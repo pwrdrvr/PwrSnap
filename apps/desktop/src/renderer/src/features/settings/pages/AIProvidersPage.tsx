@@ -188,9 +188,9 @@ export function AIProvidersPage(): ReactElement {
   const fetchAcpModels = useCallback(async (agentId: string): Promise<void> => {
     setAcpModelsLoadingIds((ids) => (ids.includes(agentId) ? ids : [...ids, agentId]));
     const result = await dispatch("acp:models", { agentId });
-    if (result.ok) {
-      setAcpModels((prev) => ({ ...prev, [agentId]: result.value.models }));
-    }
+    // Record a list either way — `[]` on failure so the picker resolves to
+    // "Default" instead of sticking on "Loading…".
+    setAcpModels((prev) => ({ ...prev, [agentId]: result.ok ? result.value.models : [] }));
     setAcpModelsLoadingIds((ids) => ids.filter((id) => id !== agentId));
   }, []);
   const agentIdFromProvider = (provider: string | undefined): string | null =>
@@ -1708,17 +1708,28 @@ function AiSurfaceDefaultControl({
   // Model choices follow the selected BACKEND: Codex models for Codex, the ACP
   // agent's advertised models for an acp:<id> provider.
   const isAcpProvider = chatProviderValue.startsWith("acp:");
+  // The ACP model list spawns the agent to fetch — disable the picker (showing
+  // "Loading…") until it arrives, instead of a stale Codex value next to
+  // "loading". Codex models load fast and the stored value is valid, so the
+  // Codex picker is never disabled (it just shows the stored model meanwhile).
+  void modelsLoading;
+  const modelLoading =
+    isAcpProvider && (acpModelsLoading === true || acpModelOptions === undefined);
   const modelChoices: Array<{ id: string; label: string }> = isAcpProvider
     ? (acpModelOptions ?? []).map((m) => ({ id: m.id, label: m.label }))
     : surfaceModelOptions(models, imageOnly === true, value.model).map((m) => ({
         id: m.id,
         label: modelLabel(m)
       }));
-  // Keep a persisted model that isn't in the current backend's list visible.
-  if (modelValue.length > 0 && !modelChoices.some((m) => m.id === modelValue)) {
+  // Keep a persisted model that isn't in the current backend's list visible —
+  // but ONLY for Codex. A Codex model id pinned before switching to an ACP
+  // agent is meaningless there, so an ACP provider just shows its own models
+  // (an unmatched stored value falls back to "Default").
+  if (!isAcpProvider && modelValue.length > 0 && !modelChoices.some((m) => m.id === modelValue)) {
     modelChoices.unshift({ id: modelValue, label: modelValue });
   }
-  const modelLoading = isAcpProvider ? acpModelsLoading === true : modelsLoading;
+  const modelInChoices = modelChoices.some((m) => m.id === modelValue);
+  const selectModelValue = modelInChoices ? modelValue : "";
   // A persisted acp:<id> whose agent isn't currently in the enabled set
   // (toggled off, or discovery still loading) — keep it as a visible option
   // so the select never silently drops the saved value.
@@ -1766,22 +1777,26 @@ function AiSurfaceDefaultControl({
           <span className="pss__ai-surface-field-label">Model</span>
           <select
             className="pss__select pss__ai-surface-select"
-            value={modelValue}
+            value={modelLoading ? "__loading__" : selectModelValue}
             aria-label={`${name} model`}
+            disabled={modelLoading}
             onChange={(e) => {
               onChange({ model: e.target.value });
             }}
           >
-            <option value="">Default</option>
-            {modelChoices.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-              </option>
-            ))}
+            {modelLoading ? (
+              <option value="__loading__">Loading…</option>
+            ) : (
+              <>
+                <option value="">Default</option>
+                {modelChoices.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </>
+            )}
           </select>
-          {modelLoading ? (
-            <span className="pss__model-loading">loading models</span>
-          ) : null}
         </label>
         <label className="pss__ai-surface-field">
           <span className="pss__ai-surface-field-label">Reasoning</span>

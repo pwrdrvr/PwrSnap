@@ -630,6 +630,12 @@
   min-width: 200px;
 }
 .pss__select:hover { border-color: var(--accent-border); }
+.pss__select:disabled {
+  cursor: progress;
+  color: var(--text-muted);
+  border-color: var(--border-subtle);
+}
+.pss__select:disabled:hover { border-color: var(--border-subtle); }
 .pss__select svg { color: var(--text-muted); margin-left: auto; }
 
 .pss__model-picker {

@@ -252,7 +252,7 @@ const listLayers = defineTool({
   namespace: "pwrsnap_library",
   name: "list_layers",
   description:
-    "List the annotation/effect layers on a capture (the edit tree). Refuses v1-format captures — open them in the editor first to upgrade.",
+    "List the EXISTING layers already on a capture (the edit tree) WITH their layer_ids. Call this FIRST whenever the user wants to move, resize, reposition, restyle, recolor, replace, or delete an annotation / box / arrow / redaction that is ALREADY on the image — it gives you the layer_id that update_layer / delete_layer / reorder_layer need. Do NOT draw a new layer to 'fix' or adjust one that already exists. (This lists the actual layers; for the catalog of TOOLS/conventions use editing_capabilities.) Refuses v1-format captures — open them in the editor first to upgrade.",
   annotations: { readOnlyHint: true },
   argsSchema: z.object({ capture_id: z.string() }),
   dispatch: async (args) => runVerb("layers:list", { captureId: args.capture_id })
@@ -334,9 +334,9 @@ const openEditor = defineTool({
 
 const listLayerCapabilities = defineTool({
   namespace: "pwrsnap_library",
-  name: "list_layer_capabilities",
+  name: "editing_capabilities",
   description:
-    "Describe what you can place or update on a capture: draw tools, effect tools, update_layer, and the coordinate/style conventions. Call this if you're unsure what's available.",
+    "Describe the editing TOOLS and conventions available (draw tools, effect tools, update_layer, and the coordinate/style conventions). This does NOT list the layers currently on the capture — for the actual existing layers and their ids, use `list_layers`. Call this only if you're unsure which tools exist.",
   annotations: { readOnlyHint: true },
   argsSchema: z.object({}),
   dispatch: async () => ({

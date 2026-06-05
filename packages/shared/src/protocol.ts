@@ -1268,6 +1268,22 @@ export function builtInAcpAgentDisplayName(id: string): string {
   return isBuiltInAcpAgentId(id) ? BUILT_IN_ACP_AGENT_DISPLAY_NAMES[id] : id;
 }
 
+/** The ACP agent id a chat thread is bound to, parsed from its id
+ *  (`acp:<agent>:<session>`), or `null` for a Codex thread. The provider is
+ *  baked into the thread id at creation, so it's stable even if the surface's
+ *  configured provider later changes. */
+export function acpAgentIdFromThreadId(threadId: string): string | null {
+  const m = /^acp:([^:]+):/.exec(threadId);
+  return m ? (m[1] ?? null) : null;
+}
+
+/** Human-facing provider label for a chat thread — the bound ACP agent's
+ *  friendly name (e.g. "Gemini CLI") or "Codex". */
+export function chatThreadProviderLabel(threadId: string): string {
+  const agentId = acpAgentIdFromThreadId(threadId);
+  return agentId === null ? "Codex" : builtInAcpAgentDisplayName(agentId);
+}
+
 /** Where a discovered instance's executable path was located. */
 export type AcpAgentInstanceSource = "override" | "path" | "fallback";
 

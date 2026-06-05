@@ -16,7 +16,7 @@ import type {
   LibraryChatToolCallEvent,
   LibraryChatThreadView
 } from "@pwrsnap/shared";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { chatThreadProviderLabel, EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { MessageList, type ChatActivityChip } from "../../shared/chat/MessageList";
 import { Composer, type ComposerAttachment } from "../../shared/chat/Composer";
@@ -457,17 +457,25 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
             </p>
           </div>
         ) : (
-          <MessageList
-            messages={messages}
-            streamingMessageId={streamingMessageId}
-            subscribeToStream={subscribeToStream}
-            activityByMessageId={activityByMsg}
-            trailingActivity={
-              activeTurnId !== null
-                ? { chips: pendingChips, thinking: streamingMessageId === null }
-                : null
-            }
-          />
+          <>
+            {activeThreadId !== null ? (
+              <div className="ps-libchat-provider" data-testid="library-chat-provider">
+                <span className="ps-libchat-provider-dot" aria-hidden="true" />
+                {chatThreadProviderLabel(activeThreadId)}
+              </div>
+            ) : null}
+            <MessageList
+              messages={messages}
+              streamingMessageId={streamingMessageId}
+              subscribeToStream={subscribeToStream}
+              activityByMessageId={activityByMsg}
+              trailingActivity={
+                activeTurnId !== null
+                  ? { chips: pendingChips, thinking: streamingMessageId === null }
+                  : null
+              }
+            />
+          </>
         )}
         <Composer onSubmit={onSubmit} placeholder="Ask PwrSnap to edit, redact, or find…" />
       </div>

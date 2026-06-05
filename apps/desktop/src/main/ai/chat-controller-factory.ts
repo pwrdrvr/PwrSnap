@@ -202,18 +202,22 @@ async function defaultMakeAcpClient(input: {
   // buildPwrSnapMcpServer). Best-effort — if it can't be set up, chat still
   // works, just without tools.
   let mcpServers: AcpMcpServerConfig[] = [];
+  let unregisterMcp: (() => void) | undefined;
   try {
     const mcp = await buildPwrSnapMcpServer({
       catalog: input.catalog,
       dispatchToolCall: input.dispatchToolCall
     });
-    if (mcp !== null) mcpServers = [mcp.config];
+    if (mcp !== null) {
+      mcpServers = [mcp.config];
+      unregisterMcp = mcp.unregister;
+    }
   } catch (cause) {
     logger.warn?.("acp chat: MCP tool bridge setup failed; tools disabled", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
   }
-  return new AcpAgentClient({
+  const client = new AcpAgentClient({
     transport,
     strategy,
     clientName: PWRSNAP_CLIENT_NAME,
@@ -230,6 +234,20 @@ async function defaultMakeAcpClient(input: {
     cwd: input.cwd,
     logger
   });
+  // Tie the MCP token's lifetime to the client: revoke it on close so a
+  // rebuilt/closed backend doesn't leave a live token registered. Idempotent.
+  if (unregisterMcp !== undefined) {
+    const closeWithUnregister = client.close.bind(client);
+    let revoked = false;
+    client.close = async (): Promise<void> => {
+      if (!revoked) {
+        revoked = true;
+        unregisterMcp();
+      }
+      await closeWithUnregister();
+    };
+  }
+  return client;
 }
 
 /** Resolve the surface's `AgentBackend` from its configured provider.

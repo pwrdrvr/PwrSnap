@@ -41,6 +41,7 @@ import {
   registerCaptureHandlers
 } from "./handlers/capture-handlers";
 import { registerAcpHandlers } from "./handlers/acp-handlers";
+import { getToolRpcServer } from "./ai/mcp/pwrsnap-tool-rpc-server";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
 import {
@@ -1510,6 +1511,11 @@ export function bootstrapApp(): void {
     disposeTray();
     disposeFocusSink();
     disposeIpcDispatcher();
+    // Close the ACP chat MCP tool-RPC server + remove its socket file. No-op
+    // when the bridge never started (no ACP chat used this run).
+    void getToolRpcServer()
+      .stop()
+      .catch(() => undefined);
     // Tear down the shared composite-thumbnail worker eagerly so an
     // in-flight encode (e.g. a deferred v1→v2 sweep still running) is
     // rejected and the worker terminated on our terms, rather than the

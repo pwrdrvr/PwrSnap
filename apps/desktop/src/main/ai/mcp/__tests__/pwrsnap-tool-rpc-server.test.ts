@@ -161,6 +161,14 @@ describe("PwrSnapToolRpcServer", () => {
     await expect(client.list()).rejects.toThrow(/unauthorized/);
   });
 
+  test("stop() is idempotent and safe before start", async () => {
+    const fresh = new PwrSnapToolRpcServer();
+    await expect(fresh.stop()).resolves.toBeUndefined(); // never started
+    await fresh.start(dir);
+    await expect(fresh.stop()).resolves.toBeUndefined();
+    await expect(fresh.stop()).resolves.toBeUndefined(); // double stop
+  });
+
   test("rejects malformed JSON", async () => {
     const { socketPath } = server.register({
       catalog,

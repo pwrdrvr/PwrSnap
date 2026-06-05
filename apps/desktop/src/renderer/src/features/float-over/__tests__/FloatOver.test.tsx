@@ -299,6 +299,73 @@ describe("FloatOverHost", () => {
     expect(container.textContent).not.toContain("Enable AI to read");
   });
 
+  test("status pill names the configured enrichment provider (Gemini, not Codex)", async () => {
+    const api = installHostApi();
+    // The fast show-loaded-with-record path must still fetch settings so the
+    // pill can name the provider. Return an acp:gemini enrichment default.
+    const geminiSettings: Settings = {
+      ...baseSettings,
+      ai: {
+        ...baseSettings.ai,
+        enabled: true,
+        consentAcceptedAt: "2026-05-19T12:00:00.000Z",
+        defaults: {
+          ...baseSettings.ai.defaults,
+          enrichment: { provider: "acp:gemini" }
+        }
+      }
+    };
+    (window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>).mockImplementation(
+      async (name: string) => {
+        if (name === "settings:read") return { ok: true, value: geminiSettings };
+        return { ok: true, value: undefined };
+      }
+    );
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(createElement(FloatOverHost));
+    });
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.floatOverState, {
+        kind: "show-loaded",
+        captureId: imageRecord.id,
+        record: imageRecord
+      });
+    });
+    // Let the on-load settings:read resolve.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.aiRunUpdated, {
+        enrichment: {
+          captureId: imageRecord.id,
+          latestRunId: "run_g",
+          status: "running",
+          ocrText: null,
+          suggestedTitle: null,
+          acceptedTitle: null,
+          titleAcceptedAt: null,
+          suggestedFilenameStem: null,
+          acceptedFilenameStem: null,
+          filenameAcceptedAt: null,
+          suggestedDescription: null,
+          acceptedDescription: null,
+          descriptionAcceptedAt: null,
+          suggestedTags: [],
+          acceptedTags: []
+        }
+      });
+    });
+
+    expect(container.textContent).toContain("Gemini is reading the snap");
+    expect(container.textContent).not.toContain("Codex is reading the snap");
+  });
+
   // Regression: bug v — the ⌘1/⌘2/⌘3 keydown listener must keep
   // dispatching `clipboard:copy` with the correct captureId after
   // enrichment IPC arrives. Previously the listener's effect was

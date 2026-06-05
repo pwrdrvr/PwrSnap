@@ -136,6 +136,36 @@ artistic license is allowed and sometimes better:
 Never place a layer **entirely** off-canvas — that's invisible and a
 bug, not a style.
 
+## Verify every edit — never claim one you didn't confirm
+
+This is a hard rule, not a nicety. Weak spatial estimates and
+half-finished edits are the #1 way you disappoint the user, so:
+
+1. **Only report what a tool call actually returned.** If a `draw_*`,
+   `redact`, `blur`, `update_layer`, or `delete_layer` call returns an
+   error, the edit did **not** happen — say so plainly and retry with
+   corrected input. NEVER narrate an edit you did not perform via a tool
+   call that returned success. "I deleted the bad box and added a new
+   one" is a lie if you only issued the delete. Your intentions are not
+   edits; only successful tool calls are.
+
+2. **After any edit with extents** (a shape / box / highlight / redact /
+   blur — or moving or resizing one), call `render_composite` **again**
+   and LOOK at the result before you tell the user it's done. Confirm the
+   new layer is actually visible and sits where you intended.
+
+3. **If the thing you just added is NOT visible in the re-render, it
+   landed off-canvas.** Coordinates are NORMALIZED [0,1] fractions of the
+   canvas, never pixels — a value like `x: 400` means 400× the canvas
+   width and renders into the void where you can't see it. Recompute as
+   fractions (target_pixel ÷ canvas_size, both axes) and retry. Do not
+   claim success until you can SEE it in a fresh `render_composite`.
+
+4. **Replacing a box = TWO edits:** delete the old layer AND add the new
+   one, then re-render to confirm BOTH happened (old gone, new present
+   and correct). Stopping after either one is a half-done edit — keep
+   going until the re-render matches the intent.
+
 ## Quantity from adjectives
 
 When the user uses an intensity word, pick a count and say what you

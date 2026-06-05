@@ -6,8 +6,25 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
   shell: { openExternal: vi.fn() } as unknown as typeof import("electron").shell
 }));
 
-import { buildAcpEnrichmentPrompt } from "../acp-enrichment-client";
+import { buildAcpEnrichmentPrompt, extractJsonObject } from "../acp-enrichment-client";
 import type { CaptureEnrichmentRequest } from "../capture-enrichment-client";
+
+describe("extractJsonObject", () => {
+  it("returns a plain JSON object unchanged", () => {
+    expect(extractJsonObject('{"a":1}')).toBe('{"a":1}');
+  });
+  it("unwraps a ```json fence", () => {
+    expect(extractJsonObject('```json\n{"a":1}\n```')).toBe('{"a":1}');
+  });
+  it("extracts JSON wrapped in reasoning prose (the Gemini flash-preview case)", () => {
+    const raw = '**Analyzing the image**\n\nHere is the result:\n{"title":"x","tags":[]}\n\nDone.';
+    expect(JSON.parse(extractJsonObject(raw))).toEqual({ title: "x", tags: [] });
+  });
+  it("handles braces inside string values + nested objects", () => {
+    const raw = 'noise {"a":{"b":"a } b"},"c":2} trailing';
+    expect(JSON.parse(extractJsonObject(raw))).toEqual({ a: { b: "a } b" }, c: 2 });
+  });
+});
 
 const request: CaptureEnrichmentRequest = {
   imagePaths: ["/tmp/a.jpg"],

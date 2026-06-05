@@ -279,7 +279,7 @@ describe("FloatOverHost", () => {
         record: imageRecord
       });
     });
-    expect(container.textContent).toContain("Enable Codex");
+    expect(container.textContent).toContain("Enable AI to read");
 
     await act(async () => {
       api.pushEvent(EVENT_CHANNELS.settingsChanged, {
@@ -296,7 +296,7 @@ describe("FloatOverHost", () => {
     });
 
     expect(container.textContent).toContain("Codex has no suggestion yet");
-    expect(container.textContent).not.toContain("Enable Codex");
+    expect(container.textContent).not.toContain("Enable AI to read");
   });
 
   // Regression: bug v — the ⌘1/⌘2/⌘3 keydown listener must keep

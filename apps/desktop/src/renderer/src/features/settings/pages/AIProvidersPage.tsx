@@ -1798,30 +1798,36 @@ function AiSurfaceDefaultControl({
             )}
           </select>
         </label>
-        <label className="pss__ai-surface-field">
-          <span className="pss__ai-surface-field-label">Reasoning</span>
-          <select
-            className="pss__select pss__ai-surface-select"
-            value={reasoningValue}
-            aria-label={`${name} reasoning effort`}
-            onChange={(e) => {
-              const next = e.target.value;
-              if (next === "") {
-                onChange({ reasoning: "" });
-                return;
-              }
-              if (!isAiReasoningEffort(next)) return;
-              onChange({ reasoning: next });
-            }}
-          >
-            <option value="">Default</option>
-            {AI_REASONING_EFFORTS.map((effort) => (
-              <option key={effort} value={effort}>
-                {effort}
-              </option>
-            ))}
-          </select>
-        </label>
+        {/* Reasoning effort (low/medium/high) is a Codex concept; ACP agents
+            don't expose it (they have execution "modes", a separate idea), so
+            the field is hidden for an ACP provider. The stored value is left
+            untouched so it returns if the user switches back to Codex. */}
+        {isAcpProvider ? null : (
+          <label className="pss__ai-surface-field">
+            <span className="pss__ai-surface-field-label">Reasoning</span>
+            <select
+              className="pss__select pss__ai-surface-select"
+              value={reasoningValue}
+              aria-label={`${name} reasoning effort`}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (next === "") {
+                  onChange({ reasoning: "" });
+                  return;
+                }
+                if (!isAiReasoningEffort(next)) return;
+                onChange({ reasoning: next });
+              }}
+            >
+              <option value="">Default</option>
+              {AI_REASONING_EFFORTS.map((effort) => (
+                <option key={effort} value={effort}>
+                  {effort}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
     </div>
   );

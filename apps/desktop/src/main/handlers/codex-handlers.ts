@@ -809,6 +809,9 @@ async function runCaptureEnrichment(params: {
   closeClientAfterRun: boolean;
 }): Promise<void> {
   const captureId = params.capture.id;
+  // The backend actually running this enrichment, for the logs (enrichment is
+  // no longer always Codex).
+  const provider = params.acpAgentId !== undefined ? `acp:${params.acpAgentId}` : "codex";
   const startedAt = performance.now();
   const abortController = new AbortController();
   const abortFromContext = (): void => abortController.abort();
@@ -871,6 +874,7 @@ async function runCaptureEnrichment(params: {
       sourceAppBundleId: params.metadata.sourceAppBundleId,
       triggerSource: params.triggerSource,
       codexCommand: params.command,
+      provider,
       preparedMedia: preparedMediaShape(prepared),
       bucketBefore: params.budgetBefore,
       bucketAfter: params.budgetAfter
@@ -959,6 +963,7 @@ async function runCaptureEnrichment(params: {
       sourceAppBundleId: params.metadata.sourceAppBundleId,
       triggerSource: params.triggerSource,
       codexCommand: params.command,
+      provider,
       codexUserAgent: response.userAgent,
       threadId: response.threadId,
       turnId: response.turnId,
@@ -1004,6 +1009,7 @@ async function runCaptureEnrichment(params: {
         sourceAppBundleId: params.metadata.sourceAppBundleId,
         triggerSource: params.triggerSource,
         codexCommand: params.command,
+        provider,
         preparedMedia: preparedMediaShape(prepared),
         outcome: "failed",
         message: error instanceof Error ? error.message : String(error)
@@ -1017,6 +1023,7 @@ async function runCaptureEnrichment(params: {
         sourceAppBundleId: params.metadata.sourceAppBundleId,
         triggerSource: params.triggerSource,
         codexCommand: params.command,
+        provider,
         preparedMedia: preparedMediaShape(prepared),
         outcome: "cancelled"
       });

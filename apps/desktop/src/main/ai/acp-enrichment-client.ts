@@ -66,6 +66,38 @@ function toBreakdown(
   };
 }
 
+/** Extract the first balanced top-level JSON object from a possibly-noisy
+ *  agent reply (leading reasoning prose, ```json fences, trailing text).
+ *  Returns the substring `{ … }`; falls back to the trimmed input when no
+ *  object is found (so the downstream parse surfaces a real error). String
+ *  literals are skipped so a `{`/`}` inside a value doesn't unbalance it.
+ *  Exported for testing. */
+export function extractJsonObject(rawText: string): string {
+  const fence = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const body = (fence?.[1] ?? rawText).trim();
+  const start = body.indexOf("{");
+  if (start === -1) return body;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < body.length; i += 1) {
+    const ch = body[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return body.slice(start, i + 1);
+    }
+  }
+  return body.slice(start);
+}
+
 /** Fold the Codex base instructions + the JSON-Schema contract + the
  *  per-capture metadata into one prompt (ACP has no outputSchema /
  *  baseInstructions seam). Exported for testing. */
@@ -116,7 +148,10 @@ export class AcpCaptureEnrichmentClient {
       ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {})
     });
     return {
-      result: parseCaptureEnrichmentResponse(response.rawText),
+      // ACP agents (esp. "thinking" models like Gemini flash-preview) often
+      // wrap the JSON in reasoning prose ("**Analyzing the image**…{…}") despite
+      // the JSON-only instruction, so extract the JSON object before validating.
+      result: parseCaptureEnrichmentResponse(extractJsonObject(response.rawText)),
       threadId: response.threadId,
       turnId: response.turnId,
       userAgent: response.modelProvider,

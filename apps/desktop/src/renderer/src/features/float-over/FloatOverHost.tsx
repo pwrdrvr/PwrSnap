@@ -29,6 +29,7 @@ import {
   type SettingsChangedEvent
 } from "@pwrsnap/shared";
 import { FloatOver } from "./FloatOver";
+import { enrichmentBackendLabel } from "../shared/CodexStatusPill";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 
@@ -405,6 +406,8 @@ export function FloatOverHost(): React.ReactElement {
         aiEnabled={settings?.ai.enabled ?? false}
         aiConsentAccepted={settings?.ai.consentAcceptedAt !== null && settings !== null}
         aiSafetyDisabled={settings?.ai.budgetSafetyDisabledAt !== null && settings !== null}
+        enrichmentProviderLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment).providerLabel}
+        enrichmentModelLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment).modelLabel}
         autoAcceptSuggestions={settings?.ai.autoAcceptSuggestions ?? false}
         onSetAutoAccept={(next) => {
           void dispatch("settings:write", {

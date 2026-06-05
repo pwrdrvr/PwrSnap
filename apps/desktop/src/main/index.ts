@@ -299,8 +299,12 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
         },
         {
           label: "Changelog",
-          click: () => {
-            void bus.dispatch("app:openDocumentWindow", { kind: "changelog" }, { principal: "ipc" });
+          click: (_item, sourceWindow) => {
+            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
+            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
+              options.sourceWindowId = sourceWindow.id;
+            }
+            void bus.dispatch("app:openDocumentWindow", { kind: "changelog" }, options);
           }
         },
         { type: "separator" },
@@ -325,11 +329,15 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
         { type: "separator" },
         {
           label: "Third-party Licenses",
-          click: () => {
+          click: (_item, sourceWindow) => {
+            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
+            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
+              options.sourceWindowId = sourceWindow.id;
+            }
             void bus.dispatch(
               "app:openDocumentWindow",
               { kind: "third-party-licenses" },
-              { principal: "ipc" }
+              options
             );
           }
         }

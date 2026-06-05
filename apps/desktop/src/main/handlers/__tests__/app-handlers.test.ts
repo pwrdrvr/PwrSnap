@@ -83,7 +83,22 @@ describe("app:* handlers", () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(mocks.showAppDocumentWindow).toHaveBeenCalledWith("third-party-licenses");
+    expect(mocks.showAppDocumentWindow).toHaveBeenCalledWith("third-party-licenses", {});
+  });
+
+  test("app:openDocumentWindow passes source window id for placement", async () => {
+    mocks.showAppDocumentWindow.mockReset();
+
+    const result = await bus.dispatch(
+      "app:openDocumentWindow",
+      { kind: "changelog" },
+      { principal: "ipc", sourceWindowId: 42 }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mocks.showAppDocumentWindow).toHaveBeenCalledWith("changelog", {
+      sourceWindowId: 42
+    });
   });
 
   test("app:openExternal opens allowlisted https URLs", async () => {

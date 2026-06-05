@@ -4,7 +4,12 @@ type WindowSpy = {
   id: number;
   getBounds: ReturnType<typeof vi.fn>;
   isDestroyed: ReturnType<typeof vi.fn>;
+  isMinimized: ReturnType<typeof vi.fn>;
+  isVisible: ReturnType<typeof vi.fn>;
+  restore: ReturnType<typeof vi.fn>;
+  focus: ReturnType<typeof vi.fn>;
   show: ReturnType<typeof vi.fn>;
+  setPosition: ReturnType<typeof vi.fn>;
   loadFile: ReturnType<typeof vi.fn>;
   loadURL: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
@@ -34,7 +39,12 @@ function makeWindowSpy(options?: Record<string, unknown>): WindowSpy {
       height: Number(options?.height ?? 720)
     })),
     isDestroyed: vi.fn(() => false),
+    isMinimized: vi.fn(() => false),
+    isVisible: vi.fn(() => true),
+    restore: vi.fn(),
+    focus: vi.fn(),
     show: vi.fn(),
+    setPosition: vi.fn(),
     loadFile: vi.fn().mockResolvedValue(undefined),
     loadURL: vi.fn().mockResolvedValue(undefined),
     on: vi.fn(),
@@ -167,5 +177,67 @@ describe("settings window placement", () => {
       show: false,
       title: "PwrSnap Sizzle Reels"
     });
+  });
+
+  test("centers a new document window on the source window display", async () => {
+    const sourceWindow = makeWindowSpy({
+      x: 2200,
+      y: 100,
+      width: 900,
+      height: 700
+    });
+    electronMock.fromId.mockReturnValue(sourceWindow);
+    electronMock.getDisplayMatching.mockReturnValue({
+      workArea: { x: 1920, y: 0, width: 1920, height: 1080 }
+    });
+
+    const { showAppDocumentWindow } = await import("../window");
+    showAppDocumentWindow("third-party-licenses", { sourceWindowId: 42 });
+
+    expect(electronMock.getDisplayMatching).toHaveBeenCalledWith({
+      x: 2200,
+      y: 100,
+      width: 900,
+      height: 700
+    });
+    expect(electronMock.constructedOptions[0]).toMatchObject({
+      x: 2420,
+      y: 160,
+      width: 920,
+      height: 760,
+      show: false,
+      title: "PwrSnap Third-party Licenses"
+    });
+  });
+
+  test("moves an existing document window to the source window display", async () => {
+    const sourceWindow = makeWindowSpy({
+      x: 2200,
+      y: 100,
+      width: 900,
+      height: 700
+    });
+    electronMock.fromId.mockReturnValue(sourceWindow);
+    electronMock.getDisplayMatching.mockReturnValue({
+      workArea: { x: 1920, y: 0, width: 1920, height: 1080 }
+    });
+
+    const { showAppDocumentWindow } = await import("../window");
+    const documentWindow = showAppDocumentWindow("changelog", {
+      sourceWindowId: 42
+    }) as unknown as WindowSpy;
+    electronMock.getDisplayMatching.mockClear();
+    documentWindow.setPosition.mockClear();
+
+    showAppDocumentWindow("changelog", { sourceWindowId: 42 });
+
+    expect(electronMock.getDisplayMatching).toHaveBeenCalledWith({
+      x: 2200,
+      y: 100,
+      width: 900,
+      height: 700
+    });
+    expect(documentWindow.setPosition).toHaveBeenCalledWith(2420, 160, false);
+    expect(documentWindow.focus).toHaveBeenCalledTimes(1);
   });
 });

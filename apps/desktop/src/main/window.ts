@@ -11,6 +11,8 @@ const SETTINGS_WINDOW_WIDTH = 1040;
 const SETTINGS_WINDOW_HEIGHT = 720;
 const SIZZLE_WINDOW_WIDTH = 1280;
 const SIZZLE_WINDOW_HEIGHT = 820;
+const APP_DOCUMENT_WINDOW_WIDTH = 920;
+const APP_DOCUMENT_WINDOW_HEIGHT = 760;
 
 /**
  * Module-level reference to the (singleton) Library window.
@@ -151,6 +153,16 @@ export function positionSettingsWindowForSource(
 }
 
 export function positionSizzleWindowForSource(
+  window: BrowserWindow,
+  sourceWindowId?: number
+): void {
+  const display = sourceDisplayForWindow(sourceWindowId);
+  const bounds = window.getBounds();
+  const position = centeredWindowBoundsOnDisplay(bounds.width, bounds.height, display);
+  window.setPosition(position.x, position.y, false);
+}
+
+export function positionAppDocumentWindowForSource(
   window: BrowserWindow,
   sourceWindowId?: number
 ): void {
@@ -443,18 +455,29 @@ function appDocumentTitle(kind: AppDocumentKind): string {
   return kind === "changelog" ? "PwrSnap Changelog" : "PwrSnap Third-party Licenses";
 }
 
-export function showAppDocumentWindow(kind: AppDocumentKind): BrowserWindow {
+export function showAppDocumentWindow(
+  kind: AppDocumentKind,
+  options: { sourceWindowId?: number | undefined } = {}
+): BrowserWindow {
   const existing = appDocumentWindows.get(kind);
   if (existing !== undefined && !existing.isDestroyed()) {
     if (existing.isMinimized()) existing.restore();
+    positionAppDocumentWindowForSource(existing, options.sourceWindowId);
     if (!existing.isVisible()) existing.show();
     existing.focus();
     return existing;
   }
 
+  const position = centeredWindowBoundsOnDisplay(
+    APP_DOCUMENT_WINDOW_WIDTH,
+    APP_DOCUMENT_WINDOW_HEIGHT,
+    sourceDisplayForWindow(options.sourceWindowId)
+  );
   const window = new BrowserWindow({
-    width: 920,
-    height: 760,
+    x: position.x,
+    y: position.y,
+    width: APP_DOCUMENT_WINDOW_WIDTH,
+    height: APP_DOCUMENT_WINDOW_HEIGHT,
     minWidth: 640,
     minHeight: 480,
     show: false,

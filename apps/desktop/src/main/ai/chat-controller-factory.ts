@@ -20,11 +20,13 @@ import {
   discoverLocalAcpAgentInstances,
   strategyByBackendId,
   strategyById,
+  type AcpMcpServerConfig,
   type DiscoveredAcpAgent,
   type DiscoveredAcpAgentGroup,
   type LocalAcpDiscoveryOptions
 } from "@pwrdrvr/agent-acp";
 import { resolveActiveAcpInstance } from "./acp-instance-resolver";
+import { buildPwrSnapMcpServer } from "./mcp/pwrsnap-mcp-server-config";
 import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
@@ -142,12 +144,15 @@ export type ChatBackendDeps = {
     loggerScope: string;
   }) => ChatBackend;
   /** ACP backend factory. Defaults to constructing an `AcpAgentClient`
-   *  over an `AcpStdioJsonRpcTransport` spawned from the discovered agent. */
+   *  over an `AcpStdioJsonRpcTransport` spawned from the discovered agent,
+   *  wired to the MCP tool bridge. */
   makeAcpClient?: (input: {
     agent: DiscoveredAcpAgent;
     loggerScope: string;
     cwd: string;
-  }) => ChatBackend;
+    catalog: DynamicToolSpec[];
+    dispatchToolCall: (params: DynamicToolCallParams) => Promise<DynamicToolCallResponse>;
+  }) => ChatBackend | Promise<ChatBackend>;
 };
 
 function defaultMakeCodexClient(input: {
@@ -165,11 +170,13 @@ function defaultMakeCodexClient(input: {
   });
 }
 
-function defaultMakeAcpClient(input: {
+async function defaultMakeAcpClient(input: {
   agent: DiscoveredAcpAgent;
   loggerScope: string;
   cwd: string;
-}): ChatBackend {
+  catalog: DynamicToolSpec[];
+  dispatchToolCall: (params: DynamicToolCallParams) => Promise<DynamicToolCallResponse>;
+}): Promise<ChatBackend> {
   const logger = toAgentKitLogger(input.loggerScope);
   // Resolve the kit strategy that carries the agent's normalization quirks +
   // display name. Prefer the neutral backendId match (`acp:<id>`), then the
@@ -190,11 +197,28 @@ function defaultMakeAcpClient(input: {
     ...(Object.keys(input.agent.env).length > 0 ? { env: input.agent.env } : {}),
     logger
   });
+  // Wire the MCP tool bridge: ACP has no Codex-style dynamic-tool seam, so the
+  // agent reaches PwrSnap tools by spawning our MCP server (see
+  // buildPwrSnapMcpServer). Best-effort — if it can't be set up, chat still
+  // works, just without tools.
+  let mcpServers: AcpMcpServerConfig[] = [];
+  try {
+    const mcp = await buildPwrSnapMcpServer({
+      catalog: input.catalog,
+      dispatchToolCall: input.dispatchToolCall
+    });
+    if (mcp !== null) mcpServers = [mcp.config];
+  } catch (cause) {
+    logger.warn?.("acp chat: MCP tool bridge setup failed; tools disabled", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
   return new AcpAgentClient({
     transport,
     strategy,
     clientName: PWRSNAP_CLIENT_NAME,
     clientTitle: PWRSNAP_CLIENT_TITLE,
+    ...(mcpServers.length > 0 ? { mcpServers } : {}),
     // Defense-in-depth: pin the constructor's DEFAULT cwd to a small scratch
     // dir. ACP agents (Gemini especially) scan their `cwd` for workspace
     // context on every `session/new` — measured 18.8s + 13.5k input tokens at
@@ -282,7 +306,13 @@ async function resolveChatBackend(
   // (the cause of the multi-second chat stall). One shared dir is fine — chat
   // tools reach PwrSnap over the bridge, not the agent's filesystem cwd.
   const acpCwd = join(config.chatsDir, ".acp-chat");
-  return makeAcp({ agent, loggerScope: config.loggerScope, cwd: acpCwd });
+  return makeAcp({
+    agent,
+    loggerScope: config.loggerScope,
+    cwd: acpCwd,
+    catalog: config.catalog,
+    dispatchToolCall: config.dispatchToolCall
+  });
 }
 
 export async function buildChatSurface(

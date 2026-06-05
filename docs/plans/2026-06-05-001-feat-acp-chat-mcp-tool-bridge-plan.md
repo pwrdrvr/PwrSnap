@@ -1,5 +1,46 @@
 # ACP Chat MCP Tool Bridge — Plan
 
+Status: **Shipped** (2026-06-05). Live-verified: Gemini spawns the PwrSnap MCP
+server and calls a tool end to end.
+
+## Shipping status
+
+- **P1 — RPC core:** `pwrsnap-tool-rpc-server.ts` (UDS + token + per-surface
+  catalog/dispatch). Shipped + tested.
+- **P2 — MCP server:** `pwrsnap-mcp-server-entry.ts` (official
+  `@modelcontextprotocol/sdk`), `pwrsnap-tool-rpc-client.ts`, pure
+  `mcp-translate.ts`. Shipped + tested (incl. a spawn smoke).
+- **P3 — Wiring + build:** `buildPwrSnapMcpServer` + `defaultMakeAcpClient`
+  passes `mcpServers`; electron-vite builds `pwrsnap-mcp-server.js` as a main
+  entry. Shipped.
+- **P4 — Live + packaging:** Live Gemini run executed `draw_arrow(cap-77)`
+  through the full chain. Packaging: `files: out/**/*` ships the entry and
+  `package.json` pulls the SDK into the asar — pure JS loads from asar under
+  `ELECTRON_RUN_AS_NODE`, no `asarUnpack` needed. **Still to do on a real
+  packaged build:** confirm asar spawn works on a signed/notarized `.app`
+  (couldn't be exercised from a dev checkout).
+
+### Required kit fix (shipped in `@pwrdrvr/agent-acp` 0.2.1)
+
+ACP's `McpServer` wire shape needs `args: string[]` and
+`env: Array<{name,value}>`; the kit had been sending `env` as a `Record` with
+`args` omitted, so Gemini failed `session/new` with `-32603`. Fixed at the
+protocol boundary (the ergonomic `Record` API is unchanged).
+
+### Known follow-ups (non-blocking)
+
+- `buildPwrSnapMcpServer` returns an `unregister` that `defaultMakeAcpClient`
+  currently drops; tokens accumulate one-per-surface (negligible — surfaces are
+  app-lifetime singletons). Wire `unregister` + `server.stop()` on teardown when
+  convenient.
+- Tool calls trust the agent-supplied `capture_id` (same exposure as the Codex
+  backend — the allowlist is the boundary). If we later want hard per-thread
+  anchor scoping, enforce it in the RPC server.
+
+---
+
+(Original plan follows.)
+
 Status: **Proposed** (not started). Author handoff: 2026-06-05.
 
 ## Problem

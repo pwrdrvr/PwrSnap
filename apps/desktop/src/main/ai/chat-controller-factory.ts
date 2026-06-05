@@ -10,6 +10,7 @@
 // in exactly one place. The controller's neutral decision type differs from
 // PwrSnap's; `toKitApprovalDecision` maps between them at the verb boundary.
 
+import { join } from "node:path";
 import { ChatThreadController, CodexThreadClient } from "@pwrdrvr/agent-client";
 import type { ChatBackend, ChatThreadControllerDeps } from "@pwrdrvr/agent-client";
 import type { AgentBackend, NormalizedApprovalDecision } from "@pwrdrvr/agent-core";
@@ -145,6 +146,7 @@ export type ChatBackendDeps = {
   makeAcpClient?: (input: {
     agent: DiscoveredAcpAgent;
     loggerScope: string;
+    cwd: string;
   }) => ChatBackend;
 };
 
@@ -166,6 +168,7 @@ function defaultMakeCodexClient(input: {
 function defaultMakeAcpClient(input: {
   agent: DiscoveredAcpAgent;
   loggerScope: string;
+  cwd: string;
 }): ChatBackend {
   const logger = toAgentKitLogger(input.loggerScope);
   // Resolve the kit strategy that carries the agent's normalization quirks +
@@ -192,6 +195,15 @@ function defaultMakeAcpClient(input: {
     strategy,
     clientName: PWRSNAP_CLIENT_NAME,
     clientTitle: PWRSNAP_CLIENT_TITLE,
+    // Defense-in-depth: pin the constructor's DEFAULT cwd to a small scratch
+    // dir. ACP agents (Gemini especially) scan their `cwd` for workspace
+    // context on every `session/new` — measured 18.8s + 13.5k input tokens at
+    // the PwrSnap repo root vs 1.4s + ~10.6k in an empty dir. The chat
+    // controller already passes a small per-thread cwd via `createThread`, so
+    // this default is only a fallback (e.g. a future `startThread` that omits
+    // cwd) — but it guarantees we never inherit `process.cwd()` (the app
+    // bundle / repo root). The kit mkdirs the dir for us.
+    cwd: input.cwd,
     logger
   });
 }
@@ -265,7 +277,12 @@ async function resolveChatBackend(
     ...(active.version !== undefined ? { version: active.version } : {})
   };
   const makeAcp = deps.makeAcpClient ?? defaultMakeAcpClient;
-  return makeAcp({ agent, loggerScope: config.loggerScope });
+  // Pin the ACP session to a dedicated scratch dir under ~/Documents/PwrSnap/
+  // Chats so the agent doesn't scan the app/repo tree for "workspace context"
+  // (the cause of the multi-second chat stall). One shared dir is fine — chat
+  // tools reach PwrSnap over the bridge, not the agent's filesystem cwd.
+  const acpCwd = join(config.chatsDir, ".acp-chat");
+  return makeAcp({ agent, loggerScope: config.loggerScope, cwd: acpCwd });
 }
 
 export async function buildChatSurface(

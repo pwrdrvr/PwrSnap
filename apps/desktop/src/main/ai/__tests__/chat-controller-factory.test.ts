@@ -160,9 +160,14 @@ describe("buildChatSurface — backend selection", () => {
 
     expect(discoverAcpAgentInstances).toHaveBeenCalledTimes(1);
     expect(makeAcpClient).toHaveBeenCalledTimes(1);
-    const agent = vi.mocked(makeAcpClient).mock.calls[0]?.[0]?.agent;
+    const call = vi.mocked(makeAcpClient).mock.calls[0]?.[0];
+    const agent = call?.agent;
     expect(agent?.command).toBe("/usr/local/bin/gemini");
     expect(agent?.args).toEqual(["--experimental-acp"]);
+    // The ACP session must be pinned to a small scratch dir under chatsDir —
+    // NOT process.cwd() — so Gemini doesn't scan the app/repo tree (the cause
+    // of the multi-second chat stall).
+    expect(call?.cwd).toBe("/tmp/pwrsnap-test-chats/.acp-chat");
     expect(makeCodexClient).not.toHaveBeenCalled();
   });
 

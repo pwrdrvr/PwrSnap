@@ -180,6 +180,9 @@ export function registerAcpHandlers(params?: {
   // so memoize per agent. Cleared on app restart; the renderer re-fetches when
   // the user switches providers, hitting the cache after the first spawn.
   const modelCache = new Map<string, AcpAgentModelOption[]>();
+  // Collapse concurrent requests for the SAME agent onto one spawn (the
+  // renderer can fire twice — e.g. React StrictMode — before either resolves).
+  const modelInFlight = new Map<string, Promise<Result<AcpAgentModelList, PwrSnapError>>>();
 
   bus.register("acp:models", async (req): Promise<
     Result<AcpAgentModelList, PwrSnapError>
@@ -187,7 +190,20 @@ export function registerAcpHandlers(params?: {
     const agentId = req.agentId;
     const cached = modelCache.get(agentId);
     if (cached !== undefined) return ok({ agentId, models: cached });
+    const inFlight = modelInFlight.get(agentId);
+    if (inFlight !== undefined) return inFlight;
+    const promise = listAcpModels(agentId);
+    modelInFlight.set(agentId, promise);
+    try {
+      return await promise;
+    } finally {
+      modelInFlight.delete(agentId);
+    }
+  });
 
+  async function listAcpModels(
+    agentId: string
+  ): Promise<Result<AcpAgentModelList, PwrSnapError>> {
     let settings: Settings;
     try {
       settings = await readSettings();
@@ -268,5 +284,5 @@ export function registerAcpHandlers(params?: {
     } finally {
       await client.close().catch(() => undefined);
     }
-  });
+  }
 }

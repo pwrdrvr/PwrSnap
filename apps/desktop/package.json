@@ -54,7 +54,7 @@
     "@pwrdrvr/codex-discovery": "^0.1.2",
     "@pwrdrvr/agent-client": "^0.1.2",
     "@pwrdrvr/agent-chat-react": "^0.1.2",
-    "@pwrdrvr/agent-acp": "^0.1.6"
+    "@pwrdrvr/agent-acp": "^0.1.7"
   },
   "devDependencies": {
     "@electron/asar": "^4.2.0",

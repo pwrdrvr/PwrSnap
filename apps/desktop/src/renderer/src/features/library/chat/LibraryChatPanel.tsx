@@ -369,7 +369,8 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         <p className="ps-libchat-empty-body">{codexError.message}</p>
         {codexError.showSettingsHint ? (
           <p className="ps-libchat-empty-body">
-            Open <b>Settings → AI Providers</b> to configure Codex, then try again.
+            Open <b>Settings → AI Providers</b> to configure Codex, Gemini, or
+            another provider, then try again.
           </p>
         ) : null}
         <button

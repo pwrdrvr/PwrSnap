@@ -250,6 +250,7 @@ export function installTray(): Tray {
 
   tray.on("click", () => toggleTrayWindow());
   tray.on("right-click", () => {
+    const trayBounds = tray?.getBounds();
     // Always dismiss the popover before the context menu appears —
     // having both visible at once is confusing UX (and was the
     // dock-icon-right-click reproduction the user reported).
@@ -296,7 +297,11 @@ export function installTray(): Tray {
         label: "Settings…",
         accelerator: "CommandOrControl+,",
         click: () => {
-          void bus.dispatch("settings:open", {}, { principal: "ipc" });
+          const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
+          if (trayBounds !== undefined) {
+            options.sourceBounds = trayBounds;
+          }
+          void bus.dispatch("settings:open", {}, options);
         }
       }
     ];

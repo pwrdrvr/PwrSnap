@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   createSettingsWindow: vi.fn(),
   findSettingsWindow: vi.fn(),
+  positionSettingsWindowForSource: vi.fn(),
   loggerInfo: vi.fn(),
   loggerWarn: vi.fn(),
   loggerError: vi.fn(),
@@ -18,7 +19,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../window", () => ({
   createSettingsWindow: mocks.createSettingsWindow,
-  findSettingsWindow: mocks.findSettingsWindow
+  findSettingsWindow: mocks.findSettingsWindow,
+  positionSettingsWindowForSource: mocks.positionSettingsWindowForSource
 }));
 
 vi.mock("../../log", () => ({
@@ -81,6 +83,7 @@ describe("settings:open", () => {
   beforeEach(() => {
     mocks.createSettingsWindow.mockReset();
     mocks.findSettingsWindow.mockReset();
+    mocks.positionSettingsWindowForSource.mockReset();
   });
   afterEach(() => {
     vi.clearAllMocks();
@@ -95,8 +98,20 @@ describe("settings:open", () => {
 
     expect(result.ok).toBe(true);
     expect(mocks.createSettingsWindow).toHaveBeenCalledTimes(1);
+    expect(mocks.createSettingsWindow).toHaveBeenCalledWith(undefined, {});
     // No focus on the just-created window — `ready-to-show` shows it.
     expect(fake.focus).not.toHaveBeenCalled();
+  });
+
+  test("passes the source window id when creating a new Settings window", async () => {
+    mocks.findSettingsWindow.mockReturnValue(null);
+    mocks.createSettingsWindow.mockReturnValue(makeFakeWindow());
+
+    await bus.dispatch("settings:open", {}, { principal: "ipc", sourceWindowId: 42 });
+
+    expect(mocks.createSettingsWindow).toHaveBeenCalledWith(undefined, {
+      sourceWindowId: 42
+    });
   });
 
   test("focuses the existing window when one is open (no create)", async () => {
@@ -107,7 +122,32 @@ describe("settings:open", () => {
 
     expect(result.ok).toBe(true);
     expect(mocks.createSettingsWindow).not.toHaveBeenCalled();
+    expect(mocks.positionSettingsWindowForSource).toHaveBeenCalledWith(fake, {});
     expect(fake.focus).toHaveBeenCalledTimes(1);
+  });
+
+  test("repositions an existing Settings window to the source display before focusing", async () => {
+    const fake = makeFakeWindow();
+    mocks.findSettingsWindow.mockReturnValue(fake);
+
+    await bus.dispatch("settings:open", {}, { principal: "ipc", sourceWindowId: 7 });
+
+    expect(mocks.positionSettingsWindowForSource).toHaveBeenCalledWith(fake, {
+      sourceWindowId: 7
+    });
+    expect(fake.focus).toHaveBeenCalledTimes(1);
+  });
+
+  test("passes source bounds when creating from a non-window affordance", async () => {
+    mocks.findSettingsWindow.mockReturnValue(null);
+    mocks.createSettingsWindow.mockReturnValue(makeFakeWindow());
+    const sourceBounds = { x: 1800, y: 0, width: 24, height: 24 };
+
+    await bus.dispatch("settings:open", {}, { principal: "ipc", sourceBounds });
+
+    expect(mocks.createSettingsWindow).toHaveBeenCalledWith(undefined, {
+      sourceBounds
+    });
   });
 
   test("restores the existing window when minimized", async () => {
@@ -138,7 +178,7 @@ describe("settings:open", () => {
 
     await bus.dispatch("settings:open", { page: "hotkeys" }, { principal: "ipc" });
 
-    expect(mocks.createSettingsWindow).toHaveBeenCalledWith("page=hotkeys");
+    expect(mocks.createSettingsWindow).toHaveBeenCalledWith("page=hotkeys", {});
   });
 
   test("navigates the existing window via typed event when `page` is supplied", async () => {

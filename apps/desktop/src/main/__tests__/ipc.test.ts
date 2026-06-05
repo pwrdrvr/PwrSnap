@@ -5,6 +5,7 @@ const electronMock = vi.hoisted(() => ({
   handler: null as
     | ((event: unknown, name: string, req: unknown) => Promise<unknown>)
     | null,
+  fromWebContents: vi.fn(),
   handle: vi.fn(),
   on: vi.fn(),
   removeAllListeners: vi.fn(),
@@ -17,6 +18,9 @@ const electronMock = vi.hoisted(() => ({
 }));
 
 vi.mock("electron", () => ({
+  BrowserWindow: {
+    fromWebContents: electronMock.fromWebContents
+  },
   ipcMain: {
     handle: vi.fn((channel: string, handler: typeof electronMock.handler) => {
       electronMock.handle(channel, handler);
@@ -43,6 +47,7 @@ describe("IPC dispatcher", () => {
   afterEach(() => {
     disposeIpcDispatcher();
     bus.unregister("codex:enrich");
+    bus.unregister("settings:open");
     vi.clearAllMocks();
   });
 
@@ -54,11 +59,30 @@ describe("IPC dispatcher", () => {
     });
     registerIpcDispatcher();
 
-    const result = await electronMock.handler?.(null, "codex:enrich", { captureId: "cap_1" });
+    const result = await electronMock.handler?.(
+      { sender: { marker: "sender" } },
+      "codex:enrich",
+      { captureId: "cap_1" }
+    );
 
     expect(result).toEqual({ ok: true, value: { runId: "run_1" } });
     expect(captured.signal?.aborted).toBe(false);
     bus.cancel("cap_1");
     expect(captured.signal?.aborted).toBe(true);
+  });
+
+  test("passes the sender BrowserWindow id into command context", async () => {
+    const captured: { sourceWindowId: number | undefined } = { sourceWindowId: undefined };
+    electronMock.fromWebContents.mockReturnValue({ id: 123 });
+    bus.register("settings:open", async (_req, ctx) => {
+      captured.sourceWindowId = ctx.sourceWindowId;
+      return ok(undefined);
+    });
+    registerIpcDispatcher();
+
+    await electronMock.handler?.({ sender: { marker: "sender" } }, "settings:open", {});
+
+    expect(electronMock.fromWebContents).toHaveBeenCalledWith({ marker: "sender" });
+    expect(captured.sourceWindowId).toBe(123);
   });
 });

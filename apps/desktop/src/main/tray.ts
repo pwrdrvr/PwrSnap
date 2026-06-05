@@ -296,7 +296,11 @@ export function installTray(): Tray {
         label: "Settings…",
         accelerator: "CommandOrControl+,",
         click: () => {
-          void bus.dispatch("settings:open", {}, { principal: "ipc" });
+          const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
+          if (trayWindow !== null && !trayWindow.isDestroyed()) {
+            options.sourceWindowId = trayWindow.id;
+          }
+          void bus.dispatch("settings:open", {}, options);
         }
       }
     ];

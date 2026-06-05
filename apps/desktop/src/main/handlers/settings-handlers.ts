@@ -15,7 +15,11 @@ import type {
   SettingsNavigateEvent
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
-import { createSettingsWindow, findSettingsWindow } from "../window";
+import {
+  createSettingsWindow,
+  findSettingsWindow,
+  positionSettingsWindowForSource
+} from "../window";
 import { getMainLogger } from "../log";
 import { DesktopSettingsService } from "../settings/desktop-settings-service";
 import {
@@ -125,13 +129,14 @@ function toSettingsError(
 }
 
 export function registerSettingsHandlers(): void {
-  bus.register("settings:open", async (req) => {
+  bus.register("settings:open", async (req, ctx) => {
     const validated = validateSettingsOpen(req);
     if (!validated.ok) return err(validated.error);
     const { page } = validated.value;
     const existing = findSettingsWindow();
     if (existing !== null) {
       if (existing.isMinimized()) existing.restore();
+      positionSettingsWindowForSource(existing, ctx.sourceWindowId);
       if (!existing.isVisible()) existing.show();
       existing.focus();
       if (page !== undefined) {
@@ -146,7 +151,11 @@ export function registerSettingsHandlers(): void {
       return ok(undefined);
     }
     const extraHash = page !== undefined ? `page=${page}` : undefined;
-    createSettingsWindow(extraHash);
+    const createOptions: { sourceWindowId?: number | undefined } = {};
+    if (ctx.sourceWindowId !== undefined) {
+      createOptions.sourceWindowId = ctx.sourceWindowId;
+    }
+    createSettingsWindow(extraHash, createOptions);
     return ok(undefined);
   });
 

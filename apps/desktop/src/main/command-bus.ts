@@ -27,6 +27,8 @@ export type CommandPrincipal = "ipc" | "rpc" | "mcp" | "seeder";
 export type CommandContext = {
   signal: AbortSignal;
   principal: CommandPrincipal;
+  /** BrowserWindow id for renderer-originated commands, when known. */
+  sourceWindowId?: number;
 };
 
 export type CommandHandler<C extends CommandName> = (
@@ -79,7 +81,11 @@ class CommandBus {
   async dispatch<C extends CommandName>(
     name: C,
     req: Req<C>,
-    options: { principal: CommandPrincipal; cancellationKey?: string | undefined }
+    options: {
+      principal: CommandPrincipal;
+      cancellationKey?: string | undefined;
+      sourceWindowId?: number | undefined;
+    }
   ): Promise<Result<Res<C>, PwrSnapError>> {
     const handler = this.handlers.get(name);
     if (!handler) {
@@ -101,10 +107,14 @@ class CommandBus {
     }
 
     try {
-      const result = (await handler(req, {
+      const ctx: CommandContext = {
         signal: controller.signal,
         principal: options.principal
-      })) as Result<Res<C>, PwrSnapError>;
+      };
+      if (options.sourceWindowId !== undefined) {
+        ctx.sourceWindowId = options.sourceWindowId;
+      }
+      const result = (await handler(req, ctx)) as Result<Res<C>, PwrSnapError>;
       return result;
     } catch (cause) {
       log.error("handler threw", {

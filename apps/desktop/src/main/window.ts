@@ -7,6 +7,8 @@ import { getMainLogger } from "./log";
 import { showWindowWhenReady } from "./window-show";
 
 const log = getMainLogger("pwrsnap:window");
+const SETTINGS_WINDOW_WIDTH = 1040;
+const SETTINGS_WINDOW_HEIGHT = 720;
 
 /**
  * Module-level reference to the (singleton) Library window.
@@ -111,6 +113,39 @@ function themedWebPreferences(): Electron.WebPreferences {
 
 function isE2E(): boolean {
   return process.env.PWRSNAP_E2E === "1";
+}
+
+function centeredWindowBoundsOnDisplay(
+  width: number,
+  height: number,
+  display: Electron.Display
+): { x: number; y: number } {
+  const wa = display.workArea;
+  return {
+    x: Math.round(wa.x + Math.max(0, wa.width - width) / 2),
+    y: Math.round(wa.y + Math.max(0, wa.height - height) / 2)
+  };
+}
+
+function sourceDisplayForSettings(sourceWindowId?: number): Electron.Display {
+  const source =
+    sourceWindowId !== undefined
+      ? BrowserWindow.fromId(sourceWindowId)
+      : BrowserWindow.getFocusedWindow() ?? libraryWindow;
+  if (source !== null && source !== undefined && !source.isDestroyed()) {
+    return screen.getDisplayMatching(source.getBounds());
+  }
+  return screen.getPrimaryDisplay();
+}
+
+export function positionSettingsWindowForSource(
+  window: BrowserWindow,
+  sourceWindowId?: number
+): void {
+  const display = sourceDisplayForSettings(sourceWindowId);
+  const bounds = window.getBounds();
+  const position = centeredWindowBoundsOnDisplay(bounds.width, bounds.height, display);
+  window.setPosition(position.x, position.y, false);
 }
 
 /**
@@ -303,13 +338,23 @@ export function findSettingsWindow(): BrowserWindow | null {
  * `setMinimumSize(0, 0)` rule (see tray / float-over) does not apply
  * here.
  */
-export function createSettingsWindow(extraHash?: string): BrowserWindow {
+export function createSettingsWindow(
+  extraHash?: string,
+  options: { sourceWindowId?: number | undefined } = {}
+): BrowserWindow {
   if (settingsWindow !== null && !settingsWindow.isDestroyed()) {
     return settingsWindow;
   }
+  const position = centeredWindowBoundsOnDisplay(
+    SETTINGS_WINDOW_WIDTH,
+    SETTINGS_WINDOW_HEIGHT,
+    sourceDisplayForSettings(options.sourceWindowId)
+  );
   const window = new BrowserWindow({
-    width: 1040,
-    height: 720,
+    x: position.x,
+    y: position.y,
+    width: SETTINGS_WINDOW_WIDTH,
+    height: SETTINGS_WINDOW_HEIGHT,
     minWidth: 720,
     minHeight: 480,
     show: false,

@@ -173,13 +173,19 @@ let lastKnownDeveloperMode = false;
 
 function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode): void {
   lastKnownDeveloperMode = developerMode;
-  const openSettings = (): void => {
-    void bus.dispatch("settings:open", {}, { principal: "ipc" });
+  const openSettings = (
+    sourceWindow?: { id: number; isDestroyed: () => boolean } | null
+  ): void => {
+    const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
+    if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
+      options.sourceWindowId = sourceWindow.id;
+    }
+    void bus.dispatch("settings:open", {}, options);
   };
   const settingsItem: Electron.MenuItemConstructorOptions = {
     label: "Settings…",
     accelerator: SETTINGS_SHORTCUT,
-    click: openSettings
+    click: (_item, sourceWindow) => openSettings(sourceWindow)
   };
   // Stripped-down View menu — Reload / Force Reload / Toggle DevTools
   // are gated behind `general.developerMode`. Hidden by default so

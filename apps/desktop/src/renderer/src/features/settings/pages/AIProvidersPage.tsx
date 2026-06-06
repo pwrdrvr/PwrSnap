@@ -427,7 +427,7 @@ export function AIProvidersPage(): ReactElement {
 
         <Row
           label="Available paths"
-          sub="Detected on this machine. The resolved binary is highlighted."
+          sub="Detected on this machine. The resolved binary is highlighted; the test below spawns it with --version to confirm it runs."
           tag="config"
         >
           <CodexCandidates
@@ -437,6 +437,49 @@ export function AIProvidersPage(): ReactElement {
               void patch({ codex: { mode: "pinned", pinnedPath: path } });
             }}
           />
+          {snapshot !== null && snapshot.resolvedPath !== null ? (
+            <div className="pss__test pss__test--attached">
+              <span className="pss__test-icon" aria-hidden="true">
+                ›_
+              </span>
+              <div className="pss__test-l">
+                <span className="pss__test-cmd">
+                  {codexTest?.account ?? "Connection test"}
+                </span>
+                <span className="pss__test-sub">
+                  {codexTestSubLine(codexTest, codexTesting)}
+                </span>
+              </div>
+              <div className="pss__test-r">
+                <span
+                  className={
+                    "pss__badge" +
+                    (codexTest ? ` ${codexTestBadgeClass(codexTest)}` : "")
+                  }
+                >
+                  {codexTestBadgeLabel(codexTest, codexTesting)}
+                </span>
+                <button
+                  className="pss__test-btn"
+                  type="button"
+                  disabled={codexTesting}
+                  onClick={() => {
+                    void (async () => {
+                      setCodexTesting(true);
+                      try {
+                        const result = await testCodex();
+                        if (result !== null) setCodexTest(result);
+                      } finally {
+                        setCodexTesting(false);
+                      }
+                    })();
+                  }}
+                >
+                  {codexTesting ? "Testing…" : "Test"}
+                </button>
+              </div>
+            </div>
+          ) : null}
         </Row>
 
         <Row
@@ -450,51 +493,6 @@ export function AIProvidersPage(): ReactElement {
               void patch({ codex: { profile: name } });
             }}
           />
-        </Row>
-
-        <Row
-          label="Connection test"
-          sub="Spawns the selected Codex binary with --version and validates the version banner."
-          tag="test"
-        >
-          <div className="pss__test">
-            <span className="pss__test-icon">C</span>
-            <div className="pss__test-l">
-              <span className="pss__test-cmd">
-                {codexTest?.account ?? snapshot?.resolvedPath ?? "—"}
-              </span>
-              <span className="pss__test-sub">
-                {codexTestSubLine(codexTest, codexTesting)}
-              </span>
-            </div>
-            <div className="pss__test-r">
-              <span
-                className={
-                  "pss__badge" + (codexTest ? ` ${codexTestBadgeClass(codexTest)}` : "")
-                }
-              >
-                {codexTestBadgeLabel(codexTest, codexTesting)}
-              </span>
-              <button
-                className="pss__test-btn"
-                type="button"
-                disabled={codexTesting}
-                onClick={() => {
-                  void (async () => {
-                    setCodexTesting(true);
-                    try {
-                      const result = await testCodex();
-                      if (result !== null) setCodexTest(result);
-                    } finally {
-                      setCodexTesting(false);
-                    }
-                  })();
-                }}
-              >
-                {codexTesting ? "Testing…" : "Test"}
-              </button>
-            </div>
-          </div>
         </Row>
       </Card>
 
@@ -795,23 +793,40 @@ type CandidateRowProps = {
 };
 
 function CandidateRow({ candidate, using, onPin }: CandidateRowProps): ReactElement {
+  // The path gets its own full-width line (never squeezed by the badges, which
+  // is what chopped `/Applications/Code…` before). Source/version/status drop
+  // to a muted meta line below — the same shape as the ACP installed-agent card.
   return (
-    <OptionRow
-      icon="C"
-      primary={candidate.path}
-      sub={candidate.available ? "available" : "unavailable"}
-      using={using}
-      badges={
-        <>
-          <span className="pss__badge">{candidate.source}</span>
+    <div className={"pss__cand" + (using ? " is-using" : "")}>
+      <span className="pss__cand-icon" aria-hidden="true">
+        C
+      </span>
+      <div className="pss__cand-body">
+        <span className="pss__cand-path" title={candidate.path}>
+          {candidate.path}
+        </span>
+        <span className="pss__cand-meta">
+          <span>{candidate.source}</span>
           {candidate.version !== null ? (
-            <span className="pss__badge">{candidate.version}</span>
+            <>
+              <span className="pss__cand-sep" aria-hidden="true">
+                ·
+              </span>
+              <span>v{candidate.version}</span>
+            </>
           ) : null}
-          {using ? <span className="pss__badge is-using">Using</span> : null}
-        </>
-      }
-      action={
-        !using ? (
+          <span className="pss__cand-sep" aria-hidden="true">
+            ·
+          </span>
+          <span className={candidate.available ? undefined : "pss__cand-unavail"}>
+            {candidate.available ? "available" : "unavailable"}
+          </span>
+        </span>
+      </div>
+      <div className="pss__cand-action">
+        {using ? (
+          <span className="pss__badge is-using">Using</span>
+        ) : (
           <button
             className="pss__opt-use"
             type="button"
@@ -820,9 +835,9 @@ function CandidateRow({ candidate, using, onPin }: CandidateRowProps): ReactElem
           >
             Use
           </button>
-        ) : undefined
-      }
-    />
+        )}
+      </div>
+    </div>
   );
 }
 

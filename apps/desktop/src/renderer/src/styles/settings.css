@@ -570,6 +570,88 @@
   border-color: var(--accent-border);
 }
 
+/* Codex discovery candidate cards. The path gets a dedicated full-width line so
+   it never competes with the badges for space (that squeeze chopped the binary
+   name to "/Applications/Code…"). Source/version/status drop to a muted meta
+   line below — the same shape as the ACP installed-agent card so the two
+   provider lists read alike. Deliberately separate from `.pss__opt`, which the
+   shared OptionRow (auth-profile row) still uses unchanged. */
+.pss__cand {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+.pss__cand + .pss__cand { margin-top: 8px; }
+.pss__cand.is-using {
+  background: var(--bg-row-active);
+  border-color: var(--accent);
+}
+.pss__cand-icon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  font: 700 12px/1 var(--font-mono);
+  margin-top: 1px;
+}
+.pss__cand.is-using .pss__cand-icon {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+.pss__cand-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pss__cand-path {
+  font: 600 12px/1.4 var(--font-mono);
+  color: var(--text-primary);
+  letter-spacing: -0.005em;
+  /* Never truncate the binary name — wrap a pathological path to a second line
+     instead of clipping it. With its own full-width line, real paths fit. */
+  word-break: break-all;
+}
+.pss__cand.is-using .pss__cand-path { color: var(--accent-bright); }
+.pss__cand-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font: 500 11px/1.3 var(--font-mono);
+  color: var(--text-muted);
+}
+.pss__cand-sep { color: var(--border-default); }
+.pss__cand-unavail { color: var(--danger-text); }
+.pss__cand-action {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  margin-top: 1px;
+}
+
+/* connection test, folded under the candidate list (was its own labeled Row) */
+.pss__test--attached {
+  margin-top: 2px;
+  background: var(--bg-panel);
+}
+.pss__test--attached .pss__test-icon {
+  font-size: 11px;
+  letter-spacing: -0.04em;
+}
+
 /* hotkey chip — for displaying a current shortcut, click to remap */
 .pss__hk {
   display: inline-flex;

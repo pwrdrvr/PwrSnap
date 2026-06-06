@@ -22,6 +22,7 @@ import {
 import type { Settings } from "@pwrsnap/shared";
 import { resolveActiveAcpInstance } from "./acp-instance-resolver";
 import { PWRSNAP_CLIENT_NAME, PWRSNAP_CLIENT_TITLE, toAgentKitLogger } from "./agent-kit-bindings";
+import { makePooledAcpApprovalHandler } from "./acp-approval-policy";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:acp-pool");
@@ -56,19 +57,23 @@ function makeAcpAgentClient(agent: DiscoveredAcpAgent, cwd: string): AcpAgentCli
     ...(Object.keys(agent.env).length > 0 ? { env: agent.env } : {}),
     logger
   });
-  return new AcpAgentClient({
+  const client = new AcpAgentClient({
     transport,
     strategy,
     clientName: PWRSNAP_CLIENT_NAME,
     clientTitle: PWRSNAP_CLIENT_TITLE,
-    // Auto-approve PwrSnap's own MCP tools; the agent's OWN tools (shell/file/
-    // web) get no host handler on the shared client, so the kit cancels them.
-    autoApproveConfiguredMcpTools: true,
     // Small scratch cwd so the agent doesn't scan the app/repo tree on
     // session/new (multi-second + token bloat). All sessions share it.
     cwd,
     logger
   });
+  // The pooled client is shared across surfaces, so the chat controller skips
+  // its per-surface approval handler (`backendClientShared`). Register PwrSnap's
+  // OWN client-level policy here: pre-approve our configured MCP tools, deny the
+  // agent's built-in shell/file/web tools. The kit makes no trust decision — it
+  // just forwards each permission request to this handler.
+  client.onApprovalRequest(makePooledAcpApprovalHandler(logger));
+  return client;
 }
 
 /** Acquire the shared, warmed client for an agent (creating + warming on first

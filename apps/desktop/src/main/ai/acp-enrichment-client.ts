@@ -11,7 +11,7 @@
 
 import {
   AcpOneShotClient,
-  AcpStdioJsonRpcTransport,
+  AcpConnection,
   type AcpAgentStrategy
 } from "@pwrdrvr/agent-acp";
 import type { AiUsageTokenBreakdown } from "@pwrsnap/shared";
@@ -118,7 +118,7 @@ export class AcpCaptureEnrichmentClient {
 
   constructor(options: AcpCaptureEnrichmentClientOptions) {
     const logger = toAgentKitLogger("pwrsnap:acp-enrichment");
-    const transport = new AcpStdioJsonRpcTransport({
+    const transport = new AcpConnection({
       command: options.command,
       args: [...options.args],
       ...(options.env !== undefined && Object.keys(options.env).length > 0

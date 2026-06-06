@@ -20,7 +20,7 @@
 
 import {
   AcpOneShotClient,
-  AcpStdioJsonRpcTransport,
+  AcpConnection,
   BUILT_IN_ACP_STRATEGIES,
   discoverLocalAcpAgentInstances,
   strategyById,
@@ -260,7 +260,7 @@ export function registerAcpHandlers(params?: {
     const cwd = join(app.getPath("documents"), "PwrSnap", "Chats", ".acp-models");
     const logger = toAgentKitLogger("pwrsnap:acp-models");
     const client = new AcpOneShotClient({
-      transport: new AcpStdioJsonRpcTransport({
+      transport: new AcpConnection({
         command: active.command,
         args: [...group.args],
         ...(Object.keys(group.env).length > 0 ? { env: group.env } : {}),

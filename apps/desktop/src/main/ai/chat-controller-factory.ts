@@ -16,7 +16,6 @@ import type { ChatBackend, ChatThreadControllerDeps } from "@pwrdrvr/agent-clien
 import type { AgentBackend, NormalizedApprovalDecision } from "@pwrdrvr/agent-core";
 import {
   AcpAgentClient,
-  AcpStdioJsonRpcTransport,
   discoverLocalAcpAgentInstances,
   strategyByBackendId,
   strategyById,

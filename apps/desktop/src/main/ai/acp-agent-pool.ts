@@ -12,7 +12,7 @@ import { join } from "node:path";
 import {
   AcpAgentClient,
   AcpAgentClientPool,
-  AcpStdioJsonRpcTransport,
+  AcpConnection,
   discoverLocalAcpAgentInstances,
   strategyByBackendId,
   strategyById,
@@ -51,7 +51,7 @@ function makeAcpAgentClient(agent: DiscoveredAcpAgent, cwd: string): AcpAgentCli
   if (strategy === undefined) {
     throw new Error(`no ACP strategy for discovered agent ${agent.backendId}`);
   }
-  const transport = new AcpStdioJsonRpcTransport({
+  const transport = new AcpConnection({
     command: agent.command,
     args: agent.args,
     ...(Object.keys(agent.env).length > 0 ? { env: agent.env } : {}),

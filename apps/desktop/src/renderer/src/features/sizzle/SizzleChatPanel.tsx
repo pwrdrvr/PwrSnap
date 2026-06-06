@@ -94,12 +94,12 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
         return;
       }
       const found = result.value?.threads ?? [];
-      const sorted = sortChatThreads(found);
-      setThreads(sorted);
-      // Resume the reel's most-recent chat (threads are modified_at DESC)
-      // instead of dropping to the greeting — so switching reels (and
-      // relaunching the app) reopens the conversation for that reel.
-      if (sorted.length > 0) setActiveThreadId(sorted[0]!.threadId);
+      setThreads(sortChatThreads(found));
+      // The list is now in CREATION order, so resume the most-recently-active
+      // chat explicitly (by modified_at) rather than sorted[0] — reopens the
+      // reel's conversation on switch / relaunch instead of the greeting.
+      const resume = mostRecentlyModified(found);
+      if (resume !== null) setActiveThreadId(resume.threadId);
       setLoading(false);
     })();
     return () => {
@@ -474,13 +474,25 @@ function errorFor(error: { code?: string; message: string }): ChatPanelError {
 }
 
 function sortChatThreads(threads: LibraryChatThreadView[]): LibraryChatThreadView[] {
+  // Stable CREATION order (oldest → newest). Deliberately NOT modified_at, so a
+  // thread never jumps to the front when you select it or send a message — its
+  // position stays put, which is the only way to tell same-named chats apart.
   return [...threads].sort((a, b) => {
-    const modified = dateValue(b.modifiedAt) - dateValue(a.modifiedAt);
-    if (modified !== 0) return modified;
-    const created = dateValue(b.createdAt) - dateValue(a.createdAt);
+    const created = dateValue(a.createdAt) - dateValue(b.createdAt);
     if (created !== 0) return created;
-    return b.threadId.localeCompare(a.threadId);
+    return a.threadId.localeCompare(b.threadId);
   });
+}
+
+/** The most-recently-active thread (by modified_at), for resume-on-open — the
+ *  list itself stays in creation order, so this can't be sorted[0]. */
+function mostRecentlyModified(
+  threads: LibraryChatThreadView[]
+): LibraryChatThreadView | null {
+  if (threads.length === 0) return null;
+  return threads.reduce((best, t) =>
+    dateValue(t.modifiedAt) > dateValue(best.modifiedAt) ? t : best
+  );
 }
 
 function dateValue(value: string): number {

@@ -86,14 +86,16 @@ afterEach(async () => {
 });
 
 describe("LibraryChatPanel", () => {
-  test("orders thread chips newest to oldest", async () => {
+  test("orders thread chips in creation order (oldest to newest), resumes most recent", async () => {
     const older = makeThread("t1", "Older chat", "2026-05-30T10:00:00.000Z");
     const newer = makeThread("t2", "Newer chat", "2026-05-30T11:00:00.000Z");
     const { el, dispatch } = await renderPanel([older, newer]);
 
+    // Stable creation order — a chip never jumps to the front on activity.
     expect(
       Array.from(el.querySelectorAll(".ps-libchat-thread-name")).map((node) => node.textContent)
-    ).toEqual(["Newer chat", "Older chat"]);
+    ).toEqual(["Older chat", "Newer chat"]);
+    // But on open we still resume the most-recently-active thread.
     expect(dispatch).toHaveBeenCalledWith("codex:libraryChat:history", { threadId: "t2" });
   });
 
@@ -102,7 +104,12 @@ describe("LibraryChatPanel", () => {
     const second = makeThread("t2", "Keep chat", "2026-05-30T10:00:00.000Z");
     const { el, dispatch } = await renderPanel([first, second]);
 
-    const close = el.querySelector<HTMLButtonElement>(".ps-libchat-thread-close")!;
+    // Target by name, not position — the list is in creation order now.
+    const shells = Array.from(el.querySelectorAll(".ps-libchat-thread-shell"));
+    const target = shells.find(
+      (s) => s.querySelector(".ps-libchat-thread-name")?.textContent === "Old chat"
+    )!;
+    const close = target.querySelector<HTMLButtonElement>(".ps-libchat-thread-close")!;
     await act(async () => {
       close.click();
       await Promise.resolve();

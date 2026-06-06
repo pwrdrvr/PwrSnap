@@ -42,7 +42,10 @@
   flex: 0 0 auto;
   min-width: 0;
 }
-/* Only the chip strip scrolls — the New button never gets squeezed. */
+/* Only the chip strip scrolls — the New button never gets squeezed. The
+   scrollbar is HIDDEN: when it appeared (macOS overlay bar) it painted on top
+   of the short chip row and made chips nearly unclickable. Scrolling still
+   works via trackpad/wheel; the bar just isn't drawn. */
 .ps-libchat-thread-strip {
   display: flex;
   gap: 6px;
@@ -50,6 +53,10 @@
   flex: 1 1 auto;
   min-width: 0;
   overflow-x: auto;
+  scrollbar-width: none; /* Firefox */
+}
+.ps-libchat-thread-strip::-webkit-scrollbar {
+  display: none; /* WebKit/Chromium (Electron) */
 }
 .ps-libchat-thread-shell {
   display: inline-flex;

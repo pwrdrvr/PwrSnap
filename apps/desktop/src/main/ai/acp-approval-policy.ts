@@ -159,30 +159,31 @@ export function permissionTargetsConfiguredMcpServer(params: Record<string, unkn
 
 /** The host approval handler registered on the pooled ACP client: pre-approve
  *  PwrSnap's own MCP tools, deny everything else (the agent's built-in tools).
- *  Logs each decision at debug so an unrecognized tool-call shape is
- *  diagnosable rather than a silent cancel/deny. */
+ *
+ *  Logging is asymmetric on purpose: an APPROVE is the common, expected case and
+ *  the tool's actual execution is already logged at the MCP bridge ("mcp tool
+ *  call"), so we stay quiet (one terse debug line). A DENY is the anomaly worth
+ *  catching — it's the shape of a future "agent X got rejected" bug — so we log
+ *  it at WARN with the full toolCall + param keys for diagnosis. */
 export function makePooledAcpApprovalHandler(
-  logger: Pick<Logger, "debug">
+  logger: Pick<Logger, "debug" | "warn">
 ): (method: string, params: unknown) => Promise<NormalizedApprovalDecision> {
   return async (_method, params) => {
     const record = asRecord(params) ?? {};
     const approve = permissionTargetsConfiguredMcpServer(record);
-    const toolCall = asRecord(record.toolCall);
-    logger.debug?.("acp permission decision", {
-      decision: approve ? "approved" : "denied",
-      mcpServerNames: readStringArray(record.mcpServerNames),
-      toolCallId: toolCall ? readString(toolCall, "toolCallId") : undefined,
-      title: toolCall ? readString(toolCall, "title") : undefined
-    });
-    // On a DENY, dump the full toolCall + param keys so an agent that hides the
-    // tool identity in a field we don't yet read is diagnosable instead of a
-    // silent deny. Bounded so a big payload can't flood the log.
-    if (!approve) {
-      logger.debug?.("acp permission denied — full toolCall for diagnosis", {
-        paramKeys: Object.keys(record),
-        toolCall: truncate(safeJson(record.toolCall), 2000)
+    if (approve) {
+      const toolCall = asRecord(record.toolCall);
+      logger.debug?.("acp permission approved", {
+        toolCallId: toolCall ? readString(toolCall, "toolCallId") : undefined,
+        title: toolCall ? readString(toolCall, "title") : undefined
       });
+      return "approved";
     }
-    return approve ? "approved" : "denied";
+    logger.warn?.("acp permission denied", {
+      mcpServerNames: readStringArray(record.mcpServerNames),
+      paramKeys: Object.keys(record),
+      toolCall: truncate(safeJson(record.toolCall), 2000)
+    });
+    return "denied";
   };
 }

@@ -108,7 +108,7 @@ describe("permissionTargetsConfiguredMcpServer", () => {
 });
 
 describe("makePooledAcpApprovalHandler", () => {
-  const logger = { debug: vi.fn() };
+  const logger = { debug: vi.fn(), warn: vi.fn() };
 
   it("approves a configured MCP tool and denies the agent's own tools", async () => {
     const handler = makePooledAcpApprovalHandler(logger);

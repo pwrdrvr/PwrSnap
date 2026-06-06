@@ -91,3 +91,91 @@ export function createChatControllerCache<T>(
 
   return { get, reset };
 }
+
+// ---- Keyed (per-thread-config) controller cache ------------------------
+//
+// Chat moved to per-thread Provider/Model/Reasoning, so a surface needs MORE
+// than one live controller: one per distinct backend config in use. This keeps
+// a controller per `(provider, model, reasoning)` key (ACP processes are still
+// shared by the agent pool; only Codex spawns a child per config). When the
+// SETTINGS-level backend bits change (codex command / auth profile / ACP agent
+// paths) every controller is torn down and rebuilt, same as the single cache.
+
+export type ChatBackendConfig = {
+  /** Backend selector: "" / "codex" / "acp:<id>". null = surface default. */
+  provider: string | null;
+  /** Pinned model id. null = backend default. */
+  model: string | null;
+  /** Reasoning effort/mode token. null = backend default. */
+  reasoning: string | null;
+};
+
+/** Stable key for a backend config (null normalized to ""). */
+export function chatBackendConfigKey(config: ChatBackendConfig): string {
+  return `${config.provider ?? ""}|${config.model ?? ""}|${config.reasoning ?? ""}`;
+}
+
+export type KeyedChatControllerCache<T> = {
+  /** Get (build on first use) the controller for a specific backend config. */
+  get: (config: ChatBackendConfig) => Promise<T>;
+  /** Dispose every cached controller (shutdown / tests). */
+  reset: () => Promise<void>;
+};
+
+export function createKeyedChatControllerCache<T>(deps: {
+  readSettings: () => Promise<Settings>;
+  /** Signature over the SETTINGS-level backend bits (codex command/profile/ACP
+   *  paths) — NOT the per-thread config. A change disposes all controllers. */
+  settingsSignature: (settings: Settings) => string;
+  build: (
+    config: ChatBackendConfig,
+    settings: Settings
+  ) => Promise<{ controller: T; dispose: () => Promise<void> }>;
+}): KeyedChatControllerCache<T> {
+  const entries = new Map<string, { controller: T; dispose: () => Promise<void> }>();
+  let settingsSig: string | null = null;
+  let chain: Promise<unknown> = Promise.resolve();
+  const serialize = <R>(task: () => Promise<R>): Promise<R> => {
+    const run = chain.then(task, task);
+    chain = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  };
+
+  const disposeAll = async (): Promise<void> => {
+    for (const e of entries.values()) {
+      try {
+        await e.dispose();
+      } catch {
+        // best-effort
+      }
+    }
+    entries.clear();
+  };
+
+  const get = (config: ChatBackendConfig): Promise<T> =>
+    serialize(async () => {
+      const settings = await deps.readSettings();
+      const sSig = deps.settingsSignature(settings);
+      if (settingsSig !== null && sSig !== settingsSig) {
+        await disposeAll();
+      }
+      settingsSig = sSig;
+      const key = chatBackendConfigKey(config);
+      const existing = entries.get(key);
+      if (existing) return existing.controller;
+      const built = await deps.build(config, settings);
+      entries.set(key, built);
+      return built.controller;
+    });
+
+  const reset = (): Promise<void> =>
+    serialize(async () => {
+      await disposeAll();
+      settingsSig = null;
+    });
+
+  return { get, reset };
+}

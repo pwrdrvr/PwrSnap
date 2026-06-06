@@ -3018,10 +3018,19 @@ export type Commands = {
   };
   /** Create a new thread. `name` optional — main mints a default
    *  ("Chat <date>") when omitted. `anchorCaptureId` glues the thread
-   *  to the capture it was started from. Returns the view for
+   *  to the capture it was started from. `provider`/`model`/`reasoning`
+   *  are the thread's chosen backend config (from the New-Chat chips);
+   *  omitted = the surface's Settings default. They're persisted on the
+   *  thread and locked once it has a first message. Returns the view for
    *  optimistic rendering. */
   "codex:libraryChat:create": {
-    req: { name?: string; anchorCaptureId?: string | null };
+    req: {
+      name?: string;
+      anchorCaptureId?: string | null;
+      provider?: string;
+      model?: string;
+      reasoning?: string;
+    };
     res: LibraryChatThreadView;
   };
   /** Send a user message + (optionally) attached image paths. Returns
@@ -3081,7 +3090,13 @@ export type Commands = {
     res: { threads: LibraryChatThreadView[] };
   };
   "codex:sizzleChat:create": {
-    req: { name?: string; anchorCaptureId?: string | null };
+    req: {
+      name?: string;
+      anchorCaptureId?: string | null;
+      provider?: string;
+      model?: string;
+      reasoning?: string;
+    };
     res: LibraryChatThreadView;
   };
   "codex:sizzleChat:send": {

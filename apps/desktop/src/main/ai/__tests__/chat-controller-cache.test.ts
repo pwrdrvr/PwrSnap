@@ -7,7 +7,12 @@
 
 import { describe, expect, test, vi } from "vitest";
 import type { Settings } from "@pwrsnap/shared";
-import { createChatControllerCache } from "../chat-controller-cache";
+import {
+  createChatControllerCache,
+  createKeyedChatControllerCache,
+  chatBackendConfigKey,
+  type ChatBackendConfig
+} from "../chat-controller-cache";
 
 /** Minimal settings whose only meaningful axis here is the library provider. */
 function settingsWithProvider(provider: string): Settings {
@@ -118,5 +123,62 @@ describe("createChatControllerCache", () => {
 
     expect(dispose1).toHaveBeenCalledTimes(1);
     expect(build).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("createKeyedChatControllerCache", () => {
+  const cfg = (provider: string, model: string | null = null, reasoning: string | null = null): ChatBackendConfig => ({
+    provider,
+    model,
+    reasoning
+  });
+  const settings = () => ({ codex: { mode: "auto", pinnedPath: "", profile: "" } }) as unknown as Settings;
+
+  test("builds ONE controller per distinct config and reuses by key", async () => {
+    const build = vi
+      .fn()
+      .mockImplementation(async (c: ChatBackendConfig) => ({
+        controller: { id: chatBackendConfigKey(c) },
+        dispose: vi.fn(async () => undefined)
+      }));
+    const cache = createKeyedChatControllerCache({
+      readSettings: async () => settings(),
+      settingsSignature: () => "stable",
+      build
+    });
+
+    const codex = await cache.get(cfg("codex"));
+    const codexAgain = await cache.get(cfg("codex"));
+    const gemini = await cache.get(cfg("acp:gemini", "gemini-2.5-pro"));
+
+    expect(codexAgain).toBe(codex); // same key → same controller
+    expect(gemini).not.toBe(codex); // different config → different controller
+    expect(build).toHaveBeenCalledTimes(2); // codex once, gemini once
+  });
+
+  test("disposes ALL controllers when the settings signature changes", async () => {
+    let sig = "v1";
+    const disposes: Array<ReturnType<typeof vi.fn>> = [];
+    const build = vi.fn().mockImplementation(async (c: ChatBackendConfig) => {
+      const dispose = vi.fn(async () => undefined);
+      disposes.push(dispose);
+      return { controller: { id: chatBackendConfigKey(c) }, dispose };
+    });
+    const cache = createKeyedChatControllerCache({
+      readSettings: async () => settings(),
+      settingsSignature: () => sig,
+      build
+    });
+
+    await cache.get(cfg("codex"));
+    await cache.get(cfg("acp:gemini"));
+    expect(build).toHaveBeenCalledTimes(2);
+
+    sig = "v2"; // e.g. user pinned a different codex binary / auth profile
+    await cache.get(cfg("codex"));
+    // Both prior controllers torn down; codex rebuilt under the new signature.
+    expect(disposes[0]).toHaveBeenCalledTimes(1);
+    expect(disposes[1]).toHaveBeenCalledTimes(1);
+    expect(build).toHaveBeenCalledTimes(3);
   });
 });

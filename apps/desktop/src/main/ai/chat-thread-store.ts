@@ -167,6 +167,19 @@ export class ChatThreadStore {
     return rowToSidecar(this.selectRowOrThrow(opts.threadId));
   }
 
+  /** Persist a thread's locked backend config (Provider / Model / Reasoning).
+   *  Written once when the thread is created with a chosen config; thereafter
+   *  the config is immutable (locked on first message). No-op for an unknown id. */
+  setBackendConfig(
+    threadId: string,
+    config: { provider: string | null; model: string | null; reasoning: string | null }
+  ): void {
+    this.ensureImported();
+    this.db()
+      .prepare(`UPDATE chat_threads SET provider = ?, model = ?, reasoning = ? WHERE thread_id = ?`)
+      .run(config.provider ?? null, config.model ?? null, config.reasoning ?? null, threadId);
+  }
+
   /**
    * Create the on-disk chat dir before Codex `thread/start`, so callers can
    * pass the final thread workspace as Codex's cwd instead of inheriting the

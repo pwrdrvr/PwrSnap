@@ -16,20 +16,16 @@ import type {
   Settings,
   TypedEventChannel
 } from "@pwrsnap/shared";
-import { EVENT_CHANNELS, err, ok } from "@pwrsnap/shared";
+import { acpAgentIdFromThreadId, EVENT_CHANNELS, err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { resolveCodexThreadConfigForCommand } from "../ai/codex-thread-config";
 import { ChatThreadStore } from "../ai/chat-thread-store";
+import { buildChatSurface, toKitApprovalDecision } from "../ai/chat-controller-factory";
 import {
-  buildChatSurface,
-  chatControllerSignature,
-  chatSurfaceDefaultsFromSettings,
-  toKitApprovalDecision
-} from "../ai/chat-controller-factory";
-import {
-  createChatControllerCache,
-  type ChatControllerCache
+  createKeyedChatControllerCache,
+  type ChatBackendConfig,
+  type KeyedChatControllerCache
 } from "../ai/chat-controller-cache";
 import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import type { ChatBroadcast, ChatChannelSet } from "../ai/chat-event-adapter";
@@ -89,30 +85,38 @@ function codexCommandForSettings(settings: Settings): string {
 // Module-level so the `forkProjectChats` export (called when a reel is
 // duplicated) shares the same lazily-built controller as the bus verbs.
 let sizzleSettingsReader: SizzleChatSettingsReader = defaultSettingsReader;
-// A test-injected controller pins the surface to that instance (no rebuild, no
+// A test-injected controller pins every config to that instance (no rebuild, no
 // real Codex child) — existing handler tests rely on this.
 let injectedSizzleController: ChatThreadController<Settings> | null = null;
-let sizzleCache: ChatControllerCache<ChatThreadController<Settings>> | null = null;
+let sizzleCache: KeyedChatControllerCache<ChatThreadController<Settings>> | null = null;
+let sizzleStore: ChatThreadStore | null = null;
 
-/** The signature-aware cache that rebuilds the Sizzle controller whenever the
- *  backend-affecting settings change (provider / model / reasoning / codex
- *  command+profile). Created on first use, capturing the current settings
- *  reader. Mirrors the Library surface. */
-function getSizzleCache(): ChatControllerCache<ChatThreadController<Settings>> {
+function getSizzleStore(): ChatThreadStore {
+  if (sizzleStore === null) {
+    sizzleStore = new ChatThreadStore({ chatsDir: join(app.getPath("documents"), "PwrSnap", "Chats") });
+  }
+  return sizzleStore;
+}
+
+/** ONE Sizzle controller per distinct (provider, model, reasoning) config, so
+ *  each thread routes to the backend it was created with. Mirrors the Library
+ *  surface; created on first use, capturing the current settings reader. */
+function getSizzleCache(): KeyedChatControllerCache<ChatThreadController<Settings>> {
   if (sizzleCache !== null) return sizzleCache;
   const readSettings = sizzleSettingsReader;
-  sizzleCache = createChatControllerCache<ChatThreadController<Settings>>({
+  sizzleCache = createKeyedChatControllerCache<ChatThreadController<Settings>>({
     readSettings,
-    signature: (settings) => chatControllerSignature(settings, "sizzleChat"),
-    build: async (settings) => {
+    settingsSignature: (s) =>
+      JSON.stringify({
+        command: codexCommandForSettings(s),
+        profile: s.codex.profile ?? null,
+        acpAgents: s.ai.acp.agents ?? null,
+        acpEnabled: s.ai.acp.enabledAgentIds ?? null
+      }),
+    build: async (config, settings) => {
       const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
-      // A throwaway store solely to resolve a thread's anchored project id for
-      // the Sizzle tool catalog. The controller's own store (built inside
-      // buildChatSurface) is what persists threads; this reads the same SQLite
-      // index/rows, so the lookup is consistent.
       const projectStore = new ChatThreadStore({ chatsDir });
       const tools = makeSizzleChatTools({
-        // The thread's anchor holds the project id; mutations bind to it.
         resolveProjectId: async (threadId) =>
           (await projectStore.get(threadId))?.anchorCaptureId ?? null
       });
@@ -132,13 +136,12 @@ function getSizzleCache(): ChatControllerCache<ChatThreadController<Settings>> {
         toolLabels: SIZZLE_TOOL_LABELS,
         catalog: tools.catalog,
         dispatchToolCall: tools.dispatch,
-        // Overlay shape selected for the running Codex build (schema churns).
         threadConfig: resolveCodexThreadConfigForCommand(command, env),
         threadEnvironments: SIZZLE_CHAT_THREAD_ENVIRONMENTS,
-        // Per-surface default provider / model / reasoning from Settings → AI
-        // (`ai.defaults.sizzleChat`). `provider` selects the chat backend
-        // (Codex vs an enabled ACP agent); unset falls back to Codex / kit.
-        ...chatSurfaceDefaultsFromSettings(settings.ai.defaults.sizzleChat),
+        // The THREAD's chosen config (null → backend default).
+        ...(config.provider !== null && config.provider !== "" ? { provider: config.provider } : {}),
+        ...(config.model !== null && config.model !== "" ? { model: config.model } : {}),
+        ...(config.reasoning !== null && config.reasoning !== "" ? { effort: config.reasoning } : {}),
         loggerScope: "pwrsnap:sizzle-chat"
       });
       return { controller: surface.controller, dispose: surface.dispose };
@@ -147,12 +150,39 @@ function getSizzleCache(): ChatControllerCache<ChatThreadController<Settings>> {
   return sizzleCache;
 }
 
-/** Lazily build the Sizzle controller, rebuilding when the backend config
- *  changes — no codex child at app start for users who never open the
- *  composer chat. */
-async function getSizzleController(): Promise<ChatThreadController<Settings>> {
+/** Route to the controller for a backend config (injected wins in tests). */
+async function sizzleControllerFor(
+  config: ChatBackendConfig
+): Promise<ChatThreadController<Settings>> {
   if (injectedSizzleController !== null) return injectedSizzleController;
-  return getSizzleCache().get();
+  return getSizzleCache().get(config);
+}
+
+/** The Sizzle surface's Settings-default config. */
+async function defaultSizzleConfig(): Promise<ChatBackendConfig> {
+  const d = (await sizzleSettingsReader()).ai?.defaults?.sizzleChat;
+  return {
+    provider: d?.provider !== undefined && d.provider !== "" ? d.provider : "codex",
+    model: d?.model !== undefined && d.model !== "" ? d.model : null,
+    reasoning: d?.reasoning ?? null
+  };
+}
+
+/** An existing thread's persisted config, else provider-from-id + defaults. */
+async function configForSizzleThread(threadId: string): Promise<ChatBackendConfig> {
+  const sidecar = await getSizzleStore().get(threadId).catch(() => null);
+  const agentId = acpAgentIdFromThreadId(threadId);
+  return {
+    provider: sidecar?.provider ?? (agentId !== null ? `acp:${agentId}` : "codex"),
+    model: sidecar?.model ?? null,
+    reasoning: sidecar?.reasoning ?? null
+  };
+}
+
+/** Back-compat for `forkProjectChats`: any controller can drive the fork
+ *  (it operates on the shared store). Uses the surface default config. */
+async function getSizzleController(): Promise<ChatThreadController<Settings>> {
+  return sizzleControllerFor(await defaultSizzleConfig());
 }
 
 /** Fork every chat thread anchored to a source project into a freshly-anchored
@@ -175,9 +205,10 @@ export function registerSizzleChatHandlers(params?: {
 }): void {
   sizzleSettingsReader = params?.settingsReader ?? defaultSettingsReader;
   injectedSizzleController = params?.controller ?? null;
-  // Re-registration (tests) starts from a fresh cache so it doesn't reuse a
-  // controller built against a previous settings reader.
+  // Re-registration (tests) starts from a fresh cache + store so it doesn't
+  // reuse state built against a previous settings reader.
   sizzleCache = null;
+  sizzleStore = null;
 
   bus.register("codex:sizzleChat:list", async (req) => {
     // Sizzle threads are ALWAYS project-scoped. The substrate's
@@ -189,12 +220,24 @@ export function registerSizzleChatHandlers(params?: {
       return ok({ threads: [] });
     }
     try {
-      const c = await getSizzleController();
+      const c = await sizzleControllerFor(await defaultSizzleConfig());
       const threads = await c.listThreads({
         includeArchived: req.includeArchived ?? false,
         anchorId: req.anchorCaptureId
       });
-      return ok({ threads: threads.map((t) => toLibraryThreadView(t)) });
+      const sidecars = await getSizzleStore()
+        .list({ includeArchived: req.includeArchived ?? false, anchorCaptureId: req.anchorCaptureId })
+        .catch(() => []);
+      const byId = new Map(sidecars.map((s) => [s.threadId, s]));
+      return ok({
+        threads: threads.map((t) => {
+          const s = byId.get(t.threadId);
+          return toLibraryThreadView(
+            t,
+            s ? { provider: s.provider, model: s.model, reasoning: s.reasoning } : undefined
+          );
+        })
+      });
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -202,12 +245,19 @@ export function registerSizzleChatHandlers(params?: {
 
   bus.register("codex:sizzleChat:create", async (req) => {
     try {
-      const c = await getSizzleController();
+      const d = await defaultSizzleConfig();
+      const config: ChatBackendConfig = {
+        provider: req.provider !== undefined && req.provider !== "" ? req.provider : d.provider,
+        model: req.model !== undefined && req.model !== "" ? req.model : d.model,
+        reasoning: req.reasoning !== undefined && req.reasoning !== "" ? req.reasoning : d.reasoning
+      };
+      const c = await sizzleControllerFor(config);
       const view = await c.createThread({
         ...(req.name !== undefined ? { name: req.name } : {}),
         ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
-      return ok(toLibraryThreadView(view));
+      if (injectedSizzleController === null) getSizzleStore().setBackendConfig(view.threadId, config);
+      return ok(toLibraryThreadView(view, config));
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -215,7 +265,7 @@ export function registerSizzleChatHandlers(params?: {
 
   bus.register("codex:sizzleChat:send", async (req) => {
     try {
-      const c = await getSizzleController();
+      const c = await sizzleControllerFor(await configForSizzleThread(req.threadId));
       const result = await c.sendMessage({
         threadId: req.threadId,
         text: req.text,
@@ -235,7 +285,7 @@ export function registerSizzleChatHandlers(params?: {
 
   bus.register("codex:sizzleChat:history", async (req) => {
     try {
-      const c = await getSizzleController();
+      const c = await sizzleControllerFor(await configForSizzleThread(req.threadId));
       const messages = await c.getHistory(req.threadId);
       return ok({ messages: messages.map(toChatMessage) });
     } catch (cause) {
@@ -245,9 +295,10 @@ export function registerSizzleChatHandlers(params?: {
 
   bus.register("codex:sizzleChat:rename", async (req) => {
     try {
-      const c = await getSizzleController();
+      const config = await configForSizzleThread(req.threadId);
+      const c = await sizzleControllerFor(config);
       const view = await c.rename(req.threadId, req.name);
-      return ok(toLibraryThreadView(view));
+      return ok(toLibraryThreadView(view, config));
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -255,9 +306,10 @@ export function registerSizzleChatHandlers(params?: {
 
   bus.register("codex:sizzleChat:archive", async (req) => {
     try {
-      const c = await getSizzleController();
+      const config = await configForSizzleThread(req.threadId);
+      const c = await sizzleControllerFor(config);
       const view = await c.archive(req.threadId, req.archived);
-      return ok(toLibraryThreadView(view));
+      return ok(toLibraryThreadView(view, config));
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -265,7 +317,7 @@ export function registerSizzleChatHandlers(params?: {
 
   bus.register("codex:sizzleChat:interrupt", async (req) => {
     try {
-      const c = await getSizzleController();
+      const c = await sizzleControllerFor(await configForSizzleThread(req.threadId));
       await c.interrupt(req.threadId);
       return ok(undefined);
     } catch (cause) {
@@ -275,7 +327,7 @@ export function registerSizzleChatHandlers(params?: {
 
   bus.register("codex:sizzleChat:approval", async (req) => {
     try {
-      const c = await getSizzleController();
+      const c = await sizzleControllerFor(await configForSizzleThread(req.threadId));
       await c.resolveApproval({
         threadId: req.threadId,
         turnId: req.turnId,

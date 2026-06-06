@@ -48,7 +48,10 @@ describe("toLibraryThreadView", () => {
       archived: false,
       pinned: true,
       lastMessagePreview: "hi",
-      status: { kind: "streaming", turnId: "turn_1" }
+      status: { kind: "streaming", turnId: "turn_1" },
+      provider: null,
+      model: null,
+      reasoning: null
     });
   });
 

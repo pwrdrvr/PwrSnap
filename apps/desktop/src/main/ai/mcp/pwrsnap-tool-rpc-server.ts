@@ -185,13 +185,33 @@ export class PwrSnapToolRpcServer {
       return;
     }
     if (request.op === "call") {
+      // Log EVERY MCP tool call reaching us (this UDS is the single entry point
+      // for both ACP chat surfaces' tools). Without this, an agent's tool calls
+      // are invisible on the main side unless the specific handler happens to
+      // log — so a turn that made a dozen calls left almost no trace. The result
+      // line carries success + duration so a denied/failing tool is obvious.
+      const call = request.call;
+      const startedAt = Date.now();
+      log.info("mcp tool call", {
+        tool: call.tool,
+        namespace: call.namespace,
+        threadId: call.threadId,
+        args: summarizeArgs(call.arguments)
+      });
       // dispatchToolCall is contractually non-throwing, but guard anyway so a
       // bug can't crash the connection (which would wedge the agent's turn).
       try {
-        const response = await surface.dispatchToolCall(request.call);
+        const response = await surface.dispatchToolCall(call);
+        log.info("mcp tool call done", {
+          tool: call.tool,
+          success: response.success === true,
+          ms: Math.round(Date.now() - startedAt)
+        });
         this.respond(socket, { ok: true, op: "call", response });
       } catch (cause) {
-        log.error("dispatchToolCall threw", {
+        log.error("mcp tool call threw", {
+          tool: call.tool,
+          ms: Math.round(Date.now() - startedAt),
           message: cause instanceof Error ? cause.message : String(cause)
         });
         this.respond(socket, {
@@ -216,6 +236,22 @@ export class PwrSnapToolRpcServer {
     if (socket.destroyed) return;
     socket.write(JSON.stringify(response) + "\n");
   }
+}
+
+/** Compact, bounded one-line view of a tool call's arguments for the log.
+ *  Truncates so a big payload (e.g. a long text label) can't flood the log,
+ *  and never throws on a non-serializable value. */
+function summarizeArgs(args: unknown): string {
+  if (args === undefined || args === null) return "";
+  let text: string;
+  try {
+    text = JSON.stringify(args);
+  } catch {
+    return "<unserializable>";
+  }
+  if (text === undefined) return "";
+  const MAX = 300;
+  return text.length > MAX ? `${text.slice(0, MAX)}…(+${text.length - MAX})` : text;
 }
 
 /** App-singleton accessor. */

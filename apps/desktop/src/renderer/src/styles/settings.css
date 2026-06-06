@@ -519,7 +519,8 @@
 }
 .pss__acp-instance {
   display: flex;
-  align-items: center;
+  /* flex-start so the meta + badge align to the top when a long path wraps. */
+  align-items: flex-start;
   gap: 8px;
   width: 100%;
   text-align: left;
@@ -537,9 +538,9 @@
 .pss__acp-instance-path {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* Never truncate the binary name — wrap a long path instead of clipping it,
+     matching the Codex candidate card so the two provider lists read alike. */
+  word-break: break-all;
   color: var(--text-primary);
   font: 500 11px/1.3 var(--font-mono);
 }

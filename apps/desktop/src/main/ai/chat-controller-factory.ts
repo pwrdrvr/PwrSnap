@@ -221,7 +221,11 @@ async function defaultMakeAcpClient(input: {
   try {
     const mcp = await buildPwrSnapMcpServer({
       catalog: input.catalog,
-      dispatchToolCall: input.dispatchToolCall
+      dispatchToolCall: input.dispatchToolCall,
+      // Attribute MCP-call logs to this surface + agent (e.g.
+      // "library-chat/grok"). The MCP channel carries no ACP thread/agent id,
+      // so this token label is how a tool call is traced back to its agent.
+      label: `${input.loggerScope.replace(/^pwrsnap:/, "")}/${input.agent.strategyId}`
     });
     // The MCP server config rides per-thread via the controller's
     // `threadMcpServers`, so each surface's threads spawn its tools on the

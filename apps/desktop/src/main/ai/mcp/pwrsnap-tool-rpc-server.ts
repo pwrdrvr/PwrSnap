@@ -50,6 +50,10 @@ export type ToolRpcSurface = {
   catalog: DynamicToolSpec[];
   /** Run one tool call. MUST resolve (never throw) — mirrors the Codex path. */
   dispatchToolCall: (params: DynamicToolCallParams) => Promise<DynamicToolCallResponse>;
+  /** Human label for logs — which surface + agent this token belongs to (e.g.
+   *  "library-chat/grok"). The MCP `tools/call` carries no ACP thread/agent id
+   *  (separate channels), so this is how we attribute a call to its agent. */
+  label?: string;
 };
 
 /** Handle returned to a registrant: the env a spawned MCP server needs to reach
@@ -192,10 +196,15 @@ export class PwrSnapToolRpcServer {
       // line carries success + duration so a denied/failing tool is obvious.
       const call = request.call;
       const startedAt = Date.now();
+      // `agent` attributes the call to its surface+backend (e.g. "library-chat/
+      // grok"). The MCP `tools/call` carries no ACP thread/agent id — separate
+      // channels — so the token's registered label is the only attribution we
+      // have; that's also why `threadId` here is always empty.
+      const agent = surface.label;
       log.info("mcp tool call", {
+        agent,
         tool: call.tool,
         namespace: call.namespace,
-        threadId: call.threadId,
         args: summarizeArgs(call.arguments)
       });
       // dispatchToolCall is contractually non-throwing, but guard anyway so a
@@ -203,6 +212,7 @@ export class PwrSnapToolRpcServer {
       try {
         const response = await surface.dispatchToolCall(call);
         log.info("mcp tool call done", {
+          agent,
           tool: call.tool,
           success: response.success === true,
           ms: Math.round(Date.now() - startedAt)
@@ -210,6 +220,7 @@ export class PwrSnapToolRpcServer {
         this.respond(socket, { ok: true, op: "call", response });
       } catch (cause) {
         log.error("mcp tool call threw", {
+          agent,
           tool: call.tool,
           ms: Math.round(Date.now() - startedAt),
           message: cause instanceof Error ? cause.message : String(cause)

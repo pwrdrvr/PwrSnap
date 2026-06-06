@@ -414,11 +414,16 @@ export function registerLayersHandlers(): void {
 
   bus.register("layers:delete", async (req) => {
     const captureId = rejectLayer(req.id);
-    log.info("layer rejected (soft-delete cascade)", { id: req.id, captureId });
-    if (captureId !== null) {
-      broadcastLayersChanged(captureId);
-      scheduleRepack(captureId);
+    if (captureId === null) {
+      // Already deleted — a redundant call (agents sometimes re-issue
+      // delete_layer several times). Idempotent no-op; quiet at debug so the
+      // retries don't spam the log. NOT an error, NOT a rejection.
+      log.debug("layer delete no-op (already deleted)", { id: req.id });
+      return ok(undefined);
     }
+    log.info("layer soft-deleted", { id: req.id, captureId });
+    broadcastLayersChanged(captureId);
+    scheduleRepack(captureId);
     return ok(undefined);
   });
 

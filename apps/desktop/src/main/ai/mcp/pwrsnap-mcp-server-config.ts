@@ -44,6 +44,8 @@ export type PwrSnapMcpServer = {
 export async function buildPwrSnapMcpServer(input: {
   catalog: DynamicToolSpec[];
   dispatchToolCall: (params: DynamicToolCallParams) => Promise<DynamicToolCallResponse>;
+  /** Log attribution for this token — surface + agent, e.g. "library-chat/grok". */
+  label?: string;
 }): Promise<PwrSnapMcpServer | null> {
   if (input.catalog.length === 0) return null;
 
@@ -51,7 +53,8 @@ export async function buildPwrSnapMcpServer(input: {
   await server.start(join(app.getPath("userData"), "mcp"));
   const registration = server.register({
     catalog: input.catalog,
-    dispatchToolCall: input.dispatchToolCall
+    dispatchToolCall: input.dispatchToolCall,
+    ...(input.label !== undefined ? { label: input.label } : {})
   });
 
   const config: AcpMcpServerConfig = {

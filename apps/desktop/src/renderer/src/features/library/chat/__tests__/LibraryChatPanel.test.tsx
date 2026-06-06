@@ -89,6 +89,19 @@ afterEach(async () => {
 });
 
 describe("LibraryChatPanel", () => {
+  test("a new chat shows editable backend chips; a started thread shows locked chips", async () => {
+    // No threads → draft/greeting → editable Provider/Model/Reasoning chips.
+    const { el } = await renderPanel([]);
+    expect(el.querySelector('[data-testid="chat-backend-chips-draft"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="chat-backend-chips-locked"]')).toBeNull();
+  });
+
+  test("an existing (resumed) thread shows the locked backend chips, not the draft", async () => {
+    const { el } = await renderPanel([makeThread("t1", "Chat", "2026-05-30T10:00:00.000Z")]);
+    expect(el.querySelector('[data-testid="chat-backend-chips-locked"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="chat-backend-chips-draft"]')).toBeNull();
+  });
+
   test("orders thread chips in creation order (oldest to newest), resumes most recent", async () => {
     const older = makeThread("t1", "Older chat", "2026-05-30T10:00:00.000Z");
     const newer = makeThread("t2", "Newer chat", "2026-05-30T11:00:00.000Z");

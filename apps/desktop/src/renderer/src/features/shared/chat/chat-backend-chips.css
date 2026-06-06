@@ -1,0 +1,75 @@
+/* Per-chat backend selector chips (Provider / Model / Reasoning). Tokens only. */
+.ps-bchips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+}
+
+/* Draft: chip-shaped <label> wrapping a borderless <select>. */
+.ps-bchip-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+}
+.ps-bchip-field:hover {
+  border-color: var(--accent-border);
+}
+.ps-bchip-label {
+  font: 500 10px/1 var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.ps-bchip-select {
+  height: 24px;
+  max-width: 200px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: 500 12px/1 var(--font-sans);
+  cursor: pointer;
+  outline: none;
+}
+.ps-bchip-select:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+/* Required-but-unset model: nudge with the accent so it's obvious you must pick. */
+.ps-bchip-select--required {
+  color: var(--accent);
+}
+
+/* Locked: small static chips on a started thread. */
+.ps-bchips--locked {
+  padding: 10px 14px 0;
+}
+.ps-bchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-secondary);
+  font: 500 11px/1.4 var(--font-sans);
+  white-space: nowrap;
+}
+.ps-bchip--muted {
+  color: var(--text-muted);
+}
+.ps-bchip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}

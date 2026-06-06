@@ -15,11 +15,16 @@ import type {
   LibraryChatToolCallEvent,
   LibraryChatThreadView
 } from "@pwrsnap/shared";
-import { chatThreadProviderLabel, EVENT_CHANNELS } from "@pwrsnap/shared";
+import { acpAgentIdFromThreadId, EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../lib/pwrsnap";
 import { MessageList, type ChatActivityChip } from "../shared/chat/MessageList";
 import { Composer, type ComposerAttachment } from "../shared/chat/Composer";
 import { ChatApprovalModal } from "../shared/chat/ChatApprovalModal";
+import {
+  NewChatConfigChips,
+  LockedBackendChips,
+  type ChatBackendChoice
+} from "../shared/chat/ChatBackendChips";
 import "../shared/chat/chat-panel.css";
 
 export interface SizzleChatPanelProps {
@@ -42,6 +47,16 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [activityByMsg, setActivityByMsg] = useState<Record<string, ChatActivityChip[]>>({});
   const [pendingChips, setPendingChips] = useState<ChatActivityChip[]>([]);
+  // New-chat backend draft (editable chips until the first message locks it).
+  const [providers, setProviders] = useState<string[]>(["codex"]);
+  const [draftConfig, setDraftConfig] = useState<ChatBackendChoice>({
+    provider: "codex",
+    model: null,
+    reasoning: "medium"
+  });
+  const [draftHint, setDraftHint] = useState<string | null>(null);
+  const draftConfigRef = useRef<ChatBackendChoice>(draftConfig);
+  draftConfigRef.current = draftConfig;
 
   const threadsRef = useRef<LibraryChatThreadView[]>([]);
   threadsRef.current = threads;
@@ -73,6 +88,26 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
       return { ...prev, [messageId]: merged };
     });
     setPendingChips([]);
+  }, []);
+
+  // Provider options + new-chat draft defaults from Settings → AI (sizzleChat).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const r = await dispatch("settings:read", {});
+      if (cancelled || !r.ok || r.value === undefined) return;
+      const enabled = r.value.ai?.acp?.enabledAgentIds ?? [];
+      setProviders(["codex", ...enabled.map((id) => `acp:${id}`)]);
+      const d = r.value.ai?.defaults?.sizzleChat;
+      setDraftConfig({
+        provider: d?.provider !== undefined && d.provider !== "" ? d.provider : "codex",
+        model: d?.model !== undefined && d.model !== "" ? d.model : null,
+        reasoning: d?.reasoning ?? "medium"
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Thread list — scoped to the active project. Re-runs on project switch.
@@ -258,27 +293,33 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
     []
   );
 
-  const onNewChat = useCallback(async () => {
-    const result = await dispatch("codex:sizzleChat:create", { anchorCaptureId: projectId });
-    if (!result.ok) {
-      setCodexError(errorFor(result.error));
-      return;
-    }
-    setThreads((prev) =>
-      sortChatThreads([result.value, ...prev.filter((t) => t.threadId !== result.value.threadId)])
-    );
-    setActiveThreadId(result.value.threadId);
+  // "New" opens a DRAFT — no thread until the first message, so the backend
+  // chips stay editable (provider unlocked) until the turn starts.
+  const onNewChat = useCallback(() => {
+    setActiveThreadId(null);
     setMessages([]);
     setActivityByMsg({});
     setPendingChips([]);
+    setDraftHint(null);
     turnMsgRef.current.clear();
-  }, [projectId]);
+  }, []);
 
   const onSubmit = useCallback(
     async (text: string, _attachments: readonly ComposerAttachment[]): Promise<void> => {
       let threadId = activeThreadRef.current;
       if (threadId === null) {
-        const created = await dispatch("codex:sizzleChat:create", { anchorCaptureId: projectId });
+        const cfg = draftConfigRef.current;
+        if (cfg.model === null || cfg.model === "") {
+          setDraftHint("Choose a model to start this chat.");
+          return;
+        }
+        setDraftHint(null);
+        const created = await dispatch("codex:sizzleChat:create", {
+          anchorCaptureId: projectId,
+          provider: cfg.provider,
+          model: cfg.model,
+          ...(cfg.reasoning !== null && cfg.reasoning !== "" ? { reasoning: cfg.reasoning } : {})
+        });
         if (!created.ok) {
           setCodexError(errorFor(created.error));
           return;
@@ -362,6 +403,20 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
   }
 
   const showGreeting = activeThreadId === null;
+  const activeThread =
+    activeThreadId !== null ? (threads.find((t) => t.threadId === activeThreadId) ?? null) : null;
+  const lockedChoice: ChatBackendChoice | null =
+    activeThread !== null
+      ? {
+          provider:
+            activeThread.provider ??
+            (acpAgentIdFromThreadId(activeThread.threadId) !== null
+              ? `acp:${acpAgentIdFromThreadId(activeThread.threadId)}`
+              : "codex"),
+          model: activeThread.model,
+          reasoning: activeThread.reasoning
+        }
+      : null;
 
   return (
     <div className="ps-libchat" data-testid="sizzle-chat-panel">
@@ -415,17 +470,18 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
             <p className="ps-libchat-empty-body">
               Describe the video you want. I can search your library, propose
               scenes, write narrator scripts, set transitions, and render this
-              reel. Type below to start.
+              reel. Pick a provider + model, then type below to start.
             </p>
+            <NewChatConfigChips providers={providers} value={draftConfig} onChange={setDraftConfig} />
+            {draftHint !== null ? (
+              <p className="ps-libchat-empty-body" style={{ color: "var(--accent)" }}>
+                {draftHint}
+              </p>
+            ) : null}
           </div>
         ) : (
           <>
-            {activeThreadId !== null ? (
-              <div className="ps-libchat-provider" data-testid="sizzle-chat-provider">
-                <span className="ps-libchat-provider-dot" aria-hidden="true" />
-                {chatThreadProviderLabel(activeThreadId)}
-              </div>
-            ) : null}
+            {lockedChoice !== null ? <LockedBackendChips choice={lockedChoice} /> : null}
             <MessageList
               messages={messages}
               streamingMessageId={streamingMessageId}

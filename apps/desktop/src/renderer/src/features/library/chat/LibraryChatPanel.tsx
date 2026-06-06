@@ -16,11 +16,16 @@ import type {
   LibraryChatToolCallEvent,
   LibraryChatThreadView
 } from "@pwrsnap/shared";
-import { chatThreadProviderLabel, EVENT_CHANNELS } from "@pwrsnap/shared";
+import { acpAgentIdFromThreadId, EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { MessageList, type ChatActivityChip } from "../../shared/chat/MessageList";
 import { Composer, type ComposerAttachment } from "../../shared/chat/Composer";
 import { ChatApprovalModal } from "../../shared/chat/ChatApprovalModal";
+import {
+  NewChatConfigChips,
+  LockedBackendChips,
+  type ChatBackendChoice
+} from "../../shared/chat/ChatBackendChips";
 import "../../shared/chat/chat-panel.css";
 
 export interface LibraryChatPanelProps {
@@ -40,6 +45,16 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   const [approval, setApproval] = useState<ChatApprovalRequest | null>(null);
   const [codexError, setCodexError] = useState<ChatPanelError | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  // New-chat backend draft (editable chips until the first message locks it).
+  const [providers, setProviders] = useState<string[]>(["codex"]);
+  const [draftConfig, setDraftConfig] = useState<ChatBackendChoice>({
+    provider: "codex",
+    model: null,
+    reasoning: "medium"
+  });
+  const [draftHint, setDraftHint] = useState<string | null>(null);
+  const draftConfigRef = useRef<ChatBackendChoice>(draftConfig);
+  draftConfigRef.current = draftConfig;
   // Tool-activity lives IN the transcript flow, not a fixed bar:
   //   • activityByMsg — chips for completed turns, keyed by the assistant
   //     message they produced (rendered above that bubble). Retained for
@@ -91,6 +106,26 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       return { ...prev, [messageId]: merged };
     });
     setPendingChips([]);
+  }, []);
+
+  // Provider options + the new-chat draft defaults come from Settings → AI.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const r = await dispatch("settings:read", {});
+      if (cancelled || !r.ok || r.value === undefined) return;
+      const enabled = r.value.ai?.acp?.enabledAgentIds ?? [];
+      setProviders(["codex", ...enabled.map((id) => `acp:${id}`)]);
+      const d = r.value.ai?.defaults?.libraryChat;
+      setDraftConfig({
+        provider: d?.provider !== undefined && d.provider !== "" ? d.provider : "codex",
+        model: d?.model !== undefined && d.model !== "" ? d.model : null,
+        reasoning: d?.reasoning ?? "medium"
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Thread list — SCOPED to the focused capture (chats are glued to
@@ -295,27 +330,36 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     []
   );
 
-  const onNewChat = useCallback(async () => {
-    const result = await dispatch("codex:libraryChat:create", { anchorCaptureId });
-    if (!result.ok) {
-      setCodexError(errorFor(result.error));
-      return;
-    }
-    setThreads((prev) =>
-      sortChatThreads([result.value, ...prev.filter((t) => t.threadId !== result.value.threadId)])
-    );
-    setActiveThreadId(result.value.threadId);
+  // "New" opens a DRAFT — no thread is created until the first message, so the
+  // backend chips stay editable (and the provider isn't locked) until the turn
+  // starts. Dropping to activeThreadId=null shows the draft greeting + chips.
+  const onNewChat = useCallback(() => {
+    setActiveThreadId(null);
     setMessages([]);
     setActivityByMsg({});
     setPendingChips([]);
+    setDraftHint(null);
     turnMsgRef.current.clear();
-  }, [anchorCaptureId]);
+  }, []);
 
   const onSubmit = useCallback(
     async (text: string, _attachments: readonly ComposerAttachment[]): Promise<void> => {
       let threadId = activeThreadRef.current;
       if (threadId === null) {
-        const created = await dispatch("codex:libraryChat:create", { anchorCaptureId });
+        // First message of a new chat: lock in the chosen backend config. A
+        // model is required.
+        const cfg = draftConfigRef.current;
+        if (cfg.model === null || cfg.model === "") {
+          setDraftHint("Choose a model to start this chat.");
+          return;
+        }
+        setDraftHint(null);
+        const created = await dispatch("codex:libraryChat:create", {
+          anchorCaptureId,
+          provider: cfg.provider,
+          model: cfg.model,
+          ...(cfg.reasoning !== null && cfg.reasoning !== "" ? { reasoning: cfg.reasoning } : {})
+        });
         if (!created.ok) {
           setCodexError(errorFor(created.error));
           return;
@@ -401,6 +445,22 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   }
 
   const showGreeting = activeThreadId === null;
+  const activeThread =
+    activeThreadId !== null ? (threads.find((t) => t.threadId === activeThreadId) ?? null) : null;
+  // The active thread's locked config, falling back to the provider baked into
+  // its id for legacy threads created before per-thread config.
+  const lockedChoice: ChatBackendChoice | null =
+    activeThread !== null
+      ? {
+          provider:
+            activeThread.provider ??
+            (acpAgentIdFromThreadId(activeThread.threadId) !== null
+              ? `acp:${acpAgentIdFromThreadId(activeThread.threadId)}`
+              : "codex"),
+          model: activeThread.model,
+          reasoning: activeThread.reasoning
+        }
+      : null;
 
   return (
     <div className="ps-libchat" data-testid="library-chat-panel">
@@ -453,17 +513,19 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
             <div className="ps-libchat-empty-title">PwrSnap chat</div>
             <p className="ps-libchat-empty-body">
               I can edit the capture you’re viewing, redact sensitive data, browse
-              your library, and answer “how do I…”. Type below to start.
+              your library, and answer “how do I…”. Pick a provider + model, then
+              type below to start.
             </p>
+            <NewChatConfigChips providers={providers} value={draftConfig} onChange={setDraftConfig} />
+            {draftHint !== null ? (
+              <p className="ps-libchat-empty-body" style={{ color: "var(--accent)" }}>
+                {draftHint}
+              </p>
+            ) : null}
           </div>
         ) : (
           <>
-            {activeThreadId !== null ? (
-              <div className="ps-libchat-provider" data-testid="library-chat-provider">
-                <span className="ps-libchat-provider-dot" aria-hidden="true" />
-                {chatThreadProviderLabel(activeThreadId)}
-              </div>
-            ) : null}
+            {lockedChoice !== null ? <LockedBackendChips choice={lockedChoice} /> : null}
             <MessageList
               messages={messages}
               streamingMessageId={streamingMessageId}

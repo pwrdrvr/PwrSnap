@@ -194,7 +194,7 @@ export function registerSizzleChatHandlers(params?: {
         includeArchived: req.includeArchived ?? false,
         anchorId: req.anchorCaptureId
       });
-      return ok({ threads: threads.map(toLibraryThreadView) });
+      return ok({ threads: threads.map((t) => toLibraryThreadView(t)) });
     } catch (cause) {
       return codexUnreachable(cause);
     }

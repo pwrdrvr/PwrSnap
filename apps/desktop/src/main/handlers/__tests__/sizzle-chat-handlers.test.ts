@@ -48,7 +48,10 @@ const rendererView = {
   archived: false,
   pinned: false,
   lastMessagePreview: "",
-  status: { kind: "idle" as const }
+  status: { kind: "idle" as const },
+  provider: null,
+  model: null,
+  reasoning: null
 };
 
 const controller = {

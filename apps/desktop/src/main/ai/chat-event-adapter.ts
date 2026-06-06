@@ -74,7 +74,13 @@ function toStatus(status: NormalizedThreadStatus): LibraryChatThreadStatus {
 
 /** Kit `NormalizedThreadView` → PwrSnap `LibraryChatThreadView`
  *  (anchorId → anchorCaptureId; status mapped through `toStatus`). */
-export function toLibraryThreadView(view: NormalizedThreadView): LibraryChatThreadView {
+export function toLibraryThreadView(
+  view: NormalizedThreadView,
+  /** The thread's persisted backend config (from PwrSnap's ChatThreadStore —
+   *  the kit's neutral view doesn't carry it). Omitted → null (legacy threads /
+   *  before the chip UI wires it through). */
+  config?: { provider?: string | null; model?: string | null; reasoning?: string | null }
+): LibraryChatThreadView {
   return {
     threadId: view.threadId,
     name: view.name,
@@ -84,7 +90,10 @@ export function toLibraryThreadView(view: NormalizedThreadView): LibraryChatThre
     archived: view.archived,
     pinned: view.pinned,
     lastMessagePreview: view.lastMessagePreview,
-    status: toStatus(view.status)
+    status: toStatus(view.status),
+    provider: config?.provider ?? null,
+    model: config?.model ?? null,
+    reasoning: config?.reasoning ?? null
   };
 }
 

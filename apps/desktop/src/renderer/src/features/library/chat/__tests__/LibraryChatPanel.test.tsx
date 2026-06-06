@@ -29,7 +29,10 @@ function makeThread(
     archived: false,
     pinned: false,
     lastMessagePreview: "",
-    status: { kind: "idle" }
+    status: { kind: "idle" },
+    provider: null,
+    model: null,
+    reasoning: null
   };
 }
 

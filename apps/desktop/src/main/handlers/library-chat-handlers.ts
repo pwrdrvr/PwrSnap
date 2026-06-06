@@ -216,7 +216,7 @@ export function registerLibraryChatHandlers(params?: {
         includeArchived: req.includeArchived ?? false,
         ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
-      return ok({ threads: threads.map(toLibraryThreadView) });
+      return ok({ threads: threads.map((t) => toLibraryThreadView(t)) });
     } catch (cause) {
       return codexUnreachable(cause);
     }

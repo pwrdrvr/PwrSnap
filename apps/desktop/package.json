@@ -33,7 +33,7 @@
     "@fontsource/geist-mono": "^5.2.8",
     "@fontsource/geist-sans": "^5.2.5",
     "@modelcontextprotocol/sdk": "1.29.0",
-    "@pwrdrvr/agent-acp": "^0.9.0",
+    "@pwrdrvr/agent-acp": "^0.9.1",
     "@pwrdrvr/agent-chat-react": "^0.1.2",
     "@pwrdrvr/agent-client": "^0.6.0",
     "@pwrdrvr/agent-core": "^0.1.2",

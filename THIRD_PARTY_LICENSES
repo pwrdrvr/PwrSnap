@@ -82,7 +82,7 @@ MIT
 - @hono/node-server@1.19.14 | https://github.com/honojs/node-server
 - @img/colour@1.1.0 | https://github.com/lovell/colour
 - @modelcontextprotocol/sdk@1.29.0 | https://github.com/modelcontextprotocol/typescript-sdk
-- @pwrdrvr/agent-acp@0.9.0 | https://github.com/pwrdrvr/agent-kit
+- @pwrdrvr/agent-acp@0.9.1 | https://github.com/pwrdrvr/agent-kit
 - @pwrdrvr/agent-chat-react@0.1.2 | https://github.com/pwrdrvr/agent-kit
 - @pwrdrvr/agent-client@0.6.0 | https://github.com/pwrdrvr/agent-kit
 - @pwrdrvr/agent-core@0.1.2 | https://github.com/pwrdrvr/agent-kit
@@ -620,11 +620,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-@pwrdrvr/agent-acp@0.9.0 (MIT)
+@pwrdrvr/agent-acp@0.9.1 (MIT)
 ------------------------------
 
 Applies to:
-- @pwrdrvr/agent-acp@0.9.0 (MIT)
+- @pwrdrvr/agent-acp@0.9.1 (MIT)
 - @pwrdrvr/agent-chat-react@0.1.2 (MIT)
 - @pwrdrvr/agent-client@0.6.0 (MIT)
 - @pwrdrvr/agent-core@0.1.2 (MIT)
@@ -633,7 +633,7 @@ Applies to:
 - @pwrdrvr/codex-app-server-protocol@0.133.0 (MIT)
 - @pwrdrvr/codex-discovery@0.1.2 (MIT)
 
-Representative file: @pwrdrvr/agent-acp@0.9.0/LICENSE
+Representative file: @pwrdrvr/agent-acp@0.9.1/LICENSE
 
 MIT License
 

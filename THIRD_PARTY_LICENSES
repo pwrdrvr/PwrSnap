@@ -86,7 +86,7 @@ MIT
 - debug@4.4.3 | https://github.com/debug-js/debug
 - decompress-response@6.0.0 | sindresorhus/decompress-response
 - deep-extend@0.6.0 | https://github.com/unclechu/node-deep-extend
-- electron@41.5.0 | https://github.com/electron/electron
+- electron@41.7.1 | https://github.com/electron/electron
 - electron-log@5.4.3 | megahertz/electron-log
 - electron-updater@6.8.3 | https://github.com/electron-userland/electron-builder
 - end-of-stream@1.4.5 | https://github.com/mafintosh/end-of-stream
@@ -1381,13 +1381,13 @@ Apache License
    See the License for the specific language governing permissions and
    limitations under the License.
 
-electron@41.5.0 (MIT)
+electron@41.7.1 (MIT)
 ---------------------
 
 Applies to:
-- electron@41.5.0 (MIT)
+- electron@41.7.1 (MIT)
 
-Representative file: electron@41.5.0/LICENSE
+Representative file: electron@41.7.1/LICENSE
 
 Copyright (c) Electron contributors
 Copyright (c) 2013-2020 GitHub Inc.

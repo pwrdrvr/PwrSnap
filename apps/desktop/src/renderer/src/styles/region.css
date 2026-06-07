@@ -141,13 +141,22 @@ body[data-stage="region"][data-snap="display"] {
 .region-handle.lm { top: 50%; left: -5px; transform: translateY(-50%); cursor: ew-resize; }
 .region-handle.rm { top: 50%; right: -5px; transform: translateY(-50%); cursor: ew-resize; }
 
-/* Interior surface of the adjustable rect — captures the cursor for
-   drag-to-move while the rect's border + handles remain on top. */
+/* Interior surface of the adjustable rect. Cursor is `crosshair` — an
+   interior drag discards the current pick and free-draws a NEW region
+   (a plain click keeps it). Move is via Space+drag / arrows. */
 .region-rect-interior {
   position: absolute;
   inset: 0;
-  cursor: move;
+  cursor: crosshair;
   pointer-events: auto;
+}
+
+/* Discard-pending feedback: while an interior mousedown is staging a
+   discard (before the drag threshold or the click-keep), dim the rect +
+   handles so the user can tell the committed pick is tentatively
+   dropped. Cleared on mouseup (keep) or threshold-cross (redraw). */
+body[data-stage="region"][data-discarding="true"] .region-rect {
+  opacity: 0.4;
 }
 
 .region-dims-chip {

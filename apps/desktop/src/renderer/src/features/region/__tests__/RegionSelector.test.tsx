@@ -14,6 +14,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 
+import type { WindowSnapEntry } from "../../../preload-types";
 import { RegionSelector } from "../RegionSelector";
 
 beforeAll(() => {
@@ -27,7 +28,7 @@ type ModePayload = {
   intent?: "snap" | "video";
 };
 type SnapshotPayload = {
-  windows: never[];
+  windows: WindowSnapEntry[];
   displayBounds: { width: number; height: number };
   cursor?: { x: number; y: number };
 };
@@ -179,6 +180,44 @@ function regionHintText(): string {
   return (el?.textContent ?? "").toLowerCase();
 }
 
+function rectStyle(): { left: number; top: number; width: number; height: number } {
+  const el = container?.querySelector(".region-rect");
+  if (!(el instanceof HTMLElement)) throw new Error("region-rect not found");
+  const num = (v: string): number => Number.parseFloat(v.replace("px", ""));
+  return {
+    left: num(el.style.left),
+    top: num(el.style.top),
+    width: num(el.style.width),
+    height: num(el.style.height)
+  };
+}
+
+const WIN: WindowSnapEntry = {
+  windowId: 4242,
+  pid: 1,
+  bundleId: "com.test.app",
+  appName: "Target App",
+  title: null,
+  ownedByUs: false,
+  zIndex: 0,
+  rect: { x: 200, y: 150, w: 400, h: 300 },
+  rawRect: { x: 200, y: 150, w: 400, h: 300 }
+};
+
+/** snap → hover a window → click (no drag) → adjusting with a window
+ *  snap. displayBounds = innerSize so the css-to-logical scale is 1. */
+async function adjustWindowSnap(): Promise<void> {
+  await emitSnapshot({
+    windows: [WIN],
+    displayBounds: { width: window.innerWidth, height: window.innerHeight }
+  });
+  const cx = WIN.rect.x + WIN.rect.w / 2;
+  const cy = WIN.rect.y + WIN.rect.h / 2;
+  await mouseMove(cx, cy);
+  await mouseDown(cx, cy);
+  await mouseUp(cx, cy);
+}
+
 describe("U1 — crosshair guide-lines", () => {
   test("mounts in snap mode and seeds the crosshair to viewport center", async () => {
     await mount();
@@ -282,5 +321,88 @@ describe("U2 — multi-step Escape", () => {
     await drawRect();
     expect(regionHintText()).toContain("back");
     expect(regionHintText()).not.toContain("cancel");
+  });
+});
+
+describe("U3 — interior drag discards + redraws", () => {
+  test("interior drag on a window snap discards it and free-draws a new region", async () => {
+    await mount();
+    await adjustWindowSnap();
+    expect(document.body.dataset.interaction).toBe("adjusting");
+
+    // Interior mousedown + drag past threshold → a brand-new region.
+    await mouseDown(400, 300);
+    await mouseMove(420, 320); // > DRAG_ENGAGE_PX → drawing
+    await mouseMove(700, 500);
+    await mouseUp(700, 500);
+
+    expect(document.body.dataset.interaction).toBe("adjusting");
+    expect(rectStyle()).toEqual({ left: 400, top: 300, width: 300, height: 200 });
+    // The window pick was discarded — commit carries no snappedWindowId.
+    await keyDown("Enter");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    const payload = submitRegion.mock.calls[0]?.[0];
+    expect(payload.ok).toBe(true);
+    expect(payload.snappedWindowId).toBeUndefined();
+  });
+
+  test("interior drag on a free-drawn region replaces it", async () => {
+    await mount();
+    await drawRect(); // (100,100)-(300,300)
+    await mouseDown(150, 150);
+    await mouseMove(170, 170);
+    await mouseMove(500, 400);
+    await mouseUp(500, 400);
+    expect(rectStyle()).toEqual({ left: 150, top: 150, width: 350, height: 250 });
+  });
+
+  test("interior click (no drag) keeps a free-drawn region — no jump to full display", async () => {
+    await mount();
+    await drawRect();
+    const before = rectStyle();
+    expect(before).toEqual({ left: 100, top: 100, width: 200, height: 200 });
+    await mouseDown(150, 150);
+    await mouseUp(150, 150); // no drag → keep
+    expect(document.body.dataset.interaction).toBe("adjusting");
+    expect(rectStyle()).toEqual(before); // unchanged, NOT the full viewport
+  });
+
+  test("interior click (no drag) keeps a window snap + preserves snappedWindowId", async () => {
+    await mount();
+    await adjustWindowSnap();
+    await mouseDown(400, 300);
+    await mouseUp(400, 300); // no drag → keep
+    expect(document.body.dataset.interaction).toBe("adjusting");
+    expect(rectStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
+    await keyDown("Enter");
+    const payload = submitRegion.mock.calls[0]?.[0];
+    expect(payload.snappedWindowId).toBe(WIN.windowId);
+  });
+
+  test("discard-pending dims the rect while staged; cleared on mouseup", async () => {
+    await mount();
+    await drawRect();
+    await mouseDown(150, 150);
+    expect(document.body.dataset.discarding).toBe("true");
+    await mouseUp(150, 150);
+    expect(document.body.dataset.discarding).toBe("false");
+  });
+
+  test("handle mousedown still resizes (not discard)", async () => {
+    await mount();
+    await drawRect();
+    const handle = container?.querySelector(".region-handle.br");
+    if (!(handle instanceof HTMLElement)) throw new Error("br handle not found");
+    await mouseDown(300, 300, handle);
+    expect(document.body.dataset.interaction).toBe("resizing");
+    expect(document.body.dataset.discarding).not.toBe("true");
+  });
+
+  test("Space-held interior mousedown still moves", async () => {
+    await mount();
+    await drawRect();
+    await keyDown(" "); // sets spaceHeld (adjusting only)
+    await mouseDown(150, 150);
+    expect(document.body.dataset.interaction).toBe("moving");
   });
 });

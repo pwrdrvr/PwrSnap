@@ -47,10 +47,11 @@ const CODEX_MODE_OPTIONS: readonly SegmentOption<"auto" | "pinned">[] = [
   { id: "pinned", label: "Specified Path" }
 ];
 
+/** Friendly model name for a picker option. Prefer the display name; only fall
+ *  back to the raw id when there's no friendlier name. (We used to append the id
+ *  in parens — "GPT-5.4-Mini (gpt-5.4-mini)" — which is just noise.) */
 function modelLabel(model: CodexModelOption): string {
-  return model.displayName === model.id || model.displayName.length === 0
-    ? model.id
-    : `${model.displayName} (${model.id})`;
+  return model.displayName.length > 0 ? model.displayName : model.id;
 }
 
 export function AIProvidersPage(): ReactElement {
@@ -179,9 +180,14 @@ export function AIProvidersPage(): ReactElement {
   const fetchAcpModels = useCallback(async (agentId: string, refresh = false): Promise<void> => {
     setAcpModelsLoadingIds((ids) => (ids.includes(agentId) ? ids : [...ids, agentId]));
     const result = await dispatch("acp:models", { agentId, refresh });
-    // Record a list either way — `[]` on failure so the picker resolves to
-    // "Default" instead of sticking on "Loading…".
-    setAcpModels((prev) => ({ ...prev, [agentId]: result.ok ? result.value.models : [] }));
+    setAcpModels((prev) => {
+      if (result.ok) return { ...prev, [agentId]: result.value.models };
+      // A FAILED probe must not blank a list we already have (e.g. a Refresh
+      // that errored shouldn't wipe the cached models). Only fall back to `[]`
+      // on the INITIAL load — so the picker resolves to "Default" instead of
+      // sticking on "Loading…" — never on a refresh of an existing list.
+      return agentId in prev ? prev : { ...prev, [agentId]: [] };
+    });
     setAcpModelsLoadingIds((ids) => ids.filter((id) => id !== agentId));
   }, []);
   const agentIdFromProvider = (provider: string | undefined): string | null =>
@@ -489,7 +495,15 @@ export function AIProvidersPage(): ReactElement {
         loading={acpDiscoveryLoading}
         error={acpDiscoveryError}
         onRefresh={() => {
+          // Re-discover installs AND re-probe the in-use agents' model lists, so
+          // a stale cache (e.g. one captured before the agent reported its
+          // default model) is refreshed and the "Default (…)" annotation +
+          // model options update. Previously this only ran acp:discover, so
+          // clicking Refresh here never updated models.
           void refreshAcpDiscovery();
+          for (const id of acpAgentIdsKey.length > 0 ? acpAgentIdsKey.split(",") : []) {
+            void fetchAcpModels(id, true);
+          }
         }}
         enabledAgentIds={settings?.ai.acp.enabledAgentIds ?? []}
         agents={settings?.ai.acp.agents}
@@ -1713,11 +1727,20 @@ export function AiSurfaceDefaultControl({
   void modelsLoading;
   const modelLoading =
     isAcpProvider && (acpModelsLoading === true || acpModelOptions === undefined);
-  // For ACP, mark the agent's protocol-confirmed default model (isDefault) with
-  // a "(default)" suffix so the user can see which one "Default" resolves to.
-  const acpDefaultModel = isAcpProvider
-    ? ((acpModelOptions ?? []).find((m) => m.isDefault) ?? acpModelOptions?.[0])
-    : undefined;
+  // Mark the backend's PROTOCOL-CONFIRMED default model (isDefault) with a
+  // "(default)" suffix so the user can see which one "Default" resolves to —
+  // for BOTH Codex and ACP. Do NOT guess: if no model carries isDefault (e.g. a
+  // cached ACP list captured before the agent reported a currentModelId), leave
+  // it undefined and show a plain "Default". Guessing the first-listed model
+  // actively misleads — Grok lists "Composer 2.5" first but its real default is
+  // "Grok Build", so a guess would claim Default → Composer while a run uses
+  // Grok Build.
+  const defaultModelName: string | undefined = isAcpProvider
+    ? (acpModelOptions ?? []).find((m) => m.isDefault)?.label
+    : (() => {
+        const def = surfaceModelOptions(models).find((m) => m.isDefault);
+        return def !== undefined ? modelLabel(def) : undefined;
+      })();
   const modelChoices: Array<{ id: string; label: string }> = isAcpProvider
     ? (acpModelOptions ?? []).map((m) => ({
         id: m.id,
@@ -1725,7 +1748,7 @@ export function AiSurfaceDefaultControl({
       }))
     : surfaceModelOptions(models).map((m) => ({
         id: m.id,
-        label: modelLabel(m)
+        label: m.isDefault === true ? `${modelLabel(m)} (default)` : modelLabel(m)
       }));
   // A stored model that isn't in the selected backend's list (e.g. a Gemini id
   // left on a now-Codex surface) is NOT kept as a phantom option — the select
@@ -1733,12 +1756,31 @@ export function AiSurfaceDefaultControl({
   // provider. Same rule for Codex and ACP.
   const modelInChoices = modelChoices.some((m) => m.id === modelValue);
   const selectModelValue = modelInChoices ? modelValue : "";
+  // Normalize a stale/invalid ACP model to Default ("") once the agent's list
+  // has loaded. Without this, a Codex id left under an ACP provider (e.g.
+  // "gpt-5.4-mini" after switching to Grok) lingers in settings: it DISPLAYS as
+  // Default but is still sent to the agent every run (the kit logs "model
+  // selection not applied" and falls back), and the run record's model is
+  // wrong. Reset to "" so stored == displayed == what runs. Only when the list
+  // is non-empty (so we can actually judge validity) and the value is a real
+  // non-empty id that isn't in it. Codex isn't normalized — its picker already
+  // shows Default for an unknown id and the App Server resolves server-side.
+  const staleAcpModel =
+    isAcpProvider && !modelLoading && modelChoices.length > 0 && modelValue !== "" && !modelInChoices;
+  const normalizedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!staleAcpModel) return;
+    const key = `${chatProviderValue}|${modelValue}`;
+    if (normalizedKeyRef.current === key) return;
+    normalizedKeyRef.current = key;
+    onChange({ model: "" });
+  }, [staleAcpModel, chatProviderValue, modelValue, onChange]);
   // "Default" means "let the backend pick its own default model" (runtime sends
-  // null). For ACP we now know the agent's actual default, so annotate the
-  // entry — "Default (kimi-k2)" — instead of leaving it a mystery. Codex keeps
-  // a plain "Default" (the App Server resolves it server-side).
+  // null). When we know the backend's default model, annotate the entry —
+  // "Default (GPT-5.4-Mini)" / "Default (Grok Build)" — instead of leaving it a
+  // mystery. Falls back to a plain "Default" when the default is unknown.
   const defaultOptionLabel =
-    isAcpProvider && acpDefaultModel !== undefined ? `Default (${acpDefaultModel.label})` : "Default";
+    defaultModelName !== undefined ? `Default (${defaultModelName})` : "Default";
   // A persisted acp:<id> whose agent isn't currently in the enabled set
   // (toggled off, or discovery still loading) — keep it as a visible option
   // so the select never silently drops the saved value.

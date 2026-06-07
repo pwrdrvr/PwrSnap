@@ -16,6 +16,7 @@ import type {
   AiEnrichmentBudgetStatus,
   AiEnrichmentTriggerSource,
   AiRunSnapshot,
+  AiRunUsageDetail,
   CaptureEnrichment,
   CaptureRecord,
   PwrSnapError,
@@ -29,9 +30,12 @@ import {
 } from "../ai/capture-enrichment-client";
 import { AcpCaptureEnrichmentClient } from "../ai/acp-enrichment-client";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
+import { findAcpModelLabel } from "../ai/acp-model-cache";
+import { findCodexModelLabel, saveCodexModelLabels } from "../ai/codex-model-cache";
 import {
   discoverLocalAcpAgentInstances,
-  strategyById
+  strategyById,
+  type AcpAgentStrategy
 } from "@pwrdrvr/agent-acp";
 import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import { estimateAiUsageCost } from "../ai/ai-usage-cost";
@@ -263,6 +267,30 @@ function enrichmentModelForSettings(settings: Settings): string {
   return settings.codex.captionModel || DEFAULT_CODEX_CAPTION_MODEL;
 }
 
+/** Enrich a usage detail with friendly model labels for the UI. `lookupLabel`
+ *  maps a model id → display label (the ACP model caches; `undefined` for Codex
+ *  / unprobed agents). Resolves BOTH the effective `model` and the requested
+ *  `run.selectedModel`: the effective label drives the strip's headline name,
+ *  and the requested label is shown while a run is in flight (effective unknown)
+ *  AND in the "you picked X — agent ran Y" override note. selectedModelLabel
+ *  falls back to the raw id so a Codex model (no ACP label) still shows. Pure +
+ *  dependency-injected for testing. Exported for testing. */
+export function withUsageModelLabels(
+  detail: AiRunUsageDetail,
+  lookupLabel: (modelId: string) => string | undefined
+): AiRunUsageDetail {
+  const selected = detail.run.selectedModel;
+  return {
+    ...detail,
+    modelLabel:
+      typeof detail.model === "string" && detail.model.length > 0
+        ? lookupLabel(detail.model) ?? null
+        : null,
+    selectedModelLabel:
+      typeof selected === "string" && selected.length > 0 ? lookupLabel(selected) ?? selected : null
+  };
+}
+
 /** Backend-aware enrichment model selection. For an ACP agent, use the
  *  per-surface model id verbatim ("" → the agent's own default) — the Codex
  *  caption-model fallback is meaningless there and a Codex id would be wrong.
@@ -310,9 +338,22 @@ async function buildAcpEnrichmentClient(
     command: active.command,
     args: group.args,
     env: group.env,
-    strategy,
+    // Enrichment is a one-shot structured-JSON job — we want the agent's ANSWER,
+    // not its chain-of-thought. With surfaceThoughts:true (Grok/Kimi/Gemini) the
+    // normalizer folds thought chunks into the final agent_message, so the
+    // model's reasoning ("The task is to analyze…") lands in rawText and buries
+    // or corrupts the JSON (Grok especially rambles + echoes the schema). Force
+    // thoughts off for enrichment so rawText is just the reply.
+    strategy: withThoughtsSuppressed(strategy),
     cwd
   });
+}
+
+/** Clone a strategy with `surfaceThoughts` forced off — used for one-shot
+ *  enrichment so the agent's reasoning isn't folded into the parsed reply.
+ *  Exported for testing. */
+export function withThoughtsSuppressed(strategy: AcpAgentStrategy): AcpAgentStrategy {
+  return { ...strategy, quirks: { ...strategy.quirks, surfaceThoughts: false } };
 }
 
 function triggerSourceOrDefault(
@@ -713,6 +754,9 @@ export function registerCodexHandlers(params?: {
     );
     try {
       const models = await client.listModels({ includeHidden: parsed.value.includeHidden });
+      // Persist id → displayName so the usage strip can show a Codex run's
+      // friendly model name (the run record only stores the id).
+      saveCodexModelLabels(models);
       return ok({ models, selectedModel: settings.codex.captionModel });
     } catch (error) {
       return err({
@@ -750,7 +794,13 @@ export function registerCodexHandlers(params?: {
       return validationError("invalid_request", "runId is required");
     }
     refreshKnownAiUsagePrices();
-    return ok(getAiRunUsageDetail(req.runId));
+    const detail = getAiRunUsageDetail(req.runId);
+    if (detail === null) return ok(null);
+    // Resolve labels from the ACP caches first, then the Codex cache (ids are
+    // distinct across the two, so order is just preference).
+    return ok(
+      withUsageModelLabels(detail, (id) => findAcpModelLabel(id) ?? findCodexModelLabel(id))
+    );
   });
 
   bus.register("codex:cancel", async (req) => {

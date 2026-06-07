@@ -1152,7 +1152,7 @@ function DetailTab({
                 type="button"
                 className="psl__chip-link"
                 onClick={regenerate}
-                title="Ask Codex for a fresh draft"
+                title={`Ask ${providerLabel} for a fresh draft`}
               >
                 Regenerate
               </button>
@@ -1169,12 +1169,12 @@ function DetailTab({
             <span>Title</span>
             {titleOrigin === "suggested" ? (
               <>
-                <span className="psl__field-origin">draft from Codex</span>
+                <span className="psl__field-origin">draft from {providerLabel}</span>
                 <button
                   type="button"
                   className="psl__field-use"
                   onClick={() => void useTitleDraft()}
-                  title="Save this Codex draft as your title"
+                  title={`Save this ${providerLabel} draft as your title`}
                 >
                   Use
                 </button>
@@ -1192,7 +1192,7 @@ function DetailTab({
           />
           {titleDraftDiverged && titleOrigin !== "suggested" ? (
             <DraftPreview
-              label="Codex draft"
+              label={`${providerLabel} draft`}
               text={suggestedTitle}
               onUse={() => void useTitleDraft()}
             />
@@ -1204,12 +1204,12 @@ function DetailTab({
             <span>Description</span>
             {descriptionOrigin === "suggested" ? (
               <>
-                <span className="psl__field-origin">draft from Codex</span>
+                <span className="psl__field-origin">draft from {providerLabel}</span>
                 <button
                   type="button"
                   className="psl__field-use"
                   onClick={() => void useDescriptionDraft()}
-                  title="Save this Codex draft as your description"
+                  title={`Save this ${providerLabel} draft as your description`}
                 >
                   Use
                 </button>
@@ -1229,7 +1229,7 @@ function DetailTab({
           />
           {descriptionDraftDiverged && descriptionOrigin !== "suggested" ? (
             <DraftPreview
-              label="Codex draft"
+              label={`${providerLabel} draft`}
               text={suggestedDescription}
               onUse={() => void useDescriptionDraft()}
             />
@@ -1281,7 +1281,7 @@ function isAiRunUsageDetail(value: unknown): value is AiRunUsageDetail {
   return typeof value === "object" && value !== null && "cost" in value && "mediaInputs" in value;
 }
 
-function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): ReactElement {
+export function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): ReactElement {
   const cost =
     detail.cost.status === "available"
       ? formatCostMicros(detail.cost.totalCostMicros)
@@ -1298,16 +1298,44 @@ function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): ReactElement
         ? `${media.sentWidthPx}×${media.sentHeightPx} ${media.format.toUpperCase()} · ${formatBytes(media.sentByteSize)}${media.quality === null ? "" : ` · q${media.quality}`}`
         : `${detail.mediaInputs.length} frames · ${media.sentWidthPx}×${media.sentHeightPx} ${media.format.toUpperCase()}`;
 
+  // Headline model name: prefer the effective model's friendly label / id; while
+  // a run is in flight (effective `model` not yet recorded) fall back to the
+  // REQUESTED model so it reads e.g. "GPT-5.4-Mini" instead of "model
+  // unavailable". Long names clip with a CSS ellipsis (full name on hover).
+  const requestedName = detail.selectedModelLabel ?? null;
+  const modelName = detail.modelLabel ?? detail.model ?? requestedName ?? "model unavailable";
+  // Override note: shown only once the effective model is KNOWN and it differs
+  // from the requested one (the agent ran a different model than picked — e.g.
+  // Grok rejecting set_model for Composer 2.5 and using its own default).
+  const effectiveKnown = detail.model !== null && detail.model.length > 0;
+  const selectedId = detail.run.selectedModel;
+  const overrode =
+    effectiveKnown &&
+    typeof selectedId === "string" &&
+    selectedId.length > 0 &&
+    selectedId !== detail.model;
+
   return (
     <div className="psl__ai-usage" aria-label="AI usage">
       <div className="psl__ai-usage-row">
-        <span>{detail.model ?? "model unavailable"}</span>
+        <span className="psl__ai-usage-model" title={modelName}>
+          {modelName}
+        </span>
         <b>{cost}</b>
       </div>
       <div className="psl__ai-usage-row is-muted">
         <span>{tokens}</span>
         <span>{mediaText}</span>
       </div>
+      {overrode ? (
+        <div className="psl__ai-usage-row is-muted psl__ai-usage-override" role="note">
+          <span
+            title={`The agent doesn't support switching to "${requestedName ?? selectedId}", so it ran ${modelName} instead.`}
+          >
+            ⚠ you picked {requestedName ?? selectedId} — agent ran {modelName}
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1559,7 +1587,7 @@ function DraftPreview({ label, text, onUse }: DraftPreviewProps): ReactElement {
           type="button"
           className="psl__draft-preview-use"
           onClick={onUse}
-          title="Replace current text with this Codex draft"
+          title="Replace current text with this draft"
         >
           Use this
         </button>

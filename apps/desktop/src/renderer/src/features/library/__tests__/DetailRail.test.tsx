@@ -9,7 +9,7 @@ import type {
   CaptureRecord,
   SettingsChangedEvent
 } from "@pwrsnap/shared";
-import { DetailRail } from "../DetailRail";
+import { DetailRail, AiRunUsageStrip } from "../DetailRail";
 import type { LibraryView } from "../library-view";
 
 beforeAll(() => {
@@ -1253,5 +1253,89 @@ describe("DetailRail", () => {
     expect(panel?.getAttribute("aria-labelledby")).toBe(
       infoTab?.getAttribute("id")
     );
+  });
+});
+
+describe("AiRunUsageStrip", () => {
+  let stripContainer: HTMLDivElement | null = null;
+  let stripRoot: Root | null = null;
+
+  afterEach(async () => {
+    await act(async () => {
+      stripRoot?.unmount();
+    });
+    stripContainer?.remove();
+    stripContainer = null;
+    stripRoot = null;
+  });
+
+  async function renderStrip(detail: AiRunUsageDetail): Promise<HTMLElement> {
+    stripContainer = document.createElement("div");
+    document.body.appendChild(stripContainer);
+    stripRoot = createRoot(stripContainer);
+    await act(async () => {
+      stripRoot?.render(createElement(AiRunUsageStrip, { detail }));
+    });
+    const span = stripContainer.querySelector<HTMLElement>(".psl__ai-usage-model");
+    if (span === null) throw new Error("model span not rendered");
+    return span;
+  }
+
+  test("prefers the friendly modelLabel over the raw id, with the full name on title", async () => {
+    const detail = aiUsageDetail({ model: "grok-build", modelLabel: "Grok Build" });
+    detail.run.selectedModel = "grok-build"; // honored → no override row
+    const span = await renderStrip(detail);
+    expect(span.textContent).toBe("Grok Build");
+    expect(span.getAttribute("title")).toBe("Grok Build");
+  });
+
+  test("falls back to the raw id when no friendly label is known (Codex)", async () => {
+    const span = await renderStrip(aiUsageDetail({ model: "gpt-5.4-mini", modelLabel: null }));
+    expect(span.textContent).toBe("gpt-5.4-mini");
+    expect(span.getAttribute("title")).toBe("gpt-5.4-mini");
+  });
+
+  test("shows 'model unavailable' when both label and id are missing", async () => {
+    const span = await renderStrip(aiUsageDetail({ model: null, modelLabel: null }));
+    expect(span.textContent).toBe("model unavailable");
+  });
+
+  test("shows the REQUESTED model while a run is in flight (effective unknown)", async () => {
+    // Previously showed "model unavailable" mid-run; now falls back to the
+    // selected model's label so it reads e.g. "GPT-5.4-Mini".
+    const detail = aiUsageDetail({ model: null, modelLabel: null });
+    detail.selectedModelLabel = "GPT-5.4-Mini";
+    const span = await renderStrip(detail);
+    expect(span.textContent).toBe("GPT-5.4-Mini");
+  });
+
+  test("surfaces an override note when the agent ran a different model than requested", async () => {
+    const detail = aiUsageDetail({ model: "grok-build", modelLabel: "Grok Build" });
+    detail.run.selectedModel = "grok-composer-2.5-fast"; // differs from effective
+    detail.selectedModelLabel = "Composer 2.5";
+    await renderStrip(detail);
+    const override = stripContainer!.querySelector<HTMLElement>(".psl__ai-usage-override");
+    expect(override).not.toBeNull();
+    expect(override!.getAttribute("role")).toBe("note"); // accessible
+    expect(override!.textContent).toContain("Composer 2.5");
+    expect(override!.textContent).toContain("Grok Build");
+  });
+
+  test("no override note when the requested model was honored", async () => {
+    const detail = aiUsageDetail({ model: "grok-build", modelLabel: "Grok Build" });
+    detail.run.selectedModel = "grok-build"; // requested == effective
+    detail.selectedModelLabel = "Grok Build";
+    await renderStrip(detail);
+    expect(stripContainer!.querySelector(".psl__ai-usage-override")).toBeNull();
+  });
+
+  test("no override note while the run is in flight (effective model unknown)", async () => {
+    // The chicken-and-egg: a running enrichment has no effective model yet, so
+    // the note must NOT render "agent ran model unavailable".
+    const detail = aiUsageDetail({ model: null, modelLabel: null });
+    detail.run.selectedModel = "grok-composer-2.5-fast";
+    detail.selectedModelLabel = "Composer 2.5";
+    await renderStrip(detail);
+    expect(stripContainer!.querySelector(".psl__ai-usage-override")).toBeNull();
   });
 });

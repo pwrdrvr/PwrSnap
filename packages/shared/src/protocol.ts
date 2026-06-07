@@ -2135,6 +2135,16 @@ export type AiRunUsageDetail = {
   threadId: string | null;
   turnId: string | null;
   model: string | null;
+  /** Friendly display label for `model` (e.g. "Grok Build" for `grok-build`),
+   *  resolved from the ACP model caches at read time. Null when unknown (a Codex
+   *  model, or an agent never probed) — the UI falls back to the raw `model`. */
+  modelLabel?: string | null;
+  /** Friendly label for the run's REQUESTED model (`run.selectedModel`), resolved
+   *  from the caches; falls back to the raw id, null when none was requested.
+   *  The UI shows it while a run is in flight (effective `model` not yet known),
+   *  and uses it for the "you picked X — agent ran Y" override note when the
+   *  agent overrode the pick (e.g. Grok rejecting `set_model` for Composer 2.5). */
+  selectedModelLabel?: string | null;
   modelProvider: string | null;
   serviceTier: string | null;
   usageStatus: AiUsageStatus;

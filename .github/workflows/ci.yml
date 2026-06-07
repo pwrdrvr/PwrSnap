@@ -152,3 +152,40 @@ jobs:
 
       - name: Test
         run: pnpm run test
+
+  windows-e2e:
+    name: Windows Desktop E2E
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.1"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run desktop Electron E2E specs (Windows)
+        # windows-latest provides an interactive desktop session, so (unlike the
+        # Linux job) no xvfb is needed. macOS-only specs self-skip via
+        # `test.skip(!isMac)`; this verifies the cross-platform specs and, as the
+        # GUI surfaces get ported, the newly un-skipped Windows specs.
+        run: pnpm run test:desktop-e2e
+
+      - name: Upload desktop Playwright artifacts
+        uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: windows-desktop-e2e-artifacts
+          path: |
+            apps/desktop/playwright-report/
+            apps/desktop/test-results/
+          retention-days: 30

@@ -168,8 +168,14 @@ export function RegionSelector() {
   // body[data-mode]; see region.css.
   const hLineRef = useRef<HTMLDivElement | null>(null);
   const vLineRef = useRef<HTMLDivElement | null>(null);
-  // Guards handleEscape against a double-delivered single Esc press.
+  // Guards handleEscape against a double-delivered single Esc press
+  // (focused-renderer keydown + forwarded globalShortcut IPC). Armed on
+  // the first Escape, auto-disarmed after ESCAPE_DEDUPE_MS — long enough
+  // to swallow the near-simultaneous duplicate, far shorter than any
+  // deliberate second press. escapeTimerRef holds the disarm timer so it
+  // can be cleared on unmount / rescheduled.
   const escapeGuardRef = useRef(false);
+  const escapeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // True while an interior mousedown is staging a discard of the
   // committed pick. The branch leaves rect + snapTarget untouched, so a
   // click-without-drag "keep" just stays put (no re-derivation); a drag
@@ -418,18 +424,32 @@ export function RegionSelector() {
     setInteraction({ kind: "snap" });
     setSnapTarget({ kind: "display" });
     setRect(displaySnapRect());
+    // Committing can happen mid-staged-discard (Enter while pending);
+    // clear the dim + flag so they don't leak into the next show.
+    clearDiscardPending();
   }
 
   // Reset the selector to live-snap mode WITHOUT submitting anything to
   // main. This is the "step back" half of the Escape behavior — purely
   // client-side, so it never triggers the main-side cancel choreography
   // (float-over cancel → hideSelector → previous-app reactivation).
+  // Clear any staged discard-pending state (the ref + the CSS dim). Safe
+  // to call from any reset path; idempotent.
+  function clearDiscardPending(): void {
+    discardingRef.current = false;
+    document.body.dataset.discarding = "false";
+  }
+
   function resetToSnap(): void {
     setInteraction({ kind: "snap" });
     setSnapTarget({ kind: "display" });
     setRect(displaySnapRect());
     setShiftHeld(false);
     setSpaceHeld(false);
+    // A reset can interrupt a staged discard (Esc held during pending);
+    // drop the dim + flag so they don't survive into the next gesture or
+    // the next show of this pre-warmed window.
+    clearDiscardPending();
   }
 
   function cancel(): void {
@@ -443,14 +463,18 @@ export function RegionSelector() {
   // keydown path and the forwarded-IPC path so they can't drift:
   //   - committed pick (anything but snap) → step back to snap, no submit
   //   - already in snap (nothing picked)   → exit (cancel → submit)
-  // The escapeGuard swallows a second Escape within ESCAPE_DEDUPE_MS so
-  // one physical press delivered via both paths can't step-back-then-
-  // cancel. (Re-armed early by onMouseMove for snappy deliberate repeats.)
+  // The escapeGuard swallows a second Escape within ESCAPE_DEDUPE_MS so a
+  // single physical press delivered via both paths can't step-back-then-
+  // cancel. The window is far shorter than any deliberate second press,
+  // so "Esc, Esc to exit" still works; it is NOT re-armed on mousemove —
+  // a stray cursor move must not be able to defeat the de-dupe.
   function handleEscape(): void {
     if (escapeGuardRef.current) return;
     escapeGuardRef.current = true;
-    setTimeout(() => {
+    if (escapeTimerRef.current !== null) clearTimeout(escapeTimerRef.current);
+    escapeTimerRef.current = setTimeout(() => {
       escapeGuardRef.current = false;
+      escapeTimerRef.current = null;
     }, ESCAPE_DEDUPE_MS);
     if (interactionRef.current.kind !== "snap") {
       resetToSnap();
@@ -671,9 +695,6 @@ export function RegionSelector() {
       // Crosshair tracks the cursor in every state; CSS decides whether
       // it paints (hidden during moving/resizing and in window mode).
       positionCrosshair(event.clientX, event.clientY);
-      // Moving the cursor re-arms the Escape de-dupe guard, so a
-      // deliberate "step back, re-aim, Esc again to exit" feels instant.
-      escapeGuardRef.current = false;
       const i = interactionRef.current;
       switch (i.kind) {
         case "snap": {
@@ -781,10 +802,13 @@ export function RegionSelector() {
 
     function onMouseUp(event: MouseEvent): void {
       const i = interactionRef.current;
+      // Clear the discard-pending dim on ANY mouseup — including when
+      // Esc/Enter already stepped the interaction back to snap/adjusting
+      // before the button was released (the early-return below would
+      // otherwise skip the clear and leave the rect dimmed).
+      document.body.dataset.discarding = "false";
       if (i.kind === "snap" || i.kind === "adjusting") return;
       event.preventDefault();
-      // Any mouseup ends a staged discard-pending; clear the dim.
-      document.body.dataset.discarding = "false";
       switch (i.kind) {
         case "pending": {
           // Click without drag → commit (or keep) the selection into
@@ -872,6 +896,7 @@ export function RegionSelector() {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
       unsubKey?.();
+      if (escapeTimerRef.current !== null) clearTimeout(escapeTimerRef.current);
     };
     // commit/cancel close over refs only; safe to leave deps empty.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1130,10 +1155,12 @@ export function RegionSelector() {
         {hint}
         <span className="region-hint-sep">·</span>
         <span>
-          {/* Single source of the Esc affordance. In a committed pick
-              Esc steps back ("back"); in snap it exits ("cancel"). */}
+          {/* Single source of the Esc affordance, accurate in every
+              state: Esc exits only from snap ("cancel"); from any other
+              state (a committed pick, or a mid-gesture pending/drawing/
+              move/resize) it steps back to snap ("back"). */}
           <kbd>esc</kbd>
-          {interaction.kind === "adjusting" ? "back" : "cancel"}
+          {interaction.kind === "snap" ? "cancel" : "back"}
         </span>
       </div>
       <style>{`@keyframes ps-rec-pulse {

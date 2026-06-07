@@ -130,8 +130,8 @@ test("Escape steps back from adjusting to snap; a second Escape exits", async ()
     await expect(selector.locator(".region-handle")).toHaveCount(0);
     expect(await readResults(app)).toHaveLength(0);
 
-    // Re-aim (re-arms the de-dupe guard), then Esc again → exit.
-    await selector.mouse.move(box.x + 140, box.y + 140);
+    // After the de-dupe window, a second Esc exits.
+    await selector.waitForTimeout(80); // let the Escape de-dupe guard disarm
     await selector.keyboard.press("Escape");
     await expect.poll(async () => (await readResults(app)).length).toBe(1);
     expect((await readResults(app))[0]).toMatchObject({ ok: false });
@@ -164,7 +164,7 @@ test("forwarded Escape (region-selector:key) drives the same two-step", async ()
     );
     expect(await readResults(app)).toHaveLength(0);
 
-    await selector.mouse.move(box.x + 140, box.y + 140);
+    await selector.waitForTimeout(80); // let the Escape de-dupe guard disarm
     await sendSelectorKey(app, "Escape");
     await expect.poll(async () => (await readResults(app)).length).toBe(1);
     expect((await readResults(app))[0]).toMatchObject({ ok: false });

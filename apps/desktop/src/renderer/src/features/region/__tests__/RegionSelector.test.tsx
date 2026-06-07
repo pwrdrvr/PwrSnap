@@ -167,6 +167,14 @@ async function emitKey(key: string): Promise<void> {
   });
 }
 
+// Real-time delay, used to let the Escape de-dupe guard (a ~50ms timer)
+// disarm between a step-back and a deliberate second Escape. Kept just
+// above ESCAPE_DEDUPE_MS so the second press is honored.
+const ESC_GUARD_WAIT_MS = 70;
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** snap → pending → drawing → adjusting via a free-draw drag. */
 async function drawRect(): Promise<void> {
   await mouseMove(100, 100);
@@ -287,10 +295,23 @@ describe("U2 — multi-step Escape", () => {
     await drawRect();
     await keyDown("Escape"); // step back → snap
     expect(submitRegion).not.toHaveBeenCalled();
-    await mouseMove(150, 150); // re-aim re-arms the de-dupe guard
+    await delay(ESC_GUARD_WAIT_MS); // let the de-dupe guard disarm
     await keyDown("Escape"); // now in snap → exit
     expect(submitRegion).toHaveBeenCalledTimes(1);
     expect(submitRegion).toHaveBeenCalledWith({ ok: false });
+  });
+
+  test("Esc during a staged interior discard clears the dim (no stuck data-discarding)", async () => {
+    await mount();
+    await drawRect(); // adjusting (free region)
+    await mouseDown(150, 150); // stage a discard → pending, dim on
+    expect(document.body.dataset.discarding).toBe("true");
+    await keyDown("Escape"); // step back from pending → snap
+    expect(document.body.dataset.interaction).toBe("snap");
+    expect(document.body.dataset.discarding).toBe("false"); // not stuck
+    expect(submitRegion).not.toHaveBeenCalled(); // step-back never submits
+    await mouseUp(150, 150); // release the still-down button — no re-dim
+    expect(document.body.dataset.discarding).toBe("false");
   });
 
   test("forwarded-IPC Escape steps back identically to the keydown path", async () => {

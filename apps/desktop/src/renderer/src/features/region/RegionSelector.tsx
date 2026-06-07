@@ -170,10 +170,12 @@ export function RegionSelector() {
   const vLineRef = useRef<HTMLDivElement | null>(null);
   // Guards handleEscape against a double-delivered single Esc press.
   const escapeGuardRef = useRef(false);
-  // Set when an interior mousedown stages a discard of the committed
-  // pick. Holds the exact committed rect + snap so a click-without-drag
-  // can restore them verbatim (a drag past threshold redraws instead).
-  const discardStashRef = useRef<{ rect: Rect; snap: SnapTarget } | null>(null);
+  // True while an interior mousedown is staging a discard of the
+  // committed pick. The branch leaves rect + snapTarget untouched, so a
+  // click-without-drag "keep" just stays put (no re-derivation); a drag
+  // past threshold redraws. The flag only tells the mouseup which case
+  // it is — there is nothing to restore.
+  const discardingRef = useRef(false);
 
   // Write the guide-line positions directly. `x` drives the vertical
   // line's left; `y` drives the horizontal line's top. Reads only the
@@ -633,21 +635,22 @@ export function RegionSelector() {
       // Adjusting → interior mousedown NO LONGER moves the pick. It
       // stages a discard: a drag past threshold free-draws a brand-new
       // region (replace), a click-without-drag keeps the current
-      // selection. Stash the committed rect + snap so the keep case
-      // restores them EXACTLY — re-deriving a free-drawn rect via
-      // rectForSnap(display) would blow it up to the whole screen.
+      // selection. We leave rect + snapTarget untouched, so the keep
+      // case needs no restore — crucially NOT re-deriving via
+      // rectForSnap, which would blow a free-drawn rect up to the whole
+      // screen.
       if (i.kind === "adjusting" && isInsideCurrentRect(event.clientX, event.clientY)) {
-        discardStashRef.current = { rect: rectRef.current, snap: snapTargetRef.current };
+        discardingRef.current = true;
         document.body.dataset.discarding = "true";
-        // Keep snapTarget as-is; pending(snapAtPress) carries it for the
-        // keep case. Fall through into pending below.
+        // Fall through into pending below (snapAtPress carries the
+        // current snap for any non-keep accounting).
       } else if (i.kind === "adjusting") {
         // Adjusting → click OUTSIDE the rect: drop to the snap under
-        // the cursor (existing behavior). No stash — nothing to keep.
+        // the cursor (existing behavior). Not a discard-keep.
         const next = snapAt(event.clientX, event.clientY);
         setSnapTarget(next);
         setRect(rectForSnap(next));
-        discardStashRef.current = null;
+        discardingRef.current = false;
         // Fall through into pending.
       }
 
@@ -721,10 +724,10 @@ export function RegionSelector() {
           // will commit the window snap.
           if (modeRef.current === "window") return;
           // Cross — start drawing. A staged discard is now a committed
-          // redraw: clear the discard-pending dim + stash so the fresh
+          // redraw: clear the discard-pending dim so the fresh
           // rubber-band draws at full strength.
           document.body.dataset.discarding = "false";
-          discardStashRef.current = null;
+          discardingRef.current = false;
           // Override the snap rect with a free-draw rect anchored at the
           // original mousedown.
           setRect(
@@ -788,21 +791,17 @@ export function RegionSelector() {
           // adjusting. The user can refine with handles + arrow keys +
           // ↵, or hit ↵ immediately to send.
           const snap = i.snapAtPress;
-          const stash = discardStashRef.current;
-          discardStashRef.current = null;
-          if (stash !== null) {
-            // Interior "keep" click: restore the EXACT committed
-            // selection (rect + snap identity). Never re-derive via
-            // rectForSnap — that would lose a manual resize or
-            // re-expand a free-drawn rect to the full display.
-            setSnapTarget(stash.snap);
-            setRect(stash.rect);
-            rectRef.current = stash.rect;
-            snapTargetRef.current = stash.snap;
-          } else if (snap !== null) {
+          const wasDiscard = discardingRef.current;
+          discardingRef.current = false;
+          if (!wasDiscard && snap !== null) {
+            // Snap-mode / click-outside commit: bind to the snap target.
             setSnapTarget(snap);
             setRect(rectForSnap(snap));
           }
+          // Interior "keep" click (wasDiscard): rect + snapTarget were
+          // never changed since the press, so there is nothing to
+          // restore — fall straight through to adjusting. (This is why
+          // a free-drawn rect doesn't re-expand to the full display.)
           // Window mode: clicking on a window IS the commit. Skip
           // adjusting and submit immediately. We re-set rect
           // synchronously off `snap` so commit() reads the window's

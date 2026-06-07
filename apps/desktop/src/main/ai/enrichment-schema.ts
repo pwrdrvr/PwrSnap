@@ -69,6 +69,25 @@ export const CAPTURE_ENRICHMENT_SCHEMA: JsonValue = {
   }
 };
 
+/** A concrete, filled-in example of the enrichment output — REAL values, not
+ *  types. Handed to ACP agents instead of the raw JSON Schema: weaker
+ *  instruction-followers (e.g. Grok) echoed the schema's type names
+ *  (`"ocrText": string`) when told to "conform to this JSON Schema", which
+ *  isn't valid JSON. An example they can copy the SHAPE of — with their own
+ *  values — produces a parseable instance. */
+export const CAPTURE_ENRICHMENT_EXAMPLE: JsonValue = {
+  ocrText: "Problem Details",
+  title: "PwrAgent crash report — missing Electron Framework",
+  description:
+    "A macOS Problem Reporter window showing a crash for PwrAgent. The report points to a launch failure caused by a missing Electron Framework library.",
+  filenameStem: "pwragent-crash-missing-electron-framework",
+  textAnchors: ["PwrAgent quit unexpectedly", "Problem Details"],
+  tags: [
+    { label: "crash report", confidence: 0.9 },
+    { label: "macOS", confidence: 0.8 }
+  ]
+};
+
 export const CAPTURE_ENRICHMENT_PROMPT_FILE = new URL(
   "./prompts/capture-enrichment.md",
   import.meta.url

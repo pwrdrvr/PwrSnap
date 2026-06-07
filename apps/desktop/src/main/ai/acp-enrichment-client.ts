@@ -17,7 +17,7 @@ import {
 import type { AiUsageTokenBreakdown } from "@pwrsnap/shared";
 import {
   CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
-  CAPTURE_ENRICHMENT_SCHEMA,
+  CAPTURE_ENRICHMENT_EXAMPLE,
   buildCaptureEnrichmentPrompt,
   parseCaptureEnrichmentResponse
 } from "./enrichment-schema";
@@ -98,18 +98,34 @@ export function extractJsonObject(rawText: string): string {
   return body.slice(start);
 }
 
-/** Fold the Codex base instructions + the JSON-Schema contract + the
- *  per-capture metadata into one prompt (ACP has no outputSchema /
- *  baseInstructions seam). Exported for testing. */
+/** Fold the Codex base instructions + the output contract + the per-capture
+ *  metadata into one prompt (ACP has no outputSchema / baseInstructions seam).
+ *
+ *  IMPORTANT: we describe the keys in prose and hand a CONCRETE EXAMPLE
+ *  instance — NOT a raw JSON Schema. Telling a weaker model to "conform to this
+ *  JSON Schema" made Grok echo the schema's type names (`"ocrText": string`),
+ *  which isn't valid JSON. An example it copies the shape of (with its own real
+ *  values) parses reliably across Gemini / Qwen / Grok / Kimi. Exported for
+ *  testing. */
 export function buildAcpEnrichmentPrompt(request: CaptureEnrichmentRequest): string {
   return [
     CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS.trim(),
     "",
     buildCaptureEnrichmentPrompt(request.metadata),
     "",
-    "Respond with ONLY a single JSON object that conforms to this JSON Schema.",
-    "Do not call any tools, ask any questions, or emit any prose or markdown — JSON only:",
-    JSON.stringify(CAPTURE_ENRICHMENT_SCHEMA)
+    "Respond with ONLY a single JSON object describing THIS image — REAL values,",
+    "not a schema and not type names. Do not call any tools, ask any questions, or",
+    "emit any prose or markdown — JSON only. Required keys:",
+    '  • "ocrText": short visible text anchors only; "" if not essential.',
+    '  • "title": short headline (≤120 chars), no trailing punctuation.',
+    '  • "description": 1–3 sentences on what is visible + why it is useful later.',
+    '  • "filenameStem": lowercase kebab-case stem, no extension; "" if none.',
+    '  • "textAnchors": array of up to 5 short visible text strings.',
+    '  • "tags": array of up to 4 objects, each with a "label" and a "confidence" (0–1, or null).',
+    "",
+    "Return an object shaped EXACTLY like this example, but with your own real",
+    'values for this image (never output the words "string"/"number" or any type):',
+    JSON.stringify(CAPTURE_ENRICHMENT_EXAMPLE, null, 2)
   ].join("\n");
 }
 

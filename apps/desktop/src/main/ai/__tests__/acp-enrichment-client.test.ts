@@ -7,6 +7,7 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
 }));
 
 import { buildAcpEnrichmentPrompt, extractJsonObject } from "../acp-enrichment-client";
+import { CAPTURE_ENRICHMENT_EXAMPLE } from "../enrichment-schema";
 import type { CaptureEnrichmentRequest } from "../capture-enrichment-client";
 
 describe("extractJsonObject", () => {
@@ -42,18 +43,39 @@ const request: CaptureEnrichmentRequest = {
 };
 
 describe("buildAcpEnrichmentPrompt", () => {
-  it("folds the base instructions + metadata + JSON-Schema contract into one prompt", () => {
+  it("folds the base instructions + metadata + output contract into one prompt", () => {
     const prompt = buildAcpEnrichmentPrompt(request);
     // The per-capture metadata is present (no outputSchema/baseInstructions
     // seam in ACP, so it must ride in the prompt).
     expect(prompt).toContain("Figma");
     expect(prompt).toContain("com.figma.Desktop");
     expect(prompt).toContain("design");
-    // The JSON-only contract + the schema's required keys are embedded.
+    // The JSON-only contract + the required keys are embedded.
     expect(prompt).toMatch(/ONLY a single JSON object/i);
     expect(prompt).toContain("filenameStem");
     expect(prompt).toContain("textAnchors");
-    // No tools / no questions instruction (enrichment is non-interactive).
     expect(prompt).toMatch(/Do not call any tools/i);
+  });
+
+  it("hands a CONCRETE example, not a raw JSON Schema (Grok schema-echo regression)", () => {
+    // Grok echoed the schema's type names (`"ocrText": string`) when told to
+    // conform to a JSON Schema. The prompt must instead carry a parseable
+    // example instance + a 'real values, not types' instruction.
+    const prompt = buildAcpEnrichmentPrompt(request);
+    // No bareword type annotations that would break JSON.parse, no schema dump.
+    expect(prompt).not.toMatch(/"ocrText":\s*string/);
+    expect(prompt).not.toContain('"type": "object"');
+    expect(prompt).toMatch(/real values/i);
+    expect(prompt).toMatch(/never output the words "string"/i);
+    // The embedded example is a real, parseable instance with the required keys.
+    const exampleJson = JSON.stringify(CAPTURE_ENRICHMENT_EXAMPLE);
+    const example = JSON.parse(exampleJson) as Record<string, unknown>;
+    for (const key of ["ocrText", "title", "description", "filenameStem", "textAnchors", "tags"]) {
+      expect(example).toHaveProperty(key);
+    }
+    expect(typeof example.title).toBe("string");
+    expect(Array.isArray(example.tags)).toBe(true);
+    // And it's actually in the prompt.
+    expect(prompt).toContain(String(example.title));
   });
 });

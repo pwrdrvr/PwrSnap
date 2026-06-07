@@ -50,9 +50,9 @@ export type CodexStatusPillProps = {
   /** Human label for the enrichment backend (e.g. "Codex", "Gemini"). The
    *  enrichment provider isn't always Codex anymore, so the copy is
    *  parameterized. Defaults to "Codex". */
-  readonly providerLabel?: string;
+  readonly providerLabel?: string | undefined;
   /** Optional model id shown in parens (e.g. "gemini-3-flash-preview"). */
-  readonly modelLabel?: string;
+  readonly modelLabel?: string | undefined;
   readonly action?: ReactNode;
   readonly style?: CSSProperties;
   readonly className?: string;

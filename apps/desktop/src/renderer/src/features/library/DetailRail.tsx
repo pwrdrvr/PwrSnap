@@ -40,7 +40,7 @@ import type {
   SuggestedTag
 } from "@pwrsnap/shared";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
-import { CodexStatusPill } from "../shared/CodexStatusPill";
+import { CodexStatusPill, enrichmentBackendLabel } from "../shared/CodexStatusPill";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { useVideoExportPresets } from "../shared/useVideoExportPresets";
@@ -53,7 +53,7 @@ import {
 } from "../shared/RightActivityBar";
 import "../shared/RightActivityBar.css";
 import { LibraryChatPanel } from "./chat/LibraryChatPanel";
-import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
+import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag, subscribe } from "../../lib/pwrsnap";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { useCart } from "./CartContext";
 import { CartPanel } from "./CartPanel";
@@ -142,6 +142,13 @@ export function DetailRail({
   const [localActiveTab, setLocalActiveTab] = useState<SidebarTab>("info");
   const [localPinned, setLocalPinned] = useState<boolean>(true);
   const [budgetStatus, setBudgetStatus] = useState<AiEnrichmentBudgetStatus | null>(null);
+  // Which backend runs enrichment — so the status pill + OCR copy say "Grok" /
+  // "Gemini" instead of always "Codex". Derived from the enrichment Settings
+  // default; refreshed on settings changes.
+  const [enrichmentLabel, setEnrichmentLabel] = useState<{
+    providerLabel: string;
+    modelLabel: string | undefined;
+  }>({ providerLabel: "Codex", modelLabel: undefined });
 
   const refreshBudgetStatus = useCallback(async (): Promise<void> => {
     const result = await dispatch("codex:budgetStatus", {});
@@ -222,6 +229,25 @@ export function DetailRail({
       cancelled = true;
     };
   }, [fullyControlled, isPinControlled, isTabControlled]);
+
+  // Track the enrichment backend label (provider + model) so the status pill +
+  // OCR copy name the actual agent. Read once + refresh on settings changes.
+  useEffect(() => {
+    let cancelled = false;
+    const load = (): void => {
+      void dispatch("settings:read", {}).then((result) => {
+        if (cancelled || !result.ok) return;
+        const enrichment = (result.value as Settings | undefined)?.ai?.defaults?.enrichment;
+        setEnrichmentLabel(enrichmentBackendLabel(enrichment));
+      });
+    };
+    load();
+    const off = subscribe(EVENT_CHANNELS.settingsChanged, () => load());
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, []);
 
   // Dev-only coherence warning. We catch:
   //   • `pinned` without `onPinChange` (or vice versa)
@@ -489,6 +515,8 @@ export function DetailRail({
             draftAvailable={draftAvailable}
             allDraftsAccepted={allDraftsAccepted}
             aiSafetyDisabled={aiSafetyDisabled}
+            providerLabel={enrichmentLabel.providerLabel}
+            modelLabel={enrichmentLabel.modelLabel}
             onEnrichmentUpdate={setEnrichment}
           />
         </div>
@@ -497,7 +525,13 @@ export function DetailRail({
     if (id === "ocr") {
       return (
         <div className="psl__right-body">
-          <OcrTab record={record} enrichment={enrichment} aiSafetyDisabled={aiSafetyDisabled} />
+          <OcrTab
+            record={record}
+            enrichment={enrichment}
+            aiSafetyDisabled={aiSafetyDisabled}
+            providerLabel={enrichmentLabel.providerLabel}
+            modelLabel={enrichmentLabel.modelLabel}
+          />
         </div>
       );
     }
@@ -822,6 +856,9 @@ type DetailTabProps = {
   readonly draftAvailable: boolean;
   readonly allDraftsAccepted: boolean;
   readonly aiSafetyDisabled: boolean;
+  /** Enrichment backend label (e.g. "Grok") + optional model for the pill. */
+  readonly providerLabel: string;
+  readonly modelLabel: string | undefined;
   readonly onEnrichmentUpdate: (next: CaptureEnrichment) => void;
 };
 
@@ -835,6 +872,8 @@ function DetailTab({
   draftAvailable,
   allDraftsAccepted,
   aiSafetyDisabled,
+  providerLabel,
+  modelLabel,
   onEnrichmentUpdate
 }: DetailTabProps): ReactElement {
   const acceptedTitle = enrichment?.acceptedTitle ?? "";
@@ -1088,6 +1127,8 @@ function DetailTab({
         draftAvailable={draftAvailable}
         accepted={allDraftsAccepted}
         safetyDisabled={aiSafetyDisabled}
+        providerLabel={providerLabel}
+        modelLabel={modelLabel}
         action={
           <>
             {/* Prominent bulk Use — the common case. Covers title +
@@ -1425,9 +1466,19 @@ type OcrTabProps = {
   readonly record: CaptureRecord;
   readonly enrichment: CaptureEnrichment | null;
   readonly aiSafetyDisabled: boolean;
+  /** The enrichment backend's display name (e.g. "Grok") + optional model, so
+   *  the OCR copy names the actual agent instead of always saying "Codex". */
+  readonly providerLabel: string;
+  readonly modelLabel: string | undefined;
 };
 
-function OcrTab({ record, enrichment, aiSafetyDisabled }: OcrTabProps): ReactElement {
+function OcrTab({
+  record,
+  enrichment,
+  aiSafetyDisabled,
+  providerLabel,
+  modelLabel
+}: OcrTabProps): ReactElement {
   const ocrText = enrichment?.ocrText ?? "";
   const status = enrichment?.status ?? null;
   const refreshing = status === "queued" || status === "running";
@@ -1446,6 +1497,8 @@ function OcrTab({ record, enrichment, aiSafetyDisabled }: OcrTabProps): ReactEle
           draftAvailable={ocrText.length > 0}
           accepted={ocrText.length > 0 && status === "completed"}
           safetyDisabled={aiSafetyDisabled}
+          providerLabel={providerLabel}
+          modelLabel={modelLabel}
         />
         <div className="psl__ocr-tab-actions">
           <button
@@ -1476,10 +1529,10 @@ function OcrTab({ record, enrichment, aiSafetyDisabled }: OcrTabProps): ReactEle
       ) : (
         <div className="psl__ocr-tab-empty">
           {refreshing
-            ? "Codex is reading the snap…"
+            ? `${providerLabel} is reading the snap…`
             : status === "failed"
-            ? "Codex could not extract text from this snap."
-            : "No OCR text yet. Hit Refresh to ask Codex to read the snap."}
+            ? `${providerLabel} could not extract text from this snap.`
+            : `No OCR text yet. Hit Refresh to ask ${providerLabel} to read the snap.`}
         </div>
       )}
     </div>

@@ -21,6 +21,10 @@ import {
   positionSettingsWindowForSource
 } from "../window";
 import { getMainLogger } from "../log";
+import {
+  LocalAgentGrantError,
+  LocalAgentGrantService
+} from "../local-agents/local-agent-grants";
 import { DesktopSettingsService } from "../settings/desktop-settings-service";
 import {
   DesktopSecretStore,
@@ -126,6 +130,22 @@ function toSettingsError(
   cause?: unknown
 ): PwrSnapError {
   return { kind: "settings", code, message, cause };
+}
+
+function ensureLocalAgentGrantService(): LocalAgentGrantService {
+  const { service, secrets } = ensureServices();
+  return new LocalAgentGrantService({ settings: service, secrets });
+}
+
+function toLocalAgentError(cause: unknown): PwrSnapError {
+  if (cause instanceof LocalAgentGrantError) {
+    return toSettingsError(cause.code, cause.message, cause);
+  }
+  return toSettingsError(
+    "local_agent_failed",
+    cause instanceof Error ? cause.message : String(cause),
+    cause
+  );
 }
 
 export function registerSettingsHandlers(): void {
@@ -290,6 +310,54 @@ export function registerSettingsHandlers(): void {
     }
     await broadcastSettingsChanged(service, secrets);
     return ok(status);
+  });
+
+  bus.register("localAgents:list", async () => {
+    const service = ensureLocalAgentGrantService();
+    try {
+      const grants = await service.list();
+      return ok({ grants });
+    } catch (cause) {
+      return err(toLocalAgentError(cause));
+    }
+  });
+
+  bus.register("localAgents:revoke", async (req) => {
+    if (typeof req.id !== "string" || req.id.trim().length === 0) {
+      return err({
+        kind: "validation",
+        code: "invalid_local_agent_id",
+        message: "localAgents:revoke: id must be a non-empty string"
+      });
+    }
+    const { service, secrets } = ensureServices();
+    const grantService = new LocalAgentGrantService({ settings: service, secrets });
+    try {
+      const grant = await grantService.revokeGrant(req.id);
+      await broadcastSettingsChanged(service, secrets);
+      return ok(grant);
+    } catch (cause) {
+      return err(toLocalAgentError(cause));
+    }
+  });
+
+  bus.register("localAgents:update", async (req) => {
+    if (typeof req.id !== "string" || req.id.trim().length === 0) {
+      return err({
+        kind: "validation",
+        code: "invalid_local_agent_id",
+        message: "localAgents:update: id must be a non-empty string"
+      });
+    }
+    const { service, secrets } = ensureServices();
+    const grantService = new LocalAgentGrantService({ settings: service, secrets });
+    try {
+      const grant = await grantService.updateGrant(req.id, req.patch);
+      await broadcastSettingsChanged(service, secrets);
+      return ok(grant);
+    } catch (cause) {
+      return err(toLocalAgentError(cause));
+    }
   });
 
 }

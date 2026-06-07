@@ -699,4 +699,57 @@ describe("settings:read + settings:write round-trip (integration)", () => {
 
     __setSettingsServicesForTests({ service: null, secrets: null });
   });
+
+  test("localAgents:list + revoke manage grants without exposing tokens", async () => {
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const dir = await mkdtemp(path.join(tmpdir(), "pwrsnap-local-agents-handlers-"));
+    const { DesktopSettingsService } = await import(
+      "../../settings/desktop-settings-service"
+    );
+    const { DesktopSecretStore } = await import(
+      "../../settings/desktop-secret-store"
+    );
+    const { LocalAgentGrantService } = await import(
+      "../../local-agents/local-agent-grants"
+    );
+    const { __setSettingsServicesForTests } = await import("../settings-handlers");
+    const service = new DesktopSettingsService({
+      filePath: path.join(dir, "settings.json")
+    });
+    const secrets = new DesktopSecretStore({
+      filePath: path.join(dir, "secrets.bin")
+    });
+    __setSettingsServicesForTests({ service, secrets });
+
+    const grantService = new LocalAgentGrantService({
+      settings: service,
+      secrets,
+      now: () => new Date("2026-06-07T12:00:00.000Z"),
+      makeId: () => "lag_handler",
+      makeToken: () => "pws_local_handler-token"
+    });
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read", "capture.composite.read"]
+    });
+
+    const list = await bus.dispatch("localAgents:list", {}, { principal: "ipc" });
+    expect(list.ok).toBe(true);
+    if (!list.ok) throw new Error("unreachable");
+    expect(list.value.grants).toHaveLength(1);
+    expect(JSON.stringify(list.value)).not.toContain("pws_local_handler-token");
+
+    const revoked = await bus.dispatch(
+      "localAgents:revoke",
+      { id: "lag_handler" },
+      { principal: "ipc" }
+    );
+    expect(revoked.ok).toBe(true);
+    if (!revoked.ok) throw new Error("unreachable");
+    expect(revoked.value.revokedAt).not.toBeNull();
+
+    __setSettingsServicesForTests({ service: null, secrets: null });
+  });
 });

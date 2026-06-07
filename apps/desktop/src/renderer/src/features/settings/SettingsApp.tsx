@@ -19,6 +19,7 @@ import { HotkeysPage } from "./pages/HotkeysPage";
 import { AboutPage } from "./pages/AboutPage";
 import { GeneralPage } from "./pages/GeneralPage";
 import { AIProvidersPage } from "./pages/AIProvidersPage";
+import { LocalAgentsPage } from "./pages/LocalAgentsPage";
 import { StoragePage } from "./pages/StoragePage";
 import { SystemPermissionsPage } from "./pages/SystemPermissionsPage";
 
@@ -36,6 +37,9 @@ export function SettingsApp(): ReactElement {
       break;
     case "ai":
       page = <AIProvidersPage />;
+      break;
+    case "local-agents":
+      page = <LocalAgentsPage />;
       break;
     case "about":
       page = <AboutPage />;

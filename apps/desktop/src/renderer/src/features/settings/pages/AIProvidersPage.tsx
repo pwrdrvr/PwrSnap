@@ -230,12 +230,6 @@ export function AIProvidersPage(): ReactElement {
     return id !== null && acpModelsLoadingIds.includes(id);
   };
 
-  // OCR rides the same enrichment turn, so its row mirrors the enrichment
-  // surface's model (the source of truth, replacing the legacy caption model).
-  const enrichmentModel = settings?.ai.defaults.enrichment.model;
-  const enrichmentModelLabel =
-    enrichmentModel !== undefined && enrichmentModel.length > 0 ? enrichmentModel : "Default";
-
   return (
     <>
       <div className="pss__main-hdr">
@@ -243,9 +237,10 @@ export function AIProvidersPage(): ReactElement {
           <div className="pss__main-eyebrow">Providers</div>
           <h1 className="pss__main-title">Backends &amp; credentials</h1>
           <p className="pss__main-sub">
-            PwrSnap delegates AI work to your local Codex install. Captions,
-            tag suggestions, and OCR all ride on a single Codex enrichment
-            turn per capture. Semantic search vectorization is planned.
+            PwrSnap delegates AI work to your local Codex install or an enabled
+            ACP agent. Captions, tag suggestions, and OCR all ride on a single
+            enrichment turn per capture. Semantic search vectorization is
+            planned.
           </p>
         </div>
       </div>
@@ -259,8 +254,8 @@ export function AIProvidersPage(): ReactElement {
         </p>
         <AiSurfaceDefaultControl
           surface="enrichment"
-          name="Capture captions & tag suggestions"
-          sub="Caption + tags shown in Library detail + Float-Over"
+          name="Capture captions, tags & OCR"
+          sub="Caption, tags + extracted text — one turn per capture, shown in Library detail + Float-Over"
           value={settings?.ai.defaults.enrichment ?? {}}
           models={codexModels?.models ?? []}
           modelsLoading={codexModelsLoading}
@@ -271,12 +266,6 @@ export function AIProvidersPage(): ReactElement {
           onChange={(p) => {
             void patch({ ai: { defaults: { enrichment: p } } });
           }}
-        />
-        <JobRoutingRow
-          name="OCR — extract text from screenshots"
-          sub="Rides with the captions request — same turn, same model"
-          provider="Codex"
-          model={enrichmentModelLabel}
         />
         <JobRoutingRow
           name="Semantic search vectorization"
@@ -318,7 +307,7 @@ export function AIProvidersPage(): ReactElement {
       <Card eyebrow="SAFETY" title="Capture enrichment">
         <Row
           label="AI enrichment"
-          sub="Controls Codex caption, OCR, filename, and tag generation for captures."
+          sub="Controls caption, OCR, filename, and tag generation for captures."
           tag={settings?.ai.enabled ? "enabled" : "off"}
         >
           <div className="pss__test">

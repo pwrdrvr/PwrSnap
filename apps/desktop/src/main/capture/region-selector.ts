@@ -877,6 +877,15 @@ function hideAllSelectors(): void {
  * window can return to its normal-bounds state for next time.
  */
 function enterMenuBarOverlayMode(win: BrowserWindow): void {
+  if (process.platform === "win32") {
+    // Windows: the taskbar (Shell_TrayWnd) is itself topmost, so a plain
+    // always-on-top overlay renders BELOW it — the real taskbar shows through
+    // on top of the frozen screenshot (which already includes a taskbar →
+    // "two taskbars"). Native fullscreen spans the whole monitor including the
+    // taskbar, so the overlay covers it.
+    if (!win.isFullScreen()) win.setFullScreen(true);
+    return;
+  }
   if (process.platform !== "darwin") return;
   if (!win.isSimpleFullScreen()) {
     win.setSimpleFullScreen(true);
@@ -894,6 +903,10 @@ function enterMenuBarOverlayMode(win: BrowserWindow): void {
 }
 
 function leaveMenuBarOverlayMode(win: BrowserWindow): void {
+  if (process.platform === "win32") {
+    if (win.isFullScreen()) win.setFullScreen(false);
+    return;
+  }
   if (process.platform !== "darwin") return;
   if (win.isSimpleFullScreen()) {
     win.setSimpleFullScreen(false);
@@ -940,7 +953,11 @@ function createSelectorWindow(display: Display): BrowserWindow {
     movable: false,
     minimizable: false,
     maximizable: false,
-    fullscreenable: false,
+    // Windows needs native fullscreen (enterMenuBarOverlayMode) to draw OVER
+    // the taskbar — a topmost window the plain always-on-top overlay can't
+    // cover — so it must be fullscreenable there. macOS uses setSimpleFullScreen
+    // instead and keeps this false.
+    fullscreenable: process.platform === "win32",
     skipTaskbar: true,
     alwaysOnTop: true,
     hasShadow: false,

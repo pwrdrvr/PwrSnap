@@ -119,6 +119,42 @@ describe("AiSurfaceDefaultControl — job routing", () => {
     expect(onChange).toHaveBeenCalledWith({ provider: "", model: "" });
   });
 
+  test("does NOT keep a stored model that isn't valid for the provider (Sizzle bug)", async () => {
+    // Repro of the real saved state: sizzleChat = { model: "gemini-3-flash-preview" }
+    // with no provider → defaults to Codex. The Codex model picker must NOT
+    // keep the stale Gemini id selectable/selected — it shows Default until a
+    // real Codex model is chosen.
+    const codexModels = [
+      {
+        id: "gpt-5.5",
+        model: "gpt-5.5",
+        displayName: "GPT-5.5",
+        description: "",
+        hidden: false,
+        inputModalities: ["text", "image"] as Array<"text" | "image">,
+        defaultServiceTier: null,
+        isDefault: true
+      }
+    ];
+    const el = await renderSurfaceControl({
+      surface: "sizzleChat",
+      name: "Sizzle Reel chat",
+      sub: "",
+      value: { model: "gemini-3-flash-preview" }, // no provider → Codex
+      models: codexModels,
+      modelsLoading: false,
+      acpProviderOptions: [],
+      acpModelsLoading: false,
+      onChange: vi.fn()
+    });
+    const modelSelect = el.querySelector<HTMLSelectElement>(
+      '[aria-label="Sizzle Reel chat model"]'
+    );
+    expect(modelSelect).not.toBeNull();
+    const optionValues = Array.from(modelSelect!.options).map((o) => o.value);
+    expect(optionValues).not.toContain("gemini-3-flash-preview");
+    expect(modelSelect!.value).toBe(""); // Default, not the stale Gemini id
+  });
 });
 
 describe("buildAcpProviderOptions", () => {

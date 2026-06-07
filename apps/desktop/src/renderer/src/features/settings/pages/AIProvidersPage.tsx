@@ -1666,16 +1666,17 @@ export type AiSurfaceDefaultControlProps = {
   onChange: (patch: AiSurfaceDefaultPatch) => void;
 };
 
-/** Build the `<select>` model option list for a surface. Filters to
- *  non-hidden (and, for enrichment, image-capable) models, falling back
- *  to the static `CODEX_CAPTION_MODELS` when the live list is empty.
- *  Always includes the user's currently-pinned model even if it's no
- *  longer in the live list, so the select never silently drops a saved
- *  value. */
+/** Build the `<select>` model option list for the Codex backend. Filters to
+ *  non-hidden (and, for enrichment, image-capable) models, falling back to the
+ *  static `CODEX_CAPTION_MODELS` when the live list is empty.
+ *
+ *  Deliberately does NOT inject the user's stored model when it's absent from
+ *  the list: a stale id that isn't a real Codex model (e.g. a Gemini id left
+ *  behind after switching providers) must NOT stay selectable — the picker
+ *  shows Default instead, forcing a model that's actually valid for Codex. */
 function surfaceModelOptions(
   models: readonly CodexModelOption[],
-  imageOnly: boolean,
-  pinned: string | undefined
+  imageOnly: boolean
 ): CodexModelOption[] {
   const filtered = models.filter((m) => {
     if (m.hidden) return false;
@@ -1684,39 +1685,17 @@ function surfaceModelOptions(
       m.inputModalities.includes("text") && m.inputModalities.includes("image")
     );
   });
-  const base =
-    filtered.length > 0
-      ? filtered
-      : CODEX_CAPTION_MODELS.map((id) => ({
-          id,
-          model: id,
-          displayName: id,
-          description: "",
-          hidden: false,
-          inputModalities: ["text", "image"] as Array<"text" | "image">,
-          defaultServiceTier: null,
-          isDefault: id === DEFAULT_CODEX_CAPTION_MODEL
-        }));
-  if (
-    pinned !== undefined &&
-    pinned.length > 0 &&
-    !base.some((m) => m.id === pinned)
-  ) {
-    return [
-      {
-        id: pinned,
-        model: pinned,
-        displayName: pinned,
-        description: "",
-        hidden: false,
-        inputModalities: ["text", "image"],
-        defaultServiceTier: null,
-        isDefault: false
-      },
-      ...base
-    ];
-  }
-  return base;
+  if (filtered.length > 0) return filtered;
+  return CODEX_CAPTION_MODELS.map((id) => ({
+    id,
+    model: id,
+    displayName: id,
+    description: "",
+    hidden: false,
+    inputModalities: ["text", "image"] as Array<"text" | "image">,
+    defaultServiceTier: null,
+    isDefault: id === DEFAULT_CODEX_CAPTION_MODEL
+  }));
 }
 
 export function AiSurfaceDefaultControl({
@@ -1753,17 +1732,14 @@ export function AiSurfaceDefaultControl({
     isAcpProvider && (acpModelsLoading === true || acpModelOptions === undefined);
   const modelChoices: Array<{ id: string; label: string }> = isAcpProvider
     ? (acpModelOptions ?? []).map((m) => ({ id: m.id, label: m.label }))
-    : surfaceModelOptions(models, imageOnly === true, value.model).map((m) => ({
+    : surfaceModelOptions(models, imageOnly === true).map((m) => ({
         id: m.id,
         label: modelLabel(m)
       }));
-  // Keep a persisted model that isn't in the current backend's list visible —
-  // but ONLY for Codex. A Codex model id pinned before switching to an ACP
-  // agent is meaningless there, so an ACP provider just shows its own models
-  // (an unmatched stored value falls back to "Default").
-  if (!isAcpProvider && modelValue.length > 0 && !modelChoices.some((m) => m.id === modelValue)) {
-    modelChoices.unshift({ id: modelValue, label: modelValue });
-  }
+  // A stored model that isn't in the selected backend's list (e.g. a Gemini id
+  // left on a now-Codex surface) is NOT kept as a phantom option — the select
+  // falls back to "Default", forcing a model that's actually valid for the
+  // provider. Same rule for Codex and ACP.
   const modelInChoices = modelChoices.some((m) => m.id === modelValue);
   const selectModelValue = modelInChoices ? modelValue : "";
   // A persisted acp:<id> whose agent isn't currently in the enabled set

@@ -169,13 +169,21 @@ export function main(argv = process.argv.slice(2), inputEnv = process.env) {
     if (status !== 0) return status;
   }
 
-  const electronViteBin = resolve(desktopRoot, "node_modules/.bin/electron-vite");
-  if (!existsSync(electronViteBin)) {
-    console.error("[dev] electron-vite binary is missing; run `pnpm install`.");
+  // Run electron-vite's JS entry directly with node rather than the
+  // node_modules/.bin shim. The `.bin/electron-vite` entry is a platform-
+  // specific wrapper — a `.cmd` on Windows — which spawnSync can't execute
+  // without a shell (ENOENT). The JS bin is cross-platform and is exactly
+  // what that shim invokes (`node …/bin/electron-vite.js`).
+  const electronViteJs = resolve(
+    desktopRoot,
+    "node_modules/electron-vite/bin/electron-vite.js"
+  );
+  if (!existsSync(electronViteJs)) {
+    console.error("[dev] electron-vite is missing; run `pnpm install`.");
     return 1;
   }
 
-  return run(electronViteBin, ["dev", ...argv], env);
+  return run(node, [electronViteJs, "dev", ...argv], env);
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";

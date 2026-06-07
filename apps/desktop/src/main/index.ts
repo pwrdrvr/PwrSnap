@@ -82,6 +82,8 @@ import { getMainLogger, initializeMainLogger } from "./log";
 import { hydrateProcessEnvFromLoginShell } from "@pwrdrvr/agent-transport";
 import { toAgentKitLogger } from "./ai/agent-kit-bindings";
 import { closeDatabase, getDb, openDatabase } from "./persistence/db";
+import { LocalAgentMcpServer } from "./local-agents/mcp-server";
+import { DesktopSecretStore } from "./settings/desktop-secret-store";
 import {
   getCaptureById,
   insertCapture,
@@ -174,6 +176,7 @@ const isMac = process.platform === "darwin";
  */
 const isE2E = process.env.PWRSNAP_E2E === "1";
 let pasteFromClipboardMenuItem: Electron.MenuItem | null = null;
+let localAgentMcpServer: LocalAgentMcpServer | null = null;
 
 /** Reflects the most recently observed `general.developerMode` value
  *  so the menu can be re-installed on settings change without re-
@@ -1250,6 +1253,18 @@ export function bootstrapApp(): void {
       // No-op in development (skips gracefully).
       initAppUpdater();
     }
+    if (!isE2E && process.env.PWRSNAP_DISABLE_LOCAL_AGENT_MCP !== "1") {
+      const userData = app.getPath("userData");
+      localAgentMcpServer = new LocalAgentMcpServer({
+        settings: new DesktopSettingsService({
+          filePath: join(userData, "pwrsnap-settings.json")
+        }),
+        secrets: new DesktopSecretStore({
+          filePath: join(userData, "pwrsnap-secrets.bin")
+        })
+      });
+      await localAgentMcpServer.start();
+    }
     scheduleAssetFilenameMaintenance();
     scheduleAcpAgentWarmup();
 
@@ -1581,6 +1596,10 @@ export function bootstrapApp(): void {
     // Close every pooled ACP agent process (warmed at startup / acquired by a
     // chat surface). No-op when no agent was ever pooled.
     void closeAcpAgentPool().catch(() => undefined);
+    if (localAgentMcpServer !== null) {
+      void localAgentMcpServer.stop();
+      localAgentMcpServer = null;
+    }
     // Tear down the shared composite-thumbnail worker eagerly so an
     // in-flight encode (e.g. a deferred v1→v2 sweep still running) is
     // rejected and the worker terminated on our terms, rather than the

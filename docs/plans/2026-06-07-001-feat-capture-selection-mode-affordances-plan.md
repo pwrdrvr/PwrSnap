@@ -1,7 +1,7 @@
 ---
 title: "feat: Capture selection-mode affordances (crosshair, Esc step-back, drag-to-redraw)"
 type: feat
-status: active
+status: completed
 date: 2026-06-07
 target_repo: PwrSnap (this repo)
 ---

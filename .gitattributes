@@ -1,0 +1,32 @@
+# Normalize line endings to LF on every platform's checkout. Without this,
+# git's autocrlf injects CRLF on Windows working trees, which breaks tooling
+# that is CRLF-sensitive — notably the shebang line of imported `.mjs` build
+# scripts, which vitest/esbuild fail to parse with a trailing CR
+# ("SyntaxError: Invalid or unexpected token"). The repo is authored with LF;
+# this keeps it that way regardless of a contributor's `core.autocrlf`.
+* text=auto eol=lf
+
+# Windows batch files are only meaningful with CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets — never normalize or diff as text.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.webp  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.mp3   binary
+*.mp4   binary
+*.mov   binary
+*.node  binary
+*.pwrsnap binary

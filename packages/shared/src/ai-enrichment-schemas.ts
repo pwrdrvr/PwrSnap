@@ -100,9 +100,13 @@ export const EnrichmentResultSchema = z.object({
   title: z.preprocess((v) => clampString(v, 120), z.string().max(120).default("")),
   description: z.preprocess((v) => clampString(v, 2_000), z.string().max(2_000).default("")),
   filenameStem: z.preprocess((v) => clampString(v, 120), z.string().max(120).optional()),
+  // Sanity bounds only — NOT style enforcement. Anchors are unconsumed prompt
+  // scaffolding; the cap exists to reject a model dumping garbage (megabytes
+  // into one string, thousands of items), not to nitpick "5 vs 6". Generous
+  // limits mean the clamp practically never fires on real replies.
   textAnchors: z.preprocess(
-    (v) => clampStringArray(v, 5, 120),
-    z.array(z.string().min(1).max(120)).max(5).optional()
+    (v) => clampStringArray(v, 100, 1_000),
+    z.array(z.string().min(1).max(1_000)).max(100).optional()
   ),
   tags: z.preprocess(
     (v) => clampTags(v, 4),

@@ -26,12 +26,20 @@ describe("EnrichmentResultSchema", () => {
     expect(parsed.tags).toEqual([{ label: "ci", confidence: 0.8 }]);
   });
 
-  test("clamps an over-limit textAnchors array to the cap", () => {
+  test("accepts a generous number of text anchors (no nitpicking 5 vs 6)", () => {
     const parsed = EnrichmentResultSchema.parse({
       title: "x",
-      textAnchors: ["a", "b", "c", "d", "e", "f"]
+      textAnchors: ["a", "b", "c", "d", "e", "f", "g"]
     });
-    expect(parsed.textAnchors).toHaveLength(5);
+    expect(parsed.textAnchors).toHaveLength(7);
+  });
+
+  test("only clamps text anchors at the sanity ceiling (100)", () => {
+    const parsed = EnrichmentResultSchema.parse({
+      title: "x",
+      textAnchors: Array.from({ length: 150 }, (_, i) => `anchor-${i}`)
+    });
+    expect(parsed.textAnchors).toHaveLength(100);
   });
 
   test("clamps an over-length title rather than rejecting", () => {

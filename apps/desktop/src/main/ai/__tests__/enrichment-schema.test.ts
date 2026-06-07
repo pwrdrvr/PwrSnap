@@ -33,12 +33,12 @@ describe("capture enrichment schema", () => {
     const parsed = parseCaptureEnrichmentResponse(
       JSON.stringify({
         title: "Dashboard",
-        textAnchors: ["a", "b", "c", "d", "e", "f", "g"], // 7 → clamp to 5
+        textAnchors: ["a", "b", "c", "d", "e", "f", "g"], // 7 is fine — generous cap
         tags: [{ label: "ok", confidence: 0.9 }, { label: "" }, "bare-string"] // blank dropped, string coerced
       })
     );
     expect(parsed.title).toBe("Dashboard");
-    expect(parsed.textAnchors).toHaveLength(5);
+    expect(parsed.textAnchors).toHaveLength(7);
     expect(parsed.tags).toEqual([
       { label: "ok", confidence: 0.9 },
       { label: "bare-string", confidence: null }

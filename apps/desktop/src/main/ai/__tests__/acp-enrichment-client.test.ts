@@ -134,9 +134,10 @@ describe("parseEnrichmentReply", () => {
     expect(() => parseEnrichmentReply('{"textAnchors": [...], "title": "x"}')).toThrow();
   });
 
-  it("clamps an over-limit textAnchors array instead of rejecting (the Kimi case)", () => {
-    // Kimi returned valid JSON with 7 text anchors; the only error was the >5
-    // cap. The whole enrichment must survive — clamp, don't discard.
+  it("accepts an over-5 textAnchors array instead of rejecting (the Kimi case)", () => {
+    // Kimi returned valid JSON with 7 text anchors and was rejected by the old
+    // .max(5) cap, sinking an otherwise-perfect enrichment. The cap is now a
+    // generous sanity bound, so this just parses.
     const result = parseEnrichmentReply(
       JSON.stringify({
         title: "Settings",
@@ -145,7 +146,7 @@ describe("parseEnrichmentReply", () => {
       })
     );
     expect(result.title).toBe("Settings");
-    expect(result.textAnchors).toHaveLength(5);
+    expect(result.textAnchors).toHaveLength(7);
   });
 
   it("recovers the real answer past a reasoning model's scratch `{}` (the Kimi empty-retry case)", () => {

@@ -53,6 +53,14 @@ import {
 const HASH_PARAM_DISPLAY_ID = "displayId";
 const NUDGE_PX = 1;
 const NUDGE_PX_SHIFT = 10;
+// Escape de-dupe window. A single physical Esc can be delivered twice
+// near-simultaneously — once via the focused renderer keydown and once
+// via the forwarded globalShortcut IPC. handleEscape() ignores a second
+// Escape within this window so one press can't both step back AND
+// cancel. Comfortably longer than the IPC hop, far shorter than a
+// deliberate second press. Timer-only — NOT re-armed on mousemove (a
+// stray cursor move must not be able to defeat the de-dupe).
+const ESCAPE_DEDUPE_MS = 50;
 
 type SnapTarget =
   | { kind: "window"; entry: WindowSnapEntry }
@@ -153,9 +161,48 @@ export function RegionSelector() {
   const lastMouseRef = useRef<{ x: number; y: number } | null>(null);
   const shiftRef = useRef(false);
   const modeRef = useRef<SelectorMode>("auto");
+  // Cursor-tracking crosshair guide-lines (auto/region modes). Rendered
+  // once and repositioned by direct DOM writes from `onMouseMove` /
+  // the window-list cursor — never via React state, so they impose no
+  // re-render cost in `adjusting` (where onMouseMove early-returns).
+  // Visibility is gated entirely in CSS off body[data-interaction] +
+  // body[data-mode]; see region.css.
+  const hLineRef = useRef<HTMLDivElement | null>(null);
+  const vLineRef = useRef<HTMLDivElement | null>(null);
+  // Guards handleEscape against a double-delivered single Esc press
+  // (focused-renderer keydown + forwarded globalShortcut IPC). Armed on
+  // the first Escape, auto-disarmed after ESCAPE_DEDUPE_MS — long enough
+  // to swallow the near-simultaneous duplicate, far shorter than any
+  // deliberate second press. escapeTimerRef holds the disarm timer so it
+  // can be cleared on unmount / rescheduled.
+  const escapeGuardRef = useRef(false);
+  const escapeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True while an interior mousedown is staging a discard of the
+  // committed pick. The branch leaves rect + snapTarget untouched, so a
+  // click-without-drag "keep" just stays put (no re-derivation); a drag
+  // past threshold redraws. The flag only tells the mouseup which case
+  // it is — there is nothing to restore.
+  const discardingRef = useRef(false);
+
+  // Write the guide-line positions directly. `x` drives the vertical
+  // line's left; `y` drives the horizontal line's top. Reads only the
+  // (stable) ref objects, so it's safe to call from the once-registered
+  // global handlers without stale-closure risk.
+  function positionCrosshair(x: number, y: number): void {
+    const hl = hLineRef.current;
+    const vl = vLineRef.current;
+    if (hl !== null) hl.style.top = `${y}px`;
+    if (vl !== null) vl.style.left = `${x}px`;
+  }
 
   useLayoutEffect(() => {
     document.title = "PwrSnap Region Selector";
+    // Seed the crosshair at viewport center until the first cursor
+    // signal (mousemove or window-list snapshot) arrives, so it never
+    // paints at a stray 0,0 corner.
+    positionCrosshair(window.innerWidth / 2, window.innerHeight / 2);
+    // positionCrosshair only reads stable refs; safe to omit from deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   shiftRef.current = shiftHeld;
@@ -255,6 +302,7 @@ export function RegionSelector() {
           y: payload.cursor.y * scale
         };
         lastMouseRef.current = cursor;
+        positionCrosshair(cursor.x, cursor.y);
         const next = snapAt(cursor.x, cursor.y);
         setSnapTarget(next);
         setRect(rectForSnap(next));
@@ -377,13 +425,63 @@ export function RegionSelector() {
     setInteraction({ kind: "snap" });
     setSnapTarget({ kind: "display" });
     setRect(displaySnapRect());
+    // Committing can happen mid-staged-discard (Enter while pending);
+    // clear the dim + flag so they don't leak into the next show.
+    clearDiscardPending();
   }
 
-  function cancel(): void {
-    window.pwrsnapApi?.submitRegion({ ok: false });
+  // Reset the selector to live-snap mode WITHOUT submitting anything to
+  // main. This is the "step back" half of the Escape behavior — purely
+  // client-side, so it never triggers the main-side cancel choreography
+  // (float-over cancel → hideSelector → previous-app reactivation).
+  // Clear any staged discard-pending state (the ref + the CSS dim). Safe
+  // to call from any reset path; idempotent.
+  function clearDiscardPending(): void {
+    discardingRef.current = false;
+    document.body.dataset.discarding = "false";
+  }
+
+  function resetToSnap(): void {
     setInteraction({ kind: "snap" });
     setSnapTarget({ kind: "display" });
     setRect(displaySnapRect());
+    setShiftHeld(false);
+    setSpaceHeld(false);
+    // A reset can interrupt a staged discard (Esc held during pending);
+    // drop the dim + flag so they don't survive into the next gesture or
+    // the next show of this pre-warmed window.
+    clearDiscardPending();
+  }
+
+  function cancel(): void {
+    // The real exit: tell main to tear the selector down, then reset
+    // local state so a re-shown (pre-warmed) window starts clean.
+    window.pwrsnapApi?.submitRegion({ ok: false });
+    resetToSnap();
+  }
+
+  // Single source of Escape semantics, called by BOTH the direct
+  // keydown path and the forwarded-IPC path so they can't drift:
+  //   - committed pick (anything but snap) → step back to snap, no submit
+  //   - already in snap (nothing picked)   → exit (cancel → submit)
+  // The escapeGuard swallows a second Escape within ESCAPE_DEDUPE_MS so a
+  // single physical press delivered via both paths can't step-back-then-
+  // cancel. The window is far shorter than any deliberate second press,
+  // so "Esc, Esc to exit" still works; it is NOT re-armed on mousemove —
+  // a stray cursor move must not be able to defeat the de-dupe.
+  function handleEscape(): void {
+    if (escapeGuardRef.current) return;
+    escapeGuardRef.current = true;
+    if (escapeTimerRef.current !== null) clearTimeout(escapeTimerRef.current);
+    escapeTimerRef.current = setTimeout(() => {
+      escapeGuardRef.current = false;
+      escapeTimerRef.current = null;
+    }, ESCAPE_DEDUPE_MS);
+    if (interactionRef.current.kind !== "snap") {
+      resetToSnap();
+    } else {
+      cancel();
+    }
   }
 
   useEffect(() => {
@@ -396,6 +494,15 @@ export function RegionSelector() {
 
     function isInsideCurrentRect(clientX: number, clientY: number): boolean {
       return isPointInsideRect(rectRef.current, clientX, clientY);
+    }
+
+    // True when the mousedown landed on a border move-band (the thin
+    // inner-edge strips rendered while adjusting). Detected via the
+    // element's `data-move` attribute, mirroring the `data-handle`
+    // resize-handle pattern — so the 8 resize handles (z-index above
+    // the bands) naturally win where they overlap an edge band.
+    function isMoveBandTarget(target: EventTarget | null): boolean {
+      return target instanceof HTMLElement && target.dataset.move !== undefined;
     }
 
     function lastCursor(): { x: number; y: number } {
@@ -431,7 +538,7 @@ export function RegionSelector() {
       }
       if (event.key === "Escape") {
         event.preventDefault();
-        cancel();
+        handleEscape();
         return;
       }
       if (event.key === "Enter") {
@@ -538,11 +645,10 @@ export function RegionSelector() {
         return;
       }
 
-      // Adjusting → click inside (or Space held) = move.
-      if (
-        i.kind === "adjusting" &&
-        (spaceRef.current || isInsideCurrentRect(event.clientX, event.clientY))
-      ) {
+      // Adjusting → Space-held OR a border move-band = move. The
+      // border band is the discoverable mouse affordance (interior drag
+      // now redraws); Space+drag stays as the keyboard-modifier path.
+      if (i.kind === "adjusting" && (spaceRef.current || isMoveBandTarget(event.target))) {
         setInteraction({
           kind: "moving",
           startMouse: { x: event.clientX, y: event.clientY },
@@ -551,20 +657,32 @@ export function RegionSelector() {
         return;
       }
 
-      // Adjusting → click outside the rect: drop back to snap mode.
-      // The next mousemove will set up a fresh snap target.
-      if (i.kind === "adjusting") {
+      // Adjusting → interior mousedown NO LONGER moves the pick. It
+      // stages a discard: a drag past threshold free-draws a brand-new
+      // region (replace), a click-without-drag keeps the current
+      // selection. We leave rect + snapTarget untouched, so the keep
+      // case needs no restore — crucially NOT re-deriving via
+      // rectForSnap, which would blow a free-drawn rect up to the whole
+      // screen.
+      if (i.kind === "adjusting" && isInsideCurrentRect(event.clientX, event.clientY)) {
+        discardingRef.current = true;
+        document.body.dataset.discarding = "true";
+        // Fall through into pending below (snapAtPress carries the
+        // current snap for any non-keep accounting).
+      } else if (i.kind === "adjusting") {
+        // Adjusting → click OUTSIDE the rect: drop to the snap under
+        // the cursor (existing behavior). Not a discard-keep.
         const next = snapAt(event.clientX, event.clientY);
         setSnapTarget(next);
         setRect(rectForSnap(next));
-        // Fall through into pending so that this same click can
-        // either commit the new snap or start a free draw.
+        discardingRef.current = false;
+        // Fall through into pending.
       }
 
-      // From snap (or just-dropped-from-adjusting): start pending.
-      // We don't transition to drawing yet — we wait to see if the
-      // mouseup happens before DRAG_ENGAGE_PX of movement (= click
-      // confirms snap) or after (= free-draw).
+      // From snap (or just-dropped/discarded-from-adjusting): start
+      // pending. We don't transition to drawing yet — we wait to see if
+      // the mouseup happens before DRAG_ENGAGE_PX of movement (= click)
+      // or after (= free-draw).
       setInteraction({
         kind: "pending",
         startX: event.clientX,
@@ -575,6 +693,9 @@ export function RegionSelector() {
 
     function onMouseMove(event: MouseEvent): void {
       lastMouseRef.current = { x: event.clientX, y: event.clientY };
+      // Crosshair tracks the cursor in every state; CSS decides whether
+      // it paints (hidden during moving/resizing and in window mode).
+      positionCrosshair(event.clientX, event.clientY);
       const i = interactionRef.current;
       switch (i.kind) {
         case "snap": {
@@ -624,8 +745,13 @@ export function RegionSelector() {
           // picking a window, not a rect. Stay in pending; mouseup
           // will commit the window snap.
           if (modeRef.current === "window") return;
-          // Cross — start drawing. Override the snap rect with a
-          // free-draw rect anchored at the original mousedown.
+          // Cross — start drawing. A staged discard is now a committed
+          // redraw: clear the discard-pending dim so the fresh
+          // rubber-band draws at full strength.
+          document.body.dataset.discarding = "false";
+          discardingRef.current = false;
+          // Override the snap rect with a free-draw rect anchored at the
+          // original mousedown.
           setRect(
             rectFromTwoPoints(
               { x: i.startX, y: i.startY },
@@ -677,23 +803,36 @@ export function RegionSelector() {
 
     function onMouseUp(event: MouseEvent): void {
       const i = interactionRef.current;
+      // Clear the discard-pending dim on ANY mouseup — including when
+      // Esc/Enter already stepped the interaction back to snap/adjusting
+      // before the button was released (the early-return below would
+      // otherwise skip the clear and leave the rect dimmed).
+      document.body.dataset.discarding = "false";
       if (i.kind === "snap" || i.kind === "adjusting") return;
       event.preventDefault();
       switch (i.kind) {
         case "pending": {
-          // Click without drag → commit the snap target into
-          // adjusting. The user can refine with handles + arrow
-          // keys + ↵, or hit ↵ immediately to send.
+          // Click without drag → commit (or keep) the selection into
+          // adjusting. The user can refine with handles + arrow keys +
+          // ↵, or hit ↵ immediately to send.
           const snap = i.snapAtPress;
-          if (snap !== null) {
+          const wasDiscard = discardingRef.current;
+          discardingRef.current = false;
+          if (!wasDiscard && snap !== null) {
+            // Snap-mode / click-outside commit: bind to the snap target.
             setSnapTarget(snap);
             setRect(rectForSnap(snap));
           }
+          // Interior "keep" click (wasDiscard): rect + snapTarget were
+          // never changed since the press, so there is nothing to
+          // restore — fall straight through to adjusting. (This is why
+          // a free-drawn rect doesn't re-expand to the full display.)
           // Window mode: clicking on a window IS the commit. Skip
           // adjusting and submit immediately. We re-set rect
-          // synchronously off `snap` so commit() reads the
-          // window's bounds rather than whatever the previous
-          // adjustingrect was.
+          // synchronously off `snap` so commit() reads the window's
+          // bounds rather than whatever the previous adjusting rect was.
+          // (Window mode has no adjusting state, so wasDiscard is always
+          // false here.)
           if (modeRef.current === "window" && snap !== null && snap.kind === "window") {
             const r = rectForSnap(snap);
             rectRef.current = r;
@@ -746,7 +885,7 @@ export function RegionSelector() {
     // keyboard focus yet.
     const unsubKey = window.pwrsnapApi?.onSelectorKey((payload) => {
       if (payload.key === "Escape") {
-        cancel();
+        handleEscape();
       } else if (payload.key === "Enter") {
         commit();
       }
@@ -758,6 +897,7 @@ export function RegionSelector() {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
       unsubKey?.();
+      if (escapeTimerRef.current !== null) clearTimeout(escapeTimerRef.current);
     };
     // commit/cancel close over refs only; safe to leave deps empty.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -785,10 +925,6 @@ export function RegionSelector() {
             <span>
               <kbd>↵</kbd>commit
             </span>
-            <span className="region-hint-sep">·</span>
-            <span>
-              <kbd>esc</kbd>cancel
-            </span>
           </>
         );
       }
@@ -807,10 +943,6 @@ export function RegionSelector() {
             <span className="region-hint-sep">·</span>
             <span>
               <kbd>tab</kbd>next window
-            </span>
-            <span className="region-hint-sep">·</span>
-            <span>
-              <kbd>esc</kbd>cancel
             </span>
           </>
         );
@@ -858,11 +990,15 @@ export function RegionSelector() {
           </span>
           <span className="region-hint-sep">·</span>
           <span>
+            <kbd>drag</kbd>redraw
+          </span>
+          <span className="region-hint-sep">·</span>
+          <span>
             <kbd>arrows</kbd>nudge (<kbd>⇧</kbd>×10)
           </span>
           <span className="region-hint-sep">·</span>
           <span>
-            <kbd>space</kbd>+drag move
+            <kbd>border</kbd>move
           </span>
         </>
       );
@@ -876,6 +1012,12 @@ export function RegionSelector() {
 
   return (
     <div className="region-root">
+      {/* Cursor-tracking crosshair guide-lines. Positioned by direct
+          DOM writes (positionCrosshair); CSS gates visibility off
+          body[data-interaction] + body[data-mode]. pointer-events:none
+          so the window-level listeners still see every event. */}
+      <div ref={hLineRef} className="region-crosshair region-crosshair-h" data-testid="region-crosshair-h" />
+      <div ref={vLineRef} className="region-crosshair region-crosshair-v" data-testid="region-crosshair-v" />
       {/* Frozen-screen snapshot — full-window background.  The
           renderer is interacting with this image, not the live
           screen.  Drawn first so the dim mask + rect sit on top.
@@ -940,6 +1082,13 @@ export function RegionSelector() {
         {isAdjustable && (
           <>
             <div className="region-rect-interior" data-interior="true" />
+            {/* Border move-bands: dragging an edge moves the selection
+                (interior drag redraws instead). Resize handles sit on
+                top (z-index) and win where they overlap. */}
+            <div className="region-move-band top" data-move="top" />
+            <div className="region-move-band right" data-move="right" />
+            <div className="region-move-band bottom" data-move="bottom" />
+            <div className="region-move-band left" data-move="left" />
             {ALL_HANDLES.map((h) => (
               <span key={h} className={`region-handle ${h}`} data-handle={h} />
             ))}
@@ -1007,7 +1156,12 @@ export function RegionSelector() {
         {hint}
         <span className="region-hint-sep">·</span>
         <span>
-          <kbd>esc</kbd>cancel
+          {/* Single source of the Esc affordance, accurate in every
+              state: Esc exits only from snap ("cancel"); from any other
+              state (a committed pick, or a mid-gesture pending/drawing/
+              move/resize) it steps back to snap ("back"). */}
+          <kbd>esc</kbd>
+          {interaction.kind === "snap" ? "cancel" : "back"}
         </span>
       </div>
       <style>{`@keyframes ps-rec-pulse {

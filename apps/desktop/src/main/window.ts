@@ -539,8 +539,17 @@ export function createTrayWindow(): BrowserWindow {
   // `activateIgnoringOtherApps` call on `focus()` for panel
   // windows, so even calls inside our render path can't accidentally
   // re-activate the app.
+  // macOS: NSPanel (non-activating) + the popover vibrancy material draw the
+  // rounded surface. Windows has no NSPanel/vibrancy equivalent, so it gets a
+  // plain frameless, transparent, always-on-top window and the renderer paints
+  // the rounded popover surface itself. (Native window shadow doesn't apply to
+  // transparent Windows windows — acceptable for now.)
+  const macChrome =
+    process.platform === "darwin"
+      ? ({ type: "panel", vibrancy: "popover", visualEffectState: "active" } as const)
+      : ({ transparent: true } as const);
   const window = new BrowserWindow({
-    type: "panel",
+    ...macChrome,
     // Width must match TRAY_WIDTH in tray.ts. The renderer's
     // ResizeObserver only updates HEIGHT — width stays at whatever
     // the BrowserWindow was constructed with, so a stale value here
@@ -561,8 +570,6 @@ export function createTrayWindow(): BrowserWindow {
     alwaysOnTop: true,
     hasShadow: true,
     backgroundColor: "#00000000",
-    vibrancy: "popover",
-    visualEffectState: "active",
     webPreferences: themedWebPreferences()
   });
   // ⚠️  IMPORTANT — load-bearing for the renderer's resize-to-fit IPC
@@ -618,11 +625,20 @@ export function positionTrayWindow(window: BrowserWindow, trayBounds: Rectangle)
   // tray icons on right-side displays whose origin x is large.
   const display = screen.getDisplayMatching(trayBounds);
   const margin = 4;
+  const wa = display.workArea;
+  // Horizontally center on the tray icon on both platforms; the clamp below
+  // keeps it on-screen near the right edge where the Windows tray lives.
   const x = Math.round(trayBounds.x + trayBounds.width / 2 - winBounds.width / 2);
-  const y = Math.round(trayBounds.y + trayBounds.height + margin);
+  // Vertical anchor differs: macOS's menubar is at the top, so the popover
+  // drops straight down from the icon. The Windows/Linux system tray sits at
+  // the bottom-right, so the popover rises ABOVE the taskbar (the work area
+  // already excludes it).
+  const y =
+    process.platform === "darwin"
+      ? Math.round(trayBounds.y + trayBounds.height + margin)
+      : wa.y + wa.height - winBounds.height - margin;
   // Clamp inside the work area so the popover never spills off-screen on
   // narrow displays or with the tray icon near the right edge.
-  const wa = display.workArea;
   const clampedX = Math.min(Math.max(x, wa.x + margin), wa.x + wa.width - winBounds.width - margin);
   const clampedY = Math.min(Math.max(y, wa.y + margin), wa.y + wa.height - winBounds.height - margin);
   window.setPosition(clampedX, clampedY, false);
@@ -639,9 +655,10 @@ export function createFloatOverWindow(): BrowserWindow {
   // moveTop() calls to activate PwrSnap and trigger a focus cascade
   // back to the Library window. The non-activating panel guarantees
   // the app stays in the background regardless of what we call on
-  // this window.
+  // this window. macOS-only; Windows/Linux use transparent + alwaysOnTop
+  // + showInactive() (the latter in float-over.ts).
   const window = new BrowserWindow({
-    type: "panel",
+    ...(process.platform === "darwin" ? { type: "panel" as const } : {}),
     width,
     height,
     show: false,
@@ -688,8 +705,14 @@ export function createFloatOverWindow(): BrowserWindow {
   // menus" — wrong feel for a persistent panel. The level switch is
   // load-bearing for the pre-show choreography (selector at
   // screen-saver covers floating; the reverse would not work).
-  window.setAlwaysOnTop(true, "floating");
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  if (process.platform === "darwin") {
+    window.setAlwaysOnTop(true, "floating");
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  } else {
+    // Windows/Linux have no NSWindowLevel tiers or Spaces — a plain
+    // always-on-top is the closest equivalent.
+    window.setAlwaysOnTop(true);
+  }
   window.setMenuBarVisibility(false);
   loadRenderer(window, rendererTarget("float-over"));
 

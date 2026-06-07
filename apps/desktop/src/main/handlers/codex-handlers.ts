@@ -31,7 +31,8 @@ import { AcpCaptureEnrichmentClient } from "../ai/acp-enrichment-client";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
 import {
   discoverLocalAcpAgentInstances,
-  strategyById
+  strategyById,
+  type AcpAgentStrategy
 } from "@pwrdrvr/agent-acp";
 import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import { estimateAiUsageCost } from "../ai/ai-usage-cost";
@@ -310,9 +311,22 @@ async function buildAcpEnrichmentClient(
     command: active.command,
     args: group.args,
     env: group.env,
-    strategy,
+    // Enrichment is a one-shot structured-JSON job — we want the agent's ANSWER,
+    // not its chain-of-thought. With surfaceThoughts:true (Grok/Kimi/Gemini) the
+    // normalizer folds thought chunks into the final agent_message, so the
+    // model's reasoning ("The task is to analyze…") lands in rawText and buries
+    // or corrupts the JSON (Grok especially rambles + echoes the schema). Force
+    // thoughts off for enrichment so rawText is just the reply.
+    strategy: withThoughtsSuppressed(strategy),
     cwd
   });
+}
+
+/** Clone a strategy with `surfaceThoughts` forced off — used for one-shot
+ *  enrichment so the agent's reasoning isn't folded into the parsed reply.
+ *  Exported for testing. */
+export function withThoughtsSuppressed(strategy: AcpAgentStrategy): AcpAgentStrategy {
+  return { ...strategy, quirks: { ...strategy.quirks, surfaceThoughts: false } };
 }
 
 function triggerSourceOrDefault(

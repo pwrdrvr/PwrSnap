@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.0.0-beta.16 - 2026-06-07
+
+- Added capture selection-mode affordances, including a crosshair cursor,
+  Escape step-back behavior, and drag-to-redraw support.
+- Switched chat, enrichment, and Settings AI flows to consume
+  `@pwrdrvr/agent-kit`.
+- Improved Grok and ACP enrichment with cleaner JSON handling, correct model
+  reporting, and friendlier model names.
+- Fixed Codex discovery path display and auxiliary-window placement on the
+  source display.
+- Prevented Sizzle narration truncation.
+- Improved Windows portability for build, typecheck, and unit-test paths.
+- Updated Electron, Playwright, and electron-log dependencies.
+
 ## v1.0.0-beta.15 - 2026-06-04
 
 - Trimmed and fully wired the Settings surface for the release.

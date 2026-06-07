@@ -125,9 +125,7 @@ describe("AiSurfaceDefaultControl — job routing", () => {
       surface: "enrichment",
       name: "Enrichment",
       sub: "",
-      // Stale Codex id lingering under an ACP provider: shows as Default, no
-      // forced write (Option B — keep Default, annotated).
-      value: { provider: "acp:kimi", model: "gpt-5.4-mini" },
+      value: { provider: "acp:kimi" }, // on Default already
       models: [],
       modelsLoading: false,
       acpProviderOptions: [{ value: "acp:kimi", label: "Kimi Code CLI" }],
@@ -138,10 +136,9 @@ describe("AiSurfaceDefaultControl — job routing", () => {
       acpModelsLoading: false,
       onChange
     });
-    // No auto-persist — the stale model just displays as Default.
-    expect(onChange).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled(); // nothing to normalize
     const modelSelect = el.querySelector<HTMLSelectElement>('[aria-label="Enrichment model"]');
-    expect(modelSelect!.value).toBe(""); // Default (stale id not selectable)
+    expect(modelSelect!.value).toBe("");
     const options = Array.from(modelSelect!.options).map((o) => ({
       value: o.value,
       text: o.textContent
@@ -152,6 +149,42 @@ describe("AiSurfaceDefaultControl — job routing", () => {
       { value: "kimi-k1.5", text: "kimi-k1.5" },
       { value: "kimi-k2", text: "kimi-k2 (default)" }
     ]);
+  });
+
+  test("normalizes a stale cross-provider model to Default once the ACP list loads", async () => {
+    // The live Grok bug: provider switched to an ACP agent but a Codex model id
+    // ("gpt-5.4-mini") lingered → it was sent to the agent every run. Once the
+    // agent's real model list is known, the invalid id resets to Default ("").
+    const onChange = vi.fn();
+    await renderSurfaceControl({
+      surface: "enrichment",
+      name: "Enrichment",
+      sub: "",
+      value: { provider: "acp:grok", model: "gpt-5.4-mini" },
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [{ value: "acp:grok", label: "Grok" }],
+      acpModelOptions: [{ id: "grok-4", label: "grok-4", isDefault: true }],
+      acpModelsLoading: false,
+      onChange
+    });
+    expect(onChange).toHaveBeenCalledWith({ model: "" });
+  });
+
+  test("does NOT normalize while the ACP model list is still loading", async () => {
+    const onChange = vi.fn();
+    await renderSurfaceControl({
+      surface: "enrichment",
+      name: "Enrichment",
+      sub: "",
+      value: { provider: "acp:grok", model: "gpt-5.4-mini" },
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [{ value: "acp:grok", label: "Grok" }],
+      acpModelsLoading: true, // list not yet known — can't judge validity
+      onChange
+    });
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   test("keeps a plain Default for an ACP agent that advertises no models", async () => {

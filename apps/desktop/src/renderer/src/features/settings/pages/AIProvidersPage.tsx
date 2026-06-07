@@ -1733,6 +1733,25 @@ export function AiSurfaceDefaultControl({
   // provider. Same rule for Codex and ACP.
   const modelInChoices = modelChoices.some((m) => m.id === modelValue);
   const selectModelValue = modelInChoices ? modelValue : "";
+  // Normalize a stale/invalid ACP model to Default ("") once the agent's list
+  // has loaded. Without this, a Codex id left under an ACP provider (e.g.
+  // "gpt-5.4-mini" after switching to Grok) lingers in settings: it DISPLAYS as
+  // Default but is still sent to the agent every run (the kit logs "model
+  // selection not applied" and falls back), and the run record's model is
+  // wrong. Reset to "" so stored == displayed == what runs. Only when the list
+  // is non-empty (so we can actually judge validity) and the value is a real
+  // non-empty id that isn't in it. Codex isn't normalized — its picker already
+  // shows Default for an unknown id and the App Server resolves server-side.
+  const staleAcpModel =
+    isAcpProvider && !modelLoading && modelChoices.length > 0 && modelValue !== "" && !modelInChoices;
+  const normalizedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!staleAcpModel) return;
+    const key = `${chatProviderValue}|${modelValue}`;
+    if (normalizedKeyRef.current === key) return;
+    normalizedKeyRef.current = key;
+    onChange({ model: "" });
+  }, [staleAcpModel, chatProviderValue, modelValue, onChange]);
   // "Default" means "let the backend pick its own default model" (runtime sends
   // null). For ACP we now know the agent's actual default, so annotate the
   // entry — "Default (kimi-k2)" — instead of leaving it a mystery. Codex keeps

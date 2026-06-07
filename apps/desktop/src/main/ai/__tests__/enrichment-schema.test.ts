@@ -3,6 +3,7 @@ import {
   CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
   CAPTURE_ENRICHMENT_SCHEMA,
   buildCaptureEnrichmentPrompt,
+  isEnrichmentResultEmpty,
   parseCaptureEnrichmentResponse
 } from "../enrichment-schema";
 
@@ -108,6 +109,40 @@ describe("capture enrichment schema", () => {
     });
 
     expect(prompt).not.toContain("Tags this user already uses");
+  });
+
+  it("treats a blank `{}` reply as an empty enrichment", () => {
+    // The result schema defaults the string fields to "" and arrays to [], so an
+    // agent that returns `{}` (seen with Grok) parses "successfully" into an
+    // all-empty result. That must be flagged as empty so the handler fails the
+    // run instead of persisting a silent-blank "completed".
+    const blank = parseCaptureEnrichmentResponse("{}");
+    expect(isEnrichmentResultEmpty(blank)).toBe(true);
+  });
+
+  it("treats whitespace-only values as empty", () => {
+    const parsed = parseCaptureEnrichmentResponse(
+      JSON.stringify({ ocrText: "  ", title: "\n", description: " ", filenameStem: "", tags: [] })
+    );
+    expect(isEnrichmentResultEmpty(parsed)).toBe(true);
+  });
+
+  it("is not empty when any usable field is present", () => {
+    expect(
+      isEnrichmentResultEmpty(parseCaptureEnrichmentResponse(JSON.stringify({ title: "A login screen" })))
+    ).toBe(false);
+    expect(
+      isEnrichmentResultEmpty(
+        parseCaptureEnrichmentResponse(
+          JSON.stringify({ tags: [{ label: "receipt", confidence: 0.9 }] })
+        )
+      )
+    ).toBe(false);
+    expect(
+      isEnrichmentResultEmpty(
+        parseCaptureEnrichmentResponse(JSON.stringify({ filenameStem: "login-screen" }))
+      )
+    ).toBe(false);
   });
 
   it("includes sampled video frame facts in the variable user prompt", () => {

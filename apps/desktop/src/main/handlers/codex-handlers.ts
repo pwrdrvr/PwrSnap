@@ -42,7 +42,10 @@ import {
   type PreparedEnrichmentImage,
   type PreparedEnrichmentVideoFrames
 } from "../ai/enrichment-image";
-import type { CaptureEnrichmentPromptMetadata } from "../ai/enrichment-schema";
+import {
+  isEnrichmentResultEmpty,
+  type CaptureEnrichmentPromptMetadata
+} from "../ai/enrichment-schema";
 import { bus, type CommandContext } from "../command-bus";
 import { getMainLogger } from "../log";
 import {
@@ -903,6 +906,19 @@ async function runCaptureEnrichment(params: {
       effort: params.effort,
       abortSignal: abortController.signal
     });
+
+    // A "completed but blank" reply is a failure, not a success. The result
+    // schema defaults title/description/ocrText to "", so an agent that returns
+    // {} or empty values (seen with Grok) would otherwise persist an all-empty
+    // enrichment + mark the run completed → the toast/rail show nothing with no
+    // way to retry. Treat all-empty as a failure so the UI surfaces "could not
+    // read … Regenerate".
+    if (isEnrichmentResultEmpty(response.result)) {
+      throw new Error(
+        `${response.modelProvider ?? provider} returned an empty enrichment ` +
+          "(no title, description, tags, or text)"
+      );
+    }
 
     const latencyMs = Math.round(performance.now() - startedAt);
     // Read settings at completion (not at enqueue) so the auto-accept

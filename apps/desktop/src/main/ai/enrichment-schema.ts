@@ -88,6 +88,21 @@ export const CAPTURE_ENRICHMENT_EXAMPLE: JsonValue = {
   ]
 };
 
+/** True when an enrichment produced nothing usable — no title, description,
+ *  OCR text, tags, or filename stem. The result schema defaults the string
+ *  fields to "", so a `{}` / blank agent reply (seen with Grok) parses
+ *  "successfully" into an all-empty result. Callers treat this as a failure
+ *  rather than persisting a silent-blank "completed" run. */
+export function isEnrichmentResultEmpty(result: EnrichmentResult): boolean {
+  return (
+    (result.title ?? "").trim() === "" &&
+    (result.description ?? "").trim() === "" &&
+    (result.ocrText ?? "").trim() === "" &&
+    (result.tags?.length ?? 0) === 0 &&
+    (result.filenameStem ?? "").trim() === ""
+  );
+}
+
 export const CAPTURE_ENRICHMENT_PROMPT_FILE = new URL(
   "./prompts/capture-enrichment.md",
   import.meta.url

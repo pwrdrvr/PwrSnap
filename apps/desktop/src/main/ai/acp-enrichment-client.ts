@@ -131,9 +131,11 @@ export function buildAcpEnrichmentPrompt(request: CaptureEnrichmentRequest): str
 
 export class AcpCaptureEnrichmentClient {
   private readonly client: AcpOneShotClient;
+  private readonly logger: ReturnType<typeof toAgentKitLogger>;
 
   constructor(options: AcpCaptureEnrichmentClientOptions) {
     const logger = toAgentKitLogger("pwrsnap:acp-enrichment");
+    this.logger = logger;
     const transport = new AcpConnection({
       command: options.command,
       args: [...options.args],
@@ -162,6 +164,14 @@ export class AcpCaptureEnrichmentClient {
       model: request.model ?? null,
       effort: request.effort ?? "low",
       ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {})
+    });
+    // Log the raw reply (bounded) — a "completed but blank" enrichment (some
+    // agents return {} or empty values) is otherwise undiagnosable, since only
+    // the parsed result is kept.
+    const raw = response.rawText ?? "";
+    this.logger.debug?.("acp enrichment raw response", {
+      chars: raw.length,
+      preview: raw.length > 600 ? `${raw.slice(0, 600)}…` : raw
     });
     return {
       // ACP agents (esp. "thinking" models like Gemini flash-preview) often

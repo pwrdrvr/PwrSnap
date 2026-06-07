@@ -51,6 +51,12 @@ import type {
   Overlay
 } from "@pwrsnap/shared";
 
+// These integration tests do real sharp rasterization (compose → PNG →
+// pixel assertions), which can exceed the 5s default on constrained CI
+// runners (the 2-core windows-latest in particular). Give them generous
+// headroom; the global 5s default stays in place for fast unit suites.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 // ---------------------------------------------------------------------
 // Mock the parts of electron we touch. We don't need a real BrowserWindow
 // or real clipboard — just enough surface for the handlers + renderer to

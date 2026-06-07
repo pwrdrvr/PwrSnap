@@ -1713,10 +1713,15 @@ export function AiSurfaceDefaultControl({
   void modelsLoading;
   const modelLoading =
     isAcpProvider && (acpModelsLoading === true || acpModelOptions === undefined);
-  // For ACP, mark the agent's protocol-confirmed default model (isDefault) with
+  // For ACP, mark the agent's PROTOCOL-CONFIRMED default model (isDefault) with
   // a "(default)" suffix so the user can see which one "Default" resolves to.
+  // Do NOT guess — if the agent didn't report a currentModelId (or the cached
+  // model list predates that capture), leave it undefined and show a plain
+  // "Default". Guessing the first-listed model actively misleads: Grok lists
+  // "Composer 2.5" first but its real default is "Grok Build", so a guess would
+  // claim Default → Composer while the run actually uses Grok Build.
   const acpDefaultModel = isAcpProvider
-    ? ((acpModelOptions ?? []).find((m) => m.isDefault) ?? acpModelOptions?.[0])
+    ? (acpModelOptions ?? []).find((m) => m.isDefault)
     : undefined;
   const modelChoices: Array<{ id: string; label: string }> = isAcpProvider
     ? (acpModelOptions ?? []).map((m) => ({

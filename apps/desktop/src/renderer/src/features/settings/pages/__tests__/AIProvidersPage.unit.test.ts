@@ -187,6 +187,31 @@ describe("AiSurfaceDefaultControl — job routing", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  test("does NOT guess a default when the agent reports no currentModelId (stale cache)", async () => {
+    // Grok lists Composer 2.5 first but its real default is Grok Build. When the
+    // cached list has no isDefault, the picker must show a PLAIN "Default" — not
+    // "Default (Composer 2.5)", which would mislabel the first-listed model.
+    const onChange = vi.fn();
+    const el = await renderSurfaceControl({
+      surface: "enrichment",
+      name: "Enrichment",
+      sub: "",
+      value: { provider: "acp:grok" },
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [{ value: "acp:grok", label: "Grok" }],
+      acpModelOptions: [
+        { id: "grok-composer-2.5-fast", label: "Composer 2.5" },
+        { id: "grok-build", label: "Grok Build" }
+      ], // no isDefault on either (cache predates the capture)
+      acpModelsLoading: false,
+      onChange
+    });
+    const modelSelect = el.querySelector<HTMLSelectElement>('[aria-label="Enrichment model"]');
+    const options = Array.from(modelSelect!.options).map((o) => o.textContent);
+    expect(options).toEqual(["Default", "Composer 2.5", "Grok Build"]); // no "(default)" guess
+  });
+
   test("keeps a plain Default for an ACP agent that advertises no models", async () => {
     const onChange = vi.fn();
     const el = await renderSurfaceControl({

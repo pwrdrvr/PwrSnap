@@ -23,7 +23,7 @@
 // If a future refactor drops any of these three calls, this test
 // catches it.
 
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 type WindowSpy = {
   setTitle: ReturnType<typeof vi.fn>;
@@ -147,9 +147,20 @@ vi.mock("../float-over", () => ({
   setFloatOverState: vi.fn()
 }));
 
+const realPlatform = process.platform;
+
 beforeEach(() => {
   constructed.length = 0;
   vi.resetModules();
+  // createSelectorWindow only sets the NSPanel (`type: 'panel'`) +
+  // setVisibleOnAllWorkspaces flags this test guards on darwin — they're
+  // macOS-only (Windows/Linux use a plain frameless overlay). Pin the
+  // platform so the macOS Splashtop guard is actually exercised.
+  Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+});
+
+afterEach(() => {
+  Object.defineProperty(process, "platform", { value: realPlatform, configurable: true });
 });
 
 describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () => {

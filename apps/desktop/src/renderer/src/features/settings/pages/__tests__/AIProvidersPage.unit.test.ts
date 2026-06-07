@@ -119,6 +119,94 @@ describe("AiSurfaceDefaultControl — job routing", () => {
     expect(onChange).toHaveBeenCalledWith({ provider: "", model: "" });
   });
 
+  test("forces a concrete ACP model: pre-picks + persists the first, no Default option", async () => {
+    // Repro of the live bug: provider switched to Kimi but a stale Codex model
+    // id lingered. ACP must run a concrete model, so the picker pre-selects +
+    // persists the agent's first advertised model and offers no "Default".
+    const onChange = vi.fn();
+    const el = await renderSurfaceControl({
+      surface: "enrichment",
+      name: "Enrichment",
+      sub: "",
+      value: { provider: "acp:kimi", model: "gpt-5.4-mini" }, // stale Codex id
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [{ value: "acp:kimi", label: "Kimi Code CLI" }],
+      acpModelOptions: [
+        { id: "kimi-k2", label: "kimi-k2" },
+        { id: "kimi-k1.5", label: "kimi-k1.5" }
+      ],
+      acpModelsLoading: false,
+      onChange
+    });
+    // Auto-persists the agent's first model, replacing the stale Codex id.
+    expect(onChange).toHaveBeenCalledWith({ model: "kimi-k2" });
+    const modelSelect = el.querySelector<HTMLSelectElement>('[aria-label="Enrichment model"]');
+    const optionValues = Array.from(modelSelect!.options).map((o) => o.value);
+    expect(optionValues).toEqual(["kimi-k2", "kimi-k1.5"]); // no "" Default entry
+    expect(modelSelect!.value).toBe("kimi-k2");
+  });
+
+  test("keeps Default for an ACP agent that advertises no models", async () => {
+    const onChange = vi.fn();
+    const el = await renderSurfaceControl({
+      surface: "libraryChat",
+      name: "Library chat",
+      sub: "",
+      value: { provider: "acp:grok" },
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [{ value: "acp:grok", label: "Grok" }],
+      acpModelOptions: [], // agent advertises none
+      acpModelsLoading: false,
+      onChange
+    });
+    const modelSelect = el.querySelector<HTMLSelectElement>('[aria-label="Library chat model"]');
+    const optionValues = Array.from(modelSelect!.options).map((o) => o.value);
+    expect(optionValues).toContain(""); // Default kept as the only choice
+    expect(onChange).not.toHaveBeenCalled(); // nothing to pre-pick
+  });
+
+  test("hides a text-only Codex model from the picker (Spark is image-incapable)", async () => {
+    const codexModels = [
+      {
+        id: "gpt-5.4-spark",
+        model: "gpt-5.4-spark",
+        displayName: "Codex Spark",
+        description: "",
+        hidden: false,
+        inputModalities: ["text"] as Array<"text" | "image">, // text-only
+        defaultServiceTier: null,
+        isDefault: false
+      },
+      {
+        id: "gpt-5.5",
+        model: "gpt-5.5",
+        displayName: "GPT-5.5",
+        description: "",
+        hidden: false,
+        inputModalities: ["text", "image"] as Array<"text" | "image">,
+        defaultServiceTier: null,
+        isDefault: true
+      }
+    ];
+    const el = await renderSurfaceControl({
+      surface: "libraryChat",
+      name: "Library chat",
+      sub: "",
+      value: {},
+      models: codexModels,
+      modelsLoading: false,
+      acpProviderOptions: [],
+      acpModelsLoading: false,
+      onChange: vi.fn()
+    });
+    const modelSelect = el.querySelector<HTMLSelectElement>('[aria-label="Library chat model"]');
+    const optionValues = Array.from(modelSelect!.options).map((o) => o.value);
+    expect(optionValues).not.toContain("gpt-5.4-spark"); // text-only → hidden everywhere
+    expect(optionValues).toContain("gpt-5.5");
+  });
+
   test("does NOT keep a stored model that isn't valid for the provider (Sizzle bug)", async () => {
     // Repro of the real saved state: sizzleChat = { model: "gemini-3-flash-preview" }
     // with no provider → defaults to Codex. The Codex model picker must NOT

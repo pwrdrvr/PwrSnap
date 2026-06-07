@@ -263,6 +263,15 @@ function enrichmentModelForSettings(settings: Settings): string {
   return settings.codex.captionModel || DEFAULT_CODEX_CAPTION_MODEL;
 }
 
+/** Backend-aware enrichment model selection. For an ACP agent, use the
+ *  per-surface model id verbatim ("" → the agent's own default) — the Codex
+ *  caption-model fallback is meaningless there and a Codex id would be wrong.
+ *  For Codex, keep the legacy fallback chain. Exported for testing. */
+export function enrichmentSelectedModel(settings: Settings, acpAgentId: string | undefined): string {
+  if (acpAgentId !== undefined) return settings.ai.defaults.enrichment.model ?? "";
+  return enrichmentModelForSettings(settings);
+}
+
 /** Resolve the enrichment reasoning effort from the per-surface AI
  *  default. Enrichment is high-volume + cost-sensitive, so the
  *  historical default is "low" — preserved when the user hasn't pinned
@@ -490,14 +499,17 @@ export function registerCodexHandlers(params?: {
       bucketBefore: budgetDecision.before,
       bucketAfter: budgetDecision.after
     });
+    // `ai.defaults.enrichment.provider` is a BACKEND selector ("" / codex →
+    // Codex; "acp:<id>" → an ACP agent). The selected model is resolved against
+    // that backend so an ACP run carries its OWN model id (or "" → agent
+    // default), not a Codex fallback. Computed here so the run record reports
+    // the model that will actually run.
+    const enrichmentAgent = enrichmentAcpAgentId(settings);
     const run = createAiRun({
       captureId: capture.id,
       codexCommand,
       triggerSource,
-      selectedModel: enrichmentModelForSettings(settings),
-      // `ai.defaults.enrichment.provider` is now a BACKEND selector ("" / codex
-      // → Codex; "acp:<id>" → an ACP agent, wired in a follow-up). Enrichment
-      // no longer carries a Codex modelProvider override, so none is passed.
+      selectedModel: enrichmentSelectedModel(settings, enrichmentAgent),
       request: {
         media: {
           maxLongEdgePx: 1024,
@@ -517,7 +529,6 @@ export function registerCodexHandlers(params?: {
     // `runCaptureEnrichment` would mean a Settings flip during a run
     // silently swaps providers and skews run-level metrics.
     const captionModel = settings.codex.captionModel;
-    const enrichmentAgent = enrichmentAcpAgentId(settings);
     // Source-path resolution (re-extracting source.png from the
     // bundle when Storage → Clear/Trim wiped the per-capture cache)
     // happens INSIDE runCaptureEnrichment so the extraction cost
@@ -543,7 +554,10 @@ export function registerCodexHandlers(params?: {
       command: codexCommand,
       env: codexEnvForProfile(settings.codex.profile),
       settingsReader,
-      selectedModel: run.selectedModel ?? DEFAULT_CODEX_CAPTION_MODEL,
+      // Don't apply the Codex caption-model default to an ACP run — "" means
+      // "use the agent's own default" and is resolved to null at send time.
+      selectedModel:
+        run.selectedModel ?? (enrichmentAgent !== undefined ? "" : DEFAULT_CODEX_CAPTION_MODEL),
       effort: enrichmentEffortForSettings(settings),
       // When enrichment is routed to an ACP agent (Gemini/Qwen), pass its id +
       // the settings snapshot so the run resolves + spawns that agent instead
@@ -898,8 +912,11 @@ async function runCaptureEnrichment(params: {
     const response = await client.enrichCapture({
       imagePaths,
       metadata,
-      // A Codex model id doesn't apply to an ACP agent — let the agent pick.
-      model: acpAgentId !== undefined ? null : params.selectedModel,
+      // Pass the resolved model for BOTH backends. For ACP this is the user's
+      // chosen agent model (the kit ignores an unknown id and falls back to the
+      // agent default, so a stale value can't break the run); "" → null → agent
+      // default. For Codex it's the caption model.
+      model: params.selectedModel.length > 0 ? params.selectedModel : null,
       ...(acpAgentId === undefined && params.selectedProvider !== undefined
         ? { modelProvider: params.selectedProvider }
         : {}),

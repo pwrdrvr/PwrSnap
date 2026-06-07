@@ -33,7 +33,9 @@ vi.mock("../persistence/db", () => ({
 }));
 
 const { bus } = await import("../command-bus");
-const { registerCodexHandlers } = await import("../handlers/codex-handlers");
+const { registerCodexHandlers, enrichmentSelectedModel } = await import(
+  "../handlers/codex-handlers"
+);
 const { getAiRun } = await import("../persistence/ai-runs-repo");
 const { getCaptureEnrichment } = await import("../persistence/enrichment-repo");
 const { defaultSettings } = await import("../settings/desktop-settings-service");
@@ -742,5 +744,48 @@ describe("Codex handlers", () => {
     if (!tooLong.ok) {
       expect(tooLong.error.code).toBe("invalid_request");
     }
+  });
+});
+
+describe("enrichmentSelectedModel", () => {
+  test("Codex: uses the surface model, then captionModel, then the hardcoded default", () => {
+    const withSurface = testSettings({
+      codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" },
+      ai: {
+        ...defaultSettings().ai,
+        defaults: { ...defaultSettings().ai.defaults, enrichment: { model: "gpt-5.4" } }
+      }
+    });
+    expect(enrichmentSelectedModel(withSurface, undefined)).toBe("gpt-5.4");
+
+    const captionFallback = testSettings({
+      codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" }
+    });
+    expect(enrichmentSelectedModel(captionFallback, undefined)).toBe("gpt-5.5");
+  });
+
+  test("ACP: uses the per-surface model verbatim, with NO Codex caption fallback", () => {
+    const withAcpModel = testSettings({
+      codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" },
+      ai: {
+        ...defaultSettings().ai,
+        defaults: {
+          ...defaultSettings().ai.defaults,
+          enrichment: { provider: "acp:kimi", model: "kimi-k2" }
+        }
+      }
+    });
+    expect(enrichmentSelectedModel(withAcpModel, "kimi")).toBe("kimi-k2");
+  });
+
+  test("ACP with no model returns '' (→ the agent's own default at send time), not a Codex id", () => {
+    const noModel = testSettings({
+      codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" },
+      ai: {
+        ...defaultSettings().ai,
+        defaults: { ...defaultSettings().ai.defaults, enrichment: { provider: "acp:grok" } }
+      }
+    });
+    expect(enrichmentSelectedModel(noModel, "grok")).toBe("");
   });
 });

@@ -259,7 +259,6 @@ export function AIProvidersPage(): ReactElement {
           value={settings?.ai.defaults.enrichment ?? {}}
           models={codexModels?.models ?? []}
           modelsLoading={codexModelsLoading}
-          imageOnly
           acpProviderOptions={acpChatProviderOptions}
           acpModelOptions={acpModelsForProvider(settings?.ai.defaults.enrichment.provider)}
           acpModelsLoading={acpModelsLoadingForProvider(settings?.ai.defaults.enrichment.provider)}
@@ -1640,9 +1639,6 @@ export type AiSurfaceDefaultControlProps = {
   value: AiSurfaceDefault;
   models: readonly CodexModelOption[];
   modelsLoading: boolean;
-  /** Enrichment feeds images to the model, so its picker is filtered to
-   *  text+image models. Chat surfaces show every non-hidden model. */
-  imageOnly?: boolean;
   /** Backend choices offered in the provider dropdown (enabled ACP agents).
    *  Always provided now — pass `[]` for a Codex-only surface. */
   acpProviderOptions: readonly AcpChatProviderOption[];
@@ -1656,23 +1652,22 @@ export type AiSurfaceDefaultControlProps = {
 };
 
 /** Build the `<select>` model option list for the Codex backend. Filters to
- *  non-hidden (and, for enrichment, image-capable) models, falling back to the
- *  static `CODEX_CAPTION_MODELS` when the live list is empty.
+ *  non-hidden, image-capable models, falling back to the static
+ *  `CODEX_CAPTION_MODELS` when the live list is empty.
+ *
+ *  EVERY PwrSnap AI surface feeds the model a capture image — enrichment/OCR
+ *  directly, and even "ask about this snap" / the Sizzle composer carry the
+ *  visual. A text-only model (e.g. Codex Spark) can't do any of it, so it's
+ *  hidden everywhere, not just on enrichment.
  *
  *  Deliberately does NOT inject the user's stored model when it's absent from
  *  the list: a stale id that isn't a real Codex model (e.g. a Gemini id left
  *  behind after switching providers) must NOT stay selectable — the picker
  *  shows Default instead, forcing a model that's actually valid for Codex. */
-function surfaceModelOptions(
-  models: readonly CodexModelOption[],
-  imageOnly: boolean
-): CodexModelOption[] {
+function surfaceModelOptions(models: readonly CodexModelOption[]): CodexModelOption[] {
   const filtered = models.filter((m) => {
     if (m.hidden) return false;
-    if (!imageOnly) return true;
-    return (
-      m.inputModalities.includes("text") && m.inputModalities.includes("image")
-    );
+    return m.inputModalities.includes("text") && m.inputModalities.includes("image");
   });
   if (filtered.length > 0) return filtered;
   return CODEX_CAPTION_MODELS.map((id) => ({
@@ -1694,7 +1689,6 @@ export function AiSurfaceDefaultControl({
   value,
   models,
   modelsLoading,
-  imageOnly,
   acpProviderOptions,
   acpModelOptions,
   acpModelsLoading,
@@ -1721,7 +1715,7 @@ export function AiSurfaceDefaultControl({
     isAcpProvider && (acpModelsLoading === true || acpModelOptions === undefined);
   const modelChoices: Array<{ id: string; label: string }> = isAcpProvider
     ? (acpModelOptions ?? []).map((m) => ({ id: m.id, label: m.label }))
-    : surfaceModelOptions(models, imageOnly === true).map((m) => ({
+    : surfaceModelOptions(models).map((m) => ({
         id: m.id,
         label: modelLabel(m)
       }));
@@ -1730,7 +1724,27 @@ export function AiSurfaceDefaultControl({
   // falls back to "Default", forcing a model that's actually valid for the
   // provider. Same rule for Codex and ACP.
   const modelInChoices = modelChoices.some((m) => m.id === modelValue);
-  const selectModelValue = modelInChoices ? modelValue : "";
+  // ACP agents must run a CONCRETE model — "Default" (let the agent pick) is
+  // hidden for them (see the Model <select> below). So when this surface's ACP
+  // model list has loaded and the stored model isn't one of them (unset, or a
+  // stale cross-provider id), pre-pick + PERSIST the agent's first advertised
+  // model. This both "defaults something for them" and keeps the persisted
+  // value honest with what the pill + runtime use. Codex keeps "Default".
+  const acpFallbackModel =
+    isAcpProvider && !modelLoading && !modelInChoices && modelChoices.length > 0
+      ? modelChoices[0]?.id
+      : undefined;
+  const defaultedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (acpFallbackModel === undefined) return;
+    const key = `${chatProviderValue}|${acpFallbackModel}`;
+    if (defaultedKeyRef.current === key) return;
+    defaultedKeyRef.current = key;
+    onChange({ model: acpFallbackModel });
+  }, [acpFallbackModel, chatProviderValue, onChange]);
+  // Until the persist round-trips, show the fallback as selected so the picker
+  // never flashes a blank/"Default" for an ACP surface.
+  const selectModelValue = modelInChoices ? modelValue : (acpFallbackModel ?? "");
   // A persisted acp:<id> whose agent isn't currently in the enabled set
   // (toggled off, or discovery still loading) — keep it as a visible option
   // so the select never silently drops the saved value.
@@ -1793,7 +1807,14 @@ export function AiSurfaceDefaultControl({
               <option value="__loading__">Loading…</option>
             ) : (
               <>
-                <option value="">Default</option>
+                {/* ACP agents must run a concrete model, so "Default" (let the
+                    agent pick) is offered ONLY for Codex. For ACP we pre-pick +
+                    persist the agent's first model above, so a real one is
+                    always selected. (If an ACP agent advertises NO models we
+                    fall back to showing Default so the picker isn't empty.) */}
+                {!isAcpProvider || modelChoices.length === 0 ? (
+                  <option value="">Default</option>
+                ) : null}
                 {modelChoices.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.label}

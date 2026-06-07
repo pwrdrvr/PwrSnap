@@ -188,7 +188,10 @@ async function waitForStableSize(
 }
 
 test.describe("tray popover sizing", () => {
-  test.skip(!isMac, "tray popover relies on macOS NSPanel semantics");
+  test.skip(
+    !isMac && process.platform !== "win32",
+    "tray popover sizing runs on macOS + Windows (Linux/xvfb excluded)"
+  );
 
   test("sizes to natural content height at default zoom", async () => {
     const app = await launchPwrSnap();

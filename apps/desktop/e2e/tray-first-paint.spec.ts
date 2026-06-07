@@ -188,7 +188,10 @@ test.describe("tray popover first-paint baseline", () => {
   // The bridge function exercises NSPanel-only window options. On
   // Linux the production tray itself is also skipped (no menubar
   // story), so the measurement isn't meaningful there.
-  test.skip(!isMac, "tray popover first-paint measurement is macOS-only");
+  test.skip(
+    !isMac && process.platform !== "win32",
+    "tray popover first-paint runs on macOS + Windows (Linux/xvfb excluded)"
+  );
 
   // Each scenario carries its expected popover height range so the
   // hard-floor assertion below can reject the constructor-frame

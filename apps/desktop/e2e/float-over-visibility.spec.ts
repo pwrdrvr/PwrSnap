@@ -222,7 +222,10 @@ async function seedCapture(
 }
 
 test.describe("float-over visibility", () => {
-  test.skip(!isMac, "float-over visibility relies on macOS BrowserWindow alwaysOnTop semantics");
+  test.skip(
+    !isMac && process.platform !== "win32",
+    "float-over visibility runs on macOS + Windows (Linux/xvfb excluded)"
+  );
 
   test("show-loaded reaches visible within 200ms and stays past 4s", async () => {
     const app = await launchPwrSnap();

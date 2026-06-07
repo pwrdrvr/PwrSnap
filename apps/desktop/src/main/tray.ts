@@ -106,13 +106,18 @@ export function hideTrayPopoverIfVisible(): void {
 }
 
 function resolveTrayIconPath(): string {
+  // macOS uses an alpha-only *template* PNG (the system tints it for
+  // dark/light/accent menubars). Windows/Linux have no template tinting, so
+  // they ship the colored brand icon (tangerine) instead.
+  const fileName =
+    process.platform === "darwin" ? "tray-icon-template.png" : "tray-icon.png";
   // Production: shipped under Contents/Resources/ via electron-builder.yml's
   // `extraResources`. nativeImage auto-loads the @2x/@3x siblings when
   // given the base path, as long as they're in the same directory.
-  const productionPath = join(process.resourcesPath, "tray-icon-template.png");
+  const productionPath = join(process.resourcesPath, fileName);
   if (existsSync(productionPath)) return productionPath;
   // Dev: served straight out of the workspace `build/` dir.
-  return join(app.getAppPath(), "build/tray-icon-template.png");
+  return join(app.getAppPath(), "build", fileName);
 }
 
 function ensureTrayWindow(): BrowserWindow {
@@ -232,7 +237,12 @@ export function installTray(): Tray {
   if (icon.isEmpty()) {
     log.warn("tray icon image is empty — falling back to setTitle text", { iconPath });
   }
-  icon.setTemplateImage(true);
+  // Template image is a macOS concept (alpha-only, system-tinted). On
+  // Windows/Linux the icon carries its own color — marking it as a template
+  // would blank it out.
+  if (process.platform === "darwin") {
+    icon.setTemplateImage(true);
+  }
 
   tray = new Tray(icon);
   tray.setToolTip("PwrSnap — ⌘⇧P to capture");

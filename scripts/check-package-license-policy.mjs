@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -42,7 +42,9 @@ export function checkPackageLicensePolicy(root = repoRoot) {
   const seen = new Set();
 
   for (const packagePath of walkPackageJsonFiles(root)) {
-    const rel = relative(root, packagePath);
+    // Canonicalize to forward slashes so the EXPECTED_LICENSES keys (authored
+    // with "/") match on Windows, where relative() yields "\"-separated paths.
+    const rel = relative(root, packagePath).split(sep).join("/");
     seen.add(rel);
     const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
     const expected = EXPECTED_LICENSES.get(rel);
@@ -83,6 +85,6 @@ function runCli() {
   console.log("package license policy check passed");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   runCli();
 }

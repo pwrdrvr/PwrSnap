@@ -58,7 +58,8 @@ const NUDGE_PX_SHIFT = 10;
 // via the forwarded globalShortcut IPC. handleEscape() ignores a second
 // Escape within this window so one press can't both step back AND
 // cancel. Comfortably longer than the IPC hop, far shorter than a
-// deliberate second press; also re-armed on the next mousemove.
+// deliberate second press. Timer-only — NOT re-armed on mousemove (a
+// stray cursor move must not be able to defeat the de-dupe).
 const ESCAPE_DEDUPE_MS = 50;
 
 type SnapTarget =
@@ -830,8 +831,8 @@ export function RegionSelector() {
           // adjusting and submit immediately. We re-set rect
           // synchronously off `snap` so commit() reads the window's
           // bounds rather than whatever the previous adjusting rect was.
-          // (Window mode has no adjusting state, so stash is always null
-          // here.)
+          // (Window mode has no adjusting state, so wasDiscard is always
+          // false here.)
           if (modeRef.current === "window" && snap !== null && snap.kind === "window") {
             const r = rectForSnap(snap);
             rectRef.current = r;

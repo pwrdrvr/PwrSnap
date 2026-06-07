@@ -1,7 +1,20 @@
+---
+title: "feat: ACP chat MCP tool bridge"
+status: complete
+date: 2026-06-05
+completed: 2026-06-05
+type: feat
+target_repo: PwrSnap (this repo)
+---
+
 # ACP Chat MCP Tool Bridge — Plan
 
-Status: **Shipped** (2026-06-05). Live-verified: Gemini spawns the PwrSnap MCP
-server and calls a tool end to end.
+Status: **Shipped** (2026-06-05), merged in **PR #195** (`0e48bcfb`).
+Live-verified: Gemini spawns the PwrSnap MCP server and calls a tool end to end
+(`draw_arrow(cap-77)` through the full chain). The one open verification is a
+signed/notarized packaged-build spawn check (see P4 below). Part of the broader
+agent-kit consumption tracked by
+`2026-06-02-001-feat-consume-agent-kit-plan.md` (now complete).
 
 ## Shipping status
 
@@ -64,6 +77,23 @@ derived/verified against the allowlist, not a rushed literal.
 - Tool calls trust the agent-supplied `capture_id` (same exposure as the Codex
   backend — the allowlist is the boundary). If we later want hard per-thread
   anchor scoping, enforce it in the RPC server.
+- Confirm the asar MCP-entry spawn works on a **signed/notarized** packaged
+  `.app` (P4 — couldn't be exercised from a dev checkout).
+
+### ACP enrichment polish follow-ups (from PR #213, non-blocking)
+
+These came out of the Grok/ACP enrichment polish (`906efe33`) and touch the same
+ACP surface, parked here for whenever they earn their keep:
+
+- **Gray out un-runnable models.** Remember which models an agent rejects on
+  `session/set_model` (`-32602` — e.g. Grok rejecting Cursor's "Composer 2.5")
+  and disable them in the Job-routing picker, so a model that won't run can't be
+  picked. Today the run honestly falls back to the agent default and the strip
+  shows a "you picked X — agent ran Y" note, but the picker still offers X.
+- **Eager-warm model-label caches.** The ACP (`acp-model-cache`) and Codex
+  (`codex-model-cache`) id→label caches warm when Settings → AI Providers lists
+  models; a run viewed before that shows the raw id, then the friendly name.
+  Could warm at startup.
 
 ---
 

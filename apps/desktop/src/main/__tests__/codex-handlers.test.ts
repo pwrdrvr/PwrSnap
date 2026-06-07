@@ -33,9 +33,12 @@ vi.mock("../persistence/db", () => ({
 }));
 
 const { bus } = await import("../command-bus");
-const { registerCodexHandlers, enrichmentSelectedModel, withThoughtsSuppressed } = await import(
-  "../handlers/codex-handlers"
-);
+const {
+  registerCodexHandlers,
+  enrichmentSelectedModel,
+  withThoughtsSuppressed,
+  withUsageModelLabels
+} = await import("../handlers/codex-handlers");
 const { strategyById } = await import("@pwrdrvr/agent-acp");
 const { getAiRun } = await import("../persistence/ai-runs-repo");
 const { getCaptureEnrichment } = await import("../persistence/enrichment-repo");
@@ -788,6 +791,43 @@ describe("enrichmentSelectedModel", () => {
       }
     });
     expect(enrichmentSelectedModel(noModel, "grok")).toBe("");
+  });
+});
+
+describe("withUsageModelLabels", () => {
+  const base = {
+    run: { selectedModel: "" },
+    model: null
+  } as unknown as import("@pwrsnap/shared").AiRunUsageDetail;
+  // grok-build → "Grok Build", everything else unknown.
+  const lookup = (id: string): string | undefined =>
+    id === "grok-build" ? "Grok Build" : id === "grok-composer-2.5-fast" ? "Composer 2.5" : undefined;
+
+  test("resolves the effective model's label; null when unknown / absent", () => {
+    expect(withUsageModelLabels({ ...base, model: "grok-build" }, lookup).modelLabel).toBe(
+      "Grok Build"
+    );
+    // Codex model not in the ACP caches → null (UI falls back to the raw id).
+    expect(withUsageModelLabels({ ...base, model: "gpt-5.4-mini" }, lookup).modelLabel).toBeNull();
+    // No effective model yet (in-flight) → null.
+    expect(withUsageModelLabels({ ...base, model: null }, lookup).modelLabel).toBeNull();
+  });
+
+  test("resolves the REQUESTED model's label, falling back to the raw id", () => {
+    const known = withUsageModelLabels(
+      { ...base, run: { selectedModel: "grok-composer-2.5-fast" } } as typeof base,
+      lookup
+    );
+    expect(known.selectedModelLabel).toBe("Composer 2.5");
+    // Unknown id (Codex / unprobed) falls back to the id itself, not null, so the
+    // strip can still show it while a run is in flight.
+    const unknown = withUsageModelLabels(
+      { ...base, run: { selectedModel: "gpt-5.4-mini" } } as typeof base,
+      lookup
+    );
+    expect(unknown.selectedModelLabel).toBe("gpt-5.4-mini");
+    // No requested model → null.
+    expect(withUsageModelLabels(base, lookup).selectedModelLabel).toBeNull();
   });
 });
 

@@ -1282,7 +1282,9 @@ describe("AiRunUsageStrip", () => {
   }
 
   test("prefers the friendly modelLabel over the raw id, with the full name on title", async () => {
-    const span = await renderStrip(aiUsageDetail({ model: "grok-build", modelLabel: "Grok Build" }));
+    const detail = aiUsageDetail({ model: "grok-build", modelLabel: "Grok Build" });
+    detail.run.selectedModel = "grok-build"; // honored → no override row
+    const span = await renderStrip(detail);
     expect(span.textContent).toBe("Grok Build");
     expect(span.getAttribute("title")).toBe("Grok Build");
   });
@@ -1298,28 +1300,41 @@ describe("AiRunUsageStrip", () => {
     expect(span.textContent).toBe("model unavailable");
   });
 
+  test("shows the REQUESTED model while a run is in flight (effective unknown)", async () => {
+    // Previously showed "model unavailable" mid-run; now falls back to the
+    // selected model's label so it reads e.g. "GPT-5.4-Mini".
+    const detail = aiUsageDetail({ model: null, modelLabel: null });
+    detail.selectedModelLabel = "GPT-5.4-Mini";
+    const span = await renderStrip(detail);
+    expect(span.textContent).toBe("GPT-5.4-Mini");
+  });
+
   test("surfaces an override note when the agent ran a different model than requested", async () => {
     const detail = aiUsageDetail({ model: "grok-build", modelLabel: "Grok Build" });
-    detail.requestedModelLabel = "Composer 2.5";
+    detail.run.selectedModel = "grok-composer-2.5-fast"; // differs from effective
+    detail.selectedModelLabel = "Composer 2.5";
     await renderStrip(detail);
     const override = stripContainer!.querySelector<HTMLElement>(".psl__ai-usage-override");
     expect(override).not.toBeNull();
+    expect(override!.getAttribute("role")).toBe("note"); // accessible
     expect(override!.textContent).toContain("Composer 2.5");
     expect(override!.textContent).toContain("Grok Build");
   });
 
   test("no override note when the requested model was honored", async () => {
     const detail = aiUsageDetail({ model: "grok-build", modelLabel: "Grok Build" });
-    detail.requestedModelLabel = null; // honored (or none requested)
+    detail.run.selectedModel = "grok-build"; // requested == effective
+    detail.selectedModelLabel = "Grok Build";
     await renderStrip(detail);
     expect(stripContainer!.querySelector(".psl__ai-usage-override")).toBeNull();
   });
 
   test("no override note while the run is in flight (effective model unknown)", async () => {
-    // The chicken-and-egg: a running enrichment has no model yet, so the note
-    // must NOT render "agent ran model unavailable".
+    // The chicken-and-egg: a running enrichment has no effective model yet, so
+    // the note must NOT render "agent ran model unavailable".
     const detail = aiUsageDetail({ model: null, modelLabel: null });
-    detail.requestedModelLabel = "Composer 2.5";
+    detail.run.selectedModel = "grok-composer-2.5-fast";
+    detail.selectedModelLabel = "Composer 2.5";
     await renderStrip(detail);
     expect(stripContainer!.querySelector(".psl__ai-usage-override")).toBeNull();
   });

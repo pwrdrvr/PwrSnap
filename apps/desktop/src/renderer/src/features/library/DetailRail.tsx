@@ -1298,17 +1298,22 @@ export function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): React
         ? `${media.sentWidthPx}×${media.sentHeightPx} ${media.format.toUpperCase()} · ${formatBytes(media.sentByteSize)}${media.quality === null ? "" : ` · q${media.quality}`}`
         : `${detail.mediaInputs.length} frames · ${media.sentWidthPx}×${media.sentHeightPx} ${media.format.toUpperCase()}`;
 
-  // Prefer the friendly label ("Grok Build") over the raw id ("grok-build");
-  // fall back to the id, then "model unavailable". Long names are clipped with
-  // CSS ellipsis and the full name shows on hover (title).
-  const modelName = detail.modelLabel ?? detail.model ?? "model unavailable";
-  // The agent overrode the user's model pick (e.g. Grok rejects set_model for a
-  // model it can't run, and falls back to its own default). requestedModelLabel
-  // is set only in that case — surface it so the user isn't confused why a
-  // different model ran. Guarded on a KNOWN effective model so an in-flight run
-  // never reads "agent ran model unavailable".
-  const requestedName =
-    detail.model !== null && detail.model.length > 0 ? detail.requestedModelLabel ?? null : null;
+  // Headline model name: prefer the effective model's friendly label / id; while
+  // a run is in flight (effective `model` not yet recorded) fall back to the
+  // REQUESTED model so it reads e.g. "GPT-5.4-Mini" instead of "model
+  // unavailable". Long names clip with a CSS ellipsis (full name on hover).
+  const requestedName = detail.selectedModelLabel ?? null;
+  const modelName = detail.modelLabel ?? detail.model ?? requestedName ?? "model unavailable";
+  // Override note: shown only once the effective model is KNOWN and it differs
+  // from the requested one (the agent ran a different model than picked — e.g.
+  // Grok rejecting set_model for Composer 2.5 and using its own default).
+  const effectiveKnown = detail.model !== null && detail.model.length > 0;
+  const selectedId = detail.run.selectedModel;
+  const overrode =
+    effectiveKnown &&
+    typeof selectedId === "string" &&
+    selectedId.length > 0 &&
+    selectedId !== detail.model;
 
   return (
     <div className="psl__ai-usage" aria-label="AI usage">
@@ -1322,12 +1327,12 @@ export function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): React
         <span>{tokens}</span>
         <span>{mediaText}</span>
       </div>
-      {requestedName !== null ? (
-        <div className="psl__ai-usage-row is-muted psl__ai-usage-override">
+      {overrode ? (
+        <div className="psl__ai-usage-row is-muted psl__ai-usage-override" role="note">
           <span
-            title={`The agent doesn't support switching to "${requestedName}", so it ran ${modelName} instead.`}
+            title={`The agent doesn't support switching to "${requestedName ?? selectedId}", so it ran ${modelName} instead.`}
           >
-            ⚠ you picked {requestedName} — agent ran {modelName}
+            ⚠ you picked {requestedName ?? selectedId} — agent ran {modelName}
           </span>
         </div>
       ) : null}

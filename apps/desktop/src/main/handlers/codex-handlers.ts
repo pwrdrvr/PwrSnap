@@ -16,6 +16,7 @@ import type {
   AiEnrichmentBudgetStatus,
   AiEnrichmentTriggerSource,
   AiRunSnapshot,
+  AiRunUsageDetail,
   CaptureEnrichment,
   CaptureRecord,
   PwrSnapError,
@@ -263,6 +264,30 @@ function enrichmentModelForSettings(settings: Settings): string {
   const surfaceModel = settings.ai.defaults.enrichment.model;
   if (surfaceModel !== undefined && surfaceModel.length > 0) return surfaceModel;
   return settings.codex.captionModel || DEFAULT_CODEX_CAPTION_MODEL;
+}
+
+/** Enrich a usage detail with friendly model labels for the UI. `lookupLabel`
+ *  maps a model id → display label (the ACP model caches; `undefined` for Codex
+ *  / unprobed agents). Resolves BOTH the effective `model` and the requested
+ *  `run.selectedModel`: the effective label drives the strip's headline name,
+ *  and the requested label is shown while a run is in flight (effective unknown)
+ *  AND in the "you picked X — agent ran Y" override note. selectedModelLabel
+ *  falls back to the raw id so a Codex model (no ACP label) still shows. Pure +
+ *  dependency-injected for testing. Exported for testing. */
+export function withUsageModelLabels(
+  detail: AiRunUsageDetail,
+  lookupLabel: (modelId: string) => string | undefined
+): AiRunUsageDetail {
+  const selected = detail.run.selectedModel;
+  return {
+    ...detail,
+    modelLabel:
+      typeof detail.model === "string" && detail.model.length > 0
+        ? lookupLabel(detail.model) ?? null
+        : null,
+    selectedModelLabel:
+      typeof selected === "string" && selected.length > 0 ? lookupLabel(selected) ?? selected : null
+  };
 }
 
 /** Backend-aware enrichment model selection. For an ACP agent, use the
@@ -767,27 +792,7 @@ export function registerCodexHandlers(params?: {
     refreshKnownAiUsagePrices();
     const detail = getAiRunUsageDetail(req.runId);
     if (detail === null) return ok(null);
-    // Resolve the model's friendly label from the ACP model caches (id → label,
-    // e.g. "grok-build" → "Grok Build") so the usage strip shows the friendly
-    // name. Null for Codex / unprobed agents → the UI falls back to the raw id.
-    // Also resolve the REQUESTED model's label when the agent overrode the pick
-    // (selectedModel ≠ effective model — e.g. Grok rejecting set_model), so the
-    // UI can say "you picked X, the agent ran Y".
-    const requested = detail.run.selectedModel;
-    // Only an override once we KNOW the effective model — otherwise an in-flight
-    // run (model still null) would read "you picked X — agent ran model
-    // unavailable". Requires both a requested and a known, different effective.
-    const overrode =
-      typeof requested === "string" &&
-      requested.length > 0 &&
-      typeof detail.model === "string" &&
-      detail.model.length > 0 &&
-      requested !== detail.model;
-    return ok({
-      ...detail,
-      modelLabel: detail.model !== null ? findAcpModelLabel(detail.model) ?? null : null,
-      requestedModelLabel: overrode ? findAcpModelLabel(requested) ?? requested : null
-    });
+    return ok(withUsageModelLabels(detail, findAcpModelLabel));
   });
 
   bus.register("codex:cancel", async (req) => {

@@ -277,7 +277,8 @@ export function registerAcpHandlers(params?: {
       const options: AcpAgentModelOption[] = models.map((m) => ({
         id: m.id,
         label: m.label ?? m.id,
-        ...(m.description !== undefined ? { description: m.description } : {})
+        ...(m.description !== undefined ? { description: m.description } : {}),
+        ...(m.isDefault === true ? { isDefault: true } : {})
       }));
       modelCache.set(agentId, options);
       // Persist so the next Settings open (even after a restart) is instant.

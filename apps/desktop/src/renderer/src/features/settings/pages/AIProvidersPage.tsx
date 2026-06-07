@@ -1713,8 +1713,16 @@ export function AiSurfaceDefaultControl({
   void modelsLoading;
   const modelLoading =
     isAcpProvider && (acpModelsLoading === true || acpModelOptions === undefined);
+  // For ACP, mark the agent's protocol-confirmed default model (isDefault) with
+  // a "(default)" suffix so the user can see which one "Default" resolves to.
+  const acpDefaultModel = isAcpProvider
+    ? ((acpModelOptions ?? []).find((m) => m.isDefault) ?? acpModelOptions?.[0])
+    : undefined;
   const modelChoices: Array<{ id: string; label: string }> = isAcpProvider
-    ? (acpModelOptions ?? []).map((m) => ({ id: m.id, label: m.label }))
+    ? (acpModelOptions ?? []).map((m) => ({
+        id: m.id,
+        label: m.isDefault === true ? `${m.label} (default)` : m.label
+      }))
     : surfaceModelOptions(models).map((m) => ({
         id: m.id,
         label: modelLabel(m)
@@ -1724,27 +1732,13 @@ export function AiSurfaceDefaultControl({
   // falls back to "Default", forcing a model that's actually valid for the
   // provider. Same rule for Codex and ACP.
   const modelInChoices = modelChoices.some((m) => m.id === modelValue);
-  // ACP agents must run a CONCRETE model — "Default" (let the agent pick) is
-  // hidden for them (see the Model <select> below). So when this surface's ACP
-  // model list has loaded and the stored model isn't one of them (unset, or a
-  // stale cross-provider id), pre-pick + PERSIST the agent's first advertised
-  // model. This both "defaults something for them" and keeps the persisted
-  // value honest with what the pill + runtime use. Codex keeps "Default".
-  const acpFallbackModel =
-    isAcpProvider && !modelLoading && !modelInChoices && modelChoices.length > 0
-      ? modelChoices[0]?.id
-      : undefined;
-  const defaultedKeyRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (acpFallbackModel === undefined) return;
-    const key = `${chatProviderValue}|${acpFallbackModel}`;
-    if (defaultedKeyRef.current === key) return;
-    defaultedKeyRef.current = key;
-    onChange({ model: acpFallbackModel });
-  }, [acpFallbackModel, chatProviderValue, onChange]);
-  // Until the persist round-trips, show the fallback as selected so the picker
-  // never flashes a blank/"Default" for an ACP surface.
-  const selectModelValue = modelInChoices ? modelValue : (acpFallbackModel ?? "");
+  const selectModelValue = modelInChoices ? modelValue : "";
+  // "Default" means "let the backend pick its own default model" (runtime sends
+  // null). For ACP we now know the agent's actual default, so annotate the
+  // entry — "Default (kimi-k2)" — instead of leaving it a mystery. Codex keeps
+  // a plain "Default" (the App Server resolves it server-side).
+  const defaultOptionLabel =
+    isAcpProvider && acpDefaultModel !== undefined ? `Default (${acpDefaultModel.label})` : "Default";
   // A persisted acp:<id> whose agent isn't currently in the enabled set
   // (toggled off, or discovery still loading) — keep it as a visible option
   // so the select never silently drops the saved value.
@@ -1807,14 +1801,11 @@ export function AiSurfaceDefaultControl({
               <option value="__loading__">Loading…</option>
             ) : (
               <>
-                {/* ACP agents must run a concrete model, so "Default" (let the
-                    agent pick) is offered ONLY for Codex. For ACP we pre-pick +
-                    persist the agent's first model above, so a real one is
-                    always selected. (If an ACP agent advertises NO models we
-                    fall back to showing Default so the picker isn't empty.) */}
-                {!isAcpProvider || modelChoices.length === 0 ? (
-                  <option value="">Default</option>
-                ) : null}
+                {/* "Default" = let the backend choose its own default model. For
+                    ACP it's annotated with the agent's actual default (e.g.
+                    "Default (kimi-k2)") so it's not a mystery; for Codex it's
+                    resolved server-side. */}
+                <option value="">{defaultOptionLabel}</option>
                 {modelChoices.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.label}

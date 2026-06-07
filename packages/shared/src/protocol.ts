@@ -1339,6 +1339,11 @@ export type AcpAgentModelOption = {
   id: string;
   label: string;
   description?: string;
+  /** True for the model the agent reports as its current/default
+   *  (`currentModelId`). At most one per list; absent when the agent
+   *  advertises models but no current id. The picker labels it "(default)"
+   *  and annotates the "Default" entry with it. */
+  isDefault?: boolean;
 };
 
 /** Result of `acp:models` — the model list a specific ACP agent advertises,

@@ -6,7 +6,13 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
   shell: { openExternal: vi.fn() } as unknown as typeof import("electron").shell
 }));
 
-import { buildAcpEnrichmentPrompt, extractJsonObject } from "../acp-enrichment-client";
+import {
+  buildAcpEnrichmentPrompt,
+  buildAcpEnrichmentRepairPrompt,
+  extractJsonObject,
+  parseEnrichmentReply,
+  repairJsonish
+} from "../acp-enrichment-client";
 import { CAPTURE_ENRICHMENT_EXAMPLE } from "../enrichment-schema";
 import type { CaptureEnrichmentRequest } from "../capture-enrichment-client";
 
@@ -57,6 +63,13 @@ describe("buildAcpEnrichmentPrompt", () => {
     expect(prompt).toMatch(/Do not call any tools/i);
   });
 
+  it("forbids placeholder ellipses, comments, and trailing commas (Grok `[...]` regression)", () => {
+    const prompt = buildAcpEnrichmentPrompt(request);
+    expect(prompt).toMatch(/\[\.\.\.\]/); // the forbidden example is named
+    expect(prompt).toMatch(/no comments, no trailing commas/i);
+    expect(prompt).toMatch(/placeholder/i);
+  });
+
   it("hands a CONCRETE example, not a raw JSON Schema (Grok schema-echo regression)", () => {
     // Grok echoed the schema's type names (`"ocrText": string`) when told to
     // conform to a JSON Schema. The prompt must instead carry a parseable
@@ -77,5 +90,67 @@ describe("buildAcpEnrichmentPrompt", () => {
     expect(Array.isArray(example.tags)).toBe(true);
     // And it's actually in the prompt.
     expect(prompt).toContain(String(example.title));
+  });
+});
+
+describe("repairJsonish", () => {
+  it("strips trailing commas before } and ]", () => {
+    expect(JSON.parse(repairJsonish('{"a":1,"b":[1,2,],}'))).toEqual({ a: 1, b: [1, 2] });
+  });
+
+  it("strips // line and /* block */ comments", () => {
+    const dirty = `{
+      // a comment
+      "title": "x", /* inline */ "tags": []
+    }`;
+    expect(JSON.parse(repairJsonish(dirty))).toEqual({ title: "x", tags: [] });
+  });
+
+  it("leaves comment-like and comma-like sequences inside strings untouched", () => {
+    const value = '{"description":"see https://x.y, end","title":"a, "}';
+    // No structural trailing comma / comment here — the string content must
+    // survive verbatim (the // in a URL, the comma before the closing quote).
+    expect(JSON.parse(repairJsonish(value))).toEqual({
+      description: "see https://x.y, end",
+      title: "a, "
+    });
+  });
+});
+
+describe("parseEnrichmentReply", () => {
+  it("parses a clean reply", () => {
+    expect(parseEnrichmentReply('{"title":"Login screen","tags":[]}').title).toBe("Login screen");
+  });
+
+  it("recovers a reply with comments + trailing commas (the Qwen case)", () => {
+    const raw = '```json\n{\n  "title": "Receipt", // headline\n  "tags": [],\n}\n```';
+    expect(parseEnrichmentReply(raw).title).toBe("Receipt");
+  });
+
+  it("still throws on a literal placeholder ellipsis (the Grok `[...]` case)", () => {
+    // repairJsonish deliberately does NOT guess at placeholders — this must
+    // surface as a parse error so enrichCapture retries with a corrective prompt.
+    expect(() => parseEnrichmentReply('{"textAnchors": [...], "title": "x"}')).toThrow();
+  });
+});
+
+describe("buildAcpEnrichmentRepairPrompt", () => {
+  it("quotes the bad reply + restates the full task", () => {
+    const prompt = buildAcpEnrichmentRepairPrompt(request, '{"textAnchors": [...]}', "the reply was not valid JSON");
+    expect(prompt).toMatch(/could not be used/i);
+    expect(prompt).toContain("the reply was not valid JSON");
+    expect(prompt).toContain("[...]"); // the offending reply is shown back
+    // The original task (metadata + contract) is restated for the fresh session.
+    expect(prompt).toContain("Figma");
+    expect(prompt).toMatch(/ONLY a single JSON object/i);
+  });
+
+  it("truncates an overlong bad reply", () => {
+    const huge = `{"x":"${"z".repeat(5000)}"}`;
+    const prompt = buildAcpEnrichmentRepairPrompt(request, huge, "empty");
+    expect(prompt).toContain("…");
+    // The full 5000-char run must NOT be echoed back verbatim.
+    expect(prompt).not.toContain("z".repeat(5000));
+    expect(prompt).toContain("z".repeat(100)); // a bounded prefix is present
   });
 });

@@ -82,23 +82,36 @@ export class PwrSnapToolRpcServer {
   /** Start listening on a UDS under `socketDir`. Idempotent. */
   async start(socketDir: string): Promise<void> {
     if (this.server !== undefined) return;
-    // Create the dir 0700 up front (mode in mkdir avoids the umask window
-    // between create and chmod) and re-assert + LOG on failure rather than
-    // silently leaving it world-traversable. The real authn is the token; this
-    // is defense-in-depth on top of the already user-scoped userData parent.
-    mkdirSync(socketDir, { recursive: true, mode: 0o700 });
-    try {
-      chmodSync(socketDir, 0o700);
-    } catch (cause) {
-      log.warn("could not chmod 0700 the MCP socket dir", {
-        socketDir,
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
+    // Transport address differs by platform. POSIX: a filesystem Unix domain
+    // socket under `socketDir`, hardened to the user (0700 dir / 0600 socket).
+    // Windows has no filesystem UDS — Node maps `net` IPC to a named pipe, so
+    // there's no directory or socket file to create, chmod, or unlink; the pipe
+    // name is unguessable and the per-run token is the real authn (same as the
+    // UDS). Returning this `\\.\pipe\…` path from register() lets the spawned
+    // MCP child `net.connect()` it transparently.
+    let socketPath: string;
+    if (process.platform === "win32") {
+      socketPath = `\\\\.\\pipe\\pwrsnap-mcp-rpc-${randomBytes(8).toString("hex")}`;
+    } else {
+      // Create the dir 0700 up front (mode in mkdir avoids the umask window
+      // between create and chmod) and re-assert + LOG on failure rather than
+      // silently leaving it world-traversable. The real authn is the token;
+      // this is defense-in-depth on top of the already user-scoped userData
+      // parent.
+      mkdirSync(socketDir, { recursive: true, mode: 0o700 });
+      try {
+        chmodSync(socketDir, 0o700);
+      } catch (cause) {
+        log.warn("could not chmod 0700 the MCP socket dir", {
+          socketDir,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
+      // Short, unique socket name. macOS caps UDS paths at ~104 bytes, so keep
+      // it tight and rely on the (already user-scoped) directory for isolation.
+      socketPath = join(socketDir, `t${randomBytes(6).toString("hex")}.sock`);
+      rmSync(socketPath, { force: true });
     }
-    // Short, unique socket name. macOS caps UDS paths at ~104 bytes, so keep it
-    // tight and rely on the (already user-scoped) directory for isolation.
-    const socketPath = join(socketDir, `t${randomBytes(6).toString("hex")}.sock`);
-    rmSync(socketPath, { force: true });
 
     const server = createServer((socket) => this.onConnection(socket));
     server.maxConnections = MAX_CONNECTIONS;
@@ -109,10 +122,12 @@ export class PwrSnapToolRpcServer {
         resolve();
       });
     });
-    try {
-      chmodSync(socketPath, 0o600);
-    } catch {
-      // best-effort
+    if (process.platform !== "win32") {
+      try {
+        chmodSync(socketPath, 0o600);
+      } catch {
+        // best-effort
+      }
     }
     this.server = server;
     this.socketPath = socketPath;
@@ -144,7 +159,11 @@ export class PwrSnapToolRpcServer {
     this.socketPath = undefined;
     if (server === undefined) return;
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    if (socketPath !== undefined) rmSync(socketPath, { force: true });
+    // POSIX leaves a socket file behind; a Windows named pipe is reclaimed when
+    // the server closes, so there's nothing to unlink there.
+    if (socketPath !== undefined && process.platform !== "win32") {
+      rmSync(socketPath, { force: true });
+    }
   }
 
   private onConnection(socket: Socket): void {

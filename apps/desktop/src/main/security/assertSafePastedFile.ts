@@ -25,7 +25,7 @@
 
 import { lstat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 
 /**
  * Path prefixes we refuse to read from, regardless of user intent.
@@ -113,7 +113,10 @@ export async function assertSafePastedFile(filePath: string): Promise<string> {
   // trigger TCC prompts on macOS).
   const prefixes = testPrefixOverride ?? PRIVILEGED_PREFIXES;
   for (const prefix of prefixes) {
-    if (abs === prefix || abs.startsWith(prefix + "/")) {
+    // `sep` (not a hardcoded "/") so the containment check works on Windows,
+    // where `resolve()` yields `\`-separated paths — otherwise the guard never
+    // matches and the per-user secret-dir protection is silently bypassed.
+    if (abs === prefix || abs.startsWith(prefix + sep)) {
       throw new UnsafePastedFileError(
         "privileged_path",
         "Invalid file",

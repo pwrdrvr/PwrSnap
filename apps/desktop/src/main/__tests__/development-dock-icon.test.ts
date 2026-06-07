@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
+
+const ICON_PATH = join("/test/app", "build", "icon.png");
 
 const mocks = vi.hoisted(() => {
   const icon = {
@@ -51,7 +54,7 @@ describe("installDevelopmentDockIcon", () => {
 
     installDevelopmentDockIcon({ platform: "darwin", nodeEnv: "development" });
 
-    expect(mocks.createFromPath).toHaveBeenCalledWith("/test/app/build/icon.png");
+    expect(mocks.createFromPath).toHaveBeenCalledWith(ICON_PATH);
     expect(mocks.dockSetIcon).toHaveBeenCalledWith(mocks.icon);
   });
 
@@ -80,7 +83,7 @@ describe("installDevelopmentDockIcon", () => {
     installDevelopmentDockIcon({ platform: "darwin", nodeEnv: "development" });
 
     expect(mocks.warn).toHaveBeenCalledWith("failed to load development dock icon", {
-      iconPath: "/test/app/build/icon.png"
+      iconPath: ICON_PATH
     });
     expect(mocks.dockSetIcon).not.toHaveBeenCalled();
   });

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { join } from "node:path";
 import type { SizzleProject, SizzleScene } from "@pwrsnap/shared";
 import type { ToolSpec } from "../define-tool";
 
@@ -211,7 +212,7 @@ describe("buildSizzleToolAllowlist", () => {
       model: "tts-1-hd",
       voice: "onyx",
       text: "Once it is installed",
-      audioPath: "/cache/tts/cached.mp3"
+      audioPath: join("/cache/tts", "cached.mp3")
     });
     if (r.ok && "data" in r) {
       const firstScene = (r.data as { scenes: Array<{ transcriptPhrases: unknown }> }).scenes[0]!;

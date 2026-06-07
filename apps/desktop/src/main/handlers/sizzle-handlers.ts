@@ -240,10 +240,11 @@ async function prepareSceneInput(args: {
       });
       const voiceoverDur = await probeDurationSec(tts.audioPath);
       audioPath = tts.audioPath;
-      durationSec =
-        scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
-          ? scene.durationOverrideSec
-          : Math.max(trimDur, voiceoverDur + 0.35);
+      durationSec = voiceoverDurationSec({
+        durationOverrideSec: scene.durationOverrideSec,
+        voiceoverDurationSec: voiceoverDur,
+        minVisualDurationSec: trimDur
+      });
       if (durationSec > trimDur + 0.05) {
         log.info("sizzle:render holding last frame for voiceover", {
           sceneIdx,
@@ -297,10 +298,11 @@ async function prepareSceneInput(args: {
       model: project.ttsModel
     });
     const measured = await probeDurationSec(tts.audioPath);
-    durationSec =
-      scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
-        ? scene.durationOverrideSec
-        : measured + 0.35;
+    durationSec = voiceoverDurationSec({
+      durationOverrideSec: scene.durationOverrideSec,
+      voiceoverDurationSec: measured,
+      minVisualDurationSec: 0
+    });
     audioPath = tts.audioPath;
   } else {
     // image + muted (or image + native that fell back to muted)
@@ -317,6 +319,22 @@ async function prepareSceneInput(args: {
     durationSec,
     transition: scene.transition
   };
+}
+
+function voiceoverDurationSec(args: {
+  durationOverrideSec: number | null;
+  voiceoverDurationSec: number;
+  minVisualDurationSec: number;
+}): number {
+  const overrideSec =
+    args.durationOverrideSec !== null && args.durationOverrideSec > 0
+      ? args.durationOverrideSec
+      : 0;
+  return Math.max(
+    args.minVisualDurationSec,
+    args.voiceoverDurationSec + 0.35,
+    overrideSec
+  );
 }
 
 export function registerSizzleHandlers(): void {

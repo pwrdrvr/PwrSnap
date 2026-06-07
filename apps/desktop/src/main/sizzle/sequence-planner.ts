@@ -162,10 +162,18 @@ export function planSequenceTimeline(
     throw new SequencePlannerError("not_sequence", "Scene is not a sequence scene");
   }
   const diagnostics: SequencePlannerDiagnostic[] = [];
-  const timelineDurationSec =
+  const overrideDurationSec =
     scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
       ? scene.durationOverrideSec
-      : speechTiming.durationSec;
+      : 0;
+  const timelineDurationSec = Math.max(overrideDurationSec, speechTiming.durationSec);
+  if (overrideDurationSec > 0 && overrideDurationSec < speechTiming.durationSec) {
+    diagnostics.push({
+      beatId: scene.beats[0]!.id,
+      code: "duration_override_short",
+      message: `Duration override was shorter than the ${roundSec(speechTiming.durationSec)}s narration; using the narration length`
+    });
+  }
   const durationSec = roundSec(Math.max(0.1, timelineDurationSec));
   const beats = normalizeSizzleSequenceBeatContinuity(scene.beats);
   const windows = resolveBeatWindows(

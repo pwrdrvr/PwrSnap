@@ -282,6 +282,60 @@ describe("planSequenceScene", () => {
     expect(plan.sceneInputs[1]!.audioStartSec).toBe(plan.beatPlans[1]!.startSec);
   });
 
+  it("does not let durationOverrideSec shorten measured sequence narration", () => {
+    const scene = sequenceScene({
+      durationOverrideSec: 16,
+      scriptLine:
+        "Our settings were not great. But the good news is, things are getting better for non-Codex agents.",
+      narration:
+        "Our settings were not great. But the good news is, things are getting better for non-Codex agents.",
+      beats: [
+        {
+          id: "bt_settings",
+          captureId: "cap_1",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "freeze-end"
+        },
+        {
+          id: "bt_good_news",
+          captureId: "cap_2",
+          timing: {
+            kind: "phrase",
+            phrase: "But the good news is",
+            occurrence: 1,
+            offsetSec: 0,
+            durationSec: null
+          },
+          mediaTrim: null,
+          transition: "crossfade",
+          videoFit: "freeze-end"
+        }
+      ]
+    });
+    const plan = planSequenceScene({
+      scene,
+      capturesById: new Map([
+        ["cap_1", capture("cap_1", "video", 5)],
+        ["cap_2", capture("cap_2", "video", 5)]
+      ]),
+      imagePathByCaptureId: new Map(),
+      narrationAudioPath: "/tmp/narration.mp3",
+      speechTiming: timing(scene.scriptLine, 23.4)
+    });
+
+    const finalBeat = plan.beatPlans[plan.beatPlans.length - 1]!;
+    const finalInput = plan.sceneInputs[plan.sceneInputs.length - 1]!;
+    expect(finalInput.audioStartSec).toBeDefined();
+    expect(finalInput.audioDurationSec).toBeDefined();
+    expect(finalBeat.endSec).toBeCloseTo(23.4, 3);
+    expect((finalInput.audioStartSec ?? 0) + (finalInput.audioDurationSec ?? 0)).toBeCloseTo(
+      23.4,
+      3
+    );
+  });
+
   it("chooses loop for a short video smart-fit beat", () => {
     const scene = sequenceScene({
       beats: [

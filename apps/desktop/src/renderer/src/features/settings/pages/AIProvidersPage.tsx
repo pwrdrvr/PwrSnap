@@ -179,9 +179,14 @@ export function AIProvidersPage(): ReactElement {
   const fetchAcpModels = useCallback(async (agentId: string, refresh = false): Promise<void> => {
     setAcpModelsLoadingIds((ids) => (ids.includes(agentId) ? ids : [...ids, agentId]));
     const result = await dispatch("acp:models", { agentId, refresh });
-    // Record a list either way — `[]` on failure so the picker resolves to
-    // "Default" instead of sticking on "Loading…".
-    setAcpModels((prev) => ({ ...prev, [agentId]: result.ok ? result.value.models : [] }));
+    setAcpModels((prev) => {
+      if (result.ok) return { ...prev, [agentId]: result.value.models };
+      // A FAILED probe must not blank a list we already have (e.g. a Refresh
+      // that errored shouldn't wipe the cached models). Only fall back to `[]`
+      // on the INITIAL load — so the picker resolves to "Default" instead of
+      // sticking on "Loading…" — never on a refresh of an existing list.
+      return agentId in prev ? prev : { ...prev, [agentId]: [] };
+    });
     setAcpModelsLoadingIds((ids) => ids.filter((id) => id !== agentId));
   }, []);
   const agentIdFromProvider = (provider: string | undefined): string | null =>
@@ -489,7 +494,15 @@ export function AIProvidersPage(): ReactElement {
         loading={acpDiscoveryLoading}
         error={acpDiscoveryError}
         onRefresh={() => {
+          // Re-discover installs AND re-probe the in-use agents' model lists, so
+          // a stale cache (e.g. one captured before the agent reported its
+          // default model) is refreshed and the "Default (…)" annotation +
+          // model options update. Previously this only ran acp:discover, so
+          // clicking Refresh here never updated models.
           void refreshAcpDiscovery();
+          for (const id of acpAgentIdsKey.length > 0 ? acpAgentIdsKey.split(",") : []) {
+            void fetchAcpModels(id, true);
+          }
         }}
         enabledAgentIds={settings?.ai.acp.enabledAgentIds ?? []}
         agents={settings?.ai.acp.agents}

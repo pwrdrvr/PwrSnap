@@ -31,6 +31,7 @@ import {
 import { AcpCaptureEnrichmentClient } from "../ai/acp-enrichment-client";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
 import { findAcpModelLabel } from "../ai/acp-model-cache";
+import { findCodexModelLabel, saveCodexModelLabels } from "../ai/codex-model-cache";
 import {
   discoverLocalAcpAgentInstances,
   strategyById,
@@ -753,6 +754,9 @@ export function registerCodexHandlers(params?: {
     );
     try {
       const models = await client.listModels({ includeHidden: parsed.value.includeHidden });
+      // Persist id → displayName so the usage strip can show a Codex run's
+      // friendly model name (the run record only stores the id).
+      saveCodexModelLabels(models);
       return ok({ models, selectedModel: settings.codex.captionModel });
     } catch (error) {
       return err({
@@ -792,7 +796,11 @@ export function registerCodexHandlers(params?: {
     refreshKnownAiUsagePrices();
     const detail = getAiRunUsageDetail(req.runId);
     if (detail === null) return ok(null);
-    return ok(withUsageModelLabels(detail, findAcpModelLabel));
+    // Resolve labels from the ACP caches first, then the Codex cache (ids are
+    // distinct across the two, so order is just preference).
+    return ok(
+      withUsageModelLabels(detail, (id) => findAcpModelLabel(id) ?? findCodexModelLabel(id))
+    );
   });
 
   bus.register("codex:cancel", async (req) => {

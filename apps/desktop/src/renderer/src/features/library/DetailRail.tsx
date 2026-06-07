@@ -1281,7 +1281,7 @@ function isAiRunUsageDetail(value: unknown): value is AiRunUsageDetail {
   return typeof value === "object" && value !== null && "cost" in value && "mediaInputs" in value;
 }
 
-function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): ReactElement {
+export function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): ReactElement {
   const cost =
     detail.cost.status === "available"
       ? formatCostMicros(detail.cost.totalCostMicros)

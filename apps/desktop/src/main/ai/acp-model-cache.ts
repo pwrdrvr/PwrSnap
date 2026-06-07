@@ -35,17 +35,29 @@ function cachePath(): string {
   return join(app.getPath("userData"), "acp-model-cache.json");
 }
 
+// In-memory memo of the parsed cache, keyed by path. The file is written ONLY by
+// this (main) process via saveAcpModelCacheEntry, which refreshes the memo, so a
+// memo hit is always current — avoiding a synchronous readFileSync + JSON.parse
+// on every read (e.g. findAcpModelLabel runs per codex:usageRunDetail). Keying
+// by path keeps tests isolated: each uses a fresh userData dir, so the memo
+// auto-invalidates when the path changes.
+let memo: { path: string; file: CacheFile } | null = null;
+
 function readFile(): CacheFile {
+  const path = cachePath();
+  if (memo !== null && memo.path === path) return memo.file;
+  let file: CacheFile = { version: CACHE_VERSION, agents: {} };
   try {
-    const raw = readFileSync(cachePath(), "utf8");
-    const parsed = JSON.parse(raw) as Partial<CacheFile>;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<CacheFile>;
     if (parsed.version === CACHE_VERSION && parsed.agents && typeof parsed.agents === "object") {
-      return { version: CACHE_VERSION, agents: parsed.agents };
+      file = { version: CACHE_VERSION, agents: parsed.agents };
     }
   } catch {
     // missing / unreadable / corrupt → empty cache (re-discovered on demand).
+    // Memoized too, so a missing file isn't re-stat'd on every call.
   }
-  return { version: CACHE_VERSION, agents: {} };
+  memo = { path, file };
+  return file;
 }
 
 /** The persisted entry for an agent, or undefined when never discovered. */
@@ -75,13 +87,18 @@ export function saveAcpModelCacheEntry(
   entry: AcpModelCacheEntry
 ): void {
   try {
-    const file = readFile();
-    file.agents[agentId] = entry;
+    // Build a fresh object (don't mutate the memo'd one) so a mid-write failure
+    // can't leave the in-memory memo ahead of what's on disk.
+    const next: CacheFile = {
+      version: CACHE_VERSION,
+      agents: { ...readFile().agents, [agentId]: entry }
+    };
     const path = cachePath();
     mkdirSync(app.getPath("userData"), { recursive: true });
     const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(file), "utf8");
+    writeFileSync(tmp, JSON.stringify(next), "utf8");
     renameSync(tmp, path);
+    memo = { path, file: next }; // refresh the memo only after a successful write
   } catch (cause) {
     log.warn("failed to persist ACP model cache", {
       agentId,

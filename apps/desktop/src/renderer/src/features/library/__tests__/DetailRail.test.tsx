@@ -9,7 +9,7 @@ import type {
   CaptureRecord,
   SettingsChangedEvent
 } from "@pwrsnap/shared";
-import { DetailRail } from "../DetailRail";
+import { DetailRail, AiRunUsageStrip } from "../DetailRail";
 import type { LibraryView } from "../library-view";
 
 beforeAll(() => {
@@ -1253,5 +1253,48 @@ describe("DetailRail", () => {
     expect(panel?.getAttribute("aria-labelledby")).toBe(
       infoTab?.getAttribute("id")
     );
+  });
+});
+
+describe("AiRunUsageStrip", () => {
+  let stripContainer: HTMLDivElement | null = null;
+  let stripRoot: Root | null = null;
+
+  afterEach(async () => {
+    await act(async () => {
+      stripRoot?.unmount();
+    });
+    stripContainer?.remove();
+    stripContainer = null;
+    stripRoot = null;
+  });
+
+  async function renderStrip(detail: AiRunUsageDetail): Promise<HTMLElement> {
+    stripContainer = document.createElement("div");
+    document.body.appendChild(stripContainer);
+    stripRoot = createRoot(stripContainer);
+    await act(async () => {
+      stripRoot?.render(createElement(AiRunUsageStrip, { detail }));
+    });
+    const span = stripContainer.querySelector<HTMLElement>(".psl__ai-usage-model");
+    if (span === null) throw new Error("model span not rendered");
+    return span;
+  }
+
+  test("prefers the friendly modelLabel over the raw id, with the full name on title", async () => {
+    const span = await renderStrip(aiUsageDetail({ model: "grok-build", modelLabel: "Grok Build" }));
+    expect(span.textContent).toBe("Grok Build");
+    expect(span.getAttribute("title")).toBe("Grok Build");
+  });
+
+  test("falls back to the raw id when no friendly label is known (Codex)", async () => {
+    const span = await renderStrip(aiUsageDetail({ model: "gpt-5.4-mini", modelLabel: null }));
+    expect(span.textContent).toBe("gpt-5.4-mini");
+    expect(span.getAttribute("title")).toBe("gpt-5.4-mini");
+  });
+
+  test("shows 'model unavailable' when both label and id are missing", async () => {
+    const span = await renderStrip(aiUsageDetail({ model: null, modelLabel: null }));
+    expect(span.textContent).toBe("model unavailable");
   });
 });

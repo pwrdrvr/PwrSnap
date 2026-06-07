@@ -1,13 +1,48 @@
 ---
 title: "feat: migrate PwrSnap onto @pwrdrvr/agent-kit packages"
-status: active
+status: complete
 date: 2026-06-02
+completed: 2026-06-07
 type: feat
 target_repo: PwrSnap (this repo)
 parent_plan: agent-kit repo, docs/plans/2026-06-02-001-feat-agent-kit-monorepo-buildout-plan.md
 ---
 
 # feat: migrate PwrSnap onto @pwrdrvr/agent-kit packages
+
+## Shipping Status — COMPLETE (2026-06-07)
+
+All implementation units shipped. PwrSnap's chat (Library + Sizzle) and capture
+enrichment run on the published `@pwrdrvr/agent-{core,client,acp,transport}`
+packages; the in-tree generic substrate (JSON-RPC core, stdio transport,
+`CodexThreadClient`, chat controller) is deleted. Persistence, prompts, tool
+allowlists, the enrichment schema, and the command bus stayed in PwrSnap via
+injected seams.
+
+- **U1–U4** (transport/discovery seams, `agent-client` + `ThreadStore` adapter,
+  renderer chat on the kit's neutral events, delete the duplicated substrate):
+  shipped in **PR #195** (`feat: consume @pwrdrvr/agent-kit`, `0e48bcfb`).
+- **U5** (`file:` links → published packages): done — PwrSnap consumes published
+  npm releases, not `file:` links. Current pins: `@pwrdrvr/agent-acp ^0.10.3`,
+  `@pwrdrvr/agent-client ^0.6.0`, `@pwrdrvr/agent-core ^0.1.3`,
+  `@pwrdrvr/agent-transport ^0.1.4`.
+- **ACP backends + Settings AI surface** (deferred "follow-up" in the original
+  plan below) also shipped: per-job provider/model/reasoning routing, local ACP
+  agents (Kimi/Grok/Qwen/Gemini) for enrichment + chat, pooled warm processes,
+  host-owned approval policy, the MCP tool bridge (its own plan,
+  `2026-06-05-001-feat-acp-chat-mcp-tool-bridge-plan.md`), and a polish pass in
+  **PR #213** (`fix: Grok/ACP enrichment — clean JSON, correct model reporting,
+  friendly names`, `906efe33`): thoughts-suppression for clean JSON, Grok
+  token-usage + effective-model reporting (`agent-acp` 0.10.1→0.10.3), friendly
+  model names, honest "Default (…)" annotation, and a model-override note.
+
+Remaining items are small, non-blocking polish (do NOT gate this plan):
+- Remember the models an agent rejects on `set_model` (`-32602`, e.g. Grok /
+  Cursor's "Composer 2.5") and gray them out in the picker.
+- Eager-warm the ACP/Codex model-label caches at startup (today they warm when
+  Settings → AI Providers lists models).
+
+---
 
 **Target repo:** PwrSnap (this repo). All paths are PwrSnap repo-relative. The packages being
 consumed live in the separate `agent-kit` repo (`@pwrdrvr/*` on npm).

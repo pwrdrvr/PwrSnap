@@ -922,7 +922,12 @@ function createSelectorWindow(display: Display): BrowserWindow {
     // (`focusable: true` below is still respected for NSPanel; the
     // float-over uses the same combination to receive clicks/keys
     // without activating the app.)
-    type: "panel",
+    //
+    // macOS-only — Windows/Linux have no NSPanel; the frameless,
+    // transparent, always-on-top window below covers the display directly
+    // (setSimpleFullScreen / enterMenuBarOverlayMode are already
+    // darwin-gated).
+    ...(process.platform === "darwin" ? { type: "panel" as const } : {}),
     title: SELECTOR_WINDOW_TITLE,
     x: bounds.x,
     y: bounds.y,
@@ -965,7 +970,11 @@ function createSelectorWindow(display: Display): BrowserWindow {
   // Paired with `type: 'panel'` above: the panel keeps show()/focus()
   // from activating the app, and canJoinAllSpaces (set here) keeps
   // the panel from being pinned to any single Space.
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // Spaces are macOS-only; on Windows/Linux this call is unnecessary (and
+  // the visibleOnFullScreen option is a macOS concept).
+  if (process.platform === "darwin") {
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  }
 
   const target = rendererTarget(display.id);
   if (target.kind === "url") {

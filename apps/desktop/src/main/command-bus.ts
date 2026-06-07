@@ -16,7 +16,13 @@
 // Electron's `invoke` strips `instanceof Error`, so we never throw across
 // process boundaries; we always return Result.
 
-import type { CommandName, Commands, Req, Res } from "@pwrsnap/shared";
+import type {
+  CommandName,
+  Commands,
+  LocalAgentCapability,
+  Req,
+  Res
+} from "@pwrsnap/shared";
 import { err, type PwrSnapError, type Result } from "@pwrsnap/shared";
 import { getMainLogger } from "./log";
 
@@ -38,6 +44,10 @@ export type CommandContext = {
   sourceWindowId?: number;
   /** Screen-space bounds for non-window UI affordances, such as the tray icon. */
   sourceBounds?: CommandSourceBounds;
+  localAgent?: {
+    clientId: string;
+    capabilities: readonly LocalAgentCapability[];
+  };
 };
 
 export type CommandHandler<C extends CommandName> = (
@@ -95,6 +105,7 @@ class CommandBus {
       cancellationKey?: string | undefined;
       sourceWindowId?: number | undefined;
       sourceBounds?: CommandSourceBounds | undefined;
+      localAgent?: CommandContext["localAgent"];
     }
   ): Promise<Result<Res<C>, PwrSnapError>> {
     const handler = this.handlers.get(name);
@@ -126,6 +137,9 @@ class CommandBus {
       }
       if (options.sourceBounds !== undefined) {
         ctx.sourceBounds = options.sourceBounds;
+      }
+      if (options.localAgent !== undefined) {
+        ctx.localAgent = options.localAgent;
       }
       const result = (await handler(req, ctx)) as Result<Res<C>, PwrSnapError>;
       return result;

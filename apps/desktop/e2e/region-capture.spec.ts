@@ -87,14 +87,15 @@ test.describe("region capture (macOS opt-in + Windows)", () => {
         if (!result.ok) return;
         const record: CaptureRecord = result.value;
 
-        // Sample dead-center of the captured PNG and compare to the
-        // painted color. Allow ±8 per channel for compositor jitter.
+        // Sample the captured PNG and compare to the painted color. The
+        // captured rect is coincident with the uniformly-colored target
+        // window, so any interior pixel is that color. Fresh v2 captures
+        // materialize their source at getCacheSourcePath(id) =
+        // <dataRoot>/render-cache/<id>/source.png — legacy_src_path is null
+        // since the v2-only migration, so sample the cache source instead.
+        const samplePath = path.join(app.homeRoot, "render-cache", record.id, "source.png");
         const cx = Math.floor(record.width_px / 2);
         const cy = Math.floor(record.height_px / 2);
-        const samplePath = record.legacy_src_path;
-        if (samplePath === null) {
-          throw new Error("region-capture spec: expected legacy_src_path on freshly captured record");
-        }
         const sampled = await samplePixel(samplePath, cx, cy);
         const expected = hexToRgb(target.color);
 

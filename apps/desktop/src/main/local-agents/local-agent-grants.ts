@@ -31,6 +31,10 @@ export type LocalAgentGrantServiceConfig = {
   makeToken?: () => string;
 };
 
+type LocalAgentGrantPatchInput = Omit<LocalAgentClientGrantPatch, "capabilities"> & {
+  capabilities?: readonly unknown[];
+};
+
 export class LocalAgentGrantService {
   private readonly settings: DesktopSettingsService;
   private readonly secrets: DesktopSecretStore;
@@ -89,7 +93,7 @@ export class LocalAgentGrantService {
     return { grant, token };
   }
 
-  async updateGrant(id: string, patch: LocalAgentClientGrantPatch): Promise<LocalAgentClientGrant> {
+  async updateGrant(id: string, patch: LocalAgentGrantPatchInput): Promise<LocalAgentClientGrant> {
     const settings = await this.settings.read();
     const existing = settings.localAgents.grants.find((grant) => grant.id === id);
     if (existing === undefined) {
@@ -100,10 +104,10 @@ export class LocalAgentGrantService {
       ...existing,
       ...(patch.name !== undefined ? { name: normalizeName(patch.name) } : {}),
       ...(patch.capabilities !== undefined
-        ? { capabilities: normalizeCapabilities(patch.capabilities) }
+        ? { capabilities: normalizeCapabilitiesStrict(patch.capabilities) }
         : {}),
-      ...(patch.lastUsedAt !== undefined ? { lastUsedAt: patch.lastUsedAt } : {}),
-      ...(patch.revokedAt !== undefined ? { revokedAt: patch.revokedAt } : {}),
+      ...(patch.lastUsedAt !== undefined ? { lastUsedAt: normalizeNullableTimestamp(patch.lastUsedAt) } : {}),
+      ...(patch.revokedAt !== undefined ? { revokedAt: normalizeNullableTimestamp(patch.revokedAt) } : {}),
       updatedAt: now
     };
     if (next.name.length === 0) {
@@ -190,6 +194,28 @@ function normalizeCapabilities(
     seen.add(value);
   }
   return [...seen];
+}
+
+function normalizeCapabilitiesStrict(values: readonly unknown[]): LocalAgentCapability[] {
+  const seen = new Set<LocalAgentCapability>();
+  for (const value of values) {
+    if (!isLocalAgentCapability(value)) {
+      throw new LocalAgentGrantError(
+        "invalid_capability",
+        `unknown local-agent capability: ${String(value)}`
+      );
+    }
+    seen.add(value);
+  }
+  return [...seen];
+}
+
+function normalizeNullableTimestamp(value: string | null): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || value.length === 0) {
+    throw new LocalAgentGrantError("invalid_timestamp", "timestamp must be an ISO string or null");
+  }
+  return value;
 }
 
 function hashToken(token: string): string {

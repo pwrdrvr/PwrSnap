@@ -520,6 +520,7 @@ export type SettingsPage =
   | "general"
   | "hotkeys"
   | "ai"
+  | "local-agents"
   | "storage"
   | "system-permissions"
   | "experimental"
@@ -536,6 +537,7 @@ export const SETTINGS_PAGES = [
   "general",
   "hotkeys",
   "ai",
+  "local-agents",
   "storage",
   "system-permissions",
   "experimental",
@@ -3126,6 +3128,18 @@ export type Commands = {
   "settings:clearSecret": {
     req: { name: DesktopSettingsSecretName };
     res: SecretStatus;
+  };
+  "localAgents:list": {
+    req: Record<string, never>;
+    res: { grants: LocalAgentClientGrant[] };
+  };
+  "localAgents:revoke": {
+    req: { id: string };
+    res: LocalAgentClientGrant;
+  };
+  "localAgents:update": {
+    req: { id: string; patch: LocalAgentClientGrantPatch };
+    res: LocalAgentClientGrant;
   };
 
   // ---- app ----

@@ -25,18 +25,26 @@ const ACP_PROVIDER_LABELS: Record<string, string> = {
 };
 
 /** Derive the status-pill provider + model labels from the enrichment surface
- *  default. `provider` is a backend selector ("" / "codex" / "acp:<id>"). */
+ *  default. `provider` is a backend selector ("" / "codex" / "acp:<id>").
+ *
+ *  The per-surface `model` is a Codex concept: the enrichment handler passes the
+ *  stored model id ONLY for Codex and `null` for ACP (the agent runs on its own
+ *  default). So we surface a model name for Codex only — showing it for an ACP
+ *  provider would label a model that never runs, and would leak a stale
+ *  cross-provider id (e.g. "Kimi … (gpt-5.4-mini)") left over from a Codex
+ *  selection made before the backend was switched. */
 export function enrichmentBackendLabel(
   enrichment: { provider?: string; model?: string } | undefined
 ): { providerLabel: string; modelLabel: string | undefined } {
   const provider = enrichment?.provider ?? "";
-  const providerLabel = provider.startsWith("acp:")
+  const isAcp = provider.startsWith("acp:");
+  const providerLabel = isAcp
     ? (ACP_PROVIDER_LABELS[provider.slice("acp:".length)] ?? provider.slice("acp:".length))
     : "Codex";
   const model = enrichment?.model;
   return {
     providerLabel,
-    modelLabel: model !== undefined && model.length > 0 ? model : undefined
+    modelLabel: !isAcp && model !== undefined && model.length > 0 ? model : undefined
   };
 }
 

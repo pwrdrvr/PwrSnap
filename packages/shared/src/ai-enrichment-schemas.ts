@@ -42,14 +42,15 @@ export type CaptureEnrichment = z.infer<typeof CaptureEnrichmentSchema>;
 
 /** Coerce a possibly-string-or-number scalar to a trimmed, length-capped string.
  *  Weak ACP models (Grok/Kimi/Qwen) over-produce: a 130-char title or a number
- *  where a string was asked for should CLAMP, not reject the whole enrichment —
- *  the caption/description/OCR are the valuable part and must survive a minor
- *  overflow in one field. Non-coercible values (objects/arrays) pass through so
- *  the base string schema still rejects genuine type errors. */
+ *  where a string was asked for should CLAMP, not reject. A non-coercible value
+ *  (object/array) DROPS to `undefined` so the field falls back to its default
+ *  rather than failing the whole parse — one bad field must never sink an
+ *  otherwise-good enrichment. The only failure left is a wholly-empty result
+ *  (caught by the empty guard) or a reply that isn't a JSON object at all. */
 function clampString(value: unknown, max: number): unknown {
   if (typeof value === "string") return value.trim().slice(0, max);
   if (typeof value === "number" || typeof value === "boolean") return String(value).slice(0, max);
-  return value;
+  return undefined;
 }
 
 /** Coerce a raw value into ≤`limit` clean, length-capped strings: accepts a
@@ -72,7 +73,9 @@ function clampStringArray(value: unknown, limit: number, itemMax: number): unkno
  *  object tags; drops blanks/unusable entries, clips labels, and nulls
  *  out-of-range confidences. Over-count clamps rather than rejects. */
 function clampTags(value: unknown, limit: number): unknown {
-  if (!Array.isArray(value)) return value;
+  // A non-array tags value (e.g. a comma-string) drops to undefined → default
+  // [], rather than passing through to z.array() and rejecting the whole result.
+  if (!Array.isArray(value)) return undefined;
   const out: Array<{ label: string; confidence: number | null }> = [];
   for (const item of value) {
     let label: string | undefined;

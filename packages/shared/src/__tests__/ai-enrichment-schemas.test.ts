@@ -47,6 +47,34 @@ describe("EnrichmentResultSchema", () => {
     expect(parsed.title).toHaveLength(120);
   });
 
+  test("drops a structurally-wrong field instead of sinking the whole result", () => {
+    // A model returns `title` as an object (genuinely wrong type) but the
+    // description/OCR are perfect. The bad field drops to its default; the
+    // valuable fields survive. No single field can fail the whole parse.
+    const parsed = EnrichmentResultSchema.parse({
+      title: { unexpected: "object" },
+      description: "A login screen with an SSO button",
+      ocrText: "Sign in with SSO"
+    });
+    expect(parsed.title).toBe("");
+    expect(parsed.description).toBe("A login screen with an SSO button");
+    expect(parsed.ocrText).toBe("Sign in with SSO");
+  });
+
+  test("drops a non-array tags value instead of rejecting", () => {
+    const parsed = EnrichmentResultSchema.parse({
+      title: "Build log",
+      tags: "ci,deploy" // a string, not an array
+    });
+    expect(parsed.title).toBe("Build log");
+    expect(parsed.tags).toEqual([]);
+  });
+
+  test("coerces a numeric title to a string rather than rejecting", () => {
+    const parsed = EnrichmentResultSchema.parse({ title: 42 });
+    expect(parsed.title).toBe("42");
+  });
+
   test("nulls an out-of-range tag confidence instead of rejecting", () => {
     const parsed = EnrichmentResultSchema.parse({
       title: "x",

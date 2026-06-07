@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SizzleProject } from "@pwrsnap/shared";
 
@@ -281,7 +281,7 @@ describe("pruneTtsCache", () => {
     expect(result.removed).toBe(0);
     const entries = await readdir(ttsCacheDir());
     expect(entries.sort()).toEqual(
-      [a.audioPath, b.audioPath, c.audioPath].map((p) => p.split("/").pop()).sort()
+      [a.audioPath, b.audioPath, c.audioPath].map((p) => basename(p)).sort()
     );
   });
 
@@ -338,7 +338,7 @@ describe("pruneTtsCache", () => {
     expect(result.kept).toBe(5);
     expect(result.removed).toBe(1);
     const entries = await readdir(ttsCacheDir());
-    expect(entries).not.toContain(paths[0]!.split("/").pop());
-    expect(entries).toContain(paths[5]!.split("/").pop());
+    expect(entries).not.toContain(basename(paths[0]!));
+    expect(entries).toContain(basename(paths[5]!));
   });
 });

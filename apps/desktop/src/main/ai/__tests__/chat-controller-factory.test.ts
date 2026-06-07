@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { join } from "node:path";
 import type { DiscoveredAcpAgentGroup } from "@pwrdrvr/agent-acp";
 import type { ChatBackend } from "@pwrdrvr/agent-client";
 import type { AiSurfaceDefault, Settings } from "@pwrsnap/shared";
@@ -173,7 +174,7 @@ describe("buildChatSurface — backend selection", () => {
     // The ACP session must be pinned to a small scratch dir under chatsDir —
     // NOT process.cwd() — so Gemini doesn't scan the app/repo tree (the cause
     // of the multi-second chat stall).
-    expect(call?.cwd).toBe("/tmp/pwrsnap-test-chats/.acp-chat");
+    expect(call?.cwd).toBe(join("/tmp/pwrsnap-test-chats", ".acp-chat"));
     expect(makeCodexClient).not.toHaveBeenCalled();
   });
 

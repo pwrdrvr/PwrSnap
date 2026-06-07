@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -142,7 +142,9 @@ export function checkDependencyVersionPolicy(root = repoRoot) {
   const failures = [];
 
   for (const packagePath of walkPackageJsonFiles(root)) {
-    const rel = relative(root, packagePath);
+    // Forward slashes so failure messages are stable across platforms
+    // (relative() yields "\"-separated paths on Windows).
+    const rel = relative(root, packagePath).split(sep).join("/");
     const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
     for (const group of EXACT_VERSION_GROUPS) {
       failures.push(

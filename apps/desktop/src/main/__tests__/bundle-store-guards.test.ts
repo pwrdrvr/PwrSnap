@@ -122,7 +122,10 @@ describe("atomicWriteBundle — same-directory temp + fsync", () => {
     expect(got.toString()).toBe("second");
   });
 
-  test("temp file uses 0o600 permissions (no world-readable window)", async () => {
+  // POSIX-only: Windows has no Unix permission bits (fs.stat().mode reports
+  // 0o666/0o444 by convention), so the 0o600 hardening — and this assertion —
+  // are meaningful only on macOS/Linux.
+  test.skipIf(process.platform === "win32")("temp file uses 0o600 permissions (no world-readable window)", async () => {
     // We can't observe the temp file mid-write without a race-prone
     // setup, but we can verify the FINAL file's mode came from the
     // rename of a 0o600 source. APFS preserves source mode through

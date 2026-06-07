@@ -6,6 +6,7 @@
 // dev tool). Either way: lock it down.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { join } from "node:path";
 
 // `paths.ts` imports `electron`'s `app` for the default-fallback case.
 // Stub it with a fixed userData path so the tests don't need an
@@ -69,13 +70,13 @@ describe("paths accessors compose from getDataRoot", () => {
       await import("../paths");
     const userData = "/tmp/pwrsnap-test-userData";
     const documents = "/tmp/pwrsnap-test-documents";
-    expect(getDbPath()).toBe(`${userData}/pwrsnap.db`);
-    expect(getCapturesRoot()).toBe(`${documents}/PwrSnap`);
-    expect(getLegacyCapturesRoot()).toBe(`${userData}/captures`);
-    expect(getCacheRoot()).toBe(`${userData}/render-cache`);
-    expect(getLegacyCacheRoot()).toBe(`${userData}/cache`);
-    expect(getTrashRoot()).toBe(`${userData}/.trash`);
-    expect(getPerfRoot()).toBe(`${userData}/perf`);
+    expect(getDbPath()).toBe(join(userData, "pwrsnap.db"));
+    expect(getCapturesRoot()).toBe(join(documents, "PwrSnap"));
+    expect(getLegacyCapturesRoot()).toBe(join(userData, "captures"));
+    expect(getCacheRoot()).toBe(join(userData, "render-cache"));
+    expect(getLegacyCacheRoot()).toBe(join(userData, "cache"));
+    expect(getTrashRoot()).toBe(join(userData, ".trash"));
+    expect(getPerfRoot()).toBe(join(userData, "perf"));
   });
 
   test("override layout: every accessor reroots under PWRSNAP_DATA_ROOT (single tree)", async () => {
@@ -91,12 +92,12 @@ describe("paths accessors compose from getDataRoot", () => {
     } =
       await import("../paths");
     const root = "/Volumes/Dev/pwrsnap-perf/100";
-    expect(getDbPath()).toBe(`${root}/pwrsnap.db`);
-    expect(getCapturesRoot()).toBe(`${root}/captures`);
-    expect(getLegacyCapturesRoot()).toBe(`${root}/captures`);
-    expect(getCacheRoot()).toBe(`${root}/render-cache`);
-    expect(getLegacyCacheRoot()).toBe(`${root}/cache`);
-    expect(getTrashRoot()).toBe(`${root}/.trash`);
-    expect(getPerfRoot()).toBe(`${root}/perf`);
+    expect(getDbPath()).toBe(join(root, "pwrsnap.db"));
+    expect(getCapturesRoot()).toBe(join(root, "captures"));
+    expect(getLegacyCapturesRoot()).toBe(join(root, "captures"));
+    expect(getCacheRoot()).toBe(join(root, "render-cache"));
+    expect(getLegacyCacheRoot()).toBe(join(root, "cache"));
+    expect(getTrashRoot()).toBe(join(root, ".trash"));
+    expect(getPerfRoot()).toBe(join(root, "perf"));
   });
 });

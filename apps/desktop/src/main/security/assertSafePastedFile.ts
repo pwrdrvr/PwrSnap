@@ -25,7 +25,7 @@
 
 import { lstat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 
 /**
  * Path prefixes we refuse to read from, regardless of user intent.
@@ -56,6 +56,20 @@ function buildPrivilegedPrefixes(): readonly string[] {
 }
 
 const PRIVILEGED_PREFIXES = buildPrivilegedPrefixes();
+
+/**
+ * Fold a path for the privileged-prefix comparison on case-insensitive
+ * filesystems (Windows always; macOS/APFS by default). `resolve()` preserves
+ * input case and `startsWith` is case-sensitive, so without this a differently-
+ * cased path (`c:\users\…` vs `C:\Users\…`, `~/.SSH` vs `~/.ssh`) slips past the
+ * guard on those platforms. Linux is case-sensitive — folding there would
+ * wrongly conflate distinct paths, so it's a no-op. Comparison only: the
+ * original-case path is what we lstat and return.
+ */
+const CASE_INSENSITIVE_FS = process.platform === "win32" || process.platform === "darwin";
+function foldForCompare(path: string): string {
+  return CASE_INSENSITIVE_FS ? path.toLowerCase() : path;
+}
 
 /**
  * Test-only override hook. Lets unit tests inject a temp-dir prefix
@@ -112,8 +126,15 @@ export async function assertSafePastedFile(filePath: string): Promise<string> {
   // so we never touch the filesystem inside a secret dir (which could
   // trigger TCC prompts on macOS).
   const prefixes = testPrefixOverride ?? PRIVILEGED_PREFIXES;
+  const foldedAbs = foldForCompare(abs);
   for (const prefix of prefixes) {
-    if (abs === prefix || abs.startsWith(prefix + "/")) {
+    // `sep` (not a hardcoded "/") so the containment check works on Windows,
+    // where `resolve()` yields `\`-separated paths. Folded comparison so a
+    // differently-cased path can't slip past on case-insensitive filesystems
+    // (see foldForCompare). Without both, the per-user secret-dir protection is
+    // silently bypassed on Windows / macOS.
+    const foldedPrefix = foldForCompare(prefix);
+    if (foldedAbs === foldedPrefix || foldedAbs.startsWith(foldedPrefix + sep)) {
       throw new UnsafePastedFileError(
         "privileged_path",
         "Invalid file",

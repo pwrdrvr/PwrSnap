@@ -106,6 +106,30 @@ describe("assertSafePastedFile", () => {
     });
   });
 
+  // Case-insensitive filesystems (Windows always; macOS/APFS by default) must
+  // reject a differently-cased path inside a privileged dir — `resolve()`
+  // preserves case, so a naive case-sensitive `startsWith` would let it
+  // through. Gated to win32, where case-insensitivity is guaranteed (a
+  // case-sensitive APFS volume would make the miscased path a genuinely
+  // different, non-existent file); the fold itself still applies on macOS.
+  test.runIf(process.platform === "win32")(
+    "refuses a differently-cased path inside a privileged dir",
+    async () => {
+      const fakePrivileged = join(dir, "fake-privileged");
+      await mkdir(fakePrivileged);
+      __setPrivilegedPrefixesForTest([fakePrivileged]);
+      const insidePrivileged = join(fakePrivileged, "secret.png");
+      await writeFile(insidePrivileged, Buffer.from([0x89]));
+      // Flip the case of the privileged segment; on a case-insensitive FS this
+      // resolves to the very same file and must still be refused.
+      const miscased = insidePrivileged.replace("fake-privileged", "FAKE-PRIVILEGED");
+      await expect(assertSafePastedFile(miscased)).rejects.toMatchObject({
+        name: "UnsafePastedFileError",
+        code: "privileged_path"
+      });
+    }
+  );
+
   test("UnsafePastedFileError exposes raw message via .message + sanitized via .sanitizedMessage", async () => {
     const file = join(dir, "nope.png");
     let caught: unknown = null;

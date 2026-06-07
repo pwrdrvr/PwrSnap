@@ -53,6 +53,21 @@ export function loadAcpModelCacheEntry(agentId: string): AcpModelCacheEntry | un
   return readFile().agents[agentId];
 }
 
+/** Friendly label for a model id, searched across ALL cached agents. Model ids
+ *  are effectively unique across agents (`grok-build`, `gemini-3-flash-preview`,
+ *  …), so this resolves a run's recorded model id → its display label without
+ *  needing to know which agent produced it. Returns undefined when the id isn't
+ *  in any cache (e.g. a Codex model, or an agent never probed). */
+export function findAcpModelLabel(modelId: string): string | undefined {
+  if (modelId.length === 0) return undefined;
+  const { agents } = readFile();
+  for (const entry of Object.values(agents)) {
+    const match = entry.models.find((m) => m.id === modelId);
+    if (match !== undefined && match.label.length > 0) return match.label;
+  }
+  return undefined;
+}
+
 /** Persist (replace) the model list for an agent. Best-effort — a write failure
  *  is logged, not thrown (the in-memory result is still returned to the UI). */
 export function saveAcpModelCacheEntry(

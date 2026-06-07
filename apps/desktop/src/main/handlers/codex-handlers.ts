@@ -29,6 +29,7 @@ import {
 } from "../ai/capture-enrichment-client";
 import { AcpCaptureEnrichmentClient } from "../ai/acp-enrichment-client";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
+import { findAcpModelLabel } from "../ai/acp-model-cache";
 import {
   discoverLocalAcpAgentInstances,
   strategyById,
@@ -764,7 +765,15 @@ export function registerCodexHandlers(params?: {
       return validationError("invalid_request", "runId is required");
     }
     refreshKnownAiUsagePrices();
-    return ok(getAiRunUsageDetail(req.runId));
+    const detail = getAiRunUsageDetail(req.runId);
+    if (detail === null) return ok(null);
+    // Resolve the model's friendly label from the ACP model caches (id → label,
+    // e.g. "grok-build" → "Grok Build") so the usage strip shows the friendly
+    // name. Null for Codex / unprobed agents → the UI falls back to the raw id.
+    return ok({
+      ...detail,
+      modelLabel: detail.model !== null ? findAcpModelLabel(detail.model) ?? null : null
+    });
   });
 
   bus.register("codex:cancel", async (req) => {

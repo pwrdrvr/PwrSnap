@@ -272,6 +272,49 @@ describe("AiSurfaceDefaultControl — job routing", () => {
     expect(optionValues).toContain("gpt-5.5");
   });
 
+  test("Codex: annotates Default with the default model + shows friendly names (no id in parens)", async () => {
+    const codexModels = [
+      {
+        id: "gpt-5.4-mini",
+        model: "gpt-5.4-mini",
+        displayName: "GPT-5.4-Mini",
+        description: "",
+        hidden: false,
+        inputModalities: ["text", "image"] as Array<"text" | "image">,
+        defaultServiceTier: null,
+        isDefault: true
+      },
+      {
+        id: "gpt-5.5",
+        model: "gpt-5.5",
+        displayName: "GPT-5.5",
+        description: "",
+        hidden: false,
+        inputModalities: ["text", "image"] as Array<"text" | "image">,
+        defaultServiceTier: null,
+        isDefault: false
+      }
+    ];
+    const el = await renderSurfaceControl({
+      surface: "enrichment",
+      name: "Enrichment",
+      sub: "",
+      value: {}, // Codex, on Default
+      models: codexModels,
+      modelsLoading: false,
+      acpProviderOptions: [],
+      acpModelsLoading: false,
+      onChange: vi.fn()
+    });
+    const modelSelect = el.querySelector<HTMLSelectElement>('[aria-label="Enrichment model"]');
+    const options = Array.from(modelSelect!.options).map((o) => o.textContent);
+    expect(options).toEqual([
+      "Default (GPT-5.4-Mini)", // annotated with the default model's friendly name
+      "GPT-5.4-Mini (default)", // friendly name + (default), NOT "GPT-5.4-Mini (gpt-5.4-mini)"
+      "GPT-5.5"
+    ]);
+  });
+
   test("does NOT keep a stored model that isn't valid for the provider (Sizzle bug)", async () => {
     // Repro of the real saved state: sizzleChat = { model: "gemini-3-flash-preview" }
     // with no provider → defaults to Codex. The Codex model picker must NOT

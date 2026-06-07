@@ -2135,6 +2135,10 @@ export type AiRunUsageDetail = {
   threadId: string | null;
   turnId: string | null;
   model: string | null;
+  /** Friendly display label for `model` (e.g. "Grok Build" for `grok-build`),
+   *  resolved from the ACP model caches at read time. Null when unknown (a Codex
+   *  model, or an agent never probed) — the UI falls back to the raw `model`. */
+  modelLabel?: string | null;
   modelProvider: string | null;
   serviceTier: string | null;
   usageStatus: AiUsageStatus;

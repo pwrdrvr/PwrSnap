@@ -47,10 +47,11 @@ const CODEX_MODE_OPTIONS: readonly SegmentOption<"auto" | "pinned">[] = [
   { id: "pinned", label: "Specified Path" }
 ];
 
+/** Friendly model name for a picker option. Prefer the display name; only fall
+ *  back to the raw id when there's no friendlier name. (We used to append the id
+ *  in parens — "GPT-5.4-Mini (gpt-5.4-mini)" — which is just noise.) */
 function modelLabel(model: CodexModelOption): string {
-  return model.displayName === model.id || model.displayName.length === 0
-    ? model.id
-    : `${model.displayName} (${model.id})`;
+  return model.displayName.length > 0 ? model.displayName : model.id;
 }
 
 export function AIProvidersPage(): ReactElement {
@@ -1726,16 +1727,20 @@ export function AiSurfaceDefaultControl({
   void modelsLoading;
   const modelLoading =
     isAcpProvider && (acpModelsLoading === true || acpModelOptions === undefined);
-  // For ACP, mark the agent's PROTOCOL-CONFIRMED default model (isDefault) with
-  // a "(default)" suffix so the user can see which one "Default" resolves to.
-  // Do NOT guess — if the agent didn't report a currentModelId (or the cached
-  // model list predates that capture), leave it undefined and show a plain
-  // "Default". Guessing the first-listed model actively misleads: Grok lists
-  // "Composer 2.5" first but its real default is "Grok Build", so a guess would
-  // claim Default → Composer while the run actually uses Grok Build.
-  const acpDefaultModel = isAcpProvider
-    ? (acpModelOptions ?? []).find((m) => m.isDefault)
-    : undefined;
+  // Mark the backend's PROTOCOL-CONFIRMED default model (isDefault) with a
+  // "(default)" suffix so the user can see which one "Default" resolves to —
+  // for BOTH Codex and ACP. Do NOT guess: if no model carries isDefault (e.g. a
+  // cached ACP list captured before the agent reported a currentModelId), leave
+  // it undefined and show a plain "Default". Guessing the first-listed model
+  // actively misleads — Grok lists "Composer 2.5" first but its real default is
+  // "Grok Build", so a guess would claim Default → Composer while a run uses
+  // Grok Build.
+  const defaultModelName: string | undefined = isAcpProvider
+    ? (acpModelOptions ?? []).find((m) => m.isDefault)?.label
+    : (() => {
+        const def = surfaceModelOptions(models).find((m) => m.isDefault);
+        return def !== undefined ? modelLabel(def) : undefined;
+      })();
   const modelChoices: Array<{ id: string; label: string }> = isAcpProvider
     ? (acpModelOptions ?? []).map((m) => ({
         id: m.id,
@@ -1743,7 +1748,7 @@ export function AiSurfaceDefaultControl({
       }))
     : surfaceModelOptions(models).map((m) => ({
         id: m.id,
-        label: modelLabel(m)
+        label: m.isDefault === true ? `${modelLabel(m)} (default)` : modelLabel(m)
       }));
   // A stored model that isn't in the selected backend's list (e.g. a Gemini id
   // left on a now-Codex surface) is NOT kept as a phantom option — the select
@@ -1771,11 +1776,11 @@ export function AiSurfaceDefaultControl({
     onChange({ model: "" });
   }, [staleAcpModel, chatProviderValue, modelValue, onChange]);
   // "Default" means "let the backend pick its own default model" (runtime sends
-  // null). For ACP we now know the agent's actual default, so annotate the
-  // entry — "Default (kimi-k2)" — instead of leaving it a mystery. Codex keeps
-  // a plain "Default" (the App Server resolves it server-side).
+  // null). When we know the backend's default model, annotate the entry —
+  // "Default (GPT-5.4-Mini)" / "Default (Grok Build)" — instead of leaving it a
+  // mystery. Falls back to a plain "Default" when the default is unknown.
   const defaultOptionLabel =
-    isAcpProvider && acpDefaultModel !== undefined ? `Default (${acpDefaultModel.label})` : "Default";
+    defaultModelName !== undefined ? `Default (${defaultModelName})` : "Default";
   // A persisted acp:<id> whose agent isn't currently in the enabled set
   // (toggled off, or discovery still loading) — keep it as a visible option
   // so the select never silently drops the saved value.

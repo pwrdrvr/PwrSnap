@@ -1298,10 +1298,17 @@ function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): ReactElement
         ? `${media.sentWidthPx}×${media.sentHeightPx} ${media.format.toUpperCase()} · ${formatBytes(media.sentByteSize)}${media.quality === null ? "" : ` · q${media.quality}`}`
         : `${detail.mediaInputs.length} frames · ${media.sentWidthPx}×${media.sentHeightPx} ${media.format.toUpperCase()}`;
 
+  // Prefer the friendly label ("Grok Build") over the raw id ("grok-build");
+  // fall back to the id, then "model unavailable". Long names are clipped with
+  // CSS ellipsis and the full name shows on hover (title).
+  const modelName = detail.modelLabel ?? detail.model ?? "model unavailable";
+
   return (
     <div className="psl__ai-usage" aria-label="AI usage">
       <div className="psl__ai-usage-row">
-        <span>{detail.model ?? "model unavailable"}</span>
+        <span className="psl__ai-usage-model" title={modelName}>
+          {modelName}
+        </span>
         <b>{cost}</b>
       </div>
       <div className="psl__ai-usage-row is-muted">

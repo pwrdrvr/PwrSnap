@@ -2170,6 +2170,13 @@
 }
 .psl__ai-usage-row b {
   color: var(--text-primary);
+  /* Keep the price fully visible; the model name shrinks/ellipsizes instead. */
+  flex: 0 0 auto;
+}
+/* The model name takes the remaining width and clips with an ellipsis (full
+   name on hover via the title attribute) — some agent model names are long. */
+.psl__ai-usage-model {
+  flex: 1 1 auto;
 }
 .psl__ai-usage-row.is-muted {
   font-weight: 400;

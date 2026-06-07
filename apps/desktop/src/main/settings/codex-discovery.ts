@@ -18,12 +18,14 @@
 //   • The `Desktop*` type names + `MINIMUM_CODEX_CLI_VERSION`, kept so
 //     desktop-settings-service.ts and its tests import the same names as before.
 //
-// Looks for the Codex binary in this priority order (unchanged):
+// Looks for the Codex binary in this priority order:
 //   1. env override (PWRSNAP_CODEX_COMMAND).
 //   2. user-configured path saved in Settings.
-//   3. `codex` on $PATH.
-//   4. /Applications/Codex.app/Contents/Resources/codex (Codex Desktop).
-//   5. ~/Applications/Codex.app/Contents/Resources/codex (per-user install).
+//   3. `codex` on $PATH (plus `codex.exe` first on Windows).
+//   4. Platform install locations:
+//      - macOS: /Applications + ~/Applications Codex.app/Contents/Resources/codex.
+//      - Windows: %LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe
+//        (and the Program Files equivalent).
 
 import { execFile as execFileCallback } from "node:child_process";
 import os from "node:os";
@@ -153,10 +155,37 @@ function parseCodexVersion(output: string): string | undefined {
 }
 
 function getCodexAppCandidatePaths(): string[] {
+  if (process.platform === "win32") {
+    // OpenAI's Windows installer drops the Codex CLI/Desktop under
+    // %LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe (per-user); also
+    // check the per-machine Program Files location.
+    const localAppData =
+      process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local");
+    const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
+    return [
+      path.join(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
+      path.join(programFiles, "OpenAI", "Codex", "bin", "codex.exe")
+    ];
+  }
   return [
     "/Applications/Codex.app/Contents/Resources/codex",
     path.join(os.homedir(), "Applications/Codex.app/Contents/Resources/codex")
   ];
+}
+
+/** PATH-lookup candidates for the bare command. Windows needs the `.exe`
+ *  form (the kit's PATH probe doesn't apply PATHEXT), so try it first. */
+function getCodexPathCandidates(): Array<{
+  command: string;
+  source: DesktopCodexCandidateSource;
+}> {
+  if (process.platform === "win32") {
+    return [
+      { command: "codex.exe", source: "path" },
+      { command: "codex", source: "path" }
+    ];
+  }
+  return [{ command: "codex", source: "path" }];
 }
 
 function toDesktopCandidate(
@@ -188,7 +217,7 @@ export async function discoverCodexCommands(params?: {
       { command: configuredCommand, source: "config" }
     ],
     autoCandidates: [
-      { command: "codex", source: "path" },
+      ...getCodexPathCandidates(),
       ...getCodexAppCandidatePaths().map((candidatePath) => ({
         command: candidatePath,
         source: "application" as const

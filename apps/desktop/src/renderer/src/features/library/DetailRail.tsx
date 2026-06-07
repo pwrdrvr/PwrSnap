@@ -1152,7 +1152,7 @@ function DetailTab({
                 type="button"
                 className="psl__chip-link"
                 onClick={regenerate}
-                title="Ask Codex for a fresh draft"
+                title={`Ask ${providerLabel} for a fresh draft`}
               >
                 Regenerate
               </button>
@@ -1169,12 +1169,12 @@ function DetailTab({
             <span>Title</span>
             {titleOrigin === "suggested" ? (
               <>
-                <span className="psl__field-origin">draft from Codex</span>
+                <span className="psl__field-origin">draft from {providerLabel}</span>
                 <button
                   type="button"
                   className="psl__field-use"
                   onClick={() => void useTitleDraft()}
-                  title="Save this Codex draft as your title"
+                  title={`Save this ${providerLabel} draft as your title`}
                 >
                   Use
                 </button>
@@ -1192,7 +1192,7 @@ function DetailTab({
           />
           {titleDraftDiverged && titleOrigin !== "suggested" ? (
             <DraftPreview
-              label="Codex draft"
+              label={`${providerLabel} draft`}
               text={suggestedTitle}
               onUse={() => void useTitleDraft()}
             />
@@ -1204,12 +1204,12 @@ function DetailTab({
             <span>Description</span>
             {descriptionOrigin === "suggested" ? (
               <>
-                <span className="psl__field-origin">draft from Codex</span>
+                <span className="psl__field-origin">draft from {providerLabel}</span>
                 <button
                   type="button"
                   className="psl__field-use"
                   onClick={() => void useDescriptionDraft()}
-                  title="Save this Codex draft as your description"
+                  title={`Save this ${providerLabel} draft as your description`}
                 >
                   Use
                 </button>
@@ -1229,7 +1229,7 @@ function DetailTab({
           />
           {descriptionDraftDiverged && descriptionOrigin !== "suggested" ? (
             <DraftPreview
-              label="Codex draft"
+              label={`${providerLabel} draft`}
               text={suggestedDescription}
               onUse={() => void useDescriptionDraft()}
             />
@@ -1559,7 +1559,7 @@ function DraftPreview({ label, text, onUse }: DraftPreviewProps): ReactElement {
           type="button"
           className="psl__draft-preview-use"
           onClick={onUse}
-          title="Replace current text with this Codex draft"
+          title="Replace current text with this draft"
         >
           Use this
         </button>

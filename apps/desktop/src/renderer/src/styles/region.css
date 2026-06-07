@@ -33,6 +33,38 @@ body[data-stage="region"] .region-root {
   inset: 0;
 }
 
+/* Cursor-tracking crosshair guide-lines. A thin tangerine cross that
+   follows the cursor so the selection mode reads unmistakably as "you
+   are aiming at something." Drawn at reduced opacity so they sit above
+   the dim mask as a subtle aid without colliding with the solid accent
+   rect border where they cross it. pointer-events:none — the window-
+   level listeners must see every event. z-index:1 puts them above the
+   dim mask + frozen image but below the handles (z-index:2). */
+.region-crosshair {
+  position: fixed;
+  z-index: 1;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.region-crosshair-h {
+  left: 0;
+  width: 100vw;
+  height: 1px;
+}
+.region-crosshair-v {
+  top: 0;
+  height: 100vh;
+  width: 1px;
+}
+/* Hide while a committed rect is being dragged (the lines would just
+   clutter), and entirely in window mode (a crosshair implies a draw
+   gesture the pure window-picker can't honor — it commits on click). */
+body[data-stage="region"][data-interaction="moving"] .region-crosshair,
+body[data-stage="region"][data-interaction="resizing"] .region-crosshair,
+body[data-stage="region"][data-mode="window"] .region-crosshair {
+  display: none;
+}
+
 .region-rect {
   position: fixed;
   border: 1.5px solid var(--accent);

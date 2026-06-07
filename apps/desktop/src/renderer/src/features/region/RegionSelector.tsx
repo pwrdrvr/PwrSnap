@@ -153,9 +153,34 @@ export function RegionSelector() {
   const lastMouseRef = useRef<{ x: number; y: number } | null>(null);
   const shiftRef = useRef(false);
   const modeRef = useRef<SelectorMode>("auto");
+  // Cursor-tracking crosshair guide-lines (auto/region modes). Rendered
+  // once and repositioned by direct DOM writes from `onMouseMove` /
+  // the window-list cursor — never via React state, so they impose no
+  // re-render cost in `adjusting` (where onMouseMove early-returns).
+  // Visibility is gated entirely in CSS off body[data-interaction] +
+  // body[data-mode]; see region.css.
+  const hLineRef = useRef<HTMLDivElement | null>(null);
+  const vLineRef = useRef<HTMLDivElement | null>(null);
+
+  // Write the guide-line positions directly. `x` drives the vertical
+  // line's left; `y` drives the horizontal line's top. Reads only the
+  // (stable) ref objects, so it's safe to call from the once-registered
+  // global handlers without stale-closure risk.
+  function positionCrosshair(x: number, y: number): void {
+    const hl = hLineRef.current;
+    const vl = vLineRef.current;
+    if (hl !== null) hl.style.top = `${y}px`;
+    if (vl !== null) vl.style.left = `${x}px`;
+  }
 
   useLayoutEffect(() => {
     document.title = "PwrSnap Region Selector";
+    // Seed the crosshair at viewport center until the first cursor
+    // signal (mousemove or window-list snapshot) arrives, so it never
+    // paints at a stray 0,0 corner.
+    positionCrosshair(window.innerWidth / 2, window.innerHeight / 2);
+    // positionCrosshair only reads stable refs; safe to omit from deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   shiftRef.current = shiftHeld;
@@ -255,6 +280,7 @@ export function RegionSelector() {
           y: payload.cursor.y * scale
         };
         lastMouseRef.current = cursor;
+        positionCrosshair(cursor.x, cursor.y);
         const next = snapAt(cursor.x, cursor.y);
         setSnapTarget(next);
         setRect(rectForSnap(next));
@@ -575,6 +601,9 @@ export function RegionSelector() {
 
     function onMouseMove(event: MouseEvent): void {
       lastMouseRef.current = { x: event.clientX, y: event.clientY };
+      // Crosshair tracks the cursor in every state; CSS decides whether
+      // it paints (hidden during moving/resizing and in window mode).
+      positionCrosshair(event.clientX, event.clientY);
       const i = interactionRef.current;
       switch (i.kind) {
         case "snap": {
@@ -876,6 +905,12 @@ export function RegionSelector() {
 
   return (
     <div className="region-root">
+      {/* Cursor-tracking crosshair guide-lines. Positioned by direct
+          DOM writes (positionCrosshair); CSS gates visibility off
+          body[data-interaction] + body[data-mode]. pointer-events:none
+          so the window-level listeners still see every event. */}
+      <div ref={hLineRef} className="region-crosshair region-crosshair-h" data-testid="region-crosshair-h" />
+      <div ref={vLineRef} className="region-crosshair region-crosshair-v" data-testid="region-crosshair-v" />
       {/* Frozen-screen snapshot — full-window background.  The
           renderer is interacting with this image, not the live
           screen.  Drawn first so the dim mask + rect sit on top.

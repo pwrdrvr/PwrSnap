@@ -77,7 +77,11 @@ describe("getStorageSnapshot", () => {
     const snapshot = await getStorageSnapshot();
 
     expect(snapshot.sourceCaptures.captureCount).toBe(1);
-    expect(snapshot.sourceCaptures.documentsBytes).toBeGreaterThan(1024 * 1024);
+    // >= not >: the bucket holds the 1 MiB file's bytes. macOS reports
+    // block-allocated size (rounds up) via stat.blocks; Windows leaves blocks
+    // unset, so the walk falls back to logical size — exactly 1 MiB. Both count
+    // the file; the strict `>` only held by relying on macOS allocation slack.
+    expect(snapshot.sourceCaptures.documentsBytes).toBeGreaterThanOrEqual(1024 * 1024);
     expect(snapshot.totalBytes).toBeGreaterThan(snapshot.sourceCaptures.documentsBytes);
     expect(snapshot.otherAppSupport.bytes).toBeLessThan(128 * 1024);
   });
@@ -94,7 +98,7 @@ describe("getStorageSnapshot", () => {
     const snapshot = await getStorageSnapshot();
 
     expect(snapshot.sourceCaptures.captureCount).toBe(1);
-    expect(snapshot.sourceCaptures.bytes).toBeGreaterThan(1024 * 1024);
+    expect(snapshot.sourceCaptures.bytes).toBeGreaterThanOrEqual(1024 * 1024);
     expect(snapshot.totalBytes).toBeLessThan(snapshot.sourceCaptures.bytes + 128 * 1024);
     expect(snapshot.otherAppSupport.bytes).toBeLessThan(128 * 1024);
   });
@@ -135,8 +139,8 @@ describe("getStorageSnapshot", () => {
 
     expect(normal.chromiumHttpCache.bytes).toBe(0);
     expect(normal.totalBytes).toBeLessThan(128 * 1024);
-    expect(audit.chromiumHttpCache.bytes).toBeGreaterThan(1024 * 1024);
-    expect(audit.totalBytes).toBeGreaterThan(1024 * 1024);
+    expect(audit.chromiumHttpCache.bytes).toBeGreaterThanOrEqual(1024 * 1024);
+    expect(audit.totalBytes).toBeGreaterThanOrEqual(1024 * 1024);
   });
 
   test("audit requests do not join an in-flight normal scan", async () => {
@@ -159,7 +163,7 @@ describe("getStorageSnapshot", () => {
       const audit = await auditPromise;
 
       expect(normal.chromiumHttpCache.bytes).toBe(0);
-      expect(audit.chromiumHttpCache.bytes).toBeGreaterThan(1024 * 1024);
+      expect(audit.chromiumHttpCache.bytes).toBeGreaterThanOrEqual(1024 * 1024);
     } finally {
       unsubscribe();
     }

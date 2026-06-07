@@ -120,6 +120,7 @@ jobs:
   windows:
     name: Windows (lint + build + test)
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -130,9 +131,9 @@ jobs:
       # build + lint — the Electron GUI E2E (screen capture, tray, AppKit
       # windowing) is macOS-specific and not yet ported to Windows.
       - name: Install pnpm
+        # Version comes from package.json's `packageManager` field (omit
+        # `version` here) so there's no second pnpm pin to drift on upgrade.
         uses: pnpm/action-setup@v4
-        with:
-          version: "10.33.0"
 
       - name: Install Node.js
         uses: actions/setup-node@v4

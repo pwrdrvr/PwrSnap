@@ -134,6 +134,51 @@ function vLine(): HTMLElement {
   return el;
 }
 
+async function mouseDown(x: number, y: number, target?: Element): Promise<void> {
+  await act(async () => {
+    const ev = new MouseEvent("mousedown", { clientX: x, clientY: y, button: 0, bubbles: true });
+    if (target !== undefined) {
+      // dispatch on a specific element so event.target carries its dataset
+      target.dispatchEvent(ev);
+    } else {
+      window.dispatchEvent(ev);
+    }
+  });
+}
+
+async function mouseUp(x: number, y: number): Promise<void> {
+  await act(async () => {
+    window.dispatchEvent(new MouseEvent("mouseup", { clientX: x, clientY: y, button: 0, bubbles: true }));
+  });
+}
+
+async function keyDown(key: string, init: KeyboardEventInit = {}): Promise<void> {
+  await act(async () => {
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init })
+    );
+  });
+}
+
+async function emitKey(key: string): Promise<void> {
+  await act(async () => {
+    keyHandler?.({ key });
+  });
+}
+
+/** snap → pending → drawing → adjusting via a free-draw drag. */
+async function drawRect(): Promise<void> {
+  await mouseMove(100, 100);
+  await mouseDown(100, 100);
+  await mouseMove(300, 300);
+  await mouseUp(300, 300);
+}
+
+function regionHintText(): string {
+  const el = container?.querySelector(".region-hint");
+  return (el?.textContent ?? "").toLowerCase();
+}
+
 describe("U1 — crosshair guide-lines", () => {
   test("mounts in snap mode and seeds the crosshair to viewport center", async () => {
     await mount();
@@ -175,5 +220,67 @@ describe("U1 — crosshair guide-lines", () => {
     });
     expect(vLine().style.left).toBe("120px");
     expect(hLine().style.top).toBe("80px");
+  });
+});
+
+describe("U2 — multi-step Escape", () => {
+  test("Esc in snap (nothing picked) exits immediately", async () => {
+    await mount();
+    expect(document.body.dataset.interaction).toBe("snap");
+    await keyDown("Escape");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith({ ok: false });
+  });
+
+  test("first Esc from a committed pick steps back to snap without submitting", async () => {
+    await mount();
+    await drawRect();
+    expect(document.body.dataset.interaction).toBe("adjusting");
+
+    await keyDown("Escape");
+    expect(document.body.dataset.interaction).toBe("snap");
+    expect(container?.querySelectorAll(".region-handle").length).toBe(0);
+    expect(submitRegion).not.toHaveBeenCalled();
+  });
+
+  test("second Esc (after stepping back) exits", async () => {
+    await mount();
+    await drawRect();
+    await keyDown("Escape"); // step back → snap
+    expect(submitRegion).not.toHaveBeenCalled();
+    await mouseMove(150, 150); // re-aim re-arms the de-dupe guard
+    await keyDown("Escape"); // now in snap → exit
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith({ ok: false });
+  });
+
+  test("forwarded-IPC Escape steps back identically to the keydown path", async () => {
+    await mount();
+    await drawRect();
+    await emitKey("Escape"); // the only-live path under macOS focus-withholding
+    expect(document.body.dataset.interaction).toBe("snap");
+    expect(submitRegion).not.toHaveBeenCalled();
+  });
+
+  test("a forwarded Esc right after a keydown step-back is swallowed (no cancel)", async () => {
+    await mount();
+    await drawRect();
+    // Direct keydown steps back (renders → interaction now snap)...
+    await keyDown("Escape");
+    expect(document.body.dataset.interaction).toBe("snap");
+    // ...and the duplicate forwarded delivery of the SAME press, arriving
+    // within the de-dupe window with no mousemove between, must NOT cancel.
+    await emitKey("Escape");
+    expect(submitRegion).not.toHaveBeenCalled();
+    expect(document.body.dataset.interaction).toBe("snap");
+  });
+
+  test("hint copy: 'esc back' while adjusting, 'esc cancel' in snap", async () => {
+    await mount();
+    expect(regionHintText()).toContain("cancel");
+    expect(regionHintText()).not.toContain("back");
+    await drawRect();
+    expect(regionHintText()).toContain("back");
+    expect(regionHintText()).not.toContain("cancel");
   });
 });

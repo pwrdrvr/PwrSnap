@@ -101,10 +101,16 @@ test("dragging on the canvas creates a rect with 8 handles", async () => {
   }
 });
 
-test("Escape from adjusting drops back to snap mode", async () => {
+test("Escape steps back from adjusting to snap; a second Escape exits", async () => {
+  // Two-step Escape: from a committed pick the first Esc clears back to
+  // snap mode WITHOUT submitting (the overlay stays open); a second Esc
+  // exits via submitRegion({ ok: false }). Driven via the direct
+  // (focused-renderer keydown) path here; the forwarded path has its
+  // own test below.
   const app = await launchPwrSnap();
   try {
     const selector = await showAndGetRegionSelector(app);
+    await installResultCapture(app);
     const root = selector.locator(".region-root");
     const box = await root.boundingBox();
     if (box === null) throw new Error("region-root has no bounding box");
@@ -114,18 +120,54 @@ test("Escape from adjusting drops back to snap mode", async () => {
     await selector.mouse.down();
     await selector.mouse.move(box.x + 300, box.y + 300, { steps: 5 });
     await selector.mouse.up();
-
     await expect(selector.locator(".region-rect.region-rect--adjustable")).toBeVisible();
 
-    // Esc cancels — renderer fires submitRegion(ok:false) and resets
-    // back to snap mode. The rect persists (now full-display snap)
-    // so the next interaction has something to bind to. Handles go
-    // away because we're no longer adjusting.
+    // First Esc → back to snap. Handles gone, NO result submitted.
     await selector.keyboard.press("Escape");
     await expect.poll(async () => selector.locator("body").getAttribute("data-interaction")).toBe(
       "snap"
     );
     await expect(selector.locator(".region-handle")).toHaveCount(0);
+    expect(await readResults(app)).toHaveLength(0);
+
+    // Re-aim (re-arms the de-dupe guard), then Esc again → exit.
+    await selector.mouse.move(box.x + 140, box.y + 140);
+    await selector.keyboard.press("Escape");
+    await expect.poll(async () => (await readResults(app)).length).toBe(1);
+    expect((await readResults(app))[0]).toMatchObject({ ok: false });
+  } finally {
+    await app.close();
+  }
+});
+
+test("forwarded Escape (region-selector:key) drives the same two-step", async () => {
+  // The forwarded-IPC path is the only live one when macOS withholds
+  // keyboard focus from the freshly-shown panel, so it must behave
+  // exactly like the direct keydown: step back, then exit.
+  const app = await launchPwrSnap();
+  try {
+    const selector = await showAndGetRegionSelector(app);
+    await installResultCapture(app);
+    const root = selector.locator(".region-root");
+    const box = await root.boundingBox();
+    if (box === null) throw new Error("region-root has no bounding box");
+
+    await selector.mouse.move(box.x + 100, box.y + 100);
+    await selector.mouse.down();
+    await selector.mouse.move(box.x + 300, box.y + 300, { steps: 5 });
+    await selector.mouse.up();
+    await expect(selector.locator(".region-rect.region-rect--adjustable")).toBeVisible();
+
+    await sendSelectorKey(app, "Escape");
+    await expect.poll(async () => selector.locator("body").getAttribute("data-interaction")).toBe(
+      "snap"
+    );
+    expect(await readResults(app)).toHaveLength(0);
+
+    await selector.mouse.move(box.x + 140, box.y + 140);
+    await sendSelectorKey(app, "Escape");
+    await expect.poll(async () => (await readResults(app)).length).toBe(1);
+    expect((await readResults(app))[0]).toMatchObject({ ok: false });
   } finally {
     await app.close();
   }
@@ -170,6 +212,46 @@ test("arrow keys nudge the adjustable rect by 1px (10 with shift)", async () => 
     await app.close();
   }
 });
+
+/** Capture submitRegion (region-selector:result) payloads on the main
+ *  side — renderer-side stubbing doesn't survive the contextBridge
+ *  freeze, so we prependListener on ipcMain (same pattern as
+ *  region-selector-snap.spec.ts). */
+async function installResultCapture(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>
+): Promise<void> {
+  await app.electronApp.evaluate(({ ipcMain }) => {
+    const captured: unknown[] = [];
+    (globalThis as unknown as { __ESC_RESULTS__: unknown[] }).__ESC_RESULTS__ = captured;
+    const handler = (_event: unknown, payload: unknown): void => {
+      captured.push(payload);
+    };
+    ipcMain.prependListener("region-selector:result", handler);
+  });
+}
+
+async function readResults(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>
+): Promise<Array<{ ok: boolean }>> {
+  return (await app.electronApp.evaluate(() => {
+    return (globalThis as unknown as { __ESC_RESULTS__?: unknown[] }).__ESC_RESULTS__ ?? [];
+  })) as Array<{ ok: boolean }>;
+}
+
+/** Simulate the globalShortcut-forwarded key path: main sends
+ *  region-selector:key to the renderer's webContents. */
+async function sendSelectorKey(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>,
+  key: string
+): Promise<void> {
+  await app.electronApp.evaluate(({ BrowserWindow }, key) => {
+    const w = BrowserWindow.getAllWindows().find(
+      (w) => !w.isDestroyed() && w.webContents.getURL().includes("stage=region")
+    );
+    if (w === undefined) throw new Error("no selector window");
+    w.webContents.send("region-selector:key", { key });
+  }, key);
+}
 
 function parseRectStyle(style: string | null): { left: number; top: number } {
   if (style === null) throw new Error("rect has no inline style");

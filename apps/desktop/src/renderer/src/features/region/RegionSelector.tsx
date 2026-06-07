@@ -53,6 +53,13 @@ import {
 const HASH_PARAM_DISPLAY_ID = "displayId";
 const NUDGE_PX = 1;
 const NUDGE_PX_SHIFT = 10;
+// Escape de-dupe window. A single physical Esc can be delivered twice
+// near-simultaneously — once via the focused renderer keydown and once
+// via the forwarded globalShortcut IPC. handleEscape() ignores a second
+// Escape within this window so one press can't both step back AND
+// cancel. Comfortably longer than the IPC hop, far shorter than a
+// deliberate second press; also re-armed on the next mousemove.
+const ESCAPE_DEDUPE_MS = 50;
 
 type SnapTarget =
   | { kind: "window"; entry: WindowSnapEntry }
@@ -161,6 +168,8 @@ export function RegionSelector() {
   // body[data-mode]; see region.css.
   const hLineRef = useRef<HTMLDivElement | null>(null);
   const vLineRef = useRef<HTMLDivElement | null>(null);
+  // Guards handleEscape against a double-delivered single Esc press.
+  const escapeGuardRef = useRef(false);
 
   // Write the guide-line positions directly. `x` drives the vertical
   // line's left; `y` drives the horizontal line's top. Reads only the
@@ -405,11 +414,43 @@ export function RegionSelector() {
     setRect(displaySnapRect());
   }
 
-  function cancel(): void {
-    window.pwrsnapApi?.submitRegion({ ok: false });
+  // Reset the selector to live-snap mode WITHOUT submitting anything to
+  // main. This is the "step back" half of the Escape behavior — purely
+  // client-side, so it never triggers the main-side cancel choreography
+  // (float-over cancel → hideSelector → previous-app reactivation).
+  function resetToSnap(): void {
     setInteraction({ kind: "snap" });
     setSnapTarget({ kind: "display" });
     setRect(displaySnapRect());
+    setShiftHeld(false);
+    setSpaceHeld(false);
+  }
+
+  function cancel(): void {
+    // The real exit: tell main to tear the selector down, then reset
+    // local state so a re-shown (pre-warmed) window starts clean.
+    window.pwrsnapApi?.submitRegion({ ok: false });
+    resetToSnap();
+  }
+
+  // Single source of Escape semantics, called by BOTH the direct
+  // keydown path and the forwarded-IPC path so they can't drift:
+  //   - committed pick (anything but snap) → step back to snap, no submit
+  //   - already in snap (nothing picked)   → exit (cancel → submit)
+  // The escapeGuard swallows a second Escape within ESCAPE_DEDUPE_MS so
+  // one physical press delivered via both paths can't step-back-then-
+  // cancel. (Re-armed early by onMouseMove for snappy deliberate repeats.)
+  function handleEscape(): void {
+    if (escapeGuardRef.current) return;
+    escapeGuardRef.current = true;
+    setTimeout(() => {
+      escapeGuardRef.current = false;
+    }, ESCAPE_DEDUPE_MS);
+    if (interactionRef.current.kind !== "snap") {
+      resetToSnap();
+    } else {
+      cancel();
+    }
   }
 
   useEffect(() => {
@@ -457,7 +498,7 @@ export function RegionSelector() {
       }
       if (event.key === "Escape") {
         event.preventDefault();
-        cancel();
+        handleEscape();
         return;
       }
       if (event.key === "Enter") {
@@ -604,6 +645,9 @@ export function RegionSelector() {
       // Crosshair tracks the cursor in every state; CSS decides whether
       // it paints (hidden during moving/resizing and in window mode).
       positionCrosshair(event.clientX, event.clientY);
+      // Moving the cursor re-arms the Escape de-dupe guard, so a
+      // deliberate "step back, re-aim, Esc again to exit" feels instant.
+      escapeGuardRef.current = false;
       const i = interactionRef.current;
       switch (i.kind) {
         case "snap": {
@@ -775,7 +819,7 @@ export function RegionSelector() {
     // keyboard focus yet.
     const unsubKey = window.pwrsnapApi?.onSelectorKey((payload) => {
       if (payload.key === "Escape") {
-        cancel();
+        handleEscape();
       } else if (payload.key === "Enter") {
         commit();
       }
@@ -814,10 +858,6 @@ export function RegionSelector() {
             <span>
               <kbd>↵</kbd>commit
             </span>
-            <span className="region-hint-sep">·</span>
-            <span>
-              <kbd>esc</kbd>cancel
-            </span>
           </>
         );
       }
@@ -836,10 +876,6 @@ export function RegionSelector() {
             <span className="region-hint-sep">·</span>
             <span>
               <kbd>tab</kbd>next window
-            </span>
-            <span className="region-hint-sep">·</span>
-            <span>
-              <kbd>esc</kbd>cancel
             </span>
           </>
         );
@@ -1042,7 +1078,10 @@ export function RegionSelector() {
         {hint}
         <span className="region-hint-sep">·</span>
         <span>
-          <kbd>esc</kbd>cancel
+          {/* Single source of the Esc affordance. In a committed pick
+              Esc steps back ("back"); in snap it exits ("cancel"). */}
+          <kbd>esc</kbd>
+          {interaction.kind === "adjusting" ? "back" : "cancel"}
         </span>
       </div>
       <style>{`@keyframes ps-rec-pulse {

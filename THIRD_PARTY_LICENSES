@@ -123,7 +123,7 @@ MIT
 - dunder-proto@1.0.1 | https://github.com/es-shims/dunder-proto
 - ee-first@1.1.1 | jonathanong/ee-first
 - electron@41.7.1 | https://github.com/electron/electron
-- electron-log@5.4.3 | megahertz/electron-log
+- electron-log@5.4.4 | megahertz/electron-log
 - electron-updater@6.8.3 | https://github.com/electron-userland/electron-builder
 - encodeurl@2.0.0 | pillarjs/encodeurl
 - end-of-stream@1.4.5 | https://github.com/mafintosh/end-of-stream
@@ -2285,13 +2285,13 @@ LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-electron-log@5.4.3 (MIT)
+electron-log@5.4.4 (MIT)
 ------------------------
 
 Applies to:
-- electron-log@5.4.3 (MIT)
+- electron-log@5.4.4 (MIT)
 
-Representative file: electron-log@5.4.3/LICENSE
+Representative file: electron-log@5.4.4/LICENSE
 
 The MIT License (MIT)
 

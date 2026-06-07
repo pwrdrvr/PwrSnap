@@ -124,7 +124,15 @@ export const chatThreadSidecarSchema = z.object({
   /** Last N focus changes (capped by the store at write time). */
   focusHistory: z.array(chatFocusEntrySchema).default([]),
   archived: z.boolean().default(false),
-  pinned: z.boolean().default(false)
+  pinned: z.boolean().default(false),
+  // ---- Per-thread backend config (chosen at New-Chat, locked on first
+  // message; migration 0024). NULL = fall back to the surface's Settings
+  // default. `provider` is the BACKEND selector ("codex" / "acp:<id>");
+  // `reasoning` is the effort/mode token. All nullable so threads created
+  // before this feature normalize cleanly.
+  provider: z.string().nullable().default(null),
+  model: z.string().nullable().default(null),
+  reasoning: z.string().nullable().default(null)
 });
 export type ChatThreadSidecar = z.infer<typeof chatThreadSidecarSchema>;
 
@@ -151,6 +159,12 @@ export type LibraryChatThreadView = {
   /** Short preview of the last message for the thread-list row. */
   lastMessagePreview: string;
   status: LibraryChatThreadStatus;
+  /** The thread's locked backend config (NULL until chosen / for legacy
+   *  threads). The renderer renders these as the locked Provider / Model /
+   *  Reasoning chips once a thread has started. */
+  provider: string | null;
+  model: string | null;
+  reasoning: string | null;
 };
 
 // ---- Approval flow -----------------------------------------------------

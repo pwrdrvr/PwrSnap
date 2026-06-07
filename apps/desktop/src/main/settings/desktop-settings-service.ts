@@ -8,6 +8,11 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type {
+  AcpAgentPreference,
+  AcpSettings,
+  AiSurfaceDefault,
+  AiSurfaceDefaultPatch,
+  AiSurfaceDefaults,
   AppearanceTheme,
   ArrowEndStyle,
   ArrowStemStyle,
@@ -48,7 +53,9 @@ import {
   MAX_HIGHLIGHT_OPACITY,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
   DEFAULT_SHAPE_KIND,
+  isAiReasoningEffort,
   isAppearanceTheme,
+  isBuiltInAcpAgentId,
   isCodexCaptionModel,
   isColorToken,
   isEditorSidebarPanel,
@@ -92,7 +99,22 @@ export function defaultSettings(): Settings {
       consentAcceptedAt: null,
       budgetSafetyDisabledAt: null,
       autoAcceptSuggestions: false,
-      chat: { ...DEFAULT_CHAT_SETTINGS, sensitiveDataPatterns: [] }
+      chat: { ...DEFAULT_CHAT_SETTINGS, sensitiveDataPatterns: [] },
+      // Per-surface defaults start empty (= "use the Codex default for
+      // every surface"). `parseV1` seeds `enrichment.model` from the
+      // legacy `codex.captionModel` so existing enrichment behavior is
+      // preserved; a fresh install (this function) has no legacy file to
+      // read from, so enrichment.model is left empty here and the
+      // enrichment path falls back to `codex.captionModel` at call time.
+      defaults: {
+        libraryChat: {},
+        sizzleChat: {},
+        enrichment: {}
+      },
+      // No ACP agents enabled on a fresh install. The user opts agents
+      // into the enabled set from Settings → AI → ACP agents (additive,
+      // no schemaVersion bump).
+      acp: { enabledAgentIds: [], agents: {} }
     },
     // Single source of truth shared with the renderer's "Reset to
     // defaults" button. Rationale for each chord lives on the
@@ -484,7 +506,25 @@ function parseV1(raw: unknown): Settings | null {
       // with the full block. No `schemaVersion` bump per the additive
       // convention. See docs/plans/2026-05-28-001-feat-library-chat-
       // editor-interface-plan.md and §F13 substrate compliance.
-      chat: parseChatSettings(ai.chat, defaults.ai.chat)
+      chat: parseChatSettings(ai.chat, defaults.ai.chat),
+      // `ai.defaults.*` is additive — older files won't have it. Falls
+      // through to empty per-surface objects (= "Codex default"). For
+      // back-compat, when the file has no explicit enrichment model we
+      // seed it from the legacy `codex.captionModel` so existing
+      // enrichment behavior (model selection) is preserved across the
+      // upgrade. No `schemaVersion` bump per the additive convention.
+      defaults: parseAiSurfaceDefaults(
+        ai.defaults,
+        defaults.ai.defaults,
+        isCodexCaptionModel(codex.captionModel)
+          ? (codex.captionModel as string)
+          : defaults.codex.captionModel
+      ),
+      // `ai.acp.*` is additive — older files won't have it. Falls through
+      // to an empty enabled set; only recognized built-in agent ids
+      // survive the parse so a stale/forged file can't enable an unknown
+      // agent. No `schemaVersion` bump per the additive convention.
+      acp: parseAcpSettings(ai.acp)
     },
     hotkeys: {
       quickCapture: pickString(hotkeys.quickCapture, defaults.hotkeys.quickCapture),
@@ -599,6 +639,100 @@ function parseChatSettings(raw: unknown, defaults: ChatSettings): ChatSettings {
       defaults.firstLaunchBannerDismissed
     )
   };
+}
+
+/** Parse one `ai.defaults.<surface>` object. Only keeps a leaf when it's
+ *  a non-empty string (provider / model) or a recognized reasoning value;
+ *  everything else is dropped so the in-memory shape omits the field
+ *  entirely (= "use the Codex default"). `seedModel`, when provided, fills
+ *  `model` if the on-disk file has no explicit model — used to carry the
+ *  legacy `codex.captionModel` into `enrichment.model`. */
+function parseAiSurfaceDefault(
+  raw: unknown,
+  seedModel?: string
+): AiSurfaceDefault {
+  const out: AiSurfaceDefault = {};
+  const rec = isRecord(raw) ? raw : {};
+  if (typeof rec.provider === "string") {
+    // `provider` is a BACKEND selector for every surface now: "codex" or
+    // "acp:<known-id>". Keep only valid selectors; a legacy free-text Codex
+    // modelProvider token (e.g. "openai" on the old enrichment surface) is
+    // dropped → Codex default. "" / "codex" also drop to the implicit default.
+    const provider = rec.provider.trim();
+    if (provider.startsWith("acp:") && isBuiltInAcpAgentId(provider.slice("acp:".length))) {
+      out.provider = provider;
+    }
+  }
+  if (typeof rec.model === "string" && rec.model.trim().length > 0) {
+    out.model = rec.model.trim();
+  } else if (seedModel !== undefined && seedModel.trim().length > 0) {
+    out.model = seedModel.trim();
+  }
+  if (isAiReasoningEffort(rec.reasoning)) {
+    out.reasoning = rec.reasoning;
+  }
+  return out;
+}
+
+/** Parse `ai.defaults` from an on-disk JSON value. Each surface falls
+ *  through to an empty object when missing. `enrichmentSeedModel` seeds
+ *  the enrichment surface's `model` for back-compat with the legacy
+ *  `codex.captionModel` field. */
+function parseAiSurfaceDefaults(
+  raw: unknown,
+  _defaults: AiSurfaceDefaults,
+  enrichmentSeedModel: string
+): AiSurfaceDefaults {
+  const rec = isRecord(raw) ? raw : {};
+  return {
+    libraryChat: parseAiSurfaceDefault(rec.libraryChat),
+    sizzleChat: parseAiSurfaceDefault(rec.sizzleChat),
+    enrichment: parseAiSurfaceDefault(rec.enrichment, enrichmentSeedModel)
+  };
+}
+
+/** Parse `ai.acp` from an on-disk JSON value. Keeps only recognized
+ *  built-in agent ids (de-duplicated, order preserved) so a stale or
+ *  forged file can't enable an unknown agent. Missing / malformed input
+ *  falls through to an empty enabled set. */
+function parseAcpSettings(raw: unknown): AcpSettings {
+  if (!isRecord(raw) || !Array.isArray(raw.enabledAgentIds)) {
+    return { enabledAgentIds: [], agents: {} };
+  }
+  const seen = new Set<string>();
+  const enabledAgentIds: string[] = [];
+  for (const entry of raw.enabledAgentIds) {
+    if (!isBuiltInAcpAgentId(entry)) continue;
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    enabledAgentIds.push(entry);
+  }
+  return { enabledAgentIds, agents: parseAcpAgentPreferences(raw.agents) };
+}
+
+/** Parse `ai.acp.agents` — a per-agent path-preference map. Keeps only
+ *  recognized built-in agent ids and only string `overridePath` / `selectedPath`
+ *  values; anything else is dropped so a forged file can't smuggle in arbitrary
+ *  keys/shapes. */
+function parseAcpAgentPreferences(
+  raw: unknown
+): Record<string, AcpAgentPreference> {
+  if (!isRecord(raw)) return {};
+  const agents: Record<string, AcpAgentPreference> = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (!isBuiltInAcpAgentId(id) || !isRecord(value)) continue;
+    const pref: AcpAgentPreference = {};
+    if (typeof value.overridePath === "string" && value.overridePath.length > 0) {
+      pref.overridePath = value.overridePath;
+    }
+    if (typeof value.selectedPath === "string" && value.selectedPath.length > 0) {
+      pref.selectedPath = value.selectedPath;
+    }
+    if (pref.overridePath !== undefined || pref.selectedPath !== undefined) {
+      agents[id] = pref;
+    }
+  }
+  return agents;
 }
 
 function parseLibrarySettings(
@@ -987,8 +1121,112 @@ function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings[
     // `chat` is a sub-object; merge field-by-field. Empty array on
     // sensitiveDataPatterns IS a meaningful value (cleared list), not
     // a "leave alone" sentinel — substrate rule `undefined ≠ null ≠ ""`.
-    chat: mergeChat(current.chat, patch.chat)
+    chat: mergeChat(current.chat, patch.chat),
+    defaults: mergeAiSurfaceDefaults(current.defaults, patch.defaults),
+    acp: mergeAcp(current.acp, patch.acp)
   };
+}
+
+/** Merge `ai.acp`. `enabledAgentIds` REPLACES the stored set wholesale
+ *  when present (the renderer ships the full desired set on each toggle,
+ *  mirroring `chat.sensitiveDataPatterns`); an empty array clears it. An
+ *  undefined `acp` / undefined `enabledAgentIds` leaves the stored set
+ *  untouched. The bus validator has already rejected unknown ids by the
+ *  time the patch reaches here. */
+function mergeAcp(
+  current: AcpSettings,
+  patch: Partial<AcpSettings> | undefined
+): AcpSettings {
+  if (patch === undefined) return current;
+  return {
+    enabledAgentIds:
+      patch.enabledAgentIds !== undefined
+        ? patch.enabledAgentIds
+        : current.enabledAgentIds,
+    agents: mergeAcpAgents(current.agents ?? {}, patch.agents)
+  };
+}
+
+/** Merge `ai.acp.agents` per agent id. Unlike `enabledAgentIds` (replace), the
+ *  agents map merges field-by-field: a patched agent's `overridePath` /
+ *  `selectedPath` updates only those leaves, and an explicit `""` / `null`
+ *  clears that leaf (→ "auto"). An agent whose entry becomes empty is dropped
+ *  so the stored shape stays minimal. Other agents are left untouched. */
+function mergeAcpAgents(
+  current: Record<string, AcpAgentPreference>,
+  patch: Record<string, AcpAgentPreference> | undefined
+): Record<string, AcpAgentPreference> {
+  if (patch === undefined) return current;
+  const next: Record<string, AcpAgentPreference> = { ...current };
+  for (const [id, prefPatch] of Object.entries(patch)) {
+    if (prefPatch === undefined) continue;
+    const merged: AcpAgentPreference = { ...next[id] };
+    if ("overridePath" in prefPatch) {
+      const value = prefPatch.overridePath;
+      if (value === undefined || value === null || value === "") {
+        delete merged.overridePath;
+      } else {
+        merged.overridePath = value;
+      }
+    }
+    if ("selectedPath" in prefPatch) {
+      const value = prefPatch.selectedPath;
+      if (value === undefined || value === null || value === "") {
+        delete merged.selectedPath;
+      } else {
+        merged.selectedPath = value;
+      }
+    }
+    if (merged.overridePath === undefined && merged.selectedPath === undefined) {
+      delete next[id];
+    } else {
+      next[id] = merged;
+    }
+  }
+  return next;
+}
+
+/** Merge `ai.defaults` field-by-field across the three surfaces. Each
+ *  surface is independently optional; within a surface each leaf is
+ *  too. Per the substrate hygiene rule, an explicit empty string clears
+ *  the field (→ "use Codex default"), while `undefined` leaves it
+ *  untouched. The stored shape OMITS cleared fields so it matches what
+ *  `parseAiSurfaceDefault` produces on the next read. */
+type AiDefaultsPatch = NonNullable<NonNullable<SettingsPatch["ai"]>["defaults"]>;
+
+function mergeAiSurfaceDefaults(
+  current: AiSurfaceDefaults,
+  patch: AiDefaultsPatch | undefined
+): AiSurfaceDefaults {
+  if (patch === undefined) return current;
+  return {
+    libraryChat: mergeAiSurfaceDefault(current.libraryChat, patch.libraryChat),
+    sizzleChat: mergeAiSurfaceDefault(current.sizzleChat, patch.sizzleChat),
+    enrichment: mergeAiSurfaceDefault(current.enrichment, patch.enrichment)
+  };
+}
+
+function mergeAiSurfaceDefault(
+  current: AiSurfaceDefault,
+  patch: AiSurfaceDefaultPatch | undefined
+): AiSurfaceDefault {
+  if (patch === undefined) return current;
+  const out: AiSurfaceDefault = { ...current };
+  // provider / model / reasoning: explicit "" clears the key (→ Codex
+  // default); any non-empty value sets it; undefined leaves it as-is.
+  if (patch.provider !== undefined) {
+    if (patch.provider.trim().length === 0) delete out.provider;
+    else out.provider = patch.provider.trim();
+  }
+  if (patch.model !== undefined) {
+    if (patch.model.trim().length === 0) delete out.model;
+    else out.model = patch.model.trim();
+  }
+  if (patch.reasoning !== undefined) {
+    if (patch.reasoning === "") delete out.reasoning;
+    else out.reasoning = patch.reasoning;
+  }
+  return out;
 }
 
 function mergeChat(

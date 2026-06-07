@@ -15,11 +15,16 @@ import type {
   LibraryChatToolCallEvent,
   LibraryChatThreadView
 } from "@pwrsnap/shared";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { acpAgentIdFromThreadId, EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../lib/pwrsnap";
 import { MessageList, type ChatActivityChip } from "../shared/chat/MessageList";
 import { Composer, type ComposerAttachment } from "../shared/chat/Composer";
 import { ChatApprovalModal } from "../shared/chat/ChatApprovalModal";
+import {
+  NewChatConfigChips,
+  LockedBackendChips,
+  type ChatBackendChoice
+} from "../shared/chat/ChatBackendChips";
 import "../shared/chat/chat-panel.css";
 
 export interface SizzleChatPanelProps {
@@ -42,6 +47,16 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [activityByMsg, setActivityByMsg] = useState<Record<string, ChatActivityChip[]>>({});
   const [pendingChips, setPendingChips] = useState<ChatActivityChip[]>([]);
+  // New-chat backend draft (editable chips until the first message locks it).
+  const [providers, setProviders] = useState<string[]>(["codex"]);
+  const [draftConfig, setDraftConfig] = useState<ChatBackendChoice>({
+    provider: "codex",
+    model: null,
+    reasoning: "medium"
+  });
+  const [draftHint, setDraftHint] = useState<string | null>(null);
+  const draftConfigRef = useRef<ChatBackendChoice>(draftConfig);
+  draftConfigRef.current = draftConfig;
 
   const threadsRef = useRef<LibraryChatThreadView[]>([]);
   threadsRef.current = threads;
@@ -75,6 +90,26 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
     setPendingChips([]);
   }, []);
 
+  // Provider options + new-chat draft defaults from Settings → AI (sizzleChat).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const r = await dispatch("settings:read", {});
+      if (cancelled || !r.ok || r.value === undefined) return;
+      const enabled = r.value.ai?.acp?.enabledAgentIds ?? [];
+      setProviders(["codex", ...enabled.map((id) => `acp:${id}`)]);
+      const d = r.value.ai?.defaults?.sizzleChat;
+      setDraftConfig({
+        provider: d?.provider !== undefined && d.provider !== "" ? d.provider : "codex",
+        model: d?.model !== undefined && d.model !== "" ? d.model : null,
+        reasoning: d?.reasoning ?? "medium"
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Thread list — scoped to the active project. Re-runs on project switch.
   useEffect(() => {
     let cancelled = false;
@@ -94,12 +129,12 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
         return;
       }
       const found = result.value?.threads ?? [];
-      const sorted = sortChatThreads(found);
-      setThreads(sorted);
-      // Resume the reel's most-recent chat (threads are modified_at DESC)
-      // instead of dropping to the greeting — so switching reels (and
-      // relaunching the app) reopens the conversation for that reel.
-      if (sorted.length > 0) setActiveThreadId(sorted[0]!.threadId);
+      setThreads(sortChatThreads(found));
+      // The list is now in CREATION order, so resume the most-recently-active
+      // chat explicitly (by modified_at) rather than sorted[0] — reopens the
+      // reel's conversation on switch / relaunch instead of the greeting.
+      const resume = mostRecentlyModified(found);
+      if (resume !== null) setActiveThreadId(resume.threadId);
       setLoading(false);
     })();
     return () => {
@@ -258,27 +293,33 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
     []
   );
 
-  const onNewChat = useCallback(async () => {
-    const result = await dispatch("codex:sizzleChat:create", { anchorCaptureId: projectId });
-    if (!result.ok) {
-      setCodexError(errorFor(result.error));
-      return;
-    }
-    setThreads((prev) =>
-      sortChatThreads([result.value, ...prev.filter((t) => t.threadId !== result.value.threadId)])
-    );
-    setActiveThreadId(result.value.threadId);
+  // "New" opens a DRAFT — no thread until the first message, so the backend
+  // chips stay editable (provider unlocked) until the turn starts.
+  const onNewChat = useCallback(() => {
+    setActiveThreadId(null);
     setMessages([]);
     setActivityByMsg({});
     setPendingChips([]);
+    setDraftHint(null);
     turnMsgRef.current.clear();
-  }, [projectId]);
+  }, []);
 
   const onSubmit = useCallback(
     async (text: string, _attachments: readonly ComposerAttachment[]): Promise<void> => {
       let threadId = activeThreadRef.current;
       if (threadId === null) {
-        const created = await dispatch("codex:sizzleChat:create", { anchorCaptureId: projectId });
+        const cfg = draftConfigRef.current;
+        if (cfg.model === null || cfg.model === "") {
+          setDraftHint("Choose a model to start this chat.");
+          return;
+        }
+        setDraftHint(null);
+        const created = await dispatch("codex:sizzleChat:create", {
+          anchorCaptureId: projectId,
+          provider: cfg.provider,
+          model: cfg.model,
+          ...(cfg.reasoning !== null && cfg.reasoning !== "" ? { reasoning: cfg.reasoning } : {})
+        });
         if (!created.ok) {
           setCodexError(errorFor(created.error));
           return;
@@ -330,7 +371,8 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
         <p className="ps-libchat-empty-body">{codexError.message}</p>
         {codexError.showSettingsHint ? (
           <p className="ps-libchat-empty-body">
-            Open <b>Settings → AI Providers</b> to configure Codex, then try again.
+            Open <b>Settings → AI Providers</b> to configure Codex, Gemini, or
+            another provider, then try again.
           </p>
         ) : null}
         <button
@@ -361,6 +403,20 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
   }
 
   const showGreeting = activeThreadId === null;
+  const activeThread =
+    activeThreadId !== null ? (threads.find((t) => t.threadId === activeThreadId) ?? null) : null;
+  const lockedChoice: ChatBackendChoice | null =
+    activeThread !== null
+      ? {
+          provider:
+            activeThread.provider ??
+            (acpAgentIdFromThreadId(activeThread.threadId) !== null
+              ? `acp:${acpAgentIdFromThreadId(activeThread.threadId)}`
+              : "codex"),
+          model: activeThread.model,
+          reasoning: activeThread.reasoning
+        }
+      : null;
 
   return (
     <div className="ps-libchat" data-testid="sizzle-chat-panel">
@@ -414,21 +470,30 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
             <p className="ps-libchat-empty-body">
               Describe the video you want. I can search your library, propose
               scenes, write narrator scripts, set transitions, and render this
-              reel. Type below to start.
+              reel. Pick a provider + model, then type below to start.
             </p>
+            <NewChatConfigChips providers={providers} value={draftConfig} onChange={setDraftConfig} />
+            {draftHint !== null ? (
+              <p className="ps-libchat-empty-body" style={{ color: "var(--accent)" }}>
+                {draftHint}
+              </p>
+            ) : null}
           </div>
         ) : (
-          <MessageList
-            messages={messages}
-            streamingMessageId={streamingMessageId}
-            subscribeToStream={subscribeToStream}
-            activityByMessageId={activityByMsg}
-            trailingActivity={
-              activeTurnId !== null
-                ? { chips: pendingChips, thinking: streamingMessageId === null }
-                : null
-            }
-          />
+          <>
+            {lockedChoice !== null ? <LockedBackendChips choice={lockedChoice} /> : null}
+            <MessageList
+              messages={messages}
+              streamingMessageId={streamingMessageId}
+              subscribeToStream={subscribeToStream}
+              activityByMessageId={activityByMsg}
+              trailingActivity={
+                activeTurnId !== null
+                  ? { chips: pendingChips, thinking: streamingMessageId === null }
+                  : null
+              }
+            />
+          </>
         )}
         <Composer onSubmit={onSubmit} placeholder="Describe the reel, or ask for an edit…" />
       </div>
@@ -465,13 +530,25 @@ function errorFor(error: { code?: string; message: string }): ChatPanelError {
 }
 
 function sortChatThreads(threads: LibraryChatThreadView[]): LibraryChatThreadView[] {
+  // Stable CREATION order (oldest → newest). Deliberately NOT modified_at, so a
+  // thread never jumps to the front when you select it or send a message — its
+  // position stays put, which is the only way to tell same-named chats apart.
   return [...threads].sort((a, b) => {
-    const modified = dateValue(b.modifiedAt) - dateValue(a.modifiedAt);
-    if (modified !== 0) return modified;
-    const created = dateValue(b.createdAt) - dateValue(a.createdAt);
+    const created = dateValue(a.createdAt) - dateValue(b.createdAt);
     if (created !== 0) return created;
-    return b.threadId.localeCompare(a.threadId);
+    return a.threadId.localeCompare(b.threadId);
   });
+}
+
+/** The most-recently-active thread (by modified_at), for resume-on-open — the
+ *  list itself stays in creation order, so this can't be sorted[0]. */
+function mostRecentlyModified(
+  threads: LibraryChatThreadView[]
+): LibraryChatThreadView | null {
+  if (threads.length === 0) return null;
+  return threads.reduce((best, t) =>
+    dateValue(t.modifiedAt) > dateValue(best.modifiedAt) ? t : best
+  );
 }
 
 function dateValue(value: string): number {

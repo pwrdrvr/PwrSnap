@@ -52,7 +52,7 @@ function enrichment(patch: Partial<CaptureEnrichment> = {}): CaptureEnrichment {
 const baseSettings: Settings = {
   schemaVersion: 1,
   codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
-  ai: { enabled: false, consentAcceptedAt: null, budgetSafetyDisabledAt: null, autoAcceptSuggestions: false, chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false } },
+  ai: { enabled: false, consentAcceptedAt: null, budgetSafetyDisabledAt: null, autoAcceptSuggestions: false, chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }, defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} }, acp: { enabledAgentIds: [] } },
   hotkeys: {
     quickCapture: "CommandOrControl+Shift+C",
     region: "",
@@ -279,7 +279,7 @@ describe("FloatOverHost", () => {
         record: imageRecord
       });
     });
-    expect(container.textContent).toContain("Enable Codex");
+    expect(container.textContent).toContain("Enable AI to read");
 
     await act(async () => {
       api.pushEvent(EVENT_CHANNELS.settingsChanged, {
@@ -296,7 +296,91 @@ describe("FloatOverHost", () => {
     });
 
     expect(container.textContent).toContain("Codex has no suggestion yet");
-    expect(container.textContent).not.toContain("Enable Codex");
+    expect(container.textContent).not.toContain("Enable AI to read");
+  });
+
+  test("status pill names the configured enrichment provider (Gemini, not Codex)", async () => {
+    const api = installHostApi();
+    // The fast show-loaded-with-record path must still fetch settings so the
+    // pill can name the provider. Return an acp:gemini enrichment default.
+    const geminiSettings: Settings = {
+      ...baseSettings,
+      ai: {
+        ...baseSettings.ai,
+        enabled: true,
+        consentAcceptedAt: "2026-05-19T12:00:00.000Z",
+        defaults: {
+          ...baseSettings.ai.defaults,
+          enrichment: { provider: "acp:gemini" }
+        }
+      }
+    };
+    (window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>).mockImplementation(
+      async (name: string) => {
+        if (name === "settings:read") return { ok: true, value: geminiSettings };
+        if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
+        if (name === "settings:refreshCodexDiscovery") {
+          return {
+            ok: true,
+            value: {
+              candidates: [{ path: "codex", source: "path", version: "1.0.0", available: true }],
+              resolvedPath: "codex",
+              auth: {
+                status: "authenticated",
+                testedAt: "2026-05-19T12:00:00.000Z",
+                durationMs: 12,
+                detail: "Logged in using ChatGPT"
+              },
+              refreshedAt: "2026-05-19T12:00:00.000Z"
+            }
+          };
+        }
+        return { ok: true, value: undefined };
+      }
+    );
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(createElement(FloatOverHost));
+    });
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.floatOverState, {
+        kind: "show-loaded",
+        captureId: imageRecord.id,
+        record: imageRecord
+      });
+    });
+    // Let the on-load settings:read resolve.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.aiRunUpdated, {
+        enrichment: {
+          captureId: imageRecord.id,
+          latestRunId: "run_g",
+          status: "running",
+          ocrText: null,
+          suggestedTitle: null,
+          acceptedTitle: null,
+          titleAcceptedAt: null,
+          suggestedFilenameStem: null,
+          acceptedFilenameStem: null,
+          filenameAcceptedAt: null,
+          suggestedDescription: null,
+          acceptedDescription: null,
+          descriptionAcceptedAt: null,
+          suggestedTags: [],
+          acceptedTags: []
+        }
+      });
+    });
+
+    expect(container.textContent).toContain("Gemini is reading the snap");
+    expect(container.textContent).not.toContain("Codex is reading the snap");
   });
 
   // Regression: bug v — the ⌘1/⌘2/⌘3 keydown listener must keep

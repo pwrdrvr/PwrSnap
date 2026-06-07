@@ -3,6 +3,7 @@ import {
   CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
   CAPTURE_ENRICHMENT_SCHEMA,
   buildCaptureEnrichmentPrompt,
+  isEnrichmentResultEmpty,
   parseCaptureEnrichmentResponse
 } from "../enrichment-schema";
 
@@ -25,12 +26,30 @@ describe("capture enrichment schema", () => {
     expect(parsed.tags).toEqual([{ label: "receipt", confidence: 0.9 }]);
   });
 
-  it("rejects malformed results", () => {
-    expect(() =>
-      parseCaptureEnrichmentResponse(
-        JSON.stringify({ ocrText: "", description: "", tags: [{ label: "" }] })
-      )
-    ).toThrow();
+  it("clamps over-limit / malformed arrays instead of rejecting the result", () => {
+    // A reply that's valid JSON but slightly over a list cap (or carries a junk
+    // entry) must NOT sink the run — the valuable caption/description survive
+    // and the offending array is clamped to the contract.
+    const parsed = parseCaptureEnrichmentResponse(
+      JSON.stringify({
+        title: "Dashboard",
+        textAnchors: ["a", "b", "c", "d", "e", "f", "g"], // 7 is fine — generous cap
+        tags: [{ label: "ok", confidence: 0.9 }, { label: "" }, "bare-string"] // blank dropped, string coerced
+      })
+    );
+    expect(parsed.title).toBe("Dashboard");
+    expect(parsed.textAnchors).toHaveLength(7);
+    expect(parsed.tags).toEqual([
+      { label: "ok", confidence: 0.9 },
+      { label: "bare-string", confidence: null }
+    ]);
+  });
+
+  it("drops a wholly-blank tag list to empty (caught later by the empty guard)", () => {
+    const parsed = parseCaptureEnrichmentResponse(
+      JSON.stringify({ ocrText: "", description: "", tags: [{ label: "" }] })
+    );
+    expect(isEnrichmentResultEmpty(parsed)).toBe(true);
   });
 
   it("exposes a strict object output schema", () => {
@@ -108,6 +127,40 @@ describe("capture enrichment schema", () => {
     });
 
     expect(prompt).not.toContain("Tags this user already uses");
+  });
+
+  it("treats a blank `{}` reply as an empty enrichment", () => {
+    // The result schema defaults the string fields to "" and arrays to [], so an
+    // agent that returns `{}` (seen with Grok) parses "successfully" into an
+    // all-empty result. That must be flagged as empty so the handler fails the
+    // run instead of persisting a silent-blank "completed".
+    const blank = parseCaptureEnrichmentResponse("{}");
+    expect(isEnrichmentResultEmpty(blank)).toBe(true);
+  });
+
+  it("treats whitespace-only values as empty", () => {
+    const parsed = parseCaptureEnrichmentResponse(
+      JSON.stringify({ ocrText: "  ", title: "\n", description: " ", filenameStem: "", tags: [] })
+    );
+    expect(isEnrichmentResultEmpty(parsed)).toBe(true);
+  });
+
+  it("is not empty when any usable field is present", () => {
+    expect(
+      isEnrichmentResultEmpty(parseCaptureEnrichmentResponse(JSON.stringify({ title: "A login screen" })))
+    ).toBe(false);
+    expect(
+      isEnrichmentResultEmpty(
+        parseCaptureEnrichmentResponse(
+          JSON.stringify({ tags: [{ label: "receipt", confidence: 0.9 }] })
+        )
+      )
+    ).toBe(false);
+    expect(
+      isEnrichmentResultEmpty(
+        parseCaptureEnrichmentResponse(JSON.stringify({ filenameStem: "login-screen" }))
+      )
+    ).toBe(false);
   });
 
   it("includes sampled video frame facts in the variable user prompt", () => {

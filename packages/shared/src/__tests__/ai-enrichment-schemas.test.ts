@@ -16,17 +16,75 @@ describe("EnrichmentResultSchema", () => {
     expect(parsed.tags[0]?.label).toBe("deploy");
   });
 
-  test("rejects empty tag labels", () => {
-    expect(() =>
-      EnrichmentResultSchema.parse({
-        ocrText: "",
-        description: "",
-        tags: [{ label: "   ", confidence: 0.5 }]
-      })
-    ).toThrow();
+  test("drops blank tag labels instead of rejecting the whole result", () => {
+    // Lenient by design: weak ACP models over-produce. A blank-label tag is
+    // dropped (not a hard failure) so a valid caption/description survives.
+    const parsed = EnrichmentResultSchema.parse({
+      title: "Build status",
+      tags: [{ label: "   ", confidence: 0.5 }, { label: "ci", confidence: 0.8 }]
+    });
+    expect(parsed.tags).toEqual([{ label: "ci", confidence: 0.8 }]);
   });
 
-  test("rejects confidence outside [0, 1]", () => {
+  test("accepts a generous number of text anchors (no nitpicking 5 vs 6)", () => {
+    const parsed = EnrichmentResultSchema.parse({
+      title: "x",
+      textAnchors: ["a", "b", "c", "d", "e", "f", "g"]
+    });
+    expect(parsed.textAnchors).toHaveLength(7);
+  });
+
+  test("only clamps text anchors at the sanity ceiling (100)", () => {
+    const parsed = EnrichmentResultSchema.parse({
+      title: "x",
+      textAnchors: Array.from({ length: 150 }, (_, i) => `anchor-${i}`)
+    });
+    expect(parsed.textAnchors).toHaveLength(100);
+  });
+
+  test("clamps an over-length title rather than rejecting", () => {
+    const parsed = EnrichmentResultSchema.parse({ title: "T".repeat(200) });
+    expect(parsed.title).toHaveLength(120);
+  });
+
+  test("drops a structurally-wrong field instead of sinking the whole result", () => {
+    // A model returns `title` as an object (genuinely wrong type) but the
+    // description/OCR are perfect. The bad field drops to its default; the
+    // valuable fields survive. No single field can fail the whole parse.
+    const parsed = EnrichmentResultSchema.parse({
+      title: { unexpected: "object" },
+      description: "A login screen with an SSO button",
+      ocrText: "Sign in with SSO"
+    });
+    expect(parsed.title).toBe("");
+    expect(parsed.description).toBe("A login screen with an SSO button");
+    expect(parsed.ocrText).toBe("Sign in with SSO");
+  });
+
+  test("drops a non-array tags value instead of rejecting", () => {
+    const parsed = EnrichmentResultSchema.parse({
+      title: "Build log",
+      tags: "ci,deploy" // a string, not an array
+    });
+    expect(parsed.title).toBe("Build log");
+    expect(parsed.tags).toEqual([]);
+  });
+
+  test("coerces a numeric title to a string rather than rejecting", () => {
+    const parsed = EnrichmentResultSchema.parse({ title: 42 });
+    expect(parsed.title).toBe("42");
+  });
+
+  test("nulls an out-of-range tag confidence instead of rejecting", () => {
+    const parsed = EnrichmentResultSchema.parse({
+      title: "x",
+      tags: [{ label: "deploy", confidence: 1.1 }]
+    });
+    expect(parsed.tags).toEqual([{ label: "deploy", confidence: null }]);
+  });
+
+  test("rejects confidence outside [0, 1] on the persisted SuggestedTagSchema", () => {
+    // The DB-facing schema stays strict — only the AI-output schema is lenient.
     expect(() => SuggestedTagSchema.parse({ label: "deploy", confidence: 1.1 })).toThrow();
   });
 });

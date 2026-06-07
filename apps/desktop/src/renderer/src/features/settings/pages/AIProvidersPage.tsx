@@ -4,20 +4,32 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import type {
+  AcpAgentDiscovery,
+  AcpAgentDiscoveryEntry,
+  AcpAgentModelOption,
+  AcpAgentPreference,
   AiEnrichmentBudgetStatus,
+  AiReasoningEffort,
+  AiSurfaceDefault,
+  AiSurfaceDefaultPatch,
+  AiSurfaceId,
   AiUsageRunsPage,
   AiUsageSummary,
   CodexModelList,
   CodexModelOption,
   CodexTestResult,
+  DesktopCodexAuthProfile,
+  DesktopCodexAuthProfileList,
   DesktopCodexDiscoveryCandidate,
   DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
 import {
+  AI_REASONING_EFFORTS,
+  builtInAcpAgentDisplayName,
   CODEX_CAPTION_MODELS,
   DEFAULT_CODEX_CAPTION_MODEL,
   EVENT_CHANNELS,
-  isCodexCaptionModel
+  isAiReasoningEffort
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import {
@@ -34,44 +46,6 @@ const CODEX_MODE_OPTIONS: readonly SegmentOption<"auto" | "pinned">[] = [
   { id: "auto", label: "Auto Discovery — Use Newest" },
   { id: "pinned", label: "Specified Path" }
 ];
-
-function modelOptionsForSelect(
-  models: readonly CodexModelOption[],
-  selectedModel: string
-): CodexModelOption[] {
-  const imageModels = models.filter(
-    (model) =>
-      !model.hidden &&
-      model.inputModalities.includes("text") &&
-      model.inputModalities.includes("image")
-  );
-  const options = imageModels.length > 0
-    ? imageModels
-    : CODEX_CAPTION_MODELS.map((id) => ({
-        id,
-        model: id,
-        displayName: id,
-        description: "",
-        hidden: false,
-        inputModalities: ["text", "image"] as Array<"text" | "image">,
-        defaultServiceTier: null,
-        isDefault: id === DEFAULT_CODEX_CAPTION_MODEL
-      }));
-  if (options.some((model) => model.id === selectedModel)) return options;
-  return [
-    {
-      id: selectedModel,
-      model: selectedModel,
-      displayName: selectedModel,
-      description: "",
-      hidden: false,
-      inputModalities: ["text", "image"],
-      defaultServiceTier: null,
-      isDefault: false
-    },
-    ...options
-  ];
-}
 
 function modelLabel(model: CodexModelOption): string {
   return model.displayName === model.id || model.displayName.length === 0
@@ -101,6 +75,25 @@ export function AIProvidersPage(): ReactElement {
   const [usageLoading, setUsageLoading] = useState<boolean>(true);
   const [codexModels, setCodexModels] = useState<CodexModelList | null>(null);
   const [codexModelsLoading, setCodexModelsLoading] = useState<boolean>(true);
+  const [acpDiscovery, setAcpDiscovery] = useState<AcpAgentDiscovery | null>(null);
+  const [acpDiscoveryLoading, setAcpDiscoveryLoading] = useState<boolean>(true);
+  const [acpDiscoveryError, setAcpDiscoveryError] = useState<string | null>(null);
+
+  const refreshAcpDiscovery = useCallback(async (): Promise<void> => {
+    setAcpDiscoveryLoading(true);
+    const result = await dispatch("acp:discover", {});
+    if (result.ok) {
+      setAcpDiscovery(result.value);
+      setAcpDiscoveryError(null);
+    } else {
+      setAcpDiscoveryError(result.error.message);
+    }
+    setAcpDiscoveryLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void refreshAcpDiscovery();
+  }, [refreshAcpDiscovery]);
 
   const refreshBudgetStatus = useCallback(async (): Promise<void> => {
     const result = await dispatch("codex:budgetStatus", {});
@@ -168,18 +161,74 @@ export function AIProvidersPage(): ReactElement {
     };
   }, [refreshUsage]);
 
+
+  // The chat-surface provider dropdown offers Codex + each ENABLED ACP agent
+  // (value `acp:<id>`, labeled by its discovery display name). Built from the
+  // enabled set intersected with discovery so an enabled-but-now-uninstalled
+  // agent still shows by id (the factory falls back to Codex at runtime). An
+  // agent enabled before discovery resolves is shown by its id until names
+  // arrive.
+  const enabledAgentIds = settings?.ai.acp.enabledAgentIds ?? [];
+  const acpChatProviderOptions = buildAcpProviderOptions(enabledAgentIds, acpDiscovery);
+
+  // ACP model lists, fetched lazily per agent (listing spawns the agent in ACP
+  // mode — seconds — so the main process memoizes; here we cache per agent and
+  // fetch only the agents a surface actually selects).
+  const [acpModels, setAcpModels] = useState<Record<string, readonly AcpAgentModelOption[]>>({});
+  const [acpModelsLoadingIds, setAcpModelsLoadingIds] = useState<readonly string[]>([]);
+  const fetchAcpModels = useCallback(async (agentId: string, refresh = false): Promise<void> => {
+    setAcpModelsLoadingIds((ids) => (ids.includes(agentId) ? ids : [...ids, agentId]));
+    const result = await dispatch("acp:models", { agentId, refresh });
+    // Record a list either way — `[]` on failure so the picker resolves to
+    // "Default" instead of sticking on "Loading…".
+    setAcpModels((prev) => ({ ...prev, [agentId]: result.ok ? result.value.models : [] }));
+    setAcpModelsLoadingIds((ids) => ids.filter((id) => id !== agentId));
+  }, []);
+  const agentIdFromProvider = (provider: string | undefined): string | null =>
+    provider !== undefined && provider.startsWith("acp:")
+      ? provider.slice("acp:".length)
+      : null;
+  const acpAgentIdsInUse = [
+    settings?.ai.defaults.enrichment.provider,
+    settings?.ai.defaults.libraryChat.provider,
+    settings?.ai.defaults.sizzleChat.provider
+  ]
+    .map(agentIdFromProvider)
+    .filter((id): id is string => id !== null);
+  const acpAgentIdsKey = [...new Set(acpAgentIdsInUse)].sort().join(",");
+  useEffect(() => {
+    for (const id of acpAgentIdsKey.length > 0 ? acpAgentIdsKey.split(",") : []) {
+      if (acpModels[id] === undefined && !acpModelsLoadingIds.includes(id)) {
+        void fetchAcpModels(id);
+      }
+    }
+  }, [acpAgentIdsKey, acpModels, acpModelsLoadingIds, fetchAcpModels]);
+
   const onRefresh = async (): Promise<void> => {
     setSnapshotLoading(true);
     setCodexModelsLoading(true);
-    const [snap] = await Promise.all([refreshCodex(true), refreshCodexModels()]);
+    // Force-refresh the in-use ACP agents' model lists too (re-spawns them),
+    // alongside the Codex snapshot + models. Normal opens read the persisted
+    // ACP model cache (instant); Refresh is the explicit re-discover.
+    const acpInUse = acpAgentIdsKey.length > 0 ? acpAgentIdsKey.split(",") : [];
+    const [snap] = await Promise.all([
+      refreshCodex(true),
+      refreshCodexModels(),
+      ...acpInUse.map((id) => fetchAcpModels(id, true))
+    ]);
     setSnapshot(snap);
     setSnapshotLoading(false);
   };
-
-  const captionModel = isCodexCaptionModel(settings?.codex.captionModel)
-    ? settings.codex.captionModel
-    : DEFAULT_CODEX_CAPTION_MODEL;
-  const captionModelOptions = modelOptionsForSelect(codexModels?.models ?? [], captionModel);
+  const acpModelsForProvider = (
+    provider: string | undefined
+  ): readonly AcpAgentModelOption[] | undefined => {
+    const id = agentIdFromProvider(provider);
+    return id === null ? undefined : acpModels[id];
+  };
+  const acpModelsLoadingForProvider = (provider: string | undefined): boolean => {
+    const id = agentIdFromProvider(provider);
+    return id !== null && acpModelsLoadingIds.includes(id);
+  };
 
   return (
     <>
@@ -188,44 +237,34 @@ export function AIProvidersPage(): ReactElement {
           <div className="pss__main-eyebrow">Providers</div>
           <h1 className="pss__main-title">Backends &amp; credentials</h1>
           <p className="pss__main-sub">
-            PwrSnap delegates AI work to your local Codex install. Captions,
-            tag suggestions, and OCR all ride on a single Codex enrichment
-            turn per capture. Semantic search vectorization is planned.
+            PwrSnap delegates AI work to your local Codex install or an enabled
+            ACP agent. Captions, tag suggestions, and OCR all ride on a single
+            enrichment turn per capture. Semantic search vectorization is
+            planned.
           </p>
         </div>
       </div>
 
       <Card eyebrow="ROLES" title="Job routing">
-        <JobRoutingRow
-          name="Capture captions & tag suggestions"
-          sub="Codex caption shown in Library detail + Float-Over"
-          provider="Codex"
-        >
-          <div className="pss__model-picker">
-            <select
-              className="pss__select"
-              value={captionModel}
-              onChange={(e) => {
-                const next = e.target.value;
-                if (!isCodexCaptionModel(next)) return;
-                void patch({ codex: { captionModel: next } });
-              }}
-              aria-label="Capture caption model"
-            >
-              {captionModelOptions.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {modelLabel(model)}
-                </option>
-              ))}
-            </select>
-            {codexModelsLoading ? <span className="pss__model-loading">loading models</span> : null}
-          </div>
-        </JobRoutingRow>
-        <JobRoutingRow
-          name="OCR — extract text from screenshots"
-          sub="Rides with the captions request — same Codex turn, same model"
-          provider="Codex"
-          model={captionModel}
+        <p className="pss__role-intro">
+          Route each AI job to a backend — Codex or an enabled ACP agent — and
+          pick its model + reasoning effort. Leave a field on Default to let the
+          backend choose. Applies to new runs / threads; existing conversations
+          aren&apos;t rewritten.
+        </p>
+        <AiSurfaceDefaultControl
+          surface="enrichment"
+          name="Capture captions, tags & OCR"
+          sub="Caption, tags + extracted text — one turn per capture, shown in Library detail + Float-Over"
+          value={settings?.ai.defaults.enrichment ?? {}}
+          models={codexModels?.models ?? []}
+          modelsLoading={codexModelsLoading}
+          acpProviderOptions={acpChatProviderOptions}
+          acpModelOptions={acpModelsForProvider(settings?.ai.defaults.enrichment.provider)}
+          acpModelsLoading={acpModelsLoadingForProvider(settings?.ai.defaults.enrichment.provider)}
+          onChange={(p) => {
+            void patch({ ai: { defaults: { enrichment: p } } });
+          }}
         />
         <JobRoutingRow
           name="Semantic search vectorization"
@@ -234,12 +273,40 @@ export function AIProvidersPage(): ReactElement {
           model="Coming soon"
           dim
         />
+        <AiSurfaceDefaultControl
+          surface="libraryChat"
+          name="Library chat"
+          sub="Ask the agent about a snap"
+          value={settings?.ai.defaults.libraryChat ?? {}}
+          models={codexModels?.models ?? []}
+          modelsLoading={codexModelsLoading}
+          acpProviderOptions={acpChatProviderOptions}
+          acpModelOptions={acpModelsForProvider(settings?.ai.defaults.libraryChat.provider)}
+          acpModelsLoading={acpModelsLoadingForProvider(settings?.ai.defaults.libraryChat.provider)}
+          onChange={(p) => {
+            void patch({ ai: { defaults: { libraryChat: p } } });
+          }}
+        />
+        <AiSurfaceDefaultControl
+          surface="sizzleChat"
+          name="Sizzle Reel chat"
+          sub="Composer agent for the reel"
+          value={settings?.ai.defaults.sizzleChat ?? {}}
+          models={codexModels?.models ?? []}
+          modelsLoading={codexModelsLoading}
+          acpProviderOptions={acpChatProviderOptions}
+          acpModelOptions={acpModelsForProvider(settings?.ai.defaults.sizzleChat.provider)}
+          acpModelsLoading={acpModelsLoadingForProvider(settings?.ai.defaults.sizzleChat.provider)}
+          onChange={(p) => {
+            void patch({ ai: { defaults: { sizzleChat: p } } });
+          }}
+        />
       </Card>
 
       <Card eyebrow="SAFETY" title="Capture enrichment">
         <Row
           label="AI enrichment"
-          sub="Controls Codex caption, OCR, filename, and tag generation for captures."
+          sub="Controls caption, OCR, filename, and tag generation for captures."
           tag={settings?.ai.enabled ? "enabled" : "off"}
         >
           <div className="pss__test">
@@ -306,7 +373,7 @@ export function AIProvidersPage(): ReactElement {
       >
         <Row
           label="PwrSnap usage"
-          sub="Observed Codex runs from this app. Cost is an OpenAI public list-price equivalent, not an account invoice."
+          sub="Observed AI runs from this app (Codex and local ACP agents). Cost is a public list-price equivalent, not an account invoice."
           tag="30 days"
         >
           <AiUsagePanel
@@ -405,27 +472,55 @@ export function AIProvidersPage(): ReactElement {
 
         <Row
           label="Auth profile"
-          sub="Select the Codex home used for auth, config, sessions, skills, and state."
+          sub="Each profile is a separate Codex home (auth, config, sessions, state). Switch accounts, add a profile, or re-login. The selected profile is used for AI features."
           tag="default"
         >
-          <OptionRow
-            icon="~"
-            primary="System default"
-            sub={codexAuthSubLine(snapshot, snapshotLoading)}
-            using={true}
-            badges={
-              <>
-                <span className="pss__badge">default</span>
-                <span className="pss__badge">auth</span>
-                <span className="pss__badge">config</span>
-                <span className={"pss__badge " + codexAuthBadgeClass(snapshot)}>
-                  {codexAuthBadgeLabel(snapshot, snapshotLoading)}
-                </span>
-              </>
-            }
+          <CodexProfilesControl
+            selectedProfile={settings?.codex.profile ?? ""}
+            onSelect={(name) => {
+              void patch({ codex: { profile: name } });
+            }}
           />
         </Row>
       </Card>
+
+      <AcpAgentsCard
+        discovery={acpDiscovery}
+        loading={acpDiscoveryLoading}
+        error={acpDiscoveryError}
+        onRefresh={() => {
+          void refreshAcpDiscovery();
+        }}
+        enabledAgentIds={settings?.ai.acp.enabledAgentIds ?? []}
+        agents={settings?.ai.acp.agents}
+        onToggle={(id, enabled) => {
+          const current = settings?.ai.acp.enabledAgentIds ?? [];
+          const next = enabled
+            ? current.includes(id)
+              ? current
+              : [...current, id]
+            : current.filter((existing) => existing !== id);
+          void patch({ ai: { acp: { enabledAgentIds: next } } });
+        }}
+        onPickInstance={(id, command) => {
+          // Pin this instance; clear any override so the pick takes effect
+          // (the resolver gives an override precedence over a pick).
+          void patch({
+            ai: { acp: { agents: { [id]: { selectedPath: command, overridePath: "" } } } }
+          });
+        }}
+        onRevertAuto={(id) => {
+          void patch({
+            ai: { acp: { agents: { [id]: { selectedPath: "", overridePath: "" } } } }
+          });
+        }}
+        onSetOverride={(id, path) => {
+          void patch({ ai: { acp: { agents: { [id]: { overridePath: path } } } } });
+        }}
+        onClearOverride={(id) => {
+          void patch({ ai: { acp: { agents: { [id]: { overridePath: "" } } } } });
+        }}
+      />
 
       <ChatSettingsCard />
 
@@ -544,7 +639,7 @@ function AiUsagePanel({ summary, runs, loading }: AiUsagePanelProps): ReactEleme
       {summary.usageUnavailableCount > 0 || summary.priceUnavailableCount > 0 ? (
         <div className="pss__usage-note">
           {summary.usageUnavailableCount > 0
-            ? `${summary.usageUnavailableCount} run${summary.usageUnavailableCount === 1 ? "" : "s"} missing Codex usage. `
+            ? `${summary.usageUnavailableCount} run${summary.usageUnavailableCount === 1 ? "" : "s"} missing token usage. `
             : ""}
           {summary.priceUnavailableCount > 0
             ? `${summary.priceUnavailableCount} run${summary.priceUnavailableCount === 1 ? "" : "s"} missing price data.`
@@ -730,6 +825,568 @@ function CandidateRow({ candidate, using, onPin }: CandidateRowProps): ReactElem
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---- Codex auth-profile management ------------------------------------
+//
+// Lists the user's Codex auth profiles (each a CODEX_HOME), shows each
+// profile's signed-in status + account email, and lets the user pick the
+// active profile, create a new one, and re-login. All backed by the kit via
+// the `codex:profiles:*` command-bus verbs. Selecting a profile is a settings
+// patch to `codex.profile` (handled by the parent via `onSelect`).
+
+type LoginState =
+  | { phase: "idle" }
+  | { phase: "waiting"; profile: string }
+  | { phase: "done"; profile: string; message: string }
+  | { phase: "error"; profile: string; message: string };
+
+type CodexProfilesControlProps = {
+  selectedProfile: string;
+  onSelect: (name: string) => void;
+};
+
+function profileStatusBadge(profile: DesktopCodexAuthProfile): {
+  label: string;
+  className: string;
+} {
+  switch (profile.status) {
+    case "authenticated":
+      return { label: "Signed in", className: "is-using" };
+    case "unauthenticated":
+      return { label: "Not signed in", className: "is-accent" };
+    case "failed":
+      return { label: "Check failed", className: "is-accent" };
+  }
+}
+
+function profileSubLine(profile: DesktopCodexAuthProfile): string {
+  if (profile.status === "authenticated") {
+    const account =
+      profile.email !== undefined && profile.email.length > 0
+        ? profile.email
+        : "signed in";
+    return profile.planType !== undefined && profile.planType.length > 0
+      ? `${account} · ${profile.planType}`
+      : account;
+  }
+  if (profile.status === "unauthenticated") {
+    return "Not signed in — click Re-login to sign in through Codex.";
+  }
+  return "Could not confirm sign-in status for this profile.";
+}
+
+function CodexProfilesControl({
+  selectedProfile,
+  onSelect
+}: CodexProfilesControlProps): ReactElement {
+  const [list, setList] = useState<DesktopCodexAuthProfileList | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [creating, setCreating] = useState<boolean>(false);
+  const [newName, setNewName] = useState<string>("");
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createBusy, setCreateBusy] = useState<boolean>(false);
+  const [loginState, setLoginState] = useState<LoginState>({ phase: "idle" });
+
+  const refresh = useCallback(async (): Promise<void> => {
+    setLoading(true);
+    const result = await dispatch("codex:profiles:list", {});
+    if (result.ok) setList(result.value);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const selected =
+    list?.profiles.find((p) => p.name === selectedProfile) ??
+    list?.profiles.find((p) => p.selected) ??
+    null;
+
+  const onLogin = useCallback(
+    async (name: string): Promise<void> => {
+      setLoginState({ phase: "waiting", profile: name });
+      const result = await dispatch("codex:profiles:login", { name });
+      if (!result.ok) {
+        setLoginState({
+          phase: "error",
+          profile: name,
+          message: result.error.message
+        });
+        return;
+      }
+      const value = result.value;
+      const message =
+        value.authenticated === true
+          ? "Signed in."
+          : value.loginUrl !== undefined
+            ? "Opened the sign-in page in your browser. Finish signing in there, then Refresh."
+            : "Started Codex login. Finish in your browser, then Refresh.";
+      setLoginState({ phase: "done", profile: name, message });
+      void refresh();
+    },
+    [refresh]
+  );
+
+  const onCreate = useCallback(async (): Promise<void> => {
+    setCreateBusy(true);
+    setCreateError(null);
+    const result = await dispatch("codex:profiles:create", { name: newName });
+    setCreateBusy(false);
+    if (!result.ok) {
+      setCreateError(result.error.message);
+      return;
+    }
+    const created = result.value;
+    setCreating(false);
+    setNewName("");
+    onSelect(created.name);
+    await refresh();
+    // A brand-new profile has no auth — prompt the login immediately.
+    void onLogin(created.name);
+  }, [newName, onSelect, refresh, onLogin]);
+
+  return (
+    <div className="pss__codex-profiles">
+      <div className="pss__model-picker">
+        <select
+          className="pss__select"
+          value={selectedProfile}
+          disabled={loading || list === null || list.profiles.length === 0}
+          onChange={(e) => {
+            onSelect(e.target.value);
+          }}
+          aria-label="Active Codex auth profile"
+        >
+          {(list?.profiles ?? []).map((profile) => {
+            const account =
+              profile.status === "authenticated" &&
+              profile.email !== undefined &&
+              profile.email.length > 0
+                ? ` — ${profile.email}`
+                : profile.status === "authenticated"
+                  ? " — signed in"
+                  : " — no auth";
+            return (
+              <option key={profile.name} value={profile.name}>
+                {profile.displayName}
+                {account}
+              </option>
+            );
+          })}
+        </select>
+        {loading ? (
+          <span className="pss__model-loading">loading profiles</span>
+        ) : null}
+      </div>
+
+      {selected !== null ? (
+        <OptionRow
+          icon={selected.name === "" ? "~" : "P"}
+          primary={selected.displayName}
+          sub={profileSubLine(selected)}
+          using={true}
+          badges={
+            <span
+              className={"pss__badge " + profileStatusBadge(selected).className}
+            >
+              {profileStatusBadge(selected).label}
+            </span>
+          }
+          action={
+            <button
+              className="pss__opt-use"
+              type="button"
+              disabled={
+                loginState.phase === "waiting" &&
+                loginState.profile === selected.name
+              }
+              onClick={() => {
+                void onLogin(selected.name);
+              }}
+            >
+              {loginState.phase === "waiting" &&
+              loginState.profile === selected.name
+                ? "Signing in…"
+                : "Re-login"}
+            </button>
+          }
+        />
+      ) : null}
+
+      {loginState.phase === "done" && selected?.name === loginState.profile ? (
+        <p className="pss__opt-sub">{loginState.message}</p>
+      ) : null}
+      {loginState.phase === "error" && selected?.name === loginState.profile ? (
+        <p className="pss__opt-sub pss__opt-sub--error">{loginState.message}</p>
+      ) : null}
+
+      {list?.error !== undefined ? (
+        <p className="pss__opt-sub pss__opt-sub--error">{list.error}</p>
+      ) : null}
+
+      {creating ? (
+        <div className="pss__profile-create">
+          <input
+            className="pss__input"
+            type="text"
+            value={newName}
+            placeholder="Profile name (e.g. work, personal)"
+            maxLength={64}
+            autoFocus
+            onChange={(e) => {
+              setNewName(e.target.value);
+              setCreateError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && newName.trim().length > 0 && !createBusy) {
+                void onCreate();
+              }
+            }}
+            aria-label="New profile name"
+          />
+          <button
+            className="pss__opt-use"
+            type="button"
+            disabled={createBusy || newName.trim().length === 0}
+            onClick={() => {
+              void onCreate();
+            }}
+          >
+            {createBusy ? "Creating…" : "Create"}
+          </button>
+          <button
+            className="pss__top-btn"
+            type="button"
+            disabled={createBusy}
+            onClick={() => {
+              setCreating(false);
+              setNewName("");
+              setCreateError(null);
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          className="pss__top-btn"
+          type="button"
+          onClick={() => {
+            setCreating(true);
+          }}
+        >
+          Create profile…
+        </button>
+      )}
+      {createError !== null ? (
+        <p className="pss__opt-sub pss__opt-sub--error">{createError}</p>
+      ) : null}
+    </div>
+  );
+}
+
+// ---- ACP agents (discovery + enable) ----------------------------------
+//
+// Discovers which built-in ACP agents (Kimi / Qwen / Gemini / Grok) are
+// installed via the `acp:discover` verb and lists each one with its install
+// status. Installed agents get an enable checkbox that patches
+// `ai.acp.enabledAgentIds`; not-installed agents show an install hint and a
+// disabled checkbox. Read-only discovery — enabling an agent here does NOT
+// wire it as a live chat backend (that's a separate next phase); it only
+// records the user's opt-in.
+
+type AcpAgentsCardProps = {
+  discovery: AcpAgentDiscovery | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+  enabledAgentIds: readonly string[];
+  agents: Record<string, AcpAgentPreference> | undefined;
+  onToggle: (id: string, enabled: boolean) => void;
+  onPickInstance: (id: string, command: string) => void;
+  onRevertAuto: (id: string) => void;
+  onSetOverride: (id: string, path: string) => void;
+  onClearOverride: (id: string) => void;
+};
+
+function AcpAgentsCard({
+  discovery,
+  loading,
+  error,
+  onRefresh,
+  enabledAgentIds,
+  agents,
+  onToggle,
+  onPickInstance,
+  onRevertAuto,
+  onSetOverride,
+  onClearOverride
+}: AcpAgentsCardProps): ReactElement {
+  return (
+    <Card
+      eyebrow="PROVIDER"
+      title="ACP agents"
+      headerAction={
+        <button
+          className="pss__top-btn"
+          type="button"
+          disabled={loading}
+          onClick={onRefresh}
+        >
+          {loading ? "Refreshing…" : "Refresh"}
+        </button>
+      }
+    >
+      <Row
+        label="Installed agents"
+        sub="ACP agent CLIs (Qwen, Gemini, Grok, Kimi) PwrSnap looks for on this machine. Enable the ones you want, pick which install to use when several are found, or set a manual path. Enabled agents become selectable as the chat backend in Per-surface defaults above."
+        tag="config"
+      >
+        <AcpAgentList
+          discovery={discovery}
+          loading={loading}
+          error={error}
+          enabledAgentIds={enabledAgentIds}
+          agents={agents}
+          onToggle={onToggle}
+          onPickInstance={onPickInstance}
+          onRevertAuto={onRevertAuto}
+          onSetOverride={onSetOverride}
+          onClearOverride={onClearOverride}
+        />
+      </Row>
+    </Card>
+  );
+}
+
+type AcpAgentListProps = {
+  discovery: AcpAgentDiscovery | null;
+  loading: boolean;
+  error: string | null;
+  enabledAgentIds: readonly string[];
+  agents: Record<string, AcpAgentPreference> | undefined;
+  onToggle: (id: string, enabled: boolean) => void;
+  onPickInstance: (id: string, command: string) => void;
+  onRevertAuto: (id: string) => void;
+  onSetOverride: (id: string, path: string) => void;
+  onClearOverride: (id: string) => void;
+};
+
+function AcpAgentList({
+  discovery,
+  loading,
+  error,
+  enabledAgentIds,
+  agents,
+  onToggle,
+  onPickInstance,
+  onRevertAuto,
+  onSetOverride,
+  onClearOverride
+}: AcpAgentListProps): ReactElement {
+  if (discovery === null) {
+    return (
+      <div className="pss__opt">
+        <span className="pss__opt-icon">{loading ? "…" : "!"}</span>
+        <div className="pss__opt-text">
+          <span className="pss__opt-primary">
+            {loading ? "Discovering ACP agents…" : "ACP agent discovery unavailable"}
+          </span>
+          {error !== null ? (
+            <span className="pss__opt-sub pss__opt-sub--error">{error}</span>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <>
+      {error !== null ? (
+        <p className="pss__opt-sub pss__opt-sub--error">{error}</p>
+      ) : null}
+      {discovery.agents.map((agent) => (
+        <AcpAgentRow
+          key={agent.id}
+          agent={agent}
+          enabled={enabledAgentIds.includes(agent.id)}
+          pref={agents?.[agent.id]}
+          onToggle={(next) => onToggle(agent.id, next)}
+          onPickInstance={(command) => onPickInstance(agent.id, command)}
+          onRevertAuto={() => onRevertAuto(agent.id)}
+          onSetOverride={(path) => onSetOverride(agent.id, path)}
+          onClearOverride={() => onClearOverride(agent.id)}
+        />
+      ))}
+    </>
+  );
+}
+
+function AcpAgentRow({
+  agent,
+  enabled,
+  pref,
+  onToggle,
+  onPickInstance,
+  onRevertAuto,
+  onSetOverride,
+  onClearOverride
+}: {
+  agent: AcpAgentDiscoveryEntry;
+  enabled: boolean;
+  pref: AcpAgentPreference | undefined;
+  onToggle: (enabled: boolean) => void;
+  onPickInstance: (command: string) => void;
+  onRevertAuto: () => void;
+  onSetOverride: (path: string) => void;
+  onClearOverride: () => void;
+}): ReactElement {
+  const instanceCount = agent.instances.length;
+  const isAuto =
+    (pref?.selectedPath ?? "") === "" && (pref?.overridePath ?? "") === "";
+  const summarySub = agent.installed
+    ? `${instanceCount} install${instanceCount === 1 ? "" : "s"} found${
+        agent.version !== undefined ? ` · active v${agent.version}` : ""
+      }${isAuto ? " · auto" : " · pinned"}`
+    : (agent.detail ?? "Not installed");
+
+  return (
+    <div className="pss__acp-agent">
+      <OptionRow
+        icon={agent.displayName.charAt(0).toUpperCase()}
+        primary={agent.displayName}
+        sub={summarySub}
+        using={agent.installed && enabled}
+        badges={
+          agent.installed ? (
+            enabled ? (
+              <span className="pss__badge is-using">Enabled</span>
+            ) : (
+              <span className="pss__badge">Installed</span>
+            )
+          ) : (
+            <span className="pss__badge">Not installed</span>
+          )
+        }
+        action={
+          <label className="pss__acp-toggle">
+            <input
+              type="checkbox"
+              checked={enabled}
+              disabled={!agent.installed}
+              aria-label={`Enable ${agent.displayName}`}
+              onChange={(e) => {
+                onToggle(e.target.checked);
+              }}
+            />
+            <span>Enable</span>
+          </label>
+        }
+      />
+      {agent.installed ? (
+        <div className="pss__acp-detail">
+          <div className="pss__acp-instances" role="list">
+            {agent.instances.map((inst) => {
+              const active = inst.command === agent.activeCommand;
+              const meta = [
+                inst.version !== undefined ? `v${inst.version}` : null,
+                inst.source === "override"
+                  ? "override"
+                  : inst.source === "fallback"
+                    ? "fallback path"
+                    : "found"
+              ]
+                .filter((part): part is string => part !== null)
+                .join(" · ");
+              return (
+                <button
+                  key={inst.command}
+                  type="button"
+                  role="listitem"
+                  className={"pss__acp-instance" + (active ? " is-active" : "")}
+                  aria-pressed={active}
+                  title={
+                    active
+                      ? "Active — click to revert to auto (use the first found)"
+                      : "Click to always use this install"
+                  }
+                  onClick={() => {
+                    if (active) onRevertAuto();
+                    else onPickInstance(inst.command);
+                  }}
+                >
+                  <span className="pss__acp-instance-path">{inst.command}</span>
+                  <span className="pss__acp-instance-meta">{meta}</span>
+                  {active ? <span className="pss__badge is-using">Using</span> : null}
+                </button>
+              );
+            })}
+          </div>
+          <AcpOverrideInput
+            overridePath={pref?.overridePath ?? ""}
+            onSave={onSetOverride}
+            onClear={onClearOverride}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Manual override-path input for one ACP agent — mirrors PwrAgnt's per-agent
+ *  "Custom path" control. Save persists the path (it's probed on the next
+ *  Refresh and, when valid, becomes the active instance); Clear reverts to
+ *  discovery + any pinned instance. */
+function AcpOverrideInput({
+  overridePath,
+  onSave,
+  onClear
+}: {
+  overridePath: string;
+  onSave: (path: string) => void;
+  onClear: () => void;
+}): ReactElement {
+  const [draft, setDraft] = useState<string>(overridePath);
+  // Re-sync the draft when the persisted value changes out from under us
+  // (e.g. a settings broadcast from another window).
+  useEffect(() => {
+    setDraft(overridePath);
+  }, [overridePath]);
+  const trimmed = draft.trim();
+  const dirty = trimmed !== overridePath;
+  return (
+    <div className="pss__acp-override">
+      <input
+        className="pss__acp-override-input"
+        type="text"
+        value={draft}
+        spellCheck={false}
+        placeholder="Manual path — e.g. /Users/you/.nvm/versions/node/vXX/bin/qwen"
+        aria-label="Manual override path"
+        onChange={(e) => setDraft(e.currentTarget.value)}
+      />
+      <button
+        className="pss__top-btn"
+        type="button"
+        disabled={!dirty || trimmed.length === 0}
+        onClick={() => onSave(trimmed)}
+      >
+        Save
+      </button>
+      <button
+        className="pss__top-btn is-muted"
+        type="button"
+        disabled={overridePath.length === 0 && draft.length === 0}
+        onClick={() => {
+          setDraft("");
+          onClear();
+        }}
+      >
+        Clear
+      </button>
     </div>
   );
 }
@@ -952,6 +1609,247 @@ function JobRoutingRow({
   );
 }
 
+// ---- Per-surface default provider / model / reasoning -------------------
+
+/** One option in a chat surface's provider dropdown — an enabled ACP agent.
+ *  `value` is the persisted `acp:<id>` selector; `label` is the agent's
+ *  discovery display name (falls back to its id before names resolve). */
+export type AcpChatProviderOption = { value: string; label: string };
+
+/** Build the chat-surface provider dropdown options from the enabled agent ids.
+ *  The label comes from discovery's display name once it resolves, else the
+ *  built-in friendly name — NEVER the raw id, so the dropdown never flashes
+ *  "gemini" before becoming "Gemini CLI" while discovery loads. */
+export function buildAcpProviderOptions(
+  enabledAgentIds: readonly string[],
+  discovery: AcpAgentDiscovery | null
+): AcpChatProviderOption[] {
+  return enabledAgentIds.map((id) => {
+    const entry = discovery?.agents.find((a) => a.id === id);
+    return { value: `acp:${id}`, label: entry?.displayName ?? builtInAcpAgentDisplayName(id) };
+  });
+}
+
+export type AiSurfaceDefaultControlProps = {
+  surface: AiSurfaceId;
+  /** Job name shown as the row heading (e.g. "Library chat"). */
+  name: string;
+  /** One-line description under the name. */
+  sub: string;
+  value: AiSurfaceDefault;
+  models: readonly CodexModelOption[];
+  modelsLoading: boolean;
+  /** Backend choices offered in the provider dropdown (enabled ACP agents).
+   *  Always provided now — pass `[]` for a Codex-only surface. */
+  acpProviderOptions: readonly AcpChatProviderOption[];
+  /** When this surface's provider is an ACP agent, its advertised models —
+   *  so the Model picker shows e.g. Gemini's models, not Codex's. Undefined
+   *  while loading / when the provider is Codex. */
+  acpModelOptions?: readonly AcpAgentModelOption[] | undefined;
+  /** True while the ACP model list for this surface's provider is loading. */
+  acpModelsLoading?: boolean | undefined;
+  onChange: (patch: AiSurfaceDefaultPatch) => void;
+};
+
+/** Build the `<select>` model option list for the Codex backend. Filters to
+ *  non-hidden, image-capable models, falling back to the static
+ *  `CODEX_CAPTION_MODELS` when the live list is empty.
+ *
+ *  EVERY PwrSnap AI surface feeds the model a capture image — enrichment/OCR
+ *  directly, and even "ask about this snap" / the Sizzle composer carry the
+ *  visual. A text-only model (e.g. Codex Spark) can't do any of it, so it's
+ *  hidden everywhere, not just on enrichment.
+ *
+ *  Deliberately does NOT inject the user's stored model when it's absent from
+ *  the list: a stale id that isn't a real Codex model (e.g. a Gemini id left
+ *  behind after switching providers) must NOT stay selectable — the picker
+ *  shows Default instead, forcing a model that's actually valid for Codex. */
+function surfaceModelOptions(models: readonly CodexModelOption[]): CodexModelOption[] {
+  const filtered = models.filter((m) => {
+    if (m.hidden) return false;
+    return m.inputModalities.includes("text") && m.inputModalities.includes("image");
+  });
+  if (filtered.length > 0) return filtered;
+  return CODEX_CAPTION_MODELS.map((id) => ({
+    id,
+    model: id,
+    displayName: id,
+    description: "",
+    hidden: false,
+    inputModalities: ["text", "image"] as Array<"text" | "image">,
+    defaultServiceTier: null,
+    isDefault: id === DEFAULT_CODEX_CAPTION_MODEL
+  }));
+}
+
+export function AiSurfaceDefaultControl({
+  surface,
+  name,
+  sub,
+  value,
+  models,
+  modelsLoading,
+  acpProviderOptions,
+  acpModelOptions,
+  acpModelsLoading,
+  onChange
+}: AiSurfaceDefaultControlProps): ReactElement {
+  const providerValue = value.provider ?? "";
+  const modelValue = value.model ?? "";
+  const reasoningValue: AiReasoningEffort | "" = isAiReasoningEffort(value.reasoning)
+    ? value.reasoning
+    : "";
+  // `provider` is a BACKEND selector for every surface: Codex + each enabled
+  // ACP agent. "" and "codex" both mean Codex; collapse onto "" so the
+  // dropdown's Codex option matches whichever the user stored.
+  const chatProviderValue = providerValue === "codex" ? "" : providerValue;
+  // Model choices follow the selected BACKEND: Codex models for Codex, the ACP
+  // agent's advertised models for an acp:<id> provider.
+  const isAcpProvider = chatProviderValue.startsWith("acp:");
+  // The ACP model list spawns the agent to fetch — disable the picker (showing
+  // "Loading…") until it arrives, instead of a stale Codex value next to
+  // "loading". Codex models load fast and the stored value is valid, so the
+  // Codex picker is never disabled (it just shows the stored model meanwhile).
+  void modelsLoading;
+  const modelLoading =
+    isAcpProvider && (acpModelsLoading === true || acpModelOptions === undefined);
+  // For ACP, mark the agent's protocol-confirmed default model (isDefault) with
+  // a "(default)" suffix so the user can see which one "Default" resolves to.
+  const acpDefaultModel = isAcpProvider
+    ? ((acpModelOptions ?? []).find((m) => m.isDefault) ?? acpModelOptions?.[0])
+    : undefined;
+  const modelChoices: Array<{ id: string; label: string }> = isAcpProvider
+    ? (acpModelOptions ?? []).map((m) => ({
+        id: m.id,
+        label: m.isDefault === true ? `${m.label} (default)` : m.label
+      }))
+    : surfaceModelOptions(models).map((m) => ({
+        id: m.id,
+        label: modelLabel(m)
+      }));
+  // A stored model that isn't in the selected backend's list (e.g. a Gemini id
+  // left on a now-Codex surface) is NOT kept as a phantom option — the select
+  // falls back to "Default", forcing a model that's actually valid for the
+  // provider. Same rule for Codex and ACP.
+  const modelInChoices = modelChoices.some((m) => m.id === modelValue);
+  const selectModelValue = modelInChoices ? modelValue : "";
+  // "Default" means "let the backend pick its own default model" (runtime sends
+  // null). For ACP we now know the agent's actual default, so annotate the
+  // entry — "Default (kimi-k2)" — instead of leaving it a mystery. Codex keeps
+  // a plain "Default" (the App Server resolves it server-side).
+  const defaultOptionLabel =
+    isAcpProvider && acpDefaultModel !== undefined ? `Default (${acpDefaultModel.label})` : "Default";
+  // A persisted acp:<id> whose agent isn't currently in the enabled set
+  // (toggled off, or discovery still loading) — keep it as a visible option
+  // so the select never silently drops the saved value.
+  const showsStaleAcp =
+    chatProviderValue.startsWith("acp:") &&
+    !acpProviderOptions.some((o) => o.value === chatProviderValue);
+
+  return (
+    <div className="pss__role pss__role--routable" data-surface={surface}>
+      <div className="pss__role-head">
+        <span className="pss__role-icon" aria-hidden="true">
+          ◆
+        </span>
+        <div className="pss__role-l">
+          <span className="pss__role-name">{name}</span>
+          <span className="pss__role-sub">{sub}</span>
+        </div>
+      </div>
+      <div className="pss__role-controls">
+        <label className="pss__ai-surface-field">
+          <span className="pss__ai-surface-field-label">Provider</span>
+          <select
+            className="pss__select pss__ai-surface-select"
+            value={chatProviderValue}
+            aria-label={`${name} provider`}
+            onChange={(e) => {
+              // "" is the Codex default (the merge drops the key on "").
+              // RESET the model on a backend switch — a model id is meaningful
+              // only for the backend that advertised it (a Gemini model can't
+              // run on Codex), so fall back to Default rather than carrying a
+              // stale value across providers.
+              onChange({ provider: e.target.value, model: "" });
+            }}
+          >
+            <option value="">Codex</option>
+            {acpProviderOptions.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+            {showsStaleAcp ? (
+              <option value={chatProviderValue}>
+                {chatProviderValue.slice("acp:".length)} (not enabled)
+              </option>
+            ) : null}
+          </select>
+        </label>
+        <label className="pss__ai-surface-field">
+          <span className="pss__ai-surface-field-label">Model</span>
+          <select
+            className="pss__select pss__ai-surface-select"
+            value={modelLoading ? "__loading__" : selectModelValue}
+            aria-label={`${name} model`}
+            disabled={modelLoading}
+            onChange={(e) => {
+              onChange({ model: e.target.value });
+            }}
+          >
+            {modelLoading ? (
+              <option value="__loading__">Loading…</option>
+            ) : (
+              <>
+                {/* "Default" = let the backend choose its own default model. For
+                    ACP it's annotated with the agent's actual default (e.g.
+                    "Default (kimi-k2)") so it's not a mystery; for Codex it's
+                    resolved server-side. */}
+                <option value="">{defaultOptionLabel}</option>
+                {modelChoices.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </>
+            )}
+          </select>
+        </label>
+        {/* Reasoning effort (low/medium/high) is a Codex concept; ACP agents
+            don't expose it (they have execution "modes", a separate idea), so
+            the field is hidden for an ACP provider. The stored value is left
+            untouched so it returns if the user switches back to Codex. */}
+        {isAcpProvider ? null : (
+          <label className="pss__ai-surface-field">
+            <span className="pss__ai-surface-field-label">Reasoning</span>
+            <select
+              className="pss__select pss__ai-surface-select"
+              value={reasoningValue}
+              aria-label={`${name} reasoning effort`}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (next === "") {
+                  onChange({ reasoning: "" });
+                  return;
+                }
+                if (!isAiReasoningEffort(next)) return;
+                onChange({ reasoning: next });
+              }}
+            >
+              <option value="">Default</option>
+              {AI_REASONING_EFFORTS.map((effort) => (
+                <option key={effort} value={effort}>
+                  {effort}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function formatLastSetAt(iso: string | null): string {
   if (iso === null || iso.length === 0) return "—";
   const then = parseTimestampMs(iso);
@@ -1006,46 +1904,6 @@ function uncachedInputTokens(inputTokens: number | null, cachedInputTokens: numb
   return Math.max(0, (inputTokens ?? 0) - (cachedInputTokens ?? 0));
 }
 
-function codexAuthBadgeLabel(
-  snapshot: DesktopCodexDiscoverySnapshot | null,
-  loading: boolean
-): string {
-  if (loading && snapshot === null) return "Checking";
-  if (snapshot?.resolvedPath === null) return "No Codex";
-  switch (snapshot?.auth?.status) {
-    case "authenticated": return "Signed in";
-    case "unauthenticated": return "Sign in";
-    case "failed": return "Check failed";
-    case undefined: return "Unknown";
-  }
-}
-
-function codexAuthBadgeClass(snapshot: DesktopCodexDiscoverySnapshot | null): string {
-  switch (snapshot?.auth?.status) {
-    case "authenticated": return "is-using";
-    case "unauthenticated":
-    case "failed": return "is-accent";
-    case undefined: return "";
-  }
-}
-
-function codexAuthSubLine(
-  snapshot: DesktopCodexDiscoverySnapshot | null,
-  loading: boolean
-): string {
-  if (loading && snapshot === null) return "Checking Codex auth…";
-  if (snapshot?.resolvedPath === null) return "No Codex binary resolved.";
-  if (snapshot?.auth?.status === "authenticated") {
-    return snapshot.auth.detail ?? "~/.codex";
-  }
-  if (snapshot?.auth?.status === "unauthenticated") {
-    return "Codex is installed but not signed in. Run codex login or sign in through Codex Desktop.";
-  }
-  if (snapshot?.auth?.status === "failed") {
-    return snapshot.auth.errorMessage ?? "Codex auth check failed.";
-  }
-  return "~/.codex";
-}
 
 export function formatNextTokenAt(iso: string | null): string {
   if (iso === null || iso.length === 0) return "soon";

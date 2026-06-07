@@ -176,6 +176,8 @@ export function FloatOver({
   aiEnabled = false,
   aiConsentAccepted = false,
   aiSafetyDisabled = false,
+  enrichmentProviderLabel,
+  enrichmentModelLabel,
   autoAcceptSuggestions = false,
   onEnableAi,
   onConfigureAi,
@@ -224,6 +226,10 @@ export function FloatOver({
   aiEnabled?: boolean;
   aiConsentAccepted?: boolean;
   aiSafetyDisabled?: boolean;
+  /** Enrichment backend label for the status pill (e.g. "Codex", "Gemini"). */
+  enrichmentProviderLabel?: string | undefined;
+  /** Optional model id shown in parens in the status pill. */
+  enrichmentModelLabel?: string | undefined;
   /** Mirrors `settings.ai.autoAcceptSuggestions`. When true, the
    *  toast renders the checkbox in the "checked" state and trusts
    *  main to promote `suggested_*` → `accepted_*` on its own at the
@@ -775,6 +781,12 @@ export function FloatOver({
             accepted={allDraftsAccepted}
             needsConsent={aiNeedsConsent}
             safetyDisabled={aiSafetyDisabled}
+            {...(enrichmentProviderLabel !== undefined
+              ? { providerLabel: enrichmentProviderLabel }
+              : {})}
+            {...(enrichmentModelLabel !== undefined
+              ? { modelLabel: enrichmentModelLabel }
+              : {})}
             action={
               !thinking && !aiFailed ? (
                 suggestedTitle.length === 0 && suggestedDescription.length === 0 && !codexAvailable ? (

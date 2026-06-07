@@ -302,7 +302,10 @@ describe("ChatThreadStore legacy-sidecar import", () => {
       anchorCaptureId: "cap-legacy",
       focusHistory: [{ captureId: "cap-legacy", at: "2026-05-01T00:00:00.000Z" }],
       archived: false,
-      pinned: true
+      pinned: true,
+      provider: null,
+      model: null,
+      reasoning: null
     };
     await writeFile(join(legacyDir, "pwrsnap-thread.json"), JSON.stringify(sidecar), "utf8");
 
@@ -333,7 +336,10 @@ describe("ChatThreadStore legacy-sidecar import", () => {
       anchorCaptureId: null,
       focusHistory: [],
       archived: false,
-      pinned: false
+      pinned: false,
+      provider: null,
+      model: null,
+      reasoning: null
     };
     await writeFile(join(goodDir, "pwrsnap-thread.json"), JSON.stringify(good), "utf8");
     await writeFile(join(badDir, "pwrsnap-thread.json"), "this is not json {[", "utf8");

@@ -81,6 +81,10 @@ type ChatThreadRow = {
   created_at: string;
   modified_at: string;
   schema_version: number;
+  // Per-thread backend config (migration 0024); NULL = use surface default.
+  provider: string | null;
+  model: string | null;
+  reasoning: string | null;
 };
 
 /**
@@ -132,6 +136,12 @@ export class ChatThreadStore {
     name: string;
     anchorCaptureId?: string | null;
     preparedDir?: PreparedChatThreadDir;
+    /** The thread's chosen backend config (Provider / Model / Reasoning),
+     *  persisted so the surface routes the thread to the right backend and the
+     *  locked chips render its real config. Omit/null = use surface default. */
+    provider?: string | null;
+    model?: string | null;
+    reasoning?: string | null;
   }): Promise<ChatThreadSidecar> {
     this.ensureImported();
     const preparedDir = opts.preparedDir ?? (await this.prepareThreadDir(opts.name));
@@ -140,11 +150,34 @@ export class ChatThreadStore {
     this.db()
       .prepare(
         `INSERT INTO chat_threads
-           (thread_id, dir_name, name, anchor_capture_id, archived, pinned, focus_history, created_at, modified_at, schema_version)
-         VALUES (?, ?, ?, ?, 0, 0, '[]', ?, ?, 1)`
+           (thread_id, dir_name, name, anchor_capture_id, archived, pinned, focus_history, created_at, modified_at, schema_version, provider, model, reasoning)
+         VALUES (?, ?, ?, ?, 0, 0, '[]', ?, ?, 1, ?, ?, ?)`
       )
-      .run(opts.threadId, preparedDir.dirName, opts.name, anchorCaptureId, now, now);
+      .run(
+        opts.threadId,
+        preparedDir.dirName,
+        opts.name,
+        anchorCaptureId,
+        now,
+        now,
+        opts.provider ?? null,
+        opts.model ?? null,
+        opts.reasoning ?? null
+      );
     return rowToSidecar(this.selectRowOrThrow(opts.threadId));
+  }
+
+  /** Persist a thread's locked backend config (Provider / Model / Reasoning).
+   *  Written once when the thread is created with a chosen config; thereafter
+   *  the config is immutable (locked on first message). No-op for an unknown id. */
+  setBackendConfig(
+    threadId: string,
+    config: { provider: string | null; model: string | null; reasoning: string | null }
+  ): void {
+    this.ensureImported();
+    this.db()
+      .prepare(`UPDATE chat_threads SET provider = ?, model = ?, reasoning = ? WHERE thread_id = ?`)
+      .run(config.provider ?? null, config.model ?? null, config.reasoning ?? null, threadId);
   }
 
   /**
@@ -515,7 +548,10 @@ function rowToSidecar(row: ChatThreadRow): ChatThreadSidecar {
     anchorCaptureId: row.anchor_capture_id,
     focusHistory: parseFocusHistory(row.focus_history),
     archived: row.archived === 1,
-    pinned: row.pinned === 1
+    pinned: row.pinned === 1,
+    provider: row.provider ?? null,
+    model: row.model ?? null,
+    reasoning: row.reasoning ?? null
   };
 }
 

@@ -484,6 +484,93 @@
 }
 .pss__opt-use:hover { border-color: var(--accent-border); color: var(--accent-bright); }
 
+/* ACP agent enable toggle — checkbox + label in the OptionRow action slot */
+.pss__acp-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--text-primary);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.pss__acp-toggle input:disabled {
+  cursor: not-allowed;
+}
+.pss__acp-toggle:has(input:disabled) {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+/* ACP agent — one block per known agent: the summary OptionRow plus a
+   detail panel listing every found install (click to pin / click the active
+   one to revert to auto) and a manual override input. */
+.pss__acp-agent + .pss__acp-agent { margin-top: 8px; }
+.pss__acp-detail {
+  margin: 6px 0 2px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pss__acp-instances {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pss__acp-instance {
+  display: flex;
+  /* flex-start so the meta + badge align to the top when a long path wraps. */
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.pss__acp-instance:hover { border-color: var(--accent-border); }
+.pss__acp-instance.is-active {
+  border-color: var(--accent);
+  background: var(--bg-row-active);
+}
+.pss__acp-instance-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* Never truncate the binary name — wrap a long path instead of clipping it,
+     matching the Codex candidate card so the two provider lists read alike. */
+  word-break: break-all;
+  color: var(--text-primary);
+  font: 500 11px/1.3 var(--font-mono);
+}
+.pss__acp-instance.is-active .pss__acp-instance-path { color: var(--accent-bright); }
+.pss__acp-instance-meta {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font: 500 10px/1 var(--font-sans);
+}
+.pss__acp-override {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pss__acp-override-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  background: var(--bg-input, var(--bg-panel));
+  border: 1px solid var(--border-default);
+  border-radius: 5px;
+  color: var(--text-primary);
+  font: 500 11px/1 var(--font-mono);
+}
+.pss__acp-override-input:focus {
+  outline: none;
+  border-color: var(--accent-border);
+}
+
 /* Codex discovery candidate cards. The path gets a dedicated full-width line so
    it never competes with the badges for space (that squeeze chopped the binary
    name to "/Applications/Code…"). Source/version/status drop to a muted meta
@@ -626,6 +713,12 @@
   min-width: 200px;
 }
 .pss__select:hover { border-color: var(--accent-border); }
+.pss__select:disabled {
+  cursor: progress;
+  color: var(--text-muted);
+  border-color: var(--border-subtle);
+}
+.pss__select:disabled:hover { border-color: var(--border-subtle); }
 .pss__select svg { color: var(--text-muted); margin-left: auto; }
 
 .pss__model-picker {
@@ -639,6 +732,80 @@
   color: var(--text-muted);
   font: 500 11px/1 var(--font-mono);
   align-self: center;
+}
+
+/* Codex auth-profile management (Settings → AI → Codex) */
+.pss__codex-profiles {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  width: 100%;
+}
+
+.pss__profile-create {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pss__profile-create .pss__input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pss__opt-sub--error {
+  color: var(--accent-bright);
+}
+
+/* per-surface AI defaults (provider / model / reasoning) */
+.pss__ai-surface-defaults {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  width: 100%;
+}
+
+.pss__ai-surface {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pss__ai-surface-name {
+  font: 600 12px/1.2 var(--font-sans);
+  color: var(--text-primary);
+}
+
+.pss__ai-surface-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.pss__ai-surface-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pss__ai-surface-field-label {
+  font: 500 10px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.pss__ai-surface-input {
+  min-width: 140px;
+}
+
+.pss__ai-surface-select {
+  min-width: 160px;
 }
 
 /* toggle switch */
@@ -1169,6 +1336,43 @@
   flex-shrink: 0;
 }
 .pss__role-control b { font: 600 12px/1 var(--font-sans); color: var(--accent-bright); }
+
+/* Short intro line at the top of the consolidated Job-routing card. */
+.pss__role-intro {
+  margin: 0 0 12px;
+  font: 500 12px/1.5 var(--font-sans);
+  color: var(--text-secondary);
+  max-width: 64ch;
+}
+
+/* A ROUTABLE job row: name + description on top, the Provider / Model /
+   Reasoning controls on a full-width row below (more space than the inline
+   right-edge chip the read-only rows use). */
+.pss__role--routable {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.pss__role-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.pss__role-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  /* Align with the text column (icon width + its gap). */
+  padding-left: 42px;
+}
+.pss__role-controls .pss__ai-surface-field {
+  flex: 1 1 0;
+  min-width: 150px;
+}
+.pss__role-controls .pss__ai-surface-select {
+  width: 100%;
+  min-width: 0;
+}
 
 /* Customization-count badge in page-header actions — shows
    "N customizations" next to the Reset button on Hotkeys (extensible

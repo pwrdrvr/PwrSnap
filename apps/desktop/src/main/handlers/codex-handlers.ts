@@ -23,7 +23,17 @@ import type {
   Settings,
   SettingsPatch
 } from "@pwrsnap/shared";
-import { CodexAppServerClient } from "../ai/codex-client";
+import {
+  CaptureEnrichmentClient,
+  type EnrichmentBackend
+} from "../ai/capture-enrichment-client";
+import { AcpCaptureEnrichmentClient } from "../ai/acp-enrichment-client";
+import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
+import {
+  discoverLocalAcpAgentInstances,
+  strategyById
+} from "@pwrdrvr/agent-acp";
+import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import { estimateAiUsageCost } from "../ai/ai-usage-cost";
 import { aiEnrichmentBudget, type AiEnrichmentBudget } from "../ai/enrichment-budget";
 import {
@@ -32,7 +42,10 @@ import {
   type PreparedEnrichmentImage,
   type PreparedEnrichmentVideoFrames
 } from "../ai/enrichment-image";
-import type { CaptureEnrichmentPromptMetadata } from "../ai/enrichment-schema";
+import {
+  isEnrichmentResultEmpty,
+  type CaptureEnrichmentPromptMetadata
+} from "../ai/enrichment-schema";
 import { bus, type CommandContext } from "../command-bus";
 import { getMainLogger } from "../log";
 import {
@@ -73,7 +86,10 @@ import { renameVideoSourceToEffectiveFilename } from "../persistence/video-filen
 
 const log = getMainLogger("pwrsnap:codex-handlers");
 
-export type CodexClientFactory = (command: string) => CodexAppServerClient;
+export type CodexClientFactory = (
+  command: string,
+  env?: NodeJS.ProcessEnv
+) => CaptureEnrichmentClient;
 export type SettingsReader = () => Promise<Settings>;
 export type SettingsWriter = (patch: SettingsPatch) => Promise<Settings>;
 
@@ -235,6 +251,70 @@ function codexCommandForSettings(settings: Settings): string {
     : "codex";
 }
 
+/** Resolve the enrichment model from the per-surface AI default,
+ *  falling back to the legacy `codex.captionModel` and then the
+ *  hardcoded default. `parseV1` seeds `ai.defaults.enrichment.model`
+ *  from `codex.captionModel` for upgraded settings, so existing
+ *  behavior is preserved; a fresh install (empty enrichment.model)
+ *  falls through to captionModel here. */
+function enrichmentModelForSettings(settings: Settings): string {
+  const surfaceModel = settings.ai.defaults.enrichment.model;
+  if (surfaceModel !== undefined && surfaceModel.length > 0) return surfaceModel;
+  return settings.codex.captionModel || DEFAULT_CODEX_CAPTION_MODEL;
+}
+
+/** Backend-aware enrichment model selection. For an ACP agent, use the
+ *  per-surface model id verbatim ("" → the agent's own default) — the Codex
+ *  caption-model fallback is meaningless there and a Codex id would be wrong.
+ *  For Codex, keep the legacy fallback chain. Exported for testing. */
+export function enrichmentSelectedModel(settings: Settings, acpAgentId: string | undefined): string {
+  if (acpAgentId !== undefined) return settings.ai.defaults.enrichment.model ?? "";
+  return enrichmentModelForSettings(settings);
+}
+
+/** Resolve the enrichment reasoning effort from the per-surface AI
+ *  default. Enrichment is high-volume + cost-sensitive, so the
+ *  historical default is "low" — preserved when the user hasn't pinned
+ *  a reasoning value. */
+function enrichmentEffortForSettings(settings: Settings): string {
+  return settings.ai.defaults.enrichment.reasoning ?? "low";
+}
+
+/** The ACP agent id to run enrichment on, when `ai.defaults.enrichment.provider`
+ *  selects one ("acp:<id>"); undefined → Codex (the default backend). */
+function enrichmentAcpAgentId(settings: Settings): string | undefined {
+  const provider = settings.ai.defaults.enrichment.provider;
+  if (provider === undefined || !provider.startsWith("acp:")) return undefined;
+  return provider.slice("acp:".length);
+}
+
+/** Discover the selected ACP agent + build an enrichment client bound to its
+ *  active install (honoring the user's per-agent override / pick from
+ *  `ai.acp.agents`). Returns null when the agent isn't installed. */
+async function buildAcpEnrichmentClient(
+  agentId: string,
+  settings: Settings,
+  cwd: string
+): Promise<AcpCaptureEnrichmentClient | null> {
+  const pref = settings.ai.acp.agents?.[agentId];
+  const override = pref?.overridePath?.trim();
+  const groups = await discoverLocalAcpAgentInstances(
+    override ? { overrides: { [agentId]: override } } : {}
+  );
+  const group = groups.find((g) => g.strategyId === agentId);
+  if (group === undefined || group.instances.length === 0) return null;
+  const strategy = strategyById(agentId);
+  if (strategy === undefined) return null;
+  const active = resolveActiveAcpInstance(group.instances, pref);
+  return new AcpCaptureEnrichmentClient({
+    command: active.command,
+    args: group.args,
+    env: group.env,
+    strategy,
+    cwd
+  });
+}
+
 function triggerSourceOrDefault(
   value: AiEnrichmentTriggerSource | undefined,
   fallback: AiEnrichmentTriggerSource
@@ -306,17 +386,21 @@ export function registerCodexHandlers(params?: {
   settingsWriter?: SettingsWriter;
   budget?: AiEnrichmentBudget;
 }): void {
-  const defaultClients = new Map<string, CodexAppServerClient>();
+  const defaultClients = new Map<string, CaptureEnrichmentClient>();
   const clientFactory =
     params?.clientFactory ??
-    ((command) => {
-      const existing = defaultClients.get(command);
+    ((command, env) => {
+      // Key by command + CODEX_HOME so switching the auth profile (which only
+      // changes env.CODEX_HOME) yields a distinct client, not a stale cached one.
+      const key = JSON.stringify([command, env?.["CODEX_HOME"] ?? ""]);
+      const existing = defaultClients.get(key);
       if (existing) return existing;
-      const client = new CodexAppServerClient({
+      const client = new CaptureEnrichmentClient({
         command,
+        ...(env !== undefined ? { env } : {}),
         captureMetadataWorkspaceDir: captureMetadataWorkspaceDir()
       });
-      defaultClients.set(command, client);
+      defaultClients.set(key, client);
       return client;
     });
   const closeClientAfterRun = params?.clientFactory !== undefined;
@@ -412,15 +496,20 @@ export function registerCodexHandlers(params?: {
       sourceAppName: capture.source_app_name,
       sourceAppBundleId: capture.source_app_bundle_id,
       triggerSource,
-      codexCommand,
       bucketBefore: budgetDecision.before,
       bucketAfter: budgetDecision.after
     });
+    // `ai.defaults.enrichment.provider` is a BACKEND selector ("" / codex →
+    // Codex; "acp:<id>" → an ACP agent). The selected model is resolved against
+    // that backend so an ACP run carries its OWN model id (or "" → agent
+    // default), not a Codex fallback. Computed here so the run record reports
+    // the model that will actually run.
+    const enrichmentAgent = enrichmentAcpAgentId(settings);
     const run = createAiRun({
       captureId: capture.id,
       codexCommand,
       triggerSource,
-      selectedModel: settings.codex.captionModel || DEFAULT_CODEX_CAPTION_MODEL,
+      selectedModel: enrichmentSelectedModel(settings, enrichmentAgent),
       request: {
         media: {
           maxLongEdgePx: 1024,
@@ -463,9 +552,19 @@ export function registerCodexHandlers(params?: {
         videoDurationSec: capture.kind === "video" ? capture.video?.durationSec ?? null : null
       },
       command: codexCommand,
-      model: captionModel,
+      env: codexEnvForProfile(settings.codex.profile),
       settingsReader,
-      selectedModel: run.selectedModel ?? DEFAULT_CODEX_CAPTION_MODEL,
+      // Don't apply the Codex caption-model default to an ACP run — "" means
+      // "use the agent's own default" and is resolved to null at send time.
+      selectedModel:
+        run.selectedModel ?? (enrichmentAgent !== undefined ? "" : DEFAULT_CODEX_CAPTION_MODEL),
+      effort: enrichmentEffortForSettings(settings),
+      // When enrichment is routed to an ACP agent (Gemini/Qwen), pass its id +
+      // the settings snapshot so the run resolves + spawns that agent instead
+      // of Codex. Undefined → the Codex one-shot path.
+      ...(enrichmentAgent !== undefined
+        ? { acpAgentId: enrichmentAgent, acpSettings: settings }
+        : {}),
       triggerSource,
       budgetBefore: budgetDecision.before,
       budgetAfter: budgetDecision.after,
@@ -608,7 +707,10 @@ export function registerCodexHandlers(params?: {
         cause: error
       });
     }
-    const client = clientFactory(codexCommandForSettings(settings));
+    const client = clientFactory(
+      codexCommandForSettings(settings),
+      codexEnvForProfile(settings.codex.profile)
+    );
     try {
       const models = await client.listModels({ includeHidden: parsed.value.includeHidden });
       return ok({ models, selectedModel: settings.codex.captionModel });
@@ -695,10 +797,8 @@ async function runCaptureEnrichment(params: {
   capture: CaptureRecord;
   metadata: CaptureEnrichmentPromptMetadata;
   command: string;
-  /** OpenAI model identifier forwarded to Codex App Server as
-   *  `thread/start.model`. Empty string = use Codex's own default.
-   *  Snapshot at enqueue time; see comment in `codex:enrich` above. */
-  model: string;
+  /** Process env for the spawned Codex (CODEX_HOME for the selected profile). */
+  env?: NodeJS.ProcessEnv;
   /**
    * Re-read just before the result is persisted so a `auto-accept`
    * toggle the user flipped DURING the run is honored — not the
@@ -707,6 +807,16 @@ async function runCaptureEnrichment(params: {
    */
   settingsReader: SettingsReader;
   selectedModel: string;
+  /** Model provider from `ai.defaults.enrichment.provider`; undefined = Codex default. */
+  selectedProvider?: string;
+  /** When set, enrichment runs on this ACP agent (Gemini/Qwen) instead of
+   *  Codex. `acpSettings` carries the snapshot used to resolve the agent's
+   *  active install (override / pick). */
+  acpAgentId?: string;
+  acpSettings?: Settings;
+  /** Reasoning effort for the enrichment turn. Resolved from
+   *  `ai.defaults.enrichment.reasoning` (default "low"). */
+  effort: string;
   triggerSource: AiEnrichmentTriggerSource;
   budgetBefore: AiEnrichmentBudgetStatus;
   budgetAfter: AiEnrichmentBudgetStatus;
@@ -715,6 +825,9 @@ async function runCaptureEnrichment(params: {
   closeClientAfterRun: boolean;
 }): Promise<void> {
   const captureId = params.capture.id;
+  // The backend actually running this enrichment, for the logs (enrichment is
+  // no longer always Codex).
+  const provider = params.acpAgentId !== undefined ? `acp:${params.acpAgentId}` : "codex";
   const startedAt = performance.now();
   const abortController = new AbortController();
   const abortFromContext = (): void => abortController.abort();
@@ -722,7 +835,7 @@ async function runCaptureEnrichment(params: {
   activeRuns.set(params.runId, abortController);
 
   let prepared: PreparedEnrichmentImage | PreparedEnrichmentVideoFrames | null = null;
-  let client: CodexAppServerClient | null = null;
+  let client: EnrichmentBackend | null = null;
 
   try {
     const running = markAiRunRunning(params.runId);
@@ -776,19 +889,53 @@ async function runCaptureEnrichment(params: {
       sourceAppName: params.metadata.sourceAppName,
       sourceAppBundleId: params.metadata.sourceAppBundleId,
       triggerSource: params.triggerSource,
-      codexCommand: params.command,
+      provider,
       preparedMedia: preparedMediaShape(prepared),
       bucketBefore: params.budgetBefore,
       bucketAfter: params.budgetAfter
     });
 
-    client = params.clientFactory(params.command);
+    const acpAgentId = params.acpAgentId;
+    if (acpAgentId !== undefined) {
+      const acpClient = await buildAcpEnrichmentClient(
+        acpAgentId,
+        params.acpSettings ?? (await params.settingsReader()),
+        captureMetadataWorkspaceDir()
+      );
+      if (acpClient === null) {
+        throw new Error(`ACP agent "${acpAgentId}" is not installed for enrichment`);
+      }
+      client = acpClient;
+    } else {
+      client = params.clientFactory(params.command, params.env);
+    }
     const response = await client.enrichCapture({
       imagePaths,
       metadata,
-      model: params.selectedModel,
+      // Pass the resolved model for BOTH backends. For ACP this is the user's
+      // chosen agent model (the kit ignores an unknown id and falls back to the
+      // agent default, so a stale value can't break the run); "" → null → agent
+      // default. For Codex it's the caption model.
+      model: params.selectedModel.length > 0 ? params.selectedModel : null,
+      ...(acpAgentId === undefined && params.selectedProvider !== undefined
+        ? { modelProvider: params.selectedProvider }
+        : {}),
+      effort: params.effort,
       abortSignal: abortController.signal
     });
+
+    // A "completed but blank" reply is a failure, not a success. The result
+    // schema defaults title/description/ocrText to "", so an agent that returns
+    // {} or empty values (seen with Grok) would otherwise persist an all-empty
+    // enrichment + mark the run completed → the toast/rail show nothing with no
+    // way to retry. Treat all-empty as a failure so the UI surfaces "could not
+    // read … Regenerate".
+    if (isEnrichmentResultEmpty(response.result)) {
+      throw new Error(
+        `${response.modelProvider ?? provider} returned an empty enrichment ` +
+          "(no title, description, tags, or text)"
+      );
+    }
 
     const latencyMs = Math.round(performance.now() - startedAt);
     // Read settings at completion (not at enqueue) so the auto-accept
@@ -815,13 +962,7 @@ async function runCaptureEnrichment(params: {
       result: response.result,
       autoAccept
     });
-    const tokens =
-      response.tokenUsage == null
-        ? null
-        : {
-            ...response.tokenUsage.last,
-            modelContextWindow: response.tokenUsage.modelContextWindow
-          };
+    const tokens = response.tokens;
     saveAiRunUsage({
       aiRunId: params.runId,
       threadId: response.threadId,
@@ -830,7 +971,10 @@ async function runCaptureEnrichment(params: {
       modelProvider: response.modelProvider ?? null,
       serviceTier: response.serviceTier ?? null,
       usageStatus: tokens === null ? "unavailable" : "available",
-      usageUnavailableReason: tokens === null ? "Codex did not report token usage" : null,
+      usageUnavailableReason:
+        tokens === null
+          ? `${response.modelProvider ?? "the agent"} did not report token usage`
+          : null,
       tokens,
       cost: estimateAiUsageCost({
         model: response.model ?? null,
@@ -852,8 +996,8 @@ async function runCaptureEnrichment(params: {
       sourceAppName: params.metadata.sourceAppName,
       sourceAppBundleId: params.metadata.sourceAppBundleId,
       triggerSource: params.triggerSource,
-      codexCommand: params.command,
-      codexUserAgent: response.userAgent,
+      provider,
+      userAgent: response.userAgent,
       threadId: response.threadId,
       turnId: response.turnId,
       latencyMs,
@@ -898,6 +1042,7 @@ async function runCaptureEnrichment(params: {
         sourceAppBundleId: params.metadata.sourceAppBundleId,
         triggerSource: params.triggerSource,
         codexCommand: params.command,
+        provider,
         preparedMedia: preparedMediaShape(prepared),
         outcome: "failed",
         message: error instanceof Error ? error.message : String(error)
@@ -911,6 +1056,7 @@ async function runCaptureEnrichment(params: {
         sourceAppBundleId: params.metadata.sourceAppBundleId,
         triggerSource: params.triggerSource,
         codexCommand: params.command,
+        provider,
         preparedMedia: preparedMediaShape(prepared),
         outcome: "cancelled"
       });
@@ -924,9 +1070,11 @@ async function runCaptureEnrichment(params: {
         message: error instanceof Error ? error.message : String(error)
       });
     });
-    if (params.closeClientAfterRun) {
+    // The Codex client is cached + reused (close only when the test factory
+    // asked for it); the ACP client is built fresh per run, so always close it.
+    if (params.closeClientAfterRun || params.acpAgentId !== undefined) {
       await client?.close().catch((error: unknown) => {
-        log.warn("codex client close failed", {
+        log.warn("enrichment client close failed", {
           runId: params.runId,
           message: error instanceof Error ? error.message : String(error)
         });

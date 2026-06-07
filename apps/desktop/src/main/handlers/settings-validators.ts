@@ -14,6 +14,11 @@
 // treatment, revisit.
 
 import {
+  AI_REASONING_EFFORTS,
+  AI_SURFACE_IDS,
+  BUILT_IN_ACP_AGENT_IDS,
+  isAiReasoningEffort,
+  isBuiltInAcpAgentId,
   isAppearanceTheme,
   isCodexCaptionModel,
   isColorToken,
@@ -31,6 +36,7 @@ import type {
   SettingsPage,
   SettingsPatch
 } from "@pwrsnap/shared";
+import { isValidProfileName, normalizeProfileName } from "@pwrdrvr/codex-discovery";
 import { KNOWN_SECRET_NAMES } from "../settings/desktop-secret-store";
 
 /** Inline builder so call sites read fluently. `kind: "validation"` is
@@ -217,6 +223,14 @@ export function validateSettingsWrite(
     if (!isUndefined(ai.chat)) {
       const chatErr = validateChatPatch(ai.chat);
       if (chatErr) return { ok: false, error: chatErr };
+    }
+    if (!isUndefined(ai.defaults)) {
+      const defaultsErr = validateAiDefaultsPatch(ai.defaults);
+      if (defaultsErr) return { ok: false, error: defaultsErr };
+    }
+    if (!isUndefined(ai.acp)) {
+      const acpErr = validateAcpPatch(ai.acp);
+      if (acpErr) return { ok: false, error: acpErr };
     }
   }
 
@@ -629,6 +643,243 @@ function validateChatPatch(raw: unknown): PwrSnapError | null {
   return null;
 }
 
+// ---- settings:write — ai.defaults sub-validator ------------------------
+//
+// Validates the per-surface default provider / model / reasoning patch.
+// Each surface key (libraryChat / sizzleChat / enrichment) is optional;
+// within a surface each leaf is optional too. Semantics:
+//   • provider —
+//       · CHAT surfaces (libraryChat / sizzleChat): a BACKEND selector.
+//         Allowed values are "" (clear → Codex default), "codex", or
+//         "acp:<known-id>" where <known-id> is a built-in ACP agent id.
+//         An unknown `acp:` id (or any other non-codex token) is rejected.
+//       · ENRICHMENT: a free-form Codex `modelProvider` token (shape-only;
+//         Codex rejects unavailable providers at runtime). The enrichment
+//         one-shot client is Codex-only, so ACP selectors don't apply.
+//   • model — string. Empty string is the explicit "clear → use Codex
+//     default" sentinel and is allowed; non-empty values must look like a
+//     Codex id token. Cap 120 chars.
+//   • reasoning — must be a member of AI_REASONING_EFFORTS.
+// Unknown surface keys are rejected so a buggy/forged renderer can't
+// stash arbitrary blobs under `ai.defaults`.
+
+/** Shape check for a Codex provider/model token. Same alphabet as
+ *  `isCodexCaptionModel` but tolerant of the empty-string clear
+ *  sentinel (checked separately by the caller). */
+function isAiTokenShape(value: string): boolean {
+  return value.length > 0 && value.length <= 120 && /^[A-Za-z0-9._:/-]+$/.test(value);
+}
+
+/** Shape check for a per-surface `model` id. UNLIKE Codex tokens, an ACP
+ *  agent's model id is an OPAQUE, agent-advertised string we persist verbatim
+ *  and only feed back to its `session/set_model` — never a path/shell/Codex
+ *  token. Qwen alone advertises ids like `coder-model(qwen-oauth)` and
+ *  `qwen3.6-plus(openai)` (parentheses), so the Codex-narrow alphabet wrongly
+ *  rejects them and the picker snaps back to Default. Accept any printable,
+ *  reasonably-bounded string; reject only control characters and absurd
+ *  lengths. */
+function isAiModelTokenShape(value: string): boolean {
+  // Codex's alphabet plus the bracket family ACP agents use in their ids
+  // (Qwen: `coder-model(qwen-oauth)`). Still rejects whitespace and other
+  // junk — a model id with spaces is almost always a pasted LABEL, not an id.
+  return value.length > 0 && value.length <= 200 && /^[A-Za-z0-9._:/()[\]-]+$/.test(value);
+}
+
+/** Validate a surface's `provider` backend selector (every surface now —
+ *  Library / Sizzle chat AND enrichment). Accepts "" / "codex" /
+ *  "acp:<known-id>"; rejects unknown `acp:` ids and any other free-text token
+ *  (those used to map to a Codex modelProvider; surfaces no longer do). */
+function validateChatSurfaceProvider(
+  surface: string,
+  value: string
+): PwrSnapError | null {
+  if (value === "" || value === "codex") return null;
+  if (value.startsWith("acp:")) {
+    const id = value.slice("acp:".length);
+    if (isBuiltInAcpAgentId(id)) return null;
+    return validationError(
+      `invalid_ai_defaults_${surface}_provider`,
+      `settings:write: ai.defaults.${surface}.provider has unknown ACP agent ${JSON.stringify(id)} (allowed: ${BUILT_IN_ACP_AGENT_IDS.join("/")})`
+    );
+  }
+  return validationError(
+    `invalid_ai_defaults_${surface}_provider`,
+    `settings:write: ai.defaults.${surface}.provider must be "", "codex", or "acp:<${BUILT_IN_ACP_AGENT_IDS.join("|")}>" (got ${JSON.stringify(value)})`
+  );
+}
+
+function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError | null {
+  if (!isObject(raw)) {
+    return validationError(
+      `invalid_ai_defaults_${surface}`,
+      `settings:write: ai.defaults.${surface} must be an object`
+    );
+  }
+  // `provider` is a BACKEND selector for EVERY surface now — chat surfaces
+  // (Library / Sizzle) and enrichment alike: "" / "codex" → Codex, "acp:<id>"
+  // → an enabled ACP agent. (Enrichment used to be a free-text Codex
+  // modelProvider token; the Settings → AI consolidation unified all three.)
+  if (!isUndefined(raw.provider)) {
+    if (!isString(raw.provider)) {
+      return validationError(
+        `invalid_ai_defaults_${surface}_provider`,
+        `settings:write: ai.defaults.${surface}.provider must be a string`
+      );
+    }
+    const provErr = validateChatSurfaceProvider(surface, raw.provider);
+    if (provErr !== null) return provErr;
+  }
+  for (const key of ["model"] as const) {
+    const v = raw[key];
+    if (isUndefined(v)) continue;
+    if (!isString(v)) {
+      return validationError(
+        `invalid_ai_defaults_${surface}_${key}`,
+        `settings:write: ai.defaults.${surface}.${key} must be a string`
+      );
+    }
+    // Empty string clears the field (→ Codex / agent default); always allowed.
+    // The model id is an opaque, possibly-ACP token (e.g. Qwen's
+    // `qwen3.6-plus(openai)`), so use the tolerant model-token shape — NOT the
+    // Codex-narrow alphabet, which would reject valid agent model ids.
+    if (v.length > 0 && !isAiModelTokenShape(v)) {
+      return validationError(
+        `invalid_ai_defaults_${surface}_${key}`,
+        `settings:write: ai.defaults.${surface}.${key} must be a non-empty model id under 200 chars with no control characters (got ${JSON.stringify(v)})`
+      );
+    }
+  }
+  // reasoning: empty string is the clear sentinel (→ Codex default); any
+  // non-empty value must be a recognized effort.
+  if (
+    !isUndefined(raw.reasoning) &&
+    raw.reasoning !== "" &&
+    !isAiReasoningEffort(raw.reasoning)
+  ) {
+    return validationError(
+      `invalid_ai_defaults_${surface}_reasoning`,
+      `settings:write: ai.defaults.${surface}.reasoning must be "" or one of ${AI_REASONING_EFFORTS.join("/")}`
+    );
+  }
+  return null;
+}
+
+function validateAiDefaultsPatch(raw: unknown): PwrSnapError | null {
+  if (!isObject(raw)) {
+    return validationError(
+      "invalid_ai_defaults",
+      "settings:write: ai.defaults must be an object"
+    );
+  }
+  for (const key of Object.keys(raw)) {
+    if (!(AI_SURFACE_IDS as readonly string[]).includes(key)) {
+      return validationError(
+        "invalid_ai_defaults_surface",
+        `settings:write: ai.defaults has unknown surface "${key}" (allowed: ${AI_SURFACE_IDS.join("/")})`
+      );
+    }
+  }
+  for (const surface of AI_SURFACE_IDS) {
+    const block = raw[surface];
+    if (isUndefined(block)) continue;
+    const err = validateAiSurfaceDefault(surface, block);
+    if (err !== null) return err;
+  }
+  return null;
+}
+
+// ---- settings:write — ai.acp sub-validator -----------------------------
+//
+// Validates the ACP-agent enablement patch. `enabledAgentIds` (when
+// present) must be an array of recognized built-in ACP agent ids — a
+// forged / buggy renderer can't enable an unknown agent or stash a
+// non-string blob in the set. An empty array is allowed (clear all).
+// The array is capped at the number of known agents (de-dup is handled
+// at merge / parse time).
+
+/** Max accepted length for an agent path (override / selected). Generous but
+ *  bounded so a forged patch can't stash a huge blob. */
+const ACP_AGENT_PATH_MAX = 4096;
+
+function validateAcpPatch(raw: unknown): PwrSnapError | null {
+  if (!isObject(raw)) {
+    return validationError(
+      "invalid_ai_acp",
+      "settings:write: ai.acp must be an object"
+    );
+  }
+  if (!isUndefined(raw.enabledAgentIds)) {
+    if (!Array.isArray(raw.enabledAgentIds)) {
+      return validationError(
+        "invalid_ai_acp_enabledAgentIds",
+        "settings:write: ai.acp.enabledAgentIds must be an array"
+      );
+    }
+    if (raw.enabledAgentIds.length > BUILT_IN_ACP_AGENT_IDS.length) {
+      return validationError(
+        "invalid_ai_acp_enabledAgentIds",
+        `settings:write: ai.acp.enabledAgentIds has ${raw.enabledAgentIds.length} ids (max ${BUILT_IN_ACP_AGENT_IDS.length})`
+      );
+    }
+    for (const id of raw.enabledAgentIds) {
+      if (!isBuiltInAcpAgentId(id)) {
+        return validationError(
+          "invalid_ai_acp_agent_id",
+          `settings:write: ai.acp.enabledAgentIds has unknown agent ${JSON.stringify(id)} (allowed: ${BUILT_IN_ACP_AGENT_IDS.join("/")})`
+        );
+      }
+    }
+  }
+  if (!isUndefined(raw.agents)) {
+    const agentsErr = validateAcpAgentsPatch(raw.agents);
+    if (agentsErr) return agentsErr;
+  }
+  return null;
+}
+
+/** Validate `ai.acp.agents` — a map of built-in agent id → `{ overridePath?,
+ *  selectedPath? }`. Rejects unknown ids and non-string / oversize path leaves.
+ *  `null` / `""` are allowed (they clear the leaf at merge time). */
+function validateAcpAgentsPatch(raw: unknown): PwrSnapError | null {
+  if (!isObject(raw)) {
+    return validationError(
+      "invalid_ai_acp_agents",
+      "settings:write: ai.acp.agents must be an object"
+    );
+  }
+  for (const [id, value] of Object.entries(raw)) {
+    if (!isBuiltInAcpAgentId(id)) {
+      return validationError(
+        "invalid_ai_acp_agent_id",
+        `settings:write: ai.acp.agents has unknown agent ${JSON.stringify(id)} (allowed: ${BUILT_IN_ACP_AGENT_IDS.join("/")})`
+      );
+    }
+    if (!isObject(value)) {
+      return validationError(
+        "invalid_ai_acp_agent_pref",
+        `settings:write: ai.acp.agents.${id} must be an object`
+      );
+    }
+    for (const key of ["overridePath", "selectedPath"] as const) {
+      const leaf = (value as Record<string, unknown>)[key];
+      if (isUndefined(leaf) || leaf === null) continue;
+      if (typeof leaf !== "string") {
+        return validationError(
+          "invalid_ai_acp_agent_pref",
+          `settings:write: ai.acp.agents.${id}.${key} must be a string or null`
+        );
+      }
+      if (leaf.length > ACP_AGENT_PATH_MAX) {
+        return validationError(
+          "invalid_ai_acp_agent_pref",
+          `settings:write: ai.acp.agents.${id}.${key} exceeds ${ACP_AGENT_PATH_MAX} chars`
+        );
+      }
+    }
+  }
+  return null;
+}
+
 // ---- settings:write — editor sub-validator -----------------------------
 //
 // Pulled into a separate function because the editor block is materially
@@ -932,4 +1183,82 @@ function isKnownSecretName(value: unknown): value is DesktopSettingsSecretName {
     typeof value === "string" &&
     (KNOWN_SECRET_NAMES as readonly string[]).includes(value)
   );
+}
+
+// ---- codex:profiles:create / codex:profiles:login ----
+//
+// A Codex auth profile maps 1:1 to a `~/.codex/profiles/<name>` directory,
+// so the name must be filesystem-safe. We reuse the kit's
+// `normalizeProfileName` to canonicalize free-text input (lowercasing,
+// stripping diacritics, collapsing illegal runs to `-`) and reject only when
+// nothing usable survives. The validator returns the NORMALIZED name so the
+// handler operates on the same canonical form the kit's discovery / create
+// helpers expect. An empty input means "System default" only for `login`;
+// `create` rejects empty (you can't create the default home from here).
+
+const MAX_PROFILE_NAME_INPUT = 64;
+
+/** Validate + normalize a profile-name input. `allowEmpty` permits the ""
+ *  sentinel (System default) — used by `login`; `create` sets it false. */
+function validateProfileNameInput(
+  verb: string,
+  raw: unknown,
+  options: { allowEmpty: boolean }
+): ValidationResult<{ name: string }> {
+  if (typeof raw !== "string") {
+    return {
+      ok: false,
+      error: validationError(
+        "invalid_profile_name",
+        `${verb}: name must be a string`
+      )
+    };
+  }
+  if (raw.length > MAX_PROFILE_NAME_INPUT) {
+    return {
+      ok: false,
+      error: validationError(
+        "profile_name_too_long",
+        `${verb}: name is ${raw.length} chars (max ${MAX_PROFILE_NAME_INPUT})`
+      )
+    };
+  }
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    if (options.allowEmpty) return { ok: true, value: { name: "" } };
+    return {
+      ok: false,
+      error: validationError(
+        "empty_profile_name",
+        `${verb}: name must contain at least one letter or number`
+      )
+    };
+  }
+  const normalized = normalizeProfileName(trimmed);
+  if (normalized.length === 0 || !isValidProfileName(normalized)) {
+    return {
+      ok: false,
+      error: validationError(
+        "invalid_profile_name",
+        `${verb}: "${trimmed}" is not a usable profile name — use letters, numbers, "-", or "_"`
+      )
+    };
+  }
+  return { ok: true, value: { name: normalized } };
+}
+
+export function validateCodexProfileCreate(
+  req: { name: string }
+): ValidationResult<{ name: string }> {
+  return validateProfileNameInput("codex:profiles:create", req?.name, {
+    allowEmpty: false
+  });
+}
+
+export function validateCodexProfileLogin(
+  req: { name: string }
+): ValidationResult<{ name: string }> {
+  return validateProfileNameInput("codex:profiles:login", req?.name, {
+    allowEmpty: true
+  });
 }

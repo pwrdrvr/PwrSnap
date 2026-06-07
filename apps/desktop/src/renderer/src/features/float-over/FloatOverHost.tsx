@@ -29,6 +29,7 @@ import {
   type SettingsChangedEvent
 } from "@pwrsnap/shared";
 import { FloatOver } from "./FloatOver";
+import { enrichmentBackendLabel } from "../shared/CodexStatusPill";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 
@@ -196,6 +197,29 @@ export function FloatOverHost(): React.ReactElement {
       cancelled = true;
     };
   }, [state]);
+
+  // The fast `show-loaded` path (record arrives inline) sets `settings: null`
+  // and never fetches them — the original pill copy was a hardcoded "Codex" so
+  // it didn't matter. It does now (the pill names the enrichment provider), so
+  // fill settings whenever we're loaded without them. The `settingsChanged`
+  // listener keeps them fresh afterward.
+  const loadedWithoutSettings = state.kind === "loaded" && state.settings === null;
+  useEffect(() => {
+    if (!loadedWithoutSettings) return undefined;
+    let cancelled = false;
+    void dispatch("settings:read", {}).then((result) => {
+      // Guard nullish so a settings read that yields nothing doesn't clobber
+      // `null` with `undefined` (which would flip `settings !== null` checks).
+      if (cancelled || !result.ok || result.value == null) return;
+      const value = result.value;
+      setState((current) =>
+        current.kind === "loaded" ? { ...current, settings: value } : current
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadedWithoutSettings]);
 
   useEffect(() => {
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.aiRunUpdated, (payload) => {
@@ -405,6 +429,8 @@ export function FloatOverHost(): React.ReactElement {
         aiEnabled={settings?.ai.enabled ?? false}
         aiConsentAccepted={settings?.ai.consentAcceptedAt !== null && settings !== null}
         aiSafetyDisabled={settings?.ai.budgetSafetyDisabledAt !== null && settings !== null}
+        enrichmentProviderLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment).providerLabel}
+        enrichmentModelLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment).modelLabel}
         autoAcceptSuggestions={settings?.ai.autoAcceptSuggestions ?? false}
         onSetAutoAccept={(next) => {
           void dispatch("settings:write", {

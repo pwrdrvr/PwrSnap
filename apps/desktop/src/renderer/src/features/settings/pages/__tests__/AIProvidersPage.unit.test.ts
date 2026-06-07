@@ -3,7 +3,11 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import type { AcpAgentDiscovery } from "@pwrsnap/shared";
 import {
+  AiSurfaceDefaultControl,
+  type AiSurfaceDefaultControlProps,
+  buildAcpProviderOptions,
   formatCostMicros,
   formatLastSetAt,
   formatNextTokenAt,
@@ -74,6 +78,195 @@ function typeIntoInput(input: HTMLInputElement, value: string): void {
     input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
   });
 }
+
+async function renderSurfaceControl(
+  props: AiSurfaceDefaultControlProps
+): Promise<HTMLDivElement> {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  await act(async () => {
+    root?.render(createElement(AiSurfaceDefaultControl, props));
+  });
+  return container;
+}
+
+describe("AiSurfaceDefaultControl — job routing", () => {
+  test("resets the model to Default when the provider changes (no stale cross-provider model)", async () => {
+    const onChange = vi.fn();
+    const el = await renderSurfaceControl({
+      surface: "libraryChat",
+      name: "Library chat",
+      sub: "",
+      value: { provider: "acp:gemini", model: "gemini-3-pro-preview" },
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [{ value: "acp:gemini", label: "Gemini CLI" }],
+      acpModelOptions: [{ id: "gemini-3-pro-preview", label: "gemini-3-pro-preview" }],
+      acpModelsLoading: false,
+      onChange
+    });
+    const providerSelect = el.querySelector<HTMLSelectElement>(
+      '[aria-label="Library chat provider"]'
+    );
+    expect(providerSelect).not.toBeNull();
+    await act(async () => {
+      providerSelect!.value = ""; // switch to Codex
+      providerSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    // The model must be cleared alongside the provider — a Gemini model can't
+    // carry over to Codex.
+    expect(onChange).toHaveBeenCalledWith({ provider: "", model: "" });
+  });
+
+  test("annotates the ACP Default with the agent's true default; marks the (default) model", async () => {
+    const onChange = vi.fn();
+    const el = await renderSurfaceControl({
+      surface: "enrichment",
+      name: "Enrichment",
+      sub: "",
+      // Stale Codex id lingering under an ACP provider: shows as Default, no
+      // forced write (Option B — keep Default, annotated).
+      value: { provider: "acp:kimi", model: "gpt-5.4-mini" },
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [{ value: "acp:kimi", label: "Kimi Code CLI" }],
+      acpModelOptions: [
+        { id: "kimi-k1.5", label: "kimi-k1.5" },
+        { id: "kimi-k2", label: "kimi-k2", isDefault: true }
+      ],
+      acpModelsLoading: false,
+      onChange
+    });
+    // No auto-persist — the stale model just displays as Default.
+    expect(onChange).not.toHaveBeenCalled();
+    const modelSelect = el.querySelector<HTMLSelectElement>('[aria-label="Enrichment model"]');
+    expect(modelSelect!.value).toBe(""); // Default (stale id not selectable)
+    const options = Array.from(modelSelect!.options).map((o) => ({
+      value: o.value,
+      text: o.textContent
+    }));
+    // Default entry names what it resolves to; the default model is tagged.
+    expect(options).toEqual([
+      { value: "", text: "Default (kimi-k2)" },
+      { value: "kimi-k1.5", text: "kimi-k1.5" },
+      { value: "kimi-k2", text: "kimi-k2 (default)" }
+    ]);
+  });
+
+  test("keeps a plain Default for an ACP agent that advertises no models", async () => {
+    const onChange = vi.fn();
+    const el = await renderSurfaceControl({
+      surface: "libraryChat",
+      name: "Library chat",
+      sub: "",
+      value: { provider: "acp:grok" },
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [{ value: "acp:grok", label: "Grok" }],
+      acpModelOptions: [], // agent advertises none
+      acpModelsLoading: false,
+      onChange
+    });
+    const modelSelect = el.querySelector<HTMLSelectElement>('[aria-label="Library chat model"]');
+    const defaultOption = Array.from(modelSelect!.options).find((o) => o.value === "");
+    expect(defaultOption?.textContent).toBe("Default"); // no annotation when no default known
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  test("hides a text-only Codex model from the picker (Spark is image-incapable)", async () => {
+    const codexModels = [
+      {
+        id: "gpt-5.4-spark",
+        model: "gpt-5.4-spark",
+        displayName: "Codex Spark",
+        description: "",
+        hidden: false,
+        inputModalities: ["text"] as Array<"text" | "image">, // text-only
+        defaultServiceTier: null,
+        isDefault: false
+      },
+      {
+        id: "gpt-5.5",
+        model: "gpt-5.5",
+        displayName: "GPT-5.5",
+        description: "",
+        hidden: false,
+        inputModalities: ["text", "image"] as Array<"text" | "image">,
+        defaultServiceTier: null,
+        isDefault: true
+      }
+    ];
+    const el = await renderSurfaceControl({
+      surface: "libraryChat",
+      name: "Library chat",
+      sub: "",
+      value: {},
+      models: codexModels,
+      modelsLoading: false,
+      acpProviderOptions: [],
+      acpModelsLoading: false,
+      onChange: vi.fn()
+    });
+    const modelSelect = el.querySelector<HTMLSelectElement>('[aria-label="Library chat model"]');
+    const optionValues = Array.from(modelSelect!.options).map((o) => o.value);
+    expect(optionValues).not.toContain("gpt-5.4-spark"); // text-only → hidden everywhere
+    expect(optionValues).toContain("gpt-5.5");
+  });
+
+  test("does NOT keep a stored model that isn't valid for the provider (Sizzle bug)", async () => {
+    // Repro of the real saved state: sizzleChat = { model: "gemini-3-flash-preview" }
+    // with no provider → defaults to Codex. The Codex model picker must NOT
+    // keep the stale Gemini id selectable/selected — it shows Default until a
+    // real Codex model is chosen.
+    const codexModels = [
+      {
+        id: "gpt-5.5",
+        model: "gpt-5.5",
+        displayName: "GPT-5.5",
+        description: "",
+        hidden: false,
+        inputModalities: ["text", "image"] as Array<"text" | "image">,
+        defaultServiceTier: null,
+        isDefault: true
+      }
+    ];
+    const el = await renderSurfaceControl({
+      surface: "sizzleChat",
+      name: "Sizzle Reel chat",
+      sub: "",
+      value: { model: "gemini-3-flash-preview" }, // no provider → Codex
+      models: codexModels,
+      modelsLoading: false,
+      acpProviderOptions: [],
+      acpModelsLoading: false,
+      onChange: vi.fn()
+    });
+    const modelSelect = el.querySelector<HTMLSelectElement>(
+      '[aria-label="Sizzle Reel chat model"]'
+    );
+    expect(modelSelect).not.toBeNull();
+    const optionValues = Array.from(modelSelect!.options).map((o) => o.value);
+    expect(optionValues).not.toContain("gemini-3-flash-preview");
+    expect(modelSelect!.value).toBe(""); // Default, not the stale Gemini id
+  });
+});
+
+describe("buildAcpProviderOptions", () => {
+  test("labels an enabled agent by its friendly name BEFORE discovery resolves (no raw-id flash)", () => {
+    // discovery=null → the label must come from the built-in name, not "gemini".
+    const opts = buildAcpProviderOptions(["gemini"], null);
+    expect(opts).toEqual([{ value: "acp:gemini", label: "Gemini CLI" }]);
+  });
+
+  test("prefers discovery's display name once it resolves", () => {
+    const discovery = {
+      agents: [{ id: "gemini", displayName: "Gemini CLI (v0.4)" }]
+    } as unknown as AcpAgentDiscovery;
+    const opts = buildAcpProviderOptions(["gemini"], discovery);
+    expect(opts[0]?.label).toBe("Gemini CLI (v0.4)");
+  });
+});
 
 describe("formatLastSetAt", () => {
   test("returns em-dash for null / empty input", () => {

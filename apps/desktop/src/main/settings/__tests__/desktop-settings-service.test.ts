@@ -254,6 +254,219 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     const settings = await svc.read();
     expect(settings.codex.captionModel).toBe("gpt-5.5");
   });
+
+  test("v1 shape missing `ai.defaults` gets empty per-surface defaults filled in", async () => {
+    // `ai.defaults.*` is additive. Older files won't have it; parseV1
+    // fills empty objects for the two chat surfaces (= "Codex default").
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: { enabled: true }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.ai.defaults.libraryChat).toEqual({});
+    expect(settings.ai.defaults.sizzleChat).toEqual({});
+    // Enrichment model is seeded from the legacy captionModel for
+    // back-compat (existing enrichment model selection is preserved).
+    expect(settings.ai.defaults.enrichment.model).toBe("gpt-5.4-mini");
+  });
+
+  test("v1 shape seeds `ai.defaults.enrichment.model` from a newer captionModel", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.5" }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.ai.defaults.enrichment.model).toBe("gpt-5.5");
+  });
+
+  test("v1 shape with explicit `ai.defaults` preserves provider/model/reasoning", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: {
+          enabled: true,
+          defaults: {
+            libraryChat: { provider: "acp:gemini", model: "gpt-5.5", reasoning: "high" },
+            sizzleChat: { reasoning: "medium" },
+            // Explicit enrichment model wins over the captionModel seed.
+            enrichment: { model: "gpt-5.5-mini" }
+          }
+        }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.ai.defaults.libraryChat).toEqual({
+      provider: "acp:gemini",
+      model: "gpt-5.5",
+      reasoning: "high"
+    });
+    expect(settings.ai.defaults.sizzleChat).toEqual({ reasoning: "medium" });
+    expect(settings.ai.defaults.enrichment.model).toBe("gpt-5.5-mini");
+  });
+
+  test("v1 shape drops a legacy free-text provider (now a backend selector)", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: {
+          enabled: true,
+          // "openai" was the old free-text Codex modelProvider; provider is a
+          // backend selector now, so it's dropped (→ Codex), model kept.
+          defaults: { enrichment: { provider: "openai", model: "gpt-5.5-mini" } }
+        }
+      }),
+      "utf8"
+    );
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.ai.defaults.enrichment).toEqual({ model: "gpt-5.5-mini" });
+  });
+
+  test("v1 shape drops empty-string and invalid `ai.defaults` leaves", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: {
+          enabled: true,
+          defaults: {
+            // Empty / whitespace strings and a bad reasoning value are
+            // dropped so the in-memory shape omits them (= Codex default).
+            libraryChat: { provider: "  ", model: "", reasoning: "ultra" }
+          }
+        }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.ai.defaults.libraryChat).toEqual({});
+  });
+
+  test("fresh defaults have an empty `ai.acp.enabledAgentIds`", () => {
+    expect(defaultSettings().ai.acp).toEqual({ enabledAgentIds: [], agents: {} });
+  });
+
+  test("v1 shape missing `ai.acp` defaults to an empty enabled set", async () => {
+    // `ai.acp.*` is additive. Older files won't have it; parseV1 fills
+    // an empty enabled set.
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: { enabled: true }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.ai.acp).toEqual({ enabledAgentIds: [], agents: {} });
+  });
+
+  test("v1 shape keeps recognized `ai.acp` agent ids and drops unknown / duplicate ones", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: {
+          enabled: true,
+          // "bogus" is not a known agent; "kimi" is duplicated; 42 is not
+          // a string. parseV1 keeps only recognized ids, de-duplicated,
+          // in order.
+          acp: { enabledAgentIds: ["kimi", "bogus", "qwen", "kimi", 42] }
+        }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.ai.acp.enabledAgentIds).toEqual(["kimi", "qwen"]);
+  });
+});
+
+describe("DesktopSettingsService.write ai.acp", () => {
+  test("patching `ai.acp.enabledAgentIds` replaces the stored set wholesale", async () => {
+    const svc = makeService();
+    await svc.write({ ai: { acp: { enabledAgentIds: ["kimi", "qwen"] } } });
+    let read = await svc.read();
+    expect(read.ai.acp.enabledAgentIds).toEqual(["kimi", "qwen"]);
+
+    // A subsequent patch replaces (does not merge) the set.
+    await svc.write({ ai: { acp: { enabledAgentIds: ["gemini"] } } });
+    read = await svc.read();
+    expect(read.ai.acp.enabledAgentIds).toEqual(["gemini"]);
+  });
+
+  test("an empty `enabledAgentIds` array clears the set", async () => {
+    const svc = makeService();
+    await svc.write({ ai: { acp: { enabledAgentIds: ["grok"] } } });
+    await svc.write({ ai: { acp: { enabledAgentIds: [] } } });
+    const read = await svc.read();
+    expect(read.ai.acp.enabledAgentIds).toEqual([]);
+  });
+
+  test("an undefined `ai.acp` leaves the stored set untouched", async () => {
+    const svc = makeService();
+    await svc.write({ ai: { acp: { enabledAgentIds: ["kimi"] } } });
+    // Patch a different ai field; acp must survive.
+    await svc.write({ ai: { enabled: true } });
+    const read = await svc.read();
+    expect(read.ai.acp.enabledAgentIds).toEqual(["kimi"]);
+  });
+
+  test("`ai.acp.agents` merges per agent (pick one without disturbing another)", async () => {
+    const svc = makeService();
+    await svc.write({ ai: { acp: { agents: { qwen: { selectedPath: "/nvm/qwen" } } } } });
+    await svc.write({ ai: { acp: { agents: { grok: { overridePath: "/custom/grok" } } } } });
+    const read = await svc.read();
+    expect(read.ai.acp.agents).toEqual({
+      qwen: { selectedPath: "/nvm/qwen" },
+      grok: { overridePath: "/custom/grok" }
+    });
+  });
+
+  test("an empty-string leaf clears that preference (revert to auto), dropping empty entries", async () => {
+    const svc = makeService();
+    await svc.write({ ai: { acp: { agents: { qwen: { selectedPath: "/nvm/qwen" } } } } });
+    await svc.write({ ai: { acp: { agents: { qwen: { selectedPath: "" } } } } });
+    const read = await svc.read();
+    expect(read.ai.acp.agents).toEqual({});
+  });
+
+  test("patching enabledAgentIds leaves the agents map untouched", async () => {
+    const svc = makeService();
+    await svc.write({ ai: { acp: { agents: { qwen: { overridePath: "/p/qwen" } } } } });
+    await svc.write({ ai: { acp: { enabledAgentIds: ["qwen"] } } });
+    const read = await svc.read();
+    expect(read.ai.acp.agents).toEqual({ qwen: { overridePath: "/p/qwen" } });
+    expect(read.ai.acp.enabledAgentIds).toEqual(["qwen"]);
+  });
 });
 
 describe("DesktopSettingsService write-queue serialization on rejection", () => {
@@ -412,6 +625,41 @@ describe("mergeSettings", () => {
     });
     expect(merged.storage.filenameTimestampZone).toBe("utc");
     expect(merged.codex.mode).toBe(current.codex.mode);
+  });
+
+  test("ai.defaults patch merges one surface field-by-field without clobbering others", () => {
+    const current = defaultSettings();
+    const merged = mergeSettings(current, {
+      ai: { defaults: { libraryChat: { model: "gpt-5.5", reasoning: "high" } } }
+    });
+    expect(merged.ai.defaults.libraryChat).toEqual({
+      model: "gpt-5.5",
+      reasoning: "high"
+    });
+    // Other surfaces untouched.
+    expect(merged.ai.defaults.sizzleChat).toEqual({});
+    expect(merged.ai.defaults.enrichment).toEqual({});
+    // Other ai fields untouched.
+    expect(merged.ai.enabled).toBe(current.ai.enabled);
+  });
+
+  test("ai.defaults patch with empty-string clears a previously-set leaf", () => {
+    const current = {
+      ...defaultSettings(),
+      ai: {
+        ...defaultSettings().ai,
+        defaults: {
+          libraryChat: { provider: "openai", model: "gpt-5.5", reasoning: "high" as const },
+          sizzleChat: {},
+          enrichment: {}
+        }
+      }
+    };
+    const merged = mergeSettings(current, {
+      ai: { defaults: { libraryChat: { provider: "", reasoning: "" } } }
+    });
+    // provider + reasoning cleared; model preserved (undefined = leave alone).
+    expect(merged.ai.defaults.libraryChat).toEqual({ model: "gpt-5.5" });
   });
 });
 

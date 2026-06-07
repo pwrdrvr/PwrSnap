@@ -210,7 +210,7 @@ const readOcrText = defineTool({
   namespace: "pwrsnap_library",
   name: "read_ocr_text",
   description:
-    "Read the text PwrSnap OCR'd out of an image capture. Use it to FIND text to redact (secrets, account / card / SSN numbers, emails) or to answer questions about what the capture says — read the text rather than guessing from the picture. Returns up to 16000 characters; `truncated` is true when the OCR was longer.",
+    "Read the text PwrSnap OCR'd out of an image capture. Use it to know WHAT text is present — confirm a secret / account / card / SSN number / email exists, decide what needs redacting, or answer questions about what the capture says (read the text rather than guessing from the picture). IMPORTANT: this is PLAIN TEXT with NO position/coordinate information — it tells you what text exists, NOT where it is on the canvas. To box / redact / highlight specific text by its location, use render_composite and locate it VISUALLY, not the OCR. Returns up to 16000 characters; `truncated` is true when the OCR was longer.",
   annotations: { readOnlyHint: true },
   argsSchema: z.object({ capture_id: z.string() }),
   dispatch: async (args) => {
@@ -252,7 +252,7 @@ const listLayers = defineTool({
   namespace: "pwrsnap_library",
   name: "list_layers",
   description:
-    "List the annotation/effect layers on a capture (the edit tree). Refuses v1-format captures — open them in the editor first to upgrade.",
+    "List the EXISTING layers already on a capture (the edit tree) WITH their layer_ids. Call this FIRST whenever the user wants to move, resize, reposition, restyle, recolor, replace, or delete an annotation / box / arrow / redaction that is ALREADY on the image — it gives you the layer_id that update_layer / delete_layer / reorder_layer need. Do NOT draw a new layer to 'fix' or adjust one that already exists. (This lists the actual layers; for the catalog of TOOLS/conventions use editing_capabilities.) Refuses v1-format captures — open them in the editor first to upgrade.",
   annotations: { readOnlyHint: true },
   argsSchema: z.object({ capture_id: z.string() }),
   dispatch: async (args) => runVerb("layers:list", { captureId: args.capture_id })
@@ -262,11 +262,11 @@ const renderComposite = defineTool({
   namespace: "pwrsnap_library",
   name: "render_composite",
   description:
-    "Render the current canvas (source image + your applied edits) to a picture so you can SEE it. Call this BEFORE placing a redaction or annotation that depends on what's on screen (e.g. to locate a credit-card field), and again AFTER to verify the result landed where you intended. `max_edge_px` (default 720, max 1440) bounds the resolution. Image captures only.",
+    "Render the current canvas (source image + your applied edits) to a picture so you can SEE it. Call this BEFORE placing a redaction or annotation that depends on what's on screen (e.g. to locate a credit-card field), and again AFTER to verify the result landed where you intended. `max_edge_px` (default 1024, max 2000) bounds the resolution — for pixel-precise alignment (boxing/redacting an exact element) request a HIGHER resolution so you can read element edges accurately, then refine with update_layer if the first placement is off. Image captures only.",
   annotations: { readOnlyHint: true },
   argsSchema: z.object({
     capture_id: z.string(),
-    max_edge_px: z.number().int().min(64).max(1440).optional()
+    max_edge_px: z.number().int().min(64).max(2000).optional()
   }),
   dispatch: async (args) => {
     const result = await bus.dispatch(
@@ -334,9 +334,9 @@ const openEditor = defineTool({
 
 const listLayerCapabilities = defineTool({
   namespace: "pwrsnap_library",
-  name: "list_layer_capabilities",
+  name: "editing_capabilities",
   description:
-    "Describe what you can place or update on a capture: draw tools, effect tools, update_layer, and the coordinate/style conventions. Call this if you're unsure what's available.",
+    "Describe the editing TOOLS and conventions available (draw tools, effect tools, update_layer, and the coordinate/style conventions). This does NOT list the layers currently on the capture — for the actual existing layers and their ids, use `list_layers`. Call this only if you're unsure which tools exist.",
   annotations: { readOnlyHint: true },
   argsSchema: z.object({}),
   dispatch: async () => ({
@@ -356,7 +356,7 @@ const listLayerCapabilities = defineTool({
       shape_note:
         "rect/square/circle/oval/parallelogram share a normalized bounding rect; keep w==h for a true square or circle. filled=true for solid, omit for outline.",
       text_tools:
-        "capture_metadata returns the AI title/description/tags + whether OCR exists; read_ocr_text returns the OCR'd text — use it to locate secrets/text to redact rather than guessing from the picture.",
+        "capture_metadata returns the AI title/description/tags + whether OCR exists; read_ocr_text returns the OCR'd text (plain text, NO positions — it tells you WHAT text exists, not WHERE; to place a mark/redaction over specific text, find it visually via render_composite, not the OCR).",
       effect_tools: {
         redact: "opaque blackout over a rect — IRREVERSIBLE, use for secrets",
         blur: "soften a rect (gaussian, or pixelate=true for mosaic) — REVERSIBLE, non-secret content only"

@@ -29,7 +29,10 @@ function makeThread(
     archived: false,
     pinned: false,
     lastMessagePreview: "",
-    status: { kind: "idle" }
+    status: { kind: "idle" },
+    provider: null,
+    model: null,
+    reasoning: null
   };
 }
 
@@ -86,14 +89,29 @@ afterEach(async () => {
 });
 
 describe("LibraryChatPanel", () => {
-  test("orders thread chips newest to oldest", async () => {
+  test("a new chat shows editable backend chips; a started thread shows locked chips", async () => {
+    // No threads → draft/greeting → editable Provider/Model/Reasoning chips.
+    const { el } = await renderPanel([]);
+    expect(el.querySelector('[data-testid="chat-backend-chips-draft"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="chat-backend-chips-locked"]')).toBeNull();
+  });
+
+  test("an existing (resumed) thread shows the locked backend chips, not the draft", async () => {
+    const { el } = await renderPanel([makeThread("t1", "Chat", "2026-05-30T10:00:00.000Z")]);
+    expect(el.querySelector('[data-testid="chat-backend-chips-locked"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="chat-backend-chips-draft"]')).toBeNull();
+  });
+
+  test("orders thread chips in creation order (oldest to newest), resumes most recent", async () => {
     const older = makeThread("t1", "Older chat", "2026-05-30T10:00:00.000Z");
     const newer = makeThread("t2", "Newer chat", "2026-05-30T11:00:00.000Z");
     const { el, dispatch } = await renderPanel([older, newer]);
 
+    // Stable creation order — a chip never jumps to the front on activity.
     expect(
       Array.from(el.querySelectorAll(".ps-libchat-thread-name")).map((node) => node.textContent)
-    ).toEqual(["Newer chat", "Older chat"]);
+    ).toEqual(["Older chat", "Newer chat"]);
+    // But on open we still resume the most-recently-active thread.
     expect(dispatch).toHaveBeenCalledWith("codex:libraryChat:history", { threadId: "t2" });
   });
 
@@ -102,7 +120,12 @@ describe("LibraryChatPanel", () => {
     const second = makeThread("t2", "Keep chat", "2026-05-30T10:00:00.000Z");
     const { el, dispatch } = await renderPanel([first, second]);
 
-    const close = el.querySelector<HTMLButtonElement>(".ps-libchat-thread-close")!;
+    // Target by name, not position — the list is in creation order now.
+    const shells = Array.from(el.querySelectorAll(".ps-libchat-thread-shell"));
+    const target = shells.find(
+      (s) => s.querySelector(".ps-libchat-thread-name")?.textContent === "Old chat"
+    )!;
+    const close = target.querySelector<HTMLButtonElement>(".ps-libchat-thread-close")!;
     await act(async () => {
       close.click();
       await Promise.resolve();

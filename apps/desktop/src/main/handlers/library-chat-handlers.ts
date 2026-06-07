@@ -14,6 +14,7 @@
 
 import { app, BrowserWindow } from "electron";
 import { join } from "node:path";
+import type { ChatThreadController } from "@pwrdrvr/agent-client";
 import type {
   EventPayloads,
   PwrSnapError,
@@ -21,17 +22,19 @@ import type {
   Settings,
   TypedEventChannel
 } from "@pwrsnap/shared";
-import { EVENT_CHANNELS, err, ok } from "@pwrsnap/shared";
+import { acpAgentIdFromThreadId, EVENT_CHANNELS, err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
-import { PWRSNAP_CODEX_THREAD_CONFIG } from "../ai/codex-thread-config";
-import { CodexThreadClient } from "../ai/codex-thread-client";
-import { ChatThreadStore } from "../ai/chat-thread-store";
+import { resolveCodexThreadConfigForCommand } from "../ai/codex-thread-config";
+import { buildChatSurface, toKitApprovalDecision } from "../ai/chat-controller-factory";
 import {
-  ChatThreadController,
-  type ChatBroadcast,
-  type ChatChannelSet
-} from "../ai/chat-thread-controller";
+  createKeyedChatControllerCache,
+  type ChatBackendConfig
+} from "../ai/chat-controller-cache";
+import { ChatThreadStore } from "../ai/chat-thread-store";
+import { codexEnvForProfile } from "../ai/agent-kit-bindings";
+import type { ChatBroadcast, ChatChannelSet } from "../ai/chat-event-adapter";
+import { toChatMessage, toLibraryThreadView } from "../ai/chat-event-adapter";
 import { buildLibrarySystemPrompt } from "../ai/library-chat-system-prompt";
 import { buildLibraryToolCatalog } from "../ai/library-tool-catalog";
 import { dispatchLibraryToolCall } from "../ai/library-tool-catalog";
@@ -56,7 +59,6 @@ const log = getMainLogger("pwrsnap:library-chat-handlers");
 // as a backstop. (`baseInstructions` already fully REPLACES Codex's
 // default coding-agent prompt — the Responses `instructions` field is
 // `base_instructions.text` verbatim.)
-const LIBRARY_CHAT_THREAD_CONFIG = PWRSNAP_CODEX_THREAD_CONFIG;
 
 /** The Library surface's broadcast channels (the controller is surface-
  *  parameterized — see `ChatChannelSet`). */
@@ -75,8 +77,8 @@ const LIBRARY_TOOL_LABELS: Record<string, string> = {
   library_search: "Searched the library",
   capture_metadata: "Read capture details",
   read_ocr_text: "Read the capture text",
-  list_layers: "Read the layers",
-  list_layer_capabilities: "Checked capabilities",
+  list_layers: "Listed existing layers",
+  editing_capabilities: "Checked capabilities",
   render_composite: "Looked at the canvas",
   open_in_library: "Opened in Library",
   open_editor: "Opened the editor",
@@ -150,53 +152,111 @@ function codexCommandForSettings(settings: Settings): string {
 }
 
 export function registerLibraryChatHandlers(params?: {
-  controller?: ChatThreadController;
+  controller?: ChatThreadController<Settings>;
   settingsReader?: LibraryChatSettingsReader;
 }): void {
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
+  const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
+  // Reads each thread's persisted backend config (for routing) + writes it on
+  // create. Lazy DB access — constructing it touches nothing.
+  const store = new ChatThreadStore({ chatsDir });
 
-  // Lazily build the singleton on first use. Building it eagerly would
-  // spawn a codex child at app start even for users who never open chat;
-  // lazy keeps startup lean and lets the first dispatch surface a clean
-  // "codex unreachable" error instead of a boot crash.
-  let controller: ChatThreadController | null = params?.controller ?? null;
-  const getController = async (): Promise<ChatThreadController> => {
-    if (controller !== null) return controller;
-    const settings = await settingsReader();
-    const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
-    const client = new CodexThreadClient({ command: codexCommandForSettings(settings) });
-    const store = new ChatThreadStore({ chatsDir });
-    controller = new ChatThreadController({
-      client,
-      store,
-      readSettings: settingsReader,
-      broadcast,
-      buildSystemPrompt: buildLibrarySystemPrompt,
-      channels: LIBRARY_CHAT_CHANNELS,
-      usageSurface: "library-chat",
-      buildTurnContext: buildCurrentCaptureContext,
-      toolLabels: LIBRARY_TOOL_LABELS,
-      catalog: buildLibraryToolCatalog(),
-      dispatchToolCall: dispatchLibraryToolCall,
-      // Default Access.
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
-      // Drop Codex's built-in coding tools — PwrSnap chat is image-only.
-      threadConfig: LIBRARY_CHAT_THREAD_CONFIG,
-      threadEnvironments: LIBRARY_CHAT_THREAD_ENVIRONMENTS
-    });
-    controller.wire();
-    return controller;
+  // ONE controller per distinct (provider, model, reasoning) config. Each thread
+  // routes to the controller matching ITS config, so different threads on this
+  // surface can run on different backends. ACP processes are shared by the agent
+  // pool; only Codex spawns a child per config. A settings-level change (codex
+  // command/profile/ACP paths) disposes + rebuilds all of them.
+  const cache = createKeyedChatControllerCache<ChatThreadController<Settings>>({
+    readSettings: settingsReader,
+    settingsSignature: (s) =>
+      JSON.stringify({
+        command: codexCommandForSettings(s),
+        profile: s.codex.profile ?? null,
+        acpAgents: s.ai.acp.agents ?? null,
+        acpEnabled: s.ai.acp.enabledAgentIds ?? null
+      }),
+    build: async (config, settings) => {
+      const command = codexCommandForSettings(settings);
+      const env = codexEnvForProfile(settings.codex.profile);
+      const surface = await buildChatSurface({
+        command,
+        env,
+        chatsDir,
+        readSettings: settingsReader,
+        channels: LIBRARY_CHAT_CHANNELS,
+        send: broadcast,
+        usageSurface: "library-chat",
+        buildSystemPrompt: ({ settings: s, anchorId }) =>
+          buildLibrarySystemPrompt({ settings: s, anchorCaptureId: anchorId }),
+        buildTurnContext: buildCurrentCaptureContext,
+        toolLabels: LIBRARY_TOOL_LABELS,
+        catalog: buildLibraryToolCatalog(),
+        dispatchToolCall: dispatchLibraryToolCall,
+        threadConfig: resolveCodexThreadConfigForCommand(command, env),
+        threadEnvironments: LIBRARY_CHAT_THREAD_ENVIRONMENTS,
+        // The THREAD's chosen config (not the surface default) — null leaves
+        // omitted so the kit/backend default applies.
+        ...(config.provider !== null && config.provider !== "" ? { provider: config.provider } : {}),
+        ...(config.model !== null && config.model !== "" ? { model: config.model } : {}),
+        ...(config.reasoning !== null && config.reasoning !== "" ? { effort: config.reasoning } : {}),
+        loggerScope: "pwrsnap:library-chat"
+      });
+      return { controller: surface.controller, dispose: surface.dispose };
+    }
+  });
+
+  // A test-injected controller pins every config to that instance (no rebuild,
+  // no real backend) — existing handler tests rely on this.
+  const injected = params?.controller ?? null;
+  const controllerFor = async (
+    config: ChatBackendConfig
+  ): Promise<ChatThreadController<Settings>> =>
+    injected !== null ? injected : cache.get(config);
+
+  /** The surface's Settings-default config (seeds a new chat + the list view). */
+  const defaultConfig = async (): Promise<ChatBackendConfig> => {
+    const d = (await settingsReader()).ai?.defaults?.libraryChat;
+    return {
+      provider: d?.provider !== undefined && d.provider !== "" ? d.provider : "codex",
+      model: d?.model !== undefined && d.model !== "" ? d.model : null,
+      reasoning: d?.reasoning ?? null
+    };
+  };
+
+  /** Resolve an EXISTING thread's backend config: its persisted config first,
+   *  else the provider baked into its id (acp:<id>:… / Codex), with model +
+   *  reasoning left to the backend default. */
+  const configForThread = async (threadId: string): Promise<ChatBackendConfig> => {
+    const sidecar = await store.get(threadId).catch(() => null);
+    const agentId = acpAgentIdFromThreadId(threadId);
+    return {
+      provider: sidecar?.provider ?? (agentId !== null ? `acp:${agentId}` : "codex"),
+      model: sidecar?.model ?? null,
+      reasoning: sidecar?.reasoning ?? null
+    };
   };
 
   bus.register("codex:libraryChat:list", async (req) => {
     try {
-      const c = await getController();
+      const c = await controllerFor(await defaultConfig());
       const threads = await c.listThreads({
         includeArchived: req.includeArchived ?? false,
-        ...(req.anchorCaptureId !== undefined ? { anchorCaptureId: req.anchorCaptureId } : {})
+        ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
-      return ok({ threads });
+      // Merge each thread's persisted config into the view (locked chips).
+      const sidecars = await store
+        .list({ includeArchived: req.includeArchived ?? false })
+        .catch(() => []);
+      const byId = new Map(sidecars.map((s) => [s.threadId, s]));
+      return ok({
+        threads: threads.map((t) => {
+          const s = byId.get(t.threadId);
+          return toLibraryThreadView(
+            t,
+            s ? { provider: s.provider, model: s.model, reasoning: s.reasoning } : undefined
+          );
+        })
+      });
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -204,12 +264,22 @@ export function registerLibraryChatHandlers(params?: {
 
   bus.register("codex:libraryChat:create", async (req) => {
     try {
-      const c = await getController();
+      const d = await defaultConfig();
+      // The chosen config: chips override, else the Settings default.
+      const config: ChatBackendConfig = {
+        provider: req.provider !== undefined && req.provider !== "" ? req.provider : d.provider,
+        model: req.model !== undefined && req.model !== "" ? req.model : d.model,
+        reasoning: req.reasoning !== undefined && req.reasoning !== "" ? req.reasoning : d.reasoning
+      };
+      const c = await controllerFor(config);
       const view = await c.createThread({
         ...(req.name !== undefined ? { name: req.name } : {}),
-        ...(req.anchorCaptureId !== undefined ? { anchorCaptureId: req.anchorCaptureId } : {})
+        ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
-      return ok(view);
+      // Persist the locked config on the thread (skip in injected-controller
+      // tests, which have no DB).
+      if (injected === null) store.setBackendConfig(view.threadId, config);
+      return ok(toLibraryThreadView(view, config));
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -217,11 +287,11 @@ export function registerLibraryChatHandlers(params?: {
 
   bus.register("codex:libraryChat:send", async (req) => {
     try {
-      const c = await getController();
+      const c = await controllerFor(await configForThread(req.threadId));
       const result = await c.sendMessage({
         threadId: req.threadId,
         text: req.text,
-        ...(req.anchorCaptureId !== undefined ? { anchorCaptureId: req.anchorCaptureId } : {})
+        ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
       return ok(result);
     } catch (cause) {
@@ -241,9 +311,9 @@ export function registerLibraryChatHandlers(params?: {
 
   bus.register("codex:libraryChat:history", async (req) => {
     try {
-      const c = await getController();
+      const c = await controllerFor(await configForThread(req.threadId));
       const messages = await c.getHistory(req.threadId);
-      return ok({ messages });
+      return ok({ messages: messages.map(toChatMessage) });
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -251,9 +321,10 @@ export function registerLibraryChatHandlers(params?: {
 
   bus.register("codex:libraryChat:rename", async (req) => {
     try {
-      const c = await getController();
+      const config = await configForThread(req.threadId);
+      const c = await controllerFor(config);
       const view = await c.rename(req.threadId, req.name);
-      return ok(view);
+      return ok(toLibraryThreadView(view, config));
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -261,9 +332,10 @@ export function registerLibraryChatHandlers(params?: {
 
   bus.register("codex:libraryChat:archive", async (req) => {
     try {
-      const c = await getController();
+      const config = await configForThread(req.threadId);
+      const c = await controllerFor(config);
       const view = await c.archive(req.threadId, req.archived);
-      return ok(view);
+      return ok(toLibraryThreadView(view, config));
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -271,7 +343,7 @@ export function registerLibraryChatHandlers(params?: {
 
   bus.register("codex:libraryChat:interrupt", async (req) => {
     try {
-      const c = await getController();
+      const c = await controllerFor(await configForThread(req.threadId));
       await c.interrupt(req.threadId);
       return ok(undefined);
     } catch (cause) {
@@ -281,12 +353,12 @@ export function registerLibraryChatHandlers(params?: {
 
   bus.register("codex:libraryChat:approval", async (req) => {
     try {
-      const c = await getController();
+      const c = await controllerFor(await configForThread(req.threadId));
       await c.resolveApproval({
         threadId: req.threadId,
         turnId: req.turnId,
         approvalId: req.approvalId,
-        decision: req.decision
+        decision: toKitApprovalDecision(req.decision)
       });
       return ok(undefined);
     } catch (cause) {

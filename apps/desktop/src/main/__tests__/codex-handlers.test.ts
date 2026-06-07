@@ -33,7 +33,9 @@ vi.mock("../persistence/db", () => ({
 }));
 
 const { bus } = await import("../command-bus");
-const { registerCodexHandlers } = await import("../handlers/codex-handlers");
+const { registerCodexHandlers, enrichmentSelectedModel } = await import(
+  "../handlers/codex-handlers"
+);
 const { getAiRun } = await import("../persistence/ai-runs-repo");
 const { getCaptureEnrichment } = await import("../persistence/enrichment-repo");
 const { defaultSettings } = await import("../settings/desktop-settings-service");
@@ -120,9 +122,9 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 class FakeCodexClient {
-  lastRequest: { model?: string | null } | null = null;
+  lastRequest: { model?: string | null; effort?: string } | null = null;
 
-  async enrichCapture(request: { model?: string | null }): Promise<{
+  async enrichCapture(request: { model?: string | null; effort?: string }): Promise<{
     result: EnrichmentResult;
     threadId: string;
     turnId: string;
@@ -130,23 +132,18 @@ class FakeCodexClient {
     model: string;
     modelProvider: string;
     serviceTier: string | null;
-    tokenUsage: {
-      total: {
-        totalTokens: number;
-        inputTokens: number;
-        cachedInputTokens: number;
-        outputTokens: number;
-        reasoningOutputTokens: number;
-      };
-      last: {
-        totalTokens: number;
-        inputTokens: number;
-        cachedInputTokens: number;
-        outputTokens: number;
-        reasoningOutputTokens: number;
-      };
+    // The CaptureEnrichmentClient now returns the PwrSnap usage breakdown
+    // directly (already mapped from the kit's NormalizedTokenUsage, carrying
+    // contextWindow → modelContextWindow), rather than the raw Codex
+    // ThreadTokenUsage `{ total, last, modelContextWindow }`.
+    tokens: {
+      totalTokens: number;
+      inputTokens: number;
+      cachedInputTokens: number;
+      outputTokens: number;
+      reasoningOutputTokens: number;
       modelContextWindow: number | null;
-    };
+    } | null;
   }> {
     this.lastRequest = request;
     return {
@@ -156,21 +153,12 @@ class FakeCodexClient {
       model: request.model ?? "gpt-5.4-mini",
       modelProvider: "openai",
       serviceTier: null,
-      tokenUsage: {
-        total: {
-          totalTokens: 1200,
-          inputTokens: 900,
-          cachedInputTokens: 100,
-          outputTokens: 300,
-          reasoningOutputTokens: 25
-        },
-        last: {
-          totalTokens: 1200,
-          inputTokens: 900,
-          cachedInputTokens: 100,
-          outputTokens: 300,
-          reasoningOutputTokens: 25
-        },
+      tokens: {
+        totalTokens: 1200,
+        inputTokens: 900,
+        cachedInputTokens: 100,
+        outputTokens: 300,
+        reasoningOutputTokens: 25,
         modelContextWindow: 400_000
       },
       result: {
@@ -296,7 +284,9 @@ describe("Codex handlers", () => {
             budgetSafetyDisabledAt: null,
             autoAcceptSuggestions: false,
 
-            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }
+            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
+            defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} },
+            acp: { enabledAgentIds: [] }
           }
         })
     });
@@ -407,6 +397,75 @@ describe("Codex handlers", () => {
         estimatedTotalCostMicros: 13_050
       });
     }
+  });
+
+  test("enrichment surface defaults (model + reasoning) reach the one-shot client", async () => {
+    const fakeClient = new FakeCodexClient();
+    registerCodexHandlers({
+      clientFactory: () => fakeClient as never,
+      settingsReader: async () =>
+        testSettings({
+          codex: {
+            ...defaultSettings().codex,
+            captionModel: "gpt-5.4-mini"
+          },
+          ai: {
+            ...defaultSettings().ai,
+            enabled: true,
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            // The per-surface enrichment default overrides the legacy
+            // captionModel and pins a non-default reasoning effort.
+            defaults: {
+              libraryChat: {},
+              sizzleChat: {},
+              enrichment: { model: "gpt-5.5", reasoning: "high" }
+            },
+            acp: { enabledAgentIds: [] }
+          }
+        })
+    });
+
+    const started = await bus.dispatch(
+      "codex:enrich",
+      { captureId: "cap_1", triggerSource: "library-regenerate" },
+      { principal: "ipc", cancellationKey: "cap_1" }
+    );
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    await waitFor(() => getAiRun(started.value.runId)?.status === "completed");
+    expect(fakeClient.lastRequest?.model).toBe("gpt-5.5");
+    expect(fakeClient.lastRequest?.effort).toBe("high");
+  });
+
+  test("enrichment falls back to captionModel + low effort when no surface default is set", async () => {
+    const fakeClient = new FakeCodexClient();
+    registerCodexHandlers({
+      clientFactory: () => fakeClient as never,
+      settingsReader: async () =>
+        testSettings({
+          codex: {
+            ...defaultSettings().codex,
+            captionModel: "gpt-5.4-mini"
+          },
+          ai: {
+            ...defaultSettings().ai,
+            enabled: true,
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z"
+            // defaults left at defaultSettings() (all empty).
+          }
+        })
+    });
+
+    const started = await bus.dispatch(
+      "codex:enrich",
+      { captureId: "cap_1", triggerSource: "library-regenerate" },
+      { principal: "ipc", cancellationKey: "cap_1" }
+    );
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    await waitFor(() => getAiRun(started.value.runId)?.status === "completed");
+    expect(fakeClient.lastRequest?.model).toBe("gpt-5.4-mini");
+    expect(fakeClient.lastRequest?.effort).toBe("low");
   });
 
   test("codex:models returns Codex App Server model options", async () => {
@@ -596,7 +655,9 @@ describe("Codex handlers", () => {
             budgetSafetyDisabledAt: null,
             autoAcceptSuggestions: false,
 
-            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }
+            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
+            defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} },
+            acp: { enabledAgentIds: [] }
           }
         })
     });
@@ -683,5 +744,48 @@ describe("Codex handlers", () => {
     if (!tooLong.ok) {
       expect(tooLong.error.code).toBe("invalid_request");
     }
+  });
+});
+
+describe("enrichmentSelectedModel", () => {
+  test("Codex: uses the surface model, then captionModel, then the hardcoded default", () => {
+    const withSurface = testSettings({
+      codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" },
+      ai: {
+        ...defaultSettings().ai,
+        defaults: { ...defaultSettings().ai.defaults, enrichment: { model: "gpt-5.4" } }
+      }
+    });
+    expect(enrichmentSelectedModel(withSurface, undefined)).toBe("gpt-5.4");
+
+    const captionFallback = testSettings({
+      codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" }
+    });
+    expect(enrichmentSelectedModel(captionFallback, undefined)).toBe("gpt-5.5");
+  });
+
+  test("ACP: uses the per-surface model verbatim, with NO Codex caption fallback", () => {
+    const withAcpModel = testSettings({
+      codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" },
+      ai: {
+        ...defaultSettings().ai,
+        defaults: {
+          ...defaultSettings().ai.defaults,
+          enrichment: { provider: "acp:kimi", model: "kimi-k2" }
+        }
+      }
+    });
+    expect(enrichmentSelectedModel(withAcpModel, "kimi")).toBe("kimi-k2");
+  });
+
+  test("ACP with no model returns '' (→ the agent's own default at send time), not a Codex id", () => {
+    const noModel = testSettings({
+      codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" },
+      ai: {
+        ...defaultSettings().ai,
+        defaults: { ...defaultSettings().ai.defaults, enrichment: { provider: "acp:grok" } }
+      }
+    });
+    expect(enrichmentSelectedModel(noModel, "grok")).toBe("");
   });
 });

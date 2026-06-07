@@ -48,7 +48,7 @@ describe("library tool allowlist", () => {
         "capture_metadata",
         "read_ocr_text",
         "list_layers",
-        "list_layer_capabilities",
+        "editing_capabilities",
         "render_composite",
         "open_in_library",
         "open_editor",

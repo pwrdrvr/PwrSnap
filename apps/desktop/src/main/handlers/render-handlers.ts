@@ -21,11 +21,13 @@ import { renderViaCoordinator } from "../render/coordinator";
 
 const log = getMainLogger("pwrsnap:render-handlers");
 
-/** Default + hard cap on the longest output edge. 720 keeps the PNG +
- *  the LLM image-token cost modest; 1440 is the ceiling for "look
- *  closer" requests. */
-const DEFAULT_MAX_EDGE_PX = 720;
-const HARD_MAX_EDGE_PX = 1440;
+/** Default + hard cap on the longest output edge. Agents place annotations by
+ *  eyeballing this preview, so resolution drives placement accuracy: a 1-2%
+ *  visual error on a 2000px capture is a 20-40px miss. 1024 is the default
+ *  balance of grounding detail vs LLM image-token cost; 2000 (≈ native) is the
+ *  ceiling for precision-critical "align exactly" requests. */
+const DEFAULT_MAX_EDGE_PX = 1024;
+const HARD_MAX_EDGE_PX = 2000;
 
 export function registerRenderHandlers(): void {
   bus.register("render:composite", async (req) => {

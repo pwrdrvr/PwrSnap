@@ -1,7 +1,15 @@
-// Sizzle chat verb registration + delegation. Uses a fake controller so
-// the eight codex:sizzleChat:* verbs are exercised without a live Codex
-// connection or DB. Also pins the unscoped-list guard (a Sizzle list with
-// no project anchor must return empty, never the shared table's rows).
+// Sizzle chat verb registration + delegation. Uses a fake (kit-shaped)
+// controller so the eight codex:sizzleChat:* verbs are exercised without a
+// live Codex connection or DB. Also pins the unscoped-list guard (a Sizzle
+// list with no project anchor must return empty, never the shared table's
+// rows).
+//
+// Post-migration wiring: the controller is now the kit's `ChatThreadController`
+// — it speaks `anchorId` (not `anchorCaptureId`) and the neutral approval
+// decision `"approved" | "denied" | "abort"`. The verbs translate the wire
+// payloads at the boundary: `anchorCaptureId → anchorId` on the way in,
+// `NormalizedThreadView → LibraryChatThreadView` (anchorId → anchorCaptureId)
+// on the way out, and `ChatApprovalDecision → NormalizedApprovalDecision`.
 
 import { beforeAll, describe, expect, test, vi } from "vitest";
 
@@ -16,7 +24,22 @@ const {
   registerSizzleChatHandlers
 } = await import("../sizzle-chat-handlers");
 
-const view = {
+/** What the kit controller returns: a `NormalizedThreadView` (anchorId). */
+const kitView = {
+  threadId: "th1",
+  name: "Chat",
+  createdAt: "",
+  modifiedAt: "",
+  anchorId: "sz_1",
+  archived: false,
+  pinned: false,
+  lastMessagePreview: "",
+  status: { kind: "idle" as const }
+};
+
+/** What the renderer expects back over IPC: a `LibraryChatThreadView`
+ *  (anchorCaptureId). */
+const rendererView = {
   threadId: "th1",
   name: "Chat",
   createdAt: "",
@@ -25,16 +48,19 @@ const view = {
   archived: false,
   pinned: false,
   lastMessagePreview: "",
-  status: { kind: "idle" as const }
+  status: { kind: "idle" as const },
+  provider: null,
+  model: null,
+  reasoning: null
 };
 
 const controller = {
-  listThreads: vi.fn(async () => [view]),
-  createThread: vi.fn(async () => view),
+  listThreads: vi.fn(async () => [kitView]),
+  createThread: vi.fn(async () => kitView),
   sendMessage: vi.fn(async () => ({ turnId: "turn1" })),
   getHistory: vi.fn(async () => []),
-  rename: vi.fn(async () => view),
-  archive: vi.fn(async () => view),
+  rename: vi.fn(async () => kitView),
+  archive: vi.fn(async () => kitView),
   interrupt: vi.fn(async () => undefined),
   resolveApproval: vi.fn(async () => undefined),
   forkThreadsForAnchor: vi.fn(async () => [])
@@ -56,9 +82,9 @@ describe("codex:sizzleChat verbs", () => {
     );
     expect(controller.listThreads).toHaveBeenCalledWith({
       includeArchived: false,
-      anchorCaptureId: "sz_1"
+      anchorId: "sz_1"
     });
-    expect(r).toEqual({ ok: true, value: { threads: [view] } });
+    expect(r).toEqual({ ok: true, value: { threads: [rendererView] } });
   });
 
   test("list WITHOUT a project anchor returns empty, never hits the shared table", async () => {
@@ -74,7 +100,7 @@ describe("codex:sizzleChat verbs", () => {
 
   test("create delegates to createThread", async () => {
     await bus.dispatch("codex:sizzleChat:create", { anchorCaptureId: "sz_1" }, { principal: "ipc" });
-    expect(controller.createThread).toHaveBeenCalledWith({ anchorCaptureId: "sz_1" });
+    expect(controller.createThread).toHaveBeenCalledWith({ anchorId: "sz_1" });
   });
 
   test("send forwards threadId + text + anchor and returns the turnId", async () => {
@@ -86,7 +112,7 @@ describe("codex:sizzleChat verbs", () => {
     expect(controller.sendMessage).toHaveBeenCalledWith({
       threadId: "th1",
       text: "make a reel",
-      anchorCaptureId: "sz_1"
+      anchorId: "sz_1"
     });
     expect(r).toEqual({ ok: true, value: { turnId: "turn1" } });
   });
@@ -101,7 +127,8 @@ describe("codex:sizzleChat verbs", () => {
       threadId: "th1",
       turnId: "turn1",
       approvalId: "ap1",
-      decision: "approve"
+      // "approve" maps to the kit's neutral "approved" at the boundary.
+      decision: "approved"
     });
   });
 
@@ -114,8 +141,8 @@ describe("codex:sizzleChat verbs", () => {
     controller.forkThreadsForAnchor.mockClear();
     await forkProjectChats("source-project", "target-project");
     expect(controller.forkThreadsForAnchor).toHaveBeenCalledWith({
-      sourceAnchorCaptureId: "source-project",
-      targetAnchorCaptureId: "target-project"
+      sourceAnchorId: "source-project",
+      targetAnchorId: "target-project"
     });
   });
 });

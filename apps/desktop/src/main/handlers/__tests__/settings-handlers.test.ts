@@ -275,6 +275,231 @@ describe("settings:* validation", () => {
     expect(result.error.code).toBe("invalid_ai_enabled");
   });
 
+  test("settings:write accepts a valid ai.defaults per-surface patch", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: {
+          defaults: {
+            // `provider` is a backend selector for EVERY surface now —
+            // chat surfaces and enrichment alike ("codex" / "acp:<known>").
+            libraryChat: { provider: "acp:gemini", model: "gpt-5.5", reasoning: "high" },
+            enrichment: { provider: "acp:qwen", model: "gpt-5.4-mini" }
+          }
+        }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.ai.defaults.libraryChat).toEqual({
+      provider: "acp:gemini",
+      model: "gpt-5.5",
+      reasoning: "high"
+    });
+    expect(result.value.ai.defaults.enrichment.provider).toBe("acp:qwen");
+  });
+
+  test("settings:write rejects a free-text (non-backend) enrichment provider", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { enrichment: { provider: "openai" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("invalid_ai_defaults_enrichment_provider");
+  });
+
+  test("settings:write accepts codex / empty chat-surface provider", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { sizzleChat: { provider: "codex" }, libraryChat: { provider: "" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.ai.defaults.sizzleChat.provider).toBe("codex");
+    // Empty string clears the field back to the Codex default.
+    expect(result.value.ai.defaults.libraryChat.provider).toBeUndefined();
+  });
+
+  test("settings:write rejects an unknown acp: chat-surface provider", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { libraryChat: { provider: "acp:bogus" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_defaults_libraryChat_provider");
+  });
+
+  test("settings:write rejects a free-text chat-surface provider", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { sizzleChat: { provider: "openai" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_defaults_sizzleChat_provider");
+  });
+
+  test("settings:write rejects an invalid ai.defaults reasoning", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { sizzleChat: { reasoning: "ultra" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_defaults_sizzleChat_reasoning");
+  });
+
+  test("settings:write rejects an unknown ai.defaults surface", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { bogusSurface: { model: "gpt-5.5" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_defaults_surface");
+  });
+
+  test("settings:write rejects a malformed ai.defaults model token", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { enrichment: { model: "has spaces!" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_defaults_enrichment_model");
+  });
+
+  test("settings:write accepts the empty-string clear sentinel for ai.defaults reasoning", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { libraryChat: { reasoning: "" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("settings:write accepts recognized ai.acp.enabledAgentIds", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { acp: { enabledAgentIds: ["kimi", "qwen"] } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.ai.acp.enabledAgentIds).toEqual(["kimi", "qwen"]);
+  });
+
+  test("settings:write accepts an empty ai.acp.enabledAgentIds (clear)", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { acp: { enabledAgentIds: [] } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("settings:write rejects an unknown ai.acp agent id", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { acp: { enabledAgentIds: ["kimi", "bogus"] } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_acp_agent_id");
+  });
+
+  test("settings:write rejects a non-array ai.acp.enabledAgentIds", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { acp: { enabledAgentIds: "kimi" } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_acp_enabledAgentIds");
+  });
+
+  test("settings:write accepts an ai.acp.agents per-agent preference", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { acp: { agents: { qwen: { selectedPath: "/nvm/qwen" } } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.ai.acp.agents).toEqual({ qwen: { selectedPath: "/nvm/qwen" } });
+  });
+
+  test("settings:write rejects an unknown agent id in ai.acp.agents", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { acp: { agents: { bogus: { overridePath: "/x" } } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("invalid_ai_acp_agent_id");
+  });
+
+  test("settings:write rejects a non-string ai.acp.agents path leaf", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { acp: { agents: { qwen: { overridePath: 42 } } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("invalid_ai_acp_agent_pref");
+  });
+
   test("settings:refreshCodexDiscovery rejects non-boolean force", async () => {
     const result = await bus.dispatch(
       "settings:refreshCodexDiscovery",

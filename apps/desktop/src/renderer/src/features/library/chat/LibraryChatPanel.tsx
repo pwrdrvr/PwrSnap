@@ -16,11 +16,16 @@ import type {
   LibraryChatToolCallEvent,
   LibraryChatThreadView
 } from "@pwrsnap/shared";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { acpAgentIdFromThreadId, EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { MessageList, type ChatActivityChip } from "../../shared/chat/MessageList";
 import { Composer, type ComposerAttachment } from "../../shared/chat/Composer";
 import { ChatApprovalModal } from "../../shared/chat/ChatApprovalModal";
+import {
+  NewChatConfigChips,
+  LockedBackendChips,
+  type ChatBackendChoice
+} from "../../shared/chat/ChatBackendChips";
 import "../../shared/chat/chat-panel.css";
 
 export interface LibraryChatPanelProps {
@@ -40,6 +45,16 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   const [approval, setApproval] = useState<ChatApprovalRequest | null>(null);
   const [codexError, setCodexError] = useState<ChatPanelError | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  // New-chat backend draft (editable chips until the first message locks it).
+  const [providers, setProviders] = useState<string[]>(["codex"]);
+  const [draftConfig, setDraftConfig] = useState<ChatBackendChoice>({
+    provider: "codex",
+    model: null,
+    reasoning: "medium"
+  });
+  const [draftHint, setDraftHint] = useState<string | null>(null);
+  const draftConfigRef = useRef<ChatBackendChoice>(draftConfig);
+  draftConfigRef.current = draftConfig;
   // Tool-activity lives IN the transcript flow, not a fixed bar:
   //   • activityByMsg — chips for completed turns, keyed by the assistant
   //     message they produced (rendered above that bubble). Retained for
@@ -93,6 +108,26 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     setPendingChips([]);
   }, []);
 
+  // Provider options + the new-chat draft defaults come from Settings → AI.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const r = await dispatch("settings:read", {});
+      if (cancelled || !r.ok || r.value === undefined) return;
+      const enabled = r.value.ai?.acp?.enabledAgentIds ?? [];
+      setProviders(["codex", ...enabled.map((id) => `acp:${id}`)]);
+      const d = r.value.ai?.defaults?.libraryChat;
+      setDraftConfig({
+        provider: d?.provider !== undefined && d.provider !== "" ? d.provider : "codex",
+        model: d?.model !== undefined && d.model !== "" ? d.model : null,
+        reasoning: d?.reasoning ?? "medium"
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Thread list — SCOPED to the focused capture (chats are glued to
   // assets). Re-runs when the user navigates to a different capture:
   // resets the selection + working state, then lists that capture's
@@ -115,12 +150,12 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         return;
       }
       const found = result.value?.threads ?? [];
-      const sorted = sortChatThreads(found);
-      setThreads(sorted);
-      // Resume this capture's most-recent chat (threads are modified_at
-      // DESC) instead of dropping to the greeting — so navigating away
-      // and back (and relaunching) reopens the conversation.
-      if (sorted.length > 0) setActiveThreadId(sorted[0]!.threadId);
+      setThreads(sortChatThreads(found));
+      // The list is now in CREATION order, so resume the most-recently-active
+      // chat explicitly (by modified_at) rather than sorted[0] — reopens the
+      // conversation on navigate-back / relaunch instead of the greeting.
+      const resume = mostRecentlyModified(found);
+      if (resume !== null) setActiveThreadId(resume.threadId);
       setLoading(false);
     })();
     return () => {
@@ -295,27 +330,36 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     []
   );
 
-  const onNewChat = useCallback(async () => {
-    const result = await dispatch("codex:libraryChat:create", { anchorCaptureId });
-    if (!result.ok) {
-      setCodexError(errorFor(result.error));
-      return;
-    }
-    setThreads((prev) =>
-      sortChatThreads([result.value, ...prev.filter((t) => t.threadId !== result.value.threadId)])
-    );
-    setActiveThreadId(result.value.threadId);
+  // "New" opens a DRAFT — no thread is created until the first message, so the
+  // backend chips stay editable (and the provider isn't locked) until the turn
+  // starts. Dropping to activeThreadId=null shows the draft greeting + chips.
+  const onNewChat = useCallback(() => {
+    setActiveThreadId(null);
     setMessages([]);
     setActivityByMsg({});
     setPendingChips([]);
+    setDraftHint(null);
     turnMsgRef.current.clear();
-  }, [anchorCaptureId]);
+  }, []);
 
   const onSubmit = useCallback(
     async (text: string, _attachments: readonly ComposerAttachment[]): Promise<void> => {
       let threadId = activeThreadRef.current;
       if (threadId === null) {
-        const created = await dispatch("codex:libraryChat:create", { anchorCaptureId });
+        // First message of a new chat: lock in the chosen backend config. A
+        // model is required.
+        const cfg = draftConfigRef.current;
+        if (cfg.model === null || cfg.model === "") {
+          setDraftHint("Choose a model to start this chat.");
+          return;
+        }
+        setDraftHint(null);
+        const created = await dispatch("codex:libraryChat:create", {
+          anchorCaptureId,
+          provider: cfg.provider,
+          model: cfg.model,
+          ...(cfg.reasoning !== null && cfg.reasoning !== "" ? { reasoning: cfg.reasoning } : {})
+        });
         if (!created.ok) {
           setCodexError(errorFor(created.error));
           return;
@@ -369,7 +413,8 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         <p className="ps-libchat-empty-body">{codexError.message}</p>
         {codexError.showSettingsHint ? (
           <p className="ps-libchat-empty-body">
-            Open <b>Settings → AI Providers</b> to configure Codex, then try again.
+            Open <b>Settings → AI Providers</b> to configure Codex, Gemini, or
+            another provider, then try again.
           </p>
         ) : null}
         <button
@@ -400,6 +445,22 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   }
 
   const showGreeting = activeThreadId === null;
+  const activeThread =
+    activeThreadId !== null ? (threads.find((t) => t.threadId === activeThreadId) ?? null) : null;
+  // The active thread's locked config, falling back to the provider baked into
+  // its id for legacy threads created before per-thread config.
+  const lockedChoice: ChatBackendChoice | null =
+    activeThread !== null
+      ? {
+          provider:
+            activeThread.provider ??
+            (acpAgentIdFromThreadId(activeThread.threadId) !== null
+              ? `acp:${acpAgentIdFromThreadId(activeThread.threadId)}`
+              : "codex"),
+          model: activeThread.model,
+          reasoning: activeThread.reasoning
+        }
+      : null;
 
   return (
     <div className="ps-libchat" data-testid="library-chat-panel">
@@ -452,21 +513,31 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
             <div className="ps-libchat-empty-title">PwrSnap chat</div>
             <p className="ps-libchat-empty-body">
               I can edit the capture you’re viewing, redact sensitive data, browse
-              your library, and answer “how do I…”. Type below to start.
+              your library, and answer “how do I…”. Pick a provider + model, then
+              type below to start.
             </p>
+            <NewChatConfigChips providers={providers} value={draftConfig} onChange={setDraftConfig} />
+            {draftHint !== null ? (
+              <p className="ps-libchat-empty-body" style={{ color: "var(--accent)" }}>
+                {draftHint}
+              </p>
+            ) : null}
           </div>
         ) : (
-          <MessageList
-            messages={messages}
-            streamingMessageId={streamingMessageId}
-            subscribeToStream={subscribeToStream}
-            activityByMessageId={activityByMsg}
-            trailingActivity={
-              activeTurnId !== null
-                ? { chips: pendingChips, thinking: streamingMessageId === null }
-                : null
-            }
-          />
+          <>
+            {lockedChoice !== null ? <LockedBackendChips choice={lockedChoice} /> : null}
+            <MessageList
+              messages={messages}
+              streamingMessageId={streamingMessageId}
+              subscribeToStream={subscribeToStream}
+              activityByMessageId={activityByMsg}
+              trailingActivity={
+                activeTurnId !== null
+                  ? { chips: pendingChips, thinking: streamingMessageId === null }
+                  : null
+              }
+            />
+          </>
         )}
         <Composer onSubmit={onSubmit} placeholder="Ask PwrSnap to edit, redact, or find…" />
       </div>
@@ -510,13 +581,25 @@ function errorFor(error: { code?: string; message: string }): ChatPanelError {
 }
 
 function sortChatThreads(threads: LibraryChatThreadView[]): LibraryChatThreadView[] {
+  // Stable CREATION order (oldest → newest). Deliberately NOT modified_at, so a
+  // thread never jumps to the front when you select it or send a message — its
+  // position stays put, which is the only way to tell same-named chats apart.
   return [...threads].sort((a, b) => {
-    const modified = dateValue(b.modifiedAt) - dateValue(a.modifiedAt);
-    if (modified !== 0) return modified;
-    const created = dateValue(b.createdAt) - dateValue(a.createdAt);
+    const created = dateValue(a.createdAt) - dateValue(b.createdAt);
     if (created !== 0) return created;
-    return b.threadId.localeCompare(a.threadId);
+    return a.threadId.localeCompare(b.threadId);
   });
+}
+
+/** The most-recently-active thread (by modified_at), for resume-on-open — the
+ *  list itself stays in creation order, so this can't be sorted[0]. */
+function mostRecentlyModified(
+  threads: LibraryChatThreadView[]
+): LibraryChatThreadView | null {
+  if (threads.length === 0) return null;
+  return threads.reduce((best, t) =>
+    dateValue(t.modifiedAt) > dateValue(best.modifiedAt) ? t : best
+  );
 }
 
 function dateValue(value: string): number {

@@ -40,8 +40,15 @@ import {
   clipboardHasPasteableImage,
   registerCaptureHandlers
 } from "./handlers/capture-handlers";
+import { registerAcpHandlers } from "./handlers/acp-handlers";
+import { getToolRpcServer } from "./ai/mcp/pwrsnap-tool-rpc-server";
+import { closeAcpAgentPool, warmConfiguredAcpAgents } from "./ai/acp-agent-pool";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
+import {
+  disposeCodexProfileHandlers,
+  registerCodexProfileHandlers
+} from "./handlers/codex-profile-handlers";
 import { registerLibraryChatHandlers } from "./handlers/library-chat-handlers";
 import { registerSizzleChatHandlers } from "./handlers/sizzle-chat-handlers";
 import { registerRenderHandlers } from "./handlers/render-handlers";
@@ -71,6 +78,8 @@ import {
 } from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
+import { hydrateProcessEnvFromLoginShell } from "@pwrdrvr/agent-transport";
+import { toAgentKitLogger } from "./ai/agent-kit-bindings";
 import { closeDatabase, getDb, openDatabase } from "./persistence/db";
 import {
   getCaptureById,
@@ -949,8 +958,38 @@ function shouldPreWarmRegionSelector(): boolean {
   return !(isE2E && process.env.PWRSNAP_E2E_SKIP_REGION_PREWARM === "1");
 }
 
+/** Background warm-up of the ACP agents configured for any AI surface, so the
+ *  first chat / enrichment doesn't pay the multi-second agent spawn. Deferred +
+ *  non-blocking; an unconfigured-but-installed agent (e.g. Kimi) is not spawned. */
+function scheduleAcpAgentWarmup(): void {
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const settings = await new DesktopSettingsService({
+          filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
+        }).read();
+        const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
+        await warmConfiguredAcpAgents({ settings, chatsDir });
+      } catch (err) {
+        getMainLogger("pwrsnap:bootstrap").warn("ACP agent warm-up failed", {
+          message: err instanceof Error ? err.message : String(err)
+        });
+      }
+    })();
+  }, ASSET_FILENAME_MAINTENANCE_BOOT_DELAY_MS);
+}
+
 export function bootstrapApp(): void {
   initializeMainLogger();
+
+  // Hydrate PATH (and the rest of the env) from the user's interactive login
+  // shell BEFORE anything spawns a child process. A Finder/Dock-launched
+  // bundle otherwise inherits launchd's minimal PATH, which hides nvm /
+  // Homebrew-installed CLIs — e.g. ACP agent binaries (`qwen`, `gemini`) that
+  // `@pwrdrvr/agent-acp` discovery probes by bare command name. Synchronous on
+  // purpose: every later spawn must see the merged env. No-op on Windows / when
+  // the shell can't be queried.
+  hydrateProcessEnvFromLoginShell({ logger: toAgentKitLogger("pwrsnap:shell-environment") });
 
   // Enable ScreenCaptureKit for window/screen capture on macOS.
   // Without this flag, Chromium / Electron may use the legacy
@@ -1122,6 +1161,8 @@ export function bootstrapApp(): void {
         }
       });
     registerCodexHandlers();
+    registerCodexProfileHandlers();
+    registerAcpHandlers();
     registerLibraryChatHandlers();
     registerSizzleChatHandlers();
     registerCaptureHandlers();
@@ -1189,6 +1230,7 @@ export function bootstrapApp(): void {
       initAppUpdater();
     }
     scheduleAssetFilenameMaintenance();
+    scheduleAcpAgentWarmup();
 
     // ── Dev probe-only CLI mode ───────────────────────────────────
     // Detect `--probe=<profile>` AFTER the full boot — unlike --seed,
@@ -1505,10 +1547,19 @@ export function bootstrapApp(): void {
       return;
     }
     globalShortcut.unregisterAll();
+    disposeCodexProfileHandlers();
     disposeRegionSelector();
     disposeTray();
     disposeFocusSink();
     disposeIpcDispatcher();
+    // Close the ACP chat MCP tool-RPC server + remove its socket file. No-op
+    // when the bridge never started (no ACP chat used this run).
+    void getToolRpcServer()
+      .stop()
+      .catch(() => undefined);
+    // Close every pooled ACP agent process (warmed at startup / acquired by a
+    // chat surface). No-op when no agent was ever pooled.
+    void closeAcpAgentPool().catch(() => undefined);
     // Tear down the shared composite-thumbnail worker eagerly so an
     // in-flight encode (e.g. a deferred v1→v2 sweep still running) is
     // rejected and the worker terminated on our terms, rather than the

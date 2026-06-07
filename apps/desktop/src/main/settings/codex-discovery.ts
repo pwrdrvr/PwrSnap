@@ -1,36 +1,51 @@
-// Lifted from PwrAgnt (apps/desktop/src/main/settings/codex-discovery.ts).
-// — discovery of Codex CLI binaries on the user's machine. Adaptations:
-//   • DesktopCodex* type definitions inlined here (PwrAgnt has them in
-//     @pwragnt/shared but PwrSnap doesn't share that package — see
-//     plan §"Decision 4").
-//   • PWRSNAP_CODEX_COMMAND env-var constant replaces PwrAgnt's
-//     CODEX_COMMAND_ENV (defined in apps/desktop/src/main/settings/env.ts).
+// Codex CLI discovery for PwrSnap — a thin host wrapper over
+// @pwrdrvr/codex-discovery's generic `discoverCommands` primitive.
 //
-// Looks for the Codex binary in this priority order:
-//   1. env override (PWRSNAP_CODEX_COMMAND or — for compatibility with
-//      Codex Desktop sharing across PwrDrvr products — falls back to
-//      whichever the user has set globally).
+// Previously this file was a near-verbatim lift of PwrAgnt's discovery. It now
+// delegates the candidate-building + selection to the agent-kit package and
+// keeps only the PwrSnap-specific bindings the kit doesn't bake in:
+//
+//   • PWRSNAP_CODEX_COMMAND env-var name (the kit's codex-specific
+//     `discoverCodexCommands` hardcodes PWRDRVR_CODEX_COMMAND, so we drive the
+//     GENERIC `discoverCommands` with our own env name instead).
+//   • PwrSnap's selection/no-throw semantics: `resolveCodexCommand` falls back
+//     to the configured command (or `codex`) when discovery finds nothing
+//     rather than throwing — the spawn then surfaces a clean ENOENT through the
+//     existing codex_unreachable path. (The kit's `resolveCodexCommand` throws
+//     `CodexCliNotInstalledError`; PwrSnap's callers never expected a throw.)
+//   • `probeCodexAuth` (a `codex login status` probe) which the kit doesn't
+//     surface in this shape.
+//   • The `Desktop*` type names + `MINIMUM_CODEX_CLI_VERSION`, kept so
+//     desktop-settings-service.ts and its tests import the same names as before.
+//
+// Looks for the Codex binary in this priority order (unchanged):
+//   1. env override (PWRSNAP_CODEX_COMMAND).
 //   2. user-configured path saved in Settings.
 //   3. `codex` on $PATH.
 //   4. /Applications/Codex.app/Contents/Resources/codex (Codex Desktop).
 //   5. ~/Applications/Codex.app/Contents/Resources/codex (per-user install).
-//
-// Within auto-discovered (path + application) candidates, sorts by
-// reported `--version` so the newest install bubbles to the top.
 
 import { execFile as execFileCallback } from "node:child_process";
-import { constants as fsConstants } from "node:fs";
-import { access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+
+import {
+  compareCodexCliVersions as kitCompareCodexCliVersions,
+  discoverCommands,
+  pathIsExecutable as kitPathIsExecutable,
+  type CommandDiscoveryCandidate,
+  type CommandDiscoverySnapshot
+} from "@pwrdrvr/codex-discovery";
 
 import { PWRSNAP_CODEX_COMMAND_ENV } from "./env";
 
 const execFile = promisify(execFileCallback);
 
 /** Minimum Codex CLI version PwrSnap will spawn. Mirrors PwrAgnt's
- *  threshold; older binaries miss protocol features we rely on. */
+ *  threshold; older binaries miss protocol features we rely on. The
+ *  settings-service applies this check; discovery itself does not filter on
+ *  it (parity with the prior in-tree behavior). */
 export const MINIMUM_CODEX_CLI_VERSION = "0.125.0";
 
 export type DesktopCodexCandidateSource = "env" | "config" | "path" | "application";
@@ -52,10 +67,7 @@ export type DesktopCodexDiscoverySnapshot = {
   error?: string | undefined;
 };
 
-export type CodexAuthProbeStatus =
-  | "authenticated"
-  | "unauthenticated"
-  | "failed";
+export type CodexAuthProbeStatus = "authenticated" | "unauthenticated" | "failed";
 
 export type CodexAuthProbeResult = {
   status: CodexAuthProbeStatus;
@@ -71,59 +83,12 @@ export type ResolvedCodexCommandCandidate = {
   version?: string | undefined;
 };
 
+/** Re-exported from the kit so callers (and tests) keep a single import
+ *  surface; the kit's comparator is the same algorithm the lift carried. */
+export const compareCodexCliVersions = kitCompareCodexCliVersions;
+
 export async function pathIsExecutable(candidate: string): Promise<boolean> {
-  try {
-    await access(candidate, fsConstants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function resolvePathCommand(
-  command: string,
-  env: NodeJS.ProcessEnv
-): Promise<string | undefined> {
-  if (command.includes(path.sep)) {
-    return command;
-  }
-  try {
-    const result = await execFile("/usr/bin/which", [command], {
-      env,
-      timeout: 2_000
-    });
-    return result.stdout.trim() || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function readCodexVersion(
-  command: string,
-  env: NodeJS.ProcessEnv
-): Promise<{
-  ran: boolean;
-  version?: string | undefined;
-  failureReason?: string | undefined;
-}> {
-  try {
-    const result = await execFile(command, ["--version"], {
-      env,
-      timeout: 2_000
-    });
-    const output = `${result.stdout}\n${result.stderr ?? ""}`;
-    const match = output.match(/\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/);
-    return {
-      ran: true,
-      version: match?.[1],
-      failureReason: match ? undefined : "version_not_reported"
-    };
-  } catch (error) {
-    return {
-      ran: false,
-      failureReason: error instanceof Error ? error.message : String(error)
-    };
-  }
+  return kitPathIsExecutable(candidate);
 }
 
 const AUTH_PROBE_TIMEOUT_MS = 2_500;
@@ -182,66 +147,9 @@ export async function probeCodexAuth(
   }
 }
 
-function parseVersion(value?: string):
-  | {
-      major: number;
-      minor: number;
-      patch: number;
-      prerelease: string[];
-    }
-  | undefined {
-  const match = value?.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
-  if (!match) {
-    return undefined;
-  }
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-    prerelease: match[4]?.split(".") ?? []
-  };
-}
-
-function comparePrerelease(left: string[], right: string[]): number {
-  if (left.length === 0 && right.length === 0) return 0;
-  if (left.length === 0) return 1;
-  if (right.length === 0) return -1;
-
-  const length = Math.max(left.length, right.length);
-  for (let index = 0; index < length; index += 1) {
-    const leftPart = left[index];
-    const rightPart = right[index];
-    if (leftPart === undefined) return -1;
-    if (rightPart === undefined) return 1;
-
-    const leftNumber = /^\d+$/.test(leftPart) ? Number(leftPart) : undefined;
-    const rightNumber = /^\d+$/.test(rightPart) ? Number(rightPart) : undefined;
-    if (leftNumber !== undefined && rightNumber !== undefined) {
-      if (leftNumber !== rightNumber) {
-        return Math.sign(leftNumber - rightNumber);
-      }
-      continue;
-    }
-    if (leftNumber !== undefined) return -1;
-    if (rightNumber !== undefined) return 1;
-    if (leftPart !== rightPart) return leftPart.localeCompare(rightPart);
-  }
-  return 0;
-}
-
-export function compareCodexCliVersions(left?: string, right?: string): number {
-  const leftVersion = parseVersion(left);
-  const rightVersion = parseVersion(right);
-  if (!leftVersion && !rightVersion) return 0;
-  if (!leftVersion) return -1;
-  if (!rightVersion) return 1;
-
-  for (const key of ["major", "minor", "patch"] as const) {
-    if (leftVersion[key] !== rightVersion[key]) {
-      return Math.sign(leftVersion[key] - rightVersion[key]);
-    }
-  }
-  return comparePrerelease(leftVersion.prerelease, rightVersion.prerelease);
+function parseCodexVersion(output: string): string | undefined {
+  const match = output.match(/\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/);
+  return match?.[1];
 }
 
 function getCodexAppCandidatePaths(): string[] {
@@ -251,34 +159,17 @@ function getCodexAppCandidatePaths(): string[] {
   ];
 }
 
-async function buildDiscoveryCandidate(
-  command: string | undefined,
-  source: DesktopCodexCandidateSource,
-  env: NodeJS.ProcessEnv
-): Promise<DesktopCodexDiscoveryCandidate | undefined> {
-  const trimmedCommand = command?.trim();
-  if (!trimmedCommand) {
-    return undefined;
-  }
-
-  const resolvedCommand =
-    source === "path" || !trimmedCommand.includes(path.sep)
-      ? await resolvePathCommand(trimmedCommand, env)
-      : trimmedCommand;
-  const accessExecutable = resolvedCommand ? await pathIsExecutable(resolvedCommand) : false;
-  const versionResult = resolvedCommand
-    ? await readCodexVersion(resolvedCommand, env)
-    : { ran: false, failureReason: "not_found" as const };
-  const executable = accessExecutable || versionResult.ran;
-
+function toDesktopCandidate(
+  candidate: CommandDiscoveryCandidate<DesktopCodexCandidateSource>
+): DesktopCodexDiscoveryCandidate {
   return {
-    command: resolvedCommand || trimmedCommand,
-    source,
-    executable,
-    selected: false,
-    version: versionResult.version,
-    versionFailureReason: executable ? versionResult.failureReason : undefined,
-    failureReason: executable ? undefined : "not_executable"
+    command: candidate.command,
+    source: candidate.source,
+    executable: candidate.executable,
+    selected: candidate.selected,
+    version: candidate.version,
+    versionFailureReason: candidate.versionFailureReason,
+    failureReason: candidate.failureReason
   };
 }
 
@@ -290,35 +181,29 @@ export async function discoverCodexCommands(params?: {
   const envOverride = env[PWRSNAP_CODEX_COMMAND_ENV]?.trim();
   const configuredCommand = params?.configuredCommand?.trim();
 
-  const fixedCandidates = (
-    await Promise.all([
-      buildDiscoveryCandidate(envOverride, "env", env),
-      buildDiscoveryCandidate(configuredCommand, "config", env)
-    ])
-  ).filter((candidate): candidate is DesktopCodexDiscoveryCandidate => Boolean(candidate));
+  const snapshot: CommandDiscoverySnapshot<DesktopCodexCandidateSource> = await discoverCommands({
+    env,
+    fixedCandidates: [
+      { command: envOverride, source: "env" },
+      { command: configuredCommand, source: "config" }
+    ],
+    autoCandidates: [
+      { command: "codex", source: "path" },
+      ...getCodexAppCandidatePaths().map((candidatePath) => ({
+        command: candidatePath,
+        source: "application" as const
+      }))
+    ],
+    parseVersion: parseCodexVersion,
+    compareVersions: kitCompareCodexCliVersions
+    // Deliberately NO `validateVersion`: PwrSnap's discovery never filtered
+    // candidates on MINIMUM_CODEX_CLI_VERSION — the settings-service applies
+    // that check separately so a too-old binary still surfaces in the list
+    // with a banner rather than vanishing.
+  });
 
-  const autoCandidates = (
-    await Promise.all([
-      buildDiscoveryCandidate("codex", "path", env),
-      ...getCodexAppCandidatePaths().map((candidatePath) =>
-        buildDiscoveryCandidate(candidatePath, "application", env)
-      )
-    ])
-  )
-    .filter((candidate): candidate is DesktopCodexDiscoveryCandidate => Boolean(candidate))
-    .filter((candidate) => candidate.executable)
-    .sort((left, right) => compareCodexCliVersions(right.version, left.version));
-
-  const candidates = [...fixedCandidates, ...autoCandidates];
-  const selected =
-    candidates.find((candidate) => candidate.source === "env" && candidate.executable) ??
-    candidates.find((candidate) => candidate.source === "config" && candidate.executable) ??
-    autoCandidates.find((candidate) => candidate.executable);
-
-  if (selected) {
-    selected.selected = true;
-  }
-
+  const candidates = snapshot.candidates.map(toDesktopCandidate);
+  const selected = candidates.find((candidate) => candidate.selected);
   return {
     selectedCommand: selected?.command,
     selectedSource: selected?.source,

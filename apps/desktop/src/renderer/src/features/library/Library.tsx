@@ -3143,7 +3143,7 @@ export function Library() {
             disabled={aiToggleBusy}
             title={
               codexAvailable === false && !aiEnabled
-                ? "Open AI Providers settings to configure Codex"
+                ? "Open AI Providers settings to configure Codex, Gemini, or another provider"
                 : aiEnabled
                 ? "Turn off automatic Codex enrichment for new captures"
                 : "Turn on automatic Codex enrichment for new captures"

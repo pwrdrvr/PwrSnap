@@ -69,6 +69,40 @@ export const CAPTURE_ENRICHMENT_SCHEMA: JsonValue = {
   }
 };
 
+/** A concrete, filled-in example of the enrichment output — REAL values, not
+ *  types. Handed to ACP agents instead of the raw JSON Schema: weaker
+ *  instruction-followers (e.g. Grok) echoed the schema's type names
+ *  (`"ocrText": string`) when told to "conform to this JSON Schema", which
+ *  isn't valid JSON. An example they can copy the SHAPE of — with their own
+ *  values — produces a parseable instance. */
+export const CAPTURE_ENRICHMENT_EXAMPLE: JsonValue = {
+  ocrText: "Problem Details",
+  title: "PwrAgent crash report — missing Electron Framework",
+  description:
+    "A macOS Problem Reporter window showing a crash for PwrAgent. The report points to a launch failure caused by a missing Electron Framework library.",
+  filenameStem: "pwragent-crash-missing-electron-framework",
+  textAnchors: ["PwrAgent quit unexpectedly", "Problem Details"],
+  tags: [
+    { label: "crash report", confidence: 0.9 },
+    { label: "macOS", confidence: 0.8 }
+  ]
+};
+
+/** True when an enrichment produced nothing usable — no title, description,
+ *  OCR text, tags, or filename stem. The result schema defaults the string
+ *  fields to "", so a `{}` / blank agent reply (seen with Grok) parses
+ *  "successfully" into an all-empty result. Callers treat this as a failure
+ *  rather than persisting a silent-blank "completed" run. */
+export function isEnrichmentResultEmpty(result: EnrichmentResult): boolean {
+  return (
+    (result.title ?? "").trim() === "" &&
+    (result.description ?? "").trim() === "" &&
+    (result.ocrText ?? "").trim() === "" &&
+    (result.tags?.length ?? 0) === 0 &&
+    (result.filenameStem ?? "").trim() === ""
+  );
+}
+
 export const CAPTURE_ENRICHMENT_PROMPT_FILE = new URL(
   "./prompts/capture-enrichment.md",
   import.meta.url

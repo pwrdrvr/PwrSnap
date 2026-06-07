@@ -115,6 +115,22 @@ describe("MessageList — content rendering", () => {
     expect(text?.textContent).toBe("hello world");
   });
 
+  test("offers a Copy affordance that writes the message text to the clipboard", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const el = await render({
+      messages: [msg({ id: "m1", content: [{ kind: "text", text: "copy me please" }] })]
+    });
+    const copy = el.querySelector(
+      '[data-testid="message-list-copy"]'
+    ) as HTMLButtonElement | null;
+    expect(copy).not.toBeNull();
+    await act(async () => {
+      copy?.click();
+    });
+    expect(writeText).toHaveBeenCalledWith("copy me please");
+  });
+
   test("renders a tool_call as a collapsible card; args expand pretty-printed", async () => {
     const el = await render({
       messages: [

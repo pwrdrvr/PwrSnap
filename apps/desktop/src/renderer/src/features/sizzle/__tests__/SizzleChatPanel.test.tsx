@@ -123,14 +123,14 @@ describe("SizzleChatPanel", () => {
     expect(el.textContent).toContain("Earlier chat");
   });
 
-  test("orders thread chips newest to oldest", async () => {
+  test("orders thread chips in creation order (oldest to newest), resumes most recent", async () => {
     const older = makeThread("t1", "Older chat", "2026-05-30T10:00:00.000Z");
     const newer = makeThread("t2", "Newer chat", "2026-05-30T11:00:00.000Z");
     const { el, dispatch } = await renderPanel([older, newer]);
 
     expect(
       Array.from(el.querySelectorAll(".ps-libchat-thread-name")).map((node) => node.textContent)
-    ).toEqual(["Newer chat", "Older chat"]);
+    ).toEqual(["Older chat", "Newer chat"]);
     expect(dispatch).toHaveBeenCalledWith("codex:sizzleChat:history", { threadId: "t2" });
   });
 

@@ -1017,6 +1017,72 @@ export type DesktopCodexDiscoverySnapshot = {
   refreshedAt: string;
 };
 
+// ---- Codex auth-profile management (Settings → AI) ---------------------
+//
+// A Codex "auth profile" maps 1:1 to a CODEX_HOME directory: the System
+// default (`~/.codex`) plus any `~/.codex/profiles/<name>` directory. Each
+// profile carries its own `auth.json`, so a user can keep multiple ChatGPT
+// accounts and switch the active one. The active profile persists via the
+// existing `settings.codex.profile` string ("" = System default).
+//
+// The shapes below mirror `@pwrdrvr/codex-discovery`'s
+// `CodexAuthProfileCandidate` / `CodexProfileLoginResponse` so the handlers
+// can map the kit output straight onto the protocol with no information loss.
+
+export type DesktopCodexAuthProfileStatus =
+  | "authenticated"
+  | "unauthenticated"
+  | "failed";
+
+/** One Codex auth profile surfaced in Settings → AI. `name === ""` is the
+ *  System default (`~/.codex`); any other name is a
+ *  `~/.codex/profiles/<name>` directory. `selected` reflects the persisted
+ *  `settings.codex.profile`. Auth fields come from `codex login status` +
+ *  the JWT in `auth.json`. */
+export type DesktopCodexAuthProfile = {
+  /** Canonical profile name; "" for the System default. */
+  name: string;
+  /** Human label ("System default" for the default home, else the name). */
+  displayName: string;
+  /** Resolved CODEX_HOME directory for this profile. */
+  codexHome: string;
+  /** True when this profile equals the persisted `settings.codex.profile`. */
+  selected: boolean;
+  /** Whether `auth.json` is present on disk (cheap, no spawn). */
+  hasAuthFile: boolean;
+  /** Result of `codex login status` for this profile's CODEX_HOME. */
+  status: DesktopCodexAuthProfileStatus;
+  /** ChatGPT account email from the JWT, when signed in. */
+  email?: string;
+  /** ChatGPT plan type from the JWT, when signed in. */
+  planType?: string;
+};
+
+export type DesktopCodexAuthProfileList = {
+  /** `~/.codex/profiles` directory the named profiles live under. */
+  profileRoot: string;
+  /** CODEX_HOME of the currently-selected profile. */
+  effectiveCodexHome: string;
+  profiles: DesktopCodexAuthProfile[];
+  /** Discovery-level error (e.g. unreadable profile root), if any. */
+  error?: string;
+};
+
+/** Outcome of starting (or completing) a Codex OAuth login for a profile.
+ *  `started: true` means the login child spawned and (usually) the OAuth URL
+ *  was opened in the browser; the user finishes in the browser. `started:
+ *  false` + `authenticated: true` means the child exited already
+ *  authenticated. `loginUrl` is the scraped OAuth URL (already handed to the
+ *  browser via shell.openExternal). */
+export type DesktopCodexProfileLoginResult = {
+  profile: string;
+  codexHome: string;
+  started: boolean;
+  authenticated?: boolean;
+  loginUrl?: string;
+  detail?: string;
+};
+
 /** Outcome of a Codex `--version` probe via the connection-test button.
  *  Ported from PwrAgnt's CredentialTester.testCodex. */
 export type CodexTestStatus = "unset" | "ok" | "failed";
@@ -1060,6 +1126,263 @@ export type CodexModelOption = {
 export type CodexModelList = {
   models: CodexModelOption[];
   selectedModel: CodexCaptionModel;
+};
+
+// ---- Per-surface AI defaults (provider / model / reasoning) ------------
+//
+// The user picks, in Settings → AI, the default provider + model +
+// reasoning for each of three AI surfaces (Library chat, Sizzle chat,
+// Enrichment). These DEFAULTS drive the kit controller / one-shot client;
+// per-thread overrides are out of scope.
+
+/** Reasoning effort the per-surface defaults expose in the UI. This is a
+ *  deliberate subset of the protocol's `ReasoningEffort`
+ *  (`none|minimal|low|medium|high|xhigh`) — PwrSnap only surfaces the
+ *  three the user-facing picker offers. The chosen value is sent verbatim
+ *  as Codex's `effort`; widen this union (and `AI_REASONING_EFFORTS`) if
+ *  we want to expose more tiers. */
+export type AiReasoningEffort = "low" | "medium" | "high";
+
+export const AI_REASONING_EFFORTS = [
+  "low",
+  "medium",
+  "high"
+] as const satisfies readonly AiReasoningEffort[];
+
+export function isAiReasoningEffort(value: unknown): value is AiReasoningEffort {
+  return (
+    typeof value === "string" &&
+    (AI_REASONING_EFFORTS as readonly string[]).includes(value)
+  );
+}
+
+/** Default provider / model / reasoning for ONE AI surface. Every field
+ *  is optional; an omitted (or empty-string) field means "use the default".
+ *  `provider` is a BACKEND selector for every surface (Library/Sizzle chat AND
+ *  enrichment): "" / "codex" → Codex, "acp:<known-id>" → an enabled ACP agent.
+ *  (It used to map to the Codex `modelProvider` for enrichment; the Settings →
+ *  AI consolidation unified all three surfaces onto the backend selector.)
+ *  `model` is whatever the chosen backend exposes (free-form, shape-validated);
+ *  `reasoning` maps to the backend's effort. */
+export type AiSurfaceDefault = {
+  provider?: string;
+  model?: string;
+  reasoning?: AiReasoningEffort;
+};
+
+/** Patch shape for ONE surface's defaults. Distinct from
+ *  `Partial<AiSurfaceDefault>` because the wire/patch form lets the
+ *  renderer CLEAR a field back to "Codex default": an explicit empty
+ *  string on `provider` / `model` / `reasoning` drops the stored field
+ *  (substrate hygiene rule `undefined ≠ null ≠ ""`). `reasoning` accepts
+ *  the empty string as its clear sentinel since it can't be `null` (the
+ *  in-memory type is a closed union); a non-empty `reasoning` must still
+ *  be a valid `AiReasoningEffort`, enforced at the bus validator. */
+export type AiSurfaceDefaultPatch = {
+  provider?: string;
+  model?: string;
+  reasoning?: AiReasoningEffort | "";
+};
+
+/** The three surfaces that carry per-surface defaults. */
+export type AiSurfaceDefaults = {
+  libraryChat: AiSurfaceDefault;
+  sizzleChat: AiSurfaceDefault;
+  enrichment: AiSurfaceDefault;
+};
+
+/** Identifier for one of the three default-carrying AI surfaces. Used by
+ *  the Settings UI to drive the three sub-groups and by the patch shape. */
+export type AiSurfaceId = keyof AiSurfaceDefaults;
+
+export const AI_SURFACE_IDS = [
+  "libraryChat",
+  "sizzleChat",
+  "enrichment"
+] as const satisfies readonly AiSurfaceId[];
+
+export function isAiSurfaceId(value: unknown): value is AiSurfaceId {
+  return (
+    typeof value === "string" &&
+    (AI_SURFACE_IDS as readonly string[]).includes(value)
+  );
+}
+
+/** Default `ai.defaults` state. Mirrored by `defaultSettings()` in the
+ *  desktop service. Empty objects = "use the Codex default for every
+ *  surface" — but note the desktop service's `parseV1` seeds
+ *  `enrichment.model` from the legacy `codex.captionModel` for back-compat
+ *  so existing enrichment behavior is preserved. */
+export const DEFAULT_AI_SURFACE_DEFAULTS: AiSurfaceDefaults = {
+  libraryChat: {},
+  sizzleChat: {},
+  enrichment: {}
+};
+
+// ---- ACP agents (discovery + enable in Settings → AI) -------------------
+//
+// PwrSnap can delegate chat to a locally-installed ACP agent CLI (Kimi /
+// Qwen / Gemini / Grok) discovered + spawned by `@pwrdrvr/agent-acp`. This
+// first phase (B1) is discovery + enable only: surface which agents are
+// installed and let the user opt the ones they want into the enabled set
+// (persisted in `Settings.ai.acp.enabledAgentIds`). Wiring an enabled agent
+// as a live chat backend is a separate next phase.
+//
+// The agent-id value space is the kit's `BUILT_IN_ACP_STRATEGIES` ids
+// (`gemini` / `grok` / `kimi` / `qwen`). The mirror below is the protocol's
+// closed copy used by the bus validator + renderer guards; the kit table is
+// the runtime source of truth that the main-process discovery handler reads.
+// Keep this list in sync with the kit strategy ids — a mismatch only narrows
+// the set the validator accepts, never widens it.
+
+export const BUILT_IN_ACP_AGENT_IDS = [
+  "gemini",
+  "grok",
+  "kimi",
+  "qwen"
+] as const;
+
+export type BuiltInAcpAgentId = (typeof BUILT_IN_ACP_AGENT_IDS)[number];
+
+export function isBuiltInAcpAgentId(value: unknown): value is BuiltInAcpAgentId {
+  return (
+    typeof value === "string" &&
+    (BUILT_IN_ACP_AGENT_IDS as readonly string[]).includes(value)
+  );
+}
+
+/** Friendly display names for the built-in ACP agents — kept in sync with the
+ *  kit strategies' `displayName`. Lets the UI label a configured agent
+ *  IMMEDIATELY (e.g. "Gemini CLI") from settings, instead of flashing the raw
+ *  id ("gemini") until async discovery resolves the same name. */
+const BUILT_IN_ACP_AGENT_DISPLAY_NAMES: Record<BuiltInAcpAgentId, string> = {
+  gemini: "Gemini CLI",
+  grok: "Grok",
+  kimi: "Kimi Code CLI",
+  qwen: "Qwen Code"
+};
+
+/** The friendly name for a built-in ACP agent id, or the id itself for an
+ *  unknown id (so a future/custom agent still shows something). */
+export function builtInAcpAgentDisplayName(id: string): string {
+  return isBuiltInAcpAgentId(id) ? BUILT_IN_ACP_AGENT_DISPLAY_NAMES[id] : id;
+}
+
+/** The ACP agent id a chat thread is bound to, parsed from its id
+ *  (`acp:<agent>:<session>`), or `null` for a Codex thread. The provider is
+ *  baked into the thread id at creation, so it's stable even if the surface's
+ *  configured provider later changes. */
+export function acpAgentIdFromThreadId(threadId: string): string | null {
+  const m = /^acp:([^:]+):/.exec(threadId);
+  return m ? (m[1] ?? null) : null;
+}
+
+/** Human-facing provider label for a chat thread — the bound ACP agent's
+ *  friendly name (e.g. "Gemini CLI") or "Codex". */
+export function chatThreadProviderLabel(threadId: string): string {
+  const agentId = acpAgentIdFromThreadId(threadId);
+  return agentId === null ? "Codex" : builtInAcpAgentDisplayName(agentId);
+}
+
+/** Where a discovered instance's executable path was located. */
+export type AcpAgentInstanceSource = "override" | "path" | "fallback";
+
+/** One installed executable of an ACP agent that passed discovery. A single
+ *  agent can have several (e.g. `qwen` under nvm AND Homebrew), each a distinct
+ *  binary the user can pick between. */
+export type AcpAgentInstance = {
+  /** Resolved command/path that passed the probe. */
+  command: string;
+  /** Parsed CLI version, when the version probe yielded one. */
+  version?: string;
+  /** How the path was found: user override, a `PATH` match, or a fallback path. */
+  source: AcpAgentInstanceSource;
+};
+
+/** One known ACP agent's discovery status, as surfaced by the
+ *  `acp:discover` verb. `installed` is the only authoritative install
+ *  signal (the kit's local discovery passed the strategy's probe).
+ *  `instances` lists EVERY installed executable found (PATH matches +
+ *  fallbacks + a passing override); `activeCommand` is the one currently in
+ *  effect for spawns (override → user-picked → first found). `version` /
+ *  `detail` mirror the active instance for compact display. */
+export type AcpAgentDiscoveryEntry = {
+  /** Kit strategy id (`gemini` / `grok` / `kimi` / `qwen`). */
+  id: string;
+  /** Human-facing name from the kit strategy (`Gemini CLI`, etc.). */
+  displayName: string;
+  /** True when the kit's local discovery found + probed the CLI. */
+  installed: boolean;
+  /** Parsed CLI version of the active instance, when known. */
+  version?: string;
+  /** Resolved command path of the active instance when installed; an install
+   *  hint when not. */
+  detail?: string;
+  /** Every installed instance found, in candidate order. Empty when not installed. */
+  instances: AcpAgentInstance[];
+  /** The instance command currently in effect (override → picked → first found).
+   *  Undefined when nothing is installed. */
+  activeCommand?: string;
+};
+
+/** Result of `acp:discover` — every known ACP agent with its install
+ *  status. Read-only; never spawns the agent in ACP server mode (the
+ *  probe only runs `--version` / `--help`). */
+export type AcpAgentDiscovery = {
+  /** One entry per known ACP agent (built-in strategy), installed or not. */
+  agents: AcpAgentDiscoveryEntry[];
+};
+
+/** One model an ACP agent advertises (from its `session/new` runtime
+ *  capabilities). `id` is the value persisted as a surface's `model`. */
+export type AcpAgentModelOption = {
+  id: string;
+  label: string;
+  description?: string;
+  /** True for the model the agent reports as its current/default
+   *  (`currentModelId`). At most one per list; absent when the agent
+   *  advertises models but no current id. The picker labels it "(default)"
+   *  and annotates the "Default" entry with it. */
+  isDefault?: boolean;
+};
+
+/** Result of `acp:models` — the model list a specific ACP agent advertises,
+ *  so the Settings model picker can show the agent's real models (Gemini's
+ *  `gemini-2.5-pro`, …) instead of Codex's. Empty `models` = the agent
+ *  advertises none (or isn't installed). */
+export type AcpAgentModelList = {
+  /** The agent id the list is for (echoed back). */
+  agentId: string;
+  models: AcpAgentModelOption[];
+};
+
+/** Per-user ACP-agent enablement. Additive sub-object of `Settings.ai`.
+ *  `enabledAgentIds` is the set of built-in ACP agent ids the user has
+ *  opted into; defaults to empty. Order is the user's toggle order; the
+ *  set is de-duplicated + validated against `BUILT_IN_ACP_AGENT_IDS` at
+ *  the bus boundary. */
+export type AcpSettings = {
+  enabledAgentIds: string[];
+  /** Per-agent path preferences, keyed by built-in agent id. A missing entry
+   *  means "auto" (use the first discovered instance, no override). */
+  agents?: Record<string, AcpAgentPreference>;
+};
+
+/** A user's per-agent path choice. `overridePath` is a manual absolute path
+ *  (highest priority — probed even if outside `PATH`/fallbacks). `selectedPath`
+ *  is a discovered instance the user clicked to pin. Both unset = auto (first
+ *  discovered instance). */
+export type AcpAgentPreference = {
+  /** Manual override path. Empty / undefined = none. */
+  overridePath?: string;
+  /** User-pinned discovered instance command. Undefined = auto (first found). */
+  selectedPath?: string;
+};
+
+/** Default `ai.acp` state — no agents enabled, no per-agent preferences. */
+export const DEFAULT_ACP_SETTINGS: AcpSettings = {
+  enabledAgentIds: [],
+  agents: {}
 };
 
 export type AiEnrichmentTriggerSource =
@@ -1138,6 +1461,20 @@ export type Settings = {
      *  docs/plans/2026-05-28-001-feat-library-chat-editor-interface-plan.md
      *  Phase 0 + deepening §F7 #3. */
     chat: ChatSettings;
+    /** Per-surface default provider / model / reasoning the user picks
+     *  in Settings → AI. These flow into the kit `ChatThreadController`
+     *  (Library chat, Sizzle chat) and the `CodexOneShotClient`
+     *  (Enrichment) — see AiSurfaceDefaults for the field semantics.
+     *  Additive: every leaf is optional, an omitted field means "use the
+     *  Codex default" (no `model` / `modelProvider` / `effort` is sent on
+     *  thread/start or turn/start). */
+    defaults: AiSurfaceDefaults;
+    /** ACP-agent enablement (Settings → AI → ACP agents). The set of
+     *  locally-installed ACP agents the user has opted into. Additive;
+     *  defaults to empty. Discovery is the `acp:discover` verb; enabling
+     *  is a `settings:write` patch to `ai.acp.enabledAgentIds`. Wiring an
+     *  enabled agent as a live chat backend is a separate next phase. */
+    acp: AcpSettings;
   };
   /** Global capture hotkeys. Each field is an Electron accelerator
    *  string (`CommandOrControl+Shift+C`-style) OR the empty string,
@@ -1612,6 +1949,24 @@ export type SettingsPatch = {
     budgetSafetyDisabledAt?: Settings["ai"]["budgetSafetyDisabledAt"];
     autoAcceptSuggestions?: Settings["ai"]["autoAcceptSuggestions"];
     chat?: Partial<ChatSettings>;
+    /** Per-surface defaults. Each surface is independently optional, and
+     *  within a surface each leaf (`provider` / `model` / `reasoning`) is
+     *  optional too — so the UI can ship just `{ ai: { defaults: {
+     *  libraryChat: { model: "gpt-…" } } } }` without re-echoing the rest.
+     *  Empty string is the explicit "cleared → use Codex default"
+     *  sentinel per the substrate hygiene rule `undefined ≠ null ≠ ""`. */
+    defaults?: {
+      libraryChat?: AiSurfaceDefaultPatch;
+      sizzleChat?: AiSurfaceDefaultPatch;
+      enrichment?: AiSurfaceDefaultPatch;
+    };
+    /** ACP-agent enablement patch. `enabledAgentIds` REPLACES the stored
+     *  set wholesale (the renderer ships the full desired set on each
+     *  toggle, mirroring `ai.chat.sensitiveDataPatterns`). An empty array
+     *  is a meaningful value (clear all), not a "leave alone" sentinel —
+     *  `undefined` / missing `acp` leaves the stored set untouched. The
+     *  bus validator rejects unknown agent ids. */
+    acp?: Partial<AcpSettings>;
   };
   hotkeys?: Partial<Settings["hotkeys"]>;
   general?: Partial<Settings["general"]>;
@@ -2562,9 +2917,56 @@ export type Commands = {
   };
   "codex:runStatus": { req: { runId: string }; res: AiRunSnapshot | null };
   "codex:budgetStatus": { req: Record<string, never>; res: AiEnrichmentBudgetStatus };
+
+  // ---- Codex auth-profile management (Settings → AI) ----
+  /** Enumerate Codex auth profiles (System default + `~/.codex/profiles/*`),
+   *  each with signed-in status + account email from `codex login status`
+   *  and the cached JWT. Backed by `@pwrdrvr/codex-discovery`. */
+  "codex:profiles:list": {
+    req: Record<string, never>;
+    res: DesktopCodexAuthProfileList;
+  };
+  /** Create a new `~/.codex/profiles/<name>` auth profile (the name is
+   *  normalized + validated). Does NOT log in or select it — the renderer
+   *  follows up with a settings patch (select) + `codex:profiles:login`. */
+  "codex:profiles:create": {
+    req: { name: string };
+    res: DesktopCodexAuthProfile;
+  };
+  /** Start (or re-start) the Codex OAuth login for a profile. Spawns
+   *  `codex login` against the profile's CODEX_HOME, scrapes the OAuth URL,
+   *  and opens it in the browser via `shell.openExternal`. Resolves once the
+   *  URL is opened (`started: true`) or the child exits already
+   *  authenticated. */
+  "codex:profiles:login": {
+    req: { name: string };
+    res: DesktopCodexProfileLoginResult;
+  };
   "codex:models": {
     req: { includeHidden?: boolean };
     res: CodexModelList;
+  };
+  // ---- ACP agent discovery (Settings → AI) ----
+  /** Discover which built-in ACP agents (Kimi / Qwen / Gemini / Grok) are
+   *  installed on this machine. Read-only — wraps `@pwrdrvr/agent-acp`
+   *  local discovery, which probes each strategy's CLI with `--version` /
+   *  `--help` (no ACP server spawn). Returns every known agent with its
+   *  install status so the renderer can list installed + not-installed
+   *  agents and let the user enable installed ones. */
+  "acp:discover": {
+    req: Record<string, never>;
+    res: AcpAgentDiscovery;
+  };
+  /** List the models a specific installed ACP agent advertises. Spawns the
+   *  agent in ACP mode, opens a throwaway session to read its runtime models,
+   *  and tears it down — so the Settings model picker can show the agent's
+   *  real models instead of Codex's. Empty list when the agent isn't
+   *  installed or advertises none. */
+  "acp:models": {
+    /** `refresh: true` bypasses the persisted/in-memory cache and re-spawns the
+     *  agent to re-read its models (e.g. after upgrading the agent binary). */
+    req: { agentId: string; refresh?: boolean };
+    res: AcpAgentModelList;
   };
   "codex:usageSummary": {
     req: { window: AiUsageSummaryWindow };
@@ -2621,10 +3023,19 @@ export type Commands = {
   };
   /** Create a new thread. `name` optional — main mints a default
    *  ("Chat <date>") when omitted. `anchorCaptureId` glues the thread
-   *  to the capture it was started from. Returns the view for
+   *  to the capture it was started from. `provider`/`model`/`reasoning`
+   *  are the thread's chosen backend config (from the New-Chat chips);
+   *  omitted = the surface's Settings default. They're persisted on the
+   *  thread and locked once it has a first message. Returns the view for
    *  optimistic rendering. */
   "codex:libraryChat:create": {
-    req: { name?: string; anchorCaptureId?: string | null };
+    req: {
+      name?: string;
+      anchorCaptureId?: string | null;
+      provider?: string;
+      model?: string;
+      reasoning?: string;
+    };
     res: LibraryChatThreadView;
   };
   /** Send a user message + (optionally) attached image paths. Returns
@@ -2684,7 +3095,13 @@ export type Commands = {
     res: { threads: LibraryChatThreadView[] };
   };
   "codex:sizzleChat:create": {
-    req: { name?: string; anchorCaptureId?: string | null };
+    req: {
+      name?: string;
+      anchorCaptureId?: string | null;
+      provider?: string;
+      model?: string;
+      reasoning?: string;
+    };
     res: LibraryChatThreadView;
   };
   "codex:sizzleChat:send": {

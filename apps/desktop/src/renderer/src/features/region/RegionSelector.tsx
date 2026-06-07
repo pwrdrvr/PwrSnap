@@ -469,6 +469,15 @@ export function RegionSelector() {
       return isPointInsideRect(rectRef.current, clientX, clientY);
     }
 
+    // True when the mousedown landed on a border move-band (the thin
+    // inner-edge strips rendered while adjusting). Detected via the
+    // element's `data-move` attribute, mirroring the `data-handle`
+    // resize-handle pattern — so the 8 resize handles (z-index above
+    // the bands) naturally win where they overlap an edge band.
+    function isMoveBandTarget(target: EventTarget | null): boolean {
+      return target instanceof HTMLElement && target.dataset.move !== undefined;
+    }
+
     function lastCursor(): { x: number; y: number } {
       // Approximate cursor — onMouseMove keeps `lastMouseRef.current`
       // current; falls back to viewport center if we have nothing yet.
@@ -609,9 +618,10 @@ export function RegionSelector() {
         return;
       }
 
-      // Adjusting → Space-held = move. Explicit move intent, anchored
-      // on the current rect even when the cursor is outside it.
-      if (i.kind === "adjusting" && spaceRef.current) {
+      // Adjusting → Space-held OR a border move-band = move. The
+      // border band is the discoverable mouse affordance (interior drag
+      // now redraws); Space+drag stays as the keyboard-modifier path.
+      if (i.kind === "adjusting" && (spaceRef.current || isMoveBandTarget(event.target))) {
         setInteraction({
           kind: "moving",
           startMouse: { x: event.clientX, y: event.clientY },
@@ -963,7 +973,7 @@ export function RegionSelector() {
           </span>
           <span className="region-hint-sep">·</span>
           <span>
-            <kbd>space</kbd>+drag move
+            <kbd>border</kbd>move
           </span>
         </>
       );
@@ -1047,6 +1057,13 @@ export function RegionSelector() {
         {isAdjustable && (
           <>
             <div className="region-rect-interior" data-interior="true" />
+            {/* Border move-bands: dragging an edge moves the selection
+                (interior drag redraws instead). Resize handles sit on
+                top (z-index) and win where they overlap. */}
+            <div className="region-move-band top" data-move="top" />
+            <div className="region-move-band right" data-move="right" />
+            <div className="region-move-band bottom" data-move="bottom" />
+            <div className="region-move-band left" data-move="left" />
             {ALL_HANDLES.map((h) => (
               <span key={h} className={`region-handle ${h}`} data-handle={h} />
             ))}

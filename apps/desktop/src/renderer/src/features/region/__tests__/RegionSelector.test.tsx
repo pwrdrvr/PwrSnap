@@ -406,3 +406,36 @@ describe("U3 — interior drag discards + redraws", () => {
     expect(document.body.dataset.interaction).toBe("moving");
   });
 });
+
+describe("U4 — border move-band", () => {
+  test("move-bands render only while adjusting", async () => {
+    await mount();
+    expect(container?.querySelectorAll(".region-move-band").length).toBe(0); // snap
+    await drawRect();
+    expect(container?.querySelectorAll(".region-move-band").length).toBe(4); // adjusting
+  });
+
+  test("dragging a border move-band translates the selection", async () => {
+    await mount();
+    await drawRect(); // (100,100,200,200)
+    const band = container?.querySelector(".region-move-band.top");
+    if (!(band instanceof HTMLElement)) throw new Error("top move-band not found");
+    await mouseDown(200, 100, band);
+    expect(document.body.dataset.interaction).toBe("moving");
+    await mouseMove(250, 130); // +50, +30
+    await mouseUp(250, 130);
+    expect(document.body.dataset.interaction).toBe("adjusting");
+    expect(rectStyle()).toEqual({ left: 150, top: 130, width: 200, height: 200 });
+  });
+
+  test("interior drag still redraws (band drag and interior drag don't overlap)", async () => {
+    await mount();
+    await drawRect();
+    // Deep interior (not a band) → discard + redraw, not move.
+    await mouseDown(200, 200);
+    await mouseMove(220, 220);
+    await mouseMove(500, 450);
+    await mouseUp(500, 450);
+    expect(rectStyle()).toEqual({ left: 200, top: 200, width: 300, height: 250 });
+  });
+});

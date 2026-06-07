@@ -57,16 +57,11 @@ test("hovering a window locks the rect to its bounds (no modifier)", async () =>
       () => document.body.dataset.windowListCount === "1"
     );
 
-    // Move the cursor over the synthetic window.
+    // Move the cursor over the synthetic window — snap flips to "window"
+    // with the synthetic window's bounds + the app name in the dims chip.
     const cx = SYNTHETIC_WINDOW.rect.x + SYNTHETIC_WINDOW.rect.w / 2;
     const cy = SYNTHETIC_WINDOW.rect.y + SYNTHETIC_WINDOW.rect.h / 2;
-    await selector.mouse.move(cx, cy);
-
-    // Snap target flips to "window" with the synthetic window's
-    // bounds + the app name in the dims chip.
-    await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
-      "window"
-    );
+    await lockWindowSnap(selector, cx, cy);
     await expect(selector.locator(".region-rect.region-rect--snap-window")).toBeVisible();
 
     const rectStyle = await selector.locator(".region-rect").getAttribute("style");
@@ -96,14 +91,21 @@ test("window-list cursor initializes the snap target before mouse movement", asy
 
     const cx = SYNTHETIC_WINDOW.rect.x + SYNTHETIC_WINDOW.rect.w / 2;
     const cy = SYNTHETIC_WINDOW.rect.y + SYNTHETIC_WINDOW.rect.h / 2;
-    await hydrateWindowList(app, [SYNTHETIC_WINDOW], { x: cx, y: cy });
-    await selector.waitForFunction(
-      () => document.body.dataset.windowListCount === "1"
-    );
-
-    await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
-      "window"
-    );
+    // Re-send the cursor-bearing snapshot until the renderer reports the
+    // window snap. This still exercises cursor-init (the snap comes from
+    // the snapshot's cursor, never a test-driven mouse.move) but is
+    // robust to a real OS mousemove over the just-shown fullscreen
+    // overlay re-snapping to "display" — an environmental artifact of
+    // running these specs locally, not a renderer bug.
+    await expect
+      .poll(
+        async () => {
+          await hydrateWindowList(app, [SYNTHETIC_WINDOW], { x: cx, y: cy });
+          return selector.locator("body").getAttribute("data-snap");
+        },
+        { timeout: 5000, intervals: [50, 100, 150, 250] }
+      )
+      .toBe("window");
     await expect(selector.locator(".region-dims-chip")).toContainText("Target App");
   } finally {
     await app.close();
@@ -140,10 +142,7 @@ test("click-without-drag on a window enters adjusting + ↵ commits with snapped
 
     const cx = SYNTHETIC_WINDOW.rect.x + SYNTHETIC_WINDOW.rect.w / 2;
     const cy = SYNTHETIC_WINDOW.rect.y + SYNTHETIC_WINDOW.rect.h / 2;
-    await selector.mouse.move(cx, cy);
-    await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
-      "window"
-    );
+    await lockWindowSnap(selector, cx, cy);
 
     // Click without drag — should land in adjusting mode (handles
     // visible) without dispatching submitRegion yet. The user gets
@@ -240,10 +239,7 @@ test("a PwrSnap-owned window covering another window is itself snappable", async
     // Hover over the overlapping region. Both windows' bounds
     // contain (300, 200), but ours is z-order frontmost. Snap
     // should be PwrSnap, not 1Password or display.
-    await selector.mouse.move(300, 200);
-    await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
-      "window"
-    );
+    await lockWindowSnap(selector, 300, 200);
     await expect(selector.locator(".region-dims-chip")).toContainText("PwrSnap");
 
     // Move outside our window but still inside 1Password's bounds.
@@ -306,7 +302,7 @@ test("⇧ over a window expands the snap rect to full bounds + flags fullWindow 
     );
 
     // Hover to lock the snap target. Default rect = visible (200×400).
-    await selector.mouse.move(150, 200);
+    await lockWindowSnap(selector, 150, 200);
     await expect(selector.locator(".region-dims-chip")).toContainText("FullWindow App");
     let style = await selector.locator(".region-rect").getAttribute("style");
     expect(style).toContain("width: 200px"); // visible only
@@ -395,7 +391,7 @@ test("Tab cycles to the next window underneath the cursor", async () => {
     // Park cursor in the OVERLAP zone (inside both rawRects).
     // Slack covers x:100-700; 1Password covers x:50-900. (300, 250)
     // is inside both. z-order picks Slack first.
-    await selector.mouse.move(300, 250);
+    await lockWindowSnap(selector, 300, 250);
     await expect(selector.locator(".region-dims-chip")).toContainText("Slack");
 
     // Tab → cycle to next: 1Password.
@@ -457,18 +453,12 @@ test("when our window only partially occludes another, both visible windows can 
     );
 
     // Cursor in upper overlap (covered by ours): PwrSnap snap.
-    await selector.mouse.move(400, 100);
-    await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
-      "window"
-    );
+    await lockWindowSnap(selector, 400, 100);
     await expect(selector.locator(".region-dims-chip")).toContainText("PwrSnap");
 
     // Cursor in lower half (1Password visible): 1Password snap with
     // the visible-only rect (NOT the full 800×400 raw bounds).
-    await selector.mouse.move(400, 300);
-    await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
-      "window"
-    );
+    await lockWindowSnap(selector, 400, 300);
     const style = await selector.locator(".region-rect").getAttribute("style");
     expect(style).toContain("top: 200px");
     expect(style).toContain("height: 200px");
@@ -484,21 +474,30 @@ test("click + drag past threshold overrides snap with a free-form region", async
     const selector = await showAndGetSelector(app);
     await selector.waitForFunction(() => document.body.dataset.snap !== undefined);
 
-    // Hydrate window list + wait for the renderer to confirm.
-    await hydrateWindowList(app, [SYNTHETIC_WINDOW]);
-    await selector.waitForFunction(
-      () => document.body.dataset.windowListCount === "1"
-    );
-
-    // Park inside the window so snap is "window" first.
     const inX = SYNTHETIC_WINDOW.rect.x + 50;
     const inY = SYNTHETIC_WINDOW.rect.y + 50;
-    await selector.mouse.move(inX, inY);
-    await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
-      "window"
-    );
+    // Establish the window snap deterministically. Re-send the snapshot
+    // (cursor parked inside the window, which makes the renderer snap in
+    // the same handler that ingests the list) until data-snap reports
+    // "window". A single send raced the snapshot-delivery / snap-
+    // recompute timing under repeat-load and left the snap on "display";
+    // re-sending inside the poll self-heals that without weakening the
+    // drag-override assertion below.
+    await expect
+      .poll(
+        async () => {
+          await hydrateWindowList(app, [SYNTHETIC_WINDOW], { x: inX, y: inY });
+          return selector.locator("body").getAttribute("data-snap");
+        },
+        { timeout: 5000, intervals: [50, 100, 150, 250] }
+      )
+      .toBe("window");
 
-    // mousedown + drag past the 4px threshold → drawing.
+    // Position Playwright's pointer for the drag (the snap is already
+    // locked to the window).
+    await selector.mouse.move(inX, inY);
+
+    // mousedown + drag past the drag-engage threshold → drawing.
     await selector.mouse.down();
     await selector.mouse.move(inX + 200, inY + 200, { steps: 8 });
 
@@ -575,6 +574,32 @@ async function hydrateWindowList(
     },
     payload
   );
+}
+
+/**
+ * Move the pointer to (x, y) and wait until the renderer locks the
+ * WINDOW snap there, re-dispatching the move on each poll iteration.
+ *
+ * Why the retry: these specs show a real, fullscreen, top-level
+ * BrowserWindow. On a machine with a physical cursor (local dev) the OS
+ * delivers a native mousemove at the cursor's location when the overlay
+ * appears — and if that point is outside the synthetic window, the
+ * renderer correctly re-snaps to "display" right after our single
+ * Playwright move, leaving data-snap stuck on "display". Headless CI has
+ * no physical cursor, so it never sees this. Re-moving inside the poll
+ * makes our move the last event each iteration and self-heals the race
+ * without weakening any assertion (it still requires a real window snap).
+ */
+async function lockWindowSnap(selector: Page, x: number, y: number): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        await selector.mouse.move(x, y);
+        return selector.locator("body").getAttribute("data-snap");
+      },
+      { timeout: 5000, intervals: [50, 100, 150, 250] }
+    )
+    .toBe("window");
 }
 
 async function showAndGetSelector(

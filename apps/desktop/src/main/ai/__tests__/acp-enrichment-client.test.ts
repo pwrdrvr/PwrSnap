@@ -10,6 +10,7 @@ import {
   buildAcpEnrichmentPrompt,
   buildAcpEnrichmentRepairPrompt,
   extractJsonObject,
+  extractJsonObjects,
   parseEnrichmentReply,
   repairJsonish
 } from "../acp-enrichment-client";
@@ -131,6 +132,38 @@ describe("parseEnrichmentReply", () => {
     // repairJsonish deliberately does NOT guess at placeholders — this must
     // surface as a parse error so enrichCapture retries with a corrective prompt.
     expect(() => parseEnrichmentReply('{"textAnchors": [...], "title": "x"}')).toThrow();
+  });
+
+  it("clamps an over-limit textAnchors array instead of rejecting (the Kimi case)", () => {
+    // Kimi returned valid JSON with 7 text anchors; the only error was the >5
+    // cap. The whole enrichment must survive — clamp, don't discard.
+    const result = parseEnrichmentReply(
+      JSON.stringify({
+        title: "Settings",
+        description: "AI providers page",
+        textAnchors: ["a", "b", "c", "d", "e", "f", "g"]
+      })
+    );
+    expect(result.title).toBe("Settings");
+    expect(result.textAnchors).toHaveLength(5);
+  });
+
+  it("recovers the real answer past a reasoning model's scratch `{}` (the Kimi empty-retry case)", () => {
+    // A reasoning model emits a scratch object early, then the real answer last.
+    // The first `{}` defaults to a valid-but-empty result; it must NOT shadow
+    // the substantive trailing object.
+    const raw =
+      "Let me think. First I'll sketch the shape {} then fill it in.\n\n" +
+      'Final answer:\n{"title":"Receipt total","description":"A receipt window"}';
+    const result = parseEnrichmentReply(raw);
+    expect(result.title).toBe("Receipt total");
+  });
+
+  it("extractJsonObjects returns every balanced top-level object in order", () => {
+    expect(extractJsonObjects('noise {"a":1} mid {"b":{"c":2}} end')).toEqual([
+      '{"a":1}',
+      '{"b":{"c":2}}'
+    ]);
   });
 });
 

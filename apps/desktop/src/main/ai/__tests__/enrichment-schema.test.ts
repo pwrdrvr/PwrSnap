@@ -26,12 +26,30 @@ describe("capture enrichment schema", () => {
     expect(parsed.tags).toEqual([{ label: "receipt", confidence: 0.9 }]);
   });
 
-  it("rejects malformed results", () => {
-    expect(() =>
-      parseCaptureEnrichmentResponse(
-        JSON.stringify({ ocrText: "", description: "", tags: [{ label: "" }] })
-      )
-    ).toThrow();
+  it("clamps over-limit / malformed arrays instead of rejecting the result", () => {
+    // A reply that's valid JSON but slightly over a list cap (or carries a junk
+    // entry) must NOT sink the run — the valuable caption/description survive
+    // and the offending array is clamped to the contract.
+    const parsed = parseCaptureEnrichmentResponse(
+      JSON.stringify({
+        title: "Dashboard",
+        textAnchors: ["a", "b", "c", "d", "e", "f", "g"], // 7 → clamp to 5
+        tags: [{ label: "ok", confidence: 0.9 }, { label: "" }, "bare-string"] // blank dropped, string coerced
+      })
+    );
+    expect(parsed.title).toBe("Dashboard");
+    expect(parsed.textAnchors).toHaveLength(5);
+    expect(parsed.tags).toEqual([
+      { label: "ok", confidence: 0.9 },
+      { label: "bare-string", confidence: null }
+    ]);
+  });
+
+  it("drops a wholly-blank tag list to empty (caught later by the empty guard)", () => {
+    const parsed = parseCaptureEnrichmentResponse(
+      JSON.stringify({ ocrText: "", description: "", tags: [{ label: "" }] })
+    );
+    expect(isEnrichmentResultEmpty(parsed)).toBe(true);
   });
 
   it("exposes a strict object output schema", () => {

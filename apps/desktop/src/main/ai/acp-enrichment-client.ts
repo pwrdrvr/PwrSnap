@@ -232,15 +232,68 @@ export function repairJsonish(text: string): string {
   return out;
 }
 
-/** Parse an enrichment reply leniently: extract the JSON object, then validate;
- *  on failure retry once through `repairJsonish`. Throws if neither parses. */
-export function parseEnrichmentReply(rawText: string): EnrichmentResult {
-  const extracted = extractJsonObject(rawText);
-  try {
-    return parseCaptureEnrichmentResponse(extracted);
-  } catch {
-    return parseCaptureEnrichmentResponse(repairJsonish(extracted));
+/** Every balanced top-level JSON object in a possibly-noisy reply, in document
+ *  order. String-aware (braces inside string values don't split an object).
+ *  Reasoning models (Kimi, Gemini flash) emit several brace groups — scratch
+ *  work plus the final answer — so the caller needs all of them, not just the
+ *  first. Exported for testing. */
+export function extractJsonObjects(rawText: string): string[] {
+  const fence = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const body = fence?.[1] ?? rawText;
+  const objects: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start !== -1) {
+        objects.push(body.slice(start, i + 1));
+        start = -1;
+      }
+    }
   }
+  return objects;
+}
+
+/** Parse an enrichment reply leniently. Tries every balanced JSON object in the
+ *  reply (last → first, since reasoning models put the final answer last), each
+ *  raw and `repairJsonish`-cleaned, and returns the first that validates to a
+ *  NON-EMPTY result. A bare `{}` scratch object earlier in the reasoning must
+ *  not shadow the real answer — the schema defaults make `{}` "valid" but empty,
+ *  so empties are only used as a last-resort fallback. Throws if nothing parses. */
+export function parseEnrichmentReply(rawText: string): EnrichmentResult {
+  const candidates = extractJsonObjects(rawText);
+  // Truncated/unbalanced object → fall back to the open-ended single extraction.
+  if (candidates.length === 0) candidates.push(extractJsonObject(rawText));
+  let lastError: unknown = new Error("no JSON object found in enrichment reply");
+  let emptyFallback: EnrichmentResult | null = null;
+  for (let i = candidates.length - 1; i >= 0; i -= 1) {
+    const candidate = candidates[i] ?? "";
+    for (const text of [candidate, repairJsonish(candidate)]) {
+      try {
+        const parsed = parseCaptureEnrichmentResponse(text);
+        if (!isEnrichmentResultEmpty(parsed)) return parsed;
+        emptyFallback ??= parsed;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+  }
+  if (emptyFallback !== null) return emptyFallback;
+  throw lastError;
 }
 
 export class AcpCaptureEnrichmentClient {

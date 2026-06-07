@@ -16,17 +16,39 @@ describe("EnrichmentResultSchema", () => {
     expect(parsed.tags[0]?.label).toBe("deploy");
   });
 
-  test("rejects empty tag labels", () => {
-    expect(() =>
-      EnrichmentResultSchema.parse({
-        ocrText: "",
-        description: "",
-        tags: [{ label: "   ", confidence: 0.5 }]
-      })
-    ).toThrow();
+  test("drops blank tag labels instead of rejecting the whole result", () => {
+    // Lenient by design: weak ACP models over-produce. A blank-label tag is
+    // dropped (not a hard failure) so a valid caption/description survives.
+    const parsed = EnrichmentResultSchema.parse({
+      title: "Build status",
+      tags: [{ label: "   ", confidence: 0.5 }, { label: "ci", confidence: 0.8 }]
+    });
+    expect(parsed.tags).toEqual([{ label: "ci", confidence: 0.8 }]);
   });
 
-  test("rejects confidence outside [0, 1]", () => {
+  test("clamps an over-limit textAnchors array to the cap", () => {
+    const parsed = EnrichmentResultSchema.parse({
+      title: "x",
+      textAnchors: ["a", "b", "c", "d", "e", "f"]
+    });
+    expect(parsed.textAnchors).toHaveLength(5);
+  });
+
+  test("clamps an over-length title rather than rejecting", () => {
+    const parsed = EnrichmentResultSchema.parse({ title: "T".repeat(200) });
+    expect(parsed.title).toHaveLength(120);
+  });
+
+  test("nulls an out-of-range tag confidence instead of rejecting", () => {
+    const parsed = EnrichmentResultSchema.parse({
+      title: "x",
+      tags: [{ label: "deploy", confidence: 1.1 }]
+    });
+    expect(parsed.tags).toEqual([{ label: "deploy", confidence: null }]);
+  });
+
+  test("rejects confidence outside [0, 1] on the persisted SuggestedTagSchema", () => {
+    // The DB-facing schema stays strict — only the AI-output schema is lenient.
     expect(() => SuggestedTagSchema.parse({ label: "deploy", confidence: 1.1 })).toThrow();
   });
 });

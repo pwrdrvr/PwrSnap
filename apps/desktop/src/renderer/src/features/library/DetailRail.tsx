@@ -1302,6 +1302,11 @@ export function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): React
   // fall back to the id, then "model unavailable". Long names are clipped with
   // CSS ellipsis and the full name shows on hover (title).
   const modelName = detail.modelLabel ?? detail.model ?? "model unavailable";
+  // The agent overrode the user's model pick (e.g. Grok rejects set_model for a
+  // model it can't run, and falls back to its own default). requestedModelLabel
+  // is set only in that case — surface it so the user isn't confused why a
+  // different model ran.
+  const requestedName = detail.requestedModelLabel ?? null;
 
   return (
     <div className="psl__ai-usage" aria-label="AI usage">
@@ -1315,6 +1320,15 @@ export function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): React
         <span>{tokens}</span>
         <span>{mediaText}</span>
       </div>
+      {requestedName !== null ? (
+        <div className="psl__ai-usage-row is-muted psl__ai-usage-override">
+          <span
+            title={`The agent doesn't support switching to "${requestedName}", so it ran ${modelName} instead.`}
+          >
+            ⚠ you picked {requestedName} — agent ran {modelName}
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }

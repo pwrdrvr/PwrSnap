@@ -770,9 +770,16 @@ export function registerCodexHandlers(params?: {
     // Resolve the model's friendly label from the ACP model caches (id → label,
     // e.g. "grok-build" → "Grok Build") so the usage strip shows the friendly
     // name. Null for Codex / unprobed agents → the UI falls back to the raw id.
+    // Also resolve the REQUESTED model's label when the agent overrode the pick
+    // (selectedModel ≠ effective model — e.g. Grok rejecting set_model), so the
+    // UI can say "you picked X, the agent ran Y".
+    const requested = detail.run.selectedModel;
+    const overrode =
+      typeof requested === "string" && requested.length > 0 && requested !== detail.model;
     return ok({
       ...detail,
-      modelLabel: detail.model !== null ? findAcpModelLabel(detail.model) ?? null : null
+      modelLabel: detail.model !== null ? findAcpModelLabel(detail.model) ?? null : null,
+      requestedModelLabel: overrode ? findAcpModelLabel(requested) ?? requested : null
     });
   });
 

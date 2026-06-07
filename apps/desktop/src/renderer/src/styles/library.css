@@ -2178,6 +2178,11 @@
 .psl__ai-usage-model {
   flex: 1 1 auto;
 }
+/* Shown only when the agent overrode the user's model pick — draw the eye to it
+   with the accent without alarming. */
+.psl__ai-usage-override span {
+  color: var(--accent);
+}
 .psl__ai-usage-row.is-muted {
   font-weight: 400;
   color: var(--text-muted);

@@ -1297,4 +1297,21 @@ describe("AiRunUsageStrip", () => {
     const span = await renderStrip(aiUsageDetail({ model: null, modelLabel: null }));
     expect(span.textContent).toBe("model unavailable");
   });
+
+  test("surfaces an override note when the agent ran a different model than requested", async () => {
+    const detail = aiUsageDetail({ model: "grok-build", modelLabel: "Grok Build" });
+    detail.requestedModelLabel = "Composer 2.5";
+    await renderStrip(detail);
+    const override = stripContainer!.querySelector<HTMLElement>(".psl__ai-usage-override");
+    expect(override).not.toBeNull();
+    expect(override!.textContent).toContain("Composer 2.5");
+    expect(override!.textContent).toContain("Grok Build");
+  });
+
+  test("no override note when the requested model was honored", async () => {
+    const detail = aiUsageDetail({ model: "grok-build", modelLabel: "Grok Build" });
+    detail.requestedModelLabel = null; // honored (or none requested)
+    await renderStrip(detail);
+    expect(stripContainer!.querySelector(".psl__ai-usage-override")).toBeNull();
+  });
 });

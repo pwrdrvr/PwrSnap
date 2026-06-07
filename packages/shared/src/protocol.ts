@@ -2139,6 +2139,11 @@ export type AiRunUsageDetail = {
    *  resolved from the ACP model caches at read time. Null when unknown (a Codex
    *  model, or an agent never probed) — the UI falls back to the raw `model`. */
   modelLabel?: string | null;
+  /** Friendly label for the run's REQUESTED model (`run.selectedModel`), when it
+   *  differs from `model` — i.e. the agent overrode the user's pick (e.g. Grok
+   *  rejects `set_model` for Cursor's "Composer 2.5" and runs its own default).
+   *  Null when the requested model was honored (or none was requested). */
+  requestedModelLabel?: string | null;
   modelProvider: string | null;
   serviceTier: string | null;
   usageStatus: AiUsageStatus;

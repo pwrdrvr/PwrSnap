@@ -23,6 +23,7 @@ import { spawnTargetWindows, type TargetWindowSpec } from "./fixtures/target-win
 import { colorsClose, formatRgb, hexToRgb, samplePixel } from "./fixtures/pixel-sample";
 
 const isMac = process.platform === "darwin";
+const isWin = process.platform === "win32";
 // Real screen capture requires Screen Recording TCC permission for
 // the running binary — a one-time approval the user grants in
 // System Settings → Privacy & Security. The Playwright-launched
@@ -32,11 +33,16 @@ const isMac = process.platform === "darwin";
 //   2. Re-run with PWRSNAP_E2E_REAL_CAPTURE=1 pnpm test:desktop-e2e.
 const realCaptureOpt = process.env.PWRSNAP_E2E_REAL_CAPTURE === "1";
 
-test.describe("region capture (macOS, opt-in)", () => {
-  test.skip(!isMac, "screencapture(1) is macOS-only");
+test.describe("region capture (macOS opt-in + Windows)", () => {
+  // macOS uses screencapture(1); Windows uses desktopCapturer. Linux/xvfb has
+  // its own capture path we don't exercise here.
+  test.skip(!isMac && !isWin, "screen capture runs on macOS + Windows (Linux/xvfb excluded)");
+  // On macOS the test Electron binary needs Screen Recording TCC perms, so the
+  // pixel check is opt-in there (PWRSNAP_E2E_REAL_CAPTURE=1). Windows'
+  // desktopCapturer needs no permission, so it always runs.
   test.skip(
-    !realCaptureOpt,
-    "set PWRSNAP_E2E_REAL_CAPTURE=1 to run; the test Electron binary needs Screen Recording TCC perms"
+    isMac && !realCaptureOpt,
+    "on macOS set PWRSNAP_E2E_REAL_CAPTURE=1 (Screen Recording TCC); not needed on Windows"
   );
 
   test("captures the painted color from a target window", async () => {

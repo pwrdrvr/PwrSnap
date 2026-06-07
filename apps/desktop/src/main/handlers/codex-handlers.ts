@@ -774,8 +774,15 @@ export function registerCodexHandlers(params?: {
     // (selectedModel ≠ effective model — e.g. Grok rejecting set_model), so the
     // UI can say "you picked X, the agent ran Y".
     const requested = detail.run.selectedModel;
+    // Only an override once we KNOW the effective model — otherwise an in-flight
+    // run (model still null) would read "you picked X — agent ran model
+    // unavailable". Requires both a requested and a known, different effective.
     const overrode =
-      typeof requested === "string" && requested.length > 0 && requested !== detail.model;
+      typeof requested === "string" &&
+      requested.length > 0 &&
+      typeof detail.model === "string" &&
+      detail.model.length > 0 &&
+      requested !== detail.model;
     return ok({
       ...detail,
       modelLabel: detail.model !== null ? findAcpModelLabel(detail.model) ?? null : null,

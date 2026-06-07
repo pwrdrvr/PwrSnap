@@ -1305,8 +1305,10 @@ export function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): React
   // The agent overrode the user's model pick (e.g. Grok rejects set_model for a
   // model it can't run, and falls back to its own default). requestedModelLabel
   // is set only in that case — surface it so the user isn't confused why a
-  // different model ran.
-  const requestedName = detail.requestedModelLabel ?? null;
+  // different model ran. Guarded on a KNOWN effective model so an in-flight run
+  // never reads "agent ran model unavailable".
+  const requestedName =
+    detail.model !== null && detail.model.length > 0 ? detail.requestedModelLabel ?? null : null;
 
   return (
     <div className="psl__ai-usage" aria-label="AI usage">

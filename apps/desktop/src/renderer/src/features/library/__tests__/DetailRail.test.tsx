@@ -1314,4 +1314,13 @@ describe("AiRunUsageStrip", () => {
     await renderStrip(detail);
     expect(stripContainer!.querySelector(".psl__ai-usage-override")).toBeNull();
   });
+
+  test("no override note while the run is in flight (effective model unknown)", async () => {
+    // The chicken-and-egg: a running enrichment has no model yet, so the note
+    // must NOT render "agent ran model unavailable".
+    const detail = aiUsageDetail({ model: null, modelLabel: null });
+    detail.requestedModelLabel = "Composer 2.5";
+    await renderStrip(detail);
+    expect(stripContainer!.querySelector(".psl__ai-usage-override")).toBeNull();
+  });
 });

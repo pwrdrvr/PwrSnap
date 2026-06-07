@@ -116,3 +116,38 @@ jobs:
             apps/desktop/playwright-report/
             apps/desktop/test-results/
           retention-days: 30
+
+  windows:
+    name: Windows (lint + build + test)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      # The shared pwrdrvr/configure-nodejs action is bash/Linux-oriented
+      # (find/grep cache logic), so use the portable pnpm + setup-node combo
+      # here to keep the Windows job self-contained. Scope is the unit suite +
+      # build + lint — the Electron GUI E2E (screen capture, tray, AppKit
+      # windowing) is macOS-specific and not yet ported to Windows.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10.33.0"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.1"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Test
+        run: pnpm run test

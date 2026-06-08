@@ -172,7 +172,7 @@ export function FloatOver({
   initialDescription = "",
   initialTags = [],
   enrichment,
-  codexAvailable = true,
+  providerAvailable = true,
   aiEnabled = false,
   aiConsentAccepted = false,
   aiSafetyDisabled = false,
@@ -222,7 +222,9 @@ export function FloatOver({
   initialDescription?: string;
   initialTags?: string[];
   enrichment?: CaptureEnrichment | null;
-  codexAvailable?: boolean;
+  /** Whether the selected enrichment backend (Codex or the chosen ACP agent)
+   *  is usable. When false the toast offers "Configure AI" instead of Enable. */
+  providerAvailable?: boolean;
   aiEnabled?: boolean;
   aiConsentAccepted?: boolean;
   aiSafetyDisabled?: boolean;
@@ -789,7 +791,7 @@ export function FloatOver({
               : {})}
             action={
               !thinking && !aiFailed ? (
-                suggestedTitle.length === 0 && suggestedDescription.length === 0 && !codexAvailable ? (
+                suggestedTitle.length === 0 && suggestedDescription.length === 0 && !providerAvailable ? (
                   <button className="fo__ai-accept" onClick={() => onConfigureAi?.()}>
                     Configure AI
                   </button>

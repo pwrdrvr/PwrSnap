@@ -20,6 +20,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   EVENT_CHANNELS,
+  type AcpAgentDiscovery,
   type CaptureEnrichment,
   type CaptureRecord,
   type DesktopCodexDiscoverySnapshot,
@@ -30,6 +31,7 @@ import {
 } from "@pwrsnap/shared";
 import { FloatOver } from "./FloatOver";
 import { enrichmentBackendLabel } from "../shared/CodexStatusPill";
+import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-availability";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 
@@ -66,6 +68,10 @@ export function FloatOverHost(): React.ReactElement {
   const [state, setState] = useState<HostState>({ kind: "idle" });
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
   const [codexAvailable, setCodexAvailable] = useState<boolean | undefined>(undefined);
+  // ACP-agent install status, so an ACP enrichment backend (Kimi/Gemini/Grok/
+  // Qwen) counts as available even when Codex is absent — see
+  // isEnrichmentProviderAvailable.
+  const [acpDiscovery, setAcpDiscovery] = useState<AcpAgentDiscovery | undefined>(undefined);
   // capture:presetMetrics returns empty for video captures (the
   // sharp render pipeline is image-only); only request the hook for
   // image-kind captures so we don't fire a no-op IPC on every video
@@ -269,6 +275,23 @@ export function FloatOverHost(): React.ReactElement {
     };
   }, []);
 
+  // Probe ACP install status ONLY when an ACP agent is the enrichment backend
+  // (mirrors Library). `acp:discover` spawns real `--version` probes with no
+  // handler cache, so we key it on the selected provider rather than firing on
+  // every capture or unrelated settings write.
+  const enrichmentProviderSelector =
+    state.kind === "loaded" ? state.settings?.ai.defaults.enrichment.provider ?? "" : "";
+  useEffect(() => {
+    if (!enrichmentProviderSelector.startsWith("acp:")) return;
+    let cancelled = false;
+    void dispatch("acp:discover", {}).then((result) => {
+      if (!cancelled && result.ok) setAcpDiscovery(result.value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [enrichmentProviderSelector]);
+
   // ⌘1 / ⌘2 / ⌘3 → clipboard:copy. Always-mounted listener — no remount-
   // induced gaps where the keystroke is in flight but the listener has
   // detached. Reads the active captureId from a ref so the closure
@@ -354,6 +377,11 @@ export function FloatOverHost(): React.ReactElement {
     );
   } else {
     const { enrichment, record, settings } = state;
+    const enrichmentProviderAvailable = isEnrichmentProviderAvailable({
+      provider: settings?.ai.defaults.enrichment.provider,
+      codexAvailable,
+      acpDiscovery
+    });
     const isVideo =
       record.kind === "video" && record.video !== null && record.video !== undefined;
     const previewSrc = captureSrcUrl(record.id);
@@ -425,7 +453,7 @@ export function FloatOverHost(): React.ReactElement {
         onDragFile={() => startCaptureDrag(record.id, "high")}
         onDragPreset={(preset) => startCaptureDrag(record.id, preset)}
         enrichment={enrichment}
-        codexAvailable={codexAvailable !== false}
+        providerAvailable={enrichmentProviderAvailable !== false}
         aiEnabled={settings?.ai.enabled ?? false}
         aiConsentAccepted={settings?.ai.consentAcceptedAt !== null && settings !== null}
         aiSafetyDisabled={settings?.ai.budgetSafetyDisabledAt !== null && settings !== null}
@@ -444,7 +472,7 @@ export function FloatOverHost(): React.ReactElement {
           });
         }}
         onEnableAi={() => {
-          if (codexAvailable === false) {
+          if (enrichmentProviderAvailable === false) {
             void dispatch("settings:open", { page: "ai" });
             return;
           }

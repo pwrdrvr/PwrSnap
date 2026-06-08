@@ -17,6 +17,7 @@ import type {
   Result,
   ScrollProbeRequest,
   Settings,
+  AcpAgentDiscovery,
   DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
 import {
@@ -59,6 +60,8 @@ import { LayoutToggleButtons } from "../shared/LayoutToggleButtons";
 import "../shared/LayoutToggleButtons.css";
 import { acceleratorToDisplayKeys } from "../../lib/format-hotkey";
 import { AiConsentDialog } from "../shared/AiConsentDialog";
+import { enrichmentBackendLabel } from "../shared/CodexStatusPill";
+import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-availability";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
 // <img src="pwrsnap-cache://"> through CellThumb below.
@@ -635,12 +638,40 @@ export function Library() {
   const [aiToggleBusy, setAiToggleBusy] = useState<boolean>(false);
   const [aiConsentDialogOpen, setAiConsentDialogOpen] = useState<boolean>(false);
   const [codexAvailable, setCodexAvailable] = useState<boolean | undefined>(undefined);
+  // Selected enrichment backend ("" / "codex" / "acp:<id>") so the footer
+  // toggle names the actual provider instead of always saying "Codex", and so
+  // its "Configure AI" gating reflects the chosen backend's availability — not
+  // just Codex's. Mirrors the float-over toast + detail rail, which derive the
+  // same label from `enrichmentBackendLabel`.
+  const [enrichmentProvider, setEnrichmentProvider] = useState<string>("");
+  // ACP-agent install status, so an enabled+installed ACP enrichment backend
+  // (Kimi/Gemini/Grok/Qwen) counts as "available" even when Codex is absent.
+  const [acpDiscovery, setAcpDiscovery] = useState<AcpAgentDiscovery | undefined>(undefined);
   const userTouchedAiRef = useRef<boolean>(false);
 
   const applyAiSettings = useCallback((settings: Settings): void => {
     setAiEnabledState(settings.ai.enabled);
     setAiConsentAcceptedAtState(settings.ai.consentAcceptedAt);
+    setEnrichmentProvider(settings.ai.defaults.enrichment.provider ?? "");
   }, []);
+
+  // Short label ("Codex", "Kimi", "Gemini", …) derived from the selected
+  // provider. providerLabel depends only on the provider string, so the model
+  // half of `enrichmentBackendLabel`'s input is irrelevant here.
+  const enrichmentProviderLabel = useMemo(
+    () => enrichmentBackendLabel({ provider: enrichmentProvider }).providerLabel,
+    [enrichmentProvider]
+  );
+
+  const enrichmentProviderAvailable = useMemo(
+    () =>
+      isEnrichmentProviderAvailable({
+        provider: enrichmentProvider,
+        codexAvailable,
+        acpDiscovery
+      }),
+    [enrichmentProvider, codexAvailable, acpDiscovery]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -692,6 +723,33 @@ export function Library() {
       cancelled = true;
     };
   }, []);
+  // Probe ACP install status ONLY when an ACP agent is the enrichment backend
+  // — Codex availability needs no ACP discovery, and `acp:discover` spawns
+  // real `--version` probes (no handler cache), so we don't want it firing on
+  // every unrelated settings write (rail pin/tab) or per-capture.
+  //
+  // Two triggers, both gated on an ACP backend so Codex users never probe:
+  //   • provider change — re-resolve the moment the user picks a new backend.
+  //   • window 'focus' — a CLI can be installed (or removed) while the app
+  //     runs, with no settings write to observe. Re-probing when the Library
+  //     regains focus picks that up the moment the user returns from Settings
+  //     or a terminal, so the footer stops saying "Configure AI" without
+  //     needing a relaunch. At most one probe per focus.
+  useEffect(() => {
+    if (!enrichmentProvider.startsWith("acp:")) return;
+    let cancelled = false;
+    const probe = (): void => {
+      void dispatch("acp:discover", {}).then((result) => {
+        if (!cancelled && result.ok) setAcpDiscovery(result.value);
+      });
+    };
+    probe();
+    window.addEventListener("focus", probe);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", probe);
+    };
+  }, [enrichmentProvider]);
   // All three setters mark `userTouchedRailRef` synchronously BEFORE
   // any state write. The settings:read resolution checks this flag
   // and bails — see the race-guard comment above. The setters use
@@ -757,7 +815,7 @@ export function Library() {
     const action = resolveLibraryAiToggleAction({
       aiEnabled,
       aiConsentAcceptedAt,
-      codexAvailable
+      providerAvailable: enrichmentProviderAvailable
     });
     switch (action) {
       case "disable":
@@ -775,7 +833,7 @@ export function Library() {
         writeAiEnabled(true, aiConsentAcceptedAt);
         return;
     }
-  }, [aiConsentAcceptedAt, aiEnabled, codexAvailable, writeAiEnabled]);
+  }, [aiConsentAcceptedAt, aiEnabled, enrichmentProviderAvailable, writeAiEnabled]);
 
   const acceptAiConsent = useCallback((): void => {
     setAiConsentDialogOpen(false);
@@ -3136,17 +3194,17 @@ export function Library() {
             className={
               "psl__ai-toggle" +
               (aiEnabled ? " is-on" : "") +
-              (codexAvailable === false ? " is-configure" : "")
+              (enrichmentProviderAvailable === false ? " is-configure" : "")
             }
             role="switch"
             aria-checked={aiEnabled}
             disabled={aiToggleBusy}
             title={
-              codexAvailable === false && !aiEnabled
+              enrichmentProviderAvailable === false && !aiEnabled
                 ? "Open AI Providers settings to configure Codex, Gemini, or another provider"
                 : aiEnabled
-                ? "Turn off automatic Codex enrichment for new captures"
-                : "Turn on automatic Codex enrichment for new captures"
+                ? `Turn off automatic ${enrichmentProviderLabel} enrichment for new captures`
+                : `Turn on automatic ${enrichmentProviderLabel} enrichment for new captures`
             }
             onClick={toggleAiEnabled}
           >
@@ -3154,13 +3212,13 @@ export function Library() {
               <span className="psl__ai-toggle-thumb" />
             </span>
             <span>
-              {codexAvailable === false && !aiEnabled ? (
+              {enrichmentProviderAvailable === false && !aiEnabled ? (
                 <>
                   Configure <b>AI</b>
                 </>
               ) : (
                 <>
-                  Codex enrich <b>{aiEnabled ? "on" : "off"}</b>
+                  {enrichmentProviderLabel} enrich <b>{aiEnabled ? "on" : "off"}</b>
                 </>
               )}
             </span>

@@ -3,10 +3,13 @@ export type LibraryAiToggleAction = "disable" | "configure" | "consent" | "enabl
 export function resolveLibraryAiToggleAction(params: {
   aiEnabled: boolean;
   aiConsentAcceptedAt: string | null;
-  codexAvailable: boolean | undefined;
+  /** Whether the SELECTED enrichment backend (Codex or the chosen ACP agent)
+   *  is usable. `false` routes to configuration; `undefined` (still
+   *  discovering) proceeds to consent/enable rather than blocking. */
+  providerAvailable: boolean | undefined;
 }): LibraryAiToggleAction {
   if (params.aiEnabled) return "disable";
-  if (params.codexAvailable === false) return "configure";
+  if (params.providerAvailable === false) return "configure";
   if (params.aiConsentAcceptedAt === null) return "consent";
   return "enable";
 }

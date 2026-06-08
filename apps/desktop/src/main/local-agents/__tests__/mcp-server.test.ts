@@ -37,6 +37,7 @@ let secrets: DesktopSecretStore;
 let grantService: LocalAgentGrantService;
 let server: LocalAgentMcpServer | null = null;
 let client: Client | null = null;
+let extraClient: Client | null = null;
 
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), "pwrsnap-mcp-server-"));
@@ -55,6 +56,10 @@ afterEach(async () => {
   if (client !== null) {
     await client.close();
     client = null;
+  }
+  if (extraClient !== null) {
+    await extraClient.close();
+    extraClient = null;
   }
   if (server !== null) {
     await server.stop();
@@ -122,18 +127,27 @@ async function startServer(): Promise<string> {
 
 async function connect(url: string, token: string): Promise<Client> {
   client = new Client({ name: "test-client", version: "1.0.0" });
+  return connectAs(url, "lag_mcp", token, client);
+}
+
+async function connectAs(
+  url: string,
+  clientId: string,
+  token: string,
+  targetClient: Client
+): Promise<Client> {
   const transport = new StreamableHTTPClientTransport(new URL(url), {
     fetch: (input, init) => {
       const headers = new Headers(init?.headers);
-      headers.set("authorization", `Bearer lag_mcp:${token}`);
+      headers.set("authorization", `Bearer ${clientId}:${token}`);
       return fetch(input, {
         ...init,
         headers
       });
     }
   });
-  await client.connect(transport as unknown as Transport);
-  return client;
+  await targetClient.connect(transport as unknown as Transport);
+  return targetClient;
 }
 
 describe("LocalAgentMcpServer", () => {
@@ -203,6 +217,45 @@ describe("LocalAgentMcpServer", () => {
       type: "text",
       text: expect.stringContaining("missing_capability")
     });
+  });
+
+  test("keeps independent streamable HTTP sessions for multiple clients", async () => {
+    const serviceA = new LocalAgentGrantService({
+      settings,
+      secrets,
+      now: () => new Date("2026-06-07T12:00:00.000Z"),
+      makeId: () => "lag_a",
+      makeToken: () => "token-a"
+    });
+    const serviceB = new LocalAgentGrantService({
+      settings,
+      secrets,
+      now: () => new Date("2026-06-07T12:00:00.000Z"),
+      makeId: () => "lag_b",
+      makeToken: () => "token-b"
+    });
+    await serviceA.createGrant({ name: "Agent A", capabilities: ["library.read"] });
+    await serviceB.createGrant({ name: "Agent B", capabilities: ["library.read"] });
+    const url = await startServer();
+
+    client = await connectAs(url, "lag_a", "token-a", new Client({ name: "a", version: "1.0.0" }));
+    extraClient = await connectAs(url, "lag_b", "token-b", new Client({ name: "b", version: "1.0.0" }));
+
+    expect(client.transport?.sessionId).toBeTruthy();
+    expect(extraClient.transport?.sessionId).toBeTruthy();
+    expect(client.transport?.sessionId).not.toBe(extraClient.transport?.sessionId);
+
+    const a = (await client.callTool({
+      name: "pwrsnap_library_search",
+      arguments: { query: "from-a" }
+    })) as CallToolResult;
+    const b = (await extraClient.callTool({
+      name: "pwrsnap_library_search",
+      arguments: { query: "from-b" }
+    })) as CallToolResult;
+
+    expect(a.structuredContent).toMatchObject({ clientId: "lag_a", query: "from-a" });
+    expect(b.structuredContent).toMatchObject({ clientId: "lag_b", query: "from-b" });
   });
 
   test("shutdown closes the socket and rejects subsequent requests", async () => {

@@ -1,7 +1,7 @@
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { LocalAgentCapability, PwrSnapError } from "@pwrsnap/shared";
 import { err, ok, type Result } from "@pwrsnap/shared";
-import type { z } from "zod";
+import { z } from "zod";
 import type { CommandContext } from "../command-bus";
 
 export type LocalAgentToolContext = {
@@ -66,36 +66,46 @@ export function capabilityDenied(
 }
 
 export function createDefaultLocalAgentMcpTools(deps: {
-  dispatch: (ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
+  search: (
+    input: { query?: string | undefined },
+    ctx: LocalAgentToolContext
+  ) => Promise<Result<unknown, PwrSnapError>>;
+  deleteToTrash: (
+    input: { captureId: string },
+    ctx: LocalAgentToolContext
+  ) => Promise<Result<unknown, PwrSnapError>>;
 }): LocalAgentMcpTool<z.ZodRawShape>[] {
-  return [
-    {
-      name: "pwrsnap_library_search",
-      title: "Search PwrSnap Library",
-      description: "Search live, non-trashed PwrSnap captures and return compact metadata rows.",
-      inputSchema: {},
-      requiredCapabilities: ["library.read"],
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        openWorldHint: false
-      },
-      dispatch: async (_input, ctx) => deps.dispatch(ctx)
+  const searchTool: LocalAgentMcpTool<{ query: z.ZodOptional<z.ZodString> }> = {
+    name: "pwrsnap_library_search",
+    title: "Search PwrSnap Library",
+    description: "Search live, non-trashed PwrSnap captures and return compact metadata rows.",
+    inputSchema: {
+      query: z.string().optional()
     },
-    {
-      name: "pwrsnap_capture_delete_to_trash",
-      title: "Move PwrSnap Capture To Trash",
-      description: "Move a capture to PwrSnap Trash. Permanent purge is not exposed.",
-      inputSchema: {},
-      requiredCapabilities: ["trash.write"],
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: true,
-        openWorldHint: false
-      },
-      dispatch: async (_input, ctx) => deps.dispatch(ctx)
-    }
-  ];
+    requiredCapabilities: ["library.read"],
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false
+    },
+    dispatch: async (input, ctx) => deps.search(input, ctx)
+  };
+  const deleteTool: LocalAgentMcpTool<{ captureId: z.ZodString }> = {
+    name: "pwrsnap_capture_delete_to_trash",
+    title: "Move PwrSnap Capture To Trash",
+    description: "Move a capture to PwrSnap Trash. Permanent purge is not exposed.",
+    inputSchema: {
+      captureId: z.string().min(1)
+    },
+    requiredCapabilities: ["trash.write"],
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      openWorldHint: false
+    },
+    dispatch: async (input, ctx) => deps.deleteToTrash(input, ctx)
+  };
+  return [searchTool, deleteTool] as LocalAgentMcpTool<z.ZodRawShape>[];
 }
 
 export function validateToolCapability<Input extends z.ZodRawShape>(

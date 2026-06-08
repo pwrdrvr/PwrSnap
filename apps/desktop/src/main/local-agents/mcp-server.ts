@@ -55,8 +55,8 @@ export class LocalAgentMcpServer {
   private readonly host: string;
   private readonly port: number;
   private readonly tools: readonly LocalAgentMcpTool<z.ZodRawShape>[];
-  private readonly mcp: McpServer;
-  private readonly transport: StreamableHTTPServerTransport;
+  private readonly sessions = new Map<string, LocalAgentMcpSession>();
+  private readonly initializingSessions = new Set<LocalAgentMcpSession>();
   private server: HttpServer | null = null;
   private address: LocalAgentMcpServerAddress | null = null;
   private closed = false;
@@ -70,28 +70,56 @@ export class LocalAgentMcpServer {
     this.tools =
       options.tools ??
       createDefaultLocalAgentMcpTools({
-        dispatch: async (ctx) =>
-          bus.dispatch("library:search", { query: "" }, {
+        search: async (input, ctx) =>
+          bus.dispatch("library:search", { query: input.query ?? "" }, {
+            principal: "mcp",
+            localAgent: ctx.commandContext.localAgent
+          }),
+        deleteToTrash: async (input, ctx) =>
+          bus.dispatch("library:delete", { id: input.captureId }, {
             principal: "mcp",
             localAgent: ctx.commandContext.localAgent
           })
       });
-    this.mcp = new McpServer(
+  }
+
+  private createMcpServer(): McpServer {
+    const mcp = new McpServer(
       { name: "PwrSnap", version: "1.0.0" },
       {
         instructions:
           "Use PwrSnap tools only for captures and sizzle assets the paired user granted to this local client."
       }
     );
-    this.transport = new StreamableHTTPServerTransport({
+    this.registerTools(mcp);
+    return mcp;
+  }
+
+  private createSession(): LocalAgentMcpSession {
+    const mcp = this.createMcpServer();
+    const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID()
     });
-    this.registerTools();
+    const session: LocalAgentMcpSession = { mcp, transport, sessionId: null };
+    const lifecycle = transport as unknown as {
+      onsessioninitialized?: (sessionId: string) => void | Promise<void>;
+      onsessionclosed?: (sessionId: string) => void | Promise<void>;
+    };
+    lifecycle.onsessioninitialized = (sessionId) => {
+      session.sessionId = sessionId;
+      this.initializingSessions.delete(session);
+      this.sessions.set(sessionId, session);
+    };
+    lifecycle.onsessionclosed = async (sessionId) => {
+      this.sessions.delete(sessionId);
+      this.initializingSessions.delete(session);
+      await this.closeSession(session);
+    };
+    return session;
   }
 
   async start(): Promise<LocalAgentMcpServerAddress> {
     if (this.server !== null && this.address !== null) return this.address;
-    await this.mcp.connect(this.transport as unknown as Transport);
     this.server = createServer((req, res) => {
       void this.handleRequest(req, res).catch((cause) => {
         log.warn("MCP request failed", {
@@ -139,8 +167,13 @@ export class LocalAgentMcpServer {
     const server = this.server;
     this.server = null;
     this.address = null;
-    await this.transport.close();
-    await this.mcp.close();
+    const sessions = [
+      ...this.sessions.values(),
+      ...this.initializingSessions.values()
+    ];
+    this.sessions.clear();
+    this.initializingSessions.clear();
+    await Promise.all(sessions.map((session) => this.closeSession(session)));
     if (server !== null) {
       await new Promise<void>((resolve, reject) => {
         server.close((cause) => {
@@ -151,9 +184,14 @@ export class LocalAgentMcpServer {
     }
   }
 
-  private registerTools(): void {
+  private async closeSession(session: LocalAgentMcpSession): Promise<void> {
+    await session.transport.close();
+    await session.mcp.close();
+  }
+
+  private registerTools(mcp: McpServer): void {
     for (const tool of this.tools) {
-      this.mcp.registerTool(
+      mcp.registerTool(
         tool.name,
         {
           title: tool.title,
@@ -220,7 +258,34 @@ export class LocalAgentMcpServer {
         capabilities: [...auth.context.capabilities]
       }
     };
-    await this.transport.handleRequest(authenticatedReq, res);
+    const session = await this.sessionForRequest(req);
+    if (session === null) {
+      res.statusCode = 404;
+      res.end("session not found");
+      return;
+    }
+    await session.transport.handleRequest(authenticatedReq, res);
+    if (session.sessionId === null && session.transport.sessionId !== undefined) {
+      session.sessionId = session.transport.sessionId;
+      this.initializingSessions.delete(session);
+      this.sessions.set(session.sessionId, session);
+    }
+  }
+
+  private async sessionForRequest(req: IncomingMessage): Promise<LocalAgentMcpSession | null> {
+    const sessionId = headerValue(req.headers["mcp-session-id"]);
+    if (sessionId !== null) return this.sessions.get(sessionId) ?? null;
+    if (req.method !== "POST") return null;
+    const session = this.createSession();
+    this.initializingSessions.add(session);
+    try {
+      await session.mcp.connect(session.transport as unknown as Transport);
+      return session;
+    } catch (cause) {
+      this.initializingSessions.delete(session);
+      await this.closeSession(session).catch(() => undefined);
+      throw cause;
+    }
   }
 
   private async authenticateRequest(req: IncomingMessage): Promise<Extract<LocalAgentAuthResult, { ok: true }> | null> {
@@ -256,6 +321,20 @@ export class LocalAgentMcpServer {
     const capabilities = caps.filter((cap): cap is LocalAgentCapability => typeof cap === "string") as LocalAgentCapability[];
     return { clientId: auth.clientId, capabilities };
   }
+}
+
+type LocalAgentMcpSession = {
+  mcp: McpServer;
+  transport: StreamableHTTPServerTransport;
+  sessionId: string | null;
+};
+
+function headerValue(value: string | string[] | undefined): string | null {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (Array.isArray(value) && typeof value[0] === "string" && value[0].length > 0) {
+    return value[0];
+  }
+  return null;
 }
 
 function splitBearerCredential(value: string): [clientId: string, token: string | null] {

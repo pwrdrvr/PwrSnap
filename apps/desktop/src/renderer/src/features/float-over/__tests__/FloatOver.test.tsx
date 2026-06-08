@@ -452,13 +452,13 @@ describe("FloatOverHost", () => {
 });
 
 describe("FloatOver Codex suggestions", () => {
-  test("shows Configure AI instead of Enable when no Codex binary is available", async () => {
+  test("shows Configure AI instead of Enable when the enrichment provider is unavailable", async () => {
     const onConfigureAi = vi.fn();
     const onEnableAi = vi.fn();
     const el = await renderFloatOver({
       src: "data:image/png;base64,",
       startCountdown: false,
-      codexAvailable: false,
+      providerAvailable: false,
       aiEnabled: false,
       aiConsentAccepted: false,
       onConfigureAi,

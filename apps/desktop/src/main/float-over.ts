@@ -441,6 +441,28 @@ export function getFloatOverState(): FloatOverState {
 }
 
 /**
+ * Re-raise the toast to topmost (Windows). The region selector goes native-
+ * fullscreen to cover the taskbar, and Windows fullscreen exclusivity REJECTS
+ * making any other window topmost while the fullscreen window is up — so the
+ * setAlwaysOnTop(true) during `show-loaded` (selector still up) silently
+ * doesn't stick (isAlwaysOnTop stays false) and the toast renders behind the
+ * Library. The region selector calls this from its `leave-full-screen` handler,
+ * once the fullscreen overlay is gone, to actually raise the loaded toast.
+ * No-op unless the toast is currently in the loaded state.
+ */
+export function reassertFloatOverTopmost(): void {
+  if (process.platform !== "win32") return;
+  if (state.kind !== "loaded") return;
+  if (singleton === null || singleton.isDestroyed()) return;
+  singleton.setAlwaysOnTop(true);
+  singleton.showInactive();
+  log.info("float-over reassert topmost (win)", {
+    alwaysOnTop: singleton.isAlwaysOnTop(),
+    visible: singleton.isVisible()
+  });
+}
+
+/**
  * Renderer-initiated dismiss — the user clicked X, hit Esc on the toast,
  * or the auto-dismiss countdown finished. Routed via the
  * `float-over:dismiss` command-bus handler (float-over-handlers.ts).

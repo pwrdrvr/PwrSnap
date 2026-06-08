@@ -28,7 +28,7 @@ import {
 } from "./window-list";
 import { captureAndRegister, releaseSnapshot, type ScreenSnapshot } from "./screen-snapshot";
 import { hideTrayPopoverIfVisible } from "../tray";
-import { setFloatOverState } from "../float-over";
+import { setFloatOverState, reassertFloatOverTopmost } from "../float-over";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
@@ -992,6 +992,15 @@ function createSelectorWindow(display: Display): BrowserWindow {
   // the visibleOnFullScreen option is a macOS concept).
   if (process.platform === "darwin") {
     window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  }
+
+  if (process.platform === "win32") {
+    // The selector covers the taskbar via native fullscreen (see
+    // enterMenuBarOverlayMode). Windows fullscreen exclusivity blocks any OTHER
+    // window from being made topmost while it's up — so the post-capture toast's
+    // setAlwaysOnTop(true) during show-loaded doesn't stick. Once the selector
+    // LEAVES fullscreen, re-raise the toast so it actually appears on top.
+    window.on("leave-full-screen", () => reassertFloatOverTopmost());
   }
 
   const target = rendererTarget(display.id);

@@ -28,12 +28,20 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
   shell: { openExternal: vi.fn() } as unknown as typeof import("electron").shell
 }));
 
+// The persisted model cache reaches for app.getPath; mock it so the `acp:models`
+// freshness tests can drive the cached list directly without a real userData dir.
+vi.mock("../../ai/acp-model-cache", () => ({
+  loadAcpModelCacheEntry: vi.fn(),
+  saveAcpModelCacheEntry: vi.fn()
+}));
+
 import {
   BUILT_IN_ACP_STRATEGIES,
   type DiscoveredAcpAgentGroup
 } from "@pwrdrvr/agent-acp";
-import type { AcpAgentPreference, Settings } from "@pwrsnap/shared";
+import type { AcpAgentModelOption, AcpAgentPreference, Settings } from "@pwrsnap/shared";
 import { bus } from "../../command-bus";
+import { loadAcpModelCacheEntry } from "../../ai/acp-model-cache";
 import { registerAcpHandlers } from "../acp-handlers";
 
 const discover = vi.fn<(options?: unknown) => Promise<DiscoveredAcpAgentGroup[]>>();
@@ -157,5 +165,59 @@ describe("acp:discover", () => {
     expect(result.error.kind).toBe("settings");
     expect(result.error.code).toBe("acp_discovery_failed");
     expect(result.error.message).toContain("spawn EACCES");
+  });
+});
+
+describe("acp:models cache freshness", () => {
+  const loadEntry = vi.mocked(loadAcpModelCacheEntry);
+
+  test("an EMPTY persisted model list is a cache MISS — the agent is re-probed", async () => {
+    // A stale pre-fix `{models: []}` (written before the kit could read
+    // config-option models) must NOT permanently shadow discovery. An empty
+    // cached list has to fall through to a live probe — observable here as
+    // discover() being called even though `refresh` is false.
+    const agentId = KNOWN_IDS[0]!;
+    agentsPref = {};
+    loadEntry.mockReturnValue({
+      models: [],
+      command: `/usr/local/bin/${agentId}`,
+      discoveredAt: "2026-01-01T00:00:00.000Z"
+    });
+    discover.mockClear();
+    discover.mockResolvedValue([]); // re-probe finds nothing installed → []
+
+    const result = await bus.dispatch(
+      "acp:models",
+      { agentId, refresh: false },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.models).toEqual([]);
+    // The point: the empty cache did NOT short-circuit the probe.
+    expect(discover).toHaveBeenCalledTimes(1);
+  });
+
+  test("a NON-empty persisted model list is served from cache — no re-probe", async () => {
+    const agentId = KNOWN_IDS[1]!;
+    const cached: AcpAgentModelOption[] = [
+      { id: "kimi-code/kimi-for-coding", label: "Kimi-k2.6", isDefault: true }
+    ];
+    loadEntry.mockReturnValue({
+      models: cached,
+      command: `/usr/local/bin/${agentId}`,
+      discoveredAt: "2026-01-01T00:00:00.000Z"
+    });
+    discover.mockClear();
+
+    const result = await bus.dispatch(
+      "acp:models",
+      { agentId, refresh: false },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.models).toEqual(cached);
+    expect(discover).not.toHaveBeenCalled();
   });
 });

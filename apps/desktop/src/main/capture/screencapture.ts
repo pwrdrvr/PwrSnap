@@ -49,15 +49,36 @@ async function captureDisplayPng(display: Display): Promise<Buffer> {
     types: ["screen"],
     thumbnailSize: { width, height }
   });
-  // Electron tags screen sources with `display_id` (the string form of
-  // Display.id). Match on it; fall back to display index, then first.
+  if (sources.length === 0) {
+    throw new Error("desktopCapturer returned no screen sources");
+  }
+  // Primary match: Electron tags screen sources with `display_id` (the
+  // string form of Display.id) on macOS + Windows. An exact match is
+  // authoritative and the only way to grab the RIGHT monitor on a
+  // multi-display setup.
   let source = sources.find((s) => s.display_id === String(display.id));
-  if (source === undefined) {
-    const idx = screen.getAllDisplays().findIndex((d) => d.id === display.id);
-    source = (idx >= 0 ? sources[idx] : undefined) ?? sources[0];
+  if (source === undefined && sources.length === 1) {
+    // Single monitor: the lone source IS this display, even when
+    // `display_id` comes back empty (observed on some Windows configs /
+    // remote sessions). Unambiguous, so take it without a warning.
+    source = sources[0];
   }
   if (source === undefined) {
-    throw new Error("desktopCapturer returned no screen sources");
+    // Multi-monitor with no display_id match. The ordering of
+    // desktopCapturer's sources is NOT guaranteed to align with
+    // screen.getAllDisplays(), so an index fallback can grab the wrong
+    // screen — this is a genuine last resort. Log it so a wrong-monitor
+    // capture is diagnosable instead of silently producing the wrong
+    // pixels.
+    const idx = screen.getAllDisplays().findIndex((d) => d.id === display.id);
+    source = (idx >= 0 ? sources[idx] : undefined) ?? sources[0];
+    log.warn(
+      "desktopCapturer: no source matched display_id; falling back to index/first source",
+      { displayId: display.id, sourceCount: sources.length, matchedIndex: idx }
+    );
+  }
+  if (source === undefined) {
+    throw new Error("desktopCapturer returned no usable screen source");
   }
   const png = source.thumbnail.toPNG();
   if (png.length === 0) {

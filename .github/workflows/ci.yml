@@ -5,8 +5,11 @@ on:
     branches:
       - main
   pull_request:
+    # Include windows-gui-port so the stacked Windows-port PRs (installer,
+    # window-picker, …) that target it get CI, not just PRs to main.
     branches:
       - main
+      - windows-gui-port
     types:
       - opened
       - synchronize

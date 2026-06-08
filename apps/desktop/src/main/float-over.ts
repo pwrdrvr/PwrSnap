@@ -130,6 +130,15 @@ function restoreOnScreen(window: BrowserWindow): void {
     window.showInactive();
     everShown = true;
   }
+  if (process.platform === "win32") {
+    // Re-assert HWND_TOPMOST so the toast is raised ABOVE the Library /
+    // foreground window WITHOUT stealing focus. Unlike the tray popover (which
+    // calls focus() to raise itself), the float-over must stay non-activating —
+    // and on Windows showInactive() + moveTop() don't reliably raise an
+    // inactive window past the active one (foreground-lock). setAlwaysOnTop(true)
+    // maps to SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE), which does.
+    window.setAlwaysOnTop(true);
+  }
   // moveTop so the toast beats other always-on-top windows that may have come
   // up since our last show.
   window.moveTop();
@@ -139,7 +148,8 @@ function restoreOnScreen(window: BrowserWindow): void {
       bounds: b,
       visible: window.isVisible(),
       minimized: window.isMinimized(),
-      opacity: window.getOpacity()
+      opacity: window.getOpacity(),
+      alwaysOnTop: window.isAlwaysOnTop()
     });
   }
 }

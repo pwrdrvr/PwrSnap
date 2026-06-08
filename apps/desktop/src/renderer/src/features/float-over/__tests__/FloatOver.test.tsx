@@ -109,6 +109,25 @@ const imageRecord: CaptureRecord = {
   video: null
 };
 
+// The host's mount probe dispatches `settings:refreshCodexDiscovery` and feeds
+// the result straight to `codexAvailableInSnapshot`, which dereferences
+// `resolvedPath`. Tests that replace the dispatch mock must return a
+// well-formed snapshot for that verb or the probe throws an unhandled rejection.
+const codexSnapshotResult = {
+  ok: true,
+  value: {
+    candidates: [{ path: "codex", source: "path", version: "1.0.0", available: true }],
+    resolvedPath: "codex",
+    auth: {
+      status: "authenticated",
+      testedAt: "2026-05-19T12:00:00.000Z",
+      durationMs: 12,
+      detail: "Logged in using ChatGPT"
+    },
+    refreshedAt: "2026-05-19T12:00:00.000Z"
+  }
+};
+
 type EventHandler = (payload: unknown) => void;
 
 function installHostApi(): {
@@ -381,6 +400,91 @@ describe("FloatOverHost", () => {
 
     expect(container.textContent).toContain("Gemini is reading the snap");
     expect(container.textContent).not.toContain("Codex is reading the snap");
+  });
+
+  // Glue for `isEnrichmentProviderAvailable`: the host probes `acp:discover`
+  // (real `--version` spawns, no handler cache) ONLY when an ACP agent is the
+  // enrichment backend — never for Codex users. The Library footer uses the
+  // identical machinery, so this gating is exercised once here.
+  test("probes acp:discover when an ACP agent is the enrichment backend", async () => {
+    const api = installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    const acpSettings: Settings = {
+      ...baseSettings,
+      ai: {
+        ...baseSettings.ai,
+        defaults: { ...baseSettings.ai.defaults, enrichment: { provider: "acp:gemini" } }
+      }
+    };
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "settings:read") return { ok: true, value: acpSettings };
+      if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
+      if (name === "settings:refreshCodexDiscovery") return codexSnapshotResult;
+      if (name === "acp:discover") {
+        return {
+          ok: true,
+          value: {
+            agents: [
+              { id: "gemini", displayName: "Gemini CLI", installed: true, instances: [] }
+            ]
+          }
+        };
+      }
+      return { ok: true, value: undefined };
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(createElement(FloatOverHost));
+    });
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.floatOverState, {
+        kind: "show-loaded",
+        captureId: imageRecord.id,
+        record: imageRecord
+      });
+    });
+    // Let settings:read resolve so the provider selector reads "acp:gemini".
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(dispatchMock.mock.calls.some((c) => c[0] === "acp:discover")).toBe(true);
+  });
+
+  test("does not probe acp:discover for the Codex enrichment backend", async () => {
+    const api = installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    // baseSettings leaves `enrichment` empty → provider "" → Codex backend.
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "settings:read") return { ok: true, value: baseSettings };
+      if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
+      if (name === "settings:refreshCodexDiscovery") return codexSnapshotResult;
+      return { ok: true, value: undefined };
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(createElement(FloatOverHost));
+    });
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.floatOverState, {
+        kind: "show-loaded",
+        captureId: imageRecord.id,
+        record: imageRecord
+      });
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(dispatchMock.mock.calls.some((c) => c[0] === "acp:discover")).toBe(false);
   });
 
   // Regression: bug v — the ⌘1/⌘2/⌘3 keydown listener must keep

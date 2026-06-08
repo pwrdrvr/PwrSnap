@@ -638,14 +638,12 @@ export function Library() {
   const [aiToggleBusy, setAiToggleBusy] = useState<boolean>(false);
   const [aiConsentDialogOpen, setAiConsentDialogOpen] = useState<boolean>(false);
   const [codexAvailable, setCodexAvailable] = useState<boolean | undefined>(undefined);
-  // Selected enrichment backend ("" / "codex" / "acp:<id>") + its short label
-  // ("Codex", "Kimi", "Gemini", …) so the footer toggle names the actual
-  // provider instead of always saying "Codex", and so its "Configure AI"
-  // gating reflects the chosen backend's availability — not just Codex's.
-  // Mirrors the float-over toast + detail rail, which derive the same label
-  // from `enrichmentBackendLabel`.
+  // Selected enrichment backend ("" / "codex" / "acp:<id>") so the footer
+  // toggle names the actual provider instead of always saying "Codex", and so
+  // its "Configure AI" gating reflects the chosen backend's availability — not
+  // just Codex's. Mirrors the float-over toast + detail rail, which derive the
+  // same label from `enrichmentBackendLabel`.
   const [enrichmentProvider, setEnrichmentProvider] = useState<string>("");
-  const [enrichmentProviderLabel, setEnrichmentProviderLabel] = useState<string>("Codex");
   // ACP-agent install status, so an enabled+installed ACP enrichment backend
   // (Kimi/Gemini/Grok/Qwen) counts as "available" even when Codex is absent.
   const [acpDiscovery, setAcpDiscovery] = useState<AcpAgentDiscovery | undefined>(undefined);
@@ -655,8 +653,15 @@ export function Library() {
     setAiEnabledState(settings.ai.enabled);
     setAiConsentAcceptedAtState(settings.ai.consentAcceptedAt);
     setEnrichmentProvider(settings.ai.defaults.enrichment.provider ?? "");
-    setEnrichmentProviderLabel(enrichmentBackendLabel(settings.ai.defaults.enrichment).providerLabel);
   }, []);
+
+  // Short label ("Codex", "Kimi", "Gemini", …) derived from the selected
+  // provider. providerLabel depends only on the provider string, so the model
+  // half of `enrichmentBackendLabel`'s input is irrelevant here.
+  const enrichmentProviderLabel = useMemo(
+    () => enrichmentBackendLabel({ provider: enrichmentProvider }).providerLabel,
+    [enrichmentProvider]
+  );
 
   const enrichmentProviderAvailable = useMemo(
     () =>
@@ -721,16 +726,28 @@ export function Library() {
   // Probe ACP install status ONLY when an ACP agent is the enrichment backend
   // — Codex availability needs no ACP discovery, and `acp:discover` spawns
   // real `--version` probes (no handler cache), so we don't want it firing on
-  // every unrelated settings write. Re-runs when the selected provider
-  // changes; install state otherwise only shifts across a relaunch.
+  // every unrelated settings write (rail pin/tab) or per-capture.
+  //
+  // Two triggers, both gated on an ACP backend so Codex users never probe:
+  //   • provider change — re-resolve the moment the user picks a new backend.
+  //   • window 'focus' — a CLI can be installed (or removed) while the app
+  //     runs, with no settings write to observe. Re-probing when the Library
+  //     regains focus picks that up the moment the user returns from Settings
+  //     or a terminal, so the footer stops saying "Configure AI" without
+  //     needing a relaunch. At most one probe per focus.
   useEffect(() => {
     if (!enrichmentProvider.startsWith("acp:")) return;
     let cancelled = false;
-    void dispatch("acp:discover", {}).then((result) => {
-      if (!cancelled && result.ok) setAcpDiscovery(result.value);
-    });
+    const probe = (): void => {
+      void dispatch("acp:discover", {}).then((result) => {
+        if (!cancelled && result.ok) setAcpDiscovery(result.value);
+      });
+    };
+    probe();
+    window.addEventListener("focus", probe);
     return () => {
       cancelled = true;
+      window.removeEventListener("focus", probe);
     };
   }, [enrichmentProvider]);
   // All three setters mark `userTouchedRailRef` synchronously BEFORE

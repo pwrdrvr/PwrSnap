@@ -75,6 +75,20 @@ function runChecked(file, argv, opts = {}) {
   }
 }
 
+// electron-builder is a devDependency, so it lives in the dev node_modules,
+// not the production-only `pnpm deploy` stage. Prefer the staged copy if it
+// somehow exists (e.g. a non-prod stage), otherwise fall back to the desktop
+// dev tree. Mirrors release.mjs's electronBuilderCli().
+function resolveElectronBuilderCli() {
+  const staged = join(stageDir, "node_modules", "electron-builder", "cli.js");
+  if (existsSync(staged)) return staged;
+  const dev = join(desktopRoot, "node_modules", "electron-builder", "cli.js");
+  if (existsSync(dev)) return dev;
+  throw new Error(
+    `electron-builder CLI missing at ${staged} and ${dev}; run \`pnpm install\` from the repo root first`
+  );
+}
+
 function readElectronBuilderVersion() {
   const config = readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8");
   const match = /^electronVersion:\s*([^\s#]+)/m.exec(config);
@@ -203,11 +217,12 @@ for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md"]) {
 }
 
 // 6. electron-builder --win nsis --x64.
+//    electron-builder is a devDependency, so `pnpm deploy --prod` does NOT
+//    stage it. Resolve the CLI from the dev node_modules (same approach as
+//    release.mjs's electronBuilderCli fallback). Run with cwd = stageDir so
+//    electron-builder packages the flat, production-only staged tree.
 step(`electron-builder --win nsis --${targetArch} (${publish ? "publish" : "no publish"})`);
-const builderCli = join(stageDir, "node_modules", "electron-builder", "cli.js");
-if (!existsSync(builderCli)) {
-  throw new Error(`electron-builder CLI missing at ${builderCli}; pnpm deploy did not stage it`);
-}
+const builderCli = resolveElectronBuilderCli();
 const builderArgs = [
   builderCli,
   "--win",

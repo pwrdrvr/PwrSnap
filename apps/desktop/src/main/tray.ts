@@ -24,7 +24,12 @@ import {
   Tray,
   type BrowserWindow
 } from "electron";
-import { EVENT_CHANNELS, type RecordingState } from "@pwrsnap/shared";
+import {
+  DEFAULT_HOTKEYS,
+  EVENT_CHANNELS,
+  type RecordingState,
+  type Settings
+} from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import {
@@ -79,6 +84,18 @@ const TRAY_WIDTH = 440;
 let tray: Tray | null = null;
 let trayWindow: BrowserWindow | null = null;
 let pendingDismiss: ReturnType<typeof setTimeout> | null = null;
+let currentTrayHotkeys: Settings["hotkeys"] = { ...DEFAULT_HOTKEYS };
+
+function idleTrayTooltip(): string {
+  return "PwrSnap — Quick Capture";
+}
+
+export function setTrayHotkeys(hotkeys: Settings["hotkeys"]): void {
+  currentTrayHotkeys = { ...hotkeys };
+  if (tray !== null && !isRecordingActive()) {
+    tray.setToolTip(idleTrayTooltip());
+  }
+}
 
 /**
  * Synchronously hide the tray popover, bypassing the 120ms blur-dismiss
@@ -245,7 +262,7 @@ export function installTray(): Tray {
   }
 
   tray = new Tray(icon);
-  tray.setToolTip("PwrSnap — ⌘⇧P to capture");
+  tray.setToolTip(idleTrayTooltip());
   tray.setIgnoreDoubleClickEvents(true);
 
   // Recording state → tray indicator. While recording, prepend "● " to
@@ -267,64 +284,7 @@ export function installTray(): Tray {
     if (trayWindow !== null && !trayWindow.isDestroyed() && trayWindow.isVisible()) {
       trayWindow.hide();
     }
-    // Top of menu changes while recording — the user almost certainly
-    // came here to stop, so make Stop the first item and demote the
-    // Capture row. Cancel sits next to Stop so a botched recording
-    // can be aborted without persisting a Library row.
-    const recordingItems: MenuItemConstructorOptions[] = isRecordingActive()
-      ? [
-          {
-            label: "● Recording — Stop",
-            click: () => {
-              void bus.dispatch("recording:stop", {}, { principal: "ipc" });
-            }
-          },
-          {
-            label: "Cancel Recording",
-            click: () => {
-              void bus.dispatch("recording:cancel", {}, { principal: "ipc" });
-            }
-          },
-          { type: "separator" }
-        ]
-      : [];
-    const baseTemplate: MenuItemConstructorOptions[] = [
-      {
-        label: "Capture (Auto)…",
-        accelerator: "CommandOrControl+Shift+P",
-        click: () => {
-          void bus.dispatch("capture:interactive", { mode: "auto" }, { principal: "ipc" });
-        }
-      },
-      { type: "separator" },
-      {
-        label: "Open Library",
-        click: () => {
-          void bus.dispatch("library:focus", {}, { principal: "ipc" });
-        }
-      },
-      {
-        label: "Settings…",
-        accelerator: "CommandOrControl+,",
-        click: () => {
-          const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
-          if (trayBounds !== undefined) {
-            options.sourceBounds = trayBounds;
-          }
-          void bus.dispatch("settings:open", {}, options);
-        }
-      }
-    ];
-    const extras = extraMenuItems.length > 0
-      ? [{ type: "separator" } as MenuItemConstructorOptions, ...extraMenuItems]
-      : [];
-    const menu = Menu.buildFromTemplate([
-      ...recordingItems,
-      ...baseTemplate,
-      ...extras,
-      { type: "separator" },
-      { role: "quit" }
-    ]);
+    const menu = Menu.buildFromTemplate(buildTrayContextMenuTemplate(trayBounds));
     tray?.popUpContextMenu(menu);
   });
 
@@ -433,6 +393,7 @@ export function disposeTray(): void {
     tray.destroy();
     tray = null;
   }
+  currentTrayHotkeys = { ...DEFAULT_HOTKEYS };
 }
 
 /**
@@ -636,6 +597,75 @@ export function setTrayCountdown(text: string | null): void {
   tray.setTitle(text ?? "");
 }
 
+export function buildTrayContextMenuTemplate(
+  trayBounds?: Electron.Rectangle
+): MenuItemConstructorOptions[] {
+  // Top of menu changes while recording — the user almost certainly
+  // came here to stop, so make Stop the first item and demote the
+  // Capture row. Cancel sits next to Stop so a botched recording
+  // can be aborted without persisting a Library row.
+  const recordingItems: MenuItemConstructorOptions[] = isRecordingActive()
+    ? [
+        {
+          label: "● Recording — Stop",
+          click: () => {
+            void bus.dispatch("recording:stop", {}, { principal: "ipc" });
+          }
+        },
+        {
+          label: "Cancel Recording",
+          click: () => {
+            void bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+          }
+        },
+        { type: "separator" }
+      ]
+    : [];
+  const baseTemplate: MenuItemConstructorOptions[] = [
+    {
+      label: "Quick Capture…",
+      ...(currentTrayHotkeys.quickCapture !== ""
+        ? { accelerator: currentTrayHotkeys.quickCapture }
+        : {}),
+      click: () => {
+        void bus.dispatch("capture:interactive", { mode: "auto" }, { principal: "ipc" });
+      }
+    },
+    { type: "separator" },
+    {
+      label: "Open Library",
+      click: () => {
+        void bus.dispatch("library:focus", {}, { principal: "ipc" });
+      }
+    },
+    {
+      label: "Settings…",
+      click: () => {
+        const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
+        if (trayBounds !== undefined) {
+          options.sourceBounds = trayBounds;
+        }
+        void bus.dispatch("settings:open", {}, options);
+      }
+    }
+  ];
+  const extras = extraMenuItems.length > 0
+    ? [{ type: "separator" } as MenuItemConstructorOptions, ...extraMenuItems]
+    : [];
+  return [
+    ...recordingItems,
+    ...baseTemplate,
+    ...extras,
+    { type: "separator" },
+    {
+      label: "Quit PwrSnap",
+      click: () => {
+        app.quit();
+      }
+    }
+  ];
+}
+
 /**
  * Reflect a recording-state transition in the menubar icon. The
  * tooltip + setTitle text both flip while the recorder is active so
@@ -679,7 +709,7 @@ function applyRecordingStateToTray(activeTray: Tray, state: RecordingState): voi
     case "ready":
     case "failed":
       activeTray.setTitle("");
-      activeTray.setToolTip("PwrSnap — ⌘⇧P to capture");
+      activeTray.setToolTip(idleTrayTooltip());
       return;
   }
 }

@@ -2519,7 +2519,7 @@ export function Library() {
           <button
             className="psl__icon-btn"
             type="button"
-            title="Settings  (⌘,)"
+            title="Settings"
             aria-label="Open Settings"
             onClick={() => { void dispatch("settings:open", {}); }}
           >

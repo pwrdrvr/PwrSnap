@@ -2,12 +2,15 @@ packages:
   - apps/*
   - packages/*
 minimumReleaseAge: 10080
-# Release builds produce a universal macOS app. Runtime packages like sharp
-# publish CPU-specific optional dependencies, so install both Darwin slices
-# even when the release stage is prepared on a single-architecture runner.
+# Release builds produce a universal macOS app and an x64 Windows installer.
+# Runtime packages like sharp publish OS+CPU-specific optional dependencies,
+# so install both Darwin slices and the win32-x64 slice even when the release
+# stage is prepared on a single-architecture / single-OS runner. `current`
+# keeps the host's own slice (e.g. linux-x64 for the Linux unit/E2E jobs).
 supportedArchitectures:
   os:
     - darwin
+    - win32
     - current
   cpu:
     - x64

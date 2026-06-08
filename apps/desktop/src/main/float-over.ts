@@ -147,14 +147,6 @@ function restoreOnScreen(window: BrowserWindow): void {
     // actually stick while the fullscreen selector is up — hideAllSelectors
     // re-asserts it via reassertFloatOverTopmost once the selector hides.)
     window.setAlwaysOnTop(true);
-    const b = window.getBounds();
-    log.info("float-over restoreOnScreen (win)", {
-      bounds: b,
-      visible: window.isVisible(),
-      minimized: window.isMinimized(),
-      opacity: window.getOpacity(),
-      alwaysOnTop: window.isAlwaysOnTop()
-    });
     return;
   }
   window.setIgnoreMouseEvents(false);
@@ -477,10 +469,6 @@ export function reassertFloatOverTopmost(): void {
   if (!singleton.webContents.isDestroyed()) {
     singleton.webContents.invalidate();
   }
-  log.info("float-over reassert topmost (win)", {
-    alwaysOnTop: singleton.isAlwaysOnTop(),
-    visible: singleton.isVisible()
-  });
 }
 
 /**

@@ -899,11 +899,13 @@ function enterMenuBarOverlayMode(win: BrowserWindow): void {
     // "two taskbars"). Native fullscreen spans the whole monitor including the
     // taskbar, so the overlay covers it. (Verified working on Windows; the
     // earlier 0xC0000005 crash was an unrelated tray-right-click bug.)
+    //
+    // Note: setFullScreen(true) grows the window to the full display (taskbar
+    // covered) but isFullScreen() stays false on Windows, and the
+    // enter/leave-full-screen events don't reliably fire — so the post-capture
+    // toast can't rely on a leave-full-screen event to re-raise itself. The
+    // re-raise is driven from hideAllSelectors instead.
     if (!win.isFullScreen()) win.setFullScreen(true);
-    log.info("selector enterMenuBarOverlayMode (win)", {
-      isFullScreen: win.isFullScreen(),
-      bounds: win.getBounds()
-    });
     return;
   }
   if (process.platform !== "darwin") return;
@@ -1011,19 +1013,6 @@ function createSelectorWindow(display: Display): BrowserWindow {
   // the visibleOnFullScreen option is a macOS concept).
   if (process.platform === "darwin") {
     window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  }
-
-  if (process.platform === "win32") {
-    // Diagnostics: confirm whether native fullscreen actually engages on the
-    // selector (the snap-candidates log shows work-area bounds, which is
-    // pre-fullscreen). The toast re-raise is driven from hideAllSelectors (the
-    // reliable "selector gone" point), not these events — leave-full-screen was
-    // observed NOT to fire on Windows.
-    window.on("enter-full-screen", () => log.info("selector enter-full-screen (win)"));
-    window.on("leave-full-screen", () => {
-      log.info("selector leave-full-screen (win)");
-      reassertFloatOverTopmost();
-    });
   }
 
   const target = rendererTarget(display.id);

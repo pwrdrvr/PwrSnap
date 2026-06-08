@@ -260,7 +260,6 @@ export function installTray(): Tray {
 
   tray.on("click", () => toggleTrayWindow());
   tray.on("right-click", () => {
-    log.info("tray right-click: handler entered", { recording: isRecordingActive() });
     const trayBounds = tray?.getBounds();
     // Always dismiss the popover before the context menu appears —
     // having both visible at once is confusing UX (and was the
@@ -319,7 +318,6 @@ export function installTray(): Tray {
     const extras = extraMenuItems.length > 0
       ? [{ type: "separator" } as MenuItemConstructorOptions, ...extraMenuItems]
       : [];
-    log.info("tray right-click: building menu");
     const menu = Menu.buildFromTemplate([
       ...recordingItems,
       ...baseTemplate,
@@ -327,9 +325,7 @@ export function installTray(): Tray {
       { type: "separator" },
       { role: "quit" }
     ]);
-    log.info("tray right-click: popUpContextMenu");
     tray?.popUpContextMenu(menu);
-    log.info("tray right-click: menu shown");
   });
 
   // Pre-warm the popover BrowserWindow at boot. Without this, the

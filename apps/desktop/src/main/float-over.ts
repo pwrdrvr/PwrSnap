@@ -121,13 +121,27 @@ function parkOffScreen(window: BrowserWindow): void {
 function restoreOnScreen(window: BrowserWindow): void {
   window.setIgnoreMouseEvents(false);
   window.setOpacity(1);
-  if (!everShown) {
+  // Windows: the opacity-park (setOpacity(0) + off-screen) doesn't reliably
+  // re-surface via setOpacity(1) alone, and there's no NSPanel/floating level
+  // to lean on — so re-assert visibility with showInactive() every time.
+  // macOS keeps the once-only showInactive (re-showing a parked panel there is
+  // unnecessary and can reshuffle key state).
+  if (!everShown || process.platform === "win32") {
     window.showInactive();
     everShown = true;
   }
-  // moveTop within the floating level — beats other floating windows
-  // that may have come up since our last show.
+  // moveTop so the toast beats other always-on-top windows that may have come
+  // up since our last show.
   window.moveTop();
+  if (process.platform === "win32") {
+    const b = window.getBounds();
+    log.info("float-over restoreOnScreen (win)", {
+      bounds: b,
+      visible: window.isVisible(),
+      minimized: window.isMinimized(),
+      opacity: window.getOpacity()
+    });
+  }
 }
 
 /**

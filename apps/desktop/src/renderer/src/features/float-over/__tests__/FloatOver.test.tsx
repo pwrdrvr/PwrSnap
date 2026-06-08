@@ -867,4 +867,42 @@ describe("FloatOver Codex suggestions", () => {
 
     expect(el.querySelector(".fo")?.classList.contains("is-paused")).toBe(true);
   });
+
+  // Regression: clicking the AI "Save"/"Use" button must NOT permanently
+  // pin the countdown. Accepting drafts is a terminal action — interacting
+  // with the toast pauses the timer while the pointer is over it, but once
+  // the mouse moves off the auto-close timer has to resume. Previously the
+  // Save click set a one-shot `aiAccepted` flag that fed `isPaused` and was
+  // never reset, so the toast hung on screen forever after a single Save.
+  test("clicking the AI Save button does not permanently pause the countdown", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      enrichment: enrichment(),
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+
+    const fo = el.querySelector(".fo");
+    // Previewed-but-unaccepted drafts alone don't pause.
+    expect(fo?.classList.contains("is-paused")).toBe(false);
+
+    const save = el.querySelector<HTMLButtonElement>(".fo__ai-accept");
+    expect(save?.textContent).toBe("Save");
+
+    await act(async () => {
+      save?.click();
+      await Promise.resolve();
+    });
+
+    // The pointer is not over the toast (this test never hovered). Simulate
+    // the "click Save, then move the mouse off" flow for good measure — the
+    // window-level mouseout handler clears any hover state. After that the
+    // countdown must be running again, not pinned by the accept click.
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent("mouseout", { relatedTarget: null, bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(fo?.classList.contains("is-paused")).toBe(false);
+  });
 });

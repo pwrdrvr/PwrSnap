@@ -301,7 +301,6 @@ export function FloatOver({
   const [nativeDragging, setNativeDragging] = useState(false);
   const [progress, setProgress] = useState(1);
   const [exiting, setExiting] = useState(false);
-  const [aiAccepted, setAiAccepted] = useState(false);
   const [storage, setStorage] = useState({ drive: false, dropbox: false, s3: false });
   const [visibleSrc, setVisibleSrc] = useState(src);
   const [sourceLoaded, setSourceLoaded] = useState(false);
@@ -359,6 +358,11 @@ export function FloatOver({
   const hasUserDescription =
     description.trim().length > 0 && descriptionOrigin === "manual";
   const hasUserTitle = title.trim().length > 0 && titleOrigin === "manual";
+  // Note: accepting AI drafts (the "Save"/"Use" button) is intentionally
+  // NOT a pause condition. It is a terminal action, not in-progress
+  // editing — once the pointer leaves the toast the auto-close timer must
+  // resume. A prior one-shot `aiAccepted` flag lived here and was never
+  // reset, which pinned the toast on screen forever after a single Save.
   const isPaused =
     thinking ||
     awaitingAi ||
@@ -366,8 +370,7 @@ export function FloatOver({
     nativeDragging ||
     hasUserDescription ||
     hasUserTitle ||
-    userTagInteractions > 0 ||
-    aiAccepted;
+    userTagInteractions > 0;
 
   const syncHoverFromPoint = (clientX: number, clientY: number): void => {
     const root = rootRef.current;
@@ -829,7 +832,6 @@ export function FloatOver({
                       for (const suggestion of aiSuggestions.slice(0, 2)) {
                         onAcceptTag?.(suggestion.id);
                       }
-                      setAiAccepted(true);
                     }}
                   >
                     {isSuggestedDescriptionPreview || titleOrigin === "suggested" ? "Save" : "Use"}

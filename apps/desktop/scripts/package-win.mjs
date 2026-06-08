@@ -25,7 +25,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
@@ -236,6 +236,24 @@ runChecked("node", builderArgs.filter(Boolean), {
   env: pnpmProjectConfigEnv
 });
 
-step("done");
+// 7. Verify the installer actually landed. electron-builder can exit 0 even
+//    when a target silently produces nothing (e.g. a missing icon/native
+//    slice degrades to a partial build), so assert the .exe exists here
+//    rather than letting CI upload an empty artifact and calling it green.
+step("verify installer artifact");
 const dist = join(stageDir, "dist");
+const installers = existsSync(dist)
+  ? readdirSync(dist).filter((name) => name.endsWith("-setup.exe"))
+  : [];
+if (installers.length === 0) {
+  throw new Error(
+    `electron-builder reported success but produced no *-setup.exe in ${dist}. ` +
+    `Check the electron-builder output above (icon conversion, native slices).`
+  );
+}
+for (const name of installers) {
+  console.log(`  ✓ ${name}`);
+}
+
+step("done");
 console.log(`  artifacts: ${dist}`);

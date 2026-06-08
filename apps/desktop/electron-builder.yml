@@ -292,7 +292,9 @@ dmg:
 # a real filesystem path.
 win:
   icon: build/icon.png
-  artifactName: "${productName}-${version}-windows-${arch}.${ext}"
+  # No win.artifactName: the only target is nsis, whose own artifactName
+  # (below) is what names the installer. A win-level name here would be dead
+  # config — electron-builder uses the per-target name for the nsis output.
   target:
     - target: nsis
       arch: [x64]

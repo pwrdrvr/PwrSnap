@@ -1793,14 +1793,31 @@ export function AiSurfaceDefaultControl({
   // and "Thinking". We reuse the existing `reasoning` field: "low" → thinking
   // OFF, "high" → thinking ON, which the ACP backend maps onto the agent's
   // `thought_level` config option at turn start (agents without one ignore it).
-  // Enrichment defaults to Fast (its effort default is "low"); chat defaults to
-  // the agent's own default (Kimi: thinking on).
   const reasoningChoices: Array<{ value: AiReasoningEffort; label: string }> = isAcpProvider
     ? [
         { value: "low", label: "Fast" },
         { value: "high", label: "Thinking" }
       ]
     : AI_REASONING_EFFORTS.map((effort) => ({ value: effort, label: effort }));
+  // What "Default" (empty reasoning) actually resolves to differs by surface and
+  // backend, so spell it out rather than leave it ambiguous. For ACP the kit
+  // collapses to Fast/Thinking: enrichment defaults Fast (its effort default is
+  // "low"); the chat surfaces default Thinking ("medium" → thinking on). Codex
+  // keeps a plain "Default" (the backend picks its own graded effort).
+  const defaultReasoningLabel = isAcpProvider
+    ? surface === "enrichment"
+      ? "Default (Fast)"
+      : "Default (Thinking)"
+    : "Default";
+  // A surface can carry a stale Codex "medium" from before its provider was
+  // switched to an ACP agent. "medium" isn't an ACP choice, so a controlled
+  // <select> would render a BLANK selection. Show what the ACP backend will
+  // actually do with it — collapse anything non-"low" to Thinking — so the
+  // control never looks empty and matches the value that gets sent.
+  const reasoningSelectValue: AiReasoningEffort | "" =
+    isAcpProvider && reasoningValue !== "" && !reasoningChoices.some((c) => c.value === reasoningValue)
+      ? "high"
+      : reasoningValue;
 
   return (
     <div className="pss__role pss__role--routable" data-surface={surface}>
@@ -1879,7 +1896,7 @@ export function AiSurfaceDefaultControl({
           <span className="pss__ai-surface-field-label">Reasoning</span>
           <select
             className="pss__select pss__ai-surface-select"
-            value={reasoningValue}
+            value={reasoningSelectValue}
             aria-label={`${name} reasoning effort`}
             onChange={(e) => {
               const next = e.target.value;
@@ -1891,7 +1908,7 @@ export function AiSurfaceDefaultControl({
               onChange({ reasoning: next });
             }}
           >
-            <option value="">Default</option>
+            <option value="">{defaultReasoningLabel}</option>
             {reasoningChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>
                 {choice.label}

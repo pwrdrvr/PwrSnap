@@ -25,6 +25,7 @@ import {
   type LocalAcpDiscoveryOptions
 } from "@pwrdrvr/agent-acp";
 import { resolveActiveAcpInstance } from "./acp-instance-resolver";
+import { acpReasoningEffort } from "./acp-effort";
 import { buildPwrSnapMcpServer } from "./mcp/pwrsnap-mcp-server-config";
 import { acquireAcpAgentClient } from "./acp-agent-pool";
 import type {
@@ -255,6 +256,10 @@ type ResolvedChatBackend = {
   /** True when `client` is a shared (pooled) ACP process — the controller skips
    *  single-handler registration to avoid clobbering a sibling surface. */
   shared: boolean;
+  /** True when the resolved backend is an ACP agent (not a Codex fallback).
+   *  Drives reasoning-effort normalization: ACP honors only Fast/Thinking, so
+   *  the per-surface effort is collapsed before it reaches the agent. */
+  isAcp: boolean;
 };
 
 async function resolveChatBackend(
@@ -268,7 +273,8 @@ async function resolveChatBackend(
       ...(config.env !== undefined ? { env: config.env } : {}),
       loggerScope: config.loggerScope
     }),
-    shared: false
+    shared: false,
+    isAcp: false
   });
 
   const provider = config.provider;
@@ -338,7 +344,8 @@ async function resolveChatBackend(
   return {
     client: result.client,
     ...(result.mcpServers.length > 0 ? { threadMcpServers: result.mcpServers } : {}),
-    shared: true
+    shared: true,
+    isAcp: true
   };
 }
 
@@ -412,7 +419,15 @@ export async function buildChatSurface(
     // `modelProvider` is no longer driven here — a chat surface's
     // `provider` selects the BACKEND (Codex vs ACP), not a Codex
     // sub-provider; both backends ignore options they don't use.
-    effort: config.effort ?? "medium",
+    //
+    // ACP honors only Fast/Thinking, so for an ACP backend the effort is
+    // collapsed: the "medium" default → Thinking (on), and any stale Codex
+    // "medium" left on the surface never reaches the agent verbatim. A Codex
+    // backend (incl. an ACP-selected-but-uninstalled fallback) keeps graded
+    // low/medium/high.
+    effort: resolved.isAcp
+      ? acpReasoningEffort(config.effort ?? "medium")
+      : config.effort ?? "medium",
     ...(config.model !== undefined ? { model: config.model } : {}),
     logger: toAgentKitLogger(config.loggerScope)
   });

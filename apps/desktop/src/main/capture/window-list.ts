@@ -12,12 +12,22 @@
 //      finds the window that owns the captured rect's center and
 //      backfills `captures.source_app_bundle_id` + `source_app_name`.
 //
-// The helper is a tiny Swift CLI compiled at install time by
-// `apps/desktop/scripts/build-native.mjs`. In dev it lives at
-// `<desktopRoot>/build/native/window-list`; in a packaged .app it's
-// shipped under `Contents/Resources/PwrSnapWindowList` via the
-// `extraResources` entry in `electron-builder.yml`. Resolver below
-// tries production path first, falls back to dev path.
+// The helper is a tiny native CLI compiled at install time by
+// `apps/desktop/scripts/build-native.mjs`:
+//   - macOS: a Swift binary `window-list` (full surface — list,
+//     --activate-pid, --capture-window, --extract-app-icon).
+//   - Windows: a C++ binary `window-list.exe`
+//     (native/window-list-win/main.cpp) that implements only the
+//     default LIST command. The macOS-only subcommands (window capture,
+//     app-icon extraction, activate-pid) are not supported there and
+//     their wrappers short-circuit before shelling out (see
+//     `helperSupportsMacSubcommands`).
+//
+// In dev it lives at `<desktopRoot>/build/native/window-list[.exe]`; in
+// a packaged build it's shipped under `Contents/Resources/
+// PwrSnapWindowList` (macOS) / `resources\PwrSnapWindowList.exe`
+// (Windows) via the `extraResources` entry in `electron-builder.yml`.
+// Resolver below tries production path first, falls back to dev path.
 
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -49,12 +59,40 @@ export type WindowInfo = {
 
 let cachedHelperPath: string | null = null;
 
+/**
+ * Platform-specific helper file names.
+ *   - production resource: `PwrSnapWindowList` on macOS,
+ *     `PwrSnapWindowList.exe` on Windows.
+ *   - dev / build-native output: `window-list` on macOS,
+ *     `window-list.exe` on Windows.
+ */
+const PRODUCTION_HELPER_NAME =
+  process.platform === "win32" ? "PwrSnapWindowList.exe" : "PwrSnapWindowList";
+const DEV_HELPER_NAME =
+  process.platform === "win32" ? "window-list.exe" : "window-list";
+
+/**
+ * True when the resolved helper supports the macOS-only subcommands
+ * (--capture-window / --extract-app-icon / --activate-pid). Only the
+ * Swift helper implements them; the Windows C++ helper is list-only.
+ * Callers of those features short-circuit on non-darwin so we never
+ * shell the Windows .exe with an argument it doesn't understand.
+ */
+function helperSupportsMacSubcommands(): boolean {
+  return process.platform === "darwin";
+}
+
 function resolveHelperPath(): string | null {
   if (cachedHelperPath !== null) return cachedHelperPath;
-  if (process.platform !== "darwin") return null;
+  // macOS (Swift) + Windows (C++) both ship a window-list helper; other
+  // platforms have none.
+  if (process.platform !== "darwin" && process.platform !== "win32") {
+    return null;
+  }
 
-  // Production: shipped under Contents/Resources/.
-  const productionPath = join(process.resourcesPath, "PwrSnapWindowList");
+  // Production: shipped under Contents/Resources/ (macOS) or
+  // resources\ (Windows) via extraResources.
+  const productionPath = join(process.resourcesPath, PRODUCTION_HELPER_NAME);
   if (existsSync(productionPath)) {
     cachedHelperPath = productionPath;
     return productionPath;
@@ -62,14 +100,14 @@ function resolveHelperPath(): string | null {
   // Dev: built into apps/desktop/build/native/.
   // __dirname at runtime (after electron-vite build) is
   // apps/desktop/out/main; the native build dir is two levels up.
-  const devPath = join(__dirname, "..", "..", "build", "native", "window-list");
+  const devPath = join(__dirname, "..", "..", "build", "native", DEV_HELPER_NAME);
   if (existsSync(devPath)) {
     cachedHelperPath = devPath;
     return devPath;
   }
   // Last-ditch: when running tests directly via Playwright we may
   // be in apps/desktop already (cwd-based).
-  const cwdPath = join(app.getAppPath(), "build", "native", "window-list");
+  const cwdPath = join(app.getAppPath(), "build", "native", DEV_HELPER_NAME);
   if (existsSync(cwdPath)) {
     cachedHelperPath = cwdPath;
     return cwdPath;
@@ -97,7 +135,9 @@ export async function captureWindowImage(
   outputPath: string
 ): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
   const helper = resolveHelperPath();
-  if (helper === null) {
+  if (helper === null || !helperSupportsMacSubcommands()) {
+    // Windows helper is list-only; the caller falls back to a rect
+    // capture, which is the same degraded path as a missing helper.
     return { ok: false, message: "native helper not available" };
   }
   if (!Number.isInteger(windowId) || windowId <= 0) {
@@ -146,7 +186,9 @@ export async function extractAppIcon(
   size: number
 ): Promise<{ ok: true; appPath: string } | { ok: false; message: string }> {
   const helper = resolveHelperPath();
-  if (helper === null) {
+  if (helper === null || !helperSupportsMacSubcommands()) {
+    // Icon extraction is NSWorkspace-based; the Windows helper has no
+    // equivalent subcommand. Callers fall back to procedural initials.
     return { ok: false, message: "native helper not available" };
   }
   if (bundleId.length === 0 || !/^[A-Za-z0-9._-]+$/.test(bundleId)) {
@@ -187,6 +229,13 @@ export async function extractAppIcon(
  * has nothing useful to do with the failure either way.
  */
 export async function activateApp(pid: number): Promise<void> {
+  // The Windows C++ helper has no --activate-pid subcommand. Restoring
+  // the previously-frontmost app there would need SetForegroundWindow,
+  // which the OS heavily restricts for background processes — a no-op is
+  // the safe choice and matches the "best-effort, silent on failure"
+  // contract. (After the selector hides, Windows naturally returns
+  // focus to the previously-active window in the common case.)
+  if (!helperSupportsMacSubcommands()) return;
   const helper = resolveHelperPath();
   if (helper === null) return;
   if (!Number.isInteger(pid) || pid <= 0) return;
@@ -206,8 +255,9 @@ export async function activateApp(pid: number): Promise<void> {
 /**
  * Snapshot of the on-screen window list plus the system's reported
  * frontmost-app pid (from NSWorkspace.shared.frontmostApplication on
- * macOS). The pid is `null` when no app is reported as frontmost
- * (brief macOS transition states) or on non-darwin platforms.
+ * macOS; from GetForegroundWindow's owner on Windows). The pid is
+ * `null` when no app is reported as frontmost (brief transition
+ * states) or on platforms without a helper (Linux).
  *
  * Callers cross-check `windows[0].pid` against `frontmostPid`; a
  * mismatch indicates CGWindowList's z-order disagrees with the
@@ -223,9 +273,11 @@ export type WindowListSnapshot = {
 /**
  * Enumerate the live on-screen windows + the system's frontmost-app
  * pid. Returns an empty snapshot when the helper isn't available
- * (Linux/Windows, or a dev environment where build-native.mjs hasn't
- * run). Logs once at warn level so we notice in dev but don't spam
- * the log on every call.
+ * (Linux, or a dev environment where build-native.mjs hasn't run).
+ * macOS shells the Swift binary; Windows shells the C++ .exe — both
+ * emit the same JSON envelope parsed by `parseHelperOutput`. Logs once
+ * at warn level so we notice in dev but don't spam the log on every
+ * call.
  *
  * Latency: ~30-50ms cold per call. Caller should cache for the
  * duration of a single user interaction (e.g. one ⌘⇧P session).

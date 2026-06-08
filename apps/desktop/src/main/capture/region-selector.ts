@@ -28,7 +28,7 @@ import {
 } from "./window-list";
 import { captureAndRegister, releaseSnapshot, type ScreenSnapshot } from "./screen-snapshot";
 import { hideTrayPopoverIfVisible } from "../tray";
-import { setFloatOverState } from "../float-over";
+import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
@@ -855,6 +855,20 @@ function hideAllSelectors(): void {
   // wins the z-order race that used to leave the toast hidden behind
   // the previous app's key window. See docs/plans/2026-05-04-001
   // §"Solution 4".
+
+  // Windows: while the selector was up (topmost screen-saver level, and on
+  // win32 native-fullscreen to cover the taskbar), the post-capture toast
+  // could NOT be made topmost — setAlwaysOnTop(true) during show-loaded
+  // silently didn't stick (isAlwaysOnTop stayed false, confirmed via the
+  // diagnostic log), so the toast rendered behind the Library. show-idle
+  // worked because the selector wasn't shown yet. Now that the selector is
+  // hidden, re-raise the (already-loaded) toast so it actually appears.
+  // ensureFloatOverTopmost polls until isAlwaysOnTop() confirms the raise
+  // took — setFullScreen(false) exits asynchronously, so a single assert can
+  // land mid-transition; the loop self-terminates the instant it sticks.
+  if (process.platform === "win32") {
+    ensureFloatOverTopmost();
+  }
 }
 
 /**
@@ -877,6 +891,29 @@ function hideAllSelectors(): void {
  * window can return to its normal-bounds state for next time.
  */
 function enterMenuBarOverlayMode(win: BrowserWindow): void {
+  if (process.platform === "win32") {
+    // Windows: the taskbar (Shell_TrayWnd) is itself topmost, so a plain
+    // always-on-top overlay renders BELOW it — the real taskbar shows through
+    // on top of the frozen screenshot (which already includes a taskbar →
+    // "two taskbars"). Native fullscreen spans the whole monitor including the
+    // taskbar, so the overlay covers it. (Verified working on Windows; the
+    // earlier 0xC0000005 crash was an unrelated tray-right-click bug.)
+    //
+    // Note: setFullScreen(true) grows the window to the full display (taskbar
+    // covered) but isFullScreen() stays false on Windows, and the
+    // enter/leave-full-screen events don't reliably fire — so the post-capture
+    // toast can't rely on a leave-full-screen event to re-raise itself. The
+    // re-raise is driven from hideAllSelectors instead.
+    //
+    // Call unconditionally — do NOT guard on isFullScreen(): it's unreliable
+    // here (stays false even after a successful setFullScreen(true)), so a
+    // guard would either no-op when it shouldn't or, on the leave side, leave
+    // the window stuck full-screen. setFullScreen(true) on an already-grown
+    // window is a harmless no-op, and this stays correct if a future Electron
+    // makes isFullScreen() accurate. leaveMenuBarOverlayMode mirrors this.
+    win.setFullScreen(true);
+    return;
+  }
   if (process.platform !== "darwin") return;
   if (!win.isSimpleFullScreen()) {
     win.setSimpleFullScreen(true);
@@ -894,6 +931,17 @@ function enterMenuBarOverlayMode(win: BrowserWindow): void {
 }
 
 function leaveMenuBarOverlayMode(win: BrowserWindow): void {
+  if (process.platform === "win32") {
+    // Unconditional, NOT guarded on isFullScreen(): that getter stays false on
+    // Windows even while the window is grown full-screen (see
+    // enterMenuBarOverlayMode), so `if (win.isFullScreen())` would never fire
+    // and the window would stay stuck at full-monitor size — the real taskbar
+    // would never come back and the next capture's pre-warmed window would
+    // start oversized. setFullScreen(false) on a non-fullscreen window is a
+    // no-op, so calling it unconditionally is safe.
+    win.setFullScreen(false);
+    return;
+  }
   if (process.platform !== "darwin") return;
   if (win.isSimpleFullScreen()) {
     win.setSimpleFullScreen(false);
@@ -922,7 +970,12 @@ function createSelectorWindow(display: Display): BrowserWindow {
     // (`focusable: true` below is still respected for NSPanel; the
     // float-over uses the same combination to receive clicks/keys
     // without activating the app.)
-    type: "panel",
+    //
+    // macOS-only — Windows/Linux have no NSPanel; the frameless,
+    // transparent, always-on-top window below covers the display directly
+    // (setSimpleFullScreen / enterMenuBarOverlayMode are already
+    // darwin-gated).
+    ...(process.platform === "darwin" ? { type: "panel" as const } : {}),
     title: SELECTOR_WINDOW_TITLE,
     x: bounds.x,
     y: bounds.y,
@@ -935,7 +988,11 @@ function createSelectorWindow(display: Display): BrowserWindow {
     movable: false,
     minimizable: false,
     maximizable: false,
-    fullscreenable: false,
+    // Windows needs native fullscreen (enterMenuBarOverlayMode) to draw OVER
+    // the taskbar (a topmost window a plain always-on-top overlay can't cover),
+    // so it must be fullscreenable there. macOS uses setSimpleFullScreen and
+    // keeps this false.
+    fullscreenable: process.platform === "win32",
     skipTaskbar: true,
     alwaysOnTop: true,
     hasShadow: false,
@@ -965,7 +1022,11 @@ function createSelectorWindow(display: Display): BrowserWindow {
   // Paired with `type: 'panel'` above: the panel keeps show()/focus()
   // from activating the app, and canJoinAllSpaces (set here) keeps
   // the panel from being pinned to any single Space.
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // Spaces are macOS-only; on Windows/Linux this call is unnecessary (and
+  // the visibleOnFullScreen option is a macOS concept).
+  if (process.platform === "darwin") {
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  }
 
   const target = rendererTarget(display.id);
   if (target.kind === "url") {

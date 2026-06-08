@@ -77,72 +77,37 @@ files:
   # App-owned prompt assets are intentionally readable Markdown in app.asar.
   - "out/main/prompts/**/*.md"
 
-# Native helpers (Swift CLIs that wrap macOS-only system APIs).
-# Compiled by `apps/desktop/scripts/build-native.mjs` into
-# `apps/desktop/build/native/`; ship them under Contents/Resources/
-# with PwrSnap-prefixed names so `process.resourcesPath` lookups in
-# main are unambiguous.
+# Cross-platform resources shipped under Contents/Resources/ (macOS)
+# or resources/ (Windows). Resolved at runtime via
+# `process.resourcesPath`. Platform-only payloads (the macOS Swift
+# helpers + ffmpeg + Quick Look extensions) live under `mac:` below so
+# a Windows build doesn't try to copy files that build-native.mjs
+# never produces off-darwin.
 extraResources:
   - from: "THIRD_PARTY_LICENSES"
     to: "THIRD_PARTY_LICENSES"
   - from: "CHANGELOG.md"
     to: "CHANGELOG.md"
-  - from: "build/native/window-list"
-    to: "PwrSnapWindowList"
-  # Fast Video Capture helper (issue #64). ScreenCaptureKit-based
-  # fixed-rect recorder spoken to via stdin/stdout JSON-RPC by
-  # apps/desktop/src/main/recording/recording-service.ts.
-  - from: "build/native/recorder"
-    to: "PwrSnapRecorder"
-  # FFmpeg built from upstream source by scripts/build-ffmpeg.mjs
-  # with no GPL or nonfree configure flags. Spawned by GIF/MP4
-  # export, video poster extraction, enrichment frames, and sizzle
-  # reel composition. It must be an actual filesystem executable,
-  # not an app.asar entry.
-  - from: "build/ffmpeg/ffmpeg"
-    to: "PwrSnapFFmpeg"
-  # Diagnostic CLI for the Quick Look Thumbnail Extension. Ships
-  # alongside production so we can reproduce a thumbnail-rendering
-  # failure on a user machine without rebuilding from source.
-  # Standalone Mach-O at Contents/Resources/PwrSnapThumbnailCli.
-  - from: "build/native/pwrsnap-thumbnail-cli"
-    to: "PwrSnapThumbnailCli"
-  # Tray template icon (16×16 base + @2x/@3x). Electron's nativeImage
-  # auto-loads the @Nx siblings when given the base path, so all three
-  # PNGs need to live next to each other under Contents/Resources/.
-  # Resolved at runtime by resolveTrayIconPath() in main/tray.ts.
+  # Tray icons. macOS reads the alpha-only *template* PNG (system tints
+  # it for dark/light/accent menubars); Windows/Linux read the colored
+  # `tray-icon.png`. Electron's nativeImage auto-loads the @Nx siblings
+  # when given the base path, so each base PNG needs its @2x/@3x next to
+  # it under resourcesPath. resolveTrayIconPath() in main/tray.ts picks
+  # the right base per platform. Both sets are tiny (<2 KB total) and
+  # exist in the repo on every platform, so they ship everywhere rather
+  # than fiddling with per-platform tray-icon resource lists.
   - from: "build/tray-icon-template.png"
     to: "tray-icon-template.png"
   - from: "build/tray-icon-template@2x.png"
     to: "tray-icon-template@2x.png"
   - from: "build/tray-icon-template@3x.png"
     to: "tray-icon-template@3x.png"
-
-# macOS Quick Look Thumbnail Extension. Lives under
-# PwrSnap.app/Contents/PlugIns/ (note the capitalized P-L-U-G-I-N-S —
-# the macOS convention is distinct from generic "plugins"). Launch
-# Services auto-discovers the extension when the parent app is
-# registered, then macOS routes any thumbnail / preview request for
-# `com.pwrdrvr.pwrsnap.bundle`-typed files through it.
-#
-# The `.appex` itself is a directory; electron-builder copies the
-# whole tree. Built by scripts/build-native.mjs which compiles the
-# Swift loadable-bundle, drops in Info.plist, and ad-hoc signs the
-# package. Production builds get re-signed with the Developer ID
-# at notarization time.
-extraFiles:
-  - from: "build/native/PwrSnapThumbnailExtension.appex"
-    to: "PlugIns/PwrSnapThumbnailExtension.appex"
-  # Sibling Quick Look Preview Extension (Spacebar / full-screen).
-  # Separate extension point (`com.apple.quicklook.preview` vs the
-  # Thumbnail Extension's `com.apple.quicklook.thumbnail`), separate
-  # principal class (PreviewProvider vs ThumbnailProvider), separate
-  # bundle id. Apple's docs recommend one .appex per extension point
-  # so a registration failure for one doesn't take the sibling down
-  # with it. Both signed by the same afterPack hook above — it
-  # iterates every `.appex` under PlugIns/.
-  - from: "build/native/PwrSnapPreviewExtension.appex"
-    to: "PlugIns/PwrSnapPreviewExtension.appex"
+  - from: "build/tray-icon.png"
+    to: "tray-icon.png"
+  - from: "build/tray-icon@2x.png"
+    to: "tray-icon@2x.png"
+  - from: "build/tray-icon@3x.png"
+    to: "tray-icon@3x.png"
 
 electronFuses:
   runAsNode: false
@@ -162,6 +127,55 @@ mac:
   notarize: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+  # macOS-only native helpers (Swift CLIs that wrap macOS system APIs)
+  # + the LGPL ffmpeg binary. Compiled by scripts/build-native.mjs /
+  # build-ffmpeg.mjs into build/native/ and build/ffmpeg/; these paths
+  # only exist on a darwin build (build-native.mjs is a no-op
+  # off-darwin), so they live under `mac:` to keep Windows packaging
+  # from trying to copy files that were never produced. Shipped under
+  # Contents/Resources/ with PwrSnap-prefixed names so
+  # `process.resourcesPath` lookups in main are unambiguous.
+  extraResources:
+    - from: "build/native/window-list"
+      to: "PwrSnapWindowList"
+    # Fast Video Capture helper (issue #64). ScreenCaptureKit-based
+    # fixed-rect recorder spoken to via stdin/stdout JSON-RPC by
+    # apps/desktop/src/main/recording/recording-service.ts.
+    - from: "build/native/recorder"
+      to: "PwrSnapRecorder"
+    # FFmpeg built from upstream source by scripts/build-ffmpeg.mjs
+    # with no GPL or nonfree configure flags. Spawned by GIF/MP4
+    # export, video poster extraction, enrichment frames, and sizzle
+    # reel composition. It must be an actual filesystem executable,
+    # not an app.asar entry.
+    - from: "build/ffmpeg/ffmpeg"
+      to: "PwrSnapFFmpeg"
+    # Diagnostic CLI for the Quick Look Thumbnail Extension. Ships
+    # alongside production so we can reproduce a thumbnail-rendering
+    # failure on a user machine without rebuilding from source.
+    # Standalone Mach-O at Contents/Resources/PwrSnapThumbnailCli.
+    - from: "build/native/pwrsnap-thumbnail-cli"
+      to: "PwrSnapThumbnailCli"
+  # macOS Quick Look Thumbnail + Preview Extensions. Live under
+  # PwrSnap.app/Contents/PlugIns/ (note the capitalized P-L-U-G-I-N-S —
+  # the macOS convention is distinct from generic "plugins"). Launch
+  # Services auto-discovers the extensions when the parent app is
+  # registered, then macOS routes any thumbnail / preview request for
+  # `com.pwrdrvr.pwrsnap.bundle`-typed files through them.
+  #
+  # Each `.appex` is a directory; electron-builder copies the whole
+  # tree. Built by scripts/build-native.mjs which compiles the Swift
+  # loadable-bundle, drops in Info.plist, and ad-hoc signs the package.
+  # Production builds get re-signed with the Developer ID at
+  # notarization time (afterPack hook iterates every `.appex` under
+  # PlugIns/). The Thumbnail and Preview extensions are separate
+  # extension points with separate principal classes and bundle ids, so
+  # a registration failure for one doesn't take the sibling down.
+  extraFiles:
+    - from: "build/native/PwrSnapThumbnailExtension.appex"
+      to: "PlugIns/PwrSnapThumbnailExtension.appex"
+    - from: "build/native/PwrSnapPreviewExtension.appex"
+      to: "PlugIns/PwrSnapPreviewExtension.appex"
   # These files are intentionally identical in both temp app trees before
   # @electron/universal merges them. The Swift helper is prebuilt universal;
   # Sharp and ffmpeg optional dependency directories are arch-named and each
@@ -267,6 +281,38 @@ dmg:
       type: link
       path: /Applications
   writeUpdateInfo: false
+
+# Windows (Phase 8 cross-platform port). x64 NSIS installer. The .ico is
+# derived by electron-builder from the 512+px build/icon.png (1024×1024 in
+# the repo) — no hand-authored .ico needed. Native modules: better-sqlite3
+# ships its Electron-native win32-x64 sidecar via rebuild-native-for-electron
+# (run with npm_config_arch=x64 before packaging), and sharp's win32-x64
+# optional dependency is pulled in by pnpm-workspace.yaml's
+# supportedArchitectures. asarUnpack `**/*.node` above keeps both binaries on
+# a real filesystem path.
+win:
+  icon: build/icon.png
+  # No win.artifactName: the only target is nsis, whose own artifactName
+  # (below) is what names the installer. A win-level name here would be dead
+  # config — electron-builder uses the per-target name for the nsis output.
+  target:
+    - target: nsis
+      arch: [x64]
+  # window-list C++ helper (native/window-list-win/main.cpp → built by
+  # scripts/build-native.mjs into build/native/window-list.exe). Same role as
+  # PwrSnapWindowList on macOS: drives snap-to-window in the region selector +
+  # source-app metadata. Resolved at runtime via process.resourcesPath as
+  # PwrSnapWindowList.exe in src/main/capture/window-list.ts.
+  extraResources:
+    - from: "build/native/window-list.exe"
+      to: "PwrSnapWindowList.exe"
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  shortcutName: PwrSnap
+  artifactName: "${productName}-${version}-windows-${arch}-setup.${ext}"
 
 # Phase 1: github provider against the existing private pwrdrvr/PwrSnap repo.
 publish:

@@ -23,6 +23,7 @@ import sharp from "sharp";
 import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
 
 const isMac = process.platform === "darwin";
+const isWin = process.platform === "win32";
 const ITERATIONS = Number.parseInt(process.env.PWRSNAP_TRAY_PAINT_RUNS ?? "5", 10);
 
 /**
@@ -188,7 +189,10 @@ test.describe("tray popover first-paint baseline", () => {
   // The bridge function exercises NSPanel-only window options. On
   // Linux the production tray itself is also skipped (no menubar
   // story), so the measurement isn't meaningful there.
-  test.skip(!isMac, "tray popover first-paint measurement is macOS-only");
+  test.skip(
+    !isMac && process.platform !== "win32",
+    "tray popover first-paint runs on macOS + Windows (Linux/xvfb excluded)"
+  );
 
   // Each scenario carries its expected popover height range so the
   // hard-floor assertion below can reject the constructor-frame
@@ -197,11 +201,18 @@ test.describe("tray popover first-paint baseline", () => {
   // machinery was added to defeat; a regression that re-introduced
   // it would otherwise paint a popover too short or too tall by ~150
   // px and still pass a generic `> 100` floor.
+  // The seeded "last snap" preview renders taller on Windows (~634 vs ~490 on
+  // macOS) — Geist line-heights and the preview block lay out a bit larger
+  // there. The band still rejects the 440×440 constructor-frame regression and
+  // absurd values; it's just platform-tuned. Empty-library heights match across
+  // platforms. (TODO: RDP-verify the seeded Windows popover visually.)
+  const seededMin = isWin ? 560 : 420;
+  const seededMax = isWin ? 720 : 560;
   for (const scenario of [
     { label: "cold | empty library", seed: false, prewarm: false, minHeight: 200, maxHeight: 320 },
-    { label: "cold | 1 seeded capture", seed: true, prewarm: false, minHeight: 420, maxHeight: 560 },
+    { label: "cold | 1 seeded capture", seed: true, prewarm: false, minHeight: seededMin, maxHeight: seededMax },
     { label: "prewarmed | empty library", seed: false, prewarm: true, minHeight: 200, maxHeight: 320 },
-    { label: "prewarmed | 1 seeded capture", seed: true, prewarm: true, minHeight: 420, maxHeight: 560 }
+    { label: "prewarmed | 1 seeded capture", seed: true, prewarm: true, minHeight: seededMin, maxHeight: seededMax }
   ] as const) {
     test(`${scenario.label}: first click → painted (×${ITERATIONS} cold launches)`, async () => {
       test.setTimeout(180_000);

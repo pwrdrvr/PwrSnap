@@ -1008,6 +1008,30 @@ export function bootstrapApp(): void {
       "ScreenCaptureKitMac,ScreenCaptureKitMacWindow,ScreenCaptureKitMacScreen,ScreenCaptureKitPickerScreen"
     );
   }
+  if (process.platform === "win32") {
+    // Disable Chromium's native window occlusion calculation. The post-capture
+    // float-over toast is shown (showInactive) WHILE the region selector covers
+    // the screen (native fullscreen + screen-saver always-on-top). Chromium's
+    // occlusion tracker marks the fully-covered transparent toast as occluded
+    // and stops compositing it — and over RDP / remote sessions the occlusion
+    // state doesn't reliably recompute when the toast is later raised topmost,
+    // so it stays a blank/transparent rectangle (visible:true + alwaysOnTop:true
+    // per the API, but never painted). Disabling the feature makes Chromium keep
+    // painting regardless of cover state. Refs: electron/electron#25368, #35192
+    // (occluded/remote windows render blank on Windows).
+    //
+    // Scope note: occlusion calculation is a global Chromium feature flag —
+    // there is NO per-window / per-BrowserWindow occlusion toggle in Electron's
+    // API, so this necessarily applies process-wide (the Library keeps
+    // compositing while minimized/covered too). The cost is bounded: a tray app
+    // with one Library window + a small toast has little to gain from occlusion
+    // culling, and disabling it is the documented, widely-used workaround for
+    // exactly this class of blank-window bug. The only tighter scoping would be
+    // to never show the toast while occluded (defer its first show to after the
+    // selector hides) — a restructure of the verified-working show choreography
+    // we're deferring until it can be validated on a real Windows GUI session.
+    app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
+  }
   if (isE2E && process.platform === "linux") {
     app.disableHardwareAcceleration();
     app.commandLine.appendSwitch("disable-gpu");

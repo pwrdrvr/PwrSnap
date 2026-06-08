@@ -23,6 +23,7 @@ import { spawnTargetWindows, type TargetWindowSpec } from "./fixtures/target-win
 import { colorsClose, formatRgb, hexToRgb, samplePixel } from "./fixtures/pixel-sample";
 
 const isMac = process.platform === "darwin";
+const isWin = process.platform === "win32";
 // Real screen capture requires Screen Recording TCC permission for
 // the running binary — a one-time approval the user grants in
 // System Settings → Privacy & Security. The Playwright-launched
@@ -32,11 +33,16 @@ const isMac = process.platform === "darwin";
 //   2. Re-run with PWRSNAP_E2E_REAL_CAPTURE=1 pnpm test:desktop-e2e.
 const realCaptureOpt = process.env.PWRSNAP_E2E_REAL_CAPTURE === "1";
 
-test.describe("region capture (macOS, opt-in)", () => {
-  test.skip(!isMac, "screencapture(1) is macOS-only");
+test.describe("region capture (macOS opt-in + Windows)", () => {
+  // macOS uses screencapture(1); Windows uses desktopCapturer. Linux/xvfb has
+  // its own capture path we don't exercise here.
+  test.skip(!isMac && !isWin, "screen capture runs on macOS + Windows (Linux/xvfb excluded)");
+  // On macOS the test Electron binary needs Screen Recording TCC perms, so the
+  // pixel check is opt-in there (PWRSNAP_E2E_REAL_CAPTURE=1). Windows'
+  // desktopCapturer needs no permission, so it always runs.
   test.skip(
-    !realCaptureOpt,
-    "set PWRSNAP_E2E_REAL_CAPTURE=1 to run; the test Electron binary needs Screen Recording TCC perms"
+    isMac && !realCaptureOpt,
+    "on macOS set PWRSNAP_E2E_REAL_CAPTURE=1 (Screen Recording TCC); not needed on Windows"
   );
 
   test("captures the painted color from a target window", async () => {
@@ -81,14 +87,15 @@ test.describe("region capture (macOS, opt-in)", () => {
         if (!result.ok) return;
         const record: CaptureRecord = result.value;
 
-        // Sample dead-center of the captured PNG and compare to the
-        // painted color. Allow ±8 per channel for compositor jitter.
+        // Sample the captured PNG and compare to the painted color. The
+        // captured rect is coincident with the uniformly-colored target
+        // window, so any interior pixel is that color. Fresh v2 captures
+        // materialize their source at getCacheSourcePath(id) =
+        // <dataRoot>/render-cache/<id>/source.png — legacy_src_path is null
+        // since the v2-only migration, so sample the cache source instead.
+        const samplePath = path.join(app.homeRoot, "render-cache", record.id, "source.png");
         const cx = Math.floor(record.width_px / 2);
         const cy = Math.floor(record.height_px / 2);
-        const samplePath = record.legacy_src_path;
-        if (samplePath === null) {
-          throw new Error("region-capture spec: expected legacy_src_path on freshly captured record");
-        }
         const sampled = await samplePixel(samplePath, cx, cy);
         const expected = hexToRgb(target.color);
 

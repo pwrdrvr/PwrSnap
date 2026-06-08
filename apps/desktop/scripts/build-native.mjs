@@ -13,9 +13,18 @@
  * `process.resourcesPath` (production) or by walking up from
  * `__dirname` (dev — `out/main/...` → `apps/desktop/build/native/...`).
  *
- * macOS-only — these helpers wrap macOS-specific APIs. On
- * Linux/Windows the build is a no-op so unit tests + Linux CI keep
- * working.
+ * macOS — compiles the Swift CLI helpers + Quick Look .appex bundles
+ * (window-list, recorder, thumbnail/preview extensions) below.
+ *
+ * Windows — compiles the C++ window-list helper
+ * (native/window-list-win/main.cpp → build/native/window-list.exe) via
+ * the win32 branch immediately below, then exits. The .exe is the
+ * counterpart to the Swift window-list binary: it drives snap-to-window
+ * in the region selector and source-app metadata at capture time. The
+ * macOS-only Swift/.appex targets are skipped on Windows.
+ *
+ * Linux — no native helpers; the build is a no-op so unit tests + Linux
+ * CI keep working.
  */
 
 import { execSync, spawnSync } from "node:child_process";
@@ -37,8 +46,13 @@ const desktopRoot = resolve(__dirname, "..");
 const nativeRoot = join(desktopRoot, "native");
 const buildRoot = join(desktopRoot, "build", "native");
 
+if (process.platform === "win32") {
+  buildWindowsHelpers();
+  process.exit(0);
+}
+
 if (process.platform !== "darwin") {
-  console.log("[build-native] non-darwin platform — skipping");
+  console.log("[build-native] non-darwin/non-win32 platform — skipping");
   process.exit(0);
 }
 
@@ -403,4 +417,194 @@ for (const appex of appexTargets) {
   // ZIP-extraction validation.
 
   console.log(`[build-native] ${appex.name}.appex → ${appex.output} (unsigned; electron-builder signs at package time)`);
+}
+
+// ---------------------------------------------------------------------------
+// Windows native helpers (C++ compiled with the VS Build Tools' cl.exe)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compile the Windows window-list helper:
+ *   native/window-list-win/main.cpp → build/native/window-list.exe
+ *
+ * Counterpart to the macOS Swift `window-list` binary. Self-contained
+ * C++ over Win32 (EnumWindows / DWM / PSAPI); compiled with cl.exe from
+ * the Visual Studio Build Tools, which are present on the GitHub
+ * `windows-latest` runner and the project's Windows dev box.
+ *
+ * Idempotent: skips the compile when the .exe is newer than its source.
+ *
+ * cl.exe needs the VS toolchain environment (INCLUDE / LIB / PATH). We
+ * never assume the caller has run `vcvarsall.bat`/`VsDevCmd.bat` first —
+ * instead we locate the VS install via `vswhere`, then invoke cl.exe
+ * through a one-shot cmd that sources `VsDevCmd.bat` for the host arch.
+ * If cl.exe is already on PATH (the developer ran from a Developer
+ * Command Prompt) we use it directly and skip the bat dance.
+ */
+function buildWindowsHelpers() {
+  mkdirSync(buildRoot, { recursive: true });
+
+  const source = join(nativeRoot, "window-list-win", "main.cpp");
+  const output = join(buildRoot, "window-list.exe");
+
+  if (!existsSync(source)) {
+    console.error(`[build-native] missing Windows source: ${source}`);
+    process.exit(1);
+  }
+
+  // Up-to-date check — same mtime semantics as the macOS targets.
+  if (
+    existsSync(output) &&
+    statSync(output).mtimeMs >= statSync(source).mtimeMs
+  ) {
+    console.log("[build-native] window-list.exe up to date");
+    return;
+  }
+
+  // Object files land next to the .exe; cl.exe drops `main.obj` in the
+  // cwd otherwise. Build dir is fine for transient artifacts.
+  const objFile = join(buildRoot, "window-list.obj");
+
+  console.log("[build-native] compiling window-list.exe…");
+
+  // cl flags:
+  //   /O2     optimize for speed (tiny binary, hot path)
+  //   /EHsc   standard C++ exception handling
+  //   /std:c++17  matches the source
+  //   /nologo quiet banner
+  //   /Fe:    output exe path
+  //   /Fo:    output obj path (keeps cwd clean)
+  // Libraries: user32 (EnumWindows / window APIs), dwmapi (cloak +
+  // extended-frame bounds). Listed after the source per cl convention.
+  const clArgs = [
+    "/O2",
+    "/EHsc",
+    "/std:c++17",
+    "/nologo",
+    `/Fe:${output}`,
+    `/Fo:${objFile}`,
+    source,
+    "user32.lib",
+    "dwmapi.lib"
+  ];
+
+  // Quote each cl arg so paths with spaces survive cmd parsing.
+  const quotedClArgs = clArgs.map((a) => `"${a}"`).join(" ");
+
+  let result;
+  let tempBat = null;
+  if (commandOnPath("cl.exe")) {
+    // Developer Command Prompt already has the toolchain env loaded.
+    result = spawnSync("cl.exe", clArgs, { stdio: "inherit" });
+  } else {
+    // Locate VsDevCmd.bat via vswhere, then compile through a small
+    // generated batch file that sources it for the host architecture.
+    //
+    // Why a batch file rather than `cmd /c "call ... && cl ..."`:
+    // VsDevCmd.bat's path contains spaces (Program Files (x86)\…), and
+    // chaining a quoted `call "<bat>"` with `&& cl.exe "<args>"` through
+    // `cmd /c` runs into cmd.exe's quote-stripping rules (it removes the
+    // first and last quote of the whole command line), which mangles the
+    // bat path — observed as `'"…\VsDevCmd.bat"' is not recognized`. A
+    // standalone .bat sidesteps the rule entirely: each line is parsed
+    // independently with normal quoting.
+    const vsDevCmd = findVsDevCmd();
+    if (vsDevCmd === null) {
+      console.error(
+        "[build-native] cl.exe not found and VS Build Tools could not be located " +
+          "via vswhere. Install the Visual Studio Build Tools (C++ workload), " +
+          "or run from a Developer Command Prompt."
+      );
+      process.exit(1);
+    }
+    const hostArch = process.arch === "arm64" ? "arm64" : "amd64";
+    tempBat = join(buildRoot, "build-window-list.bat");
+    // `@echo off` keeps the VsDevCmd banner quiet; `exit /b` propagates
+    // cl's exit code as the batch (and therefore the process) status.
+    const batContents = [
+      "@echo off",
+      `call "${vsDevCmd}" -arch=${hostArch} -host_arch=${hostArch}`,
+      `cl.exe ${quotedClArgs}`,
+      "exit /b %ERRORLEVEL%",
+      ""
+    ].join("\r\n");
+    writeFileSync(tempBat, batContents);
+    result = spawnSync("cmd.exe", ["/d", "/c", tempBat], { stdio: "inherit" });
+  }
+
+  if (result.status !== 0) {
+    console.error("[build-native] window-list.exe compilation failed");
+    process.exit(result.status ?? 1);
+  }
+
+  // Best-effort cleanup of the transient object + batch files.
+  for (const transient of [objFile, tempBat]) {
+    if (transient === null) continue;
+    try {
+      rmSync(transient, { force: true });
+    } catch {
+      /* best effort */
+    }
+  }
+
+  console.log(`[build-native] window-list.exe → ${output}`);
+}
+
+/** True when `name` resolves on the current PATH (Windows: tries
+ *  `where`). */
+function commandOnPath(name) {
+  const probe = spawnSync("where", [name], { stdio: "ignore" });
+  return probe.status === 0;
+}
+
+/**
+ * Locate `VsDevCmd.bat` for the newest installed Visual Studio / Build
+ * Tools instance using the bundled `vswhere` (shipped under Program
+ * Files (x86)\\Microsoft Visual Studio\\Installer on every modern VS /
+ * Build Tools install, including the windows-latest runner). Returns the
+ * absolute path to VsDevCmd.bat, or null when no instance is found.
+ */
+function findVsDevCmd() {
+  const programFilesX86 =
+    process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  const vswhere = join(
+    programFilesX86,
+    "Microsoft Visual Studio",
+    "Installer",
+    "vswhere.exe"
+  );
+  if (!existsSync(vswhere)) {
+    return null;
+  }
+  // -latest newest instance; -products * includes the standalone Build
+  // Tools SKU (not just full VS); require the C++ toolset component so
+  // we don't pick an instance without cl.exe; -property installationPath
+  // returns the install root.
+  const result = spawnSync(
+    vswhere,
+    [
+      "-latest",
+      "-products",
+      "*",
+      "-requires",
+      "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+      "-property",
+      "installationPath"
+    ],
+    { encoding: "utf8" }
+  );
+  if (result.status !== 0) {
+    return null;
+  }
+  const installPath = (result.stdout || "").trim().split(/\r?\n/)[0];
+  if (!installPath) {
+    return null;
+  }
+  const vsDevCmd = join(
+    installPath,
+    "Common7",
+    "Tools",
+    "VsDevCmd.bat"
+  );
+  return existsSync(vsDevCmd) ? vsDevCmd : null;
 }

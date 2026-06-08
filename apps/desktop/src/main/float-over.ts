@@ -102,6 +102,19 @@ const PARK_Y = -20_000;
  * cases windows offscreen + opacity 0).
  */
 function parkOffScreen(window: BrowserWindow): void {
+  if (process.platform === "win32") {
+    // Windows: a REAL hide() — not the macOS opacity-park. On Windows
+    // setOpacity() drives whole-window layered alpha
+    // (SetLayeredWindowAttributes), which is mutually exclusive with
+    // transparent:true's per-pixel alpha (UpdateLayeredWindow). A
+    // setOpacity(0)→setOpacity(1) round-trip leaves the toast unable to
+    // composite its content — it comes back BLANK (visible + opaque per the API,
+    // but nothing painted). The tray uses a plain hide()/show() cycle and works;
+    // mirror that here and never touch opacity on Windows.
+    window.setIgnoreMouseEvents(true);
+    window.hide();
+    return;
+  }
   window.setIgnoreMouseEvents(true);
   window.setOpacity(0);
   window.setPosition(PARK_X, PARK_Y, false);
@@ -119,14 +132,34 @@ function parkOffScreen(window: BrowserWindow): void {
  * window at PARK_X/PARK_Y and we don't want a one-frame flash.
  */
 function restoreOnScreen(window: BrowserWindow): void {
+  if (process.platform === "win32") {
+    // Windows: real show + topmost, and DELIBERATELY no setOpacity (see
+    // parkOffScreen — opacity breaks transparent-window compositing on Windows).
+    // The toast was hide()-d while parked, so showInactive() genuinely re-shows
+    // it (and doesn't steal focus).
+    window.setIgnoreMouseEvents(false);
+    window.showInactive();
+    everShown = true;
+    // Raise ABOVE the Library / foreground window WITHOUT stealing focus.
+    // setAlwaysOnTop(true) → SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE). We do
+    // NOT moveTop(): on Windows that's SetWindowPos(HWND_TOP), which CLEARS
+    // WS_EX_TOPMOST and drops the toast back under the Library. (Topmost won't
+    // actually stick while the fullscreen selector is up — hideAllSelectors
+    // re-asserts it via ensureFloatOverTopmost once the selector hides.)
+    window.setAlwaysOnTop(true);
+    return;
+  }
   window.setIgnoreMouseEvents(false);
   window.setOpacity(1);
+  // macOS: once-only showInactive to add the parked panel to AppKit's window
+  // list (re-showing it on later captures is unnecessary and can reshuffle key
+  // state). Linux follows the same once-only opacity-park model.
   if (!everShown) {
     window.showInactive();
     everShown = true;
   }
-  // moveTop within the floating level — beats other floating windows
-  // that may have come up since our last show.
+  // macOS/Linux: moveTop within the floating level beats other floating
+  // windows that may have come up since our last show.
   window.moveTop();
 }
 
@@ -411,6 +444,68 @@ export function setFloatOverState(event: FloatOverEvent): void {
 /** Snapshot of the current state. Used by tests + the cancel path. */
 export function getFloatOverState(): FloatOverState {
   return state;
+}
+
+/**
+ * One attempt to re-raise the toast to topmost (Windows). While the region
+ * selector covers the screen (native fullscreen + screen-saver always-on-top),
+ * setAlwaysOnTop(true) on the toast during `show-loaded` silently doesn't stick
+ * — and crucially `isAlwaysOnTop()` reads back `false` in that state, which
+ * gives us a reliable "did it take?" signal to poll on. Returns `true` once the
+ * flag actually sticks (or when there's nothing to do — not win32, not loaded,
+ * or the singleton is gone), `false` while the assert is still being swallowed.
+ *
+ * The selector's `leave-full-screen` event does NOT fire on Windows
+ * (setFullScreen grows the window but isFullScreen() stays false), so the
+ * region selector drives this from `hideAllSelectors` via
+ * {@link ensureFloatOverTopmost} — the reliable "selector is now hidden" point.
+ */
+function reassertFloatOverTopmost(): boolean {
+  if (process.platform !== "win32") return true;
+  if (state.kind !== "loaded") return true;
+  if (singleton === null || singleton.isDestroyed()) return true;
+  singleton.setAlwaysOnTop(true);
+  singleton.showInactive();
+  // Force a full repaint. The toast was first shown while occluded by the
+  // fullscreen selector; even with native occlusion calc disabled, nudge
+  // Chromium to composite a fresh frame now that nothing covers it.
+  if (!singleton.webContents.isDestroyed()) {
+    singleton.webContents.invalidate();
+  }
+  // Did topmost actually take? `isAlwaysOnTop()` stays false while the
+  // selector's fullscreen window is still in front, so this is the signal
+  // the retry loop converges on.
+  return singleton.isAlwaysOnTop();
+}
+
+/**
+ * Re-raise the toast to topmost (Windows) and keep retrying until it actually
+ * sticks. `setFullScreen(false)` on the selector exits asynchronously, so the
+ * first assert from `hideAllSelectors` can land mid-transition and be ignored.
+ * Rather than firing a couple of fixed-delay timers and hoping one lands after
+ * the transition (fragile across slow hardware / RDP), poll on a short interval
+ * and stop the instant `isAlwaysOnTop()` confirms it took — self-terminating
+ * when it works, resilient when the transition runs long. Bounded so a window
+ * that never accepts topmost (state left "loaded", destroyed, etc.) can't spin
+ * forever. No-op off win32.
+ */
+export function ensureFloatOverTopmost(): void {
+  if (process.platform !== "win32") return;
+  // Usually the selector is already down by the time we're called — try once
+  // synchronously and skip the timer churn when it takes immediately.
+  if (reassertFloatOverTopmost()) return;
+  const INTERVAL_MS = 50;
+  const MAX_ATTEMPTS = 40; // up to ~2s of retrying past the first attempt
+  let attempts = 0;
+  const tick = (): void => {
+    attempts += 1;
+    // reassertFloatOverTopmost() returns true both when topmost sticks AND
+    // when there's nothing left to raise (state moved off "loaded", singleton
+    // destroyed) — either way we're done.
+    if (reassertFloatOverTopmost() || attempts >= MAX_ATTEMPTS) return;
+    setTimeout(tick, INTERVAL_MS);
+  };
+  setTimeout(tick, INTERVAL_MS);
 }
 
 /**

@@ -16,7 +16,8 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { desktopCapturer, screen } from "electron";
+import { desktopCapturer, screen, type Display } from "electron";
+import sharp from "sharp";
 import { getMainLogger } from "../log";
 import { classifyCaptureError } from "./permissions";
 
@@ -25,6 +26,66 @@ const log = getMainLogger("pwrsnap:screencapture");
 const execFileAsync = promisify(execFile);
 
 export type Rect = { x: number; y: number; w: number; h: number };
+
+/**
+ * Grab a whole display as a PNG buffer via Electron's `desktopCapturer`
+ * — the cross-platform screen-grab path used on Windows/Linux where the
+ * macOS `/usr/sbin/screencapture` CLI doesn't exist. Returns physical
+ * pixels (the monitor's native resolution). Throws on failure.
+ *
+ * desktopCapturer runs in the main process and, like the macOS path,
+ * needs no native helper. On Windows there's no TCC-style permission
+ * gate, so a failure here is a plain error rather than a "revoked".
+ */
+async function captureDisplayPng(display: Display): Promise<Buffer> {
+  // Request the display's physical size so we don't downscale a HiDPI
+  // monitor. desktopCapturer treats this as a max and returns the
+  // screen's native pixels (so the actual buffer may differ slightly —
+  // callers derive the crop scale from the returned dimensions, not
+  // from scaleFactor, to stay robust).
+  const width = Math.max(1, Math.round(display.bounds.width * display.scaleFactor));
+  const height = Math.max(1, Math.round(display.bounds.height * display.scaleFactor));
+  const sources = await desktopCapturer.getSources({
+    types: ["screen"],
+    thumbnailSize: { width, height }
+  });
+  if (sources.length === 0) {
+    throw new Error("desktopCapturer returned no screen sources");
+  }
+  // Primary match: Electron tags screen sources with `display_id` (the
+  // string form of Display.id) on macOS + Windows. An exact match is
+  // authoritative and the only way to grab the RIGHT monitor on a
+  // multi-display setup.
+  let source = sources.find((s) => s.display_id === String(display.id));
+  if (source === undefined && sources.length === 1) {
+    // Single monitor: the lone source IS this display, even when
+    // `display_id` comes back empty (observed on some Windows configs /
+    // remote sessions). Unambiguous, so take it without a warning.
+    source = sources[0];
+  }
+  if (source === undefined) {
+    // Multi-monitor with no display_id match. The ordering of
+    // desktopCapturer's sources is NOT guaranteed to align with
+    // screen.getAllDisplays(), so an index fallback can grab the wrong
+    // screen — this is a genuine last resort. Log it so a wrong-monitor
+    // capture is diagnosable instead of silently producing the wrong
+    // pixels.
+    const idx = screen.getAllDisplays().findIndex((d) => d.id === display.id);
+    source = (idx >= 0 ? sources[idx] : undefined) ?? sources[0];
+    log.warn(
+      "desktopCapturer: no source matched display_id; falling back to index/first source",
+      { displayId: display.id, sourceCount: sources.length, matchedIndex: idx }
+    );
+  }
+  if (source === undefined) {
+    throw new Error("desktopCapturer returned no usable screen source");
+  }
+  const png = source.thumbnail.toPNG();
+  if (png.length === 0) {
+    throw new Error("desktopCapturer screen thumbnail was empty");
+  }
+  return png;
+}
 
 /**
  * Result of a region capture attempt. Caller awaits `tempPath` and
@@ -218,6 +279,22 @@ export async function captureScreen(displayId: number): Promise<CaptureRegionRes
   }
   const { bounds } = display;
 
+  // Non-macOS: grab the whole display via desktopCapturer (no screencapture CLI).
+  if (process.platform !== "darwin") {
+    const dir = await mkdtemp(join(tmpdir(), "pwrsnap-screen-"));
+    const tempPath = join(dir, `${Date.now()}.png`);
+    try {
+      await writeFile(tempPath, await captureDisplayPng(display));
+      return { ok: true, tempPath, displayId };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: "error",
+        message: err instanceof Error ? err.message : String(err)
+      };
+    }
+  }
+
   const dir = await mkdtemp(join(tmpdir(), "pwrsnap-screen-"));
   const tempPath = join(dir, `${Date.now()}.png`);
   // -R covers exactly this display's logical bounds. The output PNG
@@ -258,6 +335,45 @@ export async function captureRegion(
   const validation = validateRect(rect, displayId);
   if (!validation.valid) {
     return { ok: false, reason: "validation", message: validation.message };
+  }
+
+  // Non-macOS: grab the display via desktopCapturer and crop the rect with
+  // sharp. The rect is in global virtual *logical* coords (validateRect kept
+  // it inside display.bounds); the captured PNG is physical pixels. Derive the
+  // physical-per-logical scale from the actual returned dimensions rather than
+  // assuming display.scaleFactor, then clamp the extract box to the image.
+  if (process.platform !== "darwin") {
+    const display = screen.getAllDisplays().find((d) => d.id === displayId);
+    if (display === undefined) {
+      return { ok: false, reason: "validation", message: `unknown display id: ${displayId}` };
+    }
+    const dir = await mkdtemp(join(tmpdir(), "pwrsnap-"));
+    const tempPath = join(dir, `${Date.now()}.png`);
+    try {
+      const png = await captureDisplayPng(display);
+      const meta = await sharp(png).metadata();
+      const imgW = meta.width ?? Math.round(display.bounds.width * display.scaleFactor);
+      const imgH = meta.height ?? Math.round(display.bounds.height * display.scaleFactor);
+      const sx = imgW / display.bounds.width;
+      const sy = imgH / display.bounds.height;
+      const rawLeft = Math.round((rect.x - display.bounds.x) * sx);
+      const rawTop = Math.round((rect.y - display.bounds.y) * sy);
+      const left = Math.max(0, Math.min(rawLeft, imgW - 1));
+      const top = Math.max(0, Math.min(rawTop, imgH - 1));
+      const width = Math.max(1, Math.min(Math.round(rect.w * sx), imgW - left));
+      const height = Math.max(1, Math.min(Math.round(rect.h * sy), imgH - top));
+      await writeFile(
+        tempPath,
+        await sharp(png).extract({ left, top, width, height }).png().toBuffer()
+      );
+      return { ok: true, tempPath, displayId };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: "error",
+        message: err instanceof Error ? err.message : String(err)
+      };
+    }
   }
 
   const dir = await mkdtemp(join(tmpdir(), "pwrsnap-"));

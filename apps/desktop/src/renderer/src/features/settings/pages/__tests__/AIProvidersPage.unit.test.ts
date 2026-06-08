@@ -151,6 +151,95 @@ describe("AiSurfaceDefaultControl — job routing", () => {
     ]);
   });
 
+  test("shows Fast/Thinking reasoning for an ACP provider and maps them to low/high", async () => {
+    const onChange = vi.fn();
+    const el = await renderSurfaceControl({
+      surface: "enrichment",
+      name: "Enrichment",
+      sub: "",
+      value: { provider: "acp:kimi" },
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [{ value: "acp:kimi", label: "Kimi Code CLI" }],
+      acpModelOptions: [{ id: "kimi-code/kimi-for-coding", label: "Kimi-k2.6", isDefault: true }],
+      acpModelsLoading: false,
+      onChange
+    });
+    const reasoning = el.querySelector<HTMLSelectElement>('[aria-label="Enrichment reasoning effort"]');
+    expect(reasoning).not.toBeNull();
+    const options = Array.from(reasoning!.options).map((o) => ({ value: o.value, text: o.textContent }));
+    // Enrichment's empty default resolves to Fast on ACP, so the option says so.
+    expect(options).toEqual([
+      { value: "", text: "Default (Fast)" },
+      { value: "low", text: "Fast" },
+      { value: "high", text: "Thinking" }
+    ]);
+    // Picking "Thinking" stores reasoning "high" (the kit maps it to thinking ON).
+    await act(async () => {
+      reasoning!.value = "high";
+      reasoning!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledWith({ reasoning: "high" });
+  });
+
+  test("labels the ACP chat default 'Default (Thinking)' (chat defaults to thinking on)", async () => {
+    const el = await renderSurfaceControl({
+      surface: "libraryChat",
+      name: "Library chat",
+      sub: "",
+      value: { provider: "acp:kimi" },
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [{ value: "acp:kimi", label: "Kimi Code CLI" }],
+      acpModelOptions: [{ id: "kimi-code/kimi-for-coding", label: "Kimi-k2.6", isDefault: true }],
+      acpModelsLoading: false,
+      onChange: vi.fn()
+    });
+    const reasoning = el.querySelector<HTMLSelectElement>('[aria-label="Library chat reasoning effort"]');
+    const def = Array.from(reasoning!.options).find((o) => o.value === "");
+    expect(def?.textContent).toBe("Default (Thinking)");
+  });
+
+  test("a stale Codex 'medium' under an ACP provider shows Thinking, not a blank dropdown", async () => {
+    const el = await renderSurfaceControl({
+      surface: "libraryChat",
+      name: "Library chat",
+      sub: "",
+      // "medium" was set while this surface was on Codex, then the provider was
+      // switched to an ACP agent. It isn't an ACP choice, so without clamping the
+      // <select> would land on a blank selection.
+      value: { provider: "acp:kimi", reasoning: "medium" },
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [{ value: "acp:kimi", label: "Kimi Code CLI" }],
+      acpModelOptions: [{ id: "kimi-code/kimi-for-coding", label: "Kimi-k2.6", isDefault: true }],
+      acpModelsLoading: false,
+      onChange: vi.fn()
+    });
+    const reasoning = el.querySelector<HTMLSelectElement>('[aria-label="Library chat reasoning effort"]');
+    // Displays as Thinking — matching what the ACP backend does with "medium".
+    expect(reasoning!.value).toBe("high");
+  });
+
+  test("keeps graded low/medium/high reasoning for a Codex provider", async () => {
+    const onChange = vi.fn();
+    const el = await renderSurfaceControl({
+      surface: "libraryChat",
+      name: "Library chat",
+      sub: "",
+      value: { provider: "" },
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [],
+      acpModelOptions: undefined,
+      acpModelsLoading: false,
+      onChange
+    });
+    const reasoning = el.querySelector<HTMLSelectElement>('[aria-label="Library chat reasoning effort"]');
+    const values = Array.from(reasoning!.options).map((o) => o.value);
+    expect(values).toEqual(["", "low", "medium", "high"]);
+  });
+
   test("normalizes a stale cross-provider model to Default once the ACP list loads", async () => {
     // The live Grok bug: provider switched to an ACP agent but a Codex model id
     // ("gpt-5.4-mini") lingered → it was sent to the agent every run. Once the

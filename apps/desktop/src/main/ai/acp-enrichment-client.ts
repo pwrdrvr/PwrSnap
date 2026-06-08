@@ -33,6 +33,7 @@ import {
   PWRSNAP_CLIENT_TITLE,
   toAgentKitLogger
 } from "./agent-kit-bindings";
+import { acpReasoningEffort } from "./acp-effort";
 
 export type AcpCaptureEnrichmentClientOptions = {
   /** Resolved agent executable (an absolute path or a bare command). */
@@ -330,7 +331,9 @@ export class AcpCaptureEnrichmentClient {
         prompt,
         imagePaths: request.imagePaths,
         model: request.model ?? null,
-        effort: request.effort ?? "low",
+        // Collapse to the two thinking states the kit honors (Fast/Thinking);
+        // never send a bare "medium" the agent would drop. Default Fast.
+        effort: acpReasoningEffort(request.effort ?? "low"),
         ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {})
       });
 

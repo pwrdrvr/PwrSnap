@@ -194,9 +194,14 @@ export function registerAcpHandlers(params?: {
       // first Settings open after a restart shows the last-discovered list
       // INSTANTLY instead of re-spawning the agent (~seconds).
       const cached = modelCache.get(agentId);
-      if (cached !== undefined) return ok({ agentId, models: cached });
+      if (cached !== undefined && cached.length > 0) return ok({ agentId, models: cached });
       const persisted = loadAcpModelCacheEntry(agentId);
-      if (persisted !== undefined) {
+      // An EMPTY cached list is never a useful hit — it's either "not installed"
+      // (transient) or a stale pre-fix artifact (e.g. agents that advertised no
+      // models before the kit learned to read config-option models). Treat empty
+      // as a miss so the agent is re-probed instead of permanently shadowed by a
+      // historical empty result.
+      if (persisted !== undefined && persisted.models.length > 0) {
         modelCache.set(agentId, persisted.models);
         return ok({ agentId, models: persisted.models });
       }

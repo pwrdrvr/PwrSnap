@@ -131,17 +131,20 @@ function restoreOnScreen(window: BrowserWindow): void {
     everShown = true;
   }
   if (process.platform === "win32") {
-    // Re-assert HWND_TOPMOST so the toast is raised ABOVE the Library /
-    // foreground window WITHOUT stealing focus. Unlike the tray popover (which
-    // calls focus() to raise itself), the float-over must stay non-activating —
-    // and on Windows showInactive() + moveTop() don't reliably raise an
-    // inactive window past the active one (foreground-lock). setAlwaysOnTop(true)
-    // maps to SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE), which does.
+    // Raise the toast ABOVE the Library / foreground window WITHOUT stealing
+    // focus. setAlwaysOnTop(true) → SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE),
+    // which both raises it and keeps it there. Crucially we DON'T call
+    // moveTop() here: on Windows moveTop() is SetWindowPos(HWND_TOP), which
+    // CLEARS the WS_EX_TOPMOST flag — calling it right after setAlwaysOnTop(true)
+    // dropped the toast back under the Library (the diagnostic showed
+    // alwaysOnTop flipping to false at show-loaded, and the toast never
+    // appeared).
     window.setAlwaysOnTop(true);
+  } else {
+    // macOS/Linux: moveTop within the floating level beats other floating
+    // windows that may have come up since our last show.
+    window.moveTop();
   }
-  // moveTop so the toast beats other always-on-top windows that may have come
-  // up since our last show.
-  window.moveTop();
   if (process.platform === "win32") {
     const b = window.getBounds();
     log.info("float-over restoreOnScreen (win)", {

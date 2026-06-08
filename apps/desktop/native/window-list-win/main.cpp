@@ -70,6 +70,13 @@
 //                                  taskbar / Alt-Tab and aren't snap
 //                                  targets, the closest analog to the
 //                                  macOS layer != 0 chrome drop.
+//   - shell furniture            → drop the desktop host (Progman /
+//                                  WorkerW) and the taskbars
+//                                  (Shell_TrayWnd / Shell_SecondaryTrayWnd)
+//                                  by window class — they're visible,
+//                                  titled, non-tool top-levels that would
+//                                  otherwise be snap targets (the desktop
+//                                  is full-screen). See IsShellFurniture.
 //   - DWMWA_CLOAKED              → drop cloaked windows (UWP suspended
 //                                  apps, windows on another virtual
 //                                  desktop, ghost windows). Their
@@ -240,6 +247,35 @@ bool IsCloaked(HWND hwnd) {
   return SUCCEEDED(hr) && cloaked != 0;
 }
 
+// True for the Windows shell's own "furniture" windows — the desktop
+// host and the taskbar(s). These are visible, titled, non-tool,
+// non-cloaked top-levels that would otherwise sail through the filter
+// and show up as snap targets (the desktop in particular is full-screen,
+// so it becomes a giant bogus target sitting under every real window).
+// They're the Windows analog of the macOS dock / menu bar / status items
+// the Swift helper drops via `layer != 0`. Matched by window class:
+//   - Progman                → the desktop host ("Program Manager"),
+//                              full-screen.
+//   - WorkerW                → the wallpaper/desktop worker window that
+//                              hosts icons behind Progman.
+//   - Shell_TrayWnd          → the primary taskbar.
+//   - Shell_SecondaryTrayWnd → taskbars on secondary monitors.
+// We deliberately do NOT drop `Windows.UI.Core.CoreWindow` here: an
+// uncloaked CoreWindow is usually active system UI (Start / Search) but
+// can also back a real foreground UWP app, and the cloak check above
+// already hides the inactive ones — so blanket-dropping it risks losing
+// a legitimate snap target. Revisit if shell UI proves noisy in practice.
+bool IsShellFurniture(HWND hwnd) {
+  wchar_t cls[64];
+  int n = GetClassNameW(hwnd, cls, static_cast<int>(sizeof(cls) / sizeof(cls[0])));
+  if (n <= 0) {
+    return false;
+  }
+  const std::wstring name(cls, static_cast<size_t>(n));
+  return name == L"Progman" || name == L"WorkerW" ||
+         name == L"Shell_TrayWnd" || name == L"Shell_SecondaryTrayWnd";
+}
+
 // Visible bounds of the window in virtual-screen coords. Prefer the DWM
 // extended-frame rect (excludes the invisible resize-border padding that
 // GetWindowRect includes for DWM-composited windows); fall back to
@@ -288,6 +324,12 @@ BOOL CALLBACK EnumProc(HWND hwnd, LPARAM /*lparam*/) {
   // never show in the taskbar or Alt-Tab. Closest analog to the macOS
   // layer != 0 chrome drop. Not snap targets.
   if ((exStyle & WS_EX_TOOLWINDOW) != 0) {
+    return TRUE;
+  }
+
+  // Shell furniture (desktop host + taskbars) — never snap targets, and
+  // the full-screen desktop would otherwise be a giant bogus target.
+  if (IsShellFurniture(hwnd)) {
     return TRUE;
   }
 

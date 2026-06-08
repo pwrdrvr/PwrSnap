@@ -298,6 +298,14 @@ win:
   target:
     - target: nsis
       arch: [x64]
+  # window-list C++ helper (native/window-list-win/main.cpp → built by
+  # scripts/build-native.mjs into build/native/window-list.exe). Same role as
+  # PwrSnapWindowList on macOS: drives snap-to-window in the region selector +
+  # source-app metadata. Resolved at runtime via process.resourcesPath as
+  # PwrSnapWindowList.exe in src/main/capture/window-list.ts.
+  extraResources:
+    - from: "build/native/window-list.exe"
+      to: "PwrSnapWindowList.exe"
 
 nsis:
   oneClick: false

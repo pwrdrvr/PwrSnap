@@ -1,7 +1,10 @@
-// Unit tests for the pure pieces of `window-list.ts`. The Swift
+// Unit tests for the pure pieces of `window-list.ts`. The native
 // helper itself is exercised end-to-end via the E2E suite (it shells
-// to a binary and queries CGWindowListCopyWindowInfo); the hit-test
-// routine `findWindowAt` is pure and lives here.
+// to a binary and enumerates on-screen windows — CGWindowList on
+// macOS, EnumWindows on Windows); the hit-test routine `findWindowAt`
+// and the cross-platform `parseHelperOutput` are pure and live here.
+// `parseHelperOutput` is shared by both producers, so it's covered for
+// the macOS envelope, the Windows envelope, and the legacy bare-array.
 
 import { describe, expect, test } from "vitest";
 import {
@@ -237,6 +240,48 @@ describe("parseHelperOutput", () => {
     expect(result.windows).toEqual([]);
     expect(result.frontmostPid).toBeNull();
     expect(result.frontmostBundleId).toBeNull();
+  });
+
+  test("parses the Windows helper envelope (exe-path bundleId, backslashes, HWND windowId)", () => {
+    // The Windows C++ helper (native/window-list-win/main.cpp) emits the
+    // SAME envelope as the Swift helper, but with Windows-flavored field
+    // values: `windowId` is the HWND value, `bundleId` is the owning
+    // process's full exe path (Windows has no reverse-DNS bundle id),
+    // `appName` is the exe basename without extension. This is the exact
+    // byte shape that exe produces — including the doubled backslashes a
+    // JSON-encoded Windows path carries — so it locks the cross-platform
+    // parse path against the Windows producer.
+    const stdout =
+      '{"windows":[' +
+      '{"windowId":133048,"pid":7421,' +
+      '"bundleId":"C:\\\\Program Files\\\\Slack\\\\slack.exe",' +
+      '"appName":"slack","title":"general - PwrDrvr",' +
+      '"bounds":{"x":100,"y":100,"width":800,"height":600},' +
+      '"layer":0,"alpha":1,"isFrontmostInApp":true},' +
+      '{"windowId":65932,"pid":9001,' +
+      '"bundleId":"C:\\\\Windows\\\\explorer.exe",' +
+      '"appName":"explorer","title":null,' +
+      '"bounds":{"x":0,"y":0,"width":1920,"height":1040},' +
+      '"layer":0,"alpha":0.502,"isFrontmostInApp":true}' +
+      '],"frontmostPid":7421,' +
+      '"frontmostBundleId":"C:\\\\Program Files\\\\Slack\\\\slack.exe"}';
+    const result = parseHelperOutput(stdout);
+    expect(result.windows).toHaveLength(2);
+    const [slack, explorer] = result.windows;
+    // exe path survives the backslash round-trip intact.
+    expect(slack!.bundleId).toBe("C:\\Program Files\\Slack\\slack.exe");
+    expect(slack!.appName).toBe("slack");
+    expect(slack!.windowId).toBe(133048);
+    expect(slack!.title).toBe("general - PwrDrvr");
+    expect(slack!.bounds).toEqual({ x: 100, y: 100, width: 800, height: 600 });
+    expect(slack!.isFrontmostInApp).toBe(true);
+    // null title + fractional layered alpha both parse cleanly.
+    expect(explorer!.title).toBeNull();
+    expect(explorer!.alpha).toBeCloseTo(0.502);
+    // frontmost cross-check fields propagate, matching the macOS shape so
+    // the region-selector z-order/frontmost diagnostic works identically.
+    expect(result.frontmostPid).toBe(7421);
+    expect(result.frontmostBundleId).toBe("C:\\Program Files\\Slack\\slack.exe");
   });
 
   test("envelope rejects non-number/non-string frontmost field types", () => {

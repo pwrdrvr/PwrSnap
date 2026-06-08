@@ -203,9 +203,6 @@ export function HotkeysPage(): ReactElement {
             onUnbind={onUnbind("reshowFloatOver")}
           />
         </Row>
-        <Row label="Open Settings" sub="This window. Fixed, per macOS convention." tag="fixed">
-          <Hk keys={["⌘", ","]} />
-        </Row>
       </Card>
 
       <Card

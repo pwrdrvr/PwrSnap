@@ -378,7 +378,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
           <button
             className="ps-tray__hdr-btn"
             type="button"
-            title="Settings  (⌘,)"
+            title="Settings"
             onClick={() => { void dispatch("settings:open", {}); }}
           >
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -399,7 +399,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
           of the 6-mode grid because it's the single highest-frequency
           path: smart auto-mode that picks region / window / full
           screen based on what the cursor is pointing at when the
-          user fires ⌘⇧P. The orange fill + outlined ring make it
+          user runs Quick Capture. The orange fill + outlined ring make it
           unmistakably the default; explicit modes sit below as
           opt-in specializations. */}
       <button

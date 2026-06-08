@@ -108,6 +108,7 @@ import {
   installTray,
   measureTrayFirstPaintForE2E,
   prewarmTrayWindow,
+  setTrayHotkeys,
   showTrayPopoverForE2E
 } from "./tray";
 import { createMainWindow, findMainLibraryWindow, reclaimDockIconIfLibraryAlive } from "./window";
@@ -126,13 +127,6 @@ const APP_COPYRIGHT = "Copyright © 2026 PwrDrvr LLC. All rights reserved.";
 const APP_WEBSITE = "https://pwrsnap.com";
 const APP_DOCS = "https://docs.pwrsnap.com";
 const APP_ISSUE_REPORTER = "https://github.com/pwrdrvr/PwrSnap/issues/new";
-/** Settings (⌘,) stays hardcoded — it's not user-rebindable (the
- *  Hotkeys page shows it as a fixed reference only), and the platform
- *  convention is well-established. Quick Capture / Region / Window /
- *  Full Screen / All Screens / Timed / Video Capture / Re-show last
- *  Float-Over are dynamically registered from `settings.hotkeys.*` via
- *  `wireHotkeyRegistrations`. */
-const SETTINGS_SHORTCUT = "CommandOrControl+,";
 const PASTE_FROM_CLIPBOARD_MENU_ID = "file-new-paste-from-clipboard";
 
 /** The hotkey kinds we register from `settings.hotkeys.*`. Order
@@ -193,7 +187,6 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
   };
   const settingsItem: Electron.MenuItemConstructorOptions = {
     label: "Settings…",
-    accelerator: SETTINGS_SHORTCUT,
     click: (_item, sourceWindow) => openSettings(sourceWindow)
   };
   // Stripped-down View menu — Reload / Force Reload / Toggle DevTools
@@ -491,6 +484,7 @@ async function wireHotkeyRegistrations(): Promise<void> {
   let currentChannel: Settings["updates"]["channel"] = "latest";
   try {
     const settings = await service.read();
+    setTrayHotkeys(settings.hotkeys);
     applyHotkeys(settings.hotkeys);
     // Pick up the persisted developer-mode flag and re-install the menu
     // so the View submenu matches the user's choice from the start of
@@ -506,6 +500,7 @@ async function wireHotkeyRegistrations(): Promise<void> {
   }
   setUpdateChannelResolver(() => currentChannel);
   onSettingsChanged((settings) => {
+    setTrayHotkeys(settings.hotkeys);
     applyHotkeys(settings.hotkeys);
     if (settings.general.developerMode !== lastKnownDeveloperMode) {
       installApplicationMenu(settings.general.developerMode);
@@ -547,19 +542,6 @@ async function wireHotkeyRegistrations(): Promise<void> {
         message: cause instanceof Error ? cause.message : String(cause)
       });
     }
-  }
-}
-
-function registerSettingsShortcut(): void {
-  // ⌘, → open (or focus) the Settings window. Same bus-routing
-  // discipline as ⌘⇧P so a future MCP / HTTP transport gets it for
-  // free.
-  const log = getMainLogger("pwrsnap:shortcut");
-  const ok = globalShortcut.register(SETTINGS_SHORTCUT, () => {
-    void bus.dispatch("settings:open", {}, { principal: "ipc" });
-  });
-  if (!ok) {
-    log.warn("failed to register global shortcut", { shortcut: SETTINGS_SHORTCUT });
   }
 }
 
@@ -1209,9 +1191,8 @@ export function bootstrapApp(): void {
       preWarmRegionSelector();
     }
     if (!isE2E) {
-      // Settings (⌘,) is fixed; capture/region/window/video are
-      // dynamically registered from settings + rebind on change.
-      registerSettingsShortcut();
+      // Capture/region/window/video are dynamically registered from
+      // settings + rebind on change.
       void wireHotkeyRegistrations();
     }
     createMainWindow();

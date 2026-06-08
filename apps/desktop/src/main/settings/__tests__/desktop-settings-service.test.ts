@@ -292,6 +292,45 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.ai.defaults.enrichment.model).toBe("gpt-5.5");
   });
 
+  test("does NOT seed the Codex captionModel onto an ACP enrichment provider", async () => {
+    // Regression: a file that switched the enrichment backend to an ACP agent
+    // but never picked an agent model must NOT inherit `codex.captionModel`
+    // (a Codex id the agent rejects). enrichment.model stays unset → the ACP
+    // path resolves to "" = the agent's own default. The Codex-default chat
+    // surfaces still keep behaving as before.
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: { enabled: true, defaults: { enrichment: { provider: "acp:kimi" } } }
+      }),
+      "utf8"
+    );
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.ai.defaults.enrichment.provider).toBe("acp:kimi");
+    expect(settings.ai.defaults.enrichment.model).toBeUndefined();
+  });
+
+  test("an explicit ACP enrichment model is preserved (not overridden by the seed)", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: {
+          enabled: true,
+          defaults: { enrichment: { provider: "acp:kimi", model: "kimi-code/kimi-for-coding" } }
+        }
+      }),
+      "utf8"
+    );
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.ai.defaults.enrichment.model).toBe("kimi-code/kimi-for-coding");
+  });
+
   test("v1 shape with explicit `ai.defaults` preserves provider/model/reasoning", async () => {
     const filePath = join(workDir, "settings.json");
     writeFileSync(

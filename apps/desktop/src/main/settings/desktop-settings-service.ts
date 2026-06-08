@@ -665,7 +665,17 @@ function parseAiSurfaceDefault(
   }
   if (typeof rec.model === "string" && rec.model.trim().length > 0) {
     out.model = rec.model.trim();
-  } else if (seedModel !== undefined && seedModel.trim().length > 0) {
+  } else if (
+    seedModel !== undefined &&
+    seedModel.trim().length > 0 &&
+    out.provider === undefined
+  ) {
+    // The legacy `codex.captionModel` seed is meaningful ONLY for the Codex
+    // backend. When this surface routes to an ACP agent (`out.provider` set),
+    // a Codex model id is wrong — the agent rejects it (e.g. Kimi: "Invalid
+    // params") and falls back to its own default while the run misreports the
+    // rejected id. Leave `model` empty so the ACP path resolves to "" (= the
+    // agent's own default). A genuinely ACP-specific pick still rides `rec.model`.
     out.model = seedModel.trim();
   }
   if (isAiReasoningEffort(rec.reasoning)) {

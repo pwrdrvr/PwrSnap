@@ -38,8 +38,8 @@ importers:
         specifier: 1.29.0
         version: 1.29.0(zod@4.4.3)
       '@pwrdrvr/agent-acp':
-        specifier: ^0.10.3
-        version: 0.10.3
+        specifier: ^0.12.0
+        version: 0.12.0
       '@pwrdrvr/agent-chat-react':
         specifier: ^0.1.2
         version: 0.1.2(react@19.2.6)
@@ -896,8 +896,8 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  '@pwrdrvr/agent-acp@0.10.3':
-    resolution: {integrity: sha512-Pv1ryAoOa7eFb3z3+Vmrlt5BhprFupno7riA7C9YomoHbl5P7XCVrzGLZPfhIcRyzW1dtPeUJoVtNT6qRm/v+Q==}
+  '@pwrdrvr/agent-acp@0.12.0':
+    resolution: {integrity: sha512-79B0dhU6XTitgYEkQjY0t8bEcOTjfvD2wcjoArVB/uxFr9hvUz3KCb4Y7BHOHtOcIC36P6UUfarwlFh+gahDsw==}
 
   '@pwrdrvr/agent-chat-react@0.1.2':
     resolution: {integrity: sha512-IDEYEDg7VQiYzxTvRK22GeHFuo0cB2LcrGwQ4v86A5ThBFB7I/sVZfacWUwjNJz7H/87ADCl7jvVD/8DLs0NAA==}
@@ -910,8 +910,14 @@ packages:
   '@pwrdrvr/agent-core@0.1.3':
     resolution: {integrity: sha512-4yN246yJvMvupOd1R3Z/wo2QfpfpP7WWX3RvATklZVWthrjJgmVSoHn0J8emvJdySJAvvG0eE6TkQB7VNAnqVw==}
 
+  '@pwrdrvr/agent-core@0.2.0':
+    resolution: {integrity: sha512-zTo7vJGekyZX2h9xWYiZfQvt+qKTPhuciWyCouow1shaKgg0Bn6B8S5lTRvMzxvT7feKOZ7zy/To2Cu6+1i1+A==}
+
   '@pwrdrvr/agent-transport@0.1.5':
     resolution: {integrity: sha512-Hno/VuE9qLM/7X4lztD3qxZaquswSkTc8KuCVlYtLsGJiVC2Tox/DufJIWEKUEAIBFNvuFKul4NMy8KPFqqdUw==}
+
+  '@pwrdrvr/agent-transport@0.1.6':
+    resolution: {integrity: sha512-lkKHg4q/4+1XB+h8r8Vl7dq2LpV4uFG5XZ10t0MCIW19IW/DAWCm6w+etxcef5KkC9XUjDV2ZIGjWW91C5QomA==}
 
   '@pwrdrvr/codex-app-server-protocol@0.133.0':
     resolution: {integrity: sha512-mt+geA0RZEz5A3kEK8poDE3wYDrteWGb2syfXS4/kzzgWEe26DUbQlbdQyFYoa7Zs/Z6L64gNGIfFHgemfzj8g==}
@@ -3726,10 +3732,10 @@ snapshots:
     dependencies:
       playwright: 1.60.0
 
-  '@pwrdrvr/agent-acp@0.10.3':
+  '@pwrdrvr/agent-acp@0.12.0':
     dependencies:
-      '@pwrdrvr/agent-core': 0.1.3
-      '@pwrdrvr/agent-transport': 0.1.5
+      '@pwrdrvr/agent-core': 0.2.0
+      '@pwrdrvr/agent-transport': 0.1.6
       '@zed-industries/agent-client-protocol': 0.4.5
 
   '@pwrdrvr/agent-chat-react@0.1.2(react@19.2.6)':
@@ -3747,9 +3753,15 @@ snapshots:
 
   '@pwrdrvr/agent-core@0.1.3': {}
 
+  '@pwrdrvr/agent-core@0.2.0': {}
+
   '@pwrdrvr/agent-transport@0.1.5':
     dependencies:
       '@pwrdrvr/agent-core': 0.1.3
+
+  '@pwrdrvr/agent-transport@0.1.6':
+    dependencies:
+      '@pwrdrvr/agent-core': 0.2.0
 
   '@pwrdrvr/codex-app-server-protocol@0.133.0': {}
 

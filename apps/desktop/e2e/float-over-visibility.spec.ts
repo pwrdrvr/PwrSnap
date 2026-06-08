@@ -50,11 +50,13 @@ async function inspectFloatOver(
   exists: boolean;
   visible: boolean;
   /**
-   * BrowserWindow opacity (0.0 – 1.0). Source of truth for "user can
-   * actually see the toast" because the float-over uses an off-screen
-   * pseudo-hide (opacity 0 + position -20000) instead of `.hide()`,
-   * to avoid AppKit's key-window cascade triggering keyboard focus
-   * loss in other apps. See parkOffScreen() in main/float-over.ts.
+   * BrowserWindow opacity (0.0 – 1.0). On macOS/Linux this is the source of
+   * truth for "user can actually see the toast": the float-over uses an
+   * off-screen pseudo-hide (opacity 0 + position -20000) instead of `.hide()`,
+   * to avoid AppKit's key-window cascade triggering keyboard focus loss in
+   * other apps. On Windows the park is a real `.hide()` (setOpacity breaks
+   * `transparent: true` compositing there), so `visible` is the source of
+   * truth and opacity stays 1. See parkOffScreen() in main/float-over.ts.
    */
   opacity: number | null;
   bounds: { x: number; y: number; width: number; height: number } | null;
@@ -341,19 +343,30 @@ test.describe("float-over visibility", () => {
         .toBe(1);
 
       // Now cancel. setFloatOverState(cancel) calls parkOffScreen()
-      // synchronously inside the same tick, so opacity drops to 0
-      // before the selector goes away.
+      // synchronously inside the same tick.
       await setFloatOverState(app, { kind: "cancel" });
 
-      // Park flips opacity to 0 within one tick. The BrowserWindow is
-      // intentionally never `.hide()`-d — that would call AppKit's
-      // `[NSWindow orderOut:]` which triggers the key-window cascade
-      // we're trying to avoid (yanks keyboard focus from the user's
-      // other app). Electron may clamp the off-screen position for
-      // visible panels, so opacity is the stable assertion here.
       const after = await inspectFloatOver(app);
       expect(after.exists, "window persists; cancel only parks").toBe(true);
-      expect(after.opacity, "cancel parks the window at opacity 0").toBe(0);
+      if (process.platform === "win32") {
+        // Windows parks via a real `.hide()` rather than the opacity-park:
+        // setOpacity() drives whole-window layered alpha, which is mutually
+        // exclusive with `transparent: true`'s per-pixel alpha and leaves the
+        // toast unable to composite (it comes back blank). The AppKit
+        // key-window-cascade concern that motivates the opacity-park doesn't
+        // apply on Windows, so hide() is both correct and necessary. The stable
+        // assertion here is isVisible()===false. See parkOffScreen() in
+        // main/float-over.ts.
+        expect(after.visible, "cancel hides the window on Windows").toBe(false);
+      } else {
+        // macOS/Linux: park flips opacity to 0 within one tick. The
+        // BrowserWindow is intentionally never `.hide()`-d — that would call
+        // AppKit's `[NSWindow orderOut:]` which triggers the key-window cascade
+        // we're trying to avoid (yanks keyboard focus from the user's other
+        // app). Electron may clamp the off-screen position for visible panels,
+        // so opacity is the stable assertion here.
+        expect(after.opacity, "cancel parks the window at opacity 0").toBe(0);
+      }
     } finally {
       await app.close();
     }

@@ -145,7 +145,7 @@ function restoreOnScreen(window: BrowserWindow): void {
     // NOT moveTop(): on Windows that's SetWindowPos(HWND_TOP), which CLEARS
     // WS_EX_TOPMOST and drops the toast back under the Library. (Topmost won't
     // actually stick while the fullscreen selector is up — hideAllSelectors
-    // re-asserts it via reassertFloatOverTopmost once the selector hides.)
+    // re-asserts it via ensureFloatOverTopmost once the selector hides.)
     window.setAlwaysOnTop(true);
     return;
   }
@@ -447,20 +447,23 @@ export function getFloatOverState(): FloatOverState {
 }
 
 /**
- * Re-raise the toast to topmost (Windows). While the region selector covers the
- * screen (native fullscreen + screen-saver always-on-top), setAlwaysOnTop(true)
- * on the toast during `show-loaded` silently doesn't stick (isAlwaysOnTop stays
- * false). The selector's `leave-full-screen` event does NOT fire on Windows
+ * One attempt to re-raise the toast to topmost (Windows). While the region
+ * selector covers the screen (native fullscreen + screen-saver always-on-top),
+ * setAlwaysOnTop(true) on the toast during `show-loaded` silently doesn't stick
+ * — and crucially `isAlwaysOnTop()` reads back `false` in that state, which
+ * gives us a reliable "did it take?" signal to poll on. Returns `true` once the
+ * flag actually sticks (or when there's nothing to do — not win32, not loaded,
+ * or the singleton is gone), `false` while the assert is still being swallowed.
+ *
+ * The selector's `leave-full-screen` event does NOT fire on Windows
  * (setFullScreen grows the window but isFullScreen() stays false), so the
- * region selector calls this from `hideAllSelectors` instead — the reliable
- * "selector is now hidden" point — with short-timer retries to cover
- * setFullScreen(false)'s async exit. No-op unless the toast is in the loaded
- * state.
+ * region selector drives this from `hideAllSelectors` via
+ * {@link ensureFloatOverTopmost} — the reliable "selector is now hidden" point.
  */
-export function reassertFloatOverTopmost(): void {
-  if (process.platform !== "win32") return;
-  if (state.kind !== "loaded") return;
-  if (singleton === null || singleton.isDestroyed()) return;
+function reassertFloatOverTopmost(): boolean {
+  if (process.platform !== "win32") return true;
+  if (state.kind !== "loaded") return true;
+  if (singleton === null || singleton.isDestroyed()) return true;
   singleton.setAlwaysOnTop(true);
   singleton.showInactive();
   // Force a full repaint. The toast was first shown while occluded by the
@@ -469,6 +472,40 @@ export function reassertFloatOverTopmost(): void {
   if (!singleton.webContents.isDestroyed()) {
     singleton.webContents.invalidate();
   }
+  // Did topmost actually take? `isAlwaysOnTop()` stays false while the
+  // selector's fullscreen window is still in front, so this is the signal
+  // the retry loop converges on.
+  return singleton.isAlwaysOnTop();
+}
+
+/**
+ * Re-raise the toast to topmost (Windows) and keep retrying until it actually
+ * sticks. `setFullScreen(false)` on the selector exits asynchronously, so the
+ * first assert from `hideAllSelectors` can land mid-transition and be ignored.
+ * Rather than firing a couple of fixed-delay timers and hoping one lands after
+ * the transition (fragile across slow hardware / RDP), poll on a short interval
+ * and stop the instant `isAlwaysOnTop()` confirms it took — self-terminating
+ * when it works, resilient when the transition runs long. Bounded so a window
+ * that never accepts topmost (state left "loaded", destroyed, etc.) can't spin
+ * forever. No-op off win32.
+ */
+export function ensureFloatOverTopmost(): void {
+  if (process.platform !== "win32") return;
+  // Usually the selector is already down by the time we're called — try once
+  // synchronously and skip the timer churn when it takes immediately.
+  if (reassertFloatOverTopmost()) return;
+  const INTERVAL_MS = 50;
+  const MAX_ATTEMPTS = 40; // up to ~2s of retrying past the first attempt
+  let attempts = 0;
+  const tick = (): void => {
+    attempts += 1;
+    // reassertFloatOverTopmost() returns true both when topmost sticks AND
+    // when there's nothing left to raise (state moved off "loaded", singleton
+    // destroyed) — either way we're done.
+    if (reassertFloatOverTopmost() || attempts >= MAX_ATTEMPTS) return;
+    setTimeout(tick, INTERVAL_MS);
+  };
+  setTimeout(tick, INTERVAL_MS);
 }
 
 /**

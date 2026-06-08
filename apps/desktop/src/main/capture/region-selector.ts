@@ -28,7 +28,7 @@ import {
 } from "./window-list";
 import { captureAndRegister, releaseSnapshot, type ScreenSnapshot } from "./screen-snapshot";
 import { hideTrayPopoverIfVisible } from "../tray";
-import { setFloatOverState, reassertFloatOverTopmost } from "../float-over";
+import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
@@ -863,12 +863,11 @@ function hideAllSelectors(): void {
   // diagnostic log), so the toast rendered behind the Library. show-idle
   // worked because the selector wasn't shown yet. Now that the selector is
   // hidden, re-raise the (already-loaded) toast so it actually appears.
-  // Retry on a short timer: setFullScreen(false) animates out asynchronously,
-  // so the very first attempt can still land mid-transition.
+  // ensureFloatOverTopmost polls until isAlwaysOnTop() confirms the raise
+  // took — setFullScreen(false) exits asynchronously, so a single assert can
+  // land mid-transition; the loop self-terminates the instant it sticks.
   if (process.platform === "win32") {
-    reassertFloatOverTopmost();
-    setTimeout(reassertFloatOverTopmost, 120);
-    setTimeout(reassertFloatOverTopmost, 400);
+    ensureFloatOverTopmost();
   }
 }
 
@@ -905,7 +904,14 @@ function enterMenuBarOverlayMode(win: BrowserWindow): void {
     // enter/leave-full-screen events don't reliably fire — so the post-capture
     // toast can't rely on a leave-full-screen event to re-raise itself. The
     // re-raise is driven from hideAllSelectors instead.
-    if (!win.isFullScreen()) win.setFullScreen(true);
+    //
+    // Call unconditionally — do NOT guard on isFullScreen(): it's unreliable
+    // here (stays false even after a successful setFullScreen(true)), so a
+    // guard would either no-op when it shouldn't or, on the leave side, leave
+    // the window stuck full-screen. setFullScreen(true) on an already-grown
+    // window is a harmless no-op, and this stays correct if a future Electron
+    // makes isFullScreen() accurate. leaveMenuBarOverlayMode mirrors this.
+    win.setFullScreen(true);
     return;
   }
   if (process.platform !== "darwin") return;
@@ -926,7 +932,14 @@ function enterMenuBarOverlayMode(win: BrowserWindow): void {
 
 function leaveMenuBarOverlayMode(win: BrowserWindow): void {
   if (process.platform === "win32") {
-    if (win.isFullScreen()) win.setFullScreen(false);
+    // Unconditional, NOT guarded on isFullScreen(): that getter stays false on
+    // Windows even while the window is grown full-screen (see
+    // enterMenuBarOverlayMode), so `if (win.isFullScreen())` would never fire
+    // and the window would stay stuck at full-monitor size — the real taskbar
+    // would never come back and the next capture's pre-warmed window would
+    // start oversized. setFullScreen(false) on a non-fullscreen window is a
+    // no-op, so calling it unconditionally is safe.
+    win.setFullScreen(false);
     return;
   }
   if (process.platform !== "darwin") return;

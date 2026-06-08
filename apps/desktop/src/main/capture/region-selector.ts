@@ -855,6 +855,21 @@ function hideAllSelectors(): void {
   // wins the z-order race that used to leave the toast hidden behind
   // the previous app's key window. See docs/plans/2026-05-04-001
   // §"Solution 4".
+
+  // Windows: while the selector was up (topmost screen-saver level, and on
+  // win32 native-fullscreen to cover the taskbar), the post-capture toast
+  // could NOT be made topmost — setAlwaysOnTop(true) during show-loaded
+  // silently didn't stick (isAlwaysOnTop stayed false, confirmed via the
+  // diagnostic log), so the toast rendered behind the Library. show-idle
+  // worked because the selector wasn't shown yet. Now that the selector is
+  // hidden, re-raise the (already-loaded) toast so it actually appears.
+  // Retry on a short timer: setFullScreen(false) animates out asynchronously,
+  // so the very first attempt can still land mid-transition.
+  if (process.platform === "win32") {
+    reassertFloatOverTopmost();
+    setTimeout(reassertFloatOverTopmost, 120);
+    setTimeout(reassertFloatOverTopmost, 400);
+  }
 }
 
 /**
@@ -885,6 +900,10 @@ function enterMenuBarOverlayMode(win: BrowserWindow): void {
     // taskbar, so the overlay covers it. (Verified working on Windows; the
     // earlier 0xC0000005 crash was an unrelated tray-right-click bug.)
     if (!win.isFullScreen()) win.setFullScreen(true);
+    log.info("selector enterMenuBarOverlayMode (win)", {
+      isFullScreen: win.isFullScreen(),
+      bounds: win.getBounds()
+    });
     return;
   }
   if (process.platform !== "darwin") return;
@@ -995,12 +1014,16 @@ function createSelectorWindow(display: Display): BrowserWindow {
   }
 
   if (process.platform === "win32") {
-    // The selector covers the taskbar via native fullscreen (see
-    // enterMenuBarOverlayMode). Windows fullscreen exclusivity blocks any OTHER
-    // window from being made topmost while it's up — so the post-capture toast's
-    // setAlwaysOnTop(true) during show-loaded doesn't stick. Once the selector
-    // LEAVES fullscreen, re-raise the toast so it actually appears on top.
-    window.on("leave-full-screen", () => reassertFloatOverTopmost());
+    // Diagnostics: confirm whether native fullscreen actually engages on the
+    // selector (the snap-candidates log shows work-area bounds, which is
+    // pre-fullscreen). The toast re-raise is driven from hideAllSelectors (the
+    // reliable "selector gone" point), not these events — leave-full-screen was
+    // observed NOT to fire on Windows.
+    window.on("enter-full-screen", () => log.info("selector enter-full-screen (win)"));
+    window.on("leave-full-screen", () => {
+      log.info("selector leave-full-screen (win)");
+      reassertFloatOverTopmost();
+    });
   }
 
   const target = rendererTarget(display.id);

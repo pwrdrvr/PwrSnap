@@ -1056,9 +1056,18 @@ Acceptance:
 - [ ] `POST /rpc/capture.region` with a valid bearer + `{rect, displayId}` returns the same `CaptureRecord` shape as the ipcMain path. Both invocations produce a single `captures` row (deduped via `sha256` if the screen content is identical).
 - [ ] `pnpm test:parity` is green: every UI command-bus call has a matching RPC route; no UI-only privileged operations exist.
 
-#### Phase 8: Cross-platform (Windows, Linux) — deferred
+#### Phase 8: Cross-platform (Windows, Linux)
 
-Mark as deferred. Re-plan after macOS feature parity is real.
+- **Phase 8a — Windows: in progress.** No longer deferred. A working Windows
+  GUI port has landed (build/test in [#215](https://github.com/pwrdrvr/PwrSnap/pull/215);
+  tray icon, tray window, float-over, capture + region, window picker, and NSIS
+  installer in [#218](https://github.com/pwrdrvr/PwrSnap/pull/218)). The core
+  capture loop is functional on Windows. Status, architecture decisions, and the
+  remaining work (signing/notarization, auto-update, capture-trigger debounce,
+  shortcut-glyph + chrome polish) are tracked in the dedicated plan:
+  [docs/plans/2026-06-08-001-feat-windows-cross-platform-port-plan.md](2026-06-08-001-feat-windows-cross-platform-port-plan.md).
+  Implementation gotchas: [docs/solutions/2026-06-08-windows-gui-port-gotchas.md](../solutions/2026-06-08-windows-gui-port-gotchas.md).
+- **Phase 8b — Linux: deferred.** Re-plan after Windows is shippable.
 
 ## Alternative Approaches Considered
 

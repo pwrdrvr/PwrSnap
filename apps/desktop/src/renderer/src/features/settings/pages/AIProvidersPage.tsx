@@ -1787,6 +1787,20 @@ export function AiSurfaceDefaultControl({
   const showsStaleAcp =
     chatProviderValue.startsWith("acp:") &&
     !acpProviderOptions.some((o) => o.value === chatProviderValue);
+  // Reasoning options follow the backend. Codex exposes graded effort
+  // (low/medium/high). ACP "thinking" agents (Kimi) expose an on/off thinking
+  // pass — surface it as the same two choices everywhere: "Fast" (no thinking)
+  // and "Thinking". We reuse the existing `reasoning` field: "low" → thinking
+  // OFF, "high" → thinking ON, which the ACP backend maps onto the agent's
+  // `thought_level` config option at turn start (agents without one ignore it).
+  // Enrichment defaults to Fast (its effort default is "low"); chat defaults to
+  // the agent's own default (Kimi: thinking on).
+  const reasoningChoices: Array<{ value: AiReasoningEffort; label: string }> = isAcpProvider
+    ? [
+        { value: "low", label: "Fast" },
+        { value: "high", label: "Thinking" }
+      ]
+    : AI_REASONING_EFFORTS.map((effort) => ({ value: effort, label: effort }));
 
   return (
     <div className="pss__role pss__role--routable" data-surface={surface}>
@@ -1857,36 +1871,34 @@ export function AiSurfaceDefaultControl({
             )}
           </select>
         </label>
-        {/* Reasoning effort (low/medium/high) is a Codex concept; ACP agents
-            don't expose it (they have execution "modes", a separate idea), so
-            the field is hidden for an ACP provider. The stored value is left
-            untouched so it returns if the user switches back to Codex. */}
-        {isAcpProvider ? null : (
-          <label className="pss__ai-surface-field">
-            <span className="pss__ai-surface-field-label">Reasoning</span>
-            <select
-              className="pss__select pss__ai-surface-select"
-              value={reasoningValue}
-              aria-label={`${name} reasoning effort`}
-              onChange={(e) => {
-                const next = e.target.value;
-                if (next === "") {
-                  onChange({ reasoning: "" });
-                  return;
-                }
-                if (!isAiReasoningEffort(next)) return;
-                onChange({ reasoning: next });
-              }}
-            >
-              <option value="">Default</option>
-              {AI_REASONING_EFFORTS.map((effort) => (
-                <option key={effort} value={effort}>
-                  {effort}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
+        {/* Reasoning: graded effort for Codex (low/medium/high), Fast/Thinking
+            for ACP "thinking" agents. Shown for every backend now — for ACP it
+            drives the agent's thinking pass (the kit ignores it for agents that
+            have none, so the worst case is a no-op control). */}
+        <label className="pss__ai-surface-field">
+          <span className="pss__ai-surface-field-label">Reasoning</span>
+          <select
+            className="pss__select pss__ai-surface-select"
+            value={reasoningValue}
+            aria-label={`${name} reasoning effort`}
+            onChange={(e) => {
+              const next = e.target.value;
+              if (next === "") {
+                onChange({ reasoning: "" });
+                return;
+              }
+              if (!isAiReasoningEffort(next)) return;
+              onChange({ reasoning: next });
+            }}
+          >
+            <option value="">Default</option>
+            {reasoningChoices.map((choice) => (
+              <option key={choice.value} value={choice.value}>
+                {choice.label}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
     </div>
   );

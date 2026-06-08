@@ -488,14 +488,26 @@ function buildWindowsHelpers() {
     "dwmapi.lib"
   ];
 
-  const onPath = commandOnPath("cl.exe");
+  // Quote each cl arg so paths with spaces survive cmd parsing.
+  const quotedClArgs = clArgs.map((a) => `"${a}"`).join(" ");
+
   let result;
-  if (onPath) {
+  let tempBat = null;
+  if (commandOnPath("cl.exe")) {
     // Developer Command Prompt already has the toolchain env loaded.
     result = spawnSync("cl.exe", clArgs, { stdio: "inherit" });
   } else {
-    // Locate VsDevCmd.bat via vswhere, then compile through a one-shot
-    // cmd that sources it for the host architecture.
+    // Locate VsDevCmd.bat via vswhere, then compile through a small
+    // generated batch file that sources it for the host architecture.
+    //
+    // Why a batch file rather than `cmd /c "call ... && cl ..."`:
+    // VsDevCmd.bat's path contains spaces (Program Files (x86)\…), and
+    // chaining a quoted `call "<bat>"` with `&& cl.exe "<args>"` through
+    // `cmd /c` runs into cmd.exe's quote-stripping rules (it removes the
+    // first and last quote of the whole command line), which mangles the
+    // bat path — observed as `'"…\VsDevCmd.bat"' is not recognized`. A
+    // standalone .bat sidesteps the rule entirely: each line is parsed
+    // independently with normal quoting.
     const vsDevCmd = findVsDevCmd();
     if (vsDevCmd === null) {
       console.error(
@@ -506,12 +518,18 @@ function buildWindowsHelpers() {
       process.exit(1);
     }
     const hostArch = process.arch === "arm64" ? "arm64" : "amd64";
-    // Quote each cl arg so paths with spaces survive cmd parsing.
-    const quoted = clArgs.map((a) => `"${a}"`).join(" ");
-    const batLine = `call "${vsDevCmd}" -arch=${hostArch} -host_arch=${hostArch} && cl.exe ${quoted}`;
-    result = spawnSync("cmd.exe", ["/d", "/s", "/c", batLine], {
-      stdio: "inherit"
-    });
+    tempBat = join(buildRoot, "build-window-list.bat");
+    // `@echo off` keeps the VsDevCmd banner quiet; `exit /b` propagates
+    // cl's exit code as the batch (and therefore the process) status.
+    const batContents = [
+      "@echo off",
+      `call "${vsDevCmd}" -arch=${hostArch} -host_arch=${hostArch}`,
+      `cl.exe ${quotedClArgs}`,
+      "exit /b %ERRORLEVEL%",
+      ""
+    ].join("\r\n");
+    writeFileSync(tempBat, batContents);
+    result = spawnSync("cmd.exe", ["/d", "/c", tempBat], { stdio: "inherit" });
   }
 
   if (result.status !== 0) {
@@ -519,11 +537,14 @@ function buildWindowsHelpers() {
     process.exit(result.status ?? 1);
   }
 
-  // Best-effort cleanup of the transient object file.
-  try {
-    rmSync(objFile, { force: true });
-  } catch {
-    /* best effort */
+  // Best-effort cleanup of the transient object + batch files.
+  for (const transient of [objFile, tempBat]) {
+    if (transient === null) continue;
+    try {
+      rmSync(transient, { force: true });
+    } catch {
+      /* best effort */
+    }
   }
 
   console.log(`[build-native] window-list.exe → ${output}`);

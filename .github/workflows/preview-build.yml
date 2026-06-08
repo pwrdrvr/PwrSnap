@@ -1,4 +1,4 @@
-name: Preview Build (macOS universal)
+name: Preview Build (macOS DMG + Windows installer)
 
 on:
   pull_request:
@@ -73,4 +73,73 @@ jobs:
           path: |
             apps/desktop/release-stage/dist/*.dmg
             apps/desktop/build/ffmpeg-source/*
+          retention-days: 14
+
+  preview-windows:
+    name: Build preview installer (Windows)
+    # Same build-preview label gate as the macOS preview above: build only when
+    # the label is just applied (labeled) or already present on a new push
+    # (synchronize). Keeps the ~20-30 min Windows pack off every PR/push.
+    if: |
+      (github.event.action == 'labeled' && github.event.label.name == 'build-preview') ||
+      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview'))
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v5
+
+      # Portable pnpm + setup-node combo (the shared pwrdrvr/configure-nodejs
+      # action is bash/Linux-oriented). Mirrors the `windows` job in ci.yml.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.1"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # windows-latest defaults to pwsh; force bash for the version-stamp steps
+      # so they stay identical to the macOS preview job above.
+      - name: Compute preview version
+        id: version
+        shell: bash
+        run: |
+          raw=$(node -p "require('./apps/desktop/package.json').version")
+          base=$(echo "$raw" | sed 's/-.*//')
+          preview="${base}-pr.${{ github.event.pull_request.number }}"
+          echo "version=${preview}" >> "$GITHUB_OUTPUT"
+          echo "Preview version: ${preview}"
+
+      - name: Set preview version in package.json
+        shell: bash
+        run: |
+          cd apps/desktop
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.version = '${{ steps.version.outputs.version }}';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      # Materializes a flat node_modules stage via `pnpm deploy`, rebuilds
+      # better-sqlite3's Electron-native win32-x64 sidecar, injects sharp's
+      # win32-x64 slice, then runs `electron-builder --win nsis --x64`.
+      # Unsigned for now (Authenticode signing is a later task). See
+      # apps/desktop/scripts/package-win.mjs.
+      - name: Build preview installer (unsigned)
+        run: pnpm --filter @pwrsnap/desktop package:win
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: PwrSnap-${{ steps.version.outputs.version }}-windows-installer
+          path: |
+            apps/desktop/release-stage/dist/*-setup.exe
+            apps/desktop/release-stage/dist/*-setup.exe.blockmap
+            apps/desktop/release-stage/dist/builder-debug.yml
           retention-days: 14

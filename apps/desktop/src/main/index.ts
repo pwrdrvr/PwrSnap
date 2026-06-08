@@ -1008,6 +1008,20 @@ export function bootstrapApp(): void {
       "ScreenCaptureKitMac,ScreenCaptureKitMacWindow,ScreenCaptureKitMacScreen,ScreenCaptureKitPickerScreen"
     );
   }
+  if (process.platform === "win32") {
+    // Disable Chromium's native window occlusion calculation. The post-capture
+    // float-over toast is shown (showInactive) WHILE the region selector covers
+    // the screen (native fullscreen + screen-saver always-on-top). Chromium's
+    // occlusion tracker marks the fully-covered transparent toast as occluded
+    // and stops compositing it — and over RDP / remote sessions the occlusion
+    // state doesn't reliably recompute when the toast is later raised topmost,
+    // so it stays a blank/transparent rectangle (visible:true + alwaysOnTop:true
+    // per the API, but never painted). Disabling the feature makes Chromium keep
+    // painting regardless of cover state. Costs a little GPU; correctness wins.
+    // Refs: electron/electron#25368, #35192 (occluded/remote windows render
+    // blank on Windows).
+    app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
+  }
   if (isE2E && process.platform === "linux") {
     app.disableHardwareAcceleration();
     app.commandLine.appendSwitch("disable-gpu");

@@ -456,6 +456,12 @@ export function reassertFloatOverTopmost(): void {
   if (singleton === null || singleton.isDestroyed()) return;
   singleton.setAlwaysOnTop(true);
   singleton.showInactive();
+  // Force a full repaint. The toast was first shown while occluded by the
+  // fullscreen selector; even with native occlusion calc disabled, nudge
+  // Chromium to composite a fresh frame now that nothing covers it.
+  if (!singleton.webContents.isDestroyed()) {
+    singleton.webContents.invalidate();
+  }
   log.info("float-over reassert topmost (win)", {
     alwaysOnTop: singleton.isAlwaysOnTop(),
     visible: singleton.isVisible()

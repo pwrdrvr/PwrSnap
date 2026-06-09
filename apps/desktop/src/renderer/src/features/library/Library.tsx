@@ -56,6 +56,7 @@ import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
 import { useHotkeys } from "../shared/useHotkeys";
+import { AppMenuBar } from "../shared/AppMenuBar";
 import { LayoutToggleButtons } from "../shared/LayoutToggleButtons";
 import "../shared/LayoutToggleButtons.css";
 import { acceleratorToDisplayKeys } from "../../lib/format-hotkey";
@@ -2439,6 +2440,9 @@ export function Library() {
             </span>
             <PwrSnapWordmark />
           </div>
+          {/* Windows: custom title-bar menu bar (the native one is gone under
+              titleBarStyle:"hidden"). No-op on macOS/Linux. */}
+          {window.pwrsnapApi?.platform === "win32" ? <AppMenuBar /> : null}
           <div className="psl__history" aria-label="Navigation history">
             <button
               type="button"

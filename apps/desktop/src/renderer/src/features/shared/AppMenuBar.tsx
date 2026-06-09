@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import { EVENT_CHANNELS } from "@pwrsnap/shared/ipc";
+import { subscribe } from "../../lib/pwrsnap";
 
 type TopLevel = { index: number; label: string };
 
@@ -26,11 +28,21 @@ export function AppMenuBar(): ReactElement | null {
     const api = window.pwrsnapApi;
     if (api?.getAppMenuModel === undefined) return;
     let alive = true;
-    void api.getAppMenuModel().then((model) => {
-      if (alive) setItems(Array.isArray(model) ? model : []);
-    });
+    const loadModel = (): void => {
+      void api.getAppMenuModel().then((model) => {
+        if (alive) setItems(Array.isArray(model) ? model : []);
+      });
+    };
+    loadModel();
+    // The native application menu is rebuilt on settings changes (developer
+    // mode toggles the View submenu today; a future change could add or reorder
+    // a top-level entry). Re-fetch on the broadcast so the bar's labels +
+    // indices never drift from the live menu — a stale index would pop the
+    // wrong submenu.
+    const unsubscribe = subscribe(EVENT_CHANNELS.settingsChanged, loadModel);
     return () => {
       alive = false;
+      unsubscribe();
     };
   }, []);
 

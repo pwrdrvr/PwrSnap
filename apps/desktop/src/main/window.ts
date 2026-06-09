@@ -57,16 +57,24 @@ function platformWindowChrome(menu: MenuVisibility): BrowserWindowConstructorOpt
 const TITLEBAR_BG_DARK = "#050505";
 const TITLEBAR_BG_LIGHT = "#f7f4ef";
 
-/** Themed Windows title-bar overlay (the native caption-button strip). Height
- *  matches the renderer's 52px top bar; color matches the title bar's
- *  `--bg-sidebar` so the strip reads as part of our chrome rather than a system
- *  band. */
+/** Themed Windows title-bar overlay (the native caption-button strip). Color
+ *  matches the title bar's `--bg-sidebar` so the strip reads as part of our
+ *  chrome rather than a system band.
+ *
+ *  Height is 51 — ONE LESS than the renderer's 52px title bar — on purpose: it
+ *  leaves the title bar's bottom 1px border (`border-bottom: var(--border-subtle)`)
+ *  uncovered, so the divider line continues UNDER the native min/max/close
+ *  buttons on every window (GitHub Desktop does this). At full height the
+ *  overlay covers the border, which is why Settings — lacking the main window's
+ *  1px outer-border offset — showed no line under its buttons. The 1px of title
+ *  bar revealed below the buttons is `--bg-sidebar`, the same as `color`, so the
+ *  only thing that shows through is the border itself. */
 function titleBarOverlayForTheme(): { color: string; symbolColor: string; height: number } {
   const isDark = getStartupBackgroundColor() === STARTUP_BG_DARK;
   return {
     color: isDark ? TITLEBAR_BG_DARK : TITLEBAR_BG_LIGHT,
     symbolColor: isDark ? "#cdcdcd" : "#333333",
-    height: 52
+    height: 51
   };
 }
 

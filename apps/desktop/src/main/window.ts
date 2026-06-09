@@ -48,14 +48,23 @@ function platformWindowChrome(menu: MenuVisibility): BrowserWindowConstructorOpt
   return { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 20, y: 18 } };
 }
 
+// Title-bar (caption-button strip) background. This MUST match the renderer's
+// title bar — which paints `var(--bg-sidebar)`, NOT the page background — so the
+// native min/max/close buttons blend seamlessly into our chrome instead of
+// sitting on a slightly-off rectangle (most visible in light theme: pure white
+// behind cream). GitHub Desktop does the same: set the overlay to the title-bar
+// color. Keep these in sync with `--bg-sidebar` in tokens.css.
+const TITLEBAR_BG_DARK = "#050505";
+const TITLEBAR_BG_LIGHT = "#f7f4ef";
+
 /** Themed Windows title-bar overlay (the native caption-button strip). Height
- *  matches the renderer's 52px top bar; colors follow the active theme so the
- *  strip reads as part of our chrome rather than a system band. */
+ *  matches the renderer's 52px top bar; color matches the title bar's
+ *  `--bg-sidebar` so the strip reads as part of our chrome rather than a system
+ *  band. */
 function titleBarOverlayForTheme(): { color: string; symbolColor: string; height: number } {
-  const bg = getStartupBackgroundColor();
-  const isDark = bg === STARTUP_BG_DARK;
+  const isDark = getStartupBackgroundColor() === STARTUP_BG_DARK;
   return {
-    color: bg,
+    color: isDark ? TITLEBAR_BG_DARK : TITLEBAR_BG_LIGHT,
     symbolColor: isDark ? "#cdcdcd" : "#333333",
     height: 52
   };

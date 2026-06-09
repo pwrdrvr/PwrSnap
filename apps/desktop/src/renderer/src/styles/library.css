@@ -547,7 +547,7 @@
    right-aligned content (search, toggles, gear) clears them. */
 :root[data-platform="win32"] .psl__topbar {
   padding-left: 16px;
-  padding-right: 150px;
+  padding-right: var(--win-caption-reserve);
 }
 .psl__topbar button,
 .psl__topbar input,

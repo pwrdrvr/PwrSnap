@@ -35,7 +35,7 @@
    top-right via titleBarOverlay (menu hidden on this window) — reserve right. */
 :root[data-platform="win32"] .szl__titlebar {
   padding-left: 16px;
-  padding-right: 150px;
+  padding-right: var(--win-caption-reserve);
 }
 
 .szl__titlebar button,

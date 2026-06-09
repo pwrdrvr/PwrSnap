@@ -144,6 +144,15 @@
   --space-8: 64px;
   --space-9: 96px;
 
+  /* ---------- WINDOWS CHROME ----------
+     Right-side room a `:root[data-platform="win32"]` title bar reserves for
+     the native min/max/close caption buttons drawn by `titleBarOverlay` (see
+     platformWindowChrome in apps/desktop/src/main/window.ts). Every win32
+     title bar (.psl__topbar, .pss__titlebar, .szl__titlebar, .ps-doc__titlebar)
+     pads its right edge by this so right-aligned content clears the buttons.
+     One knob instead of the same magic number in four stylesheets. */
+  --win-caption-reserve: 150px;
+
   /* ---------- TYPE SCALE ---------- */
   --fs-eyebrow: 11px;
   --fs-meta:    12px;

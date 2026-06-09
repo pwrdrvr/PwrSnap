@@ -24,7 +24,7 @@
    top-right via titleBarOverlay (menu hidden on this window) — reserve right. */
 :root[data-platform="win32"] .ps-doc__titlebar {
   padding-left: 20px;
-  padding-right: 150px;
+  padding-right: var(--win-caption-reserve);
 }
 
 .ps-doc__brand {

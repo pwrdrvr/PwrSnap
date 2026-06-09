@@ -47,7 +47,7 @@
    so reserve room on the right so the title-bar icons clear them. */
 :root[data-platform="win32"] .pss__titlebar {
   padding-left: 16px;
-  padding-right: 150px;
+  padding-right: var(--win-caption-reserve);
 }
 .pss__titlebar button,
 .pss__titlebar .pss__title-r-icon {

@@ -68,6 +68,8 @@ declare global {
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;
       requestFloatOverResize(payload: { width: number; height: number }): void;
+      getAppMenuModel(): Promise<Array<{ index: number; label: string }>>;
+      popupAppMenu(payload: { index: number; x: number; y: number }): void;
       startCaptureDrag(payload: { captureId: string; preset: RenderPreset }): void;
       startVideoDrag(payload: {
         captureId: string;

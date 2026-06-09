@@ -14,7 +14,17 @@
   gap: 18px;
   padding: 0 20px 0 92px; /* left pad clears the OS traffic lights */
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
+  /* Match every other window's title bar (--bg-sidebar). The document windows
+     previously used --bg-surface, which left their title bar a different shade
+     from the rest of the app — and, on Windows, from the native caption-button
+     overlay (whose color tracks --bg-sidebar). */
+  background: var(--bg-sidebar);
+}
+/* Windows: no macOS stoplights on the left; native caption buttons drawn
+   top-right via titleBarOverlay (menu hidden on this window) — reserve right. */
+:root[data-platform="win32"] .ps-doc__titlebar {
+  padding-left: 20px;
+  padding-right: var(--win-caption-reserve);
 }
 
 .ps-doc__brand {

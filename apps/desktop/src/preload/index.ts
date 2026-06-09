@@ -102,6 +102,12 @@ const TRAY_RESIZE_CHANNEL = "tray:resize";
 // "tail" (its box-shadow bleeding into transparent space) and from
 // extending the window's bottom edge into the Dock area.
 const FLOAT_OVER_RESIZE_CHANNEL = "float-over:resize";
+// Windows custom title-bar menu bar. The renderer fetches the top-level menu
+// labels (`app-menu:model`) and, on click / Alt-mnemonic, asks main to pop the
+// real native submenu at the button's location (`app-menu:popup`). See
+// apps/desktop/src/main/app-menu-bridge.ts.
+const APP_MENU_MODEL_CHANNEL = "app-menu:model";
+const APP_MENU_POPUP_CHANNEL = "app-menu:popup";
 
 // Single window entry shipped to the renderer for snap-to-window.
 // Keep this in sync with the renderer's RegionSelector type.
@@ -219,6 +225,22 @@ const pwrsnapApi = {
    */
   requestFloatOverResize(payload: { width: number; height: number }): void {
     ipcRenderer.send(FLOAT_OVER_RESIZE_CHANNEL, payload);
+  },
+  /**
+   * Windows custom menu bar → main: fetch the current top-level application
+   * menu entries (label + index) to paint as buttons in the title bar.
+   */
+  getAppMenuModel(): Promise<Array<{ index: number; label: string }>> {
+    return ipcRenderer.invoke(APP_MENU_MODEL_CHANNEL) as Promise<
+      Array<{ index: number; label: string }>
+    >;
+  },
+  /**
+   * Windows custom menu bar → main: pop the real native submenu for a top-level
+   * entry at the button's window-relative bottom-left (DIP). Fire-and-forget.
+   */
+  popupAppMenu(payload: { index: number; x: number; y: number }): void {
+    ipcRenderer.send(APP_MENU_POPUP_CHANNEL, payload);
   },
   /**
    * Renderer -> main native file drag. Main validates the capture id,

@@ -540,12 +540,53 @@
   border-bottom: 1px solid var(--border-subtle);
   -webkit-app-region: drag;
 }
+/* Windows: the native title bar is reclaimed via titleBarOverlay — no macOS
+   stoplights to clear on the left. We custom-render the menu bar INSIDE this
+   toolbar (AppMenuBar), so the native min/max/close buttons overlay the
+   top-right of this same bar — reserve room on the right so the toolbar's
+   right-aligned content (search, toggles, gear) clears them. */
+:root[data-platform="win32"] .psl__topbar {
+  padding-left: 16px;
+  padding-right: var(--win-caption-reserve);
+}
 .psl__topbar button,
 .psl__topbar input,
 .psl__topbar .psl__view,
 .psl__topbar .psl__search-wrap { -webkit-app-region: no-drag; }
 .psl__topbar-l { display: flex; align-items: center; gap: 12px; }
 .psl__title { font: 700 14px/1 var(--font-display); letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
+
+/* Windows custom title-bar menu bar (File / Edit / View / …). Painted only on
+   win32, where titleBarStyle:"hidden" removes the native menu bar. Buttons opt
+   out of the topbar drag region (via the .psl__topbar button no-drag rule) so
+   they stay clickable. */
+.psl__menubar {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  -webkit-app-region: no-drag;
+}
+.psl__menubar-item {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 500 12.5px/1 var(--font-display);
+  letter-spacing: -0.005em;
+  padding: 6px 9px;
+  border-radius: 6px;
+  cursor: default;
+  white-space: nowrap;
+}
+.psl__menubar-item:hover {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+}
+.psl__menubar-item.is-focused {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
 .psl__title-mark {
   display: inline-flex; align-items: center; justify-content: center;
 }

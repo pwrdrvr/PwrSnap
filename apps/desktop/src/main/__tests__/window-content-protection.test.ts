@@ -91,7 +91,11 @@ vi.mock("../development-dock-icon", () => ({
 
 vi.mock("../settings/startup-appearance", () => ({
   getStartupAppearanceArgs: () => [],
-  getStartupBackgroundColor: () => "#000000"
+  getStartupBackgroundColor: () => "#000000",
+  // window.ts reads STARTUP_BG_DARK for the Windows title-bar overlay color
+  // (the win32 branch of platformWindowChrome runs on the Windows CI runner).
+  STARTUP_BG_DARK: "#000000",
+  STARTUP_BG_LIGHT: "#ffffff"
 }));
 
 vi.mock("../log", () => ({

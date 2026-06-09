@@ -45,6 +45,18 @@
     <script>
       (function () {
         try {
+          // Platform tag for platform-specific chrome CSS (e.g. the Windows
+          // custom title bar drops the macOS stoplight reservation and reserves
+          // space for the native caption buttons). `window.pwrsnapApi.platform`
+          // is exposed by the preload, which runs before this inline script.
+          var plat = window.pwrsnapApi && window.pwrsnapApi.platform;
+          if (typeof plat === "string" && plat) {
+            document.documentElement.setAttribute("data-platform", plat);
+          }
+        } catch (_platErr) {
+          /* non-fatal — CSS just keeps the macOS defaults */
+        }
+        try {
           var theme = "system";
           var bridged = window.__pwrsnapAppearance;
           if (bridged && (bridged.theme === "system" || bridged.theme === "dark" || bridged.theme === "light")) {

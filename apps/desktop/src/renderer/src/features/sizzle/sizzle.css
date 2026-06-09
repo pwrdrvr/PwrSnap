@@ -31,6 +31,12 @@
   gap: 14px;
   -webkit-app-region: drag;
 }
+/* Windows: no macOS stoplights on the left; native caption buttons drawn
+   top-right via titleBarOverlay (menu hidden on this window) — reserve right. */
+:root[data-platform="win32"] .szl__titlebar {
+  padding-left: 16px;
+  padding-right: var(--win-caption-reserve);
+}
 
 .szl__titlebar button,
 .szl__titlebar input,

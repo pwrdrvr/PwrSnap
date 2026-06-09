@@ -7,6 +7,7 @@ import {
   dialog,
   globalShortcut,
   Menu,
+  nativeTheme,
   Notification,
   shell
 } from "electron";
@@ -111,7 +112,13 @@ import {
   setTrayHotkeys,
   showTrayPopoverForE2E
 } from "./tray";
-import { createMainWindow, findMainLibraryWindow, reclaimDockIconIfLibraryAlive } from "./window";
+import {
+  createMainWindow,
+  findMainLibraryWindow,
+  reclaimDockIconIfLibraryAlive,
+  refreshWindowsTitleBarOverlay
+} from "./window";
+import { wireAppMenuBridge } from "./app-menu-bridge";
 import {
   enableOpenFileForwardingToPrimary,
   forwardQueuedOpenFilesToPrimary,
@@ -506,7 +513,12 @@ async function wireHotkeyRegistrations(): Promise<void> {
       installApplicationMenu(settings.general.developerMode);
     }
     currentChannel = settings.updates.channel;
+    // Theme may have changed — re-color the Windows title-bar overlay so the
+    // caption strip tracks the active theme (no-op off win32).
+    refreshWindowsTitleBarOverlay();
   });
+  // System appearance flip (theme = "system" following the OS) — same re-color.
+  nativeTheme.on("updated", refreshWindowsTitleBarOverlay);
   // Startup permission-routing decision (Fast Video Capture, issue
   // #64). Reads the current permission readiness; if any capability
   // needs attention AND the fingerprint differs from the last one we
@@ -1140,6 +1152,10 @@ export function bootstrapApp(): void {
     await migrateLegacyCaptureSources();
     await migrateLegacyRenderCache();
     installApplicationMenu();
+    // Windows custom title-bar menu bar: lets the renderer pop the real native
+    // submenus (the native menu bar is gone under titleBarStyle:"hidden").
+    // No-op surface off Windows — the renderer only mounts the bar on win32.
+    wireAppMenuBridge();
     // Issue #139 — wire the menu refresh + renderer broadcast to OUR
     // clipboard writes. menu-will-show alone was insufficient on macOS;
     // the in-app "Copy MED" flow now updates the menu state at write

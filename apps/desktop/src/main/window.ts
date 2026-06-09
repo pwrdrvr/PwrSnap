@@ -1,12 +1,85 @@
-import { app, BrowserWindow, screen, type Rectangle } from "electron";
+import {
+  app,
+  BrowserWindow,
+  screen,
+  type BrowserWindowConstructorOptions,
+  type Rectangle
+} from "electron";
 import { join } from "node:path";
 import type { AppDocumentKind } from "@pwrsnap/shared";
 import { installDevelopmentDockIcon, showDockWithDevelopmentIcon } from "./development-dock-icon";
-import { getStartupAppearanceArgs, getStartupBackgroundColor } from "./settings/startup-appearance";
+import {
+  getStartupAppearanceArgs,
+  getStartupBackgroundColor,
+  STARTUP_BG_DARK
+} from "./settings/startup-appearance";
 import { getMainLogger } from "./log";
 import { showWindowWhenReady } from "./window-show";
 
 const log = getMainLogger("pwrsnap:window");
+
+/**
+ * Per-platform window chrome for the main + secondary app windows.
+ *
+ * - **macOS**: `hiddenInset` title bar + inset traffic lights. The menu is the
+ *   global macOS app menu bar (always present), so nothing to do per-window.
+ * - **Windows**: reclaim the native title bar via `titleBarStyle: "hidden"` and
+ *   draw the native min/max/close as a themed overlay in the top-right of our
+ *   52px top bar (`titleBarOverlay`). Secondary windows (Settings/Sizzle/doc)
+ *   hide the native menu bar (`autoHideMenuBar`) — they don't need
+ *   File/Edit/View; the main Library window keeps it visible for
+ *   discoverability (Alt still toggles it).
+ * - **Linux** (deferred): default frame.
+ */
+type MenuVisibility = "visible" | "hidden";
+
+function platformWindowChrome(menu: MenuVisibility): BrowserWindowConstructorOptions {
+  if (process.platform === "win32") {
+    return {
+      titleBarStyle: "hidden",
+      titleBarOverlay: titleBarOverlayForTheme(),
+      autoHideMenuBar: menu === "hidden"
+    };
+  }
+  // macOS (and Linux, deferred) keep the prior chrome unchanged: hidden-inset
+  // title bar + inset traffic-light position. `trafficLightPosition` is a no-op
+  // off macOS but harmless, and matching the prior unconditional behavior keeps
+  // the Linux E2E frame identical.
+  return { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 20, y: 18 } };
+}
+
+/** Themed Windows title-bar overlay (the native caption-button strip). Height
+ *  matches the renderer's 52px top bar; colors follow the active theme so the
+ *  strip reads as part of our chrome rather than a system band. */
+function titleBarOverlayForTheme(): { color: string; symbolColor: string; height: number } {
+  const bg = getStartupBackgroundColor();
+  const isDark = bg === STARTUP_BG_DARK;
+  return {
+    color: bg,
+    symbolColor: isDark ? "#cdcdcd" : "#333333",
+    height: 52
+  };
+}
+
+/**
+ * Re-apply the themed title-bar overlay to every Windows window that has one.
+ * Call when the theme changes (settings write or OS appearance flip) so the
+ * caption strip doesn't keep its construction-time colors. No-op off win32;
+ * frameless windows without an overlay (tray, float-over, selector) throw on
+ * `setTitleBarOverlay` and are skipped.
+ */
+export function refreshWindowsTitleBarOverlay(): void {
+  if (process.platform !== "win32") return;
+  const overlay = titleBarOverlayForTheme();
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    try {
+      win.setTitleBarOverlay(overlay);
+    } catch {
+      // Window has no overlay (frameless tray/float-over/selector) — skip.
+    }
+  }
+}
 const SETTINGS_WINDOW_WIDTH = 1040;
 const SETTINGS_WINDOW_HEIGHT = 720;
 const SIZZLE_WINDOW_WIDTH = 1280;
@@ -255,8 +328,8 @@ export function createMainWindow(): BrowserWindow {
     minHeight: 760,
     show: false,
     title: "PwrSnap",
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 20, y: 18 },
+    // Main Library window keeps the native menu visible on Windows.
+    ...platformWindowChrome("visible"),
     backgroundColor: getStartupBackgroundColor(),
     webPreferences: themedWebPreferences()
   });
@@ -391,8 +464,8 @@ export function createSettingsWindow(
     minHeight: 480,
     show: false,
     title: "PwrSnap Settings",
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 20, y: 18 },
+    // Settings has no use for File/Edit/View — hide the native menu on Windows.
+    ...platformWindowChrome("hidden"),
     backgroundColor: getStartupBackgroundColor(),
     webPreferences: themedWebPreferences()
   });
@@ -443,8 +516,7 @@ export function createSizzleWindow(
     minHeight: 560,
     show: false,
     title: "PwrSnap Sizzle Reels",
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 20, y: 18 },
+    ...platformWindowChrome("hidden"),
     backgroundColor: getStartupBackgroundColor(),
     webPreferences: themedWebPreferences()
   });
@@ -490,8 +562,7 @@ export function showAppDocumentWindow(
     minHeight: 480,
     show: false,
     title: appDocumentTitle(kind),
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 20, y: 18 },
+    ...platformWindowChrome("hidden"),
     backgroundColor: getStartupBackgroundColor(),
     webPreferences: themedWebPreferences()
   });

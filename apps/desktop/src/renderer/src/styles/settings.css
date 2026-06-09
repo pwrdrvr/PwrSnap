@@ -42,6 +42,13 @@
   position: relative;
   -webkit-app-region: drag;
 }
+/* Windows: no macOS stoplights on the left; the native min/max/close buttons
+   are drawn top-right via titleBarOverlay (the menu bar is hidden on Settings),
+   so reserve room on the right so the title-bar icons clear them. */
+:root[data-platform="win32"] .pss__titlebar {
+  padding-left: 16px;
+  padding-right: 150px;
+}
 .pss__titlebar button,
 .pss__titlebar .pss__title-r-icon {
   -webkit-app-region: no-drag;

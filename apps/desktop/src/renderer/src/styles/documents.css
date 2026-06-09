@@ -16,6 +16,12 @@
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-surface);
 }
+/* Windows: no macOS stoplights on the left; native caption buttons drawn
+   top-right via titleBarOverlay (menu hidden on this window) — reserve right. */
+:root[data-platform="win32"] .ps-doc__titlebar {
+  padding-left: 20px;
+  padding-right: 150px;
+}
 
 .ps-doc__brand {
   display: inline-flex;

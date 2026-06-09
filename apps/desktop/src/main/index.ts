@@ -7,6 +7,7 @@ import {
   dialog,
   globalShortcut,
   Menu,
+  nativeTheme,
   Notification,
   shell
 } from "electron";
@@ -111,7 +112,12 @@ import {
   setTrayHotkeys,
   showTrayPopoverForE2E
 } from "./tray";
-import { createMainWindow, findMainLibraryWindow, reclaimDockIconIfLibraryAlive } from "./window";
+import {
+  createMainWindow,
+  findMainLibraryWindow,
+  reclaimDockIconIfLibraryAlive,
+  refreshWindowsTitleBarOverlay
+} from "./window";
 import {
   enableOpenFileForwardingToPrimary,
   forwardQueuedOpenFilesToPrimary,
@@ -506,7 +512,12 @@ async function wireHotkeyRegistrations(): Promise<void> {
       installApplicationMenu(settings.general.developerMode);
     }
     currentChannel = settings.updates.channel;
+    // Theme may have changed — re-color the Windows title-bar overlay so the
+    // caption strip tracks the active theme (no-op off win32).
+    refreshWindowsTitleBarOverlay();
   });
+  // System appearance flip (theme = "system" following the OS) — same re-color.
+  nativeTheme.on("updated", refreshWindowsTitleBarOverlay);
   // Startup permission-routing decision (Fast Video Capture, issue
   // #64). Reads the current permission readiness; if any capability
   // needs attention AND the fingerprint differs from the last one we

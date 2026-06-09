@@ -540,6 +540,12 @@
   border-bottom: 1px solid var(--border-subtle);
   -webkit-app-region: drag;
 }
+/* Windows: the native title bar is reclaimed via titleBarOverlay, so there are
+   no macOS stoplights to clear on the left. The native min/max/close buttons
+   render on the visible menu row ABOVE this toolbar, so the toolbar itself needs
+   no right reservation. (If the menu is ever hidden on the main window, add a
+   right reserve like the secondary windows.) */
+:root[data-platform="win32"] .psl__topbar { padding-left: 16px; }
 .psl__topbar button,
 .psl__topbar input,
 .psl__topbar .psl__view,

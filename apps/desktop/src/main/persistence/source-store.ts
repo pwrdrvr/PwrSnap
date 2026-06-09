@@ -279,7 +279,15 @@ async function rematerializeBundleSource(
   tmpCounter += 1;
   const tmp = `${cacheSourcePath}.tmp-${process.pid}-${tmpCounter}`;
   await writeFile(tmp, bytes);
-  await rename(tmp, cacheSourcePath);
+  try {
+    await rename(tmp, cacheSourcePath);
+  } catch (cause) {
+    if (existsSync(cacheSourcePath)) {
+      await rm(tmp, { force: true }).catch(() => undefined);
+    } else {
+      throw cause;
+    }
+  }
 
   log.info("re-extracted bundle source to cache", {
     captureId: record.id,

@@ -64,14 +64,9 @@ import { getCacheSourcePath } from "../persistence/paths";
 import { notifyClipboardChanged } from "../clipboard-events";
 import { mapVideoResolveError, resolveVideoExport } from "../recording/video-export-resolver";
 import { getMainLogger } from "../log";
+import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
 
 const log = getMainLogger("pwrsnap:clipboard");
-
-const PRESET_WIDTHS = {
-  low: 800,
-  med: 1440,
-  high: 0 // 0 = source width (no resize)
-} as const;
 
 export function registerClipboardHandlers(): void {
   // ── clipboard:copy (v1 + v2) ──────────────────────────────────────
@@ -85,19 +80,11 @@ export function registerClipboardHandlers(): void {
       });
     }
 
-    const presetWidth = PRESET_WIDTHS[req.preset];
-    const targetWidth = presetWidth === 0 ? record.width_px : presetWidth;
+    const targetWidth = targetWidthForImagePreset(req.preset, record.width_px);
 
     try {
-      const result = await renderViaCoordinator({
-        captureId: record.id,
-        srcPath: await ensureEffectiveSrcPath(record),
-        imageWidthPx: record.width_px,
-        imageHeightPx: record.height_px,
-        width: targetWidth,
-        format: "png"
-      });
-      const buf = await readFile(result.cachePath);
+      const result = await resolveImagePresetFile(record, req.preset);
+      const buf = await readFile(result.path);
       const image = nativeImage.createFromBuffer(buf);
       if (image.isEmpty()) {
         return err({
@@ -124,7 +111,8 @@ export function registerClipboardHandlers(): void {
         preset: req.preset,
         targetWidth,
         byteSize: buf.length,
-        fromCache: result.fromCache
+        fromCache: result.fromCache,
+        sourceReused: result.sourceReused
       });
       return ok(undefined);
     } catch (cause) {
@@ -153,26 +141,19 @@ export function registerClipboardHandlers(): void {
       });
     }
 
-    const presetWidth = PRESET_WIDTHS[req.preset];
-    const targetWidth = presetWidth === 0 ? record.width_px : presetWidth;
+    const targetWidth = targetWidthForImagePreset(req.preset, record.width_px);
 
     try {
-      const result = await renderViaCoordinator({
-        captureId: record.id,
-        srcPath: await ensureEffectiveSrcPath(record),
-        imageWidthPx: record.width_px,
-        imageHeightPx: record.height_px,
-        width: targetWidth,
-        format: "png"
-      });
-      clipboard.writeText(result.cachePath);
+      const result = await resolveImagePresetFile(record, req.preset);
+      clipboard.writeText(result.path);
       log.info("copied path to clipboard", {
         captureId: record.id,
         preset: req.preset,
         targetWidth,
-        fromCache: result.fromCache
+        fromCache: result.fromCache,
+        sourceReused: result.sourceReused
       });
-      return ok({ path: result.cachePath });
+      return ok({ path: result.path });
     } catch (cause) {
       log.error("clipboard copy-path failed", {
         captureId: record.id,
@@ -661,4 +642,3 @@ export function registerClipboardHandlers(): void {
     }
   });
 }
-

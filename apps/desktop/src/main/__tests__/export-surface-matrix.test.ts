@@ -145,6 +145,7 @@ const { bus } = await import("../command-bus");
 const { registerClipboardHandlers } = await import("../handlers/clipboard-handlers");
 const { registerCaptureHandlers } = await import("../handlers/capture-handlers");
 const { registerLibraryHandlers } = await import("../handlers/library-handlers");
+const { renderViaCoordinator } = await import("../render/coordinator");
 const { openDatabase, closeDatabase, getDb } = await import("../persistence/db");
 const { packBundleV2, buildCompositeThumbnail } = await import(
   "../persistence/bundle-store"
@@ -845,17 +846,15 @@ describe("text overlay sizing — bake honors source shortSide across crops (pwr
     }
     const pngBytes = last.bytes;
 
-    // Output dims: post bake-WYSIWYG fix, the compose-tree's final
-    // resize NO LONGER honors `withoutEnlargement` — the accumulator
-    // is built at the upscaled render dims (renderScale = req.width /
-    // canvasWidthPx) and the output emerges at the requested preset
-    // width. For MED (1440) on a 400×300 canvas: renderScale = 3.6 →
-    // output 1440×1080. Pre-fix this same call would have produced
-    // 400×300 (clamped by withoutEnlargement); now it produces the
-    // proper preset-sized PNG with crisp text rendered at the higher
-    // resolution.
+    // Copy presets now clamp to source width for captures smaller
+    // than LOW/MED, so this user-facing path should remain source-
+    // sized. The text-size assertion below still catches the original
+    // bug because the correct fontSize derives from the source
+    // shortSide (600), not the cropped canvas shortSide (300), at any
+    // render scale.
     const meta = await sharp(pngBytes).metadata();
-    expect(meta.width).toBeGreaterThan(CROPPED_TEXT_CANVAS_W); // upscale happened
+    expect(meta.width).toBe(CROPPED_TEXT_CANVAS_W);
+    expect(meta.height).toBe(CROPPED_TEXT_CANVAS_H);
     const outputWidth = meta.width;
     const outputHeight = meta.height;
     if (outputWidth === undefined || outputHeight === undefined) {
@@ -1427,24 +1426,22 @@ async function readPixel(
 }
 
 describe("scale-aware accumulator: raster + effect layers respect renderScale", () => {
-  test("raster layer fills the FULL output dims at MED on a small canvas (not the upper-left quadrant)", async () => {
+  test("raster layer fills the FULL output dims when the coordinator is explicitly asked to upscale", async () => {
     // Pre-fix this test fails: the raster lands at source dims
     // (400×300) in the upper-left of the render-dim accumulator
     // (1440×1080), so the bottom-right is transparent.
     const captureId = "t_scale_raster_fill_x";
     await seedV2CaptureCyanRaster(captureId);
 
-    const result = await bus.dispatch(
-      "clipboard:copy",
-      { captureId, preset: "med" },
-      { principal: "ipc" }
-    );
-    expect(result.ok).toBe(true);
-    const last = clipboardCaptured.at(-1);
-    if (last === undefined || last.kind !== "writeImage") {
-      throw new Error(`expected writeImage on clipboard, got ${JSON.stringify(last)}`);
-    }
-    const pngBytes = last.bytes;
+    const result = await renderViaCoordinator({
+      captureId,
+      srcPath: "/ignored/for/v2.png",
+      imageWidthPx: SCALE_TEST_CANVAS_W,
+      imageHeightPx: SCALE_TEST_CANVAS_H,
+      width: 1440,
+      format: "png"
+    });
+    const pngBytes = readFileSync(result.cachePath);
 
     // Confirm the output dims actually upscaled (sanity — if this
     // fails, the scale-aware accumulator change reverted).
@@ -1486,7 +1483,7 @@ describe("scale-aware accumulator: raster + effect layers respect renderScale", 
     }
   });
 
-  test("highlight effect clip_rect lands at the SCALED canvas position at MED (not upper-left at unscaled coords)", async () => {
+  test("highlight effect clip_rect lands at the SCALED canvas position when upscaled", async () => {
     // Pre-fix: clip_rect is in canvas coords but applied directly to
     // the render-dim accumulator, so a clip_rect at canvas (250..350,
     // 100..200) extracts the upper-left rect (250..350, 100..200) of
@@ -1495,17 +1492,15 @@ describe("scale-aware accumulator: raster + effect layers respect renderScale", 
     const captureId = "t_scale_effect_pos_xx";
     await seedV2CaptureCyanRasterWithHighlight(captureId);
 
-    const result = await bus.dispatch(
-      "clipboard:copy",
-      { captureId, preset: "med" },
-      { principal: "ipc" }
-    );
-    expect(result.ok).toBe(true);
-    const last = clipboardCaptured.at(-1);
-    if (last === undefined || last.kind !== "writeImage") {
-      throw new Error(`expected writeImage on clipboard, got ${JSON.stringify(last)}`);
-    }
-    const pngBytes = last.bytes;
+    const result = await renderViaCoordinator({
+      captureId,
+      srcPath: "/ignored/for/v2.png",
+      imageWidthPx: SCALE_TEST_CANVAS_W,
+      imageHeightPx: SCALE_TEST_CANVAS_H,
+      width: 1440,
+      format: "png"
+    });
+    const pngBytes = readFileSync(result.cachePath);
     const meta = await sharp(pngBytes).metadata();
     expect(meta.width).toBe(1440);
     expect(meta.height).toBe(1080);

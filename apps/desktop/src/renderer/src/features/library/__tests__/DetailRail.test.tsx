@@ -609,6 +609,25 @@ describe("DetailRail", () => {
     expect(tagCalls).toHaveLength(0);
   });
 
+  test("image LOW/MED/HIGH card body copies a named PNG file, not raw image bytes", async () => {
+    const { el, dispatch } = await renderDetailRail(
+      enrichment({ suggestedFilenameStem: "library-sidebar-export" })
+    );
+
+    const lowButton = el.querySelector<HTMLButtonElement>(".fo__copy-btn");
+    await act(async () => {
+      lowButton?.click();
+      await Promise.resolve();
+    });
+
+    const fileCopyCall = dispatch.mock.calls.find(([name]) => name === "clipboard:copy-file");
+    expect(fileCopyCall).toEqual([
+      "clipboard:copy-file",
+      { captureId: "cap_1", preset: "low" }
+    ]);
+    expect(dispatch.mock.calls.some(([name]) => name === "clipboard:copy")).toBe(false);
+  });
+
   test("shows latest AI run usage and sent media accounting", async () => {
     const { el } = await renderDetailRail(enrichment());
 

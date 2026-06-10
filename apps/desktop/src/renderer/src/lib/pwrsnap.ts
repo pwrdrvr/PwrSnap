@@ -78,7 +78,7 @@ export function startCaptureDrag(captureId: string, preset: RenderPreset = "high
  * with the (captureId, format, preset) tuple; main encodes (cache-
  * hit if already done), generates a poster icon, and calls
  * `webContents.startDrag`. The dragged file is a human-friendly
- * alias (e.g. `Slack__med.mp4`), not the raw render-cache path.
+ * alias (e.g. `checkout-flow-med.mp4`), not the raw render-cache path.
  *
  * Caller invokes this from an `onDragStart` handler after calling
  * `event.preventDefault()` — same shape as the image equivalent.

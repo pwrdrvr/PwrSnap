@@ -105,6 +105,18 @@ vi.mock("../../persistence/paths", () => ({
   getCacheSourcePath: () => "/tmp/source.png"
 }));
 
+vi.mock("../../persistence/enrichment-repo", () => ({
+  getCaptureEnrichment: () => ({
+    acceptedFilenameStem: null,
+    suggestedFilenameStem: "quarterly-roadmap-demo"
+  })
+}));
+
+vi.mock("../../render/file-alias", () => ({
+  prepareRenderedFileAlias: async (_path: string, displayName: string) =>
+    `/cache/video/cap_1/clipboard/r0-10.med.silent/${displayName}`
+}));
+
 vi.mock("../../clipboard-events", () => ({
   notifyClipboardChanged: () => undefined
 }));
@@ -138,21 +150,29 @@ describe("clipboard:copyVideoFile", () => {
     expect(texts).toHaveLength(0);
   });
 
-  test("file-url contains the cache path as a percent-encoded file:// URL", async () => {
-    await bus.dispatch(
+  test("file-url contains the enrichment-based alias path as a percent-encoded file:// URL", async () => {
+    const result = await bus.dispatch(
       "clipboard:copyVideoFile",
       { captureId: "cap_1", format: "mp4", preset: "med" },
       { principal: "ipc" }
     );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.path).toBe(
+      "/cache/video/cap_1/clipboard/r0-10.med.silent/quarterly-roadmap-demo-med.mp4"
+    );
+
     const buffer = clipboardCalls.find((c) => c.kind === "writeBuffer");
     if (buffer === undefined || buffer.kind !== "writeBuffer") {
       throw new Error("expected a writeBuffer call");
     }
     const url = buffer.data.toString("utf8");
-    expect(url.startsWith("file:///cache/video/")).toBe(true);
-    // The path components after `file://` should NOT have raw
-    // shell-special characters that would break NSURL parsing.
-    expect(url).toMatch(/^file:\/\/\/[\w%./-]+$/);
+    expect(url.startsWith("file://")).toBe(true);
+    expect(url.endsWith("/quarterly-roadmap-demo-med.mp4")).toBe(true);
+    expect(url).not.toContain("r0-10.med.silent.mp4");
+    // The URL should be parseable on every OS; pathToFileURL owns
+    // platform-specific drive-letter / separator handling.
+    expect(() => new URL(url)).not.toThrow();
   });
 });
 

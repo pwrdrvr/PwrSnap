@@ -76,9 +76,9 @@ export type CopyButtonProps = {
   dim: string;
   /** Output bytes label, exact once render-cache metrics load. */
   bytes: string;
-  /** Fired when the user clicks. Caller is responsible for
-   *  dispatching `clipboard:copy`; the overlay animation runs
-   *  unconditionally on click. */
+  /** Fired when the user clicks. Caller chooses whether this copies
+   *  raw image bytes or a file-backed export; the overlay animation
+   *  runs unconditionally on click. */
   onCopy: (preset: CopyPreset) => void;
   /** Fired on a drag-start gesture to drag this exact preset as a PNG file. */
   onDrag?: (preset: CopyPreset) => void;

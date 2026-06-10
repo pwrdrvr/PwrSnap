@@ -305,7 +305,7 @@ export type VideoPresetMetricsResult = {
 
 /** Response from `video:prepareDrag` — mirrors `capture:prepareDrag`.
  *  `path` is the human-friendly file alias (e.g.
- *  `<id>__<title>.<preset>.<ext>`); `iconPath` points at the poster
+ *  `<filename-stem>-<preset>.<ext>`); `iconPath` points at the poster
  *  PNG used as the drag preview. */
 export type VideoPrepareDragResult = {
   path: string;
@@ -2574,6 +2574,12 @@ export type Commands = {
 
   // ---- copy / share ----
   "clipboard:copy": { req: { captureId: string; preset: RenderPreset }; res: void };
+  /** Render (or reuse) the image preset cache file and copy it as an
+   *  OS file URL so paste targets receive a real PNG filename. */
+  "clipboard:copy-file": {
+    req: { captureId: string; preset: RenderPreset };
+    res: { path: string };
+  };
   /** Render (or reuse) the cache file at `preset` and write its POSIX
    *  path as plain text to the system clipboard. The drag affordance
    *  on the same button hands off the file itself; this one is for
@@ -2861,11 +2867,10 @@ export type Commands = {
    * Encode (cache-hit if already done) and copy the resulting file
    * to the system clipboard as a file promise — on macOS, this
    * writes `public.file-url` to NSPasteboard so paste in
-   * Slack/Mail/Finder drops the binary, plus a text-path fallback
-   * for terminal/editor consumers. Sibling of `clipboard:copy` for
-   * images, but image clipboard:copy writes raw bytes via
-   * nativeImage; videos can't fit through that API so we use file-
-   * url instead.
+   * Slack/Mail/Finder drops the binary using the friendly export
+   * alias basename. Sibling of `clipboard:copy` for images, but
+   * image clipboard:copy writes raw bytes via nativeImage; videos
+   * can't fit through that API so we use file-url instead.
    */
   "clipboard:copyVideoFile": {
     req: VideoExportCoordinates;

@@ -8,12 +8,79 @@ import electronLog from "electron-log/main.js";
 import { inspect } from "node:util";
 
 let initialized = false;
+let stdioErrorHandlersInstalled = false;
+
+type StdioError = Error & {
+  code?: unknown;
+};
+
+function isClosedStdioError(error: unknown): error is StdioError {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+
+  const code = (error as StdioError).code;
+  return code === "EPIPE" || code === "ERR_STREAM_DESTROYED";
+}
+
+function disableConsoleTransport(): void {
+  electronLog.transports.console.level = false;
+}
+
+function rethrowUnexpectedStdioError(error: unknown): void {
+  queueMicrotask(() => {
+    throw error;
+  });
+}
+
+function handleStdioError(error: unknown): void {
+  if (isClosedStdioError(error)) {
+    disableConsoleTransport();
+    return;
+  }
+
+  rethrowUnexpectedStdioError(error);
+}
+
+function installStdioErrorHandlers(): void {
+  if (stdioErrorHandlersInstalled) {
+    return;
+  }
+
+  stdioErrorHandlersInstalled = true;
+  process.stdout.on("error", handleStdioError);
+  process.stderr.on("error", handleStdioError);
+}
+
+function guardConsoleTransport(): void {
+  const transport = electronLog.transports.console;
+  const writeFn = transport.writeFn;
+
+  transport.writeFn = (options) => {
+    if (transport.level === false) {
+      return;
+    }
+
+    try {
+      writeFn(options);
+    } catch (error) {
+      if (isClosedStdioError(error)) {
+        disableConsoleTransport();
+        return;
+      }
+
+      throw error;
+    }
+  };
+}
 
 export function initializeMainLogger(): void {
   if (initialized) {
     return;
   }
   initialized = true;
+  installStdioErrorHandlers();
+  guardConsoleTransport();
   electronLog.initialize();
   // electron-log's default formatter calls util.inspect with depth=2,
   // which collapses any nested object two levels deep into "[Object]"

@@ -35,6 +35,8 @@ type WindowSpy = {
   getBounds: ReturnType<typeof vi.fn>;
   show: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
+  blur: ReturnType<typeof vi.fn>;
+  hide: ReturnType<typeof vi.fn>;
   moveTop: ReturnType<typeof vi.fn>;
   loadURL: ReturnType<typeof vi.fn>;
   loadFile: ReturnType<typeof vi.fn>;
@@ -64,6 +66,8 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
     getBounds: vi.fn().mockReturnValue({ x: 0, y: 0, width: 1440, height: 900 }),
     show: vi.fn(),
     focus: vi.fn(),
+    blur: vi.fn(),
+    hide: vi.fn(),
     moveTop: vi.fn(),
     loadURL: vi.fn().mockResolvedValue(undefined),
     loadFile: vi.fn().mockResolvedValue(undefined),
@@ -260,5 +264,29 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+
+  test("rebuilds macOS selector windows after hide so the next capture starts fresh", async () => {
+    const { hideSelector, preWarmRegionSelector } = await import(
+      "../capture/region-selector"
+    );
+    preWarmRegionSelector();
+
+    expect(constructed).toHaveLength(1);
+    const first = constructed[0]!;
+
+    hideSelector();
+
+    expect(first.destroy).toHaveBeenCalledTimes(1);
+    expect(constructed).toHaveLength(2);
+    const replacement = constructed[1]!;
+    expect(replacement.options.type).toBe("panel");
+    expect(replacement.setAlwaysOnTop).toHaveBeenCalledWith(true, "screen-saver");
+    expect(replacement.setVisibleOnAllWorkspaces).toHaveBeenCalledWith(true, {
+      visibleOnFullScreen: true
+    });
+
+    preWarmRegionSelector();
+    expect(constructed).toHaveLength(2);
   });
 });

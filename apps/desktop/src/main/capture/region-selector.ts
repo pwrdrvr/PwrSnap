@@ -842,7 +842,8 @@ function hideAllSelectors(): void {
     activeScreenSnapshot = null;
     void releaseSnapshot(stale.id);
   }
-  for (const win of selectorWindows.values()) {
+  const rebuildAfterHide: number[] = [];
+  for (const [displayId, win] of selectorWindows) {
     if (win.isDestroyed()) continue;
     // Order: leave overlay → blur → hide.
     // On macOS a screen-saver-level always-on-top window that just
@@ -854,6 +855,18 @@ function hideAllSelectors(): void {
     leaveMenuBarOverlayMode(win);
     win.blur();
     win.hide();
+    // macOS simple-fullscreen + non-activating NSPanel does not fully
+    // reset to the fresh pre-warm state after one show/hide cycle. The
+    // first selector after launch can cover menu bar + Dock correctly,
+    // while the reused panel after Esc/commit can fall back under that
+    // system chrome. Destroy and recreate the hidden panel so every
+    // subsequent capture starts from the same state as the first one.
+    if (process.platform === "darwin") {
+      rebuildAfterHide.push(displayId);
+    }
+  }
+  for (const displayId of rebuildAfterHide) {
+    rebuildSelectorForDisplay(displayId);
   }
   // Note: previously-frontmost app activation moved OUT of here. The
   // capture handler now calls `activateApp(previousAppPid)` AFTER it

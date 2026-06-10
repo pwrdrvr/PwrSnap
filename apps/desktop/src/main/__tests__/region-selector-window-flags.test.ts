@@ -35,6 +35,8 @@ type WindowSpy = {
   getBounds: ReturnType<typeof vi.fn>;
   show: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
+  blur: ReturnType<typeof vi.fn>;
+  hide: ReturnType<typeof vi.fn>;
   moveTop: ReturnType<typeof vi.fn>;
   loadURL: ReturnType<typeof vi.fn>;
   loadFile: ReturnType<typeof vi.fn>;
@@ -52,6 +54,15 @@ type WindowSpy = {
 
 const constructed: WindowSpy[] = [];
 const ipcListeners = new Map<string, (event: unknown, payload: unknown) => void>();
+const deferredLoadResolvers: (() => void)[] = [];
+let deferSelectorLoads = false;
+
+function selectorLoadPromise(): Promise<void> {
+  if (!deferSelectorLoads) return Promise.resolve();
+  return new Promise((resolve) => {
+    deferredLoadResolvers.push(resolve);
+  });
+}
 
 function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
   return {
@@ -64,9 +75,11 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
     getBounds: vi.fn().mockReturnValue({ x: 0, y: 0, width: 1440, height: 900 }),
     show: vi.fn(),
     focus: vi.fn(),
+    blur: vi.fn(),
+    hide: vi.fn(),
     moveTop: vi.fn(),
-    loadURL: vi.fn().mockResolvedValue(undefined),
-    loadFile: vi.fn().mockResolvedValue(undefined),
+    loadURL: vi.fn(() => selectorLoadPromise()),
+    loadFile: vi.fn(() => selectorLoadPromise()),
     webContents: {
       on: vi.fn(),
       send: vi.fn(),
@@ -176,6 +189,8 @@ const realPlatform = process.platform;
 beforeEach(() => {
   constructed.length = 0;
   ipcListeners.clear();
+  deferredLoadResolvers.length = 0;
+  deferSelectorLoads = false;
   vi.resetModules();
   // createSelectorWindow only sets the NSPanel (`type: 'panel'`) +
   // setVisibleOnAllWorkspaces flags this test guards on darwin — they're
@@ -257,6 +272,70 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     expect(moveTopOrder!).toBeGreaterThan(showOrder!);
     expect(moveTopOrder!).toBeGreaterThan(focusOrder!);
     expect(moveTopOrder!).toBeGreaterThan(webFocusOrder!);
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+
+  test("rebuilds macOS selector windows after hide so the next capture starts fresh", async () => {
+    const { hideSelector, preWarmRegionSelector } = await import(
+      "../capture/region-selector"
+    );
+    preWarmRegionSelector();
+
+    expect(constructed).toHaveLength(1);
+    const first = constructed[0]!;
+
+    hideSelector();
+
+    expect(first.destroy).toHaveBeenCalledTimes(1);
+    expect(constructed).toHaveLength(2);
+    const replacement = constructed[1]!;
+    expect(replacement.options.type).toBe("panel");
+    expect(replacement.setAlwaysOnTop).toHaveBeenCalledWith(true, "screen-saver");
+    expect(replacement.setVisibleOnAllWorkspaces).toHaveBeenCalledWith(true, {
+      visibleOnFullScreen: true
+    });
+
+    preWarmRegionSelector();
+    expect(constructed).toHaveLength(2);
+  });
+
+  test("waits for a rebuilt selector renderer to load before sending per-show mode", async () => {
+    const { hideSelector, pickRegion, preWarmRegionSelector } = await import(
+      "../capture/region-selector"
+    );
+    preWarmRegionSelector();
+
+    deferSelectorLoads = true;
+    hideSelector();
+
+    expect(constructed).toHaveLength(2);
+    expect(deferredLoadResolvers).toHaveLength(1);
+    const replacement = constructed[1]!;
+
+    const pick = pickRegion({ mode: "window", keepPwrSnapChrome: true });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(replacement.webContents.send).not.toHaveBeenCalledWith(
+      "region-selector:mode",
+      expect.anything()
+    );
+    expect(replacement.show).not.toHaveBeenCalled();
+
+    deferredLoadResolvers.shift()?.();
+
+    await vi.waitFor(() => {
+      expect(replacement.webContents.send).toHaveBeenCalledWith(
+        "region-selector:mode",
+        expect.objectContaining({
+          mode: "window",
+          screenUrl: "pwrsnap-screen://r/snapshot-1"
+        })
+      );
+      expect(replacement.show).toHaveBeenCalledTimes(1);
+    });
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });

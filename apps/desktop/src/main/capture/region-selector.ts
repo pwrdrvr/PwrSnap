@@ -36,6 +36,7 @@ const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
 const log = getMainLogger("pwrsnap:region-selector");
 
 const selectorWindows = new Map<number, BrowserWindow>();
+const selectorWindowLoads = new WeakMap<BrowserWindow, Promise<boolean>>();
 let pendingResolver: ((result: SelectorResult) => void) | null = null;
 let resultListenerAttached = false;
 let displayListenersAttached = false;
@@ -319,6 +320,10 @@ export async function pickRegion(
     targetWindow = selectorWindows.get(targetDisplay.id);
   }
   if (targetWindow === undefined) {
+    return { ok: false, reason: "destroyed" };
+  }
+  const targetReady = await waitForSelectorWindowLoad(targetDisplay.id, targetWindow);
+  if (!targetReady) {
     return { ok: false, reason: "destroyed" };
   }
 
@@ -842,7 +847,8 @@ function hideAllSelectors(): void {
     activeScreenSnapshot = null;
     void releaseSnapshot(stale.id);
   }
-  for (const win of selectorWindows.values()) {
+  const rebuildAfterHide: number[] = [];
+  for (const [displayId, win] of selectorWindows) {
     if (win.isDestroyed()) continue;
     // Order: leave overlay → blur → hide.
     // On macOS a screen-saver-level always-on-top window that just
@@ -854,6 +860,18 @@ function hideAllSelectors(): void {
     leaveMenuBarOverlayMode(win);
     win.blur();
     win.hide();
+    // macOS simple-fullscreen + non-activating NSPanel does not fully
+    // reset to the fresh pre-warm state after one show/hide cycle. The
+    // first selector after launch can cover menu bar + Dock correctly,
+    // while the reused panel after Esc/commit can fall back under that
+    // system chrome. Destroy and recreate the hidden panel so every
+    // subsequent capture starts from the same state as the first one.
+    if (process.platform === "darwin") {
+      rebuildAfterHide.push(displayId);
+    }
+  }
+  for (const displayId of rebuildAfterHide) {
+    rebuildSelectorForDisplay(displayId);
   }
   // Note: previously-frontmost app activation moved OUT of here. The
   // capture handler now calls `activateApp(previousAppPid)` AFTER it
@@ -1036,14 +1054,40 @@ function createSelectorWindow(display: Display): BrowserWindow {
   }
 
   const target = rendererTarget(display.id);
-  if (target.kind === "url") {
-    void window.loadURL(target.url);
-  } else {
-    void window.loadFile(target.path, { hash: target.hash });
-  }
+  const load =
+    target.kind === "url"
+      ? window.loadURL(target.url)
+      : window.loadFile(target.path, { hash: target.hash });
+  selectorWindowLoads.set(
+    window,
+    load.then(
+      () => true,
+      (err: unknown) => {
+        if (!window.isDestroyed()) {
+          log.warn("region selector renderer failed to load", {
+            displayId: display.id,
+            message: err instanceof Error ? err.message : String(err)
+          });
+        }
+        return false;
+      }
+    )
+  );
 
   log.info("region selector pre-warmed", { displayId: display.id, bounds });
   return window;
+}
+
+async function waitForSelectorWindowLoad(
+  displayId: number,
+  win: BrowserWindow
+): Promise<boolean> {
+  const load = selectorWindowLoads.get(win);
+  if (load === undefined) {
+    return !win.isDestroyed() && selectorWindows.get(displayId) === win;
+  }
+  const loaded = await load;
+  return loaded && !win.isDestroyed() && selectorWindows.get(displayId) === win;
 }
 
 function rebuildSelectorForDisplay(displayId: number): void {

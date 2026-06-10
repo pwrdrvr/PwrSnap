@@ -61,14 +61,9 @@ import { persistCaptureFromTempV2 } from "../persistence/bundle-store";
 import { getMainLogger } from "../log";
 import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedPngAlias } from "../render/file-alias";
+import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
-
-const PRESET_WIDTHS = {
-  low: 800,
-  med: 1440,
-  high: 0
-} as const;
 
 const DRAG_ICON_WIDTH = 128;
 const COPY_PRESETS = ["low", "med", "high"] as const;
@@ -833,29 +828,17 @@ async function cropScreenSnapshot(
   }
 }
 
-function targetWidthForPreset(preset: RenderPreset, sourceWidthPx: number): number {
-  const presetWidth = PRESET_WIDTHS[preset];
-  return presetWidth === 0 ? sourceWidthPx : presetWidth;
-}
-
 async function renderPresetFile(
   record: CaptureRecord,
   preset: RenderPreset
 ): Promise<CapturePresetMetric & { path: string }> {
-  const targetWidth = targetWidthForPreset(preset, record.width_px);
+  const targetWidth = targetWidthForImagePreset(preset, record.width_px);
   const scale = Math.min(1, targetWidth / Math.max(1, record.width_px));
-  const result = await renderViaCoordinator({
-    captureId: record.id,
-    srcPath: await ensureEffectiveSrcPath(record),
-    imageWidthPx: record.width_px,
-    imageHeightPx: record.height_px,
-    width: targetWidth,
-    format: "png"
-  });
+  const result = await resolveImagePresetFile(record, preset);
 
   return {
     preset,
-    path: result.cachePath,
+    path: result.path,
     widthPx: Math.round(record.width_px * scale),
     heightPx: Math.round(record.height_px * scale),
     byteSize: result.byteSize,

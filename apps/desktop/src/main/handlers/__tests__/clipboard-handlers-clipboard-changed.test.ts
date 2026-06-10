@@ -25,7 +25,8 @@ import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, test, vi 
 import type {
   BundleDocumentV2,
   BundleLayerNode,
-  BundleManifestV2
+  BundleManifestV2,
+  Overlay
 } from "@pwrsnap/shared";
 
 let testDataRoot: string;
@@ -116,7 +117,7 @@ afterEach(() => {
   db.exec(`DELETE FROM captures`);
 });
 
-async function seedSimpleV2Capture(): Promise<string> {
+async function seedSimpleV2Capture(options: { edited?: boolean } = {}): Promise<string> {
   const captureId = `t_clipchg_${Date.now()}`.slice(0, 32);
   const sourcePng = await sharp({
     create: {
@@ -177,9 +178,19 @@ async function seedSimpleV2Capture(): Promise<string> {
       natural_height_px: CANVAS_H
     }
   ];
+  if (options.edited === true) {
+    layers.push({
+      ...common,
+      id: "vec_clipchg_xxxx",
+      kind: "vector",
+      parent_id: rootGroupId,
+      z_index: 1,
+      shape: editedShape()
+    });
+  }
   const document: BundleDocumentV2 = {
     document_format_version: 1,
-    edits_version: 0,
+    edits_version: options.edited === true ? 1 : 0,
     layers,
     tags: [],
     description: null,
@@ -222,6 +233,15 @@ async function seedSimpleV2Capture(): Promise<string> {
     });
   insertLayerTreeForCapture(captureId, layers);
   return captureId;
+}
+
+function editedShape(): Overlay {
+  return {
+    kind: "shape",
+    rect: { x: 0.1, y: 0.1, w: 0.4, h: 0.3 },
+    color: "#ff0000",
+    filled: true
+  };
 }
 
 describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => {
@@ -281,3 +301,55 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     ).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("image preset exports clamp to source width", () => {
+  test("small unedited captures reuse the source file for LOW, MED, and HIGH", async () => {
+    const captureId = await seedSimpleV2Capture();
+
+    const [low, med, high] = await Promise.all([
+      bus.dispatch("clipboard:copy-path", { captureId, preset: "low" }, { principal: "ipc" }),
+      bus.dispatch("clipboard:copy-path", { captureId, preset: "med" }, { principal: "ipc" }),
+      bus.dispatch("clipboard:copy-path", { captureId, preset: "high" }, { principal: "ipc" })
+    ]);
+
+    expect(low.ok).toBe(true);
+    expect(med.ok).toBe(true);
+    expect(high.ok).toBe(true);
+    if (!low.ok || !med.ok || !high.ok) throw new Error("expected all copy-path calls to succeed");
+
+    expect(low.value.path).toBe(high.value.path);
+    expect(med.value.path).toBe(high.value.path);
+    expect(toPosixPath(high.value.path).endsWith("/source.png")).toBe(true);
+
+    const metadata = await sharp(high.value.path).metadata();
+    expect(metadata.width).toBe(CANVAS_W);
+    expect(metadata.height).toBe(CANVAS_H);
+  });
+
+  test("small edited captures reuse one source-sized composite, not the source file", async () => {
+    const captureId = await seedSimpleV2Capture({ edited: true });
+
+    const [low, med, high] = await Promise.all([
+      bus.dispatch("clipboard:copy-path", { captureId, preset: "low" }, { principal: "ipc" }),
+      bus.dispatch("clipboard:copy-path", { captureId, preset: "med" }, { principal: "ipc" }),
+      bus.dispatch("clipboard:copy-path", { captureId, preset: "high" }, { principal: "ipc" })
+    ]);
+
+    expect(low.ok).toBe(true);
+    expect(med.ok).toBe(true);
+    expect(high.ok).toBe(true);
+    if (!low.ok || !med.ok || !high.ok) throw new Error("expected all copy-path calls to succeed");
+
+    expect(low.value.path).toBe(high.value.path);
+    expect(med.value.path).toBe(high.value.path);
+    expect(toPosixPath(high.value.path).endsWith("/source.png")).toBe(false);
+
+    const metadata = await sharp(high.value.path).metadata();
+    expect(metadata.width).toBe(CANVAS_W);
+    expect(metadata.height).toBe(CANVAS_H);
+  });
+});
+
+function toPosixPath(path: string): string {
+  return path.replaceAll("\\", "/");
+}

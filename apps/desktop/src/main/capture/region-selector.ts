@@ -36,6 +36,7 @@ const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
 const log = getMainLogger("pwrsnap:region-selector");
 
 const selectorWindows = new Map<number, BrowserWindow>();
+const selectorWindowLoads = new WeakMap<BrowserWindow, Promise<boolean>>();
 let pendingResolver: ((result: SelectorResult) => void) | null = null;
 let resultListenerAttached = false;
 let displayListenersAttached = false;
@@ -319,6 +320,10 @@ export async function pickRegion(
     targetWindow = selectorWindows.get(targetDisplay.id);
   }
   if (targetWindow === undefined) {
+    return { ok: false, reason: "destroyed" };
+  }
+  const targetReady = await waitForSelectorWindowLoad(targetDisplay.id, targetWindow);
+  if (!targetReady) {
     return { ok: false, reason: "destroyed" };
   }
 
@@ -1049,14 +1054,40 @@ function createSelectorWindow(display: Display): BrowserWindow {
   }
 
   const target = rendererTarget(display.id);
-  if (target.kind === "url") {
-    void window.loadURL(target.url);
-  } else {
-    void window.loadFile(target.path, { hash: target.hash });
-  }
+  const load =
+    target.kind === "url"
+      ? window.loadURL(target.url)
+      : window.loadFile(target.path, { hash: target.hash });
+  selectorWindowLoads.set(
+    window,
+    load.then(
+      () => true,
+      (err: unknown) => {
+        if (!window.isDestroyed()) {
+          log.warn("region selector renderer failed to load", {
+            displayId: display.id,
+            message: err instanceof Error ? err.message : String(err)
+          });
+        }
+        return false;
+      }
+    )
+  );
 
   log.info("region selector pre-warmed", { displayId: display.id, bounds });
   return window;
+}
+
+async function waitForSelectorWindowLoad(
+  displayId: number,
+  win: BrowserWindow
+): Promise<boolean> {
+  const load = selectorWindowLoads.get(win);
+  if (load === undefined) {
+    return !win.isDestroyed() && selectorWindows.get(displayId) === win;
+  }
+  const loaded = await load;
+  return loaded && !win.isDestroyed() && selectorWindows.get(displayId) === win;
 }
 
 function rebuildSelectorForDisplay(displayId: number): void {

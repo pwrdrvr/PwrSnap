@@ -498,6 +498,13 @@ export async function pickRegion(
     // webContents focus is what governs whether keystrokes route
     // to the renderer's document.
     win.webContents.focus();
+    // Non-activating panels do not always win the final z-order
+    // arbitration when another app was frontmost at hotkey time. The
+    // selector still receives normal-window hover/mouse events, but
+    // the Dock/menu bar can remain live above it. Re-assert ordering
+    // after show/focus, matching the float-over and recording HUD
+    // pattern without activating PwrSnap or changing Spaces.
+    win.moveTop();
     selectorVisible = true;
     if (windowListPayload !== null) {
       deliverWindowListPayload(windowListPayload);

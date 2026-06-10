@@ -29,11 +29,19 @@ type WindowSpy = {
   setTitle: ReturnType<typeof vi.fn>;
   setAlwaysOnTop: ReturnType<typeof vi.fn>;
   setVisibleOnAllWorkspaces: ReturnType<typeof vi.fn>;
+  setSimpleFullScreen: ReturnType<typeof vi.fn>;
+  isSimpleFullScreen: ReturnType<typeof vi.fn>;
+  setContentBounds: ReturnType<typeof vi.fn>;
+  getBounds: ReturnType<typeof vi.fn>;
+  show: ReturnType<typeof vi.fn>;
+  focus: ReturnType<typeof vi.fn>;
+  moveTop: ReturnType<typeof vi.fn>;
   loadURL: ReturnType<typeof vi.fn>;
   loadFile: ReturnType<typeof vi.fn>;
   webContents: {
     on: ReturnType<typeof vi.fn>;
     send: ReturnType<typeof vi.fn>;
+    focus: ReturnType<typeof vi.fn>;
   };
   on: ReturnType<typeof vi.fn>;
   once: ReturnType<typeof vi.fn>;
@@ -43,17 +51,26 @@ type WindowSpy = {
 };
 
 const constructed: WindowSpy[] = [];
+const ipcListeners = new Map<string, (event: unknown, payload: unknown) => void>();
 
 function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
   return {
     setTitle: vi.fn(),
     setAlwaysOnTop: vi.fn(),
     setVisibleOnAllWorkspaces: vi.fn(),
+    setSimpleFullScreen: vi.fn(),
+    isSimpleFullScreen: vi.fn().mockReturnValue(false),
+    setContentBounds: vi.fn(),
+    getBounds: vi.fn().mockReturnValue({ x: 0, y: 0, width: 1440, height: 900 }),
+    show: vi.fn(),
+    focus: vi.fn(),
+    moveTop: vi.fn(),
     loadURL: vi.fn().mockResolvedValue(undefined),
     loadFile: vi.fn().mockResolvedValue(undefined),
     webContents: {
       on: vi.fn(),
-      send: vi.fn()
+      send: vi.fn(),
+      focus: vi.fn()
     },
     on: vi.fn(),
     once: vi.fn(),
@@ -108,7 +125,9 @@ vi.mock("electron", () => {
       unregister: vi.fn()
     },
     ipcMain: {
-      on: vi.fn(),
+      on: vi.fn((channel: string, listener: (event: unknown, payload: unknown) => void) => {
+        ipcListeners.set(channel, listener);
+      }),
       removeAllListeners: vi.fn()
     }
   };
@@ -131,11 +150,16 @@ vi.mock("../capture/window-list", () => ({
   activateApp: vi.fn(),
   boundsApproxEqual: () => false,
   listWindows: vi.fn().mockResolvedValue([]),
+  listWindowsSnapshot: vi
+    .fn()
+    .mockResolvedValue({ windows: [], frontmostPid: null, frontmostBundleId: null }),
   selfPidSet: () => new Set<number>()
 }));
 
 vi.mock("../capture/screen-snapshot", () => ({
-  captureAndRegister: vi.fn(),
+  captureAndRegister: vi
+    .fn()
+    .mockResolvedValue({ id: "snapshot-1", filePath: "/tmp/snapshot.png", displayId: 1 }),
   releaseSnapshot: vi.fn()
 }));
 
@@ -151,6 +175,7 @@ const realPlatform = process.platform;
 
 beforeEach(() => {
   constructed.length = 0;
+  ipcListeners.clear();
   vi.resetModules();
   // createSelectorWindow only sets the NSPanel (`type: 'panel'`) +
   // setVisibleOnAllWorkspaces flags this test guards on darwin — they're
@@ -209,5 +234,31 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     if (loadOrder !== undefined && workspacesOrder !== undefined) {
       expect(workspacesOrder).toBeLessThan(loadOrder);
     }
+  });
+
+  test("re-raises the visible selector with moveTop after show/focus without activating the app", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion();
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.moveTop).toHaveBeenCalledTimes(1);
+    });
+
+    const spy = constructed[0]!;
+    const showOrder = spy.show.mock.invocationCallOrder[0];
+    const focusOrder = spy.focus.mock.invocationCallOrder[0];
+    const webFocusOrder = spy.webContents.focus.mock.invocationCallOrder[0];
+    const moveTopOrder = spy.moveTop.mock.invocationCallOrder[0];
+
+    expect(showOrder).toBeDefined();
+    expect(focusOrder).toBeDefined();
+    expect(webFocusOrder).toBeDefined();
+    expect(moveTopOrder).toBeDefined();
+    expect(moveTopOrder!).toBeGreaterThan(showOrder!);
+    expect(moveTopOrder!).toBeGreaterThan(focusOrder!);
+    expect(moveTopOrder!).toBeGreaterThan(webFocusOrder!);
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 });

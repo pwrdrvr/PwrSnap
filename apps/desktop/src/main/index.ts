@@ -413,24 +413,46 @@ function handlerFor(kind: HotkeyKind): () => void {
   const log = getMainLogger("pwrsnap:shortcut");
   switch (kind) {
     case "quickCapture":
-      return () => void runInteractiveCapture("auto");
+      return () => {
+        const shortcutFiredAt = Date.now();
+        log.info("global hotkey fired", { kind, mode: "auto" });
+        void runInteractiveCapture("auto", { kind, shortcutFiredAt });
+      };
     case "region":
-      return () => void runInteractiveCapture("region");
+      return () => {
+        const shortcutFiredAt = Date.now();
+        log.info("global hotkey fired", { kind, mode: "region" });
+        void runInteractiveCapture("region", { kind, shortcutFiredAt });
+      };
     case "window":
-      return () => void runInteractiveCapture("window");
+      return () => {
+        const shortcutFiredAt = Date.now();
+        log.info("global hotkey fired", { kind, mode: "window" });
+        void runInteractiveCapture("window", { kind, shortcutFiredAt });
+      };
     case "fullScreen":
       // Capture the display under the cursor end-to-end (no selector).
       // Same `capture:fullScreen` verb the tray's Full Screen tile uses.
-      return () => void runFullScreenCapture();
+      return () => {
+        log.info("global hotkey fired", { kind });
+        void runFullScreenCapture();
+      };
     case "allScreens":
       // Stitch every connected display into one image. Same
       // `capture:allScreens` verb the tray uses; `"stitched"` matches
       // the Hotkeys row's "single image" description.
-      return () => void runAllScreensCapture();
+      return () => {
+        log.info("global hotkey fired", { kind });
+        void runAllScreensCapture();
+      };
     case "timed":
       // 5-second countdown, then the auto-mode selector. Routed through
       // `capture:interactive` (mode `"timed"`), same as the tray tile.
-      return () => void runInteractiveCapture("timed");
+      return () => {
+        const shortcutFiredAt = Date.now();
+        log.info("global hotkey fired", { kind, mode: "timed" });
+        void runInteractiveCapture("timed", { kind, shortcutFiredAt });
+      };
     case "videoCapture":
       // Fast Video Capture (issue #64). Opens the selector in auto
       // mode; the commit is routed to `recording:start` instead of
@@ -438,11 +460,17 @@ function handlerFor(kind: HotkeyKind): () => void {
       // ships in a follow-up enhancement — for now this hotkey is
       // the explicit "record video" entry point and the existing
       // ⌘⇧C remains the explicit "take a snap" entry point.
-      return () => void runInteractiveRecord();
+      return () => {
+        log.info("global hotkey fired", { kind, mode: "video" });
+        void runInteractiveRecord();
+      };
     case "reshowFloatOver":
       // Re-pop the most recent capture's float-over toast (issue: the
       // toast auto-dismisses; this brings it back without re-capturing).
-      return () => runReshowLastFloatOver();
+      return () => {
+        log.info("global hotkey fired", { kind });
+        return runReshowLastFloatOver();
+      };
   }
 }
 
@@ -588,9 +616,17 @@ async function runExportLibrary(): Promise<void> {
 }
 
 async function runInteractiveCapture(
-  mode: "auto" | "region" | "window" | "timed" = "auto"
+  mode: "auto" | "region" | "window" | "timed" = "auto",
+  trace?: { kind: HotkeyKind; shortcutFiredAt: number }
 ): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
+  const handlerStartedAt = Date.now();
+  log.info("interactive capture shortcut handler started", {
+    kind: trace?.kind,
+    mode,
+    durationFromHotkeyFiredMs:
+      trace === undefined ? undefined : handlerStartedAt - trace.shortcutFiredAt
+  });
   // The Quick Capture hotkey explicitly uses 'auto' mode — snap to a
   // window if the cursor is over one, drag for a free rect otherwise.
   // The Region / Window hotkeys force the selector into pure-rect /
@@ -600,11 +636,29 @@ async function runInteractiveCapture(
   // The handler owns the full lifecycle now (pre-show / populate /
   // hide-selector / activate-prev-app). We just wait for it to
   // finish and log non-cancellation errors.
+  const dispatchStartedAt = Date.now();
+  log.info("dispatching capture:interactive", {
+    kind: trace?.kind,
+    mode,
+    durationFromHotkeyFiredMs:
+      trace === undefined ? undefined : dispatchStartedAt - trace.shortcutFiredAt,
+    durationFromShortcutHandlerMs: dispatchStartedAt - handlerStartedAt
+  });
   const result = await bus.dispatch(
     "capture:interactive",
     { mode },
     { principal: "ipc" }
   );
+  log.info("capture:interactive dispatch completed", {
+    kind: trace?.kind,
+    mode,
+    ok: result.ok,
+    code: result.ok ? undefined : result.error.code,
+    durationFromDispatchMs: Date.now() - dispatchStartedAt,
+    durationFromShortcutHandlerMs: Date.now() - handlerStartedAt,
+    durationFromHotkeyFiredMs:
+      trace === undefined ? undefined : Date.now() - trace.shortcutFiredAt
+  });
   if (!result.ok && result.error.code !== "cancelled") {
     log.warn("capture:interactive failed", {
       code: result.error.code,

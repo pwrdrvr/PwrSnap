@@ -1,16 +1,16 @@
-// Unit tests for `decidePreviousAppPid` — the decision that gates the
-// post-capture `activateApp(previousAppPid)` call. The historical
-// behavior (first non-ours from frontmost) was buggy when the user
-// had a PwrSnap window — Library, Settings, edit — foreground when
-// they triggered a capture: the chosen pid was the app BEHIND our
-// window, so post-commit activation sent our window to the background
-// AND demoted our activation policy to Accessory (NSUIElement) as a
-// side-effect, stripping the Dock icon.
+// Unit tests for `decidePreviousAppPid` — the decision that records
+// which app was frontmost at selector-open time. The historical
+// behavior (first non-ours from frontmost) was buggy when the user had
+// a PwrSnap window — Library, Settings, edit — foreground when they
+// triggered a capture: the chosen pid was the app BEHIND our window.
+// In flows that explicitly restored that pid, post-commit activation
+// sent our window to the background AND demoted our activation policy
+// to Accessory (NSUIElement) as a side-effect, stripping the Dock icon.
 //
 // These tests pin the new behavior: when PwrSnap owns the topmost
-// window, return null (no activate). When another app is on top,
-// return that other app's pid (preserve historical behavior for the
-// common "user was in Claude / Terminal / Slack / etc." path).
+// window, return null. When another app is on top, return that other
+// app's pid so metadata and any explicit focus-restore flow see the
+// real previously-frontmost app.
 
 import { describe, expect, test } from "vitest";
 import { decidePreviousAppPid } from "../capture/region-selector";
@@ -41,10 +41,10 @@ describe("decidePreviousAppPid", () => {
   test("returns null when PwrSnap owns the topmost window — the bug fix", () => {
     // Library foreground (PwrSnap-owned at z=0), Claude behind it.
     // The pre-fix code would return Claude's pid here, causing
-    // post-capture activateApp(Claude) → Library sent behind +
+    // explicit activateApp(Claude) → Library sent behind +
     // PwrSnap demoted to Accessory + Dock icon vanishes. New
-    // behavior: return null, capture flow skips activateApp,
-    // Library stays foreground.
+    // behavior: return null, so no focus-restore path can send the
+    // Library behind Claude.
     const claudePid = 5678;
     const snapshot = [
       win(OUR_PID, "com.pwrdrvr.pwrsnap"),
@@ -55,8 +55,8 @@ describe("decidePreviousAppPid", () => {
 
   test("returns the topmost non-PwrSnap pid when another app is on top", () => {
     // Claude foreground, Library behind. Common case: user pressed
-    // ⌘⇧P from inside Claude. Restoring Claude after capture
-    // preserves their keyboard focus.
+    // ⌘⇧P from inside Claude. The selector records Claude as the
+    // previously-frontmost app.
     const claudePid = 5678;
     const snapshot = [
       win(claudePid, "com.anthropic.claudefordesktop"),

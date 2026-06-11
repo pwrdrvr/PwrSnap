@@ -1,7 +1,7 @@
 // Pre-warmed per-display region-selector windows. Cold BrowserWindow
 // creation is 150–400ms; the ⌘⇧P → first-paint budget is 120ms. So
 // we create one window per display at boot (`show: false`), rebuild
-// on display-config change, and `show()` only the window for the
+// on display-config change, and reveal only the window for the
 // display containing the cursor when the shortcut fires. After
 // capture, `hide()` rather than destroy.
 //
@@ -71,11 +71,10 @@ let lastSnapshot: WindowInfo[] = [];
 // re-shooting the live screen. Released on hide.
 let activeScreenSnapshot: ScreenSnapshot | null = null;
 
-// Process id of the app that was frontmost at pickRegion time —
-// captured BEFORE we steal focus to show the selector. After the
-// selector hides on cancel or commit, we re-activate this pid so
-// the user lands back where they were instead of looking at our
-// library window.
+// Process id of the app that was frontmost at pickRegion time.
+// Capture handlers keep this for metadata and for flows that still
+// explicitly restore another app, but the image selector must avoid
+// activating or hiding our normal windows just to draw the overlay.
 let previousAppPid: number | null = null;
 
 type SelectorWindowListPayload = {
@@ -110,11 +109,9 @@ export type SelectorResult =
        *  `hideAllSelectors` skips the cleanup on this code path. */
       screenSnapshotId: string;
       /** Pid of the app that was frontmost when the selector opened.
-       *  The capture handler activates this app via NSRunningApplication
-       *  AFTER the float-over has been populated, so the toast wins
-       *  the z-order race against the previous app's frontmost
-       *  window. May be null if the listWindows snapshot hadn't
-       *  resolved by commit time. */
+       *  The capture handler may use this for metadata or for flows
+       *  that explicitly restore another app. May be null if the
+       *  listWindows snapshot hadn't resolved by commit time. */
       previousAppPid: number | null;
       /** Set when the user committed straight from a window snap (no
        *  drag, no resize). Used for source-app metadata even when
@@ -130,10 +127,8 @@ export type SelectorResult =
   | {
       ok: false;
       reason: "cancelled" | "destroyed";
-      /** Same semantics as the OK branch — the caller activates this
-       *  pid after Esc / cancel-cleanup so the user lands back where
-       *  they were. Null when the listWindows snapshot hadn't
-       *  resolved or for a destroyed-state result. */
+      /** Same semantics as the OK branch. Null when the listWindows
+       *  snapshot hadn't resolved or for a destroyed-state result. */
       previousAppPid?: number | null;
     };
 
@@ -241,10 +236,8 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           const snapshot = activeScreenSnapshot;
           activeScreenSnapshot = null;
           // Snapshot previousAppPid into the result then null the
-          // module-scope reference so a follow-up cancel doesn't
-          // re-activate. The capture handler is responsible for
-          // calling activateApp AFTER the float-over has been
-          // populated (lifecycle reorder).
+          // module-scope reference so a follow-up cancel cannot reuse
+          // stale focus metadata.
           const prevPid = previousAppPid;
           previousAppPid = null;
           const result: SelectorResult = {
@@ -500,14 +493,16 @@ export async function pickRegion(
     return { ok: false, reason: "destroyed" };
   }
 
-  // Arm Esc + Enter via globalShortcut for the duration of the
+  // Arm Esc + Enter + Tab via globalShortcut for the duration of the
   // selector. macOS sometimes withholds keyboard events from a
   // newly-shown window until the user clicks to "engage" it — the
   // renderer's keydown listener exists but the event never reaches
-  // it. globalShortcut bypasses focus entirely; for the brief
-  // duration the selector is up the user has nothing else they'd
-  // want Esc / ↵ doing anyway, since the screen-saver-level overlay
-  // covers everything.
+  // it. We also intentionally avoid focusing the macOS selector so
+  // AppKit does not hide/show our normal windows or churn the Dock
+  // icon around a capture. globalShortcut bypasses focus entirely;
+  // for the brief duration the selector is up the user has nothing
+  // else they'd want these keys doing anyway, since the screen-saver-
+  // level overlay covers everything.
   installSelectorGlobalShortcuts(win);
 
   const result = await new Promise<SelectorResult>((resolve) => {
@@ -571,19 +566,25 @@ export async function pickRegion(
     // Matches every native Mac capture tool (Cleanshot, Shottr,
     // SnagIt).
     enterMenuBarOverlayMode(win);
-    win.show();
+    if (process.platform === "darwin") {
+      win.showInactive();
+    } else {
+      win.show();
+    }
     selectorDisplaysNeedingFreshPanel.add(targetDisplay.id);
-    win.focus();
-    // webContents.focus() in addition to BrowserWindow.focus() —
-    // belt and braces. focus() makes the NSWindow key, but
-    // webContents focus is what governs whether keystrokes route
-    // to the renderer's document.
-    win.webContents.focus();
+    if (process.platform !== "darwin") {
+      win.focus();
+      // webContents.focus() in addition to BrowserWindow.focus() —
+      // belt and braces. focus() makes the NSWindow key, but
+      // webContents focus is what governs whether keystrokes route
+      // to the renderer's document.
+      win.webContents.focus();
+    }
     // Non-activating panels do not always win the final z-order
     // arbitration when another app was frontmost at hotkey time. The
     // selector still receives normal-window hover/mouse events, but
     // the Dock/menu bar can remain live above it. Re-assert ordering
-    // after show/focus, matching the float-over and recording HUD
+    // after show, matching the float-over and recording HUD
     // pattern without activating PwrSnap or changing Spaces.
     win.moveTop();
     log.info("capture selector displayed", {
@@ -887,6 +888,16 @@ function installSelectorGlobalShortcuts(win: BrowserWindow): void {
       win.webContents.send(SELECTOR_KEY_CHANNEL, { key: "Enter" });
     }
   });
+  globalShortcut.register("Tab", () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send(SELECTOR_KEY_CHANNEL, { key: "Tab" });
+    }
+  });
+  globalShortcut.register("Shift+Tab", () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send(SELECTOR_KEY_CHANNEL, { key: "Tab", shiftKey: true });
+    }
+  });
   shortcutsInstalled = true;
 }
 
@@ -894,6 +905,8 @@ function uninstallSelectorGlobalShortcuts(): void {
   if (!shortcutsInstalled) return;
   globalShortcut.unregister("Escape");
   globalShortcut.unregister("Return");
+  globalShortcut.unregister("Tab");
+  globalShortcut.unregister("Shift+Tab");
   shortcutsInstalled = false;
 }
 
@@ -964,14 +977,6 @@ function hideAllSelectors(): void {
   for (const { displayId, staleWindow } of rebuildAfterHide) {
     swapFreshSelectorForDisplay(displayId, staleWindow);
   }
-  // Note: previously-frontmost app activation moved OUT of here. The
-  // capture handler now calls `activateApp(previousAppPid)` AFTER it
-  // has populated the float-over to LOADED, so the toast is up on
-  // screen before we yield focus to the previous app. This is what
-  // wins the z-order race that used to leave the toast hidden behind
-  // the previous app's key window. See docs/plans/2026-05-04-001
-  // §"Solution 4".
-
   // Windows: while the selector was up (topmost screen-saver level, and on
   // win32 native-fullscreen to cover the taskbar), the post-capture toast
   // could NOT be made topmost — setAlwaysOnTop(true) during show-loaded
@@ -1077,11 +1082,11 @@ function createSelectorWindow(
   const window = new BrowserWindow({
     // `type: 'panel'` — NSPanel + NSWindowStyleMaskNonactivatingPanel.
     // Same primitive used by createFloatOverWindow / createTrayWindow.
-    // The selector's show()/focus() must NOT cause macOS to switch
+    // The selector must NOT cause macOS to switch
     // Spaces. A regular NSWindow, even with the canJoinAllSpaces flag
     // (setVisibleOnAllWorkspaces below), can still trigger AppKit's
     // "find the Space this window belongs to and switch to it" path
-    // when the owning app is brought frontmost via show()/focus() —
+    // when the owning app is brought frontmost —
     // and that path is what Splashtop's separate Space exposes. The
     // non-activating panel skips the app-activation step entirely,
     // so AppKit never has a reason to swap Spaces on the user.
@@ -1143,7 +1148,7 @@ function createSelectorWindow(
   // Splashtop, the remote-desktop client) causes macOS to swap Spaces
   // to wherever the selector window was last associated on show —
   // the bug reported as "workspace shift on capture with Splashtop."
-  // Paired with `type: 'panel'` above: the panel keeps show()/focus()
+  // Paired with `type: 'panel'` above: the panel keeps show/showInactive
   // from activating the app, and canJoinAllSpaces (set here) keeps
   // the panel from being pinned to any single Space.
   // Spaces are macOS-only; on Windows/Linux this call is unnecessary (and

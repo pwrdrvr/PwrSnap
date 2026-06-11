@@ -512,6 +512,38 @@ export function RegionSelector() {
       return lastMouseRef.current ?? { x: v.width / 2, y: v.height / 2 };
     }
 
+    function cycleSnapTarget(backward: boolean): void {
+      // Tab cycles through windows whose raw bounds also contain
+      // the cursor — useful for capturing a window mostly hidden
+      // under another. Walks forward in z-order on Tab, backward
+      // on Shift+Tab.
+      if (interactionRef.current.kind !== "snap") return;
+      const cur = lastCursor();
+      const all = windowsRef.current;
+      const candidates = all.filter(
+        (w) =>
+          cur.x >= w.rawRect.x &&
+          cur.x <= w.rawRect.x + w.rawRect.w &&
+          cur.y >= w.rawRect.y &&
+          cur.y <= w.rawRect.y + w.rawRect.h
+      );
+      if (candidates.length === 0) return;
+      const currentTarget = snapTargetRef.current;
+      const currentIdx =
+        currentTarget.kind === "window"
+          ? candidates.findIndex((w) => w.windowId === currentTarget.entry.windowId)
+          : -1;
+      const dir = backward ? -1 : 1;
+      // Wrap around with proper modulo for negative direction.
+      const nextIdx = (currentIdx + dir + candidates.length) % candidates.length;
+      const next: SnapTarget = { kind: "window", entry: candidates[nextIdx]! };
+      setSnapTarget(next);
+      // Honor full-window mode: rect = rawRect (full bounds) when
+      // ⇧ is held, else rect (visible region bbox).
+      const r = shiftRef.current ? next.entry.rawRect : next.entry.rect;
+      setRect({ x: r.x, y: r.y, w: r.w, h: r.h });
+    }
+
     function onKeyDown(event: KeyboardEvent): void {
       // Track ⇧ in snap mode: full-window capture opt-in. The rect
       // expands from the visible-region bbox to the full window
@@ -547,36 +579,8 @@ export function RegionSelector() {
         return;
       }
       if (event.key === "Tab" && interactionRef.current.kind === "snap") {
-        // Tab cycles through windows whose raw bounds also contain
-        // the cursor — useful for capturing a window mostly hidden
-        // under another. Walks forward in z-order on Tab, backward
-        // on Shift+Tab.
         event.preventDefault();
-        const cur = lastCursor();
-        const all = windowsRef.current;
-        const candidates = all.filter(
-          (w) =>
-            cur.x >= w.rawRect.x &&
-            cur.x <= w.rawRect.x + w.rawRect.w &&
-            cur.y >= w.rawRect.y &&
-            cur.y <= w.rawRect.y + w.rawRect.h
-        );
-        if (candidates.length === 0) return;
-        const currentTarget = snapTargetRef.current;
-        const currentIdx =
-          currentTarget.kind === "window"
-            ? candidates.findIndex((w) => w.windowId === currentTarget.entry.windowId)
-            : -1;
-        const dir = event.shiftKey ? -1 : 1;
-        // Wrap around with proper modulo for negative direction.
-        const nextIdx =
-          (currentIdx + dir + candidates.length) % candidates.length;
-        const next: SnapTarget = { kind: "window", entry: candidates[nextIdx]! };
-        setSnapTarget(next);
-        // Honor full-window mode: rect = rawRect (full bounds) when
-        // ⇧ is held, else rect (visible region bbox).
-        const r = shiftRef.current ? next.entry.rawRect : next.entry.rect;
-        setRect({ x: r.x, y: r.y, w: r.w, h: r.h });
+        cycleSnapTarget(event.shiftKey);
         return;
       }
       if (event.key === " " && !spaceRef.current) {
@@ -879,15 +883,17 @@ export function RegionSelector() {
     // Globally-forwarded keystrokes (main → renderer over IPC).
     // macOS sometimes withholds keyboard events from a freshly-shown
     // window until the user clicks to "engage" it. main arms a
-    // globalShortcut on Esc + ↵ for the duration of the selector
-    // and forwards them here, so cancel / commit work on first
-    // keypress regardless of whether the renderer has caught
-    // keyboard focus yet.
+    // globalShortcut on Esc + ↵ + Tab for the duration of the selector
+    // and forwards them here, so cancel / commit / snap cycling work
+    // on first keypress even when the renderer never takes keyboard
+    // focus.
     const unsubKey = window.pwrsnapApi?.onSelectorKey((payload) => {
       if (payload.key === "Escape") {
         handleEscape();
       } else if (payload.key === "Enter") {
         commit();
+      } else if (payload.key === "Tab") {
+        cycleSnapTarget(payload.shiftKey === true);
       }
     });
     return () => {

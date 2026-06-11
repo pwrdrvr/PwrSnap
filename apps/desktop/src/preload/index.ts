@@ -272,9 +272,9 @@ const pwrsnapApi = {
    * the user has clicked). Renderer treats these as if the user
    * pressed the key directly.
    */
-  onSelectorKey(handler: (payload: { key: string }) => void): () => void {
+  onSelectorKey(handler: (payload: { key: string; shiftKey?: boolean }) => void): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
-      handler(payload as { key: string });
+      handler(payload as { key: string; shiftKey?: boolean });
     ipcRenderer.on(REGION_SELECTOR_KEY_CHANNEL, wrapped);
     return () => ipcRenderer.off(REGION_SELECTOR_KEY_CHANNEL, wrapped);
   },

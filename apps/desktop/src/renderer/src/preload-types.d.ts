@@ -58,7 +58,7 @@ declare global {
           cursor?: { x: number; y: number };
         }) => void
       ): () => void;
-      onSelectorKey(handler: (payload: { key: string }) => void): () => void;
+      onSelectorKey(handler: (payload: { key: string; shiftKey?: boolean }) => void): () => void;
       onSelectorMode(
         handler: (payload: {
           mode: "auto" | "region" | "window";

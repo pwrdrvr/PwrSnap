@@ -13,7 +13,7 @@
 //
 // Fix (see createSelectorWindow in capture/region-selector.ts):
 //   - `type: 'panel'` — NSPanel + NSWindowStyleMaskNonactivatingPanel
-//     so show()/focus() never activates the app.
+//     so the selector can show without activating the app.
 //   - `setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })`
 //     — canJoinAllSpaces so the panel isn't pinned to any single
 //     Space, and visibleOnFullScreen so it covers fullscreen apps too.
@@ -35,6 +35,7 @@ type WindowSpy = {
   setBounds: ReturnType<typeof vi.fn>;
   getBounds: ReturnType<typeof vi.fn>;
   show: ReturnType<typeof vi.fn>;
+  showInactive: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
   blur: ReturnType<typeof vi.fn>;
   hide: ReturnType<typeof vi.fn>;
@@ -80,6 +81,7 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
     setBounds: vi.fn(),
     getBounds: vi.fn().mockReturnValue({ x: 0, y: 0, width: 1440, height: 900 }),
     show: vi.fn(),
+    showInactive: vi.fn(),
     focus: vi.fn(),
     blur: vi.fn(),
     hide: vi.fn(),
@@ -215,7 +217,7 @@ afterEach(() => {
 });
 
 describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () => {
-  test("uses type: 'panel' so show()/focus() never activates PwrSnap and pulls the user's Space", async () => {
+  test("uses type: 'panel' so showing the selector does not activate PwrSnap and pull the user's Space", async () => {
     const { preWarmRegionSelector } = await import("../capture/region-selector");
     preWarmRegionSelector();
 
@@ -272,7 +274,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     }
   });
 
-  test("re-raises the visible selector with moveTop after show/focus without activating the app", async () => {
+  test("shows the macOS selector inactive and re-raises it with moveTop without focusing PwrSnap", async () => {
     const { pickRegion } = await import("../capture/region-selector");
     const pick = pickRegion();
 
@@ -281,18 +283,15 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     });
 
     const spy = constructed[0]!;
-    const showOrder = spy.show.mock.invocationCallOrder[0];
-    const focusOrder = spy.focus.mock.invocationCallOrder[0];
-    const webFocusOrder = spy.webContents.focus.mock.invocationCallOrder[0];
+    const showOrder = spy.showInactive.mock.invocationCallOrder[0];
     const moveTopOrder = spy.moveTop.mock.invocationCallOrder[0];
 
+    expect(spy.show).not.toHaveBeenCalled();
+    expect(spy.focus).not.toHaveBeenCalled();
+    expect(spy.webContents.focus).not.toHaveBeenCalled();
     expect(showOrder).toBeDefined();
-    expect(focusOrder).toBeDefined();
-    expect(webFocusOrder).toBeDefined();
     expect(moveTopOrder).toBeDefined();
     expect(moveTopOrder!).toBeGreaterThan(showOrder!);
-    expect(moveTopOrder!).toBeGreaterThan(focusOrder!);
-    expect(moveTopOrder!).toBeGreaterThan(webFocusOrder!);
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
@@ -306,7 +305,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     const first = constructed[0]!;
 
     await vi.waitFor(() => {
-      expect(first.show).toHaveBeenCalledTimes(1);
+      expect(first.showInactive).toHaveBeenCalledTimes(1);
     });
     await vi.waitFor(() => {
       expect(constructed).toHaveLength(2);
@@ -353,7 +352,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(constructed).toHaveLength(1);
-    expect(constructed[0]?.show).not.toHaveBeenCalled();
+    expect(constructed[0]?.showInactive).not.toHaveBeenCalled();
 
     resolveSnapshot({
       id: "snapshot-1",
@@ -362,7 +361,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     });
 
     await vi.waitFor(() => {
-      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+      expect(constructed[0]?.showInactive).toHaveBeenCalledTimes(1);
     });
     await vi.waitFor(() => {
       expect(constructed).toHaveLength(2);
@@ -377,7 +376,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     const firstPick = pickRegion({ keepPwrSnapChrome: true });
 
     await vi.waitFor(() => {
-      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+      expect(constructed[0]?.showInactive).toHaveBeenCalledTimes(1);
     });
     await vi.waitFor(() => {
       expect(constructed).toHaveLength(2);
@@ -401,10 +400,10 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
           screenUrl: "pwrsnap-screen://r/snapshot-1"
         })
       );
-      expect(standby.show).toHaveBeenCalledTimes(1);
+      expect(standby.showInactive).toHaveBeenCalledTimes(1);
     });
     if (constructed[2] !== undefined) {
-      expect(constructed[2].show).not.toHaveBeenCalled();
+      expect(constructed[2].showInactive).not.toHaveBeenCalled();
     }
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false });
@@ -423,7 +422,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     const firstPick = pickRegion({ keepPwrSnapChrome: true });
 
     await vi.waitFor(() => {
-      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+      expect(constructed[0]?.showInactive).toHaveBeenCalledTimes(1);
     });
 
     await vi.waitFor(() => {
@@ -447,7 +446,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
       "region-selector:mode",
       expect.anything()
     );
-    expect(standby.show).not.toHaveBeenCalled();
+    expect(standby.showInactive).not.toHaveBeenCalled();
 
     deferredLoadResolvers.shift()?.();
 
@@ -459,7 +458,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
           screenUrl: "pwrsnap-screen://r/snapshot-1"
         })
       );
-      expect(standby.show).toHaveBeenCalledTimes(1);
+      expect(standby.showInactive).toHaveBeenCalledTimes(1);
     });
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false });

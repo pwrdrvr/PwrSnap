@@ -206,18 +206,18 @@ export function registerCaptureHandlers(): void {
       await new Promise((resolve) => setTimeout(resolve, 50));
       hideSelector();
       // Leave normal app windows exactly where they were. The selector
-      // is a non-activating panel, so the app that was active before
-      // capture should naturally remain active after the selector hides.
+      // is a non-activating panel shown inactive on macOS, so the app
+      // that was active before capture should naturally remain active
+      // after the selector hides.
       // Calling activateApp(previousAppPid) here deactivates PwrSnap and
       // can shove visible Library / Settings windows behind the previous
       // app even though the user may have been trying to capture them.
       restoreLibraryIfHiddenWithoutRaising();
-      // Always re-assert Regular activation policy after cancel —
-      // if we do not activate the previous app. Showing the screen-
-      // saver-level selector alongside our persistent floating-level
-      // panels can still demote PwrSnap to Accessory as a focus-cascade
-      // side-effect on selector hide. The reclaim is a no-op when the
-      // Library is gone or the Dock icon is already visible.
+      // Re-assert Regular activation policy only if AppKit still
+      // demoted us while the screen-saver-level selector was visible
+      // alongside our persistent floating-level panels. The reclaim is
+      // a no-op when the Library is gone or the Dock icon is already
+      // visible.
       reclaimDockIconIfLibraryAlive();
       return err({
         kind: "capture",
@@ -296,10 +296,9 @@ export function registerCaptureHandlers(): void {
       hideSelector();
       void releaseSnapshot(screenSnapshotId);
       restoreLibraryIfHiddenWithoutRaising();
-      // See cancel branch above for the full rationale. The selector
-      // hide alone is enough to trip the focus-cascade side-effect on
-      // some macOS runs, so reclaim unconditionally without raising any
-      // app window.
+      // See cancel branch above for the full rationale. This should be
+      // a no-op on the normal path; if AppKit still demoted the app,
+      // restore the Dock icon without raising any app window.
       reclaimDockIconIfLibraryAlive();
     }
   });
@@ -340,15 +339,9 @@ export function registerCaptureHandlers(): void {
     }
   });
 
-  // Note (Full Screen / All Screens): unlike `capture:interactive` we
-  // do NOT call `activateApp(previousAppPid)` + `reclaimDockIconIfLibraryAlive`
-  // here. Those exist to recover from the activation cascade the
-  // region-selector window triggers (it takes key focus on show,
-  // AppKit demotes our activation policy on hide). The no-selector
-  // path never steals focus — the tray popover is a non-activating
-  // panel — so there's nothing to recover. If a future change makes
-  // this path activate PwrSnap (e.g. a confirmation HUD), re-introduce
-  // both calls here in lockstep with capture-handlers.ts:254-262.
+  // Note (Full Screen / All Screens): unlike `capture:interactive` this
+  // path has no selector window, so it must not run any selector-focused
+  // activation recovery.
   bus.register("capture:fullScreen", async (req) => {
     const displayId = resolveFullScreenDisplayId(req.displayId);
     const display = screen.getAllDisplays().find((d) => d.id === displayId);

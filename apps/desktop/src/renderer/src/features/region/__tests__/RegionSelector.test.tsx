@@ -38,7 +38,7 @@ let root: Root | null = null;
 
 let modeHandler: ((p: ModePayload) => void) | null = null;
 let snapshotHandler: ((p: SnapshotPayload) => void) | null = null;
-let keyHandler: ((p: { key: string }) => void) | null = null;
+let keyHandler: ((p: { key: string; shiftKey?: boolean }) => void) | null = null;
 const submitRegion = vi.fn();
 
 function installSelectorApi(): void {
@@ -56,7 +56,7 @@ function installSelectorApi(): void {
       snapshotHandler = h;
       return () => undefined;
     },
-    onSelectorKey: (h: (p: { key: string }) => void) => {
+    onSelectorKey: (h: (p: { key: string; shiftKey?: boolean }) => void) => {
       keyHandler = h;
       return () => undefined;
     },
@@ -161,9 +161,9 @@ async function keyDown(key: string, init: KeyboardEventInit = {}): Promise<void>
   });
 }
 
-async function emitKey(key: string): Promise<void> {
+async function emitKey(key: string, init: { shiftKey?: boolean } = {}): Promise<void> {
   await act(async () => {
-    keyHandler?.({ key });
+    keyHandler?.({ key, ...init });
   });
 }
 
@@ -210,6 +210,18 @@ const WIN: WindowSnapEntry = {
   zIndex: 0,
   rect: { x: 200, y: 150, w: 400, h: 300 },
   rawRect: { x: 200, y: 150, w: 400, h: 300 }
+};
+
+const WIN_BEHIND: WindowSnapEntry = {
+  windowId: 5252,
+  pid: 2,
+  bundleId: "com.test.behind",
+  appName: "Behind App",
+  title: null,
+  ownedByUs: false,
+  zIndex: 1,
+  rect: { x: 150, y: 100, w: 500, h: 400 },
+  rawRect: { x: 150, y: 100, w: 500, h: 400 }
 };
 
 /** snap → hover a window → click (no drag) → adjusting with a window
@@ -267,6 +279,22 @@ describe("U1 — crosshair guide-lines", () => {
     });
     expect(vLine().style.left).toBe("120px");
     expect(hLine().style.top).toBe("80px");
+  });
+
+  test("forwarded-IPC Tab cycles overlapping snap targets without renderer focus", async () => {
+    await mount();
+    await emitSnapshot({
+      windows: [WIN, WIN_BEHIND],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight }
+    });
+    await mouseMove(400, 300);
+    expect(rectStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
+
+    await emitKey("Tab");
+    expect(rectStyle()).toEqual({ left: 150, top: 100, width: 500, height: 400 });
+
+    await emitKey("Tab", { shiftKey: true });
+    expect(rectStyle()).toEqual({ left: 200, top: 150, width: 400, height: 300 });
   });
 });
 

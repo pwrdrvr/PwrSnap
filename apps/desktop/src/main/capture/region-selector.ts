@@ -44,6 +44,22 @@ let pendingResolver: ((result: SelectorResult) => void) | null = null;
 let resultListenerAttached = false;
 let displayListenersAttached = false;
 
+type SelectorPrewarmReason =
+  | "startup"
+  | "display-change"
+  | "lazy"
+  | "rebuild"
+  | "standby"
+  | "swap-fallback";
+
+type SelectorPrewarmTiming = {
+  reason: SelectorPrewarmReason;
+  startedAt: number;
+  loadedAt: number | null;
+};
+
+const selectorPrewarmTimings = new Map<number, SelectorPrewarmTiming>();
+
 // Window list snapshot taken at the moment pickRegion fires. Snap-to-
 // window in the renderer hit-tests against this same snapshot; the
 // capture handler reuses it after commit to backfill source_app_*.
@@ -143,7 +159,7 @@ export type SelectorMode = "auto" | "region" | "window";
  * Create the pre-warmed windows — one per display. Idempotent. Call
  * once at boot; safe to call again to refresh after display changes.
  */
-export function preWarmRegionSelector(): void {
+export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup"): void {
   // Build one window per display we don't already have.
   const displays = screen.getAllDisplays();
   const liveIds = new Set<number>();
@@ -151,7 +167,7 @@ export function preWarmRegionSelector(): void {
     liveIds.add(display.id);
     const existing = selectorWindows.get(display.id);
     if (existing !== undefined && !existing.isDestroyed()) continue;
-    const win = createSelectorWindow(display);
+    const win = createSelectorWindow(display, reason);
     selectorWindows.set(display.id, win);
   }
   // Tear down windows for displays that have been removed.
@@ -273,8 +289,8 @@ export function preWarmRegionSelector(): void {
     screen.on("display-metrics-changed", (_event, display) => {
       resizeSelectorToDisplay(display);
     });
-    screen.on("display-added", () => preWarmRegionSelector());
-    screen.on("display-removed", () => preWarmRegionSelector());
+    screen.on("display-added", () => preWarmRegionSelector("display-change"));
+    screen.on("display-removed", () => preWarmRegionSelector("display-change"));
     displayListenersAttached = true;
   }
 }
@@ -314,8 +330,16 @@ export async function pickRegion(
   const mode: SelectorMode = opts.mode ?? "auto";
   const keepPwrSnapChrome = opts.keepPwrSnapChrome ?? false;
   const intent = opts.intent ?? "snap";
+  const requestStartedAt = Date.now();
+  const elapsedFromRequest = (): number => Date.now() - requestStartedAt;
+  log.info("capture selector requested", {
+    mode,
+    intent,
+    keepPwrSnapChrome,
+    ...selectorPrewarmAgePayload()
+  });
   if (selectorWindows.size === 0) {
-    preWarmRegionSelector();
+    preWarmRegionSelector("lazy");
   }
   if (selectorWindows.size === 0) {
     return { ok: false, reason: "destroyed" };
@@ -324,6 +348,11 @@ export async function pickRegion(
   // Route to whichever display the cursor is on right now.
   const cursor = screen.getCursorScreenPoint();
   const targetDisplay = screen.getDisplayNearestPoint(cursor);
+  log.info("capture selector target display resolved", {
+    displayId: targetDisplay.id,
+    durationFromUserRequestMs: elapsedFromRequest(),
+    ...selectorPrewarmAgePayload(targetDisplay.id)
+  });
   let targetWindow = selectorWindows.get(targetDisplay.id);
   if (targetWindow === undefined || targetWindow.isDestroyed()) {
     // Stale entry — rebuild lazily and try again.
@@ -385,6 +414,11 @@ export async function pickRegion(
   let windowListResolver: ((result: SelectorResult) => void) | null = null;
   let acceptingWindowList = true;
   let selectorVisible = false;
+  const windowLayoutRequestedAt = Date.now();
+  log.info("requesting window layout info", {
+    displayId: targetDisplay.id,
+    durationFromUserRequestMs: elapsedFromRequest()
+  });
   const deliverWindowListPayload = (payload: SelectorWindowListPayload): void => {
     if (
       !acceptingWindowList ||
@@ -410,6 +444,14 @@ export async function pickRegion(
     .then((snapshot) => {
       if (!acceptingWindowList) return;
       if (selectorVisible && pendingResolver !== windowListResolver) return;
+      log.info("completed fetching window layout info", {
+        displayId: targetDisplay.id,
+        durationMs: Date.now() - windowLayoutRequestedAt,
+        durationFromUserRequestMs: elapsedFromRequest(),
+        rawWindowCount: snapshot.windows.length,
+        frontmostPid: snapshot.frontmostPid,
+        frontmostBundleId: snapshot.frontmostBundleId
+      });
       const prepared = prepareWindowListPayload({
         rawSnapshot: snapshot.windows,
         targetDisplay,
@@ -426,15 +468,32 @@ export async function pickRegion(
     })
     .catch((err) => {
       log.warn("window-list helper failed during selector startup", {
+        displayId: targetDisplay.id,
+        durationMs: Date.now() - windowLayoutRequestedAt,
+        durationFromUserRequestMs: elapsedFromRequest(),
         message: err instanceof Error ? err.message : String(err)
       });
     });
 
+  const screenSnapshotRequestedAt = Date.now();
+  log.info("requesting screen snapshot", {
+    displayId: targetDisplay.id,
+    durationFromUserRequestMs: elapsedFromRequest()
+  });
   try {
     const screenSnapshot = await captureAndRegister(targetDisplay.id);
     activeScreenSnapshot = screenSnapshot;
+    log.info("completed screen snapshot", {
+      displayId: targetDisplay.id,
+      durationMs: Date.now() - screenSnapshotRequestedAt,
+      durationFromUserRequestMs: elapsedFromRequest(),
+      snapshotId: screenSnapshot.id
+    });
   } catch (err) {
     log.warn("screen snapshot failed; selector aborted", {
+      displayId: targetDisplay.id,
+      durationMs: Date.now() - screenSnapshotRequestedAt,
+      durationFromUserRequestMs: elapsedFromRequest(),
       message: err instanceof Error ? err.message : String(err)
     });
     acceptingWindowList = false;
@@ -478,6 +537,11 @@ export async function pickRegion(
     if (!win.isDestroyed() && modePayload !== null) {
       win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
     }
+    const displayRequestedAt = Date.now();
+    log.info("capture selector display requested", {
+      displayId: targetDisplay.id,
+      durationFromUserRequestMs: elapsedFromRequest()
+    });
     // Order matters: setSimpleFullScreen(true) BEFORE show().
     //
     // Without this, `win.show()` paints the renderer's first frame
@@ -523,6 +587,11 @@ export async function pickRegion(
     // after show/focus, matching the float-over and recording HUD
     // pattern without activating PwrSnap or changing Spaces.
     win.moveTop();
+    log.info("capture selector displayed", {
+      displayId: targetDisplay.id,
+      durationFromDisplayRequestedMs: Date.now() - displayRequestedAt,
+      durationFromUserRequestMs: elapsedFromRequest()
+    });
     scheduleStandbySelectorWarm(targetDisplay);
     selectorVisible = true;
     if (windowListPayload !== null) {
@@ -538,6 +607,12 @@ export async function pickRegion(
   acceptingWindowList = false;
   void windowListPromise;
   uninstallSelectorGlobalShortcuts();
+  log.info("capture selector selection finished", {
+    displayId: targetDisplay.id,
+    ok: result.ok,
+    reason: result.ok ? "completed" : result.reason,
+    durationFromUserRequestMs: elapsedFromRequest()
+  });
   return result;
 }
 
@@ -990,7 +1065,10 @@ function leaveMenuBarOverlayMode(win: BrowserWindow): void {
   }
 }
 
-function createSelectorWindow(display: Display): BrowserWindow {
+function createSelectorWindow(
+  display: Display,
+  reason: SelectorPrewarmReason = "startup"
+): BrowserWindow {
   // Anchor to display.bounds. The selector enters simple-fullscreen
   // on show (covering the real menu bar) and paints its own copy of
   // the menu bar via the screen snapshot — so the user sees what
@@ -1075,8 +1153,19 @@ function createSelectorWindow(display: Display): BrowserWindow {
     window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   }
 
-  const target = rendererTarget(display.id);
   const loadStartedAt = Date.now();
+  selectorPrewarmTimings.set(display.id, {
+    reason,
+    startedAt: loadStartedAt,
+    loadedAt: null
+  });
+  log.info("pre-warming capture selector", {
+    displayId: display.id,
+    reason,
+    bounds
+  });
+
+  const target = rendererTarget(display.id);
   const load =
     target.kind === "url"
       ? window.loadURL(target.url)
@@ -1087,8 +1176,13 @@ function createSelectorWindow(display: Display): BrowserWindow {
       () => {
         log.info("region selector renderer loaded", {
           displayId: display.id,
+          reason,
           durationMs: Date.now() - loadStartedAt
         });
+        const timing = selectorPrewarmTimings.get(display.id);
+        if (timing !== undefined && timing.startedAt === loadStartedAt) {
+          timing.loadedAt = Date.now();
+        }
         return true;
       },
       (err: unknown) => {
@@ -1102,8 +1196,6 @@ function createSelectorWindow(display: Display): BrowserWindow {
       }
     )
   );
-
-  log.info("region selector pre-warmed", { displayId: display.id, bounds });
   return window;
 }
 
@@ -1113,6 +1205,9 @@ function scheduleStandbySelectorWarm(display: Display): void {
   if (existing !== undefined && !existing.isDestroyed()) return;
   if (standbyWarmScheduled.has(display.id)) return;
   standbyWarmScheduled.add(display.id);
+  log.info("pre-warming next capture selector scheduled", {
+    displayId: display.id
+  });
   setTimeout(() => {
     standbyWarmScheduled.delete(display.id);
     warmStandbySelectorForDisplay(display);
@@ -1126,8 +1221,45 @@ function warmStandbySelectorForDisplay(display: Display): void {
     if (!existing.isDestroyed()) return;
     standbySelectorWindows.delete(display.id);
   }
-  const win = createSelectorWindow(display);
+  const win = createSelectorWindow(display, "standby");
   standbySelectorWindows.set(display.id, win);
+}
+
+function selectorPrewarmAgePayload(displayId?: number): {
+  sinceLastPrewarmStartedMs?: number;
+  sinceLastPrewarmLoadedMs?: number;
+  lastPrewarmReason?: SelectorPrewarmReason;
+  lastPrewarmDisplayId?: number;
+} {
+  const now = Date.now();
+  let selectedDisplayId: number | undefined = displayId;
+  let selected: SelectorPrewarmTiming | undefined =
+    displayId === undefined ? undefined : selectorPrewarmTimings.get(displayId);
+  if (selected === undefined) {
+    for (const [candidateDisplayId, timing] of selectorPrewarmTimings) {
+      if (selected === undefined || timing.startedAt > selected.startedAt) {
+        selectedDisplayId = candidateDisplayId;
+        selected = timing;
+      }
+    }
+  }
+  if (selected === undefined) return {};
+  const payload: {
+    sinceLastPrewarmStartedMs: number;
+    sinceLastPrewarmLoadedMs?: number;
+    lastPrewarmReason: SelectorPrewarmReason;
+    lastPrewarmDisplayId?: number;
+  } = {
+    lastPrewarmReason: selected.reason,
+    sinceLastPrewarmStartedMs: now - selected.startedAt
+  };
+  if (selectedDisplayId !== undefined) {
+    payload.lastPrewarmDisplayId = selectedDisplayId;
+  }
+  if (selected.loadedAt !== null) {
+    payload.sinceLastPrewarmLoadedMs = now - selected.loadedAt;
+  }
+  return payload;
 }
 
 async function waitForSelectorWindowLoad(
@@ -1151,7 +1283,7 @@ function rebuildSelectorForDisplay(displayId: number): void {
   selectorWindows.delete(displayId);
   const display = screen.getAllDisplays().find((d) => d.id === displayId);
   if (display === undefined) return;
-  const win = createSelectorWindow(display);
+  const win = createSelectorWindow(display, "rebuild");
   selectorWindows.set(displayId, win);
 }
 
@@ -1169,7 +1301,7 @@ function swapFreshSelectorForDisplay(displayId: number, staleWindow: BrowserWind
   }
   const display = screen.getAllDisplays().find((d) => d.id === displayId);
   if (display === undefined) return;
-  const win = createSelectorWindow(display);
+  const win = createSelectorWindow(display, "swap-fallback");
   selectorWindows.set(displayId, win);
 }
 

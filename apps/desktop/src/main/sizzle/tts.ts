@@ -29,7 +29,6 @@ export class TtsError extends Error {
   constructor(
     public readonly code:
       | "no_api_key"
-      | "provider_unavailable"
       | "http_failed"
       | "empty_text",
     message: string
@@ -89,12 +88,6 @@ export async function synthesize(req: TtsRequest): Promise<TtsResult> {
 }
 
 async function fetchSynthesis(req: TtsRequest): Promise<Buffer> {
-  if (req.provider === "xai") {
-    throw new TtsError(
-      "provider_unavailable",
-      "xAI TTS is not wired up yet — pick OpenAI for now"
-    );
-  }
   const res = await fetch("https://api.openai.com/v1/audio/speech", {
     method: "POST",
     headers: {

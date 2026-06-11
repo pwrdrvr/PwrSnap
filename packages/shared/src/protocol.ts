@@ -493,9 +493,9 @@ export function isSettingsPage(value: unknown): value is SettingsPage {
 
 /** Every secret the app persists. Plaintext values never cross the IPC
  *  boundary — the renderer only ever sees the status shape below. */
-export type DesktopSettingsSecretName = "grokApiKey" | "openaiApiKey";
+export type DesktopSettingsSecretName = "openaiApiKey";
 
-export type SizzleTtsProvider = "openai" | "xai";
+export type SizzleTtsProvider = "openai";
 export type SizzleTtsModel = "tts-1" | "tts-1-hd";
 export type SizzleVoice =
   | "alloy"

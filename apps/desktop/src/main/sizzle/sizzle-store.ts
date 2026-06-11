@@ -223,6 +223,10 @@ export class SizzleStore {
         if (Array.isArray(project.scenes)) {
           project.scenes = sanitizeScenes(project.scenes);
         }
+        if ((project as unknown as Record<string, unknown>).ttsProvider !== "openai") {
+          project.ttsProvider = "openai";
+          normalizedNeedsPersist = true;
+        }
         const existingCoverCaptureId =
           typeof project.coverCaptureId === "string" && project.coverCaptureId.length > 0
             ? project.coverCaptureId

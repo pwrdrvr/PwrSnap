@@ -1655,7 +1655,7 @@ type EditorProps = {
   onTitleFocused: () => void;
   onRename: (name: string) => void;
   onVoice: (voice: SizzleVoice) => void;
-  onProvider: (provider: "openai" | "xai") => void;
+  onProvider: (provider: "openai") => void;
   onResolution: (resolution: "1080p" | "720p") => void;
   onScenes: (scenes: SizzleScene[]) => void;
   onFlushPending: () => Promise<void>;
@@ -2192,10 +2192,9 @@ function Editor(props: EditorProps): ReactElement {
           <span>Provider</span>
           <select
             value={project.ttsProvider}
-            onChange={(e) => onProvider(e.target.value as "openai" | "xai")}
+            onChange={(e) => onProvider(e.target.value as "openai")}
           >
             <option value="openai">OpenAI</option>
-            <option value="xai">xAI (coming soon)</option>
           </select>
         </label>
         <label className="szl__field">

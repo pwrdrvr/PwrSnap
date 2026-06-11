@@ -73,7 +73,7 @@ export const SIZZLE_LIMITS = {
 } as const;
 
 const TTS_MODELS: readonly SizzleTtsModel[] = ["tts-1", "tts-1-hd"];
-const TTS_PROVIDERS: readonly SizzleTtsProvider[] = ["openai", "xai"];
+const TTS_PROVIDERS: readonly SizzleTtsProvider[] = ["openai"];
 const RESOLUTIONS: readonly SizzleProject["resolution"][] = ["1080p", "720p"];
 
 function validationError(code: string, message: string): PwrSnapError {

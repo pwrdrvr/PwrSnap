@@ -516,7 +516,7 @@ describe("settings:* validation", () => {
     const result = await bus.dispatch(
       "settings:replaceSecret",
       { name: "bogusKey", value: "x" } as unknown as {
-        name: "grokApiKey";
+        name: "openaiApiKey";
         value: string;
       },
       { principal: "ipc" }
@@ -531,7 +531,7 @@ describe("settings:* validation", () => {
     const huge = "x".repeat(70_000);
     const result = await bus.dispatch(
       "settings:replaceSecret",
-      { name: "grokApiKey", value: huge },
+      { name: "openaiApiKey", value: huge },
       { principal: "ipc" }
     );
     expect(result.ok).toBe(false);
@@ -543,7 +543,7 @@ describe("settings:* validation", () => {
   test("settings:replaceSecret rejects empty value (route through clearSecret)", async () => {
     const result = await bus.dispatch(
       "settings:replaceSecret",
-      { name: "grokApiKey", value: "" },
+      { name: "openaiApiKey", value: "" },
       { principal: "ipc" }
     );
     expect(result.ok).toBe(false);
@@ -640,7 +640,7 @@ describe("settings:* validation", () => {
   test("settings:clearSecret rejects unknown secret name", async () => {
     const result = await bus.dispatch(
       "settings:clearSecret",
-      { name: "bogusKey" } as unknown as { name: "grokApiKey" },
+      { name: "bogusKey" } as unknown as { name: "openaiApiKey" },
       { principal: "ipc" }
     );
     expect(result.ok).toBe(false);

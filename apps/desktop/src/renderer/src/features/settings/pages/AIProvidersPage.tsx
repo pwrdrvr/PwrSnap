@@ -538,54 +538,6 @@ export function AIProvidersPage(): ReactElement {
 
       <ChatSettingsCard />
 
-      <Card eyebrow="PROVIDER" title="Grok">
-        <Row
-          label="API Key"
-          sub="Grok API key. Stored in the system keychain via Electron safeStorage — never written to config files or shipped to the renderer."
-          tag="keychain"
-        >
-          <SecretKeyControl
-            status={secrets?.grokApiKey ?? null}
-            placeholder="xai-…"
-            onReplace={async (value) => {
-              await replaceSecret("grokApiKey", value);
-            }}
-            onClear={async () => {
-              await clearSecret("grokApiKey");
-            }}
-          />
-        </Row>
-
-        <Row
-          label="Connection test"
-          sub="Calls the Grok models endpoint. Wires up when the AI pipeline ships."
-          tag="test"
-        >
-          <div className="pss__test">
-            <span className="pss__test-icon">G</span>
-            <div className="pss__test-l">
-              <span className="pss__test-cmd">api.x.ai/v1/models</span>
-              <span className="pss__test-sub">GET /v1/models</span>
-            </div>
-            <div className="pss__test-r">
-              <span className="pss__badge">Not tested</span>
-              <button
-                className="pss__test-btn"
-                type="button"
-                onClick={() => {
-                  // eslint-disable-next-line no-console
-                  console.warn(
-                    "[Settings] AI Providers Grok test is a Phase 4 placeholder"
-                  );
-                }}
-              >
-                Test
-              </button>
-            </div>
-          </div>
-        </Row>
-      </Card>
-
       <Card eyebrow="PROVIDER" title="OpenAI (Sizzle Reels voiceover)">
         <Row
           label="API Key"

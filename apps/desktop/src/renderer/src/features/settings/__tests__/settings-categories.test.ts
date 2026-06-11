@@ -20,6 +20,7 @@ const ALL_PAGE_IDS = [
   "general",
   "hotkeys",
   "ai",
+  "local-agents",
   "system-permissions",
   "storage",
   "about"
@@ -55,7 +56,7 @@ describe("SETTINGS_CATEGORIES", () => {
       SETTINGS_CATEGORIES.map((c) => [c.group, c.items.map((i) => i.id)])
     );
 
-    expect(byGroup["General"]).toEqual(["general", "hotkeys", "ai"]);
+    expect(byGroup["General"]).toEqual(["general", "hotkeys", "ai", "local-agents"]);
     expect(byGroup["Capture"]).toEqual(["system-permissions"]);
     expect(byGroup["Library"]).toEqual(["storage"]);
     expect(byGroup["Advanced"]).toEqual(["about"]);

@@ -1555,3 +1555,26 @@
 .pss__chat-pattern-row { display: flex; gap: 8px; align-items: center; }
 .pss__chat-pattern-row .pss__input:first-child { max-width: 160px; }
 .pss__input.is-error { border-color: var(--accent); }
+
+/* ---- Local Agents settings page ---- */
+.pss__agent-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  width: min(520px, 100%);
+}
+.pss__agent-caps {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+@media (max-width: 720px) {
+  .pss__agent-row {
+    align-items: flex-end;
+    flex-direction: column;
+  }
+}

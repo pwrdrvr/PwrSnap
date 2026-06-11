@@ -120,7 +120,8 @@ function makeSettings(): Settings {
       matchingText: { enabled: true },
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
     },
-    library: { detailRail: { pinned: true, lastSelectedTab: "info" } }
+    library: { detailRail: { pinned: true, lastSelectedTab: "info" } },
+  localAgents: { grants: [] }
   };
 }
 

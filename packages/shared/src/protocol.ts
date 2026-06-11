@@ -465,6 +465,7 @@ export type SettingsPage =
   | "general"
   | "hotkeys"
   | "ai"
+  | "local-agents"
   | "storage"
   | "system-permissions"
   | "about";
@@ -479,6 +480,7 @@ export const SETTINGS_PAGES = [
   "general",
   "hotkeys",
   "ai",
+  "local-agents",
   "storage",
   "system-permissions",
   "about"
@@ -491,9 +493,63 @@ export function isSettingsPage(value: unknown): value is SettingsPage {
   );
 }
 
+/** Every external-agent capability PwrSnap can grant to a paired local
+ *  client. Capabilities are deliberately finer-grained than "local
+ *  access" because original image bytes can bypass redactions visible
+ *  in the composite. */
+export type LocalAgentCapability =
+  | "library.read"
+  | "capture.composite.read"
+  | "capture.original.read"
+  | "capture.export"
+  | "capture.edit"
+  | "trash.write"
+  | "sizzle.compose"
+  | "sizzle.preview.read"
+  | "sizzle.full.read";
+
+export const LOCAL_AGENT_CAPABILITIES = [
+  "library.read",
+  "capture.composite.read",
+  "capture.original.read",
+  "capture.export",
+  "capture.edit",
+  "trash.write",
+  "sizzle.compose",
+  "sizzle.preview.read",
+  "sizzle.full.read"
+] as const satisfies readonly LocalAgentCapability[];
+
+export function isLocalAgentCapability(value: unknown): value is LocalAgentCapability {
+  return (
+    typeof value === "string" &&
+    (LOCAL_AGENT_CAPABILITIES as readonly string[]).includes(value)
+  );
+}
+
+export type LocalAgentClientGrant = {
+  id: string;
+  name: string;
+  capabilities: LocalAgentCapability[];
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+};
+
+export type LocalAgentClientGrantPatch = {
+  name?: string;
+  capabilities?: LocalAgentCapability[];
+  revokedAt?: string | null;
+  lastUsedAt?: string | null;
+};
+
 /** Every secret the app persists. Plaintext values never cross the IPC
  *  boundary — the renderer only ever sees the status shape below. */
-export type DesktopSettingsSecretName = "grokApiKey" | "openaiApiKey";
+export type DesktopSettingsSecretName =
+  | "grokApiKey"
+  | "openaiApiKey"
+  | `localAgentToken:${string}`;
 
 export type SizzleTtsProvider = "openai" | "xai";
 export type SizzleTtsModel = "tts-1" | "tts-1-hd";
@@ -1576,6 +1632,12 @@ export type Settings = {
    *  independently so users can prefer "always-open" in Library while
    *  the Editor stays unpinned, or vice versa. */
   library: LibrarySettings;
+  /** Paired local-agent clients. Tokens are stored separately in the
+   *  secret store under `localAgentToken:<clientId>`; Settings carries
+   *  only renderer-safe metadata and capability grants. */
+  localAgents: {
+    grants: LocalAgentClientGrant[];
+  };
 };
 
 /** Out-of-the-box global capture hotkeys. Shared so the main-process
@@ -1996,6 +2058,9 @@ export type SettingsPatch = {
    *  surfaces over time. */
   library?: {
     detailRail?: Partial<LibrarySidebarSettings>;
+  };
+  localAgents?: {
+    grants?: LocalAgentClientGrant[];
   };
 };
 
@@ -2674,6 +2739,18 @@ export type Commands = {
   "settings:clearSecret": {
     req: { name: DesktopSettingsSecretName };
     res: SecretStatus;
+  };
+  "localAgents:list": {
+    req: Record<string, never>;
+    res: { grants: LocalAgentClientGrant[] };
+  };
+  "localAgents:revoke": {
+    req: { id: string };
+    res: LocalAgentClientGrant;
+  };
+  "localAgents:update": {
+    req: { id: string; patch: LocalAgentClientGrantPatch };
+    res: LocalAgentClientGrant;
   };
 
   // ---- app ----

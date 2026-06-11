@@ -36,6 +36,8 @@ import type {
   LibrarySidebarTab,
   HighlightBlendMode,
   HighlightToolStyle,
+  LocalAgentCapability,
+  LocalAgentClientGrant,
   ShapeKind,
   ShapeToolStyle,
   SensitiveDataPattern,
@@ -60,6 +62,7 @@ import {
   isColorToken,
   isEditorSidebarPanel,
   isLibrarySidebarTab,
+  isLocalAgentCapability,
   isRedactionStyle
 } from "@pwrsnap/shared";
 import {
@@ -149,7 +152,10 @@ export function defaultSettings(): Settings {
       lastRoutedPermissionFingerprint: ""
     },
     editor: defaultEditorSettings(),
-    library: defaultLibrarySettings()
+    library: defaultLibrarySettings(),
+    localAgents: {
+      grants: []
+    }
   };
 }
 
@@ -594,7 +600,11 @@ function parseV1(raw: unknown): Settings | null {
     editor: parseEditorSettings(raw.editor, defaults.editor),
     // `library.*` is additive too — older files won't have it. Falls
     // through to defaultLibrarySettings() (pinned + Info) when missing.
-    library: parseLibrarySettings(raw.library, defaults.library)
+    library: parseLibrarySettings(raw.library, defaults.library),
+    // `localAgents.*` is metadata only; bearer tokens live in
+    // DesktopSecretStore. Malformed grants are dropped so a bad
+    // hand-edited settings file cannot create a privileged client.
+    localAgents: parseLocalAgentsSettings(raw.localAgents, defaults.localAgents)
   };
 }
 
@@ -767,6 +777,68 @@ function parseLibrarySettings(
       lastSelectedTab: pickedTab
     }
   };
+}
+
+function parseLocalAgentsSettings(
+  raw: unknown,
+  defaults: Settings["localAgents"]
+): Settings["localAgents"] {
+  if (!isRecord(raw)) return defaults;
+  const grantsRaw = Array.isArray(raw.grants) ? raw.grants : [];
+  const seen = new Set<string>();
+  const grants: LocalAgentClientGrant[] = [];
+  for (const grantRaw of grantsRaw) {
+    const grant = parseLocalAgentGrant(grantRaw);
+    if (grant === null) continue;
+    if (seen.has(grant.id)) continue;
+    seen.add(grant.id);
+    grants.push(grant);
+  }
+  return { grants };
+}
+
+function parseLocalAgentGrant(raw: unknown): LocalAgentClientGrant | null {
+  if (!isRecord(raw)) return null;
+  const id = typeof raw.id === "string" ? raw.id.trim() : "";
+  const name = typeof raw.name === "string" ? raw.name.trim() : "";
+  if (id.length === 0 || id.length > 128) return null;
+  if (name.length === 0 || name.length > 200) return null;
+  const capabilities = parseLocalAgentCapabilities(raw.capabilities);
+  if (capabilities.length === 0) return null;
+  const createdAt = pickIsoishString(raw.createdAt);
+  const updatedAt = pickIsoishString(raw.updatedAt);
+  if (createdAt === null || updatedAt === null) return null;
+  const lastUsedAt = pickIsoishStringOrNull(raw.lastUsedAt);
+  const revokedAt = pickIsoishStringOrNull(raw.revokedAt);
+  if (lastUsedAt === undefined || revokedAt === undefined) return null;
+  return {
+    id,
+    name,
+    capabilities,
+    createdAt,
+    updatedAt,
+    lastUsedAt,
+    revokedAt
+  };
+}
+
+function parseLocalAgentCapabilities(raw: unknown): LocalAgentCapability[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<LocalAgentCapability>();
+  for (const value of raw) {
+    if (!isLocalAgentCapability(value)) continue;
+    seen.add(value);
+  }
+  return [...seen];
+}
+
+function pickIsoishString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function pickIsoishStringOrNull(value: unknown): string | null | undefined {
+  if (value === null || value === undefined) return null;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 const SHAPE_CATALOG: readonly ShapeEntry[] = [
@@ -1106,7 +1178,8 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     storage: mergeSection(current.storage, patch.storage),
     recording: mergeSection(current.recording, patch.recording),
     editor: mergeEditor(current.editor, patch.editor),
-    library: mergeLibrary(current.library, patch.library)
+    library: mergeLibrary(current.library, patch.library),
+    localAgents: mergeLocalAgents(current.localAgents, patch.localAgents)
   };
 }
 
@@ -1270,6 +1343,16 @@ function mergeLibrary(
   if (patch === undefined) return current;
   return {
     detailRail: mergeSection(current.detailRail, patch.detailRail)
+  };
+}
+
+function mergeLocalAgents(
+  current: Settings["localAgents"],
+  patch: SettingsPatch["localAgents"]
+): Settings["localAgents"] {
+  if (patch === undefined) return current;
+  return {
+    grants: patch.grants !== undefined ? patch.grants : current.grants
   };
 }
 

@@ -12,14 +12,17 @@ type Logger = ReturnType<typeof getMainLogger>;
 export const KNOWN_SECRET_NAMES = [
   "grokApiKey",
   "openaiApiKey"
-] as const satisfies readonly DesktopSettingsSecretName[];
+] as const satisfies readonly Exclude<DesktopSettingsSecretName, `localAgentToken:${string}`>[];
 
 // Compile-time check the other direction: adding a new
 // `DesktopSettingsSecretName` without appending it here fails to
 // compile. `Exclude<>` returns `never` only when every union member
 // appears in the tuple.
 type _KnownSecretNamesExhaustive =
-  Exclude<DesktopSettingsSecretName, typeof KNOWN_SECRET_NAMES[number]> extends never
+  Exclude<
+    Exclude<DesktopSettingsSecretName, `localAgentToken:${string}`>,
+    typeof KNOWN_SECRET_NAMES[number]
+  > extends never
     ? true
     : false;
 const _knownSecretNamesExhaustive: _KnownSecretNamesExhaustive = true;
@@ -135,6 +138,10 @@ export class DesktopSecretStore {
         const entry = parsed[name];
         if (isStoredSecret(entry)) out[name] = entry;
       }
+      for (const [name, entry] of Object.entries(parsed)) {
+        if (!isLocalAgentTokenName(name)) continue;
+        if (isStoredSecret(entry)) out[name] = entry;
+      }
       return out;
     } catch (cause) {
       this.log.warn("secret-store: parse failed, returning empty", {
@@ -200,6 +207,11 @@ function isStoredSecret(value: unknown): value is StoredSecret {
     typeof value.value === "string" &&
     typeof value.lastSetAt === "string"
   );
+}
+
+function isLocalAgentTokenName(value: string): value is `localAgentToken:${string}` {
+  const prefix = "localAgentToken:";
+  return value.startsWith(prefix) && value.length > prefix.length;
 }
 
 function isNodeError(value: unknown): value is NodeJS.ErrnoException {

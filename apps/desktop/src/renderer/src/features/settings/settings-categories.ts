@@ -30,7 +30,8 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
     items: [
       { id: "general", name: "General" },
       { id: "hotkeys", name: "Hotkeys" },
-      { id: "ai", name: "AI Providers" }
+      { id: "ai", name: "AI Providers" },
+      { id: "local-agents", name: "Local Agents" }
     ]
   },
   {

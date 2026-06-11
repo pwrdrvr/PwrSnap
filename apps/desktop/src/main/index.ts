@@ -952,6 +952,13 @@ function shouldPreWarmRegionSelector(): boolean {
   return !(isE2E && process.env.PWRSNAP_E2E_SKIP_REGION_PREWARM === "1");
 }
 
+function scheduleRegionSelectorPreWarm(): void {
+  if (!shouldPreWarmRegionSelector()) return;
+  setTimeout(() => {
+    preWarmRegionSelector();
+  }, 0);
+}
+
 /** Background warm-up of the ACP agents configured for any AI surface, so the
  *  first chat / enrichment doesn't pay the multi-second agent spawn. Deferred +
  *  non-blocking; an unconfigured-but-installed agent (e.g. Kimi) is not spawned. */
@@ -1227,15 +1234,13 @@ export function bootstrapApp(): void {
     if (process.platform === "darwin") {
       installFocusSink();
     }
-    if (shouldPreWarmRegionSelector()) {
-      preWarmRegionSelector();
-    }
     if (!isE2E) {
       // Capture/region/window/video are dynamically registered from
       // settings + rebind on change.
       void wireHotkeyRegistrations();
     }
     createMainWindow();
+    scheduleRegionSelectorPreWarm();
     // Drain any `.pwrsnap` paths the OS handed us during cold-start
     // (macOS `app.on('open-file')` fires before whenReady; we queue
     // and dispatch here once the DB + handlers + main window are

@@ -238,6 +238,16 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     expect(spy.setAlwaysOnTop).toHaveBeenCalledWith(true, "screen-saver");
   });
 
+  test("disables background throttling so hidden prewarm loads before the first shortcut", async () => {
+    const { preWarmRegionSelector } = await import("../capture/region-selector");
+    preWarmRegionSelector();
+
+    const spy = constructed[0]!;
+    expect(spy.options.webPreferences).toMatchObject({
+      backgroundThrottling: false
+    });
+  });
+
   test("setVisibleOnAllWorkspaces is called BEFORE the renderer loads — first paint must not flash on the wrong Space", async () => {
     const { preWarmRegionSelector } = await import("../capture/region-selector");
     preWarmRegionSelector();

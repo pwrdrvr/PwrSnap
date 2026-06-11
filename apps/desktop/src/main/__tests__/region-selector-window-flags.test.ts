@@ -57,6 +57,10 @@ const constructed: WindowSpy[] = [];
 const ipcListeners = new Map<string, (event: unknown, payload: unknown) => void>();
 const deferredLoadResolvers: (() => void)[] = [];
 let deferSelectorLoads = false;
+const screenSnapshotMocks = vi.hoisted(() => ({
+  captureAndRegister: vi.fn(),
+  releaseSnapshot: vi.fn()
+}));
 
 function selectorLoadPromise(): Promise<void> {
   if (!deferSelectorLoads) return Promise.resolve();
@@ -172,10 +176,8 @@ vi.mock("../capture/window-list", () => ({
 }));
 
 vi.mock("../capture/screen-snapshot", () => ({
-  captureAndRegister: vi
-    .fn()
-    .mockResolvedValue({ id: "snapshot-1", filePath: "/tmp/snapshot.png", displayId: 1 }),
-  releaseSnapshot: vi.fn()
+  captureAndRegister: screenSnapshotMocks.captureAndRegister,
+  releaseSnapshot: screenSnapshotMocks.releaseSnapshot
 }));
 
 vi.mock("../tray", () => ({
@@ -193,6 +195,13 @@ beforeEach(() => {
   ipcListeners.clear();
   deferredLoadResolvers.length = 0;
   deferSelectorLoads = false;
+  screenSnapshotMocks.captureAndRegister.mockReset();
+  screenSnapshotMocks.releaseSnapshot.mockReset();
+  screenSnapshotMocks.captureAndRegister.mockResolvedValue({
+    id: "snapshot-1",
+    filePath: "/tmp/snapshot.png",
+    displayId: 1
+  });
   vi.resetModules();
   // createSelectorWindow only sets the NSPanel (`type: 'panel'`) +
   // setVisibleOnAllWorkspaces flags this test guards on darwin — they're
@@ -321,6 +330,46 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     const { preWarmRegionSelector } = await import("../capture/region-selector");
     preWarmRegionSelector();
     expect(constructed).toHaveLength(2);
+  });
+
+  test("does not warm a standby selector until after the current screen snapshot completes", async () => {
+    let resolveSnapshot!: (value: {
+      id: string;
+      filePath: string;
+      displayId: number;
+    }) => void;
+    screenSnapshotMocks.captureAndRegister.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSnapshot = resolve;
+      })
+    );
+
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ keepPwrSnapChrome: true });
+
+    await vi.waitFor(() => {
+      expect(screenSnapshotMocks.captureAndRegister).toHaveBeenCalledTimes(1);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(constructed).toHaveLength(1);
+    expect(constructed[0]?.show).not.toHaveBeenCalled();
+
+    resolveSnapshot({
+      id: "snapshot-1",
+      filePath: "/tmp/snapshot.png",
+      displayId: 1
+    });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+    });
+    await vi.waitFor(() => {
+      expect(constructed).toHaveLength(2);
+    });
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 
   test("uses the swapped standby selector on the next capture", async () => {

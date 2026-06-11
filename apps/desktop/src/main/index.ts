@@ -952,7 +952,7 @@ function shouldPreWarmRegionSelector(): boolean {
   return !(isE2E && process.env.PWRSNAP_E2E_SKIP_REGION_PREWARM === "1");
 }
 
-function scheduleRegionSelectorPreWarm(): void {
+function scheduleDarwinRegionSelectorPreWarm(): void {
   if (!shouldPreWarmRegionSelector()) return;
   setTimeout(() => {
     preWarmRegionSelector();
@@ -1234,13 +1234,18 @@ export function bootstrapApp(): void {
     if (process.platform === "darwin") {
       installFocusSink();
     }
+    if (process.platform !== "darwin" && shouldPreWarmRegionSelector()) {
+      preWarmRegionSelector();
+    }
     if (!isE2E) {
       // Capture/region/window/video are dynamically registered from
       // settings + rebind on change.
       void wireHotkeyRegistrations();
     }
     createMainWindow();
-    scheduleRegionSelectorPreWarm();
+    if (process.platform === "darwin") {
+      scheduleDarwinRegionSelectorPreWarm();
+    }
     // Drain any `.pwrsnap` paths the OS handed us during cold-start
     // (macOS `app.on('open-file')` fires before whenReady; we queue
     // and dispatch here once the DB + handlers + main window are

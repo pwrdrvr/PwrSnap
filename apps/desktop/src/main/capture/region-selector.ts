@@ -1045,11 +1045,11 @@ function createSelectorWindow(display: Display): BrowserWindow {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
-      // This window is intentionally hidden while it warms. Keep
-      // Chromium from throttling its renderer during that hidden
-      // load, otherwise the first shortcut after launch can still
-      // wait on the prewarm to finish.
-      backgroundThrottling: false,
+      // On macOS this window is intentionally hidden while it warms.
+      // Keep Chromium from throttling that hidden renderer load,
+      // otherwise the first shortcut after launch can still wait on
+      // the prewarm to finish.
+      ...(process.platform === "darwin" ? { backgroundThrottling: false } : {}),
       // The renderer needs the display id baked in so it can post the
       // right value back to main on commit. Pass via a query string.
       additionalArguments: [`--display-id=${display.id}`]

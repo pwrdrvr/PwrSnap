@@ -32,6 +32,7 @@ type WindowSpy = {
   setSimpleFullScreen: ReturnType<typeof vi.fn>;
   isSimpleFullScreen: ReturnType<typeof vi.fn>;
   setContentBounds: ReturnType<typeof vi.fn>;
+  setBounds: ReturnType<typeof vi.fn>;
   getBounds: ReturnType<typeof vi.fn>;
   show: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
@@ -72,6 +73,7 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
     setSimpleFullScreen: vi.fn(),
     isSimpleFullScreen: vi.fn().mockReturnValue(false),
     setContentBounds: vi.fn(),
+    setBounds: vi.fn(),
     getBounds: vi.fn().mockReturnValue({ x: 0, y: 0, width: 1440, height: 900 }),
     show: vi.fn(),
     focus: vi.fn(),
@@ -277,64 +279,128 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 
-  test("rebuilds macOS selector windows after hide so the next capture starts fresh", async () => {
-    const { hideSelector, preWarmRegionSelector } = await import(
-      "../capture/region-selector"
-    );
-    preWarmRegionSelector();
+  test("swaps in a warmed macOS standby selector after hide so the next capture starts fresh", async () => {
+    const { hideSelector, pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ keepPwrSnapChrome: true });
 
     expect(constructed).toHaveLength(1);
     const first = constructed[0]!;
 
+    await vi.waitFor(() => {
+      expect(first.show).toHaveBeenCalledTimes(1);
+    });
+    await vi.waitFor(() => {
+      expect(constructed).toHaveLength(2);
+    });
+    const standby = constructed[1]!;
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+
     hideSelector();
 
     expect(first.destroy).toHaveBeenCalledTimes(1);
+    expect(standby.destroy).not.toHaveBeenCalled();
     expect(constructed).toHaveLength(2);
-    const replacement = constructed[1]!;
-    expect(replacement.options.type).toBe("panel");
-    expect(replacement.setAlwaysOnTop).toHaveBeenCalledWith(true, "screen-saver");
-    expect(replacement.setVisibleOnAllWorkspaces).toHaveBeenCalledWith(true, {
+    expect(standby.options.type).toBe("panel");
+    expect(standby.setAlwaysOnTop).toHaveBeenCalledWith(true, "screen-saver");
+    expect(standby.setVisibleOnAllWorkspaces).toHaveBeenCalledWith(true, {
       visibleOnFullScreen: true
     });
 
+    const { preWarmRegionSelector } = await import("../capture/region-selector");
     preWarmRegionSelector();
     expect(constructed).toHaveLength(2);
   });
 
-  test("waits for a rebuilt selector renderer to load before sending per-show mode", async () => {
-    const { hideSelector, pickRegion, preWarmRegionSelector } = await import(
-      "../capture/region-selector"
-    );
-    preWarmRegionSelector();
-
-    deferSelectorLoads = true;
-    hideSelector();
-
-    expect(constructed).toHaveLength(2);
-    expect(deferredLoadResolvers).toHaveLength(1);
-    const replacement = constructed[1]!;
-
-    const pick = pickRegion({ mode: "window", keepPwrSnapChrome: true });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(replacement.webContents.send).not.toHaveBeenCalledWith(
-      "region-selector:mode",
-      expect.anything()
-    );
-    expect(replacement.show).not.toHaveBeenCalled();
-
-    deferredLoadResolvers.shift()?.();
+  test("uses the swapped standby selector on the next capture", async () => {
+    const { hideSelector, pickRegion } = await import("../capture/region-selector");
+    const firstPick = pickRegion({ keepPwrSnapChrome: true });
 
     await vi.waitFor(() => {
-      expect(replacement.webContents.send).toHaveBeenCalledWith(
+      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+    });
+    await vi.waitFor(() => {
+      expect(constructed).toHaveLength(2);
+    });
+    const standby = constructed[1]!;
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(firstPick).resolves.toMatchObject({
+      ok: false,
+      reason: "cancelled"
+    });
+    hideSelector();
+
+    const secondPick = pickRegion({ mode: "window", keepPwrSnapChrome: true });
+
+    await vi.waitFor(() => {
+      expect(standby.webContents.send).toHaveBeenCalledWith(
         "region-selector:mode",
         expect.objectContaining({
           mode: "window",
           screenUrl: "pwrsnap-screen://r/snapshot-1"
         })
       );
-      expect(replacement.show).toHaveBeenCalledTimes(1);
+      expect(standby.show).toHaveBeenCalledTimes(1);
+    });
+    if (constructed[2] !== undefined) {
+      expect(constructed[2].show).not.toHaveBeenCalled();
+    }
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(secondPick).resolves.toMatchObject({
+      ok: false,
+      reason: "cancelled"
+    });
+  });
+
+  test("waits for a swapped standby selector renderer to load before sending per-show mode", async () => {
+    const { hideSelector, pickRegion, preWarmRegionSelector } = await import(
+      "../capture/region-selector"
+    );
+    preWarmRegionSelector();
+    deferSelectorLoads = true;
+    const firstPick = pickRegion({ keepPwrSnapChrome: true });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+    });
+
+    await vi.waitFor(() => {
+      expect(constructed).toHaveLength(2);
+    });
+    expect(deferredLoadResolvers).toHaveLength(1);
+    const standby = constructed[1]!;
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(firstPick).resolves.toMatchObject({
+      ok: false,
+      reason: "cancelled"
+    });
+    hideSelector();
+
+    const pick = pickRegion({ mode: "window", keepPwrSnapChrome: true });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(standby.webContents.send).not.toHaveBeenCalledWith(
+      "region-selector:mode",
+      expect.anything()
+    );
+    expect(standby.show).not.toHaveBeenCalled();
+
+    deferredLoadResolvers.shift()?.();
+
+    await vi.waitFor(() => {
+      expect(standby.webContents.send).toHaveBeenCalledWith(
+        "region-selector:mode",
+        expect.objectContaining({
+          mode: "window",
+          screenUrl: "pwrsnap-screen://r/snapshot-1"
+        })
+      );
+      expect(standby.show).toHaveBeenCalledTimes(1);
     });
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false });

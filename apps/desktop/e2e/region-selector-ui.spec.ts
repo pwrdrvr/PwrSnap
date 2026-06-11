@@ -16,22 +16,29 @@ async function showAndGetRegionSelector(
 ): Promise<Page> {
   // Force-show the pre-warmed selector for the primary display so it
   // becomes interactive (BrowserWindow.show()).
-  await app.electronApp.evaluate(({ BrowserWindow, screen }) => {
-    const selector = BrowserWindow.getAllWindows().find(
-      (w) => !w.isDestroyed() && w.webContents.getURL().includes("stage=region")
-    );
-    if (selector === undefined) throw new Error("no region-selector window found");
-    if (process.platform === "darwin" && !selector.isSimpleFullScreen()) {
-      selector.setSimpleFullScreen(true);
-      const display = screen.getDisplayMatching(selector.getBounds());
-      selector.setContentBounds(display.bounds);
+  for (let i = 0; i < 30; i++) {
+    const shown = await app.electronApp.evaluate(({ BrowserWindow, screen }) => {
+      const selector = BrowserWindow.getAllWindows().find(
+        (w) => !w.isDestroyed() && w.webContents.getURL().includes("stage=region")
+      );
+      if (selector === undefined) return false;
+      if (process.platform === "darwin" && !selector.isSimpleFullScreen()) {
+        selector.setSimpleFullScreen(true);
+        const display = screen.getDisplayMatching(selector.getBounds());
+        selector.setContentBounds(display.bounds);
+      }
+      selector.show();
+      selector.focus();
+      return true;
+    });
+    if (shown) {
+      break;
     }
-    selector.show();
-    selector.focus();
-  });
+    await new Promise((r) => setTimeout(r, 100));
+  }
   // Wait until Playwright sees a window with the region hash — the
-  // selector window was created at boot but only becomes a Page after
-  // it loads its URL; the .show() above guarantees it has by now.
+  // selector window is scheduled as a startup prewarm, then only
+  // becomes a Page after it loads its URL.
   for (let i = 0; i < 30; i++) {
     const selector = app.electronApp
       .windows()

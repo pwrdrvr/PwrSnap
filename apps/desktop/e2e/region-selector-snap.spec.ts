@@ -605,19 +605,26 @@ async function lockWindowSnap(selector: Page, x: number, y: number): Promise<voi
 async function showAndGetSelector(
   app: Awaited<ReturnType<typeof launchPwrSnap>>
 ): Promise<Page> {
-  await app.electronApp.evaluate(({ BrowserWindow, screen }) => {
-    const w = BrowserWindow.getAllWindows().find(
-      (w) => !w.isDestroyed() && w.webContents.getURL().includes("stage=region")
-    );
-    if (w === undefined) throw new Error("no selector window");
-    if (process.platform === "darwin" && !w.isSimpleFullScreen()) {
-      w.setSimpleFullScreen(true);
-      const display = screen.getDisplayMatching(w.getBounds());
-      w.setContentBounds(display.bounds);
+  for (let i = 0; i < 30; i++) {
+    const shown = await app.electronApp.evaluate(({ BrowserWindow, screen }) => {
+      const w = BrowserWindow.getAllWindows().find(
+        (w) => !w.isDestroyed() && w.webContents.getURL().includes("stage=region")
+      );
+      if (w === undefined) return false;
+      if (process.platform === "darwin" && !w.isSimpleFullScreen()) {
+        w.setSimpleFullScreen(true);
+        const display = screen.getDisplayMatching(w.getBounds());
+        w.setContentBounds(display.bounds);
+      }
+      w.show();
+      w.focus();
+      return true;
+    });
+    if (shown) {
+      break;
     }
-    w.show();
-    w.focus();
-  });
+    await new Promise((r) => setTimeout(r, 100));
+  }
   for (let i = 0; i < 30; i++) {
     const found = app.electronApp.windows().find((w) => w.url().includes("stage=region"));
     if (found !== undefined) return found;

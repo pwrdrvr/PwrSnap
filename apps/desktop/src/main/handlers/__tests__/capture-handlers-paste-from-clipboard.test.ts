@@ -16,7 +16,7 @@
 // menu-availability test (`File menu exposes New -> Paste from
 // Clipboard`) also stays — it reads the real Electron Menu.
 
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   isEmpty: vi.fn(() => true),
@@ -24,7 +24,12 @@ const mocks = vi.hoisted(() => ({
   availableFormats: vi.fn((): string[] => []),
   readBookmark: vi.fn(() => ({ title: "", url: "" })),
   readBuffer: vi.fn(() => Buffer.alloc(0)),
-  readText: vi.fn(() => "")
+  readText: vi.fn(() => ""),
+  pickRegion: vi.fn(),
+  hideSelector: vi.fn(),
+  activateApp: vi.fn(),
+  reclaimDockIconIfLibraryAlive: vi.fn(),
+  findMainLibraryWindow: vi.fn()
 }));
 
 vi.mock("electron", () => ({
@@ -61,9 +66,9 @@ vi.mock("electron", () => ({
 // the test runner can't handle (sharp, ffmpeg, the Swift recorder) or
 // leak state across test files via a singleton.
 vi.mock("../../capture/region-selector", () => ({
-  pickRegion: async () => ({ ok: false, reason: "cancelled" }),
+  pickRegion: mocks.pickRegion,
   getLastWindowListSnapshot: () => [],
-  hideSelector: () => undefined
+  hideSelector: mocks.hideSelector
 }));
 
 vi.mock("../../capture/screencapture", () => ({
@@ -76,7 +81,7 @@ vi.mock("../../capture/screen-snapshot", () => ({
 }));
 
 vi.mock("../../capture/window-list", () => ({
-  activateApp: async () => undefined,
+  activateApp: mocks.activateApp,
   findWindowAt: () => null
 }));
 
@@ -94,7 +99,8 @@ vi.mock("../../tray", () => ({
 }));
 
 vi.mock("../../window", () => ({
-  reclaimDockIconIfLibraryAlive: () => undefined
+  reclaimDockIconIfLibraryAlive: mocks.reclaimDockIconIfLibraryAlive,
+  findMainLibraryWindow: mocks.findMainLibraryWindow
 }));
 
 vi.mock("../codex-handlers", () => ({
@@ -128,6 +134,24 @@ const { registerCaptureHandlers } = await import("../capture-handlers");
 
 registerCaptureHandlers();
 
+beforeEach(() => {
+  mocks.isEmpty.mockReturnValue(true);
+  mocks.toPNG.mockReturnValue(Buffer.alloc(0));
+  mocks.availableFormats.mockReturnValue([]);
+  mocks.readBookmark.mockReturnValue({ title: "", url: "" });
+  mocks.readBuffer.mockReturnValue(Buffer.alloc(0));
+  mocks.readText.mockReturnValue("");
+  mocks.pickRegion.mockResolvedValue({
+    ok: false,
+    reason: "cancelled",
+    previousAppPid: 42
+  });
+  mocks.hideSelector.mockClear();
+  mocks.activateApp.mockClear();
+  mocks.reclaimDockIconIfLibraryAlive.mockClear();
+  mocks.findMainLibraryWindow.mockReset();
+});
+
 describe("capture:pasteFromClipboard", () => {
   test("returns kind=clipboard, code=no_image when the clipboard is empty", async () => {
     // Default vi.hoisted state already simulates the empty-clipboard
@@ -144,5 +168,35 @@ describe("capture:pasteFromClipboard", () => {
     expect(result.error.kind).toBe("clipboard");
     expect(result.error.code).toBe("no_image");
     expect(result.error.message).toMatch(/clipboard/i);
+  });
+});
+
+describe("capture:interactive focus policy", () => {
+  test("does not activate the previous app or focus visible Library windows on cancel", async () => {
+    const library = {
+      isDestroyed: vi.fn(() => false),
+      isMinimized: vi.fn(() => false),
+      isVisible: vi.fn(() => true),
+      restore: vi.fn(),
+      showInactive: vi.fn(),
+      focus: vi.fn()
+    };
+    mocks.findMainLibraryWindow.mockReturnValue(library);
+
+    const result = await bus.dispatch(
+      "capture:interactive",
+      { mode: "auto" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected cancel");
+    expect(result.error.code).toBe("cancelled");
+    expect(mocks.hideSelector).toHaveBeenCalledTimes(1);
+    expect(mocks.activateApp).not.toHaveBeenCalled();
+    expect(library.focus).not.toHaveBeenCalled();
+    expect(library.restore).not.toHaveBeenCalled();
+    expect(library.showInactive).not.toHaveBeenCalled();
+    expect(mocks.reclaimDockIconIfLibraryAlive).toHaveBeenCalledTimes(1);
   });
 });

@@ -40,7 +40,7 @@ import {
 } from "../capture/region-selector";
 import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
 import { releaseSnapshot } from "../capture/screen-snapshot";
-import { activateApp, type WindowInfo } from "../capture/window-list";
+import { type WindowInfo } from "../capture/window-list";
 import {
   resolveSelectionSourceApp,
   resolveSourceAppByRect
@@ -91,6 +91,17 @@ const IMAGE_FILE_EXTENSIONS = new Set([
   ".tiff",
   ".webp"
 ]);
+
+function restoreLibraryIfHiddenWithoutRaising(): void {
+  const library = findMainLibraryWindow();
+  if (library === null || library.isDestroyed()) return;
+  if (library.isMinimized()) {
+    library.restore();
+  }
+  if (!library.isVisible()) {
+    library.showInactive();
+  }
+}
 
 type CaptureSource = Pick<WindowInfo, "bundleId" | "appName"> | null;
 
@@ -194,38 +205,19 @@ export function registerCaptureHandlers(): void {
       // before the selector window's compositor pass is complete.
       await new Promise((resolve) => setTimeout(resolve, 50));
       hideSelector();
-      if (selection.previousAppPid !== null && selection.previousAppPid !== undefined) {
-        await activateApp(selection.previousAppPid);
-      } else {
-        // No previous app to restore — the Library (or another
-        // PwrSnap window) was topmost when the capture started.
-        // After hideSelector, Cocoa's window-cascade picks the next
-        // key-window candidate; the floating-level focus-sink wins
-        // because it sits above the Library at level 0. Without an
-        // explicit refocus the user is left staring at whatever was
-        // behind PwrSnap (the Library is alive but not key/front),
-        // which reads as "the Library got hidden on cancel." Bring
-        // it back to its pre-capture state.
-        const library = findMainLibraryWindow();
-        if (library !== null && !library.isDestroyed()) {
-          if (library.isMinimized()) library.restore();
-          if (!library.isVisible()) library.show();
-          library.focus();
-        }
-      }
+      // Leave normal app windows exactly where they were. The selector
+      // is a non-activating panel, so the app that was active before
+      // capture should naturally remain active after the selector hides.
+      // Calling activateApp(previousAppPid) here deactivates PwrSnap and
+      // can shove visible Library / Settings windows behind the previous
+      // app even though the user may have been trying to capture them.
+      restoreLibraryIfHiddenWithoutRaising();
       // Always re-assert Regular activation policy after cancel —
-      // not just on the activateApp branch. Showing the screen-
-      // saver-level selector alongside our persistent floating-
-      // level panels (focus-sink, tray, float-over) is enough for
-      // AppKit to demote PwrSnap to Accessory as a focus-cascade
-      // side-effect on the selector's hide, even when we never
-      // explicitly deactivated to another app. Demotion strips the
-      // Dock icon and orphans the Library — the user reads it as
-      // "Library got closed and the Dock icon disappeared." The
-      // reclaim is a no-op when the Library is gone (the dock-icon-
-      // tied-to-Library invariant means there's no icon to reclaim)
-      // and a no-op when the dock is already visible, so it's safe
-      // to call unconditionally.
+      // if we do not activate the previous app. Showing the screen-
+      // saver-level selector alongside our persistent floating-level
+      // panels can still demote PwrSnap to Accessory as a focus-cascade
+      // side-effect on selector hide. The reclaim is a no-op when the
+      // Library is gone or the Dock icon is already visible.
       reclaimDockIconIfLibraryAlive();
       return err({
         kind: "capture",
@@ -237,7 +229,7 @@ export function registerCaptureHandlers(): void {
     // COMMIT path. From here on we own the screen snapshot — we MUST
     // release it before returning. wrap the rest in try/finally so an
     // error doesn't leak the temp file.
-    const { screenSnapshotId, screenSnapshotPath, previousAppPid } = selection;
+    const { screenSnapshotId, screenSnapshotPath } = selection;
     try {
       // Two capture paths:
       //   • Full-window mode (user held ⇧ at commit time, or `mode`
@@ -296,22 +288,18 @@ export function registerCaptureHandlers(): void {
       }
       return persisted;
     } finally {
-      // Selector goes away last. Then activate the previous app —
-      // toast is already established at floating level so it stays
-      // on top of the previously-frontmost app's windows.
+      // Selector goes away last. We intentionally do not activate the
+      // previous app here: the selector is a non-activating panel, so
+      // the previous app should still be active. An explicit activation
+      // can hide/de-key visible PwrSnap Library or Settings windows that
+      // the user was trying to capture.
       hideSelector();
       void releaseSnapshot(screenSnapshotId);
-      if (previousAppPid !== null) {
-        await activateApp(previousAppPid);
-      }
-      // See cancel branch above for the full rationale. activateApp
-      // is the most obvious demotion trigger (deactivates PwrSnap;
-      // with our floating-level panels in the window list AppKit
-      // demotes us to Accessory) but the selector hide alone is
-      // enough to trip the same focus-cascade side-effect when no
-      // previous app exists (Library-was-topmost case). Reclaim
-      // unconditionally so the Library stays reachable via the
-      // Dock either way.
+      restoreLibraryIfHiddenWithoutRaising();
+      // See cancel branch above for the full rationale. The selector
+      // hide alone is enough to trip the focus-cascade side-effect on
+      // some macOS runs, so reclaim unconditionally without raising any
+      // app window.
       reclaimDockIconIfLibraryAlive();
     }
   });

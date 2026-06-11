@@ -35,7 +35,7 @@ test.describe("region selector menu-bar overlay (macOS)", () => {
       // Start state: hidden, not in overlay mode, bounds match display
       // bounds (we constructed it that way), but the OS hasn't yet
       // committed those bounds because the window is hidden.
-      const before = await readSelectorState(app);
+      const before = await waitForSelectorState(app);
       expect(before).not.toBeNull();
       expect(before!.simpleFullScreen).toBe(false);
       expect(before!.visible).toBe(false);
@@ -119,6 +119,17 @@ type SelectorState = {
   visible: boolean;
   simpleFullScreen: boolean;
 };
+
+async function waitForSelectorState(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>
+): Promise<SelectorState | null> {
+  for (let i = 0; i < 30; i++) {
+    const state = await readSelectorState(app);
+    if (state !== null) return state;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return null;
+}
 
 async function readSelectorState(
   app: Awaited<ReturnType<typeof launchPwrSnap>>

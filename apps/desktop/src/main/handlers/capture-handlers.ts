@@ -118,8 +118,13 @@ export function registerCaptureHandlers(): void {
     return persistAndBroadcast(captureResult.tempPath, sourceApp);
   });
 
-  bus.register("capture:interactive", async (req) => {
+  bus.register("capture:interactive", async (req, ctx) => {
+    const handlerStartedAt = Date.now();
     const mode = req.mode ?? "auto";
+    log.info("capture:interactive handler received", {
+      mode,
+      principal: ctx.principal
+    });
 
     // Timed mode = "delay 5 s, then open the normal auto picker."
     // During the countdown the user is free to stage anything that
@@ -133,8 +138,14 @@ export function registerCaptureHandlers(): void {
     // user picks against — region / window / ⇧-full-window all work
     // exactly as they do in Quick Capture.
     if (mode === "timed") {
+      log.info("capture:interactive timed delay starting", {
+        durationFromHandlerReceivedMs: Date.now() - handlerStartedAt
+      });
       const delay = await runTimedDelay();
       if (!delay.ok) return delay;
+      log.info("capture:interactive timed delay completed", {
+        durationFromHandlerReceivedMs: Date.now() - handlerStartedAt
+      });
     }
     const selectorMode = mode === "timed" ? "auto" : mode;
     // Timed mode leaves PwrSnap chrome alone — the user may have
@@ -151,7 +162,22 @@ export function registerCaptureHandlers(): void {
     // left it through the entire capture flow — visible, minimized,
     // hidden, on another Space — and Cocoa won't touch it.
 
+    const pickRegionStartedAt = Date.now();
+    log.info("capture:interactive calling pickRegion", {
+      mode,
+      selectorMode,
+      keepPwrSnapChrome,
+      durationFromHandlerReceivedMs: pickRegionStartedAt - handlerStartedAt
+    });
     const selection = await pickRegion({ mode: selectorMode, keepPwrSnapChrome });
+    log.info("capture:interactive pickRegion returned", {
+      mode,
+      selectorMode,
+      ok: selection.ok,
+      reason: selection.ok ? "completed" : selection.reason,
+      durationFromPickRegionCallMs: Date.now() - pickRegionStartedAt,
+      durationFromHandlerReceivedMs: Date.now() - handlerStartedAt
+    });
 
     // CANCEL path. The selector window is still up at this point —
     // pickRegion no longer hides itself; the caller owns hideSelector.

@@ -2084,9 +2084,9 @@ export function Library() {
       ) {
         const preset = copyPresetForShortcutKey(event.key);
         const record = selectedRecordRef.current;
-        if (preset !== null && record !== null) {
+        if (preset !== null && record !== null && record.kind === "image") {
           event.preventDefault();
-          void dispatch("clipboard:copy", { captureId: record.id, preset });
+          void dispatch("clipboard:copy-file", { captureId: record.id, preset });
           setCopyPulses((current) => ({ ...current, [preset]: current[preset] + 1 }));
           return;
         }

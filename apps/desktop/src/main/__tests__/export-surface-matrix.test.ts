@@ -40,7 +40,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import sharp from "sharp";
 import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, test, vi } from "vitest";
 
@@ -200,6 +200,7 @@ afterEach(() => {
   // against a clean slate. The DB file persists; just the rows go.
   const db = getDb();
   db.exec(`DELETE FROM layers`);
+  db.exec(`DELETE FROM capture_enrichments`);
   db.exec(`DELETE FROM captures`);
 });
 
@@ -572,6 +573,74 @@ describe("export-surface-matrix: every surface composites the v2 layer set", () 
       });
     }
   }
+});
+
+describe("capture:prepareDrag export filename", () => {
+  test("uses the enrichment filename stem instead of the legacy image.png alias", async () => {
+    const captureId = "t_export_filename";
+    await seedV2Capture({ id: captureId, annotated: false });
+    getDb()
+      .prepare(
+        `INSERT INTO capture_enrichments (
+          capture_id, suggested_filename_stem, updated_at
+        ) VALUES (
+          @captureId, @suggestedFilenameStem, datetime('now')
+        )`
+      )
+      .run({
+        captureId,
+        suggestedFilenameStem: "settings-permissions-panel"
+      });
+
+    const result = await bus.dispatch(
+      "capture:prepareDrag",
+      { captureId, preset: "high" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`prepareDrag failed: ${result.error.code}`);
+    expect(basename(result.value.path)).toBe("settings-permissions-panel-high.png");
+    expect(basename(result.value.path)).not.toBe("image.png");
+  });
+});
+
+describe("clipboard:copy-file export filename", () => {
+  test("copies a file-url whose basename uses the enrichment filename stem", async () => {
+    const captureId = "t_clipboard_file_filename";
+    await seedV2Capture({ id: captureId, annotated: false });
+    getDb()
+      .prepare(
+        `INSERT INTO capture_enrichments (
+          capture_id, suggested_filename_stem, updated_at
+        ) VALUES (
+          @captureId, @suggestedFilenameStem, datetime('now')
+        )`
+      )
+      .run({
+        captureId,
+        suggestedFilenameStem: "library-sidebar-export"
+      });
+
+    const result = await bus.dispatch(
+      "clipboard:copy-file",
+      { captureId, preset: "med" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`copy-file failed: ${result.error.code}`);
+    expect(basename(result.value.path)).toBe("library-sidebar-export-med.png");
+
+    const writeBuf = clipboardCaptured.find((c) => c.kind === "writeBuffer");
+    if (writeBuf === undefined || writeBuf.kind !== "writeBuffer") {
+      throw new Error(`expected writeBuffer on clipboard, got ${JSON.stringify(clipboardCaptured)}`);
+    }
+    expect(writeBuf.uti).toBe("public.file-url");
+    const fileUrl = writeBuf.bytes.toString("utf8");
+    expect(fileUrl.endsWith("/library-sidebar-export-med.png")).toBe(true);
+    expect(fileUrl).not.toContain("image.png");
+  });
 });
 
 // ---------------------------------------------------------------------

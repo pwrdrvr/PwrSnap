@@ -60,8 +60,10 @@ import { ensureEffectiveSrcPath, putCaptureSource } from "../persistence/source-
 import { persistCaptureFromTempV2 } from "../persistence/bundle-store";
 import { getMainLogger } from "../log";
 import { renderViaCoordinator } from "../render/coordinator";
-import { prepareRenderedPngAlias } from "../render/file-alias";
+import { prepareRenderedFileAlias } from "../render/file-alias";
+import { buildPresetExportDisplayName } from "../render/export-filename";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
+import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
 
@@ -547,7 +549,13 @@ export function registerCaptureHandlers(): void {
         width: Math.min(DRAG_ICON_WIDTH, record.width_px),
         format: "png"
       });
-      const dragPath = await prepareRenderedPngAlias(presetFile.path);
+      const displayName = buildPresetExportDisplayName({
+        record,
+        enrichment: getCaptureEnrichment(record.id),
+        preset: req.preset,
+        ext: "png"
+      });
+      const dragPath = await prepareRenderedFileAlias(presetFile.path, displayName);
       return ok({ path: dragPath, iconPath: icon.cachePath });
     } catch (cause) {
       log.error("prepare drag failed", {

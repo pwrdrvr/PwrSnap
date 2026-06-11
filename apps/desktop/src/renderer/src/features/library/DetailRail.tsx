@@ -619,7 +619,7 @@ export function DetailRail({
                     dim={m.dim}
                     bytes={m.bytes}
                     onCopy={(preset) => {
-                      void dispatch("clipboard:copy", { captureId: record.id, preset });
+                      void dispatch("clipboard:copy-file", { captureId: record.id, preset });
                     }}
                     onCopyPath={(preset) => {
                       void dispatch("clipboard:copy-path", { captureId: record.id, preset });

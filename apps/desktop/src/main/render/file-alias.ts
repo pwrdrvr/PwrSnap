@@ -36,12 +36,3 @@ export async function prepareRenderedFileAlias(
 
   return aliasPath;
 }
-
-/**
- * @deprecated Use `prepareRenderedFileAlias(cachePath, "image.png")`.
- * Kept as a thin wrapper so existing image callers don't churn in
- * the same PR that introduces the video equivalents.
- */
-export async function prepareRenderedPngAlias(cachePath: string): Promise<string> {
-  return prepareRenderedFileAlias(cachePath, "image.png");
-}

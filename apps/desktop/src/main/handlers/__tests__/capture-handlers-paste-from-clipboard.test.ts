@@ -120,7 +120,7 @@ vi.mock("../../render/coordinator", () => ({
 }));
 
 vi.mock("../../render/file-alias", () => ({
-  prepareRenderedPngAlias: async () => ""
+  prepareRenderedFileAlias: async () => ""
 }));
 
 const { bus } = await import("../../command-bus");

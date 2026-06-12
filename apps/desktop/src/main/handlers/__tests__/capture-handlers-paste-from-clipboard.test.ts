@@ -173,6 +173,10 @@ describe("capture:interactive focus policy", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected cancel");
     expect(result.error.code).toBe("cancelled");
+    expect(mocks.pickRegion).toHaveBeenCalledWith({
+      mode: "auto",
+      keepPwrSnapChrome: true
+    });
     expect(mocks.hideSelector).toHaveBeenCalledTimes(1);
     expect(mocks.activateApp).not.toHaveBeenCalled();
   });

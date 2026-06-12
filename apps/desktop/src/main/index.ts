@@ -775,7 +775,7 @@ async function runInteractiveRecord(): Promise<void> {
   // measurable boot cost and remove the cold-press latency.
   const selection = await pickRegion({
     mode: "auto",
-    keepPwrSnapChrome: false,
+    keepPwrSnapChrome: true,
     intent: "video"
   });
   if (!selection.ok) {

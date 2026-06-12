@@ -300,13 +300,10 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
  *   - 'window': window-picker only, drag suppressed, ⇧-not-required
  *     for full-window capture
  *
- * `keepPwrSnapChrome` (default false) — by default the selector hides
- * PwrSnap's own tray popover + float-over right before snapshotting,
- * so they don't sit on top of whatever the user is trying to capture.
- * Timed mode opts IN to leaving them: the whole point of the timer is
- * to let the user stage transient UI (including the PwrSnap tray
- * menu itself) and have it preserved in the snapshot they pick
- * against.
+ * `keepPwrSnapChrome` (default true) — interactive capture should
+ * leave every PwrSnap window exactly where the user put it. Passing
+ * false is reserved for flows that explicitly want to hide transient
+ * PwrSnap chrome before snapshotting.
  */
 export async function pickRegion(
   opts: {
@@ -321,7 +318,7 @@ export async function pickRegion(
   } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
-  const keepPwrSnapChrome = opts.keepPwrSnapChrome ?? false;
+  const keepPwrSnapChrome = opts.keepPwrSnapChrome ?? true;
   const intent = opts.intent ?? "snap";
   const requestStartedAt = Date.now();
   const elapsedFromRequest = (): number => Date.now() - requestStartedAt;
@@ -379,17 +376,12 @@ export async function pickRegion(
     activeScreenSnapshot = null;
     void releaseSnapshot(stale.id);
   }
-  // Synchronously dismiss PwrSnap capture chrome BEFORE the snapshot
-  // and window-list enumeration so our own popovers/toasts neither
-  // appear in the frozen background nor become snap candidates. The
-  // user's normal PwrSnap windows (Library / Edit) are intentionally
-  // left alone: if they're on screen, they're valid capture targets.
-  //
-  // Timed mode opts out via `keepPwrSnapChrome` — the user may have
-  // re-opened the tray during the countdown precisely so it appears
-  // in the picker. Skipping the hide also skips the 50 ms compositor
-  // wait, which only mattered as a "let the hide reach the window
-  // server before snapshotting" guard.
+  // Optional transient-chrome hide. Normal interactive capture leaves
+  // every PwrSnap window alone; this branch is only for callers that
+  // explicitly opt into hiding tray/float-over chrome before the
+  // snapshot. Skipping the hide also skips the 50 ms compositor wait,
+  // which only mattered as a "let the hide reach the window server
+  // before snapshotting" guard.
   if (!keepPwrSnapChrome) {
     hideTrayPopoverIfVisible();
     setFloatOverState({ kind: "cancel" });

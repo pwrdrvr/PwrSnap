@@ -147,11 +147,11 @@ export function registerCaptureHandlers(): void {
       });
     }
     const selectorMode = mode === "timed" ? "auto" : mode;
-    // Timed mode leaves PwrSnap chrome alone — the user may have
-    // re-opened the tray menu during the 5 s precisely to capture
-    // it. Every other mode keeps the default behavior of hiding our
-    // own popovers/toasts before snapshotting.
-    const keepPwrSnapChrome = mode === "timed";
+    // Leave every PwrSnap window exactly where the user put it for
+    // interactive selection. The selector itself is the only window
+    // capture should add/remove; hiding app chrome here causes Library
+    // and Dock churn on macOS.
+    const keepPwrSnapChrome = true;
 
     // Note (2026-05-04): the prior "hide the library, restore at end"
     // dance is gone. The tray popover is now a non-activating

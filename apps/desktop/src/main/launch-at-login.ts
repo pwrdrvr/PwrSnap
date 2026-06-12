@@ -47,6 +47,7 @@ import { app } from "electron";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { dirname, join } from "node:path";
+import { join as joinPosix } from "node:path/posix";
 import type { LaunchAtLoginStatus } from "@pwrsnap/shared";
 import { DesktopSettingsService } from "./settings/desktop-settings-service";
 import { onSettingsChanged } from "./handlers/settings-handlers";
@@ -142,8 +143,12 @@ function quoteExecPath(path: string): string {
 }
 
 function xdgAutostartFilePath(env: LaunchAtLoginEnvironment): string {
-  const configHome = env.xdgConfigHome ?? join(env.homeDir, ".config");
-  return join(configHome, "autostart", "pwrsnap.desktop");
+  // POSIX join on purpose: this builds LINUX paths from env values. The
+  // planner is documented as host-independent (unit tests exercise the
+  // linux branch from any host); plain `join` would emit backslashes
+  // when the suite runs on Windows.
+  const configHome = env.xdgConfigHome ?? joinPosix(env.homeDir, ".config");
+  return joinPosix(configHome, "autostart", "pwrsnap.desktop");
 }
 
 function xdgDesktopEntryContent(env: LaunchAtLoginEnvironment): string {

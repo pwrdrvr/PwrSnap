@@ -617,8 +617,8 @@ export async function pickRegion(
 }
 
 /**
- * Decide which app pid (if any) the capture flow should re-activate
- * after a commit or cancel. Pure function, exported for unit testing.
+ * Decide which app pid (if any) was meaningfully frontmost when the
+ * selector opened. Pure function, exported for unit testing.
  *
  * Returns `null` when one of OUR pids owns the topmost window in the
  * snapshot — i.e. the user was already inside PwrSnap (Library,
@@ -637,8 +637,8 @@ export async function pickRegion(
  * Returns the topmost non-PwrSnap pid otherwise — exactly the
  * historical behavior. The "first non-ours, front-to-back" walk
  * matches `listWindows`' z-order-descending output (index 0 =
- * frontmost), so we restore the app the user had ACTIVE before they
- * opened the tray popover or pressed the global hotkey.
+ * frontmost), so downstream code can tell which app was active before
+ * the user opened the tray popover or pressed the global hotkey.
  *
  * The snapshot must already have selector-overlay self-windows
  * filtered out (see isSelectorOverlayWindow) — those would otherwise
@@ -696,14 +696,9 @@ function prepareWindowListPayload(args: {
   // Snapshot the previously-frontmost app's pid. See
   // `decidePreviousAppPid` for the full rationale — the short version
   // is: if one of OUR windows (Library, Settings, edit window) was the
-  // topmost window in z-order, the user was already in PwrSnap, so we
-  // skip the post-capture activateApp call. Activating any other app
-  // in that case yanks the Library out from under the user AND, as a
-  // side-effect of the deactivation through our floating-level panels,
-  // demotes PwrSnap's activation policy to Accessory (NSUIElement),
-  // which strips the Dock icon and orphans the Library. See
-  // capture-handlers.ts for the matching dock-reclaim guard on the
-  // OTHER branch (when previousAppPid IS set legitimately).
+  // topmost window in z-order, the user was already in PwrSnap, so
+  // downstream focus-restore flows must not pick some app behind our
+  // window as the "previous" app.
   const previousAppPid = decidePreviousAppPid(snapshot, ourPids);
 
   // Step 1: keep windows that overlap the active display. Anything

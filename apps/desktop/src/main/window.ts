@@ -277,12 +277,11 @@ export function positionAppDocumentWindowForSource(
  * to-Library invariant means no icon should exist) or when the dock
  * is already visible.
  *
- * Why this exists: `activateApp(otherPid)` (in capture-handlers.ts)
- * deactivates PwrSnap to return the user to whichever app was
- * frontmost before they triggered a capture. With our floating-level
- * panels (focus-sink, tray, float-over) in the window list, AppKit
- * periodically demotes our activation policy to Accessory as a
- * side-effect of that deactivation — which strips the Dock icon and
+ * Why this exists: explicit activation flows, such as video recording
+ * returning focus to another app, can deactivate PwrSnap while our
+ * floating-level panels (focus-sink, tray, float-over) are in the
+ * window list. AppKit can demote our activation policy to Accessory as
+ * a side-effect of that deactivation — which strips the Dock icon and
  * orphans the Library window (alive but unreachable from the Dock or
  * ⌘-Tab). The pre-existing `focus` handler on the Library window only
  * recovered when the Library itself re-focused, but once PwrSnap is
@@ -372,12 +371,7 @@ export function createMainWindow(): BrowserWindow {
   });
 
   // Defensive re-claim: every focus on the library re-asserts the
-  // dock icon. The `activateApp(previousAppPid)` call in the capture
-  // flow (capture-handlers.ts) deactivates PwrSnap to return the user
-  // to their previous app — that side-effect (in combination with our
-  // persistent panel windows) periodically strips the dock icon's
-  // representation. Re-claiming on the next Library focus puts it
-  // back.
+  // dock icon if AppKit stripped it while PwrSnap was inactive.
   //
   // BUT: macOS fires a CASCADE of focus events when the user
   // alt-tabs back to PwrSnap (window-key → window-main → app-active,

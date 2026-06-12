@@ -784,13 +784,10 @@ async function runInteractiveRecord(): Promise<void> {
     hideSelector();
     if (selection.previousAppPid !== null && selection.previousAppPid !== undefined) {
       await activateApp(selection.previousAppPid);
-      // Match the image-capture cancel branch — activateApp can
-      // demote PwrSnap's activation policy to Accessory as a side-
-      // effect of returning focus to the previous app, which leaves
-      // the Library orphaned (alive but unreachable from the Dock or
-      // ⌘-Tab). Reclaim Regular policy without yanking focus from
-      // the previous app. See `capture-handlers.ts` for the matching
-      // call on the image path.
+      // Video recording still intentionally activates the previous app
+      // after cancel. That can demote PwrSnap's activation policy to
+      // Accessory, leaving the Library orphaned. Reclaim Regular policy
+      // without yanking focus from the previous app.
       reclaimDockIconIfLibraryAlive();
     }
     return;
@@ -872,9 +869,9 @@ async function runInteractiveRecord(): Promise<void> {
     });
   } else if (previousAppPid !== null) {
     await activateApp(previousAppPid);
-    // Same reclaim as the image-capture path — activateApp deactivates
-    // PwrSnap; AppKit can demote our activation policy to Accessory as
-    // a side-effect, stripping the Dock icon and orphaning the Library.
+    // Video recording intentionally activates the previous app.
+    // AppKit can demote our activation policy to Accessory as a side-
+    // effect, stripping the Dock icon and orphaning the Library.
     reclaimDockIconIfLibraryAlive();
     log.debug("video-record activated previous app", { previousAppPid });
   }
@@ -1497,19 +1494,18 @@ export function bootstrapApp(): void {
           });
         },
         // Dock-icon test surface (dock-lifecycle.spec.ts). The
-        // capture flow's `activateApp(previousAppPid)` deactivates
-        // PwrSnap and, with our floating panels in the window list,
-        // AppKit demotes our activation policy to Accessory —
-        // stripping the Dock icon and orphaning the Library. These
-        // helpers let the spec simulate the strip + reclaim cycle
-        // without needing the real screencapture pipeline (which
-        // requires TCC permission Playwright doesn't have).
+        // Explicit activation flows can deactivate PwrSnap and, with
+        // our floating panels in the window list, AppKit can demote
+        // our activation policy to Accessory — stripping the Dock icon
+        // and orphaning the Library. These helpers let the spec
+        // simulate the strip + reclaim cycle without needing the real
+        // screencapture pipeline (which requires TCC permission
+        // Playwright doesn't have).
         //
-        // `forceReclaimDockIcon` runs the same code production calls
-        // after every activateApp — `reclaimDockIconIfLibraryAlive`
-        // — with the E2E early-out bypassed. Used to assert the
-        // recovery actually re-shows the Dock when the activation
-        // policy has drifted to Accessory.
+        // `forceReclaimDockIcon` runs the same helper explicit
+        // production activation paths use, with the E2E early-out
+        // bypassed. Used to assert the recovery actually re-shows the
+        // Dock when the activation policy has drifted to Accessory.
         dockIsVisible: () => app.dock?.isVisible() ?? false,
         // `app.dock.show()` returns a Promise that resolves when
         // AppKit has finished the policy write. Awaiting it inside
@@ -1572,29 +1568,6 @@ export function bootstrapApp(): void {
       main.focus();
     });
 
-    // Defense-in-depth Dock-icon recovery. The capture flow re-claims
-    // the Dock icon right after every `activateApp(...)` call (see
-    // capture-handlers.ts), but anything else that deactivates PwrSnap
-    // while our floating-level panels are in the window list — a
-    // future feature that activates another app, a macOS Mission
-    // Control transition, a Stage Manager re-tile — can trip the same
-    // AppKit demotion path and strip the Dock icon. Whenever PwrSnap
-    // becomes inactive, if the Library still exists we re-assert
-    // Regular activation policy on the next tick (we let the
-    // deactivation settle first; calling app.dock.show() inside the
-    // event handler can race with AppKit's policy write).
-    //
-    // setImmediate keeps us off the current Cocoa run-loop tick. The
-    // re-claim is guarded by both `findMainLibraryWindow() !== null`
-    // and `app.dock.isVisible() === false`, so steady-state inactive
-    // apps with no Library aren't churned.
-    if (process.platform === "darwin" && !isE2E) {
-      app.on("did-resign-active", () => {
-        setImmediate(() => {
-          reclaimDockIconIfLibraryAlive();
-        });
-      });
-    }
   });
 
   app.on("window-all-closed", () => {

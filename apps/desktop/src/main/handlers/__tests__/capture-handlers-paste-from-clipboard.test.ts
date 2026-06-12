@@ -27,9 +27,7 @@ const mocks = vi.hoisted(() => ({
   readText: vi.fn(() => ""),
   pickRegion: vi.fn(),
   hideSelector: vi.fn(),
-  activateApp: vi.fn(),
-  reclaimDockIconIfLibraryAlive: vi.fn(),
-  findMainLibraryWindow: vi.fn()
+  activateApp: vi.fn()
 }));
 
 vi.mock("electron", () => ({
@@ -98,11 +96,6 @@ vi.mock("../../tray", () => ({
   setTrayCountdown: () => undefined
 }));
 
-vi.mock("../../window", () => ({
-  reclaimDockIconIfLibraryAlive: mocks.reclaimDockIconIfLibraryAlive,
-  findMainLibraryWindow: mocks.findMainLibraryWindow
-}));
-
 vi.mock("../codex-handlers", () => ({
   maybeEnqueueCaptureEnrichment: () => undefined
 }));
@@ -148,8 +141,6 @@ beforeEach(() => {
   });
   mocks.hideSelector.mockClear();
   mocks.activateApp.mockClear();
-  mocks.reclaimDockIconIfLibraryAlive.mockClear();
-  mocks.findMainLibraryWindow.mockReset();
 });
 
 describe("capture:pasteFromClipboard", () => {
@@ -172,17 +163,7 @@ describe("capture:pasteFromClipboard", () => {
 });
 
 describe("capture:interactive focus policy", () => {
-  test("does not activate the previous app or focus visible Library windows on cancel", async () => {
-    const library = {
-      isDestroyed: vi.fn(() => false),
-      isMinimized: vi.fn(() => false),
-      isVisible: vi.fn(() => true),
-      restore: vi.fn(),
-      showInactive: vi.fn(),
-      focus: vi.fn()
-    };
-    mocks.findMainLibraryWindow.mockReturnValue(library);
-
+  test("does not activate apps or run Library/Dock recovery on cancel", async () => {
     const result = await bus.dispatch(
       "capture:interactive",
       { mode: "auto" },
@@ -194,9 +175,5 @@ describe("capture:interactive focus policy", () => {
     expect(result.error.code).toBe("cancelled");
     expect(mocks.hideSelector).toHaveBeenCalledTimes(1);
     expect(mocks.activateApp).not.toHaveBeenCalled();
-    expect(library.focus).not.toHaveBeenCalled();
-    expect(library.restore).not.toHaveBeenCalled();
-    expect(library.showInactive).not.toHaveBeenCalled();
-    expect(mocks.reclaimDockIconIfLibraryAlive).toHaveBeenCalledTimes(1);
   });
 });

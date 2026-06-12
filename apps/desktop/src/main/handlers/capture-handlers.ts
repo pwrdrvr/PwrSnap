@@ -53,7 +53,6 @@ import {
 import { broadcastCapturesChanged } from "../events";
 import { setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
-import { findMainLibraryWindow, reclaimDockIconIfLibraryAlive } from "../window";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
 import { getCaptureById, insertCapture } from "../persistence/captures-repo";
 import { ensureEffectiveSrcPath, putCaptureSource } from "../persistence/source-store";
@@ -91,17 +90,6 @@ const IMAGE_FILE_EXTENSIONS = new Set([
   ".tiff",
   ".webp"
 ]);
-
-function restoreLibraryIfHiddenWithoutRaising(): void {
-  const library = findMainLibraryWindow();
-  if (library === null || library.isDestroyed()) return;
-  if (library.isMinimized()) {
-    library.restore();
-  }
-  if (!library.isVisible()) {
-    library.showInactive();
-  }
-}
 
 type CaptureSource = Pick<WindowInfo, "bundleId" | "appName"> | null;
 
@@ -205,20 +193,6 @@ export function registerCaptureHandlers(): void {
       // before the selector window's compositor pass is complete.
       await new Promise((resolve) => setTimeout(resolve, 50));
       hideSelector();
-      // Leave normal app windows exactly where they were. The selector
-      // is a non-activating panel shown inactive on macOS, so the app
-      // that was active before capture should naturally remain active
-      // after the selector hides.
-      // Calling activateApp(previousAppPid) here deactivates PwrSnap and
-      // can shove visible Library / Settings windows behind the previous
-      // app even though the user may have been trying to capture them.
-      restoreLibraryIfHiddenWithoutRaising();
-      // Re-assert Regular activation policy only if AppKit still
-      // demoted us while the screen-saver-level selector was visible
-      // alongside our persistent floating-level panels. The reclaim is
-      // a no-op when the Library is gone or the Dock icon is already
-      // visible.
-      reclaimDockIconIfLibraryAlive();
       return err({
         kind: "capture",
         code: selection.reason,
@@ -295,11 +269,6 @@ export function registerCaptureHandlers(): void {
       // the user was trying to capture.
       hideSelector();
       void releaseSnapshot(screenSnapshotId);
-      restoreLibraryIfHiddenWithoutRaising();
-      // See cancel branch above for the full rationale. This should be
-      // a no-op on the normal path; if AppKit still demoted the app,
-      // restore the Dock icon without raising any app window.
-      reclaimDockIconIfLibraryAlive();
     }
   });
 

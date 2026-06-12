@@ -1,27 +1,23 @@
 // Dock-icon lifecycle spec — guards the macOS "Library is alive but
 // orphaned" bug that the user reported.
 //
-// The bug: `activateApp(previousAppPid)` runs at the end of every
-// capture commit / cancel to return the user to whichever app they
-// had foreground. On macOS, deactivating PwrSnap while our floating-
-// level panels (focus-sink, tray, float-over) are in the window list
-// causes AppKit to demote our activation policy from Regular to
-// Accessory (NSUIElement). The Dock icon vanishes and the Library
-// window becomes UNREACHABLE — alive, but no Dock icon to click,
-// can't be raised by clicking it (Accessory apps don't auto-activate
-// on window click), and not in ⌘-Tab. The user reads this as
-// "Library got closed and the Dock icon is gone."
+// The bug: explicit activation flows can return focus to another app.
+// On macOS, deactivating PwrSnap while our floating-level panels
+// (focus-sink, tray, float-over) are in the window list can demote our
+// activation policy from Regular to Accessory (NSUIElement). The Dock
+// icon vanishes and the Library window becomes UNREACHABLE — alive, but
+// no Dock icon to click, can't be raised by clicking it (Accessory apps
+// don't auto-activate on window click), and not in ⌘-Tab. The user reads
+// this as "Library got closed and the Dock icon is gone."
 //
 // What this spec asserts:
 //
 //   1. After a deliberate `dock.hide()` (simulating the activateApp
 //      side-effect), the Library window is still alive — the bug is
 //      orphaning, not closing.
-//   2. `forceReclaimDockIcon()` — production calls this on every
-//      `activateApp` site (capture-handlers.ts) and on every
-//      `app.on('did-resign-active')` (index.ts) — re-shows the Dock
-//      icon. After it runs, dockIsVisible === true and the Library
-//      is still alive.
+//   2. `forceReclaimDockIcon()` — the same helper explicit production
+//      activation paths use — re-shows the Dock icon. After it runs,
+//      dockIsVisible === true and the Library is still alive.
 //   3. The reclaim is a no-op when the Library doesn't exist. The
 //      tray-icon-keeps-the-app-alive lifecycle depends on this:
 //      closing the Library should hide the Dock icon and KEEP it
@@ -151,10 +147,9 @@ test.describe("Dock icon lifecycle (macOS)", () => {
       await dockHide(app);
       await expectDockVisible(app, false);
 
-      // The fix: production calls this from capture-handlers.ts after
-      // every activateApp, and from index.ts on app.on('did-resign-
-      // active'). Both are in production code paths; here we invoke
-      // the helper directly to assert it actually restores the icon.
+      // The fix helper: explicit production activation paths call this
+      // when they intentionally hand focus to another app. Here we
+      // invoke the helper directly to assert it restores the icon.
       await forceReclaim(app);
       await expectDockVisible(app, true);
 
@@ -221,10 +216,9 @@ test.describe("Dock icon lifecycle (macOS)", () => {
   });
 
   test("repeated forceReclaim calls while dock is up are a safe no-op", async () => {
-    // Production fires `reclaimDockIconIfLibraryAlive` from many
-    // edges — every `activateApp` call site, every
-    // `app.on('did-resign-active')` notification. Most fires are
-    // redundant (the icon is already visible). The helper's
+    // Production can fire `reclaimDockIconIfLibraryAlive` from explicit
+    // activation paths. Most fires are redundant (the icon is already
+    // visible). The helper's
     // `if (app.dock?.isVisible() === true) return;` early-exit must
     // keep the no-op cheap and side-effect-free.
     //

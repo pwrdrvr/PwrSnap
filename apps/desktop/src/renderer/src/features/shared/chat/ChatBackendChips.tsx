@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
   AI_REASONING_EFFORTS,
+  CODEX_CAPTION_MODELS,
   builtInAcpAgentDisplayName,
   type AcpAgentModelOption,
   type CodexModelOption
@@ -45,12 +46,15 @@ function providerSupportsReasoning(provider: string): boolean {
 
 function toModelOptions(provider: string, raw: unknown): ModelOption[] {
   const list = (raw as { models?: unknown })?.models;
-  if (!Array.isArray(list)) return [];
   if (provider === "" || provider === "codex") {
-    return (list as CodexModelOption[])
-      .filter((m) => !m.hidden)
-      .map((m) => ({ id: m.id, label: m.displayName && m.displayName !== m.id ? `${m.displayName}` : m.id }));
+    const liveOptions = Array.isArray(list)
+      ? (list as CodexModelOption[])
+          .filter((m) => !m.hidden && m.inputModalities.includes("text") && m.inputModalities.includes("image"))
+          .map((m) => ({ id: m.id, label: m.displayName && m.displayName !== m.id ? `${m.displayName}` : m.id }))
+      : [];
+    return liveOptions.length > 0 ? liveOptions : CODEX_CAPTION_MODELS.map((id) => ({ id, label: id }));
   }
+  if (!Array.isArray(list)) return [];
   return (list as AcpAgentModelOption[]).map((m) => ({ id: m.id, label: m.label || m.id }));
 }
 

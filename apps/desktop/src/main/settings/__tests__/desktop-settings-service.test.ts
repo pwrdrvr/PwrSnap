@@ -207,6 +207,31 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.hotkeys.reshowFloatOver).toBe("CommandOrControl+Alt+Shift+F");
   });
 
+  test("v1 shape missing `general.launchAtLogin` gets the opt-in default (false) filled in", async () => {
+    // `general.launchAtLogin` landed after v1 shipped; older files
+    // carry `general` with only `developerMode`. parseV1 fills the
+    // gap without disturbing the sibling flag.
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({ schemaVersion: 1, general: { developerMode: true } }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.general.developerMode).toBe(true);
+    expect(settings.general.launchAtLogin).toBe(false);
+  });
+
+  test("`general.launchAtLogin` write + read round-trips without touching developerMode", async () => {
+    const svc = makeService();
+    const written = await svc.write({ general: { launchAtLogin: true } });
+    expect(written.general.launchAtLogin).toBe(true);
+    expect(written.general.developerMode).toBe(false);
+    const reread = await makeService().read();
+    expect(reread.general.launchAtLogin).toBe(true);
+  });
+
   test("defaultSettings() seeds hotkeys from the shared DEFAULT_HOTKEYS", () => {
     // Lock the renderer/main shared source: the Hotkeys page's "Reset to
     // defaults" reads the same object, so a drift here would silently

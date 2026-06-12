@@ -275,6 +275,29 @@ describe("settings:* validation", () => {
     expect(result.error.code).toBe("invalid_ai_enabled");
   });
 
+  test("settings:write rejects non-boolean general.launchAtLogin", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      { general: { launchAtLogin: "yes" } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_general_launchAtLogin");
+  });
+
+  test("settings:write accepts a boolean general.launchAtLogin", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      { general: { launchAtLogin: true } },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.general.launchAtLogin).toBe(true);
+  });
+
   test("settings:write accepts a valid ai.defaults per-surface patch", async () => {
     const result = await bus.dispatch(
       "settings:write",

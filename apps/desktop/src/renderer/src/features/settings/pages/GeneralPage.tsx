@@ -12,11 +12,15 @@
 // window receives the broadcast via `useAppearanceSync` and re-paints
 // in lock-step. Developer mode re-installs the application menu's View
 // submenu on the main side; Update channel is re-read by the
-// auto-updater on the next check.
+// auto-updater on the next check; Launch at login syncs the OS
+// login-item registration on the main side (launch-at-login.ts) and
+// re-reads the live OS state via `app:launchAtLoginStatus` so the card
+// can surface a macOS/Windows "disabled it OS-side" divergence.
 
-import type { ReactElement } from "react";
-import type { AppearanceTheme, UpdateChannel } from "@pwrsnap/shared";
+import { useEffect, useState, type ReactElement } from "react";
+import type { AppearanceTheme, LaunchAtLoginStatus, UpdateChannel } from "@pwrsnap/shared";
 import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
+import { dispatch } from "../../../lib/pwrsnap";
 import { useSettingsContext } from "../SettingsContext";
 
 const THEME_OPTIONS: readonly SegmentOption<AppearanceTheme>[] = [
@@ -35,7 +39,27 @@ export function GeneralPage(): ReactElement {
   const ready = settings !== null;
   const theme: AppearanceTheme = settings?.appearance.theme ?? "system";
   const developerMode = settings?.general.developerMode ?? false;
+  const launchAtLogin = settings?.general.launchAtLogin ?? false;
   const channel: UpdateChannel = settings?.updates.channel ?? "latest";
+
+  // Live OS-side registration state, distinct from the saved toggle —
+  // macOS/Windows let the user disable a registered login item OS-side
+  // without telling us. Re-read after every toggle flip: by the time
+  // `patch()` resolves and the settings broadcast lands, main has
+  // already synced the registration (the write handler awaits the
+  // main-side listeners), so this read sees the fresh state.
+  const [loginItemStatus, setLoginItemStatus] = useState<LaunchAtLoginStatus | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const result = await dispatch("app:launchAtLoginStatus", {});
+      if (cancelled || !result.ok) return;
+      setLoginItemStatus(result.value);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [launchAtLogin]);
 
   const onThemeChange = ready
     ? (next: AppearanceTheme): void => {
@@ -51,6 +75,12 @@ export function GeneralPage(): ReactElement {
   const onDeveloperModeChange = ready
     ? (next: boolean): void => {
         void patch({ general: { developerMode: next } });
+      }
+    : undefined;
+
+  const onLaunchAtLoginChange = ready
+    ? (next: boolean): void => {
+        void patch({ general: { launchAtLogin: next } });
       }
     : undefined;
 
@@ -82,7 +112,7 @@ export function GeneralPage(): ReactElement {
           <div className="pss__main-eyebrow">General</div>
           <h1 className="pss__main-title">General</h1>
           <p className="pss__main-sub">
-            Appearance, update channel, and developer options.
+            Appearance, startup, update channel, and developer options.
           </p>
         </div>
       </div>
@@ -95,6 +125,48 @@ export function GeneralPage(): ReactElement {
             onChange={onThemeChange}
           />
         </Row>
+      </Card>
+
+      <Card eyebrow="STARTUP" title="Launch at login">
+        <Row
+          label="Start PwrSnap when you sign in"
+          sub="Starts in the background — the tray icon and capture hotkeys are ready immediately, without opening the Library."
+          tag="login"
+        >
+          <Switch on={launchAtLogin} onChange={onLaunchAtLoginChange} />
+        </Row>
+        {loginItemStatus !== null &&
+        !loginItemStatus.supported &&
+        loginItemStatus.reason === "dev-build" ? (
+          <Row
+            label="Development build"
+            sub="OS registration is skipped in unpackaged builds — the preference is saved, but only packaged builds add the login item."
+            tag="dev"
+          >
+            <span className="pss__opt-sub">Saved only</span>
+          </Row>
+        ) : null}
+        {loginItemStatus?.blockedByOs === true ? (
+          <Row
+            label="Disabled by the operating system"
+            sub={
+              window.pwrsnapApi?.platform === "darwin"
+                ? "PwrSnap's login item is switched off in System Settings → General → Login Items, so it won't start at sign-in until you re-enable it there."
+                : "PwrSnap's startup entry is disabled in the system's startup apps, so it won't start at sign-in until you re-enable it there."
+            }
+            tag="action required"
+          >
+            <button
+              className="pss__top-btn"
+              type="button"
+              onClick={() => {
+                void dispatch("app:openLoginItemsSettings", {});
+              }}
+            >
+              Open startup settings
+            </button>
+          </Row>
+        ) : null}
       </Card>
 
       <Card eyebrow="UPDATES" title="Update channel">

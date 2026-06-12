@@ -118,6 +118,7 @@ import {
   reclaimDockIconIfLibraryAlive,
   refreshWindowsTitleBarOverlay
 } from "./window";
+import { installLaunchAtLoginSync, wasLaunchedAtLogin } from "./launch-at-login";
 import { wireAppMenuBridge } from "./app-menu-bridge";
 import {
   enableOpenFileForwardingToPrimary,
@@ -1295,8 +1296,29 @@ export function bootstrapApp(): void {
       // Capture/region/window/video are dynamically registered from
       // settings + rebind on change.
       void wireHotkeyRegistrations();
+      // Sync OS login-item registration to `general.launchAtLogin`
+      // (boot reconcile + follow settings writes). E2E must never
+      // touch the host's real startup items; the module also
+      // self-skips there as defense in depth.
+      void installLaunchAtLoginSync();
     }
-    createMainWindow();
+    if (wasLaunchedAtLogin()) {
+      // Login-item boot is background-only: the tray owns the session
+      // and the Library stays closed until the user asks for it (tray
+      // "Open Library", Dock/Finder relaunch → `activate` /
+      // `second-instance`, both of which create-on-demand). Hide the
+      // Dock icon explicitly — pre-split, the combined process launches
+      // as a Regular-policy app, so without this a bare icon lingers
+      // with no window behind it. The two-process split plan
+      // (docs/plans/2026-06-12-001 §D2/§D10) later makes this
+      // structural: login items boot the agent role under LSUIElement.
+      log.info("login-item launch detected — booting tray-only (no Library window)");
+      if (process.platform === "darwin" && !isE2E) {
+        app.dock?.hide();
+      }
+    } else {
+      createMainWindow();
+    }
     if (process.platform === "darwin") {
       scheduleDarwinRegionSelectorPreWarm();
     }

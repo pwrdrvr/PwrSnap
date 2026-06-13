@@ -122,6 +122,7 @@ import {
   reclaimDockIconIfLibraryAlive,
   refreshWindowsTitleBarOverlay
 } from "./window";
+import { installLaunchAtLoginSync, wasLaunchedAtLogin } from "./launch-at-login";
 import { wireAppMenuBridge } from "./app-menu-bridge";
 import {
   enableOpenFileForwardingToPrimary,
@@ -1373,11 +1374,34 @@ export function bootstrapApp(): void {
       // 2026-06-12 (capture recovered by hand-copying rows back); the
       // guard makes profiling runs passive observers.
       void wireHotkeyRegistrations();
+      // Sync OS login-item registration to `general.launchAtLogin`
+      // (boot reconcile + follow settings writes). E2E must never
+      // touch the host's real startup items; the module also
+      // self-skips there as defense in depth. Profiling runs skip it
+      // for the same reason as the hotkey guard above — a profiling
+      // instance must not mutate the host's real OS login items.
+      void installLaunchAtLoginSync();
     } else if (startupProfilingEnabled()) {
       markStartup("main: global hotkeys SKIPPED (profiling run)");
     }
     markStartup("main: createMainWindow begin");
-    createMainWindow();
+    if (wasLaunchedAtLogin()) {
+      // Login-item boot is background-only: the tray owns the session
+      // and the Library stays closed until the user asks for it (tray
+      // "Open Library", Dock/Finder relaunch → `activate` /
+      // `second-instance`, both of which create-on-demand). Hide the
+      // Dock icon explicitly — pre-split, the combined process launches
+      // as a Regular-policy app, so without this a bare icon lingers
+      // with no window behind it. The two-process split plan
+      // (docs/plans/2026-06-12-001 §D2/§D10) later makes this
+      // structural: login items boot the agent role under LSUIElement.
+      log.info("login-item launch detected — booting tray-only (no Library window)");
+      if (process.platform === "darwin" && !isE2E) {
+        app.dock?.hide();
+      }
+    } else {
+      createMainWindow();
+    }
     markStartup("main: createMainWindow returned");
     if (process.platform === "darwin") {
       scheduleDarwinRegionSelectorPreWarm();

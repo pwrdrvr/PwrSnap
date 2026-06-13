@@ -526,9 +526,7 @@ export function registerSizzleHandlers(): void {
         }
         let apiKey: string | null;
         try {
-          apiKey = await getSecrets().getValue(
-            project.ttsProvider === "openai" ? "openaiApiKey" : "grokApiKey"
-          );
+          apiKey = await getSecrets().getValue("openaiApiKey");
         } catch (cause) {
           return err(toError(cause, "secret_read_failed"));
         }
@@ -536,7 +534,7 @@ export function registerSizzleHandlers(): void {
           return err({
             kind: "validation",
             code: "no_api_key",
-            message: `Set your ${project.ttsProvider === "openai" ? "OpenAI" : "xAI"} API key in Settings → AI Providers`
+            message: "Set your OpenAI API key in Settings → AI Providers"
           });
         }
         const tts = await synthesize({
@@ -628,9 +626,7 @@ export function registerSizzleHandlers(): void {
 
     let apiKey: string | null;
     try {
-      apiKey = await getSecrets().getValue(
-        project.ttsProvider === "openai" ? "openaiApiKey" : "grokApiKey"
-      );
+      apiKey = await getSecrets().getValue("openaiApiKey");
     } catch (cause) {
       return err(toError(cause, "secret_read_failed"));
     }
@@ -638,7 +634,7 @@ export function registerSizzleHandlers(): void {
       return err({
         kind: "validation",
         code: "no_api_key",
-        message: `Set your ${project.ttsProvider === "openai" ? "OpenAI" : "xAI"} API key in Settings → AI Providers`
+        message: "Set your OpenAI API key in Settings → AI Providers"
       });
     }
 
@@ -918,16 +914,14 @@ export function registerSizzleHandlers(): void {
     let apiKey: string | null = null;
     if (anyVoiceover) {
       try {
-        apiKey = await getSecrets().getValue(
-          project.ttsProvider === "openai" ? "openaiApiKey" : "grokApiKey"
-        );
+        apiKey = await getSecrets().getValue("openaiApiKey");
       } catch (cause) {
         const e = toError(cause, "secret_read_failed");
         broadcastRenderProgress({ projectId: project.id, phase: "failed", message: e.message, ratio: 0, error: { code: e.code, message: e.message } });
         return err(e);
       }
       if (apiKey === null || apiKey.length === 0) {
-        const message = `Set your ${project.ttsProvider === "openai" ? "OpenAI" : "xAI"} API key in Settings → AI Providers`;
+        const message = "Set your OpenAI API key in Settings → AI Providers";
         broadcastRenderProgress({ projectId: project.id, phase: "failed", message, ratio: 0, error: { code: "no_api_key", message } });
         return err({ kind: "validation", code: "no_api_key", message });
       }

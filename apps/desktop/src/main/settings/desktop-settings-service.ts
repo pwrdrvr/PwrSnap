@@ -121,7 +121,11 @@ export function defaultSettings(): Settings {
     // `DEFAULT_HOTKEYS` declaration in @pwrsnap/shared.
     hotkeys: { ...DEFAULT_HOTKEYS },
     general: {
-      developerMode: false
+      developerMode: false,
+      // Login-item registration is opt-in — silently installing
+      // ourselves into the user's startup sequence on first run would
+      // be hostile. The user flips it on in Settings -> General.
+      launchAtLogin: false
     },
     appearance: {
       // "system" tracks the OS appearance via the renderer's
@@ -546,10 +550,12 @@ function parseV1(raw: unknown): Settings | null {
       reshowFloatOver: pickString(hotkeys.reshowFloatOver, defaults.hotkeys.reshowFloatOver)
     },
     general: {
-      // `general.developerMode` landed after v1 shipped; older files
-      // won't have it. pickBoolean fills in the default (false) so the
-      // field is always present in-memory.
-      developerMode: pickBoolean(general.developerMode, defaults.general.developerMode)
+      // `general.developerMode` and `general.launchAtLogin` landed
+      // after v1 shipped; older files won't have them. pickBoolean
+      // fills in the default (false) so the fields are always present
+      // in-memory.
+      developerMode: pickBoolean(general.developerMode, defaults.general.developerMode),
+      launchAtLogin: pickBoolean(general.launchAtLogin, defaults.general.launchAtLogin)
     },
     appearance: {
       // `appearance` landed after v1 shipped; older files won't have

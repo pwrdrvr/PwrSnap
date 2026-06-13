@@ -33,7 +33,7 @@ const baseSettings: Settings = {
     videoCapture: "CommandOrControl+Alt+C",
     reshowFloatOver: "CommandOrControl+Alt+Shift+F"
   },
-  general: { developerMode: false },
+  general: { developerMode: false, launchAtLogin: false },
   appearance: { theme: "system" },
   updates: { channel: "latest" },
   storage: { filenameTimestampZone: "local" },
@@ -58,7 +58,7 @@ const baseSettings: Settings = {
 };
 
 const baseSecrets = {
-  grokApiKey: { configured: false, lastSetAt: null }
+  openaiApiKey: { configured: false, lastSetAt: null }
 };
 
 function installFakeApi(): { calls: { name: string; req: unknown }[] } {

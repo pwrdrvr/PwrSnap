@@ -580,7 +580,7 @@ describe("SecretKeyControl", () => {
     expect(primaryButton.disabled).toBe(true);
 
     focusInput(input);
-    typeIntoInput(input, "xai-new");
+    typeIntoInput(input, "sk-new");
     expect(primaryButton.disabled).toBe(false);
   });
 });

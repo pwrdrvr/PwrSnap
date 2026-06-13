@@ -119,7 +119,7 @@ function makeSettings(matchingTextEnabled = true): Settings {
       videoCapture: "CommandOrControl+Alt+C",
       reshowFloatOver: "CommandOrControl+Alt+Shift+F"
     },
-    general: { developerMode: false },
+    general: { developerMode: false, launchAtLogin: false },
     appearance: { theme: "system" },
     updates: { channel: "latest" },
     storage: { filenameTimestampZone: "local" },

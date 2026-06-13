@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.0.0-beta.17 - 2026-06-13
+
+This is the "ready to open the doors" beta: the macOS dogfood build is more
+polished, the Windows port is real enough to track in public, and the agentic
+capture loop is sharper from first launch through export.
+
+- Added the first Windows GUI path: tray, float-over controls, capture flow,
+  window picker, custom window chrome, and installer work are now in-tree.
+- Added launch-at-login with tray-only startup so PwrSnap can be present
+  without throwing a full Library window in your face.
+- Made capture startup and selector behavior more resilient: snapshots stay
+  side-effect free, the replacement selector warms up sooner, macOS selectors
+  rebuild after hide/show transitions, and selector windows re-raise when the
+  system tries to bury them.
+- Improved AI enrichment with Kimi/ACP model support, Fast/Thinking mode
+  labels, accurate provider naming, quieter ACP logs, and export filenames
+  based on enrichment stems.
+- Tightened macOS permission handling by detecting and surfacing TCC denials
+  when PwrSnap cannot read the captures folder.
+- Took startup latency seriously with a profiling harness and by moving
+  login-shell PATH work off the critical path.
+- Polished the everyday surfaces: tray shortcuts match Settings, float-over
+  countdowns resume correctly after saving AI drafts, and tray/float-over
+  colors now line up with the Library's black ramp.
+- Kept image exports practical by reusing source-width presets instead of
+  needlessly resizing captures.
+- Promoted the Windows cross-platform port plan and captured the current
+  gotchas so the open-source work has a visible map.
+
 ## v1.0.0-beta.16 - 2026-06-07
 
 - Added capture selection-mode affordances, including a crosshair cursor,

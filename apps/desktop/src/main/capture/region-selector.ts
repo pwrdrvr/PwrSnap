@@ -366,7 +366,6 @@ export async function pickRegion(
   if (!targetReady) {
     return { ok: false, reason: "destroyed" };
   }
-  scheduleStandbySelectorWarm(targetDisplay);
 
   if (pendingResolver !== null) {
     const previous = pendingResolver;

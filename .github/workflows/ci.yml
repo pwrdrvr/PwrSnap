@@ -194,22 +194,8 @@ jobs:
           node-version: "24.14.1"
           cache: pnpm
 
-      # Diagnostics only — never deletes anything. Reports free space +
-      # the size of preinstalled trees we could clear before the E2E job,
-      # so we can size a future cleanup step from real numbers. Runs
-      # twice (before install, before E2E) to show install/build impact.
-      - name: Disk diagnostics (before install)
-        shell: pwsh
-        continue-on-error: true
-        run: pwsh -File scripts/ci/windows-disk-report.ps1 -Label "before install"
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Disk diagnostics (before E2E)
-        shell: pwsh
-        continue-on-error: true
-        run: pwsh -File scripts/ci/windows-disk-report.ps1 -Label "before E2E"
 
       - name: Run desktop Electron E2E specs (Windows)
         # windows-latest provides an interactive desktop session, so (unlike the

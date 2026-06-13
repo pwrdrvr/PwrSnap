@@ -83,7 +83,7 @@ describe("ttsCacheFilename", () => {
     expect(a).not.toBe(b);
   });
 
-  it("differs when voice or model or provider changes", () => {
+  it("differs when voice or model changes", () => {
     const base = {
       provider: "openai" as const,
       model: "tts-1-hd" as const,
@@ -95,9 +95,6 @@ describe("ttsCacheFilename", () => {
     );
     expect(ttsCacheFilename(base)).not.toBe(
       ttsCacheFilename({ ...base, model: "tts-1" })
-    );
-    expect(ttsCacheFilename(base)).not.toBe(
-      ttsCacheFilename({ ...base, provider: "xai" })
     );
   });
 });
@@ -125,18 +122,6 @@ describe("synthesize", () => {
         model: "tts-1-hd"
       })
     ).rejects.toMatchObject({ code: "no_api_key" });
-  });
-
-  it("rejects xai provider (not wired up)", async () => {
-    await expect(
-      synthesize({
-        provider: "xai",
-        apiKey: "xai-test",
-        text: "hello",
-        voice: "onyx",
-        model: "tts-1-hd"
-      })
-    ).rejects.toMatchObject({ code: "provider_unavailable" });
   });
 
   it("cache HIT returns the existing file path without calling fetch", async () => {

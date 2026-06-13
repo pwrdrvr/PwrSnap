@@ -57,15 +57,15 @@ describe("resolveSpeechTiming", () => {
     ]);
   });
 
-  it("falls back to approximate timing when precise timing is unavailable", async () => {
+  it("falls back to approximate timing when precise timing lacks credentials", async () => {
     const timing = await resolveSpeechTiming({
-      provider: "xai",
+      provider: "openai",
       model: "tts-1-hd",
       voice: "onyx",
       text: "Generate the code",
       audioPath,
       durationSec: 1.5,
-      apiKey: "xai-test"
+      apiKey: null
     });
 
     expect(timing.quality).toBe("approximate");

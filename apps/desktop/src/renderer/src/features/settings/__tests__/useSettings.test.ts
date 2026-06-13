@@ -75,7 +75,7 @@ const baseSettings: Settings = {
 };
 
 const baseSecrets = {
-  grokApiKey: { configured: false, lastSetAt: null }
+  openaiApiKey: { configured: false, lastSetAt: null }
 };
 
 function installFakeApi(api: FakeApi): void {
@@ -211,11 +211,11 @@ describe("useSettings", () => {
     await act(async () => {
       api.pushEvent(EVENT_CHANNELS.settingsChanged, {
         settings: nextSettings,
-        secrets: { grokApiKey: { configured: true, lastSetAt: "2026-05-12T12:00:00.000Z" } }
+        secrets: { openaiApiKey: { configured: true, lastSetAt: "2026-05-12T12:00:00.000Z" } }
       });
     });
     expect(capturedValue?.settings).toEqual(nextSettings);
-    expect(capturedValue?.secrets?.grokApiKey.configured).toBe(true);
+    expect(capturedValue?.secrets?.openaiApiKey.configured).toBe(true);
   });
 
   test("patch() dispatches settings:write with the patch", async () => {

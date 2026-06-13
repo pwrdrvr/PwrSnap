@@ -58,7 +58,7 @@ const baseSettings: Settings = {
 };
 
 const baseSecrets = {
-  grokApiKey: { configured: false, lastSetAt: null }
+  openaiApiKey: { configured: false, lastSetAt: null }
 };
 
 function installFakeApi(): { calls: { name: string; req: unknown }[] } {

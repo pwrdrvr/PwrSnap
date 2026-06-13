@@ -10,7 +10,6 @@ import { getMainLogger } from "../log";
 type Logger = ReturnType<typeof getMainLogger>;
 
 export const KNOWN_SECRET_NAMES = [
-  "grokApiKey",
   "openaiApiKey"
 ] as const satisfies readonly DesktopSettingsSecretName[];
 
@@ -94,8 +93,7 @@ export class DesktopSecretStore {
   }
 
   // Main-process-only accessor — NOT registered on the command bus,
-  // plaintext must never leave the main process. Phase 4 Grok client
-  // is the intended consumer.
+  // plaintext must never leave the main process.
   async getValue(name: DesktopSettingsSecretName): Promise<string | null> {
     const blob = await this.readBlob();
     const stored = blob[name];

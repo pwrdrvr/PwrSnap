@@ -62,10 +62,10 @@ function makeStore(): DesktopSecretStore {
 describe("DesktopSecretStore", () => {
   test("replace + getStatus reports configured: true with a recent timestamp", async () => {
     const store = makeStore();
-    const status = await store.replace("grokApiKey", "abc-123");
+    const status = await store.replace("openaiApiKey", "abc-123");
     expect(status.configured).toBe(true);
     expect(status.lastSetAt).not.toBeNull();
-    const reread = await store.getStatus("grokApiKey");
+    const reread = await store.getStatus("openaiApiKey");
     expect(reread.configured).toBe(true);
     expect(reread.lastSetAt).toBe(status.lastSetAt);
   });
@@ -73,25 +73,25 @@ describe("DesktopSecretStore", () => {
   test("getAllStatus returns every known name even when absent", async () => {
     const store = makeStore();
     const map = await store.getAllStatus();
-    expect(Object.keys(map)).toContain("grokApiKey");
-    expect(map.grokApiKey.configured).toBe(false);
-    expect(map.grokApiKey.lastSetAt).toBeNull();
+    expect(Object.keys(map)).toContain("openaiApiKey");
+    expect(map.openaiApiKey.configured).toBe(false);
+    expect(map.openaiApiKey.lastSetAt).toBeNull();
   });
 
   test("clear removes the entry; getStatus reports unset", async () => {
     const store = makeStore();
-    await store.replace("grokApiKey", "abc-123");
-    const cleared = await store.clear("grokApiKey");
+    await store.replace("openaiApiKey", "abc-123");
+    const cleared = await store.clear("openaiApiKey");
     expect(cleared.configured).toBe(false);
     expect(cleared.lastSetAt).toBeNull();
-    const status = await store.getStatus("grokApiKey");
+    const status = await store.getStatus("openaiApiKey");
     expect(status.configured).toBe(false);
   });
 
   test("encrypted at rest: the bin file does NOT contain the plaintext value", async () => {
     const store = makeStore();
     const plaintext = "test-secret-value-1234";
-    await store.replace("grokApiKey", plaintext);
+    await store.replace("openaiApiKey", plaintext);
     const onDisk = readFileSync(join(workDir, "secrets.bin"));
     // The encryptString stub base64-encodes the plaintext after a marker,
     // so the raw plaintext substring MUST NOT appear in the file.
@@ -101,28 +101,28 @@ describe("DesktopSecretStore", () => {
   test("getValue returns the round-tripped plaintext (main-only accessor)", async () => {
     const store = makeStore();
     const plaintext = "secret-roundtrip-value";
-    await store.replace("grokApiKey", plaintext);
-    const value = await store.getValue("grokApiKey");
+    await store.replace("openaiApiKey", plaintext);
+    const value = await store.getValue("openaiApiKey");
     expect(value).toBe(plaintext);
-    await store.clear("grokApiKey");
-    const cleared = await store.getValue("grokApiKey");
+    await store.clear("openaiApiKey");
+    const cleared = await store.getValue("openaiApiKey");
     expect(cleared).toBeNull();
   });
 
   test("replace throws SecretUnavailableError when safeStorage is unavailable", async () => {
     safeStorageMock.__setAvailable(false);
     const store = makeStore();
-    await expect(store.replace("grokApiKey", "x")).rejects.toBeInstanceOf(
+    await expect(store.replace("openaiApiKey", "x")).rejects.toBeInstanceOf(
       SecretUnavailableError
     );
   });
 
   test("cleared store still readable: writes empty `{}` rather than deleting the file", async () => {
     const store = makeStore();
-    await store.replace("grokApiKey", "abc");
-    await store.clear("grokApiKey");
+    await store.replace("openaiApiKey", "abc");
+    await store.clear("openaiApiKey");
     // Re-read after clear should not crash + should return the unset status.
     const reread = await store.getAllStatus();
-    expect(reread.grokApiKey.configured).toBe(false);
+    expect(reread.openaiApiKey.configured).toBe(false);
   });
 });

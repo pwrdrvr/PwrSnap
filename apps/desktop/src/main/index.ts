@@ -84,7 +84,7 @@ import {
 } from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
-import { hydrateLoginShellEnvCached } from "./shell-env-hydration";
+import { loginShellPath } from "./login-shell-path";
 import { closeDatabase, getDb, openDatabase } from "./persistence/db";
 import {
   getCaptureById,
@@ -1047,6 +1047,9 @@ function scheduleAcpAgentWarmup(): void {
   setTimeout(() => {
     void (async () => {
       try {
+        // ACP discovery probes agent CLIs (kimi/gemini/…) by bare name on
+        // PATH — make sure the login-shell PATH is resolved first.
+        await loginShellPath.value();
         const settings = await new DesktopSettingsService({
           filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
         }).read();
@@ -1065,12 +1068,12 @@ export function bootstrapApp(): void {
   markStartup("main: bootstrapApp begin");
   initializeMainLogger();
 
-  // Login-shell env hydration moved into app.whenReady() (normal-boot
-  // section) — see shell-env-hydration.ts. The synchronous spawn here
-  // cost ~1s of main-thread block on every launch (startup profiling,
-  // 2026-06); the cached variant needs safeStorage, which wants the
-  // ready app. Nothing spawns a child process before whenReady, so the
-  // "before anything spawns" contract still holds.
+  // Login-shell PATH resolution moved into app.whenReady() (normal-boot
+  // section) and OFF the main thread — see login-shell-path.ts. The old
+  // synchronous shell spawn here cost ~1s of main-thread block on every
+  // launch (startup profiling, 2026-06). Nothing on the capture path
+  // needs the user's PATH; the only consumers (codex/ACP discovery,
+  // ffmpeg fallback) run seconds later or on user action.
 
   // Enable ScreenCaptureKit for window/screen capture on macOS.
   // Without this flag, Chromium / Electron may use the legacy
@@ -1234,14 +1237,13 @@ export function bootstrapApp(): void {
 
     // ── Normal boot ───────────────────────────────────────────────
     markStartup("main: app ready");
-    // Hydrate PATH (and the rest of the env) from the user's interactive
-    // login shell BEFORE anything spawns a child process by bare command
-    // name (codex discovery probe, ACP discover/warm-up). A Finder/Dock-
-    // launched bundle otherwise inherits launchd's minimal PATH, which
-    // hides nvm / Homebrew-installed CLIs. Uses the encrypted on-disk
-    // cache when present (~1ms) and only blocks on the login shell on a
-    // cold cache — see shell-env-hydration.ts.
-    hydrateLoginShellEnvCached();
+    // Kick off login-shell PATH resolution in the BACKGROUND (off-thread,
+    // non-blocking). It only matters for spawning user-installed CLIs by
+    // bare name — `codex`/ACP discovery and the ffmpeg-on-PATH fallback —
+    // all of which run seconds later or on user action, never on the
+    // window-show path. Those consumers `await loginShellPath.value()`
+    // when they actually spawn. See login-shell-path.ts.
+    loginShellPath.prewarm();
     // Open the DB before anything else — cold first-INSERT cost
     // (~40ms) lands here instead of inside ⌘⇧P's <120ms budget.
     await openDatabase();
@@ -1302,7 +1304,12 @@ export function bootstrapApp(): void {
     if (isE2E) {
       dispatchStartupCodexProbe();
     } else {
-      setTimeout(dispatchStartupCodexProbe, STARTUP_CODEX_PROBE_DELAY_MS).unref();
+      setTimeout(() => {
+        // Ensure the user's login-shell PATH is resolved before probing
+        // — discovery looks up bare `codex` on PATH. value() returns
+        // instantly if prewarm already finished (it usually has by now).
+        void loginShellPath.value().then(dispatchStartupCodexProbe);
+      }, STARTUP_CODEX_PROBE_DELAY_MS).unref();
     }
     registerCodexHandlers();
     registerCodexProfileHandlers();

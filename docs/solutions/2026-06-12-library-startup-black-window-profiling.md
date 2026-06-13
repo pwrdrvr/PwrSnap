@@ -55,6 +55,11 @@ were NON-issues. The ~5s was pure latency, in four parts:
    `hydrateProcessEnvFromLoginShell` (execFileSync of the interactive
    login shell) blocked the main thread at the very top of bootstrapApp,
    before the window could even be created. Single largest line item.
+   The deeper bug (see "Fixes shipped"): this was on the critical path
+   AT ALL. PwrSnap shells out by bare command name only for *AI helper*
+   discovery (`codex`, ACP agent CLIs) and the rare ffmpeg-on-PATH
+   fallback; the capture path uses absolute/bundled paths. None of
+   those run during window bring-up.
 2. **`ready-to-show` fires on the EMPTY html shell.** For a SPA the event
    is meaningless: Chromium paints the bare `<div id="root">` page (pure
    black), main shows the window, and the user stares at a void while
@@ -69,14 +74,24 @@ were NON-issues. The ~5s was pure latency, in four parts:
 
 ## Fixes shipped
 
-- **Cached login-shell hydration**
-  ([shell-env-hydration.ts](../../apps/desktop/src/main/shell-env-hydration.ts)):
-  encrypted (`safeStorage`) cache of the resolved shell env in userData;
-  warm launches apply it in ~1ms inside `whenReady` and refresh it in a
-  worker thread (+5s, off the main thread — execFileSync on main freezes
-  compositing for every window). Cold/first launch blocks exactly as
-  before, once. Merge semantics reuse the package's own
-  `resolveShellEnv` injection point.
+- **Login-shell PATH off the critical path entirely**
+  ([login-shell-path.ts](../../apps/desktop/src/main/login-shell-path.ts)).
+  The 2026-06 review (see below) rejected the first attempt — an
+  encrypted `safeStorage` cache of the *whole* shell env — as treating
+  the symptom. Final design: a singleton that resolves **only `PATH`**
+  in a worker thread (execFileSync on main freezes compositing for
+  every window), started fire-and-forget via `prewarm()` at boot so it
+  NEVER blocks window bring-up. The only consumers (`codex`/ACP
+  discovery, both deferred several seconds; the ffmpeg-on-PATH
+  fallback, user-action-only) `await loginShellPath.value()` — instant
+  once resolved, else awaits the in-flight resolve. On resolve it also
+  unions the result into `process.env.PATH` so plain inherited-env
+  spawns benefit without each call site awaiting. No on-disk cache
+  (nothing blocks now, so there's nothing to pre-warm from disk), which
+  also deletes the whole instance-key-poisoning failure class — we keep
+  one non-secret string in memory and re-resolve once per launch.
+  PATH-only is deliberate: we do NOT replay HOME/NVM_DIR/instance vars.
+  No-op on win32.
 - **Boot skeleton in index.html**: static topbar/sidebar/tile-ghost
   markup injected into `#root` (library stage only — every other window
   carries `#stage=` in its hash). React's first commit replaces it. The
@@ -106,14 +121,16 @@ thumbnails 3372→1187ms. The black phase is gone entirely.
    `startupProfilingEnabled()` guard in index.ts now makes this
    structurally impossible. Same reasoning for boot GC and filename
    maintenance: both touch files outside userData.
-2. **The login shell echoes back the env it was spawned with.** Caching
-   its output verbatim replays one launch's instance-specific env
+2. **The login shell echoes back the env it was spawned with.** The
+   first (later-discarded) cached-hydration attempt persisted the whole
+   resolved env, which replayed one launch's instance-specific vars
    (PWRSNAP_*, ELECTRON_*) into the NEXT launch — observed as a
    profiling run writing artifacts into the previous run's directory
    because the cached `PWRSNAP_STARTUP_PROFILE_DIR` overrode the live
-   one. `shell-env-hydration.ts` filters those keys on write AND on
-   apply; [shell-env-hydration.test.ts](../../apps/desktop/src/main/__tests__/shell-env-hydration.test.ts)
-   locks the behavior.
+   one. The final design ([login-shell-path.ts](../../apps/desktop/src/main/login-shell-path.ts))
+   sidesteps the entire class: it keeps **only `PATH`** and persists
+   **nothing**. If you ever reintroduce env caching, the rule stands —
+   carry only the specific keys you need, never the whole shell env.
 3. **`cp -Rpc` of a live userData clones the `Singleton*` symlinks.**
    A later launch against the clone can lose the single-instance lock to
    a stale/foreign socket and silently exit as a forwarding stub (two

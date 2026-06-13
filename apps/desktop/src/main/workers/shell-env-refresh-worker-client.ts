@@ -1,4 +1,4 @@
-// Main-side client for the off-thread login-shell env resolver
+// Main-side client for the off-thread login-shell PATH resolver
 // (shell-env-refresh-worker.ts). Same lifecycle shape as the other
 // one-shot worker clients in this directory: spawn, await the single
 // result message, terminate.
@@ -17,31 +17,20 @@ function resolveWorkerPath(): string {
   return join(here, "shell-env-refresh-worker.js");
 }
 
-let cachedPath: string | null = null;
-function getWorkerPath(): string {
-  if (cachedPath === null) cachedPath = resolveWorkerPath();
-  return cachedPath;
-}
-
-/** Test-only — lets unit tests inject a source path without rebuilding. */
-export function __setShellEnvWorkerPathForTest(path: string | null): void {
-  cachedPath = path;
-}
-
 /**
- * Resolve the interactive login shell's env off-thread. Returns the
- * resolved env, or null when the shell couldn't be queried, the worker
- * failed, or `timeoutMs` elapsed. Never throws.
+ * Resolve the interactive login shell's `PATH` off-thread. Returns the
+ * PATH string, or null when the shell couldn't be queried, returned no
+ * PATH, the worker failed, or `timeoutMs` elapsed. Never throws.
  */
-export async function runShellEnvRefreshWorker(
+export async function resolveLoginShellPath(
   options: { timeoutMs?: number } = {}
-): Promise<NodeJS.ProcessEnv | null> {
+): Promise<string | null> {
   const timeoutMs = options.timeoutMs ?? 15_000;
-  const workerPath = getWorkerPath();
+  const workerPath = resolveWorkerPath();
 
-  return await new Promise<NodeJS.ProcessEnv | null>((resolvePromise) => {
+  return await new Promise<string | null>((resolvePromise) => {
     let settled = false;
-    const resolve = (result: NodeJS.ProcessEnv | null): void => {
+    const resolve = (result: string | null): void => {
       if (settled) return;
       settled = true;
       resolvePromise(result);
@@ -60,10 +49,10 @@ export async function runShellEnvRefreshWorker(
       resolve(null);
     }, timeoutMs);
 
-    worker.once("message", (msg: NodeJS.ProcessEnv | null) => {
+    worker.once("message", (msg: string | null) => {
       clearTimeout(timer);
       void worker.terminate();
-      resolve(msg);
+      resolve(typeof msg === "string" ? msg : null);
     });
     worker.once("error", () => {
       clearTimeout(timer);

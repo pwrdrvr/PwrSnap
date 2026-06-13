@@ -1,17 +1,17 @@
 // login-shell PATH resolution (login-shell-path.ts).
 //
 // The contract under test: resolve the user's interactive login-shell
-// PATH off-thread, carry ONLY `PATH` (never the rest of the shell env),
-// union it with the launch PATH, cache it in-process, and expose it via
-// an async getter that returns instantly once resolved. No on-disk
-// cache, no whole-env replay.
+// PATH off-thread (the worker hands back ONLY a PATH string), union it
+// with the launch PATH, cache it in-process, and expose it via an async
+// getter that returns instantly once resolved. No on-disk cache, no
+// whole-env replay.
 
 import { delimiter } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const runShellEnvRefreshWorker = vi.fn();
+const resolveLoginShellPath = vi.fn();
 vi.mock("../workers/shell-env-refresh-worker-client", () => ({
-  runShellEnvRefreshWorker: (...args: unknown[]): unknown => runShellEnvRefreshWorker(...args)
+  resolveLoginShellPath: (...args: unknown[]): unknown => resolveLoginShellPath(...args)
 }));
 
 import { loginShellPath } from "../login-shell-path";
@@ -26,7 +26,7 @@ function setPlatform(platform: NodeJS.Platform): void {
 describe("loginShellPath", () => {
   beforeEach(() => {
     setPlatform("darwin");
-    runShellEnvRefreshWorker.mockReset();
+    resolveLoginShellPath.mockReset();
     process.env = { ...SAVED_ENV };
     loginShellPath.__resetForTests();
   });
@@ -38,9 +38,7 @@ describe("loginShellPath", () => {
 
   it("unions the login-shell PATH with the launch PATH, shell entries first, de-duped", async () => {
     process.env.PATH = ["/usr/bin", "/bin"].join(delimiter);
-    runShellEnvRefreshWorker.mockResolvedValue({
-      PATH: ["/opt/homebrew/bin", "/usr/bin"].join(delimiter)
-    });
+    resolveLoginShellPath.mockResolvedValue(["/opt/homebrew/bin", "/usr/bin"].join(delimiter));
 
     const resolved = await loginShellPath.value();
 
@@ -50,39 +48,39 @@ describe("loginShellPath", () => {
   });
 
   it("resolves once and serves the cache on subsequent calls", async () => {
-    runShellEnvRefreshWorker.mockResolvedValue({ PATH: "/a" });
+    resolveLoginShellPath.mockResolvedValue("/a");
 
     await loginShellPath.value();
     await loginShellPath.value();
 
-    expect(runShellEnvRefreshWorker).toHaveBeenCalledTimes(1);
+    expect(resolveLoginShellPath).toHaveBeenCalledTimes(1);
   });
 
-  it("carries ONLY PATH — other shell env vars never reach process.env", async () => {
+  it("touches ONLY process.env.PATH — no other env key changes", async () => {
     process.env.PATH = "/bin";
-    delete process.env.SECRET_FROM_SHELL;
-    runShellEnvRefreshWorker.mockResolvedValue({
-      PATH: "/x",
-      SECRET_FROM_SHELL: "leak",
-      HOME: "/somewhere/else"
-    });
+    process.env.UNRELATED = "keep-me";
+    const before = { ...process.env };
+    resolveLoginShellPath.mockResolvedValue("/x");
 
     await loginShellPath.value();
 
-    expect(process.env.SECRET_FROM_SHELL).toBeUndefined();
-    expect(process.env.HOME).toBe(SAVED_ENV.HOME);
+    const changedKeys = Object.keys(process.env).filter(
+      (k) => process.env[k] !== before[k]
+    );
+    expect(changedKeys).toEqual(["PATH"]);
+    expect(process.env.UNRELATED).toBe("keep-me");
   });
 
   it("falls back to the launch PATH when the worker returns null", async () => {
     process.env.PATH = "/launch/bin";
-    runShellEnvRefreshWorker.mockResolvedValue(null);
+    resolveLoginShellPath.mockResolvedValue(null);
 
     expect(await loginShellPath.value()).toBe("/launch/bin");
   });
 
   it("falls back to the launch PATH when the worker throws", async () => {
     process.env.PATH = "/launch/bin";
-    runShellEnvRefreshWorker.mockRejectedValue(new Error("boom"));
+    resolveLoginShellPath.mockRejectedValue(new Error("boom"));
 
     expect(await loginShellPath.value()).toBe("/launch/bin");
   });
@@ -93,30 +91,30 @@ describe("loginShellPath", () => {
 
     const resolved = await loginShellPath.value();
 
-    expect(runShellEnvRefreshWorker).not.toHaveBeenCalled();
+    expect(resolveLoginShellPath).not.toHaveBeenCalled();
     expect(resolved).toBe("C:\\Windows;C:\\Windows\\System32");
   });
 
   it("prewarm() kicks off resolution without the caller awaiting", async () => {
-    let release: (env: NodeJS.ProcessEnv) => void = () => undefined;
-    runShellEnvRefreshWorker.mockReturnValue(
-      new Promise<NodeJS.ProcessEnv>((r) => {
+    let release: (path: string) => void = () => undefined;
+    resolveLoginShellPath.mockReturnValue(
+      new Promise<string>((r) => {
         release = r;
       })
     );
 
     loginShellPath.prewarm();
-    expect(runShellEnvRefreshWorker).toHaveBeenCalledTimes(1);
+    expect(resolveLoginShellPath).toHaveBeenCalledTimes(1);
 
-    release({ PATH: "/warm/bin" });
+    release("/warm/bin");
     expect(await loginShellPath.value()).toContain("/warm/bin");
     // prewarm + value share one in-flight resolve — no second spawn.
-    expect(runShellEnvRefreshWorker).toHaveBeenCalledTimes(1);
+    expect(resolveLoginShellPath).toHaveBeenCalledTimes(1);
   });
 
   it("prewarm() is a no-op on win32", () => {
     setPlatform("win32");
     loginShellPath.prewarm();
-    expect(runShellEnvRefreshWorker).not.toHaveBeenCalled();
+    expect(resolveLoginShellPath).not.toHaveBeenCalled();
   });
 });

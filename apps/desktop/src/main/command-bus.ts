@@ -128,9 +128,10 @@ class CommandBus {
       if (options.sourceBounds !== undefined) {
         ctx.sourceBounds = options.sourceBounds;
       }
-      const dispatchStartedAt = startupProfilingEnabled() ? Date.now() : 0;
+      const profiling = startupProfilingEnabled();
+      const dispatchStartedAt = profiling ? Date.now() : 0;
       const result = (await handler(req, ctx)) as Result<Res<C>, PwrSnapError>;
-      if (startupProfilingEnabled()) {
+      if (profiling) {
         markStartup(
           `cmd ${name} (${options.principal}) → ${
             result.ok ? "ok" : `err:${result.error.code}`

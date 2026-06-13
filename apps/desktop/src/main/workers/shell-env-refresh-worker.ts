@@ -1,5 +1,4 @@
-// Off-thread login-shell env resolution for login-shell-path.ts (which
-// extracts ONLY `PATH` from the result).
+// Off-thread login-shell PATH resolution for login-shell-path.ts.
 //
 // `resolveInteractiveLoginShellEnv` is execFileSync-based — it blocks
 // whatever thread it runs on for the full login-shell startup (~0.3–1s,
@@ -8,12 +7,16 @@
 // worker gets a copy of the parent's process.env at construction, which
 // is exactly the base env the resolver wants.
 //
-// Protocol: posts the resolved env object, or null when the shell could
-// not be queried (Windows, exotic shells, timeout). One-shot — the
-// client terminates the worker after the first message.
+// Protocol: posts back ONLY the resolved `PATH` string (the sole thing
+// login-shell-path.ts consumes — keep the rest of the shell env, which
+// can include secrets exported by dotfiles, inside this worker), or
+// null when the shell could not be queried (Windows, exotic shells,
+// timeout, or no PATH). One-shot — the client terminates the worker
+// after the first message.
 
 import { parentPort } from "node:worker_threads";
 import { resolveInteractiveLoginShellEnv } from "@pwrdrvr/agent-transport";
 
 const env = resolveInteractiveLoginShellEnv();
-parentPort?.postMessage(env ?? null);
+const path = env?.PATH;
+parentPort?.postMessage(typeof path === "string" && path.length > 0 ? path : null);

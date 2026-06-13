@@ -37,7 +37,7 @@
 
 import { delimiter } from "node:path";
 import { getMainLogger } from "./log";
-import { runShellEnvRefreshWorker } from "./workers/shell-env-refresh-worker-client";
+import { resolveLoginShellPath } from "./workers/shell-env-refresh-worker-client";
 
 const log = getMainLogger("pwrsnap:login-shell-path");
 
@@ -91,9 +91,11 @@ class LoginShellPath {
   private async resolve(): Promise<string> {
     const launchPath = process.env.PATH;
     try {
-      const shellEnv = await runShellEnvRefreshWorker();
-      // Carry ONLY PATH out of the resolved shell env — nothing else.
-      const merged = unionPath(shellEnv?.PATH, launchPath);
+      // The worker hands back ONLY the shell's PATH (the rest of the
+      // shell env never leaves the worker) — union it with the launch
+      // PATH, shell entries first.
+      const shellPath = await resolveLoginShellPath();
+      const merged = unionPath(shellPath ?? undefined, launchPath);
       this.resolved = merged;
       // Keep process.env.PATH in sync so plain inherited-env spawns (the
       // ffmpeg-on-PATH fallback) resolve against the user's PATH without
@@ -101,7 +103,7 @@ class LoginShellPath {
       process.env.PATH = merged;
       log.info("login-shell PATH resolved", {
         entries: merged.split(delimiter).length,
-        shellResolved: shellEnv?.PATH !== undefined && shellEnv.PATH.length > 0
+        shellResolved: shellPath !== null
       });
       return merged;
     } catch (cause) {

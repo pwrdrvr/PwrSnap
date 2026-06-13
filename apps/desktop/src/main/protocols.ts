@@ -245,14 +245,15 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
       return new Response("invalid capture id", { status: 400 });
     }
     try {
-      const startedAt = startupProfilingEnabled() ? Date.now() : 0;
+      const profiling = startupProfilingEnabled();
+      const startedAt = profiling ? Date.now() : 0;
       const filePath = await resolver.captureSourcePath(captureId);
       if (filePath === null) {
         log.warn("capture: not found", { captureId });
         return new Response("not found", { status: 404 });
       }
       const response = await fileResponse(filePath, request);
-      if (startupProfilingEnabled()) {
+      if (profiling) {
         markStartup(`protocol capture ${captureId} ${Date.now() - startedAt}ms`);
       }
       return response;
@@ -326,10 +327,11 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
       return new Response("invalid cache url", { status: 400 });
     }
     try {
-      const startedAt = startupProfilingEnabled() ? Date.now() : 0;
+      const profiling = startupProfilingEnabled();
+      const startedAt = profiling ? Date.now() : 0;
       const filePath = await resolver.cacheFile(parsed);
       if (filePath === null) {
-        if (startupProfilingEnabled()) {
+        if (profiling) {
           markStartup(
             `protocol cache ${parsed.captureId} ${parsed.width}w.${parsed.format} MISS ${
               Date.now() - startedAt
@@ -340,7 +342,7 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
         return new Response("not found", { status: 404 });
       }
       const response = await fileResponse(filePath, request);
-      if (startupProfilingEnabled()) {
+      if (profiling) {
         markStartup(
           `protocol cache ${parsed.captureId} ${parsed.width}w.${parsed.format} ${
             Date.now() - startedAt

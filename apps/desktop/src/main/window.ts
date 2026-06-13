@@ -14,6 +14,7 @@ import {
   STARTUP_BG_DARK
 } from "./settings/startup-appearance";
 import { getMainLogger } from "./log";
+import { attachRendererStartupProfiling } from "./startup-profiler";
 import { showWindowWhenReady } from "./window-show";
 
 const log = getMainLogger("pwrsnap:window");
@@ -351,6 +352,11 @@ export function createMainWindow(): BrowserWindow {
     webPreferences: themedWebPreferences()
   });
   libraryWindow = window;
+
+  // No-op unless PWRSNAP_STARTUP_PROFILE=1 — captures a renderer CPU
+  // profile + heap snapshot covering library startup. Must attach
+  // before loadRenderer so script evaluation is in the profile.
+  attachRendererStartupProfiling(window, "library");
 
   loadRenderer(window, rendererTarget());
 

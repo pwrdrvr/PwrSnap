@@ -85,6 +85,10 @@ export default defineConfig(({ command }) => {
               __dirname,
               "src/main/workers/composite-thumbnail-worker.ts"
             ),
+            "shell-env-refresh-worker": resolve(
+              __dirname,
+              "src/main/workers/shell-env-refresh-worker.ts"
+            ),
             // Standalone stdio MCP server an ACP chat agent (Gemini/Qwen)
             // spawns to reach PwrSnap tools. Built as its own bundle and
             // launched at runtime via `process.execPath` + ELECTRON_RUN_AS_NODE

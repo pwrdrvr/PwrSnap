@@ -45,6 +45,7 @@
 
 import type { BrowserWindow } from "electron";
 import { getMainLogger } from "./log";
+import { markStartup } from "./startup-profiler";
 
 const log = getMainLogger("pwrsnap:window-show");
 
@@ -104,6 +105,7 @@ export function showWindowWhenReady(
       return;
     }
     log.info("window-show", { label, source, id: window.id });
+    markStartup(`window-show: ${label} shown (${source})`);
     window.show();
     onShow?.();
   };

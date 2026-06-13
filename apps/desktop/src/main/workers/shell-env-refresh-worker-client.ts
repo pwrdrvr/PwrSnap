@@ -44,10 +44,21 @@ export async function resolveLoginShellPath(
       return;
     }
 
+    // Resolving the login-shell PATH is best-effort and off the critical
+    // path — it must NEVER keep the process alive. Without unref, a
+    // still-running shell resolve (execFileSync can take ~1s, up to the
+    // timeout) or the pending timer blocks app.quit()/app.close() until
+    // it finishes. On Linux CI that hung Playwright's Electron worker
+    // teardown (30s timeout → job failure). unref lets the process exit
+    // immediately if nothing else holds the loop; while the app is
+    // running, the worker still delivers its result normally.
+    worker.unref();
+
     const timer = setTimeout(() => {
       void worker.terminate();
       resolve(null);
     }, timeoutMs);
+    timer.unref();
 
     worker.once("message", (msg: string | null) => {
       clearTimeout(timer);

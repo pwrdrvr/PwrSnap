@@ -735,12 +735,20 @@ export function registerCodexHandlers(params?: {
   });
 
   bus.register("codex:models", async (req) => {
+    const startedAt = performance.now();
     const parsed = parseCodexModelsRequest(req);
     if (!parsed.ok) return parsed;
+    const includeHidden = parsed.value.includeHidden;
+    log.info("codex:models request received", { includeHidden });
     let settings: Settings;
     try {
       settings = await settingsReader();
     } catch (error) {
+      log.warn("codex:models settings read failed", {
+        includeHidden,
+        durationMs: Math.round(performance.now() - startedAt),
+        message: error instanceof Error ? error.message : String(error)
+      });
       return err({
         kind: "settings",
         code: "read_failed",
@@ -748,17 +756,58 @@ export function registerCodexHandlers(params?: {
         cause: error
       });
     }
-    const client = clientFactory(
-      codexCommandForSettings(settings),
-      codexEnvForProfile(settings.codex.profile)
-    );
+    const command = codexCommandForSettings(settings);
+    const env = codexEnvForProfile(settings.codex.profile);
+    const codexHome = env["CODEX_HOME"] ?? null;
+    const profile = settings.codex.profile.length > 0 ? settings.codex.profile : "(default)";
+    log.info("codex:models listing", {
+      command,
+      codexHome,
+      profile,
+      selectedModel: settings.codex.captionModel,
+      includeHidden
+    });
+    const client = clientFactory(command, env);
     try {
-      const models = await client.listModels({ includeHidden: parsed.value.includeHidden });
+      const models = await client.listModels({ includeHidden });
       // Persist id → displayName so the usage strip can show a Codex run's
       // friendly model name (the run record only stores the id).
       saveCodexModelLabels(models);
+      const modelIds = models.map((model) => model.id);
+      const imageCapableModelIds = models
+        .filter(
+          (model) =>
+            model.inputModalities.includes("text") && model.inputModalities.includes("image")
+        )
+        .map((model) => model.id);
+      const logPayload = {
+        command,
+        codexHome,
+        profile,
+        selectedModel: settings.codex.captionModel,
+        includeHidden,
+        count: models.length,
+        imageCapableCount: imageCapableModelIds.length,
+        modelIds,
+        imageCapableModelIds,
+        durationMs: Math.round(performance.now() - startedAt)
+      };
+      if (models.length === 0) {
+        log.warn("codex:models returned no models", logPayload);
+      } else {
+        log.info("codex:models listed models", logPayload);
+      }
       return ok({ models, selectedModel: settings.codex.captionModel });
     } catch (error) {
+      log.warn("codex:models failed", {
+        command,
+        codexHome,
+        profile,
+        selectedModel: settings.codex.captionModel,
+        includeHidden,
+        durationMs: Math.round(performance.now() - startedAt),
+        message: error instanceof Error ? error.message : String(error)
+      });
       return err({
         kind: "unknown",
         code: "codex_models_failed",

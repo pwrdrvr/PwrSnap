@@ -19,6 +19,7 @@
 import type { CommandName, Commands, Req, Res } from "@pwrsnap/shared";
 import { err, type PwrSnapError, type Result } from "@pwrsnap/shared";
 import { getMainLogger } from "./log";
+import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 
 const log = getMainLogger("pwrsnap:command-bus");
 
@@ -127,7 +128,15 @@ class CommandBus {
       if (options.sourceBounds !== undefined) {
         ctx.sourceBounds = options.sourceBounds;
       }
+      const dispatchStartedAt = startupProfilingEnabled() ? Date.now() : 0;
       const result = (await handler(req, ctx)) as Result<Res<C>, PwrSnapError>;
+      if (startupProfilingEnabled()) {
+        markStartup(
+          `cmd ${name} (${options.principal}) → ${
+            result.ok ? "ok" : `err:${result.error.code}`
+          } ${Date.now() - dispatchStartedAt}ms`
+        );
+      }
       return result;
     } catch (cause) {
       log.error("handler threw", {

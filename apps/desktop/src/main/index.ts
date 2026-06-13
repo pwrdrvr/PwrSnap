@@ -1,3 +1,7 @@
+// ⚠️ Keep this side-effect import FIRST: with PWRSNAP_STARTUP_PROFILE=1 it
+// starts the main-process CPU profiler before the rest of the bundle
+// evaluates. No-op otherwise. See startup-profiler.ts.
+import "./startup-profile-boot";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -30,6 +34,7 @@ import {
 import { getAppIconPath } from "./app-icons/app-icon-cache";
 import { setFloatOverState } from "./float-over";
 import { bus } from "./command-bus";
+import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 import { installDevelopmentDockIcon } from "./development-dock-icon";
 // (showFloatOverForCapture is no longer called from the bootstrap;
 // the capture-handlers `capture:interactive` now drives the entire
@@ -79,8 +84,7 @@ import {
 } from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
-import { hydrateProcessEnvFromLoginShell } from "@pwrdrvr/agent-transport";
-import { toAgentKitLogger } from "./ai/agent-kit-bindings";
+import { hydrateLoginShellEnvCached } from "./shell-env-hydration";
 import { closeDatabase, getDb, openDatabase } from "./persistence/db";
 import {
   getCaptureById,
@@ -973,6 +977,13 @@ const protocolResolver: ProtocolResolver = {
 
 const log = getMainLogger("pwrsnap:bootstrap");
 const ASSET_FILENAME_MAINTENANCE_BOOT_DELAY_MS = 2_000;
+// Boot-deferred spawn-heavy probes. Both used to fire during the
+// window-shown→first-paint gap and competed with renderer startup
+// (startup profiling, 2026-06). 4s/8s land them after the library has
+// painted content on every machine we measured, while still finishing
+// long before a user typically reaches the surfaces they warm up.
+const STARTUP_CODEX_PROBE_DELAY_MS = 4_000;
+const ACP_AGENT_WARMUP_BOOT_DELAY_MS = 8_000;
 
 async function runBootGc(): Promise<void> {
   // Tmp file orphans first — cheap, no DB.
@@ -991,6 +1002,14 @@ async function runBootGc(): Promise<void> {
 }
 
 function scheduleAssetFilenameMaintenance(): void {
+  // Profiling runs execute against a CLONED userData dir, but capture
+  // bundles live OUTSIDE userData (~/Documents/PwrSnap) — letting the
+  // clone rename real bundle files would desync the real install's DB.
+  // Skip all mutating boot maintenance under the profiling flag.
+  if (startupProfilingEnabled()) {
+    markStartup("main: asset filename maintenance SKIPPED (profiling run)");
+    return;
+  }
   setTimeout(() => {
     void runBundleFilenameMaintenanceOnBoot()
       .then(() => runVideoFilenameMaintenanceOnBoot())
@@ -1031,20 +1050,19 @@ function scheduleAcpAgentWarmup(): void {
         });
       }
     })();
-  }, ASSET_FILENAME_MAINTENANCE_BOOT_DELAY_MS);
+  }, ACP_AGENT_WARMUP_BOOT_DELAY_MS);
 }
 
 export function bootstrapApp(): void {
+  markStartup("main: bootstrapApp begin");
   initializeMainLogger();
 
-  // Hydrate PATH (and the rest of the env) from the user's interactive login
-  // shell BEFORE anything spawns a child process. A Finder/Dock-launched
-  // bundle otherwise inherits launchd's minimal PATH, which hides nvm /
-  // Homebrew-installed CLIs — e.g. ACP agent binaries (`qwen`, `gemini`) that
-  // `@pwrdrvr/agent-acp` discovery probes by bare command name. Synchronous on
-  // purpose: every later spawn must see the merged env. No-op on Windows / when
-  // the shell can't be queried.
-  hydrateProcessEnvFromLoginShell({ logger: toAgentKitLogger("pwrsnap:shell-environment") });
+  // Login-shell env hydration moved into app.whenReady() (normal-boot
+  // section) — see shell-env-hydration.ts. The synchronous spawn here
+  // cost ~1s of main-thread block on every launch (startup profiling,
+  // 2026-06); the cached variant needs safeStorage, which wants the
+  // ready app. Nothing spawns a child process before whenReady, so the
+  // "before anything spawns" contract still holds.
 
   // Enable ScreenCaptureKit for window/screen capture on macOS.
   // Without this flag, Chromium / Electron may use the legacy
@@ -1207,11 +1225,22 @@ export function bootstrapApp(): void {
     }
 
     // ── Normal boot ───────────────────────────────────────────────
+    markStartup("main: app ready");
+    // Hydrate PATH (and the rest of the env) from the user's interactive
+    // login shell BEFORE anything spawns a child process by bare command
+    // name (codex discovery probe, ACP discover/warm-up). A Finder/Dock-
+    // launched bundle otherwise inherits launchd's minimal PATH, which
+    // hides nvm / Homebrew-installed CLIs. Uses the encrypted on-disk
+    // cache when present (~1ms) and only blocks on the login shell on a
+    // cold cache — see shell-env-hydration.ts.
+    hydrateLoginShellEnvCached();
     // Open the DB before anything else — cold first-INSERT cost
     // (~40ms) lands here instead of inside ⌘⇧P's <120ms budget.
     await openDatabase();
+    markStartup("main: database open");
     await migrateLegacyCaptureSources();
     await migrateLegacyRenderCache();
+    markStartup("main: legacy migrations done");
     installApplicationMenu();
     // Windows custom title-bar menu bar: lets the renderer pop the real native
     // submenus (the native menu bar is gone under titleBarStyle:"hidden").
@@ -1233,16 +1262,25 @@ export function bootstrapApp(): void {
     installProtocolHandlers(protocolResolver);
     registerAppHandlers();
     registerSettingsHandlers();
-    void bus
-      .dispatch("settings:refreshCodexDiscovery", { force: true }, { principal: "ipc" })
-      .then((result) => {
-        if (!result.ok) {
-          log.warn("startup Codex readiness probe failed", {
-            code: result.error.code,
-            message: result.error.message
-          });
-        }
-      });
+    // Startup Codex readiness probe — deferred past the library's first
+    // contentful paint. Profiling (2026-06) showed the probe's process
+    // spawns (~0.9s of `codex` executions) landing exactly in the
+    // window-shown→first-thumbnail-paint gap and competing with renderer
+    // startup. Nothing on the boot path consumes the result; on-demand
+    // dispatches (Settings → AI) trigger their own probe if they get
+    // there first.
+    setTimeout(() => {
+      void bus
+        .dispatch("settings:refreshCodexDiscovery", { force: true }, { principal: "ipc" })
+        .then((result) => {
+          if (!result.ok) {
+            log.warn("startup Codex readiness probe failed", {
+              code: result.error.code,
+              message: result.error.message
+            });
+          }
+        });
+    }, STARTUP_CODEX_PROBE_DELAY_MS).unref();
     registerCodexHandlers();
     registerCodexProfileHandlers();
     registerAcpHandlers();
@@ -1276,8 +1314,10 @@ export function bootstrapApp(): void {
     // not-implemented stub from library-handlers.ts. Order matters.
     registerExportHandler();
     registerIpcDispatcher();
+    markStartup("main: handlers registered");
     if (!isE2E) {
       installTray();
+      markStartup("main: tray installed");
     }
     // Focus-sink: an invisible 1×1 floating-level panel that absorbs
     // Cocoa's next-key-window cascade when the tray popover hides.
@@ -1291,12 +1331,24 @@ export function bootstrapApp(): void {
     if (process.platform !== "darwin" && shouldPreWarmRegionSelector()) {
       preWarmRegionSelector();
     }
-    if (!isE2E) {
+    if (!isE2E && !startupProfilingEnabled()) {
       // Capture/region/window/video are dynamically registered from
       // settings + rebind on change.
+      //
+      // Profiling runs (PWRSNAP_STARTUP_PROFILE=1) NEVER register
+      // global hotkeys: a profiling instance typically runs against a
+      // cloned userData while the user keeps working, and if it grabs
+      // the system-wide capture accelerators it steals the user's real
+      // captures into the throwaway clone DB. This happened on
+      // 2026-06-12 (capture recovered by hand-copying rows back); the
+      // guard makes profiling runs passive observers.
       void wireHotkeyRegistrations();
+    } else if (startupProfilingEnabled()) {
+      markStartup("main: global hotkeys SKIPPED (profiling run)");
     }
+    markStartup("main: createMainWindow begin");
     createMainWindow();
+    markStartup("main: createMainWindow returned");
     if (process.platform === "darwin") {
       scheduleDarwinRegionSelectorPreWarm();
     }
@@ -1316,6 +1368,7 @@ export function bootstrapApp(): void {
     }
     scheduleAssetFilenameMaintenance();
     scheduleAcpAgentWarmup();
+    markStartup("main: whenReady bootstrap complete");
 
     // ── Dev probe-only CLI mode ───────────────────────────────────
     // Detect `--probe=<profile>` AFTER the full boot — unlike --seed,
@@ -1555,7 +1608,13 @@ export function bootstrapApp(): void {
         testBridge;
       log.info("e2e bridge installed");
     }
-    void runBootGc();
+    // Same containment rule as scheduleAssetFilenameMaintenance: no
+    // file-deleting GC from profiling runs against a cloned userData.
+    if (startupProfilingEnabled()) {
+      markStartup("main: boot GC SKIPPED (profiling run)");
+    } else {
+      void runBootGc();
+    }
 
     app.on("activate", () => {
       // Fired when the user clicks the dock icon. Since the dock

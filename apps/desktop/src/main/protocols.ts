@@ -40,6 +40,7 @@ import { app, protocol } from "electron";
 import { getMainLogger } from "./log";
 import { getSnapshotPath } from "./capture/screen-snapshot";
 import { parseAppIconBundleId, parseCacheUrl, parseCaptureId, SCHEMES } from "./protocols-parse";
+import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 
 const log = getMainLogger("pwrsnap:protocols");
 
@@ -244,12 +245,17 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
       return new Response("invalid capture id", { status: 400 });
     }
     try {
+      const startedAt = startupProfilingEnabled() ? Date.now() : 0;
       const filePath = await resolver.captureSourcePath(captureId);
       if (filePath === null) {
         log.warn("capture: not found", { captureId });
         return new Response("not found", { status: 404 });
       }
-      return await fileResponse(filePath, request);
+      const response = await fileResponse(filePath, request);
+      if (startupProfilingEnabled()) {
+        markStartup(`protocol capture ${captureId} ${Date.now() - startedAt}ms`);
+      }
+      return response;
     } catch (cause) {
       log.error("capture handler threw", {
         captureId,
@@ -320,12 +326,28 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
       return new Response("invalid cache url", { status: 400 });
     }
     try {
+      const startedAt = startupProfilingEnabled() ? Date.now() : 0;
       const filePath = await resolver.cacheFile(parsed);
       if (filePath === null) {
+        if (startupProfilingEnabled()) {
+          markStartup(
+            `protocol cache ${parsed.captureId} ${parsed.width}w.${parsed.format} MISS ${
+              Date.now() - startedAt
+            }ms`
+          );
+        }
         log.warn("cache: not found", { ...parsed });
         return new Response("not found", { status: 404 });
       }
-      return await fileResponse(filePath, request);
+      const response = await fileResponse(filePath, request);
+      if (startupProfilingEnabled()) {
+        markStartup(
+          `protocol cache ${parsed.captureId} ${parsed.width}w.${parsed.format} ${
+            Date.now() - startedAt
+          }ms`
+        );
+      }
+      return response;
     } catch (cause) {
       log.error("cache handler threw", {
         ...parsed,

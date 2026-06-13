@@ -192,6 +192,19 @@ bump orphans existing files. We do NOT auto-sweep — see
 [docs/solutions/2026-05-28-bake-render-cache-orphans.md](docs/solutions/2026-05-28-bake-render-cache-orphans.md)
 for rationale, when-to-bump rules, and the adjacent-code map.
 
+## Startup profiling harness — `PWRSNAP_STARTUP_PROFILE=1`
+
+Env-gated, kept wired in production builds. Captures main + renderer
+CPU profiles, heap snapshots, and a ms-relative startup-marks timeline
+(window-show source, paint lifecycle, per-command timings). Profiling
+runs are passive observers: global hotkeys, boot GC, and filename
+maintenance are skipped — a profiling instance on a cloned userData
+that grabs ⌘⇧C steals real captures into the throwaway clone DB
+(capture bundles live in `~/Documents/PwrSnap`, OUTSIDE userData).
+Run recipe, findings from the 2026-06 black-window investigation, and
+the clone-safety checklist:
+[docs/solutions/2026-06-12-library-startup-black-window-profiling.md](docs/solutions/2026-06-12-library-startup-black-window-profiling.md).
+
 ## Repository conventions
 
 - **pnpm workspaces.** Apps in `apps/*`, packages in `packages/*`. Always run

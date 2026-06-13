@@ -77,6 +77,31 @@ the *terminal app that launches dev runs* (and to PwrSnap.app for
 packaged runs), then relaunch. Once the blanket grant exists, macl-less
 files read fine again — no data was ever lost or corrupted.
 
+### Gotcha: relaunching the dev app is NOT enough — restart the TERMINAL
+
+The TCC "responsible process" for a dev run is the **long-lived
+terminal** (Ghostty/Terminal/iTerm), not the Electron app. macOS
+evaluates and caches a responsible process's grants at *its* launch.
+So the chain is:
+
+```
+dev Electron  ← you ⌘Q + `pnpm dev` this
+  └ node/pnpm
+      └ zsh / login
+          └ Ghostty  ← TCC attributes file access HERE; grant is cached
+                        at Ghostty's launch, not the dev app's
+```
+
+If Ghostty has been running since before you granted Documents/FDA,
+restarting only the dev app changes nothing — its parent Ghostty still
+runs under the pre-grant TCC snapshot and keeps EPERMing. This exact
+trap appeared in the June 2026 incident: the user granted Ghostty
+access, relaunched the dev app, and the *new* session still logged 90
+EPERMs because Ghostty itself was 9 days old. **Fully quit the terminal
+app (⌘Q, all windows — not just the tab or the dev process), reopen it,
+then `pnpm dev`.** Confirm the Files & Folders toggle is actually
+switched on while you're there — a selected row is not an enabled grant.
+
 ## What the app now does (this incident's code change)
 
 - `main/storage/captures-access-health.ts` accounts EPERM/EACCES

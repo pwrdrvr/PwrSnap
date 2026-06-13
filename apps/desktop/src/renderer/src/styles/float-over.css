@@ -78,9 +78,16 @@
   bottom: 24px;
   right: 24px;
   width: 360px;
-  background: color-mix(in srgb, var(--bg-panel-hover) 94%, transparent);
-  backdrop-filter: blur(24px) saturate(1.2);
-  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+  /* Surface pairing mirrors the library window (and the tray
+     popover — keep the two in sync): body = canvas black
+     (--bg-app), header = chrome lift (--bg-sidebar, on .fo__hdr).
+     Don't paint this with --bg-panel-hover — it's the warm
+     hover-state token and reads as a different color family than
+     the library. No saturate() on the blur; it pulls color from
+     whatever's behind the toast. */
+  background: color-mix(in srgb, var(--bg-app) 94%, transparent);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
   border: 1px solid var(--border-subtle);
   border-radius: 14px;
   box-shadow:
@@ -121,6 +128,8 @@
 .fo__hdr {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px 8px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-subtle);
 }
 .fo__hdr-mark {
   width: 22px; height: 22px;

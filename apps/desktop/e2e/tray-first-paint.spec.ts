@@ -23,7 +23,6 @@ import sharp from "sharp";
 import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
 
 const isMac = process.platform === "darwin";
-const isWin = process.platform === "win32";
 const ITERATIONS = Number.parseInt(process.env.PWRSNAP_TRAY_PAINT_RUNS ?? "5", 10);
 
 /**
@@ -201,13 +200,33 @@ test.describe("tray popover first-paint baseline", () => {
   // machinery was added to defeat; a regression that re-introduced
   // it would otherwise paint a popover too short or too tall by ~150
   // px and still pass a generic `> 100` floor.
-  // The seeded "last snap" preview renders taller on Windows (~634 vs ~490 on
-  // macOS) — Geist line-heights and the preview block lay out a bit larger
-  // there. The band still rejects the 440×440 constructor-frame regression and
-  // absurd values; it's just platform-tuned. Empty-library heights match across
-  // platforms. (TODO: RDP-verify the seeded Windows popover visually.)
-  const seededMin = isWin ? 560 : 420;
-  const seededMax = isWin ? 720 : 560;
+  //
+  // The seeded "last snap" popover measures ~634 on BOTH macOS and
+  // Windows. The band below is shared on purpose. History, because we
+  // got this wrong once: the spec landed (#82) with a macOS band of
+  // [420, 560] tuned to the then-current content (~497 tall), and 44
+  // minutes later #83 grew the last-snap preview to `aspect-ratio:
+  // 16/10` (~497 → ~632 total) without retuning the band. No CI job
+  // runs these specs on macOS (see coverage note below), so the stale
+  // band sat unnoticed until someone ran the suite locally on a Mac.
+  // The Windows port (#218) then measured ~634 on Windows and — taking
+  // the stale macOS band at face value — mis-attributed the gap to
+  // Windows-specific font/layout differences. There is no platform
+  // gap: the popover is a fixed-width (440) window, the preview is a
+  // CSS aspect-ratio box, and the fonts are bundled, so the height is
+  // deterministic per content revision, not per machine.
+  //
+  // ⚠️ CI coverage: the Linux "Desktop E2E" job SKIPS this describe
+  // block (test.skip above), and there is no macOS E2E job — only the
+  // "Windows Desktop E2E" job validates these bands in CI. If you
+  // change anything that affects tray popover content height (new
+  // section, preview shape, type scale), retune the bands AND re-run
+  // this spec locally on macOS:
+  //   cd apps/desktop && pnpm build && \
+  //     pnpm exec playwright test -c playwright.config.ts --grep "seeded capture"
+  // (TODO: RDP-verify the seeded Windows popover visually.)
+  const seededMin = 560;
+  const seededMax = 720;
   for (const scenario of [
     { label: "cold | empty library", seed: false, prewarm: false, minHeight: 200, maxHeight: 320 },
     { label: "cold | 1 seeded capture", seed: true, prewarm: false, minHeight: seededMin, maxHeight: seededMax },

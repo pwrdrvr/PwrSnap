@@ -1421,6 +1421,33 @@ export type AppDocument = {
   content: string;
 };
 
+/** What the OS reports about PwrSnap's login-item registration right
+ *  now — as opposed to `Settings.general.launchAtLogin`, which is the
+ *  user's saved preference. The two diverge when the OS gates the
+ *  registration: macOS 13+ lets the user flip a registered login item
+ *  off in System Settings → Login Items, Windows lets Task Manager →
+ *  Startup apps disable the Run-key entry. Returned by
+ *  `app:launchAtLoginStatus`. */
+export type LaunchAtLoginStatus = {
+  /** False when this build can't register a login item at all. */
+  supported: boolean;
+  /** Why `supported` is false. `dev-build`: unpackaged runs would
+   *  register the bare Electron binary as the login item, so
+   *  registration is skipped outside packaged builds. `e2e`: the
+   *  Playwright harness must never touch the host machine's real
+   *  startup items. `platform-unsupported`: no implementation for this
+   *  platform. */
+  reason?: "dev-build" | "e2e" | "platform-unsupported";
+  /** True when the OS currently has a login item registered for
+   *  PwrSnap. */
+  registered: boolean;
+  /** True when the item is registered but the user disabled it on the
+   *  OS side (macOS `requires-approval`, Windows startup-approved off).
+   *  PwrSnap will NOT start at login while this is set; recovery is
+   *  `app:openLoginItemsSettings`. */
+  blockedByOs: boolean;
+};
+
 export type Settings = {
   /** Bumped when the on-disk shape changes. Readers below the current
    *  version go through the legacy-shape catalog in the service before
@@ -1518,6 +1545,15 @@ export type Settings = {
      *  reporters flip it on in Settings. Mirrors PwrAgnt's
      *  `general.developerMode`. */
     developerMode: boolean;
+    /** When true, PwrSnap registers itself as an OS login item so the
+     *  tray + capture hotkeys are ready right after sign-in. Login
+     *  launches boot tray-only (no Library window). This is the saved
+     *  PREFERENCE — the OS-side registration syncs to it in main
+     *  (launch-at-login.ts) and the live OS state is reported
+     *  separately via `app:launchAtLoginStatus` (macOS 13+ login items
+     *  can be disabled by the user in System Settings without PwrSnap
+     *  observing the change). */
+    launchAtLogin: boolean;
   };
   /** Per-user UI appearance. `theme: "system"` (default) tracks the
    *  OS-level `prefers-color-scheme`; explicit `"dark"` / `"light"`
@@ -2703,6 +2739,23 @@ export type Commands = {
    *  About page's Website / Documentation / Repository links. */
   "app:openExternal": {
     req: { url: string };
+    res: void;
+  };
+  /** Live OS-side launch-at-login state (distinct from the saved
+   *  `general.launchAtLogin` preference — macOS/Windows let the user
+   *  disable a registered login item OS-side without telling us). The
+   *  General page re-reads this after every toggle so the row reflects
+   *  what the OS will actually do at next sign-in. */
+  "app:launchAtLoginStatus": {
+    req: Record<string, never>;
+    res: LaunchAtLoginStatus;
+  };
+  /** Open the OS surface where the user manages startup items (macOS
+   *  System Settings → Login Items, Windows Settings → Startup apps).
+   *  Recovery path for the `blockedByOs` state. No-op res on platforms
+   *  without a deep link. */
+  "app:openLoginItemsSettings": {
+    req: Record<string, never>;
     res: void;
   };
 

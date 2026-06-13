@@ -174,9 +174,14 @@ export type LaunchOptions = {
   seedUserData?: (homeRoot: string) => Promise<void>;
 };
 
-export async function launchPwrSnap(
+/** A launched app with no library window expected — the tray-only
+ *  login-item boot path (`--launched-at-login`). Everything except the
+ *  `window` Page; specs reach main via `dispatch` / `electronApp`. */
+export type WindowlessLaunchedApp = Omit<LaunchedApp, "window">;
+
+async function launchPwrSnapCore(
   options: LaunchOptions = {}
-): Promise<LaunchedApp> {
+): Promise<WindowlessLaunchedApp> {
   const homeRoot = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-e2e-home-"));
 
   const env: Record<string, string> = {};
@@ -223,33 +228,8 @@ export async function launchPwrSnap(
     });
     electronApp = launchedApp;
 
-    // The main process pre-warms a region-selector BrowserWindow before
-    // it opens the library window. firstWindow() races them and may
-    // hand back the selector. Find the library window by title instead
-    // so specs always see the user-facing surface.
-    const window = await waitForLibraryWindow(launchedApp);
-
-    if (options.windowSize !== undefined) {
-      const size = options.windowSize;
-      await launchedApp.evaluate(({ BrowserWindow }, target) => {
-        const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-        if (!win) throw new Error("no live BrowserWindow to resize");
-        win.setMinimumSize(0, 0);
-        win.setContentSize(target.width, target.height);
-      }, size);
-      await expect
-        .poll(async () =>
-          window.evaluate(() => ({
-            innerWidth: globalThis.innerWidth,
-            innerHeight: globalThis.innerHeight
-          }))
-        )
-        .toMatchObject({ innerWidth: size.width, innerHeight: size.height });
-    }
-
     return {
       electronApp: launchedApp,
-      window,
       homeRoot,
       dispatch: async <C extends CommandName>(name: C, req: Req<C>) => {
         // Drive the command bus through the E2E bridge that main installs
@@ -291,4 +271,56 @@ export async function launchPwrSnap(
     await removeHomeRoot(homeRoot);
     throw cause;
   }
+}
+
+export async function launchPwrSnap(
+  options: LaunchOptions = {}
+): Promise<LaunchedApp> {
+  const core = await launchPwrSnapCore(options);
+  try {
+    // The main process pre-warms a region-selector BrowserWindow before
+    // it opens the library window. firstWindow() races them and may
+    // hand back the selector. Find the library window by title instead
+    // so specs always see the user-facing surface.
+    const window = await waitForLibraryWindow(core.electronApp);
+
+    if (options.windowSize !== undefined) {
+      const size = options.windowSize;
+      await core.electronApp.evaluate(({ BrowserWindow }, target) => {
+        const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+        if (!win) throw new Error("no live BrowserWindow to resize");
+        win.setMinimumSize(0, 0);
+        win.setContentSize(target.width, target.height);
+      }, size);
+      await expect
+        .poll(async () =>
+          window.evaluate(() => ({
+            innerWidth: globalThis.innerWidth,
+            innerHeight: globalThis.innerHeight
+          }))
+        )
+        .toMatchObject({ innerWidth: size.width, innerHeight: size.height });
+    }
+
+    return { ...core, window };
+  } catch (cause) {
+    try {
+      await core.close();
+    } catch {
+      // Ignore cleanup failures; preserve the original error.
+    }
+    throw cause;
+  }
+}
+
+/**
+ * Launch without waiting for a library window — for specs that exercise
+ * the tray-only login-item boot (`--launched-at-login`), where the
+ * whole point is that no library window appears. `windowSize` is not
+ * supported here (there is no window to size).
+ */
+export async function launchPwrSnapWindowless(
+  options: Omit<LaunchOptions, "windowSize"> = {}
+): Promise<WindowlessLaunchedApp> {
+  return launchPwrSnapCore(options);
 }

@@ -17,6 +17,7 @@ import { app, screen, shell } from "electron";
 import { err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { isAppDocumentKind, readAppDocument } from "../app-documents";
+import { readLaunchAtLoginStatus } from "../launch-at-login";
 import { showAppDocumentWindow } from "../window";
 import {
   checkForAppUpdatesNow,
@@ -56,6 +57,24 @@ export function registerAppHandlers(): void {
       nodeVersion: process.versions.node ?? "",
       chromeVersion: process.versions.chrome ?? ""
     });
+  });
+  bus.register("app:launchAtLoginStatus", async () => {
+    return ok(readLaunchAtLoginStatus());
+  });
+  bus.register("app:openLoginItemsSettings", async () => {
+    // Hardcoded OS deep links — never renderer-supplied, so this can't
+    // become a navigation gadget like a raw `shell.openExternal` would.
+    if (process.platform === "darwin") {
+      await shell.openExternal(
+        "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+      );
+    } else if (process.platform === "win32") {
+      await shell.openExternal("ms-settings:startupapps");
+    }
+    // Linux: no universal deep link for autostart management (it lives
+    // in per-DE tools like GNOME Tweaks); the Settings row copy points
+    // the user there instead.
+    return ok(undefined);
   });
   bus.register("system:listDisplays", async () => {
     const primaryId = screen.getPrimaryDisplay().id;

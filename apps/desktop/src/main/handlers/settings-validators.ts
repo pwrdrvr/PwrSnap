@@ -307,6 +307,15 @@ export function validateSettingsWrite(
         )
       };
     }
+    if (!isUndefined(general.launchAtLogin) && !isBoolean(general.launchAtLogin)) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_general_launchAtLogin",
+          "settings:write: general.launchAtLogin must be a boolean"
+        )
+      };
+    }
   }
 
   if (p.appearance !== undefined) {

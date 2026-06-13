@@ -42,7 +42,7 @@ import { captureRegion, captureScreen, captureWindow } from "../capture/screenca
 import { guardScreenCapture } from "../capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "../capture/capture-storage-gate";
 import { releaseSnapshot } from "../capture/screen-snapshot";
-import { activateApp, type WindowInfo } from "../capture/window-list";
+import { type WindowInfo } from "../capture/window-list";
 import {
   resolveSelectionSourceApp,
   resolveSourceAppByRect
@@ -241,18 +241,17 @@ export function registerCaptureHandlers(): void {
       // before the selector window's compositor pass is complete.
       await new Promise((resolve) => setTimeout(resolve, 50));
       hideSelector();
-      if (selection.previousAppPid !== null && selection.previousAppPid !== undefined) {
-        await activateApp(selection.previousAppPid);
-      } else {
-        // No previous app to restore — the Library (or another
-        // PwrSnap window) was topmost when the capture started.
-        // After hideSelector, Cocoa's window-cascade picks the next
-        // key-window candidate; the floating-level focus-sink wins
-        // because it sits above the Library at level 0. Without an
-        // explicit refocus the user is left staring at whatever was
-        // behind PwrSnap (the Library is alive but not key/front),
-        // which reads as "the Library got hidden on cancel." Bring
-        // it back to its pre-capture state.
+      // No activateApp(previousAppPid): the selector is a
+      // non-activating NSPanel, so whatever app was frontmost before
+      // the capture was never deactivated — it stays frontmost when
+      // the selector hides. Re-activating it (the old behavior) was
+      // the main trigger for AppKit demoting PwrSnap to Accessory,
+      // which is what made the Dock icon flash and the Library appear
+      // to hide. We only intervene when PwrSnap's OWN window was
+      // frontmost (previousAppPid null): there the selector-hide
+      // key-window cascade would let the floating focus-sink steal key
+      // from the Library, so restore it explicitly.
+      if (selection.previousAppPid === null || selection.previousAppPid === undefined) {
         const library = findMainLibraryWindow();
         if (library !== null && !library.isDestroyed()) {
           if (library.isMinimized()) library.restore();
@@ -260,19 +259,10 @@ export function registerCaptureHandlers(): void {
           library.focus();
         }
       }
-      // Always re-assert Regular activation policy after cancel —
-      // not just on the activateApp branch. Showing the screen-
-      // saver-level selector alongside our persistent floating-
-      // level panels (focus-sink, tray, float-over) is enough for
-      // AppKit to demote PwrSnap to Accessory as a focus-cascade
-      // side-effect on the selector's hide, even when we never
-      // explicitly deactivated to another app. Demotion strips the
-      // Dock icon and orphans the Library — the user reads it as
-      // "Library got closed and the Dock icon disappeared." The
-      // reclaim is a no-op when the Library is gone (the dock-icon-
-      // tied-to-Library invariant means there's no icon to reclaim)
-      // and a no-op when the dock is already visible, so it's safe
-      // to call unconditionally.
+      // Guarded safety net: if the selector-hide cascade still demotes
+      // us to Accessory (no-op when the dock is already visible, or
+      // when no Library exists), re-assert Regular policy without
+      // stealing focus.
       reclaimDockIconIfLibraryAlive();
       return err({
         kind: "capture",
@@ -291,24 +281,21 @@ export function registerCaptureHandlers(): void {
     //
     // We own the screen snapshot now and MUST release it; the try/finally
     // is a safety net (both teardown + release are idempotent).
-    const { screenSnapshotId, screenSnapshotPath, previousAppPid } = selection;
+    const { screenSnapshotId, screenSnapshotPath } = selection;
     let teardownDone = false;
     const tearDownSelector = async (): Promise<void> => {
       if (teardownDone) return;
       teardownDone = true;
-      // Selector down first; then re-activate the previously-frontmost
-      // app. The float-over was pre-shown idle at floating level during
-      // pickRegion, so it stays above the re-activated app through the
-      // idle→loaded content swap — no post-hoc show race. activateApp is
-      // the obvious activation-policy demotion trigger, but the selector
-      // hide alone trips the same focus cascade when no previous app
-      // exists (Library-was-topmost), so reclaim unconditionally to keep
-      // the Library reachable via the Dock. (Full rationale on the cancel
-      // branch above.)
+      // Selector down — but NO activateApp(previousAppPid). The selector
+      // is a non-activating NSPanel, so the previously-frontmost app was
+      // never deactivated; it stays frontmost as the selector hides, and
+      // the float-over (also a non-activating panel at floating level 3)
+      // sits above it through the idle→loaded swap without stealing
+      // focus. Re-activating it was the main trigger for AppKit demoting
+      // PwrSnap to Accessory (Dock flash + Library hide/reshow). Guarded
+      // reclaim only — a no-op when the dock is already visible or no
+      // Library exists. (Full rationale on the cancel branch above.)
       hideSelector();
-      if (previousAppPid !== null) {
-        await activateApp(previousAppPid);
-      }
       reclaimDockIconIfLibraryAlive();
     };
     try {

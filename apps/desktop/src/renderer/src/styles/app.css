@@ -272,6 +272,12 @@ body[data-stage="float-over"] .fo {
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .app-update-banner {
+    animation: none;
+  }
+}
+
 .app-update-banner__content {
   display: flex;
   flex-direction: column;
@@ -300,9 +306,9 @@ body[data-stage="float-over"] .fo {
 
 .app-update-banner__actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
 }
 
 .app-update-banner__restart,

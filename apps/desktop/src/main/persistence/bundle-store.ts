@@ -39,6 +39,10 @@ import { writeFile } from "node:fs/promises";
 
 import { buildCompositeThumbnailInProcess } from "../image/composite-thumbnail";
 import {
+  reportCapturesAccessFailure,
+  reportCapturesAccessSuccess
+} from "../storage/captures-access-health";
+import {
   isCompositeThumbnailWorkerAvailable,
   runCompositeThumbnailWorker
 } from "../workers/composite-thumbnail-worker-client";
@@ -312,6 +316,23 @@ type BundleReadHandle = {
 };
 
 async function openAndValidateBundle(bundlePath: string): Promise<BundleReadHandle> {
+  // Every bundle read in the codebase flows through here, which makes
+  // it the accounting chokepoint for captures-access health: a macOS
+  // TCC denial (EPERM on a file we own) gets reported so the Library
+  // banner + log surface it instead of each caller failing silently;
+  // a later success on the same path clears it. Non-permission errors
+  // pass through untouched.
+  try {
+    const handle = await openAndValidateBundleUnchecked(bundlePath);
+    reportCapturesAccessSuccess(bundlePath);
+    return handle;
+  } catch (cause) {
+    reportCapturesAccessFailure(bundlePath, cause);
+    throw cause;
+  }
+}
+
+async function openAndValidateBundleUnchecked(bundlePath: string): Promise<BundleReadHandle> {
   await assertSafeBundleFile(bundlePath);
 
   return new Promise<BundleReadHandle>((resolve, reject) => {

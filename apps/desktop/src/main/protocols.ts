@@ -41,6 +41,7 @@ import { getMainLogger } from "./log";
 import { getSnapshotPath } from "./capture/screen-snapshot";
 import { parseAppIconBundleId, parseCacheUrl, parseCaptureId, SCHEMES } from "./protocols-parse";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
+import { reportCapturesAccessFailure } from "./storage/captures-access-health";
 
 const log = getMainLogger("pwrsnap:protocols");
 
@@ -258,8 +259,16 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
       }
       return response;
     } catch (cause) {
+      // Videos and flat sources read straight off ~/Documents/PwrSnap
+      // (no bundle-store chokepoint), so a macOS TCC denial must be
+      // reported from here. Node errno errors carry the failing path.
+      const errnoPath = (cause as NodeJS.ErrnoException).path;
+      if (typeof errnoPath === "string") {
+        reportCapturesAccessFailure(errnoPath, cause);
+      }
       log.error("capture handler threw", {
         captureId,
+        code: (cause as NodeJS.ErrnoException).code,
         message: cause instanceof Error ? cause.message : String(cause)
       });
       return new Response("internal error", { status: 500 });
@@ -351,8 +360,17 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
       }
       return response;
     } catch (cause) {
+      // Bundle reads already report TCC denials via the bundle-store
+      // chokepoint (dedup makes a second report for the same path a
+      // no-op); this catches denials on non-bundle reads the render
+      // path makes directly.
+      const errnoPath = (cause as NodeJS.ErrnoException).path;
+      if (typeof errnoPath === "string") {
+        reportCapturesAccessFailure(errnoPath, cause);
+      }
       log.error("cache handler threw", {
         ...parsed,
+        code: (cause as NodeJS.ErrnoException).code,
         message: cause instanceof Error ? cause.message : String(cause)
       });
       return new Response("internal error", { status: 500 });

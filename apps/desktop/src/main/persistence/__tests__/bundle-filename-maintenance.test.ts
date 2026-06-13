@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -40,6 +40,9 @@ const {
   renameBundleToEffectiveFilename,
   runBundleFilenameMaintenanceOnBoot
 } = await import("../bundle-filename-maintenance");
+const { getCapturesAccessHealth, resetCapturesAccessHealthForTests } = await import(
+  "../../storage/captures-access-health"
+);
 
 const MIGRATIONS_DIR = join(__dirname, "..", "migrations");
 
@@ -320,6 +323,59 @@ describe("bundle filename maintenance", () => {
       .prepare("SELECT bundle_path FROM captures WHERE id = ?")
       .get(captureId) as { bundle_path: string };
     expect(row.bundle_path).toBe(actualPath);
+  });
+
+  test("permission-denied bundles are skipped without burning the error budget", async () => {
+    // macOS TCC denials are PER-FILE (bundles created under a different
+    // TCC identity lack the per-file macl grant) — so a denied row must
+    // not abort the pass or count toward the 10-failure budget; readable
+    // rows still get maintained. EACCES stands in for the production
+    // EPERM here (same errno classification, producible via chmod).
+    resetCapturesAccessHealthForTests();
+
+    const deniedId = "cap_tcc_denied";
+    const deniedPath = join(workDir, "denied-random.pwrsnap");
+    await writeBundleFixture(deniedPath, deniedId);
+    insertCapture({
+      id: deniedId,
+      bundlePath: deniedPath,
+      sourceAppName: "Safari",
+      sha256: "0badf00d".repeat(8)
+    });
+    insertEnrichment({ captureId: deniedId, suggested: "denied-flow", accepted: null });
+
+    const okId = "cap_readable";
+    const okPath = join(workDir, "readable-random.pwrsnap");
+    await writeBundleFixture(okPath, okId);
+    insertCapture({
+      id: okId,
+      bundlePath: okPath,
+      sourceAppName: "Safari",
+      sha256: "a1b2c3d4".repeat(8)
+    });
+    insertEnrichment({ captureId: okId, suggested: "checkout-flow", accepted: null });
+
+    await chmod(deniedPath, 0o000);
+    try {
+      const result = await runBundleFilenameMaintenanceOnBoot();
+      expect(result.permissionDenied).toBe(1);
+      expect(result.failed).toBe(0);
+      // The readable row was still processed despite the earlier denial.
+      expect(result.renamed).toBe(1);
+      expect(
+        existsSync(join(workDir, "2026-05-29T18-38-12_safari_checkout-flow_a1b2c3d4.pwrsnap"))
+      ).toBe(true);
+
+      // The denial was accounted to captures-access health (drives the
+      // Library banner + loud log).
+      const health = getCapturesAccessHealth();
+      expect(health.denied).toBe(true);
+      expect(health.deniedPathCount).toBe(1);
+      expect(health.samplePath).toBe(deniedPath);
+    } finally {
+      await chmod(deniedPath, 0o600);
+      resetCapturesAccessHealthForTests();
+    }
   });
 
   test("skips video captures even if a bundle path is present", async () => {

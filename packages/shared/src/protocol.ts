@@ -459,6 +459,30 @@ export type StorageSnapshotUpdate = {
   scanning: boolean;
 };
 
+/**
+ * Health snapshot for reads of the user's captures folder
+ * (`~/Documents/PwrSnap`). On macOS, reads of user-owned files there
+ * fail with EPERM when the app's TCC client (for dev runs: the
+ * terminal that launched it) lacks Files & Folders → Documents
+ * access AND the file carries no per-file `com.apple.macl` grant.
+ * The symptom is silently broken thumbnails — the record exists, the
+ * file exists, but every `open()` is denied.
+ *
+ * `denied` flips true on the first denial of the session and back to
+ * false if every previously-denied path later reads successfully
+ * (e.g. the user granted access mid-session). `deniedPathCount`
+ * counts DISTINCT denied files, not raw failures, so render retries
+ * don't inflate it.
+ */
+export type CapturesAccessHealth = {
+  denied: boolean;
+  deniedPathCount: number;
+  /** One affected absolute path, for log/UI context. */
+  samplePath: string | null;
+  firstDeniedAt: string | null;
+  lastDeniedAt: string | null;
+};
+
 /** Identifier for every Settings sidebar page. Used by `settings:open`
  *  to deep-link directly to a section. */
 export type SettingsPage =
@@ -2501,6 +2525,13 @@ export type Commands = {
     req: { mode: RenderCacheMaintenanceMode };
     res: StorageMaintenanceResult;
   };
+  /** Snapshot of macOS permission denials on captures-folder reads.
+   *  Renderers read this once on mount, then subscribe to
+   *  `events:storage:captures-access` for changes. */
+  "storage:capturesAccessHealth": { req: Record<string, never>; res: CapturesAccessHealth };
+  /** Open System Settings → Privacy & Security → Files & Folders so
+   *  the user can grant Documents access. No-op off macOS. */
+  "storage:openCapturesAccessSettings": { req: Record<string, never>; res: void };
 
   // ---- layers (v2 captures only) ----
   /** List the live layer tree for a v2 capture. Flat array; tree is

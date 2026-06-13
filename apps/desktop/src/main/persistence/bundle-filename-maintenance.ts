@@ -5,6 +5,10 @@ import { dirname, join } from "node:path";
 import type { FilenameTimestampZone } from "@pwrsnap/shared";
 
 import { getMainLogger } from "../log";
+import {
+  isPermissionDenial,
+  reportCapturesAccessFailure
+} from "../storage/captures-access-health";
 import { buildCaptureBundleFilenameStem, bundleStemFromPath } from "./bundle-filename";
 import { readBundleFilenameTimestampZone } from "./bundle-filename-settings";
 import { getDb } from "./db";
@@ -32,6 +36,11 @@ export type BundleFilenameMaintenanceResult = {
   repaired: number;
   skipped: number;
   failed: number;
+  /** Rows whose bundle read was denied by macOS (TCC EPERM/EACCES).
+   *  Tracked separately from `failed` — a denial is an environment
+   *  problem reported via captures-access-health, not a per-row error,
+   *  and must not burn the boot error budget. */
+  permissionDenied: number;
 };
 
 export async function renameBundleToEffectiveFilename(
@@ -64,7 +73,8 @@ export async function runBundleFilenameMaintenanceOnBoot(): Promise<BundleFilena
     renamed: 0,
     repaired: 0,
     skipped: 0,
-    failed: 0
+    failed: 0,
+    permissionDenied: 0
   };
 
   const timestampZone = await readBundleFilenameTimestampZone();
@@ -74,6 +84,25 @@ export async function runBundleFilenameMaintenanceOnBoot(): Promise<BundleFilena
       const outcome = await renameBundleRow(row, timestampZone);
       result[outcome] += 1;
     } catch (error) {
+      // macOS TCC denial (EPERM on a file we own). PER-FILE, not
+      // all-or-nothing: bundles created under the current TCC identity
+      // carry a com.apple.macl grant and keep working while older ones
+      // are denied. So skip the row WITHOUT burning the error budget —
+      // aborting would also starve the readable rows — and let the
+      // bundle-store chokepoint account the denial to
+      // captures-access-health (Library banner + loud first-denial
+      // log). One actionable summary line below.
+      if (isPermissionDenial(error)) {
+        result.permissionDenied += 1;
+        // Usually already reported via the bundle-store read chokepoint
+        // (dedup makes this a no-op then); reporting here too covers
+        // denials from direct fs calls like the lstat in
+        // assertBundleBelongsToCapture.
+        if (row.bundle_path !== null) {
+          reportCapturesAccessFailure(row.bundle_path, error);
+        }
+        continue;
+      }
       result.failed += 1;
       log.warn("bundle filename maintenance failed", {
         captureId: row.id,
@@ -89,6 +118,14 @@ export async function runBundleFilenameMaintenanceOnBoot(): Promise<BundleFilena
     }
   }
 
+  if (result.permissionDenied > 0) {
+    log.warn(
+      "bundle filename maintenance: some bundles are unreadable — macOS denied " +
+        "access (TCC). Grant Files & Folders → Documents access — for dev runs, " +
+        "to the terminal that launched PwrSnap — then relaunch.",
+      { permissionDenied: result.permissionDenied, attempted: result.attempted }
+    );
+  }
   log.info("bundle filename maintenance complete", result);
   return result;
 }

@@ -307,3 +307,28 @@ body[data-stage="float-over"] .fo {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* Captures-access banner (macOS TCC denial) — reuses the update
+   banner's layout/typography, tinted danger instead of accent: a
+   permission failure is a problem notice, not a release notice. */
+.captures-access-banner {
+  border-bottom-color: var(--danger-border);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--danger) 16%, transparent),
+    color-mix(in srgb, var(--danger) 8%, transparent)
+  );
+}
+
+.captures-access-banner .app-update-banner__eyebrow {
+  color: var(--danger-text);
+}
+
+.captures-access-banner .app-update-banner__restart {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.captures-access-banner .app-update-banner__restart:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--danger) 88%, white);
+}

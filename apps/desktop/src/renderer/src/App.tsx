@@ -1,5 +1,6 @@
 import { AppDocumentWindow } from "./features/documents/AppDocumentWindow";
 import { Library } from "./features/library/Library";
+import { CapturesAccessBanner } from "./features/library/CapturesAccessBanner";
 import { CartProvider } from "./features/library/CartContext";
 import { FloatOverHost } from "./features/float-over/FloatOverHost";
 import { RecordingController } from "./features/recording/RecordingController";
@@ -113,6 +114,7 @@ export function App() {
     return (
       <div className="app-shell">
         <AppUpdateBanner />
+        <CapturesAccessBanner />
         <CartProvider>
           <Library />
         </CartProvider>

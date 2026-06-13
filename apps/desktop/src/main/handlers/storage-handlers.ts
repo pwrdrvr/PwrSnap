@@ -1,4 +1,4 @@
-import { BrowserWindow, session } from "electron";
+import { BrowserWindow, session, shell } from "electron";
 import { ok, err } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
@@ -10,6 +10,10 @@ import {
   maintainRenderCache,
   onStorageSnapshotUpdated
 } from "../storage/accounting";
+import {
+  getCapturesAccessHealth,
+  onCapturesAccessHealthChanged
+} from "../storage/captures-access-health";
 
 const log = getMainLogger("pwrsnap:storage-handlers");
 let storageEventsRegistered = false;
@@ -81,6 +85,33 @@ export function registerStorageHandlers(): void {
     }
   });
 
+  bus.register("storage:capturesAccessHealth", async () => {
+    return ok(getCapturesAccessHealth());
+  });
+
+  bus.register("storage:openCapturesAccessSettings", async () => {
+    // Same deep-link scheme as capture/permissions.ts — stable since
+    // Sonoma, still works on macOS 26. Files & Folders is where the
+    // Documents-folder grant lives.
+    if (process.platform !== "darwin") return ok(undefined);
+    try {
+      await shell.openExternal(
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders"
+      );
+      return ok(undefined);
+    } catch (cause) {
+      log.warn("storage:openCapturesAccessSettings failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "persistence",
+        code: "open_privacy_settings_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
+  });
+
   bus.register("storage:maintainRenderCache", async (req) => {
     const mode = req.mode;
     if (!isRenderCacheMaintenanceMode(mode)) {
@@ -118,6 +149,12 @@ function registerStorageEventBroadcast(): void {
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isDestroyed()) continue;
       win.webContents.send(EVENT_CHANNELS.storageSnapshotUpdated, payload);
+    }
+  });
+  onCapturesAccessHealthChanged((health) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      win.webContents.send(EVENT_CHANNELS.capturesAccessChanged, health);
     }
   });
 }

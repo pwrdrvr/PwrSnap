@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -9,7 +9,12 @@ import type { BundleDocumentV2, BundleManifestV2 } from "@pwrsnap/shared";
 
 const mocks = vi.hoisted(() => ({
   db: null as Database.Database | null,
-  filenameTimestampZone: "utc" as "local" | "utc"
+  filenameTimestampZone: "utc" as "local" | "utc",
+  // When set, the bundle-store mock throws an EPERM from
+  // readBundleManifest for this exact path — a cross-platform stand-in
+  // for the macOS TCC denial (a real chmod 0o000 only denies reads on
+  // POSIX; on Windows fs.chmod can't block reads at all).
+  denyManifestPath: null as string | null
 }));
 
 vi.mock("../db", () => ({
@@ -32,6 +37,31 @@ vi.mock("../bundle-filename-settings", () => ({
   readBundleFilenameTimestampZone: async (): Promise<"local" | "utc"> =>
     mocks.filenameTimestampZone
 }));
+
+// Pass-through mock of bundle-store that can inject a permission denial
+// on a single path. Every other export (packBundleV2,
+// runExclusiveBundleFileOperation, and the real readBundleManifest for
+// non-denied paths) delegates to the real module, so the readable-row
+// rename path stays fully exercised.
+vi.mock("../bundle-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../bundle-store")>();
+  return {
+    ...actual,
+    readBundleManifest: async (
+      bundlePath: string
+    ): Promise<Awaited<ReturnType<typeof actual.readBundleManifest>>> => {
+      if (mocks.denyManifestPath !== null && bundlePath === mocks.denyManifestPath) {
+        const error: NodeJS.ErrnoException = new Error(
+          `EPERM: operation not permitted, open '${bundlePath}'`
+        );
+        error.code = "EPERM";
+        error.path = bundlePath;
+        throw error;
+      }
+      return actual.readBundleManifest(bundlePath);
+    }
+  };
+});
 
 const { buildCaptureBundleFilenameStem } = await import("../bundle-filename");
 const { packBundleV2, runExclusiveBundleFileOperation } = await import("../bundle-store");
@@ -141,6 +171,7 @@ async function writeBundleFixture(path: string, captureId: string): Promise<void
 
 beforeEach(async () => {
   mocks.filenameTimestampZone = "utc";
+  mocks.denyManifestPath = null;
   workDir = await mkdtemp(join(tmpdir(), "pwrsnap-bundle-filenames-"));
   mocks.db = new Database(":memory:");
   mocks.db.pragma("foreign_keys = ON");
@@ -329,8 +360,9 @@ describe("bundle filename maintenance", () => {
     // macOS TCC denials are PER-FILE (bundles created under a different
     // TCC identity lack the per-file macl grant) — so a denied row must
     // not abort the pass or count toward the 10-failure budget; readable
-    // rows still get maintained. EACCES stands in for the production
-    // EPERM here (same errno classification, producible via chmod).
+    // rows still get maintained. The denied bundle's manifest read is
+    // forced to throw EPERM (the exact errno openAndValidateBundle would
+    // surface in production), while the readable bundle reads for real.
     resetCapturesAccessHealthForTests();
 
     const deniedId = "cap_tcc_denied";
@@ -355,7 +387,7 @@ describe("bundle filename maintenance", () => {
     });
     insertEnrichment({ captureId: okId, suggested: "checkout-flow", accepted: null });
 
-    await chmod(deniedPath, 0o000);
+    mocks.denyManifestPath = deniedPath;
     try {
       const result = await runBundleFilenameMaintenanceOnBoot();
       expect(result.permissionDenied).toBe(1);
@@ -373,7 +405,7 @@ describe("bundle filename maintenance", () => {
       expect(health.deniedPathCount).toBe(1);
       expect(health.samplePath).toBe(deniedPath);
     } finally {
-      await chmod(deniedPath, 0o600);
+      mocks.denyManifestPath = null;
       resetCapturesAccessHealthForTests();
     }
   });

@@ -983,12 +983,14 @@ const ASSET_FILENAME_MAINTENANCE_BOOT_DELAY_MS = 2_000;
 // painted content on every machine we measured, while still finishing
 // long before a user typically reaches the surfaces they warm up.
 //
-// E2E keeps the pre-deferral timing: the Windows tray popover specs
-// measure popover size/visibility in the first seconds after launch,
-// and moving the probe's spawn churn from boot into that window made
+// E2E keeps the pre-deferral timing (probe dispatched inline at the
+// baseline call site — see the dispatch below; warm-up at the original
+// 2s): the Windows tray popover specs measure popover size/visibility
+// in the first seconds after launch, and moving the probe's
+// main-thread-blocking spawn churn from boot into that window made
 // them flake (PR #238 CI). E2E never asserts on probe timing itself,
 // so baseline parity is the stable choice there.
-const STARTUP_CODEX_PROBE_DELAY_MS = isE2E ? 0 : 4_000;
+const STARTUP_CODEX_PROBE_DELAY_MS = 4_000;
 const ACP_AGENT_WARMUP_BOOT_DELAY_MS = isE2E ? 2_000 : 8_000;
 
 async function runBootGc(): Promise<void> {
@@ -1271,11 +1273,21 @@ export function bootstrapApp(): void {
     // Startup Codex readiness probe — deferred past the library's first
     // contentful paint. Profiling (2026-06) showed the probe's process
     // spawns (~0.9s of `codex` executions) landing exactly in the
-    // window-shown→first-thumbnail-paint gap and competing with renderer
-    // startup. Nothing on the boot path consumes the result; on-demand
-    // dispatches (Settings → AI) trigger their own probe if they get
-    // there first.
-    setTimeout(() => {
+    // window-shown→first-thumbnail-paint gap, competing with renderer
+    // startup AND stalling the main thread in ~100ms chunks (the same
+    // marks show a dozen unrelated commands all blocking ~97ms while
+    // the probe ran). Nothing on the boot path consumes the result;
+    // on-demand dispatches (Settings → AI) trigger their own probe if
+    // they get there first.
+    //
+    // E2E dispatches INLINE — exactly the pre-deferral baseline. Not
+    // setTimeout(0): even a 0ms timer runs after the whenReady body,
+    // which moved the probe's main-thread blocking from "during boot,
+    // before any window" into the window where the Windows tray specs
+    // seed + measure the popover — their library:list/resize flow
+    // stalled past the stability window and flaked (PR #238 CI, two
+    // rounds).
+    const dispatchStartupCodexProbe = (): void => {
       void bus
         .dispatch("settings:refreshCodexDiscovery", { force: true }, { principal: "ipc" })
         .then((result) => {
@@ -1286,7 +1298,12 @@ export function bootstrapApp(): void {
             });
           }
         });
-    }, STARTUP_CODEX_PROBE_DELAY_MS).unref();
+    };
+    if (isE2E) {
+      dispatchStartupCodexProbe();
+    } else {
+      setTimeout(dispatchStartupCodexProbe, STARTUP_CODEX_PROBE_DELAY_MS).unref();
+    }
     registerCodexHandlers();
     registerCodexProfileHandlers();
     registerAcpHandlers();

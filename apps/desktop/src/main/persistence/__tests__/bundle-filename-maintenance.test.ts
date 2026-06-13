@@ -9,7 +9,12 @@ import type { BundleDocumentV2, BundleManifestV2 } from "@pwrsnap/shared";
 
 const mocks = vi.hoisted(() => ({
   db: null as Database.Database | null,
-  filenameTimestampZone: "utc" as "local" | "utc"
+  filenameTimestampZone: "utc" as "local" | "utc",
+  // When set, the bundle-store mock throws an EPERM from
+  // readBundleManifest for this exact path — a cross-platform stand-in
+  // for the macOS TCC denial (a real chmod 0o000 only denies reads on
+  // POSIX; on Windows fs.chmod can't block reads at all).
+  denyManifestPath: null as string | null
 }));
 
 vi.mock("../db", () => ({
@@ -33,6 +38,31 @@ vi.mock("../bundle-filename-settings", () => ({
     mocks.filenameTimestampZone
 }));
 
+// Pass-through mock of bundle-store that can inject a permission denial
+// on a single path. Every other export (packBundleV2,
+// runExclusiveBundleFileOperation, and the real readBundleManifest for
+// non-denied paths) delegates to the real module, so the readable-row
+// rename path stays fully exercised.
+vi.mock("../bundle-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../bundle-store")>();
+  return {
+    ...actual,
+    readBundleManifest: async (
+      bundlePath: string
+    ): Promise<Awaited<ReturnType<typeof actual.readBundleManifest>>> => {
+      if (mocks.denyManifestPath !== null && bundlePath === mocks.denyManifestPath) {
+        const error: NodeJS.ErrnoException = new Error(
+          `EPERM: operation not permitted, open '${bundlePath}'`
+        );
+        error.code = "EPERM";
+        error.path = bundlePath;
+        throw error;
+      }
+      return actual.readBundleManifest(bundlePath);
+    }
+  };
+});
+
 const { buildCaptureBundleFilenameStem } = await import("../bundle-filename");
 const { packBundleV2, runExclusiveBundleFileOperation } = await import("../bundle-store");
 const {
@@ -40,6 +70,9 @@ const {
   renameBundleToEffectiveFilename,
   runBundleFilenameMaintenanceOnBoot
 } = await import("../bundle-filename-maintenance");
+const { getCapturesAccessHealth, resetCapturesAccessHealthForTests } = await import(
+  "../../storage/captures-access-health"
+);
 
 const MIGRATIONS_DIR = join(__dirname, "..", "migrations");
 
@@ -138,6 +171,7 @@ async function writeBundleFixture(path: string, captureId: string): Promise<void
 
 beforeEach(async () => {
   mocks.filenameTimestampZone = "utc";
+  mocks.denyManifestPath = null;
   workDir = await mkdtemp(join(tmpdir(), "pwrsnap-bundle-filenames-"));
   mocks.db = new Database(":memory:");
   mocks.db.pragma("foreign_keys = ON");
@@ -320,6 +354,60 @@ describe("bundle filename maintenance", () => {
       .prepare("SELECT bundle_path FROM captures WHERE id = ?")
       .get(captureId) as { bundle_path: string };
     expect(row.bundle_path).toBe(actualPath);
+  });
+
+  test("permission-denied bundles are skipped without burning the error budget", async () => {
+    // macOS TCC denials are PER-FILE (bundles created under a different
+    // TCC identity lack the per-file macl grant) — so a denied row must
+    // not abort the pass or count toward the 10-failure budget; readable
+    // rows still get maintained. The denied bundle's manifest read is
+    // forced to throw EPERM (the exact errno openAndValidateBundle would
+    // surface in production), while the readable bundle reads for real.
+    resetCapturesAccessHealthForTests();
+
+    const deniedId = "cap_tcc_denied";
+    const deniedPath = join(workDir, "denied-random.pwrsnap");
+    await writeBundleFixture(deniedPath, deniedId);
+    insertCapture({
+      id: deniedId,
+      bundlePath: deniedPath,
+      sourceAppName: "Safari",
+      sha256: "0badf00d".repeat(8)
+    });
+    insertEnrichment({ captureId: deniedId, suggested: "denied-flow", accepted: null });
+
+    const okId = "cap_readable";
+    const okPath = join(workDir, "readable-random.pwrsnap");
+    await writeBundleFixture(okPath, okId);
+    insertCapture({
+      id: okId,
+      bundlePath: okPath,
+      sourceAppName: "Safari",
+      sha256: "a1b2c3d4".repeat(8)
+    });
+    insertEnrichment({ captureId: okId, suggested: "checkout-flow", accepted: null });
+
+    mocks.denyManifestPath = deniedPath;
+    try {
+      const result = await runBundleFilenameMaintenanceOnBoot();
+      expect(result.permissionDenied).toBe(1);
+      expect(result.failed).toBe(0);
+      // The readable row was still processed despite the earlier denial.
+      expect(result.renamed).toBe(1);
+      expect(
+        existsSync(join(workDir, "2026-05-29T18-38-12_safari_checkout-flow_a1b2c3d4.pwrsnap"))
+      ).toBe(true);
+
+      // The denial was accounted to captures-access health (drives the
+      // Library banner + loud log).
+      const health = getCapturesAccessHealth();
+      expect(health.denied).toBe(true);
+      expect(health.deniedPathCount).toBe(1);
+      expect(health.samplePath).toBe(deniedPath);
+    } finally {
+      mocks.denyManifestPath = null;
+      resetCapturesAccessHealthForTests();
+    }
   });
 
   test("skips video captures even if a bundle path is present", async () => {

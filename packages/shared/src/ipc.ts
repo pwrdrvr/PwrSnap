@@ -106,6 +106,17 @@ export const EVENT_CHANNELS = {
    */
   storageSnapshotUpdated: "events:storage:snapshot-updated",
   /**
+   * Main → every BrowserWindow: the captures-folder access-health
+   * snapshot changed (a macOS TCC denial was first observed, more
+   * distinct files were denied, or access recovered). Drives the
+   * Library's captures-access banner. Renderers that mount after the
+   * first denial read `storage:capturesAccessHealth` once for the
+   * snapshot, then subscribe here.
+   *
+   * Payload type: `CapturesAccessHealth` (see protocol.ts).
+   */
+  capturesAccessChanged: "events:storage:captures-access",
+  /**
    * Tells the Library renderer to navigate to a specific capture and
    * open it in Focus mode. Used by `library:openInLibrary` so the
    * float-over toast's Edit button can hand off into the inline
@@ -426,6 +437,7 @@ export type AiUsageUpdatedEvent = {
 
 export type EventPayloads = {
   [EVENT_CHANNELS.aiUsageUpdated]: AiUsageUpdatedEvent;
+  [EVENT_CHANNELS.capturesAccessChanged]: import("./protocol").CapturesAccessHealth;
   [EVENT_CHANNELS.sizzleProjectsChanged]: { projects: SizzleProject[] };
   [EVENT_CHANNELS.sizzleRenderProgress]: SizzleRenderProgressEvent;
   [EVENT_CHANNELS.cartChanged]: { cart: DraftCart };

@@ -210,27 +210,66 @@ body[data-stage="float-over"] .fo {
   display: none;
 }
 
-/* App-update banner.
- *
- * Renders inside .app-shell, ABOVE <Library />, so the library content
- * shifts down by the banner's height while it's visible. Width fills
- * the window; dismissable per-version. PwrAgnt has the same shape;
- * tokens map to PwrSnap's warm-near-black palette.
+/* Floating toast stack — fixed lower-left, mirroring PwrAgnt's
+ * .app-toast-stack. Anchors to the viewport (no transform/filter
+ * ancestor on .app-shell to capture it) and floats OVER the Library;
+ * sits below the renderer-diagnostics overlay. Children own their
+ * pointer events so the empty stack never eats clicks on the Library
+ * beneath it. Lower-left keeps clear of the bottom-right float-over.
+ */
+.app-toast-stack {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.app-toast-stack > * {
+  pointer-events: auto;
+}
+
+/* App-update toast (and the captures-access toast, which reuses this
+ * base via a modifier). A self-contained card in the lower-left stack:
+ * content stacked above its actions, accent-tinted over an opaque
+ * elevated panel so the Library never shows through. Dismissable
+ * per-version. PwrAgnt has the same shape; tokens map to PwrSnap's
+ * warm-near-black palette.
  */
 .app-update-banner {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--accent-border);
+  flex-direction: column;
+  gap: 12px;
+  width: max-content;
+  max-width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--accent-border);
+  border-radius: 10px;
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--accent) 16%, transparent),
-    color-mix(in srgb, var(--accent) 8%, transparent)
+    color-mix(in srgb, var(--accent) 14%, var(--bg-panel-elevated)),
+    color-mix(in srgb, var(--accent) 7%, var(--bg-panel-elevated))
   );
+  box-shadow: var(--shadow-lg);
   color: var(--text-primary);
   font: 500 12px/1.4 var(--font-sans);
+  animation: app-update-banner-enter 160ms ease-out;
+}
+
+@keyframes app-update-banner-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .app-update-banner__content {
@@ -308,15 +347,15 @@ body[data-stage="float-over"] .fo {
   cursor: not-allowed;
 }
 
-/* Captures-access banner (macOS TCC denial) — reuses the update
-   banner's layout/typography, tinted danger instead of accent: a
-   permission failure is a problem notice, not a release notice. */
+/* Captures-access toast (macOS TCC denial) — reuses the update toast's
+   card layout/typography, tinted danger instead of accent: a permission
+   failure is a problem notice, not a release notice. */
 .captures-access-banner {
-  border-bottom-color: var(--danger-border);
+  border-color: var(--danger-border);
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--danger) 16%, transparent),
-    color-mix(in srgb, var(--danger) 8%, transparent)
+    color-mix(in srgb, var(--danger) 14%, var(--bg-panel-elevated)),
+    color-mix(in srgb, var(--danger) 7%, var(--bg-panel-elevated))
   );
 }
 

@@ -113,11 +113,18 @@ export function App() {
     }
     return (
       <div className="app-shell">
-        <AppUpdateBanner />
-        <CapturesAccessBanner />
         <CartProvider>
           <Library />
         </CartProvider>
+        {/* Floating toast stack, lower-left. Both notices float OVER the
+            Library rather than pushing its content down, and stay clear of
+            the post-capture float-over (its own bottom-right window). Each
+            banner carries its own role/aria-live, so the wrapper stays a
+            neutral container. */}
+        <div className="app-toast-stack">
+          <CapturesAccessBanner />
+          <AppUpdateBanner />
+        </div>
       </div>
     );
   })();

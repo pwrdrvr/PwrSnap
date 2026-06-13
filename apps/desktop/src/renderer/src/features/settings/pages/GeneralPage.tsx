@@ -41,6 +41,7 @@ export function GeneralPage(): ReactElement {
   const developerMode = settings?.general.developerMode ?? false;
   const launchAtLogin = settings?.general.launchAtLogin ?? false;
   const channel: UpdateChannel = settings?.updates.channel ?? "latest";
+  const platform = window.pwrsnapApi?.platform;
 
   // Live OS-side registration state, distinct from the saved toggle —
   // macOS/Windows let the user disable a registered login item OS-side
@@ -150,21 +151,31 @@ export function GeneralPage(): ReactElement {
           <Row
             label="Disabled by the operating system"
             sub={
-              window.pwrsnapApi?.platform === "darwin"
+              platform === "darwin"
                 ? "PwrSnap's login item is switched off in System Settings → General → Login Items, so it won't start at sign-in until you re-enable it there."
-                : "PwrSnap's startup entry is disabled in the system's startup apps, so it won't start at sign-in until you re-enable it there."
+                : platform === "win32"
+                  ? "PwrSnap's startup entry is disabled in Task Manager → Startup apps, so it won't start at sign-in until you re-enable it there."
+                  : "PwrSnap's autostart entry is disabled in your desktop environment's startup settings, so it won't start at sign-in until you re-enable it there."
             }
             tag="action required"
           >
-            <button
-              className="pss__top-btn"
-              type="button"
-              onClick={() => {
-                void dispatch("app:openLoginItemsSettings", {});
-              }}
-            >
-              Open startup settings
-            </button>
+            {platform === "darwin" || platform === "win32" ? (
+              // `app:openLoginItemsSettings` only has a deep link on
+              // macOS/Windows; on Linux startup management lives in
+              // per-DE tools, so the sub copy carries the pointer and
+              // no dead button is rendered.
+              <button
+                className="pss__top-btn"
+                type="button"
+                onClick={() => {
+                  void dispatch("app:openLoginItemsSettings", {});
+                }}
+              >
+                Open startup settings
+              </button>
+            ) : (
+              <span className="pss__opt-sub">Re-enable in your startup tool</span>
+            )}
           </Row>
         ) : null}
       </Card>

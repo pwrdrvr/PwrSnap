@@ -23,12 +23,14 @@ vi.mock("electron", () => ({
 import {
   LAUNCHED_AT_LOGIN_ARG,
   applyLaunchAtLoginPlan,
+  createLaunchAtLoginApplier,
   parseLaunchedAtLoginArgv,
   planLaunchAtLoginSync,
   statusFromDarwinLoginItemSettings,
   statusFromWindowsLoginItemSettings,
   statusFromXdgDesktopFile,
-  type LaunchAtLoginEnvironment
+  type LaunchAtLoginEnvironment,
+  type LaunchAtLoginPlan
 } from "../launch-at-login";
 
 function env(overrides: Partial<LaunchAtLoginEnvironment> = {}): LaunchAtLoginEnvironment {
@@ -147,6 +149,15 @@ describe("planLaunchAtLoginSync", () => {
       expect(plan.content).toContain(`Exec="/opt/my apps/\\$weird/pwr\\"snap"`);
     });
 
+    test("doubles literal % in Exec — single % is a reserved field code, even inside quotes", () => {
+      const plan = planLaunchAtLoginSync(
+        true,
+        env({ platform: "linux", execPath: "/opt/100%/pwrsnap" })
+      );
+      if (plan.kind !== "xdg-autostart") throw new Error("expected xdg plan");
+      expect(plan.content).toContain(`Exec="/opt/100%%/pwrsnap" ${LAUNCHED_AT_LOGIN_ARG}`);
+    });
+
     test("disable plan carries no content (the entry is removed)", () => {
       const plan = planLaunchAtLoginSync(false, env({ platform: "linux" }));
       if (plan.kind !== "xdg-autostart") throw new Error("expected xdg plan");
@@ -203,6 +214,70 @@ describe("applyLaunchAtLoginPlan (xdg fs behavior)", () => {
       content: "[Desktop Entry]\nExec=/new/path\n"
     });
     expect(readFileSync(desktopFilePath, "utf8")).toContain("/new/path");
+  });
+});
+
+describe("createLaunchAtLoginApplier", () => {
+  function harness(): {
+    apply: (enabled: boolean) => void;
+    seed: (enabled: boolean) => void;
+    plans: LaunchAtLoginPlan[];
+    failNext: () => void;
+  } {
+    const plans: LaunchAtLoginPlan[] = [];
+    let fail = false;
+    const applier = createLaunchAtLoginApplier({
+      environment: () => env({ platform: "darwin" }),
+      applyPlan: (plan) => {
+        if (fail) {
+          fail = false;
+          throw new Error("synthetic-apply-failure");
+        }
+        plans.push(plan);
+      }
+    });
+    return { ...applier, plans, failNext: () => (fail = true) };
+  }
+
+  function openAtLoginOf(plan: LaunchAtLoginPlan): boolean {
+    if (plan.kind !== "electron-login-item") throw new Error(`unexpected plan: ${plan.kind}`);
+    return plan.settings.openAtLogin;
+  }
+
+  test("dedupes repeat values — every settings write broadcasts, only changes hit the OS", () => {
+    const h = harness();
+    h.apply(true);
+    h.apply(true);
+    h.apply(true);
+    expect(h.plans).toHaveLength(1);
+    expect(openAtLoginOf(h.plans[0]!)).toBe(true);
+  });
+
+  test("a changed value re-applies", () => {
+    const h = harness();
+    h.apply(true);
+    h.apply(false);
+    expect(h.plans.map(openAtLoginOf)).toEqual([true, false]);
+  });
+
+  test("a failed apply drops the dedupe marker so the next settings write retries", () => {
+    const h = harness();
+    h.failNext();
+    h.apply(true); // throws inside, swallowed + logged
+    expect(h.plans).toHaveLength(0);
+    h.apply(true); // same value — but the failure must not be sticky
+    expect(h.plans).toHaveLength(1);
+    expect(openAtLoginOf(h.plans[0]!)).toBe(true);
+  });
+
+  test("seed(false) makes later false broadcasts no-ops (enable-only boot reconcile)", () => {
+    const h = harness();
+    h.seed(false);
+    h.apply(false); // e.g. a theme write broadcasting launchAtLogin=false
+    expect(h.plans).toHaveLength(0); // never unregisters at/after boot uninvited
+    h.apply(true); // explicit toggle-on still lands
+    expect(h.plans).toHaveLength(1);
+    expect(openAtLoginOf(h.plans[0]!)).toBe(true);
   });
 });
 

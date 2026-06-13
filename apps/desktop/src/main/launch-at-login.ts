@@ -137,9 +137,13 @@ export type LaunchAtLoginPlan =
 
 /** Double-quote an Exec path per the desktop-entry spec's quoting
  *  rules (reserved characters are only safe inside quotes; backslash,
- *  double-quote, dollar, and backtick must be escaped within them). */
+ *  double-quote, dollar, and backtick must be escaped within them).
+ *  Field codes are a separate layer on top: a literal `%` anywhere in
+ *  an Exec value must be doubled (`%%`) or the launcher treats it as a
+ *  `%f`-style placeholder — quoting does not exempt it. */
 function quoteExecPath(path: string): string {
-  return `"${path.replace(/[\\"$`]/g, (ch) => `\\${ch}`)}"`;
+  const quoted = `"${path.replace(/[\\"$`]/g, (ch) => `\\${ch}`)}"`;
+  return quoted.replace(/%/g, "%%");
 }
 
 function xdgAutostartFilePath(env: LaunchAtLoginEnvironment): string {
@@ -307,13 +311,61 @@ export function readLaunchAtLoginStatus(): LaunchAtLoginStatus {
 
 // ---- boot wiring -----------------------------------------------------
 
+type LaunchAtLoginApplierDeps = {
+  environment: () => LaunchAtLoginEnvironment;
+  applyPlan: (plan: LaunchAtLoginPlan) => void;
+};
+
+/** The stateful core behind `installLaunchAtLoginSync`, extracted (with
+ *  injectable planner inputs) so the dedupe / retry / enable-only-boot
+ *  semantics are unit-testable without an Electron app or a real OS.
+ *
+ *  - `apply(enabled)` plans + applies registration, deduping repeat
+ *    values (every settings write broadcasts; only changes should hit
+ *    the OS). A failed apply drops the dedupe marker so the next
+ *    settings write retries instead of being swallowed.
+ *  - `seed(enabled)` records the current value WITHOUT touching the
+ *    OS — the enable-only boot reconcile: a `false` preference at boot
+ *    must not unregister a startup item the user created through the
+ *    OS itself (Dock → Options → Open at Login, Task Manager). */
+export function createLaunchAtLoginApplier(
+  deps: LaunchAtLoginApplierDeps = {
+    environment: currentLaunchAtLoginEnvironment,
+    applyPlan: applyLaunchAtLoginPlan
+  }
+): { apply: (enabled: boolean) => void; seed: (enabled: boolean) => void } {
+  let lastApplied: boolean | null = null;
+  return {
+    apply: (enabled: boolean): void => {
+      if (enabled === lastApplied) return;
+      lastApplied = enabled;
+      const plan = planLaunchAtLoginSync(enabled, deps.environment());
+      try {
+        deps.applyPlan(plan);
+        log.info("login-item registration synced", {
+          enabled,
+          plan: plan.kind,
+          ...(plan.kind === "skip" ? { reason: plan.reason } : {})
+        });
+      } catch (cause) {
+        lastApplied = null;
+        log.warn("login-item registration sync failed", {
+          enabled,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
+    },
+    seed: (enabled: boolean): void => {
+      lastApplied = enabled;
+    }
+  };
+}
+
 /** Sync OS registration to `general.launchAtLogin` — apply the persisted
  *  value now, then follow every settings write. Boot reconcile is
- *  ENABLE-ONLY: when the setting is off we do NOT unregister at boot,
- *  because the user may have added PwrSnap to their startup items
- *  through the OS itself (Dock → Options → Open at Login, Task
- *  Manager) and silently undoing that every boot would be hostile.
- *  Unregistration happens only when the user flips the toggle off.
+ *  ENABLE-ONLY: when the setting is off we do NOT unregister at boot
+ *  (see `createLaunchAtLoginApplier.seed`). Unregistration happens only
+ *  when the user flips the toggle off.
  *
  *  Mirrors `wireHotkeyRegistrations`: a dedicated settings reader keeps
  *  the boot dependency graph one-way, and `onSettingsChanged` rides the
@@ -325,44 +377,26 @@ export async function installLaunchAtLoginSync(): Promise<void> {
   const service = new DesktopSettingsService({
     filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
   });
-  let lastApplied: boolean | null = null;
-  const apply = (enabled: boolean): void => {
-    if (enabled === lastApplied) return;
-    lastApplied = enabled;
-    const plan = planLaunchAtLoginSync(enabled, currentLaunchAtLoginEnvironment());
-    try {
-      applyLaunchAtLoginPlan(plan);
-      log.info("login-item registration synced", {
-        enabled,
-        plan: plan.kind,
-        ...(plan.kind === "skip" ? { reason: plan.reason } : {})
-      });
-    } catch (cause) {
-      // Drop the dedupe marker so the next settings write retries
-      // instead of being swallowed as "already applied".
-      lastApplied = null;
-      log.warn("login-item registration sync failed", {
-        enabled,
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
-    }
-  };
+  const applier = createLaunchAtLoginApplier();
   try {
     const settings = await service.read();
     if (settings.general.launchAtLogin) {
-      apply(true);
+      applier.apply(true);
     } else {
-      // Enable-only boot reconcile (see docstring); remember the
-      // current value so a later settings write that keeps it false
-      // stays a no-op.
-      lastApplied = false;
+      applier.seed(false);
     }
   } catch (cause) {
+    // Treat an unreadable settings file as "preference off" for dedupe
+    // purposes: the enable-only boot courtesy must hold here too, so a
+    // later unrelated settings write (broadcasting launchAtLogin=false)
+    // doesn't unregister an OS-side registration the user made
+    // manually.
+    applier.seed(false);
     log.warn("initial settings read failed; login-item registration left as-is", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
   }
   onSettingsChanged((settings) => {
-    apply(settings.general.launchAtLogin);
+    applier.apply(settings.general.launchAtLogin);
   });
 }

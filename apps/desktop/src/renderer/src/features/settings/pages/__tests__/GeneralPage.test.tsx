@@ -84,12 +84,15 @@ vi.mock("../../SettingsContext", () => ({
 
 type AnyResult = { ok: true; value: unknown } | { ok: false; error: { message: string } };
 
-function installFakeApi(status: LaunchAtLoginStatus): { calls: { name: string; req: unknown }[] } {
+function installFakeApi(
+  status: LaunchAtLoginStatus,
+  platform: NodeJS.Platform = "darwin"
+): { calls: { name: string; req: unknown }[] } {
   const calls: { name: string; req: unknown }[] = [];
   Object.defineProperty(window, "pwrsnapApi", {
     configurable: true,
     value: {
-      platform: "darwin",
+      platform,
       dispatch: async (name: string, req: unknown): Promise<AnyResult> => {
         calls.push({ name, req });
         if (name === "app:launchAtLoginStatus") return { ok: true, value: status };
@@ -105,9 +108,10 @@ let root: Root | null = null;
 
 async function renderGeneral(
   settings: Settings,
-  status: LaunchAtLoginStatus
+  status: LaunchAtLoginStatus,
+  platform: NodeJS.Platform = "darwin"
 ): Promise<{ calls: { name: string; req: unknown }[] }> {
-  const api = installFakeApi(status);
+  const api = installFakeApi(status, platform);
   contextValue = { settings, patch: patchMock as unknown as UseSettingsValue["patch"] };
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -177,6 +181,22 @@ describe("GeneralPage — launch at login", () => {
       button?.click();
     });
     expect(calls.some((c) => c.name === "app:openLoginItemsSettings")).toBe(true);
+  });
+
+  test("blocked-by-OS on Linux renders the row but no dead deep-link button", async () => {
+    await renderGeneral(
+      { ...baseSettings, general: { developerMode: false, launchAtLogin: true } },
+      { supported: true, registered: true, blockedByOs: true },
+      "linux"
+    );
+    expect(container?.textContent).toContain("Disabled by the operating system");
+    // `app:openLoginItemsSettings` has no Linux deep link — the row
+    // must point at the DE's startup tool instead of a no-op button.
+    const button = Array.from(container!.querySelectorAll("button")).find(
+      (el) => el.textContent === "Open startup settings"
+    );
+    expect(button).toBeUndefined();
+    expect(container?.textContent).toContain("Re-enable in your startup tool");
   });
 
   test("dev-build status explains that registration is saved-only", async () => {

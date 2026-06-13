@@ -445,6 +445,16 @@ export async function pickRegion(
     y: cursor.y - displayBounds.y
   };
   const ourPids = selfPidSet();
+  // Bounds of the windows we content-protected for the snapshot (e.g.
+  // the Library on a button-triggered capture). sharingType=.none only
+  // hides them from CAPTURE — the native window-list still ENUMERATES
+  // them, so without this they'd appear as snap-to-window candidates
+  // the user can't actually see in the picker. Drop them from the
+  // candidate list by bounds match (see prepareWindowListPayload).
+  const excludeWindowBounds = protectWindowIds
+    .map((id) => BrowserWindow.fromId(id))
+    .filter((w): w is BrowserWindow => w !== null && !w.isDestroyed())
+    .map((w) => w.getBounds());
   let windowListPayload: SelectorWindowListPayload | null = null;
   let windowListResolver: ((result: SelectorResult) => void) | null = null;
   let acceptingWindowList = true;
@@ -492,6 +502,7 @@ export async function pickRegion(
         targetDisplay,
         displayCursor,
         ourPids,
+        excludeWindowBounds,
         selectorWindow: win,
         frontmostPid: snapshot.frontmostPid,
         frontmostBundleId: snapshot.frontmostBundleId
@@ -702,11 +713,30 @@ export function decidePreviousAppPid(
   return topNonOurs?.pid ?? null;
 }
 
+type BoundsLike = { x: number; y: number; width: number; height: number };
+
+/** True when `b` matches one of the excluded windows' bounds within a
+ *  small rounding tolerance — used to drop content-protected windows
+ *  (e.g. the Library) from the snap-candidate list, since they're
+ *  absent from the picker image but still appear in window enumeration. */
+function matchesExcludedBounds(b: BoundsLike, excluded: readonly BoundsLike[]): boolean {
+  return excluded.some(
+    (e) =>
+      Math.abs(b.x - e.x) <= 2 &&
+      Math.abs(b.y - e.y) <= 2 &&
+      Math.abs(b.width - e.width) <= 2 &&
+      Math.abs(b.height - e.height) <= 2
+  );
+}
+
 function prepareWindowListPayload(args: {
   rawSnapshot: WindowInfo[];
   targetDisplay: Display;
   displayCursor: { x: number; y: number };
   ourPids: Set<number>;
+  /** Bounds of windows excluded from the snapshot via content
+   *  protection — dropped from the snap-candidate list too. */
+  excludeWindowBounds: readonly BoundsLike[];
   selectorWindow: BrowserWindow;
   /** pid reported by `NSWorkspace.shared.frontmostApplication` at
    *  snapshot time. `null` on non-darwin platforms or when the
@@ -725,11 +755,18 @@ function prepareWindowListPayload(args: {
     targetDisplay,
     displayCursor,
     ourPids,
+    excludeWindowBounds,
     selectorWindow,
     frontmostPid,
     frontmostBundleId
   } = args;
   const displayBounds = targetDisplay.bounds;
+  // `snapshot` keeps the Library even when it's content-protected, so
+  // `decidePreviousAppPid` still correctly sees "PwrSnap's own window
+  // was frontmost" (→ null) for a button-triggered capture. The
+  // content-protected window is dropped only from the snap-CANDIDATE
+  // list below — it's absent from the picker image, so it mustn't be a
+  // snap-to-window target.
   const snapshot = rawSnapshot.filter(
     (w) => !isSelectorOverlayWindow(w, displayBounds, ourPids, selectorWindow)
   );
@@ -747,9 +784,18 @@ function prepareWindowListPayload(args: {
   // OTHER branch (when previousAppPid IS set legitimately).
   const previousAppPid = decidePreviousAppPid(snapshot, ourPids);
 
+  // Candidate list: drop content-protected windows (absent from the
+  // picker image, so not pickable) before the display/area filters.
+  const candidates =
+    excludeWindowBounds.length === 0
+      ? snapshot
+      : snapshot.filter(
+          (w) => !(ourPids.has(w.pid) && matchesExcludedBounds(w.bounds, excludeWindowBounds))
+        );
+
   // Step 1: keep windows that overlap the active display. Anything
   // entirely on another monitor is irrelevant to this selector.
-  const onThisDisplay = snapshot.filter((w) => {
+  const onThisDisplay = candidates.filter((w) => {
     const wx2 = w.bounds.x + w.bounds.width;
     const wy2 = w.bounds.y + w.bounds.height;
     const dx2 = displayBounds.x + displayBounds.width;

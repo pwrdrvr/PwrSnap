@@ -44,6 +44,21 @@ let pendingResolver: ((result: SelectorResult) => void) | null = null;
 let resultListenerAttached = false;
 let displayListenersAttached = false;
 
+/**
+ * Toggle content protection (NSWindow.sharingType=.none on macOS) on a
+ * set of windows so they're excluded from the screencapture snapshot
+ * without being hidden. Best-effort per window — a destroyed/missing id
+ * is skipped. Always cleared (`on=false`) on every snapshot exit path.
+ */
+function setSnapshotContentProtection(windowIds: readonly number[], on: boolean): void {
+  for (const id of windowIds) {
+    const win = BrowserWindow.fromId(id);
+    if (win !== null && !win.isDestroyed()) {
+      win.setContentProtection(on);
+    }
+  }
+}
+
 type SelectorPrewarmReason =
   | "startup"
   | "display-change"
@@ -319,6 +334,14 @@ export async function pickRegion(
   opts: {
     mode?: SelectorMode;
     keepPwrSnapChrome?: boolean;
+    /** BrowserWindow ids to exclude from the frozen snapshot via
+     *  content protection (NSWindow.sharingType=.none) — WITHOUT
+     *  hiding them. Used when the capture was triggered from a PwrSnap
+     *  window the user obviously didn't mean to capture (e.g. the
+     *  Library's own Capture button): the Library stays exactly where
+     *  it is on screen, but is absent from the picker's frozen
+     *  background. Cleared the instant the snapshot is taken. */
+    protectWindowIds?: readonly number[];
     /** Visual intent telegraphed to the renderer. `"video"` swaps
      *  the "Capture" chip for a "● Recording video" badge and
      *  changes the hint text so the user knows clicking commits a
@@ -329,6 +352,7 @@ export async function pickRegion(
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
   const keepPwrSnapChrome = opts.keepPwrSnapChrome ?? false;
+  const protectWindowIds = opts.protectWindowIds ?? [];
   const intent = opts.intent ?? "snap";
   const requestStartedAt = Date.now();
   const elapsedFromRequest = (): number => Date.now() - requestStartedAt;
@@ -397,9 +421,21 @@ export async function pickRegion(
   // in the picker. Skipping the hide also skips the 50 ms compositor
   // wait, which only mattered as a "let the hide reach the window
   // server before snapshotting" guard.
+  // Content-protect the windows the trigger says shouldn't appear in
+  // the snapshot (e.g. the Library when the capture was started from
+  // its own Capture button). sharingType=.none excludes them from the
+  // screencapture output but keeps them visible on screen — no hide,
+  // no flicker, no focus disturbance. Cleared right after the frozen
+  // snapshot below (`clearSnapshotContentProtection`).
+  setSnapshotContentProtection(protectWindowIds, true);
   if (!keepPwrSnapChrome) {
     hideTrayPopoverIfVisible();
     setFloatOverState({ kind: "cancel" });
+  }
+  if (!keepPwrSnapChrome || protectWindowIds.length > 0) {
+    // Compositor flush — let the hide / content-protection toggle
+    // reach the window server before we snapshot, otherwise the
+    // frozen background can race ahead of the state change.
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
@@ -481,6 +517,11 @@ export async function pickRegion(
   });
   try {
     const screenSnapshot = await captureAndRegister(targetDisplay.id);
+    // Snapshot is frozen — the protected windows are out of it. Lift
+    // protection immediately so they're capturable again the instant
+    // this capture finishes (and so we never leave a window stuck
+    // uncapturable if a later step throws).
+    setSnapshotContentProtection(protectWindowIds, false);
     activeScreenSnapshot = screenSnapshot;
     log.info("completed screen snapshot", {
       displayId: targetDisplay.id,
@@ -489,6 +530,7 @@ export async function pickRegion(
       snapshotId: screenSnapshot.id
     });
   } catch (err) {
+    setSnapshotContentProtection(protectWindowIds, false);
     log.warn("screen snapshot failed; selector aborted", {
       displayId: targetDisplay.id,
       durationMs: Date.now() - screenSnapshotRequestedAt,

@@ -32,7 +32,7 @@ import type {
   RenderPreset,
   Result
 } from "@pwrsnap/shared";
-import { bus } from "../command-bus";
+import { bus, type CommandContext } from "../command-bus";
 import {
   pickRegion,
   getLastWindowListSnapshot,
@@ -101,6 +101,21 @@ export function clipboardHasPasteableImage(): boolean {
   if (clipboardImageBufferFormats(clipboard.availableFormats()).length > 0) return true;
   const filePath = clipboardImageFilePath();
   return filePath !== null && looksLikeImageFile(filePath);
+}
+
+/**
+ * The Library window id when THIS capture was triggered from inside the
+ * Library window (its Capture button), else empty. Used to content-
+ * protect the Library out of the snapshot — the user clicking a control
+ * on the Library can't have meant to capture the Library itself. A
+ * global-hotkey trigger has no `sourceWindowId`, so this returns empty
+ * and the Library stays in the picker as a valid capture target.
+ */
+function librarySourceWindowIds(ctx: CommandContext): number[] {
+  if (ctx.sourceWindowId === undefined) return [];
+  const library = findMainLibraryWindow();
+  if (library === null || library.isDestroyed()) return [];
+  return library.id === ctx.sourceWindowId ? [library.id] : [];
 }
 
 export function registerCaptureHandlers(): void {
@@ -183,14 +198,25 @@ export function registerCaptureHandlers(): void {
     // left it through the entire capture flow — visible, minimized,
     // hidden, on another Space — and Cocoa won't touch it.
 
+    // Trigger-source exclusion: when the capture was started from the
+    // Library's OWN Capture button (ctx.sourceWindowId is the Library
+    // window), the user demonstrably can't have meant to capture the
+    // Library itself — they were clicking a control on it. Content-
+    // protect the Library for the snapshot so it's absent from the
+    // picker while staying exactly where it is on screen. A global-
+    // hotkey trigger carries no sourceWindowId, so the Library is left
+    // in the picker — there the user may well want to capture it.
+    const protectWindowIds = librarySourceWindowIds(ctx);
+
     const pickRegionStartedAt = Date.now();
     log.info("capture:interactive calling pickRegion", {
       mode,
       selectorMode,
       keepPwrSnapChrome,
+      protectWindowCount: protectWindowIds.length,
       durationFromHandlerReceivedMs: pickRegionStartedAt - handlerStartedAt
     });
-    const selection = await pickRegion({ mode: selectorMode, keepPwrSnapChrome });
+    const selection = await pickRegion({ mode: selectorMode, keepPwrSnapChrome, protectWindowIds });
     log.info("capture:interactive pickRegion returned", {
       mode,
       selectorMode,

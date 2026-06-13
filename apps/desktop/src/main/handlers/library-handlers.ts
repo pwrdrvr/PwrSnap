@@ -44,20 +44,21 @@ import {
   restoreSourceFromTrash
 } from "../persistence/source-store";
 import { createMainWindow, findMainLibraryWindow } from "../window";
+import { broadcastCapturesChanged, broadcastRendererEventToLocalWindows } from "../events";
+import {
+  relayCancellationToPeer,
+  relayRendererEventToPeer
+} from "../process-split/event-relay";
+import { activateForUserSurface } from "../process-split/activate-user-surface";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:library-handlers");
 
-// Mirror of capture-handlers.broadcastCapturesChanged. The renderer's
-// useLibrary subscribes to this event channel and refetches; without a
-// broadcast a soft-delete / restore / purge would be invisible until
-// the next capture nudged the list.
-function broadcastCapturesChanged(changedIds: string[]): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed()) continue;
-    win.webContents.send(EVENT_CHANNELS.capturesChanged, { changedIds });
-  }
-}
+// Captures-changed broadcasts go through events.ts so the renderer's
+// useLibrary refetch fires in every window — including, in split mode,
+// the peer process's windows (the relay rides the same helper). A
+// soft-delete from the library must refresh the agent's float-over and
+// vice versa.
 
 /**
  * Bring the singleton Library window forward, creating it if it isn't
@@ -72,12 +73,35 @@ function bringLibraryForward(): {
   justCreated: boolean;
 } {
   const existing = findMainLibraryWindow();
-  const justCreated = existing === null;
-  const window = existing ?? createMainWindow();
-  if (window.isMinimized()) window.restore();
-  if (!window.isVisible()) window.show();
-  window.focus();
-  return { window, justCreated };
+  if (existing === null) {
+    // Fresh window: do NOT force show() here. createMainWindow wires
+    // `showWindowWhenReady`, which shows on `ready-to-show` (after the
+    // first layout, before any empty-frame flash) and — via its onShow
+    // — activates the app at that same moment. Forcing show() now would
+    // surface the unpainted window for the renderer's entire cold load,
+    // which in a freshly-spawned library process is ~4-5s of a black
+    // frame. Activation rides the show, so we add nothing here.
+    return { window: createMainWindow(), justCreated: true };
+  }
+  // Existing window — already painted; re-surface it immediately.
+  if (existing.isMinimized()) existing.restore();
+  if (!existing.isVisible()) existing.show();
+  existing.focus();
+  // Split mode: the supervisor-spawned library process is never
+  // activated by Launch Services, so window.focus() alone leaves the
+  // window behind the user's frontmost app. No-op off-darwin and in
+  // other roles.
+  activateForUserSurface();
+  return { window: existing, justCreated: false };
+}
+
+/** aiRunUpdated fan-out for user tag edits — local windows plus, in
+ *  split mode, the peer's (a tag accepted on the float-over must
+ *  refresh the Library detail rail, and vice versa). */
+function broadcastEnrichmentUpdated(enrichment: unknown): void {
+  const payload = { run: null, enrichment };
+  broadcastRendererEventToLocalWindows(EVENT_CHANNELS.aiRunUpdated, payload);
+  relayRendererEventToPeer(EVENT_CHANNELS.aiRunUpdated, payload);
 }
 
 /**
@@ -116,7 +140,21 @@ function sendOpenCaptureWhenReady(
   }
 }
 
+/** Combined-mode registration: both halves, the pre-split shape. */
 export function registerLibraryHandlers(): void {
+  registerLibraryDataHandlers();
+  registerLibraryWindowHandlers();
+}
+
+/**
+ * Pure data verbs — register in BOTH processes in split mode (plan
+ * 2026-06-12-001 §D4). The agent's surfaces (tray last-snap, the
+ * float-over) read and mutate captures too, and a tray preview asking
+ * `library:byId` must NOT resurrect the library process — both sides
+ * answer locally against the shared WAL database, and the
+ * captures-changed relay keeps the other side's windows fresh.
+ */
+export function registerLibraryDataHandlers(): void {
   bus.register("library:list", async (req) => {
     const { rows, nextCursor } = listCaptures(req);
     // Unfiltered head-page requests return appStats + totalLive so the
@@ -200,6 +238,9 @@ export function registerLibraryHandlers(): void {
       return err({ kind: "validation", code: "not_found", message: `capture not found: ${req.id}` });
     }
     bus.cancel(req.id);
+    // Split mode: in-flight work for this capture may live in the
+    // OTHER process (the agent's enrichment run) — mirror the cancel.
+    relayCancellationToPeer(req.id);
     softDeleteCapture(req.id);
     try {
       if (record.bundle_path !== null) {
@@ -339,6 +380,66 @@ export function registerLibraryHandlers(): void {
     return ok({ removedCount: removed });
   });
 
+  bus.register("library:addTag", async (req) => {
+    const parsed = AddUserTagRequestSchema.safeParse(req);
+    if (!parsed.success) {
+      return err({
+        kind: "validation",
+        code: "invalid_request",
+        message: parsed.error.message
+      });
+    }
+    try {
+      const enrichment = addUserTag(parsed.data.captureId, parsed.data.label);
+      // Reuse the AI-run broadcast channel — every renderer that cares
+      // about a capture's enrichment (DetailRail, FloatOverHost) already
+      // subscribes here and refreshes from `payload.enrichment`. A new
+      // channel would just be a parallel subscriber on every window for
+      // the same shape.
+      broadcastEnrichmentUpdated(enrichment);
+      return ok(enrichment);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isNotFound = /not found or deleted/.test(message);
+      return err({
+        kind: "validation",
+        code: isNotFound ? "not_found" : "invalid_request",
+        message
+      });
+    }
+  });
+
+  bus.register("library:removeTag", async (req) => {
+    const parsed = RemoveUserTagRequestSchema.safeParse(req);
+    if (!parsed.success) {
+      return err({
+        kind: "validation",
+        code: "invalid_request",
+        message: parsed.error.message
+      });
+    }
+    try {
+      const enrichment = removeTag(parsed.data.captureId, parsed.data.label);
+      broadcastEnrichmentUpdated(enrichment);
+      return ok(enrichment);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isNotFound = /not found/.test(message);
+      return err({
+        kind: "validation",
+        code: isNotFound ? "not_found" : "invalid_request",
+        message
+      });
+    }
+  });
+}
+
+/**
+ * Window verbs + library-surface-only utilities — library-owned in
+ * split mode; the agent forwards these over the bridge (and the
+ * forward is what spawns the library process on demand).
+ */
+export function registerLibraryWindowHandlers(): void {
   bus.register("library:export", async () => {
     // Phase 1.9 fills this in (`pwrsnap export` CLI hook).
     return err({
@@ -376,65 +477,6 @@ export function registerLibraryHandlers(): void {
     const { window: main, justCreated } = bringLibraryForward();
     sendOpenCaptureWhenReady(main, req.captureId, justCreated);
     return ok(undefined);
-  });
-
-  bus.register("library:addTag", async (req) => {
-    const parsed = AddUserTagRequestSchema.safeParse(req);
-    if (!parsed.success) {
-      return err({
-        kind: "validation",
-        code: "invalid_request",
-        message: parsed.error.message
-      });
-    }
-    try {
-      const enrichment = addUserTag(parsed.data.captureId, parsed.data.label);
-      // Reuse the AI-run broadcast channel — every renderer that cares
-      // about a capture's enrichment (DetailRail, FloatOverHost) already
-      // subscribes here and refreshes from `payload.enrichment`. A new
-      // channel would just be a parallel subscriber on every window for
-      // the same shape.
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (win.isDestroyed()) continue;
-        win.webContents.send(EVENT_CHANNELS.aiRunUpdated, { run: null, enrichment });
-      }
-      return ok(enrichment);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const isNotFound = /not found or deleted/.test(message);
-      return err({
-        kind: "validation",
-        code: isNotFound ? "not_found" : "invalid_request",
-        message
-      });
-    }
-  });
-
-  bus.register("library:removeTag", async (req) => {
-    const parsed = RemoveUserTagRequestSchema.safeParse(req);
-    if (!parsed.success) {
-      return err({
-        kind: "validation",
-        code: "invalid_request",
-        message: parsed.error.message
-      });
-    }
-    try {
-      const enrichment = removeTag(parsed.data.captureId, parsed.data.label);
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (win.isDestroyed()) continue;
-        win.webContents.send(EVENT_CHANNELS.aiRunUpdated, { run: null, enrichment });
-      }
-      return ok(enrichment);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const isNotFound = /not found/.test(message);
-      return err({
-        kind: "validation",
-        code: isNotFound ? "not_found" : "invalid_request",
-        message
-      });
-    }
   });
 
   bus.register("clipboard:copyText", async (req) => {

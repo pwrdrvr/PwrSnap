@@ -91,6 +91,17 @@ export function GeneralPage(): ReactElement {
       }
     : (): void => {};
 
+  // macOS-only: the two-process split doesn't exist on other platforms
+  // (the boot is always single-process there), so don't show a switch
+  // that can't do anything.
+  const isMac = window.pwrsnapApi?.platform === "darwin";
+  const processSplit = settings?.experimental.processSplit ?? false;
+  const onProcessSplitChange = ready
+    ? (next: boolean): void => {
+        void patch({ experimental: { processSplit: next } });
+      }
+    : undefined;
+
   // Surface the resolved theme when the user is on "System" so the
   // choice doesn't read as ambiguous. Pulled off the documentElement
   // attribute the bootstrap + useAppearance hook set — the canonical
@@ -203,6 +214,18 @@ export function GeneralPage(): ReactElement {
           <Switch on={developerMode} onChange={onDeveloperModeChange} />
         </Row>
       </Card>
+
+      {isMac ? (
+        <Card eyebrow="EXPERIMENTAL" title="Two-process mode">
+          <Row
+            label="Run the capture agent and Library as separate processes"
+            sub="The menu-bar capture agent and the Library window run as separate apps, so capture overlays never disturb the Library or flash the Dock. Turn off to revert to single-process mode. Takes effect after PwrSnap is quit and relaunched."
+            tag="process-split"
+          >
+            <Switch on={processSplit} onChange={onProcessSplitChange} />
+          </Row>
+        </Card>
+      ) : null}
     </>
   );
 }

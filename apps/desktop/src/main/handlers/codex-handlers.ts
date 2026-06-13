@@ -29,6 +29,8 @@ import {
   CaptureEnrichmentClient,
   type EnrichmentBackend
 } from "../ai/capture-enrichment-client";
+import { broadcastRendererEventToLocalWindows } from "../events";
+import { relayRendererEventToPeer } from "../process-split/event-relay";
 import { AcpCaptureEnrichmentClient } from "../ai/acp-enrichment-client";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
 import { findAcpModelLabel } from "../ai/acp-model-cache";
@@ -109,10 +111,12 @@ function broadcastAiRunUpdated(payload: {
   run: AiRunSnapshot | null;
   enrichment: CaptureEnrichment | null;
 }): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed()) continue;
-    win.webContents.send(EVENT_CHANNELS.aiRunUpdated, payload);
-  }
+  // Local windows + the peer process (split mode): enrichment runs in
+  // the agent, but the Library's DetailRail subscribes to this channel
+  // for the live "running → done, here's the text" transition — a run
+  // the library didn't start must still land in its focused view.
+  broadcastRendererEventToLocalWindows(EVENT_CHANNELS.aiRunUpdated, payload);
+  relayRendererEventToPeer(EVENT_CHANNELS.aiRunUpdated, payload);
 }
 
 function preparedMediaShape(
@@ -182,10 +186,10 @@ function preparedImageAccountingBase(
 }
 
 function broadcastAiBudgetUpdated(payload: AiEnrichmentBudgetStatus): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed()) continue;
-    win.webContents.send(EVENT_CHANNELS.aiBudgetUpdated, payload);
-  }
+  // Same cross-process shape as aiRunUpdated — Settings → AI (a
+  // library-process window) shows the live budget meter.
+  broadcastRendererEventToLocalWindows(EVENT_CHANNELS.aiBudgetUpdated, payload);
+  relayRendererEventToPeer(EVENT_CHANNELS.aiBudgetUpdated, payload);
 }
 
 function validationError(code: string, message: string): Result<never, PwrSnapError> {

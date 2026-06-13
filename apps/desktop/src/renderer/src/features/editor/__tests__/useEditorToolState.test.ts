@@ -85,6 +85,7 @@ function makeSettings(overrides?: {
       reshowFloatOver: "CommandOrControl+Alt+Shift+F"
     },
     general: { developerMode: false, launchAtLogin: false },
+    experimental: { processSplit: true },
     appearance: { theme: "system" },
     updates: { channel: "latest" },
     storage: { filenameTimestampZone: "local" },

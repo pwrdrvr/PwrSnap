@@ -318,6 +318,32 @@ export function validateSettingsWrite(
     }
   }
 
+  if (p.experimental !== undefined) {
+    if (
+      typeof p.experimental !== "object" ||
+      p.experimental === null ||
+      Array.isArray(p.experimental)
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_experimental",
+          "settings:write: experimental must be an object"
+        )
+      };
+    }
+    const experimental = p.experimental as Record<string, unknown>;
+    if (!isUndefined(experimental.processSplit) && !isBoolean(experimental.processSplit)) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_experimental_processSplit",
+          "settings:write: experimental.processSplit must be a boolean"
+        )
+      };
+    }
+  }
+
   if (p.appearance !== undefined) {
     if (
       typeof p.appearance !== "object" ||

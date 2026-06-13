@@ -16,7 +16,7 @@ import {
   shell
 } from "electron";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
-import type { RecordingSubject, Settings } from "@pwrsnap/shared";
+import type { RecordingSubject, Settings, SettingsChangedEvent } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
   getLastWindowListSnapshot,
@@ -41,7 +41,11 @@ import { installDevelopmentDockIcon } from "./development-dock-icon";
 // float-over lifecycle. Kept as an export from float-over.ts for the
 // agent-flow / headless path.)
 import { disposeFocusSink, installFocusSink } from "./focus-sink";
-import { registerAppHandlers } from "./handlers/app-handlers";
+import {
+  registerAppCommonHandlers,
+  registerAppUpdateHandlers,
+  registerAppWindowHandlers
+} from "./handlers/app-handlers";
 import {
   clipboardHasPasteableImage,
   registerCaptureHandlers
@@ -63,13 +67,21 @@ import { registerEditorHandlers } from "./handlers/editor-handlers";
 import { registerExportHandler } from "./handlers/export-handler";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
 import { registerLayersHandlers } from "./handlers/layers-handlers";
-import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
+import {
+  gcHardDeleteCaptures,
+  registerLibraryDataHandlers,
+  registerLibraryWindowHandlers
+} from "./handlers/library-handlers";
 import { registerRecordingHandlers } from "./handlers/recording-handlers";
 import { installRecordingController } from "./recording/recording-controller";
 import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
 import { isRecordingActive } from "./recording/recording-state";
-import { onSettingsChanged, registerSettingsHandlers } from "./handlers/settings-handlers";
+import {
+  onSettingsChanged,
+  registerSettingsDataHandlers,
+  registerSettingsWindowHandlers
+} from "./handlers/settings-handlers";
 import { registerStorageHandlers } from "./handlers/storage-handlers";
 import { registerSizzleHandlers } from "./handlers/sizzle-handlers";
 import { registerCartHandlers } from "./handlers/cart-handlers";
@@ -83,7 +95,38 @@ import {
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import { loginShellPath } from "./login-shell-path";
-import { closeDatabase, getDb, openDatabase } from "./persistence/db";
+import {
+  getRuntimeProcessRole,
+  resolveProcessRole,
+  setRuntimeProcessRole
+} from "./process-role";
+import { peerOwnsCommand } from "./process-split/command-routing";
+import { peekExperimentalProcessSplit } from "./process-split/settings-peek";
+import {
+  installCancellationForwarder,
+  installRendererEventForwarder,
+  onRelayedRendererEvent,
+  relayRendererEventToPeer
+} from "./process-split/event-relay";
+import {
+  dispatchToLibraryProcess,
+  forwardCancellationToLibrary,
+  forwardRendererEventToLibrary,
+  stopLibraryProcess
+} from "./process-split/library-process-supervisor";
+import {
+  connectAgentBridge,
+  dispatchToAgentProcess,
+  forwardCancellationToAgent,
+  forwardRendererEventToAgent,
+  isAgentBridgeConnected
+} from "./process-split/agent-bridge";
+import {
+  closeDatabase,
+  getDb,
+  openDatabase,
+  PendingMigrationsError
+} from "./persistence/db";
 import {
   getCaptureById,
   insertCapture,
@@ -214,6 +257,11 @@ let pasteFromClipboardMenuItem: Electron.MenuItem | null = null;
 let lastKnownDeveloperMode = false;
 
 function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode): void {
+  // The agent process is menubar-only (Accessory policy — no app menu
+  // to show); the menu belongs to the library process. Guarded here so
+  // every re-install site (developer-mode flips, hotkey wiring) inherits
+  // the rule without repeating it.
+  if (getRuntimeProcessRole() === "agent") return;
   lastKnownDeveloperMode = developerMode;
   const openSettings = (
     sourceWindow?: { id: number; isDestroyed: () => boolean } | null
@@ -1173,6 +1221,28 @@ export function bootstrapApp(): void {
   markStartup("main: bootstrapApp begin");
   initializeMainLogger();
 
+  // setName BEFORE the first app.getPath("userData") access — Electron
+  // derives userData from the app name, and the role peek below reads
+  // the settings file from that directory. (Previously set later in
+  // bootstrap; every prior getPath call happened after it.)
+  app.setName(APP_NAME);
+
+  const role = resolveProcessRole({
+    argv: process.argv,
+    env: process.env,
+    platform: process.platform,
+    // The user's Settings → Experimental toggle, read synchronously —
+    // role resolution can't await the settings service. Honors the E2E
+    // userData override the same way the later setPath does.
+    experimentalProcessSplit: peekExperimentalProcessSplit(
+      join(process.env.PWRSNAP_USER_DATA ?? app.getPath("userData"), "pwrsnap-settings.json")
+    )
+  });
+  setRuntimeProcessRole(role);
+  if (role !== "combined") {
+    log.info("booting with process role", { role, pid: process.pid });
+  }
+
   // Login-shell PATH resolution moved into app.whenReady() (normal-boot
   // section) and OFF the main thread — see login-shell-path.ts. The old
   // synchronous shell spawn here cost ~1s of main-thread block on every
@@ -1241,7 +1311,10 @@ export function bootstrapApp(): void {
   // alwaysOnTop region-selector windows fighting for clicks. The
   // first instance acquires the lock; subsequent processes find an
   // existing app, focus its main window, and exit immediately.
-  if (!isE2E) {
+  //
+  // The library role never takes the lock: it's a supervised child of
+  // the agent (which holds it), not a user-launched instance.
+  if (!isE2E && role !== "library") {
     const gotLock = app.requestSingleInstanceLock(singleInstanceOpenFileHandoffData());
     if (!gotLock) {
       // Finder may deliver macOS's open-file event just after the
@@ -1261,6 +1334,13 @@ export function bootstrapApp(): void {
       // Another `pnpm dev` (or another launch of the .app) tried to
       // start. Raise (or recreate) the library singleton so the user
       // gets the window they were trying to launch.
+      if (role === "agent") {
+        // Split mode: the library window lives in the supervised child.
+        // library:focus spawns it on demand and raises the singleton.
+        void dispatchToLibraryProcess("library:focus", {});
+        handleSecondInstanceArgv(argv, additionalData);
+        return;
+      }
       const main = findMainLibraryWindow() ?? createMainWindow();
       if (main.isMinimized()) main.restore();
       if (!main.isVisible()) main.show();
@@ -1277,7 +1357,8 @@ export function bootstrapApp(): void {
   // Privileged schemes MUST be registered before app is ready.
   registerSchemesAsPrivileged();
 
-  app.setName(APP_NAME);
+  // (app.setName moved to the top of bootstrap — the role peek needs
+  // the correct userData path.)
 
   // E2E isolation: each Playwright launch sets PWRSNAP_USER_DATA to
   // an isolated tmpdir so SQLite, captures dir, cache dir, and trash
@@ -1291,6 +1372,33 @@ export function bootstrapApp(): void {
     app.setPath("userData", customUserData);
   }
 
+  // Two-process split: the agent and library are separate Chromium
+  // browser processes that share one `userData`. Chromium's per-profile
+  // storage (the Local Storage LevelDB, HTTP cache, GPUCache) assumes a
+  // single browser process per profile dir and guards it with on-disk
+  // locks. With both processes pointed at the same default location,
+  // the library (second to start) BLOCKS for ~3s on its first
+  // `localStorage` access — the agent's renderers grabbed the Local
+  // Storage lock first. That was the black-frame cold open: the
+  // Library window painted its background immediately but React's first
+  // render stalled inside `useAppearanceSync → readCachedAppearance`
+  // (the first localStorage touch) until the lock timed out.
+  //
+  // Fix: relocate ONLY the library's session storage to a subdirectory.
+  // `userData` stays shared, so the SQLite DB, captures, and settings
+  // (all resolved from `userData` in persistence/paths.ts) remain a
+  // single shared store; custom protocols stay on the default session.
+  // The agent keeps the default location (it's the always-resident
+  // primary). The relocated localStorage only holds the redundant
+  // first-paint theme cache, so nothing of value is "lost" by isolating
+  // it. macOS-only by construction — the library role exists only in
+  // the split, which is darwin-only.
+  if (role === "library") {
+    // app.getPath("userData") already reflects the override applied
+    // just above (when present), so this is the final shared root.
+    app.setPath("sessionData", join(app.getPath("userData"), "library-session"));
+  }
+
   app.setAboutPanelOptions({
     applicationName: APP_NAME,
     applicationVersion: app.getVersion(),
@@ -1299,7 +1407,10 @@ export function bootstrapApp(): void {
   });
 
   app.whenReady().then(async () => {
-    if (isE2E && process.platform === "darwin") {
+    if (process.platform === "darwin" && (isE2E || role === "agent")) {
+      // Agent role: menubar-only process — no Dock presence, ever.
+      // (Phase 4 ships LSUIElement so this becomes the launch default
+      // instead of a post-launch hide.)
       app.dock?.hide();
     } else {
       installDevelopmentDockIcon();
@@ -1351,16 +1462,62 @@ export function bootstrapApp(): void {
     loginShellPath.prewarm();
     // Open the DB before anything else — cold first-INSERT cost
     // (~40ms) lands here instead of inside ⌘⇧P's <120ms budget.
-    await openDatabase();
-    markStartup("main: database open");
-    await migrateLegacyCaptureSources();
-    await migrateLegacyRenderCache();
-    markStartup("main: legacy migrations done");
-    installApplicationMenu();
+    //
+    // Split mode: only the agent migrates (§D6). The library opens in
+    // verify mode after it and fails closed on version skew — never a
+    // concurrent migration race between the two processes.
+    if (role === "library") {
+      try {
+        await openDatabase({ migrations: "verify" });
+      } catch (cause) {
+        if (cause instanceof PendingMigrationsError) {
+          log.error("library process: schema behind the agent", {
+            pending: cause.pendingFiles
+          });
+          dialog.showErrorBox(
+            "PwrSnap needs a relaunch",
+            "The PwrSnap library is out of sync with the running agent (likely mid-update). Quit PwrSnap fully and relaunch."
+          );
+          app.exit(1);
+          return;
+        }
+        throw cause;
+      }
+      markStartup("main: database open");
+    } else {
+      await openDatabase();
+      markStartup("main: database open");
+      await migrateLegacyCaptureSources();
+      await migrateLegacyRenderCache();
+      markStartup("main: legacy migrations done");
+    }
+    if (role === "library") {
+      // The persisted developer-mode flag normally reaches the menu via
+      // wireHotkeyRegistrations (agent/combined only). The library does
+      // a read-only peek at the settings file for it — reads are fine
+      // under §D8; writes stay funneled through the agent. Live toggles
+      // while the library is open arrive via the relayed settings event
+      // wired below; this boot peek covers the persisted flag.
+      installApplicationMenu();
+      void new DesktopSettingsService({
+        filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
+      })
+        .read()
+        .then((settings) => {
+          if (settings.general.developerMode !== lastKnownDeveloperMode) {
+            installApplicationMenu(settings.general.developerMode);
+          }
+        })
+        .catch(() => undefined);
+    } else {
+      installApplicationMenu();
+    }
     // Windows custom title-bar menu bar: lets the renderer pop the real native
     // submenus (the native menu bar is gone under titleBarStyle:"hidden").
     // No-op surface off Windows — the renderer only mounts the bar on win32.
-    wireAppMenuBridge();
+    if (role !== "agent") {
+      wireAppMenuBridge();
+    }
     // Issue #139 — wire the menu refresh + renderer broadcast to OUR
     // clipboard writes. menu-will-show alone was insufficient on macOS;
     // the in-app "Copy MED" flow now updates the menu state at write
@@ -1373,84 +1530,131 @@ export function bootstrapApp(): void {
         if (win.isDestroyed()) continue;
         win.webContents.send(EVENT_CHANNELS.clipboardChanged, {});
       }
+      relayRendererEventToPeer(EVENT_CHANNELS.clipboardChanged, {});
     });
     installProtocolHandlers(protocolResolver);
-    registerAppHandlers();
-    registerSettingsHandlers();
-    // Startup Codex readiness probe — deferred past the library's first
-    // contentful paint. Profiling (2026-06) showed the probe's process
-    // spawns (~0.9s of `codex` executions) landing exactly in the
-    // window-shown→first-thumbnail-paint gap, competing with renderer
-    // startup AND stalling the main thread in ~100ms chunks (the same
-    // marks show a dozen unrelated commands all blocking ~97ms while
-    // the probe ran). Nothing on the boot path consumes the result;
-    // on-demand dispatches (Settings → AI) trigger their own probe if
-    // they get there first.
-    //
-    // E2E dispatches INLINE — exactly the pre-deferral baseline. Not
-    // setTimeout(0): even a 0ms timer runs after the whenReady body,
-    // which moved the probe's main-thread blocking from "during boot,
-    // before any window" into the window where the Windows tray specs
-    // seed + measure the popover — their library:list/resize flow
-    // stalled past the stability window and flaked (PR #238 CI, two
-    // rounds).
-    const dispatchStartupCodexProbe = (): void => {
-      void bus
-        .dispatch("settings:refreshCodexDiscovery", { force: true }, { principal: "ipc" })
-        .then((result) => {
-          if (!result.ok) {
-            log.warn("startup Codex readiness probe failed", {
-              code: result.error.code,
-              message: result.error.message
-            });
-          }
-        });
-    };
-    if (isE2E) {
-      dispatchStartupCodexProbe();
-    } else {
-      setTimeout(() => {
-        // Ensure the user's login-shell PATH is resolved before probing
-        // — discovery looks up bare `codex` on PATH. value() returns
-        // instantly if prewarm already finished (it usually has by now).
-        void loginShellPath.value().then(dispatchStartupCodexProbe);
-      }, STARTUP_CODEX_PROBE_DELAY_MS).unref();
+    // ── Command registration, by role (§D4) ───────────────────────
+    // Combined registers everything on one bus — the pre-split shape.
+    // In split mode each command lives in exactly one process and the
+    // bus forwarder (installed below) carries the peer-owned names
+    // across the bridge. The grouping must agree with command-routing.ts;
+    // the routing tests pin the contentious assignments.
+    registerAppCommonHandlers();
+    // Library DATA verbs register in every role: the agent's tray and
+    // float-over read + mutate captures locally against the shared WAL
+    // DB — a tray preview must never resurrect the library process.
+    registerLibraryDataHandlers();
+    if (role !== "library") {
+      // Agent half: capture surface, recording, clipboard, float-over,
+      // settings + secrets substrate, AI enrichment + discovery, updater.
+      registerSettingsDataHandlers();
+      registerCodexHandlers();
+      registerCodexProfileHandlers();
+      registerAcpHandlers();
+      registerCaptureHandlers();
+      registerClipboardHandlers();
+      registerFloatOverHandlers();
+      registerRecordingHandlers();
+      registerAppUpdateHandlers();
+      // Startup Codex readiness probe — deferred past the library's first
+      // contentful paint (#238). The probe's `codex` process spawns
+      // (~0.9s) otherwise land in the window-shown→first-paint gap,
+      // stalling the main thread in ~100ms chunks. Nothing on the boot
+      // path consumes the result; on-demand dispatches (Settings → AI)
+      // trigger their own. E2E dispatches INLINE (pre-deferral baseline).
+      // Agent/combined only — codex is agent-owned.
+        const dispatchStartupCodexProbe = (): void => {
+        void bus
+          .dispatch("settings:refreshCodexDiscovery", { force: true }, { principal: "ipc" })
+          .then((result) => {
+            if (!result.ok) {
+              log.warn("startup Codex readiness probe failed", {
+                code: result.error.code,
+                message: result.error.message
+              });
+            }
+          });
+      };
+      if (isE2E) {
+        dispatchStartupCodexProbe();
+      } else {
+        setTimeout(() => {
+          // Ensure the user's login-shell PATH is resolved before probing
+          // — discovery looks up bare `codex` on PATH. value() returns
+          // instantly if prewarm already finished (it usually has by now).
+          void loginShellPath.value().then(dispatchStartupCodexProbe);
+        }, STARTUP_CODEX_PROBE_DELAY_MS).unref();
+      }
     }
-    registerCodexHandlers();
-    registerCodexProfileHandlers();
-    registerAcpHandlers();
-    registerLibraryChatHandlers();
-    registerSizzleChatHandlers();
-    registerCaptureHandlers();
-    registerClipboardHandlers();
-    registerFloatOverHandlers();
-    registerLibraryHandlers();
-    registerRecordingHandlers();
-    registerStorageHandlers();
-    registerLayersHandlers();
-    registerRenderHandlers();
-    registerEditorHandlers();
-    registerSizzleHandlers();
-    registerCartHandlers();
+    if (role !== "agent") {
+      // Library half: the windows and everything that renders, edits,
+      // or organizes captures inside them — chat surfaces included.
+      registerSettingsWindowHandlers();
+      registerAppWindowHandlers();
+      registerLibraryChatHandlers();
+      registerSizzleChatHandlers();
+      registerLibraryWindowHandlers();
+      registerStorageHandlers();
+      registerLayersHandlers();
+      registerRenderHandlers();
+      registerEditorHandlers();
+      registerSizzleHandlers();
+      registerCartHandlers();
+    }
     // Wire the floating recording HUD so it appears whenever the
     // recording service is non-idle. Has to be installed AFTER the
     // BrowserWindow + handler plumbing because the controller creates
     // a BrowserWindow on the first state transition.
-    installRecordingController();
+    if (role !== "library") {
+      installRecordingController();
+    }
     // Dev seeder — gated on DEV at static-substitution time + a
     // belt-and-suspenders runtime NODE_ENV check. Production builds
     // tree-shake the entire `dev/seeder` subtree out of the bundle.
     // (Tray menu only here; the CLI-flag path is handled earlier.)
-    if (import.meta.env.DEV && process.env.NODE_ENV !== "production") {
+    if (role === "combined" && import.meta.env.DEV && process.env.NODE_ENV !== "production") {
       const { registerDevSeeder } = await import("./dev/seeder");
       registerDevSeeder();
     }
     // export-handler.ts re-registers `library:export` over the
     // not-implemented stub from library-handlers.ts. Order matters.
-    registerExportHandler();
+    if (role !== "agent") {
+      registerExportHandler();
+    }
     registerIpcDispatcher();
     markStartup("main: handlers registered");
-    if (!isE2E) {
+    // ── Cross-process bridge wiring (split mode only, §D2/§D4) ─────
+    // After ALL local handlers are registered: the library's connect
+    // doubles as its readiness hello, and the forwarders must never
+    // shadow a local registration.
+    if (role === "agent") {
+      bus.installRemoteForwarder({
+        canForward: (name) => peerOwnsCommand("agent", name),
+        forward: (name, req) => dispatchToLibraryProcess(name, req)
+      });
+      installRendererEventForwarder(forwardRendererEventToLibrary);
+      installCancellationForwarder(forwardCancellationToLibrary);
+    } else if (role === "library") {
+      connectAgentBridge();
+      bus.installRemoteForwarder({
+        canForward: (name) => isAgentBridgeConnected() && peerOwnsCommand("library", name),
+        forward: (name, req) => dispatchToAgentProcess(name, req)
+      });
+      installRendererEventForwarder(forwardRendererEventToAgent);
+      installCancellationForwarder(forwardCancellationToAgent);
+      // Live settings reactions in the library's MAIN process: the
+      // agent owns the settings substrate, so changes arrive here as
+      // relayed renderer events — the menu's developer-mode items must
+      // track them without a relaunch (the boot-time file peek above
+      // only covers the persisted state).
+      onRelayedRendererEvent(EVENT_CHANNELS.settingsChanged, (payload) => {
+        const settings = (payload as SettingsChangedEvent).settings;
+        if (settings.general.developerMode !== lastKnownDeveloperMode) {
+          installApplicationMenu(settings.general.developerMode);
+        }
+      });
+    }
+    if (!isE2E && role !== "library") {
       installTray();
       markStartup("main: tray installed");
     }
@@ -1460,13 +1664,18 @@ export function bootstrapApp(): void {
     // (un-minimizes) it. See focus-sink.ts for the full rationale.
     // It is macOS-only by design; Linux/Xvfb does not have Cocoa's
     // cascade behavior, and hidden panel windows are unstable there.
-    if (process.platform === "darwin") {
+    //
+    // Combined-only: in split mode neither process needs it — the
+    // agent has no Library window for the cascade to land on, and the
+    // library has no floating panels to cascade from. (Phase 4 deletes
+    // it outright.)
+    if (process.platform === "darwin" && role === "combined") {
       installFocusSink();
     }
-    if (process.platform !== "darwin" && shouldPreWarmRegionSelector()) {
+    if (process.platform !== "darwin" && role !== "library" && shouldPreWarmRegionSelector()) {
       preWarmRegionSelector();
     }
-    if (!isE2E && !startupProfilingEnabled()) {
+    if (!isE2E && role !== "library" && !startupProfilingEnabled()) {
       // Capture/region/window/video are dynamically registered from
       // settings + rebind on change.
       //
@@ -1493,21 +1702,32 @@ export function bootstrapApp(): void {
       // Login-item boot is background-only: the tray owns the session
       // and the Library stays closed until the user asks for it (tray
       // "Open Library", Dock/Finder relaunch → `activate` /
-      // `second-instance`, both of which create-on-demand). Hide the
-      // Dock icon explicitly — pre-split, the combined process launches
-      // as a Regular-policy app, so without this a bare icon lingers
-      // with no window behind it. The two-process split plan
-      // (docs/plans/2026-06-12-001 §D2/§D10) later makes this
-      // structural: login items boot the agent role under LSUIElement.
+      // `second-instance`, both of which create-on-demand). Applies to
+      // BOTH combined and agent roles — a login launch never opens a
+      // window. Hide the Dock icon explicitly: in combined the process
+      // is Regular-policy, so without this a bare icon lingers with no
+      // window behind it (the agent has no dock to hide).
       log.info("login-item launch detected — booting tray-only (no Library window)");
       if (process.platform === "darwin" && !isE2E) {
         app.dock?.hide();
       }
-    } else {
+    } else if (role === "combined") {
       createMainWindow();
+    } else if (role === "agent") {
+      // Reached only on a NON-login launch (the wasLaunchedAtLogin
+      // branch above already handled the tray-only login case for both
+      // roles). User-initiated launch should land in the Library, like
+      // double-clicking any app. The library:focus forward spawns the
+      // library child; its handler shows + activates the window.
+      void dispatchToLibraryProcess("library:focus", {});
     }
     markStartup("main: createMainWindow returned");
-    if (process.platform === "darwin") {
+    // Library role: no boot-time window here — the verb that spawned
+    // this process (library:focus, settings:open, library:openInLibrary)
+    // creates exactly the window the user asked for. After that the
+    // process stays resident across window closes (see window-all-closed
+    // below) until the user ⌘Q's it or the agent quits.
+    if (process.platform === "darwin" && role !== "library") {
       scheduleDarwinRegionSelectorPreWarm();
     }
     // Drain any `.pwrsnap` paths the OS handed us during cold-start
@@ -1515,8 +1735,12 @@ export function bootstrapApp(): void {
     // and dispatch here once the DB + handlers + main window are
     // ready). For each path, looks up the capture by id and opens
     // the editor window. See open-file.ts for the resolution flow.
-    processQueuedOpenFiles();
-    if (!isE2E) {
+    // The supervised library child never receives OS open-file events;
+    // the agent does, and its dispatches forward over the bridge.
+    if (role !== "library") {
+      processQueuedOpenFiles();
+    }
+    if (!isE2E && role !== "library") {
       // Auto-update needs the channel resolver wired
       // (wireHotkeyRegistrations sets it). In production, kicks off
       // an initial check after the main window has mounted so the
@@ -1524,8 +1748,10 @@ export function bootstrapApp(): void {
       // No-op in development (skips gracefully).
       initAppUpdater();
     }
-    scheduleAssetFilenameMaintenance();
-    scheduleAcpAgentWarmup();
+    if (role !== "library") {
+      scheduleAssetFilenameMaintenance();
+      scheduleAcpAgentWarmup();
+    }
     markStartup("main: whenReady bootstrap complete");
 
     // ── Dev probe-only CLI mode ───────────────────────────────────
@@ -1768,9 +1994,11 @@ export function bootstrapApp(): void {
     }
     // Same containment rule as scheduleAssetFilenameMaintenance: no
     // file-deleting GC from profiling runs against a cloned userData.
+    // The supervised library child doesn't GC either — the agent owns
+    // capture lifecycle.
     if (startupProfilingEnabled()) {
       markStartup("main: boot GC SKIPPED (profiling run)");
-    } else {
+    } else if (role !== "library") {
       void runBootGc();
     }
 
@@ -1783,6 +2011,10 @@ export function bootstrapApp(): void {
       // The earlier `getAllWindows().length === 0` guard was dead
       // code: the focus-sink + tray + float-over panels persist for
       // the app's lifetime, so the array was never empty.
+      //
+      // Agent role: no Dock icon, no library window to raise — and we
+      // must never create one in this process.
+      if (role === "agent") return;
       const main = findMainLibraryWindow() ?? createMainWindow();
       if (main.isMinimized()) main.restore();
       if (!main.isVisible()) main.show();
@@ -1805,7 +2037,10 @@ export function bootstrapApp(): void {
     // re-claim is guarded by both `findMainLibraryWindow() !== null`
     // and `app.dock.isVisible() === false`, so steady-state inactive
     // apps with no Library aren't churned.
-    if (process.platform === "darwin" && !isE2E) {
+    // Combined-only: the agent never owns a Library window or Dock
+    // icon, and the library process never loses its Dock icon to the
+    // AppKit demotion this works around (no floating panels there).
+    if (process.platform === "darwin" && !isE2E && role === "combined") {
       app.on("did-resign-active", () => {
         setImmediate(() => {
           reclaimDockIconIfLibraryAlive();
@@ -1817,6 +2052,21 @@ export function bootstrapApp(): void {
   app.on("window-all-closed", () => {
     // The tray icon keeps the app alive after the main window closes —
     // matches the expected menubar-app lifecycle on every platform.
+    //
+    // The library role also stays alive: closing the last window
+    // behaves like any macOS document app — the process and its Dock
+    // icon remain, and Dock-click / tray "Open Library" / float-over
+    // "Edit" re-show a window instantly without a process relaunch.
+    // ⌘Q (or right-click Dock → Quit) quits it for real; the agent's
+    // ensure-on-demand supervision respawns it on the next intent.
+    //
+    // EXCEPT when the agent pipe is dead (agent crashed / force-
+    // killed): a resident library with no bridge is a zombie — a fresh
+    // user launch starts a NEW agent with its own child. Quit instead.
+    if (role === "library" && !isAgentBridgeConnected()) {
+      log.info("last window closed with agent bridge down — quitting orphaned library");
+      app.quit();
+    }
   });
 
   // Track whether we've already initiated the recording-cancel
@@ -1849,6 +2099,9 @@ export function bootstrapApp(): void {
       return;
     }
     globalShortcut.unregisterAll();
+    // Take the supervised library child down with the agent. No-op in
+    // combined/library roles (nothing was ever spawned).
+    stopLibraryProcess();
     disposeCodexProfileHandlers();
     disposeRegionSelector();
     disposeTray();

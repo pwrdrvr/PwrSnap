@@ -32,6 +32,7 @@ import {
 } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
+import { getRuntimeProcessRole } from "./process-role";
 import {
   isRecordingActive,
   subscribeToRecordingState
@@ -263,7 +264,12 @@ export function installTray(): Tray {
 
   tray = new Tray(icon);
   tray.setToolTip(idleTrayTooltip());
-  tray.setIgnoreDoubleClickEvents(true);
+  // Split mode only: double-click opens the Library (a real action), so
+  // don't suppress double-clicks. Combined mode keeps the prior behavior
+  // (ignore double-clicks) so the experiment-off app is unchanged — the
+  // double-click handler below is wired only outside combined.
+  const trayDoubleClickOpensLibrary = getRuntimeProcessRole() !== "combined";
+  tray.setIgnoreDoubleClickEvents(!trayDoubleClickOpensLibrary);
 
   // Recording state → tray indicator. While recording, prepend "● " to
   // the tooltip + tray title so the menubar telegraphs the live state
@@ -276,6 +282,19 @@ export function installTray(): Tray {
   });
 
   tray.on("click", () => toggleTrayWindow());
+  if (trayDoubleClickOpensLibrary) {
+    tray.on("double-click", () => {
+      // The first click of the pair already fired `click` and toggled
+      // the popover — drop it so the Library doesn't open underneath an
+      // orphaned popover.
+      if (trayWindow !== null && !trayWindow.isDestroyed() && trayWindow.isVisible()) {
+        trayWindow.hide();
+      }
+      // library:focus spawns (or raises) the Library — same verb as the
+      // context menu's "Open Library".
+      void bus.dispatch("library:focus", {}, { principal: "ipc" });
+    });
+  }
   tray.on("right-click", () => {
     const trayBounds = tray?.getBounds();
     // Always dismiss the popover before the context menu appears —

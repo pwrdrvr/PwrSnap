@@ -27,14 +27,13 @@
 // Never throws during cold-start. Bad input, missing DB row, malformed
 // bundle → log + Notification, don't take the app down.
 
-import { app, BrowserWindow, Notification } from "electron";
+import { app, Notification } from "electron";
 import { extname } from "node:path";
 
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { readBundleManifest } from "./persistence/bundle-store";
 import { getCaptureById } from "./persistence/captures-repo";
-import { createMainWindow, findMainLibraryWindow } from "./window";
 
 const log = getMainLogger("open-file");
 const SECOND_INSTANCE_OPEN_FILE_PATHS_KEY = "pwrsnapOpenFilePaths";
@@ -219,9 +218,11 @@ async function openPwrsnapInEditor(bundlePath: string): Promise<void> {
   const record = getCaptureById(captureId);
   if (record === null) {
     log.info("open-file: capture not in library", { bundlePath, captureId });
-    // Surface the library window so the user has somewhere to land.
-    const main = findMainLibraryWindow() ?? createMainWindow();
-    raiseToFront(main);
+    // Surface the library window so the user has somewhere to land —
+    // via the bus, never createMainWindow directly: in split mode this
+    // code runs in the AGENT, and the Library window must only ever be
+    // created in the library process (the forward spawns it on demand).
+    void bus.dispatch("library:focus", {}, { principal: "ipc" });
     notifyUser(
       "Capture not in your library",
       "This .pwrsnap file was created on a different device. Cross-device import is coming soon."
@@ -252,12 +253,6 @@ async function openPwrsnapInEditor(bundlePath: string): Promise<void> {
     });
     notifyUser("Can't open PwrSnap file", result.error.message);
   }
-}
-
-function raiseToFront(window: BrowserWindow): void {
-  if (window.isMinimized()) window.restore();
-  if (!window.isVisible()) window.show();
-  window.focus();
 }
 
 function notifyUser(title: string, body: string): void {

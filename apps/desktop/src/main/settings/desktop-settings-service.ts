@@ -127,6 +127,14 @@ export function defaultSettings(): Settings {
       // be hostile. The user flips it on in Settings -> General.
       launchAtLogin: false
     },
+    experimental: {
+      // macOS two-process split ships default-OFF (plan 2026-06-12-001):
+      // regular users get the single-process (combined) app; the split
+      // is opt-in via Settings → General → "Two-process mode" while it
+      // soaks. Ignored off macOS. Read once at process start — relaunch
+      // to apply.
+      processSplit: false
+    },
     appearance: {
       // "system" tracks the OS appearance via the renderer's
       // matchMedia listener. Explicit "dark" / "light" override.
@@ -479,6 +487,7 @@ function parseV1(raw: unknown): Settings | null {
   const ai = isRecord(raw.ai) ? raw.ai : {};
   const hotkeys = isRecord(raw.hotkeys) ? raw.hotkeys : {};
   const general = isRecord(raw.general) ? raw.general : {};
+  const experimental = isRecord(raw.experimental) ? raw.experimental : {};
   const appearance = isRecord(raw.appearance) ? raw.appearance : {};
   const updates = isRecord(raw.updates) ? raw.updates : {};
   const storage = isRecord(raw.storage) ? raw.storage : {};
@@ -561,6 +570,13 @@ function parseV1(raw: unknown): Settings | null {
       // in-memory.
       developerMode: pickBoolean(general.developerMode, defaults.general.developerMode),
       launchAtLogin: pickBoolean(general.launchAtLogin, defaults.general.launchAtLogin)
+    },
+    experimental: {
+      // `experimental.processSplit` landed after v1 shipped; older
+      // files won't have it. pickBoolean fills in the default (true —
+      // the macOS two-process split is mainline) so the field is
+      // always present in-memory.
+      processSplit: pickBoolean(experimental.processSplit, defaults.experimental.processSplit)
     },
     appearance: {
       // `appearance` landed after v1 shipped; older files won't have
@@ -1120,6 +1136,7 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     ai: mergeAi(current.ai, patch.ai),
     hotkeys: mergeSection(current.hotkeys, patch.hotkeys),
     general: mergeSection(current.general, patch.general),
+    experimental: mergeSection(current.experimental, patch.experimental),
     appearance: mergeSection(current.appearance, patch.appearance),
     updates: mergeSection(current.updates, patch.updates),
     storage: mergeSection(current.storage, patch.storage),

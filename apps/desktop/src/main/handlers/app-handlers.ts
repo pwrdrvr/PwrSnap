@@ -49,7 +49,18 @@ function isAllowedExternalUrl(raw: string): boolean {
   return false;
 }
 
+/** Combined-mode registration: all three groups on one bus. Split mode
+ *  composes per role — common verbs register in BOTH processes (each
+ *  answers locally), the document window with the library, the updater
+ *  verbs with the agent that runs electron-updater (plan §D4/§D10). */
 export function registerAppHandlers(): void {
+  registerAppCommonHandlers();
+  registerAppWindowHandlers();
+  registerAppUpdateHandlers();
+}
+
+/** Process-agnostic verbs — safe and useful in any role. */
+export function registerAppCommonHandlers(): void {
   bus.register("app:version", async () => {
     return ok({
       version: app.getVersion(),
@@ -107,6 +118,22 @@ export function registerAppHandlers(): void {
       });
     }
   });
+  bus.register("app:openExternal", async (req) => {
+    const url = typeof req === "object" && req !== null ? req.url : undefined;
+    if (typeof url !== "string" || !isAllowedExternalUrl(url)) {
+      return err({
+        kind: "validation",
+        code: "url_not_allowed",
+        message: `app:openExternal: refused to open ${String(url)} (must be an https PwrSnap or GitHub URL)`
+      });
+    }
+    await shell.openExternal(url);
+    return ok(undefined);
+  });
+}
+
+/** Opens the document-viewer BrowserWindow — library-owned in split mode. */
+export function registerAppWindowHandlers(): void {
   bus.register("app:openDocumentWindow", async (req, ctx) => {
     const kind = typeof req === "object" && req !== null ? req.kind : undefined;
     if (!isAppDocumentKind(kind)) {
@@ -126,18 +153,11 @@ export function registerAppHandlers(): void {
     showAppDocumentWindow(kind, options);
     return ok(undefined);
   });
-  bus.register("app:openExternal", async (req) => {
-    const url = typeof req === "object" && req !== null ? req.url : undefined;
-    if (typeof url !== "string" || !isAllowedExternalUrl(url)) {
-      return err({
-        kind: "validation",
-        code: "url_not_allowed",
-        message: `app:openExternal: refused to open ${String(url)} (must be an https PwrSnap or GitHub URL)`
-      });
-    }
-    await shell.openExternal(url);
-    return ok(undefined);
-  });
+}
+
+/** electron-updater surface — agent-owned in split mode (the updater
+ *  runs in the always-resident process). */
+export function registerAppUpdateHandlers(): void {
   bus.register("app:update:check", async () => {
     return ok(await checkForAppUpdatesNow("manual"));
   });

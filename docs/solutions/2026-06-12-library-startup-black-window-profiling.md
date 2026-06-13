@@ -123,3 +123,18 @@ thumbnails 3372→1187ms. The black phase is gone entirely.
    `apps/desktop/node_modules`. Patterns that miss it leave orphan
    tray-app instances alive (no window ≠ quit) holding locks and
    hotkeys.
+5. **No infinite CSS animations in boot-path chrome.** The skeleton's
+   tiles originally pulsed (infinite opacity animation) from inject
+   until React's first commit cleared them. On GPU-less machines (GHA
+   Windows runners, some VMs) Chromium composites in software, and the
+   animating library window starved the shared compositor enough that
+   the TRAY renderer's ResizeObserver — which fires as part of the
+   rendering steps — never ran: its resize IPC never posted and the
+   popover stuck at the constructor frame / pre-data empty height.
+   Four straight red Windows E2E rounds; a CI bisect (revert
+   index.html → green) pinned it. Boot chrome must be static — zero
+   ongoing compositor cost after the first frame. Related trap from
+   the same debugging session: the seeded tray-spec macOS height
+   ranges ([420, 560]) are machine-tuned and fail on other Macs even
+   on pure main — no CI job runs those specs on macOS, so local macOS
+   runs are NOT a proxy for the Windows job.

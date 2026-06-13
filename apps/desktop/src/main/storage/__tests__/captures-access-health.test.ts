@@ -110,6 +110,41 @@ describe("captures access health accounting", () => {
     expect(getCapturesAccessHealth().deniedPathCount).toBe(1);
   });
 
+  test("full recovery resets the snapshot to the healthy baseline", () => {
+    reportCapturesAccessFailure("/c/a.pwrsnap", eperm("/c/a.pwrsnap"));
+    reportCapturesAccessFailure("/c/b.pwrsnap", eperm("/c/b.pwrsnap"));
+    expect(getCapturesAccessHealth().firstDeniedAt).not.toBeNull();
+
+    reportCapturesAccessSuccess("/c/a.pwrsnap");
+    reportCapturesAccessSuccess("/c/b.pwrsnap");
+
+    // No stale episode metadata may survive once denied flips false —
+    // the snapshot must equal the initial healthy baseline exactly.
+    expect(getCapturesAccessHealth()).toEqual({
+      denied: false,
+      deniedPathCount: 0,
+      samplePath: null,
+      firstDeniedAt: null,
+      lastDeniedAt: null
+    });
+  });
+
+  test("a fresh denial episode re-arms firstDeniedAt", () => {
+    vi.setSystemTime(new Date("2026-06-13T00:00:00.000Z"));
+    reportCapturesAccessFailure("/c/a.pwrsnap", eperm("/c/a.pwrsnap"));
+    expect(getCapturesAccessHealth().firstDeniedAt).toBe("2026-06-13T00:00:00.000Z");
+
+    // Full recovery clears the episode...
+    reportCapturesAccessSuccess("/c/a.pwrsnap");
+    expect(getCapturesAccessHealth().firstDeniedAt).toBeNull();
+
+    // ...so the NEXT denial stamps a new firstDeniedAt rather than
+    // keeping the first-ever one.
+    vi.setSystemTime(new Date("2026-06-13T01:00:00.000Z"));
+    reportCapturesAccessFailure("/c/b.pwrsnap", eperm("/c/b.pwrsnap"));
+    expect(getCapturesAccessHealth().firstDeniedAt).toBe("2026-06-13T01:00:00.000Z");
+  });
+
   test("notifies listeners with a debounced snapshot", () => {
     const seen: Array<{ denied: boolean; deniedPathCount: number }> = [];
     const unsubscribe = onCapturesAccessHealthChanged((health) => {

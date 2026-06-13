@@ -151,6 +151,13 @@ function registerStorageEventBroadcast(): void {
       win.webContents.send(EVENT_CHANNELS.storageSnapshotUpdated, payload);
     }
   });
+  // Boot filename maintenance is kicked off earlier in startup than
+  // this registration, so its denials can be reported before any
+  // listener exists — those early broadcasts reach no window. That's
+  // fine and intentional: the snapshot persists in the
+  // captures-access-health singleton, and the Library banner fetches it
+  // via `storage:capturesAccessHealth` on mount, then stays current
+  // through this broadcast. No denial is lost by the ordering.
   onCapturesAccessHealthChanged((health) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isDestroyed()) continue;

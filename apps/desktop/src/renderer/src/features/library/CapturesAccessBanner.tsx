@@ -16,6 +16,10 @@
 //
 // Mirrors AppUpdateBanner's shape (and reuses its CSS classes via a
 // modifier) so the two banners stack consistently above the Library.
+// Copy + the settings deep-link button are platform-tailored — see
+// describeCapturesAccess below — since the remediation differs by OS
+// (macOS TCC vs Windows Controlled Folder Access vs Linux Flatpak/Snap
+// confinement).
 
 import { useEffect, useState, type ReactElement } from "react";
 import type { CapturesAccessHealth } from "@pwrsnap/shared";
@@ -64,7 +68,10 @@ export function CapturesAccessBanner(): ReactElement | null {
     return null;
   }
 
-  const fileNoun = health.deniedPathCount === 1 ? "capture file" : "capture files";
+  const copy = describeCapturesAccess(
+    window.pwrsnapApi?.platform,
+    health.deniedPathCount
+  );
 
   return (
     <aside
@@ -73,24 +80,21 @@ export function CapturesAccessBanner(): ReactElement | null {
       aria-live="assertive"
     >
       <div className="app-update-banner__content">
-        <p className="app-update-banner__eyebrow">macOS is blocking captures</p>
-        <p className="app-update-banner__message">
-          {health.deniedPathCount} {fileNoun} in your captures folder can’t be read
-          (operation not permitted), so previews show broken. Grant Documents-folder
-          access under Privacy &amp; Security → Files &amp; Folders — when running from a
-          terminal in development, grant it to that terminal app — then relaunch PwrSnap.
-        </p>
+        <p className="app-update-banner__eyebrow">{copy.eyebrow}</p>
+        <p className="app-update-banner__message">{copy.message}</p>
       </div>
       <div className="app-update-banner__actions">
-        <button
-          className="app-update-banner__restart"
-          type="button"
-          onClick={() => {
-            void dispatch("storage:openCapturesAccessSettings", {});
-          }}
-        >
-          Open Privacy Settings
-        </button>
+        {copy.showSettingsButton ? (
+          <button
+            className="app-update-banner__restart"
+            type="button"
+            onClick={() => {
+              void dispatch("storage:openCapturesAccessSettings", {});
+            }}
+          >
+            Open Privacy Settings
+          </button>
+        ) : null}
         <button
           className="app-update-banner__dismiss"
           type="button"
@@ -102,4 +106,70 @@ export function CapturesAccessBanner(): ReactElement | null {
       </div>
     </aside>
   );
+}
+
+type CapturesAccessCopy = {
+  eyebrow: string;
+  message: string;
+  /** Only macOS has a reliable settings deep link (Files & Folders).
+   *  Windows denials are ambiguous (Controlled Folder Access vs AV vs
+   *  OneDrive cloud-only files) and Linux confinement varies by
+   *  Flatpak/Snap, so neither gets an auto-link button. */
+  showSettingsButton: boolean;
+};
+
+/**
+ * Platform-tailored copy for the captures-access denial. macOS gets the
+ * precise TCC remediation (the only platform that ships today); Windows
+ * and Linux get accurate, hedged guidance for their closest analog —
+ * Controlled Folder Access / antivirus / OneDrive on Windows, Flatpak/
+ * Snap filesystem confinement on Linux — and a generic fallback covers
+ * anything else.
+ */
+function describeCapturesAccess(
+  platform: string | undefined,
+  count: number
+): CapturesAccessCopy {
+  const fileNoun = count === 1 ? "capture file" : "capture files";
+  const lead = `${count} ${fileNoun} in your captures folder can’t be read`;
+
+  if (platform === "darwin") {
+    return {
+      eyebrow: "macOS is blocking captures",
+      message:
+        `${lead} (operation not permitted), so previews show broken. Grant ` +
+        "Documents-folder access under Privacy & Security → Files & Folders — when " +
+        "running from a terminal in development, grant it to that terminal app — then " +
+        "relaunch PwrSnap.",
+      showSettingsButton: true
+    };
+  }
+  if (platform === "win32") {
+    return {
+      eyebrow: "Can’t read captures",
+      message:
+        `${lead} (access denied), so previews show broken. This is usually Controlled ` +
+        "Folder Access (Windows Security → Ransomware protection) or antivirus blocking " +
+        "PwrSnap, or files still syncing from OneDrive. Allow PwrSnap to read the folder, " +
+        "then reopen it.",
+      showSettingsButton: false
+    };
+  }
+  if (platform === "linux") {
+    return {
+      eyebrow: "Can’t read captures",
+      message:
+        `${lead} (permission denied), so previews show broken. If PwrSnap is installed ` +
+        "as a Flatpak or Snap, grant it filesystem access to your Documents (or home) " +
+        "folder — e.g. with Flatseal or `snap connect` — then reopen it.",
+      showSettingsButton: false
+    };
+  }
+  return {
+    eyebrow: "Can’t read captures",
+    message:
+      `${lead} (permission denied), so previews show broken. Make sure PwrSnap has ` +
+      "permission to read the folder, then reopen it.",
+    showSettingsButton: false
+  };
 }

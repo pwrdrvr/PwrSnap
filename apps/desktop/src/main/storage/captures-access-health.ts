@@ -23,7 +23,10 @@
 // report failures/successes here; the Library banner + a loud log line
 // are driven off the snapshot. Counting is per DISTINCT path so render
 // retries don't inflate it, and a later successful read of a denied
-// path clears it (TCC grants apply to new opens without a relaunch).
+// path clears it, so the banner self-dismisses if access is restored
+// while the app keeps running. (Restoring a TCC grant usually means
+// relaunching the responsible terminal — see the solution doc — in
+// which case the fresh process simply starts with nothing denied.)
 
 import type { CapturesAccessHealth } from "@pwrsnap/shared";
 
@@ -131,7 +134,14 @@ export function reportCapturesAccessSuccess(path: string): void {
   if (deniedPaths.size === 0) return;
   if (!deniedPaths.delete(path)) return;
   if (deniedPaths.size === 0) {
+    // Full recovery — return the snapshot to the healthy baseline so a
+    // `denied: false` reading never carries stale episode metadata, and
+    // so the next denial episode re-arms `firstDeniedAt` + the loud
+    // first-denial log + the per-path warn budget cleanly.
     samplePath = null;
+    firstDeniedAt = null;
+    lastDeniedAt = null;
+    pathWarnCount = 0;
     log.info("captures-folder access recovered — previously denied paths now readable");
   } else if (samplePath === path) {
     samplePath = deniedPaths.values().next().value ?? null;

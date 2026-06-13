@@ -472,14 +472,22 @@ export type StorageSnapshotUpdate = {
  * false if every previously-denied path later reads successfully
  * (e.g. the user granted access mid-session). `deniedPathCount`
  * counts DISTINCT denied files, not raw failures, so render retries
- * don't inflate it.
+ * don't inflate it. On full recovery the whole snapshot returns to the
+ * healthy baseline (`denied: false`, count 0, all fields null), so the
+ * timestamps below are scoped to the CURRENT denial episode, not the
+ * lifetime of the process.
  */
 export type CapturesAccessHealth = {
   denied: boolean;
   deniedPathCount: number;
-  /** One affected absolute path, for log/UI context. */
+  /** One affected absolute path, for log/UI context. Null whenever
+   *  `denied` is false. */
   samplePath: string | null;
+  /** When the current denial episode's first denial was observed.
+   *  Null whenever `denied` is false; re-armed on the next episode. */
   firstDeniedAt: string | null;
+  /** Most recent denial in the current episode. Null whenever `denied`
+   *  is false. */
   lastDeniedAt: string | null;
 };
 

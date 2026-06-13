@@ -109,8 +109,11 @@ switched on while you're there — a selected row is not an enabled grant.
   chokepoint (`openAndValidateBundle`) and the `pwrsnap-capture://` /
   `pwrsnap-cache://` protocol handlers. First denial logs one loud,
   actionable error; recovery (later successful read of every denied
-  path) clears automatically — TCC grants apply to new opens without a
-  relaunch.
+  path) clears the banner automatically if access is restored while the
+  app keeps running. (Restoring a TCC grant usually means relaunching
+  the responsible terminal — see the gotcha above — in which case the
+  fresh process just starts clean, so the in-place auto-clear mainly
+  covers cases where a grant takes effect without a relaunch.)
 - Boot filename maintenance classifies denials as `permissionDenied`
   (skip row, keep going, one summary warn) instead of burning its
   10-failure budget — denials are per-file, so readable rows must

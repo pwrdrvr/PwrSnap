@@ -1,10 +1,28 @@
-# Library startup: 5s black-window — profiling harness, root causes, fixes
+# Library startup profiling harness + startup-path cleanups
 
 **Date:** 2026-06-12
-**Symptom:** On launch, the Library window appeared as a featureless black
-rectangle and only "filled in" with content several seconds later (~5s
-reported on a ~700-capture library; 1.4–3.4s reproduced warm/cold on an
-M4 Mac mini).
+**Reported symptom:** On launch, the Library window appeared as a
+featureless black rectangle and "filled in" several seconds later (~5s
+on a ~700-capture library).
+
+> **⚠️ Root-cause correction (read this first).** The dramatic *~5s*
+> black window was **NOT** caused by anything in this document. It was a
+> **Chromium singleton-lock hang** introduced by the two-process split
+> work: a second Electron process launched against the **same userData**
+> dir and blocked on the userData `SingletonLock` until it timed out —
+> so nothing painted at all. That is a separate bug in the split-process
+> code, fixed there.
+>
+> What this investigation actually produced is still worth keeping: an
+> env-gated **startup profiling harness** and two **genuine
+> startup-path improvements** (login-shell PATH off the critical path;
+> AI probes deferred). Those stand on their own merit — they were never
+> the multi-second hang. An earlier iteration also added a boot
+> *skeleton* to mask the (misattributed) black window; once the real
+> cause was understood the skeleton was **removed** — it was papering
+> over a phantom and looked worse than a brief flash. The
+> compositor-starvation lesson it taught (§5 below) is kept because it's
+> a real Chromium gotcha.
 
 ## The startup profiling harness (kept wired, env-gated)
 
@@ -47,30 +65,35 @@ PWRSNAP_USER_DATA=/tmp/pwrsnap-profile-userdata \
 
 ## What the profiles showed (700-capture library, built output)
 
-Renderer JS heap was 9.7MB and renderer CPU ~200ms total — pagination
-(100-row head page) and virtualization work; memory and renderer compute
-were NON-issues. The ~5s was pure latency, in four parts:
+These are the real costs the profiler surfaced on a *normal
+single-process* launch. NONE of them is multi-second — the ~5s the user
+saw was the singleton-lock hang (see the correction at the top), which a
+single-process profiling run does not reproduce. Renderer JS heap was
+9.7MB and renderer CPU ~200ms total — pagination (100-row head page) and
+virtualization; memory and renderer compute were non-issues. The
+worthwhile findings:
 
 1. **~1.0s: synchronous login-shell env hydration.**
    `hydrateProcessEnvFromLoginShell` (execFileSync of the interactive
    login shell) blocked the main thread at the very top of bootstrapApp,
-   before the window could even be created. Single largest line item.
-   The deeper bug (see "Fixes shipped"): this was on the critical path
-   AT ALL. PwrSnap shells out by bare command name only for *AI helper*
-   discovery (`codex`, ACP agent CLIs) and the rare ffmpeg-on-PATH
-   fallback; the capture path uses absolute/bundled paths. None of
-   those run during window bring-up.
-2. **`ready-to-show` fires on the EMPTY html shell.** For a SPA the event
-   is meaningless: Chromium paints the bare `<div id="root">` page (pure
-   black), main shows the window, and the user stares at a void while
-   React mounts + `library:list` returns + thumbnails decode. The "black
-   placeholder" was literally the window `backgroundColor`.
-3. **Spawn storms during the paint window.** The startup Codex readiness
+   before the window could even be created. Real, and on the critical
+   path for no reason: PwrSnap shells out by bare command name only for
+   *AI helper* discovery (`codex`, ACP agent CLIs) and the rare
+   ffmpeg-on-PATH fallback; the capture path uses absolute/bundled
+   paths. None run during window bring-up. → moved off-thread (fix
+   below).
+2. **Spawn storms during the paint window.** The startup Codex readiness
    probe (~0.9s of `codex` process spawns) and ACP discovery/warm-up
-   (~2s, kimi etc.) landed exactly between window-show and
-   first-thumbnail-paint, competing with renderer startup.
-4. The rest (DB open ~150–260ms, tray ~90ms, 30 × ~70ms parallel
+   (~2s, kimi etc.) landed between window-show and first-thumbnail-paint,
+   competing with renderer startup. → deferred (fix below).
+3. The rest (DB open ~150–260ms, tray ~90ms, 30 × ~70ms parallel
    thumbnail-cache fetches + decode) was individually fine.
+4. **The empty-shell paint.** `ready-to-show` fires on the bare
+   `<div id="root">` (pure black) before React paints, so there's a
+   brief black flash. On a single-process launch this is ~150–350ms and
+   was never the complaint. The earlier boot-skeleton "fix" targeted
+   this and was removed (see the top correction); the flash is
+   acceptable and we show on `ready-to-show` as before.
 
 ## Fixes shipped
 
@@ -92,19 +115,23 @@ were NON-issues. The ~5s was pure latency, in four parts:
   one non-secret string in memory and re-resolve once per launch.
   PATH-only is deliberate: we do NOT replay HOME/NVM_DIR/instance vars.
   No-op on win32.
-- **Boot skeleton in index.html**: static topbar/sidebar/tile-ghost
-  markup injected into `#root` (library stage only — every other window
-  carries `#stage=` in its hash). React's first commit replaces it. The
-  shown window now paints app structure before React even mounts —
-  verified by `firstPaint` landing BEFORE `window-show` in the marks.
 - **Deferred probes**: startup Codex readiness probe +4s
   (`STARTUP_CODEX_PROBE_DELAY_MS`), ACP agent warm-up 2s→8s
   (`ACP_AGENT_WARMUP_BOOT_DELAY_MS`). Nothing on the boot path consumes
   either result; on-demand dispatches still trigger their own probes.
+  E2E keeps baseline timing (codex inline, warm-up 2s) — see index.ts.
+- **~~Boot skeleton~~ (reverted).** An interim fix injected static
+  topbar/sidebar/tile-ghost markup into `#root` to mask the empty-shell
+  flash. Removed once the ~5s was traced to the singleton-lock hang: it
+  masked a phantom, looked worse than a brief flash on a fast machine,
+  and its animated (loading-shimmer) variant starved the software
+  compositor on GPU-less CI (§5). We show on `ready-to-show` as before.
 
-Measured warm-launch result (same machine, same library):
-window visible 1977→393ms; first paint 2727→368ms (now pre-show);
-thumbnails 3372→1187ms. The black phase is gone entirely.
+Measured (profiled single-process launch, 700-capture library): DB open
+lands ~+44ms after app-ready (was ~+1.1s behind the blocking shell
+spawn); login-shell PATH now resolves in the background after the window
+is up. These are real-but-small wins — again, the ~5s was the lock hang,
+not this.
 
 ## Safety lessons (hard-won, do not relearn)
 
@@ -140,9 +167,11 @@ thumbnails 3372→1187ms. The black phase is gone entirely.
    `apps/desktop/node_modules`. Patterns that miss it leave orphan
    tray-app instances alive (no window ≠ quit) holding locks and
    hotkeys.
-5. **No infinite CSS animations in boot-path chrome.** The skeleton's
-   tiles originally pulsed (infinite opacity animation) from inject
-   until React's first commit cleared them. On GPU-less machines (GHA
+5. **No infinite CSS animations in boot-path chrome.** (The skeleton
+   this came from was ultimately reverted — but the lesson is real and
+   independent.) The skeleton's tiles originally pulsed (infinite
+   opacity animation) from inject until React's first commit cleared
+   them. On GPU-less machines (GHA
    Windows runners, some VMs) Chromium composites in software, and the
    animating library window starved the shared compositor enough that
    the TRAY renderer's ResizeObserver — which fires as part of the

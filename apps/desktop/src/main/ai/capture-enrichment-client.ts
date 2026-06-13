@@ -9,16 +9,16 @@
 // token-usage normalization — exactly the loop PwrSnap's old in-tree
 // `CodexAppServerClient` hand-rolled.
 //
-// This wrapper preserves the `enrichCapture(...)` / `listModels(...)` /
-// `close()` surface that `codex-handlers.ts` consumes, mapping PwrSnap's
-// caller-supplied args (prompt + schema + image paths) onto a
-// `CodexOneShotRequest` and the kit's `NormalizedTokenUsage` back onto
-// PwrSnap's `AiUsageTokenBreakdown` (carrying `contextWindow → modelContextWindow`).
+// This wrapper preserves the `enrichCapture(...)` / `close()` surface that
+// `codex-handlers.ts` consumes, mapping PwrSnap's caller-supplied args (prompt
+// + schema + image paths) onto a `CodexOneShotRequest` and the kit's
+// `NormalizedTokenUsage` back onto PwrSnap's `AiUsageTokenBreakdown` (carrying
+// `contextWindow → modelContextWindow`).
 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CodexOneShotClient } from "@pwrdrvr/agent-client";
-import type { AiUsageTokenBreakdown, CodexModelOption, EnrichmentResult } from "@pwrsnap/shared";
+import type { AiUsageTokenBreakdown, EnrichmentResult } from "@pwrsnap/shared";
 import { resolveCodexThreadConfigForCommand } from "./codex-thread-config";
 import {
   CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
@@ -153,22 +153,6 @@ export class CaptureEnrichmentClient {
       serviceTier: response.serviceTier,
       tokens: toBreakdown(response.tokenUsage)
     };
-  }
-
-  async listModels(input: { includeHidden?: boolean } = {}): Promise<CodexModelOption[]> {
-    const models = await this.client.listModels({
-      includeHidden: input.includeHidden ?? false
-    });
-    return models.map((m) => ({
-      id: m.id,
-      model: m.model,
-      displayName: m.displayName,
-      description: m.description,
-      hidden: m.hidden,
-      inputModalities: m.inputModalities as Array<"text" | "image">,
-      defaultServiceTier: m.defaultServiceTier,
-      isDefault: m.isDefault
-    }));
   }
 
   async close(): Promise<void> {

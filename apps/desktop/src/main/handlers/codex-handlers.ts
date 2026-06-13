@@ -19,6 +19,7 @@ import type {
   AiRunUsageDetail,
   CaptureEnrichment,
   CaptureRecord,
+  CodexModelOption,
   PwrSnapError,
   Result,
   Settings,
@@ -32,6 +33,7 @@ import { AcpCaptureEnrichmentClient } from "../ai/acp-enrichment-client";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
 import { findAcpModelLabel } from "../ai/acp-model-cache";
 import { findCodexModelLabel, saveCodexModelLabels } from "../ai/codex-model-cache";
+import { listCodexModels, type CodexModelLister } from "../ai/codex-model-client";
 import {
   discoverLocalAcpAgentInstances,
   strategyById,
@@ -423,11 +425,13 @@ export function maybeEnqueueCaptureEnrichment(captureId: string): void {
 
 export function registerCodexHandlers(params?: {
   clientFactory?: CodexClientFactory;
+  modelLister?: CodexModelLister;
   settingsReader?: SettingsReader;
   settingsWriter?: SettingsWriter;
   budget?: AiEnrichmentBudget;
 }): void {
   const defaultClients = new Map<string, CaptureEnrichmentClient>();
+  const modelListInFlight = new Map<string, Promise<CodexModelOption[]>>();
   const clientFactory =
     params?.clientFactory ??
     ((command, env) => {
@@ -444,6 +448,7 @@ export function registerCodexHandlers(params?: {
       defaultClients.set(key, client);
       return client;
     });
+  const modelLister = params?.modelLister ?? listCodexModels;
   const closeClientAfterRun = params?.clientFactory !== undefined;
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
   const settingsWriter = params?.settingsWriter ?? defaultSettingsWriter;
@@ -767,9 +772,29 @@ export function registerCodexHandlers(params?: {
       selectedModel: settings.codex.captionModel,
       includeHidden
     });
-    const client = clientFactory(command, env);
     try {
-      const models = await client.listModels({ includeHidden });
+      const inFlightKey = JSON.stringify([command, codexHome ?? "", includeHidden]);
+      let listing = modelListInFlight.get(inFlightKey);
+      if (listing === undefined) {
+        listing = modelLister({ command, env, includeHidden });
+        modelListInFlight.set(inFlightKey, listing);
+      } else {
+        log.info("codex:models joined in-flight listing", {
+          command,
+          codexHome,
+          profile,
+          selectedModel: settings.codex.captionModel,
+          includeHidden
+        });
+      }
+      let models: CodexModelOption[];
+      try {
+        models = await listing;
+      } finally {
+        if (modelListInFlight.get(inFlightKey) === listing) {
+          modelListInFlight.delete(inFlightKey);
+        }
+      }
       // Persist id → displayName so the usage strip can show a Codex run's
       // friendly model name (the run record only stores the id).
       saveCodexModelLabels(models);
@@ -813,12 +838,6 @@ export function registerCodexHandlers(params?: {
         code: "codex_models_failed",
         message: error instanceof Error ? error.message : String(error),
         cause: error
-      });
-    } finally {
-      await client.close().catch((error: unknown) => {
-        log.warn("codex client close failed after model list", {
-          message: error instanceof Error ? error.message : String(error)
-        });
       });
     }
   });

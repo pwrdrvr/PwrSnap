@@ -1,4 +1,5 @@
-// Inline notice that an update is downloaded and ready to install.
+// Floating toast (lower-left .app-toast-stack) that an update is
+// downloaded and ready to install.
 //
 // Subscribes to `events:app-update:status` from main; reads the
 // initial status once (in case main fired before this component

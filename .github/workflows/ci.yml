@@ -91,23 +91,20 @@ jobs:
 
       # ubuntu-latest ships only ~14 GB free on /, and build + native
       # rebuild + Playwright have exhausted it (a prior run hit 17 MB
-      # free and timed an unrelated spec out). Remove preinstalled
-      # toolchains this job never uses. The Windows diagnostics in this
-      # PR confirmed Android SDK + .NET + Haskell are the dominant
-      # consumers; the paths below are their ubuntu-latest equivalents.
-      # We do NOT touch /opt/hostedtoolcache/node — configure-nodejs
-      # serves our Node from there. Each removal is best-effort so a
-      # missing dir on a future image revision can't fail the job.
+      # free and timed an unrelated spec out). We only need a few GB of
+      # headroom — that run overshot 16 GB free by essentially nothing —
+      # so free space CHEAPLY: prune the preloaded Docker images (large
+      # layer blobs, fast to delete) and drop the .NET SDK. We
+      # deliberately skip the Android SDK / Haskell trees: they'd free
+      # far more but cost ~80s of small-file `rm` for headroom we don't
+      # need. /opt/hostedtoolcache/node is untouched (configure-nodejs
+      # serves our Node from there). Best-effort so a missing dir can't
+      # fail the job; df before/after records the result.
       - name: Free up disk space
         run: |
           echo "== disk before cleanup =="; df -h /
-          sudo rm -rf /usr/local/lib/android || true   # ~9-13 GB Android SDK
-          sudo rm -rf /usr/share/dotnet || true        # ~1.6 GB .NET
-          sudo rm -rf /opt/ghc /usr/local/.ghcup || true  # ~5 GB Haskell
-          sudo rm -rf /opt/hostedtoolcache/CodeQL || true # ~5 GB CodeQL
-          sudo rm -rf /usr/local/share/boost || true   # ~1.5 GB Boost
-          sudo rm -rf /usr/lib/jvm || true             # ~1 GB JVMs
-          sudo docker image prune --all --force || true # preloaded images
+          sudo docker image prune --all --force || true  # preloaded images (several GB, fast)
+          sudo rm -rf /usr/share/dotnet || true          # ~1.6 GB .NET SDK
           echo "== disk after cleanup =="; df -h /
 
       - name: Install Node.js and dependencies

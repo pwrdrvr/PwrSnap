@@ -982,8 +982,14 @@ const ASSET_FILENAME_MAINTENANCE_BOOT_DELAY_MS = 2_000;
 // (startup profiling, 2026-06). 4s/8s land them after the library has
 // painted content on every machine we measured, while still finishing
 // long before a user typically reaches the surfaces they warm up.
-const STARTUP_CODEX_PROBE_DELAY_MS = 4_000;
-const ACP_AGENT_WARMUP_BOOT_DELAY_MS = 8_000;
+//
+// E2E keeps the pre-deferral timing: the Windows tray popover specs
+// measure popover size/visibility in the first seconds after launch,
+// and moving the probe's spawn churn from boot into that window made
+// them flake (PR #238 CI). E2E never asserts on probe timing itself,
+// so baseline parity is the stable choice there.
+const STARTUP_CODEX_PROBE_DELAY_MS = isE2E ? 0 : 4_000;
+const ACP_AGENT_WARMUP_BOOT_DELAY_MS = isE2E ? 2_000 : 8_000;
 
 async function runBootGc(): Promise<void> {
   // Tmp file orphans first — cheap, no DB.

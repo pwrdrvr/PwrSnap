@@ -61,10 +61,20 @@ function readCacheJson(): { shell: string | null; env: Record<string, string> } 
 }
 
 const SAVED_ENV = { ...process.env };
+const REAL_PLATFORM = process.platform;
+
+// Hydration is a hard no-op on win32 (launchd-PATH starvation is a
+// macOS/Linux problem), so pin the platform for the suite — otherwise
+// every assertion trivially fails on Windows CI. The win32 behavior
+// gets its own explicit test below.
+function setPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", { value: platform, configurable: true });
+}
 
 describe("hydrateLoginShellEnvCached", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    setPlatform("darwin");
     rmSync(CACHE_PATH, { force: true });
     resolveInteractiveLoginShellEnv.mockReset();
     process.env = { ...SAVED_ENV };
@@ -74,6 +84,7 @@ describe("hydrateLoginShellEnvCached", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    setPlatform(REAL_PLATFORM);
     process.env = { ...SAVED_ENV };
   });
 
@@ -126,6 +137,16 @@ describe("hydrateLoginShellEnvCached", () => {
     hydrateLoginShellEnvCached(); // warm apply
 
     expect(process.env.PWRSNAP_STARTUP_PROFILE_DIR).toBe("/this/launch/value");
+  });
+
+  it("is a no-op on win32", () => {
+    setPlatform("win32");
+    resolveInteractiveLoginShellEnv.mockReturnValue({ PATH: "/never/applied" });
+
+    hydrateLoginShellEnvCached();
+
+    expect(resolveInteractiveLoginShellEnv).not.toHaveBeenCalled();
+    expect(process.env.PATH).not.toBe("/never/applied");
   });
 
   it("SHELL change invalidates the cache and re-resolves", () => {

@@ -88,7 +88,22 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
     loadFile: vi.fn(() => selectorLoadPromise()),
     webContents: {
       on: vi.fn(),
-      send: vi.fn(),
+      // Simulate the selector renderer: when main pushes the per-show
+      // mode with a snapshot URL, the real renderer loads the frozen
+      // <img> and acks `region-selector:painted` — which main now gates
+      // `show()` on. Mirror that ack here (next microtask, after main
+      // has registered its paint waiter) so the gated show proceeds
+      // without a real renderer/image decode.
+      send: vi.fn((channel: string, payload: unknown) => {
+        if (channel === "region-selector:mode" && payload !== null && typeof payload === "object") {
+          const url = (payload as { screenUrl?: unknown }).screenUrl;
+          if (typeof url === "string") {
+            queueMicrotask(() =>
+              ipcListeners.get("region-selector:painted")?.({}, { screenUrl: url })
+            );
+          }
+        }
+      }),
       focus: vi.fn()
     },
     on: vi.fn(),

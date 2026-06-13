@@ -51,6 +51,7 @@ declare global {
         snappedWindowId?: number;
         fullWindow?: boolean;
       }): void;
+      notifySelectorSnapshotPainted(screenUrl: string): void;
       onWindowListSnapshot(
         handler: (payload: {
           windows: WindowSnapEntry[];

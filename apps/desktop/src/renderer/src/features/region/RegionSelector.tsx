@@ -1028,6 +1028,12 @@ export function RegionSelector() {
           src={screenUrl}
           alt=""
           draggable={false}
+          // Ack to main once the frozen snapshot has loaded/decoded.
+          // Main gates `win.show()` on this so the selector window is
+          // never revealed as an empty transparent overlay (which would
+          // flash the live screen behind it). Fires while the window is
+          // still hidden — onLoad doesn't require a visible paint.
+          onLoad={() => window.pwrsnapApi?.notifySelectorSnapshotPainted(screenUrl)}
           style={{
             position: "fixed",
             inset: 0,

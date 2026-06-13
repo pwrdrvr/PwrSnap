@@ -89,6 +89,11 @@ const REGION_SELECTOR_KEY_CHANNEL = "region-selector:key";
 // `win.show()` so the selector renderer can configure UI for
 // 'auto' | 'region' | 'window' before the first paint.
 const REGION_SELECTOR_MODE_CHANNEL = "region-selector:mode";
+// Renderer → main: the selector acks that the frozen-snapshot <img>
+// for a given screenUrl has loaded/decoded. Main waits for this before
+// showing the (still-hidden) selector window, so it never appears as an
+// empty transparent overlay flashing the live screen behind it.
+const REGION_SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
 
 // Tray content auto-sizes to fit. The renderer measures itself with a
 // ResizeObserver and asks main to setContentSize so the popover never
@@ -181,6 +186,16 @@ const pwrsnapApi = {
     fullWindow?: boolean;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_RESULT_CHANNEL, payload);
+  },
+  /**
+   * Region-selector renderer → main: the frozen-snapshot image for
+   * `screenUrl` finished loading/decoding. Main gates `win.show()` on
+   * this so the selector never appears before its background is
+   * painted. Carries `screenUrl` so a stale ack from a superseded
+   * capture can't satisfy the current wait.
+   */
+  notifySelectorSnapshotPainted(screenUrl: string): void {
+    ipcRenderer.send(REGION_SELECTOR_PAINTED_CHANNEL, { screenUrl });
   },
   /**
    * Subscribe to the snap-to-window window-list snapshot main pushes

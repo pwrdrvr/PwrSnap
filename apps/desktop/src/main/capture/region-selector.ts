@@ -44,6 +44,37 @@ let pendingResolver: ((result: SelectorResult) => void) | null = null;
 let resultListenerAttached = false;
 let displayListenersAttached = false;
 
+/** The capture currently waiting for its snapshot to paint before the
+ *  selector is shown. Resolved by the SELECTOR_PAINTED_CHANNEL ack
+ *  (matching screenUrl) or by its own timeout. */
+let pendingPaintWait: { screenUrl: string; resolve: () => void } | null = null;
+
+/**
+ * Resolve once the renderer acks that the snapshot for `screenUrl` has
+ * painted, or after `timeoutMs` — whichever comes first. Never rejects.
+ * A new wait supersedes any previous one (the older capture is moot).
+ */
+function waitForSnapshotPainted(screenUrl: string, timeoutMs: number): Promise<void> {
+  if (pendingPaintWait !== null) {
+    const stale = pendingPaintWait;
+    pendingPaintWait = null;
+    stale.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (pendingPaintWait?.resolve === settleResolve) pendingPaintWait = null;
+      resolve();
+    };
+    const settleResolve = finish;
+    const timer = setTimeout(finish, timeoutMs);
+    pendingPaintWait = { screenUrl, resolve: settleResolve };
+  });
+}
+
 /**
  * Toggle content protection (NSWindow.sharingType=.none on macOS) on a
  * set of windows so they're excluded from the screencapture snapshot
@@ -167,6 +198,21 @@ const SELECTOR_KEY_CHANNEL = "region-selector:key";
 // before show() and the renderer flips its UI accordingly. Possible
 // values: 'auto' | 'region' | 'window'.
 const SELECTOR_MODE_CHANNEL = "region-selector:mode";
+// Renderer → main: the renderer fires this once the frozen-snapshot
+// <img> for a given screenUrl has loaded/decoded. Main waits for it
+// before `win.show()` so the window never appears as an empty
+// transparent overlay (which would flash the live screen / desktop
+// behind it for a frame before the snapshot paints). Carries the
+// screenUrl so a late ack from a previous capture can't satisfy the
+// current wait.
+const SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
+
+/** How long to wait for the renderer's "snapshot painted" ack before
+ *  showing the selector anyway. Decode of a full-screen PNG is well
+ *  under this; the timeout only fires if the renderer is wedged, in
+ *  which case we fall back to the pre-fix behavior (show immediately)
+ *  — no hang, no regression. */
+const SHOW_AFTER_PAINT_TIMEOUT_MS = 250;
 
 export type SelectorMode = "auto" | "region" | "window";
 
@@ -219,6 +265,20 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       if (lastViewportByWebContents.get(wcId) === summary) return;
       lastViewportByWebContents.set(wcId, summary);
       log.info(`renderer viewport wc=${wcId} ${summary}`);
+    });
+    ipcMain.on(SELECTOR_PAINTED_CHANNEL, (_event, payload: unknown) => {
+      // Renderer acked that the frozen snapshot finished painting.
+      // Only satisfy the current wait if the URL matches (a stale ack
+      // from a superseded capture must not reveal the selector early).
+      if (pendingPaintWait === null) return;
+      const ackedUrl =
+        typeof payload === "object" && payload !== null && "screenUrl" in payload
+          ? (payload as { screenUrl?: unknown }).screenUrl
+          : null;
+      if (ackedUrl !== null && ackedUrl !== pendingPaintWait.screenUrl) return;
+      const waiter = pendingPaintWait;
+      pendingPaintWait = null;
+      waiter.resolve();
     });
     ipcMain.on(SELECTOR_RESULT_CHANNEL, (_event, payload: unknown) => {
       // IMPORTANT: this handler does NOT hide the selector windows.
@@ -566,22 +626,14 @@ export async function pickRegion(
   const result = await new Promise<SelectorResult>((resolve) => {
     pendingResolver = resolve;
     windowListResolver = resolve;
-    // Pre-show the float-over UNDER the selector. The float-over is
-    // at floating window level (3); the selector below is at
-    // screen-saver level (1000), so the selector covers the float-
-    // over visually until we hide it. This lets the post-commit
-    // reveal be instantaneous (the toast is already painted at the
-    // right position) and avoids the post-hoc show race that left
-    // the toast hidden behind the previously-frontmost app's window.
-    // See docs/plans/2026-05-04-001 §"Solution 3" for the full
-    // choreography.
-    setFloatOverState({ kind: "show-idle" });
-
-    // Tell the renderer which mode + snapshot URL to use BEFORE we
-    // make the window visible. The renderer applies both
-    // synchronously on receipt (mode → body[data-mode]; snapshot →
-    // <img> background), so by the first paint we're showing the
-    // frozen-in-time pixels and we're already in the right mode.
+    // Tell the renderer which mode + snapshot URL to use, then let it
+    // render + DECODE the frozen-snapshot <img> while the window is
+    // STILL HIDDEN. We reveal the window only once the renderer acks
+    // that paint (or a short timeout elapses) — see `reveal()` below.
+    // Showing first (the old behavior) made the window appear as an
+    // empty transparent overlay for a frame, flashing the live screen
+    // / desktop behind the screen-saver-level selector before the
+    // snapshot landed. ("compose → load image → show in one go.")
     const modePayload =
       activeScreenSnapshot !== null
         ? { mode, screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}`, intent }
@@ -594,67 +646,88 @@ export async function pickRegion(
       displayId: targetDisplay.id,
       durationFromUserRequestMs: elapsedFromRequest()
     });
-    // Order matters: setSimpleFullScreen(true) BEFORE show().
-    //
-    // Without this, `win.show()` paints the renderer's first frame
-    // while Cocoa is still clipping content to the work-area (the
-    // region below the menu bar) — even though the BrowserWindow
-    // bounds cover the full display. The screen snapshot, painted
-    // at body coords (0, 0), then sits 25-or-so pixels below where
-    // it should, with the LIVE menu bar still visible above. ~150ms
-    // later setSimpleFullScreen settles, the menu bar slides out,
-    // the window's content area expands, and the snapshot suddenly
-    // jumps up by the menu-bar height — visible to the user as the
-    // whole screen "lurching."
-    //
-    // First ⌘⇧P after launch happened to look clean because no prior
-    // teardown had toggled setSimpleFullScreen back to false; the
-    // pre-warmed window inherited a permissive style mask. Subsequent
-    // shows hit the lurch because hideAllSelectors → leaveMenuBarOverlayMode
-    // had reset it.
-    //
-    // Doing the toggle while the window is hidden lets the style-
-    // mask change settle off-screen; show() then reveals the window
-    // already in its final geometry. Snapshot's menu bar pixels land
-    // exactly where the user expects them, no jump.
-    //
-    // The renderer paints the menu bar / dock area itself via the
-    // screen snapshot, so covering the real menu bar is fine — user
-    // sees a 1-frame-old version of it instead of the live one.
-    // Matches every native Mac capture tool (Cleanshot, Shottr,
-    // SnagIt).
-    enterMenuBarOverlayMode(win);
-    win.show();
-    selectorDisplaysNeedingFreshPanel.add(targetDisplay.id);
-    win.focus();
-    // webContents.focus() in addition to BrowserWindow.focus() —
-    // belt and braces. focus() makes the NSWindow key, but
-    // webContents focus is what governs whether keystrokes route
-    // to the renderer's document.
-    win.webContents.focus();
-    // Non-activating panels do not always win the final z-order
-    // arbitration when another app was frontmost at hotkey time. The
-    // selector still receives normal-window hover/mouse events, but
-    // the Dock/menu bar can remain live above it. Re-assert ordering
-    // after show/focus, matching the float-over and recording HUD
-    // pattern without activating PwrSnap or changing Spaces.
-    win.moveTop();
-    log.info("capture selector displayed", {
-      displayId: targetDisplay.id,
-      durationFromDisplayRequestedMs: Date.now() - displayRequestedAt,
-      durationFromUserRequestMs: elapsedFromRequest()
-    });
-    scheduleStandbySelectorWarm(targetDisplay);
-    selectorVisible = true;
-    if (windowListPayload !== null) {
-      deliverWindowListPayload(windowListPayload);
-    }
-    setTimeout(() => {
+    // Reveal the window once the snapshot has painted (gated below).
+    const reveal = (): void => {
       if (win.isDestroyed() || pendingResolver !== resolve) return;
-      if (modePayload !== null) {
-        win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
+      // Pre-show the float-over UNDER the selector, then show the
+      // selector — kept as ONE atomic step so the floating-level
+      // float-over is never briefly visible uncovered. The selector
+      // (screen-saver level) covers it until commit/cancel, and the
+      // post-commit reveal stays instant (toast already painted).
+      // See docs/plans/2026-05-04-001 §"Solution 3".
+      setFloatOverState({ kind: "show-idle" });
+      // Order matters: setSimpleFullScreen(true) BEFORE show().
+      //
+      // Without this, `win.show()` paints the renderer's first frame
+      // while Cocoa is still clipping content to the work-area (the
+      // region below the menu bar) — even though the BrowserWindow
+      // bounds cover the full display. The screen snapshot, painted
+      // at body coords (0, 0), then sits 25-or-so pixels below where
+      // it should, with the LIVE menu bar still visible above. ~150ms
+      // later setSimpleFullScreen settles, the menu bar slides out,
+      // the window's content area expands, and the snapshot suddenly
+      // jumps up by the menu-bar height — visible to the user as the
+      // whole screen "lurching."
+      //
+      // First ⌘⇧P after launch happened to look clean because no prior
+      // teardown had toggled setSimpleFullScreen back to false; the
+      // pre-warmed window inherited a permissive style mask. Subsequent
+      // shows hit the lurch because hideAllSelectors → leaveMenuBarOverlayMode
+      // had reset it.
+      //
+      // Doing the toggle while the window is hidden lets the style-
+      // mask change settle off-screen; show() then reveals the window
+      // already in its final geometry. Snapshot's menu bar pixels land
+      // exactly where the user expects them, no jump.
+      //
+      // The renderer paints the menu bar / dock area itself via the
+      // screen snapshot, so covering the real menu bar is fine — user
+      // sees a 1-frame-old version of it instead of the live one.
+      // Matches every native Mac capture tool (Cleanshot, Shottr,
+      // SnagIt).
+      enterMenuBarOverlayMode(win);
+      win.show();
+      selectorDisplaysNeedingFreshPanel.add(targetDisplay.id);
+      win.focus();
+      // webContents.focus() in addition to BrowserWindow.focus() —
+      // belt and braces. focus() makes the NSWindow key, but
+      // webContents focus is what governs whether keystrokes route
+      // to the renderer's document.
+      win.webContents.focus();
+      // Non-activating panels do not always win the final z-order
+      // arbitration when another app was frontmost at hotkey time. The
+      // selector still receives normal-window hover/mouse events, but
+      // the Dock/menu bar can remain live above it. Re-assert ordering
+      // after show/focus, matching the float-over and recording HUD
+      // pattern without activating PwrSnap or changing Spaces.
+      win.moveTop();
+      log.info("capture selector displayed", {
+        displayId: targetDisplay.id,
+        durationFromDisplayRequestedMs: Date.now() - displayRequestedAt,
+        durationFromUserRequestMs: elapsedFromRequest()
+      });
+      scheduleStandbySelectorWarm(targetDisplay);
+      selectorVisible = true;
+      if (windowListPayload !== null) {
+        deliverWindowListPayload(windowListPayload);
       }
-    }, 50);
+      setTimeout(() => {
+        if (win.isDestroyed() || pendingResolver !== resolve) return;
+        if (modePayload !== null) {
+          win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
+        }
+      }, 50);
+    };
+
+    // Gate the reveal on the snapshot actually painting in the
+    // (still-hidden) renderer, so the window never appears empty. The
+    // timeout is the safety net: if the ack never comes (renderer
+    // wedged), show anyway — identical to the pre-fix behavior.
+    if (modePayload === null) {
+      reveal();
+    } else {
+      void waitForSnapshotPainted(modePayload.screenUrl, SHOW_AFTER_PAINT_TIMEOUT_MS).then(reveal);
+    }
   });
   acceptingWindowList = false;
   void windowListPromise;
@@ -1496,6 +1569,7 @@ export function disposeRegionSelector(): void {
   selectorDisplaysNeedingFreshPanel.clear();
   if (resultListenerAttached) {
     ipcMain.removeAllListeners(SELECTOR_RESULT_CHANNEL);
+    ipcMain.removeAllListeners(SELECTOR_PAINTED_CHANNEL);
     resultListenerAttached = false;
   }
 }

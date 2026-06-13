@@ -140,6 +140,28 @@ const APP_WEBSITE = "https://pwrsnap.com";
 const APP_DOCS = "https://docs.pwrsnap.com";
 const APP_ISSUE_REPORTER = "https://github.com/pwrdrvr/PwrSnap/issues/new";
 const PASTE_FROM_CLIPBOARD_MENU_ID = "file-new-paste-from-clipboard";
+const EDIT_UNDO_MENU_ID = "edit-undo";
+const EDIT_REDO_MENU_ID = "edit-redo";
+
+/**
+ * Route a native Edit ▸ Undo / Edit ▸ Redo activation to the focused
+ * window's renderer. The menu item's `click` gives us a `BaseWindow`
+ * (no `webContents`), so resolve it to the owning `BrowserWindow`;
+ * fall back to the focused window if needed. The renderer's edit-menu
+ * bridge decides text-undo vs editor-undo based on focus.
+ */
+function sendEditCommand(
+  window: Electron.BaseWindow | undefined,
+  channel: (typeof EVENT_CHANNELS)["editUndo" | "editRedo"]
+): void {
+  const candidate =
+    window !== undefined && !window.isDestroyed()
+      ? BrowserWindow.fromId(window.id)
+      : null;
+  const target = candidate ?? BrowserWindow.getFocusedWindow();
+  if (target === null || target.isDestroyed()) return;
+  target.webContents.send(channel);
+}
 
 /** The hotkey kinds we register from `settings.hotkeys.*`. Order
  *  matters only for log readability. */
@@ -261,7 +283,66 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
         isMac ? { role: "close" as const } : { role: "quit" as const }
       ]
     },
-    { role: "editMenu" },
+    {
+      // Custom Edit menu. We replace Electron's `role: "editMenu"` only
+      // for Undo/Redo: the built-in `role: "undo"` / `role: "redo"`
+      // drive the browser's native edit-undo (`webContents.undo()`),
+      // which can't reach the editor's renderer-side undo stack (crop,
+      // arrow, every canvas annotation). Our custom items send
+      // `editUndo` / `editRedo` to the focused window; the renderer's
+      // edit-menu bridge does native text undo when an editable field is
+      // focused and editor undo otherwise. Everything else mirrors what
+      // `role: "editMenu"` produces per-platform so cut/copy/paste/
+      // select-all (and the macOS Speech submenu) don't regress.
+      //
+      // Accelerators are `CmdOrCtrl+…` so the same template works on
+      // macOS, Windows, and Linux. The Windows/Linux Ctrl+Y redo
+      // convention is handled in the renderer bridge (a single menu item
+      // can register only one accelerator). See
+      // docs/solutions/2026-06-13-edit-menu-undo-redo-bridge.md.
+      label: "Edit",
+      submenu: [
+        {
+          id: EDIT_UNDO_MENU_ID,
+          label: "Undo",
+          accelerator: "CmdOrCtrl+Z",
+          click: (_item, window) => {
+            sendEditCommand(window, EVENT_CHANNELS.editUndo);
+          }
+        },
+        {
+          id: EDIT_REDO_MENU_ID,
+          label: "Redo",
+          accelerator: "CmdOrCtrl+Shift+Z",
+          click: (_item, window) => {
+            sendEditCommand(window, EVENT_CHANNELS.editRedo);
+          }
+        },
+        { type: "separator" as const },
+        { role: "cut" as const },
+        { role: "copy" as const },
+        { role: "paste" as const },
+        ...(isMac
+          ? [
+              { role: "pasteAndMatchStyle" as const },
+              { role: "delete" as const },
+              { role: "selectAll" as const },
+              { type: "separator" as const },
+              {
+                label: "Speech",
+                submenu: [
+                  { role: "startSpeaking" as const },
+                  { role: "stopSpeaking" as const }
+                ]
+              }
+            ]
+          : [
+              { role: "delete" as const },
+              { type: "separator" as const },
+              { role: "selectAll" as const }
+            ])
+      ]
+    },
     { label: "View", submenu: viewSubmenu },
     { role: "windowMenu" },
     {

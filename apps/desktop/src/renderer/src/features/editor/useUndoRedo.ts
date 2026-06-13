@@ -47,6 +47,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { BundleLayerNode, OverlayRow, PwrSnapError, Result } from "@pwrsnap/shared";
+import { registerEditorUndoRedo } from "../../lib/editMenuBridge";
 import type {
   CropRect,
   EditOpResult,
@@ -758,34 +759,28 @@ export function useUndoRedo(opts: {
     lastCoalesceRef.current = null;
   }, [future, applyInverse, wrapApplying]);
 
-  // Cmd+Z / Cmd+Shift+Z / Cmd+Y keyboard bindings. Skipped when a
-  // text field has focus (the user is typing — Cmd+Z should be
-  // browser-default text-undo).
+  // Register this stack with the app-wide Edit-menu bridge so the native
+  // Edit ▸ Undo / Edit ▸ Redo items and the ⌘Z / ⌘⇧Z accelerators reach
+  // it when the canvas — not a text field — is focused.
+  //
+  // This replaces a former window-keydown listener that handled
+  // ⌘Z / ⌘⇧Z / Ctrl+Y directly. Those combos are now REGISTERED MENU
+  // ACCELERATORS (see apps/desktop/src/main/index.ts). An Electron menu
+  // accelerator and a renderer `keydown` listener BOTH fire for the same
+  // keystroke (the accelerator doesn't consume the JS event), so keeping
+  // the listener would undo/redo twice. The menu is therefore the single
+  // keyboard source for ⌘Z / ⌘⇧Z; Ctrl+Y (Windows/Linux) is handled once
+  // in the bridge. Text-field-focus awareness lives in the bridge too.
+  // See docs/solutions/2026-06-13-edit-menu-undo-redo-bridge.md.
   useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      const target = e.target as HTMLElement | null;
-      if (
-        target?.tagName === "INPUT" ||
-        target?.tagName === "TEXTAREA" ||
-        target?.isContentEditable === true
-      ) {
-        return;
-      }
-      if (e.key === "z" || e.key === "Z") {
-        e.preventDefault();
-        if (e.shiftKey) {
-          void redo();
-        } else {
-          void undo();
-        }
-      } else if (e.key === "y") {
-        e.preventDefault();
+    return registerEditorUndoRedo({
+      undo: () => {
+        void undo();
+      },
+      redo: () => {
         void redo();
       }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    });
   }, [undo, redo]);
 
   return {

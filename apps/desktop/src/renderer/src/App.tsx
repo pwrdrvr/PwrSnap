@@ -11,6 +11,7 @@ import { TrayMenu } from "./features/tray/TrayMenu";
 import { AppUpdateBanner } from "./features/update/AppUpdateBanner";
 import { RendererErrorBoundary } from "./RendererErrorBoundary";
 import { useAppearanceSync } from "./lib/useAppearance";
+import { useEditMenuBridge } from "./lib/editMenuBridge";
 
 type Stage =
   | "library"
@@ -88,6 +89,14 @@ export function App() {
   // at this level — the Appearance settings page reads from its own
   // `useSettings` snapshot to render the segmented control.
   useAppearanceSync();
+
+  // Bridge the native Edit ▸ Undo / Edit ▸ Redo menu items (and the
+  // Windows/Linux Ctrl+Y redo accelerator) to the right undo system,
+  // focus-aware. Mounted once per BrowserWindow here so text-field undo
+  // keeps working in every surface and the editor's canvas undo is
+  // reachable wherever the editor is mounted (the Library window's Focus
+  // mode). See ./lib/editMenuBridge.ts.
+  useEditMenuBridge();
 
   const app = (() => {
     if (STAGE === "tray") {

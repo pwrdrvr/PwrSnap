@@ -200,6 +200,23 @@ export const EVENT_CHANNELS = {
    */
   clipboardChanged: "events:clipboard:changed",
   /**
+   * Main → focused BrowserWindow: the native Edit ▸ Undo / Edit ▸ Redo
+   * menu item (or its CmdOrCtrl+Z / CmdOrCtrl+Shift+Z accelerator) was
+   * invoked. The renderer's edit-menu bridge decides what to undo based
+   * on focus: an editable field (INPUT / TEXTAREA / contentEditable)
+   * gets a native text undo (`document.execCommand`); otherwise the
+   * editor's renderer-side undo stack is driven.
+   *
+   * Electron's `role: "undo"` / `role: "redo"` only reach the browser's
+   * native edit-undo (`webContents.undo()`), which has no connection to
+   * the editor's `useUndoRedo` stack — hence this explicit bridge. See
+   * docs/solutions/2026-06-13-edit-menu-undo-redo-bridge.md.
+   *
+   * Signal-only — the channel itself is the command; no payload.
+   */
+  editUndo: "events:edit:undo",
+  editRedo: "events:edit:redo",
+  /**
    * Main → every BrowserWindow: a Library chat thread's metadata
    * changed (created, renamed, archived, anchor moved, status flipped
    * to streaming/awaiting-approval/idle, or last-message preview

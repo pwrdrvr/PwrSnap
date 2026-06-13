@@ -165,12 +165,22 @@
 
      overflow: hidden keeps the rounded corners crisp; the
      BrowserWindow itself is transparent so the corners read
-     correctly against whatever's behind. */
+     correctly against whatever's behind.
+
+     Surface pairing mirrors the library window: body = canvas
+     black (--bg-app), header = chrome lift (--bg-sidebar, on
+     .ps-tray__hdr). Don't paint this with --bg-panel-hover — it's
+     the warm hover-state token, and as a primary fill it pushes
+     the popover into a different color family than the library.
+     Slight translucency + blur (no saturate — it pulls color from
+     the desktop behind) keeps the floating edge readable over dark
+     wallpapers. The float-over (.fo) uses the same pairing; keep
+     them in sync. */
   position: relative;
   width: 100%;
-  background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
-  backdrop-filter: blur(28px) saturate(1.2);
-  -webkit-backdrop-filter: blur(28px) saturate(1.2);
+  background: color-mix(in srgb, var(--bg-app) 94%, transparent);
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
   border: 1px solid var(--border-subtle);
   border-radius: 12px;
   box-shadow: var(--shadow-lg), var(--shadow-inset);
@@ -181,6 +191,7 @@
 .ps-tray__hdr {
   display: flex; align-items: center; justify-content: space-between;
   padding: 11px 14px 8px;
+  background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border-subtle);
 }
 .ps-tray__brand { display: flex; align-items: center; gap: 8px; }

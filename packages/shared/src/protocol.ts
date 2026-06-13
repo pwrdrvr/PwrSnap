@@ -1522,7 +1522,7 @@ export type Settings = {
     chat: ChatSettings;
     /** Per-surface default provider / model / reasoning the user picks
      *  in Settings → AI. These flow into the kit `ChatThreadController`
-     *  (Library chat, Sizzle chat) and the `CodexOneShotClient`
+     *  (Library chat, Sizzle chat) and pooled Codex enrichment
      *  (Enrichment) — see AiSurfaceDefaults for the field semantics.
      *  Additive: every leaf is optional, an omitted field means "use the
      *  Codex default" (no `model` / `modelProvider` / `effort` is sent on

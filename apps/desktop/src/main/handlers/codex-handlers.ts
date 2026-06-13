@@ -430,23 +430,15 @@ export function registerCodexHandlers(params?: {
   settingsWriter?: SettingsWriter;
   budget?: AiEnrichmentBudget;
 }): void {
-  const defaultClients = new Map<string, CaptureEnrichmentClient>();
   const modelListInFlight = new Map<string, Promise<CodexModelOption[]>>();
   const clientFactory =
     params?.clientFactory ??
     ((command, env) => {
-      // Key by command + CODEX_HOME so switching the auth profile (which only
-      // changes env.CODEX_HOME) yields a distinct client, not a stale cached one.
-      const key = JSON.stringify([command, env?.["CODEX_HOME"] ?? ""]);
-      const existing = defaultClients.get(key);
-      if (existing) return existing;
-      const client = new CaptureEnrichmentClient({
+      return new CaptureEnrichmentClient({
         command,
         ...(env !== undefined ? { env } : {}),
         captureMetadataWorkspaceDir: captureMetadataWorkspaceDir()
       });
-      defaultClients.set(key, client);
-      return client;
     });
   const modelLister = params?.modelLister ?? listCodexModels;
   const closeClientAfterRun = params?.clientFactory !== undefined;
@@ -1188,8 +1180,9 @@ async function runCaptureEnrichment(params: {
         message: error instanceof Error ? error.message : String(error)
       });
     });
-    // The Codex client is cached + reused (close only when the test factory
-    // asked for it); the ACP client is built fresh per run, so always close it.
+    // The default Codex enrichment wrapper is processless; the app-wide Codex
+    // owner closes at app shutdown. Test-provided clients may still need close.
+    // The ACP client is built fresh per run, so always close it.
     if (params.closeClientAfterRun || params.acpAgentId !== undefined) {
       await client?.close().catch((error: unknown) => {
         log.warn("enrichment client close failed", {

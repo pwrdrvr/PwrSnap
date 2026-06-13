@@ -1,6 +1,6 @@
 // Builds a kit `ChatThreadController` for one PwrSnap chat surface (Library or
 // Sizzle), wiring it to:
-//   • a `CodexThreadClient` (the kit's `AgentBackend`),
+//   • a pooled Codex backend view (the kit's `AgentBackend` surface),
 //   • a `ThreadStoreAdapter` over PwrSnap's `ChatThreadStore` (+ usage),
 //   • a per-surface event adapter that re-broadcasts the controller's neutral
 //     events onto PwrSnap's six `events:*Chat:*` IPC channels,
@@ -11,7 +11,7 @@
 // PwrSnap's; `toKitApprovalDecision` maps between them at the verb boundary.
 
 import { join } from "node:path";
-import { ChatThreadController, CodexThreadClient } from "@pwrdrvr/agent-client";
+import { ChatThreadController } from "@pwrdrvr/agent-client";
 import type { ChatBackend, ChatThreadControllerDeps } from "@pwrdrvr/agent-client";
 import type { AgentBackend, NormalizedApprovalDecision } from "@pwrdrvr/agent-core";
 import {
@@ -28,6 +28,7 @@ import { resolveActiveAcpInstance } from "./acp-instance-resolver";
 import { acpReasoningEffort } from "./acp-effort";
 import { buildPwrSnapMcpServer } from "./mcp/pwrsnap-mcp-server-config";
 import { acquireAcpAgentClient } from "./acp-agent-pool";
+import { acquireCodexAgentBackendView } from "./codex-agent-pool";
 import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
@@ -42,7 +43,7 @@ import type {
 import { ChatThreadStore } from "./chat-thread-store";
 import { ThreadStoreAdapter } from "./thread-store-adapter";
 import { makeChatBroadcast, type ChatBroadcast, type ChatChannelSet } from "./chat-event-adapter";
-import { toAgentKitLogger, PWRSNAP_CLIENT_NAME, PWRSNAP_CLIENT_TITLE, PWRSNAP_SERVICE_NAME } from "./agent-kit-bindings";
+import { toAgentKitLogger, PWRSNAP_SERVICE_NAME } from "./agent-kit-bindings";
 
 /** PwrSnap's approval decision union → the kit's neutral decision. PwrSnap
  *  distinguishes "reject-layer" / "reject-run" at the renderer for the layer-
@@ -167,7 +168,7 @@ export type ChatBackendDeps = {
   discoverAcpAgentInstances?: (
     options?: LocalAcpDiscoveryOptions
   ) => Promise<DiscoveredAcpAgentGroup[]>;
-  /** Codex backend factory. Defaults to constructing a `CodexThreadClient`. */
+  /** Codex backend factory. Defaults to acquiring a pooled Codex backend view. */
   makeCodexClient?: (input: {
     command: string;
     env?: NodeJS.ProcessEnv;
@@ -198,13 +199,10 @@ function defaultMakeCodexClient(input: {
   env?: NodeJS.ProcessEnv;
   loggerScope: string;
 }): ChatBackend {
-  return new CodexThreadClient({
+  return acquireCodexAgentBackendView({
     command: input.command,
     ...(input.env !== undefined ? { env: input.env } : {}),
-    clientName: PWRSNAP_CLIENT_NAME,
-    clientTitle: PWRSNAP_CLIENT_TITLE,
-    serviceName: PWRSNAP_SERVICE_NAME,
-    logger: toAgentKitLogger(input.loggerScope)
+    loggerScope: input.loggerScope
   });
 }
 
@@ -436,7 +434,9 @@ export async function buildChatSurface(
   const dispose = async (): Promise<void> => {
     live = false;
     if (!resolved.shared) {
-      // Exclusively-ours Codex child — shut it down. A pooled ACP backend is
+      // Codex backend views release their surface registration here while the
+      // app-wide Codex owner keeps the single process alive. Non-shared test
+      // doubles may still use this as a real close. A pooled ACP backend is
       // left for the pool to manage (other surfaces / warm-up may share it).
       try {
         await client.close();

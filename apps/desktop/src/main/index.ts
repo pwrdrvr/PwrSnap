@@ -49,6 +49,7 @@ import {
 import { registerAcpHandlers } from "./handlers/acp-handlers";
 import { getToolRpcServer } from "./ai/mcp/pwrsnap-tool-rpc-server";
 import { closeAcpAgentPool, warmConfiguredAcpAgents } from "./ai/acp-agent-pool";
+import { closeCodexAgentPool } from "./ai/codex-agent-pool";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
 import {
@@ -1758,6 +1759,9 @@ export function bootstrapApp(): void {
     // Close every pooled ACP agent process (warmed at startup / acquired by a
     // chat surface). No-op when no agent was ever pooled.
     void closeAcpAgentPool().catch(() => undefined);
+    // Close the shared Codex App Server process owner. No-op when Codex was
+    // never used this run.
+    void closeCodexAgentPool().catch(() => undefined);
     // Tear down the shared composite-thumbnail worker eagerly so an
     // in-flight encode (e.g. a deferred v1→v2 sweep still running) is
     // rejected and the worker terminated on our terms, rather than the

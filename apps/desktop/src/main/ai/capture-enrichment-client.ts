@@ -1,25 +1,25 @@
-// Capture-enrichment client — a thin PwrSnap wrapper over the kit's
-// `CodexOneShotClient`.
+// Capture-enrichment client — a thin PwrSnap wrapper over the shared Codex
+// App Server owner.
 //
 // Capture enrichment (annotate / describe / tag / filename / sensitive-scan)
 // is a one-shot structured-output turn: one prompt + one or more local images
 // in, one JSON object out (validated against `CAPTURE_ENRICHMENT_SCHEMA`). The
-// kit's `CodexOneShotClient` owns the persistent worker thread, the
-// `outputSchema` plumbing, the localImage inputs, the per-turn rollback, and
-// token-usage normalization — exactly the loop PwrSnap's old in-tree
-// `CodexAppServerClient` hand-rolled.
+// pooled owner owns the persistent worker thread, `outputSchema` plumbing,
+// localImage inputs, per-turn rollback, and token-usage normalization. This
+// keeps capture enrichment from spawning a second Codex process alongside chat
+// or model listing.
 //
 // This wrapper preserves the `enrichCapture(...)` / `close()` surface that
 // `codex-handlers.ts` consumes, mapping PwrSnap's caller-supplied args (prompt
-// + schema + image paths) onto a `CodexOneShotRequest` and the kit's
+// + schema + image paths) onto a pooled one-shot request and the kit's
 // `NormalizedTokenUsage` back onto PwrSnap's `AiUsageTokenBreakdown` (carrying
 // `contextWindow → modelContextWindow`).
 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { CodexOneShotClient } from "@pwrdrvr/agent-client";
 import type { AiUsageTokenBreakdown, EnrichmentResult } from "@pwrsnap/shared";
 import { resolveCodexThreadConfigForCommand } from "./codex-thread-config";
+import { runCodexOneShotFromPool } from "./codex-agent-pool";
 import {
   CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
   CAPTURE_ENRICHMENT_SCHEMA,
@@ -27,12 +27,6 @@ import {
   type CaptureEnrichmentPromptMetadata,
   parseCaptureEnrichmentResponse
 } from "./enrichment-schema";
-import {
-  PWRSNAP_CLIENT_NAME,
-  PWRSNAP_CLIENT_TITLE,
-  PWRSNAP_SERVICE_NAME,
-  toAgentKitLogger
-} from "./agent-kit-bindings";
 
 export type CaptureEnrichmentClientOptions = {
   command: string;
@@ -104,36 +98,40 @@ function toBreakdown(
 }
 
 export class CaptureEnrichmentClient {
-  private readonly client: CodexOneShotClient;
+  private readonly command: string;
+  private readonly env?: NodeJS.ProcessEnv;
+  private readonly workspaceDir: string;
+  private readonly requestTimeoutMs?: number;
+  private readonly turnTimeoutMs?: number;
+  private readonly threadConfig: Record<string, unknown>;
 
   constructor(options: CaptureEnrichmentClientOptions) {
-    const workspaceDir =
+    this.command = options.command;
+    if (options.env !== undefined) this.env = options.env;
+    this.workspaceDir =
       options.captureMetadataWorkspaceDir ??
       join(tmpdir(), "pwrsnap", "Chats", ".capture-metadata");
-    this.client = new CodexOneShotClient({
-      command: options.command,
-      ...(options.env !== undefined ? { env: options.env } : {}),
-      clientName: PWRSNAP_CLIENT_NAME,
-      clientTitle: PWRSNAP_CLIENT_TITLE,
-      serviceName: PWRSNAP_SERVICE_NAME,
-      workspaceDir,
-      workerThreadName: "PwrSnap Capture Metadata Worker",
-      // Pick the config overlay shape for the running Codex build (the schema
-      // churns across releases). Probed once per command, cached.
-      threadConfig: resolveCodexThreadConfigForCommand(options.command, options.env),
-      ...(options.requestTimeoutMs !== undefined
-        ? { requestTimeoutMs: options.requestTimeoutMs }
-        : {}),
-      ...(options.turnTimeoutMs !== undefined ? { turnTimeoutMs: options.turnTimeoutMs } : {}),
-      logger: toAgentKitLogger("pwrsnap:capture-enrichment")
-    });
+    if (options.requestTimeoutMs !== undefined) this.requestTimeoutMs = options.requestTimeoutMs;
+    if (options.turnTimeoutMs !== undefined) this.turnTimeoutMs = options.turnTimeoutMs;
+    // Pick the config overlay shape for the running Codex build (the schema
+    // churns across releases). Probed once per command, cached.
+    this.threadConfig = resolveCodexThreadConfigForCommand(options.command, options.env);
   }
 
   async enrichCapture(request: CaptureEnrichmentRequest): Promise<CaptureEnrichmentResponse> {
     if (request.imagePaths.length === 0) {
       throw new Error("capture enrichment requires at least one image input");
     }
-    const response = await this.client.run({
+    const response = await runCodexOneShotFromPool({
+      command: this.command,
+      ...(this.env !== undefined ? { env: this.env } : {}),
+      workspaceDir: this.workspaceDir,
+      workerThreadName: "PwrSnap Capture Metadata Worker",
+      threadConfig: this.threadConfig,
+      ...(this.requestTimeoutMs !== undefined
+        ? { requestTimeoutMs: this.requestTimeoutMs }
+        : {}),
+      ...(this.turnTimeoutMs !== undefined ? { turnTimeoutMs: this.turnTimeoutMs } : {}),
       prompt: buildCaptureEnrichmentPrompt(request.metadata),
       imagePaths: request.imagePaths,
       outputSchema: CAPTURE_ENRICHMENT_SCHEMA,
@@ -156,6 +154,6 @@ export class CaptureEnrichmentClient {
   }
 
   async close(): Promise<void> {
-    await this.client.close();
+    // The app-wide Codex owner owns the process lifecycle.
   }
 }

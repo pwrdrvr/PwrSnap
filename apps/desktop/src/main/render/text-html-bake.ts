@@ -58,6 +58,7 @@ import sharp from "sharp";
 import type { Overlay } from "@pwrsnap/shared";
 import {
   computeTextHtmlStyle,
+  readOverlayRotation,
   readTextWeight,
   serializeStyleAttribute
 } from "@pwrsnap/shared";
@@ -133,7 +134,7 @@ function ensurePoolWindow(): BrowserWindow {
  *  color + stroke). Structure mirrors `TextHtml.tsx` in the renderer
  *  — both consume `computeTextHtmlStyle` so the rendered glyph is
  *  pixel-identical to what the editor shows. */
-function buildBakeHtml(args: {
+export function buildBakeHtml(args: {
   data: Extract<Overlay, { kind: "text" }>;
   renderWidthPx: number;
   renderHeightPx: number;
@@ -167,7 +168,15 @@ function buildBakeHtml(args: {
     // text renders proportionally larger in the scaled accumulator —
     // matching what the editor display does (canvasCssHeight is the
     // CSS-px box, fontPx is the on-screen glyph height).
-    canvasCssHeight: renderHeightPx
+    canvasCssHeight: renderHeightPx,
+    // Thread the overlay's rotation so the bake matches the editor.
+    // computeTextHtmlStyle appends `rotate(${rad}rad)` to the wrapper's
+    // transform (pivoting on the visible body-box center, same as
+    // TextHtml.tsx). Omitting this was the bug: the baked PNG showed
+    // horizontal text while the editor showed it rotated. 0 is a no-op
+    // in the helper (it skips the rotate fragment), so unrotated rows
+    // bake bit-identically to before.
+    rotation: readOverlayRotation(data)
   });
   const wrapperCss = serializeStyleAttribute(style.wrapper);
   const glyphCss = serializeStyleAttribute(style.glyph);

@@ -134,11 +134,12 @@ the end confirms the leak.
 - Bound the teardown `app.evaluate(exit)` (`ELECTRON_EVAL_TIMEOUT_MS = 3s`) → a
   wedged main falls straight through to the forceful close/kill instead of
   hanging teardown.
-- Bound `app.dispatch`'s `evaluate` (`DISPATCH_TIMEOUT_MS = 30s`, generous so it
-  only trips on a true wedge) → a wedged main yields a prompt, catchable failure
-  the test's `finally` can clean up after, instead of a 60s hang that poisons the
-  worker. Turns a worker-killing timeout into an ordinary flaky failure that
-  retry recovers.
+- Bound `app.dispatch`'s `evaluate` (`DISPATCH_TIMEOUT_MS = 10s` — ~5× headroom
+  over any real dispatch, fail-fast by design) → a wedged main yields a prompt,
+  catchable failure the test's `finally` can clean up after, instead of a 60s
+  hang that poisons the worker. Turns a worker-killing timeout into an ordinary
+  flaky failure that retry recovers quickly. (Was unbounded before — a wedge fell
+  through to the 60s test timeout; the goal is the opposite: fast fail + retry.)
 - **`killProcessTree`**: on Windows, `taskkill /pid <pid> /T /F` tears down the
   whole child tree instead of just the top PID, so zombies stop accumulating —
   attacking the wedge at its source. macOS/Linux keep the plain `SIGKILL`.

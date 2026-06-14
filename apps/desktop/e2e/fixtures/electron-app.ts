@@ -43,13 +43,16 @@ const ELECTRON_CLOSE_TIMEOUT_MS = 5_000;
 // a best-effort nicety before the forceful close/SIGKILL fallback.
 const ELECTRON_EVAL_TIMEOUT_MS = 3_000;
 // Bound on a single command-bus `dispatch` round-trip. A healthy command
-// resolves in milliseconds; a wedged main never resolves and, unbounded,
-// would burn the full 60s test timeout — which poisons the Playwright
-// worker. Rejecting promptly turns that into a fast, ordinary test
-// failure that the `finally { app.close() }` can clean up after (and
-// retry recovers), instead of a worker-killing hang. Generous so it
-// only ever trips on a genuine wedge, never on slow-but-live CI.
-const DISPATCH_TIMEOUT_MS = 30_000;
+// resolves in milliseconds (the heaviest spec dispatch — region capture,
+// clipboard image encode, codex discovery — is a couple seconds at worst
+// on slow CI); a wedged main never resolves. Before this existed, a wedge
+// fell through to the full 60s test timeout, which poisons the Playwright
+// worker. We want the opposite: fail FAST and let the retry recover the
+// flake. 10s is ~5× headroom over any real dispatch yet declares a wedge
+// in a sixth of the old ceiling, leaving the `finally { app.close() }`
+// ample room to clean up before the 60s test deadline. A spurious trip is
+// self-correcting (retry), so erring tight is the right trade.
+const DISPATCH_TIMEOUT_MS = 10_000;
 
 async function removeHomeRoot(homeRoot: string): Promise<void> {
   try {

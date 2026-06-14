@@ -47,6 +47,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { BundleLayerNode, OverlayRow, PwrSnapError, Result } from "@pwrsnap/shared";
+import { registerEditorUndoRedo } from "../../lib/editMenuBridge";
 import type {
   CropRect,
   EditOpResult,
@@ -758,34 +759,24 @@ export function useUndoRedo(opts: {
     lastCoalesceRef.current = null;
   }, [future, applyInverse, wrapApplying]);
 
-  // Cmd+Z / Cmd+Shift+Z / Cmd+Y keyboard bindings. Skipped when a
-  // text field has focus (the user is typing — Cmd+Z should be
-  // browser-default text-undo).
+  // Register this stack with the app-wide Edit-menu bridge
+  // (lib/editMenuBridge.ts). The bridge owns BOTH the keyboard shortcuts
+  // (⌘Z / ⌘⇧Z / Ctrl+Y) and the native Edit ▸ Undo / Edit ▸ Redo menu
+  // IPC, and drives this stack when the canvas — not a text field — is
+  // focused. This hook used to own a ⌘Z keydown listener of its own; that
+  // moved to the bridge so the keyboard and the menu share one
+  // focus-aware, double-fire-guarded handler that also reaches text
+  // fields and runs in every window. See
+  // docs/solutions/2026-06-13-edit-menu-undo-redo-bridge.md.
   useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      const target = e.target as HTMLElement | null;
-      if (
-        target?.tagName === "INPUT" ||
-        target?.tagName === "TEXTAREA" ||
-        target?.isContentEditable === true
-      ) {
-        return;
-      }
-      if (e.key === "z" || e.key === "Z") {
-        e.preventDefault();
-        if (e.shiftKey) {
-          void redo();
-        } else {
-          void undo();
-        }
-      } else if (e.key === "y") {
-        e.preventDefault();
+    return registerEditorUndoRedo({
+      undo: () => {
+        void undo();
+      },
+      redo: () => {
         void redo();
       }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    });
   }, [undo, redo]);
 
   return {

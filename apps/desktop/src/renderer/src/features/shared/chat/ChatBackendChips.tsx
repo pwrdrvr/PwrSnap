@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
   AI_REASONING_EFFORTS,
+  CODEX_CAPTION_MODELS,
   builtInAcpAgentDisplayName,
   type AcpAgentModelOption,
   type CodexModelOption
@@ -26,7 +27,7 @@ export type ChatBackendChoice = {
   reasoning: string | null;
 };
 
-type ModelOption = { id: string; label: string };
+type ModelOption = { id: string; label: string; isDefault?: boolean };
 
 const REASONING_LABEL: Record<string, string> = { low: "Low", medium: "Medium", high: "High" };
 
@@ -45,13 +46,24 @@ function providerSupportsReasoning(provider: string): boolean {
 
 function toModelOptions(provider: string, raw: unknown): ModelOption[] {
   const list = (raw as { models?: unknown })?.models;
-  if (!Array.isArray(list)) return [];
   if (provider === "" || provider === "codex") {
-    return (list as CodexModelOption[])
-      .filter((m) => !m.hidden)
-      .map((m) => ({ id: m.id, label: m.displayName && m.displayName !== m.id ? `${m.displayName}` : m.id }));
+    const liveOptions = Array.isArray(list)
+      ? (list as CodexModelOption[])
+          .filter((m) => !m.hidden && m.inputModalities.includes("text") && m.inputModalities.includes("image"))
+          .map((m) => ({
+            id: m.id,
+            label: m.displayName && m.displayName !== m.id ? `${m.displayName}` : m.id,
+            ...(m.isDefault ? { isDefault: true } : {})
+          }))
+      : [];
+    return liveOptions.length > 0 ? liveOptions : CODEX_CAPTION_MODELS.map((id) => ({ id, label: id }));
   }
-  return (list as AcpAgentModelOption[]).map((m) => ({ id: m.id, label: m.label || m.id }));
+  if (!Array.isArray(list)) return [];
+  return (list as AcpAgentModelOption[]).map((m) => ({
+    id: m.id,
+    label: m.label || m.id,
+    ...(m.isDefault === true ? { isDefault: true } : {})
+  }));
 }
 
 // ---- Locked (read-only) chips ------------------------------------------
@@ -107,6 +119,11 @@ export function NewChatConfigChips({
       // user must pick one (required) rather than silently carrying a stale id.
       if (value.model !== null && !opts.some((o) => o.id === value.model)) {
         onChange({ ...value, model: null });
+        return;
+      }
+      const defaultModel = opts.find((o) => o.isDefault === true);
+      if (value.model === null && defaultModel !== undefined) {
+        onChange({ ...value, model: defaultModel.id });
       }
     })();
     // Only refetch when the provider changes.

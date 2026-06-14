@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
-import type { EnrichmentResult, Settings } from "@pwrsnap/shared";
+import type { CodexModelOption, EnrichmentResult, Settings } from "@pwrsnap/shared";
 
 let testDb: Database.Database;
 let tempRoot: string;
@@ -177,30 +177,31 @@ class FakeCodexClient {
   async close(): Promise<void> {
     return;
   }
+}
 
-  async listModels(): Promise<Array<{
-    id: string;
-    model: string;
-    displayName: string;
-    description: string;
-    hidden: boolean;
-    inputModalities: Array<"text" | "image">;
-    defaultServiceTier: string | null;
-    isDefault: boolean;
-  }>> {
-    return [
-      {
-        id: "gpt-5.5",
-        model: "gpt-5.5",
-        displayName: "GPT-5.5",
-        description: "Frontier model",
-        hidden: false,
-        inputModalities: ["text", "image"],
-        defaultServiceTier: null,
-        isDefault: true
-      }
-    ];
-  }
+function fakeCodexModels(): CodexModelOption[] {
+  return [
+    {
+      id: "gpt-5.5",
+      model: "gpt-5.5",
+      displayName: "GPT-5.5",
+      description: "Frontier model",
+      hidden: false,
+      inputModalities: ["text", "image"],
+      defaultServiceTier: null,
+      isDefault: true
+    }
+  ];
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (cause: unknown) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 class HangingCodexClient {
@@ -474,14 +475,14 @@ describe("Codex handlers", () => {
 
   test("codex:models returns Codex App Server model options", async () => {
     registerCodexHandlers({
-      clientFactory: () => new FakeCodexClient() as never,
+      modelLister: async () => fakeCodexModels(),
       settingsReader: async () =>
         testSettings({
           codex: {
             ...defaultSettings().codex,
             captionModel: "gpt-5.5"
           }
-        })
+      })
     });
 
     const result = await bus.dispatch("codex:models", {}, { principal: "ipc" });
@@ -496,6 +497,36 @@ describe("Codex handlers", () => {
         inputModalities: ["text", "image"]
       })
     ]);
+  });
+
+  test("codex:models joins concurrent identical listings", async () => {
+    const models = deferred<CodexModelOption[]>();
+    const modelLister = vi.fn(() => models.promise);
+    registerCodexHandlers({
+      modelLister,
+      settingsReader: async () =>
+        testSettings({
+          codex: {
+            ...defaultSettings().codex,
+            captionModel: "gpt-5.5"
+          }
+        })
+    });
+
+    const first = bus.dispatch("codex:models", {}, { principal: "ipc" });
+    const second = bus.dispatch("codex:models", {}, { principal: "ipc" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(modelLister).toHaveBeenCalledTimes(1);
+    models.resolve(fakeCodexModels());
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    expect(a.value.models.map((m) => m.id)).toEqual(["gpt-5.5"]);
+    expect(b.value.models.map((m) => m.id)).toEqual(["gpt-5.5"]);
   });
 
   test("codex:enrich refuses to run without consent", async () => {

@@ -167,6 +167,7 @@ class CodexBackendView implements AgentBackend {
   }
 
   async close(): Promise<void> {
+    await this.owner.interruptActiveTurnsForHandlers(this.handlers);
     this.owner.releaseHandlers(this.handlers);
   }
 }
@@ -225,6 +226,26 @@ class CodexAgentOwner {
 
   markActiveTurn(threadId: string, handlers: CodexViewHandlers): void {
     this.activeTurns.set(threadId, handlers);
+  }
+
+  async interruptActiveTurnsForHandlers(handlers: CodexViewHandlers): Promise<void> {
+    const threadIds = [...this.activeTurns.entries()]
+      .filter(([, owner]) => owner === handlers)
+      .map(([threadId]) => threadId);
+    await Promise.all(
+      threadIds.map(async (threadId) => {
+        try {
+          await this.client.interruptTurn(threadId);
+        } catch (error) {
+          log.warn("Codex pooled view active turn interrupt failed", {
+            threadId,
+            message: error instanceof Error ? error.message : String(error)
+          });
+        } finally {
+          if (this.activeTurns.get(threadId) === handlers) this.activeTurns.delete(threadId);
+        }
+      })
+    );
   }
 
   async listModels(includeHidden: boolean): Promise<CodexModelOption[]> {

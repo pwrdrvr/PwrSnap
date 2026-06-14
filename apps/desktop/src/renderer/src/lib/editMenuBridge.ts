@@ -112,19 +112,27 @@ export function useEditMenuBridge(): void {
     // carries CmdOrCtrl+Shift+Z — a single menu item can only display
     // (and register) one accelerator — so Ctrl+Y is handled here in the
     // renderer. It is deliberately NOT a registered menu accelerator, so
-    // this listener cannot double-fire against the menu. `preventDefault`
-    // suppresses the browser's own Ctrl+Y editing default so an editable
-    // field isn't redone twice.
+    // this listener cannot double-fire against the menu.
+    //
+    // When a text field is focused we DON'T touch it: the field keeps its
+    // native Ctrl+Y (redo on Windows/Linux, emacs "yank" on macOS) — this
+    // mirrors the editable guard of the keydown listener this bridge
+    // replaced, so no key binding regresses. Outside a text field, Ctrl+Y
+    // drives the editor redo stack only (never execCommand). The ⌘⇧Z menu
+    // accelerator still covers redo inside text fields (via execCommand),
+    // so editable redo isn't lost.
     const onKey = (e: KeyboardEvent): void => {
       if (
-        e.ctrlKey &&
-        !e.metaKey &&
-        !e.altKey &&
-        (e.key === "y" || e.key === "Y")
+        !e.ctrlKey ||
+        e.metaKey ||
+        e.altKey ||
+        (e.key !== "y" && e.key !== "Y")
       ) {
-        e.preventDefault();
-        runEditRedo();
+        return;
       }
+      if (activeElementIsEditable()) return;
+      e.preventDefault();
+      registeredEditor?.redo();
     };
     window.addEventListener("keydown", onKey);
 

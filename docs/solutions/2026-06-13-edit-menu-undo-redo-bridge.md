@@ -74,8 +74,12 @@ default — which is exactly why `role: "undo"` never double-undoes a text
 field. Replacing the role with a custom click means the text field gets
 *no* native undo unless we perform it ourselves, hence
 `document.execCommand`. Because the browser default is suppressed, there's
-no double-apply. (On the Ctrl+Y keydown path, `preventDefault()` provides
-the same suppression.)
+no double-apply.
+
+This is specific to the **registered menu accelerators** (⌘Z / ⌘⇧Z). The
+Ctrl+Y keydown path is different (see below): Ctrl+Y is *not* a menu
+accelerator, so the browser default is **not** suppressed — there we leave
+the field's native Ctrl+Y alone rather than calling `execCommand`.
 
 ## The double-fire trap — menu accelerator vs renderer keydown
 
@@ -102,8 +106,16 @@ A single menu item can register/display only one accelerator, and we use
 `CmdOrCtrl+Shift+Z` for Redo. The Windows/Linux **Ctrl+Y** convention is
 handled by a tiny keydown listener inside the bridge. Ctrl+Y is
 deliberately **not** a registered menu accelerator, so it can't
-double-fire against the menu; it routes through the same focus-aware
-`runEditRedo`.
+double-fire against the menu.
+
+The Ctrl+Y listener keeps the **editable-focus guard** of the keydown
+listener it replaced: when a text field is focused it does nothing and
+lets the field's native Ctrl+Y win (redo on Windows/Linux, emacs "yank"
+on macOS) — dropping that guard would hijack those native bindings.
+Outside a text field, Ctrl+Y drives the editor redo stack only (it calls
+`registeredEditor.redo()` directly, never `execCommand`). Redo *inside* a
+text field still works via the ⌘⇧Z menu accelerator (`execCommand`), so
+nothing is lost.
 
 ## Enabled state (deferred)
 

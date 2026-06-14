@@ -120,6 +120,31 @@ describe("useEditMenuBridge", () => {
     expect(redo).toHaveBeenCalledTimes(1);
   });
 
+  test("Ctrl+Y in a text field is left to native handling — no editor redo, no preventDefault", () => {
+    const redo = vi.fn();
+    registerEditorUndoRedo({ undo: vi.fn(), redo });
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    mount();
+
+    const event = new KeyboardEvent("keydown", {
+      key: "y",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true
+    });
+    act(() => {
+      window.dispatchEvent(event);
+    });
+
+    expect(redo).not.toHaveBeenCalled();
+    expect(document.execCommand).not.toHaveBeenCalled();
+    // Native Ctrl+Y (Windows/Linux redo, macOS yank) must survive.
+    expect(event.defaultPrevented).toBe(false);
+  });
+
   test("after unregister, editUndo is a no-op (no editor) and doesn't throw", () => {
     const undo = vi.fn();
     const unregister = registerEditorUndoRedo({ undo, redo: vi.fn() });

@@ -234,10 +234,12 @@ function approxEqual(a: number, b: number, tol = 1.5): boolean {
   return Math.abs(a - b) <= tol;
 }
 
+type Pt = { x: number; y: number };
+type RectN = { x: number; y: number; w: number; h: number };
 type CropClipLayer = {
   kind: string;
-  clip_rect?: { x: number; y: number; w: number; h: number } | null;
-  shape?: { kind?: string; rect?: { x: number; y: number; w: number; h: number } };
+  clip_rect?: RectN | null;
+  shape?: { kind?: string; rect?: RectN; from?: Pt; to?: Pt };
 };
 
 async function readLayers(
@@ -248,6 +250,85 @@ async function readLayers(
   expect(res.ok, "layers:list should succeed").toBe(true);
   if (!res.ok) return [];
   return res.value as unknown as CropClipLayer[];
+}
+
+// A crop is a viewport translate: a vector layer's NORMALIZED coords are
+// re-normalized to the new (smaller) canvas, but the ABSOLUTE position is
+// preserved. The forward transform is `n' = (n - c) / cw`, so the inverse
+// invariant is `n' × cw + c === n`. These helpers assert that invariant
+// against the actual recorded crop rect, so they're robust to whatever
+// exact rect the Crop tool committed.
+function expectPointPreserved(after: Pt, before: Pt, crop: RectN): void {
+  expect(approxEqual(after.x * crop.w + crop.x, before.x, 0.01)).toBe(true);
+  expect(approxEqual(after.y * crop.h + crop.y, before.y, 0.01)).toBe(true);
+}
+function expectRectPreserved(after: RectN, before: RectN, crop: RectN): void {
+  expect(approxEqual(after.x * crop.w + crop.x, before.x, 0.01)).toBe(true);
+  expect(approxEqual(after.y * crop.h + crop.y, before.y, 0.01)).toBe(true);
+  expect(approxEqual(after.w * crop.w, before.w, 0.01)).toBe(true);
+  expect(approxEqual(after.h * crop.h, before.h, 0.01)).toBe(true);
+}
+
+/**
+ * Insert a vector layer (arrow / shape / highlight) carrying a normalized
+ * Overlay `shape`, under the capture's root group, via the test bridge.
+ */
+async function insertVector(
+  app: LaunchedApp,
+  captureId: string,
+  id: string,
+  shape: Record<string, unknown>
+): Promise<void> {
+  await app.electronApp.evaluate(
+    async (_electron, payload) => {
+      const bridge = (
+        globalThis as unknown as {
+          __PWRSNAP_TEST__: {
+            dispatch: (
+              n: string,
+              r: unknown
+            ) => Promise<{ ok: boolean; value?: unknown }>;
+          };
+        }
+      ).__PWRSNAP_TEST__;
+      const listed = await bridge.dispatch("layers:list", {
+        captureId: payload.captureId
+      });
+      const layers = (listed.value ?? []) as Array<{
+        kind: string;
+        parent_id: string | null;
+      }>;
+      const root = layers.find(
+        (l) => l.kind === "group" && l.parent_id === null
+      ) as { id: string } | undefined;
+      if (root === undefined) throw new Error("no root group");
+      const now = new Date().toISOString();
+      const up = await bridge.dispatch("layers:upsert", {
+        captureId: payload.captureId,
+        layer: {
+          id: payload.id,
+          parent_id: root.id,
+          name: "vector",
+          visible: true,
+          locked: false,
+          opacity: 1,
+          blend_mode: "normal",
+          transform: [1, 0, 0, 1, 0, 0],
+          z_index: 100,
+          source: "user",
+          ai_run_id: null,
+          applied_at: now,
+          rejected_at: null,
+          superseded_by: null,
+          created_at: now,
+          kind: "vector",
+          shape: payload.shape
+        }
+      });
+      if (!up.ok) throw new Error("layers:upsert (vector) failed");
+    },
+    { captureId, id, shape }
+  );
 }
 
 test("editor-crop-clip: cropped capture clips the source to the canvas; canvas + clip never collapse", async () => {
@@ -431,6 +512,80 @@ test("editor-crop-clip: off-origin crop translates a blur's clip_rect so it keep
     expect(approxEqual(clip.y, blurBefore.y - offsetY)).toBe(true);
     expect(approxEqual(clip.w, blurBefore.w)).toBe(true);
     expect(approxEqual(clip.h, blurBefore.h)).toBe(true);
+  } finally {
+    await app.close();
+  }
+});
+
+test("editor-crop-clip: off-origin crop keeps vector annotations (arrow / rectangle / highlight) in place", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedBundleCapture(app, 800, 600);
+    // Arrow, rectangle, and highlight are VECTOR layers (only blur is an
+    // effect layer). They take the Step-0 `inverseTransformOverlayByCrop`
+    // path — separate from the effect clip_rect fix above — so guard it
+    // too: it's the other coordinate-translation path a future change
+    // could break. All three sit well inside the centered-60% kept region.
+    const arrowBefore = {
+      kind: "arrow",
+      from: { x: 0.35, y: 0.4 },
+      to: { x: 0.6, y: 0.55 },
+      color: "auto"
+    };
+    const rectBefore = {
+      kind: "shape",
+      shape: "rect",
+      rect: { x: 0.3, y: 0.32, w: 0.25, h: 0.2 },
+      color: "auto"
+    };
+    const hiBefore = {
+      kind: "highlight",
+      rect: { x: 0.45, y: 0.5, w: 0.2, h: 0.1 },
+      color: "auto"
+    };
+    await insertVector(app, captureId, "vecArrow00000001", arrowBefore);
+    await insertVector(app, captureId, "vecRect000000001", rectBefore);
+    await insertVector(app, captureId, "vecHighlight0001", hiBefore);
+    const win = await openEditor(app, captureId);
+
+    // Off-origin crop via the real Crop tool (centered 60% default rect).
+    await win.locator('.psl__edit-toolbar button[data-tool="crop"]').click();
+    await win
+      .locator('[data-testid="crop-tool"]')
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await win.locator('[data-testid="crop-apply"]').click();
+    await win
+      .locator('[data-testid="crop-tool"]')
+      .waitFor({ state: "detached", timeout: 10_000 });
+
+    const layers = await readLayers(app, captureId);
+    const cropRect = layers.find(
+      (l) => l.kind === "vector" && l.shape?.kind === "crop"
+    )?.shape?.rect;
+    const arrow = layers.find(
+      (l) => l.kind === "vector" && l.shape?.kind === "arrow"
+    )?.shape;
+    const rect = layers.find(
+      (l) => l.kind === "vector" && l.shape?.kind === "shape"
+    )?.shape;
+    const hi = layers.find(
+      (l) => l.kind === "vector" && l.shape?.kind === "highlight"
+    )?.shape;
+    if (
+      cropRect === undefined ||
+      arrow?.from === undefined ||
+      arrow.to === undefined ||
+      rect?.rect === undefined ||
+      hi?.rect === undefined
+    ) {
+      throw new Error("missing crop rect or transformed vector shapes");
+    }
+
+    // Each annotation must still cover the SAME source region.
+    expectPointPreserved(arrow.from, arrowBefore.from, cropRect);
+    expectPointPreserved(arrow.to, arrowBefore.to, cropRect);
+    expectRectPreserved(rect.rect, rectBefore.rect, cropRect);
+    expectRectPreserved(hi.rect, hiBefore.rect, cropRect);
   } finally {
     await app.close();
   }

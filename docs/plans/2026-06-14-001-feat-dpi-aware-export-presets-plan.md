@@ -187,6 +187,35 @@ to tune against real numbers:
   Judged on the real file — the content-aware rule that finally kills
   "I pick Med but it's identical."
 
+## Clipboard paste — DPI inference + verbatim PNG (shipped with Phase 1)
+
+Pasting an image into the library is the other place a capture's
+`device_pixel_ratio` originates, and it was wrong in two ways:
+
+- **Re-encode inflation.** `capture:pasteFromClipboard` decoded the
+  clipboard bitmap and re-encoded it to PNG (`nativeImage.toPNG()` /
+  `sharp().png()`), so a 612 KB source PNG was stored as ~707 KB. High
+  re-export then faithfully reused the inflated bytes — the inflation was
+  at *ingest*, not export. Fixed by preferring the raw pasteboard image
+  flavors and storing a **PNG flavor verbatim** (no re-encode), falling
+  back to the decoded bitmap only when no raw flavor decodes. The
+  `pHYs` density survives verbatim storage, which feeds the next point.
+- **DPR hardcoded to 1.** Pasted images were always `device_pixel_ratio:
+  1`, so a Retina paste never showed the Retina label or got the right
+  ladder. Now the scale is inferred from the image's DPI density
+  (`devicePixelRatioFromDensity`: 144 DPI → 2×, clamped to [1,3], default
+  1× when absent). Heuristic — not every source tags density — so the 1×
+  default is load-bearing.
+
+Implementation: `apps/desktop/src/main/clipboard-image-buffer.ts`
+(`ingestImageBufferToTempPng`, `devicePixelRatioFromDensity`) +
+`apps/desktop/src/main/handlers/capture-handlers.ts`
+(`writeClipboardImageToTempPng`). Not yet addressed: PwrSnap's own
+`clipboard:copy` writes a bitmap (TIFF) with no PNG flavor + no density,
+so a PwrSnap→PwrSnap *image-copy* round-trip still re-encodes and loses
+DPR — a copy-as-file round-trip is already clean. A follow-up could write
+`pHYs` density on export and/or co-write a PNG flavor on copy.
+
 ## Phasing
 
 1. **Phase 1 (this plan):** shared `resolveExportLadder`;

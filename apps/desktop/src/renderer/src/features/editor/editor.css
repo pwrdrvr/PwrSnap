@@ -190,19 +190,32 @@
 .editor-canvas[data-tool="text"] {
   cursor: text;
 }
+/* Crop clip box for the source <img>. `.editor-canvas` is
+   overflow:visible so SelectionOutline + TransformHandles + draft
+   glyphs can extend off-canvas (#125), which means it can't clip the
+   image. The image is sized to (source/canvas)×100% and OVERFLOWS the
+   canvas for any crop, so it needs its own overflow:hidden box, sized
+   to the canvas via inset:0, to hide the cropped-away region. Without
+   it the full source bleeds out and the crop is invisible in the
+   editor even though the bake is correct. This is the clipping role
+   .editor-canvas's overflow:hidden played before #125. */
+.editor-image-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 6px;
+}
 .editor-image {
   display: block;
   width: 100%;
   height: 100%;
   user-select: none;
   -webkit-user-drag: none;
-  /* The image self-clips to rounded corners. Pre-fix this clipping
-     came from .editor-canvas's overflow:hidden, which ALSO clipped
-     the SelectionOutline + TransformHandles when a shape was dragged
-     off-canvas. .editor-canvas is now overflow:visible; the image
-     handles its own clipping via border-radius (browsers clip <img>
-     content to the radius natively — no overflow:hidden needed). */
-  border-radius: 6px;
+  /* No border-radius here: the image is (often) LARGER than the canvas
+     (it overflows for crops), so rounding its own box would round the
+     wrong corners — and for off-origin crops it would notch the middle
+     of the visible region. .editor-image-clip rounds the canvas corners
+     correctly for every crop shape. */
 }
 .editor-svg {
   position: absolute;

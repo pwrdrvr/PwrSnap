@@ -1003,12 +1003,14 @@ export function useCaptureModel(captureId: string): CaptureModel {
           // deletes for "out of bounds" — that data has to survive.
           //
           // Skip the (current) crop VectorLayer itself — it's about
-          // to be deleted in Step 1 anyway. Skip effect layers'
-          // clip_rect: those are already in absolute canvas pixels
-          // (per the v2 EffectLayer contract), so a (0,0)-anchored
-          // crop leaves their position unchanged. (Off-origin crops
-          // would need an effect.clip_rect translate but the current
-          // dispatcher collapses to (0,0) so this isn't reachable.)
+          // to be deleted in Step 1 anyway. Effect layers' clip_rect is
+          // in absolute canvas pixels (per the v2 EffectLayer contract):
+          // a (0,0)-anchored crop leaves it unchanged, but an OFF-ORIGIN
+          // crop must translate it by the same offset as the raster —
+          // handled in Step 0.5 below. (This was a real bug: the old
+          // dispatcher assumed off-origin crops were unreachable, so
+          // blurs / highlights drifted off the region they covered after
+          // an off-origin crop, in BOTH the editor and the bake.)
           // The IPC surface has no `layers:updateOverlay` verb — v2
           // edits are delete-plus-insert via `layers:delete` +
           // `layers:upsert` (the v2 updateOverlay dispatcher op does
@@ -1121,6 +1123,48 @@ export function useCaptureModel(captureId: string): CaptureModel {
                 console.error("[crop-dispatch v2] raster upsert failed", {
                   id: raster.id,
                   newTransform,
+                  error: insResult.error
+                });
+                return err(insResult.error);
+              }
+            }
+
+            // Effect layers (blur / highlight) carry an absolute-canvas-
+            // pixel `clip_rect`. An off-origin crop moves the canvas
+            // origin to (offsetXPx, offsetYPx) of the OLD canvas, so the
+            // clip_rect must shift by the same (-offsetXPx, -offsetYPx)
+            // as the raster transform above — otherwise the effect keeps
+            // its pre-crop coords and drifts off the region it covered
+            // (wrong in BOTH the editor and the bake, since clip_rect
+            // drives both). Crop is a viewport translate, so we DON'T
+            // clamp: a clip_rect pushed partly/fully out of the new
+            // canvas persists as data and is clipped at paint, mirroring
+            // the overlay re-normalization in Step 0. Snapshot is safe to
+            // read here — the raster ops above don't touch effect rows.
+            const effectLayers = layersRef.current.filter(
+              (l): l is BundleLayerNode & { kind: "effect" } => l.kind === "effect"
+            );
+            for (const effect of effectLayers) {
+              if (effect.clip_rect === null) continue;
+              const newClipRect = {
+                x: effect.clip_rect.x - offsetXPx,
+                y: effect.clip_rect.y - offsetYPx,
+                w: effect.clip_rect.w,
+                h: effect.clip_rect.h
+              };
+              // eslint-disable-next-line no-await-in-loop
+              const delResult = await dispatch("layers:delete", { id: effect.id });
+              if (!delResult.ok) return err(delResult.error);
+              // eslint-disable-next-line no-await-in-loop
+              const insResult = await dispatch("layers:upsert", {
+                captureId,
+                layer: { ...effect, id: nanoid(16), clip_rect: newClipRect }
+              });
+              if (!insResult.ok) {
+                // eslint-disable-next-line no-console
+                console.error("[crop-dispatch v2] effect upsert failed", {
+                  id: effect.id,
+                  newClipRect,
                   error: insResult.error
                 });
                 return err(insResult.error);

@@ -4217,8 +4217,10 @@ function EditorLoaded({
               the current Fit/Actual/custom zoom level. The trick is to
               size the img to `(source / canvas) × 100%` of its parent
               and let the default object-fit (fill) scale the image
-              content to that box. The parent `.editor-canvas` clips
-              via `overflow: hidden`.
+              content to that box. The `.editor-image-clip` wrapper
+              (sized to the canvas, overflow:hidden) clips the overflow
+              — `.editor-canvas` itself is overflow:visible so handles +
+              outlines can extend off-canvas (#125).
 
               Why the percentage trick works for crop view:
                 • No crop  → source == canvas → img is 100% × 100% →
@@ -4253,22 +4255,47 @@ function EditorLoaded({
               crop silently shows the top-left of the source even
               though the bake (compose-tree.ts) produces the right
               region. */}
-          <img
-            ref={editorImageRef}
-            src={captureSrcUrl(record.id)}
-            alt={record.source_app_name ?? "Capture"}
-            draggable={false}
-            className="editor-image"
-            data-testid="editor-image"
-            style={computeEditorImageStyle({
-              sourceWidthPx,
-              sourceHeightPx,
-              canvasWidthPx: record.width_px,
-              canvasHeightPx: record.height_px,
-              rasterTranslateXPx,
-              rasterTranslateYPx
-            })}
-          />
+          {/* Crop clip box. The <img> is sized to (source/canvas)×100%
+              so a cropped capture's source OVERFLOWS the canvas (e.g.
+              100%×412% for a horizontal-band crop) — that overflow is
+              the whole mechanism: the kept region fills the canvas and
+              the rest spills past the edges. It MUST be clipped to the
+              canvas so the editor shows the same region the bake /
+              export / library thumbnail produce.
+
+              `.editor-canvas` itself is overflow:visible on purpose (so
+              SelectionOutline + TransformHandles + draft glyphs can
+              extend past the canvas edge when a shape is dragged
+              off-screen — #125). That means it can NO LONGER clip the
+              image, so the image gets its OWN overflow:hidden box here,
+              sized to the canvas via inset:0. Without this wrapper the
+              full source bleeds out and the crop is invisible in the
+              editor even though every baked surface is correctly cropped
+              — exactly the regression #125 introduced when it flipped
+              .editor-canvas to overflow:visible on the (false for
+              cropped captures) assumption that "the IMAGE doesn't extend
+              past on its own". border-radius on the <img> does NOT stand
+              in for this clip: it rounds the img's OWN (412%-tall) box,
+              not the canvas, and for off-origin crops it would notch the
+              middle of the visible region. */}
+          <div className="editor-image-clip">
+            <img
+              ref={editorImageRef}
+              src={captureSrcUrl(record.id)}
+              alt={record.source_app_name ?? "Capture"}
+              draggable={false}
+              className="editor-image"
+              data-testid="editor-image"
+              style={computeEditorImageStyle({
+                sourceWidthPx,
+                sourceHeightPx,
+                canvasWidthPx: record.width_px,
+                canvasHeightPx: record.height_px,
+                rasterTranslateXPx,
+                rasterTranslateYPx
+              })}
+            />
+          </div>
           {/* HTML blur layer between the <img> and the SVG so
               backdrop-filter on each blur rect actually obscures
               the image behind. Lives separately from OverlaySvg

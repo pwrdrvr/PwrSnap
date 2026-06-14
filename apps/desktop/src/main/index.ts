@@ -940,17 +940,29 @@ async function runInteractiveRecord(): Promise<void> {
     setFloatOverState({ kind: "cancel" });
     await new Promise((resolve) => setTimeout(resolve, 50));
     hideSelector();
-    if (selection.previousAppPid !== null && selection.previousAppPid !== undefined) {
-      await activateApp(selection.previousAppPid);
-      // Match the image-capture cancel branch — activateApp can
-      // demote PwrSnap's activation policy to Accessory as a side-
-      // effect of returning focus to the previous app, which leaves
-      // the Library orphaned (alive but unreachable from the Dock or
-      // ⌘-Tab). Reclaim Regular policy without yanking focus from
-      // the previous app. See `capture-handlers.ts` for the matching
-      // call on the image path.
-      reclaimDockIconIfLibraryAlive();
+    // No activateApp(previousAppPid): the selector is a non-activating
+    // NSPanel, so the previously-frontmost app was never deactivated —
+    // it stays frontmost as the selector hides. Re-activating it was a
+    // primary trigger for AppKit demoting PwrSnap to Accessory (Dock
+    // flash + orphaned Library). Mirrors the image cancel path in
+    // capture-handlers.ts. Only intervene when PwrSnap's OWN window was
+    // frontmost (previousAppPid null): there the selector-hide
+    // key-window cascade would let the floating focus-sink steal key
+    // from the Library, so restore it explicitly.
+    if (selection.previousAppPid === null || selection.previousAppPid === undefined) {
+      const library = findMainLibraryWindow();
+      if (library !== null && !library.isDestroyed()) {
+        if (library.isMinimized()) library.restore();
+        library.show();
+        library.focus();
+      }
     }
+    // The Accessory demotion lands async — and with PwrSnap a background
+    // app (capture triggered from another app) WITHOUT a
+    // did-resign-active to catch it — so a single synchronous reclaim
+    // races it. Re-assert Regular across a spread of delays; guarded, so
+    // it no-ops once the Dock is back. Mirrors the image cancel path.
+    scheduleDockReclaim();
     return;
   }
   const { screenSnapshotId, previousAppPid } = selection;
@@ -1029,12 +1041,15 @@ async function runInteractiveRecord(): Promise<void> {
       dockVisibleAfter: app.dock?.isVisible() ?? null
     });
   } else if (previousAppPid !== null) {
-    await activateApp(previousAppPid);
-    // Same reclaim as the image-capture path — activateApp deactivates
-    // PwrSnap; AppKit can demote our activation policy to Accessory as
-    // a side-effect, stripping the Dock icon and orphaning the Library.
-    reclaimDockIconIfLibraryAlive();
-    log.debug("video-record activated previous app", { previousAppPid });
+    // No activateApp(previousAppPid): the non-activating selector never
+    // deactivated the previously-frontmost app, so it stays frontmost as
+    // the selector hides. Dropping the re-activation removes the AppKit
+    // Accessory-demotion (Dock flash + Library hide). Mirrors the image
+    // commit path; the raise-our-windows branch above is the deliberate
+    // exception — there we DO want PwrSnap forward to record our window.
+    // Spread reclaim to catch the async demotion (see cancel branch).
+    scheduleDockReclaim();
+    log.debug("video-record left previous app frontmost", { previousAppPid });
   }
   const settings = await new DesktopSettingsService({
     filePath: join(app.getPath("userData"), "pwrsnap-settings.json")

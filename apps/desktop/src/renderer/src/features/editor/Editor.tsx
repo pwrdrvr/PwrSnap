@@ -1210,6 +1210,21 @@ export function Editor({
       }) => void)
     | null
   >(null);
+  // Style/body recorder. Populated by EditorLoaded alongside
+  // recordCreateRef. commitText's text re-edit path reads it to push a
+  // style op onto the undo stack so ⌘Z reverts a body change
+  // ("Hi Mommy" → "Hi Mom") instead of falling through to the previous
+  // create. `currentIdRef` follows the layer's id across undo/redo
+  // cycles (a no-op now that updateOverlay preserves the id, but the
+  // shape stays honest for any future churn).
+  const recordStyleRef = useRef<
+    | ((entry: {
+        currentIdRef: { current: string };
+        previousPatch: Partial<Overlay>;
+        nextPatch: Partial<Overlay>;
+      }) => void)
+    | null
+  >(null);
   // Coalescing bracket refs (Phase 2 task #14, plan Alt 5). pointerdown
   // opens a "drag" interaction; pointerup closes it. Current Phase 2
   // editor flows commit exactly one recordCreate per drag at pointerup,
@@ -2026,11 +2041,42 @@ export function Editor({
       // (those came from the popover when it was first placed) and
       // only updates the typed body. dispatchEdit routes through
       // both v1 (overlays:update) and v2 (layers:updateOverlay).
-      await dispatchEditErased({
+      //
+      // Capture the PRE-EDIT body BEFORE dispatching so undo can revert
+      // it — the persisted row still holds the old body here (entering
+      // edit mode left the overlay untouched behind the draft input).
+      const previousRow = overlaysRef.current.find((o) => o.id === editingId);
+      const previousBody =
+        previousRow !== undefined && previousRow.data.kind === "text"
+          ? previousRow.data.body
+          : undefined;
+      const result = await dispatchEditErased({
         kind: "updateOverlay",
         layerId: editingId,
         patch: { kind: "text", body }
       });
+      // Record the body change on the undo stack so ⌘Z reverts the edit
+      // ("Hi Mommy" → "Hi Mom") rather than falling through to the
+      // previous create entry. Mirrors the style-popover path
+      // (onSelectedStyleFieldChange). Pre-fix this dispatch recorded
+      // NOTHING — the edit was invisible to undo. With updateOverlay now
+      // preserving the layer id, the earlier `create` entry for this
+      // text stays valid too, so undoing all the way still deletes the
+      // text last (the user's expected order). Skip the no-op case where
+      // the body didn't actually change.
+      if (
+        result.ok &&
+        result.value.kind === "update" &&
+        previousBody !== undefined &&
+        previousBody !== body &&
+        !undoApplyingRef.current
+      ) {
+        recordStyleRef.current?.({
+          currentIdRef: { current: result.value.artifact.node.id },
+          previousPatch: { kind: "text", body: previousBody },
+          nextPatch: { kind: "text", body }
+        });
+      }
       return;
     }
     const wrote = await persistOverlay(overlay);
@@ -2735,6 +2781,7 @@ export function Editor({
       undoApplyingRef={undoApplyingRef}
       recordCreateRef={recordCreateRef}
       recordCropRef={recordCropRef}
+      recordStyleRef={recordStyleRef}
       beginInteractionRef={beginInteractionRef}
       endInteractionRef={endInteractionRef}
       onPointerDown={onPointerDown}
@@ -2789,6 +2836,7 @@ function EditorLoaded({
   undoApplyingRef,
   recordCreateRef,
   recordCropRef,
+  recordStyleRef,
   beginInteractionRef,
   endInteractionRef,
   onPointerDown,
@@ -2850,6 +2898,17 @@ function EditorLoaded({
         previousHeightPx: number;
         newWidthPx: number;
         newHeightPx: number;
+      }) => void)
+    | null
+  >;
+  /** Style/body recorder — populated from the undo hook so the outer
+   *  Editor's commitText can push a style op when a text body is
+   *  re-edited (⌘Z reverts the body change). */
+  recordStyleRef: React.RefObject<
+    | ((entry: {
+        currentIdRef: { current: string };
+        previousPatch: Partial<Overlay>;
+        nextPatch: Partial<Overlay>;
       }) => void)
     | null
   >;
@@ -3107,6 +3166,16 @@ function EditorLoaded({
       recordCropRef.current = null;
     };
   }, [recordCropRef, undo.recordCrop]);
+
+  // Bridge: commitText's text re-edit reads recordStyleRef.current to
+  // push a style op (body change) onto the undo stack. Same pattern as
+  // recordCreateRef / recordCropRef above.
+  useEffect(() => {
+    recordStyleRef.current = undo.recordStyle;
+    return () => {
+      recordStyleRef.current = null;
+    };
+  }, [recordStyleRef, undo.recordStyle]);
 
   // Bridge: parent's pointer handlers read begin/endInteractionRef
   // to bracket coalescing windows around drag operations. Phase 2

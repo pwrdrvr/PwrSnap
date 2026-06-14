@@ -721,6 +721,66 @@ describe("useUndoRedo", () => {
     expect(call.patch.color).toBe("auto");
   });
 
+  test("text re-edit then full undo rolls back in the user's expected order", async () => {
+    // Executable spec for the text-edit undo bug. Repro: draw arrow1,
+    // type "Hi Mom", draw arrow2, type "Hi Dad", then edit "Hi Mom" →
+    // "Hi Mommy". ⌘Z must walk back as:
+    //   Hi Mommy → Hi Mom, delete Hi Dad, delete arrow2,
+    //   delete Hi Mom, delete arrow1
+    //
+    // Pre-fix the body edit recorded NOTHING on the stack, so the first
+    // ⌘Z skipped straight to deleting "Hi Dad" and (because the edit had
+    // also churned the text's layer id) the edited text could never be
+    // removed. This pins both halves: the edit IS recorded (first undo
+    // reverts the body), and the id is stable so the original create
+    // entry still deletes "hiMom" near the end.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    act(() => {
+      api!.recordCreate(makeRow("arrow1"), { node: makeNode("arrow1") });
+      api!.recordCreate(makeRow("hiMom"), { node: makeNode("hiMom") });
+      api!.recordCreate(makeRow("arrow2"), { node: makeNode("arrow2") });
+      api!.recordCreate(makeRow("hiDad"), { node: makeNode("hiDad") });
+      // The text body edit. updateOverlay now preserves the layer id, so
+      // currentIdRef tracks the (unchanged) "hiMom".
+      api!.recordStyle({
+        currentIdRef: { current: "hiMom" },
+        previousPatch: { kind: "text", body: "Hi Mom" },
+        nextPatch: { kind: "text", body: "Hi Mommy" }
+      });
+    });
+
+    for (let i = 0; i < 5; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await act(async () => {
+        await api!.undo();
+      });
+    }
+
+    const ops = dispatchEditMock.mock.calls.map((c) => c[0]);
+    expect(ops).toEqual([
+      // 1. Hi Mommy → Hi Mom (body reverted, NOT a delete).
+      {
+        kind: "updateOverlay",
+        layerId: "hiMom",
+        patch: { kind: "text", body: "Hi Mom" }
+      },
+      // 2-5. creates unwind in LIFO order, each deleting its own layer.
+      { kind: "delete", id: "hiDad" },
+      { kind: "delete", id: "arrow2" },
+      { kind: "delete", id: "hiMom" },
+      { kind: "delete", id: "arrow1" }
+    ]);
+  });
+
   test("MAX_DEPTH caps the past stack (older ops drop off the back)", async () => {
     let api: UseUndoRedoResult | null = null;
     render(

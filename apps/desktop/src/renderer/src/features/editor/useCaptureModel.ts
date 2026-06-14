@@ -651,10 +651,20 @@ export function inverseTransformOverlayByCrop(
  *  we update the underlying `shape` (which carries the v1 Overlay
  *  shape verbatim). For blur/highlight effect layers, geometry
  *  updates target `clip_rect` — renormalized to absolute canvas
- *  pixels (the v2 EffectLayer.clip_rect contract). Returns a fresh
- *  node with a NEW id since the IPC surface requires the delete-
- *  plus-insert pair (the same-id insert collides on PRIMARY KEY).
- *  Returns null if the geometry kind doesn't fit the layer kind. */
+ *  pixels (the v2 EffectLayer.clip_rect contract). Returns null if
+ *  the geometry kind doesn't fit the layer kind.
+ *
+ *  NOTE: this mints a FRESH id, UNLIKE `applyPatchToLayer` (which now
+ *  preserves the id). The divergence is deliberate-for-now, not an
+ *  oversight: a test pins geometry's churn (`useCaptureModel.test.ts`
+ *  "updateGeometry → ... different id"), so flipping it is a separate
+ *  change. The earlier "same-id insert collides on PRIMARY KEY"
+ *  rationale was wrong — `layers:upsert` restores a just-soft-deleted
+ *  id rather than colliding (that's exactly how applyPatchToLayer reuses
+ *  the id). So geometry CAN preserve too; it just carries the same
+ *  undo-orphan caveat the text path used to (drag a freshly-drawn layer,
+ *  then ⌘Z past the drag, and the create entry's id is stale). Tracked
+ *  as a follow-up. */
 export function applyGeometryToLayer(
   layer: BundleLayerNode,
   geometry: GeometryUpdate,
@@ -663,7 +673,9 @@ export function applyGeometryToLayer(
   if (layer.kind === "vector") {
     const merged = applyGeometryToOverlay(layer.shape, geometry);
     if (merged === null) return null;
-    // Fresh id (the old layer is deleted in the same op).
+    // Fresh id (the old layer is deleted in the same op). See the
+    // doc-block for why this still churns while applyPatchToLayer
+    // preserves.
     return { ...layer, id: nanoid(16), shape: merged };
   }
   if (layer.kind === "effect") {
@@ -698,9 +710,24 @@ export function applyGeometryToLayer(
 
 /** Apply a generic OverlayPatch to a BundleLayerNode. Vector layers
  *  merge into `shape`; effect layers project the patch's relevant
- *  fields into `effect.*` (blur style currently). Returns a fresh
- *  node with a new id (delete-plus-insert pattern); returns null
- *  when the patch doesn't fit the layer kind. */
+ *  fields into `effect.*` (blur style currently). Returns null when the
+ *  patch doesn't fit the layer kind.
+ *
+ *  PRESERVES the layer id. The op is still materialized as a
+ *  delete-plus-insert (the `updateOverlay` dispatcher soft-deletes the
+ *  old row then upserts this merged node), but reusing `layer.id` keeps
+ *  it the SAME logical layer — `layers:upsert` hits the restore path
+ *  (un-rejects the just-soft-deleted row, rewrites its columns) rather
+ *  than inserting a fresh row.
+ *
+ *  Why preserve, not churn: minting a fresh id on every style/text edit
+ *  orphaned the undo stack. A `create` entry recorded when the layer was
+ *  first drawn points at the original id; once an edit churned that id,
+ *  undoing back to the create became a silent no-op (it deleted a dead
+ *  id, leaving the live layer un-removable). The user-reported repro:
+ *  type "Hi Mom", edit to "Hi Mommy", then ⌘Z all the way — the text
+ *  never deleted because its create entry's id had churned out from
+ *  under it. A stable id keeps every prior entry valid. */
 export function applyPatchToLayer(
   layer: BundleLayerNode,
   patch: OverlayPatch,
@@ -709,7 +736,9 @@ export function applyPatchToLayer(
   if (layer.kind === "vector") {
     const merged = applyPatchToOverlay(layer.shape, patch);
     if (merged === null) return null;
-    return { ...layer, id: nanoid(16), shape: merged };
+    // Keep `layer.id` (carried by the spread) — the delete-plus-insert
+    // restore path re-materializes the SAME row. See the doc-block.
+    return { ...layer, shape: merged };
   }
   if (layer.kind === "effect") {
     // Map blur-overlay style patches onto effect.style.
@@ -730,10 +759,12 @@ export function applyPatchToLayer(
         // through updateGeometry above.
         ...(rotationUpdate !== undefined ? { rotation: rotationUpdate } : {})
       };
-      // Apply rect part if present (treat as geometry).
+      // Apply rect part if present (treat as geometry). Keep `layer.id`
+      // (carried by the spread) so the delete-plus-insert restore path
+      // re-materializes the SAME row — same id-stability rationale as
+      // the vector branch above.
       const next: BundleLayerNode = {
         ...layer,
-        id: nanoid(16),
         effect: newEffect,
         clip_rect:
           patch.rect !== undefined

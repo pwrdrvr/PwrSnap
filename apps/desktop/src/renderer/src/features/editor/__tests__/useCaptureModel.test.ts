@@ -1270,8 +1270,106 @@ describe("useCaptureModel", () => {
       expect(sentLayer.shape.from.x).toBeCloseTo(0.2);
       expect(sentLayer.shape.to.x).toBeCloseTo(0.9);
     }
-    // The new layer has a different id from the original (delete+insert).
-    expect(sentLayer.id).not.toBe("ly_orig");
+    // The id is PRESERVED across the edit (same logical layer). The op
+    // is still a delete-plus-insert, but reusing the id hits
+    // layers:upsert's restore path — so the layer's create undo entry
+    // stays valid and ⌘Z past the edit can still delete it. (Pre-fix
+    // this minted a fresh nanoid, which orphaned the create entry — see
+    // the "13d-text" sibling and applyGeometryToLayer's doc-block.)
+    expect(sentLayer.id).toBe("ly_orig");
+    if (r.value.kind === "update") {
+      expect(r.value.artifact.node.id).toBe("ly_orig");
+    }
+  });
+
+  test("13d-text. v2 dispatchEdit: updateOverlay (text body edit) PRESERVES the layer id", async () => {
+    // Regression: editing a text overlay's body must keep the SAME
+    // layer id. updateOverlay is still materialized as delete-plus-
+    // insert, but `applyPatchToLayer` reuses `layer.id` so the upsert
+    // hits the restore path (re-materializes the same row) instead of
+    // minting a fresh id.
+    //
+    // Why this matters (the user-reported undo bug): when the id churns
+    // on every edit, the `create` undo entry recorded when the text was
+    // first drawn points at the now-dead original id. Undoing back to
+    // it becomes a silent no-op — the edited text can never be deleted
+    // by ⌘Z. A stable id keeps that prior create entry valid, so the
+    // repro "type Hi Mom → edit to Hi Mommy → ⌘Z all the way" deletes
+    // the text last, in the order the user expects.
+    const record = makeRecord("cap_2", 2);
+    const textLayer: BundleLayerNode = {
+      id: "ly_text",
+      parent_id: null,
+      name: "Text",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 0,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-24T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-24T00:00:00Z",
+      kind: "vector",
+      shape: {
+        kind: "text",
+        point: { x: 0.5, y: 0.5 },
+        body: "Hi Mom",
+        size: "medium",
+        color: "auto"
+      }
+    };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list") return Promise.resolve({ ok: true, value: [textLayer] });
+      if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "layers:upsert") {
+        const r = req as { layer: BundleLayerNode };
+        return Promise.resolve({ ok: true, value: r.layer });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+    const r = await m.dispatchEdit({
+      kind: "updateOverlay",
+      layerId: "ly_text",
+      patch: { kind: "text", body: "Hi Mommy" }
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.value.kind).toBe("update");
+    if (r.value.kind !== "update") throw new Error("unreachable");
+    // Still a delete-plus-insert of the same id.
+    const deletes = dispatchMock.mock.calls.filter((c) => c[0] === "layers:delete");
+    expect(deletes.length).toBe(1);
+    expect(deletes[0]?.[1]).toEqual({ id: "ly_text" });
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
+    expect(upserts.length).toBe(1);
+    const sentLayer = (upserts[0]?.[1] as { layer: BundleLayerNode }).layer;
+    expect(sentLayer.kind).toBe("vector");
+    if (sentLayer.kind === "vector" && sentLayer.shape.kind === "text") {
+      expect(sentLayer.shape.body).toBe("Hi Mommy");
+    }
+    // The load-bearing assertion: id is PRESERVED across the edit, so
+    // the original create undo entry stays valid.
+    expect(sentLayer.id).toBe("ly_text");
+    expect(r.value.artifact.node.id).toBe("ly_text");
   });
 
   // ───────────────────────────────────────────────────────────────────────

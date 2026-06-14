@@ -234,6 +234,22 @@ function approxEqual(a: number, b: number, tol = 1.5): boolean {
   return Math.abs(a - b) <= tol;
 }
 
+type CropClipLayer = {
+  kind: string;
+  clip_rect?: { x: number; y: number; w: number; h: number } | null;
+  shape?: { kind?: string; rect?: { x: number; y: number; w: number; h: number } };
+};
+
+async function readLayers(
+  app: LaunchedApp,
+  captureId: string
+): Promise<CropClipLayer[]> {
+  const res = await app.dispatch("layers:list", { captureId });
+  expect(res.ok, "layers:list should succeed").toBe(true);
+  if (!res.ok) return [];
+  return res.value as unknown as CropClipLayer[];
+}
+
 test("editor-crop-clip: cropped capture clips the source to the canvas; canvas + clip never collapse", async () => {
   const app = await launchPwrSnap();
   try {
@@ -360,6 +376,61 @@ test("editor-crop-clip: blur renders within the canvas over a cropped capture (c
     expect(blurBox.y + blurBox.height).toBeLessThanOrEqual(
       canvasBox.y + canvasBox.height + 2
     );
+  } finally {
+    await app.close();
+  }
+});
+
+test("editor-crop-clip: off-origin crop translates a blur's clip_rect so it keeps covering the same region", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedBundleCapture(app, 800, 600);
+    // Blur over a known source region, fully inside the kept area of the
+    // centered-60% default crop (kept region is source [160,640]×[120,480]).
+    const blurBefore = { x: 300, y: 240, w: 120, h: 90 };
+    await insertGaussianBlur(app, captureId, blurBefore);
+    const win = await openEditor(app, captureId);
+
+    // Apply an OFF-ORIGIN crop through the REAL crop dispatch. Selecting
+    // the Crop tool seeds a centered 60% rect ({0.2, 0.2, 0.6, 0.6} — both
+    // x and y > 0), and Apply Crop runs useCaptureModel's crop op.
+    await win.locator('.psl__edit-toolbar button[data-tool="crop"]').click();
+    await win
+      .locator('[data-testid="crop-tool"]')
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await win.locator('[data-testid="crop-apply"]').click();
+    // Crop commits → exits crop mode (tool → pointer), so the overlay
+    // detaches once every crop write has landed in the DB.
+    await win
+      .locator('[data-testid="crop-tool"]')
+      .waitFor({ state: "detached", timeout: 10_000 });
+
+    const layers = await readLayers(app, captureId);
+    const cropVec = layers.find(
+      (l) => l.kind === "vector" && l.shape?.kind === "crop"
+    );
+    const blur = layers.find((l) => l.kind === "effect");
+    expect(cropVec, "crop vector layer recorded").toBeTruthy();
+    expect(blur, "blur effect layer survives the crop").toBeTruthy();
+    const cropRect = cropVec?.shape?.rect;
+    const clip = blur?.clip_rect;
+    if (cropRect === undefined || clip === null || clip === undefined) {
+      throw new Error("missing crop rect / blur clip_rect");
+    }
+
+    // A crop is a viewport translate: the blur must keep covering the
+    // SAME source region. Its clip_rect (absolute canvas px) shifts by
+    // the crop's pixel offset (rect.{x,y} × OLD canvas dims = 800×600),
+    // exactly like the raster transform (Step 0.5). The dispatcher
+    // currently SKIPS effect layers, so the blur drifts — failing here.
+    // clip_rect drives BOTH the editor render and the bake (library
+    // thumbnail), so this single check covers both surfaces.
+    const offsetX = cropRect.x * 800;
+    const offsetY = cropRect.y * 600;
+    expect(approxEqual(clip.x, blurBefore.x - offsetX)).toBe(true);
+    expect(approxEqual(clip.y, blurBefore.y - offsetY)).toBe(true);
+    expect(approxEqual(clip.w, blurBefore.w)).toBe(true);
+    expect(approxEqual(clip.h, blurBefore.h)).toBe(true);
   } finally {
     await app.close();
   }

@@ -781,6 +781,66 @@ describe("useUndoRedo", () => {
     ]);
   });
 
+  test("geometry drag then full undo rolls back in the user's expected order", async () => {
+    // Executable spec for the geometry-edit undo orphan. Repro: draw
+    // arrow1, draw arrow2, drag arrow1 to a new spot, then ⌘Z must walk
+    // back as:
+    //   revert arrow1's drag, delete arrow2, delete arrow1
+    //
+    // Pre-fix the drag churned arrow1's layer id, so the original create
+    // entry pointed at a dead id — the final ⌘Z that should delete
+    // arrow1 was a silent no-op and arrow1 stayed on the canvas. With
+    // applyGeometryToLayer preserving the id, currentIdRef tracks the
+    // (unchanged) "arrow1" and the create entry still deletes it last.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    const previousGeometry = {
+      kind: "arrow" as const,
+      from: { x: 0.1, y: 0.1 },
+      to: { x: 0.5, y: 0.5 }
+    };
+    act(() => {
+      api!.recordCreate(makeRow("arrow1"), { node: makeNode("arrow1") });
+      api!.recordCreate(makeRow("arrow2"), { node: makeNode("arrow2") });
+      // The drag of arrow1. updateGeometry now preserves the layer id,
+      // so currentIdRef tracks the (unchanged) "arrow1".
+      api!.recordGeometry({
+        currentIdRef: { current: "arrow1" },
+        previousGeometry,
+        nextGeometry: {
+          kind: "arrow",
+          from: { x: 0.3, y: 0.3 },
+          to: { x: 0.8, y: 0.8 }
+        }
+      });
+    });
+
+    for (let i = 0; i < 3; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await act(async () => {
+        await api!.undo();
+      });
+    }
+
+    const ops = dispatchEditMock.mock.calls.map((c) => c[0]);
+    expect(ops).toEqual([
+      // 1. revert arrow1's drag (geometry restored, NOT a delete).
+      { kind: "updateGeometry", layerId: "arrow1", geometry: previousGeometry },
+      // 2-3. creates unwind in LIFO order, each deleting its own layer —
+      // arrow1's delete targets its ORIGINAL id (stable across the drag).
+      { kind: "delete", id: "arrow2" },
+      { kind: "delete", id: "arrow1" }
+    ]);
+  });
+
   test("MAX_DEPTH caps the past stack (older ops drop off the back)", async () => {
     let api: UseUndoRedoResult | null = null;
     render(

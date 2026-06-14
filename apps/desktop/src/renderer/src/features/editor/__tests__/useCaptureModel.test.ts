@@ -1270,8 +1270,16 @@ describe("useCaptureModel", () => {
       expect(sentLayer.shape.from.x).toBeCloseTo(0.2);
       expect(sentLayer.shape.to.x).toBeCloseTo(0.9);
     }
-    // The new layer has a different id from the original (delete+insert).
-    expect(sentLayer.id).not.toBe("ly_orig");
+    // The id is PRESERVED across the edit (same logical layer). The op
+    // is still a delete-plus-insert, but reusing the id hits
+    // layers:upsert's restore path — so the layer's create undo entry
+    // stays valid and ⌘Z past the edit can still delete it. (Pre-fix
+    // this minted a fresh nanoid, which orphaned the create entry — see
+    // the "13d-text" sibling and applyGeometryToLayer's doc-block.)
+    expect(sentLayer.id).toBe("ly_orig");
+    if (r.value.kind === "update") {
+      expect(r.value.artifact.node.id).toBe("ly_orig");
+    }
   });
 
   test("13d-text. v2 dispatchEdit: updateOverlay (text body edit) PRESERVES the layer id", async () => {

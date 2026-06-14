@@ -654,17 +654,21 @@ export function inverseTransformOverlayByCrop(
  *  pixels (the v2 EffectLayer.clip_rect contract). Returns null if
  *  the geometry kind doesn't fit the layer kind.
  *
- *  NOTE: this mints a FRESH id, UNLIKE `applyPatchToLayer` (which now
- *  preserves the id). The divergence is deliberate-for-now, not an
- *  oversight: a test pins geometry's churn (`useCaptureModel.test.ts`
- *  "updateGeometry → ... different id"), so flipping it is a separate
- *  change. The earlier "same-id insert collides on PRIMARY KEY"
- *  rationale was wrong — `layers:upsert` restores a just-soft-deleted
- *  id rather than colliding (that's exactly how applyPatchToLayer reuses
- *  the id). So geometry CAN preserve too; it just carries the same
- *  undo-orphan caveat the text path used to (drag a freshly-drawn layer,
- *  then ⌘Z past the drag, and the create entry's id is stale). Tracked
- *  as a follow-up. */
+ *  PRESERVES the layer id, like `applyPatchToLayer`. The op is still a
+ *  delete-plus-insert (the `updateGeometry` dispatcher soft-deletes the
+ *  old row then upserts this merged node), but reusing `layer.id` keeps
+ *  it the SAME logical layer — `layers:upsert` hits the restore path
+ *  (un-rejects the just-soft-deleted row) rather than inserting a fresh
+ *  row, so there is no PRIMARY KEY collision.
+ *
+ *  Why preserve, not churn: minting a fresh id on every drag/resize/
+ *  rotate orphaned the undo stack the same way it did for text edits —
+ *  the `create` entry recorded when the layer was first drawn points at
+ *  the original id, so once an edit churned that id, undoing back to the
+ *  create deleted a dead id (a silent no-op) and the layer became
+ *  un-removable. Repro: draw arrow1, draw arrow2, drag arrow1, then ⌘Z
+ *  all the way — arrow1 used to be stuck on the canvas. A stable id
+ *  keeps every prior entry valid. */
 export function applyGeometryToLayer(
   layer: BundleLayerNode,
   geometry: GeometryUpdate,
@@ -673,10 +677,9 @@ export function applyGeometryToLayer(
   if (layer.kind === "vector") {
     const merged = applyGeometryToOverlay(layer.shape, geometry);
     if (merged === null) return null;
-    // Fresh id (the old layer is deleted in the same op). See the
-    // doc-block for why this still churns while applyPatchToLayer
-    // preserves.
-    return { ...layer, id: nanoid(16), shape: merged };
+    // Keep `layer.id` (carried by the spread) — the delete-plus-insert
+    // restore path re-materializes the SAME row. See the doc-block.
+    return { ...layer, shape: merged };
   }
   if (layer.kind === "effect") {
     // Only rect-shaped geometry maps onto an effect's clip_rect.
@@ -692,9 +695,10 @@ export function applyGeometryToLayer(
       layer.effect.type === "blur" && geometry.rotation !== undefined
         ? { ...layer.effect, rotation: geometry.rotation }
         : layer.effect;
+    // Keep `layer.id` (carried by the spread) — same id-stability
+    // rationale as the vector branch above.
     return {
       ...layer,
-      id: nanoid(16),
       effect: nextEffect,
       clip_rect: {
         x: geometry.rect.x * canvas.width,

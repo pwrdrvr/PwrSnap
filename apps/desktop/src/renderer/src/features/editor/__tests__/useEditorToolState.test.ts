@@ -85,7 +85,7 @@ function makeSettings(overrides?: {
       reshowFloatOver: "CommandOrControl+Alt+Shift+F"
     },
     general: { developerMode: false, launchAtLogin: false },
-    experimental: { processSplit: true },
+    experimental: { processSplit: true, dpiAwareExport: false, allowRetinaExport: true },
     appearance: { theme: "system" },
     updates: { channel: "latest" },
     storage: { filenameTimestampZone: "local" },

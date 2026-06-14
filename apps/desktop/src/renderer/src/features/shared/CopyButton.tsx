@@ -11,6 +11,7 @@
 // twitch when you click.
 
 import { useEffect, useRef, useState } from "react";
+import type { ExportRung } from "@pwrsnap/shared";
 import { FoIcon } from "../float-over/FoIcons";
 
 export type CopyPreset = "low" | "med" | "high";
@@ -20,6 +21,57 @@ export type CopyButtonMetric = {
   readonly bytes: string;
   readonly exact: boolean;
 };
+
+/** Small DPI callout shown under a copy card's dimensions when the
+ *  experimental DPI-aware export ladder is active. `retina` drives the
+ *  accent treatment so the user can see at a glance which rung is the
+ *  full Retina image vs. a downscaled one. */
+export type CopyTag = {
+  readonly label: string;
+  readonly retina: boolean;
+};
+
+/** Format a rung's on-screen multiple as a compact label (2×, 1×, ½×). */
+function formatOnScreenMultiple(m: number): string {
+  const fractions: ReadonlyArray<readonly [number, string]> = [
+    [0.125, "⅛×"],
+    [0.25, "¼×"],
+    [0.5, "½×"],
+    [0.75, "¾×"]
+  ];
+  for (const [value, label] of fractions) {
+    if (Math.abs(m - value) < 0.02) return label;
+  }
+  const rounded = Math.round(m * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}×`;
+}
+
+/** Derive the DPI callout for a resolved ladder rung. */
+export function rungTag(rung: ExportRung): CopyTag {
+  return rung.retina
+    ? { label: "Retina", retina: true }
+    : { label: formatOnScreenMultiple(rung.onScreenMultiple), retina: false };
+}
+
+/** Estimate dims + bytes for a resolved ladder rung — used as the
+ *  placeholder before main's exact render-cache metrics land, when the
+ *  DPI-aware ladder is active (the legacy estimate in `presetMetrics`
+ *  hardcodes the 800/1440 widths and would flash a wrong size). Bytes is
+ *  the same area-scaling estimate as `presetMetrics` and stays marked
+ *  provisional with a `~`. */
+export function estimateMetricForRung(
+  rung: ExportRung,
+  srcW: number,
+  srcBytes: number
+): CopyButtonMetric {
+  const scale = Math.min(1, rung.widthPx / Math.max(1, srcW));
+  const bytes = Math.round(srcBytes * scale * scale);
+  return {
+    dim: `${rung.widthPx} × ${rung.heightPx}`,
+    bytes: formatBytes(bytes, true),
+    exact: false
+  };
+}
 
 /** Estimated output dimensions + bytes for a given preset against a
  *  source capture's actual width × height × byte size — surfaced on
@@ -76,6 +128,11 @@ export type CopyButtonProps = {
   dim: string;
   /** Output bytes label, exact once render-cache metrics load. */
   bytes: string;
+  /** Optional DPI callout (Retina / 1× / ½× …). Rendered under the
+   *  dimensions only when the experimental DPI-aware export ladder is
+   *  active; `undefined` (legacy mode) keeps the card visually identical
+   *  to what normal users see. */
+  tag?: CopyTag | undefined;
   /** Fired when the user clicks. Caller chooses whether this copies
    *  raw image bytes or a file-backed export; the overlay animation
    *  runs unconditionally on click. */
@@ -116,6 +173,7 @@ export function CopyButton({
   label,
   dim,
   bytes,
+  tag,
   onCopy,
   onDrag,
   onCopyPath,
@@ -200,6 +258,11 @@ export function CopyButton({
           <span className="fo__copy-dim">
             <span>{dimLine1}</span>
             {dimLine2.length > 0 ? <span>{dimLine2}</span> : null}
+            {tag !== undefined ? (
+              <span className={"fo__copy-tag" + (tag.retina ? " is-retina" : "")}>
+                {tag.label}
+              </span>
+            ) : null}
           </span>
           <span className="fo__copy-bytes">
             <span>{bytesLine1}</span>

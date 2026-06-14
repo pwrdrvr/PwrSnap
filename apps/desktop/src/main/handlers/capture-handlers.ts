@@ -27,6 +27,7 @@ import { ok, err } from "@pwrsnap/shared";
 import type {
   CapturePresetMetric,
   CaptureRecord,
+  ExportStrategy,
   PwrSnapError,
   Rect,
   RenderPreset,
@@ -65,6 +66,7 @@ import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
+import { getActiveExportStrategy } from "./settings-handlers";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
@@ -626,7 +628,8 @@ export function registerCaptureHandlers(): void {
     }
 
     try {
-      const presetFile = await renderPresetFile(record, req.preset);
+      const strategy = await getActiveExportStrategy();
+      const presetFile = await renderPresetFile(record, req.preset, strategy);
       const icon = await renderViaCoordinator({
         captureId: record.id,
         srcPath: await ensureEffectiveSrcPath(record),
@@ -679,8 +682,9 @@ export function registerCaptureHandlers(): void {
     }
 
     try {
+      const strategy = await getActiveExportStrategy();
       const rendered = await Promise.all(
-        COPY_PRESETS.map((preset) => renderPresetFile(record, preset))
+        COPY_PRESETS.map((preset) => renderPresetFile(record, preset, strategy))
       );
       return ok({
         metrics: rendered.map(({ path: _path, ...metric }) => metric)
@@ -924,11 +928,12 @@ async function cropScreenSnapshot(
 
 async function renderPresetFile(
   record: CaptureRecord,
-  preset: RenderPreset
+  preset: RenderPreset,
+  strategy: ExportStrategy
 ): Promise<CapturePresetMetric & { path: string }> {
-  const targetWidth = targetWidthForImagePreset(preset, record.width_px);
+  const targetWidth = targetWidthForImagePreset(preset, record, strategy);
   const scale = Math.min(1, targetWidth / Math.max(1, record.width_px));
-  const result = await resolveImagePresetFile(record, preset);
+  const result = await resolveImagePresetFile(record, preset, strategy);
 
   return {
     preset,

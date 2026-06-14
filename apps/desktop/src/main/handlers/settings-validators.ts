@@ -318,32 +318,6 @@ export function validateSettingsWrite(
     }
   }
 
-  if (p.experimental !== undefined) {
-    if (
-      typeof p.experimental !== "object" ||
-      p.experimental === null ||
-      Array.isArray(p.experimental)
-    ) {
-      return {
-        ok: false,
-        error: validationError(
-          "invalid_experimental",
-          "settings:write: experimental must be an object"
-        )
-      };
-    }
-    const experimental = p.experimental as Record<string, unknown>;
-    if (!isUndefined(experimental.processSplit) && !isBoolean(experimental.processSplit)) {
-      return {
-        ok: false,
-        error: validationError(
-          "invalid_experimental_processSplit",
-          "settings:write: experimental.processSplit must be a boolean"
-        )
-      };
-    }
-  }
-
   if (p.appearance !== undefined) {
     if (
       typeof p.appearance !== "object" ||
@@ -485,7 +459,33 @@ export function validateSettingsWrite(
     if (libraryErr !== null) return { ok: false, error: libraryErr };
   }
 
+  if (p.experimental !== undefined) {
+    const experimentalErr = validateExperimentalPatch(p.experimental);
+    if (experimentalErr !== null) return { ok: false, error: experimentalErr };
+  }
+
   return { ok: true, value: patch as SettingsPatch };
+}
+
+/** Validate the `experimental` section of a settings patch — the opt-in
+ *  feature-gate booleans. Reject anything non-boolean so a forged file /
+ *  HTTP-RPC payload can't smuggle a non-boolean into a flag. */
+function validateExperimentalPatch(raw: unknown): PwrSnapError | null {
+  if (!isObject(raw)) {
+    return validationError(
+      "invalid_experimental",
+      "settings:write: experimental must be an object"
+    );
+  }
+  for (const key of ["processSplit", "dpiAwareExport", "allowRetinaExport"] as const) {
+    if (!isUndefined(raw[key]) && !isBoolean(raw[key])) {
+      return validationError(
+        `invalid_experimental_${key}`,
+        `settings:write: experimental.${key} must be a boolean`
+      );
+    }
+  }
+  return null;
 }
 
 /** Validate the library section of a settings patch. Currently

@@ -5,8 +5,9 @@
 
 import { BrowserWindow, app } from "electron";
 import { join } from "node:path";
-import { ok, err, EVENT_CHANNELS } from "@pwrsnap/shared";
+import { ok, err, EVENT_CHANNELS, exportStrategyFromSettings } from "@pwrsnap/shared";
 import type {
+  ExportStrategy,
   PwrSnapError,
   Result,
   SecretStatus,
@@ -66,6 +67,27 @@ export function __setSettingsServicesForTests(injected: {
 }): void {
   if (injected.service !== undefined) settingsService = injected.service;
   if (injected.secrets !== undefined) secretStore = injected.secrets;
+}
+
+/** Read the live settings snapshot for non-`settings:*` main handlers
+ *  (e.g. the export path resolving the active preset ladder). Shares the
+ *  same lazily-constructed `DesktopSettingsService` as the bus verbs, so
+ *  a write made through `settings:write` is visible here on the next read
+ *  (the service has no in-memory cache — `read()` re-parses the file). */
+export async function readDesktopSettings(): Promise<Settings> {
+  return ensureServices().service.read();
+}
+
+/** Resolve the export-preset strategy currently selected in Settings.
+ *  Wrapped in try/catch so a settings read hiccup (corrupt file mid-write,
+ *  no app instance in a unit test) degrades to the legacy fixed-width
+ *  ladder — the export path must never throw on a settings problem. */
+export async function getActiveExportStrategy(): Promise<ExportStrategy> {
+  try {
+    return exportStrategyFromSettings(await readDesktopSettings());
+  } catch {
+    return "legacy";
+  }
 }
 
 /** Main-side listeners that want to react to settings changes (e.g.

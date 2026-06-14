@@ -28,18 +28,30 @@ import {
   useState,
   type ReactElement
 } from "react";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import {
+  EVENT_CHANNELS,
+  exportStrategyFromSettings,
+  resolveExportLadder,
+  rungForPreset
+} from "@pwrsnap/shared";
 import type {
   AiEnrichmentBudgetStatus,
   AiRunUsageDetail,
   CaptureEnrichment,
   CaptureRecord,
+  ExportStrategy,
   LibrarySidebarTab,
   SettingsChangedEvent,
   Settings,
   SuggestedTag
 } from "@pwrsnap/shared";
-import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
+import {
+  CopyButton,
+  presetMetrics,
+  rungTag,
+  estimateMetricForRung,
+  type CopyPreset
+} from "../shared/CopyButton";
 import { CodexStatusPill, enrichmentBackendLabel } from "../shared/CodexStatusPill";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
@@ -164,6 +176,8 @@ export function DetailRail({
     providerLabel: string;
     modelLabel: string | undefined;
   }>({ providerLabel: "Codex", modelLabel: undefined });
+  // Experimental DPI-aware export strategy (default legacy = no change).
+  const [exportStrategy, setExportStrategy] = useState<ExportStrategy>("legacy");
 
   const refreshBudgetStatus = useCallback(async (): Promise<void> => {
     const result = await dispatch("codex:budgetStatus", {});
@@ -246,14 +260,18 @@ export function DetailRail({
   }, [fullyControlled, isPinControlled, isTabControlled]);
 
   // Track the enrichment backend label (provider + model) so the status pill +
-  // OCR copy name the actual agent. Read once + refresh on settings changes.
+  // OCR copy name the actual agent — plus the experimental export-preset
+  // strategy (DPI-aware ladder) so the L/M/H copy cards label + estimate
+  // the right sizes. Read once + refresh on settings changes; the
+  // `usePresetRenderMetrics` hook separately refetches the exact bytes.
   useEffect(() => {
     let cancelled = false;
     const load = (): void => {
       void dispatch("settings:read", {}).then((result) => {
         if (cancelled || !result.ok) return;
-        const enrichment = (result.value as Settings | undefined)?.ai?.defaults?.enrichment;
-        setEnrichmentLabel(enrichmentBackendLabel(enrichment));
+        const settings = result.value as Settings | undefined;
+        setEnrichmentLabel(enrichmentBackendLabel(settings?.ai?.defaults?.enrichment));
+        setExportStrategy(exportStrategyFromSettings(settings));
       });
     };
     load();
@@ -622,17 +640,38 @@ export function DetailRail({
             </div>
           ) : (
             <div className="psl__copy-row">
-              {COPY_PRESETS.map((p) => {
-                const m =
-                  renderMetrics[p] ??
-                  presetMetrics(p, record.width_px, record.height_px, record.byte_size);
-                return (
+              {((): ReactElement[] => {
+                // Resolve the active export ladder once per render. In
+                // legacy mode `ladder` stays unused and the cards look
+                // exactly as they do for normal users; with DPI-aware
+                // export on, each rung supplies the Retina/scale tag and a
+                // correct pre-render dim estimate.
+                const ladder =
+                  exportStrategy === "legacy"
+                    ? null
+                    : resolveExportLadder(
+                        {
+                          widthPx: record.width_px,
+                          heightPx: record.height_px,
+                          devicePixelRatio: record.device_pixel_ratio
+                        },
+                        exportStrategy
+                      );
+                return COPY_PRESETS.map((p) => {
+                  const rung = ladder === null ? undefined : rungForPreset(ladder, p);
+                  const estimate =
+                    rung === undefined
+                      ? presetMetrics(p, record.width_px, record.height_px, record.byte_size)
+                      : estimateMetricForRung(rung, record.width_px, record.byte_size);
+                  const m = renderMetrics[p] ?? estimate;
+                  return (
                   <CopyButton
                     key={p}
                     preset={p}
                     label={COPY_LABELS[p]}
                     dim={m.dim}
                     bytes={m.bytes}
+                    tag={rung === undefined ? undefined : rungTag(rung)}
                     onCopy={(preset) => {
                       void dispatch("clipboard:copy-file", { captureId: record.id, preset });
                     }}
@@ -642,8 +681,9 @@ export function DetailRail({
                     onDrag={(preset) => startCaptureDrag(record.id, preset)}
                     copyPulse={copyPulses?.[p] ?? 0}
                   />
-                );
-              })}
+                  );
+                });
+              })()}
             </div>
           )}
         </div>

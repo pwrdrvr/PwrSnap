@@ -20,6 +20,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   EVENT_CHANNELS,
+  exportStrategyFromSettings,
   type AcpAgentDiscovery,
   type CaptureEnrichment,
   type CaptureRecord,
@@ -448,6 +449,8 @@ export function FloatOverHost(): React.ReactElement {
         srcW={record.width_px}
         srcH={record.height_px}
         srcBytes={record.byte_size}
+        srcDpr={record.device_pixel_ratio}
+        exportStrategy={exportStrategyFromSettings(settings)}
         copyMetrics={copyMetrics}
         copyPulses={copyPulses}
         onDragFile={() => startCaptureDrag(record.id, "high")}

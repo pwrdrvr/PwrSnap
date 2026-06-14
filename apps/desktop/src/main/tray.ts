@@ -444,6 +444,24 @@ export function hideTrayPopoverForE2E(): void {
 export async function measureTrayFirstPaintForE2E(options: {
   stableMs?: number;
   timeoutMs?: number;
+  /**
+   * Minimum content height (DIP) the popover must reach before its size
+   * is accepted as "stable". Defaults to 0 (no gate).
+   *
+   * The "no resize for stableMs" heuristic alone is unsound when the
+   * popover's final height depends on an async reflow that lands AFTER a
+   * quiet period: a seeded last-snap preview is fetched over IPC and its
+   * image decoded via pwrsnap-capture://, so the renderer first measures
+   * the empty/text-only height (~248) and only later re-measures to the
+   * full seeded height (~634). When that second reflow arrives more than
+   * stableMs after the first measurement — routine on the slower VS2026
+   * runner image — the bare heuristic breaks at ~248, the empty-tray
+   * band. Callers that know they seeded content pass the expected floor
+   * so the measurement waits for the real content instead of sampling
+   * the transient empty state. A height that never reaches the floor
+   * times out (`timedOut: true`) — a genuine regression still fails.
+   */
+  minStableHeight?: number;
 } = {}): Promise<{
   mode: "cold" | "prewarmed";
   windowCreated: number | null;
@@ -459,6 +477,7 @@ export async function measureTrayFirstPaintForE2E(options: {
 }> {
   const stableMs = options.stableMs ?? 300;
   const timeoutMs = options.timeoutMs ?? 10_000;
+  const minStableHeight = options.minStableHeight ?? 0;
 
   const alreadyExists = trayWindow !== null && !trayWindow.isDestroyed();
   const mode: "cold" | "prewarmed" = alreadyExists ? "prewarmed" : "cold";
@@ -546,17 +565,32 @@ export async function measureTrayFirstPaintForE2E(options: {
   // its content height. Hold long enough for the OS to swap the off-
   // screen window in and the spec can read back isVisible.
   const minimumPrewarmedHoldMs = 60;
+  // The seeded content (if any) must have actually landed before we
+  // accept the size as final — see `minStableHeight`. Cheap: a
+  // synchronous getContentSize read, no IPC. Trivially true for the
+  // empty-tray scenarios (their floor is below the empty height) and
+  // for callers that pass no floor.
+  const heightSettled = (): boolean =>
+    !window.isDestroyed() && window.getContentSize()[1] >= minStableHeight;
   let timedOut = true;
   while (performance.now() < deadline) {
     if (isVisible === null && !window.isDestroyed() && window.isVisible()) {
       isVisible = mark();
     }
     if (mode === "prewarmed") {
-      if (isVisible !== null && performance.now() - startedAt >= minimumPrewarmedHoldMs) {
+      if (
+        isVisible !== null &&
+        performance.now() - startedAt >= minimumPrewarmedHoldMs &&
+        heightSettled()
+      ) {
         timedOut = false;
         break;
       }
-    } else if (lastResizeAt > 0 && performance.now() - lastResizeAt >= stableMs) {
+    } else if (
+      lastResizeAt > 0 &&
+      performance.now() - lastResizeAt >= stableMs &&
+      heightSettled()
+    ) {
       timedOut = false;
       break;
     }

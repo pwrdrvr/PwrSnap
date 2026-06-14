@@ -78,7 +78,11 @@ import { BlurOverlays } from "./BlurOverlays";
 import { TextDraftInput } from "./TextDraftInput";
 import { TextHtmlOverlays } from "./TextHtmlOverlays";
 import { resolveTextDraftStyle } from "./text-draft-style";
-import { TEXT_BBOX_CHAR_ADVANCE_HIT } from "./text-bbox-constants";
+import {
+  TEXT_BBOX_CHAR_ADVANCE_HIT,
+  TEXT_BBOX_HIT_WIDTH_SLOP
+} from "./text-bbox-constants";
+import { measureTextWidthPx } from "./text-measure";
 import { LayerContextMenu } from "./LayerContextMenu";
 import {
   buildLayerContextMenuItems,
@@ -831,18 +835,25 @@ export function hitTestOverlays(
       const lines = o.body.split("\n");
       const lineCount = Math.max(1, lines.length);
       const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 1);
-      // Char-advance for the HIT TEST — intentionally LOOSER than the
-      // selection outline's so clicks landing just past the right edge
-      // of the rendered text still register (users pointing at
-      // characters near the right side were misfiring on the empty
-      // space just past the glyph). Both constants + rationale live in
-      // text-bbox-constants.ts; see it before tweaking either value.
-      // Width also has a floor of 1× fontSize so a 1-char line still
-      // has a reasonable click target.
-      const naturalWidthPx = Math.max(
+      // Measure the REAL advance width (same metric the selection outline
+      // now uses) so the click target tracks the glyph extent instead of
+      // a char-count guess that mis-sized wide-cap text like `Hi MOm`.
+      // The hit target stays intentionally MORE forgiving than the
+      // outline: TEXT_BBOX_HIT_WIDTH_SLOP widens the measured width so
+      // clicks landing just past the right edge still register (users
+      // pointing near the right side were misfiring on the empty space
+      // just past the glyph). Falls back to the char-count advance where
+      // a 2D canvas is unavailable (jsdom unit tests). Width floors at
+      // 1× fontSize so a 1-char line still has a reasonable click target.
+      const measuredWidthPx = measureTextWidthPx(
+        o.body,
         sizePx,
-        maxChars * sizePx * TEXT_BBOX_CHAR_ADVANCE_HIT
+        readTextWeight(o)
       );
+      const naturalWidthPx =
+        measuredWidthPx !== null
+          ? Math.max(sizePx, measuredWidthPx * TEXT_BBOX_HIT_WIDTH_SLOP)
+          : Math.max(sizePx, maxChars * sizePx * TEXT_BBOX_CHAR_ADVANCE_HIT);
       const naturalHeightPx = sizePx * lineCount;
       // Box centered vertically on the anchor (matches the HTML
       // wrapper's `translateY(-50%)` layout); left edge at anchor.x.

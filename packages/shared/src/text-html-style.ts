@@ -94,8 +94,13 @@ export interface TextHtmlStyle {
 
 /** Font-family stack — verbatim across renderer and bake. Apple system
  *  fonts render differently than HTML's `system-ui` alias on Chromium;
- *  being explicit pins the metrics. */
-const FONT_FAMILY =
+ *  being explicit pins the metrics.
+ *
+ *  Exported so the renderer's canvas-based text measurer
+ *  (`measureTextWidthPx`) can size its `measureText` context with the
+ *  EXACT same stack the glyph renders with — otherwise the measured
+ *  advance width wouldn't match the rendered `<div>`. */
+export const TEXT_OVERLAY_FONT_FAMILY =
   "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
 /** Resolves all CSS needed to render a text overlay through Chromium's
@@ -182,7 +187,7 @@ export function computeTextHtmlStyle(args: TextHtmlStyleArgs): TextHtmlStyle {
   // and two places to audit. The single-map design is the property
   // any reasonable caller (renderer or future bake) wants.
   const glyph: Record<string, string | number> = {
-    fontFamily: FONT_FAMILY,
+    fontFamily: TEXT_OVERLAY_FONT_FAMILY,
     fontWeight: weight,
     fontSize: `${fontPx}px`,
     lineHeight: 1,

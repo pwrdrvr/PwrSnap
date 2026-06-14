@@ -35,12 +35,32 @@ const mainEntry = path.resolve(desktopRoot, "out", "main", "index.js");
 const ELECTRON_CLOSE_TIMEOUT_MS = 5_000;
 
 async function removeHomeRoot(homeRoot: string): Promise<void> {
-  await rm(homeRoot, {
-    recursive: true,
-    force: true,
-    maxRetries: 5,
-    retryDelay: 100
-  });
+  try {
+    await rm(homeRoot, {
+      recursive: true,
+      force: true,
+      // On Windows the OS reaps a dead process's file handles
+      // asynchronously, so better-sqlite3's WAL/db files (pwrsnap.db,
+      // DIPS-wal, …) can still be locked for a beat after Electron
+      // exits — the unlink then hits EBUSY. fs.rm retries EBUSY with
+      // linear backoff; give the handle a generous window to drop. The
+      // VS2026 runner image surfaced this (its teardown timing loses a
+      // race the VS2022 image always won); ~11s worst case, but it
+      // returns the instant the unlink succeeds, so the healthy path
+      // pays nothing.
+      maxRetries: 10,
+      retryDelay: 200
+    });
+  } catch (error) {
+    // A leaked temp dir under os.tmpdir() on an ephemeral CI runner is
+    // harmless. Throwing here is NOT: it escapes test teardown, crashes
+    // the Playwright worker mid-run ("Failed worker ran N tests"), and
+    // fails the whole job — turning an otherwise-green suite red and
+    // flipping a pass-on-retry flake into a hard failure. Cleanup must
+    // never take down the worker.
+    // eslint-disable-next-line no-console
+    console.warn(`[e2e] could not remove temp HOME ${homeRoot}: ${String(error)}`);
+  }
 }
 
 type CloseResult = "closed" | "rejected" | "timeout";

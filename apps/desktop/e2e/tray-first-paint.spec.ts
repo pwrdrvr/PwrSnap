@@ -104,15 +104,21 @@ type Checkpoints = {
   timedOut: boolean;
 };
 
-async function measure(app: LaunchedApp): Promise<Checkpoints> {
-  return (await app.electronApp.evaluate(async () => {
+async function measure(app: LaunchedApp, minStableHeight: number): Promise<Checkpoints> {
+  return (await app.electronApp.evaluate(async (_electron, minHeight: number) => {
     const bridge = (
       globalThis as unknown as {
-        __PWRSNAP_TEST__: { measureTrayFirstPaint: () => Promise<unknown> };
+        __PWRSNAP_TEST__: {
+          measureTrayFirstPaint: (opts?: { minStableHeight?: number }) => Promise<unknown>;
+        };
       }
     ).__PWRSNAP_TEST__;
-    return await bridge.measureTrayFirstPaint();
-  })) as Checkpoints;
+    // Gate "size-stable" on the seeded content actually arriving so the
+    // measurement doesn't sample the transient empty-tray height (~248)
+    // when the seeded last-snap reflow lands >stableMs late — the flake
+    // the VS2026 runner image exposes. See measureTrayFirstPaintForE2E.
+    return await bridge.measureTrayFirstPaint({ minStableHeight: minHeight });
+  }, minStableHeight)) as Checkpoints;
 }
 
 /**
@@ -263,7 +269,7 @@ test.describe("tray popover first-paint baseline", () => {
           if (scenario.prewarm) {
             await prewarmTrayPopover(app);
           }
-          const result = await measure(app);
+          const result = await measure(app, scenario.minHeight);
           runs.push(result);
           // eslint-disable-next-line no-console
           console.log(

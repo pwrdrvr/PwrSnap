@@ -252,7 +252,23 @@ test.describe("tray popover sizing", () => {
       // `events:popover:remeasure` to the renderer, which re-posts
       // through the resize channel.
       const ZOOM = 1.5;
+      const beforeHeight = before.contentSize!.height;
       await setTrayZoom(app, ZOOM);
+
+      // setZoomFactor → zoom-changed → events:popover:remeasure →
+      // renderer re-post → setContentSize spans several frames. On the
+      // slower VS2026 runner image that round-trip can outlast
+      // waitForStableSize's stability window, so a bare waitForStableSize()
+      // returns the *pre-zoom* size — the flake. Gate on the contentSize
+      // actually growing toward the zoomed value before settling; a height
+      // that never grows fails here (a genuine remeasure-plumbing
+      // regression) instead of passing through at the unzoomed value.
+      await expect
+        .poll(async () => (await inspectTray(app)).contentSize?.height ?? 0, {
+          timeout: 8000,
+          message: "tray contentSize never grew after zoom — remeasure round-trip didn't land"
+        })
+        .toBeGreaterThan(beforeHeight + 20);
 
       // contentSize should re-stabilize at a value matching the new
       // measurement × zoomFactor.

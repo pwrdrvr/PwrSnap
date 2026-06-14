@@ -43,8 +43,8 @@ import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 //   • updateGeometry — drag the selected layer's handles. For vector
 //     kinds, merge a kind-specific positional/size patch into
 //     shape.{from,to,rect,point} via layers:upsert (delete-plus-insert
-//     under a fresh id); for blur effects, update clip_rect via
-//     layers:upsert.
+//     reusing the layer id — the upsert restores the soft-deleted row);
+//     for blur effects, update clip_rect via layers:upsert.
 //
 //   • updateOverlay — generic style patch dispatched by the selected-
 //     layer style editor (popover writes through this when a layer is
@@ -1264,14 +1264,18 @@ export function useCaptureModel(captureId: string): CaptureModel {
           };
         }
         case "updateGeometry": {
-          // Phase 3.5 — v2 mirror of the v1 update path. layers:upsert
-          // inserts a fresh row keyed on `node.id` (collision on the
-          // same id), so the visible "edit-in-place" semantic is again
-          // a delete-plus-insert pair. The new node carries a fresh id
-          // (mintFreshLayerId) so the insert succeeds. Vector layers
-          // merge into `shape.*`; effect layers (blur/highlight) merge
-          // into `clip_rect` (renormalized to absolute canvas pixels
-          // per the v2 EffectLayer.clip_rect contract).
+          // Phase 3.5 — v2 mirror of the v1 update path. The visible
+          // "edit-in-place" is materialized as a delete-plus-insert
+          // pair (layers:delete then layers:upsert). The merged node
+          // REUSES `op.layerId` (applyGeometryToLayer preserves it), so
+          // the upsert hits layers:upsert's restore path — un-rejects
+          // the just-soft-deleted row rather than colliding on PRIMARY
+          // KEY. Keeping the id stable keeps undo-stack create entries
+          // valid across edits (see applyGeometryToLayer's doc-block).
+          // Vector layers merge into `shape.*`; effect layers
+          // (blur/highlight) merge into `clip_rect` (renormalized to
+          // absolute canvas pixels per the v2 EffectLayer.clip_rect
+          // contract).
           const record = recordRef.current;
           if (record === null) {
             return err({

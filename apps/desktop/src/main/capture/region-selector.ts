@@ -20,7 +20,6 @@ import { join } from "node:path";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
 import {
-  activateApp,
   boundsApproxEqual,
   listWindowsSnapshot,
   selfPidSet,
@@ -481,17 +480,18 @@ export async function pickRegion(
   // in the picker. Skipping the hide also skips the 50 ms compositor
   // wait, which only mattered as a "let the hide reach the window
   // server before snapshotting" guard.
-  // Content-protect the windows the trigger says shouldn't appear in
-  // the snapshot (e.g. the Library when the capture was started from
-  // its own Capture button). sharingType=.none excludes them from the
-  // screencapture output but keeps them visible on screen — no hide,
-  // no flicker, no focus disturbance. Cleared right after the frozen
-  // snapshot below (`clearSnapshotContentProtection`).
-  setSnapshotContentProtection(protectWindowIds, true);
   if (!keepPwrSnapChrome) {
     hideTrayPopoverIfVisible();
     setFloatOverState({ kind: "cancel" });
   }
+  // Content-protect the windows the trigger says shouldn't appear in
+  // the snapshot (e.g. the Library when the capture was started from
+  // its own Capture button). sharingType=.none excludes them from the
+  // screencapture output but keeps them visible on screen — no hide,
+  // no flicker, no focus disturbance. Set AFTER the hide above so a
+  // hide throw can't leave a window protected, and the try/finally
+  // around the snapshot below lifts it on every exit path.
+  setSnapshotContentProtection(protectWindowIds, true);
   if (!keepPwrSnapChrome || protectWindowIds.length > 0) {
     // Compositor flush — let the hide / content-protection toggle
     // reach the window server before we snapshot, otherwise the
@@ -588,11 +588,6 @@ export async function pickRegion(
   });
   try {
     const screenSnapshot = await captureAndRegister(targetDisplay.id);
-    // Snapshot is frozen — the protected windows are out of it. Lift
-    // protection immediately so they're capturable again the instant
-    // this capture finishes (and so we never leave a window stuck
-    // uncapturable if a later step throws).
-    setSnapshotContentProtection(protectWindowIds, false);
     activeScreenSnapshot = screenSnapshot;
     log.info("completed screen snapshot", {
       displayId: targetDisplay.id,
@@ -601,7 +596,6 @@ export async function pickRegion(
       snapshotId: screenSnapshot.id
     });
   } catch (err) {
-    setSnapshotContentProtection(protectWindowIds, false);
     log.warn("screen snapshot failed; selector aborted", {
       displayId: targetDisplay.id,
       durationMs: Date.now() - screenSnapshotRequestedAt,
@@ -611,6 +605,13 @@ export async function pickRegion(
     acceptingWindowList = false;
     void windowListPromise;
     return { ok: false, reason: "destroyed" };
+  } finally {
+    // Lift protection on EVERY snapshot exit path — success, throw, or
+    // the early `return` in the catch (the `finally` still runs before
+    // the function returns). The frozen snapshot already excludes the
+    // protected windows; holding protection any longer would leave them
+    // stuck uncapturable. No-op when protectWindowIds is empty.
+    setSnapshotContentProtection(protectWindowIds, false);
   }
 
   // Arm Esc + Enter via globalShortcut for the duration of the
@@ -711,12 +712,11 @@ export async function pickRegion(
       if (windowListPayload !== null) {
         deliverWindowListPayload(windowListPayload);
       }
-      setTimeout(() => {
-        if (win.isDestroyed() || pendingResolver !== resolve) return;
-        if (modePayload !== null) {
-          win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
-        }
-      }, 50);
+      // No mode re-send here: the renderer already received the mode +
+      // snapshot at the pre-gate send above — that's precisely what it
+      // loaded/decoded to fire the paint ack we just waited on. Showing
+      // the window doesn't reset the renderer's state, so a re-send is a
+      // no-op.
     };
 
     // Gate the reveal on the snapshot actually painting in the
@@ -802,7 +802,7 @@ function matchesExcludedBounds(b: BoundsLike, excluded: readonly BoundsLike[]): 
   );
 }
 
-function prepareWindowListPayload(args: {
+export function prepareWindowListPayload(args: {
   rawSnapshot: WindowInfo[];
   targetDisplay: Display;
   displayCursor: { x: number; y: number };

@@ -24,6 +24,8 @@
 // catches it.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { BrowserWindow, Display } from "electron";
+import type { WindowInfo } from "../capture/window-list";
 
 type WindowSpy = {
   setTitle: ReturnType<typeof vi.fn>;
@@ -57,6 +59,10 @@ const constructed: WindowSpy[] = [];
 const ipcListeners = new Map<string, (event: unknown, payload: unknown) => void>();
 const deferredLoadResolvers: (() => void)[] = [];
 let deferSelectorLoads = false;
+// When true, the window spy stops auto-acking `region-selector:painted`
+// on a mode push — lets a test simulate a renderer that never paints
+// (timeout fallback) or drive the ack manually (stale-URL rejection).
+let suppressPaintAck = false;
 const screenSnapshotMocks = vi.hoisted(() => ({
   captureAndRegister: vi.fn(),
   releaseSnapshot: vi.fn()
@@ -95,6 +101,7 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
       // has registered its paint waiter) so the gated show proceeds
       // without a real renderer/image decode.
       send: vi.fn((channel: string, payload: unknown) => {
+        if (suppressPaintAck) return;
         if (channel === "region-selector:mode" && payload !== null && typeof payload === "object") {
           const url = (payload as { screenUrl?: unknown }).screenUrl;
           if (typeof url === "string") {
@@ -210,6 +217,7 @@ beforeEach(() => {
   ipcListeners.clear();
   deferredLoadResolvers.length = 0;
   deferSelectorLoads = false;
+  suppressPaintAck = false;
   screenSnapshotMocks.captureAndRegister.mockReset();
   screenSnapshotMocks.releaseSnapshot.mockReset();
   screenSnapshotMocks.captureAndRegister.mockResolvedValue({
@@ -479,5 +487,146 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+});
+
+describe("region-selector — snapshot-paint gate before show()", () => {
+  test("reveals via the timeout fallback when the renderer never acks the paint", async () => {
+    // Simulate a wedged renderer: the mode/snapshot is pushed (so it
+    // COULD paint) but the `region-selector:painted` ack never fires.
+    suppressPaintAck = true;
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion();
+
+    // The mode + snapshot URL reaches the renderer...
+    await vi.waitFor(() => {
+      expect(constructed[0]?.webContents.send).toHaveBeenCalledWith(
+        "region-selector:mode",
+        expect.objectContaining({ screenUrl: "pwrsnap-screen://r/snapshot-1" })
+      );
+    });
+
+    // ...and even with no paint ack, the selector still shows once the
+    // SHOW_AFTER_PAINT_TIMEOUT_MS safety net elapses (identical to the
+    // pre-gate behavior — never hangs the picker).
+    await vi.waitFor(
+      () => {
+        expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+      },
+      { timeout: 2000 }
+    );
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+
+  test("ignores a painted ack with a stale screenUrl, then reveals on the matching one", async () => {
+    suppressPaintAck = true;
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion();
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.webContents.send).toHaveBeenCalledWith(
+        "region-selector:mode",
+        expect.objectContaining({ screenUrl: "pwrsnap-screen://r/snapshot-1" })
+      );
+    });
+
+    // A late ack from a SUPERSEDED capture (different screenUrl) must not
+    // satisfy the current wait — the selector stays hidden. (Well under
+    // the 250ms timeout, so the fallback can't be what keeps it hidden.)
+    ipcListeners.get("region-selector:painted")?.({}, { screenUrl: "pwrsnap-screen://r/stale-0" });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(constructed[0]?.show).not.toHaveBeenCalled();
+
+    // The ack for the CURRENT snapshot reveals it.
+    ipcListeners.get("region-selector:painted")?.({}, { screenUrl: "pwrsnap-screen://r/snapshot-1" });
+    await vi.waitFor(() => {
+      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+    });
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+});
+
+describe("prepareWindowListPayload — content-protected windows", () => {
+  const protectionDisplay = {
+    id: 1,
+    bounds: { x: 0, y: 0, width: 1440, height: 900 },
+    workArea: { x: 0, y: 25, width: 1440, height: 875 },
+    scaleFactor: 2
+  } as unknown as Display;
+
+  // prepareWindowListPayload reads getBounds/getContentBounds/
+  // isSimpleFullScreen off the selector window (the last two only feed a
+  // debug log, but their args are still evaluated).
+  const protectionSelectorWindow = {
+    getBounds: () => ({ x: 0, y: 0, width: 1440, height: 900 }),
+    getContentBounds: () => ({ x: 0, y: 0, width: 1440, height: 900 }),
+    isSimpleFullScreen: () => false
+  } as unknown as BrowserWindow;
+
+  // Library = ours, topmost (z=0). A non-empty title short-circuits
+  // isSelectorOverlayWindow, so it's never mistaken for the overlay.
+  const library: WindowInfo = {
+    windowId: 10,
+    pid: 4242,
+    bundleId: "com.pwrdrvr.pwrsnap",
+    appName: "PwrSnap",
+    title: "PwrSnap Library",
+    bounds: { x: 240, y: 30, width: 1000, height: 700 },
+    layer: 0,
+    alpha: 1,
+    isFrontmostInApp: true
+  };
+  const otherApp: WindowInfo = {
+    windowId: 20,
+    pid: 5555,
+    bundleId: "com.anthropic.claude",
+    appName: "Claude",
+    title: "Claude",
+    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+    layer: 0,
+    alpha: 1,
+    isFrontmostInApp: true
+  };
+
+  test("drops the protected Library from candidates but keeps it for previousAppPid", async () => {
+    const { prepareWindowListPayload } = await import("../capture/region-selector");
+    const result = prepareWindowListPayload({
+      rawSnapshot: [library, otherApp],
+      targetDisplay: protectionDisplay,
+      displayCursor: { x: 100, y: 100 },
+      ourPids: new Set([4242]),
+      excludeWindowBounds: [library.bounds],
+      selectorWindow: protectionSelectorWindow,
+      frontmostPid: 4242,
+      frontmostBundleId: "com.pwrdrvr.pwrsnap"
+    });
+
+    // Library (ours, topmost) ⇒ "we were already in PwrSnap", no
+    // previous app to restore. Computed on the UNFILTERED snapshot, so
+    // the candidate exclusion must not perturb it.
+    expect(result.previousAppPid).toBeNull();
+    // Library is absent from the frozen picker image, so it must NOT be
+    // a snap target — only the other app remains pickable.
+    expect(result.payload.windows.map((w) => w.windowId)).toEqual([20]);
+  });
+
+  test("without exclusion the Library IS a candidate (proves exclusion is what drops it)", async () => {
+    const { prepareWindowListPayload } = await import("../capture/region-selector");
+    const result = prepareWindowListPayload({
+      rawSnapshot: [library, otherApp],
+      targetDisplay: protectionDisplay,
+      displayCursor: { x: 100, y: 100 },
+      ourPids: new Set([4242]),
+      excludeWindowBounds: [],
+      selectorWindow: protectionSelectorWindow,
+      frontmostPid: 4242,
+      frontmostBundleId: "com.pwrdrvr.pwrsnap"
+    });
+
+    expect([...result.payload.windows.map((w) => w.windowId)].sort()).toEqual([10, 20]);
   });
 });

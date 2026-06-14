@@ -39,14 +39,17 @@ threading issue.
   (redo) so one template works on macOS, Windows, and Linux.
   `Menu.setApplicationMenu` is called unconditionally (no `isMac` gate),
   so the menu — and its accelerators — install on all three platforms.
-- The custom items' `click(_item, window)` call `sendEditCommand`, which
-  resolves the `BaseWindow` to its `BrowserWindow` and
-  `webContents.send(EVENT_CHANNELS.editUndo | editRedo)`. **No
-  `executeJavaScript`** (sandbox crack — forbidden by CLAUDE.md).
+- The custom items' `click(_item, window, event)` call `sendEditCommand`,
+  which resolves the `BaseWindow` to its `BrowserWindow` and
+  `webContents.send(EVENT_CHANNELS.editUndo | editRedo, { viaAccelerator })`
+  — forwarding `event.triggeredByAccelerator` for the double-fire guard.
+  **No `executeJavaScript`** (sandbox crack — forbidden by CLAUDE.md).
 - **Renderer bridge**
   [`editMenuBridge.ts`](../../apps/desktop/src/renderer/src/lib/editMenuBridge.ts)
   is mounted once per `BrowserWindow` at the `App` root (`useEditMenuBridge`).
-  It subscribes to `editUndo`/`editRedo` and applies a single focus rule:
+  It owns **both** input paths for the window — a renderer `keydown`
+  listener (⌘Z / ⌘⇧Z, plus Ctrl+Y on Windows/Linux) **and** the
+  `editUndo`/`editRedo` menu IPC — and applies a single focus rule:
   - **editable field focused** (`INPUT`/`TEXTAREA`/`contentEditable`) →
     `document.execCommand("undo" | "redo")` (native text undo).
   - **otherwise** → drive the editor undo/redo registered via
@@ -81,41 +84,59 @@ Ctrl+Y keydown path is different (see below): Ctrl+Y is *not* a menu
 accelerator, so the browser default is **not** suppressed — there we leave
 the field's native Ctrl+Y alone rather than calling `execCommand`.
 
-## The double-fire trap — menu accelerator vs renderer keydown
+## Why keep a renderer keydown at all (and the double-fire guard)
 
-**An Electron menu accelerator and a renderer `window` `keydown`
-listener BOTH fire for the same keystroke.** The accelerator does *not*
-consume the JS keyboard event, and `preventDefault()` in the renderer
-does *not* stop the accelerator. So if you register ⌘Z as a menu
-accelerator **and** keep a renderer keydown listener that also calls
-`undo()`, every ⌘Z undoes twice.
+The first cut made the **menu the single keyboard source**: it dropped the
+renderer keydown listener entirely and relied on the registered ⌘Z / ⌘⇧Z
+menu accelerators. That **broke keyboard undo where the native accelerator
+can't be reached** — most visibly the existing E2E
+([`editor-v2-edit-undo-redo.spec.ts`](../../apps/desktop/e2e/editor-v2-edit-undo-redo.spec.ts)),
+which drives undo with `page.keyboard.press("Control+Z")`. Playwright/CDP
+injects key events into the renderer; they do **not** fire native menu
+accelerators. Library Focus mode is keyboard-driven and the standalone
+undo/redo toolbar was retired, so the keyboard path is the canonical one —
+it must stay renderer-level.
 
-Resolution: **the menu is the single keyboard source** for ⌘Z / ⌘⇧Z. The
-former keydown listener in `useUndoRedo.ts` was removed (replaced by
-`registerEditorUndoRedo`).
+So the bridge **keeps a renderer keydown listener** (the keyboard source)
+**and** the menu items keep registered accelerators (task requirement +
+native menu-click). The risk this re-introduces: on a platform where a
+menu accelerator AND the page keydown both fire for one press, undo runs
+twice. The guard:
 
-`registerAccelerator: false` (which would show the shortcut without
-registering it, letting a renderer listener stay the source) is **not** a
-cross-platform option: it is honored only on macOS/Windows. On Linux the
-accelerator registers regardless, so that path would double-fire on
-Linux.
+- The keydown stamps the time it handled a direction (`lastKeyboardUndoAt`
+  / `lastKeyboardRedoAt`) and always performs.
+- An **accelerator-triggered** menu IPC (`viaAccelerator: true`) arriving
+  within `KEYBOARD_DEDUP_MS` (250 ms) of that stamp is **dropped** — the
+  keydown already did it.
+- A **mouse-click** menu IPC (`viaAccelerator: false`) is **never**
+  dropped.
+- If the keydown never fires (a platform where only the accelerator
+  fires), no stamp is set and the IPC performs.
+
+Single application in every combination; this is the "keep both, guard
+against double-application" option. `registerAccelerator: false` (show the
+shortcut without registering it) is **not** a cross-platform alternative:
+it is honored only on macOS/Windows — on Linux the accelerator registers
+regardless.
 
 ### Ctrl+Y (Windows/Linux redo) is handled in the renderer, on purpose
 
 A single menu item can register/display only one accelerator, and we use
 `CmdOrCtrl+Shift+Z` for Redo. The Windows/Linux **Ctrl+Y** convention is
-handled by a tiny keydown listener inside the bridge. Ctrl+Y is
-deliberately **not** a registered menu accelerator, so it can't
+handled by the bridge's keydown listener. Ctrl+Y is deliberately **not** a
+registered menu accelerator, so it has no IPC to dedup against and can't
 double-fire against the menu.
 
-The Ctrl+Y listener keeps the **editable-focus guard** of the keydown
-listener it replaced: when a text field is focused it does nothing and
-lets the field's native Ctrl+Y win (redo on Windows/Linux, emacs "yank"
-on macOS) — dropping that guard would hijack those native bindings.
-Outside a text field, Ctrl+Y drives the editor redo stack only (it calls
-`registeredEditor.redo()` directly, never `execCommand`). Redo *inside* a
-text field still works via the ⌘⇧Z menu accelerator (`execCommand`), so
-nothing is lost.
+Ctrl+Y has an **editable-focus guard**: when a text field is focused it
+does nothing and lets the field's native Ctrl+Y win (redo on
+Windows/Linux, emacs "yank" on macOS) — intercepting it would hijack those
+native bindings. This is *different* from ⌘Z / ⌘⇧Z, which DO `execCommand`
+in a text field: those are registered accelerators (browser default
+suppressed, so we must perform it), Ctrl+Y is not (browser default intact,
+so we leave it). Outside a text field, Ctrl+Y drives the editor redo stack
+only (it calls `registeredEditor.redo()` directly, never `execCommand`).
+Redo *inside* a text field still works via the ⌘⇧Z menu accelerator
+(`execCommand`), so nothing is lost.
 
 ## Enabled state (deferred)
 

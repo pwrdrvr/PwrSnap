@@ -149,10 +149,15 @@ const EDIT_REDO_MENU_ID = "edit-redo";
  * (no `webContents`), so resolve it to the owning `BrowserWindow`;
  * fall back to the focused window if needed. The renderer's edit-menu
  * bridge decides text-undo vs editor-undo based on focus.
+ *
+ * `triggeredByAccelerator` rides along so the renderer can drop an
+ * accelerator activation that races the page keydown for the same
+ * keypress (double-fire guard) while always honoring a mouse click.
  */
 function sendEditCommand(
   window: Electron.BaseWindow | undefined,
-  channel: (typeof EVENT_CHANNELS)["editUndo" | "editRedo"]
+  channel: (typeof EVENT_CHANNELS)["editUndo" | "editRedo"],
+  event?: Electron.KeyboardEvent
 ): void {
   const candidate =
     window !== undefined && !window.isDestroyed()
@@ -160,7 +165,9 @@ function sendEditCommand(
       : null;
   const target = candidate ?? BrowserWindow.getFocusedWindow();
   if (target === null || target.isDestroyed()) return;
-  target.webContents.send(channel);
+  target.webContents.send(channel, {
+    viaAccelerator: event?.triggeredByAccelerator === true
+  });
 }
 
 /** The hotkey kinds we register from `settings.hotkeys.*`. Order
@@ -306,16 +313,16 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
           id: EDIT_UNDO_MENU_ID,
           label: "Undo",
           accelerator: "CmdOrCtrl+Z",
-          click: (_item, window) => {
-            sendEditCommand(window, EVENT_CHANNELS.editUndo);
+          click: (_item, window, event) => {
+            sendEditCommand(window, EVENT_CHANNELS.editUndo, event);
           }
         },
         {
           id: EDIT_REDO_MENU_ID,
           label: "Redo",
           accelerator: "CmdOrCtrl+Shift+Z",
-          click: (_item, window) => {
-            sendEditCommand(window, EVENT_CHANNELS.editRedo);
+          click: (_item, window, event) => {
+            sendEditCommand(window, EVENT_CHANNELS.editRedo, event);
           }
         },
         { type: "separator" as const },

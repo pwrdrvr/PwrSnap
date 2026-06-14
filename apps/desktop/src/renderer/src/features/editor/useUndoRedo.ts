@@ -759,19 +759,15 @@ export function useUndoRedo(opts: {
     lastCoalesceRef.current = null;
   }, [future, applyInverse, wrapApplying]);
 
-  // Register this stack with the app-wide Edit-menu bridge so the native
-  // Edit ▸ Undo / Edit ▸ Redo items and the ⌘Z / ⌘⇧Z accelerators reach
-  // it when the canvas — not a text field — is focused.
-  //
-  // This replaces a former window-keydown listener that handled
-  // ⌘Z / ⌘⇧Z / Ctrl+Y directly. Those combos are now REGISTERED MENU
-  // ACCELERATORS (see apps/desktop/src/main/index.ts). An Electron menu
-  // accelerator and a renderer `keydown` listener BOTH fire for the same
-  // keystroke (the accelerator doesn't consume the JS event), so keeping
-  // the listener would undo/redo twice. The menu is therefore the single
-  // keyboard source for ⌘Z / ⌘⇧Z; Ctrl+Y (Windows/Linux) is handled once
-  // in the bridge. Text-field-focus awareness lives in the bridge too.
-  // See docs/solutions/2026-06-13-edit-menu-undo-redo-bridge.md.
+  // Register this stack with the app-wide Edit-menu bridge
+  // (lib/editMenuBridge.ts). The bridge owns BOTH the keyboard shortcuts
+  // (⌘Z / ⌘⇧Z / Ctrl+Y) and the native Edit ▸ Undo / Edit ▸ Redo menu
+  // IPC, and drives this stack when the canvas — not a text field — is
+  // focused. This hook used to own a ⌘Z keydown listener of its own; that
+  // moved to the bridge so the keyboard and the menu share one
+  // focus-aware, double-fire-guarded handler that also reaches text
+  // fields and runs in every window. See
+  // docs/solutions/2026-06-13-edit-menu-undo-redo-bridge.md.
   useEffect(() => {
     return registerEditorUndoRedo({
       undo: () => {

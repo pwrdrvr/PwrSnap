@@ -1,6 +1,5 @@
-// Edit ▸ Undo / Edit ▸ Redo bridge — connects the native app menu (and
-// the Windows/Linux Ctrl+Y redo accelerator) to the right undo system,
-// focus-aware.
+// Edit ▸ Undo / Edit ▸ Redo bridge — connects the native app menu AND
+// renderer-level keyboard shortcuts to the right undo system, focus-aware.
 //
 // Why this exists
 // ───────────────
@@ -12,27 +11,49 @@
 //      library chat, OCR field, settings inputs).
 //
 // Electron's `role: "undo"` / `role: "redo"` menu items only reach #2
-// (`webContents.undo()` / `.redo()`); they have NO connection to #1.
-// So before this bridge, Edit ▸ Undo did nothing for canvas operations.
+// (`webContents.undo()` / `.redo()`); they have NO connection to #1. So
+// before this bridge the menu's Undo/Redo did nothing for canvas edits.
 //
-// The fix: the menu's Undo/Redo items are custom items (see
-// apps/desktop/src/main/index.ts) that send `editUndo` / `editRedo` to
-// the focused window. This module is the single renderer-side receiver,
-// mounted once per BrowserWindow at the `App` root so it works in EVERY
-// window — including library-without-an-open-editor (the search box) and
-// the Settings / Sizzle windows, where only the native text-field arm
-// is relevant. The editor registers its undo/redo via
-// `registerEditorUndoRedo` while it is mounted.
+// This module owns BOTH input paths for one window, mounted once at the
+// `App` root via `useEditMenuBridge` so it works in EVERY window —
+// including library-without-an-open-editor (the search box) and the
+// Settings / Sizzle windows, where only the native text-field arm is
+// relevant. The editor registers its undo/redo via `registerEditorUndoRedo`
+// while it is mounted.
 //
-// Focus rule (applied identically on the menu path and the Ctrl+Y path):
-//   • editable field focused → `document.execCommand("undo" | "redo")`.
-//     The browser's own editing default for ⌘Z/⌘⇧Z is suppressed once
-//     those combos are registered as menu accelerators (this is why
-//     `role: "undo"` never double-applies in a text field), so we must
-//     perform the text undo ourselves here. Same for the Ctrl+Y keydown
-//     path, where `preventDefault()` suppresses the native default.
-//   • otherwise → drive the registered editor undo/redo (no-op when no
+//   • Keyboard (⌘Z / ⌘⇧Z, plus Ctrl+Y on Windows/Linux) is handled by a
+//     renderer `keydown` listener here. This stays renderer-level on
+//     purpose: a key event must drive undo even when the native menu
+//     accelerator can't be reached — Playwright/CDP key injection in E2E
+//     never fires native accelerators, and some windows/platforms may not
+//     either. (Library Focus mode is keyboard-driven; the standalone
+//     undo/redo toolbar was retired.)
+//   • The native menu's Undo/Redo items (see apps/desktop/src/main/index.ts)
+//     send `editUndo` / `editRedo` here. This covers the MENU CLICK and,
+//     on platforms where a menu accelerator fires instead of (or in
+//     addition to) the page keydown, the accelerator too.
+//
+// Focus rule (applied to both paths):
+//   • ⌘Z / ⌘⇧Z with an editable field focused → `document.execCommand`.
+//     These are registered menu accelerators, so the browser's own
+//     editing default is suppressed (the reason `role: "undo"` never
+//     double-undoes a text field) — we must perform the text undo
+//     ourselves.
+//   • Otherwise → drive the registered editor undo/redo (no-op when no
 //     editor is mounted).
+//   • Ctrl+Y is NOT a registered menu accelerator, so the browser default
+//     is NOT suppressed: in a text field we leave the field's native
+//     Ctrl+Y alone (redo on Windows/Linux, emacs "yank" on macOS); only
+//     outside a text field does it drive editor redo.
+//
+// Double-fire guard: ⌘Z / ⌘⇧Z are registered menu accelerators AND handled
+// by the keydown listener. On platforms where BOTH fire for one keypress
+// the editor would undo twice. The keydown stamps the time it handled a
+// direction; an ACCELERATOR-triggered menu IPC (`viaAccelerator: true`)
+// arriving within `KEYBOARD_DEDUP_MS` is dropped. Menu MOUSE clicks
+// (`viaAccelerator: false`) are never dropped. If the keydown never fires
+// (a platform where the accelerator alone fires), no stamp is set and the
+// IPC performs — single undo either way.
 //
 // See docs/solutions/2026-06-13-edit-menu-undo-redo-bridge.md.
 
@@ -45,17 +66,17 @@ export type EditorUndoRedoHandlers = {
   redo: () => void;
 };
 
-// Module-level singleton. Each BrowserWindow is its own renderer
-// process (separate JS realm), so this is effectively per-window — no
-// cross-window leakage. At most one editor is mounted per window, so a
-// single slot is sufficient; "last registration wins" + identity-checked
-// cleanup keeps remounts correct.
+// Module-level singleton. Each BrowserWindow is its own renderer process
+// (separate JS realm), so this is effectively per-window — no cross-window
+// leakage. At most one editor is mounted per window, so a single slot is
+// sufficient; "last registration wins" + identity-checked cleanup keeps
+// remounts correct.
 let registeredEditor: EditorUndoRedoHandlers | null = null;
 
 /**
  * Register the editor's undo/redo with the edit-menu bridge. Returns an
- * unregister function (call from a `useEffect` cleanup). Re-register
- * when the underlying callbacks change identity — the latest wins.
+ * unregister function (call from a `useEffect` cleanup). Re-register when
+ * the underlying callbacks change identity — the latest wins.
  */
 export function registerEditorUndoRedo(
   handlers: EditorUndoRedoHandlers
@@ -78,7 +99,25 @@ function activeElementIsEditable(): boolean {
   );
 }
 
-function runEditUndo(): void {
+function nowMs(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+// Timestamps of the last keyboard-driven undo/redo, used to drop an
+// accelerator-triggered menu IPC for the same physical keypress. Init to
+// -Infinity so the first menu activation is never mistaken for a dup.
+let lastKeyboardUndoAt = Number.NEGATIVE_INFINITY;
+let lastKeyboardRedoAt = Number.NEGATIVE_INFINITY;
+const KEYBOARD_DEDUP_MS = 250;
+
+/** Reset the dedup stamps. Test-only — module state persists across tests
+ *  within a file (vitest isolates per file, not per test). */
+export function __resetEditMenuBridgeForTests(): void {
+  lastKeyboardUndoAt = Number.NEGATIVE_INFINITY;
+  lastKeyboardRedoAt = Number.NEGATIVE_INFINITY;
+}
+
+function performUndo(): void {
   if (activeElementIsEditable()) {
     document.execCommand("undo");
     return;
@@ -86,7 +125,7 @@ function runEditUndo(): void {
   registeredEditor?.undo();
 }
 
-function runEditRedo(): void {
+function performRedo(): void {
   if (activeElementIsEditable()) {
     document.execCommand("redo");
     return;
@@ -101,38 +140,51 @@ function runEditRedo(): void {
  */
 export function useEditMenuBridge(): void {
   useEffect(() => {
-    const offUndo = subscribe(EVENT_CHANNELS.editUndo, () => {
-      runEditUndo();
-    });
-    const offRedo = subscribe(EVENT_CHANNELS.editRedo, () => {
-      runEditRedo();
-    });
-
-    // Windows/Linux Ctrl+Y redo convention. The Edit ▸ Redo menu item
-    // carries CmdOrCtrl+Shift+Z — a single menu item can only display
-    // (and register) one accelerator — so Ctrl+Y is handled here in the
-    // renderer. It is deliberately NOT a registered menu accelerator, so
-    // this listener cannot double-fire against the menu.
-    //
-    // When a text field is focused we DON'T touch it: the field keeps its
-    // native Ctrl+Y (redo on Windows/Linux, emacs "yank" on macOS) — this
-    // mirrors the editable guard of the keydown listener this bridge
-    // replaced, so no key binding regresses. Outside a text field, Ctrl+Y
-    // drives the editor redo stack only (never execCommand). The ⌘⇧Z menu
-    // accelerator still covers redo inside text fields (via execCommand),
-    // so editable redo isn't lost.
-    const onKey = (e: KeyboardEvent): void => {
-      if (
-        !e.ctrlKey ||
-        e.metaKey ||
-        e.altKey ||
-        (e.key !== "y" && e.key !== "Y")
-      ) {
+    const offUndo = subscribe(EVENT_CHANNELS.editUndo, (payload) => {
+      const viaAccelerator =
+        (payload as { viaAccelerator?: boolean } | undefined)
+          ?.viaAccelerator === true;
+      if (viaAccelerator && nowMs() - lastKeyboardUndoAt < KEYBOARD_DEDUP_MS) {
         return;
       }
-      if (activeElementIsEditable()) return;
+      performUndo();
+    });
+    const offRedo = subscribe(EVENT_CHANNELS.editRedo, (payload) => {
+      const viaAccelerator =
+        (payload as { viaAccelerator?: boolean } | undefined)
+          ?.viaAccelerator === true;
+      if (viaAccelerator && nowMs() - lastKeyboardRedoAt < KEYBOARD_DEDUP_MS) {
+        return;
+      }
+      performRedo();
+    });
+
+    const onKey = (e: KeyboardEvent): void => {
+      // Ctrl+Y (Windows/Linux redo) — deliberately NOT a menu accelerator.
+      // In a text field, leave the field's native Ctrl+Y alone (redo on
+      // Windows/Linux, emacs "yank" on macOS). Outside one, editor redo.
+      if (
+        e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        (e.key === "y" || e.key === "Y")
+      ) {
+        if (activeElementIsEditable()) return;
+        e.preventDefault();
+        registeredEditor?.redo();
+        return;
+      }
+      // ⌘Z / Ctrl+Z (undo) and ⌘⇧Z / Ctrl+Shift+Z (redo).
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      if (e.key !== "z" && e.key !== "Z") return;
       e.preventDefault();
-      registeredEditor?.redo();
+      if (e.shiftKey) {
+        lastKeyboardRedoAt = nowMs();
+        performRedo();
+      } else {
+        lastKeyboardUndoAt = nowMs();
+        performUndo();
+      }
     };
     window.addEventListener("keydown", onKey);
 

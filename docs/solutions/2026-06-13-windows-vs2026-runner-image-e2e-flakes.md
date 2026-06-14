@@ -89,6 +89,65 @@ flaky tests themselves.
 temp dir on an ephemeral runner is harmless; crashing the worker is not. Log a
 warning and move on.
 
+### 3. The deeper one #252 only half-caught: the `settings:open` wedge + unbounded teardown `evaluate`
+
+After #252, the job kept going red — but now the *single* failing line was
+always `settings.spec.ts:64 › settings:open creates a new Settings window`, and
+the surviving error was **"Worker teardown timeout of 30000ms exceeded"**
+reported as **"1 error was not a part of any test"** (in some runs the EBUSY
+DIPS unlink instead). The test itself is *flaky*, not failed — it times out at
+exactly 60s on the first attempt, then **passes on retry #1 in ~1.5s**. A flaky
+test never fails the job; the leaked worker-level error does (exit 1).
+
+The signal that cracked it: attempt #1 is the **~52nd Electron launch in one
+long-lived Playwright worker**; the retry runs in a **fresh** worker (Playwright
+restarts the worker after a timeout) and opens the same window in ~1.5s. So
+`settings:open` is not broken — something accumulates across a worker's
+launch→close cycles and wedges the **main-process event loop** on a late launch.
+`createSettingsWindow` is fully synchronous and the `settings:open` handler
+returns `ok(undefined)` immediately, so the 60s is not handler work — it's the
+Playwright `electronApp.evaluate` round-trip (`app.dispatch`) never getting a
+turn on a wedged main.
+
+Two latent fixtures bugs turned that wedge into a job-killing worker error:
+
+- **`closeElectronApp` awaited `app.evaluate(exit(0))` with no timeout.** On a
+  wedged main that `await` never returns, so the orphaned
+  `finally { app.close() }` hangs the whole teardown → Playwright's 30s
+  worker-teardown timeout → force-kill → "error not part of any test."
+- **`app.dispatch` (the bus bridge `evaluate`) had no timeout either**, so a
+  wedged main burned the full 60s test budget before the test could even reach
+  its `finally`.
+
+**Why the zombies accumulate (the actual root):** `child.kill("SIGKILL")` maps to
+`TerminateProcess` on the **top PID only**. Electron's renderer / GPU / utility /
+crashpad children survive as orphans every time `app.close()` doesn't exit
+cleanly (routine on the slow VS2026 image, where the 5s graceful-close budget is
+often missed). Over a worker's 50+ cycles those zombies starve the runner, which
+is what wedges the late launch. The job's "Cleaning up orphan processes" step at
+the end confirms the leak.
+
+**Fix (all in `e2e/fixtures/electron-app.ts`):**
+- A `withTimeout(promise, ms, msg)` helper that races against a timer **and
+  swallows the racing promise's late rejection** (an unhandled rejection is, you
+  guessed it, "an error not part of any test").
+- Bound the teardown `app.evaluate(exit)` (`ELECTRON_EVAL_TIMEOUT_MS = 3s`) → a
+  wedged main falls straight through to the forceful close/kill instead of
+  hanging teardown.
+- Bound `app.dispatch`'s `evaluate` (`DISPATCH_TIMEOUT_MS = 30s`, generous so it
+  only trips on a true wedge) → a wedged main yields a prompt, catchable failure
+  the test's `finally` can clean up after, instead of a 60s hang that poisons the
+  worker. Turns a worker-killing timeout into an ordinary flaky failure that
+  retry recovers.
+- **`killProcessTree`**: on Windows, `taskkill /pid <pid> /T /F` tears down the
+  whole child tree instead of just the top PID, so zombies stop accumulating —
+  attacking the wedge at its source. macOS/Linux keep the plain `SIGKILL`.
+
+Net effect: even if a late launch still wedges, the test fails fast (or passes),
+teardown completes in seconds, the worker stops gracefully, and the retry passes
+— flaky, but **green**. And fewer wedges happen at all because the process tree
+no longer leaks.
+
 ## If you need green CI *now* (escape hatches, in order)
 
 1. **Preferred:** the fixes above (root cause, survives the image).
@@ -105,4 +164,6 @@ warning and move on.
 - `apps/desktop/e2e/tray-sizing.spec.ts` — poll past pre-zoom height before
   sampling.
 - `apps/desktop/e2e/fixtures/electron-app.ts` — `removeHomeRoot` retries
-  harder and swallows.
+  harder and swallows (#252); `withTimeout` helper, bounded teardown +
+  dispatch `evaluate`, and Windows `killProcessTree` (taskkill `/T`) for the
+  `settings:open` wedge / worker-teardown-timeout follow-up (§3).

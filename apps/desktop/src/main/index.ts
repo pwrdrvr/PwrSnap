@@ -37,6 +37,7 @@ import { bus } from "./command-bus";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 import { installDevelopmentDockIcon } from "./development-dock-icon";
 import { disableAppNap } from "./disable-app-nap";
+import { startAppNapProbe } from "./app-nap-probe";
 // (showFloatOverForCapture is no longer called from the bootstrap;
 // the capture-handlers `capture:interactive` now drives the entire
 // float-over lifecycle. Kept as an export from float-over.ts for the
@@ -1431,8 +1432,12 @@ export function bootstrapApp(): void {
     // appears (the in-process pipeline is only ~280ms; the rest is the
     // OS spinning the napped process back up). The library owns no
     // hotkeys, so it stays nap-eligible. macOS-only. See disable-app-nap.ts.
-    if (role !== "library") {
+    if (role !== "library" && !isE2E) {
       disableAppNap();
+      // DIAGNOSTIC: heartbeat that detects whether this process is being
+      // App-Napped while idle (the suspected hotkey-latency cause).
+      // Remove once root-caused. See app-nap-probe.ts.
+      startAppNapProbe();
     }
     if (process.platform === "darwin" && (isE2E || role === "agent")) {
       // Agent role: menubar-only process — no Dock presence, ever.

@@ -40,6 +40,7 @@ import {
 } from "../capture/region-selector";
 import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
 import { guardScreenCapture } from "../capture/screen-permission-gate";
+import { ensureCapturesDirReady } from "../capture/capture-storage-gate";
 import { releaseSnapshot } from "../capture/screen-snapshot";
 import { activateApp, type WindowInfo } from "../capture/window-list";
 import {
@@ -109,6 +110,8 @@ export function registerCaptureHandlers(): void {
     // pop our Settings window at a programmatic caller on the denied path.
     const blocked = await guardScreenCapture({ routeToSettings: false });
     if (blocked) return blocked;
+    const storageBlocked = await ensureCapturesDirReady();
+    if (storageBlocked) return storageBlocked;
     const captureResult = await captureRegion(req.rect, req.displayId);
     if (!captureResult.ok) {
       return err({
@@ -132,6 +135,11 @@ export function registerCaptureHandlers(): void {
     // we never paint an empty selector at the user.
     const blocked = await guardScreenCapture();
     if (blocked) return blocked;
+    // Pre-warm the captures-folder (Documents) TCC grant before the
+    // selector goes up — otherwise the "Allow Documents" dialog pops
+    // under the screen-saver-level selector at persist time.
+    const storageBlocked = await ensureCapturesDirReady();
+    if (storageBlocked) return storageBlocked;
     const handlerStartedAt = Date.now();
     const mode = req.mode ?? "auto";
     log.info("capture:interactive handler received", {
@@ -377,6 +385,8 @@ export function registerCaptureHandlers(): void {
   bus.register("capture:fullScreen", async (req) => {
     const blocked = await guardScreenCapture();
     if (blocked) return blocked;
+    const storageBlocked = await ensureCapturesDirReady();
+    if (storageBlocked) return storageBlocked;
     const displayId = resolveFullScreenDisplayId(req.displayId);
     const display = screen.getAllDisplays().find((d) => d.id === displayId);
     if (display === undefined) {
@@ -411,6 +421,8 @@ export function registerCaptureHandlers(): void {
   bus.register("capture:allScreens", async (req) => {
     const blocked = await guardScreenCapture();
     if (blocked) return blocked;
+    const storageBlocked = await ensureCapturesDirReady();
+    if (storageBlocked) return storageBlocked;
     // Bus-boundary validation. The type system catches in-process
     // callers, but `req` arrives over IPC where unchecked JSON could
     // pass `{}` or `{mode: "bogus"}` and silently fall through to

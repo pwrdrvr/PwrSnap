@@ -137,3 +137,27 @@ switched on while you're there — a selected row is not an enabled grant.
   `main/storage/captures-access-health.ts`.
 - **Never suggest deleting/regenerating user data for this.** The
   bundles are intact; the permission is the problem (CLAUDE.md rule).
+
+## Addendum (2026-06-15): pre-warm the Documents prompt before capture UI
+
+A first-capture bug surfaced from this same TCC protection. The captures
+root (`~/Documents/PwrSnap`) is created lazily on the first persist, so on
+a fresh install the very first capture's write is what triggers the macOS
+"Allow Documents folder" consent dialog — **and that write blocks until
+the user answers.** In the interactive flow that write
+(`persistAndBroadcast`) runs *before* `hideSelector()`, and the region
+selector is an `alwaysOnTop` screen-saver-level (1000) window — so the
+dialog pops UNDERNEATH the orange selector. The user sees the picker
+floating over an unreachable consent dialog and the capture appears wedged
+(the persist is parked awaiting an answer they can't click).
+
+Fix: `main/capture/capture-storage-gate.ts` → `ensureCapturesDirReady()`
+does the `mkdir(getCapturesRoot(), { recursive: true })` at the **top of
+every capture/record entrypoint** (right after `guardScreenCapture`,
+before any selector/countdown UI), so the Documents prompt lands on a
+clean screen. It's idempotent (cheap once granted) and classifies an
+`EPERM`/`EACCES` result via `isPermissionDenial()` into an actionable
+`captures_dir_denied` error instead of failing mid-capture. We kept the
+storage location at `~/Documents/PwrSnap` (user-discoverable, survives
+uninstall) — the prompt is unavoidable for a protected folder; we just
+moved *when* it appears.

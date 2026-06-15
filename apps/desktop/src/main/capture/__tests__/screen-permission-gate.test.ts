@@ -168,4 +168,17 @@ describe("guardScreenCapture", () => {
     if (result.ok) throw new Error("expected error");
     expect(result.error.code).toBe("screen_permission_pending");
   });
+
+  test("routeToSettings:false (headless) still errors but does NOT open Settings", async () => {
+    electronMock.screenStatus = "denied";
+    busMock.attempted = true; // asked before → denied branch
+    const { guardScreenCapture } = await import("../screen-permission-gate");
+    const result = await guardScreenCapture({ routeToSettings: false });
+    // No window popped at the programmatic caller…
+    expect(dispatchedNames()).not.toContain("settings:open");
+    // …but it still short-circuits with the denied error.
+    if (result === null) throw new Error("expected blocked");
+    if (result.ok) throw new Error("expected error");
+    expect(result.error.code).toBe("screen_not_granted");
+  });
 });

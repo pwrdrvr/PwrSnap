@@ -47,12 +47,12 @@ const log = getMainLogger("pwrsnap:screen-permission-gate");
  * failure) so a missing read never wedges the first-run prompt path — the
  * worst case is one extra harmless prompt attempt.
  */
-export async function readScreenCaptureAttempted(): Promise<boolean> {
+export async function readScreenCapturePrompted(): Promise<boolean> {
   try {
     const res = await bus.dispatch("settings:read", {}, { principal: "ipc" });
     return res.ok ? res.value.recording.screenCapturePrompted : false;
   } catch (cause) {
-    log.warn("readScreenCaptureAttempted: settings read failed", {
+    log.warn("readScreenCapturePrompted: settings read failed", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
     return false;
@@ -66,7 +66,7 @@ export async function readScreenCaptureAttempted(): Promise<boolean> {
  * harmless no-op-value write (it still broadcasts, which keeps any open
  * Settings window in sync).
  */
-export async function markScreenCaptureAttempted(): Promise<void> {
+export async function markScreenCapturePrompted(): Promise<void> {
   try {
     await bus.dispatch(
       "settings:write",
@@ -74,7 +74,7 @@ export async function markScreenCaptureAttempted(): Promise<void> {
       { principal: "ipc" }
     );
   } catch (cause) {
-    log.warn("markScreenCaptureAttempted: settings write failed", {
+    log.warn("markScreenCapturePrompted: settings write failed", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
   }
@@ -95,8 +95,16 @@ function screenPermissionError(code: string, message: string): PwrSnapError {
  *
  * The `Result<never, …>` arm is structurally assignable to any handler's
  * `Result<Res, PwrSnapError>` because the error arm carries no value.
+ *
+ * `opts.routeToSettings` (default true): on the "asked before, still not
+ * granted" branch, whether to open Settings → System Permissions. The
+ * headless `capture:region` path passes `false` — an agent/programmatic
+ * caller shouldn't have a window popped at it; it just gets the error.
  */
-export async function guardScreenCapture(): Promise<Result<never, PwrSnapError> | null> {
+export async function guardScreenCapture(
+  opts: { routeToSettings?: boolean } = {}
+): Promise<Result<never, PwrSnapError> | null> {
+  const routeToSettings = opts.routeToSettings ?? true;
   // Non-darwin builds have no screen-capture TCC gate (Linux/CI; Windows
   // has no preflight permission for desktopCapturer). Let everything
   // through — `readScreenStatus()` already returns `granted` off-darwin,
@@ -105,14 +113,14 @@ export async function guardScreenCapture(): Promise<Result<never, PwrSnapError> 
 
   if (readScreenStatus() === "granted") return null;
 
-  const attempted = await readScreenCaptureAttempted();
-  if (!attempted) {
+  const prompted = await readScreenCapturePrompted();
+  if (!prompted) {
     // First-ever attempt: drive the macOS prompt with a real screen-source
     // request, remember we asked, then stop. The OS consent dialog is the
     // UI — opening our own Settings window over it would be noise.
     log.info("guardScreenCapture: first attempt — triggering OS prompt");
     await triggerScreenCapturePrompt();
-    await markScreenCaptureAttempted();
+    await markScreenCapturePrompted();
     // A few macOS configs grant in-session straight off the prompt — if so,
     // let this very capture proceed ("continue if possible").
     if (readScreenStatus() === "granted") return null;
@@ -126,15 +134,17 @@ export async function guardScreenCapture(): Promise<Result<never, PwrSnapError> 
 
   // We've asked before and macOS still reports not-granted. It will not
   // prompt a second time, so the only path forward is the Privacy pane.
-  // Route the user there. (If they already granted it, macOS may need a
-  // relaunch before the running process can see it — the System
-  // Permissions page says so.)
-  log.info("guardScreenCapture: prior attempt, still not granted — routing to Settings");
-  void bus.dispatch(
-    "settings:open",
-    { page: "system-permissions" },
-    { principal: "ipc" }
-  );
+  // Route the user there (unless the caller is headless). If they already
+  // granted it, macOS may need a relaunch before the running process can
+  // see it — the System Permissions page says so.
+  log.info("guardScreenCapture: prior attempt, still not granted", { routeToSettings });
+  if (routeToSettings) {
+    void bus.dispatch(
+      "settings:open",
+      { page: "system-permissions" },
+      { principal: "ipc" }
+    );
+  }
   return err(
     screenPermissionError(
       "screen_not_granted",

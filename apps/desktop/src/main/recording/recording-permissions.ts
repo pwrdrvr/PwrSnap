@@ -191,19 +191,19 @@ export async function triggerScreenCapturePrompt(): Promise<void> {
  *   • Microphone — `systemPreferences.askForMediaAccess`
  *     shows the standard TCC dialog directly.
  *   • Screen Recording / System Audio — no `askForMediaAccess`
- *     equivalent exists, but issuing a real
- *     `desktopCapturer.getSources` call drives the same first-grant
- *     dialog and registers PwrSnap in the Screen Recording pane.
- *     Used only when current status is `not-determined`; once a
- *     decision has been recorded we open System Settings instead
- *     (macOS does not re-prompt) and the caller surfaces "restart
- *     PwrSnap after granting" guidance.
+ *     equivalent exists, but issuing a real `desktopCapturer.getSources`
+ *     call drives the same first-grant dialog and registers PwrSnap in
+ *     the Screen Recording pane. The caller (System Permissions page)
+ *     only invokes this when PwrSnap has never asked; once macOS has
+ *     recorded a decision it won't re-prompt, so the page switches to
+ *     the separate `permissions:openSystemSettings` verb. Returns the
+ *     live status read back after the prompt.
  */
 export async function requestPermission(
   permission: RecordingPermission
-): Promise<{ status: RecordingPermissionStatus; openedSettings: boolean }> {
+): Promise<{ status: RecordingPermissionStatus }> {
   if (process.platform !== "darwin") {
-    return { status: "granted", openedSettings: false };
+    return { status: "granted" };
   }
 
   switch (permission) {
@@ -213,7 +213,7 @@ export async function requestPermission(
       // standard "PwrSnap would like to access your microphone" alert.
       const granted = await systemPreferences.askForMediaAccess("microphone");
       const status: RecordingPermissionStatus = granted ? "granted" : readMicrophoneStatus();
-      return { status, openedSettings: false };
+      return { status };
     }
     case "screen":
     case "systemAudio": {
@@ -236,7 +236,7 @@ export async function requestPermission(
       // configurations grant in-session straight off the dialog; we read
       // the status back so the caller sees the live result.
       await triggerScreenCapturePrompt();
-      return { status: readScreenStatus(), openedSettings: false };
+      return { status: readScreenStatus() };
     }
   }
 }

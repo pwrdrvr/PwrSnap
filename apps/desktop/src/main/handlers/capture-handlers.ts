@@ -104,7 +104,10 @@ export function clipboardHasPasteableImage(): boolean {
 
 export function registerCaptureHandlers(): void {
   bus.register("capture:region", async (req) => {
-    const blocked = await guardScreenCapture();
+    // Headless/agent path — still trigger the OS prompt on a first-ever
+    // attempt (it registers PwrSnap so captures can ever work), but don't
+    // pop our Settings window at a programmatic caller on the denied path.
+    const blocked = await guardScreenCapture({ routeToSettings: false });
     if (blocked) return blocked;
     const captureResult = await captureRegion(req.rect, req.displayId);
     if (!captureResult.ok) {

@@ -83,9 +83,17 @@ running process (passive guidance).
 
 The startup permission-routing (`index.ts`) **no longer opens Settings on
 a fresh install**. It's gated on `screenCapturePrompted === true`, so we
-only auto-route once the user has actually attempted a capture and a
-permission is still blocking them. A brand-new user just sees the empty
-Library — no Settings window pops over it claiming "Denied".
+only auto-route once the user has actually attempted a capture. It also
+gates on **Screen Recording specifically** (`screenRecording !==
+"granted"`) rather than the full `needsAttention` predicate — Microphone
+and System Audio are optional and nothing uses them until the user opts
+into mic/system-audio on a recording (requested in-context by
+`recording:start`). Otherwise an un-asked microphone (`not-determined`)
+would drag the user to Settings on every launch for a capability we don't
+use yet. A brand-new user just sees the empty Library — no Settings window
+pops over it claiming "Denied". (`needsAttention` is retained as a tested
+helper for when mic/system-audio UX lands; it's no longer wired to startup
+routing.)
 
 To point that user at the one action that fills the Library, the Library's
 **Quick Capture button "breathes"** (a calm accent-glow pulse,

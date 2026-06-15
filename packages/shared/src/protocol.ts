@@ -2880,12 +2880,12 @@ export type Commands = {
    * first-grant dialog AND registers PwrSnap in the Privacy pane — this
    * is how a fresh install gets listed there at all. The handler records
    * `recording.screenCapturePrompted` so the next time around the UI
-   * routes to System Settings (macOS won't prompt twice). `openedSettings`
-   * stays false for the screen prompt path.
+   * routes to System Settings via `permissions:openSystemSettings` (macOS
+   * won't prompt twice). Returns the live status read back after the prompt.
    */
   "permissions:request": {
     req: { permission: RecordingPermission };
-    res: { status: RecordingPermissionStatus; openedSettings: boolean };
+    res: { status: RecordingPermissionStatus };
   };
   /**
    * Open System Settings to the right Privacy & Security pane for the

@@ -34,8 +34,8 @@ import {
 } from "../recording/recording-permissions";
 import {
   guardScreenCapture,
-  markScreenCaptureAttempted,
-  readScreenCaptureAttempted
+  markScreenCapturePrompted,
+  readScreenCapturePrompted
 } from "../capture/screen-permission-gate";
 import {
   getRecordingService,
@@ -144,7 +144,7 @@ export function registerRecordingHandlers(): void {
     // see screen-permission-gate.ts).
     return ok({
       ...readRecordingReadiness(),
-      screenCapturePrompted: await readScreenCaptureAttempted()
+      screenCapturePrompted: await readScreenCapturePrompted()
     });
   });
 
@@ -158,12 +158,16 @@ export function registerRecordingHandlers(): void {
       );
     }
     const result = await requestPermission(req.permission);
-    if (req.permission === "screen" || req.permission === "systemAudio") {
+    if (
+      process.platform === "darwin" &&
+      (req.permission === "screen" || req.permission === "systemAudio")
+    ) {
       // We just drove the macOS screen-capture prompt (which also
       // registers PwrSnap in the Privacy pane). Remember it so the UI
       // switches to the "Open System Settings" path next time — macOS
-      // won't prompt twice.
-      await markScreenCaptureAttempted();
+      // won't prompt twice. darwin-only: off-darwin `requestPermission`
+      // is a no-op that never prompts, so there's nothing to remember.
+      await markScreenCapturePrompted();
     }
     return ok(result);
   });

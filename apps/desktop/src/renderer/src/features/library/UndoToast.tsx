@@ -1,13 +1,12 @@
 // Transient "Moved to Trash · Undo" toast for capture soft-deletes.
 //
-// Shown after a confirmed delete as the immediate recovery affordance
-// (alongside ⌘Z / Edit ▸ Undo, which the Library wires to the same restore
-// via the edit-menu bridge's capture fallback). The toast OWNS its
-// auto-dismiss countdown — a depleting top strip, same pattern as the
-// post-capture float-over (`.fo__progress`) — and calls `onDismiss` when it
-// runs out. The Library clears `lastDeleted` at that point, so the ⌘Z undo
-// window is exactly "as long as this toast is on screen." Hovering pauses
-// the countdown so reaching for the Undo button never races the timer.
+// Shown after a confirmed delete as the QUICK, discoverable recovery
+// affordance. It is independent of ⌘Z / Edit ▸ Undo: that restores from the
+// Library's session-lived delete undo stack whether or not this toast is
+// showing. The toast just OWNS its own auto-dismiss countdown — a depleting
+// top strip, same pattern as the post-capture float-over (`.fo__progress`) —
+// and calls `onDismiss` (hide only) when it runs out. Hovering pauses the
+// countdown so reaching for the Undo button never races the timer.
 //
 // Remount per delete (Library keys it by the deleted id) gives each delete a
 // fresh countdown without any reset plumbing here.

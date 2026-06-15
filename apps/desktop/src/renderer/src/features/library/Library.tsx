@@ -41,6 +41,7 @@ import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
 import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
 import { nextAfterDelete } from "./delete-nav";
+import { DeleteUndoStack } from "./delete-undo-stack";
 import { mergeOpenedLiveRecords } from "./library-records";
 import { initialLibraryView, libraryReducer, type LibraryAction, type LibraryView } from "./library-view";
 import { Stage } from "./Stage";
@@ -73,11 +74,16 @@ import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-ava
 // <img src="pwrsnap-cache://"> through CellThumb below.
 import { Thumb } from "./Thumb";
 
-/** How long the "Moved to Trash · Undo" toast stays up (and, since the ⌘Z /
- *  Edit ▸ Undo restore window is coupled to it, how long that undo stays
- *  available). The toast renders a visible countdown strip over this window
- *  and pauses it on hover, so the bound is legible rather than a silent timer. */
+/** How long the "Moved to Trash · Undo" toast stays up. This is ONLY the
+ *  toast's visible lifetime (it renders a countdown strip over this window and
+ *  pauses on hover) — it does NOT bound ⌘Z / Edit ▸ Undo, which restores from
+ *  the session-lived undo stack regardless of whether the toast is showing. */
 const UNDO_TOAST_MS = 8000;
+
+/** Cap on the in-memory capture-delete undo/redo stacks. Entries are just
+ *  capture ids (a few bytes each), so this is generous — it only exists so a
+ *  marathon session can't grow the arrays without bound. */
+const MAX_DELETE_UNDO = 200;
 
 function codexAvailableInSnapshot(snapshot: DesktopCodexDiscoverySnapshot): boolean {
   if (snapshot.resolvedPath === null) return false;
@@ -577,20 +583,21 @@ export function Library() {
     openedRecordsRef.current = openedRecords;
   }, [openedRecords]);
 
-  // Capture soft-delete undo. `lastDeleted` drives the Undo toast; the ref
-  // mirror lets the edit-menu bridge's capture fallback (⌘Z / Edit ▸ Undo)
-  // read the pending id without re-registering. Both clear together when the
-  // toast times out, the user restores, or a newer delete supersedes it —
-  // so ⌘Z restore stays bounded to the same recently-deleted window the
-  // toast advertises.
-  // The Undo toast OWNS the auto-dismiss countdown (visible depleting strip +
-  // hover-pause). The ⌘Z / Edit ▸ Undo restore window is therefore EXACTLY
-  // "while the toast is on screen": `lastDeleted` is set on delete and cleared
-  // only when the toast finishes its countdown, the user restores, the user
-  // dismisses it, or a newer delete supersedes it (a fresh toast, keyed by id).
+  // Capture-delete Undo. Two independent concerns, deliberately decoupled:
+  //
+  //  • `deleteUndoRef` — the in-memory undo/redo stack behind ⌘Z / Edit ▸ Undo
+  //    (registered as the edit-menu bridge's capture fallback). Just capture
+  //    ids; it lives for the whole session, so the menu restores the most-
+  //    recent delete whether or not the toast is still on screen — exactly when
+  //    you'd reach for it.
+  //  • `lastDeleted` — the single capture the Undo TOAST is advertising right
+  //    now. The toast owns its own countdown; its expiry/dismiss only HIDES
+  //    the toast and never touches the undo stack.
+  const deleteUndoRef = useRef<DeleteUndoStack | null>(null);
+  if (deleteUndoRef.current === null) {
+    deleteUndoRef.current = new DeleteUndoStack(MAX_DELETE_UNDO);
+  }
   const [lastDeleted, setLastDeleted] = useState<{ id: string } | null>(null);
-  const lastDeletedRef = useRef<{ id: string } | null>(null);
-  lastDeletedRef.current = lastDeleted;
 
   // "Confirm before moving to Trash" preference (Settings →
   // library.confirmBeforeTrash). Seeded from settings:read + kept live via
@@ -603,29 +610,41 @@ export function Library() {
     void dispatch("settings:write", { library: { confirmBeforeTrash: false } });
   }, []);
 
+  // Hide the toast only — does NOT pop the undo stack.
   const clearLastDeleted = useCallback(() => {
     setLastDeleted(null);
   }, []);
 
-  const restoreLastDeleted = useCallback(() => {
-    const pending = lastDeletedRef.current;
-    if (pending === null) return;
-    void dispatch("library:restore", { id: pending.id });
-    setLastDeleted(null);
+  // ⌘Z / Edit ▸ Undo / toast "Undo": restore the most-recently trashed
+  // capture (the stack moves it onto its redo list).
+  const undoDelete = useCallback(() => {
+    const id = deleteUndoRef.current?.undo();
+    if (id === undefined) return;
+    void dispatch("library:restore", { id });
+    setLastDeleted((cur) => (cur?.id === id ? null : cur));
   }, []);
 
-  // Register the capture-level undo fallback so ⌘Z / Edit ▸ Undo restores
-  // the last trashed capture when the editor's own history is empty (or no
-  // editor is mounted — i.e. grid mode). Redo intentionally no-ops:
-  // re-deleting on ⌘⇧Z would be a surprising, destructive inverse.
+  // ⌘⇧Z / Edit ▸ Redo: re-trash the most-recently restored capture (the
+  // inverse of the undo above; still recoverable, so it's a safe redo).
+  const redoDelete = useCallback(() => {
+    const id = deleteUndoRef.current?.redo();
+    if (id === undefined) return;
+    void dispatch("library:delete", { id });
+    setLastDeleted({ id });
+  }, []);
+
+  // Register the capture-level undo/redo with the edit-menu bridge. The bridge
+  // consults this when the editor's own history is empty (or no editor is
+  // mounted — i.e. grid mode), so ⌘Z / Edit ▸ Undo restores deletes session-
+  // wide, independent of the toast.
   useEffect(() => {
     return registerCaptureUndoFallback({
-      undo: restoreLastDeleted,
-      redo: () => undefined,
-      canUndo: () => lastDeletedRef.current !== null,
-      canRedo: () => false
+      undo: undoDelete,
+      redo: redoDelete,
+      canUndo: () => deleteUndoRef.current?.canUndo() === true,
+      canRedo: () => deleteUndoRef.current?.canRedo() === true
     });
-  }, [restoreLastDeleted]);
+  }, [undoDelete, redoDelete]);
   const sourceAppRowsRef = useRef(sourceAppRows);
   useEffect(() => {
     sourceAppRowsRef.current = sourceAppRows;
@@ -2339,8 +2358,10 @@ export function Library() {
     });
     if (nav !== null) viewDispatch(nav);
     void dispatch("library:delete", { id: recordId });
-    // Arm the Undo affordance. The toast (keyed by id) owns the countdown
-    // and calls back to clear this when it expires.
+    // Record on the session undo stack — this is what ⌘Z / Edit ▸ Undo
+    // restores from, independent of the toast. Then surface the toast (keyed
+    // by id) as the quick, visible affordance for this delete.
+    deleteUndoRef.current?.pushDelete(recordId);
     setLastDeleted({ id: recordId });
   }
 
@@ -3221,7 +3242,7 @@ export function Library() {
             key={lastDeleted.id}
             message="Moved to Trash"
             durationMs={UNDO_TOAST_MS}
-            onUndo={restoreLastDeleted}
+            onUndo={undoDelete}
             onDismiss={clearLastDeleted}
           />,
           document.querySelector(".app-toast-stack") ?? document.body

@@ -17,6 +17,7 @@
 // `capture:interactive`, `library:list`, etc. without simulating a
 // global shortcut keystroke.
 
+import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -33,18 +34,117 @@ const fixtureDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(fixtureDir, "..", "..");
 const mainEntry = path.resolve(desktopRoot, "out", "main", "index.js");
 const ELECTRON_CLOSE_TIMEOUT_MS = 5_000;
+// Bound on the graceful `app.evaluate(exit)` round-trip during teardown.
+// On the VS2026 Windows runner the main-process event loop can wedge
+// mid window-creation; an UNBOUNDED `evaluate` then hangs the entire
+// teardown, which is what trips Playwright's 30s worker-teardown timeout
+// (reported as "an error not part of any test" — that fails the whole
+// job even when the test itself passes on retry). Keep this short: it's
+// a best-effort nicety before the forceful close/SIGKILL fallback.
+const ELECTRON_EVAL_TIMEOUT_MS = 3_000;
+// Bound on a single command-bus `dispatch` round-trip. A healthy command
+// resolves in milliseconds (the heaviest spec dispatch — region capture,
+// clipboard image encode, codex discovery — is a couple seconds at worst
+// on slow CI); a wedged main never resolves. Before this existed, a wedge
+// fell through to the full 60s test timeout, which poisons the Playwright
+// worker. We want the opposite: fail FAST and let the retry recover the
+// flake. 10s is ~5× headroom over any real dispatch yet declares a wedge
+// in a sixth of the old ceiling, leaving the `finally { app.close() }`
+// ample room to clean up before the 60s test deadline. A spurious trip is
+// self-correcting (retry), so erring tight is the right trade.
+const DISPATCH_TIMEOUT_MS = 10_000;
 
 async function removeHomeRoot(homeRoot: string): Promise<void> {
-  await rm(homeRoot, {
-    recursive: true,
-    force: true,
-    maxRetries: 5,
-    retryDelay: 100
-  });
+  try {
+    await rm(homeRoot, {
+      recursive: true,
+      force: true,
+      // On Windows the OS reaps a dead process's file handles
+      // asynchronously, so better-sqlite3's WAL/db files (pwrsnap.db,
+      // DIPS-wal, …) can still be locked for a beat after Electron
+      // exits — the unlink then hits EBUSY. fs.rm retries EBUSY with
+      // linear backoff; give the handle a generous window to drop. The
+      // VS2026 runner image surfaced this (its teardown timing loses a
+      // race the VS2022 image always won); ~11s worst case, but it
+      // returns the instant the unlink succeeds, so the healthy path
+      // pays nothing.
+      maxRetries: 10,
+      retryDelay: 200
+    });
+  } catch (error) {
+    // A leaked temp dir under os.tmpdir() on an ephemeral CI runner is
+    // harmless. Throwing here is NOT: it escapes test teardown, crashes
+    // the Playwright worker mid-run ("Failed worker ran N tests"), and
+    // fails the whole job — turning an otherwise-green suite red and
+    // flipping a pass-on-retry flake into a hard failure. Cleanup must
+    // never take down the worker.
+    // eslint-disable-next-line no-console
+    console.warn(`[e2e] could not remove temp HOME ${homeRoot}: ${String(error)}`);
+  }
 }
 
 type CloseResult = "closed" | "rejected" | "timeout";
 type ElectronChildProcess = ReturnType<ElectronApplication["process"]>;
+
+/**
+ * Race a promise against a timeout. If the timeout wins, the returned
+ * promise rejects with `new Error(message)` and the racing promise's
+ * eventual settlement is swallowed so it can NEVER surface later as an
+ * unhandled rejection — Playwright reports those as "errors not part of
+ * any test", which fail the whole job even when the owning test passed
+ * on retry. Used to bound every `electronApp.evaluate` round-trip so a
+ * wedged main-process event loop (seen on the VS2026 runner during
+ * window creation) produces a prompt, catchable error instead of an
+ * open-ended hang.
+ */
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string
+): Promise<T> {
+  // Once the timeout wins we stop awaiting `promise`; without this catch
+  // its later rejection (e.g. when the process is force-killed and the
+  // Playwright connection drops) would have no handler.
+  promise.catch(() => undefined);
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race<T>([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+/**
+ * Forcefully terminate the Electron process — and on Windows its whole
+ * child-process tree. `child.kill("SIGKILL")` maps to `TerminateProcess`
+ * on the top PID only, so Electron's renderer / GPU / utility / crashpad
+ * children survive as orphans. Across a single Playwright worker's 50+
+ * sequential launch→close cycles those zombies pile up and starve the
+ * runner — which is the most plausible reason the ~52nd window creation
+ * wedges in the first place (a fresh worker, post-restart, opens the same
+ * window in ~1.5s). `taskkill /T` tears down the entire tree. Best-effort
+ * and idempotent: if the process is already gone taskkill exits non-zero,
+ * which we ignore (falling back to a harmless no-op `kill`).
+ */
+async function killProcessTree(child: ElectronChildProcess): Promise<void> {
+  const pid = child.pid;
+  if (pid === undefined || process.platform !== "win32") {
+    if (!child.killed) child.kill("SIGKILL");
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    execFile("taskkill", ["/pid", String(pid), "/T", "/F"], { timeout: 5_000 }, (error) => {
+      // Non-zero exit usually just means "already exited" — nothing to do.
+      if (error && !child.killed) child.kill("SIGKILL");
+      resolve();
+    });
+  });
+}
 
 async function waitForClose(promise: Promise<void>, timeoutMs: number): Promise<CloseResult> {
   let timeout: NodeJS.Timeout | undefined;
@@ -90,20 +190,30 @@ async function waitForProcessExit(
 async function closeElectronApp(app: ElectronApplication): Promise<void> {
   const child = app.process();
   try {
-    await app.evaluate(({ app: electronApp }) => {
-      electronApp.dock?.hide();
-      electronApp.exit(0);
-    });
+    // Bounded: a wedged main never round-trips this `evaluate`, and an
+    // unbounded await here is exactly what hangs teardown long enough to
+    // trip Playwright's worker-teardown timeout. If it doesn't land
+    // quickly, fall through to the forceful close + SIGKILL below.
+    await withTimeout(
+      app.evaluate(({ app: electronApp }) => {
+        electronApp.dock?.hide();
+        electronApp.exit(0);
+      }),
+      ELECTRON_EVAL_TIMEOUT_MS,
+      "graceful electron exit evaluate timed out"
+    );
   } catch {
-    // The process may exit before the evaluate call can round-trip.
+    // The process may exit before the evaluate call can round-trip, or
+    // the main event loop may be wedged — either way the forceful path
+    // below takes over.
   }
 
   const closePromise = app.close();
   const result = await waitForClose(closePromise, ELECTRON_CLOSE_TIMEOUT_MS);
   if (result === "closed" && (await waitForProcessExit(child, 1_000))) return;
 
-  if (!hasExited(child) && !child.killed) {
-    child.kill("SIGKILL");
+  if (!hasExited(child)) {
+    await killProcessTree(child);
   }
   await waitForProcessExit(child, 1_000);
   await waitForClose(closePromise, 1_000);
@@ -236,19 +346,28 @@ async function launchPwrSnapCore(
         // when `PWRSNAP_E2E=1`. The bridge re-uses the same `bus.dispatch`
         // that ipcMain calls, so the Result envelope a spec sees is the
         // exact same shape a renderer would.
-        const result = await launchedApp.evaluate(
-          async (_electron, payload: { name: string; req: unknown }) => {
-            const bridge = (
-              globalThis as unknown as {
-                __PWRSNAP_TEST__?: { dispatch: (n: string, r: unknown) => Promise<unknown> };
+        //
+        // Bounded so a wedged main process can't make `dispatch` hang the
+        // full test timeout: a prompt rejection lets the test fail fast
+        // (and its `finally { app.close() }` clean up) rather than burning
+        // 60s and poisoning the Playwright worker.
+        const result = await withTimeout(
+          launchedApp.evaluate(
+            async (_electron, payload: { name: string; req: unknown }) => {
+              const bridge = (
+                globalThis as unknown as {
+                  __PWRSNAP_TEST__?: { dispatch: (n: string, r: unknown) => Promise<unknown> };
+                }
+              ).__PWRSNAP_TEST__;
+              if (bridge === undefined) {
+                throw new Error("PWRSNAP_E2E bridge not installed — did you set PWRSNAP_E2E=1?");
               }
-            ).__PWRSNAP_TEST__;
-            if (bridge === undefined) {
-              throw new Error("PWRSNAP_E2E bridge not installed — did you set PWRSNAP_E2E=1?");
-            }
-            return await bridge.dispatch(payload.name, payload.req);
-          },
-          { name, req }
+              return await bridge.dispatch(payload.name, payload.req);
+            },
+            { name, req }
+          ),
+          DISPATCH_TIMEOUT_MS,
+          `command-bus dispatch "${name}" timed out after ${DISPATCH_TIMEOUT_MS}ms (main process unresponsive?)`
         );
         return result as Result<Res<C>, PwrSnapError>;
       },

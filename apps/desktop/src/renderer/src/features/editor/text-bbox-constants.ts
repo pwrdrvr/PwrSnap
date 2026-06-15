@@ -17,22 +17,34 @@
 // the hit-test wants forgiveness (UX). Keeping both numbers here,
 // named, makes the divergence explicit and reviewable.
 //
-// Neither value needs to be pixel-perfect — the actual rendered
-// glyph width depends on the proportional font's metrics for each
-// character (narrow 'i' vs wide 'M' vs even-wider emoji). 0.55 / 0.65
-// are reasonable approximations for the system-font stack
-// (`-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`) at
-// the sizes we ship. If a future PR adds an OffscreenCanvas-based
-// measureText path for true per-character widths, both call sites
-// should switch to it together.
+// FALLBACK-ONLY as of the canvas-measure path. Both call sites now
+// measure the real per-character advance width with `measureTextWidthPx`
+// (text-measure.ts) — char count alone can't tell `Hi Mom` from
+// `Hi MOm`, since capital glyphs are wider than the average advance, so
+// the count-based box under-shot wide-cap text. These constants are kept
+// as the fallback for environments without a 2D canvas context (the
+// jsdom unit-test environment) — they're never hit in the real Chromium
+// renderer. They remain reasonable approximations for the system-font
+// stack (`-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`) at
+// the sizes we ship.
 
-/** Char advance for the SELECTION OUTLINE (tight wrap around the
- *  rendered glyph). 0.55 lines up close to the visible extent of the
- *  system-font stack for the buckets we ship. */
+/** FALLBACK char advance for the SELECTION OUTLINE (tight wrap around
+ *  the rendered glyph) when canvas measurement is unavailable. 0.55
+ *  lines up close to the visible extent of the system-font stack for
+ *  the buckets we ship. */
 export const TEXT_BBOX_CHAR_ADVANCE_OUTLINE = 0.55;
 
-/** Char advance for the HIT TEST (forgiving click target). 0.65 is
- *  ~18% wider than the outline so clicks landing just past the right
- *  edge of the rendered text still register. The hit-test ALSO adds a
- *  small all-around padding (see `hitTestOverlays`) on top of this. */
+/** FALLBACK char advance for the HIT TEST (forgiving click target) when
+ *  canvas measurement is unavailable. 0.65 is ~18% wider than the
+ *  outline so clicks landing just past the right edge of the rendered
+ *  text still register. The hit-test ALSO adds a small all-around
+ *  padding (see `hitTestOverlays`) on top of this. */
 export const TEXT_BBOX_CHAR_ADVANCE_HIT = 0.65;
+
+/** Generosity factor applied to the MEASURED hit-test width so the click
+ *  target stays more forgiving than the (tight) selection outline — the
+ *  same ~18% relationship the fallback advances encode (0.65 / 0.55),
+ *  now applied to the accurate measured advance instead of a char count.
+ *  Clicks landing just past the right edge of the rendered text still
+ *  register; the hit-test's all-around padding stacks on top. */
+export const TEXT_BBOX_HIT_WIDTH_SLOP = 1.18;

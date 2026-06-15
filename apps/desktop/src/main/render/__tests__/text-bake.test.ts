@@ -97,3 +97,30 @@ describe("textSvg (bake) — fontSize derives from SOURCE shortSide, not canvas"
     expect(svg).toMatch(/font-size="10"/); // 300 / 30, legacy behavior
   });
 });
+
+describe("textSvg (bake) — rotation", () => {
+  // The SVG path is the FALLBACK bake (used in headless / non-Electron
+  // contexts where the BrowserWindow HTML path can't run). The runtime
+  // path is text-html-bake.ts (covered by text-html-bake-rotation.test.ts);
+  // both must rotate so the two paths agree. The SVG path applies
+  // rotation via a `<g transform="rotate(...)">` wrapper around the
+  // <text>, pivoting on the body-box center — same convention as the
+  // editor + HTML bake.
+  test("rotated overlay wraps the text in a rotate() transform group", () => {
+    const rotation = Math.PI / 4; // 45° → 45 degrees in the SVG
+    const svg = textSvgForV2(
+      { ...baseText("medium"), rotation },
+      800,
+      600,
+      800,
+      600
+    );
+    // SVG rotate() takes degrees; π/4 rad = 45°.
+    expect(svg).toMatch(/<g transform="rotate\(45 /);
+  });
+
+  test("unrotated overlay emits no rotate() group", () => {
+    const svg = textSvgForV2(baseText("medium"), 800, 600, 800, 600);
+    expect(svg).not.toContain("rotate(");
+  });
+});

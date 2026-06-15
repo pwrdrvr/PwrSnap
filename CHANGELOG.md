@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.0.0-beta.18 - 2026-06-14
+
+This beta tightens the editor and update experience after the first
+public-ready build: text tools behave more predictably, crop/export output is
+more faithful, Codex chat model choices are cleaner, and the app-update notice
+is less intrusive.
+
+- Fixed editor text selection geometry, rotated-text baking, and text-edit undo
+  so text layers behave correctly both on canvas and in exported output.
+- Wired macOS Edit > Undo / Redo into PwrSnap's editor undo stack.
+- Fixed off-origin editor crops so the visible editor view and baked effects
+  are clipped and translated correctly.
+- Filtered Codex chat model choices so unsupported models no longer show up in
+  the chat backend selector.
+- Moved the app-update notice into a lower-left toast instead of consuming the
+  main Library surface.
+- Hardened tray sizing and Windows E2E teardown behavior exposed by the newer
+  Windows runner image.
+
 ## v1.0.0-beta.17 - 2026-06-13
 
 This is the "ready to open the doors" beta: the macOS dogfood build is more

@@ -137,3 +137,66 @@ switched on while you're there — a selected row is not an enabled grant.
   `main/storage/captures-access-health.ts`.
 - **Never suggest deleting/regenerating user data for this.** The
   bundles are intact; the permission is the problem (CLAUDE.md rule).
+
+## Addendum (2026-06-15): pre-warm the Documents prompt before capture UI
+
+A first-capture bug surfaced from this same TCC protection. The captures
+root (`~/Documents/PwrSnap`) is created lazily on the first persist, so on
+a fresh install the very first capture's write is what triggers the macOS
+"Allow Documents folder" consent dialog — **and that write blocks until
+the user answers.** In the interactive flow that write
+(`persistAndBroadcast`) runs *before* `hideSelector()`, and the region
+selector is an `alwaysOnTop` screen-saver-level (1000) window — so the
+dialog pops UNDERNEATH the orange selector. The user sees the picker
+floating over an unreachable consent dialog and the capture appears wedged
+(the persist is parked awaiting an answer they can't click).
+
+Fix: `main/capture/capture-storage-gate.ts` → `ensureCapturesDirReady()`
+runs at the **top of every capture/record entrypoint** (right after
+`guardScreenCapture`, before any selector/countdown UI), so the Documents
+prompt lands on a clean screen. It classifies an `EPERM`/`EACCES` result
+via `isPermissionDenial()` into an actionable `captures_dir_denied` error
+instead of failing mid-capture. We kept the storage location at
+`~/Documents/PwrSnap` (user-discoverable, survives uninstall) — the prompt
+is unavoidable for a protected folder; we just moved *when* it appears.
+
+**Gotcha that bit the first attempt: `mkdir(recursive)` is NOT a reliable
+trigger.** macOS only prompts on an access that actually *needs* the
+grant. If `~/Documents/PwrSnap` already exists — any prior capture, or a
+real install sitting behind a throwaway `PWRSNAP_USER_DATA` test profile
+(captures live OUTSIDE userData, so the folder persists across profiles) —
+`mkdir(recursive)` is a no-op that never touches the protected folder, and
+the prompt defers right back to the first persist WRITE (under the
+selector). The gate therefore does a real **write probe**: `mkdir`, then
+`writeFile` + delete a tiny `.pwrsnap-access-probe` inside the captures
+root, which forces the prompt exactly like the persist would. Cached
+per-session (probe once, not per capture). If you ever see this prompt
+under the selector again, verify the pre-warm does a real *write*, not a
+stat/mkdir.
+
+**Structural backstop (the real fix): defer the save until the selector
+is gone.** The pre-warm makes the prompt happen up front, but the deeper
+correctness rule is that the file save must NEVER run while the picker is
+on screen. `capture:interactive`'s commit path now tears the selector
+down *completely* — `hideSelector()` + re-activate previous app +
+`reclaimDockIconIfLibraryAlive()` — BEFORE calling `persistAndBroadcast`.
+After teardown the only PwrSnap window left is the float-over at floating
+level (3), which sits *below* a system consent dialog, so even if a prompt
+fires at persist time it's reachable. The float-over was pre-shown idle
+under the selector, so the reveal shows that idle placeholder for the
+(now fast, post-pre-warm) persist window, then swaps to the loaded preview
+in place. Don't reorder persist before `hideSelector` again — that's the
+original bug.
+
+**Surfacing the status (Settings → System Permissions).** There is NO
+non-prompting status read for the Documents folder (unlike
+`getMediaAccessStatus` for screen/mic), so the "Captures Folder" row
+reflects the *observed-access* signal — `storage:capturesAccessHealth`
+(`denied` vs OK), the same snapshot + `events:storage:captures-access`
+the Library banner uses — plus a **Check access** button
+(`storage:checkCapturesAccess`) that forces a real write probe to verify
+and, if macOS has no decision on file, trigger the consent prompt right
+there. When denied it offers `storage:openCapturesAccessSettings` (Files &
+Folders pane). The check routes its result back through
+`reportCapturesAccessFailure/Success`, so the row, the banner, and the
+event stay in lockstep.

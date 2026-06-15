@@ -43,13 +43,15 @@ import {
   readOverlayThickness,
   readShapeFilled,
   readShapeKind,
-  readShapeSkewDeg
+  readShapeSkewDeg,
+  readTextWeight
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
 import { applyGeometryLocally } from "./geometry-projection";
 import { computeTextGlyphSize } from "@pwrsnap/shared";
 import { TEXT_BBOX_CHAR_ADVANCE_OUTLINE } from "./text-bbox-constants";
+import { measureTextWidthPx } from "./text-measure";
 
 /** Phase 3.3 — draft style overrides threaded from `useEditorToolState`.
  *  When the user picks "red" for the arrow tool, the draft preview
@@ -1128,13 +1130,24 @@ function textBoundsBox(
   const lines = data.body.split("\n");
   const lineCount = Math.max(1, lines.length);
   const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 0);
-  // Approximate proportional-font advance for the SELECTION OUTLINE
-  // — tight wrap around the rendered glyph. The hit-test
-  // (`hitTestOverlays` in Editor.tsx) uses a slightly LOOSER advance
-  // so clicks just past the right edge still register. Both constants
-  // live in text-bbox-constants.ts with the rationale; see it before
-  // changing either value.
-  const naturalWidthPx = maxChars * fontSizePx * TEXT_BBOX_CHAR_ADVANCE_OUTLINE;
+  // Measure the REAL advance width of the widest line in the same font
+  // the glyph renders with (family + weight + size) so the outline hugs
+  // the visible text. The char-count × 0.55 fallback can't tell
+  // `Hi Mom` from `Hi MOm` — capital glyphs are wider than the average
+  // advance, so the count-based box under-shot wide-cap text (right edge
+  // landing inside the glyph). fontSizePx is image-px and measureText
+  // scales linearly, so the result is image-px too — normalized by
+  // imageWidthPx below. The char-advance fallback only engages where a
+  // 2D canvas is unavailable (jsdom unit tests). The hit-test
+  // (`hitTestOverlays` in Editor.tsx) measures the same way but stays
+  // looser; both constants live in text-bbox-constants.ts.
+  const measuredWidthPx = measureTextWidthPx(
+    data.body,
+    fontSizePx,
+    readTextWeight(data)
+  );
+  const naturalWidthPx =
+    measuredWidthPx ?? maxChars * fontSizePx * TEXT_BBOX_CHAR_ADVANCE_OUTLINE;
   // line-height: 1 on the HTML div → total block height is exactly
   // `lineCount * fontSize`. No extra 1.2× spacing, no 0.2 trailing
   // subtraction (that was for SVG dy="1.2em").

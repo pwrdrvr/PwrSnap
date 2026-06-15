@@ -78,7 +78,11 @@ import { BlurOverlays } from "./BlurOverlays";
 import { TextDraftInput } from "./TextDraftInput";
 import { TextHtmlOverlays } from "./TextHtmlOverlays";
 import { resolveTextDraftStyle } from "./text-draft-style";
-import { TEXT_BBOX_CHAR_ADVANCE_HIT } from "./text-bbox-constants";
+import {
+  TEXT_BBOX_CHAR_ADVANCE_HIT,
+  TEXT_BBOX_HIT_WIDTH_SLOP
+} from "./text-bbox-constants";
+import { measureTextWidthPx } from "./text-measure";
 import { LayerContextMenu } from "./LayerContextMenu";
 import {
   buildLayerContextMenuItems,
@@ -831,18 +835,25 @@ export function hitTestOverlays(
       const lines = o.body.split("\n");
       const lineCount = Math.max(1, lines.length);
       const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 1);
-      // Char-advance for the HIT TEST — intentionally LOOSER than the
-      // selection outline's so clicks landing just past the right edge
-      // of the rendered text still register (users pointing at
-      // characters near the right side were misfiring on the empty
-      // space just past the glyph). Both constants + rationale live in
-      // text-bbox-constants.ts; see it before tweaking either value.
-      // Width also has a floor of 1× fontSize so a 1-char line still
-      // has a reasonable click target.
-      const naturalWidthPx = Math.max(
+      // Measure the REAL advance width (same metric the selection outline
+      // now uses) so the click target tracks the glyph extent instead of
+      // a char-count guess that mis-sized wide-cap text like `Hi MOm`.
+      // The hit target stays intentionally MORE forgiving than the
+      // outline: TEXT_BBOX_HIT_WIDTH_SLOP widens the measured width so
+      // clicks landing just past the right edge still register (users
+      // pointing near the right side were misfiring on the empty space
+      // just past the glyph). Falls back to the char-count advance where
+      // a 2D canvas is unavailable (jsdom unit tests). Width floors at
+      // 1× fontSize so a 1-char line still has a reasonable click target.
+      const measuredWidthPx = measureTextWidthPx(
+        o.body,
         sizePx,
-        maxChars * sizePx * TEXT_BBOX_CHAR_ADVANCE_HIT
+        readTextWeight(o)
       );
+      const naturalWidthPx =
+        measuredWidthPx !== null
+          ? Math.max(sizePx, measuredWidthPx * TEXT_BBOX_HIT_WIDTH_SLOP)
+          : Math.max(sizePx, maxChars * sizePx * TEXT_BBOX_CHAR_ADVANCE_HIT);
       const naturalHeightPx = sizePx * lineCount;
       // Box centered vertically on the anchor (matches the HTML
       // wrapper's `translateY(-50%)` layout); left edge at anchor.x.
@@ -1196,6 +1207,21 @@ export function Editor({
         previousHeightPx: number;
         newWidthPx: number;
         newHeightPx: number;
+      }) => void)
+    | null
+  >(null);
+  // Style/body recorder. Populated by EditorLoaded alongside
+  // recordCreateRef. commitText's text re-edit path reads it to push a
+  // style op onto the undo stack so ⌘Z reverts a body change
+  // ("Hi Mommy" → "Hi Mom") instead of falling through to the previous
+  // create. `currentIdRef` follows the layer's id across undo/redo
+  // cycles (a no-op now that updateOverlay preserves the id, but the
+  // shape stays honest for any future churn).
+  const recordStyleRef = useRef<
+    | ((entry: {
+        currentIdRef: { current: string };
+        previousPatch: Partial<Overlay>;
+        nextPatch: Partial<Overlay>;
       }) => void)
     | null
   >(null);
@@ -2015,11 +2041,42 @@ export function Editor({
       // (those came from the popover when it was first placed) and
       // only updates the typed body. dispatchEdit routes through
       // both v1 (overlays:update) and v2 (layers:updateOverlay).
-      await dispatchEditErased({
+      //
+      // Capture the PRE-EDIT body BEFORE dispatching so undo can revert
+      // it — the persisted row still holds the old body here (entering
+      // edit mode left the overlay untouched behind the draft input).
+      const previousRow = overlaysRef.current.find((o) => o.id === editingId);
+      const previousBody =
+        previousRow !== undefined && previousRow.data.kind === "text"
+          ? previousRow.data.body
+          : undefined;
+      const result = await dispatchEditErased({
         kind: "updateOverlay",
         layerId: editingId,
         patch: { kind: "text", body }
       });
+      // Record the body change on the undo stack so ⌘Z reverts the edit
+      // ("Hi Mommy" → "Hi Mom") rather than falling through to the
+      // previous create entry. Mirrors the style-popover path
+      // (onSelectedStyleFieldChange). Pre-fix this dispatch recorded
+      // NOTHING — the edit was invisible to undo. With updateOverlay now
+      // preserving the layer id, the earlier `create` entry for this
+      // text stays valid too, so undoing all the way still deletes the
+      // text last (the user's expected order). Skip the no-op case where
+      // the body didn't actually change.
+      if (
+        result.ok &&
+        result.value.kind === "update" &&
+        previousBody !== undefined &&
+        previousBody !== body &&
+        !undoApplyingRef.current
+      ) {
+        recordStyleRef.current?.({
+          currentIdRef: { current: result.value.artifact.node.id },
+          previousPatch: { kind: "text", body: previousBody },
+          nextPatch: { kind: "text", body }
+        });
+      }
       return;
     }
     const wrote = await persistOverlay(overlay);
@@ -2724,6 +2781,7 @@ export function Editor({
       undoApplyingRef={undoApplyingRef}
       recordCreateRef={recordCreateRef}
       recordCropRef={recordCropRef}
+      recordStyleRef={recordStyleRef}
       beginInteractionRef={beginInteractionRef}
       endInteractionRef={endInteractionRef}
       onPointerDown={onPointerDown}
@@ -2778,6 +2836,7 @@ function EditorLoaded({
   undoApplyingRef,
   recordCreateRef,
   recordCropRef,
+  recordStyleRef,
   beginInteractionRef,
   endInteractionRef,
   onPointerDown,
@@ -2839,6 +2898,17 @@ function EditorLoaded({
         previousHeightPx: number;
         newWidthPx: number;
         newHeightPx: number;
+      }) => void)
+    | null
+  >;
+  /** Style/body recorder — populated from the undo hook so the outer
+   *  Editor's commitText can push a style op when a text body is
+   *  re-edited (⌘Z reverts the body change). */
+  recordStyleRef: React.RefObject<
+    | ((entry: {
+        currentIdRef: { current: string };
+        previousPatch: Partial<Overlay>;
+        nextPatch: Partial<Overlay>;
       }) => void)
     | null
   >;
@@ -3096,6 +3166,16 @@ function EditorLoaded({
       recordCropRef.current = null;
     };
   }, [recordCropRef, undo.recordCrop]);
+
+  // Bridge: commitText's text re-edit reads recordStyleRef.current to
+  // push a style op (body change) onto the undo stack. Same pattern as
+  // recordCreateRef / recordCropRef above.
+  useEffect(() => {
+    recordStyleRef.current = undo.recordStyle;
+    return () => {
+      recordStyleRef.current = null;
+    };
+  }, [recordStyleRef, undo.recordStyle]);
 
   // Bridge: parent's pointer handlers read begin/endInteractionRef
   // to bracket coalescing windows around drag operations. Phase 2
@@ -4217,8 +4297,10 @@ function EditorLoaded({
               the current Fit/Actual/custom zoom level. The trick is to
               size the img to `(source / canvas) × 100%` of its parent
               and let the default object-fit (fill) scale the image
-              content to that box. The parent `.editor-canvas` clips
-              via `overflow: hidden`.
+              content to that box. The `.editor-image-clip` wrapper
+              (sized to the canvas, overflow:hidden) clips the overflow
+              — `.editor-canvas` itself is overflow:visible so handles +
+              outlines can extend off-canvas (#125).
 
               Why the percentage trick works for crop view:
                 • No crop  → source == canvas → img is 100% × 100% →
@@ -4253,22 +4335,47 @@ function EditorLoaded({
               crop silently shows the top-left of the source even
               though the bake (compose-tree.ts) produces the right
               region. */}
-          <img
-            ref={editorImageRef}
-            src={captureSrcUrl(record.id)}
-            alt={record.source_app_name ?? "Capture"}
-            draggable={false}
-            className="editor-image"
-            data-testid="editor-image"
-            style={computeEditorImageStyle({
-              sourceWidthPx,
-              sourceHeightPx,
-              canvasWidthPx: record.width_px,
-              canvasHeightPx: record.height_px,
-              rasterTranslateXPx,
-              rasterTranslateYPx
-            })}
-          />
+          {/* Crop clip box. The <img> is sized to (source/canvas)×100%
+              so a cropped capture's source OVERFLOWS the canvas (e.g.
+              100%×412% for a horizontal-band crop) — that overflow is
+              the whole mechanism: the kept region fills the canvas and
+              the rest spills past the edges. It MUST be clipped to the
+              canvas so the editor shows the same region the bake /
+              export / library thumbnail produce.
+
+              `.editor-canvas` itself is overflow:visible on purpose (so
+              SelectionOutline + TransformHandles + draft glyphs can
+              extend past the canvas edge when a shape is dragged
+              off-screen — #125). That means it can NO LONGER clip the
+              image, so the image gets its OWN overflow:hidden box here,
+              sized to the canvas via inset:0. Without this wrapper the
+              full source bleeds out and the crop is invisible in the
+              editor even though every baked surface is correctly cropped
+              — exactly the regression #125 introduced when it flipped
+              .editor-canvas to overflow:visible on the (false for
+              cropped captures) assumption that "the IMAGE doesn't extend
+              past on its own". border-radius on the <img> does NOT stand
+              in for this clip: it rounds the img's OWN (412%-tall) box,
+              not the canvas, and for off-origin crops it would notch the
+              middle of the visible region. */}
+          <div className="editor-image-clip">
+            <img
+              ref={editorImageRef}
+              src={captureSrcUrl(record.id)}
+              alt={record.source_app_name ?? "Capture"}
+              draggable={false}
+              className="editor-image"
+              data-testid="editor-image"
+              style={computeEditorImageStyle({
+                sourceWidthPx,
+                sourceHeightPx,
+                canvasWidthPx: record.width_px,
+                canvasHeightPx: record.height_px,
+                rasterTranslateXPx,
+                rasterTranslateYPx
+              })}
+            />
+          </div>
           {/* HTML blur layer between the <img> and the SVG so
               backdrop-filter on each blur rect actually obscures
               the image behind. Lives separately from OverlaySvg

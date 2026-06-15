@@ -11,6 +11,7 @@ import { TrayMenu } from "./features/tray/TrayMenu";
 import { AppUpdateBanner } from "./features/update/AppUpdateBanner";
 import { RendererErrorBoundary } from "./RendererErrorBoundary";
 import { useAppearanceSync } from "./lib/useAppearance";
+import { useEditMenuBridge } from "./lib/editMenuBridge";
 
 type Stage =
   | "library"
@@ -89,6 +90,14 @@ export function App() {
   // `useSettings` snapshot to render the segmented control.
   useAppearanceSync();
 
+  // Bridge the native Edit ▸ Undo / Edit ▸ Redo menu items (and the
+  // Windows/Linux Ctrl+Y redo accelerator) to the right undo system,
+  // focus-aware. Mounted once per BrowserWindow here so text-field undo
+  // keeps working in every surface and the editor's canvas undo is
+  // reachable wherever the editor is mounted (the Library window's Focus
+  // mode). See ./lib/editMenuBridge.ts.
+  useEditMenuBridge();
+
   const app = (() => {
     if (STAGE === "tray") {
       return <TrayMenu activeMode="auto" />;
@@ -113,11 +122,18 @@ export function App() {
     }
     return (
       <div className="app-shell">
-        <AppUpdateBanner />
-        <CapturesAccessBanner />
         <CartProvider>
           <Library />
         </CartProvider>
+        {/* Floating toast stack, lower-left. Both notices float OVER the
+            Library rather than pushing its content down, and stay clear of
+            the post-capture float-over (its own bottom-right window). Each
+            banner carries its own role/aria-live, so the wrapper stays a
+            neutral container. */}
+        <div className="app-toast-stack">
+          <CapturesAccessBanner />
+          <AppUpdateBanner />
+        </div>
       </div>
     );
   })();

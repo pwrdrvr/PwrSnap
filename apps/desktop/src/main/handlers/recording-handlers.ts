@@ -33,6 +33,12 @@ import {
   requestPermission
 } from "../recording/recording-permissions";
 import {
+  guardScreenCapture,
+  markScreenCapturePrompted,
+  readScreenCapturePrompted
+} from "../capture/screen-permission-gate";
+import { ensureCapturesDirReady } from "../capture/capture-storage-gate";
+import {
   getRecordingService,
   type RecordingService
 } from "../recording/recording-service";
@@ -133,7 +139,14 @@ export function registerRecordingHandlers(): void {
   // ---- permissions ----
 
   bus.register("permissions:readiness", async () => {
-    return ok(readRecordingReadiness());
+    // Superset of the OS-level snapshot: also report whether we've ever
+    // triggered the screen-capture prompt, so the System Permissions page
+    // can distinguish "Not yet requested" from "Denied" (macOS can't —
+    // see screen-permission-gate.ts).
+    return ok({
+      ...readRecordingReadiness(),
+      screenCapturePrompted: await readScreenCapturePrompted()
+    });
   });
 
   bus.register("permissions:request", async (req) => {
@@ -146,6 +159,17 @@ export function registerRecordingHandlers(): void {
       );
     }
     const result = await requestPermission(req.permission);
+    if (
+      process.platform === "darwin" &&
+      (req.permission === "screen" || req.permission === "systemAudio")
+    ) {
+      // We just drove the macOS screen-capture prompt (which also
+      // registers PwrSnap in the Privacy pane). Remember it so the UI
+      // switches to the "Open System Settings" path next time — macOS
+      // won't prompt twice. darwin-only: off-darwin `requestPermission`
+      // is a no-op that never prompts, so there's nothing to remember.
+      await markScreenCapturePrompted();
+    }
     return ok(result);
   });
 
@@ -180,18 +204,18 @@ export function registerRecordingHandlers(): void {
   bus.register("recording:start", async (req) => {
     // Preflight permissions before the countdown so the user is
     // never staring at "3, 2, 1, …" only to hit a permission wall.
-    // We reject only on missing screen (required); missing audio is
-    // a degraded continuation that the selector dialog handled
-    // before calling us.
+    // Screen Recording is required: the gate fires the macOS prompt on
+    // the first-ever attempt and routes to System Settings thereafter
+    // (see screen-permission-gate.ts). Missing audio is a degraded
+    // continuation that the selector dialog handled before calling us.
+    const blocked = await guardScreenCapture();
+    if (blocked) return blocked;
+    // Pre-warm the captures-folder (Documents) TCC grant before the
+    // countdown HUD so the "Allow Documents" dialog lands on a clean
+    // screen, not under recording chrome when the clip is saved.
+    const storageBlocked = await ensureCapturesDirReady();
+    if (storageBlocked) return storageBlocked;
     const readiness = readRecordingReadiness();
-    if (readiness.screenRecording !== "granted") {
-      return err(
-        permissionError(
-          "screen_not_granted",
-          "Screen Recording permission is required. Grant it in System Settings → Privacy & Security and restart PwrSnap."
-        )
-      );
-    }
     if (
       req.capabilities.microphone &&
       readiness.microphone !== "granted"

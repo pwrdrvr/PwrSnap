@@ -242,6 +242,20 @@ export type RecordingReadiness = {
   fingerprint: string;
 };
 
+/**
+ * `permissions:readiness` response. Superset of {@link RecordingReadiness}
+ * (the OS-level snapshot) plus PwrSnap's own memory of whether it has ever
+ * triggered the macOS screen-capture prompt. The System Permissions page
+ * needs the flag to choose between offering "Request access" (fires the OS
+ * prompt on a fresh install) and "Open System Settings" (once macOS has
+ * already recorded a decision and won't re-prompt). See
+ * {@link Settings.recording.screenCapturePrompted} for the macOS quirk
+ * that makes this necessary.
+ */
+export type PermissionReadinessReport = RecordingReadiness & {
+  screenCapturePrompted: boolean;
+};
+
 export type RecordingPermission = "screen" | "microphone" | "systemAudio";
 
 /**
@@ -1522,7 +1536,7 @@ export type Settings = {
     chat: ChatSettings;
     /** Per-surface default provider / model / reasoning the user picks
      *  in Settings → AI. These flow into the kit `ChatThreadController`
-     *  (Library chat, Sizzle chat) and the `CodexOneShotClient`
+     *  (Library chat, Sizzle chat) and pooled Codex enrichment
      *  (Enrichment) — see AiSurfaceDefaults for the field semantics.
      *  Additive: every leaf is optional, an omitted field means "use the
      *  Codex default" (no `model` / `modelProvider` / `effort` is sent on
@@ -1629,6 +1643,19 @@ export type Settings = {
      *  needs attention, we route once and write the new fingerprint
      *  back so we don't nag on subsequent launches. */
     lastRoutedPermissionFingerprint: string;
+    /** Whether PwrSnap has ever triggered the macOS Screen Recording
+     *  TCC prompt on this install (by attempting a real screen grab).
+     *  macOS reports `denied` for BOTH "never asked" and "explicitly
+     *  denied" — `getMediaAccessStatus('screen')` is backed by the
+     *  boolean `CGPreflightScreenCaptureAccess()` and NEVER returns
+     *  `not-determined` for screen. This flag is the only way to tell
+     *  the two apart, so the UI can offer "Request access" (which fires
+     *  the OS prompt and registers PwrSnap in the Privacy pane) on a
+     *  fresh install instead of a dead-end "Open System Settings" for an
+     *  app that isn't in the list yet. Set the first time we trigger the
+     *  prompt — from the System Permissions page button OR the first
+     *  capture attempt (see the main-side screen-permission gate). */
+    screenCapturePrompted: boolean;
   };
   /** v2 editor user preferences — tool style defaults (sticky-mode
    *  memory), one-time coachmark flags, matching-text affordance gate,
@@ -2540,6 +2567,16 @@ export type Commands = {
   /** Open System Settings → Privacy & Security → Files & Folders so
    *  the user can grant Documents access. No-op off macOS. */
   "storage:openCapturesAccessSettings": { req: Record<string, never>; res: void };
+  /** Actively verify captures-folder (Documents) write access by issuing
+   *  a real write probe — which also re-triggers the macOS consent prompt
+   *  + re-registers PwrSnap in the Privacy pane when macOS has no decision
+   *  on file. Updates the captures-access-health snapshot (so the Library
+   *  banner + the Settings row reflect the result) and returns the
+   *  outcome. Backs the System Permissions "Check access" button. */
+  "storage:checkCapturesAccess": {
+    req: Record<string, never>;
+    res: { granted: boolean };
+  };
 
   // ---- layers (v2 captures only) ----
   /** List the live layer tree for a v2 capture. Flat array; tree is
@@ -2845,16 +2882,20 @@ export type Commands = {
    * route through the in-context dialog. Cheap — backed by Electron's
    * `systemPreferences` + a single async ScreenCaptureKit probe.
    */
-  "permissions:readiness": { req: Record<string, never>; res: RecordingReadiness };
+  "permissions:readiness": { req: Record<string, never>; res: PermissionReadinessReport };
   /**
-   * Trigger an OS-level permission prompt where one is possible
-   * (microphone). For screen + system-audio the only path is System
-   * Settings → Privacy & Security; the response carries `openedSettings`
-   * so the renderer can show a "Restart PwrSnap after granting" hint.
+   * Trigger an OS-level permission prompt. Microphone uses
+   * `askForMediaAccess`. Screen + system-audio issue a real screen-source
+   * request (`desktopCapturer.getSources`), which drives the macOS
+   * first-grant dialog AND registers PwrSnap in the Privacy pane — this
+   * is how a fresh install gets listed there at all. The handler records
+   * `recording.screenCapturePrompted` so the next time around the UI
+   * routes to System Settings via `permissions:openSystemSettings` (macOS
+   * won't prompt twice). Returns the live status read back after the prompt.
    */
   "permissions:request": {
     req: { permission: RecordingPermission };
-    res: { status: RecordingPermissionStatus; openedSettings: boolean };
+    res: { status: RecordingPermissionStatus };
   };
   /**
    * Open System Settings to the right Privacy & Security pane for the

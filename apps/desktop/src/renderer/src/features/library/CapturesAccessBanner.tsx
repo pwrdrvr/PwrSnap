@@ -1,4 +1,5 @@
-// Inline notice that macOS is blocking reads of the captures folder.
+// Floating toast (lower-left .app-toast-stack) that macOS is blocking
+// reads of the captures folder.
 //
 // Subscribes to `events:storage:captures-access` from main; reads the
 // initial snapshot once (in case the denial happened before this
@@ -15,7 +16,7 @@
 // See main/storage/captures-access-health.ts for the mechanism.
 //
 // Mirrors AppUpdateBanner's shape (and reuses its CSS classes via a
-// modifier) so the two banners stack consistently above the Library.
+// modifier) so the two toasts stack consistently in the lower-left.
 // Copy + the settings deep-link button are platform-tailored — see
 // describeCapturesAccess below — since the remediation differs by OS
 // (macOS TCC vs Windows Controlled Folder Access vs Linux Flatpak/Snap

@@ -47,6 +47,12 @@ const GITHUB_RELEASES_URL =
 const RELEASE_FETCH_TIMEOUT_MS = 5_000;
 export const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
 
+/** Obvious not-a-real-release version that the dev/QA fake update
+ *  reports (see `simulateDevUpdateCheck`), so a previewed toast can
+ *  never be mistaken for a genuine update. */
+const DEV_FAKE_UPDATE_VERSION = "420.0.0";
+
+type AppUpdateCheckTrigger = "startup" | "periodic" | "manual" | "menu";
 type ChannelResolver = () => UpdateChannel;
 
 let resolveChannel: ChannelResolver = () => "latest";
@@ -136,12 +142,10 @@ function setUpdateStatusUnlessDownloaded(nextStatus: AppUpdateStatus): void {
 }
 
 export async function checkForAppUpdatesNow(
-  trigger: "startup" | "periodic" | "manual" | "menu" = "manual"
+  trigger: AppUpdateCheckTrigger = "manual"
 ): Promise<AppUpdateCheckResult> {
   if (!productionUpdatesEnabled()) {
-    const result = developmentUpdateCheckResult();
-    setUpdateStatus(result);
-    return result;
+    return simulateDevUpdateCheck(trigger);
   }
 
   if (updateCheckInFlight) {
@@ -185,6 +189,59 @@ export async function checkForAppUpdatesNow(
   })();
 
   return updateCheckInFlight;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+}
+
+/** Dev/QA stand-in for a real update check.
+ *
+ *  Real auto-update only runs in production — the dev binary is
+ *  unsigned and has no release feed, so `initAppUpdater` skips the
+ *  whole electron-updater wiring outside production. That means the
+ *  update toast can't otherwise be seen without cutting a release. So
+ *  a *user-initiated* check (Help → Check for Updates, or the Updates
+ *  settings page) instead walks the status machine to a fake
+ *  `downloaded@420.0.0`, broadcasting each transition so the entire
+ *  flow — checking → available → downloading → downloaded → toast —
+ *  can be exercised end-to-end in `pnpm dev`.
+ *
+ *  Startup/periodic triggers stay silent (status `skipped`) so a dev
+ *  launch never pops a toast on its own. Clicking Restart on the fake
+ *  update is a no-op — see `installDownloadedAppUpdate`.
+ */
+async function simulateDevUpdateCheck(
+  trigger: AppUpdateCheckTrigger
+): Promise<AppUpdateCheckResult> {
+  if (trigger !== "manual" && trigger !== "menu") {
+    const skipped = developmentUpdateCheckResult();
+    setUpdateStatus(skipped);
+    return skipped;
+  }
+  // Join an in-flight simulation so mashing the menu doesn't stack
+  // overlapping animations racing on setUpdateStatus.
+  if (updateCheckInFlight) return updateCheckInFlight;
+  const version = DEV_FAKE_UPDATE_VERSION;
+  log.info("simulating dev update check", { trigger, version });
+  updateCheckInFlight = (async (): Promise<AppUpdateCheckResult> => {
+    setUpdateStatus({ status: "checking" });
+    await delay(300);
+    setUpdateStatus({ status: "available", version });
+    await delay(300);
+    setUpdateStatus({ status: "downloading", version, percent: 60 });
+    await delay(300);
+    setUpdateStatus({ status: "downloaded", version });
+    return { status: "downloaded", version };
+  })();
+  try {
+    return await updateCheckInFlight;
+  } finally {
+    updateCheckInFlight = undefined;
+  }
 }
 
 function startPeriodicUpdateChecks(): void {
@@ -262,6 +319,19 @@ export function installDownloadedAppUpdate(): AppUpdateInstallResult {
     return {
       status: "error",
       message: "No downloaded update is ready to install."
+    };
+  }
+  if (!productionUpdatesEnabled()) {
+    // The only way to reach `downloaded` outside production is the
+    // dev/QA fake (see `simulateDevUpdateCheck`): there's no real
+    // payload and the dev binary is unsigned, so don't bounce the app
+    // through quitAndInstall — surface a clear no-op in the toast.
+    log.info("dev fake update — Restart is a no-op outside production", {
+      version
+    });
+    return {
+      status: "error",
+      message: `Dev preview (v${version}): Restart only works in production builds.`
     };
   }
   try {

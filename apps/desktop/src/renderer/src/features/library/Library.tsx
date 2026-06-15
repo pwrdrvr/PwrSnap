@@ -963,10 +963,17 @@ export function Library() {
     error,
     hasMore,
     isLoadingMore,
+    loading,
     loadMore,
     totalLive,
     appStats
   } = useLibrary();
+  // First-run nudge: while the Library has no live captures (and the
+  // head fetch has resolved, so we don't flicker on cold start for users
+  // who DO have captures), breathe the Quick Capture button to point a
+  // brand-new user at the one action that fills the Library. Drops the
+  // moment the first capture lands (totalLive > 0).
+  const libraryIsEmpty = !loading && totalLive === 0;
   const recordsRef = useRef(records);
   useEffect(() => {
     recordsRef.current = records;
@@ -2595,7 +2602,9 @@ export function Library() {
               with `auto` mode (smart pick: region / window / full screen
               based on what the cursor is pointing at). */}
           <button
-            className="psl__chip-btn psl__chip-btn--accent"
+            className={`psl__chip-btn psl__chip-btn--accent${
+              libraryIsEmpty ? " psl__chip-btn--breathe" : ""
+            }`}
             style={{ height: 28 }}
             type="button"
             title="Smart auto-mode · picks region, window, or full screen"

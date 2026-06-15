@@ -49,6 +49,7 @@ import {
 import { registerAcpHandlers } from "./handlers/acp-handlers";
 import { getToolRpcServer } from "./ai/mcp/pwrsnap-tool-rpc-server";
 import { closeAcpAgentPool, warmConfiguredAcpAgents } from "./ai/acp-agent-pool";
+import { closeCodexAgentPool } from "./ai/codex-agent-pool";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
 import {
@@ -65,10 +66,7 @@ import { registerLayersHandlers } from "./handlers/layers-handlers";
 import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
 import { registerRecordingHandlers } from "./handlers/recording-handlers";
 import { installRecordingController } from "./recording/recording-controller";
-import {
-  needsAttention,
-  readRecordingReadiness
-} from "./recording/recording-permissions";
+import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
 import { isRecordingActive } from "./recording/recording-state";
 import { onSettingsChanged, registerSettingsHandlers } from "./handlers/settings-handlers";
@@ -140,6 +138,35 @@ const APP_WEBSITE = "https://pwrsnap.com";
 const APP_DOCS = "https://docs.pwrsnap.com";
 const APP_ISSUE_REPORTER = "https://github.com/pwrdrvr/PwrSnap/issues/new";
 const PASTE_FROM_CLIPBOARD_MENU_ID = "file-new-paste-from-clipboard";
+const EDIT_UNDO_MENU_ID = "edit-undo";
+const EDIT_REDO_MENU_ID = "edit-redo";
+
+/**
+ * Route a native Edit ▸ Undo / Edit ▸ Redo activation to the focused
+ * window's renderer. The menu item's `click` gives us a `BaseWindow`
+ * (no `webContents`), so resolve it to the owning `BrowserWindow`;
+ * fall back to the focused window if needed. The renderer's edit-menu
+ * bridge decides text-undo vs editor-undo based on focus.
+ *
+ * `triggeredByAccelerator` rides along so the renderer can drop an
+ * accelerator activation that races the page keydown for the same
+ * keypress (double-fire guard) while always honoring a mouse click.
+ */
+function sendEditCommand(
+  window: Electron.BaseWindow | undefined,
+  channel: (typeof EVENT_CHANNELS)["editUndo" | "editRedo"],
+  event?: Electron.KeyboardEvent
+): void {
+  const candidate =
+    window !== undefined && !window.isDestroyed()
+      ? BrowserWindow.fromId(window.id)
+      : null;
+  const target = candidate ?? BrowserWindow.getFocusedWindow();
+  if (target === null || target.isDestroyed()) return;
+  target.webContents.send(channel, {
+    viaAccelerator: event?.triggeredByAccelerator === true
+  });
+}
 
 /** The hotkey kinds we register from `settings.hotkeys.*`. Order
  *  matters only for log readability. */
@@ -261,7 +288,66 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
         isMac ? { role: "close" as const } : { role: "quit" as const }
       ]
     },
-    { role: "editMenu" },
+    {
+      // Custom Edit menu. We replace Electron's `role: "editMenu"` only
+      // for Undo/Redo: the built-in `role: "undo"` / `role: "redo"`
+      // drive the browser's native edit-undo (`webContents.undo()`),
+      // which can't reach the editor's renderer-side undo stack (crop,
+      // arrow, every canvas annotation). Our custom items send
+      // `editUndo` / `editRedo` to the focused window; the renderer's
+      // edit-menu bridge does native text undo when an editable field is
+      // focused and editor undo otherwise. Everything else mirrors what
+      // `role: "editMenu"` produces per-platform so cut/copy/paste/
+      // select-all (and the macOS Speech submenu) don't regress.
+      //
+      // Accelerators are `CmdOrCtrl+…` so the same template works on
+      // macOS, Windows, and Linux. The Windows/Linux Ctrl+Y redo
+      // convention is handled in the renderer bridge (a single menu item
+      // can register only one accelerator). See
+      // docs/solutions/2026-06-13-edit-menu-undo-redo-bridge.md.
+      label: "Edit",
+      submenu: [
+        {
+          id: EDIT_UNDO_MENU_ID,
+          label: "Undo",
+          accelerator: "CmdOrCtrl+Z",
+          click: (_item, window, event) => {
+            sendEditCommand(window, EVENT_CHANNELS.editUndo, event);
+          }
+        },
+        {
+          id: EDIT_REDO_MENU_ID,
+          label: "Redo",
+          accelerator: "CmdOrCtrl+Shift+Z",
+          click: (_item, window, event) => {
+            sendEditCommand(window, EVENT_CHANNELS.editRedo, event);
+          }
+        },
+        { type: "separator" as const },
+        { role: "cut" as const },
+        { role: "copy" as const },
+        { role: "paste" as const },
+        ...(isMac
+          ? [
+              { role: "pasteAndMatchStyle" as const },
+              { role: "delete" as const },
+              { role: "selectAll" as const },
+              { type: "separator" as const },
+              {
+                label: "Speech",
+                submenu: [
+                  { role: "startSpeaking" as const },
+                  { role: "stopSpeaking" as const }
+                ]
+              }
+            ]
+          : [
+              { role: "delete" as const },
+              { type: "separator" as const },
+              { role: "selectAll" as const }
+            ])
+      ]
+    },
     { label: "View", submenu: viewSubmenu },
     { role: "windowMenu" },
     {
@@ -559,12 +645,30 @@ async function wireHotkeyRegistrations(): Promise<void> {
   // writes the new fingerprint back so a subsequent unchanged launch
   // doesn't re-nag. On darwin only — the Linux/CI build has no
   // permission surface to route to.
+  //
+  // BUT never route on a truly fresh install (`screenCapturePrompted ===
+  // false`, i.e. the user has never attempted a capture). macOS reports
+  // `denied` for screen before we've ever asked — indistinguishable from
+  // an explicit denial — so routing here would dead-end on a Privacy
+  // pane that doesn't list PwrSnap yet. Instead the empty Library breathes
+  // its Quick Capture button, and the first capture fires the OS prompt
+  // on demand (see capture/screen-permission-gate.ts). We only auto-route
+  // once the user has engaged and a permission is still blocking them.
+  //
+  // We gate on SCREEN RECORDING only — not the full `needsAttention`
+  // predicate. Microphone and System Audio are OPTIONAL: nothing uses
+  // them until the user explicitly opts into mic/system-audio on a video
+  // recording, at which point `recording:start` requests them at point of
+  // use. Letting an un-asked microphone (`not-determined`) drag the user
+  // to Settings on every launch is a nag for a capability we don't even
+  // use yet. (When mic features ship, request them in-context, not here.)
   if (process.platform === "darwin") {
     try {
       const settings = await service.read();
       const readiness = readRecordingReadiness();
       if (
-        needsAttention(readiness) &&
+        settings.recording.screenCapturePrompted &&
+        readiness.screenRecording !== "granted" &&
         readiness.fingerprint !== settings.recording.lastRoutedPermissionFingerprint
       ) {
         log.info("routing to System Permissions on startup", {
@@ -1758,6 +1862,9 @@ export function bootstrapApp(): void {
     // Close every pooled ACP agent process (warmed at startup / acquired by a
     // chat surface). No-op when no agent was ever pooled.
     void closeAcpAgentPool().catch(() => undefined);
+    // Close the shared Codex App Server process owner. No-op when Codex was
+    // never used this run.
+    void closeCodexAgentPool().catch(() => undefined);
     // Tear down the shared composite-thumbnail worker eagerly so an
     // in-flight encode (e.g. a deferred v1→v2 sweep still running) is
     // rejected and the worker terminated on our terms, rather than the

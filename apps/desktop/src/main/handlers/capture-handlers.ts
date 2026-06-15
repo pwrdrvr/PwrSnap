@@ -39,6 +39,8 @@ import {
   hideSelector
 } from "../capture/region-selector";
 import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
+import { guardScreenCapture } from "../capture/screen-permission-gate";
+import { ensureCapturesDirReady } from "../capture/capture-storage-gate";
 import { releaseSnapshot } from "../capture/screen-snapshot";
 import { activateApp, type WindowInfo } from "../capture/window-list";
 import {
@@ -103,6 +105,13 @@ export function clipboardHasPasteableImage(): boolean {
 
 export function registerCaptureHandlers(): void {
   bus.register("capture:region", async (req) => {
+    // Headless/agent path — still trigger the OS prompt on a first-ever
+    // attempt (it registers PwrSnap so captures can ever work), but don't
+    // pop our Settings window at a programmatic caller on the denied path.
+    const blocked = await guardScreenCapture({ routeToSettings: false });
+    if (blocked) return blocked;
+    const storageBlocked = await ensureCapturesDirReady();
+    if (storageBlocked) return storageBlocked;
     const captureResult = await captureRegion(req.rect, req.displayId);
     if (!captureResult.ok) {
       return err({
@@ -119,6 +128,18 @@ export function registerCaptureHandlers(): void {
   });
 
   bus.register("capture:interactive", async (req, ctx) => {
+    // Gate BEFORE pickRegion: the selector freezes a screen snapshot on
+    // show(), which is all-black on a Mac without Screen Recording. On a
+    // first-ever attempt the gate fires the macOS prompt instead; on a
+    // subsequent denied attempt it routes to System Settings. Either way
+    // we never paint an empty selector at the user.
+    const blocked = await guardScreenCapture();
+    if (blocked) return blocked;
+    // Pre-warm the captures-folder (Documents) TCC grant before the
+    // selector goes up — otherwise the "Allow Documents" dialog pops
+    // under the screen-saver-level selector at persist time.
+    const storageBlocked = await ensureCapturesDirReady();
+    if (storageBlocked) return storageBlocked;
     const handlerStartedAt = Date.now();
     const mode = req.mode ?? "auto";
     log.info("capture:interactive handler received", {
@@ -234,10 +255,36 @@ export function registerCaptureHandlers(): void {
       });
     }
 
-    // COMMIT path. From here on we own the screen snapshot — we MUST
-    // release it before returning. wrap the rest in try/finally so an
-    // error doesn't leak the temp file.
+    // COMMIT path. The user has selected AND committed — the selector has
+    // done its job. We tear it down COMPLETELY before attempting the file
+    // save, so a first-capture macOS Documents TCC prompt (triggered by
+    // the persist write) can never appear UNDER the screen-saver-level
+    // (1000) selector. Once the selector is gone the only PwrSnap window
+    // left is the float-over at floating level (3), which sits BELOW a
+    // system consent dialog — so the prompt is reachable.
+    //
+    // We own the screen snapshot now and MUST release it; the try/finally
+    // is a safety net (both teardown + release are idempotent).
     const { screenSnapshotId, screenSnapshotPath, previousAppPid } = selection;
+    let teardownDone = false;
+    const tearDownSelector = async (): Promise<void> => {
+      if (teardownDone) return;
+      teardownDone = true;
+      // Selector down first; then re-activate the previously-frontmost
+      // app. The float-over was pre-shown idle at floating level during
+      // pickRegion, so it stays above the re-activated app through the
+      // idle→loaded content swap — no post-hoc show race. activateApp is
+      // the obvious activation-policy demotion trigger, but the selector
+      // hide alone trips the same focus cascade when no previous app
+      // exists (Library-was-topmost), so reclaim unconditionally to keep
+      // the Library reachable via the Dock. (Full rationale on the cancel
+      // branch above.)
+      hideSelector();
+      if (previousAppPid !== null) {
+        await activateApp(previousAppPid);
+      }
+      reclaimDockIconIfLibraryAlive();
+    };
     try {
       // Two capture paths:
       //   • Full-window mode (user held ⇧ at commit time, or `mode`
@@ -265,6 +312,10 @@ export function registerCaptureHandlers(): void {
               selection.rect,
               selection.displayId
             );
+      // Snapshot pixels are now in `captureResult.tempPath` — release the
+      // frozen snapshot immediately (idempotent; finally re-calls as a
+      // safety net).
+      void releaseSnapshot(screenSnapshotId);
       // Source-app resolution is the same on both capture branches —
       // the choice of pixel-fetch path (full-window vs. cropped
       // snapshot) doesn't change WHO owned the window. Single shared
@@ -275,44 +326,45 @@ export function registerCaptureHandlers(): void {
         selection.snappedWindowId,
         snapshot
       );
+
       if (!captureResult.ok) {
+        // Crop/window grab failed before we even tried to save. Mirror the
+        // cancel choreography: park the pre-shown idle toast, flush, then
+        // drop the selector — so the empty placeholder never flashes.
+        setFloatOverState({ kind: "cancel" });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await tearDownSelector();
         return err({
           kind: "capture",
           code: captureResult.reason,
           message: captureResult.message
         });
       }
+
+      // We have the pixels. Tear the selector down NOW — BEFORE the save —
+      // so the file write (and any Documents TCC prompt it triggers) runs
+      // on a clean screen, never under the picker.
+      await tearDownSelector();
+
       const persisted = await persistAndBroadcast(captureResult.tempPath, sourceApp);
-      // ORDER MATTERS: populate the float-over BEFORE hiding the
-      // selector. The selector covers the float-over visually; once
-      // we hide it, the toast is already painted at floating level
-      // and instantly visible. No post-hoc show race.
       if (persisted.ok) {
+        // Selector is already gone; this swaps the idle float-over to the
+        // loaded preview in place (the window stays at floating level).
         setFloatOverState({
           kind: "show-loaded",
           captureId: persisted.value.id,
           record: persisted.value
         });
+      } else {
+        // Save failed (e.g. the user denied Documents access at the
+        // prompt). Park the idle toast rather than leaving it empty.
+        setFloatOverState({ kind: "cancel" });
       }
       return persisted;
     } finally {
-      // Selector goes away last. Then activate the previous app —
-      // toast is already established at floating level so it stays
-      // on top of the previously-frontmost app's windows.
-      hideSelector();
+      // Safety net for an unexpected throw before the explicit teardown.
       void releaseSnapshot(screenSnapshotId);
-      if (previousAppPid !== null) {
-        await activateApp(previousAppPid);
-      }
-      // See cancel branch above for the full rationale. activateApp
-      // is the most obvious demotion trigger (deactivates PwrSnap;
-      // with our floating-level panels in the window list AppKit
-      // demotes us to Accessory) but the selector hide alone is
-      // enough to trip the same focus-cascade side-effect when no
-      // previous app exists (Library-was-topmost case). Reclaim
-      // unconditionally so the Library stays reachable via the
-      // Dock either way.
-      reclaimDockIconIfLibraryAlive();
+      await tearDownSelector();
     }
   });
 
@@ -362,6 +414,10 @@ export function registerCaptureHandlers(): void {
   // this path activate PwrSnap (e.g. a confirmation HUD), re-introduce
   // both calls here in lockstep with capture-handlers.ts:254-262.
   bus.register("capture:fullScreen", async (req) => {
+    const blocked = await guardScreenCapture();
+    if (blocked) return blocked;
+    const storageBlocked = await ensureCapturesDirReady();
+    if (storageBlocked) return storageBlocked;
     const displayId = resolveFullScreenDisplayId(req.displayId);
     const display = screen.getAllDisplays().find((d) => d.id === displayId);
     if (display === undefined) {
@@ -394,6 +450,10 @@ export function registerCaptureHandlers(): void {
   });
 
   bus.register("capture:allScreens", async (req) => {
+    const blocked = await guardScreenCapture();
+    if (blocked) return blocked;
+    const storageBlocked = await ensureCapturesDirReady();
+    if (storageBlocked) return storageBlocked;
     // Bus-boundary validation. The type system catches in-process
     // callers, but `req` arrives over IPC where unchecked JSON could
     // pass `{}` or `{mode: "bogus"}` and silently fall through to

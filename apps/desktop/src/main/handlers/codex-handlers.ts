@@ -19,6 +19,7 @@ import type {
   AiRunUsageDetail,
   CaptureEnrichment,
   CaptureRecord,
+  CodexModelOption,
   PwrSnapError,
   Result,
   Settings,
@@ -32,6 +33,7 @@ import { AcpCaptureEnrichmentClient } from "../ai/acp-enrichment-client";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
 import { findAcpModelLabel } from "../ai/acp-model-cache";
 import { findCodexModelLabel, saveCodexModelLabels } from "../ai/codex-model-cache";
+import { listCodexModels, type CodexModelLister } from "../ai/codex-model-client";
 import {
   discoverLocalAcpAgentInstances,
   strategyById,
@@ -423,27 +425,22 @@ export function maybeEnqueueCaptureEnrichment(captureId: string): void {
 
 export function registerCodexHandlers(params?: {
   clientFactory?: CodexClientFactory;
+  modelLister?: CodexModelLister;
   settingsReader?: SettingsReader;
   settingsWriter?: SettingsWriter;
   budget?: AiEnrichmentBudget;
 }): void {
-  const defaultClients = new Map<string, CaptureEnrichmentClient>();
+  const modelListInFlight = new Map<string, Promise<CodexModelOption[]>>();
   const clientFactory =
     params?.clientFactory ??
     ((command, env) => {
-      // Key by command + CODEX_HOME so switching the auth profile (which only
-      // changes env.CODEX_HOME) yields a distinct client, not a stale cached one.
-      const key = JSON.stringify([command, env?.["CODEX_HOME"] ?? ""]);
-      const existing = defaultClients.get(key);
-      if (existing) return existing;
-      const client = new CaptureEnrichmentClient({
+      return new CaptureEnrichmentClient({
         command,
         ...(env !== undefined ? { env } : {}),
         captureMetadataWorkspaceDir: captureMetadataWorkspaceDir()
       });
-      defaultClients.set(key, client);
-      return client;
     });
+  const modelLister = params?.modelLister ?? listCodexModels;
   const closeClientAfterRun = params?.clientFactory !== undefined;
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
   const settingsWriter = params?.settingsWriter ?? defaultSettingsWriter;
@@ -735,12 +732,20 @@ export function registerCodexHandlers(params?: {
   });
 
   bus.register("codex:models", async (req) => {
+    const startedAt = performance.now();
     const parsed = parseCodexModelsRequest(req);
     if (!parsed.ok) return parsed;
+    const includeHidden = parsed.value.includeHidden;
+    log.info("codex:models request received", { includeHidden });
     let settings: Settings;
     try {
       settings = await settingsReader();
     } catch (error) {
+      log.warn("codex:models settings read failed", {
+        includeHidden,
+        durationMs: Math.round(performance.now() - startedAt),
+        message: error instanceof Error ? error.message : String(error)
+      });
       return err({
         kind: "settings",
         code: "read_failed",
@@ -748,28 +753,83 @@ export function registerCodexHandlers(params?: {
         cause: error
       });
     }
-    const client = clientFactory(
-      codexCommandForSettings(settings),
-      codexEnvForProfile(settings.codex.profile)
-    );
+    const command = codexCommandForSettings(settings);
+    const env = codexEnvForProfile(settings.codex.profile);
+    const codexHome = env["CODEX_HOME"] ?? null;
+    const profile = settings.codex.profile.length > 0 ? settings.codex.profile : "(default)";
+    log.info("codex:models listing", {
+      command,
+      codexHome,
+      profile,
+      selectedModel: settings.codex.captionModel,
+      includeHidden
+    });
     try {
-      const models = await client.listModels({ includeHidden: parsed.value.includeHidden });
+      const inFlightKey = JSON.stringify([command, codexHome ?? "", includeHidden]);
+      let listing = modelListInFlight.get(inFlightKey);
+      if (listing === undefined) {
+        listing = modelLister({ command, env, includeHidden });
+        modelListInFlight.set(inFlightKey, listing);
+      } else {
+        log.info("codex:models joined in-flight listing", {
+          command,
+          codexHome,
+          profile,
+          selectedModel: settings.codex.captionModel,
+          includeHidden
+        });
+      }
+      let models: CodexModelOption[];
+      try {
+        models = await listing;
+      } finally {
+        if (modelListInFlight.get(inFlightKey) === listing) {
+          modelListInFlight.delete(inFlightKey);
+        }
+      }
       // Persist id → displayName so the usage strip can show a Codex run's
       // friendly model name (the run record only stores the id).
       saveCodexModelLabels(models);
+      const modelIds = models.map((model) => model.id);
+      const imageCapableModelIds = models
+        .filter(
+          (model) =>
+            model.inputModalities.includes("text") && model.inputModalities.includes("image")
+        )
+        .map((model) => model.id);
+      const logPayload = {
+        command,
+        codexHome,
+        profile,
+        selectedModel: settings.codex.captionModel,
+        includeHidden,
+        count: models.length,
+        imageCapableCount: imageCapableModelIds.length,
+        modelIds,
+        imageCapableModelIds,
+        durationMs: Math.round(performance.now() - startedAt)
+      };
+      if (models.length === 0) {
+        log.warn("codex:models returned no models", logPayload);
+      } else {
+        log.info("codex:models listed models", logPayload);
+      }
       return ok({ models, selectedModel: settings.codex.captionModel });
     } catch (error) {
+      log.warn("codex:models failed", {
+        command,
+        codexHome,
+        profile,
+        selectedModel: settings.codex.captionModel,
+        includeHidden,
+        durationMs: Math.round(performance.now() - startedAt),
+        message: error instanceof Error ? error.message : String(error)
+      });
       return err({
         kind: "unknown",
         code: "codex_models_failed",
         message: error instanceof Error ? error.message : String(error),
         cause: error
-      });
-    } finally {
-      await client.close().catch((error: unknown) => {
-        log.warn("codex client close failed after model list", {
-          message: error instanceof Error ? error.message : String(error)
-        });
       });
     }
   });
@@ -1120,8 +1180,9 @@ async function runCaptureEnrichment(params: {
         message: error instanceof Error ? error.message : String(error)
       });
     });
-    // The Codex client is cached + reused (close only when the test factory
-    // asked for it); the ACP client is built fresh per run, so always close it.
+    // The default Codex enrichment wrapper is processless; the app-wide Codex
+    // owner closes at app shutdown. Test-provided clients may still need close.
+    // The ACP client is built fresh per run, so always close it.
     if (params.closeClientAfterRun || params.acpAgentId !== undefined) {
       await client?.close().catch((error: unknown) => {
         log.warn("enrichment client close failed", {

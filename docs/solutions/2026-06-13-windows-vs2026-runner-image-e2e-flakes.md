@@ -1,0 +1,170 @@
+# Windows E2E flakes after the `windows-latest` → VS2026 runner image migration
+
+**Date:** 2026-06-13
+**Symptom:** "Windows Desktop E2E" job (`ci.yml`) started going red on `main`
+and on unrelated PR branches, all at once. Reported as flaky:
+
+- `tray-first-paint.spec.ts` — `tray popover height 248 outside expected
+  range [560, 720]` for the seeded scenario.
+- `tray-sizing.spec.ts:269` — `expect(...).toBeGreaterThanOrEqual(370)` got
+  `248` under non-1.0 zoom.
+- `settings.spec.ts` — `EBUSY: resource busy or locked, unlink
+  '...\pwrsnap-e2e-home-XXXX\DIPS-wal'` (also seen on `pwrsnap.db`).
+
+It *looked* like PR #247 caused it (failure appeared on the first push after
+it merged), but #247 was a coincidence.
+
+## Root cause: the runner image changed, not our code
+
+GitHub migrated the `windows-latest` / `windows-2025` label to a new image —
+**Windows Server 2025 + Visual Studio 2026** (`windows-2025-vs2026`, GA
+2026-06-08, gradual rollout through ~06-15). Our runs flipped from the old
+VS2022 image to the new VS2026 image between 2026-06-11 and 2026-06-13.
+
+Evidence (read the `Set up job` → `Runner Image` block of any job log):
+
+| When | Image | Windows E2E |
+|---|---|---|
+| Jun 8–11 | `win25/20260525–20260607` (VS2022) | green, every run |
+| Jun 13 (all day) | `win25-vs2026/20260608.135` (VS2026) | green ~7×, then first fail |
+
+The old VS2022 image was 100% green. The failures **only** appear on the new
+VS2026 image. Why #247 is exonerated: (1) it only touched `App.tsx` /
+`app.css` / the auto-updater — not the tray or settings windows the failing
+specs exercise; (2) the new image was already green several times before it
+merged; (3) PR branches without #247's code fail identically. These specs are
+flaky (pass on retry), so #247's merge was just when the new image's
+low-frequency flake first rolled a loss.
+
+**Lesson:** when CI goes red "right after PR X" but X can't plausibly touch
+the failing code, check the runner image version in the job log *before*
+blaming the PR. `runs-on: windows-latest` auto-migrates underneath you.
+
+## What actually broke: two latent races the new image's timing exposes
+
+The VS2026 image has different CPU/disk/GPU/WebView2 timing, which lost two
+races our code had been winning by luck.
+
+### 1. Tray remeasure race (the `248` heights)
+
+`248` is the **empty-tray** height. The seeded tray's "last snap" section is
+fetched over IPC and its preview image decoded via `pwrsnap-capture://`, so
+the renderer measures the empty/text-only height first (~248) and re-measures
+to the full height (~634) only after that async reflow lands.
+
+- `measureTrayFirstPaintForE2E` (main, `tray.ts`) declared "stable" on *no
+  resize for `stableMs` (300ms)*. When the seeded reflow arrives >300ms after
+  the first measurement — routine on the slow image — it broke at 248.
+- `tray-sizing.spec.ts` zoom test: `setZoomFactor` → `zoom-changed` →
+  `events:popover:remeasure` → renderer re-post round-trip can outlast
+  `waitForStableSize`'s window, so it sampled the pre-zoom 248.
+
+**Fix:** gate "stable" on the expected content actually arriving, not on a
+quiet timer.
+- Added `minStableHeight` to `measureTrayFirstPaintForE2E`; the cold + prewarmed
+  breaks now also require `getContentSize()[1] >= minStableHeight`. The spec
+  passes `scenario.minHeight`. A height that never arrives **times out** (a real
+  regression still fails) instead of silently sampling the transient state.
+- Zoom test polls `contentSize.height` past the pre-zoom value before
+  `waitForStableSize`.
+
+This is the same class of bug the tray sizing notes in `CLAUDE.md` warn about:
+a tuned constant (`stableMs`) that's right on the machine it was tuned on and
+wrong elsewhere. The fix replaces the heuristic with a content-arrival gate.
+
+### 2. Windows file-handle race in teardown (the `EBUSY`)
+
+`removeHomeRoot` (`e2e/fixtures/electron-app.ts`) `rm`s the temp HOME right
+after Electron exits. On Windows the OS reaps a dead process's file handles
+**asynchronously**, so better-sqlite3's WAL/db files can still be locked for a
+beat → `unlink` hits `EBUSY`. The old `maxRetries: 5 / 100ms` (~1.5s) wasn't
+enough on the slower image.
+
+The real damage: the `rm` **threw in test teardown**, which crashes the
+Playwright worker (`Failed worker ran 36 tests`) and fails the whole job. That
+is why a "3 flaky / 67 passed" report still exits 1 — the worker death, not the
+flaky tests themselves.
+
+**Fix:** bump retries (`maxRetries: 10 / 200ms`) **and never throw** — a leaked
+temp dir on an ephemeral runner is harmless; crashing the worker is not. Log a
+warning and move on.
+
+### 3. The deeper one #252 only half-caught: the `settings:open` wedge + unbounded teardown `evaluate`
+
+After #252, the job kept going red — but now the *single* failing line was
+always `settings.spec.ts:64 › settings:open creates a new Settings window`, and
+the surviving error was **"Worker teardown timeout of 30000ms exceeded"**
+reported as **"1 error was not a part of any test"** (in some runs the EBUSY
+DIPS unlink instead). The test itself is *flaky*, not failed — it times out at
+exactly 60s on the first attempt, then **passes on retry #1 in ~1.5s**. A flaky
+test never fails the job; the leaked worker-level error does (exit 1).
+
+The signal that cracked it: attempt #1 is the **~52nd Electron launch in one
+long-lived Playwright worker**; the retry runs in a **fresh** worker (Playwright
+restarts the worker after a timeout) and opens the same window in ~1.5s. So
+`settings:open` is not broken — something accumulates across a worker's
+launch→close cycles and wedges the **main-process event loop** on a late launch.
+`createSettingsWindow` is fully synchronous and the `settings:open` handler
+returns `ok(undefined)` immediately, so the 60s is not handler work — it's the
+Playwright `electronApp.evaluate` round-trip (`app.dispatch`) never getting a
+turn on a wedged main.
+
+Two latent fixtures bugs turned that wedge into a job-killing worker error:
+
+- **`closeElectronApp` awaited `app.evaluate(exit(0))` with no timeout.** On a
+  wedged main that `await` never returns, so the orphaned
+  `finally { app.close() }` hangs the whole teardown → Playwright's 30s
+  worker-teardown timeout → force-kill → "error not part of any test."
+- **`app.dispatch` (the bus bridge `evaluate`) had no timeout either**, so a
+  wedged main burned the full 60s test budget before the test could even reach
+  its `finally`.
+
+**Why the zombies accumulate (the actual root):** `child.kill("SIGKILL")` maps to
+`TerminateProcess` on the **top PID only**. Electron's renderer / GPU / utility /
+crashpad children survive as orphans every time `app.close()` doesn't exit
+cleanly (routine on the slow VS2026 image, where the 5s graceful-close budget is
+often missed). Over a worker's 50+ cycles those zombies starve the runner, which
+is what wedges the late launch. The job's "Cleaning up orphan processes" step at
+the end confirms the leak.
+
+**Fix (all in `e2e/fixtures/electron-app.ts`):**
+- A `withTimeout(promise, ms, msg)` helper that races against a timer **and
+  swallows the racing promise's late rejection** (an unhandled rejection is, you
+  guessed it, "an error not part of any test").
+- Bound the teardown `app.evaluate(exit)` (`ELECTRON_EVAL_TIMEOUT_MS = 3s`) → a
+  wedged main falls straight through to the forceful close/kill instead of
+  hanging teardown.
+- Bound `app.dispatch`'s `evaluate` (`DISPATCH_TIMEOUT_MS = 10s` — ~5× headroom
+  over any real dispatch, fail-fast by design) → a wedged main yields a prompt,
+  catchable failure the test's `finally` can clean up after, instead of a 60s
+  hang that poisons the worker. Turns a worker-killing timeout into an ordinary
+  flaky failure that retry recovers quickly. (Was unbounded before — a wedge fell
+  through to the 60s test timeout; the goal is the opposite: fast fail + retry.)
+- **`killProcessTree`**: on Windows, `taskkill /pid <pid> /T /F` tears down the
+  whole child tree instead of just the top PID, so zombies stop accumulating —
+  attacking the wedge at its source. macOS/Linux keep the plain `SIGKILL`.
+
+Net effect: even if a late launch still wedges, the test fails fast (or passes),
+teardown completes in seconds, the worker stops gracefully, and the retry passes
+— flaky, but **green**. And fewer wedges happen at all because the process tree
+no longer leaks.
+
+## If you need green CI *now* (escape hatches, in order)
+
+1. **Preferred:** the fixes above (root cause, survives the image).
+2. Pinning is a poor option: `windows-2025` also migrates to VS2026, and the
+   only VS2022 label left is `windows-2022` — which downgrades the OS to Server
+   2022 (we've been on Server 2025 since late May). There is no "Server 2025 +
+   VS2022" pin, and the old labels retire anyway.
+
+## Files
+
+- `apps/desktop/src/main/tray.ts` — `minStableHeight` gate in
+  `measureTrayFirstPaintForE2E`.
+- `apps/desktop/e2e/tray-first-paint.spec.ts` — `measure()` passes the floor.
+- `apps/desktop/e2e/tray-sizing.spec.ts` — poll past pre-zoom height before
+  sampling.
+- `apps/desktop/e2e/fixtures/electron-app.ts` — `removeHomeRoot` retries
+  harder and swallows (#252); `withTimeout` helper, bounded teardown +
+  dispatch `evaluate`, and Windows `killProcessTree` (taskkill `/T`) for the
+  `settings:open` wedge / worker-teardown-timeout follow-up (§3).

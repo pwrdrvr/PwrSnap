@@ -1369,10 +1369,10 @@
 .psl__cell-app-overlay > .ps-app-tag { pointer-events: none; }
 /* Center play button — the primary, at-a-glance "this is a video" cue
    (a duration chip alone is too easy to miss). Translucent so it never
-   fights the frame; fades out on hover (opacity driven inline from the
-   hovering state) because hovering starts the silent preview playing,
-   so the affordance steps aside. pointer-events:none keeps clicks on
-   the cell. */
+   fights the frame; fades out on cell hover (the `.psl__cell:hover`
+   rule below) because hovering starts the silent preview playing, so
+   the affordance steps aside. pointer-events:none keeps clicks on the
+   cell. */
 .psl__cell-play {
   position: absolute; top: 50%; left: 50%;
   transform: translate(-50%, -50%);

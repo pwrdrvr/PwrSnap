@@ -14,7 +14,7 @@ import { getMainLogger } from "../log";
 import { channelForChildProcess } from "../process-bridge/channel";
 import { BridgeEndpoint } from "../process-bridge/endpoint";
 import { processRoleFlag } from "../process-role";
-import { deliverRelayedRendererEventToMain } from "./event-relay";
+import { deliverRelayedRendererEventToMain, LIBRARY_WINDOW_READY_CHANNEL } from "./event-relay";
 
 const log = getMainLogger("pwrsnap:library-supervisor");
 
@@ -22,6 +22,33 @@ const log = getMainLogger("pwrsnap:library-supervisor");
  *  and say hello before forwarded dispatches fail. Cold Electron boot
  *  is ~1–3s; first-launch-after-update and slow disks earn headroom. */
 const LIBRARY_READY_TIMEOUT_MS = 30_000;
+
+/**
+ * Cold-launch watchdog window. After the agent forwards a verb that
+ * should bring a library window up, the library must emit
+ * `LIBRARY_WINDOW_READY_CHANNEL` (on its window's `did-finish-load`, or
+ * immediately when re-showing an already-loaded window) within this
+ * budget. If it doesn't, the library's main thread is wedged — the
+ * black-window-that-never-paints bug — and a setTimeout INSIDE the
+ * library can't fire to self-heal (the loop is blocked), so the agent
+ * (which is NOT blocked) recovers from out here. Generous on purpose:
+ * a healthy cold load is <5s even on the slow paths we measured, so
+ * 20s only trips on a genuine hang, never on a slow-but-alive load.
+ */
+const LIBRARY_WINDOW_WATCHDOG_MS = 20_000;
+
+/** Verbs the agent forwards that MUST produce a visible library main
+ *  window. Used to arm the cold-launch watchdog. Other forwarded verbs
+ *  (settings/data/etc.) don't create the main window and aren't armed. */
+const LIBRARY_WINDOW_SPAWN_VERBS: ReadonlySet<string> = new Set([
+  "library:focus",
+  "library:openInLibrary",
+  "editor:open"
+]);
+
+export function isLibraryWindowSpawnVerb(name: string): boolean {
+  return LIBRARY_WINDOW_SPAWN_VERBS.has(name);
+}
 
 /**
  * How to launch a second instance of ourselves in the library role.
@@ -41,6 +68,46 @@ export function libraryProcessSpawnPlan(input: {
 
 let child: ChildProcess | null = null;
 let endpoint: BridgeEndpoint | null = null;
+let windowWatchdog: ReturnType<typeof setTimeout> | null = null;
+
+function clearWindowWatchdog(): void {
+  if (windowWatchdog !== null) {
+    clearTimeout(windowWatchdog);
+    windowWatchdog = null;
+  }
+}
+
+/** Arm (or re-arm) the cold-launch watchdog for `verb`. Fires only if
+ *  the library doesn't signal window-ready in time — then it logs a
+ *  loud, unmistakable line and KILLS the wedged library so the user can
+ *  simply re-open (the next intent respawns a fresh process) instead of
+ *  being stuck with a black window that needs a force-quit. */
+function armWindowWatchdog(verb: string): void {
+  clearWindowWatchdog();
+  windowWatchdog = setTimeout(() => {
+    windowWatchdog = null;
+    log.error(
+      "library window watchdog: no window-ready signal within budget — " +
+        "library main thread appears wedged; killing it for a clean respawn",
+      { verb, timeoutMs: LIBRARY_WINDOW_WATCHDOG_MS, pid: child?.pid }
+    );
+    killWedgedLibrary();
+  }, LIBRARY_WINDOW_WATCHDOG_MS);
+  windowWatchdog.unref?.();
+}
+
+/** Kill the (presumed-wedged) library + forget it, so the next
+ *  window-verb forward respawns a fresh process. The agent stays up. */
+function killWedgedLibrary(): void {
+  const spawned = child;
+  const ep = endpoint;
+  child = null;
+  endpoint = null;
+  ep?.close();
+  if (spawned !== null && spawned.exitCode === null) {
+    spawned.kill();
+  }
+}
 
 function spawnLibraryProcess(): BridgeEndpoint {
   const plan = libraryProcessSpawnPlan({
@@ -64,6 +131,14 @@ function spawnLibraryProcess(): BridgeEndpoint {
     dispatchLocal: (name, req) =>
       bus.dispatch(name as never, req as never, { principal: "bridge" }),
     onRemoteEvent: (channel, payload) => {
+      // Internal control signal — the library's window is up; disarm the
+      // cold-launch watchdog. Not a renderer event: don't fan it out to
+      // the agent's windows.
+      if (channel === LIBRARY_WINDOW_READY_CHANNEL) {
+        log.info("library window-ready signal received — disarming watchdog");
+        clearWindowWatchdog();
+        return;
+      }
       broadcastRendererEventToLocalWindows(channel, payload);
       deliverRelayedRendererEventToMain(channel, payload);
     },
@@ -76,6 +151,9 @@ function spawnLibraryProcess(): BridgeEndpoint {
     if (child === spawned) {
       child = null;
       endpoint = null;
+      // The process this watchdog was guarding is gone — don't let a
+      // stale timer fire against a dead/replaced child.
+      clearWindowWatchdog();
     }
     ep.close();
   };
@@ -123,6 +201,14 @@ export async function dispatchToLibraryProcess(
   // hang shows up as "sent, never returned" vs "peer never ready".
   log.info("dispatchToLibraryProcess: peer ready", { name, ok: ready.ok });
   if (!ready.ok) return ready;
+  // Cold-launch watchdog for window-spawning verbs: armed AFTER the boot
+  // gate (waitForPeer already covers boot) and BEFORE the dispatch await,
+  // so an existing-window's synchronous window-ready signal — which can
+  // arrive during the await — disarms it instead of racing a re-arm.
+  // A new window disarms later, on its did-finish-load.
+  if (isLibraryWindowSpawnVerb(name)) {
+    armWindowWatchdog(name);
+  }
   const result = await ep.dispatchRemote(name, req);
   log.info("dispatchToLibraryProcess: remote returned", {
     name,
@@ -147,6 +233,7 @@ export function forwardCancellationToLibrary(key: string): void {
 
 /** Agent quit path: take the library down with us. */
 export function stopLibraryProcess(): void {
+  clearWindowWatchdog();
   const spawned = child;
   const ep = endpoint;
   child = null;

@@ -50,6 +50,7 @@ import {
   relayRendererEventToPeer
 } from "../process-split/event-relay";
 import { activateForUserSurface } from "../process-split/activate-user-surface";
+import { signalLibraryWindowReady } from "../process-split/agent-bridge";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:library-handlers");
@@ -92,6 +93,9 @@ function bringLibraryForward(): {
   // window behind the user's frontmost app. No-op off-darwin and in
   // other roles.
   activateForUserSurface();
+  // Disarm the agent's cold-launch watchdog: this window is already
+  // loaded, so no `did-finish-load` will fire to signal readiness.
+  signalLibraryWindowReady();
   return { window: existing, justCreated: false };
 }
 

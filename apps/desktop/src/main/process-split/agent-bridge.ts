@@ -11,7 +11,8 @@ import { broadcastRendererEventToLocalWindows } from "../events";
 import { getMainLogger } from "../log";
 import { channelForParentProcess } from "../process-bridge/channel";
 import { BridgeEndpoint } from "../process-bridge/endpoint";
-import { deliverRelayedRendererEventToMain } from "./event-relay";
+import { deliverRelayedRendererEventToMain, LIBRARY_WINDOW_READY_CHANNEL } from "./event-relay";
+import { getRuntimeProcessRole } from "../process-role";
 
 const log = getMainLogger("pwrsnap:agent-bridge");
 
@@ -106,4 +107,16 @@ export function forwardRendererEventToAgent(channel: string, payload: unknown): 
  *  abort the agent's in-flight enrichment for it. */
 export function forwardCancellationToAgent(key: string): void {
   endpoint?.cancelRemote(key);
+}
+
+/**
+ * Library role: tell the agent a library main window has actually
+ * finished loading (or was re-shown), so the agent's cold-launch
+ * watchdog disarms. No-op outside the library role / when the bridge
+ * isn't connected. If the library's main thread is wedged, this never
+ * sends — which is exactly what trips the watchdog into recovering.
+ */
+export function signalLibraryWindowReady(): void {
+  if (getRuntimeProcessRole() !== "library") return;
+  endpoint?.emitEvent(LIBRARY_WINDOW_READY_CHANNEL, {});
 }

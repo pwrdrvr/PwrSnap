@@ -17,6 +17,7 @@ import { getMainLogger } from "./log";
 import { attachRendererStartupProfiling } from "./startup-profiler";
 import { getRuntimeProcessRole } from "./process-role";
 import { activateForUserSurface } from "./process-split/activate-user-surface";
+import { signalLibraryWindowReady } from "./process-split/agent-bridge";
 import { showWindowWhenReady } from "./window-show";
 
 const log = getMainLogger("pwrsnap:window");
@@ -388,7 +389,12 @@ function instrumentLibraryLoadTiming(window: BrowserWindow): void {
   const id = window.id;
   wc.on("did-start-loading", () => log.info("library wc did-start-loading", { id, ms: ms() }));
   wc.on("dom-ready", () => log.info("library wc dom-ready", { id, ms: ms() }));
-  wc.once("did-finish-load", () => log.info("library wc did-finish-load", { id, ms: ms() }));
+  wc.once("did-finish-load", () => {
+    log.info("library wc did-finish-load", { id, ms: ms() });
+    // Cold-launch watchdog: tell the agent this window actually loaded
+    // so it disarms. No-op outside the library role.
+    signalLibraryWindowReady();
+  });
   // DIAG (cold-launch race): a load that never starts/finishes is the
   // split-mode black-window symptom — surface every failure mode.
   wc.on("did-fail-load", (_e, code, desc, url) =>

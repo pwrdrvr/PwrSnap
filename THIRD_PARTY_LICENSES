@@ -90,7 +90,7 @@ MIT
 - @pwrdrvr/codex-app-server-protocol@0.133.0 | https://github.com/pwrdrvr/codex-app-server-protocol
 - @pwrdrvr/codex-discovery@0.1.3 | https://github.com/pwrdrvr/agent-kit
 - @shutterstock/p-map-iterable@1.1.2 | https://github.com/shutterstock/p-map-iterable
-- @tanstack/react-virtual@3.13.24 | https://tanstack.com/virtual
+- @tanstack/react-virtual@3.13.24 | https://github.com/TanStack/virtual
 - @tanstack/virtual-core@3.14.0 | https://github.com/TanStack/virtual
 - accepts@2.0.0 | jshttp/accepts
 - aggregate-error@3.1.0 | sindresorhus/aggregate-error
@@ -190,8 +190,8 @@ MIT
 - pump@3.0.4 | https://github.com/mafintosh/pump
 - range-parser@1.2.1 | jshttp/range-parser
 - raw-body@3.0.2 | stream-utils/raw-body
-- react@19.2.7 | https://react.dev/
-- react-dom@19.2.7 | https://react.dev/
+- react@19.2.7 | https://github.com/facebook/react
+- react-dom@19.2.7 | https://github.com/facebook/react
 - readable-stream@3.6.2 | https://github.com/nodejs/readable-stream
 - require-from-string@2.0.2 | floatdrop/require-from-string
 - router@2.2.0 | pillarjs/router
@@ -624,6 +624,7 @@ SOFTWARE.
 
 Applies to:
 - @pwrdrvr/agent-acp@0.12.2 (MIT)
+- @pwrdrvr/agent-chat-react@0.1.3 (MIT)
 - @pwrdrvr/agent-client@0.6.1 (MIT)
 - @pwrdrvr/agent-core@0.2.0 (MIT)
 - @pwrdrvr/agent-transport@0.1.6 (MIT)
@@ -635,38 +636,6 @@ Representative file: @pwrdrvr/agent-acp@0.12.2/LICENSE
 MIT License
 
 Copyright (c) 2026 PwrDrvr LLC
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-@pwrdrvr/agent-chat-react@0.1.3 (MIT)
--------------------------------------
-
-Applies to:
-- @pwrdrvr/agent-chat-react@0.1.3 (MIT)
-
-Representative file: @pwrdrvr/agent-chat-react@0.1.3/package metadata
-
-The installed package does not include a separate license file. Its package metadata declares MIT.
-
-MIT License
-
-Copyright (c) @pwrdrvr/agent-chat-react
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -721,40 +690,9 @@ SOFTWARE.
 
 Applies to:
 - @tanstack/react-virtual@3.13.24 (MIT)
-
-Representative file: @tanstack/react-virtual@3.13.24/package metadata
-
-The installed package does not include a separate license file. Its package metadata declares MIT.
-
-MIT License
-
-Copyright (c) @tanstack/react-virtual
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-@tanstack/virtual-core@3.14.0 (MIT)
------------------------------------
-
-Applies to:
 - @tanstack/virtual-core@3.14.0 (MIT)
 
-Representative file: @tanstack/virtual-core@3.14.0/LICENSE
+Representative file: @tanstack/react-virtual@3.13.24/LICENSE
 
 MIT License
 
@@ -4245,46 +4183,14 @@ react@19.2.7 (MIT)
 
 Applies to:
 - react@19.2.7 (MIT)
-
-Representative file: react@19.2.7/package metadata
-
-The installed package does not include a separate license file. Its package metadata declares MIT.
-
-MIT License
-
-Copyright (c) react
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-react-dom@19.2.7 (MIT)
-----------------------
-
-Applies to:
 - react-dom@19.2.7 (MIT)
+- scheduler@0.27.0 (MIT)
 
-Representative file: react-dom@19.2.7/package metadata
-
-The installed package does not include a separate license file. Its package metadata declares MIT.
+Representative file: react@19.2.7/LICENSE
 
 MIT License
 
-Copyright (c) react-dom
+Copyright (c) Meta Platforms, Inc. and affiliates.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -4576,36 +4482,6 @@ No contributor can revoke this license.
 without any warranty or condition, and no contributor
 will be liable to anyone for any damages related to this
 software or this license, under any kind of legal claim.***
-
-scheduler@0.27.0 (MIT)
-----------------------
-
-Applies to:
-- scheduler@0.27.0 (MIT)
-
-Representative file: scheduler@0.27.0/LICENSE
-
-MIT License
-
-Copyright (c) Meta Platforms, Inc. and affiliates.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 
 send@1.2.1 (MIT)
 ----------------

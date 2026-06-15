@@ -10,6 +10,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import {
   __resetEditMenuBridgeForTests,
+  registerCaptureUndoFallback,
   registerEditorUndoRedo,
   useEditMenuBridge
 } from "../editMenuBridge";
@@ -20,6 +21,7 @@ import {
 let host: HTMLDivElement;
 let root: Root;
 let unregisterEditor: (() => void) | null = null;
+let unregisterFallback: (() => void) | null = null;
 /** channel → set of subscriber handlers, populated by the mocked
  *  `window.pwrsnapApi.on`. */
 const handlers = new Map<string, Set<(payload: unknown) => void>>();
@@ -39,8 +41,20 @@ function emit(channel: string, viaAccelerator?: boolean): void {
 function registerSpyEditor(editor: {
   undo: () => void;
   redo: () => void;
+  canUndo?: () => boolean;
+  canRedo?: () => boolean;
 }): void {
   unregisterEditor = registerEditorUndoRedo(editor);
+}
+
+/** Register a spy capture-level fallback, tracked for afterEach cleanup. */
+function registerSpyFallback(fallback: {
+  undo: () => void;
+  redo: () => void;
+  canUndo?: () => boolean;
+  canRedo?: () => boolean;
+}): void {
+  unregisterFallback = registerCaptureUndoFallback(fallback);
 }
 
 beforeEach(() => {
@@ -69,6 +83,8 @@ afterEach(() => {
   document.body.innerHTML = "";
   unregisterEditor?.();
   unregisterEditor = null;
+  unregisterFallback?.();
+  unregisterFallback = null;
 });
 
 function pressKey(init: KeyboardEventInit): KeyboardEvent {
@@ -209,6 +225,93 @@ describe("useEditMenuBridge — keyboard path", () => {
     expect(document.execCommand).not.toHaveBeenCalled();
     // Native Ctrl+Y (Windows/Linux redo, macOS yank) must survive.
     expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+describe("useEditMenuBridge — capture-level undo fallback", () => {
+  test("⌘Z restores the last-deleted capture when no editor is mounted (grid mode)", () => {
+    const undo = vi.fn();
+    registerSpyFallback({ undo, redo: vi.fn(), canUndo: () => true, canRedo: () => false });
+    mount();
+
+    pressKey({ key: "z", metaKey: true });
+
+    expect(undo).toHaveBeenCalledTimes(1);
+  });
+
+  test("⌘Z is a no-op when the fallback reports nothing to restore", () => {
+    const undo = vi.fn();
+    registerSpyFallback({ undo, redo: vi.fn(), canUndo: () => false, canRedo: () => false });
+    mount();
+
+    pressKey({ key: "z", metaKey: true });
+
+    expect(undo).not.toHaveBeenCalled();
+  });
+
+  test("editor undo wins while its stack has entries; fallback is untouched", () => {
+    const editorUndo = vi.fn();
+    const fallbackUndo = vi.fn();
+    registerSpyEditor({ undo: editorUndo, redo: vi.fn(), canUndo: () => true, canRedo: () => true });
+    registerSpyFallback({
+      undo: fallbackUndo,
+      redo: vi.fn(),
+      canUndo: () => true,
+      canRedo: () => false
+    });
+    mount();
+
+    pressKey({ key: "z", metaKey: true });
+
+    expect(editorUndo).toHaveBeenCalledTimes(1);
+    expect(fallbackUndo).not.toHaveBeenCalled();
+  });
+
+  test("⌘Z delegates to the capture fallback once the editor stack is empty", () => {
+    const editorUndo = vi.fn();
+    const fallbackUndo = vi.fn();
+    registerSpyEditor({ undo: editorUndo, redo: vi.fn(), canUndo: () => false, canRedo: () => false });
+    registerSpyFallback({
+      undo: fallbackUndo,
+      redo: vi.fn(),
+      canUndo: () => true,
+      canRedo: () => false
+    });
+    mount();
+
+    pressKey({ key: "z", metaKey: true });
+
+    expect(editorUndo).not.toHaveBeenCalled();
+    expect(fallbackUndo).toHaveBeenCalledTimes(1);
+  });
+
+  test("a focused text field still takes native undo over the capture fallback", () => {
+    const fallbackUndo = vi.fn();
+    registerSpyFallback({ undo: fallbackUndo, redo: vi.fn(), canUndo: () => true, canRedo: () => false });
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+    mount();
+
+    pressKey({ key: "z", metaKey: true });
+
+    expect(document.execCommand).toHaveBeenCalledWith("undo");
+    expect(fallbackUndo).not.toHaveBeenCalled();
+  });
+
+  test("⌘⇧Z does not re-delete via the fallback (redo is disabled)", () => {
+    const fallbackRedo = vi.fn();
+    registerSpyFallback({
+      undo: vi.fn(),
+      redo: fallbackRedo,
+      canUndo: () => true,
+      canRedo: () => false
+    });
+    mount();
+
+    pressKey({ key: "z", metaKey: true, shiftKey: true });
+
+    expect(fallbackRedo).not.toHaveBeenCalled();
   });
 });
 

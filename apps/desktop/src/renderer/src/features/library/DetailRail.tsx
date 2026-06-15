@@ -47,6 +47,7 @@ import { useVideoExportPresets } from "../shared/useVideoExportPresets";
 import { useVideoPresetMetrics } from "../shared/useVideoPresetMetrics";
 import { VideoExportPresetGrid } from "../shared/VideoExportPresetGrid";
 import { AppTag } from "../shared/AppIcons";
+import { DeleteConfirm } from "../shared/DeleteConfirm";
 import {
   RightActivityBar,
   type RightActivityTab
@@ -84,6 +85,11 @@ export type DetailRailProps = {
   /** Controlled active-tab — same shape as `pinned`. */
   readonly activeTab?: LibrarySidebarTab;
   readonly onActiveTabChange?: (next: LibrarySidebarTab) => void;
+  /** Soft-delete handler. Library routes this through its delete
+   *  coordinator (advance-to-next in Focus, arm the Undo toast + ⌘Z
+   *  restore). When omitted, the rail falls back to a bare `library:delete`
+   *  dispatch so it stays usable in isolation. */
+  readonly onTrash?: (id: string) => void;
 };
 
 export function DetailRail({
@@ -93,7 +99,8 @@ export function DetailRail({
   pinned: pinnedProp,
   onPinChange,
   activeTab: activeTabProp,
-  onActiveTabChange
+  onActiveTabChange,
+  onTrash
 }: DetailRailProps): ReactElement | null {
   // Skip the image render-metrics IPC for video captures — the
   // sharp-based preset pipeline is image-only and the video branch
@@ -740,25 +747,35 @@ export function DetailRail({
                   Editor
                 </button>
               )}
-              <button
-                type="button"
-                className="is-danger"
-                title="Move to Trash"
-                onClick={() => {
-                  void dispatch("library:delete", { id: record.id });
+              <DeleteConfirm
+                message="Move to Trash?"
+                detail="You can undo this."
+                placement="top"
+                onConfirm={() => {
+                  if (onTrash !== undefined) onTrash(record.id);
+                  else void dispatch("library:delete", { id: record.id });
                 }}
               >
-                <svg
-                  width="11"
-                  height="11"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                </svg>
-              </button>
+                {(trigger) => (
+                  <button
+                    type="button"
+                    className="is-danger"
+                    title="Move to Trash"
+                    {...trigger}
+                  >
+                    <svg
+                      width="11"
+                      height="11"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                    >
+                      <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                    </svg>
+                  </button>
+                )}
+              </DeleteConfirm>
             </>
           )}
         </div>

@@ -64,14 +64,35 @@ import { subscribe } from "./pwrsnap";
 export type EditorUndoRedoHandlers = {
   undo: () => void;
   redo: () => void;
+  /** Optional capability probes. When present and a probe returns `false`,
+   *  the bridge treats the editor stack as exhausted for that direction and
+   *  delegates to the capture-level fallback (see
+   *  `registerCaptureUndoFallback`) — so ⌘Z restores the last-deleted
+   *  capture once the canvas history is empty, or immediately on a freshly
+   *  opened image with nothing to undo. Omit to preserve the previous
+   *  "editor always handles" behavior. */
+  canUndo?: () => boolean;
+  canRedo?: () => boolean;
 };
 
-// Module-level singleton. Each BrowserWindow is its own renderer process
-// (separate JS realm), so this is effectively per-window — no cross-window
+/** Capture-level (library) undo fallback. Restores the most recently
+ *  trashed capture when no editor history is available to consume the
+ *  ⌘Z / Edit ▸ Undo. This is the grid-mode path (no editor mounted) AND
+ *  the focus-mode tail (editor mounted but its stack is empty). */
+export type CaptureUndoFallback = {
+  undo: () => void;
+  redo: () => void;
+  canUndo?: () => boolean;
+  canRedo?: () => boolean;
+};
+
+// Module-level singletons. Each BrowserWindow is its own renderer process
+// (separate JS realm), so these are effectively per-window — no cross-window
 // leakage. At most one editor is mounted per window, so a single slot is
 // sufficient; "last registration wins" + identity-checked cleanup keeps
 // remounts correct.
 let registeredEditor: EditorUndoRedoHandlers | null = null;
+let registeredCaptureFallback: CaptureUndoFallback | null = null;
 
 /**
  * Register the editor's undo/redo with the edit-menu bridge. Returns an
@@ -85,6 +106,22 @@ export function registerEditorUndoRedo(
   return () => {
     if (registeredEditor === handlers) {
       registeredEditor = null;
+    }
+  };
+}
+
+/**
+ * Register the capture-level undo fallback (library restore-last-deleted).
+ * Consulted only after the editor stack reports nothing to undo/redo (or no
+ * editor is registered). Returns an identity-checked unregister function.
+ */
+export function registerCaptureUndoFallback(
+  handlers: CaptureUndoFallback
+): () => void {
+  registeredCaptureFallback = handlers;
+  return () => {
+    if (registeredCaptureFallback === handlers) {
+      registeredCaptureFallback = null;
     }
   };
 }
@@ -115,6 +152,8 @@ const KEYBOARD_DEDUP_MS = 250;
 export function __resetEditMenuBridgeForTests(): void {
   lastKeyboardUndoAt = Number.NEGATIVE_INFINITY;
   lastKeyboardRedoAt = Number.NEGATIVE_INFINITY;
+  registeredEditor = null;
+  registeredCaptureFallback = null;
 }
 
 function performUndo(): void {
@@ -122,7 +161,15 @@ function performUndo(): void {
     document.execCommand("undo");
     return;
   }
-  registeredEditor?.undo();
+  // Editor history first; delegate to the capture fallback only once the
+  // editor reports nothing to undo (or no editor is mounted).
+  if (registeredEditor !== null && (registeredEditor.canUndo?.() ?? true)) {
+    registeredEditor.undo();
+    return;
+  }
+  if (registeredCaptureFallback?.canUndo?.() ?? registeredCaptureFallback !== null) {
+    registeredCaptureFallback?.undo();
+  }
 }
 
 function performRedo(): void {
@@ -130,7 +177,13 @@ function performRedo(): void {
     document.execCommand("redo");
     return;
   }
-  registeredEditor?.redo();
+  if (registeredEditor !== null && (registeredEditor.canRedo?.() ?? true)) {
+    registeredEditor.redo();
+    return;
+  }
+  if (registeredCaptureFallback?.canRedo?.() ?? registeredCaptureFallback !== null) {
+    registeredCaptureFallback?.redo();
+  }
 }
 
 /**

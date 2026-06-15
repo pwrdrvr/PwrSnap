@@ -5,7 +5,13 @@
 // This is what pulls the Documents consent prompt onto a clean screen
 // instead of under the screen-saver-level region selector.
 
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+
+// Mirror the impl's path construction so assertions are separator-correct
+// on every platform (path.join uses "\" on Windows).
+const ROOT = "/Users/test/Documents/PwrSnap";
+const PROBE = join(ROOT, ".pwrsnap-access-probe");
 
 const fsMock = vi.hoisted(() => ({
   mkdir: async (_p: string, _o: unknown): Promise<void> => undefined,
@@ -63,10 +69,10 @@ describe("ensureCapturesDirReady", () => {
     expect(result).toBeNull();
     // A REAL write is what forces the Documents prompt — mkdir alone is a
     // no-op on an existing dir.
-    expect(fsMock.calls).toContain("writeFile:/Users/test/Documents/PwrSnap/.pwrsnap-access-probe");
-    expect(fsMock.calls).toContain("mkdir:/Users/test/Documents/PwrSnap");
+    expect(fsMock.calls).toContain(`writeFile:${PROBE}`);
+    expect(fsMock.calls).toContain(`mkdir:${ROOT}`);
     // Probe is cleaned up.
-    expect(fsMock.calls).toContain("rm:/Users/test/Documents/PwrSnap/.pwrsnap-access-probe");
+    expect(fsMock.calls).toContain(`rm:${PROBE}`);
   });
 
   test("session cache: a second call does NOT re-probe", async () => {

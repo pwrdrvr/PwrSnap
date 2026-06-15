@@ -255,10 +255,36 @@ export function registerCaptureHandlers(): void {
       });
     }
 
-    // COMMIT path. From here on we own the screen snapshot — we MUST
-    // release it before returning. wrap the rest in try/finally so an
-    // error doesn't leak the temp file.
+    // COMMIT path. The user has selected AND committed — the selector has
+    // done its job. We tear it down COMPLETELY before attempting the file
+    // save, so a first-capture macOS Documents TCC prompt (triggered by
+    // the persist write) can never appear UNDER the screen-saver-level
+    // (1000) selector. Once the selector is gone the only PwrSnap window
+    // left is the float-over at floating level (3), which sits BELOW a
+    // system consent dialog — so the prompt is reachable.
+    //
+    // We own the screen snapshot now and MUST release it; the try/finally
+    // is a safety net (both teardown + release are idempotent).
     const { screenSnapshotId, screenSnapshotPath, previousAppPid } = selection;
+    let teardownDone = false;
+    const tearDownSelector = async (): Promise<void> => {
+      if (teardownDone) return;
+      teardownDone = true;
+      // Selector down first; then re-activate the previously-frontmost
+      // app. The float-over was pre-shown idle at floating level during
+      // pickRegion, so it stays above the re-activated app through the
+      // idle→loaded content swap — no post-hoc show race. activateApp is
+      // the obvious activation-policy demotion trigger, but the selector
+      // hide alone trips the same focus cascade when no previous app
+      // exists (Library-was-topmost), so reclaim unconditionally to keep
+      // the Library reachable via the Dock. (Full rationale on the cancel
+      // branch above.)
+      hideSelector();
+      if (previousAppPid !== null) {
+        await activateApp(previousAppPid);
+      }
+      reclaimDockIconIfLibraryAlive();
+    };
     try {
       // Two capture paths:
       //   • Full-window mode (user held ⇧ at commit time, or `mode`
@@ -286,6 +312,10 @@ export function registerCaptureHandlers(): void {
               selection.rect,
               selection.displayId
             );
+      // Snapshot pixels are now in `captureResult.tempPath` — release the
+      // frozen snapshot immediately (idempotent; finally re-calls as a
+      // safety net).
+      void releaseSnapshot(screenSnapshotId);
       // Source-app resolution is the same on both capture branches —
       // the choice of pixel-fetch path (full-window vs. cropped
       // snapshot) doesn't change WHO owned the window. Single shared
@@ -296,44 +326,45 @@ export function registerCaptureHandlers(): void {
         selection.snappedWindowId,
         snapshot
       );
+
       if (!captureResult.ok) {
+        // Crop/window grab failed before we even tried to save. Mirror the
+        // cancel choreography: park the pre-shown idle toast, flush, then
+        // drop the selector — so the empty placeholder never flashes.
+        setFloatOverState({ kind: "cancel" });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await tearDownSelector();
         return err({
           kind: "capture",
           code: captureResult.reason,
           message: captureResult.message
         });
       }
+
+      // We have the pixels. Tear the selector down NOW — BEFORE the save —
+      // so the file write (and any Documents TCC prompt it triggers) runs
+      // on a clean screen, never under the picker.
+      await tearDownSelector();
+
       const persisted = await persistAndBroadcast(captureResult.tempPath, sourceApp);
-      // ORDER MATTERS: populate the float-over BEFORE hiding the
-      // selector. The selector covers the float-over visually; once
-      // we hide it, the toast is already painted at floating level
-      // and instantly visible. No post-hoc show race.
       if (persisted.ok) {
+        // Selector is already gone; this swaps the idle float-over to the
+        // loaded preview in place (the window stays at floating level).
         setFloatOverState({
           kind: "show-loaded",
           captureId: persisted.value.id,
           record: persisted.value
         });
+      } else {
+        // Save failed (e.g. the user denied Documents access at the
+        // prompt). Park the idle toast rather than leaving it empty.
+        setFloatOverState({ kind: "cancel" });
       }
       return persisted;
     } finally {
-      // Selector goes away last. Then activate the previous app —
-      // toast is already established at floating level so it stays
-      // on top of the previously-frontmost app's windows.
-      hideSelector();
+      // Safety net for an unexpected throw before the explicit teardown.
       void releaseSnapshot(screenSnapshotId);
-      if (previousAppPid !== null) {
-        await activateApp(previousAppPid);
-      }
-      // See cancel branch above for the full rationale. activateApp
-      // is the most obvious demotion trigger (deactivates PwrSnap;
-      // with our floating-level panels in the window list AppKit
-      // demotes us to Accessory) but the selector hide alone is
-      // enough to trip the same focus-cascade side-effect when no
-      // previous app exists (Library-was-topmost case). Reclaim
-      // unconditionally so the Library stays reachable via the
-      // Dock either way.
-      reclaimDockIconIfLibraryAlive();
+      await tearDownSelector();
     }
   });
 

@@ -173,3 +173,17 @@ root, which forces the prompt exactly like the persist would. Cached
 per-session (probe once, not per capture). If you ever see this prompt
 under the selector again, verify the pre-warm does a real *write*, not a
 stat/mkdir.
+
+**Structural backstop (the real fix): defer the save until the selector
+is gone.** The pre-warm makes the prompt happen up front, but the deeper
+correctness rule is that the file save must NEVER run while the picker is
+on screen. `capture:interactive`'s commit path now tears the selector
+down *completely* — `hideSelector()` + re-activate previous app +
+`reclaimDockIconIfLibraryAlive()` — BEFORE calling `persistAndBroadcast`.
+After teardown the only PwrSnap window left is the float-over at floating
+level (3), which sits *below* a system consent dialog, so even if a prompt
+fires at persist time it's reachable. The float-over was pre-shown idle
+under the selector, so the reveal shows that idle placeholder for the
+(now fast, post-pre-warm) persist window, then swaps to the loaded preview
+in place. Don't reorder persist before `hideSelector` again — that's the
+original bug.

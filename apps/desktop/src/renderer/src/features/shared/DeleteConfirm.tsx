@@ -49,6 +49,13 @@ export type DeleteConfirmProps = {
   readonly confirmLabel?: string;
   readonly cancelLabel?: string;
   readonly placement?: DeleteConfirmPlacement;
+  /** When false, the trigger skips the popover and fires `onConfirm`
+   *  immediately (the user opted out via "Don't ask again"). Defaults to
+   *  true. The trigger still stops propagation either way. */
+  readonly enabled?: boolean;
+  /** When provided, the popover shows a "Don't ask again" checkbox; ticking
+   *  it and confirming calls this (persist the opt-out) before `onConfirm`. */
+  readonly onDontAskAgain?: () => void;
   /** Run when the user confirms. The popover closes first, then this fires. */
   readonly onConfirm: () => void;
   /** Render the trigger button. Spread the supplied props onto it; the
@@ -68,11 +75,14 @@ export function DeleteConfirm({
   confirmLabel = "Delete",
   cancelLabel = "Cancel",
   placement = "left",
+  enabled = true,
+  onDontAskAgain,
   onConfirm,
   children
 }: DeleteConfirmProps): ReactElement {
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState<Coords | null>(null);
+  const [dontAsk, setDontAsk] = useState(false);
   const anchorRef = useRef<HTMLElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const confirmBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -80,6 +90,7 @@ export function DeleteConfirm({
   const close = useCallback(() => {
     setOpen(false);
     setCoords(null);
+    setDontAsk(false);
     anchorRef.current = null;
   }, []);
 
@@ -89,10 +100,15 @@ export function DeleteConfirm({
       // would open Focus on the very capture we're about to trash).
       event.preventDefault();
       event.stopPropagation();
+      // Opted out of confirmation — delete straight away (still undoable).
+      if (!enabled) {
+        onConfirm();
+        return;
+      }
       anchorRef.current = event.currentTarget as HTMLElement;
       setOpen((prev) => !prev);
     },
-    []
+    [enabled, onConfirm]
   );
 
   // Position against the anchor once the popover has measurable dimensions.
@@ -126,7 +142,9 @@ export function DeleteConfirm({
   // Focus the confirm button when the popover opens (keyboard-friendly,
   // and an Enter immediately confirms).
   useEffect(() => {
-    if (open && coords !== null) confirmBtnRef.current?.focus();
+    // preventScroll so focusing never nudges a scroller — the close-on-scroll
+    // listener below would otherwise dismiss the popover the instant it opens.
+    if (open && coords !== null) confirmBtnRef.current?.focus({ preventScroll: true });
   }, [open, coords]);
 
   // Dismiss on outside pointer-down, Escape, scroll, or window resize. The
@@ -162,10 +180,11 @@ export function DeleteConfirm({
     (event: ReactMouseEvent) => {
       event.preventDefault();
       event.stopPropagation();
+      if (dontAsk && onDontAskAgain !== undefined) onDontAskAgain();
       close();
       onConfirm();
     },
-    [close, onConfirm]
+    [dontAsk, onDontAskAgain, close, onConfirm]
   );
 
   const cancel = useCallback(
@@ -201,6 +220,16 @@ export function DeleteConfirm({
           >
             <div className="ps-confirm__msg">{message}</div>
             {detail !== undefined && <div className="ps-confirm__detail">{detail}</div>}
+            {onDontAskAgain !== undefined && (
+              <label className="ps-confirm__dont-ask">
+                <input
+                  type="checkbox"
+                  checked={dontAsk}
+                  onChange={(e) => setDontAsk(e.target.checked)}
+                />
+                <span>Don&rsquo;t ask again</span>
+              </label>
+            )}
             <div className="ps-confirm__actions">
               <button type="button" className="ps-confirm__btn" onClick={cancel}>
                 {cancelLabel}

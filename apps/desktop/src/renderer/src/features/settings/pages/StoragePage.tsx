@@ -1,6 +1,6 @@
 import type { ReactElement } from "react";
 import type { FilenameTimestampZone } from "@pwrsnap/shared";
-import { Card, Row, SegmentedControl, type SegmentOption } from "../components";
+import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
 import { formatBytes } from "../../../lib/format-bytes";
 import { useStorageSnapshot } from "../../../lib/useStorageSnapshot";
 import { useSettingsContext } from "../SettingsContext";
@@ -33,12 +33,19 @@ export function StoragePage(): ReactElement {
   const timestampZone: FilenameTimestampZone =
     settings?.storage.filenameTimestampZone ?? "local";
   const ready = settings !== null;
+  const confirmBeforeTrash = settings?.library.confirmBeforeTrash ?? true;
 
   const onTimestampZoneChange = ready
     ? (next: FilenameTimestampZone): void => {
         void patch({ storage: { filenameTimestampZone: next } });
       }
     : (): void => {};
+
+  const onConfirmBeforeTrashChange = ready
+    ? (next: boolean): void => {
+        void patch({ library: { confirmBeforeTrash: next } });
+      }
+    : undefined;
 
   return (
     <>
@@ -176,6 +183,16 @@ export function StoragePage(): ReactElement {
             value={timestampZone}
             onChange={onTimestampZoneChange}
           />
+        </Row>
+      </Card>
+
+      <Card eyebrow="DELETING" title="Move to Trash">
+        <Row
+          label="Confirm before moving to Trash"
+          sub="Show a quick confirmation next to the delete button. Turn off (or untick “Don’t ask again” in the popover) to delete in one click — moves are still recoverable from the Undo toast, ⌘Z, and the Trash view."
+          tag={confirmBeforeTrash ? "on" : "off"}
+        >
+          <Switch on={confirmBeforeTrash} onChange={onConfirmBeforeTrashChange} />
         </Row>
       </Card>
     </>

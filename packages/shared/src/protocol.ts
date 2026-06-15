@@ -1908,6 +1908,12 @@ export type LibrarySidebarSettings = {
 
 export type LibrarySettings = {
   detailRail: LibrarySidebarSettings;
+  /** When true (default), moving a capture to Trash pops a small confirm
+   *  popover next to the delete button. Users can untick "Don't ask again"
+   *  in that popover to set this false — deletes then go straight to Trash
+   *  (still recoverable via the Undo toast / ⌘Z and the Trash view). Re-
+   *  enable from Settings → Storage & retention. */
+  confirmBeforeTrash: boolean;
 };
 
 // ---- Chat substrate types (Library Chat — Phase 0) ---------------------
@@ -2091,6 +2097,7 @@ export type SettingsPatch = {
    *  surfaces over time. */
   library?: {
     detailRail?: Partial<LibrarySidebarSettings>;
+    confirmBeforeTrash?: boolean;
   };
 };
 

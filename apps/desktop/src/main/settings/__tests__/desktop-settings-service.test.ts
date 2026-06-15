@@ -865,3 +865,49 @@ describe("DesktopSettingsService.library.detailRail", () => {
     expect(written.library.detailRail.lastSelectedTab).toBe("chat");
   });
 });
+
+describe("DesktopSettingsService.library.confirmBeforeTrash", () => {
+  test("defaults to true when absent on disk", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        library: { detailRail: { pinned: true, lastSelectedTab: "info" } }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.library.confirmBeforeTrash).toBe(true);
+  });
+
+  test("a malformed detailRail still preserves confirmBeforeTrash", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        library: { detailRail: 42, confirmBeforeTrash: false }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.library.confirmBeforeTrash).toBe(false);
+    // detailRail fell back to the default.
+    expect(settings.library.detailRail.pinned).toBe(true);
+  });
+
+  test("write({ library: { confirmBeforeTrash: false } }) round-trips without stomping detailRail", async () => {
+    const svc = makeService();
+    await svc.write({ library: { detailRail: { lastSelectedTab: "chat" } } });
+    const written = await svc.write({
+      library: { confirmBeforeTrash: false }
+    });
+    expect(written.library.confirmBeforeTrash).toBe(false);
+    expect(written.library.detailRail.lastSelectedTab).toBe("chat");
+    const reread = await svc.read();
+    expect(reread.library.confirmBeforeTrash).toBe(false);
+  });
+});

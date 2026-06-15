@@ -33,19 +33,31 @@ afterEach(async () => {
   document.body.innerHTML = "";
 });
 
-async function renderConfirm(): Promise<{
+async function renderConfirm(opts?: {
+  enabled?: boolean;
+  withDontAsk?: boolean;
+}): Promise<{
   onConfirm: ReturnType<typeof vi.fn<() => void>>;
   onParentClick: ReturnType<typeof vi.fn<() => void>>;
+  onDontAskAgain: ReturnType<typeof vi.fn<() => void>>;
 }> {
   const onConfirm = vi.fn<() => void>();
   const onParentClick = vi.fn<() => void>();
+  const onDontAskAgain = vi.fn<() => void>();
+  const enabled = opts?.enabled ?? true;
+  const withDontAsk = opts?.withDontAsk ?? false;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => {
     root?.render(
       <div onClick={onParentClick}>
-        <DeleteConfirm message="Move to Trash?" onConfirm={onConfirm}>
+        <DeleteConfirm
+          message="Move to Trash?"
+          enabled={enabled}
+          onConfirm={onConfirm}
+          {...(withDontAsk ? { onDontAskAgain } : {})}
+        >
           {(trig) => (
             <button type="button" data-testid="trash-trigger" {...trig}>
               trash
@@ -56,7 +68,7 @@ async function renderConfirm(): Promise<{
     );
     await Promise.resolve();
   });
-  return { onConfirm, onParentClick };
+  return { onConfirm, onParentClick, onDontAskAgain };
 }
 
 function trigger(): HTMLButtonElement {
@@ -148,5 +160,55 @@ describe("DeleteConfirm", () => {
     });
     expect(onConfirm).not.toHaveBeenCalled();
     expect(popover()).toBeNull();
+  });
+
+  test("enabled=false skips the popover and confirms immediately (still no bubble)", async () => {
+    const { onConfirm, onParentClick } = await renderConfirm({ enabled: false });
+    await clickTrigger();
+    expect(popover()).toBeNull();
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(onParentClick).not.toHaveBeenCalled();
+  });
+
+  test("no 'Don't ask again' checkbox unless onDontAskAgain is provided", async () => {
+    await renderConfirm();
+    await clickTrigger();
+    expect(popover()?.querySelector(".ps-confirm__dont-ask")).toBeNull();
+  });
+
+  test("ticking 'Don't ask again' then confirming calls onDontAskAgain before onConfirm", async () => {
+    const { onConfirm, onDontAskAgain } = await renderConfirm({ withDontAsk: true });
+    await clickTrigger();
+    const checkbox = popover()?.querySelector<HTMLInputElement>(
+      ".ps-confirm__dont-ask input"
+    );
+    expect(checkbox).not.toBeNull();
+    await act(async () => {
+      checkbox!.click();
+      await Promise.resolve();
+    });
+    const confirmBtn = popover()?.querySelector<HTMLButtonElement>(
+      ".ps-confirm__btn.is-danger"
+    );
+    await act(async () => {
+      confirmBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(onDontAskAgain).toHaveBeenCalledTimes(1);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  test("confirming WITHOUT ticking the box does not call onDontAskAgain", async () => {
+    const { onConfirm, onDontAskAgain } = await renderConfirm({ withDontAsk: true });
+    await clickTrigger();
+    const confirmBtn = popover()?.querySelector<HTMLButtonElement>(
+      ".ps-confirm__btn.is-danger"
+    );
+    await act(async () => {
+      confirmBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(onDontAskAgain).not.toHaveBeenCalled();
   });
 });

@@ -40,6 +40,7 @@ import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
 import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
+import { nextAfterDelete } from "./delete-nav";
 import { mergeOpenedLiveRecords } from "./library-records";
 import { initialLibraryView, libraryReducer, type LibraryAction, type LibraryView } from "./library-view";
 import { Stage } from "./Stage";
@@ -585,6 +586,17 @@ export function Library() {
   lastDeletedRef.current = lastDeleted;
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // "Confirm before moving to Trash" preference (Settings →
+  // library.confirmBeforeTrash). Seeded from settings:read + kept live via
+  // the settings broadcast below; the DeleteConfirm popover's "Don't ask
+  // again" flips it off (deletes then go straight to Trash, still recoverable
+  // via the Undo toast / ⌘Z). Default true until the read resolves.
+  const [confirmBeforeTrash, setConfirmBeforeTrash] = useState<boolean>(true);
+  const suppressTrashConfirm = useCallback(() => {
+    setConfirmBeforeTrash(false); // optimistic; broadcast confirms
+    void dispatch("settings:write", { library: { confirmBeforeTrash: false } });
+  }, []);
+
   const clearLastDeleted = useCallback(() => {
     if (undoTimerRef.current !== null) {
       clearTimeout(undoTimerRef.current);
@@ -739,6 +751,9 @@ export function Library() {
           setRightActiveTabState(rail.lastSelectedTab);
         }
       }
+      if (result.ok) {
+        setConfirmBeforeTrash(result.value.library.confirmBeforeTrash);
+      }
       if (result.ok && !userTouchedAiRef.current) {
         applyAiSettings(result.value);
       }
@@ -756,6 +771,7 @@ export function Library() {
     const unsubscribe = subscribe(EVENT_CHANNELS.settingsChanged, (payload) => {
       const evt = payload as SettingsChangedEvent;
       applyAiSettings(evt.settings);
+      setConfirmBeforeTrash(evt.settings.library.confirmBeforeTrash);
       void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
         if (result.ok) setCodexAvailable(codexAvailableInSnapshot(result.value));
       });
@@ -2319,17 +2335,13 @@ export function Library() {
    * button) routes here, all gated behind the DeleteConfirm popover.
    */
   function deleteCaptureById(recordId: string): void {
-    if (
-      (view.kind === "focus" || view.kind === "reel") &&
-      view.selectedRecordId === recordId
-    ) {
-      const target = nextRecordIdRef.current ?? prevRecordIdRef.current;
-      if (target !== null && target !== recordId) {
-        viewDispatch({ type: "NAVIGATE", recordId: target });
-      } else if (view.kind === "focus") {
-        viewDispatch({ type: "CLOSE_FOCUS" });
-      }
-    }
+    const nav = nextAfterDelete({
+      viewKind: view.kind,
+      selectedRecordId: view.selectedRecordId,
+      deletedId: recordId,
+      visibleIds: visibleRecords.map((r) => r.id)
+    });
+    if (nav !== null) viewDispatch(nav);
     void dispatch("library:delete", { id: recordId });
     if (undoTimerRef.current !== null) clearTimeout(undoTimerRef.current);
     setLastDeleted({ id: recordId });
@@ -2990,6 +3002,8 @@ export function Library() {
             loadMore={loadMore}
             isTrashView={isTrashView}
             trashCapture={trashCapture}
+            confirmBeforeTrash={confirmBeforeTrash}
+            onDontAskAgainTrash={suppressTrashConfirm}
             restoreCaptureAction={restoreCaptureAction}
             purgeCaptureAction={purgeCaptureAction}
           />
@@ -3152,6 +3166,8 @@ export function Library() {
                                         message="Move to Trash?"
                                         detail="You can undo this."
                                         placement="left"
+                                        enabled={confirmBeforeTrash}
+                                        onDontAskAgain={suppressTrashConfirm}
                                         onConfirm={() => trashCapture(c.id)}
                                       >
                                         {(trigger) => (
@@ -3198,6 +3214,8 @@ export function Library() {
         activeTab={rightActiveTab}
         onActiveTabChange={setRightActiveTab}
         onTrash={deleteCaptureById}
+        confirmBeforeTrash={confirmBeforeTrash}
+        onDontAskAgainTrash={suppressTrashConfirm}
       />
 
       {/* Capture soft-delete Undo toast — lower-left, in the shared
@@ -3432,6 +3450,8 @@ type VirtualizedGridProps = {
   loadMore: () => Promise<void>;
   isTrashView: boolean;
   trashCapture: TrashAction;
+  confirmBeforeTrash: boolean;
+  onDontAskAgainTrash: () => void;
   restoreCaptureAction: CellAction;
   purgeCaptureAction: CellAction;
 };
@@ -3556,6 +3576,8 @@ function VirtualizedGrid({
   loadMore,
   isTrashView,
   trashCapture,
+  confirmBeforeTrash,
+  onDontAskAgainTrash,
   restoreCaptureAction,
   purgeCaptureAction
 }: VirtualizedGridProps) {
@@ -3743,6 +3765,8 @@ function VirtualizedGrid({
                 preloadFullRes={preloadFullRes}
                 isTrashView={isTrashView}
                 trashCapture={trashCapture}
+                confirmBeforeTrash={confirmBeforeTrash}
+                onDontAskAgainTrash={onDontAskAgainTrash}
                 restoreCaptureAction={restoreCaptureAction}
                 purgeCaptureAction={purgeCaptureAction}
               />
@@ -3783,6 +3807,8 @@ function CellRow({
   preloadFullRes,
   isTrashView,
   trashCapture,
+  confirmBeforeTrash,
+  onDontAskAgainTrash,
   restoreCaptureAction,
   purgeCaptureAction
 }: {
@@ -3803,6 +3829,8 @@ function CellRow({
   preloadFullRes: (record: CaptureRecord | null) => void;
   isTrashView: boolean;
   trashCapture: TrashAction;
+  confirmBeforeTrash: boolean;
+  onDontAskAgainTrash: () => void;
   restoreCaptureAction: CellAction;
   purgeCaptureAction: CellAction;
 }) {
@@ -3930,6 +3958,8 @@ function CellRow({
                     message="Move to Trash?"
                     detail="You can undo this."
                     placement="left"
+                    enabled={confirmBeforeTrash}
+                    onDontAskAgain={onDontAskAgainTrash}
                     onConfirm={() => trashCapture(c.id)}
                   >
                     {(trigger) => (

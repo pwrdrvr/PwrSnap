@@ -40,6 +40,22 @@
   font: 500 11px/1.35 var(--font-sans);
 }
 
+.ps-confirm__dont-ask {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
+  color: var(--text-muted);
+  font: 500 11px/1.2 var(--font-sans);
+  cursor: pointer;
+  user-select: none;
+}
+.ps-confirm__dont-ask input {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .ps-confirm__actions {
   display: flex;
   justify-content: flex-end;

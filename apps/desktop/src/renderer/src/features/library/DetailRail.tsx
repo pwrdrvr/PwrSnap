@@ -90,6 +90,12 @@ export type DetailRailProps = {
    *  restore). When omitted, the rail falls back to a bare `library:delete`
    *  dispatch so it stays usable in isolation. */
   readonly onTrash?: (id: string) => void;
+  /** When false, the Move-to-Trash button skips its confirm popover and
+   *  deletes immediately (still recoverable via Undo). Defaults to true. */
+  readonly confirmBeforeTrash?: boolean;
+  /** Flip `library.confirmBeforeTrash` off — wired to the popover's
+   *  "Don't ask again". */
+  readonly onDontAskAgainTrash?: () => void;
 };
 
 export function DetailRail({
@@ -100,7 +106,9 @@ export function DetailRail({
   onPinChange,
   activeTab: activeTabProp,
   onActiveTabChange,
-  onTrash
+  onTrash,
+  confirmBeforeTrash = true,
+  onDontAskAgainTrash
 }: DetailRailProps): ReactElement | null {
   // Skip the image render-metrics IPC for video captures — the
   // sharp-based preset pipeline is image-only and the video branch
@@ -751,6 +759,10 @@ export function DetailRail({
                 message="Move to Trash?"
                 detail="You can undo this."
                 placement="top"
+                enabled={confirmBeforeTrash}
+                {...(onDontAskAgainTrash !== undefined
+                  ? { onDontAskAgain: onDontAskAgainTrash }
+                  : {})}
                 onConfirm={() => {
                   if (onTrash !== undefined) onTrash(record.id);
                   else void dispatch("library:delete", { id: record.id });

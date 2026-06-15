@@ -59,17 +59,25 @@ function waitForSnapshotPainted(screenUrl: string, timeoutMs: number): Promise<v
     pendingPaintWait = null;
     stale.resolve();
   }
+  const startedAt = Date.now();
   return new Promise<void>((resolve) => {
     let settled = false;
-    const finish = (): void => {
+    // `via` distinguishes the renderer's paint ack (the standby selector
+    // decoded + painted the frozen screenshot) from the safety-net
+    // timeout (renderer too cold/slow to ack in time → we reveal anyway,
+    // and the actual pixels land later). A long-idle standby that paints
+    // slowly shows up here as a high `ms` (or a "timeout") — the direct
+    // readout of the cold-renderer hotkey latency.
+    const finish = (via: "ack" | "timeout"): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (pendingPaintWait?.resolve === settleResolve) pendingPaintWait = null;
+      log.info("snapshot paint wait settled", { via, ms: Date.now() - startedAt });
       resolve();
     };
-    const settleResolve = finish;
-    const timer = setTimeout(finish, timeoutMs);
+    const settleResolve = (): void => finish("ack");
+    const timer = setTimeout(() => finish("timeout"), timeoutMs);
     pendingPaintWait = { screenUrl, resolve: settleResolve };
   });
 }

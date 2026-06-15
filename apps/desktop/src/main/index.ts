@@ -1315,6 +1315,23 @@ export function bootstrapApp(): void {
   }
   app.commandLine.appendSwitch("disk-cache-size", String(CHROMIUM_DISK_CACHE_LIMIT_BYTES));
 
+  // Keep hidden renderers responsive — specifically the pre-warmed
+  // standby capture selector. After a long idle (~1h) its renderer goes
+  // cold and takes ~150ms (vs ~14ms warm) to decode+paint the frozen
+  // screenshot when ⌘⇧C fires, and that paint GATES the picker's
+  // appearance (see waitForSnapshotPainted in capture/region-selector.ts).
+  // The per-window `backgroundThrottling: false` handles timer
+  // throttling, but Chromium still DEPRIORITIZES / treats-as-occluded a
+  // hidden renderer at the process level — these switches stop that, so
+  // the standby stays warm and the first capture after an idle period is
+  // as fast as a warm one. Only the process that owns the selector needs
+  // it (agent / combined). macOS-first — that's where the cold-standby
+  // penalty was measured; harmless elsewhere.
+  if (role !== "library") {
+    app.commandLine.appendSwitch("disable-renderer-backgrounding");
+    app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+  }
+
   // open-file MUST be registered before the single-instance lock and
   // before `app.whenReady()` resolves. macOS can fire it during cold
   // start with the path the user double-clicked in Finder. If this

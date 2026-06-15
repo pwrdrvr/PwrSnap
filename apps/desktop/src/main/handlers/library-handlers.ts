@@ -454,7 +454,9 @@ export function registerLibraryWindowHandlers(): void {
     // create one. Dock-icon show/hide is owned by the window's
     // `ready-to-show` / `closed` handlers — see createMainWindow in
     // ../window.ts.
+    log.info("library:focus handler: begin"); // DIAG (cold-launch race)
     bringLibraryForward();
+    log.info("library:focus handler: done"); // DIAG (cold-launch race)
     return ok(undefined);
   });
 

@@ -119,8 +119,17 @@ export async function dispatchToLibraryProcess(
   }
   const ep = ensureLibraryProcess();
   const ready = await ep.waitForPeer(LIBRARY_READY_TIMEOUT_MS);
+  // DIAG (cold-launch race): brackets the agent→library round trip so a
+  // hang shows up as "sent, never returned" vs "peer never ready".
+  log.info("dispatchToLibraryProcess: peer ready", { name, ok: ready.ok });
   if (!ready.ok) return ready;
-  return ep.dispatchRemote(name, req);
+  const result = await ep.dispatchRemote(name, req);
+  log.info("dispatchToLibraryProcess: remote returned", {
+    name,
+    ok: result.ok,
+    code: result.ok ? undefined : result.error.code
+  });
+  return result;
 }
 
 /** Renderer-event relay toward the library. Deliberately does NOT

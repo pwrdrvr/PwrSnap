@@ -30,6 +30,7 @@ export function connectAgentBridge(): boolean {
     log.warn("no parent IPC pipe — library running standalone, agent commands unavailable");
     return false;
   }
+  log.info("connectAgentBridge: attaching to parent pipe");
   const channel = channelForParentProcess();
   pipeAlive = true;
   // Orphan guard: a clean agent quit kills this process explicitly, so
@@ -52,8 +53,15 @@ export function connectAgentBridge(): boolean {
   endpoint = new BridgeEndpoint({
     role: "library",
     channel,
-    dispatchLocal: (name, req) =>
-      bus.dispatch(name as never, req as never, { principal: "bridge" }),
+    dispatchLocal: (name, req) => {
+      // DIAG (cold-launch race): proves a bridge request (e.g.
+      // library:focus) actually reached the library, and brackets the
+      // synchronous dispatch so a stall inside it is attributable.
+      log.info("bridge dispatchLocal: begin", { name });
+      const result = bus.dispatch(name as never, req as never, { principal: "bridge" });
+      void result.finally(() => log.info("bridge dispatchLocal: settled", { name }));
+      return result;
+    },
     onRemoteEvent: (channel_, payload) => {
       broadcastRendererEventToLocalWindows(channel_, payload);
       deliverRelayedRendererEventToMain(channel_, payload);

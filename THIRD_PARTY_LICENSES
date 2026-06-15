@@ -190,8 +190,8 @@ MIT
 - pump@3.0.4 | https://github.com/mafintosh/pump
 - range-parser@1.2.1 | jshttp/range-parser
 - raw-body@3.0.2 | stream-utils/raw-body
-- react@19.2.6 | https://github.com/facebook/react
-- react-dom@19.2.6 | https://github.com/facebook/react
+- react@19.2.7 | https://github.com/facebook/react
+- react-dom@19.2.7 | https://github.com/facebook/react
 - readable-stream@3.6.2 | https://github.com/nodejs/readable-stream
 - require-from-string@2.0.2 | floatdrop/require-from-string
 - router@2.2.0 | pillarjs/router
@@ -4178,15 +4178,15 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-react@19.2.6 (MIT)
+react@19.2.7 (MIT)
 ------------------
 
 Applies to:
-- react@19.2.6 (MIT)
-- react-dom@19.2.6 (MIT)
+- react@19.2.7 (MIT)
+- react-dom@19.2.7 (MIT)
 - scheduler@0.27.0 (MIT)
 
-Representative file: react@19.2.6/LICENSE
+Representative file: react@19.2.7/LICENSE
 
 MIT License
 

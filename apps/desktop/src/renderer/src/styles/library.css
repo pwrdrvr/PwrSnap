@@ -1367,40 +1367,92 @@
 /* The chip has no onClick — pass clicks through to the cell underneath
    so the rounded corners aren't dead zones for selection. */
 .psl__cell-app-overlay > .ps-app-tag { pointer-events: none; }
-/* Hover-only trash affordance on grid cells. Hidden by default, fades
-   in on cell hover. Sits in the bottom-right corner — opposite the
-   bottom-left app dot, balanced. stopPropagation in the click handler
-   prevents the parent cell's onClick from also firing (which would
-   open Focus on a record about to disappear). */
-.psl__cell-trash {
+/* Center play button — the primary, at-a-glance "this is a video" cue
+   (a duration chip alone is too easy to miss). Translucent so it never
+   fights the frame; fades out on hover (opacity driven inline from the
+   hovering state) because hovering starts the silent preview playing,
+   so the affordance steps aside. pointer-events:none keeps clicks on
+   the cell. */
+.psl__cell-play {
+  position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px;
+  border-radius: 999px;
+  /* Dark scrim + white glyph in BOTH themes — this sits over arbitrary
+     video frames, so it derives from --shadow-base / --media-scrim-text
+     (theme-stable) rather than --bg-app (which flips to white in light
+     theme and would vanish). */
+  background: color-mix(in srgb, var(--shadow-base) 46%, transparent);
+  border: 1px solid color-mix(in srgb, var(--media-scrim-text) 22%, transparent);
+  color: var(--media-scrim-text);
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--shadow-base) 50%, transparent);
+  opacity: 1;
+  pointer-events: none;
+  transition: opacity 140ms var(--ease-out);
+}
+.psl__cell:hover .psl__cell-play { opacity: 0; }
+/* Optical-center the triangle — it reads left-heavy when geometrically
+   centered. */
+.psl__cell-play svg { margin-left: 2px; }
+
+/* Bottom-right rail — a flex cluster pinned to the cell's corner. The
+   video duration chip (when present) is the left item and stays visible
+   at rest; the hover-revealed action buttons collapse to zero width when
+   idle and expand on hover. Right-anchored with no width means the
+   cluster grows LEFTWARD, so a button slides in beside the duration and
+   pushes it left rather than landing on top of it. pointer-events:none
+   lets clicks on the chip / empty rail fall through to the cell for
+   selection; the buttons re-enable their own. */
+.psl__cell-rail {
   position: absolute; bottom: 5px; right: 5px;
+  display: flex; align-items: center;
+  pointer-events: none;
+}
+/* Duration chip — mirrors the .psl__cell-time pill in the opposite
+   corner so the two read as a matched set. */
+.psl__cell-duration {
+  font: 600 9px/1 var(--font-mono);
+  background: color-mix(in srgb, var(--bg-app) 85%, transparent);
+  color: var(--text-secondary);
+  padding: 2px 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+/* Hover-only action affordance inside the rail (trash / restore / purge
+   / duplicate). Hidden + zero-width by default; expands on cell hover so
+   it slides in from the right edge. stopPropagation in the click handler
+   prevents the parent cell's onClick from also firing (which would open
+   Focus on a record about to disappear). */
+.psl__cell-trash {
+  flex: 0 0 auto;
   display: flex; align-items: center; justify-content: center;
   width: 22px; height: 22px;
+  max-width: 0;
+  margin-left: 0;
   border-radius: 5px;
   background: color-mix(in srgb, var(--bg-app) 78%, transparent);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid transparent;
   color: var(--text-secondary);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 100ms var(--ease-out), background 100ms var(--ease-out), color 100ms var(--ease-out);
+  overflow: hidden;
+  pointer-events: auto;
+  transition: max-width 130ms var(--ease-out), margin-left 130ms var(--ease-out),
+    opacity 100ms var(--ease-out), background 100ms var(--ease-out),
+    color 100ms var(--ease-out), border-color 100ms var(--ease-out);
 }
 .psl__cell:hover .psl__cell-trash,
-.psl__cell-trash:focus-visible { opacity: 1; }
+.psl__cell-trash:focus-visible {
+  max-width: 22px;
+  margin-left: 4px;
+  border-color: var(--border-subtle);
+  opacity: 1;
+}
 .psl__cell-trash:hover {
   background: var(--danger-soft);
   color: var(--danger-text, var(--danger-text));
-}
-/* In-trash hover affordance: pair of icons (Restore + Permanent
-   Delete). Sits in the same bottom-right slot as the single soft-
-   delete icon. The group inherits the cell-hover reveal — the
-   buttons inside drop their own absolute positioning since the
-   `<span>` wrapper handles placement. */
-.psl__cell-actions {
-  position: absolute; bottom: 5px; right: 5px;
-  display: inline-flex; gap: 4px;
-}
-.psl__cell-actions .psl__cell-trash {
-  position: static;     /* container places us; reset the per-icon abs */
 }
 /* Restore icon: positive accent on hover (the safe action). */
 .psl__cell-trash--restore:hover {

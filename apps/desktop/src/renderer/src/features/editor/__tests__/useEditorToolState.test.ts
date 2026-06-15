@@ -91,7 +91,8 @@ function makeSettings(overrides?: {
     recording: {
       includeSystemAudio: false,
       includeMicrophone: false,
-      lastRoutedPermissionFingerprint: ""
+      lastRoutedPermissionFingerprint: "",
+      screenCapturePrompted: false
     },
     editor: {
       toolStyles: {

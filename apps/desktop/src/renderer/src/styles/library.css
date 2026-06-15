@@ -2319,6 +2319,32 @@
 }
 .psl__chip-btn--accent { background: var(--accent); border-color: var(--accent); color: var(--button-text-on-accent); }
 .psl__chip-btn--accent:hover { background: var(--accent-strong); color: var(--button-text-on-accent); }
+/* "Breathe" the accent Quick Capture button while the Library is empty —
+   a calm, expanding accent glow (+ a hair of scale) that pulls a first-
+   run user's eye to the one action that fills the Library. The renderer
+   adds `psl__chip-btn--breathe` whenever there are no live captures
+   (after the head fetch resolves) and drops it the moment the first
+   capture lands. Honors reduced-motion. */
+@keyframes psl-quick-capture-breathe {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 50%, transparent);
+  }
+  50% {
+    transform: scale(1.045);
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+.psl__chip-btn--breathe {
+  animation: psl-quick-capture-breathe 2.2s ease-in-out infinite;
+}
+.psl__chip-btn--breathe:hover {
+  /* Settle the pulse on hover — the user found it; stop nagging. */
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .psl__chip-btn--breathe { animation: none; }
+}
 /* Lightweight text-link sibling of `.psl__chip-btn` — used for
    secondary AI-strip actions like Regenerate where a full chip
    competes with the primary "Use draft" button. No background, no

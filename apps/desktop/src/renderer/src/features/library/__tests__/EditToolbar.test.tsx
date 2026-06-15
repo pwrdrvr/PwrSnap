@@ -126,7 +126,8 @@ function makeSettings(matchingTextEnabled = true): Settings {
     recording: {
       includeSystemAudio: false,
       includeMicrophone: false,
-      lastRoutedPermissionFingerprint: ""
+      lastRoutedPermissionFingerprint: "",
+      screenCapturePrompted: false
     },
     editor: {
       toolStyles: {

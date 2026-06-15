@@ -66,10 +66,7 @@ import { registerLayersHandlers } from "./handlers/layers-handlers";
 import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
 import { registerRecordingHandlers } from "./handlers/recording-handlers";
 import { installRecordingController } from "./recording/recording-controller";
-import {
-  needsAttention,
-  readRecordingReadiness
-} from "./recording/recording-permissions";
+import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
 import { isRecordingActive } from "./recording/recording-state";
 import { onSettingsChanged, registerSettingsHandlers } from "./handlers/settings-handlers";
@@ -648,12 +645,30 @@ async function wireHotkeyRegistrations(): Promise<void> {
   // writes the new fingerprint back so a subsequent unchanged launch
   // doesn't re-nag. On darwin only — the Linux/CI build has no
   // permission surface to route to.
+  //
+  // BUT never route on a truly fresh install (`screenCapturePrompted ===
+  // false`, i.e. the user has never attempted a capture). macOS reports
+  // `denied` for screen before we've ever asked — indistinguishable from
+  // an explicit denial — so routing here would dead-end on a Privacy
+  // pane that doesn't list PwrSnap yet. Instead the empty Library breathes
+  // its Quick Capture button, and the first capture fires the OS prompt
+  // on demand (see capture/screen-permission-gate.ts). We only auto-route
+  // once the user has engaged and a permission is still blocking them.
+  //
+  // We gate on SCREEN RECORDING only — not the full `needsAttention`
+  // predicate. Microphone and System Audio are OPTIONAL: nothing uses
+  // them until the user explicitly opts into mic/system-audio on a video
+  // recording, at which point `recording:start` requests them at point of
+  // use. Letting an un-asked microphone (`not-determined`) drag the user
+  // to Settings on every launch is a nag for a capability we don't even
+  // use yet. (When mic features ship, request them in-context, not here.)
   if (process.platform === "darwin") {
     try {
       const settings = await service.read();
       const readiness = readRecordingReadiness();
       if (
-        needsAttention(readiness) &&
+        settings.recording.screenCapturePrompted &&
+        readiness.screenRecording !== "granted" &&
         readiness.fingerprint !== settings.recording.lastRoutedPermissionFingerprint
       ) {
         log.info("routing to System Permissions on startup", {

@@ -1,61 +1,21 @@
-// macOS TCC (Transparency, Consent & Control) helpers for the screen-
-// capture flow. Phase 1 only needs `screen` permission; mic + camera
-// land in Phase 5.
+// macOS TCC (Transparency, Consent & Control) helper for the screen-
+// capture flow: classifying the outcome of a `screencapture` CLI run.
 //
-// Status checks use Electron's systemPreferences.getMediaAccessStatus
-// which is implemented atop CGPreflightScreenCaptureAccess and does
-// NOT prompt. The "request" path explicitly attempts a screencapture
-// CLI invocation to drive TCC's first-grant prompt — `getMediaAccessStatus`
-// can return 'granted' on a fresh install before the user has actually
-// been prompted, so we always pair a status check with a real capture
-// attempt before declaring success.
+// Permission STATUS reads and System Settings routing live elsewhere:
+// `readScreenStatus` / `openSystemSettingsFor` / `triggerScreenCapturePrompt`
+// in ../recording/recording-permissions.ts, gated by
+// ./screen-permission-gate.ts. A key macOS quirk those rely on:
+// `systemPreferences.getMediaAccessStatus('screen')` is backed by the
+// boolean `CGPreflightScreenCaptureAccess()`, so for the `screen` media
+// type it returns only 'granted' or 'denied' — never 'not-determined'.
+// A fresh install that has never attempted a capture reads 'denied',
+// indistinguishable from an explicit denial (see
+// docs/solutions/2026-06-14-first-run-screen-recording-permission.md).
 //
-// Mid-session revocation: Preflight does not flip back reliably after
+// Mid-session revocation: preflight does not flip back reliably after
 // the user revokes screen-recording in System Settings. The reliable
 // signal is a screencapture CLI exit error — `classifyCaptureError`
 // distinguishes revocation from cancel from genuine errors.
-
-import { shell, systemPreferences } from "electron";
-
-export type Permission = "screen" | "microphone" | "camera";
-export type PermissionStatus =
-  | "granted"
-  | "denied"
-  | "not-determined"
-  | "restricted"
-  | "unknown";
-
-export function checkPermission(perm: Permission): PermissionStatus {
-  // systemPreferences.getMediaAccessStatus is Mac/Windows only; on
-  // unsupported platforms, treat as granted (we won't ship to those
-  // until Phase 8).
-  if (process.platform !== "darwin") return "granted";
-  const status = systemPreferences.getMediaAccessStatus(perm);
-  switch (status) {
-    case "granted":
-    case "denied":
-    case "restricted":
-    case "not-determined":
-      return status;
-    default:
-      return "unknown";
-  }
-}
-
-/**
- * Open System Settings → Privacy & Security → <pane>. The deep-link URL
- * scheme has been stable since Sonoma and continues to work on macOS
- * 14 / 15 / 26.
- */
-export function openSystemSettingsForPermission(perm: Permission): Promise<void> {
-  if (process.platform !== "darwin") return Promise.resolve();
-  const map: Record<Permission, string> = {
-    screen: "Privacy_ScreenCapture",
-    microphone: "Privacy_Microphone",
-    camera: "Privacy_Camera"
-  };
-  return shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${map[perm]}`);
-}
 
 /**
  * Classify the outcome of a `screencapture` CLI invocation. The CLI

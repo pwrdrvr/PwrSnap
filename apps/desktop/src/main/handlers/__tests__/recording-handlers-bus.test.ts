@@ -148,6 +148,11 @@ describe("permissions:* command-bus surface", () => {
     expect(validStatuses).toContain(r.screenRecording);
     expect(validStatuses).toContain(r.microphone);
     expect(validStatuses).toContain(r.systemAudio);
+    // Superset field over RecordingReadiness: whether PwrSnap has ever
+    // triggered the screen prompt. Settings handlers aren't registered in
+    // this file, so the gate's settings:read returns unknown_command and
+    // the flag defaults to false — but the field must always be present.
+    expect(typeof r.screenCapturePrompted).toBe("boolean");
     // 16-char hex prefix of a sha1 over the permission triple +
     // recorder backend. Stability is the contract — the routing memory
     // compares fingerprints across boots to decide whether to re-prompt.

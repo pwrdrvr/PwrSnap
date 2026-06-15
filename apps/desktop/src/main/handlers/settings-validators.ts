@@ -418,7 +418,11 @@ export function validateSettingsWrite(
       };
     }
     const recording = p.recording as Record<string, unknown>;
-    for (const key of ["includeSystemAudio", "includeMicrophone"] as const) {
+    for (const key of [
+      "includeSystemAudio",
+      "includeMicrophone",
+      "screenCapturePrompted"
+    ] as const) {
       const v = recording[key];
       if (isUndefined(v)) continue;
       if (!isBoolean(v)) {

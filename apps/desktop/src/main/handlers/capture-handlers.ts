@@ -39,6 +39,7 @@ import {
   hideSelector
 } from "../capture/region-selector";
 import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
+import { guardScreenCapture } from "../capture/screen-permission-gate";
 import { releaseSnapshot } from "../capture/screen-snapshot";
 import { activateApp, type WindowInfo } from "../capture/window-list";
 import {
@@ -103,6 +104,11 @@ export function clipboardHasPasteableImage(): boolean {
 
 export function registerCaptureHandlers(): void {
   bus.register("capture:region", async (req) => {
+    // Headless/agent path — still trigger the OS prompt on a first-ever
+    // attempt (it registers PwrSnap so captures can ever work), but don't
+    // pop our Settings window at a programmatic caller on the denied path.
+    const blocked = await guardScreenCapture({ routeToSettings: false });
+    if (blocked) return blocked;
     const captureResult = await captureRegion(req.rect, req.displayId);
     if (!captureResult.ok) {
       return err({
@@ -119,6 +125,13 @@ export function registerCaptureHandlers(): void {
   });
 
   bus.register("capture:interactive", async (req, ctx) => {
+    // Gate BEFORE pickRegion: the selector freezes a screen snapshot on
+    // show(), which is all-black on a Mac without Screen Recording. On a
+    // first-ever attempt the gate fires the macOS prompt instead; on a
+    // subsequent denied attempt it routes to System Settings. Either way
+    // we never paint an empty selector at the user.
+    const blocked = await guardScreenCapture();
+    if (blocked) return blocked;
     const handlerStartedAt = Date.now();
     const mode = req.mode ?? "auto";
     log.info("capture:interactive handler received", {
@@ -362,6 +375,8 @@ export function registerCaptureHandlers(): void {
   // this path activate PwrSnap (e.g. a confirmation HUD), re-introduce
   // both calls here in lockstep with capture-handlers.ts:254-262.
   bus.register("capture:fullScreen", async (req) => {
+    const blocked = await guardScreenCapture();
+    if (blocked) return blocked;
     const displayId = resolveFullScreenDisplayId(req.displayId);
     const display = screen.getAllDisplays().find((d) => d.id === displayId);
     if (display === undefined) {
@@ -394,6 +409,8 @@ export function registerCaptureHandlers(): void {
   });
 
   bus.register("capture:allScreens", async (req) => {
+    const blocked = await guardScreenCapture();
+    if (blocked) return blocked;
     // Bus-boundary validation. The type system catches in-process
     // callers, but `req` arrives over IPC where unchecked JSON could
     // pass `{}` or `{mode: "bogus"}` and silently fall through to

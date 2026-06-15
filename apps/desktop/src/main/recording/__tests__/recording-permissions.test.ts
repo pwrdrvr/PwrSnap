@@ -135,7 +135,6 @@ describe("requestPermission", () => {
     const { requestPermission } = await import("../recording-permissions");
     const res = await requestPermission("microphone");
     expect(res.status).toBe("granted");
-    expect(res.openedSettings).toBe(false);
   });
 
   test("microphone denied path reads back current status", async () => {
@@ -144,18 +143,23 @@ describe("requestPermission", () => {
     const { requestPermission } = await import("../recording-permissions");
     const res = await requestPermission("microphone");
     expect(res.status).toBe("denied");
-    expect(res.openedSettings).toBe(false);
   });
 
-  test("screen denied routes through System Settings (TCC won't re-prompt)", async () => {
+  test("screen denied still drives the prompt (registers PwrSnap in the pane)", async () => {
+    // macOS reports `denied` for a fresh install that has never asked —
+    // it's indistinguishable from an explicit denial. requestPermission
+    // is only invoked by the System Permissions page when PwrSnap has
+    // never asked, so it ALWAYS issues a real screen-source request,
+    // which both shows the OS dialog and registers our bundle in the
+    // Privacy pane. It never opens System Settings directly (that's the
+    // separate permissions:openSystemSettings verb the page switches to
+    // once it knows we've asked).
     electronMock.status = { screen: "denied", microphone: "granted" };
     const { requestPermission } = await import("../recording-permissions");
     const res = await requestPermission("screen");
-    expect(res.openedSettings).toBe(true);
-    expect(electronMock.shellOpenCalls).toBe(1);
-    expect(electronMock.desktopCapturerCalls).toBe(0);
-    // status is read back after opening Settings; user hasn't acted
-    // yet so it remains denied.
+    expect(electronMock.desktopCapturerCalls).toBe(1);
+    expect(electronMock.shellOpenCalls).toBe(0);
+    // User hasn't granted yet — status read back is still denied.
     expect(res.status).toBe("denied");
   });
 
@@ -169,26 +173,15 @@ describe("requestPermission", () => {
     const res = await requestPermission("screen");
     expect(electronMock.desktopCapturerCalls).toBe(1);
     expect(electronMock.shellOpenCalls).toBe(0);
-    expect(res.openedSettings).toBe(false);
     // User hasn't clicked Allow yet — status still not-determined.
     expect(res.status).toBe("not-determined");
   });
 
-  test("systemAudio not-determined mirrors the screen prompt path", async () => {
-    electronMock.status = { screen: "not-determined", microphone: "granted" };
+  test("systemAudio mirrors the screen prompt path", async () => {
+    electronMock.status = { screen: "denied", microphone: "granted" };
     const { requestPermission } = await import("../recording-permissions");
     const res = await requestPermission("systemAudio");
     expect(electronMock.desktopCapturerCalls).toBe(1);
     expect(electronMock.shellOpenCalls).toBe(0);
-    expect(res.openedSettings).toBe(false);
-  });
-
-  test("systemAudio denied falls back to System Settings", async () => {
-    electronMock.status = { screen: "denied", microphone: "granted" };
-    const { requestPermission } = await import("../recording-permissions");
-    const res = await requestPermission("systemAudio");
-    expect(res.openedSettings).toBe(true);
-    expect(electronMock.shellOpenCalls).toBe(1);
-    expect(electronMock.desktopCapturerCalls).toBe(0);
   });
 });

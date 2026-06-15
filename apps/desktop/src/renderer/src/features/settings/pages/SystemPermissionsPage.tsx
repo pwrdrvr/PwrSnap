@@ -25,9 +25,9 @@
 
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import type {
+  PermissionReadinessReport,
   RecordingPermission,
-  RecordingPermissionStatus,
-  RecordingReadiness
+  RecordingPermissionStatus
 } from "@pwrsnap/shared";
 import { Card, Row } from "../components";
 import { dispatch } from "../../../lib/pwrsnap";
@@ -35,28 +35,12 @@ import { dispatch } from "../../../lib/pwrsnap";
 type RowSpec = {
   permission: RecordingPermission;
   title: string;
-  description: string;
 };
 
 const ROWS: readonly RowSpec[] = [
-  {
-    permission: "screen",
-    title: "Screen Recording",
-    description:
-      "Required to capture any pixels from your display. Grant in System Settings → Privacy & Security → Screen & System Audio Recording, then relaunch PwrSnap."
-  },
-  {
-    permission: "microphone",
-    title: "Microphone",
-    description:
-      "Optional. Lets video recordings include your microphone audio."
-  },
-  {
-    permission: "systemAudio",
-    title: "System Audio",
-    description:
-      "Optional. Lets video recordings capture sound played by other apps on your Mac. Requires macOS 13 or newer and shares the Screen Recording grant."
-  }
+  { permission: "screen", title: "Screen Recording" },
+  { permission: "microphone", title: "Microphone" },
+  { permission: "systemAudio", title: "System Audio" }
 ];
 
 function statusLabel(status: RecordingPermissionStatus): string {
@@ -66,7 +50,7 @@ function statusLabel(status: RecordingPermissionStatus): string {
     case "denied":
       return "Denied";
     case "not-determined":
-      return "Not yet asked";
+      return "Not yet requested";
     case "restricted":
       return "Restricted by policy";
     case "unavailable":
@@ -78,12 +62,53 @@ function statusLabel(status: RecordingPermissionStatus): string {
 
 function statusTone(status: RecordingPermissionStatus): "ok" | "warn" | "neutral" {
   if (status === "granted") return "ok";
-  if (status === "unavailable" || status === "restricted") return "neutral";
+  // "Not yet requested" is a normal first-run state, not an error — keep
+  // it neutral so a fresh install doesn't look broken. `denied` stays warn.
+  if (
+    status === "unavailable" ||
+    status === "restricted" ||
+    status === "not-determined"
+  ) {
+    return "neutral";
+  }
   return "warn";
 }
 
+/**
+ * Status-specific guidance shown beneath each row. Screen / system-audio
+ * `not-determined` is PwrSnap's synthesized "we've never asked" state (see
+ * `screenCapturePrompted`); `denied` means macOS has already recorded a
+ * decision and won't prompt again, so the only path is the Privacy pane +
+ * (usually) a relaunch.
+ */
+function statusHint(
+  permission: RecordingPermission,
+  status: RecordingPermissionStatus
+): string {
+  if (permission === "microphone") {
+    if (status === "not-determined")
+      return "Click Ask now and approve the macOS prompt to let recordings include your microphone.";
+    if (status === "denied")
+      return "Turn Microphone back on for PwrSnap in System Settings → Privacy & Security.";
+    return "Optional. Lets video recordings include your microphone audio.";
+  }
+  // screen + systemAudio share the Screen Recording grant.
+  if (status === "not-determined") {
+    return "PwrSnap will ask macOS for this the first time you capture. Click Request access to do it now — macOS shows its own approval dialog.";
+  }
+  if (status === "denied") {
+    return "Turn on Screen Recording for PwrSnap in System Settings → Privacy & Security → Screen & System Audio Recording. If it's already on, relaunch PwrSnap so the change takes effect.";
+  }
+  if (status === "unavailable") {
+    return "Requires macOS 13 or newer. System audio shares the Screen Recording grant.";
+  }
+  return permission === "systemAudio"
+    ? "Optional. Lets video recordings capture sound from other apps. Requires macOS 13+ and shares the Screen Recording grant."
+    : "Required to capture any pixels from your display.";
+}
+
 export function SystemPermissionsPage(): ReactElement {
-  const [readiness, setReadiness] = useState<RecordingReadiness | null>(null);
+  const [readiness, setReadiness] = useState<PermissionReadinessReport | null>(null);
   const [busyPermission, setBusyPermission] = useState<RecordingPermission | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
 
@@ -105,11 +130,12 @@ export function SystemPermissionsPage(): ReactElement {
     async (permission: RecordingPermission, status: RecordingPermissionStatus) => {
       setBusyPermission(permission);
       try {
-        // Microphone always uses the prompt API. Screen / system
-        // audio use the prompt API only when TCC has never asked —
-        // otherwise our bundle is already in the Privacy pane and
-        // the user just needs to flip the checkbox, so we open
-        // Settings instead.
+        // Microphone always uses the prompt API. Screen / system audio
+        // use the prompt API only when PwrSnap has never asked (the
+        // synthesized `not-determined` effective status, derived from
+        // `screenCapturePrompted`) — that call fires the macOS dialog and
+        // registers PwrSnap in the Privacy pane. Once macOS has a decision
+        // on file it won't re-prompt, so we open System Settings instead.
         const usePromptApi = permission === "microphone" || status === "not-determined";
         if (usePromptApi) {
           const res = await dispatch("permissions:request", { permission });
@@ -140,9 +166,11 @@ export function SystemPermissionsPage(): ReactElement {
           <h1 className="pss__main-title">System Permissions</h1>
           <p className="pss__main-sub">
             PwrSnap needs access to record your screen and, optionally,
-            audio. Each capability has its own macOS approval. We will
-            never use these capabilities unless you explicitly start a
-            capture.
+            audio. Each capability has its own macOS approval, and we never
+            use any of them unless you explicitly start a capture. On a
+            fresh install you'll see <strong>Not yet requested</strong> —
+            click <strong>Request access</strong> (or just take your first
+            snap) and macOS will show its own approval dialog.
           </p>
         </div>
       </div>
@@ -157,7 +185,7 @@ export function SystemPermissionsPage(): ReactElement {
 
       <Card eyebrow="STATUS" title="Recording capabilities">
         {ROWS.map((row) => {
-          const status: RecordingPermissionStatus =
+          const rawStatus: RecordingPermissionStatus =
             readiness === null
               ? "unknown"
               : row.permission === "screen"
@@ -165,6 +193,26 @@ export function SystemPermissionsPage(): ReactElement {
               : row.permission === "microphone"
               ? readiness.microphone
               : readiness.systemAudio;
+          // macOS reports `denied` for screen / system-audio both when
+          // PwrSnap has never asked AND when the user explicitly denied —
+          // `getMediaAccessStatus('screen')` can't tell them apart. Use
+          // PwrSnap's own `screenCapturePrompted` memory to surface the
+          // honest "Not yet requested" state (synthesized as
+          // `not-determined`) so the row offers a working "Request access"
+          // that fires the OS prompt, instead of a dead-end "Open System
+          // Settings" for an app that isn't in the Privacy pane yet.
+          const isScreenFamily =
+            row.permission === "screen" || row.permission === "systemAudio";
+          const neverRequested =
+            isScreenFamily &&
+            readiness !== null &&
+            !readiness.screenCapturePrompted &&
+            rawStatus !== "granted" &&
+            rawStatus !== "unavailable" &&
+            rawStatus !== "restricted";
+          const status: RecordingPermissionStatus = neverRequested
+            ? "not-determined"
+            : rawStatus;
           const tone = statusTone(status);
           const showAction =
             status !== "granted" && status !== "unavailable" && status !== "restricted";
@@ -172,7 +220,7 @@ export function SystemPermissionsPage(): ReactElement {
             <Row
               key={row.permission}
               label={row.title}
-              sub={`${statusLabel(status)} — ${row.description}`}
+              sub={`${statusLabel(status)} — ${statusHint(row.permission, status)}`}
               tag={row.permission}
             >
               <div style={{ display: "flex", gap: 12, alignItems: "center" }}>

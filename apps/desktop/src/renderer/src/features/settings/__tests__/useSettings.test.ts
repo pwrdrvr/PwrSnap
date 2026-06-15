@@ -57,7 +57,8 @@ const baseSettings: Settings = {
   recording: {
     includeSystemAudio: false,
     includeMicrophone: false,
-    lastRoutedPermissionFingerprint: ""
+    lastRoutedPermissionFingerprint: "",
+    screenCapturePrompted: false
   },
   editor: {
     toolStyles: {

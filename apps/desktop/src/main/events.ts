@@ -7,18 +7,31 @@
 
 import { BrowserWindow } from "electron";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { relayRendererEventToPeer } from "./process-split/event-relay";
 
 export type BroadcastCapturesChanged = (changedIds: string[]) => void;
 
 /**
- * Default broadcast implementation: send `events:captures:changed` to
- * every live BrowserWindow.
+ * Send an event to every live BrowserWindow in THIS process. Also the
+ * delivery half of the cross-process relay: the bridge's onRemoteEvent
+ * calls this (and only this — never the relaying variant below), so
+ * peer-originated events reach local windows without echoing back.
  */
-export const broadcastCapturesChangedDefault: BroadcastCapturesChanged = (changedIds) => {
+export function broadcastRendererEventToLocalWindows(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
-    win.webContents.send(EVENT_CHANNELS.capturesChanged, { changedIds });
+    win.webContents.send(channel, payload);
   }
+}
+
+/**
+ * Default broadcast implementation: send `events:captures:changed` to
+ * every live BrowserWindow, then once to the peer process (split mode;
+ * no-op in combined).
+ */
+export const broadcastCapturesChangedDefault: BroadcastCapturesChanged = (changedIds) => {
+  broadcastRendererEventToLocalWindows(EVENT_CHANNELS.capturesChanged, { changedIds });
+  relayRendererEventToPeer(EVENT_CHANNELS.capturesChanged, { changedIds });
 };
 
 /**

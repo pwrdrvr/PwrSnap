@@ -27,6 +27,8 @@ import type {
   UpdateChannel
 } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { broadcastRendererEventToLocalWindows } from "./events";
+import { relayRendererEventToPeer } from "./process-split/event-relay";
 import { getMainLogger } from "./log";
 
 // Access `autoUpdater` lazily. electron-updater exposes it as a
@@ -80,10 +82,11 @@ export function setUpdateChannelResolver(fn: ChannelResolver): void {
 
 function setUpdateStatus(nextStatus: AppUpdateStatus): void {
   updateStatus = nextStatus;
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (window.isDestroyed()) continue;
-    window.webContents.send(EVENT_CHANNELS.appUpdateStatus, nextStatus);
-  }
+  // Local windows + the peer process (split mode): the updater runs in
+  // the agent, but Settings → Updates (a library-process window) shows
+  // the live check/download/restart status.
+  broadcastRendererEventToLocalWindows(EVENT_CHANNELS.appUpdateStatus, nextStatus);
+  relayRendererEventToPeer(EVENT_CHANNELS.appUpdateStatus, nextStatus);
 }
 
 function downloadedVersion(): string | undefined {

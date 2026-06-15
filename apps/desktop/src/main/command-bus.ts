@@ -23,7 +23,7 @@ import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 
 const log = getMainLogger("pwrsnap:command-bus");
 
-export type CommandPrincipal = "ipc" | "rpc" | "mcp" | "seeder";
+export type CommandPrincipal = "ipc" | "rpc" | "mcp" | "seeder" | "bridge";
 
 export type CommandSourceBounds = {
   x: number;
@@ -46,6 +46,20 @@ export type CommandHandler<C extends CommandName> = (
   ctx: CommandContext
 ) => Promise<Result<Res<C>, PwrSnapError>>;
 
+/**
+ * Cross-process fallback (two-process split, plan 2026-06-12-001 §D4).
+ * When a dispatched command has no local handler, the bus consults the
+ * installed forwarder; if the command belongs to the peer process the
+ * forwarder carries it over the process bridge. Internal dispatches
+ * (handlers calling `bus.dispatch`) route exactly like renderer ones —
+ * that's why this lives on the bus instead of in the ipc transport.
+ */
+export type RemoteCommandForwarder = {
+  /** True when `name` is owned by the peer process and reachable. */
+  canForward(name: string): boolean;
+  forward(name: string, req: unknown): Promise<Result<unknown, PwrSnapError>>;
+};
+
 // Storage type is intentionally a wide function — TS can't represent a
 // "for some C, CommandHandler<C>" existential, so we erase to any-shape
 // and cast on the way out. Type safety lives at the public register/
@@ -61,6 +75,8 @@ class CommandBus {
    */
   private readonly cancellation = new Map<string, AbortController>();
 
+  private remoteForwarder: RemoteCommandForwarder | null = null;
+
   register<C extends CommandName>(name: C, handler: CommandHandler<C>): void {
     if (this.handlers.has(name)) {
       throw new Error(`command-bus: duplicate handler for ${name}`);
@@ -72,8 +88,22 @@ class CommandBus {
     this.handlers.delete(name);
   }
 
+  /** Install the cross-process fallback. One per process — the boot
+   *  path wires it once for the agent or library role. */
+  installRemoteForwarder(forwarder: RemoteCommandForwarder): void {
+    if (this.remoteForwarder !== null) {
+      throw new Error("command-bus: remote forwarder already installed");
+    }
+    this.remoteForwarder = forwarder;
+  }
+
+  uninstallRemoteForwarderForTests(): void {
+    this.remoteForwarder = null;
+  }
+
   isRegistered(name: string): name is CommandName {
-    return this.handlers.has(name as CommandName);
+    if (this.handlers.has(name as CommandName)) return true;
+    return this.remoteForwarder?.canForward(name) ?? false;
   }
 
   /**
@@ -100,6 +130,26 @@ class CommandBus {
   ): Promise<Result<Res<C>, PwrSnapError>> {
     const handler = this.handlers.get(name);
     if (!handler) {
+      const forwarder = this.remoteForwarder;
+      if (forwarder !== null && forwarder.canForward(name)) {
+        try {
+          return (await forwarder.forward(name, req)) as Result<Res<C>, PwrSnapError>;
+        } catch (cause) {
+          // Forwarders normally return Result (the bridge never
+          // rejects); this catches supervisor spawn failures and the
+          // like so a broken peer process degrades to an error result.
+          log.error("remote forward threw", {
+            name,
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+          return err({
+            kind: "unknown",
+            code: "bridge_forward_failed",
+            message: cause instanceof Error ? cause.message : String(cause),
+            cause
+          });
+        }
+      }
       log.warn("unknown command", { name, principal: options.principal });
       return err({
         kind: "validation",

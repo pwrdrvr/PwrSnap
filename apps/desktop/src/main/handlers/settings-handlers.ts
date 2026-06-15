@@ -15,6 +15,8 @@ import type {
   SettingsNavigateEvent
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
+import { activateForUserSurface } from "../process-split/activate-user-surface";
+import { relayRendererEventToPeer } from "../process-split/event-relay";
 import {
   createSettingsWindow,
   findSettingsWindow,
@@ -102,6 +104,9 @@ async function broadcastSettingsChanged(
     if (win.isDestroyed()) continue;
     win.webContents.send(EVENT_CHANNELS.settingsChanged, payload);
   }
+  // Split mode: the library process's windows (Settings UI included)
+  // subscribe to the same broadcast — relay once across the bridge.
+  relayRendererEventToPeer(EVENT_CHANNELS.settingsChanged, payload);
   for (const listener of mainSettingsListeners) {
     try {
       await listener(payload.settings);
@@ -128,7 +133,18 @@ function toSettingsError(
   return { kind: "settings", code, message, cause };
 }
 
+/** Combined-mode registration: both halves on one bus, exactly the
+ *  pre-split behavior. Split mode registers the halves separately —
+ *  the window verb with the library process, the data/secrets verbs
+ *  with the agent (plan 2026-06-12-001 §D4/§D8). */
 export function registerSettingsHandlers(): void {
+  registerSettingsWindowHandlers();
+  registerSettingsDataHandlers();
+}
+
+/** `settings:open` — opens/raises the Settings window, so it lives
+ *  with the process that owns that window. */
+export function registerSettingsWindowHandlers(): void {
   bus.register("settings:open", async (req, ctx) => {
     const validated = validateSettingsOpen(req);
     if (!validated.ok) return err(validated.error);
@@ -146,6 +162,7 @@ export function registerSettingsHandlers(): void {
       positionSettingsWindowForSource(existing, placementSource);
       if (!existing.isVisible()) existing.show();
       existing.focus();
+      activateForUserSurface();
       if (page !== undefined) {
         // Typed event broadcast — replaces the prior `executeJavaScript`
         // template-injection footgun. The renderer's `useActivePage`
@@ -159,9 +176,17 @@ export function registerSettingsHandlers(): void {
     }
     const extraHash = page !== undefined ? `page=${page}` : undefined;
     createSettingsWindow(extraHash, placementSource);
+    // Split mode: the spawned library process is never LS-activated;
+    // without this the new Settings window opens behind the user's
+    // frontmost app. No-op in combined/agent roles and off-darwin.
+    activateForUserSurface();
     return ok(undefined);
   });
+}
 
+/** The settings + secrets substrate verbs — agent-owned in split mode
+ *  (single writer, always-resident process). */
+export function registerSettingsDataHandlers(): void {
   bus.register("settings:read", async () => {
     const { service } = ensureServices();
     try {

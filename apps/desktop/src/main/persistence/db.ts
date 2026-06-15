@@ -32,6 +32,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getMainLogger } from "../log";
+import { pendingMigrationFiles } from "./migration-pending";
 import { getNativeBinding } from "./native-binding";
 import { getDbPath } from "./paths";
 
@@ -44,6 +45,28 @@ export type SchemaMigration = {
   appliedAt: string;
 };
 
+export type OpenDatabaseOptions = {
+  /**
+   * "apply" (default) runs pending migrations. "verify" opens without
+   * migrating and throws `PendingMigrationsError` if any are pending —
+   * in the two-process split (plan 2026-06-12-001 §D6) only the agent
+   * migrates; the library process opens after it and must fail closed
+   * on version skew rather than migrate concurrently.
+   */
+  migrations?: "apply" | "verify";
+};
+
+export class PendingMigrationsError extends Error {
+  constructor(public readonly pendingFiles: string[]) {
+    super(
+      `db: ${pendingFiles.length} migration(s) pending (${pendingFiles.join(", ")}); ` +
+        "this process opened with migrations:\"verify\" and never migrates — " +
+        "the agent process must migrate first (relaunch PwrSnap)"
+    );
+    this.name = "PendingMigrationsError";
+  }
+}
+
 /**
  * Open the database, run pending migrations, and return the connection.
  * Idempotent — safe to call from a hot reload boot path.
@@ -53,7 +76,9 @@ export type SchemaMigration = {
  * Phase 1's <120ms ⌘⇧P SLA, we touch the DB at app.whenReady() so the
  * cold path is paid before the user fires the shortcut.
  */
-export async function openDatabase(): Promise<Database.Database> {
+export async function openDatabase(
+  options: OpenDatabaseOptions = {}
+): Promise<Database.Database> {
   if (dbInstance) return dbInstance;
 
   const dbPath = getDbPath();
@@ -75,7 +100,15 @@ export async function openDatabase(): Promise<Database.Database> {
   db.pragma("busy_timeout = 5000");
   db.pragma("foreign_keys = ON");
 
-  runMigrations(db);
+  if ((options.migrations ?? "apply") === "verify") {
+    const pending = listPendingMigrationFiles(db);
+    if (pending.length > 0) {
+      db.close();
+      throw new PendingMigrationsError(pending);
+    }
+  } else {
+    runMigrations(db);
+  }
 
   // PRAGMA optimize must run AFTER migrations so any new indexes
   // exist and have stats populated on first use. The 0x10002 mask is
@@ -135,6 +168,27 @@ export async function openDatabase(): Promise<Database.Database> {
   return db;
 }
 
+/** Versions recorded in schema_migrations, or empty when the table
+ *  itself doesn't exist yet (fresh DB — everything is pending). */
+function appliedMigrationVersions(db: Database.Database): Set<number> {
+  const hasTable = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'")
+    .get();
+  if (hasTable === undefined) return new Set();
+  return new Set<number>(
+    db
+      .prepare("SELECT version FROM schema_migrations")
+      .all()
+      .map((row) => (row as { version: number }).version)
+  );
+}
+
+/** Migration files on disk that aren't recorded as applied. Read-only —
+ *  the migrations:"verify" open path uses this without writing anything. */
+export function listPendingMigrationFiles(db: Database.Database): string[] {
+  return pendingMigrationFiles(readdirSync(resolveMigrationsDir()), appliedMigrationVersions(db));
+}
+
 /**
  * Apply pending migrations from ./migrations/. Each migration runs in
  * its own transaction; partial failure leaves the schema unchanged.
@@ -145,12 +199,7 @@ function runMigrations(db: Database.Database): void {
     applied_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
 
-  const applied = new Set<number>(
-    db
-      .prepare("SELECT version FROM schema_migrations")
-      .all()
-      .map((row) => (row as { version: number }).version)
-  );
+  const applied = appliedMigrationVersions(db);
 
   // Migrations live next to the compiled main bundle; electron-vite
   // emits them via a `?asset` import side-effect or — simpler — via

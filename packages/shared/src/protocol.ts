@@ -1601,6 +1601,21 @@ export type Settings = {
      *  observing the change). */
     launchAtLogin: boolean;
   };
+  /** Feature gates that ship default-on (or -off) while their legacy
+   *  fallback still exists. Each flag documents its own exit plan —
+   *  once a gate has soaked, the flag and the fallback path are
+   *  deleted together. */
+  experimental: {
+    /** macOS two-process split (docs/plans/2026-06-12-001): the tray /
+     *  capture agent and the Library run as separate processes, so the
+     *  capture overlays can never flash the Dock or disturb the
+     *  Library window. Default OFF — opt-in while it soaks; turning it
+     *  on switches from the single-process (`combined`) boot. Read once
+     *  at process start — changing it requires relaunching PwrSnap.
+     *  Meaningless (ignored) off macOS, where the boot is always
+     *  single-process. */
+    processSplit: boolean;
+  };
   /** Per-user UI appearance. `theme: "system"` (default) tracks the
    *  OS-level `prefers-color-scheme`; explicit `"dark"` / `"light"`
    *  pin the renderer regardless of OS. The renderer applies this via
@@ -2037,6 +2052,7 @@ export type FilenameTimestampZone = "local" | "utc";
  *  field without echoing the rest. */
 export type SettingsPatch = {
   codex?: Partial<Settings["codex"]>;
+  experimental?: Partial<Settings["experimental"]>;
   /** `ai` is deeper than the other top-level branches because Library
    *  chat preferences live under `ai.chat`. Each leaf within `chat` is
    *  independently optional so a single textarea blur can ship just

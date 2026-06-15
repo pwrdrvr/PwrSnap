@@ -15,6 +15,8 @@ import {
 } from "./settings/startup-appearance";
 import { getMainLogger } from "./log";
 import { attachRendererStartupProfiling } from "./startup-profiler";
+import { getRuntimeProcessRole } from "./process-role";
+import { activateForUserSurface } from "./process-split/activate-user-surface";
 import { showWindowWhenReady } from "./window-show";
 
 const log = getMainLogger("pwrsnap:window");
@@ -207,7 +209,16 @@ const baseWebPreferences = {
 function themedWebPreferences(): Electron.WebPreferences {
   return {
     ...baseWebPreferences,
-    additionalArguments: [...getStartupAppearanceArgs()]
+    additionalArguments: [...getStartupAppearanceArgs()],
+    // Split mode only: keep the renderer at full priority even when the
+    // window is hidden / its process isn't frontmost. Default `true`
+    // lets Chromium throttle a backgrounded renderer's main thread +
+    // timers (React's concurrent scheduler included). The split spawns
+    // the library before it comes frontmost, so its first render can run
+    // backgrounded — we don't want it throttled. Combined mode is left
+    // at the Electron default (today's behavior) so the experiment-off
+    // app is byte-for-byte unchanged.
+    ...(getRuntimeProcessRole() !== "combined" ? { backgroundThrottling: false } : {})
   };
 }
 
@@ -326,6 +337,29 @@ export function findMainLibraryWindow(): BrowserWindow | null {
 }
 
 /**
+ * Diagnostic: trace the Library window's load lifecycle so a slow first
+ * paint is attributable to a specific phase instead of an opaque gap.
+ * All deltas are ms from BrowserWindow construction. Cheap (a handful
+ * of one-shot logs); kept on in every role since it also helps field
+ * bug reports via the log file.
+ *
+ * Historical note: this is what localized the split-mode black-frame
+ * cold open — `did-finish-load` landed fast but first paint didn't,
+ * pointing past module loading to the renderer blocking on a Local
+ * Storage lock shared with the agent process (fixed by relocating the
+ * library's sessionData; see bootstrapApp in index.ts).
+ */
+function instrumentLibraryLoadTiming(window: BrowserWindow): void {
+  const createdAt = Date.now();
+  const ms = (): number => Date.now() - createdAt;
+  const wc = window.webContents;
+  const id = window.id;
+  wc.on("did-start-loading", () => log.info("library wc did-start-loading", { id, ms: ms() }));
+  wc.on("dom-ready", () => log.info("library wc dom-ready", { id, ms: ms() }));
+  wc.once("did-finish-load", () => log.info("library wc did-finish-load", { id, ms: ms() }));
+}
+
+/**
  * Create the Library window if one doesn't already exist; otherwise
  * return the existing singleton. Idempotent — clicking "Open Library"
  * five times raises the same window five times rather than spawning
@@ -359,6 +393,7 @@ export function createMainWindow(): BrowserWindow {
   attachRendererStartupProfiling(window, "library");
 
   loadRenderer(window, rendererTarget());
+  instrumentLibraryLoadTiming(window);
 
   // `showWindowWhenReady` handles the Linux `ready-to-show`
   // unreliability (see window-show.ts for the why); on macOS the
@@ -374,6 +409,13 @@ export function createMainWindow(): BrowserWindow {
       if (process.platform === "darwin" && !isE2E()) {
         showDockWithDevelopmentIcon();
       }
+      // Split-mode library: the supervisor-spawned process is never
+      // activated by Launch Services. Activate at the moment the window
+      // actually paints (ready-to-show) so the user sees real content
+      // come forward — not an empty black frame during the renderer's
+      // cold load. No-op outside the library role / off darwin, so the
+      // combined-mode boot is unaffected.
+      activateForUserSurface();
     }
   });
 
@@ -411,9 +453,13 @@ export function createMainWindow(): BrowserWindow {
   window.on("closed", () => {
     log.info("main window closed", { id: window.id });
     if (libraryWindow === window) libraryWindow = null;
-    // No library = no dock icon. Tray icon keeps the app alive in the
-    // background; the user re-opens via right-click → "Open Library".
-    if (process.platform === "darwin") {
+    // Combined mode: no library = no dock icon; the tray keeps the
+    // app alive and the user re-opens via right-click → "Open
+    // Library". The split-mode library PROCESS keeps its Dock icon
+    // instead — closing the window there behaves like any macOS
+    // document app (process resident, Dock-click re-opens), so hiding
+    // the icon would read as the app quitting when it didn't.
+    if (process.platform === "darwin" && getRuntimeProcessRole() !== "library") {
       app.dock?.hide();
     }
   });

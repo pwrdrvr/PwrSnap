@@ -45,3 +45,39 @@ describe("database migrations", () => {
   });
 
 });
+
+// The `migrations: "verify"` open path (two-process split §D6): the
+// library process never migrates — it computes the pending set and
+// fails closed when the agent hasn't migrated yet.
+describe("pendingMigrationFiles", () => {
+  test("fresh database (nothing applied) reports every migration pending, sorted", async () => {
+    const { pendingMigrationFiles } = await import("../persistence/migration-pending");
+    const files = migrationFiles();
+    expect(pendingMigrationFiles([...files].reverse(), new Set())).toEqual(files);
+  });
+
+  test("fully-applied database reports nothing pending", async () => {
+    const { pendingMigrationFiles, migrationVersionOf } = await import(
+      "../persistence/migration-pending"
+    );
+    const files = migrationFiles();
+    const applied = new Set(files.map((f) => migrationVersionOf(f)!));
+    expect(pendingMigrationFiles(files, applied)).toEqual([]);
+  });
+
+  test("reports only the gap when the agent is ahead of the library's last run", async () => {
+    const { pendingMigrationFiles, migrationVersionOf } = await import(
+      "../persistence/migration-pending"
+    );
+    const files = migrationFiles();
+    const allButLast = new Set(files.slice(0, -1).map((f) => migrationVersionOf(f)!));
+    expect(pendingMigrationFiles(files, allButLast)).toEqual(files.slice(-1));
+  });
+
+  test("ignores non-migration files", async () => {
+    const { pendingMigrationFiles } = await import("../persistence/migration-pending");
+    expect(
+      pendingMigrationFiles(["README.md", "0001_init.sql.bak", "notes.txt"], new Set())
+    ).toEqual([]);
+  });
+});

@@ -36,6 +36,7 @@ import { setFloatOverState } from "./float-over";
 import { bus } from "./command-bus";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 import { installDevelopmentDockIcon } from "./development-dock-icon";
+import { disableAppNap } from "./disable-app-nap";
 // (showFloatOverForCapture is no longer called from the bootstrap;
 // the capture-handlers `capture:interactive` now drives the entire
 // float-over lifecycle. Kept as an export from float-over.ts for the
@@ -1423,6 +1424,16 @@ export function bootstrapApp(): void {
   });
 
   app.whenReady().then(async () => {
+    // Opt out of macOS App Nap for the process that owns the global
+    // capture hotkeys + pipeline (agent / combined). Without this, a
+    // windowless agent — or combined mode with the Library closed — gets
+    // napped, and ⌘⇧C pays a ~0.5–1s wake-up tax before the picker
+    // appears (the in-process pipeline is only ~280ms; the rest is the
+    // OS spinning the napped process back up). The library owns no
+    // hotkeys, so it stays nap-eligible. macOS-only. See disable-app-nap.ts.
+    if (role !== "library") {
+      disableAppNap();
+    }
     if (process.platform === "darwin" && (isE2E || role === "agent")) {
       // Agent role: menubar-only process — no Dock presence, ever.
       // (Phase 4 ships LSUIElement so this becomes the launch default

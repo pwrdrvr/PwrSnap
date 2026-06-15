@@ -195,7 +195,7 @@ mac:
     # Audio capture description (Fast Video Capture, issue #64).
     # macOS uses this when the user opts into system-audio recording.
     NSAudioCaptureUsageDescription: "PwrSnap records system audio for screen-recording exports when you turn it on."
-    NSDocumentsFolderUsageDescription: "Save your screenshots in Documents so you can find them in Finder and sync them via iCloud."
+    NSDocumentsFolderUsageDescription: "PwrSnap creates a 'PwrSnap' folder in your Documents and saves your screenshots and recordings there — so you can find them in Finder and sync them via iCloud. It only reads and writes its own folder."
     # Private UTI carrying PwrSnap layer-fragment payloads on the macOS
     # pasteboard. Pasting between two PwrSnap instances preserves layer
     # transforms, effects, and masks losslessly; non-PwrSnap consumers

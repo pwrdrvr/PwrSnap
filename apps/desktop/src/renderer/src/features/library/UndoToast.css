@@ -3,13 +3,18 @@
    over the library and clear of the bottom-right post-capture float-over. */
 
 .ps-undo-toast {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 8px 8px 13px;
+  /* A touch more top padding leaves room under the countdown strip. */
+  padding: 10px 8px 8px 13px;
   background: color-mix(in srgb, var(--bg-panel-elevated) 96%, transparent);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-pill);
+  /* Rounded card (not a pill) so the full-width countdown strip across the
+     top reads cleanly — mirrors the float-over toast. */
+  border-radius: var(--radius-lg);
+  overflow: hidden;
   backdrop-filter: blur(18px) saturate(1.2);
   -webkit-backdrop-filter: blur(18px) saturate(1.2);
   box-shadow: 0 14px 36px color-mix(in srgb, var(--shadow-base) 50%, transparent);
@@ -26,6 +31,30 @@
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* Auto-dismiss countdown — depleting strip across the top, same language as
+   the float-over toast's `.fo__progress`. Width is driven by an inline
+   scaleX(progress) from 1 → 0; transform-origin left so it recedes toward
+   the left ("right to left") before the toast closes. */
+.ps-undo-toast__progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: transparent;
+  z-index: 1;
+}
+.ps-undo-toast__progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-strong) 100%);
+  box-shadow: 0 0 8px var(--accent-shadow);
+  transform-origin: left center;
+  transition: transform 100ms linear, opacity 200ms ease;
+}
+.ps-undo-toast.is-paused .ps-undo-toast__progress-fill {
+  opacity: 0.25;
 }
 
 .ps-undo-toast__icon {

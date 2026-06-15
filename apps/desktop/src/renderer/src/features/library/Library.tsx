@@ -73,9 +73,11 @@ import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-ava
 // <img src="pwrsnap-cache://"> through CellThumb below.
 import { Thumb } from "./Thumb";
 
-/** How long the "Moved to Trash · Undo" toast (and the bounded ⌘Z restore
- *  window it advertises) stays live after a soft-delete. */
-const UNDO_TOAST_MS = 7000;
+/** How long the "Moved to Trash · Undo" toast stays up (and, since the ⌘Z /
+ *  Edit ▸ Undo restore window is coupled to it, how long that undo stays
+ *  available). The toast renders a visible countdown strip over this window
+ *  and pauses it on hover, so the bound is legible rather than a silent timer. */
+const UNDO_TOAST_MS = 8000;
 
 function codexAvailableInSnapshot(snapshot: DesktopCodexDiscoverySnapshot): boolean {
   if (snapshot.resolvedPath === null) return false;
@@ -581,10 +583,14 @@ export function Library() {
   // toast times out, the user restores, or a newer delete supersedes it —
   // so ⌘Z restore stays bounded to the same recently-deleted window the
   // toast advertises.
+  // The Undo toast OWNS the auto-dismiss countdown (visible depleting strip +
+  // hover-pause). The ⌘Z / Edit ▸ Undo restore window is therefore EXACTLY
+  // "while the toast is on screen": `lastDeleted` is set on delete and cleared
+  // only when the toast finishes its countdown, the user restores, the user
+  // dismisses it, or a newer delete supersedes it (a fresh toast, keyed by id).
   const [lastDeleted, setLastDeleted] = useState<{ id: string } | null>(null);
   const lastDeletedRef = useRef<{ id: string } | null>(null);
   lastDeletedRef.current = lastDeleted;
-  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // "Confirm before moving to Trash" preference (Settings →
   // library.confirmBeforeTrash). Seeded from settings:read + kept live via
@@ -598,10 +604,6 @@ export function Library() {
   }, []);
 
   const clearLastDeleted = useCallback(() => {
-    if (undoTimerRef.current !== null) {
-      clearTimeout(undoTimerRef.current);
-      undoTimerRef.current = null;
-    }
     setLastDeleted(null);
   }, []);
 
@@ -609,8 +611,8 @@ export function Library() {
     const pending = lastDeletedRef.current;
     if (pending === null) return;
     void dispatch("library:restore", { id: pending.id });
-    clearLastDeleted();
-  }, [clearLastDeleted]);
+    setLastDeleted(null);
+  }, []);
 
   // Register the capture-level undo fallback so ⌘Z / Edit ▸ Undo restores
   // the last trashed capture when the editor's own history is empty (or no
@@ -624,12 +626,6 @@ export function Library() {
       canRedo: () => false
     });
   }, [restoreLastDeleted]);
-
-  useEffect(() => {
-    return () => {
-      if (undoTimerRef.current !== null) clearTimeout(undoTimerRef.current);
-    };
-  }, []);
   const sourceAppRowsRef = useRef(sourceAppRows);
   useEffect(() => {
     sourceAppRowsRef.current = sourceAppRows;
@@ -2343,12 +2339,9 @@ export function Library() {
     });
     if (nav !== null) viewDispatch(nav);
     void dispatch("library:delete", { id: recordId });
-    if (undoTimerRef.current !== null) clearTimeout(undoTimerRef.current);
+    // Arm the Undo affordance. The toast (keyed by id) owns the countdown
+    // and calls back to clear this when it expires.
     setLastDeleted({ id: recordId });
-    undoTimerRef.current = setTimeout(() => {
-      undoTimerRef.current = null;
-      setLastDeleted(null);
-    }, UNDO_TOAST_MS);
   }
 
   function trashCapture(captureId: number): void {
@@ -3225,7 +3218,9 @@ export function Library() {
       {lastDeleted !== null &&
         createPortal(
           <UndoToast
+            key={lastDeleted.id}
             message="Moved to Trash"
+            durationMs={UNDO_TOAST_MS}
             onUndo={restoreLastDeleted}
             onDismiss={clearLastDeleted}
           />,

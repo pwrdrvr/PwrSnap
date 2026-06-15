@@ -63,7 +63,7 @@ ISC
 - isexe@2.0.0 | https://github.com/isaacs/isexe
 - once@1.4.0 | https://github.com/isaacs/once
 - semver@7.7.4 | https://github.com/npm/node-semver
-- semver@7.8.1 | https://github.com/npm/node-semver
+- semver@7.8.2 | https://github.com/npm/node-semver
 - setprototypeof@1.2.0 | https://github.com/wesleytodd/setprototypeof
 - which@2.0.2 | https://github.com/isaacs/node-which
 - wrappy@1.0.2 | https://github.com/npm/wrappy
@@ -104,7 +104,7 @@ MIT
 - buffer@5.7.1 | https://github.com/feross/buffer
 - buffer-crc32@0.2.13 | https://github.com/brianloveswords/buffer-crc32
 - buffer-crc32@1.0.0 | https://github.com/brianloveswords/buffer-crc32
-- builder-util-runtime@9.5.1 | https://github.com/electron-userland/electron-builder
+- builder-util-runtime@9.7.0 | https://github.com/electron-userland/electron-builder
 - bytes@3.1.2 | visionmedia/bytes.js
 - call-bind-apply-helpers@1.0.2 | https://github.com/ljharb/call-bind-apply-helpers
 - call-bound@1.0.4 | https://github.com/ljharb/call-bound
@@ -124,7 +124,7 @@ MIT
 - ee-first@1.1.1 | jonathanong/ee-first
 - electron@41.7.1 | https://github.com/electron/electron
 - electron-log@5.4.4 | megahertz/electron-log
-- electron-updater@6.8.3 | https://github.com/electron-userland/electron-builder
+- electron-updater@6.8.9 | https://github.com/electron-userland/electron-builder
 - encodeurl@2.0.0 | pillarjs/encodeurl
 - end-of-stream@1.4.5 | https://github.com/mafintosh/end-of-stream
 - es-define-property@1.0.1 | https://github.com/ljharb/es-define-property
@@ -158,7 +158,7 @@ MIT
 - ipaddr.js@1.9.1 | https://github.com/whitequark/ipaddr.js
 - is-promise@4.0.0 | https://github.com/then/is-promise
 - jose@6.2.3 | panva/jose
-- js-yaml@4.1.1 | nodeca/js-yaml
+- js-yaml@4.2.0 | nodeca/js-yaml
 - json-schema-traverse@1.0.0 | https://github.com/epoberezkin/json-schema-traverse
 - jsonfile@6.2.1 | https://github.com/jprichardson/node-jsonfile
 - lazy-val@1.0.5 | develar/lazy-val
@@ -1557,14 +1557,14 @@ PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS 
 FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
 ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-builder-util-runtime@9.5.1 (MIT)
+builder-util-runtime@9.7.0 (MIT)
 --------------------------------
 
 Applies to:
-- builder-util-runtime@9.5.1 (MIT)
-- electron-updater@6.8.3 (MIT)
+- builder-util-runtime@9.7.0 (MIT)
+- electron-updater@6.8.9 (MIT)
 
-Representative file: builder-util-runtime@9.5.1/LICENSE
+Representative file: builder-util-runtime@9.7.0/LICENSE
 
 The MIT License (MIT)
 
@@ -1665,7 +1665,7 @@ Applies to:
 - isexe@2.0.0 (ISC)
 - once@1.4.0 (ISC)
 - semver@7.7.4 (ISC)
-- semver@7.8.1 (ISC)
+- semver@7.8.2 (ISC)
 - which@2.0.2 (ISC)
 - wrappy@1.0.2 (ISC)
 
@@ -3308,13 +3308,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-js-yaml@4.1.1 (MIT)
+js-yaml@4.2.0 (MIT)
 -------------------
 
 Applies to:
-- js-yaml@4.1.1 (MIT)
+- js-yaml@4.2.0 (MIT)
 
-Representative file: js-yaml@4.1.1/LICENSE
+Representative file: js-yaml@4.2.0/LICENSE
 
 (The MIT License)
 

@@ -20,3 +20,43 @@ nvm use --silent
 corepack enable
 pnpm dev
 '''
+
+[[actions]]
+name = "Package"
+icon = "run"
+command = '''
+nvm use --silent
+corepack enable
+pnpm --filter @pwrsnap/desktop package --dryrun
+'''
+
+[[actions]]
+name = "Reset TCC"
+icon = "run"
+command = '''
+tccutil reset SystemPolicyDocumentsFolder com.pwrdrvr.pwrsnap && tccutil reset ScreenCapture com.pwrdrvr.pwrsnap
+'''
+
+[[actions]]
+name = "Dev - First Time"
+icon = "run"
+command = '''
+first_run_id="$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p .local
+printf '%s\n' "$first_run_id" > .local/first-run
+echo "PwrSnap first-run ID: $first_run_id"
+PWRSNAP_USER_DATA="/tmp/pwrsnap-firstrun-$first_run_id" open -n apps/desktop/release-stage/dist/mac-universal/PwrSnap.app
+'''
+
+[[actions]]
+name = "Dev - First Time Re-Run"
+icon = "run"
+command = '''
+if [ ! -f .local/first-run ]; then
+  echo "Missing .local/first-run; run Dev - First Time first." >&2
+  exit 1
+fi
+first_run_id="$(cat .local/first-run)"
+echo "PwrSnap first-run ID: $first_run_id"
+PWRSNAP_USER_DATA="/tmp/pwrsnap-firstrun-$first_run_id" open -n apps/desktop/release-stage/dist/mac-universal/PwrSnap.app
+'''

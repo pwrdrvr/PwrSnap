@@ -70,6 +70,7 @@ import { notifyClipboardChanged } from "../clipboard-events";
 import { mapVideoResolveError, resolveVideoExport } from "../recording/video-export-resolver";
 import { getMainLogger } from "../log";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
+import { getActiveExportStrategy } from "./settings-handlers";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
@@ -88,10 +89,11 @@ export function registerClipboardHandlers(): void {
       });
     }
 
-    const targetWidth = targetWidthForImagePreset(req.preset, record.width_px);
+    const strategy = await getActiveExportStrategy();
+    const targetWidth = targetWidthForImagePreset(req.preset, record, strategy);
 
     try {
-      const result = await resolveImagePresetFile(record, req.preset);
+      const result = await resolveImagePresetFile(record, req.preset, strategy);
       const buf = await readFile(result.path);
       const image = nativeImage.createFromBuffer(buf);
       if (image.isEmpty()) {
@@ -156,10 +158,11 @@ export function registerClipboardHandlers(): void {
       });
     }
 
-    const targetWidth = targetWidthForImagePreset(req.preset, record.width_px);
+    const strategy = await getActiveExportStrategy();
+    const targetWidth = targetWidthForImagePreset(req.preset, record, strategy);
 
     try {
-      const result = await resolveImagePresetFile(record, req.preset);
+      const result = await resolveImagePresetFile(record, req.preset, strategy);
       const displayName = buildPresetExportDisplayName({
         record,
         enrichment: getCaptureEnrichment(record.id),
@@ -205,10 +208,11 @@ export function registerClipboardHandlers(): void {
       });
     }
 
-    const targetWidth = targetWidthForImagePreset(req.preset, record.width_px);
+    const strategy = await getActiveExportStrategy();
+    const targetWidth = targetWidthForImagePreset(req.preset, record, strategy);
 
     try {
-      const result = await resolveImagePresetFile(record, req.preset);
+      const result = await resolveImagePresetFile(record, req.preset, strategy);
       clipboard.writeText(result.path);
       log.info("copied path to clipboard", {
         captureId: record.id,

@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import type { CaptureEnrichment } from "@pwrsnap/shared";
+import type { CaptureEnrichment, ExportStrategy } from "@pwrsnap/shared";
+import { resolveExportLadder, rungForPreset } from "@pwrsnap/shared";
 import { PwrSnapMark } from "../shared/BrandMark";
-import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
+import {
+  CopyButton,
+  presetMetrics,
+  rungTag,
+  estimateMetricForRung,
+  type CopyPreset
+} from "../shared/CopyButton";
 import { CodexStatusPill } from "../shared/CodexStatusPill";
 import { AiConsentDialog } from "../shared/AiConsentDialog";
 import { useFieldEditor } from "../shared/useFieldEditor";
@@ -29,6 +36,17 @@ type VariantId = keyof typeof VARIANTS;
 
 function dimText(w: number, h: number) {
   return `${w.toLocaleString()} × ${h.toLocaleString()}`;
+}
+
+/** Preview-size badge text from the capture's scale factor. Reads the
+ *  real `device_pixel_ratio` instead of the old hardcoded "2× retina" so
+ *  1× / 3× / fractional-DPI captures are labeled honestly. */
+function dprBadgeLabel(dpr: number): string {
+  const scale = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  const rounded = Math.round(scale * 10) / 10;
+  const num = Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1);
+  // ≥2× is where macOS calls a display "Retina"; below that it's just 1×.
+  return scale >= 2 ? `${num}× retina` : `${num}×`;
 }
 
 function fmtDurationLabel(seconds: number): string {
@@ -159,6 +177,8 @@ export function FloatOver({
   srcW = 2880,
   srcH = 1800,
   srcBytes = 2.4 * 1024 * 1024,
+  srcDpr = 2,
+  exportStrategy = "legacy",
   copyMetrics,
   copyPulses,
   onDismiss,
@@ -199,6 +219,14 @@ export function FloatOver({
   srcW?: number;
   srcH?: number;
   srcBytes?: number;
+  /** Capture's display scale factor (`device_pixel_ratio`). Drives the
+   *  preview "Retina" badge and the DPI-aware export ladder. Defaults to
+   *  2 to match the legacy hardcoded "2× retina" badge. */
+  srcDpr?: number;
+  /** Active export-preset strategy. `legacy` (default) keeps the cards
+   *  visually identical for normal users; the DPI-aware strategies add
+   *  the Retina/scale tags + rescale the dim estimates. */
+  exportStrategy?: ExportStrategy;
   copyMetrics?: PresetMetricMap | undefined;
   copyPulses?: Readonly<Record<CopyPreset, number>> | undefined;
   onDismiss?: () => void;
@@ -587,7 +615,7 @@ export function FloatOver({
           <b>{dimText(srcW, srcH)}</b>
         </div>
         <div className="fo__preview-size">
-          {asset?.kind === "video" ? fmtDurationLabel(asset.durationSec) : "2× retina"}
+          {asset?.kind === "video" ? fmtDurationLabel(asset.durationSec) : dprBadgeLabel(srcDpr)}
         </div>
 
         {asset?.kind !== "video" && (
@@ -688,22 +716,40 @@ export function FloatOver({
         </div>
       ) : (
         <div className="fo__copy">
-          {RES_PRESETS.map((p) => {
-            const m = copyMetrics?.[p.id] ?? presetMetrics(p.id, srcW, srcH, srcBytes);
-            return (
-              <CopyButton
-                key={p.id}
-                preset={p.id}
-                label={p.label}
-                dim={m.dim}
-                bytes={m.bytes}
-                onCopy={(preset) => onCopy?.(preset)}
-                {...(onCopyPath !== undefined ? { onCopyPath } : {})}
-                {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
-                copyPulse={copyPulses?.[p.id] ?? 0}
-              />
-            );
-          })}
+          {(() => {
+            // Resolve the export ladder once. In legacy mode the cards are
+            // unchanged; with DPI-aware export on, each rung supplies the
+            // Retina/scale tag + a correct pre-render dim estimate.
+            const ladder =
+              exportStrategy === "legacy"
+                ? null
+                : resolveExportLadder(
+                    { widthPx: srcW, heightPx: srcH, devicePixelRatio: srcDpr },
+                    exportStrategy
+                  );
+            return RES_PRESETS.map((p) => {
+              const rung = ladder === null ? undefined : rungForPreset(ladder, p.id);
+              const estimate =
+                rung === undefined
+                  ? presetMetrics(p.id, srcW, srcH, srcBytes)
+                  : estimateMetricForRung(rung, srcW, srcBytes);
+              const m = copyMetrics?.[p.id] ?? estimate;
+              return (
+                <CopyButton
+                  key={p.id}
+                  preset={p.id}
+                  label={p.label}
+                  dim={m.dim}
+                  bytes={m.bytes}
+                  tag={rung === undefined ? undefined : rungTag(rung)}
+                  onCopy={(preset) => onCopy?.(preset)}
+                  {...(onCopyPath !== undefined ? { onCopyPath } : {})}
+                  {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
+                  copyPulse={copyPulses?.[p.id] ?? 0}
+                />
+              );
+            });
+          })()}
         </div>
       )}
 

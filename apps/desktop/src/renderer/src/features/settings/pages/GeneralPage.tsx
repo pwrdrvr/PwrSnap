@@ -41,6 +41,8 @@ export function GeneralPage(): ReactElement {
   const developerMode = settings?.general.developerMode ?? false;
   const launchAtLogin = settings?.general.launchAtLogin ?? false;
   const channel: UpdateChannel = settings?.updates.channel ?? "latest";
+  const dpiAwareExport = settings?.experimental.dpiAwareExport ?? false;
+  const allowRetinaExport = settings?.experimental.allowRetinaExport ?? true;
   const platform = window.pwrsnapApi?.platform;
 
   // Live OS-side registration state, distinct from the saved toggle —
@@ -99,6 +101,18 @@ export function GeneralPage(): ReactElement {
   const onProcessSplitChange = ready
     ? (next: boolean): void => {
         void patch({ experimental: { processSplit: next } });
+      }
+    : undefined;
+
+  const onDpiAwareExportChange = ready
+    ? (next: boolean): void => {
+        void patch({ experimental: { dpiAwareExport: next } });
+      }
+    : undefined;
+
+  const onAllowRetinaExportChange = ready
+    ? (next: boolean): void => {
+        void patch({ experimental: { allowRetinaExport: next } });
       }
     : undefined;
 
@@ -226,6 +240,25 @@ export function GeneralPage(): ReactElement {
           </Row>
         </Card>
       ) : null}
+
+      <Card eyebrow="EXPERIMENTAL" title="DPI-aware export">
+        <Row
+          label="Scale exports by display resolution"
+          sub="Maps Low / Med / High to 25% / 50% / 100% of the capture's pixels instead of the fixed 800 / 1440 / full widths. On a Retina display High is the full 2× image; Med lands at the on-screen (1×) size. Off by default — flip it on to try the new sizing."
+          tag="experimental"
+        >
+          <Switch on={dpiAwareExport} onChange={onDpiAwareExportChange} />
+        </Row>
+        {dpiAwareExport ? (
+          <Row
+            label="Allow Retina export"
+            sub="When on, High keeps the full Retina (2×) pixels. Turn off to cap exports at the on-screen 1× resolution — High becomes today's 50%, with two smaller sizes below it."
+            tag="retina"
+          >
+            <Switch on={allowRetinaExport} onChange={onAllowRetinaExportChange} />
+          </Row>
+        ) : null}
+      </Card>
     </>
   );
 }

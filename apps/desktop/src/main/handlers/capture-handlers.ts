@@ -17,7 +17,7 @@
 // Phase 1.5 wires the float-over to actually fire after a successful
 // capture. Phase 1.6 adds clipboard at this seam.
 
-import { mkdtemp, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,6 +27,7 @@ import { ok, err } from "@pwrsnap/shared";
 import type {
   CapturePresetMetric,
   CaptureRecord,
+  ExportStrategy,
   PwrSnapError,
   Rect,
   RenderPreset,
@@ -49,6 +50,7 @@ import {
 } from "../capture/source-app";
 import {
   clipboardImageBufferFormats,
+  ingestImageBufferToTempPng,
   writeFirstDecodableClipboardBufferToPng,
   type RawClipboardDecodeFailure
 } from "../clipboard-image-buffer";
@@ -65,6 +67,7 @@ import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
+import { getActiveExportStrategy } from "./settings-handlers";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
@@ -398,13 +401,14 @@ export function registerCaptureHandlers(): void {
 
     try {
       const persisted = await persistAndBroadcast(clipboardPng.tempPath, CLIPBOARD_SOURCE, {
-        devicePixelRatio: 1
+        devicePixelRatio: clipboardPng.devicePixelRatio
       });
       if (persisted.ok) {
         log.info("clipboard image pasted into library", {
           captureId: persisted.value.id,
           widthPx: persisted.value.width_px,
-          heightPx: persisted.value.height_px
+          heightPx: persisted.value.height_px,
+          devicePixelRatio: clipboardPng.devicePixelRatio
         });
       }
       return persisted;
@@ -643,7 +647,8 @@ export function registerCaptureHandlers(): void {
     }
 
     try {
-      const presetFile = await renderPresetFile(record, req.preset);
+      const strategy = await getActiveExportStrategy();
+      const presetFile = await renderPresetFile(record, req.preset, strategy);
       const icon = await renderViaCoordinator({
         captureId: record.id,
         srcPath: await ensureEffectiveSrcPath(record),
@@ -696,8 +701,9 @@ export function registerCaptureHandlers(): void {
     }
 
     try {
+      const strategy = await getActiveExportStrategy();
       const rendered = await Promise.all(
-        COPY_PRESETS.map((preset) => renderPresetFile(record, preset))
+        COPY_PRESETS.map((preset) => renderPresetFile(record, preset, strategy))
       );
       return ok({
         metrics: rendered.map(({ path: _path, ...metric }) => metric)
@@ -753,47 +759,60 @@ export function registerCaptureHandlers(): void {
 }
 
 async function writeClipboardImageToTempPng(): Promise<
-  | { ok: true; tempPath: string }
+  | { ok: true; tempPath: string; devicePixelRatio: number }
   | { ok: false; code: "no_image" | "unsupported_image"; message: string; cause?: unknown }
 > {
-  const image = clipboard.readImage();
-  if (!image.isEmpty()) {
-    const tempPath = await makeClipboardTempPngPath();
-    await writeFile(tempPath, image.toPNG());
-    return { ok: true, tempPath };
-  }
+  const decodeFailures: RawClipboardDecodeFailure[] = [];
 
+  // Prefer the raw image flavors on the pasteboard. A PNG flavor is stored
+  // verbatim — no re-encode inflation (the source 612 KB PNG stays 612 KB,
+  // not the ~707 KB a round-trip through Chromium's encoder produces) and
+  // the `pHYs` density survives so we can recover the Retina scale. TIFF /
+  // JPEG are encoded to PNG, but we still read their resolution for the
+  // DPR. Only when no raw flavor decodes do we fall back to the decoded
+  // bitmap (`readImage().toPNG()`), which inflates and drops DPI.
   const decodedBuffer = await writeFirstDecodableClipboardBufferToPng({
     formats: clipboard.availableFormats(),
     readBuffer: (format) => clipboard.readBuffer(format),
     makeTempPath: makeClipboardTempPngPath
   });
-  const decodeFailures: RawClipboardDecodeFailure[] = [];
   if (decodedBuffer.ok) {
     return decodedBuffer;
   }
   decodeFailures.push(...decodedBuffer.failures);
 
+  // A file URL on the clipboard (e.g. a PNG copied in Finder) — ingest the
+  // file directly so a PNG is preserved verbatim and its density is read.
   const filePath = clipboardImageFilePath();
-  if (filePath === null || !looksLikeImageFile(filePath)) {
-    if (decodeFailures.length > 0) {
-      return unsupportedClipboardImage(decodeFailures);
+  if (filePath !== null && looksLikeImageFile(filePath)) {
+    try {
+      const ingested = await ingestImageBufferToTempPng(
+        await readFile(filePath),
+        makeClipboardTempPngPath
+      );
+      return { ok: true, ...ingested };
+    } catch (cause) {
+      decodeFailures.push({ source: filePath, cause });
     }
-    return {
-      ok: false,
-      code: "no_image",
-      message: "The clipboard does not currently contain an image or image file URL."
-    };
   }
 
-  try {
+  // Last resort: the decoded bitmap. This re-encodes via Chromium and
+  // can't recover the source DPI, so the scale defaults to 1×.
+  const image = clipboard.readImage();
+  if (!image.isEmpty()) {
     const tempPath = await makeClipboardTempPngPath();
-    await sharp(filePath).png().toFile(tempPath);
-    return { ok: true, tempPath };
-  } catch (cause) {
-    decodeFailures.push({ source: filePath, cause });
+    await writeFile(tempPath, image.toPNG());
+    return { ok: true, tempPath, devicePixelRatio: 1 };
+  }
+
+  if (decodeFailures.length > 0) {
     return unsupportedClipboardImage(decodeFailures);
   }
+  return {
+    ok: false,
+    code: "no_image",
+    message: "The clipboard does not currently contain an image or image file URL."
+  };
 }
 
 function unsupportedClipboardImage(failures: RawClipboardDecodeFailure[]): {
@@ -941,11 +960,12 @@ async function cropScreenSnapshot(
 
 async function renderPresetFile(
   record: CaptureRecord,
-  preset: RenderPreset
+  preset: RenderPreset,
+  strategy: ExportStrategy
 ): Promise<CapturePresetMetric & { path: string }> {
-  const targetWidth = targetWidthForImagePreset(preset, record.width_px);
+  const targetWidth = targetWidthForImagePreset(preset, record, strategy);
   const scale = Math.min(1, targetWidth / Math.max(1, record.width_px));
-  const result = await resolveImagePresetFile(record, preset);
+  const result = await resolveImagePresetFile(record, preset, strategy);
 
   return {
     preset,
@@ -1018,9 +1038,10 @@ async function persistAndBroadcast(
   // doctor (lazy on first edit-open + eager at boot) upgrades any
   // pre-v2 captures left in the library.
   //
-  // devicePixelRatio threads through so PR #48's clipboard-paste
-  // flow (which passes 1, since pasted bytes aren't from a physical
-  // display) doesn't get hardcoded to 2.
+  // devicePixelRatio threads through so the clipboard-paste flow can pass
+  // the scale it inferred from the pasted image's DPI metadata (pHYs /
+  // TIFF resolution; 144 DPI → 2× Retina), falling back to 1 when the
+  // source carried no density rather than defaulting to 2.
   const { record } = await persistCaptureFromTempV2({
     tempPath,
     sourceApp:

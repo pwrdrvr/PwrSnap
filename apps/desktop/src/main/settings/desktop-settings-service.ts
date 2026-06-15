@@ -133,7 +133,14 @@ export function defaultSettings(): Settings {
       // is opt-in via Settings → General → "Two-process mode" while it
       // soaks. Ignored off macOS. Read once at process start — relaunch
       // to apply.
-      processSplit: false
+      processSplit: false,
+      // DPI-aware export ships OFF so the default install keeps the
+      // legacy 800 / 1440 / source preset widths. Power users opt in from
+      // Settings → General. `allowRetinaExport` only matters once the
+      // toggle is on; it defaults ON so the opt-in state is "give me the
+      // full Retina image at High".
+      dpiAwareExport: false,
+      allowRetinaExport: true
     },
     appearance: {
       // "system" tracks the OS appearance via the renderer's
@@ -575,11 +582,19 @@ function parseV1(raw: unknown): Settings | null {
       launchAtLogin: pickBoolean(general.launchAtLogin, defaults.general.launchAtLogin)
     },
     experimental: {
-      // `experimental.processSplit` landed after v1 shipped; older
-      // files won't have it. pickBoolean fills in the default (true —
-      // the macOS two-process split is mainline) so the field is
-      // always present in-memory.
-      processSplit: pickBoolean(experimental.processSplit, defaults.experimental.processSplit)
+      // `experimental.*` is additive — older files won't have these.
+      // pickBoolean fills the defaults (processSplit + dpiAwareExport OFF,
+      // allowRetinaExport ON) so the fields are always present in-memory.
+      // No `schemaVersion` bump per the additive convention.
+      processSplit: pickBoolean(experimental.processSplit, defaults.experimental.processSplit),
+      dpiAwareExport: pickBoolean(
+        experimental.dpiAwareExport,
+        defaults.experimental.dpiAwareExport
+      ),
+      allowRetinaExport: pickBoolean(
+        experimental.allowRetinaExport,
+        defaults.experimental.allowRetinaExport
+      )
     },
     appearance: {
       // `appearance` landed after v1 shipped; older files won't have

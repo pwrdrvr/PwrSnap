@@ -1615,6 +1615,18 @@ export type Settings = {
      *  Meaningless (ignored) off macOS, where the boot is always
      *  single-process. */
     processSplit: boolean;
+    /** When true, the Low / Med / High image-export presets scale to
+     *  25% / 50% / 100% of the capture's resolution (DPI-aware) instead
+     *  of the legacy fixed-width clamp (800 / 1440 / source). Resolves to
+     *  the `scalePhysical` / `scaleLogical` export strategies in
+     *  `@pwrsnap/shared`'s `resolveExportStrategy`. Default false. See
+     *  docs/plans/2026-06-14-001-feat-dpi-aware-export-presets-plan.md. */
+    dpiAwareExport: boolean;
+    /** Only meaningful when `dpiAwareExport` is true. When true (default)
+     *  the 100% rung is the full native capture (Retina on a 2× display);
+     *  when false the ladder re-anchors to the on-screen / logical
+     *  resolution so the top rung is 1× with two smaller rungs below. */
+    allowRetinaExport: boolean;
   };
   /** Per-user UI appearance. `theme: "system"` (default) tracks the
    *  OS-level `prefers-color-scheme`; explicit `"dark"` / `"light"`

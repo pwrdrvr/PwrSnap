@@ -355,6 +355,21 @@
   font: 600 11px/1 var(--font-mono);
   min-width: 0;
 }
+/* DPI callout under the dimensions — only present when the experimental
+   DPI-aware export ladder is active. Sits inside the dim column so it can
+   never overflow the narrow card horizontally. */
+.fo__copy-tag {
+  margin-top: 3px;
+  font: 700 8px/1 var(--font-sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.55;
+  white-space: nowrap;
+}
+.fo__copy-tag.is-retina {
+  color: var(--accent);
+  opacity: 0.9;
+}
 .fo__copy-bytes {
   display: flex;
   flex-direction: column;

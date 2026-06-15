@@ -1,24 +1,32 @@
-import type { RenderPreset } from "@pwrsnap/shared";
+import type { RenderPreset, ExportStrategy } from "@pwrsnap/shared";
 import type { CaptureRecord, BundleLayerNode } from "@pwrsnap/shared";
+import { resolveExportRung } from "@pwrsnap/shared";
 import { stat } from "node:fs/promises";
 import { renderViaCoordinator } from "./coordinator";
 import { listLayerTree } from "../persistence/layers-repo";
 import { ensureEffectiveSrcPath } from "../persistence/source-store";
 
-export const IMAGE_PRESET_WIDTHS = {
-  low: 800,
-  med: 1440,
-  high: 0
-} as const satisfies Record<RenderPreset, number>;
-
+/** Resolve a preset to its output pixel width under the active export
+ *  strategy. Delegates to the shared ladder (the one place that owns the
+ *  legacy 800/1440/source mapping AND the DPI-aware scale ladders) so the
+ *  renderer's copy-card labels and this render path can never drift.
+ *  `strategy` defaults to `legacy` for callers that haven't threaded the
+ *  setting through yet. */
 export function targetWidthForImagePreset(
   preset: RenderPreset,
-  sourceWidthPx: number
+  record: Pick<CaptureRecord, "width_px" | "height_px" | "device_pixel_ratio">,
+  strategy: ExportStrategy = "legacy"
 ): number {
-  const sourceWidth = Math.max(1, sourceWidthPx);
-  const presetWidth = IMAGE_PRESET_WIDTHS[preset];
-  if (presetWidth === 0) return sourceWidth;
-  return Math.min(sourceWidth, presetWidth);
+  const rung = resolveExportRung(
+    {
+      widthPx: record.width_px,
+      heightPx: record.height_px,
+      devicePixelRatio: record.device_pixel_ratio
+    },
+    strategy,
+    preset
+  );
+  return rung?.widthPx ?? Math.max(1, record.width_px);
 }
 
 export type ImagePresetFile = {
@@ -30,9 +38,10 @@ export type ImagePresetFile = {
 
 export async function resolveImagePresetFile(
   record: CaptureRecord,
-  preset: RenderPreset
+  preset: RenderPreset,
+  strategy: ExportStrategy = "legacy"
 ): Promise<ImagePresetFile> {
-  const targetWidth = targetWidthForImagePreset(preset, record.width_px);
+  const targetWidth = targetWidthForImagePreset(preset, record, strategy);
   if (targetWidth === record.width_px && canReuseSourceImage(record)) {
     const path = await ensureEffectiveSrcPath(record);
     const stats = await stat(path);

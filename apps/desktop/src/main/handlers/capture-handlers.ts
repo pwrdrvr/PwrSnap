@@ -55,7 +55,7 @@ import {
 import { broadcastCapturesChanged } from "../events";
 import { setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
-import { findMainLibraryWindow, reclaimDockIconIfLibraryAlive } from "../window";
+import { findMainLibraryWindow, scheduleDockReclaim } from "../window";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
 import { getCaptureById, insertCapture } from "../persistence/captures-repo";
 import { ensureEffectiveSrcPath, putCaptureSource } from "../persistence/source-store";
@@ -259,11 +259,14 @@ export function registerCaptureHandlers(): void {
           library.focus();
         }
       }
-      // Guarded safety net: if the selector-hide cascade still demotes
-      // us to Accessory (no-op when the dock is already visible, or
-      // when no Library exists), re-assert Regular policy without
-      // stealing focus.
-      reclaimDockIconIfLibraryAlive();
+      // The Accessory demotion that strips the Library's Dock icon
+      // lands asynchronously — and when PwrSnap was a background app
+      // (capture triggered from another app), WITHOUT a
+      // did-resign-active to drive the app-level safety net. A single
+      // synchronous reclaim races it and loses. Re-assert Regular at a
+      // spread of delays — guarded, so it no-ops once the Dock is back,
+      // and never steals focus from the app the user's now in.
+      scheduleDockReclaim();
       return err({
         kind: "capture",
         code: selection.reason,
@@ -292,11 +295,12 @@ export function registerCaptureHandlers(): void {
       // the float-over (also a non-activating panel at floating level 3)
       // sits above it through the idle→loaded swap without stealing
       // focus. Re-activating it was the main trigger for AppKit demoting
-      // PwrSnap to Accessory (Dock flash + Library hide/reshow). Guarded
-      // reclaim only — a no-op when the dock is already visible or no
-      // Library exists. (Full rationale on the cancel branch above.)
+      // PwrSnap to Accessory (Dock flash + Library hide/reshow). Reclaim
+      // across a spread of delays to catch the async demotion — guarded,
+      // so it no-ops once the Dock is back. (Full rationale on the
+      // cancel branch above.)
       hideSelector();
-      reclaimDockIconIfLibraryAlive();
+      scheduleDockReclaim();
     };
     try {
       // Two capture paths:

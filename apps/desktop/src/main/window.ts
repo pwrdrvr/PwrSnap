@@ -321,7 +321,39 @@ export function reclaimDockIconIfLibraryAlive(options: { force?: boolean } = {})
   if (isE2E() && options.force !== true) return;
   if (libraryWindow === null || libraryWindow.isDestroyed()) return;
   if (app.dock?.isVisible() === true) return;
+  // We only reach here when the Library is alive but the Dock icon is
+  // gone — the fingerprint of an AppKit Accessory demotion that orphans
+  // the Library. Log it: it's the symptom users report as "the Library
+  // disappeared from the Dock."
+  log.info("reclaiming Dock icon — Library alive but Dock tile stripped (AppKit Accessory demotion)");
   showDockWithDevelopmentIcon();
+}
+
+/**
+ * Race-proof companion to {@link reclaimDockIconIfLibraryAlive}.
+ *
+ * The Accessory demotion that strips the Library's Dock icon lands
+ * ASYNCHRONOUSLY — tens to a few hundred ms after the capture overlays
+ * show/hide. Worse, when PwrSnap was a BACKGROUND app the whole time
+ * (the user triggered the capture from another app), it can demote
+ * WITHOUT ever firing `did-resign-active`, so the app-level safety net
+ * never runs. A single synchronous reclaim races the demotion and
+ * loses: the Dock is still visible at reclaim time, the guard returns,
+ * and the demotion then strips the icon with nothing left to catch it.
+ *
+ * Re-assert Regular policy at a spread of delays so we catch the
+ * demotion whenever it lands within ~1s. Each attempt defers to
+ * `reclaimDockIconIfLibraryAlive`, which no-ops once the Dock is back,
+ * so the later attempts are harmless — no repeated `setActivationPolicy`
+ * and no traffic-light flash. All attempts are deferred (no synchronous
+ * call): re-asserting policy inside a Cocoa event handler can race
+ * AppKit's own policy write.
+ */
+export function scheduleDockReclaim(): void {
+  if (process.platform !== "darwin") return;
+  for (const delayMs of [0, 120, 300, 600, 1000]) {
+    setTimeout(() => reclaimDockIconIfLibraryAlive(), delayMs);
+  }
 }
 
 /**

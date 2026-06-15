@@ -161,6 +161,7 @@ import {
   createMainWindow,
   findMainLibraryWindow,
   reclaimDockIconIfLibraryAlive,
+  scheduleDockReclaim,
   refreshWindowsTitleBarOverlay
 } from "./window";
 import { installLaunchAtLoginSync, wasLaunchedAtLogin } from "./launch-at-login";
@@ -2033,18 +2034,24 @@ export function bootstrapApp(): void {
     // deactivation settle first; calling app.dock.show() inside the
     // event handler can race with AppKit's policy write).
     //
-    // setImmediate keeps us off the current Cocoa run-loop tick. The
-    // re-claim is guarded by both `findMainLibraryWindow() !== null`
-    // and `app.dock.isVisible() === false`, so steady-state inactive
-    // apps with no Library aren't churned.
-    // Combined-only: the agent never owns a Library window or Dock
-    // icon, and the library process never loses its Dock icon to the
-    // AppKit demotion this works around (no floating panels there).
+    // A single setImmediate reclaim isn't enough: AppKit's policy write
+    // for the demotion can land AFTER the immediate tick, so the
+    // one-shot reclaim sees a still-visible Dock, no-ops, and the
+    // demotion then strips the icon with nothing left to catch it.
+    // scheduleDockReclaim re-asserts across a spread of delays; each
+    // attempt is guarded by `findMainLibraryWindow() !== null` and
+    // `app.dock.isVisible() === false`, so steady-state inactive apps
+    // with no Library aren't churned and recovered ones stop after the
+    // first hit.
+    //
+    // Combined (single-process) role only: in the split the agent never
+    // owns a Library window or Dock icon, and the library process never
+    // loses its Dock icon to this AppKit demotion (no floating panels
+    // there) — so the recovery is only relevant when capture + Library
+    // share one process.
     if (process.platform === "darwin" && !isE2E && role === "combined") {
       app.on("did-resign-active", () => {
-        setImmediate(() => {
-          reclaimDockIconIfLibraryAlive();
-        });
+        scheduleDockReclaim();
       });
     }
   });

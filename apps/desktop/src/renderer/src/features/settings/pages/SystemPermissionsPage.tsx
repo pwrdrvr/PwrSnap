@@ -130,27 +130,41 @@ export function SystemPermissionsPage(): ReactElement {
     async (permission: RecordingPermission, status: RecordingPermissionStatus) => {
       setBusyPermission(permission);
       try {
-        // Microphone always uses the prompt API. Screen / system audio
-        // use the prompt API only when PwrSnap has never asked (the
-        // synthesized `not-determined` effective status, derived from
-        // `screenCapturePrompted`) — that call fires the macOS dialog and
-        // registers PwrSnap in the Privacy pane. Once macOS has a decision
-        // on file it won't re-prompt, so we open System Settings instead.
-        const usePromptApi = permission === "microphone" || status === "not-determined";
-        if (usePromptApi) {
+        if (permission === "microphone") {
+          // Mic: askForMediaAccess re-prompts directly.
           const res = await dispatch("permissions:request", { permission });
           if (!res.ok) {
             setLastError(res.error.message);
             return;
           }
-        } else {
-          const res = await dispatch("permissions:openSystemSettings", { permission });
-          if (!res.ok) {
-            setLastError(res.error.message);
-            return;
-          }
+          await refresh();
+          return;
+        }
+        // Screen / system audio: ALWAYS try a real screen-capture probe
+        // FIRST — even on the "Open System Settings" (denied) button. The
+        // probe re-registers PwrSnap + shows the OS dialog when macOS has
+        // no decision on file (fresh install, or after a `tccutil reset` /
+        // a new unsigned dev build that gets a different TCC identity), and
+        // it picks up a grant that just landed. Never skip it — that's how
+        // a denied-looking app gets back into the Privacy pane.
+        const res = await dispatch("permissions:request", { permission });
+        if (!res.ok) {
+          setLastError(res.error.message);
+          return;
         }
         await refresh();
+        // If the probe didn't grant AND macOS had already recorded a
+        // decision (effective status was "denied", not the synthesized
+        // "not-determined" first-ask), open System Settings as the
+        // fallback — macOS won't re-prompt for an already-decided app, so
+        // the Privacy pane is the only recovery. On the first ask the OS
+        // dialog is the UI; don't stack a Settings window on top of it.
+        if (res.value.status !== "granted" && status === "denied") {
+          const opened = await dispatch("permissions:openSystemSettings", { permission });
+          if (!opened.ok) {
+            setLastError(opened.error.message);
+          }
+        }
       } finally {
         setBusyPermission(null);
       }

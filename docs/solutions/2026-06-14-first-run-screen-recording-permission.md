@@ -107,20 +107,29 @@ moment the first capture lands. Honors `prefers-reduced-motion`.
 
 - **Do not** reintroduce a screen `not-determined` code path expecting
   macOS to produce it — it won't. `screenCapturePrompted` is the only
-  signal that distinguishes never-asked from denied.
+  signal that distinguishes never-asked from denied (for messaging).
+- **CARDINAL RULE — never let `screenCapturePrompted` pre-decide
+  "denied" and skip the real attempt.** This bit us (2026-06-15): the
+  gate's old "asked before → just open Settings, never re-probe" branch
+  dead-ended after a `tccutil reset` (or a new unsigned dev build that
+  gets a different TCC identity), which wipes macOS's decision + the
+  Privacy-pane listing but leaves our flag `true`. Result: clicking
+  Quick Capture / "Open System Settings" opened Settings for an app macOS
+  no longer listed and **never re-registered it**, because it never tried
+  to capture again. Fix: `guardScreenCapture` now ALWAYS runs the
+  `getSources` probe when not granted (it re-registers + re-prompts when
+  macOS has no decision; harmless no-op otherwise), THEN decides — proceed
+  if it granted, stop quietly on the first ask (OS dialog is the UI), else
+  route to Settings. The Settings page's "Open System Settings" button
+  likewise probes FIRST, then opens System Settings only if the probe
+  didn't grant. The flag now only controls first-ask-vs-later messaging,
+  never whether we attempt.
 - **`desktopCapturer.getSources` is not a reliable *granted* check.**
   When denied it can still return a non-empty source array with
-  **black** thumbnails. Use it to *trigger* the prompt, not to *detect*
-  the grant. For the grant check, `getMediaAccessStatus` is authoritative
-  (modulo the stale-until-relaunch lag).
-- **`tccutil reset ScreenCapture`** clears macOS's decision *and* the
-  Privacy-pane listing but leaves `screenCapturePrompted = true` in our
-  settings, so the gate would route to a pane that no longer lists us.
-  The gate tolerates this: a settings-read failure defaults to
-  never-asked, and the worst case is one extra harmless prompt attempt.
-  If this becomes a real complaint, re-prompt when
-  `screenCapturePrompted` is true but the pane listing is gone (no clean
-  API for "are we listed", so we'd just always try the prompt first).
+  **black** thumbnails. Use it to *trigger/register* (always safe to
+  call), not to *detect* the grant. For the grant check,
+  `getMediaAccessStatus` is authoritative (modulo the stale-until-relaunch
+  lag, which is why the route-to-Settings copy says "relaunch").
 - The separate `capture/permissions.ts` module now holds **only**
   `classifyCaptureError` (used by `screencapture.ts`). Its old
   `checkPermission` / `openSystemSettingsForPermission` exports were dead

@@ -10,7 +10,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
-import type { PermissionReadinessReport } from "@pwrsnap/shared";
+import type { PermissionReadinessReport, RecordingPermissionStatus } from "@pwrsnap/shared";
 import { SystemPermissionsPage } from "../SystemPermissionsPage";
 
 beforeAll(() => {
@@ -19,7 +19,13 @@ beforeAll(() => {
 
 type AnyResult = { ok: true; value: unknown } | { ok: false; error: { message: string } };
 
-function installFakeApi(report: PermissionReadinessReport): {
+function installFakeApi(
+  report: PermissionReadinessReport,
+  // Status that `permissions:request` (the real screen-capture probe)
+  // reports back. Defaults to the report's screen status (probe didn't
+  // change anything); pass "granted" to simulate the user approving.
+  requestStatus?: RecordingPermissionStatus
+): {
   calls: { name: string; req: unknown }[];
 } {
   const calls: { name: string; req: unknown }[] = [];
@@ -30,6 +36,9 @@ function installFakeApi(report: PermissionReadinessReport): {
       dispatch: async (name: string, req: unknown): Promise<AnyResult> => {
         calls.push({ name, req });
         if (name === "permissions:readiness") return { ok: true, value: report };
+        if (name === "permissions:request") {
+          return { ok: true, value: { status: requestStatus ?? report.screenRecording } };
+        }
         return { ok: true, value: undefined };
       }
     }
@@ -40,10 +49,13 @@ function installFakeApi(report: PermissionReadinessReport): {
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-async function render(report: PermissionReadinessReport): Promise<{
+async function render(
+  report: PermissionReadinessReport,
+  requestStatus?: RecordingPermissionStatus
+): Promise<{
   calls: { name: string; req: unknown }[];
 }> {
-  const api = installFakeApi(report);
+  const api = installFakeApi(report, requestStatus);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -109,12 +121,14 @@ describe("SystemPermissionsPage — screen permission disambiguation", () => {
     expect(row.querySelector("button")).toBeNull();
   });
 
-  test("Request access dispatches permissions:request for screen", async () => {
+  test("Request access (first ask) probes but does NOT open System Settings", async () => {
     const { calls } = await render({ ...baseReport, screenCapturePrompted: false });
     const button = rowByTag("screen").querySelector("button");
     await act(async () => {
       button?.click();
     });
+    const names = calls.map((c) => c.name);
+    // Always probe via the real screen-capture attempt…
     expect(
       calls.some(
         (c) =>
@@ -122,5 +136,36 @@ describe("SystemPermissionsPage — screen permission disambiguation", () => {
           (c.req as { permission?: string }).permission === "screen"
       )
     ).toBe(true);
+    // …but on the first ask the OS dialog is the UI — don't pile Settings on.
+    expect(names).not.toContain("permissions:openSystemSettings");
+  });
+
+  test("Open System Settings (denied) probes FIRST, then opens System Settings", async () => {
+    // The probe is what re-registers PwrSnap after a tccutil reset / new
+    // build — clicking must never skip it.
+    const { calls } = await render({ ...baseReport, screenCapturePrompted: true }, "denied");
+    const button = rowByTag("screen").querySelector("button");
+    expect(button?.textContent).toBe("Open System Settings");
+    await act(async () => {
+      button?.click();
+    });
+    const names = calls.map((c) => c.name);
+    expect(names).toContain("permissions:request");
+    expect(names).toContain("permissions:openSystemSettings");
+    // Order: probe before the Settings fallback.
+    expect(names.indexOf("permissions:request")).toBeLessThan(
+      names.indexOf("permissions:openSystemSettings")
+    );
+  });
+
+  test("denied screen where the probe grants in-session → no System Settings", async () => {
+    const { calls } = await render({ ...baseReport, screenCapturePrompted: true }, "granted");
+    const button = rowByTag("screen").querySelector("button");
+    await act(async () => {
+      button?.click();
+    });
+    const names = calls.map((c) => c.name);
+    expect(names).toContain("permissions:request");
+    expect(names).not.toContain("permissions:openSystemSettings");
   });
 });

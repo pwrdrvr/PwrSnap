@@ -32,6 +32,7 @@ import {
   shouldConsiderRaisingOurWindows
 } from "./capture/source-app";
 import { getAppIconPath } from "./app-icons/app-icon-cache";
+import { installAppQuitTeardownHandlers } from "./app-lifecycle";
 import { setFloatOverState } from "./float-over";
 import { bus } from "./command-bus";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
@@ -1258,6 +1259,7 @@ export function bootstrapApp(): void {
   if (role !== "combined") {
     log.info("booting with process role", { role, pid: process.pid });
   }
+  installAppQuitTeardownHandlers();
 
   // Login-shell PATH resolution moved into app.whenReady() (normal-boot
   // section) and OFF the main thread — see login-shell-path.ts. The old

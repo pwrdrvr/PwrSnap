@@ -144,6 +144,6 @@ export function stopLibraryProcess(): void {
   endpoint = null;
   ep?.close();
   if (spawned !== null && spawned.exitCode === null) {
-    spawned.kill();
+    spawned.kill("SIGTERM");
   }
 }

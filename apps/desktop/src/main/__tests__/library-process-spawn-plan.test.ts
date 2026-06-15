@@ -4,15 +4,62 @@
 // the app dir argument or it boots Electron's default app.
 
 import { describe, expect, test, vi } from "vitest";
+import { ok } from "@pwrsnap/shared";
 
-vi.mock("electron", () => ({ app: {} }));
+const mocks = vi.hoisted(() => ({
+  bridgeClose: vi.fn(),
+  childKill: vi.fn(),
+  spawn: vi.fn()
+}));
+
+vi.mock("node:child_process", () => ({
+  spawn: mocks.spawn
+}));
+
+vi.mock("electron", () => ({
+  app: {
+    getAppPath: () => "/repo/apps/desktop",
+    isPackaged: false
+  }
+}));
 vi.mock("../log", () => ({
   getMainLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })
 }));
+vi.mock("../process-bridge/channel", () => ({
+  channelForChildProcess: vi.fn(() => ({}))
+}));
+vi.mock("../process-bridge/endpoint", () => ({
+  BridgeEndpoint: class {
+    close = mocks.bridgeClose;
+    waitForPeer = vi.fn(async () => ok(undefined));
+    dispatchRemote = vi.fn(async () => ok(undefined));
+    emitEvent = vi.fn();
+    cancelRemote = vi.fn();
+  }
+}));
 
-const { libraryProcessSpawnPlan } = await import("../process-split/library-process-supervisor");
+const {
+  ensureLibraryProcess,
+  libraryProcessSpawnPlan,
+  stopLibraryProcess
+} = await import("../process-split/library-process-supervisor");
 
 describe("libraryProcessSpawnPlan", () => {
+  test("agent stop sends SIGTERM to the supervised library child", () => {
+    const child = {
+      exitCode: null,
+      kill: mocks.childKill,
+      on: vi.fn()
+    };
+    mocks.spawn.mockReturnValue(child);
+
+    ensureLibraryProcess();
+    stopLibraryProcess();
+
+    expect(mocks.bridgeClose).toHaveBeenCalledTimes(1);
+    expect(mocks.childKill).toHaveBeenCalledWith("SIGTERM");
+  });
+
   test("packaged: relaunch our own binary with only the role flag", () => {
     expect(
       libraryProcessSpawnPlan({

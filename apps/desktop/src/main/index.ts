@@ -49,6 +49,7 @@ import {
 } from "./handlers/app-handlers";
 import {
   clipboardHasPasteableImage,
+  librarySourceWindowIds,
   registerCaptureHandlers
 } from "./handlers/capture-handlers";
 import { registerAcpHandlers } from "./handlers/acp-handlers";
@@ -917,7 +918,9 @@ function pickFocusTargetForRecording(overlapping: BrowserWindow[]): BrowserWindo
  * this is the explicit "record" entry point used by the videoCapture
  * hotkey and the tray's Record button.
  */
-async function runInteractiveRecord(): Promise<void> {
+async function runInteractiveRecord(
+  protectWindowIds: readonly number[] = []
+): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
   // Pick a rect / window via the existing region selector. We can't
   // route through capture:interactive (which persists an image on
@@ -935,7 +938,14 @@ async function runInteractiveRecord(): Promise<void> {
   const selection = await pickRegion({
     mode: "auto",
     keepPwrSnapChrome: false,
-    intent: "video"
+    intent: "video",
+    // Mirror the snap path: when the record was triggered from the
+    // Library's own button, content-protect the Library out of the
+    // frozen snapshot so it isn't part of the recording (the user
+    // clicked a control ON it — they didn't mean to record it). A
+    // hotkey or tray trigger passes an empty list and leaves the
+    // Library as a valid target.
+    protectWindowIds
   });
   if (!selection.ok) {
     setFloatOverState({ kind: "cancel" });
@@ -1580,8 +1590,12 @@ export function bootstrapApp(): void {
       // Library's Video chip. Fire-and-forget — lifecycle broadcasts on
       // `events:recording:*`, so we ack immediately rather than awaiting
       // the whole pick→countdown→record chain.
-      bus.register("capture:videoInteractive", async () => {
-        void runInteractiveRecord();
+      bus.register("capture:videoInteractive", async (_req, ctx) => {
+        // Same Library-protection rule as `capture:interactive`: a record
+        // triggered from the Library's own Video chip keeps the Library
+        // out of the frozen snapshot. Tray / hotkey triggers resolve to
+        // an empty list and leave the Library as a valid target.
+        void runInteractiveRecord(librarySourceWindowIds(ctx));
         return ok(undefined);
       });
       registerAppUpdateHandlers();

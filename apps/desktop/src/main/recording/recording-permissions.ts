@@ -69,8 +69,15 @@ function fromElectronStatus(value: string): RecordingPermissionStatus {
 /** Read screen-recording readiness without prompting. Returns
  *  `granted` on non-darwin so dev / Linux CI environments don't
  *  surface false-negative banners for code paths that gate on
- *  this. */
-function readScreenStatus(): RecordingPermissionStatus {
+ *  this.
+ *
+ *  NOTE: on macOS this is backed by the boolean
+ *  `CGPreflightScreenCaptureAccess()`, so it only ever returns
+ *  `granted` or `denied` — never `not-determined`. A fresh install
+ *  that has never attempted a capture reads `denied`, indistinguishable
+ *  from an explicit denial. The capture gate disambiguates the two via
+ *  the persisted `recording.screenCapturePrompted` flag. */
+export function readScreenStatus(): RecordingPermissionStatus {
   if (process.platform !== "darwin") return "granted";
   return fromElectronStatus(systemPreferences.getMediaAccessStatus("screen"));
 }
@@ -164,7 +171,7 @@ export function needsAttention(readiness: RecordingReadiness): boolean {
  * trigger. `thumbnailSize` is a 1×1 placeholder so we don't pay for
  * a real thumbnail render on a path we don't consume.
  */
-async function triggerScreenCapturePrompt(): Promise<void> {
+export async function triggerScreenCapturePrompt(): Promise<void> {
   try {
     await desktopCapturer.getSources({
       types: ["screen"],
@@ -210,34 +217,26 @@ export async function requestPermission(
     }
     case "screen":
     case "systemAudio": {
-      // Branch on the current TCC state. `not-determined` means
-      // PwrSnap has never been seen by TCC for this capability — the
-      // Screen Recording pane will not list our bundle, so routing
-      // the user there is a dead-end. Force the prompt by issuing a
-      // real screen-source request via `desktopCapturer.getSources`;
-      // macOS shows the standard "PwrSnap would like to record this
-      // computer's screen" dialog and registers our bundle ID in the
-      // pane regardless of the user's answer.
+      // No `askForMediaAccess` equivalent exists for screen capture.
+      // Issuing a real screen-source request via
+      // `desktopCapturer.getSources` drives the macOS first-grant dialog
+      // AND registers PwrSnap's bundle ID in System Settings → Privacy &
+      // Security → Screen & System Audio Recording. That registration is
+      // the whole point: until it happens the pane doesn't list us, so
+      // there is nothing for an "Open System Settings" button to point
+      // at — routing there on a fresh install is the dead-end this fix
+      // removes.
       //
-      // Any other recoverable state (`denied`, `unknown`) means we are
-      // already in the list and the user needs to flip a checkbox.
-      // macOS does not re-prompt once a decision has been recorded,
-      // so the only useful action is to open Settings.
-      const current = readScreenStatus();
-      if (current === "not-determined") {
-        await triggerScreenCapturePrompt();
-        return { status: readScreenStatus(), openedSettings: false };
-      }
-      try {
-        await openSystemSettingsFor(permission);
-        return { status: readScreenStatus(), openedSettings: true };
-      } catch (cause) {
-        log.warn("permissions:request: open settings failed", {
-          permission,
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
-        return { status: readScreenStatus(), openedSettings: false };
-      }
+      // The caller (System Permissions page) only invokes this verb when
+      // PwrSnap has NOT yet asked (`recording.screenCapturePrompted ===
+      // false`). Once macOS has recorded a decision it will not prompt
+      // again, so the page switches to the `permissions:openSystemSettings`
+      // path. The `permissions:request` HANDLER persists the
+      // `screenCapturePrompted` flag after this returns. A few macOS
+      // configurations grant in-session straight off the dialog; we read
+      // the status back so the caller sees the live result.
+      await triggerScreenCapturePrompt();
+      return { status: readScreenStatus(), openedSettings: false };
     }
   }
 }

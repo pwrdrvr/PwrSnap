@@ -150,7 +150,12 @@ export function defaultSettings(): Settings {
       // include everything". Once they pick, the choice persists.
       includeSystemAudio: false,
       includeMicrophone: false,
-      lastRoutedPermissionFingerprint: ""
+      lastRoutedPermissionFingerprint: "",
+      // Fresh install has never triggered the macOS Screen Recording
+      // prompt, so the System Permissions page + the capture gate show
+      // "Not yet requested" and fire the OS prompt on first use rather
+      // than dead-ending at "Open System Settings".
+      screenCapturePrompted: false
     },
     editor: defaultEditorSettings(),
     library: defaultLibrarySettings()
@@ -590,6 +595,14 @@ function parseV1(raw: unknown): Settings | null {
       lastRoutedPermissionFingerprint: pickString(
         recording.lastRoutedPermissionFingerprint,
         defaults.recording.lastRoutedPermissionFingerprint
+      ),
+      // `screenCapturePrompted` landed with the first-run permission fix;
+      // older files won't have it. Default false so existing installs
+      // re-run the honest first-run prompt path once (harmless if screen
+      // is already granted — the gate short-circuits before prompting).
+      screenCapturePrompted: pickBoolean(
+        recording.screenCapturePrompted,
+        defaults.recording.screenCapturePrompted
       )
     },
     // `editor.*` landed in the v2-editor refresh (docs/plans/2026-05-23-

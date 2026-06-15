@@ -116,7 +116,7 @@ function makeSettings(overrides?: {
       matchingText: { enabled: overrides?.matchingTextEnabled ?? true },
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
     },
-    library: { detailRail: { pinned: true, lastSelectedTab: "info" } }
+    library: { detailRail: { pinned: true, lastSelectedTab: "info" }, confirmBeforeTrash: true }
   };
 }
 

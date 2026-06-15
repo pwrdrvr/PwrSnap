@@ -768,6 +768,14 @@ export function useUndoRedo(opts: {
   // focus-aware, double-fire-guarded handler that also reaches text
   // fields and runs in every window. See
   // docs/solutions/2026-06-13-edit-menu-undo-redo-bridge.md.
+  // Capability probes for the bridge. Refs (not the booleans directly) so a
+  // single registration sees live values — the bridge delegates to the
+  // capture-level fallback (restore last-deleted snap) the moment this stack
+  // runs dry, without needing to re-register on every push/pop.
+  const canUndoRef = useRef(false);
+  const canRedoRef = useRef(false);
+  canUndoRef.current = past.length > 0;
+  canRedoRef.current = future.length > 0;
   useEffect(() => {
     return registerEditorUndoRedo({
       undo: () => {
@@ -775,7 +783,9 @@ export function useUndoRedo(opts: {
       },
       redo: () => {
         void redo();
-      }
+      },
+      canUndo: () => canUndoRef.current,
+      canRedo: () => canRedoRef.current
     });
   }, [undo, redo]);
 

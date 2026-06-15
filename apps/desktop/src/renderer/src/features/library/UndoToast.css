@@ -1,0 +1,111 @@
+/* Undo toast for capture soft-deletes (features/library/UndoToast.tsx).
+   Sits in the App's lower-left toast stack (.app-toast-stack), floating
+   over the library and clear of the bottom-right post-capture float-over. */
+
+.ps-undo-toast {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  /* A touch more top padding leaves room under the countdown strip. */
+  padding: 10px 8px 8px 13px;
+  background: color-mix(in srgb, var(--bg-panel-elevated) 96%, transparent);
+  border: 1px solid var(--border-strong);
+  /* Rounded card (not a pill) so the full-width countdown strip across the
+     top reads cleanly — mirrors the float-over toast. */
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  box-shadow: 0 14px 36px color-mix(in srgb, var(--shadow-base) 50%, transparent);
+  animation: ps-undo-toast-in 140ms ease-out;
+  pointer-events: auto;
+}
+
+@keyframes ps-undo-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Auto-dismiss countdown — depleting strip across the top, same language as
+   the float-over toast's `.fo__progress`. Width is driven by an inline
+   scaleX(progress) from 1 → 0; transform-origin left so it recedes toward
+   the left ("right to left") before the toast closes. */
+.ps-undo-toast__progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: transparent;
+  z-index: 1;
+}
+.ps-undo-toast__progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-strong) 100%);
+  box-shadow: 0 0 8px var(--accent-shadow);
+  transform-origin: left center;
+  transition: transform 100ms linear, opacity 200ms ease;
+}
+.ps-undo-toast.is-paused .ps-undo-toast__progress-fill {
+  opacity: 0.25;
+}
+
+.ps-undo-toast__icon {
+  color: var(--text-muted);
+  flex: none;
+}
+
+.ps-undo-toast__msg {
+  color: var(--text-primary);
+  font: 600 12px/1 var(--font-sans);
+  white-space: nowrap;
+}
+
+.ps-undo-toast__undo {
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+  font: 700 11px/1 var(--font-sans);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+.ps-undo-toast__undo:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.ps-undo-toast__undo:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.ps-undo-toast__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.ps-undo-toast__close:hover {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+}
+.ps-undo-toast__close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

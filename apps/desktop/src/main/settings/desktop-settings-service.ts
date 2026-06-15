@@ -171,7 +171,10 @@ function defaultLibrarySettings(): Settings["library"] {
     detailRail: {
       pinned: true,
       lastSelectedTab: "info"
-    }
+    },
+    // Confirm soft-deletes by default; users can opt out via the popover's
+    // "Don't ask again" or re-enable in Settings → Storage & retention.
+    confirmBeforeTrash: true
   };
 }
 
@@ -769,8 +772,17 @@ function parseLibrarySettings(
   defaults: Settings["library"]
 ): Settings["library"] {
   if (!isRecord(raw)) return defaults;
+  // confirmBeforeTrash is parsed independently of detailRail so a file
+  // that's missing or has a malformed detailRail still keeps the user's
+  // delete-confirmation choice (and vice versa).
+  const confirmBeforeTrash = pickBoolean(
+    raw.confirmBeforeTrash,
+    defaults.confirmBeforeTrash
+  );
   const detailRaw = raw.detailRail;
-  if (!isRecord(detailRaw)) return defaults;
+  if (!isRecord(detailRaw)) {
+    return { detailRail: defaults.detailRail, confirmBeforeTrash };
+  }
   // Route the on-disk tab value through the shared type guard so the
   // accepted set has a single source of truth (the protocol's
   // LIBRARY_SIDEBAR_TABS array). A new tab id only has to be added in
@@ -784,7 +796,8 @@ function parseLibrarySettings(
     detailRail: {
       pinned: pickBoolean(detailRaw.pinned, defaults.detailRail.pinned),
       lastSelectedTab: pickedTab
-    }
+    },
+    confirmBeforeTrash
   };
 }
 
@@ -1288,7 +1301,11 @@ function mergeLibrary(
 ): Settings["library"] {
   if (patch === undefined) return current;
   return {
-    detailRail: mergeSection(current.detailRail, patch.detailRail)
+    detailRail: mergeSection(current.detailRail, patch.detailRail),
+    confirmBeforeTrash:
+      patch.confirmBeforeTrash !== undefined
+        ? patch.confirmBeforeTrash
+        : current.confirmBeforeTrash
   };
 }
 

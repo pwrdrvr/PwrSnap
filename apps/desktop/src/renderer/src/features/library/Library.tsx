@@ -7,6 +7,7 @@ import {
   useRef,
   useState
 } from "react";
+import { createPortal } from "react-dom";
 import type {
   CaptureRecord,
   CaptureSearchResultRow,
@@ -28,6 +29,7 @@ import {
 } from "@pwrsnap/shared";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { AppIcon, AppTag } from "../shared/AppIcons";
+import { DeleteConfirm } from "../shared/DeleteConfirm";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import type { CopyPreset } from "../shared/CopyButton";
 import type { Tool } from "../editor/editor-tools";
@@ -38,9 +40,12 @@ import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
 import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
+import { nextAfterDelete } from "./delete-nav";
+import { DeleteUndoStack } from "./delete-undo-stack";
 import { mergeOpenedLiveRecords } from "./library-records";
 import { initialLibraryView, libraryReducer, type LibraryAction, type LibraryView } from "./library-view";
 import { Stage } from "./Stage";
+import { UndoToast } from "./UndoToast";
 import {
   cacheUrl,
   captureSrcUrl,
@@ -54,6 +59,7 @@ import { useCart, useCartIsEmpty } from "./CartContext";
 import { CartPanel } from "./CartPanel";
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
+import { registerCaptureUndoFallback } from "../../lib/editMenuBridge";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
 import { useHotkeys } from "../shared/useHotkeys";
 import { AppMenuBar } from "../shared/AppMenuBar";
@@ -67,6 +73,17 @@ import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-ava
 // state and for fixture rows in dev. Real captures render via
 // <img src="pwrsnap-cache://"> through CellThumb below.
 import { Thumb } from "./Thumb";
+
+/** How long the "Moved to Trash · Undo" toast stays up. This is ONLY the
+ *  toast's visible lifetime (it renders a countdown strip over this window and
+ *  pauses on hover) — it does NOT bound ⌘Z / Edit ▸ Undo, which restores from
+ *  the session-lived undo stack regardless of whether the toast is showing. */
+const UNDO_TOAST_MS = 8000;
+
+/** Cap on the in-memory capture-delete undo/redo stacks. Entries are just
+ *  capture ids (a few bytes each), so this is generous — it only exists so a
+ *  marathon session can't grow the arrays without bound. */
+const MAX_DELETE_UNDO = 200;
 
 function codexAvailableInSnapshot(snapshot: DesktopCodexDiscoverySnapshot): boolean {
   if (snapshot.resolvedPath === null) return false;
@@ -565,6 +582,80 @@ export function Library() {
   useEffect(() => {
     openedRecordsRef.current = openedRecords;
   }, [openedRecords]);
+
+  // Capture-delete Undo. Two independent concerns, deliberately decoupled:
+  //
+  //  • `deleteUndoRef` — the in-memory undo/redo stack behind ⌘Z / Edit ▸ Undo
+  //    (registered as the edit-menu bridge's capture fallback). Just capture
+  //    ids; it lives for the whole session, so the menu restores the most-
+  //    recent delete whether or not the toast is still on screen — exactly when
+  //    you'd reach for it.
+  //  • `lastDeleted` — the single capture the Undo TOAST is advertising right
+  //    now. The toast owns its own countdown; its expiry/dismiss only HIDES
+  //    the toast and never touches the undo stack.
+  const deleteUndoRef = useRef<DeleteUndoStack | null>(null);
+  if (deleteUndoRef.current === null) {
+    deleteUndoRef.current = new DeleteUndoStack(MAX_DELETE_UNDO);
+  }
+  const [lastDeleted, setLastDeleted] = useState<{ id: string } | null>(null);
+
+  // "Confirm before moving to Trash" preference (Settings →
+  // library.confirmBeforeTrash). Seeded from settings:read + kept live via
+  // the settings broadcast below; the DeleteConfirm popover's "Don't ask
+  // again" flips it off (deletes then go straight to Trash, still recoverable
+  // via the Undo toast / ⌘Z). Default true until the read resolves.
+  const [confirmBeforeTrash, setConfirmBeforeTrash] = useState<boolean>(true);
+  const suppressTrashConfirm = useCallback(() => {
+    setConfirmBeforeTrash(false); // optimistic; broadcast confirms
+    void dispatch("settings:write", { library: { confirmBeforeTrash: false } });
+  }, []);
+
+  // Hide the toast only — does NOT pop the undo stack.
+  const clearLastDeleted = useCallback(() => {
+    setLastDeleted(null);
+  }, []);
+
+  // ⌘Z / Edit ▸ Undo / toast "Undo": restore the most-recently trashed
+  // capture (the stack moves it onto its redo list).
+  const undoDelete = useCallback(() => {
+    const id = deleteUndoRef.current?.undo();
+    if (id === undefined) return;
+    setLastDeleted((cur) => (cur?.id === id ? null : cur));
+    void (async () => {
+      const res = await dispatch("library:restore", { id });
+      if (!res.ok) return;
+      // If we're in single-capture Focus, bring the restored capture back into
+      // view — otherwise the undo is invisible (it reappears in the grid behind
+      // the editor). `library:restore` clears `deleted_at` synchronously before
+      // resolving, so editor:open won't reject as deleted; editor:open also
+      // owns the navigate + "not in the fetched page yet" wait via pendingOpen.
+      if (viewRef.current.kind === "focus") {
+        void dispatch("editor:open", { captureId: id });
+      }
+    })();
+  }, []);
+
+  // ⌘⇧Z / Edit ▸ Redo: re-trash the most-recently restored capture (the
+  // inverse of the undo above; still recoverable, so it's a safe redo).
+  const redoDelete = useCallback(() => {
+    const id = deleteUndoRef.current?.redo();
+    if (id === undefined) return;
+    void dispatch("library:delete", { id });
+    setLastDeleted({ id });
+  }, []);
+
+  // Register the capture-level undo/redo with the edit-menu bridge. The bridge
+  // consults this when the editor's own history is empty (or no editor is
+  // mounted — i.e. grid mode), so ⌘Z / Edit ▸ Undo restores deletes session-
+  // wide, independent of the toast.
+  useEffect(() => {
+    return registerCaptureUndoFallback({
+      undo: undoDelete,
+      redo: redoDelete,
+      canUndo: () => deleteUndoRef.current?.canUndo() === true,
+      canRedo: () => deleteUndoRef.current?.canRedo() === true
+    });
+  }, [undoDelete, redoDelete]);
   const sourceAppRowsRef = useRef(sourceAppRows);
   useEffect(() => {
     sourceAppRowsRef.current = sourceAppRows;
@@ -686,6 +777,9 @@ export function Library() {
           setRightActiveTabState(rail.lastSelectedTab);
         }
       }
+      if (result.ok) {
+        setConfirmBeforeTrash(result.value.library.confirmBeforeTrash);
+      }
       if (result.ok && !userTouchedAiRef.current) {
         applyAiSettings(result.value);
       }
@@ -703,6 +797,7 @@ export function Library() {
     const unsubscribe = subscribe(EVENT_CHANNELS.settingsChanged, (payload) => {
       const evt = payload as SettingsChangedEvent;
       applyAiSettings(evt.settings);
+      setConfirmBeforeTrash(evt.settings.library.confirmBeforeTrash);
       void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
         if (result.ok) setCodexAvailable(codexAvailableInSnapshot(result.value));
       });
@@ -2251,16 +2346,40 @@ export function Library() {
   }
 
   /**
-   * Soft-delete a capture from the grid/reel hover affordance. The
-   * trash icon sits on top of the cell; without stopPropagation the
-   * cell's click handler would also fire and open Focus on a record
-   * that's about to disappear from the visible set.
+   * Soft-delete a capture (move to Trash), with the editor kept honest.
+   *
+   * If the deleted capture is the one currently open in Focus/Reel, advance
+   * to the next capture (wrapping; closing Focus if it was the last one)
+   * BEFORE the async refetch lands. This is the fix for the "Delete didn't
+   * close the image, so I clicked again and it trashed a neighbor" trap:
+   * the view never lingers on a just-deleted record, so a second click can
+   * only ever target the new, live capture.
+   *
+   * Also arms the Undo affordance — the lower-left toast and the ⌘Z /
+   * Edit ▸ Undo capture fallback — for a short window. Every soft-delete
+   * entry point (grid/reel hover trash, the detail-rail Move-to-Trash
+   * button) routes here, all gated behind the DeleteConfirm popover.
    */
-  function trashCapture(captureId: number, event: ReactMouseEvent): void {
-    event.stopPropagation();
+  function deleteCaptureById(recordId: string): void {
+    const nav = nextAfterDelete({
+      viewKind: view.kind,
+      selectedRecordId: view.selectedRecordId,
+      deletedId: recordId,
+      visibleIds: visibleRecords.map((r) => r.id)
+    });
+    if (nav !== null) viewDispatch(nav);
+    void dispatch("library:delete", { id: recordId });
+    // Record on the session undo stack — this is what ⌘Z / Edit ▸ Undo
+    // restores from, independent of the toast. Then surface the toast (keyed
+    // by id) as the quick, visible affordance for this delete.
+    deleteUndoRef.current?.pushDelete(recordId);
+    setLastDeleted({ id: recordId });
+  }
+
+  function trashCapture(captureId: number): void {
     const record = fixtureBacking.recordFor(captureId);
     if (record === null) return;
-    void dispatch("library:delete", { id: record.id });
+    deleteCaptureById(record.id);
   }
 
   /** Restore a soft-deleted capture from the in-trash hover affordance. */
@@ -2908,6 +3027,8 @@ export function Library() {
             loadMore={loadMore}
             isTrashView={isTrashView}
             trashCapture={trashCapture}
+            confirmBeforeTrash={confirmBeforeTrash}
+            onDontAskAgainTrash={suppressTrashConfirm}
             restoreCaptureAction={restoreCaptureAction}
             purgeCaptureAction={purgeCaptureAction}
           />
@@ -3066,18 +3187,29 @@ export function Library() {
                                         </span>
                                       </span>
                                     ) : (
-                                      <span
-                                        role="button"
-                                        tabIndex={-1}
-                                        className="psl__frame-trash"
-                                        title="Move to Trash"
-                                        aria-label="Move to Trash"
-                                        onClick={(e) => trashCapture(c.id, e)}
+                                      <DeleteConfirm
+                                        message="Move to Trash?"
+                                        detail="You can undo this."
+                                        placement="left"
+                                        enabled={confirmBeforeTrash}
+                                        onDontAskAgain={suppressTrashConfirm}
+                                        onConfirm={() => trashCapture(c.id)}
                                       >
-                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                          <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                                        </svg>
-                                      </span>
+                                        {(trigger) => (
+                                          <span
+                                            role="button"
+                                            tabIndex={-1}
+                                            className="psl__frame-trash"
+                                            title="Move to Trash"
+                                            aria-label="Move to Trash"
+                                            {...trigger}
+                                          >
+                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                              <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                                            </svg>
+                                          </span>
+                                        )}
+                                      </DeleteConfirm>
                                     ))}
                                 </button>
                               );
@@ -3106,7 +3238,26 @@ export function Library() {
         onPinChange={setRightPinned}
         activeTab={rightActiveTab}
         onActiveTabChange={setRightActiveTab}
+        onTrash={deleteCaptureById}
+        confirmBeforeTrash={confirmBeforeTrash}
+        onDontAskAgainTrash={suppressTrashConfirm}
       />
+
+      {/* Capture soft-delete Undo toast — lower-left, in the shared
+          app-toast-stack so it stacks with the update/access banners and
+          stays clear of the bottom-right post-capture float-over. Backs the
+          same restore that ⌘Z / Edit ▸ Undo triggers. */}
+      {lastDeleted !== null &&
+        createPortal(
+          <UndoToast
+            key={lastDeleted.id}
+            message="Moved to Trash"
+            durationMs={UNDO_TOAST_MS}
+            onUndo={undoDelete}
+            onDismiss={clearLastDeleted}
+          />,
+          document.querySelector(".app-toast-stack") ?? document.body
+        )}
 
       {/* Grid-mode standalone cart rail. DetailRail returns null in
           grid mode (its tabs are all per-capture), so the cart — which
@@ -3289,6 +3440,9 @@ const REEL_LOADMORE_THRESHOLD_PX = 3000;
 type DayGroup = ReturnType<typeof groupByDay>[number];
 
 type CellAction = (captureId: number, event: ReactMouseEvent) => void;
+// Trash is gated behind a confirm popover (DeleteConfirm), which owns the
+// click + stopPropagation, so the action only needs the capture id.
+type TrashAction = (captureId: number) => void;
 
 type LibraryRow =
   | { kind: "header"; day: string; date: string; count: number }
@@ -3322,7 +3476,9 @@ type VirtualizedGridProps = {
   isLoadingMore: boolean;
   loadMore: () => Promise<void>;
   isTrashView: boolean;
-  trashCapture: CellAction;
+  trashCapture: TrashAction;
+  confirmBeforeTrash: boolean;
+  onDontAskAgainTrash: () => void;
   restoreCaptureAction: CellAction;
   purgeCaptureAction: CellAction;
 };
@@ -3447,6 +3603,8 @@ function VirtualizedGrid({
   loadMore,
   isTrashView,
   trashCapture,
+  confirmBeforeTrash,
+  onDontAskAgainTrash,
   restoreCaptureAction,
   purgeCaptureAction
 }: VirtualizedGridProps) {
@@ -3634,6 +3792,8 @@ function VirtualizedGrid({
                 preloadFullRes={preloadFullRes}
                 isTrashView={isTrashView}
                 trashCapture={trashCapture}
+                confirmBeforeTrash={confirmBeforeTrash}
+                onDontAskAgainTrash={onDontAskAgainTrash}
                 restoreCaptureAction={restoreCaptureAction}
                 purgeCaptureAction={purgeCaptureAction}
               />
@@ -3674,6 +3834,8 @@ function CellRow({
   preloadFullRes,
   isTrashView,
   trashCapture,
+  confirmBeforeTrash,
+  onDontAskAgainTrash,
   restoreCaptureAction,
   purgeCaptureAction
 }: {
@@ -3693,7 +3855,9 @@ function CellRow({
   ) => void;
   preloadFullRes: (record: CaptureRecord | null) => void;
   isTrashView: boolean;
-  trashCapture: CellAction;
+  trashCapture: TrashAction;
+  confirmBeforeTrash: boolean;
+  onDontAskAgainTrash: () => void;
   restoreCaptureAction: CellAction;
   purgeCaptureAction: CellAction;
 }) {
@@ -3817,17 +3981,28 @@ function CellRow({
                     </button>
                   </span>
                 ) : (
-                  <button
-                    type="button"
-                    className="psl__cell-trash"
-                    title="Move to Trash"
-                    aria-label="Move to Trash"
-                    onClick={(e) => trashCapture(c.id, e)}
+                  <DeleteConfirm
+                    message="Move to Trash?"
+                    detail="You can undo this."
+                    placement="left"
+                    enabled={confirmBeforeTrash}
+                    onDontAskAgain={onDontAskAgainTrash}
+                    onConfirm={() => trashCapture(c.id)}
                   >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                    </svg>
-                  </button>
+                    {(trigger) => (
+                      <button
+                        type="button"
+                        className="psl__cell-trash"
+                        title="Move to Trash"
+                        aria-label="Move to Trash"
+                        {...trigger}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                        </svg>
+                      </button>
+                    )}
+                  </DeleteConfirm>
                 ))}
             </div>
           </div>

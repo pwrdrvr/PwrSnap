@@ -77,9 +77,9 @@ const TRAY_HEIGHT_MIN = 200;
 const TRAY_HEIGHT_MAX = 1040;
 /** Window width is fixed by the design — must match `.ps-tray { width }`
     in library.css. Bumped from 380 → 440 because the 2-column mode
-    grid (Region/Window, Full/All, Scrolling/Timed) was clipping the
-    right column at 380, especially with multi-key shortcuts like
-    ⌘⇧F that need 56px just for the kbds. */
+    grid (Region/Window, Full/All, Timed) was clipping the right column
+    at 380, especially with multi-key shortcuts like ⌘⇧F that need 56px
+    just for the kbds. */
 const TRAY_WIDTH = 440;
 
 let tray: Tray | null = null;

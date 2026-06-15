@@ -15,7 +15,7 @@ import {
   Notification,
   shell
 } from "electron";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, ok } from "@pwrsnap/shared";
 import type { RecordingSubject, Settings, SettingsChangedEvent } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
@@ -1573,6 +1573,17 @@ export function bootstrapApp(): void {
       registerClipboardHandlers();
       registerFloatOverHandlers();
       registerRecordingHandlers();
+      // Renderer-dispatchable entry into the interactive video-record
+      // flow (selector → recording:start). The `videoCapture` global
+      // hotkey calls `runInteractiveRecord()` directly; this verb is the
+      // UI-surface equivalent used by the tray's Record button and the
+      // Library's Video chip. Fire-and-forget — lifecycle broadcasts on
+      // `events:recording:*`, so we ack immediately rather than awaiting
+      // the whole pick→countdown→record chain.
+      bus.register("capture:videoInteractive", async () => {
+        void runInteractiveRecord();
+        return ok(undefined);
+      });
       registerAppUpdateHandlers();
       // Startup Codex readiness probe — deferred past the library's first
       // contentful paint (#238). The probe's `codex` process spawns

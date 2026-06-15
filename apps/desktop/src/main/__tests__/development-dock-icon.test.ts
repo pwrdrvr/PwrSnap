@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => {
     createFromPath: vi.fn(() => icon),
     dockSetIcon: vi.fn(),
     dockShow: vi.fn(() => Promise.resolve()),
+    dockIsVisible: vi.fn(() => true),
     getAppPath: vi.fn(() => "/test/app"),
     icon,
     warn: vi.fn()
@@ -22,7 +23,8 @@ vi.mock("electron", () => ({
   app: {
     dock: {
       show: mocks.dockShow,
-      setIcon: mocks.dockSetIcon
+      setIcon: mocks.dockSetIcon,
+      isVisible: mocks.dockIsVisible
     },
     getAppPath: mocks.getAppPath
   },
@@ -43,6 +45,9 @@ describe("installDevelopmentDockIcon", () => {
     mocks.createFromPath.mockClear();
     mocks.dockSetIcon.mockClear();
     mocks.dockShow.mockClear();
+    mocks.dockShow.mockImplementation(() => Promise.resolve());
+    mocks.dockIsVisible.mockReset();
+    mocks.dockIsVisible.mockReturnValue(true);
     mocks.getAppPath.mockClear();
     mocks.icon.isEmpty.mockReset();
     mocks.icon.isEmpty.mockReturnValue(false);
@@ -88,15 +93,54 @@ describe("installDevelopmentDockIcon", () => {
     expect(mocks.dockSetIcon).not.toHaveBeenCalled();
   });
 
-  it("reapplies the development icon around Dock show", async () => {
+  it("skips setIcon while the Dock tile is hidden (Accessory) — phantom-tile guard", async () => {
+    const { installDevelopmentDockIcon } = await import("../development-dock-icon");
+    mocks.dockIsVisible.mockReturnValue(false);
+
+    installDevelopmentDockIcon({ platform: "darwin", nodeEnv: "development" });
+
+    // No tile exists yet — setIcon here would race tile creation and
+    // spawn the phantom. Must be a no-op.
+    expect(mocks.dockSetIcon).not.toHaveBeenCalled();
+  });
+
+  it("sets the icon AFTER the Dock is shown (never before the tile exists)", async () => {
     const { showDockWithDevelopmentIcon } = await import("../development-dock-icon");
 
     showDockWithDevelopmentIcon({ platform: "darwin", nodeEnv: "development" });
+    // Synchronously, before show() resolves: no setIcon yet.
+    expect(mocks.dockSetIcon).not.toHaveBeenCalled();
+
+    await Promise.resolve();
     await Promise.resolve();
 
     expect(mocks.dockShow).toHaveBeenCalledTimes(1);
-    expect(mocks.dockSetIcon).toHaveBeenCalledTimes(2);
-    expect(mocks.dockSetIcon).toHaveBeenNthCalledWith(1, mocks.icon);
-    expect(mocks.dockSetIcon).toHaveBeenNthCalledWith(2, mocks.icon);
+    // Exactly once, and only after show() resolved (tile exists).
+    expect(mocks.dockSetIcon).toHaveBeenCalledTimes(1);
+    expect(mocks.dockSetIcon).toHaveBeenCalledWith(mocks.icon);
+  });
+
+  it("coalesces concurrent shows so overlapping transitions can't race", async () => {
+    const { showDockWithDevelopmentIcon } = await import("../development-dock-icon");
+    let resolveShow!: () => void;
+    mocks.dockShow.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveShow = resolve;
+        })
+    );
+
+    // Two back-to-back calls during the same (still-pending) transition.
+    showDockWithDevelopmentIcon({ platform: "darwin", nodeEnv: "development" });
+    showDockWithDevelopmentIcon({ platform: "darwin", nodeEnv: "development" });
+
+    // Only one show() — the second call coalesced.
+    expect(mocks.dockShow).toHaveBeenCalledTimes(1);
+
+    resolveShow();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mocks.dockSetIcon).toHaveBeenCalledTimes(1);
   });
 });

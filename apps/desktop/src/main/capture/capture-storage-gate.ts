@@ -42,6 +42,13 @@ const PROBE_NAME = ".pwrsnap-access-probe";
  *  write+delete churn in the user's Documents folder. */
 let accessConfirmedThisSession = false;
 
+/** Whether a write probe / real capture has confirmed captures-folder
+ *  access this session. Drives the Settings "Captures folder" row's
+ *  positive state. */
+export function isCapturesAccessConfirmed(): boolean {
+  return accessConfirmedThisSession;
+}
+
 /** Test seam — reset the per-session cache between specs. */
 export function resetCaptureStorageGateForTests(): void {
   accessConfirmedThisSession = false;
@@ -57,9 +64,15 @@ export function resetCaptureStorageGateForTests(): void {
  *
  * Distinguishes a macOS TCC denial (`EPERM`/`EACCES` → actionable
  * "grant Documents access" copy) from any other write failure.
+ *
+ * `opts.force` bypasses the per-session cache — the Settings "Check
+ * access" button passes it so the user always gets a genuine re-probe
+ * (which also re-triggers the OS prompt if macOS has no decision on file).
  */
-export async function ensureCapturesDirReady(): Promise<Result<never, PwrSnapError> | null> {
-  if (accessConfirmedThisSession) return null;
+export async function ensureCapturesDirReady(
+  opts: { force?: boolean } = {}
+): Promise<Result<never, PwrSnapError> | null> {
+  if (!opts.force && accessConfirmedThisSession) return null;
 
   const root = getCapturesRoot();
   const probe = join(root, PROBE_NAME);

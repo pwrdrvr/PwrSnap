@@ -25,10 +25,12 @@
 
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import type {
+  CapturesAccessHealth,
   PermissionReadinessReport,
   RecordingPermission,
   RecordingPermissionStatus
 } from "@pwrsnap/shared";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { Card, Row } from "../components";
 import { dispatch } from "../../../lib/pwrsnap";
 
@@ -111,6 +113,12 @@ export function SystemPermissionsPage(): ReactElement {
   const [readiness, setReadiness] = useState<PermissionReadinessReport | null>(null);
   const [busyPermission, setBusyPermission] = useState<RecordingPermission | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
+  // Captures folder (Documents) TCC. macOS exposes NO non-prompting status
+  // read for Files & Folders, so we reflect the observed-access health
+  // signal (the same one the Library banner uses) and offer an active
+  // "Check access" that probes (and can trigger the OS prompt).
+  const [capturesHealth, setCapturesHealth] = useState<CapturesAccessHealth | null>(null);
+  const [capturesBusy, setCapturesBusy] = useState(false);
 
   const refresh = useCallback(async (): Promise<void> => {
     const res = await dispatch("permissions:readiness", {});
@@ -122,9 +130,47 @@ export function SystemPermissionsPage(): ReactElement {
     }
   }, []);
 
+  const refreshCapturesHealth = useCallback(async (): Promise<void> => {
+    const res = await dispatch("storage:capturesAccessHealth", {});
+    if (res.ok) setCapturesHealth(res.value);
+  }, []);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Read captures-access health once, then stay live off the same event
+  // channel the Library banner uses (a capture that fails mid-session
+  // flips this row to "Denied" without a re-open).
+  useEffect(() => {
+    void refreshCapturesHealth();
+    const unsubscribe = window.pwrsnapApi?.on(
+      EVENT_CHANNELS.capturesAccessChanged,
+      (payload) => setCapturesHealth(payload as CapturesAccessHealth)
+    );
+    return () => unsubscribe?.();
+  }, [refreshCapturesHealth]);
+
+  const checkCapturesAccess = useCallback(async (): Promise<void> => {
+    setCapturesBusy(true);
+    try {
+      // Active probe — may show the macOS Documents prompt. Updates the
+      // health snapshot main-side; we re-read it for the result.
+      const res = await dispatch("storage:checkCapturesAccess", {});
+      if (!res.ok) {
+        setLastError(res.error.message);
+        return;
+      }
+      await refreshCapturesHealth();
+    } finally {
+      setCapturesBusy(false);
+    }
+  }, [refreshCapturesHealth]);
+
+  const openCapturesSettings = useCallback(async (): Promise<void> => {
+    const res = await dispatch("storage:openCapturesAccessSettings", {});
+    if (!res.ok) setLastError(res.error.message);
+  }, []);
 
   const requestAction = useCallback(
     async (permission: RecordingPermission, status: RecordingPermissionStatus) => {
@@ -283,6 +329,85 @@ export function SystemPermissionsPage(): ReactElement {
             </Row>
           );
         })}
+      </Card>
+
+      <Card eyebrow="STORAGE" title="Captures folder">
+        {(() => {
+          // macOS has no non-prompting status read for the Documents
+          // folder, so this reflects observed access: "Denied" once a real
+          // read/write was blocked, "OK" otherwise, "Checking…" before the
+          // first snapshot. "Check access" actively probes (and can trigger
+          // the OS prompt). `denied` is the only authoritative state.
+          const denied = capturesHealth?.denied === true;
+          const isDarwin = window.pwrsnapApi?.platform === "darwin";
+          const label =
+            capturesHealth === null ? "Checking…" : denied ? "Denied" : "OK";
+          const tone: "ok" | "warn" | "neutral" =
+            capturesHealth === null ? "neutral" : denied ? "warn" : "ok";
+          const hint = denied
+            ? `${capturesHealth?.deniedPathCount ?? 0} capture file(s) can't be read. Grant PwrSnap access to your Documents folder under Privacy & Security → Files & Folders, then relaunch.`
+            : "Captures are saved to ~/Documents/PwrSnap so you can find them in Finder. macOS gates the Documents folder — use Check access to verify (or grant) it.";
+          return (
+            <Row
+              label="Captures Folder (Documents)"
+              sub={`${label} — ${hint}`}
+              tag="documents"
+            >
+              <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                <span
+                  data-captures-access={denied ? "denied" : capturesHealth === null ? "unknown" : "ok"}
+                  data-tone={tone}
+                  style={{
+                    font: "500 11px/1 var(--font-sans)",
+                    color:
+                      tone === "ok"
+                        ? "var(--success-text, #22c55e)"
+                        : tone === "warn"
+                        ? "var(--warning-text, #ff8a1f)"
+                        : "var(--text-secondary)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.04em"
+                  }}
+                >
+                  {label}
+                </span>
+                {denied && isDarwin && (
+                  <button
+                    type="button"
+                    onClick={() => void openCapturesSettings()}
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: 6,
+                      border: "1px solid var(--border)",
+                      background: "var(--surface)",
+                      color: "var(--text)",
+                      cursor: "pointer",
+                      font: "500 12px/1 var(--font-sans)"
+                    }}
+                  >
+                    Open System Settings
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void checkCapturesAccess()}
+                  disabled={capturesBusy}
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: 6,
+                    border: "1px solid var(--border)",
+                    background: "var(--surface)",
+                    color: "var(--text)",
+                    cursor: capturesBusy ? "wait" : "pointer",
+                    font: "500 12px/1 var(--font-sans)"
+                  }}
+                >
+                  {capturesBusy ? "Checking…" : "Check access"}
+                </button>
+              </div>
+            </Row>
+          );
+        })()}
       </Card>
 
       <Card eyebrow="DIAGNOSTICS" title="Permission fingerprint">

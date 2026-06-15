@@ -187,3 +187,16 @@ under the selector, so the reveal shows that idle placeholder for the
 (now fast, post-pre-warm) persist window, then swaps to the loaded preview
 in place. Don't reorder persist before `hideSelector` again — that's the
 original bug.
+
+**Surfacing the status (Settings → System Permissions).** There is NO
+non-prompting status read for the Documents folder (unlike
+`getMediaAccessStatus` for screen/mic), so the "Captures Folder" row
+reflects the *observed-access* signal — `storage:capturesAccessHealth`
+(`denied` vs OK), the same snapshot + `events:storage:captures-access`
+the Library banner uses — plus a **Check access** button
+(`storage:checkCapturesAccess`) that forces a real write probe to verify
+and, if macOS has no decision on file, trigger the consent prompt right
+there. When denied it offers `storage:openCapturesAccessSettings` (Files &
+Folders pane). The check routes its result back through
+`reportCapturesAccessFailure/Success`, so the row, the banner, and the
+event stay in lockstep.

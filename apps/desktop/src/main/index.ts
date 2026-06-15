@@ -648,11 +648,21 @@ async function wireHotkeyRegistrations(): Promise<void> {
   // writes the new fingerprint back so a subsequent unchanged launch
   // doesn't re-nag. On darwin only — the Linux/CI build has no
   // permission surface to route to.
+  //
+  // BUT never route on a truly fresh install (`screenCapturePrompted ===
+  // false`, i.e. the user has never attempted a capture). macOS reports
+  // `denied` for screen before we've ever asked — indistinguishable from
+  // an explicit denial — so routing here would dead-end on a Privacy
+  // pane that doesn't list PwrSnap yet. Instead the empty Library breathes
+  // its Quick Capture button, and the first capture fires the OS prompt
+  // on demand (see capture/screen-permission-gate.ts). We only auto-route
+  // once the user has engaged and a permission is still blocking them.
   if (process.platform === "darwin") {
     try {
       const settings = await service.read();
       const readiness = readRecordingReadiness();
       if (
+        settings.recording.screenCapturePrompted &&
         needsAttention(readiness) &&
         readiness.fingerprint !== settings.recording.lastRoutedPermissionFingerprint
       ) {

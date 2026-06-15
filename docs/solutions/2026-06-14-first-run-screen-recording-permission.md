@@ -79,6 +79,22 @@ capture. Where it stays stale until relaunch, the next attempt routes to
 Settings, whose copy says to relaunch. We **never force-relaunch** the
 running process (passive guidance).
 
+### 3. First-run experience: no startup nag, breathe the button instead
+
+The startup permission-routing (`index.ts`) **no longer opens Settings on
+a fresh install**. It's gated on `screenCapturePrompted === true`, so we
+only auto-route once the user has actually attempted a capture and a
+permission is still blocking them. A brand-new user just sees the empty
+Library — no Settings window pops over it claiming "Denied".
+
+To point that user at the one action that fills the Library, the Library's
+**Quick Capture button "breathes"** (a calm accent-glow pulse,
+`psl__chip-btn--breathe` in `library.css`) whenever there are no live
+captures. The renderer toggles it on `!loading && totalLive === 0` from
+`useLibrary()`, so it starts only after the head fetch resolves (no
+cold-start flicker for users who already have captures) and drops the
+moment the first capture lands. Honors `prefers-reduced-motion`.
+
 ## Gotchas for anyone touching this
 
 - **Do not** reintroduce a screen `not-determined` code path expecting
@@ -97,10 +113,11 @@ running process (passive guidance).
   If this becomes a real complaint, re-prompt when
   `screenCapturePrompted` is true but the pane listing is gone (no clean
   API for "are we listed", so we'd just always try the prompt first).
-- The separate `capture/permissions.ts` module (`checkPermission`,
-  `openSystemSettingsForPermission`) is **unused** outside its own file
-  (only `classifyCaptureError` is live, in `screencapture.ts`). Don't
-  resurrect `checkPermission` as a competing gate.
+- The separate `capture/permissions.ts` module now holds **only**
+  `classifyCaptureError` (used by `screencapture.ts`). Its old
+  `checkPermission` / `openSystemSettingsForPermission` exports were dead
+  and have been deleted — don't resurrect them as a competing gate; status
+  + routing live in `recording-permissions.ts` + `screen-permission-gate.ts`.
 
 ## Touched files
 
@@ -115,11 +132,18 @@ running process (passive guidance).
   request always drives the prompt.
 - `apps/desktop/src/main/capture/screen-permission-gate.ts` — **new**
   gate + flag accessors.
+- `apps/desktop/src/main/capture/permissions.ts` — trimmed to
+  `classifyCaptureError`; removed dead exports + stale doc.
 - `apps/desktop/src/main/handlers/recording-handlers.ts` — readiness
   report, flag-marking on request, `recording:start` gate.
 - `apps/desktop/src/main/handlers/capture-handlers.ts` — gate on the
   screen-capturing entrypoints.
+- `apps/desktop/src/main/index.ts` — startup routing suppressed on a
+  fresh install (gated on `screenCapturePrompted`).
 - `apps/desktop/src/renderer/src/features/settings/pages/SystemPermissionsPage.tsx`
   — effective status, friendly copy.
+- `apps/desktop/src/renderer/src/features/library/Library.tsx` +
+  `styles/library.css` — breathe the Quick Capture button while the
+  Library is empty.
 - Tests: `screen-permission-gate.test.ts` (new), updated
   `recording-permissions.test.ts`.

@@ -226,7 +226,7 @@ function CellThumb({
         : `${Math.round(totalSec)}s`;
     const coverThumb =
       projectCoverRecord?.kind === "video" ? (
-        <VideoCellThumb record={projectCoverRecord} showDuration={false} />
+        <VideoCellThumb record={projectCoverRecord} />
       ) : projectCoverRecord !== null ? (
         <img
           src={cacheUrl(projectCoverRecord.id, width, "webp", projectCoverRecord.edits_version)}
@@ -281,7 +281,7 @@ function CellThumb({
     );
   }
   if (record !== null && record.kind === "video") {
-    return <VideoCellThumb record={record} />;
+    return <VideoCellThumb record={record} showPlayButton />;
   }
   if (record !== null) {
     return (
@@ -317,21 +317,23 @@ function CellThumb({
  * hover and stops playback on mouseleave so the grid stays calm with
  * many videos in view.
  *
- * Duration badge in the bottom-right makes video cards instantly
- * recognizable from images at a glance.
+ * A translucent center play button (`showPlayButton`) makes video
+ * cards instantly recognizable from images at a glance, and fades out
+ * on hover as the preview starts playing. The duration chip lives in
+ * the cell's bottom-right rail (see CellRow), not here, so it can
+ * coexist with the hover trash button instead of being covered by it.
  */
 function VideoCellThumb({
   record,
-  showDuration = true
+  showPlayButton = false
 }: {
   record: CaptureRecord;
-  showDuration?: boolean;
+  showPlayButton?: boolean;
 }): React.ReactElement {
   return (
     <PreviewVideoThumb
       src={captureSrcUrl(record.id)}
-      duration={record.video?.durationSec ?? 0}
-      showDuration={showDuration}
+      showPlayButton={showPlayButton}
     />
   );
 }
@@ -351,25 +353,16 @@ function ProjectMovieCellThumb({
   if (failed) {
     return <>{children}</>;
   }
-  return (
-    <PreviewVideoThumb
-      src={src}
-      duration={0}
-      showDuration={false}
-      onError={() => setFailed(true)}
-    />
-  );
+  return <PreviewVideoThumb src={src} onError={() => setFailed(true)} />;
 }
 
 function PreviewVideoThumb({
   src,
-  duration,
-  showDuration = true,
+  showPlayButton = false,
   onError
 }: {
   src: string;
-  duration: number;
-  showDuration?: boolean;
+  showPlayButton?: boolean;
   onError?: () => void;
 }): React.ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -410,23 +403,17 @@ function PreviewVideoThumb({
           display: "block"
         }}
       />
-      {showDuration ? (
-        <span
-          data-video-duration={duration.toFixed(1)}
-          style={{
-            position: "absolute",
-            right: 6,
-            bottom: 6,
-            padding: "2px 6px",
-            borderRadius: 4,
-            background: "rgba(0, 0, 0, 0.7)",
-            color: "#fff",
-            font: "500 10px/1 var(--font-mono)",
-            letterSpacing: "0.02em",
-            pointerEvents: "none"
-          }}
-        >
-          {formatDurationLabel(duration)}
+      {showPlayButton ? (
+        // Center play button — the at-a-glance "this is a video" cue.
+        // Fades out on cell hover (CSS) because hovering starts the
+        // preview playing, so the affordance gets out of the way of the
+        // frame. Driven by `.psl__cell:hover` rather than this element's
+        // own hover so it doesn't flash back when the pointer moves onto
+        // the corner trash button (a sibling stacked over the thumb).
+        <span className="psl__cell-play" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+            <path d="M8 5v14l11-7z" />
+          </svg>
         </span>
       ) : null}
     </div>
@@ -3939,71 +3926,85 @@ function CellRow({
                   <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" bundleId={c.bundleId ?? undefined} />
                 )}
               </span>
-              {projectId !== null ? (
-                <button
-                  type="button"
-                  className="psl__cell-trash psl__cell-duplicate"
-                  title="Duplicate Sizzle Reel"
-                  aria-label={`Duplicate ${c.n}`}
-                  onClick={(event) => duplicateSizzleProject(projectId, event)}
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <rect x="8" y="8" width="11" height="11" rx="2" />
-                    <path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h9a1 1 0 0 1 1 1v1" />
-                  </svg>
-                </button>
-              ) : null}
-              {record !== null &&
-                (isTrashView ? (
-                  <span className="psl__cell-actions">
-                    <button
-                      type="button"
-                      className="psl__cell-trash psl__cell-trash--restore"
-                      title="Restore"
-                      aria-label="Restore from Trash"
-                      onClick={(e) => restoreCaptureAction(c.id, e)}
-                    >
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M3 12a9 9 0 1 0 3-6.7" />
-                        <path d="M3 4v5h5" />
-                      </svg>
-                    </button>
-                    <button
-                      type="button"
-                      className="psl__cell-trash psl__cell-trash--purge"
-                      title="Delete permanently"
-                      aria-label="Delete permanently"
-                      onClick={(e) => purgeCaptureAction(c.id, e)}
-                    >
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                      </svg>
-                    </button>
-                  </span>
-                ) : (
-                  <DeleteConfirm
-                    message="Move to Trash?"
-                    detail="You can undo this."
-                    placement="left"
-                    enabled={confirmBeforeTrash}
-                    onDontAskAgain={onDontAskAgainTrash}
-                    onConfirm={() => trashCapture(c.id)}
+              {/* Bottom-right rail. The duration chip (videos) sits at
+                  the left; hover-revealed action buttons slide in from
+                  the right edge, pushing the duration left rather than
+                  covering it. */}
+              <span className="psl__cell-rail">
+                {record !== null && record.kind === "video" ? (
+                  <span
+                    className="psl__cell-duration"
+                    data-video-duration={(record.video?.durationSec ?? 0).toFixed(1)}
                   >
-                    {(trigger) => (
+                    {formatDurationLabel(record.video?.durationSec ?? 0)}
+                  </span>
+                ) : null}
+                {projectId !== null ? (
+                  <button
+                    type="button"
+                    className="psl__cell-trash psl__cell-duplicate"
+                    title="Duplicate Sizzle Reel"
+                    aria-label={`Duplicate ${c.n}`}
+                    onClick={(event) => duplicateSizzleProject(projectId, event)}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="8" y="8" width="11" height="11" rx="2" />
+                      <path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h9a1 1 0 0 1 1 1v1" />
+                    </svg>
+                  </button>
+                ) : null}
+                {record !== null &&
+                  (isTrashView ? (
+                    <>
                       <button
                         type="button"
-                        className="psl__cell-trash"
-                        title="Move to Trash"
-                        aria-label="Move to Trash"
-                        {...trigger}
+                        className="psl__cell-trash psl__cell-trash--restore"
+                        title="Restore"
+                        aria-label="Restore from Trash"
+                        onClick={(e) => restoreCaptureAction(c.id, e)}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M3 12a9 9 0 1 0 3-6.7" />
+                          <path d="M3 4v5h5" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        className="psl__cell-trash psl__cell-trash--purge"
+                        title="Delete permanently"
+                        aria-label="Delete permanently"
+                        onClick={(e) => purgeCaptureAction(c.id, e)}
                       >
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
                         </svg>
                       </button>
-                    )}
-                  </DeleteConfirm>
-                ))}
+                    </>
+                  ) : (
+                    <DeleteConfirm
+                      message="Move to Trash?"
+                      detail="You can undo this."
+                      placement="left"
+                      enabled={confirmBeforeTrash}
+                      onDontAskAgain={onDontAskAgainTrash}
+                      onConfirm={() => trashCapture(c.id)}
+                    >
+                      {(trigger) => (
+                        <button
+                          type="button"
+                          className="psl__cell-trash"
+                          title="Move to Trash"
+                          aria-label="Move to Trash"
+                          {...trigger}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                          </svg>
+                        </button>
+                      )}
+                    </DeleteConfirm>
+                  ))}
+              </span>
             </div>
           </div>
         );

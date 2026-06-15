@@ -1,17 +1,32 @@
-// Pins the pre-capture storage gate: it must succeed silently when the
-// captures dir is writable, and short-circuit with an actionable error
-// (distinguishing a macOS TCC denial from any other failure) otherwise.
-// This is what pulls the Documents-folder consent prompt onto a clean
-// screen instead of under the screen-saver-level region selector.
+// Pins the pre-capture storage gate. It must confirm the captures folder
+// is WRITABLE via a real write probe (not just mkdir — that's a no-op on
+// an existing dir and never trips the macOS Documents TCC prompt), and
+// short-circuit with an actionable, denial-classified error otherwise.
+// This is what pulls the Documents consent prompt onto a clean screen
+// instead of under the screen-saver-level region selector.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const mkdirMock = vi.hoisted(() => ({
-  impl: async (_path: string, _opts: unknown): Promise<void> => undefined
+const fsMock = vi.hoisted(() => ({
+  mkdir: async (_p: string, _o: unknown): Promise<void> => undefined,
+  writeFile: async (_p: string, _d: unknown): Promise<void> => undefined,
+  rm: async (_p: string, _o: unknown): Promise<void> => undefined,
+  calls: [] as string[]
 }));
 
 vi.mock("node:fs/promises", () => ({
-  mkdir: (path: string, opts: unknown) => mkdirMock.impl(path, opts)
+  mkdir: (p: string, o: unknown) => {
+    fsMock.calls.push(`mkdir:${p}`);
+    return fsMock.mkdir(p, o);
+  },
+  writeFile: (p: string, d: unknown) => {
+    fsMock.calls.push(`writeFile:${p}`);
+    return fsMock.writeFile(p, d);
+  },
+  rm: (p: string, o: unknown) => {
+    fsMock.calls.push(`rm:${p}`);
+    return fsMock.rm(p, o);
+  }
 }));
 
 vi.mock("../../persistence/paths", () => ({
@@ -27,12 +42,14 @@ vi.mock("../../log", () => ({
   })
 }));
 
-// Use the real isPermissionDenial (pure errno check) — don't mock it, so
-// the EPERM→denied classification is exercised end to end.
+// Real isPermissionDenial (pure errno check) — exercise EPERM→denied.
 
 beforeEach(() => {
   vi.resetModules();
-  mkdirMock.impl = async () => undefined;
+  fsMock.mkdir = async () => undefined;
+  fsMock.writeFile = async () => undefined;
+  fsMock.rm = async () => undefined;
+  fsMock.calls = [];
 });
 
 afterEach(() => {
@@ -40,23 +57,29 @@ afterEach(() => {
 });
 
 describe("ensureCapturesDirReady", () => {
-  test("writable captures dir → proceeds (null)", async () => {
-    const calls: Array<{ path: string; opts: unknown }> = [];
-    mkdirMock.impl = async (path: string, opts: unknown) => {
-      calls.push({ path, opts });
-    };
+  test("writable: mkdir + write probe + cleanup, then proceeds (null)", async () => {
     const { ensureCapturesDirReady } = await import("../capture-storage-gate");
     const result = await ensureCapturesDirReady();
     expect(result).toBeNull();
-    // Recursive mkdir of the captures root — idempotent + triggers the
-    // Documents TCC prompt on first access.
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.path).toBe("/Users/test/Documents/PwrSnap");
-    expect(calls[0]?.opts).toEqual({ recursive: true });
+    // A REAL write is what forces the Documents prompt — mkdir alone is a
+    // no-op on an existing dir.
+    expect(fsMock.calls).toContain("writeFile:/Users/test/Documents/PwrSnap/.pwrsnap-access-probe");
+    expect(fsMock.calls).toContain("mkdir:/Users/test/Documents/PwrSnap");
+    // Probe is cleaned up.
+    expect(fsMock.calls).toContain("rm:/Users/test/Documents/PwrSnap/.pwrsnap-access-probe");
   });
 
-  test("EPERM (TCC denial) → actionable Documents-access error", async () => {
-    mkdirMock.impl = async () => {
+  test("session cache: a second call does NOT re-probe", async () => {
+    const { ensureCapturesDirReady } = await import("../capture-storage-gate");
+    await ensureCapturesDirReady();
+    fsMock.calls = [];
+    const second = await ensureCapturesDirReady();
+    expect(second).toBeNull();
+    expect(fsMock.calls).toHaveLength(0); // no mkdir/write/rm on the hot path
+  });
+
+  test("EPERM on the write probe (TCC denial) → actionable Documents error", async () => {
+    fsMock.writeFile = async () => {
       const e = new Error("operation not permitted") as NodeJS.ErrnoException;
       e.code = "EPERM";
       throw e;
@@ -70,8 +93,23 @@ describe("ensureCapturesDirReady", () => {
     expect(result.error.message).toContain("Documents");
   });
 
+  test("denial is NOT cached — a later granted retry proceeds", async () => {
+    fsMock.writeFile = async () => {
+      const e = new Error("denied") as NodeJS.ErrnoException;
+      e.code = "EPERM";
+      throw e;
+    };
+    const { ensureCapturesDirReady } = await import("../capture-storage-gate");
+    const denied = await ensureCapturesDirReady();
+    expect(denied?.ok).toBe(false);
+    // User grants in System Settings; next attempt's write succeeds.
+    fsMock.writeFile = async () => undefined;
+    const ok = await ensureCapturesDirReady();
+    expect(ok).toBeNull();
+  });
+
   test("non-permission failure → generic unwritable error", async () => {
-    mkdirMock.impl = async () => {
+    fsMock.writeFile = async () => {
       const e = new Error("disk full") as NodeJS.ErrnoException;
       e.code = "ENOSPC";
       throw e;

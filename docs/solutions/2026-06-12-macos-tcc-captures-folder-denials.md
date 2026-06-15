@@ -152,12 +152,24 @@ floating over an unreachable consent dialog and the capture appears wedged
 (the persist is parked awaiting an answer they can't click).
 
 Fix: `main/capture/capture-storage-gate.ts` → `ensureCapturesDirReady()`
-does the `mkdir(getCapturesRoot(), { recursive: true })` at the **top of
-every capture/record entrypoint** (right after `guardScreenCapture`,
-before any selector/countdown UI), so the Documents prompt lands on a
-clean screen. It's idempotent (cheap once granted) and classifies an
-`EPERM`/`EACCES` result via `isPermissionDenial()` into an actionable
-`captures_dir_denied` error instead of failing mid-capture. We kept the
-storage location at `~/Documents/PwrSnap` (user-discoverable, survives
-uninstall) — the prompt is unavoidable for a protected folder; we just
-moved *when* it appears.
+runs at the **top of every capture/record entrypoint** (right after
+`guardScreenCapture`, before any selector/countdown UI), so the Documents
+prompt lands on a clean screen. It classifies an `EPERM`/`EACCES` result
+via `isPermissionDenial()` into an actionable `captures_dir_denied` error
+instead of failing mid-capture. We kept the storage location at
+`~/Documents/PwrSnap` (user-discoverable, survives uninstall) — the prompt
+is unavoidable for a protected folder; we just moved *when* it appears.
+
+**Gotcha that bit the first attempt: `mkdir(recursive)` is NOT a reliable
+trigger.** macOS only prompts on an access that actually *needs* the
+grant. If `~/Documents/PwrSnap` already exists — any prior capture, or a
+real install sitting behind a throwaway `PWRSNAP_USER_DATA` test profile
+(captures live OUTSIDE userData, so the folder persists across profiles) —
+`mkdir(recursive)` is a no-op that never touches the protected folder, and
+the prompt defers right back to the first persist WRITE (under the
+selector). The gate therefore does a real **write probe**: `mkdir`, then
+`writeFile` + delete a tiny `.pwrsnap-access-probe` inside the captures
+root, which forces the prompt exactly like the persist would. Cached
+per-session (probe once, not per capture). If you ever see this prompt
+under the selector again, verify the pre-warm does a real *write*, not a
+stat/mkdir.

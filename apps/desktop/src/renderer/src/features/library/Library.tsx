@@ -620,8 +620,19 @@ export function Library() {
   const undoDelete = useCallback(() => {
     const id = deleteUndoRef.current?.undo();
     if (id === undefined) return;
-    void dispatch("library:restore", { id });
     setLastDeleted((cur) => (cur?.id === id ? null : cur));
+    void (async () => {
+      const res = await dispatch("library:restore", { id });
+      if (!res.ok) return;
+      // If we're in single-capture Focus, bring the restored capture back into
+      // view — otherwise the undo is invisible (it reappears in the grid behind
+      // the editor). `library:restore` clears `deleted_at` synchronously before
+      // resolving, so editor:open won't reject as deleted; editor:open also
+      // owns the navigate + "not in the fetched page yet" wait via pendingOpen.
+      if (viewRef.current.kind === "focus") {
+        void dispatch("editor:open", { captureId: id });
+      }
+    })();
   }, []);
 
   // ⌘⇧Z / Edit ▸ Redo: re-trash the most-recently restored capture (the

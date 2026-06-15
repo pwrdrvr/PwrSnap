@@ -37,6 +37,7 @@ import {
   markScreenCapturePrompted,
   readScreenCapturePrompted
 } from "../capture/screen-permission-gate";
+import { ensureCapturesDirReady } from "../capture/capture-storage-gate";
 import {
   getRecordingService,
   type RecordingService
@@ -209,6 +210,11 @@ export function registerRecordingHandlers(): void {
     // continuation that the selector dialog handled before calling us.
     const blocked = await guardScreenCapture();
     if (blocked) return blocked;
+    // Pre-warm the captures-folder (Documents) TCC grant before the
+    // countdown HUD so the "Allow Documents" dialog lands on a clean
+    // screen, not under recording chrome when the clip is saved.
+    const storageBlocked = await ensureCapturesDirReady();
+    if (storageBlocked) return storageBlocked;
     const readiness = readRecordingReadiness();
     if (
       req.capabilities.microphone &&

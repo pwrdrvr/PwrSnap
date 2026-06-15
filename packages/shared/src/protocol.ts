@@ -2567,6 +2567,16 @@ export type Commands = {
   /** Open System Settings → Privacy & Security → Files & Folders so
    *  the user can grant Documents access. No-op off macOS. */
   "storage:openCapturesAccessSettings": { req: Record<string, never>; res: void };
+  /** Actively verify captures-folder (Documents) write access by issuing
+   *  a real write probe — which also re-triggers the macOS consent prompt
+   *  + re-registers PwrSnap in the Privacy pane when macOS has no decision
+   *  on file. Updates the captures-access-health snapshot (so the Library
+   *  banner + the Settings row reflect the result) and returns the
+   *  outcome. Backs the System Permissions "Check access" button. */
+  "storage:checkCapturesAccess": {
+    req: Record<string, never>;
+    res: { granted: boolean };
+  };
 
   // ---- layers (v2 captures only) ----
   /** List the live layer tree for a v2 capture. Flat array; tree is

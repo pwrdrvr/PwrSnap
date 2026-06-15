@@ -12,8 +12,12 @@ import {
 } from "../storage/accounting";
 import {
   getCapturesAccessHealth,
-  onCapturesAccessHealthChanged
+  onCapturesAccessHealthChanged,
+  reportCapturesAccessFailure,
+  reportCapturesAccessSuccess
 } from "../storage/captures-access-health";
+import { ensureCapturesDirReady } from "../capture/capture-storage-gate";
+import { getCapturesRoot } from "../persistence/paths";
 
 const log = getMainLogger("pwrsnap:storage-handlers");
 let storageEventsRegistered = false;
@@ -110,6 +114,29 @@ export function registerStorageHandlers(): void {
         cause
       });
     }
+  });
+
+  bus.register("storage:checkCapturesAccess", async () => {
+    // Active, user-initiated verification (the Settings "Check access"
+    // button). Force a real write probe — it re-triggers the macOS
+    // Documents prompt + re-registers PwrSnap when macOS has no decision
+    // on file, and tells us definitively whether writes work right now.
+    const blocked = await ensureCapturesDirReady({ force: true });
+    const root = getCapturesRoot();
+    if (blocked === null) {
+      // Writable — clear any standing denial so the banner + Settings row
+      // both recover.
+      reportCapturesAccessSuccess(root);
+      return ok({ granted: true });
+    }
+    // Probe failed. Route the cause through the shared health accounting so
+    // a TCC denial (EPERM/EACCES) lights up the same snapshot/event the
+    // Library banner and Settings row read. Non-permission failures (e.g.
+    // ENOSPC) are ignored by reportCapturesAccessFailure by design.
+    // (`blocked` is non-null here and ensureCapturesDirReady only ever
+    // returns null | err, so the `.ok` guard is just to satisfy the type.)
+    reportCapturesAccessFailure(root, blocked.ok ? undefined : blocked.error.cause);
+    return ok({ granted: false });
   });
 
   bus.register("storage:maintainRenderCache", async (req) => {

@@ -9,21 +9,29 @@
 // entrypoint:
 //
 //   • granted                      → proceed.
-//   • not granted, never asked yet  → issue a real screen grab. macOS
-//     shows ITS OWN consent dialog and registers PwrSnap in the Privacy
-//     pane; we record that we asked, then stop. The OS dialog is the UI —
-//     we deliberately do NOT pop our own Settings window on top of it.
-//   • not granted, asked before     → macOS won't prompt again, so the
-//     only recovery is the Privacy pane. Open Settings → System
-//     Permissions and stop.
+//   • not granted                  → ALWAYS attempt the real screen-
+//     capture API (`getSources`) first. It shows the OS consent dialog +
+//     registers PwrSnap when macOS has no decision on file (fresh install
+//     OR after a `tccutil reset` / new unsigned dev build, which our
+//     persisted flag CANNOT detect), and picks up a grant that landed
+//     without a relaunch. Then re-read status:
+//       – granted now            → proceed ("continue if possible").
+//       – first time we've asked → stop quietly; the OS dialog is the UI.
+//       – asked before, still no → route to Settings (grant + relaunch).
 //
-// "Continue if possible" (per the product decision on this fix): the
-// granted fast-path reads `getMediaAccessStatus`, which on some macOS
-// versions flips to `granted` in-session the moment the user toggles the
-// checkbox — those users flow straight into the real capture. Where it
-// stays stale until relaunch, the next attempt routes to Settings, whose
-// copy tells them to relaunch (passive guidance — we never force-relaunch
-// the running process).
+// The cardinal rule (learned the hard way): NEVER let the persisted
+// `screenCapturePrompted` flag pre-decide "denied" and skip the real
+// attempt. The flag survives a `tccutil reset` that wipes macOS's
+// decision + the Privacy-pane listing, so a flag-gated short-circuit
+// would open Settings for an app macOS no longer lists and never
+// re-register it. The getSources probe is harmless when macOS already
+// has a decision (black sources, no prompt), so we run it every time.
+//
+// "Continue if possible" / relaunch: `getMediaAccessStatus` flips to
+// granted in-session on some macOS versions the moment the user toggles
+// the checkbox; on others it stays stale until relaunch, so the route-to-
+// Settings copy tells them to relaunch (passive guidance — we never
+// force-relaunch the running process).
 //
 // Call `guardScreenCapture()` at the TOP of every command that captures
 // screen pixels, BEFORE any frozen-screen snapshot is taken — otherwise
@@ -113,31 +121,49 @@ export async function guardScreenCapture(
 
   if (readScreenStatus() === "granted") return null;
 
-  const prompted = await readScreenCapturePrompted();
-  if (!prompted) {
-    // First-ever attempt: drive the macOS prompt with a real screen-source
-    // request, remember we asked, then stop. The OS consent dialog is the
-    // UI — opening our own Settings window over it would be noise.
-    log.info("guardScreenCapture: first attempt — triggering OS prompt");
-    await triggerScreenCapturePrompt();
-    await markScreenCapturePrompted();
-    // A few macOS configs grant in-session straight off the prompt — if so,
-    // let this very capture proceed ("continue if possible").
-    if (readScreenStatus() === "granted") return null;
+  // Not granted by preflight. ALWAYS attempt the real screen-capture API
+  // before giving up — never let our persisted flag pre-decide "denied"
+  // and skip the attempt. `desktopCapturer.getSources` is the only thing
+  // that:
+  //   • shows the OS consent dialog AND registers PwrSnap in the Privacy
+  //     pane when macOS has no decision on file. That's true on a fresh
+  //     install — but ALSO after `tccutil reset` (or a new unsigned dev
+  //     build that gets a different TCC identity), which our persisted
+  //     `screenCapturePrompted` flag CANNOT detect. The old "asked before
+  //     → just open Settings, never re-attempt" branch dead-ended here:
+  //     it opened Settings for an app macOS no longer listed, and never
+  //     re-registered it because it never tried to capture again.
+  //   • lets a grant that just landed (without a relaunch) start working.
+  // Harmless no-op when macOS already has a decision recorded — it just
+  // returns black sources without a prompt.
+  const firstAsk = !(await readScreenCapturePrompted());
+  log.info("guardScreenCapture: not granted — attempting real probe", { firstAsk });
+  await triggerScreenCapturePrompt();
+  await markScreenCapturePrompted();
+
+  // Re-read after the real attempt — some macOS configs flip to granted
+  // in-session right off the prompt. ("Continue if possible.")
+  if (readScreenStatus() === "granted") return null;
+
+  if (firstAsk) {
+    // The probe just showed the OS consent dialog / registered us for the
+    // first time. The dialog is the UI — don't stack our own Settings
+    // window over it. Stop quietly; the next attempt will route to
+    // Settings if it's still not granted.
     return err(
       screenPermissionError(
         "screen_permission_pending",
-        "PwrSnap just asked macOS for Screen Recording access. Approve it in the dialog (or in System Settings → Privacy & Security → Screen & System Audio Recording), then capture again."
+        "PwrSnap just asked macOS for Screen Recording access. Approve it in the dialog (it has an “Open System Settings” button), then capture again."
       )
     );
   }
 
-  // We've asked before and macOS still reports not-granted. It will not
-  // prompt a second time, so the only path forward is the Privacy pane.
-  // Route the user there (unless the caller is headless). If they already
-  // granted it, macOS may need a relaunch before the running process can
-  // see it — the System Permissions page says so.
-  log.info("guardScreenCapture: prior attempt, still not granted", { routeToSettings });
+  // We've asked before AND a fresh real attempt still didn't grant —
+  // either a standing denial, or a grant that needs a relaunch to take
+  // effect. Route to the Privacy pane (unless the caller is headless).
+  log.info("guardScreenCapture: re-probe still not granted — routing to Settings", {
+    routeToSettings
+  });
   if (routeToSettings) {
     void bus.dispatch(
       "settings:open",
@@ -148,7 +174,7 @@ export async function guardScreenCapture(
   return err(
     screenPermissionError(
       "screen_not_granted",
-      "Screen Recording is not enabled for PwrSnap. Turn it on in System Settings → Privacy & Security → Screen & System Audio Recording, then relaunch PwrSnap."
+      "Screen Recording isn't active for PwrSnap yet. If you just enabled it, relaunch PwrSnap so the change takes effect; otherwise turn it on in System Settings → Privacy & Security → Screen & System Audio Recording."
     )
   );
 }

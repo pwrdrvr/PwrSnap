@@ -168,6 +168,12 @@ export function defaultSettings(): Settings {
       // include everything". Once they pick, the choice persists.
       includeSystemAudio: false,
       includeMicrophone: false,
+      // Cursor defaults ON for both modes: video has always baked in
+      // the cursor (the native recorder hardcoded it), and Phase 1
+      // preserves that. Image consumption lands in Phase 3; the field
+      // is seeded now so the later change is additive.
+      videoCaptureCursor: true,
+      imageCaptureCursor: true,
       lastRoutedPermissionFingerprint: "",
       // Fresh install has never triggered the macOS Screen Recording
       // prompt, so the System Permissions page + the capture gate show
@@ -632,6 +638,12 @@ function parseV1(raw: unknown): Settings | null {
       // on the new build.
       includeSystemAudio: pickBoolean(recording.includeSystemAudio, defaults.recording.includeSystemAudio),
       includeMicrophone: pickBoolean(recording.includeMicrophone, defaults.recording.includeMicrophone),
+      // `videoCaptureCursor` / `imageCaptureCursor` landed with the
+      // cursor-capture-control feature; older files won't have them.
+      // pickBoolean fills the ON default so existing installs keep the
+      // pre-setting behavior (video bakes in the cursor).
+      videoCaptureCursor: pickBoolean(recording.videoCaptureCursor, defaults.recording.videoCaptureCursor),
+      imageCaptureCursor: pickBoolean(recording.imageCaptureCursor, defaults.recording.imageCaptureCursor),
       lastRoutedPermissionFingerprint: pickString(
         recording.lastRoutedPermissionFingerprint,
         defaults.recording.lastRoutedPermissionFingerprint

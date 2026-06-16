@@ -36,6 +36,7 @@ import { setFloatOverState } from "./float-over";
 import { bus } from "./command-bus";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 import { installDevelopmentDockIcon } from "./development-dock-icon";
+import { installTerminalSignalShutdown } from "./terminal-signal-shutdown";
 // (showFloatOverForCapture is no longer called from the bootstrap;
 // the capture-handlers `capture:interactive` now drives the entire
 // float-over lifecycle. Kept as an export from float-over.ts for the
@@ -1236,6 +1237,7 @@ function scheduleAcpAgentWarmup(): void {
 export function bootstrapApp(): void {
   markStartup("main: bootstrapApp begin");
   initializeMainLogger();
+  installTerminalSignalShutdown();
 
   // setName BEFORE the first app.getPath("userData") access — Electron
   // derives userData from the app name, and the role peek below reads

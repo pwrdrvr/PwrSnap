@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -63,6 +63,100 @@ function run(command, args, env) {
     return 1;
   }
   return result.status ?? 1;
+}
+
+const TERMINAL_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM"];
+
+function exitCodeForSignal(signal) {
+  return signal === "SIGINT" ? 130 : 143;
+}
+
+function signalChild(child, signal, platform = process.platform, killProcess = process.kill) {
+  if (child.pid === undefined) {
+    child.kill(signal);
+    return;
+  }
+
+  if (platform !== "win32") {
+    try {
+      killProcess(-child.pid, signal);
+      return;
+    } catch (error) {
+      if (error?.code !== "ESRCH") {
+        throw error;
+      }
+    }
+  }
+
+  child.kill(signal);
+}
+
+export function runLongLived(command, args, env, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const spawnImpl = options.spawn ?? spawn;
+  const processTarget = options.process ?? process;
+  const killProcess = options.killProcess ?? process.kill;
+  const child = spawnImpl(command, args, {
+    cwd: desktopRoot,
+    detached: platform !== "win32",
+    env,
+    stdio: "inherit"
+  });
+
+  if (child.pid === undefined) {
+    return Promise.resolve(1);
+  }
+
+  return new Promise((resolve) => {
+    let shutdownSignal = null;
+    let forced = false;
+    const signalHandlers = new Map();
+
+    const cleanup = () => {
+      for (const [signal, handler] of signalHandlers) {
+        processTarget.off(signal, handler);
+      }
+    };
+
+    for (const signal of TERMINAL_SHUTDOWN_SIGNALS) {
+      const handler = () => {
+        if (forced) return;
+        if (shutdownSignal !== null) {
+          forced = true;
+          signalChild(child, "SIGKILL", platform, killProcess);
+          return;
+        }
+
+        shutdownSignal = signal;
+        signalChild(child, signal, platform, killProcess);
+      };
+      signalHandlers.set(signal, handler);
+      processTarget.on(signal, handler);
+    }
+
+    child.on("error", (error) => {
+      cleanup();
+      console.error(`[dev] failed to run ${command}: ${error.message}`);
+      resolve(1);
+    });
+
+    child.on("close", (status, signal) => {
+      cleanup();
+      if (typeof status === "number") {
+        resolve(status);
+        return;
+      }
+      if (shutdownSignal !== null) {
+        resolve(exitCodeForSignal(shutdownSignal));
+        return;
+      }
+      if (signal === "SIGINT" || signal === "SIGTERM") {
+        resolve(exitCodeForSignal(signal));
+        return;
+      }
+      resolve(1);
+    });
+  });
 }
 
 export function electronExecutableRelativePath(platform = process.platform) {
@@ -142,7 +236,7 @@ export function ensureElectronInstalled(
   return 0;
 }
 
-export function main(argv = process.argv.slice(2), inputEnv = process.env) {
+export async function main(argv = process.argv.slice(2), inputEnv = process.env) {
   const nodeCheck = checkNodeVersion(process.version, readExpectedNodeVersion());
   if (!nodeCheck.ok) {
     console.error(
@@ -183,10 +277,10 @@ export function main(argv = process.argv.slice(2), inputEnv = process.env) {
     return 1;
   }
 
-  return run(node, [electronViteJs, "dev", ...argv], env);
+  return runLongLived(node, [electronViteJs, "dev", ...argv], env);
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
 if (import.meta.url === invokedPath) {
-  process.exitCode = main();
+  process.exitCode = await main();
 }

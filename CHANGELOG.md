@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.0.0-beta.19 - 2026-06-16
+
+This beta intentionally releases from commit
+`632decd40a1814477e710f0f67219d89323318ec`, before the later main-branch
+changes currently under performance investigation. It picks up the permission,
+delete-confirmation, and editor undo work that landed after beta.18 without
+including the newer experimental changes.
+
+- Added an honest first-run Screen Recording permission flow so PwrSnap tells
+  the user what macOS is actually allowing before capture begins.
+- Pre-warmed the Documents-folder permission path before showing capture UI,
+  reducing surprise TCC prompts during the capture flow.
+- Added confirmation and undo affordances for capture deletion, including
+  navigation behavior after deleting from the Library detail view.
+- Advanced editor undo integration so Edit > Undo / Redo continues to map
+  cleanly into the canvas editing stack.
+- Updated `electron-updater` and related release metadata while keeping this
+  build pinned before the suspected performance regression window.
+
 ## v1.0.0-beta.18 - 2026-06-14
 
 This beta tightens the editor and update experience after the first

@@ -323,6 +323,50 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.codex.captionModel).toBe("gpt-5.5");
   });
 
+  test("defaultSettings() seeds recording cursor capture ON for both modes", () => {
+    const d = defaultSettings();
+    expect(d.recording.videoCaptureCursor).toBe(true);
+    expect(d.recording.imageCaptureCursor).toBe(true);
+  });
+
+  test("v1 recording block missing the cursor flags gets ON defaults filled in", async () => {
+    // `videoCaptureCursor` / `imageCaptureCursor` are additive (no
+    // schemaVersion bump). Older files have a `recording` block without
+    // them; parseV1 fills ON so existing installs keep the pre-setting
+    // behavior (video has always baked in the cursor).
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        recording: { includeSystemAudio: true, includeMicrophone: false }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.recording.videoCaptureCursor).toBe(true);
+    expect(settings.recording.imageCaptureCursor).toBe(true);
+    // Existing fields in the same block still parse.
+    expect(settings.recording.includeSystemAudio).toBe(true);
+  });
+
+  test("v1 recording block preserves an explicit cursor:false choice", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        recording: { videoCaptureCursor: false, imageCaptureCursor: false }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.recording.videoCaptureCursor).toBe(false);
+    expect(settings.recording.imageCaptureCursor).toBe(false);
+  });
+
   test("v1 shape missing `ai.defaults` gets empty per-surface defaults filled in", async () => {
     // `ai.defaults.*` is additive. Older files won't have it; parseV1
     // fills empty objects for the two chat surfaces (= "Codex default").

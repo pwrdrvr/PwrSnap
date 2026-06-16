@@ -951,6 +951,12 @@ async function runInteractiveRecord(
   // seconds before the picker appeared (subsequent invocations were
   // instant because the chunks were cached). Static imports add no
   // measurable boot cost and remove the cold-press latency.
+  // Read settings before the picker so the selector's cursor toggle
+  // seeds from the persisted default. Reused below for audio
+  // capabilities + the cursor value passed to `recording:start`.
+  const settings = await new DesktopSettingsService({
+    filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
+  }).read();
   const selection = await pickRegion({
     mode: "auto",
     keepPwrSnapChrome: false,
@@ -961,7 +967,9 @@ async function runInteractiveRecord(
     // clicked a control ON it — they didn't mean to record it). A
     // hotkey or tray trigger passes an empty list and leaves the
     // Library as a valid target.
-    protectWindowIds
+    protectWindowIds,
+    // Seed the selector's cursor toggle from the persisted default.
+    cursorDefault: settings.recording.videoCaptureCursor
   });
   if (!selection.ok) {
     setFloatOverState({ kind: "cancel" });
@@ -1078,11 +1086,9 @@ async function runInteractiveRecord(
     scheduleDockReclaim();
     log.debug("video-record left previous app frontmost", { previousAppPid });
   }
-  const settings = await new DesktopSettingsService({
-    filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
-  }).read();
   // Honor the user's persisted audio defaults; the in-context
   // recording dialog (a later enhancement) can override these.
+  // `settings` is read once above (before the picker) and reused here.
   const capabilities = {
     systemAudio: settings.recording.includeSystemAudio,
     microphone: settings.recording.includeMicrophone
@@ -1125,7 +1131,14 @@ async function runInteractiveRecord(
   }
   const result = await bus.dispatch(
     "recording:start",
-    { subject, capabilities, countdownSeconds: 3 },
+    {
+      subject,
+      capabilities,
+      // The selector's `C` toggle wins; fall back to the persisted
+      // default if the renderer didn't send a value.
+      captureCursor: selection.captureCursor ?? settings.recording.videoCaptureCursor,
+      countdownSeconds: 3
+    },
     { principal: "ipc" }
   );
   if (!result.ok) {

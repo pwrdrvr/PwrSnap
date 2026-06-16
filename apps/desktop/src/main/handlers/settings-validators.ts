@@ -423,6 +423,8 @@ export function validateSettingsWrite(
     for (const key of [
       "includeSystemAudio",
       "includeMicrophone",
+      "videoCaptureCursor",
+      "imageCaptureCursor",
       "screenCapturePrompted"
     ] as const) {
       const v = recording[key];

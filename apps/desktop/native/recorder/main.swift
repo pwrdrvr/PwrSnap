@@ -7,7 +7,8 @@
 //
 //   start  → { "type": "start", "displayId": 1, "rect": { "x": …, "y": …,
 //             "w": …, "h": … }, "outputPath": "/tmp/foo.mp4",
-//             "systemAudio": true, "microphone": false }
+//             "systemAudio": true, "microphone": false,
+//             "showsCursor": true }   // optional; omitted ⇒ true
 //   stop   → { "type": "stop" }
 //
 // Notifies main:
@@ -40,6 +41,10 @@ struct StartRequest: Decodable {
     let outputPath: String
     let systemAudio: Bool
     let microphone: Bool
+    /// Whether the recording bakes in the mouse cursor. Optional for
+    /// back-compat with older callers — `nil` defaults to `true`, which
+    /// is the behavior before this field existed (cursor always shown).
+    let showsCursor: Bool?
     /// Optional wall-clock target (Date.now() ms) — Swift does setup
     /// immediately, then waits until this moment before calling
     /// `stream.startCapture()`. Lets the TS-side visible countdown
@@ -199,7 +204,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         cfg.height = req.rect.h
         cfg.minimumFrameInterval = CMTime(value: 1, timescale: 60) // 60fps cap
         cfg.queueDepth = 5
-        cfg.showsCursor = true
+        cfg.showsCursor = req.showsCursor ?? true
         cfg.pixelFormat = kCVPixelFormatType_32BGRA
         cfg.scalesToFit = false
         cfg.sourceRect = CGRect(

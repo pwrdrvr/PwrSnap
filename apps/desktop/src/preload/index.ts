@@ -184,6 +184,9 @@ const pwrsnapApi = {
      *  ⇧ at commit time. Routes main to `screencapture -l <id>`
      *  instead of `-R <rect>`. */
     fullWindow?: boolean;
+    /** Video-only: whether the recording bakes in the mouse cursor,
+     *  from the selector's `C` toggle. Omitted for image captures. */
+    captureCursor?: boolean;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_RESULT_CHANNEL, payload);
   },
@@ -316,6 +319,8 @@ const pwrsnapApi = {
        *  starts a recording instead of taking a snap. Default
        *  `"snap"` keeps existing visuals unchanged. */
       intent?: "snap" | "video";
+      /** Video-only seed for the cursor toggle. `undefined` = ON. */
+      cursor?: boolean;
     }) => void
   ): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
@@ -324,6 +329,7 @@ const pwrsnapApi = {
           mode: "auto" | "region" | "window";
           screenUrl?: string;
           intent?: "snap" | "video";
+          cursor?: boolean;
         }
       );
     ipcRenderer.on(REGION_SELECTOR_MODE_CHANNEL, wrapped);

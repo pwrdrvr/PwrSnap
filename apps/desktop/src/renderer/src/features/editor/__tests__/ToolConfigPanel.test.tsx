@@ -101,6 +101,8 @@ function makeSettings(): Settings {
     recording: {
       includeSystemAudio: false,
       includeMicrophone: false,
+      videoCaptureCursor: true,
+      imageCaptureCursor: true,
       lastRoutedPermissionFingerprint: "",
       screenCapturePrompted: false
     },

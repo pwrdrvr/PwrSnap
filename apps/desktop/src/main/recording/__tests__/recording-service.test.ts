@@ -340,6 +340,87 @@ describe("RecordingService.start excludePids", () => {
   });
 });
 
+describe("RecordingService.start showsCursor (cursor capture)", () => {
+  test("captureCursor:false writes showsCursor:false to the recorder", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const startPromise = service
+      .start({ subject: SUBJECT, capabilities: CAPS, captureCursor: false, countdownSeconds: 0 })
+      .catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const child = mocks.spawnedChildren[0]!;
+    const startCmd = JSON.parse(child.stdin.write.mock.calls[0]![0].trim());
+    expect(startCmd.showsCursor).toBe(false);
+
+    const cancelDone = service.cancel();
+    await vi.advanceTimersByTimeAsync(600);
+    await cancelDone;
+    await vi.advanceTimersByTimeAsync(16_000);
+    await startPromise;
+  });
+
+  test("omitting captureCursor omits showsCursor (recorder defaults to true)", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const startPromise = service
+      .start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 })
+      .catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const child = mocks.spawnedChildren[0]!;
+    const startCmd = JSON.parse(child.stdin.write.mock.calls[0]![0].trim());
+    // JSON.stringify drops `undefined`, so the key is absent and the
+    // Swift side falls back to `cfg.showsCursor = req.showsCursor ?? true`.
+    expect("showsCursor" in startCmd).toBe(false);
+
+    const cancelDone = service.cancel();
+    await vi.advanceTimersByTimeAsync(600);
+    await cancelDone;
+    await vi.advanceTimersByTimeAsync(16_000);
+    await startPromise;
+  });
+
+  test("restart preserves the cursor choice across the cancel→start", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const first = service
+      .start({ subject: SUBJECT, capabilities: CAPS, captureCursor: false, countdownSeconds: 3 })
+      .catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.spawnedChildren).toHaveLength(1);
+
+    const restartPromise = service.restart().catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(700);
+    await vi.advanceTimersByTimeAsync(1100);
+
+    expect(mocks.spawnedChildren).toHaveLength(2);
+    const newStartCmd = JSON.parse(
+      mocks.spawnedChildren[1]!.stdin.write.mock.calls[0]![0].trim()
+    );
+    expect(newStartCmd.showsCursor).toBe(false);
+
+    const cancelDone = service.cancel();
+    await vi.advanceTimersByTimeAsync(600);
+    await cancelDone;
+    await vi.advanceTimersByTimeAsync(1100);
+    await first;
+    await restartPromise;
+  });
+});
+
 describe("RecordingService.start multi-monitor rect translation", () => {
   test("subject on secondary display gets translated to display-local before reaching recorder + HUD", async () => {
     const { __setRecordingServiceForTests, getRecordingService } = await import(

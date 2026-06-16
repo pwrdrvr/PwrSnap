@@ -132,6 +132,12 @@ export function RegionSelector() {
   // 'snap' for backwards-compat with every call site that doesn't
   // set the flag (Quick Capture, Region, Window, Timed).
   const [intent, setIntent] = useState<"snap" | "video">("snap");
+  // Video-only: whether the recording bakes in the mouse cursor.
+  // Seeded from `settings.recording.videoCaptureCursor` via the mode
+  // signal on every show (so a prior capture's flip never leaks through
+  // the pre-warmed window), flipped with the `C` key, and shipped on the
+  // commit payload for the hotkey path to pass to `recording:start`.
+  const [captureCursor, setCaptureCursor] = useState(true);
   // ⇧ in snap mode opts into full-window capture: the rect expands
   // from the visible-region bounding box (`entry.rect`) to the
   // window's full bounds (`entry.rawRect`), and the commit payload
@@ -161,6 +167,8 @@ export function RegionSelector() {
   const lastMouseRef = useRef<{ x: number; y: number } | null>(null);
   const shiftRef = useRef(false);
   const modeRef = useRef<SelectorMode>("auto");
+  const intentRef = useRef<"snap" | "video">("snap");
+  const captureCursorRef = useRef(true);
   // Cursor-tracking crosshair guide-lines (auto/region modes). Rendered
   // once and repositioned by direct DOM writes from `onMouseMove` /
   // the window-list cursor — never via React state, so they impose no
@@ -211,6 +219,8 @@ export function RegionSelector() {
   spaceRef.current = spaceHeld;
   snapTargetRef.current = snapTarget;
   modeRef.current = mode;
+  intentRef.current = intent;
+  captureCursorRef.current = captureCursor;
 
   // Surface state to CSS for cursor switching + snap visualization.
   useLayoutEffect(() => {
@@ -239,6 +249,10 @@ export function RegionSelector() {
       setMode(payload.mode);
       setScreenUrl(payload.screenUrl ?? null);
       setIntent(payload.intent ?? "snap");
+      // Re-seed the cursor toggle from the persisted default each show
+      // (defaults ON when unset) so a prior capture's choice can't bleed
+      // into this one through the reused, pre-warmed selector window.
+      setCaptureCursor(payload.cursor ?? true);
       // When switching INTO 'region' mode, drop any existing window
       // snap target back to display — otherwise the user sees a stale
       // window-snap rect from the previous session before they move
@@ -420,7 +434,14 @@ export function RegionSelector() {
       // by definition). The default (no ⇧, mode='auto'|'region')
       // goes through the rect path, which captures whatever's
       // literally on screen including overlapping windows.
-      ...(wantFull ? { fullWindow: true } : {})
+      ...(wantFull ? { fullWindow: true } : {}),
+      // Video-only: the cursor choice for this recording. Read from the
+      // ref (not state) because this commit closure is captured once at
+      // mount by the global keydown listener. Omitted for image
+      // captures, which don't consume it yet (Phase 3).
+      ...(intentRef.current === "video"
+        ? { captureCursor: captureCursorRef.current }
+        : {})
     });
     setInteraction({ kind: "snap" });
     setSnapTarget({ kind: "display" });
@@ -544,6 +565,17 @@ export function RegionSelector() {
       if (event.key === "Enter") {
         event.preventDefault();
         commit();
+        return;
+      }
+      if (
+        (event.key === "c" || event.key === "C") &&
+        intentRef.current === "video"
+      ) {
+        // Video-only: toggle whether the recording bakes in the mouse
+        // cursor. The hint bar reflects the current state; the value
+        // rides the commit payload to `recording:start`.
+        event.preventDefault();
+        setCaptureCursor((prev) => !prev);
         return;
       }
       if (event.key === "Tab" && interactionRef.current.kind === "snap") {
@@ -1155,6 +1187,10 @@ export function RegionSelector() {
           <>
             <span>
               <kbd>click / drag</kbd>start recording
+            </span>
+            <span className="region-hint-sep">·</span>
+            <span>
+              <kbd>C</kbd>cursor: {captureCursor ? "on" : "off"}
             </span>
             <span className="region-hint-sep">·</span>
           </>

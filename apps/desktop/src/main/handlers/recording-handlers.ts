@@ -242,6 +242,7 @@ export function registerRecordingHandlers(): void {
       const session = await getService().start({
         subject: req.subject,
         capabilities: req.capabilities,
+        captureCursor: req.captureCursor,
         countdownSeconds: req.countdownSeconds ?? 3
       });
       return ok({ sessionId: session.sessionId });

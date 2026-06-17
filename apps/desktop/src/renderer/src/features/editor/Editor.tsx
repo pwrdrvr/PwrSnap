@@ -433,7 +433,10 @@ function selectedOverlayToToolStyle(
       tool: "blur",
       style: {
         ...defaults.blur,
-        ...(data.style !== undefined ? { mode: data.style } : {})
+        ...(data.style !== undefined ? { mode: data.style } : {}),
+        ...(data.radiusPx !== undefined
+          ? { radius: { mode: "px", value: data.radiusPx } }
+          : {})
       }
     };
   }
@@ -556,6 +559,7 @@ function projectV2LayersToOverlayRows(
                 // DEFAULT_BLUR_STYLE — same gaussian default the
                 // renderer always assumed).
                 style: layer.effect.style ?? DEFAULT_BLUR_STYLE,
+                radiusPx: layer.effect.radius_px,
                 // Rotation lives on the effect spec (not on the layer's
                 // transform matrix). Vector layers carry rotation inside
                 // `shape.rotation`; effect layers can't (no `shape`) so
@@ -571,6 +575,9 @@ function projectV2LayersToOverlayRows(
                 rect,
                 color: layer.effect.tint_hex,
                 opacity: layer.effect.opacity,
+                ...(layer.effect.blend !== undefined
+                  ? { blend: layer.effect.blend }
+                  : {}),
                 ...(layer.effect.rotation !== undefined
                   ? { rotation: layer.effect.rotation }
                   : {})
@@ -1030,6 +1037,16 @@ export function Editor({
     // path on the next blur-tool selection.
     return DEFAULT_BLUR_STYLE;
   }, [blurStyleProp, effectiveToolState.activeStyle]);
+
+  const blurRadiusPx: number | undefined = useMemo(() => {
+    if (
+      effectiveToolState.activeStyle.tool === "blur" &&
+      effectiveToolState.activeStyle.style.radius.mode === "px"
+    ) {
+      return effectiveToolState.activeStyle.style.radius.value;
+    }
+    return undefined;
+  }, [effectiveToolState.activeStyle]);
 
   const [draft, setDraft] = useState<Draft | null>(null);
   // Multi-select model. Tracks the ids of all currently-selected
@@ -1878,9 +1895,15 @@ export function Editor({
         }
         overlay = hlOverlay;
       } else {
-        // blur — already threaded via the `blurStyle` memo at the
-        // top of this function, so this branch was correct pre-fix.
-        overlay = { kind: "blur", rect, style: blurStyle };
+        // blur — thread both mode and optional custom radius through
+        // the committed overlay so the v2 EffectLayer doesn't silently
+        // fall back to auto radius.
+        overlay = {
+          kind: "blur",
+          rect,
+          style: blurStyle,
+          ...(blurRadiusPx !== undefined ? { radiusPx: blurRadiusPx } : {})
+        };
       }
       setDraft(null);
       const wrote = await persistOverlay(overlay);
@@ -2812,6 +2835,7 @@ export function Editor({
       commitText={commitText}
       onZoomChange={onZoomChange}
       blurStyle={blurStyle}
+      blurRadiusPx={blurRadiusPx}
       isControlled={isControlled}
       toolState={effectiveToolState}
       openActivePopoverRef={openActivePopoverRef}
@@ -2867,6 +2891,7 @@ function EditorLoaded({
   commitText,
   onZoomChange,
   blurStyle,
+  blurRadiusPx,
   isControlled,
   toolState,
   openActivePopoverRef,
@@ -2986,6 +3011,7 @@ function EditorLoaded({
   commitText: () => Promise<void>;
   onZoomChange: ((api: ZoomApi) => void) | undefined;
   blurStyle: BlurStyle;
+  blurRadiusPx: number | undefined;
   isControlled: boolean;
   toolState: ReturnType<typeof useEditorToolState>;
   openActivePopoverRef: React.RefObject<(() => void) | null>;
@@ -4400,6 +4426,7 @@ function EditorLoaded({
             overlays={overlays}
             draft={draft}
             blurStyle={blurStyle}
+            blurRadiusPx={blurRadiusPx}
             liveOverride={draftGeometry}
             editorImageRef={editorImageRef}
             canvasWidthPx={record.width_px}

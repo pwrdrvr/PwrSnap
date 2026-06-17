@@ -1476,6 +1476,160 @@ describe("useCaptureModel", () => {
     expect(result.value.artifact.node.effect.rotation).toBeCloseTo(Math.PI / 4);
   });
 
+  test("13d-blur-style. v2 dispatchEdit: updateOverlay persists blur radius/style and stable id", async () => {
+    const record = makeRecord("cap_2", 2);
+    const blurLayer: BundleLayerNode = {
+      id: "ly_blur",
+      parent_id: null,
+      name: "Blur",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 3,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-24T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-24T00:00:00Z",
+      kind: "effect",
+      effect: { type: "blur", radius_px: 9, style: "gaussian", rotation: Math.PI / 9 },
+      clip_rect: { x: 200, y: 100, w: 400, h: 200 }
+    };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list") return Promise.resolve({ ok: true, value: [blurLayer] });
+      if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "layers:upsert") {
+        const r = req as { layer: BundleLayerNode };
+        return Promise.resolve({ ok: true, value: r.layer });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+    const result = await m.dispatchEdit({
+      kind: "updateOverlay",
+      layerId: "ly_blur",
+      patch: { kind: "blur", style: "pixelate", radiusPx: 24 }
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.kind).toBe("update");
+    if (result.value.kind !== "update") throw new Error("unreachable");
+
+    const upsert = dispatchMock.mock.calls.find((c) => c[0] === "layers:upsert");
+    expect(upsert).toBeDefined();
+    const sentLayer = (upsert?.[1] as { layer: BundleLayerNode }).layer;
+    expect(sentLayer.kind).toBe("effect");
+    if (sentLayer.kind !== "effect" || sentLayer.effect.type !== "blur") {
+      throw new Error("expected blur effect");
+    }
+    expect(sentLayer.id).toBe("ly_blur");
+    expect(sentLayer.z_index).toBe(3);
+    expect(sentLayer.effect.style).toBe("pixelate");
+    expect(sentLayer.effect.radius_px).toBe(24);
+    expect(sentLayer.effect.rotation).toBeCloseTo(Math.PI / 9);
+    expect(result.value.artifact.node.id).toBe("ly_blur");
+    if (result.value.artifact.node.kind !== "effect" || result.value.artifact.node.effect.type !== "blur") {
+      throw new Error("expected blur effect artifact");
+    }
+    expect(result.value.artifact.node.effect.radius_px).toBe(24);
+  });
+
+  test("13d-highlight-style. v2 dispatchEdit: updateOverlay persists highlight blend and stable id", async () => {
+    const record = makeRecord("cap_2", 2);
+    const highlightLayer: BundleLayerNode = {
+      id: "ly_highlight",
+      parent_id: null,
+      name: "Highlight",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 5,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-24T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-24T00:00:00Z",
+      kind: "effect",
+      effect: { type: "highlight", tint_hex: "#ff8a1f", opacity: 0.3, rotation: Math.PI / 7 },
+      clip_rect: { x: 200, y: 100, w: 400, h: 200 }
+    };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list") return Promise.resolve({ ok: true, value: [highlightLayer] });
+      if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "layers:upsert") {
+        const r = req as { layer: BundleLayerNode };
+        return Promise.resolve({ ok: true, value: r.layer });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+    const result = await m.dispatchEdit({
+      kind: "updateOverlay",
+      layerId: "ly_highlight",
+      patch: { kind: "highlight", color: "#00ff00", opacity: 0.4, blend: "screen" }
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.kind).toBe("update");
+    if (result.value.kind !== "update") throw new Error("unreachable");
+
+    const upsert = dispatchMock.mock.calls.find((c) => c[0] === "layers:upsert");
+    expect(upsert).toBeDefined();
+    const sentLayer = (upsert?.[1] as { layer: BundleLayerNode }).layer;
+    expect(sentLayer.kind).toBe("effect");
+    if (sentLayer.kind !== "effect" || sentLayer.effect.type !== "highlight") {
+      throw new Error("expected highlight effect");
+    }
+    expect(sentLayer.id).toBe("ly_highlight");
+    expect(sentLayer.z_index).toBe(5);
+    expect(sentLayer.effect.tint_hex).toBe("#00ff00");
+    expect(sentLayer.effect.opacity).toBe(0.4);
+    expect(sentLayer.effect.blend).toBe("screen");
+    expect(sentLayer.effect.rotation).toBeCloseTo(Math.PI / 7);
+    expect(result.value.artifact.node.id).toBe("ly_highlight");
+    if (
+      result.value.artifact.node.kind !== "effect" ||
+      result.value.artifact.node.effect.type !== "highlight"
+    ) {
+      throw new Error("expected highlight effect artifact");
+    }
+    expect(result.value.artifact.node.effect.blend).toBe("screen");
+  });
+
   test("13d-text. v2 dispatchEdit: updateOverlay (text body edit) PRESERVES the layer id", async () => {
     // Regression: editing a text overlay's body must keep the SAME
     // layer id. updateOverlay is still materialized as delete-plus-

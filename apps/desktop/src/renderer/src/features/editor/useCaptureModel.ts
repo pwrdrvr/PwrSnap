@@ -26,6 +26,7 @@ import {
   err,
   readHighlightColor,
   readHighlightOpacity,
+  readBlurRadiusPx,
   type BundleLayerNode,
   type CaptureRecord,
   type Overlay,
@@ -130,7 +131,12 @@ export type VectorStyle = {
 export type EffectSpec =
   | { mode: "gaussian" | "pixelate" | "redact"; radius: "auto" | number }
   | { mode: "crop" }
-  | { mode: "highlight"; opacity: number };
+  | {
+      mode: "highlight";
+      opacity: number;
+      color?: string;
+      blend?: "multiply" | "screen" | "overlay";
+    };
 
 export type LayerView =
   | {
@@ -473,7 +479,7 @@ function layerNodeToLayerView(node: BundleLayerNode): LayerView {
         return {
           kind: "effect",
           id: node.id,
-          effect: { mode: "gaussian", radius: effect.radius_px },
+          effect: { mode: effect.style ?? "gaussian", radius: effect.radius_px },
           clipRect,
           meta
         };
@@ -482,7 +488,12 @@ function layerNodeToLayerView(node: BundleLayerNode): LayerView {
       return {
         kind: "effect",
         id: node.id,
-        effect: { mode: "highlight", opacity: effect.opacity },
+        effect: {
+          mode: "highlight",
+          opacity: effect.opacity,
+          color: effect.tint_hex,
+          ...(effect.blend !== undefined ? { blend: effect.blend } : {})
+        },
         clipRect,
         meta
       };
@@ -748,11 +759,15 @@ export function applyPatchToLayer(
     // Map overlay-shaped patches onto effect-layer payloads.
     if (patch.kind === "blur" && layer.effect.type === "blur") {
       const styleUpdate = patch.style;
+      const radiusUpdate = patch.radiusPx;
       const rotationUpdate = patch.rotation;
       const effect = layer.effect;
       const newEffect: typeof effect = {
         ...effect,
         ...(styleUpdate !== undefined ? { style: styleUpdate } : {}),
+        ...(radiusUpdate !== undefined
+          ? { radius_px: readBlurRadiusPx({ radiusPx: radiusUpdate }, canvas) }
+          : {}),
         // Rotation rides on the effect spec for blur (see schema +
         // applyGeometryToLayer effect branch). Style patches can
         // change rotation via this path; rotation-handle drags go
@@ -792,6 +807,7 @@ export function applyPatchToLayer(
           ...(highlightPatch.opacity !== undefined
             ? { opacity: readHighlightOpacity({ opacity: highlightPatch.opacity }) }
             : {}),
+          ...(highlightPatch.blend !== undefined ? { blend: highlightPatch.blend } : {}),
           ...(highlightPatch.rotation !== undefined
             ? { rotation: highlightPatch.rotation }
             : {})

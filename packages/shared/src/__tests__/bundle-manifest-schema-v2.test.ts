@@ -342,10 +342,11 @@ describe("HighlightEffect", () => {
         type: "highlight",
         tint_hex: "#ff8c00",
         opacity: 0.5,
+        blend: "screen",
         rotation: Math.PI / 4
       })
     ).toEqual({
-      type: "highlight", tint_hex: "#ff8c00", opacity: 0.5, rotation: Math.PI / 4
+      type: "highlight", tint_hex: "#ff8c00", opacity: 0.5, blend: "screen", rotation: Math.PI / 4
     });
   });
 

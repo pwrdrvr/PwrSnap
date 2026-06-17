@@ -22,6 +22,7 @@ import {
   Overlay,
   OVERLAY_RENDER_ORDER,
   OverlayThickness,
+  readBlurRadiusPx,
   readBlurStyle,
   readHighlightOpacity,
   readOverlayThickness,
@@ -324,6 +325,14 @@ describe("Overlay smoke — the variants we ship in Phase 1 + Phase 2", () => {
     expect(readBlurStyle({})).toBe(DEFAULT_BLUR_STYLE);
     expect(readBlurStyle({ style: "pixelate" })).toBe("pixelate");
     expect(readBlurStyle({ style: "redact" })).toBe("redact");
+  });
+
+  test("readBlurRadiusPx uses custom radius when present and auto-derives otherwise", () => {
+    expect(readBlurRadiusPx({ radiusPx: 24 }, { width: 800, height: 600 })).toBe(24);
+    expect(readBlurRadiusPx({}, { width: 800, height: 600 })).toBe(
+      deriveBlurRadiusPx({ width: 800, height: 600 })
+    );
+    expect(readBlurRadiusPx({ radiusPx: 999 }, { width: 800, height: 600 })).toBe(200);
   });
 });
 

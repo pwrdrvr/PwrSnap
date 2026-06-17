@@ -43,6 +43,7 @@ import {
 import type { BlurStyle, OverlayRow } from "@pwrsnap/shared";
 import {
   deriveBlurRadiusPx,
+  readBlurRadiusPx,
   readBlurStyle,
   readOverlayRotation
 } from "@pwrsnap/shared";
@@ -55,6 +56,7 @@ export function BlurOverlays({
   overlays,
   draft,
   blurStyle,
+  blurRadiusPx,
   liveOverride = null,
   editorImageRef,
   canvasWidthPx,
@@ -71,6 +73,9 @@ export function BlurOverlays({
    *  committed. Committed overlays read their own style off
    *  `row.data.style`. */
   blurStyle: BlurStyle;
+  /** Optional custom gaussian radius for the live-drag draft. Persisted
+   *  blur rows read their radius from row.data.radiusPx. */
+  blurRadiusPx?: number | undefined;
   /** Live-drag geometry override — Map of layer id → in-progress
    *  geometry. Same shape OverlaySvg / TextHtmlOverlays consume.
    *  When the matching row is a blur and the override's geometry
@@ -144,6 +149,10 @@ export function BlurOverlays({
     <div className="ed-blur-layer">
       {blurs.map(({ row, data }) => {
         const style = readBlurStyle(data);
+        const radiusPx = readBlurRadiusPx(data, {
+          width: canvasWidthPx,
+          height: canvasHeightPx
+        });
         const rotation = readOverlayRotation(data);
         // Persisted blur items carry their layer.z_index in CSS so
         // they stack against arrows / rects / text / highlight by
@@ -159,6 +168,7 @@ export function BlurOverlays({
           rect: data.rect,
           rotation,
           style,
+          radiusPx,
           editorImageRef,
           canvasWidthPx,
           canvasHeightPx,
@@ -177,6 +187,9 @@ export function BlurOverlays({
           // So the draft is always rotation === 0.
           rotation: 0,
           style: blurStyle,
+          radiusPx:
+            blurRadiusPx ??
+            deriveBlurRadiusPx({ width: canvasWidthPx, height: canvasHeightPx }),
           editorImageRef,
           canvasWidthPx,
           canvasHeightPx,
@@ -206,6 +219,7 @@ function renderBlur(args: {
   rect: { x: number; y: number; w: number; h: number };
   rotation: number;
   style: BlurStyle;
+  radiusPx: number;
   editorImageRef: RefObject<HTMLImageElement | null>;
   canvasWidthPx: number;
   canvasHeightPx: number;
@@ -221,7 +235,7 @@ function renderBlur(args: {
    *  tree below doesn't have to know about chrome vs persisted. */
   zIndex?: number;
 }): ReactElement {
-  const { key, rect, rotation, style, isDraft = false, zIndex } = args;
+  const { key, rect, rotation, style, radiusPx, isDraft = false, zIndex } = args;
   // ROTATED gaussian + pixelate: the bake samples the rotated rect's
   // AABB, applies the effect, masks to the rotated rect interior. CSS
   // backdrop-filter and the un-rotated canvas mosaic can't replicate
@@ -234,6 +248,7 @@ function renderBlur(args: {
         rect={rect}
         rotation={rotation}
         style={style}
+        radiusPx={radiusPx}
         editorImageRef={args.editorImageRef}
         canvasWidthPx={args.canvasWidthPx}
         canvasHeightPx={args.canvasHeightPx}
@@ -275,6 +290,7 @@ function renderBlur(args: {
       rect={rect}
       rotation={rotation}
       style={style}
+      radiusPx={radiusPx}
       isDraft={isDraft}
       {...(zIndex !== undefined ? { zIndex } : {})}
     />
@@ -285,6 +301,7 @@ function BlurOverlayItem({
   rect,
   rotation,
   style,
+  radiusPx,
   isDraft = false,
   zIndex
 }: {
@@ -304,6 +321,7 @@ function BlurOverlayItem({
    *  clip regions on v1. v2 (default since PR #129) honors rotation. */
   rotation: number;
   style: BlurStyle;
+  radiusPx: number;
   isDraft?: boolean;
   /** Optional CSS z-index for cross-kind ordering. Persisted blur
    *  items pass `row.z_index` so they stack against arrows / rects /
@@ -315,6 +333,10 @@ function BlurOverlayItem({
   zIndex?: number;
 }): ReactElement {
   const rotateDeg = (rotation * 180) / Math.PI;
+  const gaussianFilter =
+    style === "gaussian"
+      ? `blur(${Math.max(1, Math.min(200, radiusPx))}px)`
+      : undefined;
   return (
     <div
       className={
@@ -325,6 +347,12 @@ function BlurOverlayItem({
         top: `${rect.y * 100}%`,
         width: `${rect.w * 100}%`,
         height: `${rect.h * 100}%`,
+        ...(gaussianFilter !== undefined
+          ? {
+              backdropFilter: gaussianFilter,
+              WebkitBackdropFilter: gaussianFilter
+            }
+          : {}),
         ...(rotation !== 0 ? { transform: `rotate(${rotateDeg}deg)` } : {}),
         ...(zIndex !== undefined ? { zIndex } : {})
       }}
@@ -471,6 +499,7 @@ function RotatedEffectCanvas({
   rect,
   rotation,
   style,
+  radiusPx,
   editorImageRef,
   canvasWidthPx,
   canvasHeightPx,
@@ -487,6 +516,7 @@ function RotatedEffectCanvas({
    *  by `BlurOverlayItem` (a rotated black square IS a rotated black
    *  square — no algorithmic mismatch to fix). */
   style: "gaussian" | "pixelate";
+  radiusPx: number;
   editorImageRef: RefObject<HTMLImageElement | null>;
   canvasWidthPx: number;
   canvasHeightPx: number;
@@ -564,10 +594,7 @@ function RotatedEffectCanvas({
         // ctx.filter applies to the NEXT drawImage. σ matches the
         // bake's blur radius (compose-tree.ts calls sharp.blur(σ)
         // with the same effect.radius_px value).
-        const sigma = deriveBlurRadiusPx({
-          width: canvasWidthPx,
-          height: canvasHeightPx
-        });
+        const sigma = Math.max(1, Math.min(200, radiusPx));
         ctx.filter = `blur(${sigma}px)`;
         ctx.drawImage(
           img,
@@ -637,6 +664,7 @@ function RotatedEffectCanvas({
     aabb.aabbW,
     aabb.aabbH,
     style,
+    radiusPx,
     canvasWidthPx,
     canvasHeightPx,
     sourceWidthPx,

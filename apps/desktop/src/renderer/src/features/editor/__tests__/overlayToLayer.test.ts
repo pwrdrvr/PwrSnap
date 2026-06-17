@@ -93,6 +93,7 @@ describe("overlayToBundleLayerNode", () => {
       type: "highlight",
       tint_hex: "#ff8a1f",
       opacity: 0.5,
+      blend: "overlay",
       rotation: Math.PI / 6
     });
     expect(result.layer.clip_rect).toEqual({
@@ -108,7 +109,9 @@ describe("overlayToBundleLayerNode", () => {
     const blur: Overlay = {
       kind: "blur",
       rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.4 },
-      style: "gaussian"
+      style: "gaussian",
+      radiusPx: 24,
+      rotation: Math.PI / 8
     };
     const result = overlayToBundleLayerNode(blur, CANVAS);
     expect(result.ok).toBe(true);
@@ -124,9 +127,8 @@ describe("overlayToBundleLayerNode", () => {
       h: 0.4 * 600
     });
     if (result.layer.effect.type === "blur") {
-      // 1.5% of short-side (600) = 9, floored at 8 then rounded.
-      expect(result.layer.effect.radius_px).toBeGreaterThanOrEqual(8);
-      expect(result.layer.effect.radius_px).toBeLessThanOrEqual(200);
+      expect(result.layer.effect.radius_px).toBe(24);
+      expect(result.layer.effect.rotation).toBeCloseTo(Math.PI / 8);
     }
     expect(() => BundleLayerNodeSchema.parse(result.layer)).not.toThrow();
   });

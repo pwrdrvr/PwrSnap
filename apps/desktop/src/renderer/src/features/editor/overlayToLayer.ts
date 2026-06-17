@@ -24,7 +24,7 @@
 import { nanoid } from "nanoid";
 import type { BundleLayerNode, Overlay } from "@pwrsnap/shared";
 import {
-  deriveBlurRadiusPx,
+  readBlurRadiusPx,
   readHighlightColor,
   readHighlightOpacity,
   readShapeKind
@@ -130,8 +130,9 @@ export function overlayToBundleLayerNode(
       kind: "effect",
       effect: {
         type: "blur",
-        radius_px: deriveBlurRadiusPx(canvas),
-        ...(overlay.style !== undefined ? { style: overlay.style } : {})
+        radius_px: readBlurRadiusPx(overlay, canvas),
+        ...(overlay.style !== undefined ? { style: overlay.style } : {}),
+        ...(overlay.rotation !== undefined ? { rotation: overlay.rotation } : {})
       },
       clip_rect: {
         x: overlay.rect.x * canvas.width,
@@ -165,6 +166,7 @@ export function overlayToBundleLayerNode(
         type: "highlight",
         tint_hex: readHighlightColor(overlay),
         opacity: readHighlightOpacity(overlay),
+        ...(overlay.blend !== undefined ? { blend: overlay.blend } : {}),
         ...(overlay.rotation !== undefined ? { rotation: overlay.rotation } : {})
       },
       clip_rect: {

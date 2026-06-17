@@ -48,7 +48,8 @@ afterEach(async () => {
 
 function blurRow(
   id: string,
-  style: "gaussian" | "pixelate" | "redact" = "pixelate"
+  style: "gaussian" | "pixelate" | "redact" = "pixelate",
+  options: { radiusPx?: number } = {}
 ): OverlayRow {
   return {
     id,
@@ -56,7 +57,8 @@ function blurRow(
     data: {
       kind: "blur",
       rect: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 },
-      style
+      style,
+      ...(options.radiusPx !== undefined ? { radiusPx: options.radiusPx } : {})
     },
     schema_version: 1,
     source: "user",
@@ -152,6 +154,22 @@ describe("BlurOverlays — pixelate uses a canvas mosaic (issue #137)", () => {
     });
     const gaussian = el.querySelector("div.ed-blur-item--gaussian");
     expect(gaussian).not.toBeNull();
+  });
+
+  test("gaussian rows use persisted custom radius for backdrop-filter", () => {
+    const ref = createRef<HTMLImageElement>();
+    (ref as { current: HTMLImageElement }).current = makeFakeImage();
+    const el = render({
+      overlays: [blurRow("blur_gauss_custom", "gaussian", { radiusPx: 24 })],
+      draft: null,
+      blurStyle: "gaussian",
+      editorImageRef: ref,
+      canvasWidthPx: 400,
+      canvasHeightPx: 300
+    });
+    const gaussian = el.querySelector("div.ed-blur-item--gaussian") as HTMLElement | null;
+    expect(gaussian).not.toBeNull();
+    expect(gaussian?.style.backdropFilter).toBe("blur(24px)");
   });
 
   test("redact rows still render as styled divs (untouched)", () => {
@@ -278,6 +296,32 @@ describe("BlurOverlays — pixelate uses a canvas mosaic (issue #137)", () => {
     ).not.toBeNull();
     const stray = el.querySelector("canvas");
     expect(stray, "no canvas should mount for a gaussian live-drag").toBeNull();
+  });
+
+  test("gaussian live-drag draft uses active custom radius", () => {
+    const ref = createRef<HTMLImageElement>();
+    (ref as { current: HTMLImageElement }).current = makeFakeImage();
+    const el = render({
+      overlays: [],
+      draft: {
+        kind: "shape-drag",
+        tool: "blur",
+        startXn: 0.2,
+        startYn: 0.3,
+        curXn: 0.7,
+        curYn: 0.8
+      },
+      blurStyle: "gaussian",
+      blurRadiusPx: 32,
+      editorImageRef: ref,
+      canvasWidthPx: 400,
+      canvasHeightPx: 300
+    });
+    const gaussianDraft = el.querySelector(
+      "div.ed-blur-item--gaussian.is-draft"
+    ) as HTMLElement | null;
+    expect(gaussianDraft).not.toBeNull();
+    expect(gaussianDraft?.style.backdropFilter).toBe("blur(32px)");
   });
 });
 

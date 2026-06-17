@@ -300,6 +300,7 @@ export function EditToolbar({
                   kind: "blur",
                   rect,
                   style: layer.effect.style ?? "gaussian",
+                  radiusPx: layer.effect.radius_px,
                   ...(layer.effect.rotation !== undefined
                     ? { rotation: layer.effect.rotation }
                     : {})
@@ -309,6 +310,9 @@ export function EditToolbar({
                   rect,
                   color: layer.effect.tint_hex,
                   opacity: layer.effect.opacity,
+                  ...(layer.effect.blend !== undefined
+                    ? { blend: layer.effect.blend }
+                    : {}),
                   ...(layer.effect.rotation !== undefined
                     ? { rotation: layer.effect.rotation }
                     : {})

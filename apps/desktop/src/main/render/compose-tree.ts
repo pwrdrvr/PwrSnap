@@ -621,12 +621,13 @@ async function applyEffectOntoAccumulator(
           h: node.clip_rect.h * renderScale
         }
       : { x: 0, y: 0, w: canvasInfo.width, h: canvasInfo.height };
-  // Rotation lives on the effect spec for blur (no `shape` slot on
-  // effect layers). Highlight effects don't carry rotation — they
-  // also don't have a renderer surface in the editor today, so any
-  // rotated highlight would be ignored on the live preview side too.
+  // Rotation lives on the effect spec for rectangular effects (no
+  // `shape` slot on effect layers). Blur and highlight both use the
+  // same rotated-AABB extraction + dest-in mask discipline.
   const rotation =
-    node.effect.type === "blur" ? (node.effect.rotation ?? 0) : 0;
+    node.effect.type === "blur" || node.effect.type === "highlight"
+      ? (node.effect.rotation ?? 0)
+      : 0;
 
   // Compute the AABB of the rotated rect in render-space pixels.
   // Unrotated rows fall back to the rect itself (no AABB expansion)
@@ -932,8 +933,10 @@ function flattenTreeInZOrder(layers: readonly BundleLayerNode[]): BundleLayerNod
  *           path (same layer family as blur). Legacy vector
  *           highlights bake with the same alpha-over marker
  *           semantics so dark UI captures do not look like the
- *           highlight was dropped. */
-const BAKE_PIPELINE_VERSION = "7";
+ *           highlight was dropped.
+ *    "8" — highlight EffectLayer rotation is honored in the bake via
+ *           the same rotated-AABB extraction + mask path as blur. */
+const BAKE_PIPELINE_VERSION = "8";
 
 export function computeTreeRenderHash(input: {
   layers: readonly BundleLayerNode[];

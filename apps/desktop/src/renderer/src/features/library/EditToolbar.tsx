@@ -308,7 +308,10 @@ export function EditToolbar({
                   kind: "highlight",
                   rect,
                   color: layer.effect.tint_hex,
-                  opacity: layer.effect.opacity
+                  opacity: layer.effect.opacity,
+                  ...(layer.effect.rotation !== undefined
+                    ? { rotation: layer.effect.rotation }
+                    : {})
                 },
           schema_version: 1,
           source: layer.source,

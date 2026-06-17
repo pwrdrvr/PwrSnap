@@ -198,7 +198,12 @@ export type BlurEffect = z.infer<typeof BlurEffect>;
 export const HighlightEffect = z.object({
   type: z.literal("highlight"),
   tint_hex: z.string().regex(/^#[0-9a-f]{6}$/i),
-  opacity: FiniteNumber.min(0).max(1)
+  opacity: FiniteNumber.min(0).max(1),
+  // Clockwise rotation (radians) around the clip_rect's geometric
+  // center. Mirrors BlurEffect.rotation and v1 HighlightOverlay's
+  // rotation field. Optional for back-compat with v2 bundles produced
+  // before highlights moved to EffectLayer.
+  rotation: FiniteNumber.optional()
 });
 export type HighlightEffect = z.infer<typeof HighlightEffect>;
 

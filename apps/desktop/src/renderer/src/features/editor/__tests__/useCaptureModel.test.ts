@@ -727,6 +727,119 @@ describe("useCaptureModel", () => {
     });
   });
 
+  test("5g3. v2 dispatchEdit: OFF-ORIGIN crop translates blur and highlight effect clip_rects", async () => {
+    const record = makeRecord("cap_2", 2); // 2000x1000
+    const rootGroup: BundleLayerNode = {
+      id: "ly_root",
+      parent_id: null,
+      name: "Root",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 0,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-23T12:00:00.000Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-23T12:00:00.000Z",
+      kind: "group",
+      collapsed: false
+    };
+    const blurEffect: BundleLayerNode = {
+      id: "ly_blur",
+      parent_id: "ly_root",
+      name: "Blur",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 1,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-23T12:00:00.000Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-23T12:00:00.000Z",
+      kind: "effect",
+      effect: { type: "blur", radius_px: 20, style: "gaussian", rotation: Math.PI / 8 },
+      clip_rect: { x: 600, y: 300, w: 200, h: 100 }
+    };
+    const highlightEffect: BundleLayerNode = {
+      id: "ly_highlight",
+      parent_id: "ly_root",
+      name: "Highlight",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 2,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-23T12:00:00.000Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-23T12:00:00.000Z",
+      kind: "effect",
+      effect: { type: "highlight", tint_hex: "#ff8a1f", opacity: 0.3, rotation: Math.PI / 6 },
+      clip_rect: { x: 600, y: 300, w: 200, h: 100 }
+    };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list")
+        return Promise.resolve({ ok: true, value: [rootGroup, blurEffect, highlightEffect] });
+      if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "layers:upsert") {
+        const r = req as { layer: BundleLayerNode };
+        return Promise.resolve({ ok: true, value: r.layer });
+      }
+      if (name === "bundle:updateCanvasDimensions") {
+        return Promise.resolve({
+          ok: true,
+          value: { previousWidthPx: 2000, previousHeightPx: 1000 }
+        });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+
+    const r = await m.dispatchEdit({
+      kind: "crop",
+      rect: { x: 0.25, y: 0.1, w: 0.5, h: 0.5 }
+    });
+    expect(r.ok).toBe(true);
+
+    const effectUpserts = dispatchMock.mock.calls
+      .filter((c) => c[0] === "layers:upsert")
+      .map((c) => (c[1] as { layer: BundleLayerNode }).layer)
+      .filter((layer): layer is BundleLayerNode & { kind: "effect" } => layer.kind === "effect");
+    expect(effectUpserts.length).toBe(2);
+    for (const layer of effectUpserts) {
+      expect(layer.clip_rect).toEqual({ x: 100, y: 200, w: 200, h: 100 });
+      if (layer.effect.type === "blur") {
+        expect(layer.effect.rotation).toBeCloseTo(Math.PI / 8);
+      } else {
+        expect(layer.effect.rotation).toBeCloseTo(Math.PI / 6);
+      }
+    }
+  });
+
   test("5h. v2 refetch race: stale broadcast resolution must NOT overwrite fresh record (crop undo bug)", async () => {
     // User-reported bug from PR #110 review:
     //   1. User crops a capture (1728 → 1037 wide).
@@ -1280,6 +1393,87 @@ describe("useCaptureModel", () => {
     if (r.value.kind === "update") {
       expect(r.value.artifact.node.id).toBe("ly_orig");
     }
+  });
+
+  test("13d-highlight. v2 dispatchEdit: updateGeometry persists highlight effect rotation and stable id", async () => {
+    const record = makeRecord("cap_2", 2);
+    const highlightLayer: BundleLayerNode = {
+      id: "ly_highlight",
+      parent_id: null,
+      name: "Highlight",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 4,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-24T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-24T00:00:00Z",
+      kind: "effect",
+      effect: { type: "highlight", tint_hex: "#ff8a1f", opacity: 0.3 },
+      clip_rect: { x: 200, y: 100, w: 400, h: 200 }
+    };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list") return Promise.resolve({ ok: true, value: [highlightLayer] });
+      if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "layers:upsert") {
+        const r = req as { layer: BundleLayerNode };
+        return Promise.resolve({ ok: true, value: r.layer });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+    const result = await m.dispatchEdit({
+      kind: "updateGeometry",
+      layerId: "ly_highlight",
+      geometry: {
+        kind: "rect",
+        rect: { x: 0.25, y: 0.25, w: 0.2, h: 0.1 },
+        rotation: Math.PI / 4
+      }
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.kind).toBe("update");
+    if (result.value.kind !== "update") throw new Error("unreachable");
+
+    const upsert = dispatchMock.mock.calls.find((c) => c[0] === "layers:upsert");
+    expect(upsert).toBeDefined();
+    const sentLayer = (upsert?.[1] as { layer: BundleLayerNode }).layer;
+    expect(sentLayer.kind).toBe("effect");
+    if (sentLayer.kind !== "effect" || sentLayer.effect.type !== "highlight") {
+      throw new Error("expected highlight effect");
+    }
+    expect(sentLayer.id).toBe("ly_highlight");
+    expect(sentLayer.z_index).toBe(4);
+    expect(sentLayer.clip_rect).toEqual({ x: 500, y: 250, w: 400, h: 100 });
+    expect(sentLayer.effect.rotation).toBeCloseTo(Math.PI / 4);
+    expect(result.value.artifact.node.id).toBe("ly_highlight");
+    if (
+      result.value.artifact.node.kind !== "effect" ||
+      result.value.artifact.node.effect.type !== "highlight"
+    ) {
+      throw new Error("expected highlight effect artifact");
+    }
+    expect(result.value.artifact.node.effect.rotation).toBeCloseTo(Math.PI / 4);
   });
 
   test("13d-text. v2 dispatchEdit: updateOverlay (text body edit) PRESERVES the layer id", async () => {

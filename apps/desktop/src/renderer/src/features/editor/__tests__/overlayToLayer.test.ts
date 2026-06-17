@@ -80,7 +80,8 @@ describe("overlayToBundleLayerNode", () => {
       rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.4 },
       color: "#ff8a1f",
       opacity: 0.5,
-      blend: "overlay"
+      blend: "overlay",
+      rotation: Math.PI / 6
     };
     const result = overlayToBundleLayerNode(highlight, CANVAS);
     expect(result.ok).toBe(true);
@@ -91,7 +92,8 @@ describe("overlayToBundleLayerNode", () => {
     expect(result.layer.effect).toEqual({
       type: "highlight",
       tint_hex: "#ff8a1f",
-      opacity: 0.5
+      opacity: 0.5,
+      rotation: Math.PI / 6
     });
     expect(result.layer.clip_rect).toEqual({
       x: 0.1 * 800,

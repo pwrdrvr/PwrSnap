@@ -164,7 +164,8 @@ export function overlayToBundleLayerNode(
       effect: {
         type: "highlight",
         tint_hex: readHighlightColor(overlay),
-        opacity: readHighlightOpacity(overlay)
+        opacity: readHighlightOpacity(overlay),
+        ...(overlay.rotation !== undefined ? { rotation: overlay.rotation } : {})
       },
       clip_rect: {
         x: overlay.rect.x * canvas.width,

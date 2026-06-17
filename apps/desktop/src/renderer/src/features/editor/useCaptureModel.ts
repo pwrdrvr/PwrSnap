@@ -686,15 +686,13 @@ export function applyGeometryToLayer(
   if (layer.kind === "effect") {
     // Only rect-shaped geometry maps onto an effect's clip_rect.
     if (geometry.kind !== "rect") return null;
-    // Rotation lives on the effect spec for blur (no `shape` slot).
-    // Highlight effects don't have a renderer surface in this slice;
-    // they keep their effect spec verbatim. Skipping the rotation
-    // write on non-blur effects is a no-op rather than a bug — the
-    // editor's rotation handle only fires for blur effect rows
-    // (effect/highlight isn't projected to an overlay row today; see
-    // projectV2LayersToOverlayRows).
+    // Rotation lives on the effect spec for rectangular effects (no
+    // `shape` slot). Blur and highlight both project back to overlay
+    // rows, so the same rotation-handle geometry update must persist
+    // for both.
     const nextEffect =
-      layer.effect.type === "blur" && geometry.rotation !== undefined
+      geometry.rotation !== undefined &&
+      (layer.effect.type === "blur" || layer.effect.type === "highlight")
         ? { ...layer.effect, rotation: geometry.rotation }
         : layer.effect;
     // Keep `layer.id` (carried by the spread) — same id-stability
@@ -793,6 +791,9 @@ export function applyPatchToLayer(
             : {}),
           ...(highlightPatch.opacity !== undefined
             ? { opacity: readHighlightOpacity({ opacity: highlightPatch.opacity }) }
+            : {}),
+          ...(highlightPatch.rotation !== undefined
+            ? { rotation: highlightPatch.rotation }
             : {})
         },
         clip_rect:

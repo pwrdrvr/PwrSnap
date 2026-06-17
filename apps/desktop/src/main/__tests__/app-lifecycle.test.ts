@@ -61,7 +61,7 @@ describe("app lifecycle teardown", () => {
     electronMock.windows = [];
   });
 
-  test("before-quit destroys every live BrowserWindow", async () => {
+  test("before-quit gives renderers a graceful close window before fallback destroy", async () => {
     const live = makeWindow(1);
     const settings = makeWindow(2);
     const alreadyGone = makeWindow(3, true);
@@ -77,12 +77,17 @@ describe("app lifecycle teardown", () => {
     expect(beforeQuit).toBeDefined();
     beforeQuit?.();
 
+    expect(live.destroy).not.toHaveBeenCalled();
+    expect(settings.destroy).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(2_000);
+
     expect(live.destroy).toHaveBeenCalledTimes(1);
     expect(settings.destroy).toHaveBeenCalledTimes(1);
     expect(alreadyGone.destroy).not.toHaveBeenCalled();
   });
 
-  test("SIGTERM destroys windows and enters Electron quit", async () => {
+  test("SIGTERM enters Electron quit and only force-destroys windows after timeout", async () => {
     const live = makeWindow(11);
     electronMock.windows = [live];
     const signalTarget = new EventEmitter();
@@ -92,9 +97,13 @@ describe("app lifecycle teardown", () => {
 
     signalTarget.emit("SIGTERM");
 
-    expect(live.destroy).toHaveBeenCalledTimes(1);
+    expect(live.destroy).not.toHaveBeenCalled();
     expect(electronMock.appQuit).toHaveBeenCalledTimes(1);
     expect(electronMock.appExit).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(2_000);
+
+    expect(live.destroy).toHaveBeenCalledTimes(1);
   });
 
   test("a repeated quit signal forces process exit", async () => {

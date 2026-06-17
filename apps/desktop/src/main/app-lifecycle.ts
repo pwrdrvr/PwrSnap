@@ -9,16 +9,19 @@ type SignalTarget = {
 
 let installed = false;
 let signalQuitInFlight = false;
+let forceDestroyTimer: NodeJS.Timeout | null = null;
 let forceExitTimer: NodeJS.Timeout | null = null;
+const FORCE_DESTROY_WINDOWS_AFTER_MS = 2_000;
+const FORCE_EXIT_AFTER_SIGNAL_MS = 5_000;
 
 /**
- * Electron's graceful quit path closes windows before `will-quit`.
- * If a secondary renderer is wedged, that handshake can leave the
- * process alive with a stray window. On process teardown we do not
- * need renderer cleanup; destroy every BrowserWindow synchronously
- * and let the existing `will-quit` handler release native resources.
+ * Forceful fallback for Electron's graceful quit path. Normal quit
+ * must first let Electron close windows so renderer `beforeunload`
+ * cleanup can flush pending state. If a renderer is wedged and a
+ * BrowserWindow survives that path, this fallback destroys what is
+ * left so the process does not hang around with a stray window.
  */
-export function destroyAllBrowserWindowsForAppQuit(reason: string): number {
+export function forceDestroyAllBrowserWindowsForAppQuit(reason: string): number {
   let destroyed = 0;
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
@@ -39,12 +42,21 @@ export function destroyAllBrowserWindowsForAppQuit(reason: string): number {
   return destroyed;
 }
 
+function scheduleForceDestroyAllBrowserWindows(reason: string): void {
+  if (forceDestroyTimer !== null) return;
+  forceDestroyTimer = setTimeout(() => {
+    forceDestroyTimer = null;
+    forceDestroyAllBrowserWindowsForAppQuit(reason);
+  }, FORCE_DESTROY_WINDOWS_AFTER_MS);
+  forceDestroyTimer.unref();
+}
+
 function forceExitSoon(): void {
   if (forceExitTimer !== null) return;
   forceExitTimer = setTimeout(() => {
     log.warn("app quit signal did not complete promptly; forcing process exit");
     app.exit(0);
-  }, 5_000);
+  }, FORCE_EXIT_AFTER_SIGNAL_MS);
   forceExitTimer.unref();
 }
 
@@ -53,7 +65,7 @@ export function installAppQuitTeardownHandlers(signalTarget: SignalTarget = proc
   installed = true;
 
   app.on("before-quit", () => {
-    destroyAllBrowserWindowsForAppQuit("before-quit");
+    scheduleForceDestroyAllBrowserWindows("before-quit-timeout");
   });
 
   const requestQuitFromSignal = (signal: NodeJS.Signals): void => {
@@ -64,7 +76,7 @@ export function installAppQuitTeardownHandlers(signalTarget: SignalTarget = proc
     }
     signalQuitInFlight = true;
     log.info("received quit signal", { signal });
-    destroyAllBrowserWindowsForAppQuit(signal);
+    scheduleForceDestroyAllBrowserWindows(`${signal}-timeout`);
     forceExitSoon();
     app.quit();
   };

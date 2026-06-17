@@ -260,7 +260,8 @@ export function EditToolbar({
   const overlayRows: OverlayRow[] = useMemo(() => {
     if (captureId === undefined) return [];
     if (model.kind !== "loaded") return [];
-    // Re-shape vector + blur-effect layers back into OverlayRow shape.
+    // Re-shape vector + rectangular effect layers back into
+    // OverlayRow shape.
     // EditToolbar only needs id + data.kind + created_at + source for
     // placement detection, all of which carry through.
     const rows: OverlayRow[] = [];
@@ -270,6 +271,45 @@ export function EditToolbar({
           id: layer.id,
           capture_id: captureId,
           data: layer.shape,
+          schema_version: 1,
+          source: layer.source,
+          ai_run_id: layer.ai_run_id,
+          z_index: layer.z_index,
+          rejected_at: layer.rejected_at,
+          applied_at: layer.applied_at,
+          superseded_by: layer.superseded_by,
+          created_at: layer.created_at
+        });
+      } else if (
+        layer.kind === "effect" &&
+        layer.clip_rect !== null &&
+        (layer.effect.type === "blur" || layer.effect.type === "highlight")
+      ) {
+        const rect = {
+          x: layer.clip_rect.x / model.record.width_px,
+          y: layer.clip_rect.y / model.record.height_px,
+          w: layer.clip_rect.w / model.record.width_px,
+          h: layer.clip_rect.h / model.record.height_px
+        };
+        rows.push({
+          id: layer.id,
+          capture_id: captureId,
+          data:
+            layer.effect.type === "blur"
+              ? {
+                  kind: "blur",
+                  rect,
+                  style: layer.effect.style ?? "gaussian",
+                  ...(layer.effect.rotation !== undefined
+                    ? { rotation: layer.effect.rotation }
+                    : {})
+                }
+              : {
+                  kind: "highlight",
+                  rect,
+                  color: layer.effect.tint_hex,
+                  opacity: layer.effect.opacity
+                },
           schema_version: 1,
           source: layer.source,
           ai_run_id: layer.ai_run_id,

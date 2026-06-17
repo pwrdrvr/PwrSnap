@@ -27,7 +27,6 @@ import { createHash } from "node:crypto";
 
 import type { BundleLayerNode, Overlay, OverlayRow } from "@pwrsnap/shared";
 import {
-  readHighlightBlend,
   readHighlightColor,
   readHighlightOpacity
 } from "@pwrsnap/shared";
@@ -485,24 +484,11 @@ async function compositeVectorOntoAccumulator(
     return accumulator; // EffectLayer is the v2 blur path
   }
 
-  // Special-case HIGHLIGHT: needs CSS-style blend (multiply / screen /
-  // overlay) computed against the accumulator content, NOT sharp's
-  // built-in blend modes. resvg premultiplies fill-opacity into the
-  // SVG's RGB during rasterization, and sharp's blend modes assume
-  // already-premultiplied input — so going through SVG → sharp.composite
-  // (blend:"multiply") produces results that diverge from CSS
-  // mix-blend-mode multiply by a lot:
-  //
-  //   user-visible symptom: a 50%-opaque blue highlight over a white
-  //   raster, which the editor renders as light blue (165, 207, 255),
-  //   bakes through the SVG path as gray-blue (146, 167, 192) —
-  //   dark+desaturated. WYSIWYG broken.
-  //
-  // Fix: extract the rect from the accumulator, apply the CSS blend
-  // formula per-pixel with the unpremultiplied tint color, then
-  // alpha-composite the blended result back at the user's opacity.
-  // This matches the editor's `mix-blend-mode: multiply` Chromium
-  // implementation exactly (modulo rounding).
+  // Special-case legacy vector HIGHLIGHT rows. New editor commits
+  // write EffectLayer highlights so they share the contextual-effect
+  // path with blur. Older captures still carry highlight as a vector
+  // shape, so keep that compatibility path here and paint it with the
+  // same alpha-over marker semantics as EffectLayer highlight.
   const shape = node.shape as Overlay;
   if (shape.kind === "highlight") {
     return compositeHighlightOntoAccumulator(shape, accumulator, canvasInfo);
@@ -533,20 +519,10 @@ async function compositeVectorOntoAccumulator(
 }
 
 /**
- * Composite a VECTOR HIGHLIGHT shape onto the accumulator using
- * CSS-style blend modes computed manually. Bypasses the SVG +
- * sharp.composite(blend:"multiply") path because that double-applies
- * alpha (resvg premultiplies fill-opacity into RGB, sharp's multiply
- * assumes premultiplied input) and produces user-visibly different
- * colors from the editor's `mix-blend-mode: multiply`.
- *
- * Math mirrors the CSS Compositing and Blending Level 1 spec:
- *   B(Cb, Cs) — the blend function: multiply / screen / overlay
- *   Co       = αs × B(Cb, Cs) + (1 − αs) × Cb
- *
- * where Cb = backdrop (accumulator) and Cs = source (highlight tint).
- * Alpha is preserved from the backdrop — the highlight tints existing
- * pixels but doesn't introduce new alpha.
+ * Composite a legacy VECTOR HIGHLIGHT shape onto the accumulator.
+ * Highlight is an EffectLayer for new v2 editor writes; this path
+ * exists so older vector-highlight captures still bake visibly and
+ * do not require a database repair pass.
  */
 async function compositeHighlightOntoAccumulator(
   shape: Extract<Overlay, { kind: "highlight" }>,
@@ -574,93 +550,27 @@ async function compositeHighlightOntoAccumulator(
 
   const colorHex = readHighlightColor(shape);
   const opacity = readHighlightOpacity(shape);
-  const blendMode = readHighlightBlend(shape);
-  const tintR = parseInt(colorHex.slice(1, 3), 16);
-  const tintG = parseInt(colorHex.slice(3, 5), 16);
-  const tintB = parseInt(colorHex.slice(5, 7), 16);
-
-  // Extract the affected rect from the accumulator as raw RGBA.
-  const extracted = await sharp(accumulator, { raw: canvasInfo })
-    .extract({ left: x, top: y, width: w, height: h })
-    .ensureAlpha()
-    .raw()
-    .toBuffer();
-
-  // Apply CSS blend formula per pixel. Hot loop — keep it tight; no
-  // branching inside the per-pixel block (lift blend mode out).
-  const out = Buffer.alloc(w * h * 4);
-  const oneMinusAlpha = 1 - opacity;
-  // Compute the blended channel as a function (no allocation per pixel).
-  // CSS spec definitions:
-  //   multiply: Cb × Cs
-  //   screen:   1 − (1 − Cb) × (1 − Cs)
-  //   overlay:  hardlight(Cs, Cb), where hardlight(a,b) =
-  //               b < 128 ? multiply(a, 2b) : screen(a, 2b − 255)
-  // Working in 0..255 ints throughout (channel values), promoting to
-  // float only for the alpha-composite. Branch hoisted out of the loop.
-  if (blendMode === "multiply") {
-    for (let i = 0; i < w * h; i += 1) {
-      const idx = i * 4;
-      const cb_r = extracted[idx] ?? 0;
-      const cb_g = extracted[idx + 1] ?? 0;
-      const cb_b = extracted[idx + 2] ?? 0;
-      const cb_a = extracted[idx + 3] ?? 0;
-      const b_r = (cb_r * tintR) >> 8;
-      const b_g = (cb_g * tintG) >> 8;
-      const b_b = (cb_b * tintB) >> 8;
-      out[idx] = Math.round(opacity * b_r + oneMinusAlpha * cb_r);
-      out[idx + 1] = Math.round(opacity * b_g + oneMinusAlpha * cb_g);
-      out[idx + 2] = Math.round(opacity * b_b + oneMinusAlpha * cb_b);
-      out[idx + 3] = cb_a;
-    }
-  } else if (blendMode === "screen") {
-    for (let i = 0; i < w * h; i += 1) {
-      const idx = i * 4;
-      const cb_r = extracted[idx] ?? 0;
-      const cb_g = extracted[idx + 1] ?? 0;
-      const cb_b = extracted[idx + 2] ?? 0;
-      const cb_a = extracted[idx + 3] ?? 0;
-      const b_r = 255 - (((255 - cb_r) * (255 - tintR)) >> 8);
-      const b_g = 255 - (((255 - cb_g) * (255 - tintG)) >> 8);
-      const b_b = 255 - (((255 - cb_b) * (255 - tintB)) >> 8);
-      out[idx] = Math.round(opacity * b_r + oneMinusAlpha * cb_r);
-      out[idx + 1] = Math.round(opacity * b_g + oneMinusAlpha * cb_g);
-      out[idx + 2] = Math.round(opacity * b_b + oneMinusAlpha * cb_b);
-      out[idx + 3] = cb_a;
-    }
-  } else {
-    // overlay: hardlight with source/backdrop swapped, i.e.
-    //   B(Cb, Cs) = Cb < 128 ? multiply(Cs, 2Cb) : screen(Cs, 2Cb − 255)
-    for (let i = 0; i < w * h; i += 1) {
-      const idx = i * 4;
-      const cb_r = extracted[idx] ?? 0;
-      const cb_g = extracted[idx + 1] ?? 0;
-      const cb_b = extracted[idx + 2] ?? 0;
-      const cb_a = extracted[idx + 3] ?? 0;
-      const b_r =
-        cb_r < 128
-          ? (tintR * (2 * cb_r)) >> 8
-          : 255 - (((255 - tintR) * (255 - (2 * cb_r - 255))) >> 8);
-      const b_g =
-        cb_g < 128
-          ? (tintG * (2 * cb_g)) >> 8
-          : 255 - (((255 - tintG) * (255 - (2 * cb_g - 255))) >> 8);
-      const b_b =
-        cb_b < 128
-          ? (tintB * (2 * cb_b)) >> 8
-          : 255 - (((255 - tintB) * (255 - (2 * cb_b - 255))) >> 8);
-      out[idx] = Math.round(opacity * b_r + oneMinusAlpha * cb_r);
-      out[idx + 1] = Math.round(opacity * b_g + oneMinusAlpha * cb_g);
-      out[idx + 2] = Math.round(opacity * b_b + oneMinusAlpha * cb_b);
-      out[idx + 3] = cb_a;
-    }
+  const r = parseInt(colorHex.slice(1, 3), 16);
+  const g = parseInt(colorHex.slice(3, 5), 16);
+  const b = parseInt(colorHex.slice(5, 7), 16);
+  const alpha = Math.round(opacity * 255);
+  const tintBuf = Buffer.alloc(w * h * 4);
+  for (let i = 0; i < w * h; i += 1) {
+    tintBuf[i * 4] = r;
+    tintBuf[i * 4 + 1] = g;
+    tintBuf[i * 4 + 2] = b;
+    tintBuf[i * 4 + 3] = alpha;
   }
 
-  // Composite the blended rect back onto the accumulator at (x, y).
+  // Vector highlights are legacy rows now; new editor commits write
+  // EffectLayer highlights. Keep old rows visible by using the same
+  // alpha-over marker semantics as the effect path instead of the
+  // old CSS blend emulation, which made dark UI highlights look
+  // effectively absent.
   return sharp(accumulator, { raw: canvasInfo })
     .composite([
       {
-        input: out,
+        input: tintBuf,
         raw: { width: w, height: h, channels: 4 },
         top: y,
         left: x
@@ -1017,8 +927,13 @@ function flattenTreeInZOrder(layers: readonly BundleLayerNode[]): BundleLayerNod
  *           are unchanged, but they no longer match a new render
  *           hash; the next bake re-paints them). Tolerated per
  *           `docs/solutions/2026-05-28-bake-render-cache-
- *           orphans.md`. */
-const BAKE_PIPELINE_VERSION = "6";
+ *           orphans.md`.
+ *    "7" — editor-created highlights now use the v2 EffectLayer
+ *           path (same layer family as blur). Legacy vector
+ *           highlights bake with the same alpha-over marker
+ *           semantics so dark UI captures do not look like the
+ *           highlight was dropped. */
+const BAKE_PIPELINE_VERSION = "7";
 
 export function computeTreeRenderHash(input: {
   layers: readonly BundleLayerNode[];

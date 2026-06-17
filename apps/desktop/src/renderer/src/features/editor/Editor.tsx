@@ -483,8 +483,9 @@ function resolveTextSize(
  *  back-project layer nodes into the same shape so the renderers don't
  *  need to know about the format split during Phase 2 (Phase 4-5 swap
  *  the renderers to consume `LayerView` natively and this shim
- *  retires). Only `vector` and `effect` (blur) layers project — groups
- *  and rasters are skipped (no Phase 1 renderer surface for them). */
+ *  retires). Vector layers and rectangular effect layers project —
+ *  groups and rasters are skipped (no Phase 1 renderer surface for
+ *  them). */
 /** Source dims for the v2 → v1 projection (Phase 3.3 fix). The
  *  caller is the EditorLoaded render which has the CaptureRecord in
  *  scope, so passing them in is cheap. Used to renormalize v2 effect
@@ -521,8 +522,8 @@ function projectV2LayersToOverlayRows(
       });
       continue;
     }
-    if (layer.kind === "effect" && layer.effect.type === "blur") {
-      // v2 blur effects clip to a `clip_rect` in absolute canvas
+    if (layer.kind === "effect" && (layer.effect.type === "blur" || layer.effect.type === "highlight")) {
+      // v2 rectangular effects clip to a `clip_rect` in absolute canvas
       // pixels (per the v2 EffectLayer schema in
       // packages/shared/src/bundle-manifest-schema-v2.ts — CanvasRect
       // uses FiniteNumber, no [0,1] constraint). v1 blurs use
@@ -536,30 +537,41 @@ function projectV2LayersToOverlayRows(
       // Phase 3.3 fix: divide by source/canvas dims to renormalize.
       // Skip null clip_rect (no spatial extent → unrenderable).
       if (layer.clip_rect === null) continue;
+      const rect = {
+        x: layer.clip_rect.x / dims.widthPx,
+        y: layer.clip_rect.y / dims.heightPx,
+        w: layer.clip_rect.w / dims.widthPx,
+        h: layer.clip_rect.h / dims.heightPx
+      };
       rows.push({
         id: layer.id,
         capture_id: captureId,
-        data: {
-          kind: "blur",
-          rect: {
-            x: layer.clip_rect.x / dims.widthPx,
-            y: layer.clip_rect.y / dims.heightPx,
-            w: layer.clip_rect.w / dims.widthPx,
-            h: layer.clip_rect.h / dims.heightPx
-          },
-          // Phase 3.4: read the v2 BlurEffect's `style` field (optional;
-          // older v2 bundles without it fall back to DEFAULT_BLUR_STYLE
-          // — same gaussian default the renderer always assumed).
-          style: layer.effect.style ?? DEFAULT_BLUR_STYLE,
-          // Rotation lives on the effect spec (not on the layer's
-          // transform matrix). Vector layers carry rotation inside
-          // `shape.rotation`; effect layers can't (no `shape`) so the
-          // field rides on `effect.rotation`. Legacy v2 bundles
-          // without it render unrotated (the field is optional).
-          ...(layer.effect.rotation !== undefined
-            ? { rotation: layer.effect.rotation }
-            : {})
-        },
+        data:
+          layer.effect.type === "blur"
+            ? {
+                kind: "blur",
+                rect,
+                // Phase 3.4: read the v2 BlurEffect's `style` field
+                // (optional; older v2 bundles without it fall back to
+                // DEFAULT_BLUR_STYLE — same gaussian default the
+                // renderer always assumed).
+                style: layer.effect.style ?? DEFAULT_BLUR_STYLE,
+                // Rotation lives on the effect spec (not on the layer's
+                // transform matrix). Vector layers carry rotation inside
+                // `shape.rotation`; effect layers can't (no `shape`) so
+                // the field rides on `effect.rotation`. Legacy v2
+                // bundles without it render unrotated (the field is
+                // optional).
+                ...(layer.effect.rotation !== undefined
+                  ? { rotation: layer.effect.rotation }
+                  : {})
+              }
+            : {
+                kind: "highlight",
+                rect,
+                color: layer.effect.tint_hex,
+                opacity: layer.effect.opacity
+              },
         schema_version: 1,
         source: layer.source,
         ai_run_id: layer.ai_run_id,
@@ -570,7 +582,7 @@ function projectV2LayersToOverlayRows(
         created_at: layer.created_at
       });
     }
-    // group + raster + highlight-effect: no Phase 2 renderer surface.
+    // group + raster: no Phase 2 renderer surface.
     // Phase 4-5 LayerView rewrite covers them.
   }
   return rows;

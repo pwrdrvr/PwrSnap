@@ -223,6 +223,19 @@ async function makeNoiseSource(): Promise<Buffer> {
     .toBuffer();
 }
 
+async function makeDarkUiSource(): Promise<Buffer> {
+  return await sharp({
+    create: {
+      width: CANVAS_W,
+      height: CANVAS_H,
+      channels: 3,
+      background: { r: 10, g: 10, b: 10 }
+    }
+  })
+    .png()
+    .toBuffer();
+}
+
 // Per-test fixture: temp workspace + DB.
 let workDir: string;
 
@@ -682,24 +695,11 @@ describe("tool matrix: rect", () => {
 //
 // The checkerboard has 50% black + 50% white pixels at fine grain.
 // Mean RGB over the highlight region is ~(127,127,127) BEFORE the
-// highlight is applied. AFTER, the blend pushes mean toward the tint:
-//
-//   multiply with tint ~ "darken half"   : mean drops on each channel
-//                                          proportional to (255−tint)/2
-//   screen with tint ~ "brighten half"   : mean rises on each channel
-//                                          proportional to tint/2
-//   overlay with tint                    : a mix of the two
-//
-// For a yellow (255, 204, 21) multiply at α=0.3 over checkerboard:
-//   blended_white = (255, 204, 21) — for white backdrop, channel-wise
-//   blended_black = (0, 0, 0) — multiply with 0 stays 0
-//   mean_white = 0.7×(255,255,255) + 0.3×blended_white = (255, 239.7, 184.8)
-//   mean_black = 0.7×(0,0,0) + 0.3×blended_black = (0, 0, 0)
-//   mean       = (mean_white + mean_black) / 2 = (127.5, 119.85, 92.4)
-//
-// Pre-fix multiply: bake produces sharp/libvips premultiplied multiply,
-// which for the same inputs hits much darker. Tests assert the
-// CSS-correct direction.
+// highlight is applied. AFTER, the marker's alpha-over tint pushes
+// the mean toward the selected color while preserving the backdrop
+// structure. A separate dark-UI test below pins the user-visible
+// regression where CSS-style overlay/multiply math made black UI
+// highlights look effectively absent.
 
 describe("tool matrix: highlight", () => {
   for (const variant of [
@@ -708,12 +708,8 @@ describe("tool matrix: highlight", () => {
       color: "#facc15", // tailwind yellow-400 — also the default
       opacity: 0.3,
       blend: "multiply" as const,
-      // Yellow multiply pulls G slightly down + B way down (yellow's
-      // blue channel is 21). Net mean: r stays ~127, g drops, b drops.
-      // Analytical target: ~(127, 120, 92) — slack ±5 for half-pixel
-      // antialiasing on rect edges + the `>>8` vs `/255` approximation
-      // in the manual multiply implementation.
-      expectations: { r_min: 110, g_max: 130, b_max: 100 }
+      // Yellow marker: red + green stay high, blue drops.
+      expectations: { r_min: 150, g_min: 135, b_max: 115 }
     },
     {
       name: "red-multiply-half",
@@ -721,7 +717,7 @@ describe("tool matrix: highlight", () => {
       opacity: 0.5,
       blend: "multiply" as const,
       // Red multiply: blue+green channels collapse on the white half;
-      // red stays. Mean drops g and b more than r.
+      // red stays. Alpha-over still makes red dominate.
       expectations: { r_diff_from_g: 40, r_diff_from_b: 40 }
     },
     {
@@ -729,8 +725,7 @@ describe("tool matrix: highlight", () => {
       color: "#0000ff",
       opacity: 0.5,
       blend: "screen" as const,
-      // Screen brightens. Blue channel saturates fastest — b > r and
-      // b > g over the region.
+      // Blue marker: blue dominates over the region.
       expectations: { b_min: 160, b_diff_from_r: 30, b_diff_from_g: 30 }
     },
     {
@@ -770,7 +765,7 @@ describe("tool matrix: highlight", () => {
       const e: Record<string, number | boolean | undefined> = variant.expectations;
       if (typeof e.r_min === "number") {
         expect(mean.r, `${variant.name} r ${mean.r}`).toBeGreaterThan(e.r_min);
-        expect(mean.g, `${variant.name} g ${mean.g}`).toBeLessThan(e.g_max as number);
+        expect(mean.g, `${variant.name} g ${mean.g}`).toBeGreaterThan(e.g_min as number);
         expect(mean.b, `${variant.name} b ${mean.b}`).toBeLessThan(e.b_max as number);
       } else if (typeof e.b_min === "number") {
         expect(mean.b, `${variant.name} b ${mean.b}`).toBeGreaterThan(e.b_min);
@@ -787,6 +782,33 @@ describe("tool matrix: highlight", () => {
       }
     });
   }
+
+  test("orange overlay highlight remains visible over dark UI pixels", async () => {
+    const overlay: Overlay = {
+      kind: "highlight",
+      rect: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 },
+      color: "#ff8a1f",
+      opacity: 0.3,
+      blend: "overlay"
+    };
+    const captureId = await seedCheckerboardCapture({
+      testTag: "hi_dark_overlay",
+      overlayLayers: [makeVectorLayer(overlay)],
+      source: makeDarkUiSource
+    });
+    const png = await bakeAtHigh(captureId);
+    const img = await decodePng(png);
+    const center = pixelAt(img, Math.round(0.5 * CANVAS_W), Math.round(0.5 * CANVAS_H));
+    expect(
+      center.r,
+      `Dark UI highlight should be visibly orange at the rect center. ` +
+        `If R is near the #0a background (~10-15), the bake used CSS ` +
+        `overlay/multiply semantics and the highlight looks dropped. ` +
+        `Got rgba(${center.r}, ${center.g}, ${center.b}, ${center.a}).`
+    ).toBeGreaterThan(70);
+    expect(center.g).toBeGreaterThan(35);
+    expect(center.b).toBeGreaterThan(15);
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────────

@@ -23,7 +23,12 @@
 
 import { nanoid } from "nanoid";
 import type { BundleLayerNode, Overlay } from "@pwrsnap/shared";
-import { deriveBlurRadiusPx, readShapeKind } from "@pwrsnap/shared";
+import {
+  deriveBlurRadiusPx,
+  readHighlightColor,
+  readHighlightOpacity,
+  readShapeKind
+} from "@pwrsnap/shared";
 
 /** Canvas dimensions (source-pixel space) used to denormalize Overlay
  *  rects (which carry `[0,1]^2` fractions) into the absolute canvas
@@ -65,9 +70,9 @@ function nowIso(): string {
  *     their normalized `[0,1]^2` coords — the v2 vector renderer
  *     multiplies by canvas dims at render time (see
  *     compose-tree-vector.ts on the bake path).
- *   • effect layers (blur) denormalize their rect into absolute canvas
- *     pixels for `clip_rect` — that's what the EffectLayer schema
- *     expects (`CanvasRect`).
+ *   • effect layers (blur / highlight) denormalize their rect into
+ *     absolute canvas pixels for `clip_rect` — that's what the
+ *     EffectLayer schema expects (`CanvasRect`).
  *
  * `parent_id` is set to `null` deliberately: the root group's id is a
  * server-side concept the renderer doesn't have in scope. The bus
@@ -151,8 +156,41 @@ export function overlayToBundleLayerNode(
     return { ok: true, layer };
   }
 
-  // arrow / shape / highlight / text / step — all carry the Overlay
-  // shape verbatim under `shape`.
+  if (overlay.kind === "highlight") {
+    const layer: BundleLayerNode = {
+      id,
+      parent_id: parentId,
+      kind: "effect",
+      effect: {
+        type: "highlight",
+        tint_hex: readHighlightColor(overlay),
+        opacity: readHighlightOpacity(overlay)
+      },
+      clip_rect: {
+        x: overlay.rect.x * canvas.width,
+        y: overlay.rect.y * canvas.height,
+        w: overlay.rect.w * canvas.width,
+        h: overlay.rect.h * canvas.height
+      },
+      name: "Highlight",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 0,
+      source: "user",
+      ai_run_id: null,
+      applied_at: now,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: now
+    };
+    return { ok: true, layer };
+  }
+
+  // arrow / shape / text / step — all carry the Overlay shape
+  // verbatim under `shape`.
   const layer: BundleLayerNode = {
     id,
     parent_id: parentId,
@@ -197,7 +235,7 @@ export function findRootGroupId(layers: readonly BundleLayerNode[]): string | nu
  *  ("Rectangle" / "Square" / "Circle" / "Oval" / "Parallelogram") off
  *  the `shape` discriminant. */
 function layerNameForVector(
-  overlay: Exclude<Overlay, { kind: "blur" }>
+  overlay: Exclude<Overlay, { kind: "blur" | "highlight" }>
 ): string {
   switch (overlay.kind) {
     case "arrow":
@@ -214,8 +252,6 @@ function layerNameForVector(
     }
     case "text":
       return "Text";
-    case "highlight":
-      return "Highlight";
     case "step":
       return "Step";
     case "crop":

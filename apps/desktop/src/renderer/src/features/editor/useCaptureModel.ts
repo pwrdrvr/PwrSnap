@@ -24,6 +24,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { nanoid } from "nanoid";
 import {
   err,
+  readHighlightColor,
+  readHighlightOpacity,
   type BundleLayerNode,
   type CaptureRecord,
   type Overlay,
@@ -745,11 +747,7 @@ export function applyPatchToLayer(
     return { ...layer, shape: merged };
   }
   if (layer.kind === "effect") {
-    // Map blur-overlay style patches onto effect.style.
-    // (Highlight effect updates aren't in the v3.5 surface yet —
-    // ToolStylePopover for selected highlights still routes through
-    // overlays:upsert in v1; the v2 highlight effect doesn't have a
-    // popover surface in this slice.)
+    // Map overlay-shaped patches onto effect-layer payloads.
     if (patch.kind === "blur" && layer.effect.type === "blur") {
       const styleUpdate = patch.style;
       const rotationUpdate = patch.rotation;
@@ -777,6 +775,33 @@ export function applyPatchToLayer(
                 y: patch.rect.y * canvas.height,
                 w: patch.rect.w * canvas.width,
                 h: patch.rect.h * canvas.height
+              }
+            : layer.clip_rect
+      };
+      return next;
+    }
+    if (patch.kind === "highlight" && layer.effect.type === "highlight") {
+      const highlightPatch = patch as Partial<
+        Extract<Overlay, { kind: "highlight" }>
+      > & { kind: "highlight" };
+      const next: BundleLayerNode = {
+        ...layer,
+        effect: {
+          ...layer.effect,
+          ...(highlightPatch.color !== undefined
+            ? { tint_hex: readHighlightColor({ color: highlightPatch.color }) }
+            : {}),
+          ...(highlightPatch.opacity !== undefined
+            ? { opacity: readHighlightOpacity({ opacity: highlightPatch.opacity }) }
+            : {})
+        },
+        clip_rect:
+          highlightPatch.rect !== undefined
+            ? {
+                x: highlightPatch.rect.x * canvas.width,
+                y: highlightPatch.rect.y * canvas.height,
+                w: highlightPatch.rect.w * canvas.width,
+                h: highlightPatch.rect.h * canvas.height
               }
             : layer.clip_rect
       };

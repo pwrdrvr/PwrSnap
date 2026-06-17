@@ -290,7 +290,7 @@ describe("ToolConfigPanel", () => {
     expect(q('[data-testid="color-row"]')).toBeNull();
   });
 
-  test("7. activeTool='highlight' renders highlight controls including opacity slider", () => {
+  test("7. activeTool='highlight' renders color + opacity controls, with blend hidden", () => {
     render(
       createElement(ToolConfigPanel, {
         captureId: "cap_1",
@@ -302,7 +302,7 @@ describe("ToolConfigPanel", () => {
     expect(q('[data-testid="color-row"]')).not.toBeNull();
     expect(q('[data-testid="highlight-opacity"]')).not.toBeNull();
     expect(q('[data-testid="highlight-opacity-input"]')).not.toBeNull();
-    expect(q('[data-testid="highlight-blend"]')).not.toBeNull();
+    expect(q('[data-testid="highlight-blend"]')).toBeNull();
   });
 
   test("8. swatch click → onStyleFieldChange('arrow', 'color', 'green')", () => {

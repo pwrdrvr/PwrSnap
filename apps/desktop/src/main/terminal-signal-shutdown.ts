@@ -2,7 +2,7 @@ import { app as electronApp } from "electron";
 import type { App } from "electron";
 import { getMainLogger } from "./log";
 
-const TERMINAL_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM"] as const;
+const TERMINAL_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
 type TerminalShutdownSignal = (typeof TERMINAL_SHUTDOWN_SIGNALS)[number];
 
@@ -19,7 +19,8 @@ type TerminalSignalShutdownOptions = {
 
 const signalExitCodes: Record<TerminalShutdownSignal, number> = {
   SIGINT: 130,
-  SIGTERM: 143
+  SIGTERM: 143,
+  SIGHUP: 129
 };
 
 export function installTerminalSignalShutdown(

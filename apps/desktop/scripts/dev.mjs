@@ -65,10 +65,19 @@ function run(command, args, env) {
   return result.status ?? 1;
 }
 
-const TERMINAL_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM"];
+const TERMINAL_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 
 function exitCodeForSignal(signal) {
-  return signal === "SIGINT" ? 130 : 143;
+  switch (signal) {
+    case "SIGINT":
+      return 130;
+    case "SIGTERM":
+      return 143;
+    case "SIGHUP":
+      return 129;
+    default:
+      return 1;
+  }
 }
 
 function signalChild(child, signal, platform = process.platform, killProcess = process.kill) {
@@ -96,18 +105,21 @@ export function runLongLived(command, args, env, options = {}) {
   const spawnImpl = options.spawn ?? spawn;
   const processTarget = options.process ?? process;
   const killProcess = options.killProcess ?? process.kill;
-  const child = spawnImpl(command, args, {
-    cwd: desktopRoot,
-    detached: platform !== "win32",
-    env,
-    stdio: "inherit"
-  });
-
-  if (child.pid === undefined) {
+  let child;
+  try {
+    child = spawnImpl(command, args, {
+      cwd: desktopRoot,
+      detached: platform !== "win32",
+      env,
+      stdio: "inherit"
+    });
+  } catch (error) {
+    console.error(`[dev] failed to run ${command}: ${error.message}`);
     return Promise.resolve(1);
   }
 
   return new Promise((resolve) => {
+    let settled = false;
     let shutdownSignal = null;
     let forced = false;
     const signalHandlers = new Map();
@@ -117,6 +129,43 @@ export function runLongLived(command, args, env, options = {}) {
         processTarget.off(signal, handler);
       }
     };
+
+    const resolveOnce = (status) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(status);
+    };
+
+    child.on("error", (error) => {
+      console.error(`[dev] failed to run ${command}: ${error.message}`);
+      resolveOnce(1);
+    });
+
+    child.on("close", (status, signal) => {
+      if (typeof status === "number") {
+        resolveOnce(status);
+        return;
+      }
+      if (forced) {
+        resolveOnce(signal === "SIGKILL" ? 137 : exitCodeForSignal(shutdownSignal));
+        return;
+      }
+      if (shutdownSignal !== null) {
+        resolveOnce(0);
+        return;
+      }
+      if (signal === "SIGINT" || signal === "SIGTERM" || signal === "SIGHUP") {
+        resolveOnce(exitCodeForSignal(signal));
+        return;
+      }
+      resolveOnce(1);
+    });
+
+    if (child.pid === undefined) {
+      setImmediate(() => resolveOnce(1));
+      return;
+    }
 
     for (const signal of TERMINAL_SHUTDOWN_SIGNALS) {
       const handler = () => {
@@ -133,33 +182,6 @@ export function runLongLived(command, args, env, options = {}) {
       signalHandlers.set(signal, handler);
       processTarget.on(signal, handler);
     }
-
-    child.on("error", (error) => {
-      cleanup();
-      console.error(`[dev] failed to run ${command}: ${error.message}`);
-      resolve(1);
-    });
-
-    child.on("close", (status, signal) => {
-      cleanup();
-      if (typeof status === "number") {
-        resolve(status);
-        return;
-      }
-      if (forced) {
-        resolve(signal === "SIGKILL" ? 137 : exitCodeForSignal(shutdownSignal));
-        return;
-      }
-      if (shutdownSignal !== null) {
-        resolve(0);
-        return;
-      }
-      if (signal === "SIGINT" || signal === "SIGTERM") {
-        resolve(exitCodeForSignal(signal));
-        return;
-      }
-      resolve(1);
-    });
   });
 }
 

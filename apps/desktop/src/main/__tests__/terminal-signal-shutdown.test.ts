@@ -2,26 +2,27 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installTerminalSignalShutdown } from "../terminal-signal-shutdown";
 
 type Listener = () => void;
+type ShutdownSignal = "SIGINT" | "SIGTERM" | "SIGHUP";
 
 function createSignalProcess() {
   const listeners = new Map<string, Listener[]>();
 
   return {
-    on: vi.fn((signal: "SIGINT" | "SIGTERM", listener: Listener) => {
+    on: vi.fn((signal: ShutdownSignal, listener: Listener) => {
       listeners.set(signal, [...(listeners.get(signal) ?? []), listener]);
     }),
-    off: vi.fn((signal: "SIGINT" | "SIGTERM", listener: Listener) => {
+    off: vi.fn((signal: ShutdownSignal, listener: Listener) => {
       listeners.set(
         signal,
         (listeners.get(signal) ?? []).filter((candidate) => candidate !== listener)
       );
     }),
-    emit(signal: "SIGINT" | "SIGTERM") {
+    emit(signal: ShutdownSignal) {
       for (const listener of listeners.get(signal) ?? []) {
         listener();
       }
     },
-    listenerCount(signal: "SIGINT" | "SIGTERM") {
+    listenerCount(signal: ShutdownSignal) {
       return listeners.get(signal)?.length ?? 0;
     }
   };
@@ -68,6 +69,16 @@ describe("installTerminalSignalShutdown", () => {
     expect(app.exit).not.toHaveBeenCalled();
   });
 
+  it("handles terminal hangup as a graceful app quit", () => {
+    const signalProcess = createSignalProcess();
+
+    installTerminalSignalShutdown({ app, logger, process: signalProcess });
+    signalProcess.emit("SIGHUP");
+
+    expect(app.quit).toHaveBeenCalledTimes(1);
+    expect(app.exit).not.toHaveBeenCalled();
+  });
+
   it("forces exit on a repeated shutdown signal if graceful quit is wedged", () => {
     const signalProcess = createSignalProcess();
 
@@ -89,10 +100,12 @@ describe("installTerminalSignalShutdown", () => {
     const dispose = installTerminalSignalShutdown({ app, logger, process: signalProcess });
     expect(signalProcess.listenerCount("SIGINT")).toBe(1);
     expect(signalProcess.listenerCount("SIGTERM")).toBe(1);
+    expect(signalProcess.listenerCount("SIGHUP")).toBe(1);
 
     dispose();
 
     expect(signalProcess.listenerCount("SIGINT")).toBe(0);
     expect(signalProcess.listenerCount("SIGTERM")).toBe(0);
+    expect(signalProcess.listenerCount("SIGHUP")).toBe(0);
   });
 });

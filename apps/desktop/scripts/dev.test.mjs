@@ -168,7 +168,7 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
     fakeProcess.emit("SIGINT");
     child.emit("close", null, null);
 
-    await expect(promise).resolves.toBe(130);
+    await expect(promise).resolves.toBe(0);
     expect(killCalls).toEqual([[-4242, "SIGINT"]]);
     expect(child.killCalls).toEqual([]);
     expect(fakeProcess.listenerCount("SIGINT")).toBe(0);
@@ -187,8 +187,22 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
     fakeProcess.emit("SIGTERM");
     child.emit("close", null, null);
 
-    await expect(promise).resolves.toBe(143);
+    await expect(promise).resolves.toBe(0);
     expect(child.killCalls).toEqual(["SIGTERM"]);
+  });
+
+  it("preserves nonzero status when the child exits by signal independently", async () => {
+    const fakeProcess = createFakeProcess();
+    const child = createFakeChild(6161);
+    const promise = runLongLived("node", ["electron-vite", "dev"], {}, {
+      platform: "darwin",
+      process: fakeProcess,
+      spawn: () => child
+    });
+
+    child.emit("close", null, "SIGTERM");
+
+    await expect(promise).resolves.toBe(143);
   });
 
   it("forces the long-lived dev child down on a repeated terminal signal", async () => {
@@ -207,9 +221,9 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
 
     fakeProcess.emit("SIGINT");
     fakeProcess.emit("SIGINT");
-    child.emit("close", null, null);
+    child.emit("close", null, "SIGKILL");
 
-    await expect(promise).resolves.toBe(130);
+    await expect(promise).resolves.toBe(137);
     expect(killCalls).toEqual([
       [-6262, "SIGINT"],
       [-6262, "SIGKILL"]

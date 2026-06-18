@@ -146,8 +146,12 @@ export function runLongLived(command, args, env, options = {}) {
         resolve(status);
         return;
       }
+      if (forced) {
+        resolve(signal === "SIGKILL" ? 137 : exitCodeForSignal(shutdownSignal));
+        return;
+      }
       if (shutdownSignal !== null) {
-        resolve(exitCodeForSignal(shutdownSignal));
+        resolve(0);
         return;
       }
       if (signal === "SIGINT" || signal === "SIGTERM") {

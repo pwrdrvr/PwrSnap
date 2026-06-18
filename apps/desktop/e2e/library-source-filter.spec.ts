@@ -431,7 +431,8 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
       timeout: 10_000
     });
 
-    await window.locator(".psl__cell[data-cell-id='source-filter-unknown-null-bundle']").click();
+    // Double-click opens Focus (single-click selects in the grid-first model).
+    await window.locator(".psl__cell[data-cell-id='source-filter-unknown-null-bundle']").dblclick();
     await expect(window.locator(".psl")).toHaveAttribute("data-mode", "focus", {
       timeout: 10_000
     });

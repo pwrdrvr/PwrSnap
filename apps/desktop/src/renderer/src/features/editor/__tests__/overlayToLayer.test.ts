@@ -40,7 +40,7 @@ describe("overlayToBundleLayerNode", () => {
     expect(() => BundleLayerNodeSchema.parse(result.layer)).not.toThrow();
   });
 
-  test("rect / text / highlight / step all become vector layers", () => {
+  test("rect / text / step become vector layers", () => {
     const cases: Array<{ overlay: Overlay; expectedName: string }> = [
       {
         overlay: { kind: "shape", rect: { x: 0, y: 0, w: 0.5, h: 0.5 }, color: "auto" },
@@ -55,16 +55,6 @@ describe("overlayToBundleLayerNode", () => {
           color: "#abcdef"
         },
         expectedName: "Text"
-      },
-      {
-        overlay: {
-          kind: "highlight",
-          rect: { x: 0, y: 0, w: 0.5, h: 0.5 },
-          color: "#facc15",
-          opacity: 0.5,
-          blend: "multiply"
-        },
-        expectedName: "Highlight"
       },
       {
         overlay: { kind: "step", point: { x: 0.5, y: 0.5 }, index: 3 },
@@ -84,11 +74,44 @@ describe("overlayToBundleLayerNode", () => {
     }
   });
 
+  test("highlight → effect layer with absolute canvas-px clip_rect", () => {
+    const highlight: Overlay = {
+      kind: "highlight",
+      rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.4 },
+      color: "#ff8a1f",
+      opacity: 0.5,
+      blend: "overlay",
+      rotation: Math.PI / 6
+    };
+    const result = overlayToBundleLayerNode(highlight, CANVAS);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.layer.kind).toBe("effect");
+    if (result.layer.kind !== "effect") throw new Error("kind");
+    expect(result.layer.name).toBe("Highlight");
+    expect(result.layer.effect).toEqual({
+      type: "highlight",
+      tint_hex: "#ff8a1f",
+      opacity: 0.5,
+      blend: "overlay",
+      rotation: Math.PI / 6
+    });
+    expect(result.layer.clip_rect).toEqual({
+      x: 0.1 * 800,
+      y: 0.2 * 600,
+      w: 0.5 * 800,
+      h: 0.4 * 600
+    });
+    expect(() => BundleLayerNodeSchema.parse(result.layer)).not.toThrow();
+  });
+
   test("blur → effect layer with absolute canvas-px clip_rect", () => {
     const blur: Overlay = {
       kind: "blur",
       rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.4 },
-      style: "gaussian"
+      style: "gaussian",
+      radiusPx: 24,
+      rotation: Math.PI / 8
     };
     const result = overlayToBundleLayerNode(blur, CANVAS);
     expect(result.ok).toBe(true);
@@ -104,9 +127,8 @@ describe("overlayToBundleLayerNode", () => {
       h: 0.4 * 600
     });
     if (result.layer.effect.type === "blur") {
-      // 1.5% of short-side (600) = 9, floored at 8 then rounded.
-      expect(result.layer.effect.radius_px).toBeGreaterThanOrEqual(8);
-      expect(result.layer.effect.radius_px).toBeLessThanOrEqual(200);
+      expect(result.layer.effect.radius_px).toBe(24);
+      expect(result.layer.effect.rotation).toBeCloseTo(Math.PI / 8);
     }
     expect(() => BundleLayerNodeSchema.parse(result.layer)).not.toThrow();
   });

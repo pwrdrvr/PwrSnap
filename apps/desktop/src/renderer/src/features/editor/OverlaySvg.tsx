@@ -36,7 +36,6 @@ import {
   readArrowDoubleEnded,
   readArrowEndStyle,
   readArrowStemStyle,
-  readHighlightBlend,
   readHighlightColor,
   readHighlightOpacity,
   readOverlayRotation,
@@ -1011,7 +1010,6 @@ function HighlightGlyph({
   rotation = 0,
   color,
   opacity,
-  blend,
   imageWidthPx,
   imageHeightPx
 }: {
@@ -1026,27 +1024,17 @@ function HighlightGlyph({
   /** Optional 0..1 opacity. Legacy rows fall back to the shared
    *  marker-pen default used by the bake path. */
   opacity?: number | undefined;
-  /** CSS mix-blend-mode for the highlight rect. Mirrors the
-   *  HighlightOverlay's optional `blend` field — `multiply` darkens
-   *  the area below (classic marker-pen look on light bg), `screen`
-   *  brightens (good for dark UI), `overlay` combines both for
-   *  high-contrast emphasis. Legacy rows without blend fall back to
-   *  `multiply` (the historical hardcoded behavior was implicit
-   *  multiply via fill+opacity, even though no actual blend-mode
-   *  was set — this default keeps existing captures looking the
-   *  same). */
+  /** Legacy/persisted rows may still carry a blend field, but the live
+   *  v2 preview intentionally ignores it. Highlight effects bake with
+   *  marker-style alpha-over semantics so dark UI captures stay visibly
+   *  highlighted; preview must match that instead of using CSS
+   *  mix-blend-mode. */
   blend?: "multiply" | "screen" | "overlay" | undefined;
   imageWidthPx: number;
   imageHeightPx: number;
 }): ReactElement {
   const baseHex = readHighlightColor({ color });
   const fillOpacity = readHighlightOpacity({ opacity });
-  // Resolved blend mode for the CSS mix-blend-mode attribute on the
-  // <rect>. SVG 2 supports mix-blend-mode via the `style` attribute;
-  // Chromium honors it on individual SVG children, so the highlight
-  // rect blends only with the canvas below — NOT with other overlays
-  // (which sit in the same SVG and don't have blend modes applied).
-  const resolvedBlend = readHighlightBlend({ blend });
   // Rotation transform — same convention as ShapeGlyph: SVG `rotate(deg
   // cx cy)` in pixel-space, with `cx, cy` at the rect's center.
   const rx = rect.x * imageWidthPx;
@@ -1067,7 +1055,6 @@ function HighlightGlyph({
       fill={baseHex}
       fillOpacity={fillOpacity}
       stroke="none"
-      style={{ mixBlendMode: resolvedBlend }}
       {...(transformAttr !== undefined ? { transform: transformAttr } : {})}
     />
   );

@@ -24,6 +24,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { nanoid } from "nanoid";
 import {
   err,
+  readHighlightColor,
+  readHighlightOpacity,
+  readBlurRadiusPx,
   type BundleLayerNode,
   type CaptureRecord,
   type Overlay,
@@ -128,7 +131,12 @@ export type VectorStyle = {
 export type EffectSpec =
   | { mode: "gaussian" | "pixelate" | "redact"; radius: "auto" | number }
   | { mode: "crop" }
-  | { mode: "highlight"; opacity: number };
+  | {
+      mode: "highlight";
+      opacity: number;
+      color?: string;
+      blend?: "multiply" | "screen" | "overlay";
+    };
 
 export type LayerView =
   | {
@@ -471,7 +479,7 @@ function layerNodeToLayerView(node: BundleLayerNode): LayerView {
         return {
           kind: "effect",
           id: node.id,
-          effect: { mode: "gaussian", radius: effect.radius_px },
+          effect: { mode: effect.style ?? "gaussian", radius: effect.radius_px },
           clipRect,
           meta
         };
@@ -480,7 +488,12 @@ function layerNodeToLayerView(node: BundleLayerNode): LayerView {
       return {
         kind: "effect",
         id: node.id,
-        effect: { mode: "highlight", opacity: effect.opacity },
+        effect: {
+          mode: "highlight",
+          opacity: effect.opacity,
+          color: effect.tint_hex,
+          ...(effect.blend !== undefined ? { blend: effect.blend } : {})
+        },
         clipRect,
         meta
       };
@@ -684,15 +697,13 @@ export function applyGeometryToLayer(
   if (layer.kind === "effect") {
     // Only rect-shaped geometry maps onto an effect's clip_rect.
     if (geometry.kind !== "rect") return null;
-    // Rotation lives on the effect spec for blur (no `shape` slot).
-    // Highlight effects don't have a renderer surface in this slice;
-    // they keep their effect spec verbatim. Skipping the rotation
-    // write on non-blur effects is a no-op rather than a bug — the
-    // editor's rotation handle only fires for blur effect rows
-    // (effect/highlight isn't projected to an overlay row today; see
-    // projectV2LayersToOverlayRows).
+    // Rotation lives on the effect spec for rectangular effects (no
+    // `shape` slot). Blur and highlight both project back to overlay
+    // rows, so the same rotation-handle geometry update must persist
+    // for both.
     const nextEffect =
-      layer.effect.type === "blur" && geometry.rotation !== undefined
+      geometry.rotation !== undefined &&
+      (layer.effect.type === "blur" || layer.effect.type === "highlight")
         ? { ...layer.effect, rotation: geometry.rotation }
         : layer.effect;
     // Keep `layer.id` (carried by the spread) — same id-stability
@@ -745,18 +756,18 @@ export function applyPatchToLayer(
     return { ...layer, shape: merged };
   }
   if (layer.kind === "effect") {
-    // Map blur-overlay style patches onto effect.style.
-    // (Highlight effect updates aren't in the v3.5 surface yet —
-    // ToolStylePopover for selected highlights still routes through
-    // overlays:upsert in v1; the v2 highlight effect doesn't have a
-    // popover surface in this slice.)
+    // Map overlay-shaped patches onto effect-layer payloads.
     if (patch.kind === "blur" && layer.effect.type === "blur") {
       const styleUpdate = patch.style;
+      const radiusUpdate = patch.radiusPx;
       const rotationUpdate = patch.rotation;
       const effect = layer.effect;
       const newEffect: typeof effect = {
         ...effect,
         ...(styleUpdate !== undefined ? { style: styleUpdate } : {}),
+        ...(radiusUpdate !== undefined
+          ? { radius_px: readBlurRadiusPx({ radiusPx: radiusUpdate }, canvas) }
+          : {}),
         // Rotation rides on the effect spec for blur (see schema +
         // applyGeometryToLayer effect branch). Style patches can
         // change rotation via this path; rotation-handle drags go
@@ -777,6 +788,37 @@ export function applyPatchToLayer(
                 y: patch.rect.y * canvas.height,
                 w: patch.rect.w * canvas.width,
                 h: patch.rect.h * canvas.height
+              }
+            : layer.clip_rect
+      };
+      return next;
+    }
+    if (patch.kind === "highlight" && layer.effect.type === "highlight") {
+      const highlightPatch = patch as Partial<
+        Extract<Overlay, { kind: "highlight" }>
+      > & { kind: "highlight" };
+      const next: BundleLayerNode = {
+        ...layer,
+        effect: {
+          ...layer.effect,
+          ...(highlightPatch.color !== undefined
+            ? { tint_hex: readHighlightColor({ color: highlightPatch.color }) }
+            : {}),
+          ...(highlightPatch.opacity !== undefined
+            ? { opacity: readHighlightOpacity({ opacity: highlightPatch.opacity }) }
+            : {}),
+          ...(highlightPatch.blend !== undefined ? { blend: highlightPatch.blend } : {}),
+          ...(highlightPatch.rotation !== undefined
+            ? { rotation: highlightPatch.rotation }
+            : {})
+        },
+        clip_rect:
+          highlightPatch.rect !== undefined
+            ? {
+                x: highlightPatch.rect.x * canvas.width,
+                y: highlightPatch.rect.y * canvas.height,
+                w: highlightPatch.rect.w * canvas.width,
+                h: highlightPatch.rect.h * canvas.height
               }
             : layer.clip_rect
       };
@@ -1081,7 +1123,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
             // eslint-disable-next-line no-await-in-loop
             const insResult = await dispatch("layers:upsert", {
               captureId,
-              layer: { ...layer, id: nanoid(16), shape: transformed }
+              layer: { ...layer, shape: transformed }
             });
             if (!insResult.ok) {
               // eslint-disable-next-line no-console
@@ -1151,7 +1193,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
               // eslint-disable-next-line no-await-in-loop
               const insResult = await dispatch("layers:upsert", {
                 captureId,
-                layer: { ...raster, id: nanoid(16), transform: newTransform }
+                layer: { ...raster, transform: newTransform }
               });
               if (!insResult.ok) {
                 // eslint-disable-next-line no-console
@@ -1193,7 +1235,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
               // eslint-disable-next-line no-await-in-loop
               const insResult = await dispatch("layers:upsert", {
                 captureId,
-                layer: { ...effect, id: nanoid(16), clip_rect: newClipRect }
+                layer: { ...effect, clip_rect: newClipRect }
               });
               if (!insResult.ok) {
                 // eslint-disable-next-line no-console

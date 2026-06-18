@@ -400,6 +400,11 @@ export const BlurOverlay = z.object({
   /** Render style. Optional for backwards compat — legacy rows are
    *  parsed as `"gaussian"` via the default in `readBlurStyle` below. */
   style: BlurStyle.optional(),
+  /** Explicit gaussian blur radius in pixels. Optional for back-compat
+   *  and for the default Auto mode, where renderers derive the radius
+   *  from the canvas short-side via `deriveBlurRadiusPx`. Pixelate and
+   *  redact keep their existing rect-derived / solid-fill behavior. */
+  radiusPx: z.number().positive().finite().max(200).optional(),
   /** Why the blur was applied — for the AI suggestion strip. */
   reason: z.string().max(80).optional(),
   /** Clockwise rotation in radians around the rect's geometric center.
@@ -419,6 +424,15 @@ export function readBlurStyle(
   data: { style?: BlurStyle | undefined }
 ): BlurStyle {
   return data.style ?? DEFAULT_BLUR_STYLE;
+}
+
+export function readBlurRadiusPx(
+  data: { radiusPx?: number | undefined },
+  canvas: { width: number; height: number }
+): number {
+  const raw = data.radiusPx;
+  if (raw === undefined || !Number.isFinite(raw)) return deriveBlurRadiusPx(canvas);
+  return Math.max(1, Math.min(200, raw));
 }
 
 /** Canonical blur sigma derivation: **1.5% of the canvas short-side**

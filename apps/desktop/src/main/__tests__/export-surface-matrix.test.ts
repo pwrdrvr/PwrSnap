@@ -1337,7 +1337,13 @@ async function seedV2CaptureCyanRaster(id: string): Promise<void> {
   insertLayerTreeForCapture(id, layers);
 }
 
-async function seedV2CaptureCyanRasterWithHighlight(id: string): Promise<void> {
+async function seedV2CaptureCyanRasterWithHighlight(
+  id: string,
+  options: {
+    clipRect?: { x: number; y: number; w: number; h: number };
+    rotation?: number;
+  } = {}
+): Promise<void> {
   // Same cyan raster as above + a highlight EFFECT layer covering the
   // CENTER of the canvas. The effect compositor extracts from the
   // accumulator at clip_rect bounds, applies the tint, composites back.
@@ -1390,6 +1396,7 @@ async function seedV2CaptureCyanRasterWithHighlight(id: string): Promise<void> {
     superseded_by: null,
     created_at: now
   };
+  const clipRect = options.clipRect ?? { x: 250, y: 100, w: 100, h: 100 };
   const layers: BundleLayerNode[] = [
     {
       ...common,
@@ -1417,7 +1424,12 @@ async function seedV2CaptureCyanRasterWithHighlight(id: string): Promise<void> {
       z_index: 1,
       // Pure red tint at full opacity so the post-effect pixels are
       // unambiguously red (not pink-cyan blend).
-      effect: { type: "highlight", tint_hex: "#ff0000", opacity: 1 },
+      effect: {
+        type: "highlight",
+        tint_hex: "#ff0000",
+        opacity: 1,
+        ...(options.rotation !== undefined ? { rotation: options.rotation } : {})
+      },
       // clip_rect in CANVAS coords: a 100×100 box at canvas position
       // (250, 100). At MED scale=3.6 it must land at render position
       // (900, 360) covering 360×360 px. Pre-fix, the effect used the
@@ -1425,7 +1437,7 @@ async function seedV2CaptureCyanRasterWithHighlight(id: string): Promise<void> {
       // effect would land at the SAME pixel coords (250..350, 100..200)
       // which is the UPPER-LEFT quadrant of the render canvas, NOT
       // the canvas center.
-      clip_rect: { x: 250, y: 100, w: 100, h: 100 }
+      clip_rect: clipRect
     }
   ];
   const document: BundleDocumentV2 = {
@@ -1599,6 +1611,52 @@ describe("scale-aware accumulator: raster + effect layers respect renderScale", 
         `${insideBugRegion.b}, ${insideBugRegion.a}).`
     ).toBeLessThan(80);
     expect(insideBugRegion.g).toBeGreaterThan(150);
+  });
+
+  test("rotated highlight effect bakes the rotated rect, not the unrotated clip_rect", async () => {
+    const captureId = "t_scale_effect_rot_hl";
+    await seedV2CaptureCyanRasterWithHighlight(captureId, {
+      // Wide, short rect centered at canvas (200, 150). A 90° rotation
+      // should produce a tall, narrow tinted footprint.
+      clipRect: { x: 150, y: 130, w: 100, h: 40 },
+      rotation: Math.PI / 2
+    });
+
+    const result = await renderViaCoordinator({
+      captureId,
+      srcPath: "/ignored/for/v2.png",
+      imageWidthPx: SCALE_TEST_CANVAS_W,
+      imageHeightPx: SCALE_TEST_CANVAS_H,
+      width: SCALE_TEST_CANVAS_W,
+      format: "png"
+    });
+    const pngBytes = readFileSync(result.cachePath);
+
+    // Inside the ROTATED footprint: center x, above the original
+    // horizontal rect. If rotation is ignored this stays cyan.
+    const insideRotatedOnly = await readPixel(pngBytes, 200, 110);
+    expect(
+      insideRotatedOnly.r,
+      `Pixel inside the rotated highlight footprint should be red. ` +
+        `If low, the bake ignored HighlightEffect.rotation. Got ` +
+        `rgba(${insideRotatedOnly.r}, ${insideRotatedOnly.g}, ` +
+        `${insideRotatedOnly.b}, ${insideRotatedOnly.a}).`
+    ).toBeGreaterThan(180);
+    expect(insideRotatedOnly.g).toBeLessThan(80);
+
+    // Inside the UNROTATED clip_rect but outside the 90° rotated
+    // footprint. If rotation is ignored this is red; correct bake
+    // leaves it as the cyan raster.
+    const insideUnrotatedOnly = await readPixel(pngBytes, 245, 150);
+    expect(
+      insideUnrotatedOnly.r,
+      `Pixel inside the unrotated-only part of clip_rect should stay ` +
+        `cyan. If red, the bake applied the highlight before masking ` +
+        `to the rotated rect. Got rgba(${insideUnrotatedOnly.r}, ` +
+        `${insideUnrotatedOnly.g}, ${insideUnrotatedOnly.b}, ` +
+        `${insideUnrotatedOnly.a}).`
+    ).toBeLessThan(80);
+    expect(insideUnrotatedOnly.g).toBeGreaterThan(150);
   });
 });
 

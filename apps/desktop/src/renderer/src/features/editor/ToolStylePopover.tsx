@@ -46,7 +46,6 @@ import type {
   BlurEffectMode,
   BlurToolStyle,
   ColorToken,
-  HighlightBlendMode,
   HighlightToolStyle,
   ShapeKind,
   ShapeToolStyle,
@@ -221,12 +220,6 @@ const BLUR_MODES: ReadonlyArray<{
     hint: "Solid black for privacy",
     Icon: RedactIcon
   }
-];
-
-const BLEND_MODES: ReadonlyArray<{ id: HighlightBlendMode; label: string }> = [
-  { id: "multiply", label: "Multiply" },
-  { id: "screen", label: "Screen" },
-  { id: "overlay", label: "Overlay" }
 ];
 
 /** Shape-kind picker entries — drives the icon-radio row in ShapeBody.
@@ -1118,13 +1111,6 @@ function HighlightBody({
           </span>
         </div>
       </FieldGroup>
-      <Segmented
-        label="Blend"
-        testid="highlight-blend"
-        options={BLEND_MODES}
-        value={style.blend}
-        onChange={(v) => onStyleFieldChange("blend", v)}
-      />
     </>
   );
 }

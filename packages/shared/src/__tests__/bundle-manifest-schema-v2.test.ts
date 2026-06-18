@@ -337,8 +337,16 @@ describe("BlurEffect — finite() + bounded radius", () => {
 
 describe("HighlightEffect", () => {
   test("accepts a valid highlight", () => {
-    expect(HighlightEffect.parse({ type: "highlight", tint_hex: "#ff8c00", opacity: 0.5 })).toEqual({
-      type: "highlight", tint_hex: "#ff8c00", opacity: 0.5
+    expect(
+      HighlightEffect.parse({
+        type: "highlight",
+        tint_hex: "#ff8c00",
+        opacity: 0.5,
+        blend: "screen",
+        rotation: Math.PI / 4
+      })
+    ).toEqual({
+      type: "highlight", tint_hex: "#ff8c00", opacity: 0.5, blend: "screen", rotation: Math.PI / 4
     });
   });
 

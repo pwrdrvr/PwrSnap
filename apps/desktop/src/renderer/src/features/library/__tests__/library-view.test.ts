@@ -80,7 +80,11 @@ describe("CLOSE_FOCUS", () => {
   });
 
   test("from reel is a no-op (reel exits via TOGGLE_VIEW, not CLOSE_FOCUS)", () => {
-    const before: LibraryView = { kind: "reel", selectedRecordId: "abc" };
+    const before: LibraryView = {
+      kind: "reel",
+      selectedRecordId: "abc",
+      selectionSynthesized: false
+    };
     expect(libraryReducer(before, { type: "CLOSE_FOCUS" })).toBe(before);
   });
 });
@@ -94,12 +98,22 @@ describe("TOGGLE_VIEW to grid", () => {
     expect(next).toEqual({ kind: "grid", selectedRecordId: "abc" });
   });
 
-  test("from reel preserves selection", () => {
+  test("from reel (real selection) preserves selection", () => {
     const next = libraryReducer(
-      { kind: "reel", selectedRecordId: "abc" },
+      { kind: "reel", selectedRecordId: "abc", selectionSynthesized: false },
       { type: "TOGGLE_VIEW", to: "grid", fallbackId: null }
     );
     expect(next).toEqual({ kind: "grid", selectedRecordId: "abc" });
+  });
+
+  test("from reel (synthesized selection) returns to grid with NO selection", () => {
+    // The user toggled to Reel with nothing selected (fallback supplied
+    // the id); toggling back must not gift a selection they never made.
+    const next = libraryReducer(
+      { kind: "reel", selectedRecordId: "abc", selectionSynthesized: true },
+      { type: "TOGGLE_VIEW", to: "grid", fallbackId: null }
+    );
+    expect(next).toEqual({ kind: "grid", selectedRecordId: null });
   });
 
   test("from grid → grid is identity (no-op)", () => {
@@ -113,21 +127,86 @@ describe("TOGGLE_VIEW to grid", () => {
   });
 });
 
+describe("TOGGLE_VIEW round-trip selection provenance (SpecFlow I2)", () => {
+  test("grid(no selection) → reel(via fallback) → grid leaves no selection", () => {
+    const reel = libraryReducer(
+      { kind: "grid", selectedRecordId: null },
+      { type: "TOGGLE_VIEW", to: "reel", fallbackId: "xyz" }
+    );
+    expect(reel).toEqual({
+      kind: "reel",
+      selectedRecordId: "xyz",
+      selectionSynthesized: true
+    });
+    const grid = libraryReducer(reel, {
+      type: "TOGGLE_VIEW",
+      to: "grid",
+      fallbackId: null
+    });
+    expect(grid).toEqual({ kind: "grid", selectedRecordId: null });
+  });
+
+  test("grid(selection) → reel → grid keeps the user's selection", () => {
+    const reel = libraryReducer(
+      { kind: "grid", selectedRecordId: "abc" },
+      { type: "TOGGLE_VIEW", to: "reel", fallbackId: "xyz" }
+    );
+    expect(reel).toEqual({
+      kind: "reel",
+      selectedRecordId: "abc",
+      selectionSynthesized: false
+    });
+    const grid = libraryReducer(reel, {
+      type: "TOGGLE_VIEW",
+      to: "grid",
+      fallbackId: null
+    });
+    expect(grid).toEqual({ kind: "grid", selectedRecordId: "abc" });
+  });
+
+  test("synthesized reel, then NAVIGATE a frame, then → grid keeps it (now a real choice)", () => {
+    const reel = libraryReducer(
+      { kind: "grid", selectedRecordId: null },
+      { type: "TOGGLE_VIEW", to: "reel", fallbackId: "xyz" }
+    );
+    const navigated = libraryReducer(reel, { type: "NAVIGATE", recordId: "def" });
+    expect(navigated).toEqual({
+      kind: "reel",
+      selectedRecordId: "def",
+      selectionSynthesized: false
+    });
+    const grid = libraryReducer(navigated, {
+      type: "TOGGLE_VIEW",
+      to: "grid",
+      fallbackId: null
+    });
+    expect(grid).toEqual({ kind: "grid", selectedRecordId: "def" });
+  });
+});
+
 describe("TOGGLE_VIEW to reel", () => {
-  test("from grid (with selection) carries selection into reel", () => {
+  test("from grid (with selection) carries selection into reel, not synthesized", () => {
     const next = libraryReducer(
       { kind: "grid", selectedRecordId: "abc" },
       { type: "TOGGLE_VIEW", to: "reel", fallbackId: "xyz" }
     );
-    expect(next).toEqual({ kind: "reel", selectedRecordId: "abc" });
+    expect(next).toEqual({
+      kind: "reel",
+      selectedRecordId: "abc",
+      selectionSynthesized: false
+    });
   });
 
-  test("from grid (no selection, fallback present) uses fallback", () => {
+  test("from grid (no selection, fallback present) uses fallback, marked synthesized", () => {
     const next = libraryReducer(
       { kind: "grid", selectedRecordId: null },
       { type: "TOGGLE_VIEW", to: "reel", fallbackId: "xyz" }
     );
-    expect(next).toEqual({ kind: "reel", selectedRecordId: "xyz" });
+    expect(next).toEqual({
+      kind: "reel",
+      selectedRecordId: "xyz",
+      selectionSynthesized: true
+    });
   });
 
   test("from grid (no selection, no fallback) STAYS in grid — can't enter reel without a record", () => {
@@ -138,12 +217,16 @@ describe("TOGGLE_VIEW to reel", () => {
     expect(next).toEqual({ kind: "grid", selectedRecordId: null });
   });
 
-  test("from focus carries selection into reel", () => {
+  test("from focus carries selection into reel, not synthesized", () => {
     const next = libraryReducer(
       { kind: "focus", selectedRecordId: "abc", returnAnchor: ANCHOR_A },
       { type: "TOGGLE_VIEW", to: "reel", fallbackId: null }
     );
-    expect(next).toEqual({ kind: "reel", selectedRecordId: "abc" });
+    expect(next).toEqual({
+      kind: "reel",
+      selectedRecordId: "abc",
+      selectionSynthesized: false
+    });
   });
 });
 
@@ -160,12 +243,16 @@ describe("NAVIGATE", () => {
     });
   });
 
-  test("in reel updates selectedRecordId", () => {
+  test("in reel updates selectedRecordId and clears synthesized provenance", () => {
     const next = libraryReducer(
-      { kind: "reel", selectedRecordId: "abc" },
+      { kind: "reel", selectedRecordId: "abc", selectionSynthesized: true },
       { type: "NAVIGATE", recordId: "xyz" }
     );
-    expect(next).toEqual({ kind: "reel", selectedRecordId: "xyz" });
+    expect(next).toEqual({
+      kind: "reel",
+      selectedRecordId: "xyz",
+      selectionSynthesized: false
+    });
   });
 
   test("in grid is a no-op (← / → don't navigate in grid)", () => {
@@ -183,6 +270,14 @@ describe("SELECT_IN_GRID", () => {
     expect(next).toEqual({ kind: "grid", selectedRecordId: "abc" });
   });
 
+  test("re-selecting the already-selected cell is a referential no-op", () => {
+    // Avoids allocating a new state object, which would re-render the grid.
+    const before: LibraryView = { kind: "grid", selectedRecordId: "abc" };
+    expect(libraryReducer(before, { type: "SELECT_IN_GRID", recordId: "abc" })).toBe(
+      before
+    );
+  });
+
   test("in focus is a no-op", () => {
     const before: LibraryView = {
       kind: "focus",
@@ -195,7 +290,11 @@ describe("SELECT_IN_GRID", () => {
   });
 
   test("in reel is a no-op", () => {
-    const before: LibraryView = { kind: "reel", selectedRecordId: "abc" };
+    const before: LibraryView = {
+      kind: "reel",
+      selectedRecordId: "abc",
+      selectionSynthesized: false
+    };
     expect(libraryReducer(before, { type: "SELECT_IN_GRID", recordId: "xyz" })).toBe(
       before
     );
@@ -263,14 +362,34 @@ describe("FILTER_CHANGED", () => {
 
   test("in reel, current selection NOT in new visible set → bail to grid", () => {
     const next = libraryReducer(
-      { kind: "reel", selectedRecordId: "abc" },
+      { kind: "reel", selectedRecordId: "abc", selectionSynthesized: false },
       { type: "FILTER_CHANGED", visibleIds: ["xyz"] }
     );
     expect(next).toEqual({ kind: "grid", selectedRecordId: null });
   });
 
-  test("in grid, ignored — grid handles its own filter behavior via re-render", () => {
+  test("in grid, selection filtered away → cleared to null (SpecFlow I1)", () => {
+    // Grid now carries a real, inspectable selection; if it leaves the
+    // visible set the inspector must empty rather than show an off-screen
+    // record. (Previously FILTER_CHANGED was a no-op in grid.)
+    const next = libraryReducer(
+      { kind: "grid", selectedRecordId: "abc" },
+      { type: "FILTER_CHANGED", visibleIds: ["xyz"] }
+    );
+    expect(next).toEqual({ kind: "grid", selectedRecordId: null });
+  });
+
+  test("in grid, selection still visible → identity no-op", () => {
     const before: LibraryView = { kind: "grid", selectedRecordId: "abc" };
+    const next = libraryReducer(before, {
+      type: "FILTER_CHANGED",
+      visibleIds: ["abc", "xyz"]
+    });
+    expect(next).toBe(before);
+  });
+
+  test("in grid with no selection → identity no-op", () => {
+    const before: LibraryView = { kind: "grid", selectedRecordId: null };
     const next = libraryReducer(before, {
       type: "FILTER_CHANGED",
       visibleIds: ["xyz"]

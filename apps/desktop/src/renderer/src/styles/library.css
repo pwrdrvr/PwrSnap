@@ -1314,6 +1314,10 @@
   border: 1px solid var(--border-subtle);
   overflow: hidden;
   cursor: pointer;
+  /* Double-click = open the editor. Suppress text selection so a quick
+     double-click on the time / app-name overlay doesn't leave a stray
+     highlight. */
+  user-select: none;
   transition: all 120ms var(--ease-out);
   /* Perf hygiene (Phase B.9). content-visibility:auto skips paint +
      layout for offscreen cells; contain-intrinsic-size keeps the
@@ -1463,6 +1467,20 @@
 .psl__cell-duplicate:hover {
   background: var(--accent-soft);
   color: var(--accent-bright, var(--accent));
+}
+
+/* Edit CTA — the primary post-hover action: open the editor. Reuses the
+   .psl__cell-trash slide-in mechanics but reads as the tangerine accent
+   affordance (vs the trash button, which reddens on hover) so "edit" and
+   "delete" never look alike. Single-click still SELECTS the cell; this
+   button is the explicit door into the Focus editor. */
+.psl__cell-edit {
+  color: var(--accent-bright, var(--accent));
+}
+.psl__cell-edit:hover {
+  background: var(--accent-soft);
+  color: var(--accent-bright, var(--accent));
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
 }
 
 .psl__context-menu {

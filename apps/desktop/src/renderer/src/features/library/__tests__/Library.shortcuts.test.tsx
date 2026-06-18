@@ -202,8 +202,10 @@ describe("Library keyboard shortcuts", () => {
     const cell = container?.querySelector<HTMLElement>('[data-cell-id="cap_image"]');
     expect(cell).not.toBeNull();
 
+    // Double-click to open the editor (single-click now only selects), so
+    // the ⌘1/2/3 copy shortcuts — gated to focus/reel — are live.
     await act(async () => {
-      cell?.click();
+      cell?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
 
@@ -226,5 +228,95 @@ describe("Library keyboard shortcuts", () => {
       preset: "med"
     });
     expect(dispatchMock.mock.calls.some(([name]) => name === "clipboard:copy")).toBe(false);
+  });
+});
+
+describe("Library grid select vs edit", () => {
+  async function renderLibrary(): Promise<void> {
+    await act(async () => {
+      root?.render(createElement(Library));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  function cellEl(): HTMLElement | null {
+    return container?.querySelector<HTMLElement>('[data-cell-id="cap_image"]') ?? null;
+  }
+
+  function hasStage(): boolean {
+    return container?.querySelector('[data-testid="library-stage"]') !== null;
+  }
+
+  test("single click selects the tile without opening the editor", async () => {
+    await renderLibrary();
+    expect(cellEl()).not.toBeNull();
+
+    await act(async () => {
+      cellEl()?.click();
+      await Promise.resolve();
+    });
+
+    // No takeover…
+    expect(hasStage()).toBe(false);
+    // …but the tile is selected (the inspector-feeding ring).
+    expect(cellEl()?.classList.contains("is-selected")).toBe(true);
+  });
+
+  test("double-click opens the editor", async () => {
+    await renderLibrary();
+
+    await act(async () => {
+      cellEl()?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+
+    expect(hasStage()).toBe(true);
+  });
+
+  test("Enter on the selected tile opens the editor", async () => {
+    await renderLibrary();
+
+    await act(async () => {
+      cellEl()?.click();
+      await Promise.resolve();
+    });
+    expect(hasStage()).toBe(false);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })
+      );
+      await Promise.resolve();
+    });
+
+    expect(hasStage()).toBe(true);
+  });
+
+  test("Enter with nothing selected is a no-op", async () => {
+    await renderLibrary();
+    expect(hasStage()).toBe(false);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })
+      );
+      await Promise.resolve();
+    });
+
+    expect(hasStage()).toBe(false);
+  });
+
+  test("the hover Edit CTA opens the editor", async () => {
+    await renderLibrary();
+    const editBtn = container?.querySelector<HTMLElement>(".psl__cell-edit");
+    expect(editBtn).not.toBeNull();
+
+    await act(async () => {
+      editBtn?.click();
+      await Promise.resolve();
+    });
+
+    expect(hasStage()).toBe(true);
   });
 });

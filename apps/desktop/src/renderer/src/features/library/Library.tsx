@@ -45,6 +45,7 @@ import { nextAfterDelete } from "./delete-nav";
 import { DeleteUndoStack } from "./delete-undo-stack";
 import { mergeOpenedLiveRecords } from "./library-records";
 import { initialLibraryView, libraryReducer, type LibraryAction, type LibraryView } from "./library-view";
+import { resolveCellIntent, toGridCell, type CellTrigger } from "./resolve-cell-intent";
 import { Stage } from "./Stage";
 import { UndoToast } from "./UndoToast";
 import {
@@ -2265,6 +2266,32 @@ export function Library() {
         viewDispatch({ type: "CLOSE_FOCUS" });
         return;
       }
+      // Enter on the selected grid tile → open the editor. Reads the
+      // selection from viewRef.current (updated synchronously in
+      // viewDispatch) — NOT the effect-synced selectedRecordRef, which
+      // lags a commit and would edit the previously-selected tile if the
+      // user clicks then immediately presses Enter. No-op when nothing is
+      // selected; trashed captures resolve to noop (can't be edited).
+      if (event.key === "Enter" && kind === "grid") {
+        const recordId = viewRef.current.selectedRecordId;
+        if (recordId === null) return;
+        const intent = resolveCellIntent("enter", {
+          kind: "capture",
+          recordId,
+          isTrashed: activeFilterRef.current.kind === "trash"
+        });
+        if (intent.kind === "edit") {
+          event.preventDefault();
+          const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
+          gridReturnScrollTopRef.current = savedScrollTop;
+          viewDispatch({
+            type: "OPEN_FOCUS",
+            recordId: intent.recordId,
+            returnAnchor: { scrollTop: savedScrollTop, cellId: intent.recordId }
+          });
+        }
+        return;
+      }
       if (event.key === "ArrowLeft" && (kind === "focus" || kind === "reel")) {
         const id = prevRecordIdRef.current;
         if (id !== null) {
@@ -2287,35 +2314,52 @@ export function Library() {
   }, [viewDispatch]);
 
   /**
-   * Single-click handler for grid cells. Phase C: dispatches
-   * `OPEN_FOCUS` with the captured grid scroll position + cell id
-   * so the cell-pulse effect can highlight the right cell on
-   * Focus → Grid return. Reel-mode filmstrip frames have their own
-   * NAVIGATE-only click handler (no Focus open from filmstrip).
+   * Grid-cell interaction handler. The grid-first select/edit split routes
+   * EVERY trigger through the one pure resolver (see resolve-cell-intent):
+   *   • plain click → SELECT (update the inspector, stay in grid)
+   *   • double-click / the orange Edit CTA → EDIT (open the Focus takeover)
+   *   • project cell → open the Sizzle window (exempt from the split)
+   *   • fixture / trashed-edit → no-op
+   * Reel-mode filmstrip frames have their own NAVIGATE-only handler.
    */
-  function onSelectCell(c: Capture): void {
-    // Project cell → open the sizzle window for that project.
-    // Click handler doesn't transition into focus/reel for projects;
-    // projects are edited in the dedicated Sizzle Reels window.
-    if (c.kind === "project" && c.projectId !== undefined) {
-      openSizzleProject(c.projectId);
-      return;
-    }
+  function onSelectCell(c: Capture, trigger: CellTrigger): void {
     const record = fixtureBacking.recordFor(c.id);
-    if (record === null) {
-      // Fixture-only cell (dev placeholder) — no real record to open.
-      return;
-    }
-    const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
-    gridReturnScrollTopRef.current = savedScrollTop;
-    viewDispatch({
-      type: "OPEN_FOCUS",
-      recordId: record.id,
-      returnAnchor: {
-        scrollTop: savedScrollTop,
-        cellId: record.id
-      }
+    const cell = toGridCell({
+      recordId: record?.id ?? "",
+      isProject: c.kind === "project",
+      projectId: c.kind === "project" && c.projectId !== undefined ? c.projectId : null,
+      hasBackingRecord: record !== null,
+      isTrashed: record?.deleted_at != null
     });
+    const intent = resolveCellIntent(trigger, cell);
+    switch (intent.kind) {
+      case "open-sizzle":
+        // Projects are edited in the dedicated Sizzle Reels window.
+        openSizzleProject(intent.projectId);
+        return;
+      case "select":
+        // Transient inspector update — replace history so a later
+        // double-click doesn't leave a stray grid-selection Back stop.
+        viewDispatch({ type: "SELECT_IN_GRID", recordId: intent.recordId }, { history: "replace" });
+        return;
+      case "edit": {
+        const cur = viewRef.current;
+        // Already-opening guard: a second edit intent for the record we're
+        // already focused on (e.g. a double-click landing on the Edit CTA)
+        // must not push a duplicate history entry.
+        if (cur.kind === "focus" && cur.selectedRecordId === intent.recordId) return;
+        const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
+        gridReturnScrollTopRef.current = savedScrollTop;
+        viewDispatch({
+          type: "OPEN_FOCUS",
+          recordId: intent.recordId,
+          returnAnchor: { scrollTop: savedScrollTop, cellId: intent.recordId }
+        });
+        return;
+      }
+      case "noop":
+        return;
+    }
   }
 
   function duplicateSizzleProject(
@@ -3524,7 +3568,7 @@ type VirtualizedGridProps = {
   fixtureBacking: FixtureBackedRecords;
   projectCoverRecordsById: Map<string, CaptureRecord>;
   appLabels: Record<string, string>;
-  onSelectCell: (c: Capture) => void;
+  onSelectCell: (c: Capture, trigger: CellTrigger) => void;
   duplicateSizzleProject: (projectId: string, event?: ReactMouseEvent<HTMLElement>) => void;
   openProjectContextMenu: (
     projectId: string,
@@ -3926,7 +3970,7 @@ function CellRow({
   fixtureBacking: FixtureBackedRecords;
   projectCoverRecordsById: Map<string, CaptureRecord>;
   appLabels: Record<string, string>;
-  onSelectCell: (c: Capture) => void;
+  onSelectCell: (c: Capture, trigger: CellTrigger) => void;
   duplicateSizzleProject: (projectId: string, event?: ReactMouseEvent<HTMLElement>) => void;
   openProjectContextMenu: (
     projectId: string,
@@ -3990,7 +4034,8 @@ function CellRow({
               (isProject ? " psl__cell--project" : "")
             }
             data-cell-id={record?.id ?? ""}
-            onClick={() => onSelectCell(c)}
+            onClick={() => onSelectCell(c, "click")}
+            onDoubleClick={() => onSelectCell(c, "dblclick")}
             onContextMenu={(event) => {
               if (projectId !== null) {
                 openProjectContextMenu(projectId, c.n, event);
@@ -4043,6 +4088,28 @@ function CellRow({
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <rect x="8" y="8" width="11" height="11" rx="2" />
                       <path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h9a1 1 0 0 1 1 1v1" />
+                    </svg>
+                  </button>
+                ) : null}
+                {record !== null && !isProject && !isTrashView ? (
+                  <button
+                    type="button"
+                    className="psl__cell-trash psl__cell-edit"
+                    title="Edit"
+                    aria-label={`Edit ${c.n}`}
+                    onClick={(e) => {
+                      // Stop propagation so the CTA doesn't also fire the
+                      // cell's select onClick; stop dblclick too so a
+                      // double-click on the button doesn't bubble to the
+                      // cell's edit handler (one open, not two).
+                      e.stopPropagation();
+                      onSelectCell(c, "edit-cta");
+                    }}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 20h9" />
+                      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
                     </svg>
                   </button>
                 ) : null}

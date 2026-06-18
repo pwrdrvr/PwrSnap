@@ -530,6 +530,18 @@
 .psl[data-mode="grid"][data-cart="open"] {
   --right-col: 360px;
 }
+/* Grid-first inspector: when a capture is selected in Grid (and the
+   standalone cart rail isn't taking the column), the right rail opens
+   for the restricted Info/OCR inspector — pinned at 360px, or the 38px
+   activity-bar spine when unpinned, mirroring focus/reel. data-right is
+   only emitted in Grid when the inspector is showing (and never with
+   data-cart="open"), so these don't fight the cart rule above. */
+.psl[data-mode="grid"][data-right="pinned"] {
+  --right-col: 360px;
+}
+.psl[data-mode="grid"][data-right="collapsed"] {
+  --right-col: 38px;
+}
 /* Collapsed left bar — only the 36px spine sticks out. Peek state
    reuses the same column width; the panel itself slides on as an
    absolute-positioned overlay (see .psl__left rules). */

@@ -860,6 +860,39 @@ describe("DetailRail", () => {
     expect(el.querySelector('[data-testid="psl-right-footer"]')).not.toBeNull();
   });
 
+  test("Grid mode renders the restricted Info/OCR inspector (no Chat tab)", async () => {
+    installFakeApi(enrichment({ ocrText: "some text" }));
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(DetailRail, {
+          view: { kind: "grid", selectedRecordId: record.id } as LibraryView,
+          record
+        })
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Info + OCR are present in Grid…
+    expect(
+      container?.querySelector('[data-testid="psl-right-tab-info"]')
+    ).not.toBeNull();
+    expect(
+      container?.querySelector('[data-testid="psl-right-tab-ocr"]')
+    ).not.toBeNull();
+    // …but Chat (and Project/Cart) are focus/reel-only.
+    expect(
+      container?.querySelector('[data-testid="psl-right-tab-chat"]')
+    ).toBeNull();
+    // The export footer still rides along in Grid.
+    expect(
+      container?.querySelector('[data-testid="psl-right-footer"]')
+    ).not.toBeNull();
+  });
+
   test("OCR tab shows a notification badge when extracted text exists", async () => {
     const { el } = await renderDetailRail(enrichment({ ocrText: "snap content" }));
     const ocrTab = el.querySelector<HTMLButtonElement>(

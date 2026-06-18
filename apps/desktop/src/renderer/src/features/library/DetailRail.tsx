@@ -168,6 +168,13 @@ export function DetailRail({
   // intended to control sees the bug instead of silent fallback.
   const [localActiveTab, setLocalActiveTab] = useState<SidebarTab>("info");
   const [localPinned, setLocalPinned] = useState<boolean>(true);
+  // Grid keeps its OWN active tab, separate from the focus/reel
+  // controlled tab. The grid set is restricted to Info/OCR, so reusing
+  // the shared tab would force a clamp-to-Info that overwrites the
+  // user's focus/reel tab choice (e.g. Chat) every time they drop back
+  // to Grid. A local tab side-steps that; it's session-scoped (not
+  // persisted) by design for this slice.
+  const [gridTab, setGridTab] = useState<SidebarTab>("info");
   const [budgetStatus, setBudgetStatus] = useState<AiEnrichmentBudgetStatus | null>(null);
   // Which backend runs enrichment — so the status pill + OCR copy say "Grok" /
   // "Gemini" instead of always "Codex". Derived from the enrichment Settings
@@ -480,6 +487,14 @@ export function DetailRail({
     [hasOcrText, sizzleProjects.length, containingProjects.length, cartCount]
   );
 
+  // Grid restricts the rail to Info + OCR (export footer rides along for
+  // free). Chat/Project/Cart are focus/reel-only — Cart in Grid is the
+  // standalone rail until the cart-zip work folds it in here as a tab.
+  const gridTabs = useMemo(
+    () => tabs.filter((t) => t.id === "info" || t.id === "ocr"),
+    [tabs]
+  );
+
   // If the active tab no longer exists in the tab set — e.g. the user
   // was on the Cart tab and then committed/cleared the cart (the Cart
   // tab is gated on cartCount > 0), or the only sizzle project got
@@ -492,10 +507,20 @@ export function DetailRail({
     }
   }, [tabs, activeTab, writeActiveTab]);
 
-  // Grid mode: rail not rendered. Future surfaces that want a rail
-  // in Grid (bulk-select, etc.) only change one component.
-  if (view.kind === "grid") return null;
+  // No selection → no rail. Grid renders the rail for a SELECTED
+  // capture (Library forces `record` null when nothing's selected or the
+  // standalone cart rail owns the column), so this single guard covers
+  // grid-empty, focus, and reel alike. Hooks above this point run every
+  // render regardless of view.kind — do NOT move any hook below here
+  // (Rules of Hooks; guarded by DetailRail.test + library-*-spec).
   if (record === null) return null;
+
+  // Grid uses its own restricted tab set + local tab; focus/reel use the
+  // full set + the parent-controlled tab. Pin is shared across modes.
+  const isGrid = view.kind === "grid";
+  const railTabs = isGrid ? gridTabs : tabs;
+  const railActiveTab = isGrid ? gridTab : activeTab;
+  const onRailTabChange = isGrid ? setGridTab : writeActiveTab;
 
   const capturedAt = formatTimestamp(record.captured_at);
   const sourceName = record.source_app_name ?? "Unknown app";
@@ -601,10 +626,10 @@ export function DetailRail({
     <aside className="psl__right psl__right--vertical" aria-label="Capture details">
       <div className="psl__right-content">
         <RightActivityBar
-          tabs={tabs}
-          activeTab={activeTab}
+          tabs={railTabs}
+          activeTab={railActiveTab}
           pinned={pinned}
-          onTabChange={writeActiveTab}
+          onTabChange={onRailTabChange}
           onPinChange={writePinned}
           renderPanel={renderPanel}
           testIdPrefix="psl-right"

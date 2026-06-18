@@ -1768,6 +1768,14 @@ export function Library() {
     );
   }, [isTrashView, records, selectedRecordId, universeRecords]);
 
+  // Grid-first inspector: in Grid, the right rail shows for a SELECTED
+  // capture (Info + OCR + the L/M/H export footer). It yields to the
+  // standalone cart rail while that's open — both occupy the third grid
+  // column, so only one shows at a time. (Folding the cart in as a rail
+  // tab lands with the cart-zip work in a later phase.)
+  const showGridInspector =
+    view.kind === "grid" && selectedRecord !== null && !cartIsOpenInGrid;
+
   // Records that match the current active filter, mapped from the
   // (already-filtered) `visible` fixture list. Drives ←/→ navigation
   // in Focus + Reel — both modes cycle through this set with wrap-
@@ -2623,17 +2631,24 @@ export function Library() {
       data-mode={view.kind}
       data-left={leftState}
       // `data-right` controls the right column width (38px collapsed
-      // vs 360px pinned) AND the footer/overflow rules. In Grid mode
-      // DetailRail returns null, so the column is 0 either way and
-      // emitting the attribute would just confuse readers. Likewise,
-      // skip it until settings:read resolves so the rail doesn't
-      // paint at the wrong width for ~50ms on cold start.
+      // vs 360px pinned) AND the footer/overflow rules. It's emitted
+      // whenever the rail is showing: always in focus/reel, and in Grid
+      // when a capture is selected (showGridInspector). When nothing is
+      // selected in Grid the column collapses to 0. Skipped until
+      // settings:read resolves so the rail doesn't paint at the wrong
+      // width for ~50ms on cold start.
       data-right={
-        !settingsHydrated || view.kind === "grid"
+        !settingsHydrated
           ? undefined
-          : rightPinned
-            ? "pinned"
-            : "collapsed"
+          : view.kind === "grid"
+            ? showGridInspector
+              ? rightPinned
+                ? "pinned"
+                : "collapsed"
+              : undefined
+            : rightPinned
+              ? "pinned"
+              : "collapsed"
       }
       // `data-cart="open"` widens the right column in GRID mode so the
       // standalone cart rail has room. In focus/reel the cart lives in
@@ -3309,14 +3324,15 @@ export function Library() {
         />
       )}
 
-      {/* Detail rail. Renders null in grid mode (Phase B); shows
-          metadata + Codex caption + L/M/H copy row + action row in
-          focus + reel modes. Lives in the third grid column
-          (`grid-template-columns: 220px 1fr 360px` when
-          data-mode is focus/reel, collapsed to 0 in grid mode). */}
+      {/* Detail rail. Shows metadata + Codex caption + L/M/H export row
+          + action row. In focus/reel it's always present; in Grid it
+          renders the restricted Info/OCR inspector for the selected
+          capture (record forced null while the standalone cart rail owns
+          the column, so the two never overlap). Lives in the third grid
+          column (360px pinned / 38px collapsed via data-right). */}
       <DetailRail
         view={view}
-        record={selectedRecord}
+        record={view.kind === "grid" && !showGridInspector ? null : selectedRecord}
         copyPulses={copyPulses}
         pinned={rightPinned}
         onPinChange={setRightPinned}

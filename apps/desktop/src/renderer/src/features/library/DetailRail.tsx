@@ -66,6 +66,8 @@ import {
 } from "../shared/RightActivityBar";
 import "../shared/RightActivityBar.css";
 import { LibraryChatPanel } from "./chat/LibraryChatPanel";
+import { LayersPanel } from "./LayersPanel";
+import type { LayersPanelApi } from "../editor/Editor";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag, subscribe } from "../../lib/pwrsnap";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { useCart } from "./CartContext";
@@ -119,6 +121,13 @@ export type DetailRailProps = {
    *  Info. When omitted, the rail owns it locally. */
   readonly gridActiveTab?: LibrarySidebarTab;
   readonly onGridActiveTabChange?: (next: LibrarySidebarTab) => void;
+  /** Mirror of the editor's canvas selection (Library owns it). Drives
+   *  the highlighted row in the Layers tab. Defaults to empty. */
+  readonly selectedLayerIds?: readonly string[];
+  /** Editor-published Layers API. The Layers tab appears only when this
+   *  is non-null AND the capture is an image (i.e. an editor is
+   *  mounted). Omitted/null in isolation (e.g. tests) → no Layers tab. */
+  readonly layersApi?: LayersPanelApi | null;
 };
 
 export function DetailRail({
@@ -135,7 +144,9 @@ export function DetailRail({
   onCartJumpTo,
   onCartTrashAll,
   gridActiveTab: gridActiveTabProp,
-  onGridActiveTabChange
+  onGridActiveTabChange,
+  selectedLayerIds = [],
+  layersApi = null
 }: DetailRailProps): ReactElement | null {
   // Skip the image render-metrics IPC for video captures — the
   // sharp-based preset pipeline is image-only and the video branch
@@ -454,6 +465,11 @@ export function DetailRail({
   // L373 on CI). Compute tabs up front; the early returns below
   // just gate rendering, not hook-count.
   const hasOcrText = (enrichment?.ocrText ?? "").length > 0;
+  // Layers-tab gating, as stable primitives so the tabs memo doesn't
+  // churn on every selection change (the layersApi object's identity
+  // changes whenever the editor's selection does).
+  const isImageCapture = record?.kind === "image";
+  const hasLayersApi = layersApi !== null;
   const tabs: ReadonlyArray<RightActivityTab<SidebarTab>> = useMemo(
     () => [
       {
@@ -508,9 +524,31 @@ export function DetailRail({
               icon: CART_ICON
             }
           ]
+        : []),
+      // Layers tab — only for image captures with an editor mounted
+      // (the editor publishes `layersApi`; videos mount no editor, so
+      // it stays null and the tab is absent). Gated on `hasLayersApi`
+      // (a stable boolean) rather than the api object so the memo
+      // doesn't recompute on every selection change.
+      ...(isImageCapture && hasLayersApi
+        ? [
+            {
+              id: "layers" as const,
+              label: "Layers",
+              title: "Layers",
+              icon: LAYERS_ICON
+            }
+          ]
         : [])
     ],
-    [hasOcrText, sizzleProjects.length, containingProjects.length, cartCount]
+    [
+      hasOcrText,
+      sizzleProjects.length,
+      containingProjects.length,
+      cartCount,
+      isImageCapture,
+      hasLayersApi
+    ]
   );
 
   // Grid restricts the rail to Info + OCR + Cart (the cross-asset cart
@@ -676,6 +714,17 @@ export function DetailRail({
       return (
         <div className="psl__right-body psl__right-body--cart">
           <CartPanel onJumpTo={onCartJumpTo} onTrashAll={onCartTrashAll} />
+        </div>
+      );
+    }
+    if (id === "layers") {
+      return (
+        <div className="psl__right-body">
+          <LayersPanel
+            captureId={record.id}
+            selectedLayerIds={selectedLayerIds}
+            api={layersApi}
+          />
         </div>
       );
     }
@@ -1009,6 +1058,22 @@ const CART_ICON: ReactElement = (
     <path d="M3 5h2l1.6 9.5a1 1 0 0 0 1 .8h8.8a1 1 0 0 0 1-.8L20 8H6" />
     <circle cx="9" cy="19" r="1.2" fill="currentColor" />
     <circle cx="17" cy="19" r="1.2" fill="currentColor" />
+  </svg>
+);
+
+const LAYERS_ICON: ReactElement = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="m12 3 9 5-9 5-9-5 9-5Z" />
+    <path d="m3 13 9 5 9-5" />
+    <path d="m3 17 9 5 9-5" />
   </svg>
 );
 

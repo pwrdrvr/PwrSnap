@@ -49,6 +49,7 @@ import { initialLibraryView, libraryReducer, type LibraryAction, type LibraryVie
 import { resolveCellIntent, toGridCell, type CellTrigger } from "./resolve-cell-intent";
 import { GRID_NAV_KEYS, nextGridSelectionId } from "./grid-nav";
 import { Stage } from "./Stage";
+import type { LayersPanelApi } from "../editor/Editor";
 import { UndoToast } from "./UndoToast";
 import {
   cacheUrl,
@@ -1883,6 +1884,24 @@ export function Library() {
   // preference, not a transient drawing-tool selection.
   const [blurStyle, setBlurStyle] = useState<BlurStyle>(DEFAULT_BLUR_STYLE);
 
+  // Layers panel wiring. Library owns the MIRROR of the editor's canvas
+  // selection plus the editor-published LayersPanelApi, so the
+  // DetailRail's Layers tab (a sibling of the chromeless Editor) can
+  // highlight rows and drive layer ops. The editor remains the single
+  // source of truth for selection — this mirror is read-only here and
+  // is never fed back into the Editor.
+  const [selectedLayerIds, setSelectedLayerIds] = useState<readonly string[]>(
+    []
+  );
+  const [layersApi, setLayersApi] = useState<LayersPanelApi | null>(null);
+  // Drop the mirrored selection when the active capture or the view
+  // mode changes, so a stale id from a prior capture can't highlight a
+  // row in the new one. (The editor clears its own selection on
+  // unmount; this keeps Library's mirror in step before it remounts.)
+  useEffect(() => {
+    setSelectedLayerIds([]);
+  }, [selectedRecordId, view.kind]);
+
   // Ref to the scrollable grid container. Used by:
   //   • Cell click handler — captures scrollTop into the OPEN_FOCUS
   //     returnAnchor so the cell-pulse effect can find which cell
@@ -3360,6 +3379,8 @@ export function Library() {
           toolState={liftedToolState}
           blurStyle={blurStyle}
           onBlurStyleChange={setBlurStyle}
+          onSelectionChange={setSelectedLayerIds}
+          onLayersApi={setLayersApi}
           {...(view.kind === "reel"
             ? {
                 aboveStageSlot: (
@@ -3524,6 +3545,8 @@ export function Library() {
         onCartTrashAll={trashCartCaptures}
         gridActiveTab={gridActiveTab}
         onGridActiveTabChange={setGridActiveTab}
+        selectedLayerIds={selectedLayerIds}
+        layersApi={layersApi}
       />
 
       {/* Capture soft-delete Undo toast — lower-left, in the shared

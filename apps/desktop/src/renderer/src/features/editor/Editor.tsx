@@ -71,6 +71,7 @@ import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUnd
 import { decideClickSelection } from "./decideClickSelection";
 import {
   useCaptureModel,
+  inverseCropRect,
   type EditOpResult,
   type GeometryUpdate,
   type LayerEditOp
@@ -162,6 +163,38 @@ export type ZoomApi = {
    *  for -20%). */
   zoomBy: (factor: number) => void;
 } | null;
+
+/** Imperative API the editor publishes so the Library's Layers panel —
+ *  which lives in DetailRail, a sibling of the chromeless editor — can
+ *  drive layer operations on the canvas: selection, visibility, delete,
+ *  reorder, and uncrop. Published via the `onLayersApi` callback the
+ *  same way `ZoomApi` rides `onZoomChange` (the editor publishes
+ *  callbacks rather than exposing a `forwardRef`). The parent receives
+ *  `null` on unmount so it can clear its cached handle. */
+export type LayersPanelApi = {
+  /** Replace (additive=false) or toggle (additive=true) the canvas
+   *  selection. Pure state set — no IPC. Drives the selection outline +
+   *  transform handles. Selecting a hidden layer won't persist (the
+   *  stale-id cleanup drops ids absent from the rendered set) — that's
+   *  the accepted "hide deselects" behavior. */
+  selectLayers: (id: string, additive: boolean) => void;
+  /** Flip a layer's `visible` flag via a full-node `layers:update`. */
+  setLayerVisibility: (id: string, visible: boolean) => Promise<void>;
+  /** Soft-delete a layer, recording undo when the layer projects to an
+   *  OverlayRow. Callers must NOT pass the base raster (panel disables
+   *  it) or a crop layer (panel routes crop to `uncrop`). */
+  deleteLayer: (id: string) => Promise<void>;
+  /** Move a layer one z-order step. Computes over the full reorderable
+   *  set (vector + effect, including hidden) so panel ordering stays
+   *  correct regardless of which layers are currently visible. */
+  moveLayer: (id: string, direction: "forward" | "backward") => Promise<void>;
+  /** Remove the crop while keeping every other annotation correctly
+   *  positioned. Reuses the inverse-crop dispatch (which re-normalizes
+   *  overlays + restores off-origin raster/effect transforms + grows
+   *  the canvas back), then deletes the leftover crop layer that
+   *  dispatch inserts. */
+  uncrop: (cropLayerId: string) => Promise<void>;
+};
 
 const STYLED_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
   "arrow",
@@ -509,6 +542,12 @@ function projectV2LayersToOverlayRows(
 ): OverlayRow[] {
   const rows: OverlayRow[] = [];
   for (const layer of layers) {
+    // A layer toggled hidden via the Layers panel (`visible === false`)
+    // must NOT render in the live canvas. The bake compositor already
+    // honors `visible` (compose-tree.ts), but this live projection used
+    // to render every layer regardless — so a hidden layer stayed
+    // visible while editing until the next bake. Skip it here too.
+    if (layer.visible === false) continue;
     if (layer.kind === "vector") {
       // v2 vector layers carry the v1 Overlay shape verbatim under
       // `shape`. The renderer only reads `id` + `data` so the projection
@@ -978,7 +1017,9 @@ export function Editor({
   onToolChange,
   toolState: toolStateProp,
   blurStyle: blurStyleProp,
-  onZoomChange
+  onZoomChange,
+  onSelectionChange,
+  onLayersApi
 }: {
   captureId: string;
   /** Chrome shape — see `EditorChromeKind` above. Defaults to `"full"`. */
@@ -1012,6 +1053,14 @@ export function Editor({
    *  (so the indicator doesn't float over the image). Called with
    *  `null` on unmount so the parent can clear its cached api. */
   onZoomChange?: (api: ZoomApi) => void;
+  /** Called whenever the canvas selection changes (canvas → panel).
+   *  Library mirrors this into state so the Layers panel can highlight
+   *  the selected rows. The editor remains the single source of truth
+   *  for selection — this only reports it upward. */
+  onSelectionChange?: (ids: readonly string[]) => void;
+  /** Publishes the imperative Layers-panel API (panel → canvas), same
+   *  callback pattern as `onZoomChange`. `null` on unmount. */
+  onLayersApi?: (api: LayersPanelApi | null) => void;
 }) {
   // ----- Capture data ---------------------------------------------
   //
@@ -2950,6 +2999,8 @@ export function Editor({
       setDraftGeometry={setDraftGeometry}
       commitText={commitText}
       onZoomChange={onZoomChange}
+      onSelectionChange={onSelectionChange}
+      onLayersApi={onLayersApi}
       blurStyle={blurStyle}
       blurRadiusPx={blurRadiusPx}
       isControlled={isControlled}
@@ -3009,6 +3060,8 @@ function EditorLoaded({
   setDraftGeometry,
   commitText,
   onZoomChange,
+  onSelectionChange,
+  onLayersApi,
   blurStyle,
   blurRadiusPx,
   isControlled,
@@ -3132,6 +3185,8 @@ function EditorLoaded({
   >;
   commitText: () => Promise<void>;
   onZoomChange: ((api: ZoomApi) => void) | undefined;
+  onSelectionChange: ((ids: readonly string[]) => void) | undefined;
+  onLayersApi: ((api: LayersPanelApi | null) => void) | undefined;
   blurStyle: BlurStyle;
   blurRadiusPx: number | undefined;
   isControlled: boolean;
@@ -3408,6 +3463,166 @@ function EditorLoaded({
     undo,
     undoApplyingRef
   ]);
+
+  // ---- Layers panel bridge (canvas ↔ DetailRail Layers tab) -------
+  //
+  // The Layers panel lives in the Library's DetailRail — a sibling of
+  // this chromeless editor — so it can't reach the editor's selection
+  // or dispatchers directly. We publish a small imperative API the
+  // same way `onZoomChange` surfaces zoom state, and report selection
+  // changes upward so the panel can highlight the active rows. The
+  // editor stays the single source of truth for selection (Library
+  // only mirrors it for the panel; it is never fed back in here).
+  useEffect(() => {
+    onSelectionChange?.(selectedLayerIds);
+  }, [onSelectionChange, selectedLayerIds]);
+
+  useEffect(() => {
+    if (onLayersApi === undefined) return;
+    onLayersApi({
+      selectLayers: (id, additive) => {
+        setSelectedLayerIds(
+          additive
+            ? selectedLayerIds.includes(id)
+              ? selectedLayerIds.filter((x) => x !== id)
+              : [...selectedLayerIds, id]
+            : [id]
+        );
+      },
+      setLayerVisibility: async (id, visible) => {
+        const node = modelLayers.find((l) => l.id === id);
+        if (node === undefined) return;
+        const result = await dispatch("layers:update", {
+          captureId: record.id,
+          layer: { ...node, visible }
+        });
+        if (!result.ok) {
+          // eslint-disable-next-line no-console
+          console.error("layer visibility update failed", result.error);
+        }
+      },
+      deleteLayer: async (id) => {
+        const node = modelLayers.find((l) => l.id === id) ?? null;
+        const result = await dispatchEdit({ kind: "delete", id });
+        if (!result.ok) {
+          // eslint-disable-next-line no-console
+          console.error("layer delete failed", result.error);
+          return;
+        }
+        // Record undo when the layer projects to an OverlayRow (vector
+        // + blur effect). Force `visible: true` for the projection so a
+        // hidden layer still yields a row (the live projection skips
+        // invisible layers). Other kinds delete without an undo entry —
+        // an accepted v1 edge.
+        if (node !== null && !undoApplyingRef.current) {
+          const rows = projectV2LayersToOverlayRows(
+            [{ ...node, visible: true }],
+            record.id,
+            { widthPx: record.width_px, heightPx: record.height_px }
+          );
+          const row = rows[0];
+          if (row !== undefined) undo.recordDelete(row, { node });
+        }
+      },
+      moveLayer: async (id, direction) => {
+        // Reorder over the FULL reorderable set (vector + effect),
+        // including hidden layers, sorted by z_index ASC — independent
+        // of the visible-filtered render snapshot the keyboard path
+        // uses. Same pure helpers (computeNewOrder / diffChanges).
+        const items = modelLayers
+          .filter((l) => l.kind === "vector" || l.kind === "effect")
+          .slice()
+          .sort((a, b) => a.z_index - b.z_index)
+          .map((l) => ({ id: l.id }));
+        if (items.length === 0) return;
+        const newOrder = computeNewOrder(items, [id], direction);
+        const changes = diffChanges(items, newOrder);
+        for (const change of changes) {
+          // eslint-disable-next-line no-await-in-loop
+          const result = await dispatchEdit({
+            kind: "reorder",
+            layerId: change.id,
+            zIndex: change.newZIndex
+          });
+          if (!result.ok) {
+            // eslint-disable-next-line no-console
+            console.error("layer reorder failed", result.error);
+            return;
+          }
+        }
+      },
+      uncrop: async (cropLayerId) => {
+        const cropNode = modelLayers.find((l) => l.id === cropLayerId);
+        if (
+          cropNode === undefined ||
+          cropNode.kind !== "vector" ||
+          cropNode.shape.kind !== "crop"
+        ) {
+          return;
+        }
+        // Inverse of the forward crop, applied against the CURRENT
+        // (cropped) canvas: the dispatcher re-normalizes every other
+        // overlay, restores off-origin raster/effect transforms, and
+        // grows the canvas back to the pre-crop dims. (Same formula the
+        // crop-undo path uses — see inverseCropRect / useUndoRedo.)
+        const inverse = inverseCropRect(cropNode.shape.rect);
+        if (inverse === null) return;
+        const previousWidthPx = record.width_px;
+        const previousHeightPx = record.height_px;
+        const result = await dispatchEdit({ kind: "crop", rect: inverse });
+        if (!result.ok) {
+          // eslint-disable-next-line no-console
+          console.error("uncrop failed", result.error);
+          return;
+        }
+        // The crop dispatcher always inserts a fresh crop layer (the
+        // inverse one). Delete it so no spurious "Crop" row lingers in
+        // the panel and the capture is truly uncropped.
+        const listed = await dispatch("layers:list", { captureId: record.id });
+        if (listed.ok) {
+          const leftover = listed.value.find(
+            (l) => l.kind === "vector" && l.shape.kind === "crop"
+          );
+          if (leftover !== undefined) {
+            await dispatchEdit({ kind: "delete", id: leftover.id });
+          }
+        }
+        // Record undo so ⌘Z re-applies the original crop (mirrors
+        // onCropCommit). Undo of this entry re-crops to the prior dims.
+        if (result.value.kind === "crop" && !undoApplyingRef.current) {
+          const newWidthPx = Math.max(
+            1,
+            Math.round(inverse.w * previousWidthPx)
+          );
+          const newHeightPx = Math.max(
+            1,
+            Math.round(inverse.h * previousHeightPx)
+          );
+          recordCropRef.current?.({
+            rect: inverse,
+            previousWidthPx,
+            previousHeightPx,
+            newWidthPx,
+            newHeightPx
+          });
+        }
+      }
+    });
+  }, [
+    onLayersApi,
+    selectedLayerIds,
+    setSelectedLayerIds,
+    modelLayers,
+    record,
+    dispatchEdit,
+    undo,
+    undoApplyingRef,
+    recordCropRef
+  ]);
+  useEffect(() => {
+    if (onLayersApi === undefined) return;
+    return () => onLayersApi(null);
+  }, [onLayersApi]);
 
   // Arrow-key nudge — translate every selected overlay by N source-
   // pixels along the axis. Each dispatch is delete-plus-insert (id

@@ -40,7 +40,7 @@
 
 import { useState, type ReactElement } from "react";
 import type { BlurStyle, CaptureRecord } from "@pwrsnap/shared";
-import { Editor, type ZoomApi } from "../editor/Editor";
+import { Editor, type ZoomApi, type LayersPanelApi } from "../editor/Editor";
 import type { Tool } from "../editor/editor-tools";
 import type { UseEditorToolStateReturn } from "../editor/useEditorToolState";
 import { AppTag } from "../shared/AppIcons";
@@ -91,6 +91,12 @@ export type StageProps = {
    *  hook-mirror effect (post-BlurMenu-fold). */
   readonly blurStyle: BlurStyle;
   readonly onBlurStyleChange: (style: BlurStyle) => void;
+  /** Layers-panel wiring — forwarded straight into the chromeless
+   *  Editor. Library owns the mirrored selection + the published API
+   *  (so the sibling DetailRail's Layers tab can drive the canvas);
+   *  Stage is a pass-through, same as `onZoomChange`. */
+  readonly onSelectionChange: (ids: readonly string[]) => void;
+  readonly onLayersApi: (api: LayersPanelApi | null) => void;
   /** Optional content to render above the stage — used by Reel mode
    *  to host the filmstrip. Focus passes nothing (no filmstrip). */
   readonly aboveStageSlot?: ReactElement;
@@ -151,6 +157,8 @@ function StageBody({
   toolState,
   blurStyle,
   onBlurStyleChange,
+  onSelectionChange,
+  onLayersApi,
   onClose
 }: StageProps & { onClose: () => void }): ReactElement {
   const captureId = record.id;
@@ -309,6 +317,8 @@ function StageBody({
             toolState={toolState}
             blurStyle={blurStyle}
             onZoomChange={setZoom}
+            onSelectionChange={onSelectionChange}
+            onLayersApi={onLayersApi}
           />
         )}
       </div>

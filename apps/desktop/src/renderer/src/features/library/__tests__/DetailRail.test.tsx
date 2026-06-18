@@ -222,7 +222,8 @@ async function renderDetailRail(
   initial: CaptureEnrichment,
   options?: {
     usageDetail?: () => AiRunUsageDetail;
-  }
+  },
+  extraProps?: Record<string, unknown>
 ): Promise<{
   el: HTMLDivElement;
   dispatch: ReturnType<typeof vi.fn>;
@@ -239,7 +240,8 @@ async function renderDetailRail(
         selectedRecordId: record.id,
         returnAnchor: { scrollTop: 0, cellId: record.id }
       },
-      record
+      record,
+      ...extraProps
     }));
   });
   await act(async () => {
@@ -1390,5 +1392,38 @@ describe("AiRunUsageStrip", () => {
     detail.selectedModelLabel = "Composer 2.5";
     await renderStrip(detail);
     expect(stripContainer!.querySelector(".psl__ai-usage-override")).toBeNull();
+  });
+});
+
+describe("DetailRail — Layers tab", () => {
+  const stubLayersApi = {
+    selectLayers: () => undefined,
+    setLayerVisibility: async () => undefined,
+    deleteLayer: async () => undefined,
+    moveLayer: async () => undefined,
+    uncrop: async () => undefined
+  };
+
+  test("shows the Layers tab for an image capture when layersApi is present", async () => {
+    const { el } = await renderDetailRail(enrichment(), undefined, {
+      layersApi: stubLayersApi
+    });
+    expect(el.querySelector('[data-testid="psl-right-tab-layers"]')).not.toBeNull();
+  });
+
+  test("hides the Layers tab when layersApi is null", async () => {
+    const { el } = await renderDetailRail(enrichment(), undefined, {
+      layersApi: null
+    });
+    expect(el.querySelector('[data-testid="psl-right-tab-layers"]')).toBeNull();
+  });
+
+  test("hides the Layers tab for a video capture even with layersApi", async () => {
+    const videoRecord: CaptureRecord = { ...record, kind: "video" };
+    const { el } = await renderDetailRail(enrichment(), undefined, {
+      record: videoRecord,
+      layersApi: stubLayersApi
+    });
+    expect(el.querySelector('[data-testid="psl-right-tab-layers"]')).toBeNull();
   });
 });

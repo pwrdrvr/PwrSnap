@@ -660,6 +660,33 @@ export function inverseTransformOverlayByCrop(
   }
 }
 
+/** Compute the rect that, fed back into the crop dispatcher, REVERSES a
+ *  forward crop of `rect` — i.e. uncrops. The forward crop maps a
+ *  normalized coord `n → (n - x) / w`; the inverse is `n → n*w + x`,
+ *  which the SAME dispatcher reproduces from the rect:
+ *    x' = -x/w,  y' = -y/h,  w' = 1/w,  h' = 1/h
+ *  So `dispatchEdit({ kind: "crop", rect: inverseCropRect(forward) })`
+ *  re-normalizes every overlay back to its pre-crop position, restores
+ *  off-origin raster/effect transforms, and grows the canvas back to
+ *  the pre-crop dims — round-tripping exactly (the same formula the
+ *  crop-undo branch in useUndoRedo uses). The caller then deletes the
+ *  leftover crop layer the dispatcher inserts. Returns null for a
+ *  degenerate rect. */
+export function inverseCropRect(rect: {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}): { x: number; y: number; w: number; h: number } | null {
+  if (rect.w <= 0 || rect.h <= 0) return null;
+  return {
+    x: -rect.x / rect.w,
+    y: -rect.y / rect.h,
+    w: 1 / rect.w,
+    h: 1 / rect.h
+  };
+}
+
 /** Apply a GeometryUpdate to a BundleLayerNode. For vector layers
  *  we update the underlying `shape` (which carries the v1 Overlay
  *  shape verbatim). For blur/highlight effect layers, geometry

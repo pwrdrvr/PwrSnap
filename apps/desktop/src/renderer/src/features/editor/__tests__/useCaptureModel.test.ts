@@ -72,6 +72,7 @@ function broadcast(channel: string, payload: unknown): void {
 
 import {
   useCaptureModel,
+  inverseCropRect,
   type CaptureModel,
   type LayerView
 } from "../useCaptureModel";
@@ -2180,6 +2181,44 @@ describe("useCaptureModel", () => {
     // Specifically: 99 >= 2 → v2 path is reasonable. Verify no crash.
     if (m.kind === "loaded") {
       expect(m.format).toBe(2);
+    }
+  });
+});
+
+describe("inverseCropRect (uncrop math)", () => {
+  test("computes the reversing rect from a forward crop rect", () => {
+    expect(inverseCropRect({ x: 0.1, y: 0.2, w: 0.5, h: 0.4 })).toEqual({
+      x: -0.2, // -0.1 / 0.5
+      y: -0.5, // -0.2 / 0.4
+      w: 2, //  1 / 0.5
+      h: 2.5 //  1 / 0.4
+    });
+  });
+
+  test("returns null for a degenerate rect", () => {
+    expect(inverseCropRect({ x: 0, y: 0, w: 0, h: 1 })).toBeNull();
+    expect(inverseCropRect({ x: 0, y: 0, w: 1, h: -0.5 })).toBeNull();
+  });
+
+  test("forward-then-inverse round-trips a coordinate exactly", () => {
+    // The crop dispatcher normalizes a coord against a rect via
+    // n → (n - rect.x) / rect.w. Applying the forward rect then the
+    // inverse rect must recover the original coord — that's what makes
+    // uncrop reposition every annotation back to where it started.
+    const forward = { x: 0.15, y: 0.3, w: 0.6, h: 0.45 };
+    const inverse = inverseCropRect(forward);
+    if (inverse === null) throw new Error("unreachable");
+    const normalize = (
+      n: number,
+      r: { x?: number; y?: number; w?: number; h?: number },
+      axis: "x" | "y"
+    ): number =>
+      axis === "x" ? (n - (r.x ?? 0)) / (r.w ?? 1) : (n - (r.y ?? 0)) / (r.h ?? 1);
+    for (const n of [0, 0.25, 0.5, 0.95, 1]) {
+      const round = normalize(normalize(n, forward, "x"), inverse, "x");
+      expect(round).toBeCloseTo(n, 10);
+      const roundY = normalize(normalize(n, forward, "y"), inverse, "y");
+      expect(roundY).toBeCloseTo(n, 10);
     }
   });
 });

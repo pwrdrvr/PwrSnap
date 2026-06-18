@@ -1123,7 +1123,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
             // eslint-disable-next-line no-await-in-loop
             const insResult = await dispatch("layers:upsert", {
               captureId,
-              layer: { ...layer, id: nanoid(16), shape: transformed }
+              layer: { ...layer, shape: transformed }
             });
             if (!insResult.ok) {
               // eslint-disable-next-line no-console
@@ -1193,7 +1193,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
               // eslint-disable-next-line no-await-in-loop
               const insResult = await dispatch("layers:upsert", {
                 captureId,
-                layer: { ...raster, id: nanoid(16), transform: newTransform }
+                layer: { ...raster, transform: newTransform }
               });
               if (!insResult.ok) {
                 // eslint-disable-next-line no-console
@@ -1235,7 +1235,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
               // eslint-disable-next-line no-await-in-loop
               const insResult = await dispatch("layers:upsert", {
                 captureId,
-                layer: { ...effect, id: nanoid(16), clip_rect: newClipRect }
+                layer: { ...effect, clip_rect: newClipRect }
               });
               if (!insResult.ok) {
                 // eslint-disable-next-line no-console

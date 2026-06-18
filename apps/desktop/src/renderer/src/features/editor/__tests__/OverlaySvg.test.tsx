@@ -401,7 +401,7 @@ describe("OverlaySvg HighlightGlyph — opacity", () => {
     expect(highlight).not.toBeNull();
     expect(highlight!.getAttribute("fill")).toBe("#22c55e");
     expect(highlight!.getAttribute("fill-opacity")).toBe("0.3");
-    expect((highlight as SVGRectElement).style.mixBlendMode).toBe("multiply");
+    expect((highlight as SVGRectElement).style.mixBlendMode).toBe("");
   });
 
   test("live highlight draft clamps stale opaque opacity to marker range", async () => {

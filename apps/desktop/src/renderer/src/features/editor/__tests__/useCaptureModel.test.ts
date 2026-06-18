@@ -570,6 +570,7 @@ describe("useCaptureModel", () => {
       if (layer.kind !== "vector" || layer.shape.kind !== "text") {
         throw new Error("text layer shape preserved");
       }
+      expect(layer.id).toBe("ly_text");
       // 0.95 / 0.6 = 1.5833... — past the new canvas, but preserved.
       expect(layer.shape.point.x).toBeCloseTo(0.95 / 0.6, 4);
       expect(layer.shape.point.y).toBeCloseTo(0.5, 6);
@@ -703,6 +704,7 @@ describe("useCaptureModel", () => {
     if (rasterUpsertCall !== undefined) {
       const layer = (rasterUpsertCall[1] as { layer: BundleLayerNode }).layer;
       if (layer.kind !== "raster") throw new Error("kind preserved");
+      expect(layer.id).toBe("ly_raster");
       // transform = [a, b, c, d, tx, ty]; the translation lives at [4]/[5].
       expect(layer.transform[4]).toBeCloseTo(-500, 3);
       expect(layer.transform[5]).toBeCloseTo(-100, 3);
@@ -830,6 +832,10 @@ describe("useCaptureModel", () => {
       .map((c) => (c[1] as { layer: BundleLayerNode }).layer)
       .filter((layer): layer is BundleLayerNode & { kind: "effect" } => layer.kind === "effect");
     expect(effectUpserts.length).toBe(2);
+    expect(effectUpserts.map((layer) => layer.id).sort()).toEqual([
+      "ly_blur",
+      "ly_highlight"
+    ]);
     for (const layer of effectUpserts) {
       expect(layer.clip_rect).toEqual({ x: 100, y: 200, w: 200, h: 100 });
       if (layer.effect.type === "blur") {

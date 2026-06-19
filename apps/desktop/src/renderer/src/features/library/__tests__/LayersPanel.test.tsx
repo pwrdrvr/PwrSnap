@@ -77,6 +77,15 @@ function crop(id = "ly_crop", z = 1000): BundleLayerNode {
     shape: { kind: "crop", rect: { x: 0.1, y: 0.1, w: 0.6, h: 0.6 } }
   };
 }
+// The no-op "inverse crop" the dispatcher leaves behind after a crop is
+// undone — its rect expands (w/h > 1). The panel must hide it.
+function cropExpandArtifact(id = "ly_crop_expand", z = 1500): BundleLayerNode {
+  return {
+    ...common(id, z, ROOT),
+    kind: "vector",
+    shape: { kind: "crop", rect: { x: -0.2, y: -0.2, w: 1.6, h: 1.6 } }
+  };
+}
 
 function loadedModel(layers: BundleLayerNode[]): unknown {
   return {
@@ -152,6 +161,18 @@ describe("LayersPanel", () => {
       "layer-row-ly_crop",
       "layer-row-ly_raster"
     ]);
+  });
+
+  test("hides no-op expand-crop artifacts (left behind by crop undo) but keeps real crops", async () => {
+    const el = await renderPanel(
+      [rootGroup(), raster(), arrow(), crop(), cropExpandArtifact()],
+      makeApi()
+    );
+    const rows = Array.from(
+      el.querySelectorAll<HTMLElement>('[data-testid^="layer-row-"]')
+    ).map((r) => r.dataset.testid);
+    expect(rows).toContain("layer-row-ly_crop");
+    expect(rows).not.toContain("layer-row-ly_crop_expand");
   });
 
   test("base raster trash is disabled; arrow + crop are not", async () => {

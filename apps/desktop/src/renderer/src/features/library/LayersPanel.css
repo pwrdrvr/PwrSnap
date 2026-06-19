@@ -26,7 +26,6 @@
   user-select: none;
 }
 
-.psl-layers__row[onclick],
 .psl-layers__row.is-selectable {
   cursor: pointer;
 }

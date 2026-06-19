@@ -153,6 +153,20 @@ function isCropLayer(node: BundleLayerNode): boolean {
   return node.kind === "vector" && node.shape.kind === "crop";
 }
 
+/** A crop layer whose rect EXPANDS (w > 1 or h > 1) isn't a real crop —
+ *  it's the no-op "inverse crop" the dispatcher leaves behind when a
+ *  crop is undone (crop-undo dispatches an expanding rect; the
+ *  dispatcher always inserts a crop layer for it). A real user crop
+ *  only ever reduces, so its rect stays within [0,1] on both axes.
+ *  These artifacts are invisible in the composite, so we hide them
+ *  from the panel — otherwise the user sees a phantom "Crop" row on an
+ *  uncropped image, and clicking its trash would RE-crop. */
+function isSpuriousCropArtifact(node: BundleLayerNode): boolean {
+  if (node.kind !== "vector" || node.shape.kind !== "crop") return false;
+  const { w, h } = node.shape.rect;
+  return w > 1 || h > 1;
+}
+
 export function LayersPanel({
   captureId,
   selectedLayerIds,
@@ -166,7 +180,7 @@ export function LayersPanel({
   const rows = useMemo<BundleLayerNode[]>(() => {
     if (model.kind !== "loaded") return [];
     return model.layers
-      .filter((l) => l.kind !== "group")
+      .filter((l) => l.kind !== "group" && !isSpuriousCropArtifact(l))
       .slice()
       .sort((a, b) => b.z_index - a.z_index);
   }, [model]);
@@ -200,6 +214,7 @@ export function LayersPanel({
             aria-selected={selected}
             className={[
               "psl-layers__row",
+              selectable ? "is-selectable" : "",
               selected ? "is-selected" : "",
               visible ? "" : "is-hidden"
             ]

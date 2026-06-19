@@ -3200,8 +3200,12 @@ function EditorLoaded({
   /** Phase 3.5 — geometry/style updates land as delete-plus-insert
    *  (id changes on every cycle). EditorLoaded reads this setter to
    *  re-anchor the selection on the new id after a successful
-   *  updateGeometry / updateOverlay dispatch. */
-  setSelectedLayerIds: (ids: readonly string[]) => void;
+   *  updateGeometry / updateOverlay dispatch. Typed as a full React
+   *  dispatcher (not just `(ids) => void`) so the Layers-panel API can
+   *  use the functional updater form — that lets its `selectLayers`
+   *  toggle read the latest selection without closing over
+   *  `selectedLayerIds`, keeping the published API identity stable. */
+  setSelectedLayerIds: React.Dispatch<React.SetStateAction<readonly string[]>>;
   /** Like `setSelectedLayerIds` but also registers each id with the
    *  outer in-flight set so the stale-id cleanup in the outer Editor
    *  doesn't wipe a just-set selection while the
@@ -3481,11 +3485,16 @@ function EditorLoaded({
     if (onLayersApi === undefined) return;
     onLayersApi({
       selectLayers: (id, additive) => {
-        setSelectedLayerIds(
+        // Functional update so this closure doesn't capture
+        // `selectedLayerIds` — that keeps the published API identity
+        // stable across selection changes (no per-selection republish /
+        // Library re-render). Canvas → panel selection still flows via
+        // `onSelectionChange` below.
+        setSelectedLayerIds((prev) =>
           additive
-            ? selectedLayerIds.includes(id)
-              ? selectedLayerIds.filter((x) => x !== id)
-              : [...selectedLayerIds, id]
+            ? prev.includes(id)
+              ? prev.filter((x) => x !== id)
+              : [...prev, id]
             : [id]
         );
       },
@@ -3610,7 +3619,6 @@ function EditorLoaded({
     });
   }, [
     onLayersApi,
-    selectedLayerIds,
     setSelectedLayerIds,
     modelLayers,
     record,

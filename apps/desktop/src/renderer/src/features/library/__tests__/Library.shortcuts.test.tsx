@@ -274,6 +274,22 @@ describe("Library grid select vs edit", () => {
     expect(hasStage()).toBe(true);
   });
 
+  test("the real click→click→dblclick sequence lands in the editor", async () => {
+    // Browsers fire click, click, dblclick for a double-click: the first
+    // click SELECTs (history:replace), the dblclick EDITs. Verify the
+    // sequence ends in the editor rather than getting stuck on select.
+    await renderLibrary();
+
+    await act(async () => {
+      cellEl()?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      cellEl()?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      cellEl()?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+
+    expect(hasStage()).toBe(true);
+  });
+
   test("Enter on the selected tile opens the editor", async () => {
     await renderLibrary();
 

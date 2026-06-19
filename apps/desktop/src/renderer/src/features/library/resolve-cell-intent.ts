@@ -20,9 +20,7 @@ export type CellTrigger =
   /** Enter on the selected tile → EDIT */
   | "enter"
   /** the orange hover Edit CTA → EDIT */
-  | "edit-cta"
-  /** editor:open IPC (Codex / undo-restore / external) → EDIT */
-  | "ipc-open";
+  | "edit-cta";
 
 /** A grid cell narrowed to a closed union BEFORE the resolver sees it, so
  *  the resolver stays exhaustive. The live grid model is a flat `Capture`
@@ -46,8 +44,7 @@ export type CellIntent =
 const EDIT_TRIGGERS: ReadonlySet<CellTrigger> = new Set<CellTrigger>([
   "dblclick",
   "enter",
-  "edit-cta",
-  "ipc-open"
+  "edit-cta"
 ]);
 
 export function resolveCellIntent(trigger: CellTrigger, cell: GridCell): CellIntent {

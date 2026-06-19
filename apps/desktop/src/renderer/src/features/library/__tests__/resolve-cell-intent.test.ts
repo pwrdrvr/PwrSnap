@@ -10,8 +10,8 @@ import {
   type GridCell
 } from "../resolve-cell-intent";
 
-const ALL_TRIGGERS: CellTrigger[] = ["click", "dblclick", "enter", "edit-cta", "ipc-open"];
-const EDIT_TRIGGERS: CellTrigger[] = ["dblclick", "enter", "edit-cta", "ipc-open"];
+const ALL_TRIGGERS: CellTrigger[] = ["click", "dblclick", "enter", "edit-cta"];
+const EDIT_TRIGGERS: CellTrigger[] = ["dblclick", "enter", "edit-cta"];
 
 describe("resolveCellIntent — project cells", () => {
   const project: GridCell = { kind: "project", projectId: "proj-1" };

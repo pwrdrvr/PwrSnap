@@ -1,5 +1,6 @@
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -315,6 +316,16 @@ function CellThumb({
   }
   return <Thumb c={capture} />;
 }
+
+// Memoized so a grid re-render driven by SELECT (single-click → the
+// is-selected ring + inspector) skips re-rendering the thumbnail — the
+// dominant per-cell cost. Props are referentially stable across a
+// selection re-render: `capture` comes from the memoized `grouped`,
+// `record`/`project`/`projectCoverRecord` from the memoized
+// `fixtureBacking`, and `width` is a constant. (The cheaper cell chrome
+// still re-renders; collapsing that to only the two affected cells is a
+// tracked follow-up.)
+const CellThumbMemo = memo(CellThumb);
 
 /**
  * Video Library card thumbnail. Renders a silent source preview on
@@ -1775,6 +1786,18 @@ export function Library() {
   // tab lands with the cart-zip work in a later phase.)
   const showGridInspector =
     view.kind === "grid" && selectedRecord !== null && !cartIsOpenInGrid;
+  // The right rail is "showing" whenever it occupies the column: always
+  // in focus/reel, and in Grid only when the inspector is up. Drives the
+  // data-right column-width attribute (undefined until settings hydrate so
+  // it doesn't paint at the wrong width on cold start).
+  const railShowing = view.kind !== "grid" || showGridInspector;
+  const railDataRight = !settingsHydrated
+    ? undefined
+    : railShowing
+      ? rightPinned
+        ? "pinned"
+        : "collapsed"
+      : undefined;
 
   // Records that match the current active filter, mapped from the
   // (already-filtered) `visible` fixture list. Drives ←/→ navigation
@@ -2337,7 +2360,10 @@ export function Library() {
       isProject: c.kind === "project",
       projectId: c.kind === "project" && c.projectId !== undefined ? c.projectId : null,
       hasBackingRecord: record !== null,
-      isTrashed: record?.deleted_at != null
+      // Use the view-level trash signal (same one the Enter handler
+      // reads) so click and keyboard agree on edit-eligibility, and so
+      // the check can't lag behind a record ref.
+      isTrashed: isTrashView
     });
     const intent = resolveCellIntent(trigger, cell);
     switch (intent.kind) {
@@ -2630,26 +2656,12 @@ export function Library() {
       className="psl"
       data-mode={view.kind}
       data-left={leftState}
-      // `data-right` controls the right column width (38px collapsed
-      // vs 360px pinned) AND the footer/overflow rules. It's emitted
-      // whenever the rail is showing: always in focus/reel, and in Grid
-      // when a capture is selected (showGridInspector). When nothing is
-      // selected in Grid the column collapses to 0. Skipped until
-      // settings:read resolves so the rail doesn't paint at the wrong
-      // width for ~50ms on cold start.
-      data-right={
-        !settingsHydrated
-          ? undefined
-          : view.kind === "grid"
-            ? showGridInspector
-              ? rightPinned
-                ? "pinned"
-                : "collapsed"
-              : undefined
-            : rightPinned
-              ? "pinned"
-              : "collapsed"
-      }
+      // `data-right` controls the right column width (38px collapsed vs
+      // 360px pinned) AND the footer/overflow rules. Computed as
+      // `railDataRight` above: pinned/collapsed whenever the rail is
+      // showing (focus/reel always, Grid only when a capture is
+      // selected), else undefined so the column collapses to 0.
+      data-right={railDataRight}
       // `data-cart="open"` widens the right column in GRID mode so the
       // standalone cart rail has room. In focus/reel the cart lives in
       // the DetailRail tab strip and the column is already 360px, so
@@ -4060,7 +4072,7 @@ function CellRow({
             onMouseEnter={() => preloadFullRes(record ?? null)}
           >
             <div className="psl__cell-thumb">
-              <CellThumb
+              <CellThumbMemo
                 capture={c}
                 record={record}
                 project={project}

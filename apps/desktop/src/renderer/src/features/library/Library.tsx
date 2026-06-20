@@ -806,10 +806,17 @@ export function Library() {
       const evt = payload as SettingsChangedEvent;
       applyAiSettings(evt.settings);
       setConfirmBeforeTrash(evt.settings.library.confirmBeforeTrash);
-      // Cross-window sync: another window (or a future Settings control)
-      // changed the grid zoom. Apply it; our own writes echo back here and
-      // are idempotent (snap to the same level).
-      setGridZoomState(snapGridZoom(evt.settings.library.gridZoom));
+      // Don't re-apply gridZoom from the broadcast once the user has
+      // pinched in THIS window. Every pinch step writes, and each write
+      // echoes a broadcast back; a stale echo (e.g. 220) arriving after a
+      // newer local step (280) would momentarily revert the displayed zoom
+      // and reflow the grid mid-pinch. Local state owns the value here.
+      // Mirrors the rail, which likewise doesn't re-apply detailRail on
+      // broadcast. (One Library window is the norm, so cross-window sync of
+      // this preference isn't worth the flicker.)
+      if (!userTouchedGridZoomRef.current) {
+        setGridZoomState(snapGridZoom(evt.settings.library.gridZoom));
+      }
       void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
         if (result.ok) setCodexAvailable(codexAvailableInSnapshot(result.value));
       });
@@ -3459,7 +3466,21 @@ export function Library() {
 // scrollbar tracks correctly.
 
 const HEADER_ESTIMATE_PX = 60;
-const CELL_ROW_ESTIMATE_PX = 280; // one row of cells (cell aspect 16:10 + meta)
+// Per-cell-row height estimate for the virtualizer, derived from the zoom
+// level rather than a fixed constant: the thumbnail is 16:10, plus a fixed
+// chunk of metadata/padding/gap chrome below it. measureElement corrects
+// the exact height after first paint, but a zoom-aware estimate keeps the
+// pre-measure layout and scrollbar close across the ~3× zoom range — a flat
+// 280 (tuned for the 180px level) badly over-/under-shot the extremes.
+// `cellMinWidth` is a lower bound for the real column width (1fr ≥ min), so
+// this slightly under-estimates; that just renders a couple extra rows
+// until measurement, which is the safe direction. At the 180px default this
+// yields ~280, matching the historical constant.
+const CELL_THUMB_ASPECT = 10 / 16; // thumbnail height / width
+const CELL_ROW_CHROME_PX = 168; // meta + padding + gap below the thumbnail
+function cellRowEstimatePx(cellMinWidth: number): number {
+  return Math.round(cellMinWidth * CELL_THUMB_ASPECT) + CELL_ROW_CHROME_PX;
+}
 // The cell min-width is no longer a constant — it's the sticky grid-zoom
 // level (settings.library.gridZoom, default GRID_ZOOM_DEFAULT=180, which
 // matches the historical CSS `minmax(180px, 1fr)`), threaded in as the
@@ -3539,6 +3560,11 @@ function useCellsPerRow(
   cellMinWidth: number
 ): number {
   const [cellsPerRow, setCellsPerRow] = useState(4);
+  // Read the live zoom level through a ref so the ResizeObserver attaches
+  // ONCE (to the scroll element) instead of being torn down + recreated on
+  // every pinch step. A separate effect recomputes when the zoom changes.
+  const cellMinWidthRef = useRef(cellMinWidth);
+  const computeRef = useRef<() => void>(() => undefined);
   useLayoutEffect(() => {
     const el = scrollElement.current;
     if (el === null) return;
@@ -3550,17 +3576,24 @@ function useCellsPerRow(
       // focus mode.
       if (width <= 0) return;
       const inner = width - 2 * GRID_HORIZONTAL_PADDING;
-      const next = Math.max(1, Math.floor((inner + CELL_GAP) / (cellMinWidth + CELL_GAP)));
+      const next = Math.max(
+        1,
+        Math.floor((inner + CELL_GAP) / (cellMinWidthRef.current + CELL_GAP))
+      );
       setCellsPerRow((prev) => (prev === next ? prev : next));
     };
+    computeRef.current = compute;
     compute();
     const ro = new ResizeObserver(compute);
     ro.observe(el);
     return () => ro.disconnect();
-    // cellMinWidth is the zoom level — when the user pinches, re-run so the
-    // column count recomputes immediately (re-creating the observer is
-    // cheap and recomputes synchronously via the leading compute()).
-  }, [scrollElement, cellMinWidth]);
+  }, [scrollElement]);
+  // Zoom changed (pinch): recompute the column count immediately, reusing
+  // the already-attached observer's compute (no observer churn).
+  useLayoutEffect(() => {
+    cellMinWidthRef.current = cellMinWidth;
+    computeRef.current();
+  }, [cellMinWidth]);
   return cellsPerRow;
 }
 
@@ -3717,11 +3750,12 @@ function VirtualizedGrid({
     [headerIndexes]
   );
 
+  const cellRowEstimate = cellRowEstimatePx(cellMinWidth);
   const virtualizer = useVirtualizer({
     count: flatRows.length,
     getScrollElement: () => scrollElement.current,
     estimateSize: (i) =>
-      flatRows[i]?.kind === "header" ? HEADER_ESTIMATE_PX : CELL_ROW_ESTIMATE_PX,
+      flatRows[i]?.kind === "header" ? HEADER_ESTIMATE_PX : cellRowEstimate,
     overscan: 5,
     rangeExtractor
     // NOTE: do NOT set `useScrollendEvent: true`. That opts into the

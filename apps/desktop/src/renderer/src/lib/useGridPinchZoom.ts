@@ -38,7 +38,10 @@ const GESTURE_PINCH_RATIO = 1.15;
 const GESTURE_TAIL_GRACE_MS = 200;
 
 function now(): number {
-  return typeof performance !== "undefined" ? performance.now() : 0;
+  // Fall back to Date.now() (not 0): a constant 0 would make
+  // `now() - gestureEndedAt` stay below the grace threshold forever after
+  // the first gesture, permanently swallowing the wheel path.
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
 }
 
 /**

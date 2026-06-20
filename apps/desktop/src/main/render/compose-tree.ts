@@ -5,8 +5,9 @@
 // throughout; single PNG/WEBP encode at root) but extends it to:
 //
 //   • Multiple raster sources via RasterLayer.source_ref.sha256
-//     — bytes extracted from the bundle's sources/<sha>.png with
-//     sha256 content-integrity verify.
+//     — bytes extracted from the bundle's sources/<sha>.png, or from
+//     the verified per-capture cache during the paste/drop repack
+//     debounce window, with sha256 content-integrity verify.
 //   • Vector shapes (arrow / rect / text / highlight / step / crop)
 //     reusing v1's SVG-rasterize discipline via Overlay schemas.
 //   • Effect layers (blur / highlight) that sample-below from the
@@ -32,7 +33,7 @@ import {
 } from "@pwrsnap/shared";
 
 import { listLayerTree } from "../persistence/layers-repo";
-import { readSourceFromBundle } from "../persistence/bundle-store";
+import { readSourceForCapture } from "../persistence/bundle-store";
 import { getCacheRoot } from "../persistence/paths";
 import { getMainLogger } from "../log";
 
@@ -302,7 +303,7 @@ async function renderNode(
 
 /**
  * Composite a raster layer onto the accumulator. Reads source bytes
- * from the bundle (with sha256 verify), applies the layer's
+ * from the bundle/cache (with sha256 verify), applies the layer's
  * translation (transform tx/ty), composites at that position with
  * the layer's opacity.
  *
@@ -327,7 +328,7 @@ async function compositeRasterOntoAccumulator(
    *  renderWidthPx — spread across the rest of the canvas. */
   renderScale: number
 ): Promise<Buffer> {
-  const sourceBytes = await readSourceFromBundle(req.bundlePath, node.source_ref.sha256);
+  const sourceBytes = await readSourceForCapture(req.captureId, req.bundlePath, node.source_ref.sha256);
   // CANVAS-coord position. Scaled below into render coords for placement
   // on the accumulator.
   const tx = Math.round(node.transform[4] * renderScale);

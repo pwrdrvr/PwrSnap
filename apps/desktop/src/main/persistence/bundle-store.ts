@@ -58,6 +58,13 @@ import { readBundleFilenameTimestampZone } from "./bundle-filename-settings";
 
 const log = getMainLogger("pwrsnap:bundle-store");
 
+export class BundleSourceMissingError extends Error {
+  constructor() {
+    super("bundle-store: v2 bundle does not contain the requested source entry");
+    this.name = "BundleSourceMissingError";
+  }
+}
+
 /**
  * Refuse to read or extract a bundle file whose on-disk shape would
  * let an attacker redirect us off-path: a symlink (could point
@@ -558,9 +565,7 @@ export async function readSourceFromBundle(
     if (entry === undefined) {
       // Generic message — does not echo the requested sha, which is
       // attacker-controllable when the bundle came from outside.
-      throw new Error(
-        `bundle-store: v2 bundle does not contain the requested source entry`
-      );
+      throw new BundleSourceMissingError();
     }
     const bytes = await readEntryToBuffer(handle.zipFile, entry);
     const computed = createHash("sha256").update(bytes).digest("hex");
@@ -576,6 +581,37 @@ export async function readSourceFromBundle(
   } finally {
     handle.zipFile.close();
   }
+}
+
+/**
+ * Read a raster source for a live capture. The bundle is the durable
+ * source of truth, but newly pasted/dropped raster layers are written
+ * to the per-capture cache first and only folded into the bundle by
+ * the debounced repack. Renderers must be able to consume that
+ * cache-only source during the debounce window, and repack must be
+ * able to read it so the bundle can become durable.
+ */
+export async function readSourceForCapture(
+  captureId: string,
+  bundlePath: string,
+  sha: string
+): Promise<Buffer> {
+  try {
+    return await readSourceFromBundle(bundlePath, sha);
+  } catch (cause) {
+    if (!(cause instanceof BundleSourceMissingError)) {
+      throw cause;
+    }
+  }
+
+  const cacheSourcePath = getCacheSourcePath(captureId).replace(/source\.png$/, `${sha}.png`);
+  const bytes = await readFile(cacheSourcePath);
+  const computed = createHash("sha256").update(bytes).digest("hex");
+  if (computed !== sha) {
+    log.warn("bundle-store: cached source content-integrity mismatch", { captureId });
+    throw new Error("bundle-store: cached source content-hash mismatch");
+  }
+  return bytes;
 }
 
 // ---------------------------------------------------------------------------
@@ -948,7 +984,7 @@ async function runRepackV2(captureId: string): Promise<void> {
     for (const node of layers) {
       if (node.kind === "raster" && !sources.has(node.source_ref.sha256)) {
         try {
-          const bytes = await readSourceFromBundle(record.bundle_path, node.source_ref.sha256);
+          const bytes = await readSourceForCapture(captureId, record.bundle_path, node.source_ref.sha256);
           sources.set(node.source_ref.sha256, bytes);
         } catch (cause) {
           log.warn("bundle-store: v2 repack failed to read source", {

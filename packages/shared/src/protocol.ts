@@ -2743,8 +2743,9 @@ export type Commands = {
   "clipboard:copyText": { req: { text: string }; res: void };
   /** v2 only: serialize selected layers (or the entire live tree if
    *  layerIds omitted) into a clipboard payload — private UTI for
-   *  PwrSnap-to-PwrSnap fidelity, standard PNG fallback for everyone
-   *  else (Slack, Messages, Mail). */
+   *  PwrSnap-to-PwrSnap fidelity. Standard rendered image copy goes
+   *  through clipboard:copy; Electron cannot atomically co-write an
+   *  arbitrary private UTI and image bytes. */
   "clipboard:copyLayerFragment": {
     req: { captureId: string; layerIds?: string[] };
     res: { layerCount: number; sourceCount: number; bytes: number };

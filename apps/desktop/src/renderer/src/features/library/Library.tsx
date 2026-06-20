@@ -23,6 +23,7 @@ import type {
 } from "@pwrsnap/shared";
 import {
   EVENT_CHANNELS,
+  GRID_ZOOM_DEFAULT,
   resolveSizzleProjectCoverCaptureId,
   type SettingsChangedEvent,
   type SizzleProject
@@ -59,6 +60,8 @@ import { useCart, useCartIsEmpty } from "./CartContext";
 import { CartPanel } from "./CartPanel";
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
+import { snapGridZoom, stepGridZoom } from "../../lib/gridZoom";
+import { useGridPinchZoom } from "../../lib/useGridPinchZoom";
 import { registerCaptureUndoFallback } from "../../lib/editMenuBridge";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
 import { useHotkeys } from "../shared/useHotkeys";
@@ -712,6 +715,21 @@ export function Library() {
     rightPinnedRef.current = rightPinned;
   }, [rightPinned]);
 
+  // Sticky Library-grid thumbnail size (target cell min-width px). Pinch-
+  // to-zoom on the grid steps this; it persists to settings.library.gridZoom
+  // and snaps to a fixed ladder of levels. `gridZoomRef` mirrors the state
+  // so the pinch handler can compute the next level without subscribing
+  // (keeps the handler identity stable → listeners attach once).
+  // `userTouchedGridZoomRef` guards the same click-before-hydrate race as
+  // the rail: a pinch within the settings:read round-trip must not be
+  // clobbered by the resolved (older) value.
+  const [gridZoom, setGridZoomState] = useState<number>(GRID_ZOOM_DEFAULT);
+  const gridZoomRef = useRef<number>(GRID_ZOOM_DEFAULT);
+  useEffect(() => {
+    gridZoomRef.current = gridZoom;
+  }, [gridZoom]);
+  const userTouchedGridZoomRef = useRef<boolean>(false);
+
   const [aiEnabled, setAiEnabledState] = useState<boolean>(false);
   const [aiConsentAcceptedAt, setAiConsentAcceptedAtState] = useState<string | null>(null);
   const [aiToggleBusy, setAiToggleBusy] = useState<boolean>(false);
@@ -767,6 +785,9 @@ export function Library() {
       if (result.ok) {
         setConfirmBeforeTrash(result.value.library.confirmBeforeTrash);
       }
+      if (result.ok && !userTouchedGridZoomRef.current) {
+        setGridZoomState(snapGridZoom(result.value.library.gridZoom));
+      }
       if (result.ok && !userTouchedAiRef.current) {
         applyAiSettings(result.value);
       }
@@ -785,6 +806,10 @@ export function Library() {
       const evt = payload as SettingsChangedEvent;
       applyAiSettings(evt.settings);
       setConfirmBeforeTrash(evt.settings.library.confirmBeforeTrash);
+      // Cross-window sync: another window (or a future Settings control)
+      // changed the grid zoom. Apply it; our own writes echo back here and
+      // are idempotent (snap to the same level).
+      setGridZoomState(snapGridZoom(evt.settings.library.gridZoom));
       void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
         if (result.ok) setCodexAvailable(codexAvailableInSnapshot(result.value));
       });
@@ -868,6 +893,21 @@ export function Library() {
     void dispatch("settings:write", {
       library: { detailRail: { pinned: next } }
     });
+  }, []);
+
+  // Step the grid zoom one level (pinch in/out). Reads + writes through
+  // `gridZoomRef` so the callback identity is stable (the pinch listeners
+  // attach once). No-op at the ladder ends; only persists on a real change
+  // so a pinch that's already maxed/minned doesn't spam settings writes.
+  // dispatch runs OUTSIDE any setState updater (StrictMode double-invokes
+  // updaters in dev — see the rail setters' note).
+  const stepGridZoomBy = useCallback((direction: 1 | -1): void => {
+    const next = stepGridZoom(gridZoomRef.current, direction);
+    if (next === gridZoomRef.current) return;
+    userTouchedGridZoomRef.current = true;
+    gridZoomRef.current = next;
+    setGridZoomState(next);
+    void dispatch("settings:write", { library: { gridZoom: next } });
   }, []);
 
   const writeAiEnabled = useCallback((next: boolean, consentAcceptedAt: string | null): void => {
@@ -1792,6 +1832,11 @@ export function Library() {
   //   • Stack-semantics restore on Focus → Grid (see
   //     `gridReturnScrollTopRef` below).
   const gridScrollRef = useRef<HTMLDivElement | null>(null);
+  // Pinch-to-zoom on the grid: each discrete snap steps the sticky zoom
+  // level. The grid-wrap is display:none in focus/reel mode, so these
+  // listeners are dormant there and the editor's own pinch-zoom (its
+  // window-level handlers) takes over without conflict.
+  useGridPinchZoom(gridScrollRef, stepGridZoomBy);
   // Saved scrollTop captured the moment Focus opens. Restored on
   // Focus → Grid via the useLayoutEffect below.
   //
@@ -3001,6 +3046,7 @@ export function Library() {
           <VirtualizedGrid
             grouped={grouped}
             scrollElement={gridScrollRef}
+            cellMinWidth={gridZoom}
             selectedRecordId={selectedRecordId}
             fixtureBacking={fixtureBacking}
             projectCoverRecordsById={projectCoverRecordsById}
@@ -3414,7 +3460,10 @@ export function Library() {
 
 const HEADER_ESTIMATE_PX = 60;
 const CELL_ROW_ESTIMATE_PX = 280; // one row of cells (cell aspect 16:10 + meta)
-const CELL_MIN_WIDTH = 180; // matches CSS minmax(180px, 1fr)
+// The cell min-width is no longer a constant — it's the sticky grid-zoom
+// level (settings.library.gridZoom, default GRID_ZOOM_DEFAULT=180, which
+// matches the historical CSS `minmax(180px, 1fr)`), threaded in as the
+// `cellMinWidth` prop and stepped by pinch-to-zoom.
 const CELL_GAP = 12;
 const CELL_GAP_DAY_END = 18; // .psl__grid padding-bottom in the original single-grid layout
 const GRID_HORIZONTAL_PADDING = 18;
@@ -3447,6 +3496,9 @@ type LibraryRow =
 type VirtualizedGridProps = {
   grouped: DayGroup[];
   scrollElement: React.RefObject<HTMLDivElement | null>;
+  /** Target minimum cell width in px (the sticky grid-zoom level). The
+   *  grid fits `floor(width / cellMinWidth)` columns at this width. */
+  cellMinWidth: number;
   selectedRecordId: string | null;
   fixtureBacking: FixtureBackedRecords;
   projectCoverRecordsById: Map<string, CaptureRecord>;
@@ -3482,7 +3534,10 @@ type VirtualizedGridProps = {
  *  Stack semantics — opening/closing focus shouldn't reflow the
  *  grid at all. Treat zero-width measurements as "no information"
  *  and keep the last computed value. */
-function useCellsPerRow(scrollElement: React.RefObject<HTMLDivElement | null>): number {
+function useCellsPerRow(
+  scrollElement: React.RefObject<HTMLDivElement | null>,
+  cellMinWidth: number
+): number {
   const [cellsPerRow, setCellsPerRow] = useState(4);
   useLayoutEffect(() => {
     const el = scrollElement.current;
@@ -3495,14 +3550,17 @@ function useCellsPerRow(scrollElement: React.RefObject<HTMLDivElement | null>): 
       // focus mode.
       if (width <= 0) return;
       const inner = width - 2 * GRID_HORIZONTAL_PADDING;
-      const next = Math.max(1, Math.floor((inner + CELL_GAP) / (CELL_MIN_WIDTH + CELL_GAP)));
+      const next = Math.max(1, Math.floor((inner + CELL_GAP) / (cellMinWidth + CELL_GAP)));
       setCellsPerRow((prev) => (prev === next ? prev : next));
     };
     compute();
     const ro = new ResizeObserver(compute);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [scrollElement]);
+    // cellMinWidth is the zoom level — when the user pinches, re-run so the
+    // column count recomputes immediately (re-creating the observer is
+    // cheap and recomputes synchronously via the leading compute()).
+  }, [scrollElement, cellMinWidth]);
   return cellsPerRow;
 }
 
@@ -3577,6 +3635,7 @@ function LibraryProjectContextMenu({
 function VirtualizedGrid({
   grouped,
   scrollElement,
+  cellMinWidth,
   selectedRecordId,
   fixtureBacking,
   projectCoverRecordsById,
@@ -3595,7 +3654,7 @@ function VirtualizedGrid({
   restoreCaptureAction,
   purgeCaptureAction
 }: VirtualizedGridProps) {
-  const cellsPerRow = useCellsPerRow(scrollElement);
+  const cellsPerRow = useCellsPerRow(scrollElement, cellMinWidth);
 
   // Flatten day-groups → 1-D row list. Each header gets one row;
   // each day's items are sliced into rows of cellsPerRow. Memoized

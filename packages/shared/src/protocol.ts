@@ -1941,7 +1941,30 @@ export type LibrarySettings = {
    *  (still recoverable via the Undo toast / ⌘Z and the Trash view). Re-
    *  enable from Settings → Storage & retention. */
   confirmBeforeTrash: boolean;
+  /** Sticky Library-grid thumbnail size: the *target minimum thumbnail
+   *  width in px*. The grid fits as many equal columns as fit at this
+   *  width (matching the old `repeat(auto-fill, minmax(180px, 1fr))`),
+   *  so a larger value = bigger thumbnails / fewer columns. Pinch-to-zoom
+   *  on the grid steps this through {@link GRID_ZOOM_LEVELS}. Stored as a
+   *  raw px number rather than a level index so the value survives changes
+   *  to the level ladder (readers snap to the nearest level). Clamped to
+   *  [{@link GRID_ZOOM_MIN}, {@link GRID_ZOOM_MAX}]. */
+  gridZoom: number;
 };
+
+/** Discrete Library-grid zoom levels — target thumbnail min-widths in px,
+ *  ascending (smallest thumbnails / most columns → largest / fewest).
+ *  Pinch-to-zoom snaps between adjacent entries. The contract (this list,
+ *  the default, and the bounds) lives in shared so the main-process
+ *  settings service/validator and the renderer agree on one source of
+ *  truth. The snap/step *behavior* lives in the renderer
+ *  (apps/desktop/src/renderer/src/lib/gridZoom.ts). */
+export const GRID_ZOOM_LEVELS = [120, 150, 180, 220, 280, 360] as const;
+/** Default grid thumbnail min-width — matches the historical CSS
+ *  `minmax(180px, 1fr)`. Must be one of {@link GRID_ZOOM_LEVELS}. */
+export const GRID_ZOOM_DEFAULT = 180;
+export const GRID_ZOOM_MIN = GRID_ZOOM_LEVELS[0];
+export const GRID_ZOOM_MAX = GRID_ZOOM_LEVELS[GRID_ZOOM_LEVELS.length - 1];
 
 // ---- Chat substrate types (Library Chat — Phase 0) ---------------------
 //
@@ -2126,6 +2149,9 @@ export type SettingsPatch = {
   library?: {
     detailRail?: Partial<LibrarySidebarSettings>;
     confirmBeforeTrash?: boolean;
+    /** Sticky grid thumbnail size (target min-width px). See
+     *  {@link LibrarySettings.gridZoom}. */
+    gridZoom?: number;
   };
 };
 

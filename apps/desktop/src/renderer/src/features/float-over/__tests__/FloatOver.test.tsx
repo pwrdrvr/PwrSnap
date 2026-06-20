@@ -86,7 +86,7 @@ const baseSettings: Settings = {
     matchingText: { enabled: true },
     sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
   },
-  library: { detailRail: { pinned: true, lastSelectedTab: "info" }, confirmBeforeTrash: true }
+  library: { detailRail: { pinned: true, lastSelectedTab: "info" }, confirmBeforeTrash: true, gridZoom: 180 }
 };
 
 const imageRecord: CaptureRecord = {

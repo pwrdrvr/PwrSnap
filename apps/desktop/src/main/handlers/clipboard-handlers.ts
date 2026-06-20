@@ -16,12 +16,14 @@
 //
 //   • clipboard:copyLayerFragment — v2 only: serializes selected
 //     layers + referenced sources into a private UTI buffer
-//     (`com.pwrdrvr.pwrsnap.layer-fragment`), co-writes a standard
-//     PNG so non-PwrSnap consumers (Slack, Messages, Mail) get a
-//     usable image.
+//     (`com.pwrdrvr.pwrsnap.layer-fragment`). Standard image copy is
+//     handled by clipboard:copy; Electron cannot atomically write an
+//     arbitrary private UTI and image bytes in one clipboard update.
 //
 //   • clipboard:pasteLayerFragment — v2 only: reads the private UTI
-//     buffer if present; falls back to the standard PNG image.
+//     buffer if present. Standard image paste is handled by
+//     editor:pasteImageAsLayer so one Cmd+V cannot insert both a
+//     layer fragment and a raster image.
 //     Enforces 5 layers of defense against hostile payloads:
 //
 //       1. Hard size cap (CLIPBOARD_FRAGMENT_MAX_BYTES = 64 MiB)
@@ -41,8 +43,7 @@
 
 import { clipboard, nativeImage } from "electron";
 import { createHash } from "node:crypto";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import sharp from "sharp";
 import { nanoid } from "nanoid";
@@ -58,14 +59,12 @@ import {
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getCaptureById } from "../persistence/captures-repo";
-import { ensureEffectiveSrcPath } from "../persistence/source-store";
 import {
-  readSourceFromBundle,
+  readSourceForCapture,
   scheduleRepack
 } from "../persistence/bundle-store";
-import { renderViaCoordinator } from "../render/coordinator";
 import { insertLayerTreeForCapture, listLayerTree } from "../persistence/layers-repo";
-import { getCacheSourcePath } from "../persistence/paths";
+import { materializePendingSourceForCapture } from "../persistence/pending-source-store";
 import { notifyClipboardChanged } from "../clipboard-events";
 import { mapVideoResolveError, resolveVideoExport } from "../recording/video-export-resolver";
 import { getMainLogger } from "../log";
@@ -392,7 +391,7 @@ export function registerClipboardHandlers(): void {
       // out — if the bundle was tampered with, the copy refuses.
       const sourceRefs: ClipboardLayerFragmentV1Type["source_refs"] = [];
       for (const sha of referencedShas) {
-        const bytes = await readSourceFromBundle(record.bundle_path, sha);
+        const bytes = await readSourceForCapture(record.id, record.bundle_path, sha);
         sourceRefs.push({ sha256: sha, png_base64: bytes.toString("base64") });
       }
 
@@ -421,34 +420,8 @@ export function registerClipboardHandlers(): void {
       // Write the private UTI buffer for PwrSnap-to-PwrSnap fidelity.
       clipboard.writeBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI, buf);
 
-      // Co-write a standard PNG so non-PwrSnap consumers get a usable
-      // image when pasting elsewhere. We render the current composite
-      // at source-equivalent width.
-      try {
-        const renderResult = await renderViaCoordinator({
-          captureId: record.id,
-          srcPath: await ensureEffectiveSrcPath(record),
-          imageWidthPx: record.width_px,
-          imageHeightPx: record.height_px,
-          width: record.width_px,
-          format: "png"
-        });
-        const pngBuf = await readFile(renderResult.cachePath);
-        const image = nativeImage.createFromBuffer(pngBuf);
-        if (!image.isEmpty()) {
-          clipboard.writeImage(image);
-        }
-      } catch (cause) {
-        // Non-fatal: the private UTI buffer is already on the
-        // clipboard. Just log.
-        log.warn("clipboard:copyLayerFragment: PNG fallback write failed", {
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
-      }
-
-      // Notify subscribers — the UTI buffer is always written; the
-      // PNG fallback may have succeeded or not. Either way the OS
-      // clipboard changed under us.
+      // Notify subscribers — the private UTI buffer was written, so
+      // the OS clipboard changed under us.
       notifyClipboardChanged();
 
       log.info("copied layer fragment to clipboard", {
@@ -579,20 +552,11 @@ export function registerClipboardHandlers(): void {
         verifiedSources.set(ref.sha256, bytes);
       }
 
-      // All defenses passed. Materialize new sources into the target
-      // capture's cache (so subsequent renders find them without
-      // round-tripping through readSourceFromBundle).
+      // All defenses passed. Materialize new sources into durable
+      // pending storage before inserting layers that reference them.
+      // The debounced repack folds these into the bundle.
       for (const [sha, bytes] of verifiedSources) {
-        // Cache under the receiving capture's id. This isn't strictly
-        // content-addressable by capture, but storing under the
-        // receiving id keeps cleanup tied to the capture's lifecycle.
-        // Future: a shared content-addressed cache.
-        const cachePath = getCacheSourcePath(req.captureId);
-        await mkdir(dirname(cachePath), { recursive: true });
-        // Use the existing cache slot if the sha matches; else write
-        // alongside under the sha as the filename.
-        const sourceCachePath = cachePath.replace(/source\.png$/, `${sha}.png`);
-        await writeFile(sourceCachePath, bytes);
+        await materializePendingSourceForCapture(req.captureId, sha, bytes);
       }
 
       // Insert the pasted layers with fresh ids so they don't collide
@@ -637,83 +601,9 @@ export function registerClipboardHandlers(): void {
       });
     }
 
-    // No private UTI on the clipboard. Fall back to standard PNG —
-    // create a new raster layer from the clipboard image bytes.
-    const image = clipboard.readImage();
-    if (image.isEmpty()) {
-      return err({
-        kind: "clipboard",
-        code: "no_image_or_fragment",
-        message: "clipboard has neither a PwrSnap fragment nor a PNG image"
-      });
-    }
-    try {
-      const pngBuf = image.toPNG();
-      // Defense (4) applies here too — though the image came from
-      // Electron's NativeImage rather than an attacker JSON, decode
-      // probing keeps the contract uniform.
-      const meta = await sharp(pngBuf).metadata();
-      const w = meta.width ?? 0;
-      const h = meta.height ?? 0;
-      if (w === 0 || h === 0 || w > MAX_IMAGE_DIM_PX || h > MAX_IMAGE_DIM_PX) {
-        return err({
-          kind: "validation",
-          code: "source_invalid_dimensions",
-          message: "clipboard image dimensions invalid or exceed cap"
-        });
-      }
-      const sha = createHash("sha256").update(pngBuf).digest("hex");
-      const cachePath = getCacheSourcePath(req.captureId).replace(/source\.png$/, `${sha}.png`);
-      await mkdir(dirname(cachePath), { recursive: true });
-      await writeFile(cachePath, pngBuf);
-
-      const now = new Date().toISOString();
-      const rasterId = nanoid(16);
-      const rasterLayer: BundleLayerNode = {
-        id: rasterId,
-        parent_id: req.parentId ?? null,
-        kind: "raster",
-        source_ref: { kind: "embedded", sha256: sha },
-        natural_width_px: w,
-        natural_height_px: h,
-        name: "Pasted Image",
-        visible: true,
-        locked: false,
-        opacity: 1,
-        blend_mode: "normal",
-        transform: [1, 0, 0, 1, 0, 0],
-        z_index: 0,
-        source: "user",
-        ai_run_id: null,
-        applied_at: now,
-        rejected_at: null,
-        superseded_by: null,
-        created_at: now
-      };
-      insertLayerTreeForCapture(req.captureId, [rasterLayer]);
-      scheduleRepack(req.captureId);
-
-      log.info("pasted PNG fallback as raster layer", {
-        captureId: req.captureId,
-        rasterId,
-        widthPx: w,
-        heightPx: h
-      });
-
-      return ok({
-        insertedLayerIds: [rasterId],
-        fallbackUsedPng: true
-      });
-    } catch (cause) {
-      log.error("clipboard:pasteLayerFragment PNG fallback failed", {
-        captureId: req.captureId,
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
-      return err({
-        kind: "clipboard",
-        code: "paste_failed",
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
-    }
+    return ok({
+      insertedLayerIds: [],
+      fallbackUsedPng: false
+    });
   });
 }

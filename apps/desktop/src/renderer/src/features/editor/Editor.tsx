@@ -110,7 +110,7 @@ import {
   type DraftShape,
   type DraftText
 } from "./editor-types";
-import { usePasteImage, type PasteImagePosition } from "./usePasteImage";
+import type { PasteImagePosition } from "./usePasteImage";
 import { useDropImage } from "./useDropImage";
 import { computeNewOrder, diffChanges } from "./z-order";
 import "./editor.css";
@@ -2159,6 +2159,48 @@ export function Editor({
     [effectiveToolState]
   );
 
+  // -------------------- Paste/drop image as raster layer ----------
+  //
+  // Finder drop and OS-image paste failures surface a transient
+  // notice. Cmd+V is owned by the copy/paste handler below so layer
+  // fragments, in-memory layers, and standard images are mutually
+  // exclusive for a single keypress.
+  const [pasteNotice, setPasteNotice] =
+    useState<{ text: string; tone: "error" | "info" } | null>(null);
+  useEffect(() => {
+    if (pasteNotice === null) return;
+    const timer = setTimeout(() => setPasteNotice(null), 3500);
+    return () => clearTimeout(timer);
+  }, [pasteNotice]);
+
+  const formatPasteError = useCallback((error: { code: string; message: string }): string => {
+    switch (error.code) {
+      case "v1_capture_use_v2":
+        return "Only v2 captures support multi-image";
+      case "no_image":
+        return "Clipboard doesn't contain an image";
+      case "image_too_large":
+        return "Image too large to paste (max 32 MiB)";
+      case "image_invalid_dimensions":
+        return "Image dimensions invalid or exceed cap";
+      case "image_decode_failed":
+        return "Image failed to decode";
+      case "image_read_failed":
+        return "Image bytes unreadable";
+      case "unsafe_symlink":
+      case "unsafe_not_regular_file":
+      case "unsafe_privileged_path":
+      case "unsafe_stat_failed":
+        return "Invalid file";
+      case "drop_not_image":
+        return "Only image files supported";
+      case "drop_path_unavailable":
+        return "Dropped file path unavailable";
+      default:
+        return error.message;
+    }
+  }, []);
+
   /** Copy / paste / duplicate helpers. All three operate on the
    *  current `selectedLayerIds` snapshot at call time.
    *
@@ -2166,12 +2208,9 @@ export function Editor({
    *    `clipboardRef`. Cheap; no IPC. Replaces any previous clipboard
    *    contents (consistent with OS clipboard semantics).
    *
-   *  • pasteFromClipboard — for each clipboard entry, translate by a
-   *    small offset (so the paste is visually distinct from the
-   *    original) and persist as a new overlay. Awaits all persist
-   *    dispatches, collects the new ids, and re-anchors the selection
-   *    on the pasted layers so the user can immediately continue
-   *    manipulating them.
+   *  • pasteFromClipboard — one Cmd+V owner. It tries a private
+   *    PwrSnap layer fragment first, then the in-memory same-editor
+   *    layer clipboard, then a standard OS image as a raster layer.
    *
    *  • duplicateSelected — equivalent to "copy + paste without
    *    touching the clipboard." Useful when the user wants a quick
@@ -2183,10 +2222,6 @@ export function Editor({
    *    original, so back-to-back pastes overlap. A future pass can
    *    bump a per-clipboard counter so each paste lands at a fresh
    *    offset (Cleanshot-style).
-   *  - In-memory only — no cross-capture / cross-editor paste. The
-   *    main-side `clipboard:copyLayerFragment` private-UTI flow is
-   *    intentionally separate; wiring the renderer to it ships in a
-   *    follow-up so the in-app gesture lands first.
    *  - Each paste produces one undo entry per pasted layer. Wrap in
    *    a coalescing bracket for "undo restores all pastes" in a
    *    future polish pass. */
@@ -2268,8 +2303,10 @@ export function Editor({
     // and hasn't touched the OS clipboard — in-memory has the data,
     // no IPC needed).
     //
-    // The OS call is async; on no-fragment + no-image, it returns
-    // `insertedLayerIds: []` which signals "fall back to in-memory".
+    // The OS call is async; when there is no private PwrSnap fragment,
+    // it returns `insertedLayerIds: []` which signals "fall through".
+    // Fallthrough order is deliberate: in-memory layer copies beat a
+    // generic image on the clipboard, and generic image paste is last.
     if (model.kind === "loaded") {
       void (async (): Promise<void> => {
         const result = await dispatch("clipboard:pasteLayerFragment", {
@@ -2277,16 +2314,50 @@ export function Editor({
           parentId: null
         });
         if (result.ok && result.value.insertedLayerIds.length > 0) {
-          // OS clipboard had a fragment (or PNG fallback inserted a
-          // raster layer). Select what landed so the user can
-          // immediately nudge / re-style / delete it.
+          // OS clipboard had a PwrSnap fragment. Select what landed
+          // so the user can immediately nudge / re-style / delete it.
           setSelectionTrustingDispatch(result.value.insertedLayerIds);
           return;
         }
-        // OS clipboard had nothing actionable — fall back to the
-        // in-memory clipboard so a same-capture copy → paste still
-        // works even if the OS clipboard is empty.
-        void pasteOverlaysWithOffset(clipboardRef.current);
+        if (clipboardRef.current.length > 0) {
+          // OS clipboard had no PwrSnap fragment — fall back to the
+          // in-memory clipboard so same-capture copy → paste still
+          // works if another app touched the OS clipboard.
+          void pasteOverlaysWithOffset(clipboardRef.current);
+          return;
+        }
+        // Last resort: paste a standard OS clipboard image as a raster
+        // layer. This is intentionally owned by the same Cmd+V flow so
+        // a single keystroke cannot insert both a PwrSnap fragment and
+        // a rasterized clipboard image.
+        const canvas = canvasRef.current;
+        let position: PasteImagePosition | undefined;
+        if (canvas !== null) {
+          const rect = canvas.getBoundingClientRect();
+          position = {
+            xn: 0.5,
+            yn: 0.5,
+            canvasPx: { x: rect.width / 2, y: rect.height / 2 }
+          };
+        }
+        const req: {
+          captureId: string;
+          positionXn?: number;
+          positionYn?: number;
+        } = { captureId };
+        if (position !== undefined) {
+          req.positionXn = position.xn;
+          req.positionYn = position.yn;
+        }
+        const imagePasteResult = await dispatch("editor:pasteImageAsLayer", req);
+        if (imagePasteResult.ok) {
+          setSelectionTrustingDispatch([imagePasteResult.value.layerId]);
+        } else {
+          setPasteNotice({
+            text: formatPasteError(imagePasteResult.error),
+            tone: "error"
+          });
+        }
       })();
       return;
     }
@@ -2675,12 +2746,9 @@ export function Editor({
   // Outlives the current selection: after copy, the user can click
   // away, then Cmd+V to paste at the original geometry + offset.
   //
-  // Scope: in-memory, this editor instance only. The Phase 4-ish
-  // cross-capture clipboard fragment (private UTI via
-  // `clipboard:copyLayerFragment` / `pasteLayerFragment`) is a
-  // separate layer that PwrSnap already has in main-side handlers —
-  // wiring the renderer end of that is deferred so the in-app
-  // gesture lands first.
+  // Scope: in-memory, this editor instance only. Cross-capture /
+  // cross-editor paste goes through the private OS clipboard fragment
+  // (`clipboard:copyLayerFragment` / `pasteLayerFragment`).
   const clipboardRef = useRef<readonly Overlay[]>([]);
 
   if (model.kind === "loading") {
@@ -2854,6 +2922,9 @@ export function Editor({
       rasterTranslateXPx={rasterTranslateXPx}
       rasterTranslateYPx={rasterTranslateYPx}
       onRequestEditOverlay={onRequestEditOverlay}
+      pasteNotice={pasteNotice}
+      setPasteNotice={setPasteNotice}
+      formatPasteError={formatPasteError}
     />
   );
 }
@@ -2909,7 +2980,10 @@ function EditorLoaded({
   sourceHeightPx,
   rasterTranslateXPx,
   rasterTranslateYPx,
-  onRequestEditOverlay
+  onRequestEditOverlay,
+  pasteNotice,
+  setPasteNotice,
+  formatPasteError
 }: {
   record: CaptureRecord;
   overlays: OverlayRow[];
@@ -3105,6 +3179,11 @@ function EditorLoaded({
    *  body; commit replaces the overlay's body rather than creating
    *  a new one. */
   onRequestEditOverlay: (overlay: OverlayRow) => void;
+  pasteNotice: { text: string; tone: "error" | "info" } | null;
+  setPasteNotice: React.Dispatch<
+    React.SetStateAction<{ text: string; tone: "error" | "info" } | null>
+  >;
+  formatPasteError: (error: { code: string; message: string }) => string;
 }) {
   // Live ref to the editor's source `<img>` element. BlurOverlays'
   // pixelate preview reads pixels off this image via canvas drawImage
@@ -4031,68 +4110,6 @@ function EditorLoaded({
     zoom.canvasStyle?.transform
   ]);
 
-  // -------------------- Phase 5 paste/drop image as raster layer ---
-  //
-  // Multi-image paste + Finder drop. v2 captures only. ⌘V on the canvas
-  // routes through usePasteImage; HTML5 drag-drop on the canvas-wrap
-  // routes through useDropImage. Both surface a transient notice on
-  // success/failure via `pasteNotice` state; v1 captures get a
-  // friendly "Only v2 captures support multi-image" message rather
-  // than a silent no-op.
-  //
-  // The "Pasting…" affordance is positioned by `pastingAt` (canvas-px
-  // coords). Cleared when the dispatch resolves or rejects.
-  const [pastingAt, setPastingAt] =
-    useState<PasteImagePosition | null>(null);
-  const [pasteNotice, setPasteNotice] =
-    useState<{ text: string; tone: "error" | "info" } | null>(null);
-  // Auto-clear the notice after a short window so it doesn't linger.
-  useEffect(() => {
-    if (pasteNotice === null) return;
-    const timer = setTimeout(() => setPasteNotice(null), 3500);
-    return () => clearTimeout(timer);
-  }, [pasteNotice]);
-
-  const formatPasteError = useCallback((error: { code: string; message: string }): string => {
-    // Map a handful of bus codes to user-friendly copy; fall back to
-    // the raw message for unrecognized codes (defensive against a
-    // future code we haven't surfaced yet).
-    switch (error.code) {
-      case "v1_capture_use_v2":
-        return "Only v2 captures support multi-image";
-      case "no_image":
-        return "Clipboard doesn't contain an image";
-      case "image_too_large":
-        return "Image too large to paste (max 32 MiB)";
-      case "image_invalid_dimensions":
-        return "Image dimensions invalid or exceed cap";
-      case "image_decode_failed":
-        return "Image failed to decode";
-      case "image_read_failed":
-        return "Image bytes unreadable";
-      case "unsafe_symlink":
-      case "unsafe_not_regular_file":
-      case "unsafe_privileged_path":
-      case "unsafe_stat_failed":
-        return "Invalid file";
-      case "drop_not_image":
-        return "Only image files supported";
-      case "drop_path_unavailable":
-        return "Dropped file path unavailable";
-      default:
-        return error.message;
-    }
-  }, []);
-
-  const paste = usePasteImage({
-    captureId: record.id,
-    bundleFormatVersion: record.bundle_format_version,
-    onPastingChange: setPastingAt,
-    onError: (error) => {
-      setPasteNotice({ text: formatPasteError(error), tone: "error" });
-    }
-  });
-
   const drop = useDropImage({
     captureId: record.id,
     bundleFormatVersion: record.bundle_format_version,
@@ -4101,47 +4118,6 @@ function EditorLoaded({
       setPasteNotice({ text: formatPasteError(error), tone: "error" });
     }
   });
-
-  // Bind ⌘V on the document. We're already inside the editor's
-  // keyboard event chain (the outer Editor function handles tool
-  // shortcuts), but those handlers explicitly skip ⌘-modified keys.
-  // Adding a dedicated listener here keeps the paste path independent
-  // of the tool-shortcut handler.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      // ⌘V (macOS) / Ctrl+V (others). Both modifiers in the same
-      // condition because Electron normalizes macOS Command to metaKey.
-      if (e.key !== "v") return;
-      if (!(e.metaKey || e.ctrlKey)) return;
-      if (e.shiftKey || e.altKey) return;
-      // Don't hijack ⌘V from text inputs / contenteditable elements —
-      // the user is pasting into a text field, not the canvas.
-      const target = e.target as HTMLElement | null;
-      if (
-        target?.tagName === "INPUT" ||
-        target?.tagName === "TEXTAREA" ||
-        target?.isContentEditable === true
-      ) {
-        return;
-      }
-      e.preventDefault();
-      // Default position: canvas center. The keyboard-triggered path
-      // doesn't have a click point.
-      const canvas = canvasRef.current;
-      let position: PasteImagePosition | undefined;
-      if (canvas !== null) {
-        const rect = canvas.getBoundingClientRect();
-        position = {
-          xn: 0.5,
-          yn: 0.5,
-          canvasPx: { x: rect.width / 2, y: rect.height / 2 }
-        };
-      }
-      void paste.pasteFromClipboard(position);
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [paste, canvasRef]);
 
   // -------------------- ToolStylePopover anchor + open state -------
   //
@@ -4582,23 +4558,6 @@ function EditorLoaded({
             >
               + Add label
             </button>
-          )}
-          {/* Phase 5 "Pasting…" affordance. Lives at the click point
-              while the worker decodes + writes. Auto-clears when the
-              dispatch resolves. */}
-          {pastingAt !== null && (
-            <div
-              className="pse-pasting-affordance"
-              data-testid="paste-pasting-affordance"
-              style={{
-                position: "absolute",
-                left: pastingAt.canvasPx.x,
-                top: pastingAt.canvasPx.y,
-                transform: "translate(-50%, -50%)"
-              }}
-            >
-              Pasting…
-            </div>
           )}
         </div>
         {/* Phase 5 paste/drop notice. Surfaces user-friendly errors

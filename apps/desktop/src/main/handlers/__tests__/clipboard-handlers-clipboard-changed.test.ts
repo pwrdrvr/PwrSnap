@@ -76,8 +76,12 @@ const { openDatabase, closeDatabase, getDb } = await import("../../persistence/d
 const { packBundleV2, buildCompositeThumbnail } = await import(
   "../../persistence/bundle-store"
 );
+const { materializePendingSourceForCapture } = await import(
+  "../../persistence/pending-source-store"
+);
 const { insertLayerTreeForCapture } = await import("../../persistence/layers-repo");
 const { clipboardEvents } = await import("../../clipboard-events");
+const { clipboard } = await import("electron");
 
 const CANVAS_W = 100;
 const CANVAS_H = 80;
@@ -108,6 +112,10 @@ let changedSpy: ReturnType<typeof vi.fn<(...args: unknown[]) => void>>;
 beforeEach(() => {
   changedSpy = vi.fn<(...args: unknown[]) => void>();
   clipboardEvents.on("changed", changedSpy);
+  vi.mocked(clipboard.write).mockClear();
+  vi.mocked(clipboard.writeText).mockClear();
+  vi.mocked(clipboard.writeImage).mockClear();
+  vi.mocked(clipboard.writeBuffer).mockClear();
 });
 
 afterEach(() => {
@@ -282,12 +290,7 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     expect(changedSpy).toHaveBeenCalledTimes(2);
   });
 
-  test("clipboard:copyLayerFragment also fires 'changed' (private-UTI + PNG fallback are one signal)", async () => {
-    // copyLayerFragment writes BOTH a private-UTI buffer AND a fallback
-    // PNG image in the same dispatch. The notification semantics ARE
-    // "OS clipboard changed under us" — one signal per dispatch, not
-    // one per write call. A future bug splitting the two into separate
-    // notifications would surface here as `toHaveBeenCalledTimes(2)`.
+  test("clipboard:copyLayerFragment writes the private fragment without overwriting it with image fallback", async () => {
     const captureId = await seedSimpleV2Capture();
     const result = await bus.dispatch(
       "clipboard:copyLayerFragment",
@@ -299,6 +302,8 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
       changedSpy,
       "expected clipboardEvents 'changed' to fire exactly once per copyLayerFragment dispatch"
     ).toHaveBeenCalledTimes(1);
+    expect(clipboard.writeBuffer).toHaveBeenCalledTimes(1);
+    expect(clipboard.writeImage).not.toHaveBeenCalled();
   });
 });
 
@@ -345,6 +350,67 @@ describe("image preset exports clamp to source width", () => {
     expect(toPosixPath(high.value.path).endsWith("/source.png")).toBe(false);
 
     const metadata = await sharp(high.value.path).metadata();
+    expect(metadata.width).toBe(CANVAS_W);
+    expect(metadata.height).toBe(CANVAS_H);
+  });
+
+  test("renders a pending pasted raster source after render-cache is cleared", async () => {
+    const captureId = await seedSimpleV2Capture();
+    const pastedPng = await sharp({
+      create: {
+        width: 24,
+        height: 18,
+        channels: 4,
+        background: { r: 0, g: 128, b: 255, alpha: 1 }
+      }
+    })
+      .png()
+      .toBuffer();
+    const pastedSha = createHash("sha256").update(pastedPng).digest("hex");
+    await materializePendingSourceForCapture(captureId, pastedSha, pastedPng);
+    await rm(join(workDir, "render-cache"), { recursive: true, force: true });
+    await mkdir(join(workDir, "render-cache"), { recursive: true });
+
+    const root = getDb()
+      .prepare<[string], { id: string }>(
+        `SELECT id FROM layers WHERE capture_id = ? AND kind = 'group' AND parent_id IS NULL`
+      )
+      .get(captureId);
+    if (root === undefined) throw new Error("expected root group");
+    const now = new Date().toISOString();
+    insertLayerTreeForCapture(captureId, [
+      {
+        id: "ras_cacheonly_xx",
+        parent_id: root.id,
+        kind: "raster",
+        source_ref: { kind: "embedded", sha256: pastedSha },
+        natural_width_px: 24,
+        natural_height_px: 18,
+        name: "Pasted Image",
+        visible: true,
+        locked: false,
+        opacity: 1,
+        blend_mode: "normal",
+        transform: [1, 0, 0, 1, 10, 10],
+        z_index: 1000,
+        source: "user",
+        ai_run_id: null,
+        applied_at: now,
+        rejected_at: null,
+        superseded_by: null,
+        created_at: now
+      }
+    ]);
+
+    const result = await bus.dispatch(
+      "clipboard:copy-path",
+      { captureId, preset: "high" },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error.message);
+
+    const metadata = await sharp(result.value.path).metadata();
     expect(metadata.width).toBe(CANVAS_W);
     expect(metadata.height).toBe(CANVAS_H);
   });

@@ -15,6 +15,7 @@ import { dirname, extname, join } from "node:path";
 import { nanoid } from "nanoid";
 import sharp from "sharp";
 
+import { deletePendingSourcesForCapture } from "./pending-source-store";
 import { getCacheRoot, getCacheSourcePath, getCapturesRoot, getTrashRoot } from "./paths";
 import { getMainLogger } from "../log";
 
@@ -365,7 +366,8 @@ export async function purgeCacheForCapture(captureId: string): Promise<void> {
   const videoDir = join(cacheRoot, "video", captureId);
   await Promise.allSettled([
     rm(imageDir, { recursive: true, force: true }),
-    rm(videoDir, { recursive: true, force: true })
+    rm(videoDir, { recursive: true, force: true }),
+    deletePendingSourcesForCapture(captureId)
   ]);
 }
 

@@ -22,6 +22,7 @@
 //     called
 
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, mkdtempSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,7 +77,11 @@ vi.mock("../../workers/paste-image-worker-client", () => ({
 // handler's writeFile lands somewhere we can clean up.
 vi.mock("../../persistence/paths", () => ({
   getCacheSourcePath: (captureId: string): string =>
-    join(tmpDataRoot, captureId, "source.png")
+    join(tmpDataRoot, "render-cache", captureId, "source.png"),
+  getPendingSourceCaptureDir: (captureId: string): string =>
+    join(tmpDataRoot, "pending-sources", captureId),
+  getPendingSourcePath: (captureId: string, sha: string): string =>
+    join(tmpDataRoot, "pending-sources", captureId, `${sha}.png`)
 }));
 
 const { bus } = await import("../../command-bus");
@@ -87,6 +92,9 @@ const { clipboard } = await import("electron");
 
 registerEditorHandlers();
 registerLayersHandlers();
+
+const WORKER_PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+const WORKER_PNG_SHA = createHash("sha256").update(WORKER_PNG_BYTES).digest("hex");
 
 function applyAllMigrations(): void {
   const dir = new URL("../../persistence/migrations/", import.meta.url);
@@ -184,10 +192,10 @@ beforeEach(() => {
   tmpDataRoot = mkdtempSync(join(tmpdir(), "pwrsnap-editor-test-"));
   workerResponse = {
     ok: true,
-    sha256: "a".repeat(64),
+    sha256: WORKER_PNG_SHA,
     widthPx: 100,
     heightPx: 80,
-    pngBytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47])
+    pngBytes: new Uint8Array(WORKER_PNG_BYTES)
   };
   setClipboardImage(null);
 });
@@ -294,9 +302,12 @@ describe("editor:pasteImageAsLayer", () => {
       .get(result.value.layerId);
     expect(row?.kind).toBe("raster");
     const data = JSON.parse(row?.data ?? "{}");
-    expect(data.source_ref?.sha256).toBe("a".repeat(64));
+    expect(data.source_ref?.sha256).toBe(WORKER_PNG_SHA);
     expect(data.natural_width_px).toBe(100);
     expect(data.natural_height_px).toBe(80);
+    expect(
+      readFileSync(join(tmpDataRoot, "pending-sources", "cap_d", `${WORKER_PNG_SHA}.png`))
+    ).toEqual(WORKER_PNG_BYTES);
   });
 });
 

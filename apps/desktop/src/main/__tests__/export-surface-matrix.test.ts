@@ -16,7 +16,7 @@
 //
 //   SURFACES = clipboard:copy-image, clipboard:copy-path,
 //              capture:prepareDrag
-//   VARIANTS = v1-unedited, v1-annotated, v2-unedited, v2-annotated
+//   VARIANTS = v2-unedited, v2-annotated
 //
 // For each cell:
 //   1. Seed the capture (real bundle on disk, real captures row in
@@ -408,10 +408,7 @@ async function pngHasRedInOverlayRegion(pngBytes: Buffer): Promise<boolean> {
 interface Surface {
   name: string;
   /** Optional applicability filter. Returning false for a variant
-   *  skips the cell entirely — used by v2-only surfaces (e.g.,
-   *  `clipboard:copyLayerFragment`) so v1 variants don't run against
-   *  a handler that's documented to refuse them. Default = always
-   *  applies. */
+   *  skips the cell entirely. Default = always applies. */
   appliesTo?(variantName: string): boolean;
   /** Drive the surface; return the PNG bytes it produced. */
   run(captureId: string): Promise<Buffer>;
@@ -467,45 +464,6 @@ const SURFACES: readonly Surface[] = [
       // `iconPath` (the smaller drag preview). The high-res path is
       // the user-facing payload; verify pixels there.
       return readFileSync(result.value.path);
-    }
-  },
-  {
-    name: "clipboard:copyLayerFragment",
-    // v2-only by design: the handler returns `v1_capture` for v1
-    // rows. Skipping v1 variants is cleaner than asserting the
-    // error (which would be testing the validation gate, not the
-    // composite-bytes-on-clipboard behavior the matrix exists for).
-    appliesTo: (variantName) => variantName.startsWith("v2"),
-    run: async (captureId) => {
-      // Drive the verb with no `layerIds` so the whole tree gets
-      // serialized — matches the most common "copy this PwrSnap"
-      // user flow.
-      const result = await bus.dispatch(
-        "clipboard:copyLayerFragment",
-        { captureId },
-        { principal: "ipc" }
-      );
-      if (!result.ok) {
-        throw new Error(`copyLayerFragment failed: ${result.error.code}`);
-      }
-      // copyLayerFragment writes BOTH a private-UTI buffer (the
-      // PwrSnap-to-PwrSnap fragment) AND a fallback PNG image (so
-      // non-PwrSnap consumers get usable bytes). The PNG is what
-      // a generic paste-target would see; the matrix asserts the
-      // PNG contains the user's annotations. The writeBuffer call
-      // is a separate, independent check — see the dedicated test
-      // below the matrix.
-      const writeImage = [...clipboardCaptured]
-        .reverse()
-        .find((c) => c.kind === "writeImage");
-      if (writeImage === undefined || writeImage.kind !== "writeImage") {
-        throw new Error(
-          `expected writeImage in clipboard captures, got ${JSON.stringify(
-            clipboardCaptured
-          )}`
-        );
-      }
-      return writeImage.bytes;
     }
   }
 ];
@@ -644,10 +602,12 @@ describe("clipboard:copy-file export filename", () => {
 });
 
 // ---------------------------------------------------------------------
-// Additional pin for `clipboard:copyLayerFragment`'s WriteBuffer side
-// (the private-UTI fragment payload). The matrix above asserts the
-// PNG fallback that non-PwrSnap consumers see; this confirms the
-// PwrSnap-to-PwrSnap fragment ALSO lands on the clipboard correctly.
+// Additional pin for `clipboard:copyLayerFragment`'s private-UTI
+// fragment payload. This verb intentionally does NOT write a standard
+// image fallback: Electron clipboard writes are not additive, so a
+// second image write would clear the private UTI and break PwrSnap-to-
+// PwrSnap paste. Standard rendered image copy goes through
+// `clipboard:copy`.
 // Without this, the writeBuffer interceptor in the electron mock
 // would be untested — a regression where writeBuffer stopped being
 // called for some reason would slip through silently.
@@ -683,6 +643,9 @@ describe("clipboard:copyLayerFragment — private UTI fragment payload", () => {
     expect(Array.isArray(parsed.layers)).toBe(true);
     expect(parsed.layers.length).toBeGreaterThan(0);
     expect(Array.isArray(parsed.source_refs)).toBe(true);
+    expect(
+      clipboardCaptured.some((entry) => entry.kind === "writeImage")
+    ).toBe(false);
   });
 });
 

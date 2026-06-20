@@ -12,6 +12,7 @@ import { AppUpdateBanner } from "./features/update/AppUpdateBanner";
 import { RendererErrorBoundary } from "./RendererErrorBoundary";
 import { useAppearanceSync } from "./lib/useAppearance";
 import { useEditMenuBridge } from "./lib/editMenuBridge";
+import { usePreventBrowserZoom } from "./lib/usePreventBrowserZoom";
 
 type Stage =
   | "library"
@@ -97,6 +98,16 @@ export function App() {
   // reachable wherever the editor is mounted (the Library window's Focus
   // mode). See ./lib/editMenuBridge.ts.
   useEditMenuBridge();
+
+  // Suppress Chromium's native visual page-zoom (trackpad pinch /
+  // ctrl+wheel) on every surface. The preload arms visual zoom so the
+  // editor receives the pinch gesture stream; without this guard a
+  // pinch over the Library grid (or any non-editor surface) magnifies
+  // the whole window — sidebar and title bar scroll off-screen and
+  // don't come back. The editor's own canvas zoom is unaffected: it
+  // reads the same events and never relies on the browser default.
+  // See ./lib/usePreventBrowserZoom.ts.
+  usePreventBrowserZoom();
 
   const app = (() => {
     if (STAGE === "tray") {

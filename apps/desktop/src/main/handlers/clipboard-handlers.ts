@@ -43,8 +43,7 @@
 
 import { clipboard, nativeImage } from "electron";
 import { createHash } from "node:crypto";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import sharp from "sharp";
 import { nanoid } from "nanoid";
@@ -65,7 +64,7 @@ import {
   scheduleRepack
 } from "../persistence/bundle-store";
 import { insertLayerTreeForCapture, listLayerTree } from "../persistence/layers-repo";
-import { getCacheSourcePath } from "../persistence/paths";
+import { materializePendingSourceForCapture } from "../persistence/pending-source-store";
 import { notifyClipboardChanged } from "../clipboard-events";
 import { mapVideoResolveError, resolveVideoExport } from "../recording/video-export-resolver";
 import { getMainLogger } from "../log";
@@ -553,20 +552,11 @@ export function registerClipboardHandlers(): void {
         verifiedSources.set(ref.sha256, bytes);
       }
 
-      // All defenses passed. Materialize new sources into the target
-      // capture's cache (so subsequent renders find them without
-      // round-tripping through readSourceFromBundle).
+      // All defenses passed. Materialize new sources into durable
+      // pending storage before inserting layers that reference them.
+      // The debounced repack folds these into the bundle.
       for (const [sha, bytes] of verifiedSources) {
-        // Cache under the receiving capture's id. This isn't strictly
-        // content-addressable by capture, but storing under the
-        // receiving id keeps cleanup tied to the capture's lifecycle.
-        // Future: a shared content-addressed cache.
-        const cachePath = getCacheSourcePath(req.captureId);
-        await mkdir(dirname(cachePath), { recursive: true });
-        // Use the existing cache slot if the sha matches; else write
-        // alongside under the sha as the filename.
-        const sourceCachePath = cachePath.replace(/source\.png$/, `${sha}.png`);
-        await writeFile(sourceCachePath, bytes);
+        await materializePendingSourceForCapture(req.captureId, sha, bytes);
       }
 
       // Insert the pasted layers with fresh ids so they don't collide

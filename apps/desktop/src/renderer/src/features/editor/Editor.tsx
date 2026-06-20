@@ -2159,6 +2159,48 @@ export function Editor({
     [effectiveToolState]
   );
 
+  // -------------------- Paste/drop image as raster layer ----------
+  //
+  // Finder drop and OS-image paste failures surface a transient
+  // notice. Cmd+V is owned by the copy/paste handler below so layer
+  // fragments, in-memory layers, and standard images are mutually
+  // exclusive for a single keypress.
+  const [pasteNotice, setPasteNotice] =
+    useState<{ text: string; tone: "error" | "info" } | null>(null);
+  useEffect(() => {
+    if (pasteNotice === null) return;
+    const timer = setTimeout(() => setPasteNotice(null), 3500);
+    return () => clearTimeout(timer);
+  }, [pasteNotice]);
+
+  const formatPasteError = useCallback((error: { code: string; message: string }): string => {
+    switch (error.code) {
+      case "v1_capture_use_v2":
+        return "Only v2 captures support multi-image";
+      case "no_image":
+        return "Clipboard doesn't contain an image";
+      case "image_too_large":
+        return "Image too large to paste (max 32 MiB)";
+      case "image_invalid_dimensions":
+        return "Image dimensions invalid or exceed cap";
+      case "image_decode_failed":
+        return "Image failed to decode";
+      case "image_read_failed":
+        return "Image bytes unreadable";
+      case "unsafe_symlink":
+      case "unsafe_not_regular_file":
+      case "unsafe_privileged_path":
+      case "unsafe_stat_failed":
+        return "Invalid file";
+      case "drop_not_image":
+        return "Only image files supported";
+      case "drop_path_unavailable":
+        return "Dropped file path unavailable";
+      default:
+        return error.message;
+    }
+  }, []);
+
   /** Copy / paste / duplicate helpers. All three operate on the
    *  current `selectedLayerIds` snapshot at call time.
    *
@@ -2310,6 +2352,11 @@ export function Editor({
         const imagePasteResult = await dispatch("editor:pasteImageAsLayer", req);
         if (imagePasteResult.ok) {
           setSelectionTrustingDispatch([imagePasteResult.value.layerId]);
+        } else {
+          setPasteNotice({
+            text: formatPasteError(imagePasteResult.error),
+            tone: "error"
+          });
         }
       })();
       return;
@@ -2875,6 +2922,9 @@ export function Editor({
       rasterTranslateXPx={rasterTranslateXPx}
       rasterTranslateYPx={rasterTranslateYPx}
       onRequestEditOverlay={onRequestEditOverlay}
+      pasteNotice={pasteNotice}
+      setPasteNotice={setPasteNotice}
+      formatPasteError={formatPasteError}
     />
   );
 }
@@ -2930,7 +2980,10 @@ function EditorLoaded({
   sourceHeightPx,
   rasterTranslateXPx,
   rasterTranslateYPx,
-  onRequestEditOverlay
+  onRequestEditOverlay,
+  pasteNotice,
+  setPasteNotice,
+  formatPasteError
 }: {
   record: CaptureRecord;
   overlays: OverlayRow[];
@@ -3126,6 +3179,11 @@ function EditorLoaded({
    *  body; commit replaces the overlay's body rather than creating
    *  a new one. */
   onRequestEditOverlay: (overlay: OverlayRow) => void;
+  pasteNotice: { text: string; tone: "error" | "info" } | null;
+  setPasteNotice: React.Dispatch<
+    React.SetStateAction<{ text: string; tone: "error" | "info" } | null>
+  >;
+  formatPasteError: (error: { code: string; message: string }) => string;
 }) {
   // Live ref to the editor's source `<img>` element. BlurOverlays'
   // pixelate preview reads pixels off this image via canvas drawImage
@@ -4051,52 +4109,6 @@ function EditorLoaded({
     zoom.canvasStyle?.height,
     zoom.canvasStyle?.transform
   ]);
-
-  // -------------------- Phase 5 paste/drop image as raster layer ---
-  //
-  // Finder drop. v2 captures only. Cmd+V is owned by the main
-  // copy/paste handler above so layer fragments, in-memory layers,
-  // and standard images are mutually exclusive for a single keypress.
-  // Drop surfaces a transient notice on failure via `pasteNotice`.
-  const [pasteNotice, setPasteNotice] =
-    useState<{ text: string; tone: "error" | "info" } | null>(null);
-  // Auto-clear the notice after a short window so it doesn't linger.
-  useEffect(() => {
-    if (pasteNotice === null) return;
-    const timer = setTimeout(() => setPasteNotice(null), 3500);
-    return () => clearTimeout(timer);
-  }, [pasteNotice]);
-
-  const formatPasteError = useCallback((error: { code: string; message: string }): string => {
-    // Map a handful of bus codes to user-friendly copy; fall back to
-    // the raw message for unrecognized codes (defensive against a
-    // future code we haven't surfaced yet).
-    switch (error.code) {
-      case "v1_capture_use_v2":
-        return "Only v2 captures support multi-image";
-      case "no_image":
-        return "Clipboard doesn't contain an image";
-      case "image_too_large":
-        return "Image too large to paste (max 32 MiB)";
-      case "image_invalid_dimensions":
-        return "Image dimensions invalid or exceed cap";
-      case "image_decode_failed":
-        return "Image failed to decode";
-      case "image_read_failed":
-        return "Image bytes unreadable";
-      case "unsafe_symlink":
-      case "unsafe_not_regular_file":
-      case "unsafe_privileged_path":
-      case "unsafe_stat_failed":
-        return "Invalid file";
-      case "drop_not_image":
-        return "Only image files supported";
-      case "drop_path_unavailable":
-        return "Dropped file path unavailable";
-      default:
-        return error.message;
-    }
-  }, []);
 
   const drop = useDropImage({
     captureId: record.id,

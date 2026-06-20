@@ -25,8 +25,6 @@
 // worker returns.
 
 import { clipboard } from "electron";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import { nanoid } from "nanoid";
 import type { BundleLayerNode } from "@pwrsnap/shared";
 import { ok, err } from "@pwrsnap/shared";
@@ -34,7 +32,7 @@ import { bus } from "../command-bus";
 import { getCaptureById } from "../persistence/captures-repo";
 import { insertLayerTreeForCapture, listLayerTree } from "../persistence/layers-repo";
 import { scheduleRepack } from "../persistence/bundle-store";
-import { getCacheSourcePath } from "../persistence/paths";
+import { materializePendingSourceForCapture } from "../persistence/pending-source-store";
 import { getMainLogger } from "../log";
 import { assertSafePastedFile, UnsafePastedFileError } from "../security/assertSafePastedFile";
 import { runPasteImageWorker } from "../workers/paste-image-worker-client";
@@ -155,16 +153,15 @@ function refuseIfV1Capture(captureId: string):
 
 /**
  * Insert a raster layer into the target capture and materialize its
- * source bytes into the per-capture cache. Shared between paste +
+ * source bytes into durable pending storage. Shared between paste +
  * drop paths. Returns the inserted layer id.
  *
- * Cache write happens BEFORE the layer insert so a render kicked off
+ * Source write happens BEFORE the layer insert so a render kicked off
  * by the events:overlays:changed broadcast can find the source bytes
- * via `sources/<sha>.png` on first read.
+ * before the debounced repack folds them into the bundle.
  */
 async function persistRasterFromBytes(args: {
   captureId: string;
-  bundlePath: string;
   canvasWidthPx: number;
   canvasHeightPx: number;
   positionXn: number | undefined;
@@ -175,16 +172,7 @@ async function persistRasterFromBytes(args: {
   heightPx: number;
   parentId: string | null;
 }): Promise<string> {
-  // Write the source PNG into the per-capture cache under
-  // `<sha>.png` (NOT `source.png` — that name is reserved for the
-  // capture's primary raster). The cache directory is per-capture so
-  // cleanup is tied to the capture's lifecycle. scheduleRepack picks
-  // up the new sha and adds a `sources/<sha>.png` entry to the bundle
-  // on next pack — same convention as clipboard:pasteLayerFragment.
-  const baseCachePath = getCacheSourcePath(args.captureId);
-  await mkdir(dirname(baseCachePath), { recursive: true });
-  const sourceCachePath = baseCachePath.replace(/source\.png$/, `${args.sha256}.png`);
-  await writeFile(sourceCachePath, args.pngBytes);
+  await materializePendingSourceForCapture(args.captureId, args.sha256, args.pngBytes);
 
   const now = new Date().toISOString();
   const rasterId = nanoid(16);
@@ -287,7 +275,6 @@ export function registerEditorHandlers(): void {
       const parentId = findRootGroupParent(req.captureId);
       const layerId = await persistRasterFromBytes({
         captureId: req.captureId,
-        bundlePath: record.bundle_path,
         canvasWidthPx: record.width_px,
         canvasHeightPx: record.height_px,
         positionXn: req.positionXn,
@@ -381,7 +368,6 @@ export function registerEditorHandlers(): void {
       const parentId = findRootGroupParent(req.captureId);
       const layerId = await persistRasterFromBytes({
         captureId: req.captureId,
-        bundlePath: record.bundle_path,
         canvasWidthPx: record.width_px,
         canvasHeightPx: record.height_px,
         positionXn: req.positionXn,

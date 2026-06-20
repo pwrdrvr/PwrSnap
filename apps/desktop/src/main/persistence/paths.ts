@@ -7,6 +7,7 @@
 //   pwrsnap.db                          → <userData>/pwrsnap.db
 //   captures/<id>.png                   → <documents>/PwrSnap/<id>.png
 //   render-cache/<capture_id>/<hash>.<format>  → <userData>/render-cache/...
+//   pending-sources/<capture_id>/<sha>.png      → <userData>/pending-sources/...
 //   .trash/<id>.png                     → <userData>/.trash/...
 //
 // Captures land in `~/Documents/PwrSnap/` so users can find them in
@@ -18,6 +19,7 @@
 //   pwrsnap.db    → <root>/pwrsnap.db
 //   captures      → <root>/captures
 //   render-cache  → <root>/render-cache
+//   pending-sources → <root>/pending-sources
 //   .trash        → <root>/.trash
 //   perf          → <root>/perf
 //
@@ -82,6 +84,14 @@ export function getCacheRoot(): string {
   // that same directory and mixes PwrSnap render derivatives with the
   // browser HTTP cache.
   return join(getDataRoot(), "render-cache");
+}
+
+export function getPendingSourceCaptureDir(captureId: string): string {
+  return join(getDataRoot(), "pending-sources", captureId);
+}
+
+export function getPendingSourcePath(captureId: string, sha: string): string {
+  return join(getPendingSourceCaptureDir(captureId), `${sha}.png`);
 }
 
 /**

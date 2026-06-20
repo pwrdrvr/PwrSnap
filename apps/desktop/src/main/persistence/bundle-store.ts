@@ -52,6 +52,11 @@ import {
   updateCaptureBundleAfterRepack
 } from "./captures-repo";
 import { getCacheSourcePath, getCapturesRoot, getTrashRoot } from "./paths";
+import {
+  deletePendingSourcesForCapture,
+  PendingSourceMissingError,
+  readPendingSourceForCapture
+} from "./pending-source-store";
 import { getMainLogger } from "../log";
 import { buildCaptureBundleFilenameStem, bundleStemFromPath } from "./bundle-filename";
 import { readBundleFilenameTimestampZone } from "./bundle-filename-settings";
@@ -586,10 +591,10 @@ export async function readSourceFromBundle(
 /**
  * Read a raster source for a live capture. The bundle is the durable
  * source of truth, but newly pasted/dropped raster layers are written
- * to the per-capture cache first and only folded into the bundle by
- * the debounced repack. Renderers must be able to consume that
- * cache-only source during the debounce window, and repack must be
- * able to read it so the bundle can become durable.
+ * to pending-sources first and only folded into the bundle by the
+ * debounced repack. Renderers must be able to consume that pending
+ * source during the debounce window, and repack must be able to read
+ * it so the bundle can become durable.
  */
 export async function readSourceForCapture(
   captureId: string,
@@ -600,6 +605,14 @@ export async function readSourceForCapture(
     return await readSourceFromBundle(bundlePath, sha);
   } catch (cause) {
     if (!(cause instanceof BundleSourceMissingError)) {
+      throw cause;
+    }
+  }
+
+  try {
+    return await readPendingSourceForCapture(captureId, sha);
+  } catch (cause) {
+    if (!(cause instanceof PendingSourceMissingError)) {
       throw cause;
     }
   }
@@ -1030,6 +1043,12 @@ async function runRepackV2(captureId: string): Promise<void> {
     updateCaptureBundleAfterRepack(captureId, {
       bundle_modified_at: now,
       bundle_edits_version: record.edits_version
+    });
+    await deletePendingSourcesForCapture(captureId, sources.keys()).catch((cause) => {
+      log.warn("bundle-store: v2 repack pending-source cleanup failed", {
+        captureId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
     });
 
     log.info("bundle-store: v2 repacked", {

@@ -76,6 +76,9 @@ const { openDatabase, closeDatabase, getDb } = await import("../../persistence/d
 const { packBundleV2, buildCompositeThumbnail } = await import(
   "../../persistence/bundle-store"
 );
+const { materializePendingSourceForCapture } = await import(
+  "../../persistence/pending-source-store"
+);
 const { insertLayerTreeForCapture } = await import("../../persistence/layers-repo");
 const { clipboardEvents } = await import("../../clipboard-events");
 const { clipboard } = await import("electron");
@@ -351,7 +354,7 @@ describe("image preset exports clamp to source width", () => {
     expect(metadata.height).toBe(CANVAS_H);
   });
 
-  test("renders a cache-only pasted raster source before bundle repack folds it in", async () => {
+  test("renders a pending pasted raster source after render-cache is cleared", async () => {
     const captureId = await seedSimpleV2Capture();
     const pastedPng = await sharp({
       create: {
@@ -364,9 +367,9 @@ describe("image preset exports clamp to source width", () => {
       .png()
       .toBuffer();
     const pastedSha = createHash("sha256").update(pastedPng).digest("hex");
-    const pastedPath = join(workDir, "render-cache", captureId, `${pastedSha}.png`);
-    await mkdir(join(workDir, "render-cache", captureId), { recursive: true });
-    await writeFile(pastedPath, pastedPng);
+    await materializePendingSourceForCapture(captureId, pastedSha, pastedPng);
+    await rm(join(workDir, "render-cache"), { recursive: true, force: true });
+    await mkdir(join(workDir, "render-cache"), { recursive: true });
 
     const root = getDb()
       .prepare<[string], { id: string }>(

@@ -135,7 +135,7 @@ function makeSettings(overrides?: {
       matchingText: { enabled: true },
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
     },
-    library: { detailRail: { pinned: true, lastSelectedTab: "info" }, confirmBeforeTrash: true }
+    library: { detailRail: { pinned: true, lastSelectedTab: "info" }, confirmBeforeTrash: true, gridZoom: 180 }
   };
 }
 

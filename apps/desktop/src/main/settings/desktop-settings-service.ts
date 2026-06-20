@@ -50,6 +50,9 @@ import {
   DEFAULT_CHAT_SETTINGS,
   DEFAULT_CODEX_CAPTION_MODEL,
   DEFAULT_HOTKEYS,
+  GRID_ZOOM_DEFAULT,
+  GRID_ZOOM_MAX,
+  GRID_ZOOM_MIN,
   MAX_HIGHLIGHT_OPACITY,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
   DEFAULT_SHAPE_KIND,
@@ -189,7 +192,10 @@ function defaultLibrarySettings(): Settings["library"] {
     },
     // Confirm soft-deletes by default; users can opt out via the popover's
     // "Don't ask again" or re-enable in Settings → Storage & retention.
-    confirmBeforeTrash: true
+    confirmBeforeTrash: true,
+    // Matches the historical CSS `minmax(180px, 1fr)`. Pinch-to-zoom on
+    // the grid steps this through GRID_ZOOM_LEVELS.
+    gridZoom: GRID_ZOOM_DEFAULT
   };
 }
 
@@ -810,9 +816,15 @@ function parseLibrarySettings(
     raw.confirmBeforeTrash,
     defaults.confirmBeforeTrash
   );
+  // gridZoom is additive (older files won't have it) and parsed
+  // independently of detailRail. Clamp to the valid band; out-of-range
+  // or non-numeric values fall back to the default. Renderers snap the
+  // clamped value to the nearest GRID_ZOOM_LEVELS entry, so we don't
+  // force-snap here — any in-band number round-trips.
+  const gridZoom = clampGridZoom(pickNumber(raw.gridZoom, defaults.gridZoom));
   const detailRaw = raw.detailRail;
   if (!isRecord(detailRaw)) {
-    return { detailRail: defaults.detailRail, confirmBeforeTrash };
+    return { detailRail: defaults.detailRail, confirmBeforeTrash, gridZoom };
   }
   // Route the on-disk tab value through the shared type guard so the
   // accepted set has a single source of truth (the protocol's
@@ -828,8 +840,15 @@ function parseLibrarySettings(
       pinned: pickBoolean(detailRaw.pinned, defaults.detailRail.pinned),
       lastSelectedTab: pickedTab
     },
-    confirmBeforeTrash
+    confirmBeforeTrash,
+    gridZoom
   };
+}
+
+/** Clamp a grid-zoom px value to the valid [MIN, MAX] band. NaN /
+ *  non-finite inputs are handled upstream by pickNumber. */
+function clampGridZoom(value: number): number {
+  return Math.min(GRID_ZOOM_MAX, Math.max(GRID_ZOOM_MIN, value));
 }
 
 const SHAPE_CATALOG: readonly ShapeEntry[] = [
@@ -1337,7 +1356,11 @@ function mergeLibrary(
     confirmBeforeTrash:
       patch.confirmBeforeTrash !== undefined
         ? patch.confirmBeforeTrash
-        : current.confirmBeforeTrash
+        : current.confirmBeforeTrash,
+    gridZoom:
+      patch.gridZoom !== undefined
+        ? clampGridZoom(patch.gridZoom)
+        : current.gridZoom
   };
 }
 

@@ -22,7 +22,12 @@ vi.mock("electron", () => ({
   BrowserWindow: { getAllWindows: () => [] }
 }));
 
-import { DEFAULT_HOTKEYS } from "@pwrsnap/shared";
+import {
+  DEFAULT_HOTKEYS,
+  GRID_ZOOM_DEFAULT,
+  GRID_ZOOM_MAX,
+  GRID_ZOOM_MIN
+} from "@pwrsnap/shared";
 import {
   DesktopSettingsService,
   defaultSettings,
@@ -205,6 +210,44 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.hotkeys.timed).toBe("");
     // Re-show last Float-Over defaults to the three-modifier ⌘⌥⇧F chord.
     expect(settings.hotkeys.reshowFloatOver).toBe("CommandOrControl+Alt+Shift+F");
+  });
+
+  test("v1 shape missing `library.gridZoom` gets the default filled in; out-of-range clamps", async () => {
+    // gridZoom landed after v1 shipped, so older files won't carry it.
+    // parseLibrarySettings fills the default without disturbing siblings,
+    // and clamps a hand-edited out-of-range value into the valid band.
+    const missingPath = join(workDir, "settings-missing.json");
+    writeFileSync(
+      missingPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        library: { detailRail: { pinned: false, lastSelectedTab: "info" }, confirmBeforeTrash: false }
+      }),
+      "utf8"
+    );
+    const missing = await new DesktopSettingsService({ filePath: missingPath }).read();
+    expect(missing.library.gridZoom).toBe(GRID_ZOOM_DEFAULT);
+    // Sibling library fields from the file are preserved.
+    expect(missing.library.detailRail.pinned).toBe(false);
+    expect(missing.library.confirmBeforeTrash).toBe(false);
+
+    const oobPath = join(workDir, "settings-oob.json");
+    writeFileSync(
+      oobPath,
+      JSON.stringify({ schemaVersion: 1, library: { gridZoom: 100000 } }),
+      "utf8"
+    );
+    const oob = await new DesktopSettingsService({ filePath: oobPath }).read();
+    expect(oob.library.gridZoom).toBe(GRID_ZOOM_MAX);
+
+    const lowPath = join(workDir, "settings-low.json");
+    writeFileSync(
+      lowPath,
+      JSON.stringify({ schemaVersion: 1, library: { gridZoom: 1 } }),
+      "utf8"
+    );
+    const low = await new DesktopSettingsService({ filePath: lowPath }).read();
+    expect(low.library.gridZoom).toBe(GRID_ZOOM_MIN);
   });
 
   test("v1 shape missing `general.launchAtLogin` gets the opt-in default (false) filled in", async () => {
@@ -679,6 +722,23 @@ describe("mergeSettings", () => {
     expect(merged.appearance.theme).toBe("light");
     // Other sections untouched.
     expect(merged.codex.mode).toBe(current.codex.mode);
+  });
+
+  test("library.gridZoom patch overwrites only that field and clamps to range", () => {
+    const current = defaultSettings();
+    expect(current.library.gridZoom).toBe(GRID_ZOOM_DEFAULT);
+    const merged = mergeSettings(current, { library: { gridZoom: 280 } });
+    expect(merged.library.gridZoom).toBe(280);
+    // Sibling library fields preserved.
+    expect(merged.library.confirmBeforeTrash).toBe(current.library.confirmBeforeTrash);
+    expect(merged.library.detailRail).toEqual(current.library.detailRail);
+    // Out-of-range patches clamp rather than corrupt the stored value.
+    expect(mergeSettings(current, { library: { gridZoom: 9999 } }).library.gridZoom).toBe(
+      GRID_ZOOM_MAX
+    );
+    expect(mergeSettings(current, { library: { gridZoom: 10 } }).library.gridZoom).toBe(
+      GRID_ZOOM_MIN
+    );
   });
 
   test("storage.filenameTimestampZone patch overwrites only the specified field", () => {

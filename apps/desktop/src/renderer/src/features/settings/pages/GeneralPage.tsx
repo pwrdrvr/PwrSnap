@@ -18,9 +18,18 @@
 // can surface a macOS/Windows "disabled it OS-side" divergence.
 
 import { useEffect, useState, type ReactElement } from "react";
-import type { AppearanceTheme, LaunchAtLoginStatus, UpdateChannel } from "@pwrsnap/shared";
+import {
+  EVENT_CHANNELS,
+  type AppearanceTheme,
+  type AppUpdateCheckResult,
+  type AppUpdateReleaseInfo,
+  type AppUpdateReleaseVersions,
+  type AppUpdateStatus,
+  type LaunchAtLoginStatus,
+  type UpdateChannel
+} from "@pwrsnap/shared";
 import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
-import { dispatch } from "../../../lib/pwrsnap";
+import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { useSettingsContext } from "../SettingsContext";
 
 const THEME_OPTIONS: readonly SegmentOption<AppearanceTheme>[] = [
@@ -33,6 +42,37 @@ const UPDATE_CHANNEL_OPTIONS: readonly SegmentOption<UpdateChannel>[] = [
   { id: "latest", label: "Stable" },
   { id: "prerelease", label: "Prerelease" }
 ];
+
+function releaseVersionText(release: AppUpdateReleaseInfo | undefined): string {
+  return release?.version ?? "Unavailable";
+}
+
+function updateResultText(result: AppUpdateCheckResult): string {
+  if (result.status === "skipped") return result.reason;
+  if (result.status === "error") return `Update check failed: ${result.message}`;
+  if (result.status === "checking") return "Checking for updates...";
+  if (result.status === "no-update") return `You're up to date (v${result.version}).`;
+  if (result.status === "downloaded") {
+    return `Update ready: v${result.version}. Restart to install.`;
+  }
+  return `Update available: v${result.version}. Downloading in the background.`;
+}
+
+function updateStatusText(status: AppUpdateStatus): string | undefined {
+  if (status.status === "checking") return "Checking for updates...";
+  if (status.status === "available") {
+    return `Update available: v${status.version}. Downloading in the background.`;
+  }
+  if (status.status === "downloading") {
+    const percent = status.percent === undefined ? "" : ` (${status.percent}%)`;
+    return `Downloading update v${status.version}${percent}.`;
+  }
+  if (status.status === "downloaded") {
+    return `Update ready: v${status.version}. Restart to install.`;
+  }
+  if (status.status === "error") return `Update check failed: ${status.message}`;
+  return undefined;
+}
 
 export function GeneralPage(): ReactElement {
   const { settings, patch } = useSettingsContext();
@@ -52,6 +92,13 @@ export function GeneralPage(): ReactElement {
   // already synced the registration (the write handler awaits the
   // main-side listeners), so this read sees the fresh state.
   const [loginItemStatus, setLoginItemStatus] = useState<LaunchAtLoginStatus | null>(null);
+  const [releaseVersions, setReleaseVersions] = useState<AppUpdateReleaseVersions | undefined>();
+  const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus>({ status: "idle" });
+  const [updateResult, setUpdateResult] = useState<AppUpdateCheckResult | undefined>();
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateRestarting, setUpdateRestarting] = useState(false);
+  const [updateRestartError, setUpdateRestartError] = useState<string | undefined>();
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -63,6 +110,42 @@ export function GeneralPage(): ReactElement {
       cancelled = true;
     };
   }, [launchAtLogin]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const result = await dispatch("app:update:releases", {});
+      if (cancelled || !result.ok) return;
+      setReleaseVersions(result.value);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let receivedEvent = false;
+    const unsubscribe = subscribe(EVENT_CHANNELS.appUpdateStatus, (payload) => {
+      receivedEvent = true;
+      if (cancelled) return;
+      const next = payload as AppUpdateStatus;
+      setUpdateStatus(next);
+      if (next.status === "downloaded") {
+        setUpdateRestartError(undefined);
+        setUpdateRestarting(false);
+      }
+    });
+    void (async () => {
+      const result = await dispatch("app:update:status", {});
+      if (cancelled || receivedEvent || !result.ok) return;
+      setUpdateStatus(result.value);
+    })();
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
 
   const onThemeChange = ready
     ? (next: AppearanceTheme): void => {
@@ -130,6 +213,55 @@ export function GeneralPage(): ReactElement {
     theme === "system"
       ? `Following the operating system — currently ${resolvedLabel.toLowerCase()}.`
       : `Locked to ${theme === "light" ? "light" : "dark"} regardless of the OS.`;
+
+  const updateChannelOptions: readonly SegmentOption<UpdateChannel>[] =
+    UPDATE_CHANNEL_OPTIONS.map((option) => ({
+      ...option,
+      meta:
+        releaseVersions === undefined
+          ? "Loading..."
+          : releaseVersionText(releaseVersions[option.id])
+    }));
+  const downloadedVersion =
+    updateStatus.status === "downloaded" ? updateStatus.version : undefined;
+  const liveUpdateStatus = updateStatusText(updateStatus);
+  const visibleUpdateStatus =
+    liveUpdateStatus ?? (updateResult !== undefined ? updateResultText(updateResult) : undefined);
+  const visibleUpdateStatusIsError =
+    liveUpdateStatus !== undefined
+      ? updateStatus.status === "error"
+      : updateResult?.status === "error";
+
+  const checkForUpdates = async (): Promise<void> => {
+    setUpdateChecking(true);
+    setUpdateResult(undefined);
+    try {
+      const result = await dispatch("app:update:check", {});
+      if (!result.ok) {
+        setUpdateResult({ status: "error", message: result.error.message });
+        return;
+      }
+      setUpdateResult(result.value);
+      setUpdateStatus(result.value);
+    } finally {
+      setUpdateChecking(false);
+    }
+  };
+
+  const restartToUpdate = async (): Promise<void> => {
+    setUpdateRestarting(true);
+    setUpdateRestartError(undefined);
+    const result = await dispatch("app:update:install", {});
+    if (!result.ok) {
+      setUpdateRestartError(result.error.message);
+      setUpdateRestarting(false);
+      return;
+    }
+    if (result.value.status === "error") {
+      setUpdateRestartError(result.value.message);
+      setUpdateRestarting(false);
+    }
+  };
 
   return (
     <>
@@ -211,11 +343,58 @@ export function GeneralPage(): ReactElement {
           sub='"Stable" tracks the latest signed release. "Prerelease" includes betas and alphas — earlier features, more rough edges. Takes effect on the next update check.'
           tag={channel}
         >
-          <SegmentedControl
-            options={UPDATE_CHANNEL_OPTIONS}
-            value={channel}
-            onChange={onChannelChange}
-          />
+          <div className="pss__update-channel">
+            <SegmentedControl
+              options={updateChannelOptions}
+              value={channel}
+              onChange={onChannelChange}
+            />
+            {downloadedVersion !== undefined ? (
+              <button
+                className="pss__top-btn is-active"
+                type="button"
+                aria-label={`Restart to Update (${downloadedVersion})`}
+                disabled={updateRestarting}
+                onClick={() => {
+                  void restartToUpdate();
+                }}
+              >
+                {updateRestarting ? "Restarting..." : "Restart to Update"}
+              </button>
+            ) : (
+              <button
+                className="pss__top-btn"
+                type="button"
+                disabled={updateChecking}
+                onClick={() => {
+                  void checkForUpdates();
+                }}
+              >
+                {updateChecking ? "Checking..." : "Check for Updates"}
+              </button>
+            )}
+            {downloadedVersion !== undefined ? (
+              <span className="pss__update-note">
+                Downloaded version: {downloadedVersion}
+              </span>
+            ) : null}
+            {visibleUpdateStatus !== undefined ? (
+              <span
+                className={
+                  "pss__update-note" +
+                  (visibleUpdateStatusIsError ? " pss__update-note--error" : "")
+                }
+                role={visibleUpdateStatusIsError ? "alert" : undefined}
+              >
+                {visibleUpdateStatus}
+              </span>
+            ) : null}
+            {updateRestartError !== undefined ? (
+              <span className="pss__update-note pss__update-note--error" role="alert">
+                {updateRestartError}
+              </span>
+            ) : null}
+          </div>
         </Row>
       </Card>
 

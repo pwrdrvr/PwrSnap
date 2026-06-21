@@ -3,6 +3,7 @@ import type { ReactElement } from "react";
 export type SegmentOption<T extends string> = {
   id: T;
   label: string;
+  meta?: string;
 };
 
 type SegmentedControlProps<T extends string> = {
@@ -26,10 +27,17 @@ export function SegmentedControl<T extends string>({
             type="button"
             role="tab"
             aria-selected={active}
-            className={"pss__seg-btn" + (active ? " is-active" : "")}
+            className={
+              "pss__seg-btn" +
+              (opt.meta !== undefined ? " pss__seg-btn--stacked" : "") +
+              (active ? " is-active" : "")
+            }
             onClick={() => onChange(opt.id)}
           >
-            {opt.label}
+            <span>{opt.label}</span>
+            {opt.meta !== undefined ? (
+              <span className="pss__seg-meta">{opt.meta}</span>
+            ) : null}
           </button>
         );
       })}

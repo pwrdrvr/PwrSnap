@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -63,6 +63,234 @@ function run(command, args, env) {
     return 1;
   }
   return result.status ?? 1;
+}
+
+const TERMINAL_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+const PROCESS_GROUP_EXIT_POLL_MS = 250;
+
+function exitCodeForSignal(signal) {
+  switch (signal) {
+    case "SIGINT":
+      return 130;
+    case "SIGTERM":
+      return 143;
+    case "SIGHUP":
+      return 129;
+    default:
+      return 1;
+  }
+}
+
+function processSnapshot(pid, spawnSyncImpl = spawnSync) {
+  if (pid === undefined) return undefined;
+
+  const result = spawnSyncImpl(
+    "ps",
+    ["-p", String(pid), "-o", "pid=,ppid=,pgid=,sess=,tpgid=,tty=,stat=,command="],
+    { encoding: "utf8" }
+  );
+  if (result.error !== undefined) {
+    return { pid, error: result.error.message };
+  }
+  if (result.status !== 0) {
+    return { pid, error: `ps exited ${result.status}` };
+  }
+
+  const line = result.stdout.trim();
+  if (line.length === 0) return { pid, error: "process not found" };
+
+  const [pidText, ppidText, pgidText, sessionText, terminalProcessGroupText, tty, stat, ...command] =
+    line.split(/\s+/);
+  return {
+    pid: Number(pidText),
+    ppid: Number(ppidText),
+    pgid: Number(pgidText),
+    sessionId: Number(sessionText),
+    terminalProcessGroupId: Number(terminalProcessGroupText),
+    tty,
+    stat,
+    command: command.join(" ")
+  };
+}
+
+export function devSignalContext(processTarget = process, child, options = {}) {
+  const snapshot = options.processSnapshot ?? processSnapshot;
+  const currentPid = processTarget.pid;
+  const parentPid = processTarget.ppid;
+  return {
+    wrapper: snapshot(currentPid),
+    parent: snapshot(parentPid),
+    child: snapshot(child?.pid),
+    platform: options.platform ?? process.platform,
+    terminal: processTarget.env?.TERM,
+    terminalProgram: processTarget.env?.TERM_PROGRAM
+  };
+}
+
+function signalChild(child, signal, platform = process.platform, killProcess = process.kill) {
+  if (child.pid === undefined) {
+    child.kill(signal);
+    return;
+  }
+
+  if (platform !== "win32") {
+    try {
+      killProcess(-child.pid, signal);
+      return;
+    } catch (error) {
+      if (error?.code !== "ESRCH") {
+        throw error;
+      }
+    }
+  }
+
+  child.kill(signal);
+}
+
+function processGroupExists(pid, platform = process.platform, killProcess = process.kill) {
+  if (pid === undefined || platform === "win32") return false;
+
+  try {
+    killProcess(-pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "EPERM") return true;
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+export function runLongLived(command, args, env, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const spawnImpl = options.spawn ?? spawn;
+  const processTarget = options.process ?? process;
+  const killProcess = options.killProcess ?? process.kill;
+  const logger = options.logger ?? console;
+  const signalContext = options.signalContext ?? devSignalContext;
+  const groupExists = options.processGroupExists ?? processGroupExists;
+  const processGroupExitPollMs = options.processGroupExitPollMs ?? PROCESS_GROUP_EXIT_POLL_MS;
+  const setTimeoutImpl = options.setTimeout ?? setTimeout;
+  let child;
+  try {
+    child = spawnImpl(command, args, {
+      cwd: desktopRoot,
+      detached: platform !== "win32",
+      env,
+      stdio: "inherit"
+    });
+  } catch (error) {
+    console.error(`[dev] failed to run ${command}: ${error.message}`);
+    return Promise.resolve(1);
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let shutdownSignal = null;
+    let forced = false;
+    let waitingForProcessGroupExit = false;
+    const signalHandlers = new Map();
+
+    const cleanup = () => {
+      for (const [signal, handler] of signalHandlers) {
+        processTarget.off(signal, handler);
+      }
+    };
+
+    const resolveOnce = (status) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(status);
+    };
+
+    const waitForProcessGroupExit = () => {
+      if (child.pid === undefined || platform === "win32") {
+        resolveOnce(forced ? 137 : 0);
+        return;
+      }
+
+      waitingForProcessGroupExit = true;
+
+      const poll = () => {
+        if (settled) return;
+
+        let exists;
+        try {
+          exists = groupExists(child.pid, platform, killProcess);
+        } catch (error) {
+          logger.warn("[dev] failed while waiting for dev process group to exit", {
+            message: error instanceof Error ? error.message : String(error),
+            context: signalContext(processTarget, child, { platform })
+          });
+          resolveOnce(forced ? 137 : 0);
+          return;
+        }
+
+        if (!exists) {
+          resolveOnce(forced ? 137 : 0);
+          return;
+        }
+
+        setTimeoutImpl(poll, processGroupExitPollMs);
+      };
+
+      poll();
+    };
+
+    child.on("error", (error) => {
+      console.error(`[dev] failed to run ${command}: ${error.message}`);
+      resolveOnce(1);
+    });
+
+    child.on("close", (status, signal) => {
+      if (shutdownSignal !== null) {
+        waitForProcessGroupExit();
+        return;
+      }
+      if (typeof status === "number") {
+        resolveOnce(status);
+        return;
+      }
+      if (signal === "SIGINT" || signal === "SIGTERM" || signal === "SIGHUP") {
+        resolveOnce(exitCodeForSignal(signal));
+        return;
+      }
+      resolveOnce(1);
+    });
+
+    if (child.pid === undefined) {
+      setImmediate(() => resolveOnce(1));
+      return;
+    }
+
+    for (const signal of TERMINAL_SHUTDOWN_SIGNALS) {
+      const handler = () => {
+        if (forced) return;
+        if (shutdownSignal !== null) {
+          forced = true;
+          logger.warn("[dev] repeated shutdown signal received; forcing dev child down", {
+            signal,
+            previousSignal: shutdownSignal,
+            context: signalContext(processTarget, child, { platform })
+          });
+          signalChild(child, "SIGKILL", platform, killProcess);
+          if (waitingForProcessGroupExit) {
+            waitForProcessGroupExit();
+          }
+          return;
+        }
+
+        shutdownSignal = signal;
+        logger.warn("[dev] shutdown signal received; forwarding to dev child", {
+          signal,
+          context: signalContext(processTarget, child, { platform })
+        });
+        signalChild(child, signal, platform, killProcess);
+      };
+      signalHandlers.set(signal, handler);
+      processTarget.on(signal, handler);
+    }
+  });
 }
 
 export function electronExecutableRelativePath(platform = process.platform) {
@@ -142,7 +370,7 @@ export function ensureElectronInstalled(
   return 0;
 }
 
-export function main(argv = process.argv.slice(2), inputEnv = process.env) {
+export async function main(argv = process.argv.slice(2), inputEnv = process.env) {
   const nodeCheck = checkNodeVersion(process.version, readExpectedNodeVersion());
   if (!nodeCheck.ok) {
     console.error(
@@ -183,10 +411,10 @@ export function main(argv = process.argv.slice(2), inputEnv = process.env) {
     return 1;
   }
 
-  return run(node, [electronViteJs, "dev", ...argv], env);
+  return runLongLived(node, [electronViteJs, "dev", ...argv], env);
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
 if (import.meta.url === invokedPath) {
-  process.exitCode = main();
+  process.exitCode = await main();
 }

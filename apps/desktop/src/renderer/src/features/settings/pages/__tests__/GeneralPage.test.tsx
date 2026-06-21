@@ -9,7 +9,12 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import type { LaunchAtLoginStatus, Settings } from "@pwrsnap/shared";
+import {
+  EVENT_CHANNELS,
+  type AppUpdateStatus,
+  type LaunchAtLoginStatus,
+  type Settings
+} from "@pwrsnap/shared";
 import { GeneralPage } from "../GeneralPage";
 import type { UseSettingsValue } from "../../useSettings";
 
@@ -89,8 +94,12 @@ type AnyResult = { ok: true; value: unknown } | { ok: false; error: { message: s
 function installFakeApi(
   status: LaunchAtLoginStatus,
   platform: NodeJS.Platform = "darwin"
-): { calls: { name: string; req: unknown }[] } {
+): {
+  calls: { name: string; req: unknown }[];
+  pushEvent: (channel: string, payload: unknown) => void;
+} {
   const calls: { name: string; req: unknown }[] = [];
+  const listeners = new Map<string, Set<(payload: unknown) => void>>();
   Object.defineProperty(window, "pwrsnapApi", {
     configurable: true,
     value: {
@@ -98,11 +107,43 @@ function installFakeApi(
       dispatch: async (name: string, req: unknown): Promise<AnyResult> => {
         calls.push({ name, req });
         if (name === "app:launchAtLoginStatus") return { ok: true, value: status };
+        if (name === "app:update:releases") {
+          return {
+            ok: true,
+            value: {
+              fetchedAt: 1,
+              latest: { version: "v1.2.3" },
+              prerelease: { version: "v1.3.0-beta.2" }
+            }
+          };
+        }
+        if (name === "app:update:status") {
+          return { ok: true, value: { status: "idle" } satisfies AppUpdateStatus };
+        }
+        if (name === "app:update:check") {
+          return { ok: true, value: { status: "available", version: "1.3.0-beta.3" } };
+        }
+        if (name === "app:update:install") {
+          return { ok: true, value: { status: "restarting" } };
+        }
         return { ok: true, value: undefined };
+      },
+      on: (channel: string, handler: (payload: unknown) => void): (() => void) => {
+        const channelListeners = listeners.get(channel) ?? new Set();
+        channelListeners.add(handler);
+        listeners.set(channel, channelListeners);
+        return () => {
+          channelListeners.delete(handler);
+        };
       }
     }
   });
-  return { calls };
+  return {
+    calls,
+    pushEvent: (channel: string, payload: unknown) => {
+      for (const listener of listeners.get(channel) ?? []) listener(payload);
+    }
+  };
 }
 
 let container: HTMLDivElement | null = null;
@@ -112,7 +153,10 @@ async function renderGeneral(
   settings: Settings,
   status: LaunchAtLoginStatus,
   platform: NodeJS.Platform = "darwin"
-): Promise<{ calls: { name: string; req: unknown }[] }> {
+): Promise<{
+  calls: { name: string; req: unknown }[];
+  pushEvent: (channel: string, payload: unknown) => void;
+}> {
   const api = installFakeApi(status, platform);
   contextValue = { settings, patch: patchMock as unknown as UseSettingsValue["patch"] };
   container = document.createElement("div");
@@ -120,6 +164,9 @@ async function renderGeneral(
   root = createRoot(container);
   await act(async () => {
     root?.render(createElement(GeneralPage));
+  });
+  await act(async () => {
+    await Promise.resolve();
   });
   await act(async () => {
     await Promise.resolve();
@@ -210,5 +257,62 @@ describe("GeneralPage — launch at login", () => {
     });
     expect(container?.textContent).toContain("Development build");
     expect(container?.textContent).toContain("Saved only");
+  });
+});
+
+describe("GeneralPage — updates", () => {
+  test("shows channel release versions and patches the selected channel", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+
+    expect(container?.textContent).toContain("v1.2.3");
+    expect(container?.textContent).toContain("v1.3.0-beta.2");
+
+    const prerelease = Array.from(container!.querySelectorAll("button")).find(
+      (el) => el.textContent?.includes("Prerelease")
+    );
+    await act(async () => {
+      prerelease?.click();
+    });
+
+    expect(patchMock).toHaveBeenCalledWith({ updates: { channel: "prerelease" } });
+  });
+
+  test("manual check dispatches app:update:check and shows the result", async () => {
+    const { calls } = await renderGeneral(baseSettings, healthyStatus);
+    const button = Array.from(container!.querySelectorAll("button")).find(
+      (el) => el.textContent === "Check for Updates"
+    );
+
+    await act(async () => {
+      button?.click();
+      await Promise.resolve();
+    });
+
+    expect(calls.some((c) => c.name === "app:update:check")).toBe(true);
+    expect(container?.textContent).toContain("Update available: v1.3.0-beta.3");
+  });
+
+  test("downloaded update status switches the action to restart", async () => {
+    const api = await renderGeneral(baseSettings, healthyStatus);
+
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.appUpdateStatus, {
+        status: "downloaded",
+        version: "1.3.0-beta.4"
+      } satisfies AppUpdateStatus);
+    });
+
+    expect(container?.textContent).toContain("Downloaded version: 1.3.0-beta.4");
+    const button = Array.from(container!.querySelectorAll("button")).find(
+      (el) => el.getAttribute("aria-label") === "Restart to Update (1.3.0-beta.4)"
+    );
+    expect(button).toBeDefined();
+
+    await act(async () => {
+      button?.click();
+      await Promise.resolve();
+    });
+
+    expect(api.calls.some((c) => c.name === "app:update:install")).toBe(true);
   });
 });

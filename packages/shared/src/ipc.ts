@@ -6,7 +6,7 @@
 // out of the registry. Event channels (server → client broadcasts) use
 // the typed map below.
 
-import type { CaptureRecord } from "./protocol";
+import type { AppUpdateStatus, CaptureRecord } from "./protocol";
 
 export const IPC_CMD = "cmd" as const;
 
@@ -453,6 +453,7 @@ export type AiUsageUpdatedEvent = {
 };
 
 export type EventPayloads = {
+  [EVENT_CHANNELS.appUpdateStatus]: AppUpdateStatus;
   [EVENT_CHANNELS.aiUsageUpdated]: AiUsageUpdatedEvent;
   [EVENT_CHANNELS.capturesAccessChanged]: import("./protocol").CapturesAccessHealth;
   [EVENT_CHANNELS.sizzleProjectsChanged]: { projects: SizzleProject[] };

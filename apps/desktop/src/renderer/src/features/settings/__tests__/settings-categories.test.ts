@@ -22,6 +22,7 @@ const ALL_PAGE_IDS = [
   "ai",
   "system-permissions",
   "storage",
+  "experimental",
   "about"
 ] as const satisfies readonly SettingsPage[];
 
@@ -58,7 +59,7 @@ describe("SETTINGS_CATEGORIES", () => {
     expect(byGroup["General"]).toEqual(["general", "hotkeys", "ai"]);
     expect(byGroup["Capture"]).toEqual(["system-permissions"]);
     expect(byGroup["Library"]).toEqual(["storage"]);
-    expect(byGroup["Advanced"]).toEqual(["about"]);
+    expect(byGroup["Advanced"]).toEqual(["experimental", "about"]);
   });
 
   test("SETTINGS_PAGE_IDS exposes the same id set", () => {

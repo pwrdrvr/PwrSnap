@@ -513,6 +513,7 @@ export type SettingsPage =
   | "ai"
   | "storage"
   | "system-permissions"
+  | "experimental"
   | "about";
 
 /** Runtime allowlist of every valid `SettingsPage`. Kept here (not in
@@ -527,6 +528,7 @@ export const SETTINGS_PAGES = [
   "ai",
   "storage",
   "system-permissions",
+  "experimental",
   "about"
 ] as const satisfies readonly SettingsPage[];
 

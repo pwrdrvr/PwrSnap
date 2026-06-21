@@ -66,6 +66,7 @@ function run(command, args, env) {
 }
 
 const TERMINAL_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+const PROCESS_GROUP_EXIT_POLL_MS = 250;
 
 function exitCodeForSignal(signal) {
   switch (signal) {
@@ -146,6 +147,19 @@ function signalChild(child, signal, platform = process.platform, killProcess = p
   child.kill(signal);
 }
 
+function processGroupExists(pid, platform = process.platform, killProcess = process.kill) {
+  if (pid === undefined || platform === "win32") return false;
+
+  try {
+    killProcess(-pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "EPERM") return true;
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
 export function runLongLived(command, args, env, options = {}) {
   const platform = options.platform ?? process.platform;
   const spawnImpl = options.spawn ?? spawn;
@@ -153,6 +167,9 @@ export function runLongLived(command, args, env, options = {}) {
   const killProcess = options.killProcess ?? process.kill;
   const logger = options.logger ?? console;
   const signalContext = options.signalContext ?? devSignalContext;
+  const groupExists = options.processGroupExists ?? processGroupExists;
+  const processGroupExitPollMs = options.processGroupExitPollMs ?? PROCESS_GROUP_EXIT_POLL_MS;
+  const setTimeoutImpl = options.setTimeout ?? setTimeout;
   let child;
   try {
     child = spawnImpl(command, args, {
@@ -170,6 +187,7 @@ export function runLongLived(command, args, env, options = {}) {
     let settled = false;
     let shutdownSignal = null;
     let forced = false;
+    let waitingForProcessGroupExit = false;
     const signalHandlers = new Map();
 
     const cleanup = () => {
@@ -185,22 +203,52 @@ export function runLongLived(command, args, env, options = {}) {
       resolve(status);
     };
 
+    const waitForProcessGroupExit = () => {
+      if (child.pid === undefined || platform === "win32") {
+        resolveOnce(forced ? 137 : 0);
+        return;
+      }
+
+      waitingForProcessGroupExit = true;
+
+      const poll = () => {
+        if (settled) return;
+
+        let exists;
+        try {
+          exists = groupExists(child.pid, platform, killProcess);
+        } catch (error) {
+          logger.warn("[dev] failed while waiting for dev process group to exit", {
+            message: error instanceof Error ? error.message : String(error),
+            context: signalContext(processTarget, child, { platform })
+          });
+          resolveOnce(forced ? 137 : 0);
+          return;
+        }
+
+        if (!exists) {
+          resolveOnce(forced ? 137 : 0);
+          return;
+        }
+
+        setTimeoutImpl(poll, processGroupExitPollMs);
+      };
+
+      poll();
+    };
+
     child.on("error", (error) => {
       console.error(`[dev] failed to run ${command}: ${error.message}`);
       resolveOnce(1);
     });
 
     child.on("close", (status, signal) => {
+      if (shutdownSignal !== null) {
+        waitForProcessGroupExit();
+        return;
+      }
       if (typeof status === "number") {
         resolveOnce(status);
-        return;
-      }
-      if (forced) {
-        resolveOnce(signal === "SIGKILL" ? 137 : exitCodeForSignal(shutdownSignal));
-        return;
-      }
-      if (shutdownSignal !== null) {
-        resolveOnce(0);
         return;
       }
       if (signal === "SIGINT" || signal === "SIGTERM" || signal === "SIGHUP") {
@@ -226,6 +274,9 @@ export function runLongLived(command, args, env, options = {}) {
             context: signalContext(processTarget, child, { platform })
           });
           signalChild(child, "SIGKILL", platform, killProcess);
+          if (waitingForProcessGroupExit) {
+            waitForProcessGroupExit();
+          }
           return;
         }
 

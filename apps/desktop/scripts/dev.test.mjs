@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -27,6 +27,7 @@ function tempElectronRoot() {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -188,6 +189,7 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
       },
       platform: "darwin",
       process: fakeProcess,
+      processGroupExists: () => false,
       logger,
       signalContext: fakeSignalContext,
       spawn: (_command, _args, options) => {
@@ -230,6 +232,7 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
       },
       platform: "darwin",
       process: fakeProcess,
+      processGroupExists: () => false,
       logger,
       signalContext: fakeSignalContext,
       spawn: () => child
@@ -318,6 +321,7 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
       },
       platform: "darwin",
       process: fakeProcess,
+      processGroupExists: () => false,
       logger,
       signalContext: fakeSignalContext,
       spawn: () => child
@@ -346,6 +350,54 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
       [-6262, "SIGINT"],
       [-6262, "SIGKILL"]
     ]);
+  });
+
+  it("keeps supervising after electron-vite exits but the Electron process group remains", async () => {
+    vi.useFakeTimers();
+    const fakeProcess = createFakeProcess();
+    const logger = createFakeLogger();
+    const child = createFakeChild(7272);
+    const killCalls = [];
+    let groupExists = true;
+    let settled = false;
+    const promise = runLongLived("node", ["electron-vite", "dev"], {}, {
+      killProcess: (pid, signal) => {
+        killCalls.push([pid, signal]);
+        return true;
+      },
+      platform: "darwin",
+      process: fakeProcess,
+      processGroupExists: () => groupExists,
+      processGroupExitPollMs: 10,
+      logger,
+      signalContext: fakeSignalContext,
+      spawn: () => child
+    }).then((status) => {
+      settled = true;
+      return status;
+    });
+
+    fakeProcess.emit("SIGINT");
+    child.emit("close", 0, null);
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(fakeProcess.listenerCount("SIGINT")).toBe(1);
+    expect(fakeProcess.listenerCount("SIGTERM")).toBe(1);
+    expect(fakeProcess.listenerCount("SIGHUP")).toBe(1);
+
+    fakeProcess.emit("SIGINT");
+    groupExists = false;
+    await vi.advanceTimersByTimeAsync(10);
+
+    await expect(promise).resolves.toBe(137);
+    expect(killCalls).toEqual([
+      [-7272, "SIGINT"],
+      [-7272, "SIGKILL"]
+    ]);
+    expect(fakeProcess.listenerCount("SIGINT")).toBe(0);
+    expect(fakeProcess.listenerCount("SIGTERM")).toBe(0);
+    expect(fakeProcess.listenerCount("SIGHUP")).toBe(0);
   });
 
   it("describes wrapper, parent, child, and terminal context for signal diagnostics", () => {

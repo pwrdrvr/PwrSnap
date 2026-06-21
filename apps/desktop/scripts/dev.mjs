@@ -80,6 +80,52 @@ function exitCodeForSignal(signal) {
   }
 }
 
+function processSnapshot(pid, spawnSyncImpl = spawnSync) {
+  if (pid === undefined) return undefined;
+
+  const result = spawnSyncImpl(
+    "ps",
+    ["-p", String(pid), "-o", "pid=,ppid=,pgid=,sess=,tpgid=,tty=,stat=,command="],
+    { encoding: "utf8" }
+  );
+  if (result.error !== undefined) {
+    return { pid, error: result.error.message };
+  }
+  if (result.status !== 0) {
+    return { pid, error: `ps exited ${result.status}` };
+  }
+
+  const line = result.stdout.trim();
+  if (line.length === 0) return { pid, error: "process not found" };
+
+  const [pidText, ppidText, pgidText, sessionText, terminalProcessGroupText, tty, stat, ...command] =
+    line.split(/\s+/);
+  return {
+    pid: Number(pidText),
+    ppid: Number(ppidText),
+    pgid: Number(pgidText),
+    sessionId: Number(sessionText),
+    terminalProcessGroupId: Number(terminalProcessGroupText),
+    tty,
+    stat,
+    command: command.join(" ")
+  };
+}
+
+export function devSignalContext(processTarget = process, child, options = {}) {
+  const snapshot = options.processSnapshot ?? processSnapshot;
+  const currentPid = processTarget.pid;
+  const parentPid = processTarget.ppid;
+  return {
+    wrapper: snapshot(currentPid),
+    parent: snapshot(parentPid),
+    child: snapshot(child?.pid),
+    platform: options.platform ?? process.platform,
+    terminal: processTarget.env?.TERM,
+    terminalProgram: processTarget.env?.TERM_PROGRAM
+  };
+}
+
 function signalChild(child, signal, platform = process.platform, killProcess = process.kill) {
   if (child.pid === undefined) {
     child.kill(signal);
@@ -105,6 +151,8 @@ export function runLongLived(command, args, env, options = {}) {
   const spawnImpl = options.spawn ?? spawn;
   const processTarget = options.process ?? process;
   const killProcess = options.killProcess ?? process.kill;
+  const logger = options.logger ?? console;
+  const signalContext = options.signalContext ?? devSignalContext;
   let child;
   try {
     child = spawnImpl(command, args, {
@@ -172,11 +220,20 @@ export function runLongLived(command, args, env, options = {}) {
         if (forced) return;
         if (shutdownSignal !== null) {
           forced = true;
+          logger.warn("[dev] repeated shutdown signal received; forcing dev child down", {
+            signal,
+            previousSignal: shutdownSignal,
+            context: signalContext(processTarget, child, { platform })
+          });
           signalChild(child, "SIGKILL", platform, killProcess);
           return;
         }
 
         shutdownSignal = signal;
+        logger.warn("[dev] shutdown signal received; forwarding to dev child", {
+          signal,
+          context: signalContext(processTarget, child, { platform })
+        });
         signalChild(child, signal, platform, killProcess);
       };
       signalHandlers.set(signal, handler);

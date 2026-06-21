@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   checkNodeVersion,
+  devSignalContext,
   ELECTRON_DEV_ENV_KEYS,
   ensureElectronInstalled,
   electronInstallState,
@@ -34,6 +35,12 @@ afterEach(() => {
 function createFakeProcess() {
   const listeners = new Map();
   return {
+    pid: 1001,
+    ppid: 1000,
+    env: {
+      TERM: "xterm-256color",
+      TERM_PROGRAM: "Ghostty"
+    },
     on(signal, handler) {
       listeners.set(signal, [...(listeners.get(signal) ?? []), handler]);
     },
@@ -54,6 +61,15 @@ function createFakeProcess() {
   };
 }
 
+function createFakeLogger() {
+  return {
+    warnCalls: [],
+    warn(message, details) {
+      this.warnCalls.push([message, details]);
+    }
+  };
+}
+
 function createFakeChild(pid = 12345) {
   const child = new EventEmitter();
   child.pid = pid;
@@ -63,6 +79,16 @@ function createFakeChild(pid = 12345) {
     return true;
   };
   return child;
+}
+
+function fakeSignalContext() {
+  return {
+    wrapper: { pid: 1001, command: "node ./scripts/dev.mjs" },
+    parent: { pid: 1000, command: "pnpm --filter @pwrsnap/desktop dev" },
+    child: { pid: 4242, command: "node electron-vite dev" },
+    terminal: "xterm-256color",
+    terminalProgram: "Ghostty"
+  };
 }
 
 function createFakeChildWithoutPid() {
@@ -151,6 +177,7 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
 
   it("runs the long-lived dev child in a POSIX process group and forwards Ctrl+C", async () => {
     const fakeProcess = createFakeProcess();
+    const logger = createFakeLogger();
     const child = createFakeChild(4242);
     const killCalls = [];
     let spawnOptions;
@@ -161,6 +188,8 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
       },
       platform: "darwin",
       process: fakeProcess,
+      logger,
+      signalContext: fakeSignalContext,
       spawn: (_command, _args, options) => {
         spawnOptions = options;
         return child;
@@ -176,6 +205,12 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
     child.emit("close", null, null);
 
     await expect(promise).resolves.toBe(0);
+    expect(logger.warnCalls).toEqual([
+      [
+        "[dev] shutdown signal received; forwarding to dev child",
+        { signal: "SIGINT", context: fakeSignalContext() }
+      ]
+    ]);
     expect(killCalls).toEqual([[-4242, "SIGINT"]]);
     expect(child.killCalls).toEqual([]);
     expect(fakeProcess.listenerCount("SIGINT")).toBe(0);
@@ -185,6 +220,7 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
 
   it("forwards terminal hangup to the detached POSIX process group", async () => {
     const fakeProcess = createFakeProcess();
+    const logger = createFakeLogger();
     const child = createFakeChild(4343);
     const killCalls = [];
     const promise = runLongLived("node", ["electron-vite", "dev"], {}, {
@@ -194,6 +230,8 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
       },
       platform: "darwin",
       process: fakeProcess,
+      logger,
+      signalContext: fakeSignalContext,
       spawn: () => child
     });
 
@@ -206,10 +244,13 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
 
   it("falls back to child.kill on Windows", async () => {
     const fakeProcess = createFakeProcess();
+    const logger = createFakeLogger();
     const child = createFakeChild(5151);
     const promise = runLongLived("node", ["electron-vite", "dev"], {}, {
       platform: "win32",
       process: fakeProcess,
+      logger,
+      signalContext: fakeSignalContext,
       spawn: () => child
     });
 
@@ -267,6 +308,7 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
 
   it("forces the long-lived dev child down on a repeated terminal signal", async () => {
     const fakeProcess = createFakeProcess();
+    const logger = createFakeLogger();
     const child = createFakeChild(6262);
     const killCalls = [];
     const promise = runLongLived("node", ["electron-vite", "dev"], {}, {
@@ -276,6 +318,8 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
       },
       platform: "darwin",
       process: fakeProcess,
+      logger,
+      signalContext: fakeSignalContext,
       spawn: () => child
     });
 
@@ -284,9 +328,47 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
     child.emit("close", null, "SIGKILL");
 
     await expect(promise).resolves.toBe(137);
+    expect(logger.warnCalls).toEqual([
+      [
+        "[dev] shutdown signal received; forwarding to dev child",
+        { signal: "SIGINT", context: fakeSignalContext() }
+      ],
+      [
+        "[dev] repeated shutdown signal received; forcing dev child down",
+        {
+          signal: "SIGINT",
+          previousSignal: "SIGINT",
+          context: fakeSignalContext()
+        }
+      ]
+    ]);
     expect(killCalls).toEqual([
       [-6262, "SIGINT"],
       [-6262, "SIGKILL"]
     ]);
+  });
+
+  it("describes wrapper, parent, child, and terminal context for signal diagnostics", () => {
+    const processTarget = createFakeProcess();
+    const child = createFakeChild(4242);
+    const snapshots = new Map([
+      [1001, { pid: 1001, command: "node ./scripts/dev.mjs" }],
+      [1000, { pid: 1000, command: "pnpm dev" }],
+      [4242, { pid: 4242, command: "node electron-vite dev" }]
+    ]);
+
+    expect(
+      devSignalContext(processTarget, child, {
+        platform: "darwin",
+        processSnapshot: (pid) => snapshots.get(pid)
+      })
+    ).toEqual({
+      wrapper: { pid: 1001, command: "node ./scripts/dev.mjs" },
+      parent: { pid: 1000, command: "pnpm dev" },
+      child: { pid: 4242, command: "node electron-vite dev" },
+      platform: "darwin",
+      terminal: "xterm-256color",
+      terminalProgram: "Ghostty"
+    });
   });
 });

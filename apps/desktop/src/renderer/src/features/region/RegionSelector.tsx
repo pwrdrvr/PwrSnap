@@ -127,6 +127,9 @@ export function RegionSelector() {
   // not the live screen. Apps starting / stopping during selection
   // can no longer change what's under the cursor.
   const [screenUrl, setScreenUrl] = useState<string | null>(null);
+  // DIAGNOSTIC (temporary): latest screenUrl, readable from the
+  // visibilitychange listener without re-subscribing each capture.
+  const screenUrlRef = useRef<string | null>(null);
   // Visual intent: 'video' swaps the rect badge + hint copy so the
   // user knows commit starts a recording, not a snap. Defaults to
   // 'snap' for backwards-compat with every call site that doesn't
@@ -238,6 +241,7 @@ export function RegionSelector() {
     const unsub = window.pwrsnapApi?.onSelectorMode((payload) => {
       setMode(payload.mode);
       setScreenUrl(payload.screenUrl ?? null);
+      screenUrlRef.current = payload.screenUrl ?? null;
       setIntent(payload.intent ?? "snap");
       // When switching INTO 'region' mode, drop any existing window
       // snap target back to display — otherwise the user sees a stale
@@ -250,6 +254,31 @@ export function RegionSelector() {
     });
     return () => {
       unsub?.();
+    };
+  }, []);
+
+  // DIAGNOSTIC (temporary): measure true on-screen paint. main gates
+  // win.show() on the <img> onLoad ack, which fires while the window is
+  // STILL HIDDEN (decode, not visible paint). To capture the real
+  // win.show() → pixels-on-glass latency the user feels, ack again once
+  // the document actually becomes visible AND the compositor has
+  // produced a frame — visibilitychange → visible, then a double rAF
+  // (first rAF schedules inside the newly-visible frame; the second
+  // fires after that frame has been committed). Remove with the probe.
+  useEffect(() => {
+    const onVisible = (): void => {
+      if (document.visibilityState !== "visible") return;
+      const url = screenUrlRef.current;
+      if (url === null) return;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          window.pwrsnapApi?.notifySelectorVisiblePaint(url);
+        });
+      });
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 

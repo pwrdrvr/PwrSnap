@@ -52,6 +52,7 @@ declare global {
         fullWindow?: boolean;
       }): void;
       notifySelectorSnapshotPainted(screenUrl: string): void;
+      notifySelectorVisiblePaint(screenUrl: string): void;
       onWindowListSnapshot(
         handler: (payload: {
           windows: WindowSnapEntry[];

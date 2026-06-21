@@ -95,6 +95,16 @@ const REGION_SELECTOR_MODE_CHANNEL = "region-selector:mode";
 // empty transparent overlay flashing the live screen behind it.
 const REGION_SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
 
+// DIAGNOSTIC (temporary): renderer → main, fired AFTER the selector
+// window actually becomes visible and the compositor produces its first
+// frame (visibilitychange → visible, then a double rAF). Distinct from
+// REGION_SELECTOR_PAINTED_CHANNEL, which fires on the <img> onLoad while
+// the window is STILL HIDDEN (decode, not on-screen paint). The gap
+// between main's win.show() and this ack is the true cold-idle hotkey
+// latency the user feels — invisible to every other log. Remove once
+// the latency is root-caused.
+const REGION_SELECTOR_VISIBLE_PAINT_CHANNEL = "region-selector:visible-paint";
+
 // Tray content auto-sizes to fit. The renderer measures itself with a
 // ResizeObserver and asks main to setContentSize so the popover never
 // has dead space at the bottom or clips a row.
@@ -196,6 +206,15 @@ const pwrsnapApi = {
    */
   notifySelectorSnapshotPainted(screenUrl: string): void {
     ipcRenderer.send(REGION_SELECTOR_PAINTED_CHANNEL, { screenUrl });
+  },
+  /**
+   * DIAGNOSTIC (temporary): ack that the selector window has actually
+   * become visible AND the compositor produced its first frame (not just
+   * that the snapshot <img> decoded while hidden). Lets main measure the
+   * true win.show() → pixels-on-screen latency. Remove with the probe.
+   */
+  notifySelectorVisiblePaint(screenUrl: string): void {
+    ipcRenderer.send(REGION_SELECTOR_VISIBLE_PAINT_CHANNEL, { screenUrl });
   },
   /**
    * Subscribe to the snap-to-window window-list snapshot main pushes

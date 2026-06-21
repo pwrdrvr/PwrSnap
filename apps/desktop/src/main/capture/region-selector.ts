@@ -48,6 +48,15 @@ let displayListenersAttached = false;
  *  (matching screenUrl) or by its own timeout. */
 let pendingPaintWait: { screenUrl: string; resolve: () => void } | null = null;
 
+/** DIAGNOSTIC (temporary): the selector that has been win.show()'d and is
+ *  waiting for the renderer's TRUE visible-paint ack (compositor produced
+ *  the first on-screen frame), so we can log win.show() → pixels latency —
+ *  the part the user feels that no other log captures. Remove with the
+ *  probe. */
+let pendingVisiblePaint:
+  | { screenUrl: string; shownAt: number; requestStartedAt: number }
+  | null = null;
+
 /**
  * Resolve once the renderer acks that the snapshot for `screenUrl` has
  * painted, or after `timeoutMs` — whichever comes first. Never rejects.
@@ -214,6 +223,11 @@ const SELECTOR_MODE_CHANNEL = "region-selector:mode";
 // current wait.
 const SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
 
+/** DIAGNOSTIC (temporary): renderer acks the selector's first TRUE
+ *  on-screen frame (visibilitychange → visible + double rAF). Remove with
+ *  the probe. */
+const SELECTOR_VISIBLE_PAINT_CHANNEL = "region-selector:visible-paint";
+
 /** How long to wait for the renderer's "snapshot painted" ack before
  *  showing the selector anyway. Decode of a full-screen PNG is well
  *  under this; the timeout only fires if the renderer is wedged, in
@@ -286,6 +300,25 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       const waiter = pendingPaintWait;
       pendingPaintWait = null;
       waiter.resolve();
+    });
+    ipcMain.on(SELECTOR_VISIBLE_PAINT_CHANNEL, (_event, payload: unknown) => {
+      // DIAGNOSTIC (temporary): the renderer became visible and the
+      // compositor produced its first on-screen frame. The delta from
+      // win.show() (shownAt) is the TRUE cold-idle hotkey latency the user
+      // feels — every other log stops at win.show() returning, which does
+      // NOT mean pixels are on the glass. Remove with the probe.
+      if (pendingVisiblePaint === null) return;
+      const ackedUrl =
+        typeof payload === "object" && payload !== null && "screenUrl" in payload
+          ? (payload as { screenUrl?: unknown }).screenUrl
+          : null;
+      if (ackedUrl !== null && ackedUrl !== pendingVisiblePaint.screenUrl) return;
+      const now = Date.now();
+      log.info("selector visible paint", {
+        msFromShow: now - pendingVisiblePaint.shownAt,
+        msFromUserRequest: now - pendingVisiblePaint.requestStartedAt
+      });
+      pendingVisiblePaint = null;
     });
     ipcMain.on(SELECTOR_RESULT_CHANNEL, (_event, payload: unknown) => {
       // IMPORTANT: this handler does NOT hide the selector windows.
@@ -696,6 +729,16 @@ export async function pickRegion(
       // SnagIt).
       enterMenuBarOverlayMode(win);
       win.show();
+      // DIAGNOSTIC (temporary): arm the true visible-paint probe. shownAt
+      // is captured the instant after show(); the renderer's
+      // visibilitychange ack measures win.show() → first on-screen frame.
+      if (modePayload !== null) {
+        pendingVisiblePaint = {
+          screenUrl: modePayload.screenUrl,
+          shownAt: Date.now(),
+          requestStartedAt
+        };
+      }
       selectorDisplaysNeedingFreshPanel.add(targetDisplay.id);
       win.focus();
       // webContents.focus() in addition to BrowserWindow.focus() —
@@ -1578,6 +1621,7 @@ export function disposeRegionSelector(): void {
   if (resultListenerAttached) {
     ipcMain.removeAllListeners(SELECTOR_RESULT_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PAINTED_CHANNEL);
+    ipcMain.removeAllListeners(SELECTOR_VISIBLE_PAINT_CHANNEL);
     resultListenerAttached = false;
   }
 }

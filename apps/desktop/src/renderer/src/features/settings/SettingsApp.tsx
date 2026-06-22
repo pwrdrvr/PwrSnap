@@ -21,6 +21,7 @@ import { GeneralPage } from "./pages/GeneralPage";
 import { AIProvidersPage } from "./pages/AIProvidersPage";
 import { StoragePage } from "./pages/StoragePage";
 import { SystemPermissionsPage } from "./pages/SystemPermissionsPage";
+import { ExperimentalPage } from "./pages/ExperimentalPage";
 
 export function SettingsApp(): ReactElement {
   const active = useActivePage();
@@ -45,6 +46,9 @@ export function SettingsApp(): ReactElement {
       break;
     case "system-permissions":
       page = <SystemPermissionsPage />;
+      break;
+    case "experimental":
+      page = <ExperimentalPage />;
       break;
     default: {
       // Exhaustiveness guard: if a new SettingsPage member is added

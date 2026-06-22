@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Download Stats"
+  short_description: "Summarize PwrSnap release asset downloads"
+  default_prompt: "Use $release-download-stats to check PwrSnap release download stats."

@@ -74,8 +74,31 @@ Read these files before changing release metadata:
    ## v0.0.1-alpha.5 - YYYY-MM-DD
    ```
 
-   Write user-facing bullets from merged PRs and direct commits since the last
-   release. Preserve the same substance in GitHub release notes.
+   Write release notes for users/operators, not as commit summaries. Preserve
+   the same substance in GitHub release notes.
+
+   Each bullet must use this shape:
+
+   ```md
+   - <Feature Area> - <Added|Improved|Fixed> <user-visible behavior and why it matters>.
+   ```
+
+   Good examples:
+
+   ```md
+   - Composer - Improved complex Markdown pastes with lists, inline code, and nested code blocks.
+   - Thread Search - Escape now dismisses search, pairing naturally with Cmd/Ctrl+Shift+F to open it.
+   - Thread List Pull Request Info - Merged PR commits no longer show as unpushed work.
+   - Minor - Dependency updates and small UI polish.
+   ```
+
+   Avoid vague bullets that only summarize the commit mechanic, such as
+   "Improved paste handling", "Added Escape-key handling", "Fixed progress
+   chips", or "Updated dependencies". A good note answers: what
+   feature/surface changed, whether it was Added/Improved/Fixed, and what
+   user-visible behavior changed. Roll low-value maintenance-only items into
+   `Minor - ...` unless they affect installs, updates, data safety, or a major
+   workflow.
 
 4. Run the metadata gate locally before committing:
 

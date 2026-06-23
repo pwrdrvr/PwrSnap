@@ -549,6 +549,20 @@
 .psl[data-left="peek"] {
   --left-col: 36px;
 }
+/* Edit takeover hides the left nav (filters). Focus is a single-capture
+   takeover, not a browse surface, so the filter rail doesn't belong — you
+   leave Edit via Esc / × / Done, not by clicking a filter. Reel KEEPS the
+   nav (it's a browse layout where filters define the strip). Placed after
+   the data-left rule above so it wins the specificity tie and forces the
+   column to 0 regardless of the user's pin/peek state — and because it's
+   pure CSS keyed on data-mode, the nav's pinned/collapsed state is
+   preserved and restored intact when Edit closes. */
+.psl[data-mode="focus"] {
+  --left-col: 0px;
+}
+.psl[data-mode="focus"] .psl__left {
+  display: none;
+}
 /* Center pane is the absolute-positioning anchor for the future
    Focus overlay (Phase C). */
 .psl__main {

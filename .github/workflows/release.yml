@@ -1,4 +1,4 @@
-name: Release Desktop (macOS universal)
+name: Release Desktop (macOS universal + Windows)
 
 on:
   push:
@@ -192,4 +192,80 @@ jobs:
             apps/desktop/release-stage/dist/latest-mac.yml
             apps/desktop/release-stage/dist/builder-debug.yml
             apps/desktop/release-stage/build/ffmpeg-source/*
+          retention-days: 30
+  windows:
+    name: Sign and publish Windows installer
+    runs-on: windows-latest
+    needs: prepare
+    timeout-minutes: 45
+    environment: windows-signing
+    permissions:
+      contents: write # publish releases to the same repo
+      id-token: none
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.1"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check release metadata
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: pnpm release:check
+
+      - name: Download vetted Windows FFmpeg
+        shell: pwsh
+        env:
+          WINDOWS_FFMPEG_URL: ${{ secrets.WINDOWS_FFMPEG_URL }}
+          WINDOWS_FFMPEG_SHA256: ${{ secrets.WINDOWS_FFMPEG_SHA256 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_FFMPEG_URL)) {
+            throw "WINDOWS_FFMPEG_URL secret is required for Windows releases. It must point at a vetted LGPL ffmpeg.exe."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_FFMPEG_SHA256)) {
+            throw "WINDOWS_FFMPEG_SHA256 secret is required for Windows releases."
+          }
+          $dir = Join-Path $env:RUNNER_TEMP "pwrsnap-ffmpeg"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $ffmpeg = Join-Path $dir "ffmpeg.exe"
+          Invoke-WebRequest -Uri $env:WINDOWS_FFMPEG_URL -OutFile $ffmpeg
+          $actual = (Get-FileHash -Algorithm SHA256 $ffmpeg).Hash.ToLowerInvariant()
+          $expected = $env:WINDOWS_FFMPEG_SHA256.Trim().ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "Windows ffmpeg SHA-256 mismatch: expected $expected, got $actual"
+          }
+          "PWRSNAP_WINDOWS_FFMPEG_PATH=$ffmpeg" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Sign and publish Windows installer
+        env:
+          # Authenticode certificate for PwrDrvr LLC. These come from the
+          # protected windows-signing environment, not repository-wide secrets.
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          GH_TOKEN: ${{ secrets.RELEASES_PAT || github.token }}
+        run: pnpm --filter @pwrsnap/desktop package:win -- --publish
+
+      - name: Upload Windows release artifacts (debug retention)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: desktop-release-windows-artifacts
+          path: |
+            apps/desktop/release-stage/dist/*-setup.exe
+            apps/desktop/release-stage/dist/*-setup.exe.blockmap
+            apps/desktop/release-stage/dist/latest.yml
+            apps/desktop/release-stage/dist/builder-debug.yml
           retention-days: 30

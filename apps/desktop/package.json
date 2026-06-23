@@ -19,6 +19,7 @@
     "package:skip-notarize": "node ./scripts/release.mjs --no-publish --skip-notarize",
     "package": "node ./scripts/release.mjs --no-publish",
     "package:win": "node ./scripts/package-win.mjs",
+    "package:win:release": "node ./scripts/package-win.mjs --release",
     "release": "node ./scripts/release.mjs",
     "postinstall": "pnpm run rebuild:electron-native",
     "preview": "electron-vite preview",

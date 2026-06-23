@@ -919,6 +919,7 @@ function pickFocusTargetForRecording(overlapping: BrowserWindow[]): BrowserWindo
  */
 async function runInteractiveRecord(): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
+
   // Pick a rect / window via the existing region selector. We can't
   // route through capture:interactive (which persists an image on
   // commit), so we drive the region-selector module directly. On
@@ -1104,6 +1105,16 @@ async function runInteractiveRecord(): Promise<void> {
   );
   if (!result.ok) {
     log.warn("recording:start failed", { code: result.error.code, message: result.error.message });
+    try {
+      if (Notification.isSupported()) {
+        new Notification({
+          title: "Recording failed",
+          body: result.error.message
+        }).show();
+      }
+    } catch {
+      /* notification support is best-effort */
+    }
   }
 }
 

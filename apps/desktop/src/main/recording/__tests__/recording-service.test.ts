@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   return {
     spawnedChildren: [] as FakeChild[],
+    spawnCalls: [] as Array<{ command: string; args: string[] }>,
     binaryPath: "/fake/PwrSnapRecorder",
     stateLog: [] as Array<{ phase: string }>,
     /** Full broadcast log including rect/displayId payloads — used
@@ -50,7 +51,8 @@ class FakeChild extends EventEmitter {
 }
 
 vi.mock("node:child_process", () => ({
-  spawn: vi.fn(() => {
+  spawn: vi.fn((command: string, args: string[] = []) => {
+    mocks.spawnCalls.push({ command, args });
     const child = new FakeChild();
     mocks.spawnedChildren.push(child);
     return child;
@@ -169,6 +171,7 @@ const originalResourcesPath = (process as { resourcesPath?: string }).resourcesP
 beforeEach(() => {
   vi.resetModules();
   mocks.spawnedChildren.length = 0;
+  mocks.spawnCalls.length = 0;
   mocks.stateLog.length = 0;
   mocks.stateLogFull.length = 0;
   mocks.pendingTimeouts.length = 0;
@@ -578,5 +581,42 @@ describe("RecordingService.start startedPromise timeout", () => {
     expect(child.killCalled).toBe(true);
     // State path includes a `failed` transition for the HUD/tray.
     expect(mocks.stateLog.map((s) => s.phase)).toContain("failed");
+  });
+});
+
+describe("Windows FFmpeg recorder", () => {
+  test("spawns gdigrab and persists the stopped MP4", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+
+    expect(mocks.spawnCalls).toHaveLength(1);
+    const call = mocks.spawnCalls[0]!;
+    expect(call.command).toContain("PwrSnapFFmpeg.exe");
+    expect(call.args).toContain("gdigrab");
+    expect(call.args).toContain("-video_size");
+    expect(call.args).toContain("100x100");
+    expect(call.args).toContain("h264_mf");
+    expect(mocks.stateLog.map((s) => s.phase)).toEqual([
+      "preflight",
+      "starting",
+      "recording"
+    ]);
+
+    const child = mocks.spawnedChildren[0]!;
+    const stopPromise = service.stop();
+    expect(child.stdin.write).toHaveBeenCalledWith("q");
+    child.emit("exit", 0, null);
+    const stopped = await stopPromise;
+
+    expect(stopped.captureId).toBe("cap-1");
+    expect(mocks.stateLog.map((s) => s.phase)).toContain("processing");
+    expect(mocks.stateLog.map((s) => s.phase)).toContain("ready");
   });
 });

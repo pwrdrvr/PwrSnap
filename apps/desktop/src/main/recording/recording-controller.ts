@@ -77,6 +77,75 @@ function anchorTopCenter(win: BrowserWindow, recordedDisplayId?: number): void {
   win.setPosition(x, y, false);
 }
 
+
+type ScreenRect = { x: number; y: number; width: number; height: number };
+
+type Point = { x: number; y: number };
+
+function rectsIntersect(a: ScreenRect, b: ScreenRect): boolean {
+  return a.x < b.x + b.width &&
+    a.x + a.width > b.x &&
+    a.y < b.y + b.height &&
+    a.y + a.height > b.y;
+}
+
+function pointFitsWorkArea(point: Point, width: number, height: number, workArea: ScreenRect): boolean {
+  return point.x >= workArea.x &&
+    point.y >= workArea.y &&
+    point.x + width <= workArea.x + workArea.width &&
+    point.y + height <= workArea.y + workArea.height;
+}
+
+function clampPointToWorkArea(point: Point, width: number, height: number, workArea: ScreenRect): Point {
+  return {
+    x: Math.min(Math.max(point.x, workArea.x), workArea.x + workArea.width - width),
+    y: Math.min(Math.max(point.y, workArea.y), workArea.y + workArea.height - height)
+  };
+}
+
+/**
+ * FFmpeg/gdigrab cannot exclude the HUD the way ScreenCaptureKit can on
+ * macOS. During Windows recording, keep the compact controller outside the
+ * recorded rect whenever the work area has room. Full-display recordings have
+ * no safe in-display placement, so they fall back to the normal top-center
+ * anchor and can still be stopped from the tray context menu.
+ */
+function anchorAwayFromRecordedRect(
+  win: BrowserWindow,
+  rect: { x: number; y: number; w: number; h: number },
+  displayId: number
+): void {
+  const display = screen.getAllDisplays().find((d) => d.id === displayId) ?? screen.getPrimaryDisplay();
+  const [w, h] = win.getSize();
+  const workArea = display.workArea;
+  const recorded = {
+    x: display.bounds.x + rect.x,
+    y: display.bounds.y + rect.y,
+    width: rect.w,
+    height: rect.h
+  };
+  const centerX = recorded.x + (recorded.width - w) / 2;
+  const centerY = recorded.y + (recorded.height - h) / 2;
+  const candidates: Point[] = [
+    { x: recorded.x + recorded.width + 12, y: centerY },
+    { x: recorded.x - w - 12, y: centerY },
+    { x: centerX, y: recorded.y + recorded.height + 12 },
+    { x: centerX, y: recorded.y - h - 12 },
+    { x: workArea.x + (workArea.width - w) / 2, y: workArea.y + 16 },
+    { x: workArea.x + (workArea.width - w) / 2, y: workArea.y + workArea.height - h - 16 }
+  ].map((point) => clampPointToWorkArea(point, w, h, workArea));
+
+  for (const point of candidates) {
+    if (!pointFitsWorkArea(point, w, h, workArea)) continue;
+    const hud = { x: point.x, y: point.y, width: w, height: h };
+    if (!rectsIntersect(hud, recorded)) {
+      win.setPosition(Math.round(point.x), Math.round(point.y), false);
+      return;
+    }
+  }
+
+  anchorTopCenter(win, displayId);
+}
 /**
  * Position + size the HUD so it BECOMES the recorded rect. The
  * window's content area covers the user's selected area exactly;
@@ -209,7 +278,11 @@ export function applyRecordingStateToController(state: RecordingState): void {
       // the pill stays anchored from the recording transition.
       const recordedDisplayId =
         state.phase === "recording" ? state.displayId : undefined;
-      anchorTopCenter(win, recordedDisplayId);
+      if (process.platform === "win32" && state.phase === "recording") {
+        anchorAwayFromRecordedRect(win, state.rect, state.displayId);
+      } else {
+        anchorTopCenter(win, recordedDisplayId);
+      }
       if (!win.isVisible()) {
         win.showInactive();
       } else {

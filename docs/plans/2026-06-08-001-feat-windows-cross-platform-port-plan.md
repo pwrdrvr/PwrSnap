@@ -65,7 +65,7 @@ macOS path byte-for-byte unchanged.**
 | float-over opacity-park (`setOpacity(0)` off-screen) | **real `hide()`/`showInactive()`** — `setOpacity` breaks `transparent:true` compositing on Windows |
 | `screencapture` CLI | Electron `desktopCapturer` (full display) + `sharp` crop |
 | Swift `window-list` helper | C++ `EnumWindows` helper (`window-list.exe`, built with `cl.exe`) |
-| `recorder` / Quick Look extensions | macOS-only; **deferred** (no-op off-darwin) |
+| `recorder` / Quick Look extensions | Video recording uses Windows FFmpeg `gdigrab` backend; Quick Look extensions remain macOS-only |
 | DMG / notarization | NSIS installer via electron-builder `win` target |
 
 Cross-cutting:
@@ -102,11 +102,13 @@ Cross-cutting:
 - [x] **NSIS installer** — [#220] electron-builder `win` target + `package-win.mjs`; gated behind the `build-preview` label in CI; installs + launches
 - [x] **Codex CLI discovery on Windows** — `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe` + Program Files; `codex.exe` PATH candidate first
 - [x] CI: **Windows Desktop E2E** job; **Build preview installer (Windows)** + **Build preview DMG** artifacts; macOS DMG build verified intact after the electron-builder restructure
+- [x] **Windows release wiring** - `.pwrsnap` Explorer association, Authenticode-gated `package-win.mjs --release/--publish`, tagged-release `windows-signing` job, `electron-updater` NSIS feed publishing, and optional bundled `PwrSnapFFmpeg.exe` injection are wired. Windows video recording uses the same selected-region flow backed by FFmpeg `gdigrab` + `h264_mf`; imported/existing video export and sizzle paths use the same vetted binary.
 
 ### 🔜 Remaining before Windows is shippable
 
-- [ ] **Code signing + notarization (Windows)** — the installer is currently unsigned; SmartScreen will warn. Decide on an Authenticode cert / EV cert + wire signing into electron-builder.
-- [ ] **Auto-update on Windows** — `electron-updater` NSIS path (mirrors the macOS Phase 3 wiring); needs a published feed.
+- [ ] **Provision Windows signing environment** - create the protected `windows-signing` GitHub Environment and set `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` for an Authenticode certificate belonging to PwrDrvr LLC. EV is preferred for SmartScreen reputation, but the repo wiring accepts any valid Authenticode cert.
+- [ ] **Provision vetted Windows FFmpeg binary input** - set `WINDOWS_FFMPEG_URL` + `WINDOWS_FFMPEG_SHA256` in `windows-signing`. The URL must point at a legally-vetted LGPL `ffmpeg.exe`; the packager refuses to publish without it.
+- [ ] **First signed Windows release smoke** - publish a prerelease tag, install the signed NSIS artifact on a clean Windows VM, verify `.pwrsnap` double-click, still capture, clipboard copy, and one update from prerelease to prerelease.
 - [ ] **Capture-trigger debounce** — observed one snap firing the capture pipeline 3× in ~600ms on Windows (global-shortcut key-repeat / double-bound trigger). Harmless today (only one persists) but wasteful and race-prone.
 - [ ] **Window picker doesn't highlight the Library window** — cosmetic; the picker works but the own-window highlight is missing.
 
@@ -125,9 +127,10 @@ Cross-cutting:
 
 - **Linux** (Phase 8b) — still fully deferred; `desktopCapturer` is portable but
   Wayland/X11 capture, tray, and global-shortcut behavior need their own pass.
-- **macOS-only features on Windows** — Quick Look thumbnail/preview extensions,
-  the ScreenCaptureKit recorder, presenter-cam segmentation. These stay
-  macOS-only; Windows equivalents (if ever) are separate work.
+- **macOS-only features on Windows** - Quick Look thumbnail/preview extensions,
+  the ScreenCaptureKit recorder implementation, and presenter-cam segmentation.
+  Video capture now has a Windows FFmpeg backend; a future Windows Graphics
+  Capture native helper can replace it without changing the renderer flow.
 
 ---
 

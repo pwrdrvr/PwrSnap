@@ -9,23 +9,26 @@
  * pnpm's symlinked virtual store. Differences from release.mjs:
  *
  *   - Target is `--win nsis --x64`, not `--mac --universal`.
- *   - No code signing / notarization (Phase 8 cross-platform port is
- *     unsigned for now; Windows Authenticode signing is a later task).
- *   - No bundled Swift native helpers, ffmpeg, or Quick Look
- *     extensions — those are macOS-only and live under `mac:` in
- *     electron-builder.yml, so a Windows pack never references them.
+ *   - Preview builds are unsigned; release/publish builds require
+ *     Authenticode signing input so SmartScreen does not see an
+ *     accidentally unsigned installer.
+ *   - No bundled Swift native helpers or Quick Look extensions - those
+ *     are macOS-only and live under `mac:` in electron-builder.yml.
+ *   - Windows releases may bundle a vetted LGPL `ffmpeg.exe` when
+ *     PWRSNAP_WINDOWS_FFMPEG_PATH (or PWRSNAP_FFMPEG_PATH) points at it.
  *   - The injected platform package is sharp's win32-x64 slice (which
  *     bundles libvips), not the four darwin slices.
  *
  * Modes:
- *   --dryrun  (default behavior is identical right now): build + pack
- *             an unsigned NSIS installer, no publish.
+ *   --dryrun  / default: build + pack an unsigned NSIS installer, no publish.
+ *   --release: enforce Authenticode + bundled ffmpeg inputs, no publish.
+ *   --publish: same release checks, then publish via electron-builder.
  *
  * Output: apps/desktop/release-stage/dist/PwrSnap-<version>-windows-x64-setup.exe
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
@@ -38,6 +41,7 @@ const targetArch = "x64";
 
 const args = process.argv.slice(2);
 const publish = args.includes("--publish");
+const releaseMode = publish || args.includes("--release");
 
 // Force pnpm to ignore any user-level global-pnpmfile inside child
 // processes — mirrors release.mjs so the staged install resolves the
@@ -108,6 +112,95 @@ function readStagedPackageJson(pkgName) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
+function assertWindowsReleaseInputs() {
+  if (process.platform !== "win32") {
+    throw new Error("Windows release packaging must run on Windows so Authenticode signing is exercised.");
+  }
+
+  const cscLink = process.env.WIN_CSC_LINK || process.env.CSC_LINK;
+  const cscPassword = process.env.WIN_CSC_KEY_PASSWORD || process.env.CSC_KEY_PASSWORD;
+  if (!cscLink || !cscPassword) {
+    throw new Error(
+      "Windows release packaging requires WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD " +
+        "(or CSC_LINK/CSC_KEY_PASSWORD) for Authenticode signing."
+    );
+  }
+  process.env.CSC_LINK ??= cscLink;
+  process.env.CSC_KEY_PASSWORD ??= cscPassword;
+
+  if (publish && !process.env.GH_TOKEN && !process.env.GITHUB_TOKEN) {
+    throw new Error("--publish requires GH_TOKEN or GITHUB_TOKEN so electron-builder can upload artifacts.");
+  }
+
+  const ffmpeg = resolveWindowsFfmpegInput();
+  if (ffmpeg === null) {
+    throw new Error(
+      "Windows release packaging requires a vetted LGPL ffmpeg.exe. " +
+        "Set PWRSNAP_WINDOWS_FFMPEG_PATH (preferred) or PWRSNAP_FFMPEG_PATH."
+    );
+  }
+}
+
+function resolveWindowsFfmpegInput() {
+  const source = process.env.PWRSNAP_WINDOWS_FFMPEG_PATH || process.env.PWRSNAP_FFMPEG_PATH;
+  if (!source || source.length === 0) return null;
+  if (!existsSync(source)) {
+    throw new Error(`configured Windows ffmpeg input does not exist: ${source}`);
+  }
+  return source;
+}
+
+function injectWindowsFfmpegResource(configPath) {
+  let config = readFileSync(configPath, "utf8");
+  if (config.includes("PwrSnapFFmpeg.exe")) return;
+  const marker = '    - from: "build/native/window-list.exe"\n      to: "PwrSnapWindowList.exe"\n';
+  const normalized = config.replace(/\r\n/g, "\n");
+  if (!normalized.includes(marker)) {
+    throw new Error("electron-builder.yml win.extraResources window-list marker not found");
+  }
+  config = normalized.replace(
+    marker,
+    marker + '    - from: "build/ffmpeg/ffmpeg.exe"\n      to: "PwrSnapFFmpeg.exe"\n'
+  );
+  writeFileSync(configPath, config);
+}
+
+function copyWindowsFfmpegIntoStage({ required }) {
+  const source = resolveWindowsFfmpegInput();
+  if (source === null) {
+    if (required) {
+      throw new Error("missing Windows ffmpeg release input");
+    }
+    console.log(
+      "  ! no Windows ffmpeg configured; packaged video export/sizzle will rely on PWRSNAP_FFMPEG_PATH or PATH"
+    );
+    return;
+  }
+  const target = join(stageDir, "build", "ffmpeg", "ffmpeg.exe");
+  mkdirSync(dirname(target), { recursive: true });
+  cpSync(source, target);
+  injectWindowsFfmpegResource(join(stageDir, "electron-builder.yml"));
+  console.log(`  + bundled ffmpeg.exe from ${source}`);
+}
+
+function assertRequiredWindowsResources() {
+  const required = [
+    {
+      label: "Windows window-list helper",
+      path: join(stageDir, "build", "native", "window-list.exe"),
+      hint: "Run `pnpm --filter @pwrsnap/desktop build:native` on Windows before packaging."
+    }
+  ];
+
+  const missing = required.filter(({ path }) => !existsSync(path));
+  if (missing.length === 0) return;
+
+  const details = missing
+    .map(({ label, path, hint }) => `- ${label} missing at ${path}\n  ${hint}`)
+    .join("\n");
+  throw new Error(`Windows package is missing required runtime resources:\n${details}`);
+}
+
 /**
  * `pnpm deploy --prod --legacy` stages only the host arch's slice and
  * drops platform-specific optionalDependencies. On the Windows runner
@@ -156,6 +249,10 @@ function injectWin32PlatformPackages() {
     cpSync(source, target, { recursive: true, dereference: true });
     console.log(`  + ${pkgName}@${expected}`);
   }
+}
+
+if (releaseMode) {
+  assertWindowsReleaseInputs();
 }
 
 // 1. License notices check (cheap, fail-fast).
@@ -215,6 +312,8 @@ cpSync(join(repoRoot, ".npmrc"), join(stageDir, ".npmrc"));
 for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md"]) {
   cpSync(join(repoRoot, file), join(stageDir, file));
 }
+copyWindowsFfmpegIntoStage({ required: releaseMode });
+assertRequiredWindowsResources();
 
 // 6. electron-builder --win nsis --x64.
 //    electron-builder is a devDependency, so `pnpm deploy --prod` does NOT

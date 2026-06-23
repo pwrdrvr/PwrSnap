@@ -83,6 +83,9 @@ operator setup + feature reference at
    Codex install, capture and library still work; the AI surfaces are
    just hidden.
 
+Windows preview install, FFmpeg, and build notes live in
+[docs/windows/README.md](docs/windows/README.md).
+
 Updates flow through `electron-updater` against the GitHub release feed.
 Switch between stable and prerelease channels in **Settings →
 Experimental → Update channel**. The Help menu's **Check for Updates**
@@ -132,8 +135,7 @@ A few load-bearing design rules:
 
 ## Roadmap
 
-macOS-first today. Linux and Windows are deferred to Phase 8 of the
-[buildout plan](docs/plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md).
+macOS-first today. Windows preview work is in progress under Phase 8 of the [buildout plan](docs/plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md); see [docs/windows/README.md](docs/windows/README.md) for local installer and build instructions. Linux remains deferred.
 
 What's shipped vs. what's still in flight — including video capture, the
 sizzle-reel composer, and presenter video — will land at

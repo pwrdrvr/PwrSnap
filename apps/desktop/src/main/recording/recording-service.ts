@@ -37,6 +37,7 @@ import {
   isRecordingActive,
   setRecordingState
 } from "./recording-state";
+import { resolveFfmpegPath } from "./ffmpeg-resolver";
 
 const log = getMainLogger("pwrsnap:recording-service");
 
@@ -539,6 +540,389 @@ class NativeRecorderService implements RecordingService {
   }
 }
 
+
+type PersistStoppedRecordingInput = {
+  outputPath: string;
+  durationSec: number;
+  containerFormat: "mp4" | "mov";
+  hasSystemAudio: boolean;
+  hasMicrophoneAudio: boolean;
+  subject: RecordingSubject;
+};
+
+async function persistStoppedRecording(stopped: PersistStoppedRecordingInput): Promise<{ captureId: string }> {
+  const stored = await adoptExistingFileAsSource(stopped.outputPath);
+  const sizeInfo = await statSource(stored.srcPath);
+  const rect = subjectToPhysicalRect(stopped.subject);
+
+  const sourceAppBundleId =
+    stopped.subject.kind === "window" ? stopped.subject.appBundleId ?? null : null;
+  const sourceAppName =
+    stopped.subject.kind === "window" ? stopped.subject.appName ?? null : null;
+
+  const { record } = insertCapture({
+    id: stored.id,
+    kind: "video",
+    captured_at: new Date().toISOString(),
+    source_app_bundle_id: sourceAppBundleId,
+    source_app_name: sourceAppName,
+    legacy_src_path: stored.srcPath,
+    width_px: rect.w,
+    height_px: rect.h,
+    device_pixel_ratio: 1,
+    byte_size: sizeInfo.byteSize,
+    sha256: stored.sha256
+  });
+  insertVideoMetadata({
+    captureId: record.id,
+    durationSec: stopped.durationSec,
+    containerFormat: stopped.containerFormat,
+    hasSystemAudio: stopped.hasSystemAudio,
+    hasMicrophoneAudio: stopped.hasMicrophoneAudio,
+    subject: stopped.subject
+  });
+  try {
+    await renameVideoSourceToEffectiveFilename(record.id);
+  } catch (cause) {
+    log.warn("recording source rename skipped", {
+      captureId: record.id,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
+
+  const hydrated = getCaptureById(record.id) ?? record;
+
+  broadcastCapturesChanged([record.id]);
+  setFloatOverState({ kind: "show-loaded", captureId: record.id, record: hydrated });
+  maybeEnqueueCaptureEnrichment(record.id);
+  try {
+    if (Notification.isSupported()) {
+      new Notification({
+        title: "Recording saved",
+        body: `${stopped.durationSec.toFixed(1)}s clip added to your Library.`
+      }).show();
+    }
+  } catch {
+    /* notifications are decorative; never block on them */
+  }
+
+  return { captureId: record.id };
+}
+
+class WindowsFfmpegRecorderService implements RecordingService {
+  private child: ChildProcessWithoutNullStreams | null = null;
+  private sessionId: string | null = null;
+  private subject: RecordingSubject | null = null;
+  private outputPath: string | null = null;
+  private startedAtMs = 0;
+  private stopRequested = false;
+  private exitPromise: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | null = null;
+  private stderrTail: string[] = [];
+
+  isActive(): boolean {
+    return this.child !== null && this.sessionId !== null;
+  }
+
+  async start(opts: StartOptions): Promise<{ sessionId: string }> {
+    if (isRecordingActive() || this.child !== null) {
+      throw new Error("already_recording");
+    }
+    const ffmpeg = resolveFfmpegPath();
+    if (ffmpeg === null) {
+      throw new Error(
+        "ffmpeg_not_available: Windows video recording requires PwrSnapFFmpeg.exe in the packaged app, or PWRSNAP_FFMPEG_PATH / ffmpeg.exe on PATH in development."
+      );
+    }
+
+    if (opts.capabilities.microphone || opts.capabilities.systemAudio) {
+      log.warn("Windows recording currently captures screen video only; audio toggles ignored", {
+        microphone: opts.capabilities.microphone,
+        systemAudio: opts.capabilities.systemAudio
+      });
+    }
+
+    const sessionId = nanoid(12);
+    const tmpDir = await mkdtemp(join(tmpdir(), "pwrsnap-recording-"));
+    const outputPath = join(tmpDir, `${sessionId}.mp4`);
+    const hudRect = subjectToPhysicalRect(opts.subject);
+    const displayId = subjectDisplayId(opts.subject);
+    const captureRect = subjectToWindowsDesktopRect(opts.subject);
+
+    this.sessionId = sessionId;
+    this.subject = opts.subject;
+    this.outputPath = outputPath;
+    this.stderrTail = [];
+    this.stopRequested = false;
+
+    setRecordingState({ phase: "preflight", sessionId, rect: hudRect, displayId });
+
+    if (opts.countdownSeconds > 0) {
+      for (let n = opts.countdownSeconds; n > 0; n--) {
+        if (this.sessionId !== sessionId) {
+          throw new Error("cancelled");
+        }
+        setRecordingState({
+          phase: "countdown",
+          sessionId,
+          secondsRemaining: n,
+          rect: hudRect,
+          displayId
+        });
+        await new Promise((r) => setTimeout(r, 1_000));
+      }
+      if (this.sessionId !== sessionId) {
+        throw new Error("cancelled");
+      }
+    }
+
+    setRecordingState({ phase: "starting", sessionId, rect: hudRect, displayId });
+
+    const args = windowsFfmpegCaptureArgs(captureRect, outputPath);
+    log.info("starting Windows ffmpeg recorder", { ffmpeg, captureRect, outputPath });
+    const child = spawn(ffmpeg, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true
+    });
+    this.child = child;
+    this.startedAtMs = Date.now();
+    this.exitPromise = new Promise((resolve) => {
+      child.on("exit", (code, signal) => {
+        log.info("Windows ffmpeg recorder exited", { code, signal });
+        resolve({ code, signal });
+        if (!this.stopRequested && this.sessionId === sessionId) {
+          const message = windowsFfmpegFailureMessage(this.stderrTail, code, signal);
+          this.cleanup();
+          setRecordingState({ phase: "failed", sessionId, code: "recorder_exited", message });
+          setTimeout(() => {
+            if (!this.isActive()) setRecordingState({ phase: "idle" });
+          }, 1_500);
+        }
+      });
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      this.rememberStderr(chunk);
+      log.warn("Windows ffmpeg recorder stderr", { chunk: chunk.trim() });
+    });
+    child.stdout.setEncoding("utf8");
+    child.on("error", (cause) => {
+      if (this.sessionId !== sessionId) return;
+      const message = cause instanceof Error ? cause.message : String(cause);
+      this.cleanup();
+      setRecordingState({ phase: "failed", sessionId, code: "recorder_spawn_failed", message });
+    });
+
+    setRecordingState({
+      phase: "recording",
+      sessionId,
+      startedAt: new Date(this.startedAtMs).toISOString(),
+      rect: hudRect,
+      displayId
+    });
+    return { sessionId };
+  }
+
+  async stop(): Promise<{ captureId: string }> {
+    if (this.child === null || this.sessionId === null || this.exitPromise === null) {
+      throw new Error("no_active_recording");
+    }
+    const sessionId = this.sessionId;
+    const outputPath = this.outputPath!;
+    const subject = this.subject!;
+    const startedAtMs = this.startedAtMs;
+    const child = this.child;
+    const exitPromise = this.exitPromise;
+
+    this.stopRequested = true;
+    setRecordingState({ phase: "stopping", sessionId });
+    try {
+      child.stdin.write("q");
+    } catch {
+      /* ffmpeg may already have closed stdin; the exit wait below handles it */
+    }
+    const exit = await Promise.race([
+      exitPromise,
+      new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+        setTimeout(() => {
+          try {
+            child.kill("SIGTERM");
+          } catch {
+            /* ignore */
+          }
+          resolve({ code: null, signal: "SIGTERM" });
+        }, 5_000);
+      })
+    ]);
+    if (exit.code !== 0 && exit.signal === null) {
+      const message = windowsFfmpegFailureMessage(this.stderrTail, exit.code, exit.signal);
+      this.cleanup();
+      setRecordingState({ phase: "failed", sessionId, code: "stop_failed", message });
+      throw new Error(message);
+    }
+
+    setRecordingState({ phase: "processing", sessionId });
+    const durationSec = Math.max(0.1, (Date.now() - startedAtMs) / 1000);
+    const stored = await persistStoppedRecording({
+      outputPath,
+      durationSec,
+      containerFormat: "mp4",
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      subject
+    });
+    setRecordingState({ phase: "ready", sessionId, captureId: stored.captureId });
+    this.cleanup();
+    return stored;
+  }
+
+  async restart(): Promise<{ sessionId: string }> {
+    if (this.subject === null) {
+      throw new Error("not_recording");
+    }
+    const subject = this.subject;
+    await this.cancel();
+    return this.start({
+      subject,
+      capabilities: { systemAudio: false, microphone: false },
+      countdownSeconds: 3
+    });
+  }
+
+  async cancel(): Promise<void> {
+    const sessionId = this.sessionId;
+    const child = this.child;
+    this.stopRequested = true;
+    if (child !== null) {
+      try {
+        child.stdin.write("q");
+      } catch {
+        /* ignore */
+      }
+      await Promise.race([
+        this.exitPromise ?? Promise.resolve(),
+        new Promise((resolve) => setTimeout(resolve, 500))
+      ]);
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+    }
+    this.cleanup();
+    setRecordingState({ phase: "idle" });
+    log.info("recording cancelled", { sessionId });
+  }
+
+  private rememberStderr(chunk: string): void {
+    const trimmed = chunk.trim();
+    if (trimmed.length === 0) return;
+    this.stderrTail.push(trimmed);
+    if (this.stderrTail.length > 8) this.stderrTail.shift();
+  }
+
+  private cleanup(): void {
+    const child = this.child;
+    if (child !== null && !child.killed) {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+    }
+    this.child = null;
+    this.sessionId = null;
+    this.subject = null;
+    this.outputPath = null;
+    this.startedAtMs = 0;
+    this.stopRequested = false;
+    this.exitPromise = null;
+    this.stderrTail = [];
+  }
+}
+
+function windowsFfmpegCaptureArgs(
+  rect: { x: number; y: number; w: number; h: number },
+  outputPath: string
+): string[] {
+  return [
+    "-hide_banner",
+    "-loglevel",
+    "warning",
+    "-y",
+    "-f",
+    "gdigrab",
+    "-framerate",
+    "30",
+    "-offset_x",
+    String(rect.x),
+    "-offset_y",
+    String(rect.y),
+    "-video_size",
+    `${rect.w}x${rect.h}`,
+    "-draw_mouse",
+    "1",
+    "-i",
+    "desktop",
+    "-an",
+    "-c:v",
+    "h264_mf",
+    "-b:v",
+    "8M",
+    "-pix_fmt",
+    "yuv420p",
+    "-movflags",
+    "+faststart",
+    outputPath
+  ];
+}
+
+function windowsFfmpegFailureMessage(
+  stderrTail: string[],
+  code: number | null,
+  signal: NodeJS.Signals | null
+): string {
+  const suffix = stderrTail.length > 0 ? `: ${stderrTail.join("\n")}` : "";
+  return `ffmpeg recorder exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"})${suffix}`;
+}
+
+function subjectToWindowsDesktopRect(subject: RecordingSubject): {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+} {
+  if (subject.kind === "display") {
+    const display = screen.getAllDisplays().find((d) => d.id === subject.displayId) ?? screen.getPrimaryDisplay();
+    return normalizeWindowsCaptureRect({
+      x: display.bounds.x,
+      y: display.bounds.y,
+      w: display.bounds.width,
+      h: display.bounds.height
+    });
+  }
+  return normalizeWindowsCaptureRect({
+    x: subject.rect.x,
+    y: subject.rect.y,
+    w: subject.rect.w,
+    h: subject.rect.h
+  });
+}
+
+function normalizeWindowsCaptureRect(rect: { x: number; y: number; w: number; h: number }): {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+} {
+  const w = Math.max(2, Math.floor(rect.w / 2) * 2);
+  const h = Math.max(2, Math.floor(rect.h / 2) * 2);
+  return {
+    x: Math.round(rect.x),
+    y: Math.round(rect.y),
+    w,
+    h
+  };
+}
 /**
  * Translate the subject's rect from the GLOBAL logical coord space
  * (the convention the region selector resolves to —
@@ -627,7 +1011,9 @@ function collectOurPids(): number[] {
  */
 export function getRecordingService(): RecordingService {
   if (activeService === null) {
-    activeService = new NativeRecorderService();
+    activeService = process.platform === "win32"
+      ? new WindowsFfmpegRecorderService()
+      : new NativeRecorderService();
   }
   return activeService;
 }

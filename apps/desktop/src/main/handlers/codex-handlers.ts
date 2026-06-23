@@ -42,6 +42,7 @@ import {
   type AcpAgentStrategy
 } from "@pwrdrvr/agent-acp";
 import { codexEnvForProfile } from "../ai/agent-kit-bindings";
+import { agentErrorMessage } from "../ai/agent-error-message";
 import { estimateAiUsageCost } from "../ai/ai-usage-cost";
 import { aiEnrichmentBudget, type AiEnrichmentBudget } from "../ai/enrichment-budget";
 import {
@@ -1136,13 +1137,10 @@ async function runCaptureEnrichment(params: {
         message: usageError instanceof Error ? usageError.message : String(usageError)
       });
     }
+    const message = agentErrorMessage(error);
     const run = isAbort
       ? cancelAiRun(params.runId)
-      : failAiRun(
-          params.runId,
-          error instanceof Error ? error.message : String(error),
-          latencyMs
-        );
+      : failAiRun(params.runId, message, latencyMs);
     broadcastAiRunUpdated({
       run,
       enrichment: getCaptureEnrichment(captureId)
@@ -1159,7 +1157,7 @@ async function runCaptureEnrichment(params: {
         provider,
         preparedMedia: preparedMediaShape(prepared),
         outcome: "failed",
-        message: error instanceof Error ? error.message : String(error)
+        message
       });
     } else {
       log.info("capture enrichment cancelled", {

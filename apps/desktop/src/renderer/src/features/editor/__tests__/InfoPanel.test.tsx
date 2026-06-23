@@ -79,6 +79,7 @@ function makeEnrichment(
     captureId: "cap_1",
     latestRunId: null,
     status: null,
+    error: null,
     ocrText: null,
     suggestedTitle: null,
     acceptedTitle: null,

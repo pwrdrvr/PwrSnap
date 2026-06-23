@@ -11,6 +11,7 @@ type EnrichmentRow = {
   capture_id: string;
   latest_ai_run_id: string | null;
   status: CaptureEnrichment["status"];
+  error: string | null;
   ocr_text: string | null;
   suggested_title: string | null;
   accepted_title: string | null;
@@ -40,6 +41,7 @@ function emptyEnrichment(captureId: string): CaptureEnrichment {
     captureId,
     latestRunId: null,
     status: null,
+    error: null,
     ocrText: null,
     suggestedTitle: null,
     acceptedTitle: null,
@@ -93,6 +95,7 @@ export function getCaptureEnrichment(captureId: string): CaptureEnrichment | nul
       `SELECT capture_enrichments.capture_id,
               capture_enrichments.latest_ai_run_id,
               ai_runs.status,
+              ai_runs.error,
               capture_enrichments.ocr_text,
               capture_enrichments.suggested_title,
               capture_enrichments.accepted_title,
@@ -125,6 +128,7 @@ export function getCaptureEnrichment(captureId: string): CaptureEnrichment | nul
     captureId: row.capture_id,
     latestRunId: row.latest_ai_run_id,
     status: row.status,
+    error: row.error,
     ocrText: row.ocr_text,
     suggestedTitle: row.suggested_title,
     acceptedTitle: row.accepted_title,
@@ -147,6 +151,7 @@ export function getEnrichmentSummaries(captureIds: string[]): CaptureEnrichmentS
     return {
       captureId,
       status: enrichment?.status ?? null,
+      error: enrichment?.error ?? null,
       acceptedTitle: enrichment?.acceptedTitle ?? null,
       acceptedDescription: enrichment?.acceptedDescription ?? null,
       acceptedTags: enrichment?.acceptedTags ?? [],
@@ -199,6 +204,7 @@ export function listEnrichmentsByCaptureIds(
       `SELECT capture_enrichments.capture_id,
               capture_enrichments.latest_ai_run_id,
               ai_runs.status,
+              ai_runs.error,
               capture_enrichments.ocr_text,
               capture_enrichments.suggested_title,
               capture_enrichments.accepted_title,
@@ -271,6 +277,7 @@ export function listEnrichmentsByCaptureIds(
         captureId: row.capture_id,
         latestRunId: row.latest_ai_run_id,
         status: row.status,
+        error: row.error,
         ocrText: row.ocr_text,
         suggestedTitle: row.suggested_title,
         acceptedTitle: row.accepted_title,

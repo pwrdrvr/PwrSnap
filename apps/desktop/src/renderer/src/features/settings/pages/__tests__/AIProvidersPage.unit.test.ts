@@ -119,6 +119,25 @@ describe("AiSurfaceDefaultControl — job routing", () => {
     expect(onChange).toHaveBeenCalledWith({ provider: "", model: "" });
   });
 
+  test("surfaces ACP runtime/auth errors for the selected provider", async () => {
+    const el = await renderSurfaceControl({
+      surface: "enrichment",
+      name: "Capture captions, tags & OCR",
+      sub: "",
+      value: { provider: "acp:gemini", model: "gemini-3-pro-preview" },
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [{ value: "acp:gemini", label: "Gemini CLI" }],
+      acpModelOptions: [],
+      acpModelsLoading: false,
+      acpModelError: "This client is no longer supported for Gemini Code Assist for individuals.",
+      onChange: vi.fn()
+    });
+
+    expect(el.textContent).toContain("Gemini CLI is not available");
+    expect(el.textContent).toContain("This client is no longer supported");
+  });
+
   test("annotates the ACP Default with the agent's true default; marks the (default) model", async () => {
     const onChange = vi.fn();
     const el = await renderSurfaceControl({

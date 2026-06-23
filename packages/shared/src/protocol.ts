@@ -2376,6 +2376,7 @@ export type AiUsageRunsPage = {
 export type CaptureEnrichmentSummary = {
   captureId: string;
   status: AiRunStatus | null;
+  error: string | null;
   acceptedTitle: string | null;
   acceptedDescription: string | null;
   acceptedTags: string[];

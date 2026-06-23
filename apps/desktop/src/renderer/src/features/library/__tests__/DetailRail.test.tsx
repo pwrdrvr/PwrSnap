@@ -45,6 +45,7 @@ function enrichment(patch: Partial<CaptureEnrichment> = {}): CaptureEnrichment {
     captureId: "cap_1",
     latestRunId: "run_1",
     status: "completed",
+    error: null,
     ocrText: "Search by display name\n\nhuntharo\nKeep Memo\nAll albums\nFriends 2",
     suggestedTitle: null,
     acceptedTitle: null,

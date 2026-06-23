@@ -845,6 +845,12 @@
   min-width: 160px;
 }
 
+.pss__ai-surface-error {
+  flex: 1 0 100%;
+  color: var(--accent-bright);
+  font: 500 11px/1.35 var(--font-sans);
+}
+
 /* toggle switch */
 .pss__switch {
   position: relative;

@@ -1198,6 +1198,7 @@ function DetailTab({
         safetyDisabled={aiSafetyDisabled}
         providerLabel={providerLabel}
         modelLabel={modelLabel}
+        error={enrichment?.error}
         action={
           <>
             {/* Prominent bulk Use — the common case. Covers title +
@@ -1596,6 +1597,7 @@ function OcrTab({
           safetyDisabled={aiSafetyDisabled}
           providerLabel={providerLabel}
           modelLabel={modelLabel}
+          error={enrichment?.error}
         />
         <div className="psl__ocr-tab-actions">
           <button

@@ -487,11 +487,13 @@ export function DetailRail({
     [hasOcrText, sizzleProjects.length, containingProjects.length, cartCount]
   );
 
-  // Grid restricts the rail to Info + OCR (export footer rides along for
-  // free). Chat/Project/Cart are focus/reel-only — Cart in Grid is the
-  // standalone rail until the cart-zip work folds it in here as a tab.
+  // Grid restricts the rail to Info + OCR + Cart (the cross-asset cart
+  // tab, surfaced when the cart is non-empty). Chat/Project stay
+  // focus/reel-only; the export footer rides along for free. `tabs`
+  // already gates the Cart entry on cartCount > 0, so this picks it up
+  // only when there's actually a cart.
   const gridTabs = useMemo(
-    () => tabs.filter((t) => t.id === "info" || t.id === "ocr"),
+    () => tabs.filter((t) => t.id === "info" || t.id === "ocr" || t.id === "cart"),
     [tabs]
   );
 
@@ -507,9 +509,18 @@ export function DetailRail({
     }
   }, [tabs, activeTab, writeActiveTab]);
 
-  // No selection → no rail. Grid renders the rail for a SELECTED
-  // capture (Library forces `record` null when nothing's selected or the
-  // standalone cart rail owns the column), so this single guard covers
+  // Same orphan guard for the grid-local tab: if the cart empties while
+  // the grid Cart tab is active, fall back to Info so the bar and panel
+  // don't disagree.
+  useEffect(() => {
+    if (!gridTabs.some((t) => t.id === gridTab)) {
+      setGridTab("info");
+    }
+  }, [gridTabs, gridTab]);
+
+  // No selection → no rail. In Grid, Library passes `record` null
+  // whenever nothing is selected (the standalone cart rail covers the
+  // no-selection + non-empty-cart case), so this single guard covers
   // grid-empty, focus, and reel alike. Hooks above this point run every
   // render regardless of view.kind — do NOT move any hook below here
   // (Rules of Hooks; guarded by DetailRail.test + library-*-spec).

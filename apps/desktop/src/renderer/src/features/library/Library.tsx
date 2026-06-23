@@ -1780,12 +1780,14 @@ export function Library() {
   }, [isTrashView, records, selectedRecordId, universeRecords]);
 
   // Grid-first inspector: in Grid, the right rail shows for a SELECTED
-  // capture (Info + OCR + the L/M/H export footer). It yields to the
-  // standalone cart rail while that's open — both occupy the third grid
-  // column, so only one shows at a time. (Folding the cart in as a rail
-  // tab lands with the cart-zip work in a later phase.)
-  const showGridInspector =
-    view.kind === "grid" && selectedRecord !== null && !cartIsOpenInGrid;
+  // capture (Info + OCR + Cart-when-non-empty + the L/M/H export footer).
+  // The cart rides along as a tab here, so selecting a capture no longer
+  // hides the cart — it just changes the cart's form (full rail → tab).
+  const showGridInspector = view.kind === "grid" && selectedRecord !== null;
+  // The standalone cart rail fills the column ONLY when nothing is
+  // selected. Once a capture is selected the inspector takes the column
+  // and the cart becomes its Cart tab — so the two never compete.
+  const cartRailInGrid = cartIsOpenInGrid && selectedRecord === null;
   // The right rail is "showing" whenever it occupies the column: always
   // in focus/reel, and in Grid only when the inspector is up. Drives the
   // data-right column-width attribute (undefined until settings hydrate so
@@ -2666,7 +2668,7 @@ export function Library() {
       // standalone cart rail has room. In focus/reel the cart lives in
       // the DetailRail tab strip and the column is already 360px, so
       // this only matters for grid. See `.psl[data-mode="grid"][data-cart="open"]`.
-      data-cart={cartIsOpenInGrid ? "open" : undefined}
+      data-cart={cartRailInGrid ? "open" : undefined}
     >
       <header className="psl__topbar">
         <div className="psl__topbar-l">
@@ -3371,12 +3373,13 @@ export function Library() {
           document.querySelector(".app-toast-stack") ?? document.body
         )}
 
-      {/* Grid-mode standalone cart rail. DetailRail returns null in
-          grid mode (its tabs are all per-capture), so the cart — which
-          is workspace-global — gets its own rail here that appears the
-          moment the user checks their first capture. In focus/reel the
-          cart is a DetailRail tab instead, so this is gated to grid. */}
-      {cartIsOpenInGrid ? (
+      {/* Grid-mode standalone cart rail — shown ONLY when no capture is
+          selected. The moment a capture is selected the DetailRail takes
+          the column and surfaces the cart as its Cart tab instead, so the
+          cart never disappears. With nothing selected there's no inspector
+          to host the tab, so the workspace-global cart gets its own rail
+          here (appears when the user checks their first capture). */}
+      {cartRailInGrid ? (
         // Render CartPanel DIRECTLY in the base `.psl__right` (which is
         // a flex column with `overflow: hidden`). Deliberately NOT
         // `.psl__right--vertical` / `.psl__right-content` /

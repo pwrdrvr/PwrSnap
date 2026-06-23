@@ -323,6 +323,23 @@ describe("Library grid select vs edit", () => {
     expect(hasStage()).toBe(false);
   });
 
+  test("an arrow key in grid moves the selection (and doesn't open the editor)", async () => {
+    await renderLibrary();
+    expect(cellEl()?.classList.contains("is-selected")).toBe(false);
+
+    // Nothing selected yet → the first arrow enters from an end and
+    // selects a tile, staying in grid.
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })
+      );
+      await Promise.resolve();
+    });
+
+    expect(cellEl()?.classList.contains("is-selected")).toBe(true);
+    expect(hasStage()).toBe(false);
+  });
+
   test("the hover Edit CTA opens the editor", async () => {
     await renderLibrary();
     const editBtn = container?.querySelector<HTMLElement>(".psl__cell-edit");

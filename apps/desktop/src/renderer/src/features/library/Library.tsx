@@ -47,6 +47,7 @@ import { DeleteUndoStack } from "./delete-undo-stack";
 import { mergeOpenedLiveRecords } from "./library-records";
 import { initialLibraryView, libraryReducer, type LibraryAction, type LibraryView } from "./library-view";
 import { resolveCellIntent, toGridCell, type CellTrigger } from "./resolve-cell-intent";
+import { GRID_NAV_KEYS, nextGridSelectionId } from "./grid-nav";
 import { Stage } from "./Stage";
 import { UndoToast } from "./UndoToast";
 import {
@@ -2212,6 +2213,12 @@ export function Library() {
   const prevRecordIdRef = useRef(prevRecordId);
   const nextRecordIdRef = useRef(nextRecordId);
   const selectedRecordRef = useRef(selectedRecord);
+  // Live ordered visible ids + cells-per-row, read by the grid arrow-key
+  // navigation in the keydown handler (refs so the single listener never
+  // goes stale). cellsPerRow is owned by VirtualizedGrid (it measures the
+  // container) and mirrored here.
+  const orderedIdsRef = useRef<string[]>([]);
+  const cellsPerRowRef = useRef<number>(4);
   useEffect(() => {
     prevRecordIdRef.current = prevRecordId;
   }, [prevRecordId]);
@@ -2221,6 +2228,9 @@ export function Library() {
   useEffect(() => {
     selectedRecordRef.current = selectedRecord;
   }, [selectedRecord]);
+  useEffect(() => {
+    orderedIdsRef.current = visibleRecords.map((r) => r.id);
+  }, [visibleRecords]);
   useEffect(() => {
     function onKey(event: KeyboardEvent): void {
       // ⌘F — focus the library search input. Runs BEFORE the
@@ -2323,6 +2333,42 @@ export function Library() {
             returnAnchor: { scrollTop: savedScrollTop, cellId: intent.recordId }
           });
         }
+        return;
+      }
+      // Grid: arrow keys + PageUp/Down move the SELECTION through the
+      // visible cells — ←/→ by one, ↑/↓ by a row, PageUp/Down by a page —
+      // and keep the moved cell in view. Lets you browse + inspect from
+      // the keyboard without leaving Grid. (Enter on the selection edits.)
+      const gridDir = kind === "grid" ? GRID_NAV_KEYS[event.key] : undefined;
+      if (gridDir !== undefined) {
+        const ids = orderedIdsRef.current;
+        if (ids.length === 0) return;
+        event.preventDefault();
+        const wrap = gridScrollRef.current;
+        const rowsPerPage = Math.max(
+          1,
+          Math.floor((wrap?.clientHeight ?? 720) / GRID_ROW_EST_PX)
+        );
+        const nextId = nextGridSelectionId(
+          ids,
+          viewRef.current.selectedRecordId,
+          gridDir,
+          cellsPerRowRef.current,
+          rowsPerPage
+        );
+        if (nextId === null) return;
+        // For a page jump the target is ~a page away and likely not
+        // rendered yet — nudge the scroll first so the virtualizer renders
+        // near it, then scroll the cell exactly into view next frame.
+        if ((gridDir === "pageup" || gridDir === "pagedown") && wrap !== null) {
+          wrap.scrollTop += gridDir === "pagedown" ? wrap.clientHeight : -wrap.clientHeight;
+        }
+        viewDispatch({ type: "SELECT_IN_GRID", recordId: nextId }, { history: "replace" });
+        requestAnimationFrame(() => {
+          gridScrollRef.current
+            ?.querySelector(`[data-cell-id="${nextId}"]`)
+            ?.scrollIntoView({ block: "nearest" });
+        });
         return;
       }
       if (event.key === "ArrowLeft" && (kind === "focus" || kind === "reel")) {
@@ -3127,6 +3173,7 @@ export function Library() {
             grouped={grouped}
             scrollElement={gridScrollRef}
             cellMinWidth={gridZoom}
+            cellsPerRowRef={cellsPerRowRef}
             selectedRecordId={selectedRecordId}
             fixtureBacking={fixtureBacking}
             projectCoverRecordsById={projectCoverRecordsById}
@@ -3562,6 +3609,10 @@ function cellRowEstimatePx(cellMinWidth: number): number {
 // `cellMinWidth` prop and stepped by pinch-to-zoom.
 const CELL_GAP = 12;
 const CELL_GAP_DAY_END = 18; // .psl__grid padding-bottom in the original single-grid layout
+// Approximate rendered grid-cell row height (cell box ~240px +
+// CELL_GAP). Only used to estimate rows-per-page for PageUp/PageDown
+// keyboard nav, so a rough value is fine.
+const GRID_ROW_EST_PX = 252;
 const GRID_HORIZONTAL_PADDING = 18;
 /** Horizontal pixels from the reel's right edge at which to fire
  *  `loadMore`. ~3 viewport-widths of frames at typical filmstrip
@@ -3595,6 +3646,9 @@ type VirtualizedGridProps = {
   /** Target minimum cell width in px (the sticky grid-zoom level). The
    *  grid fits `floor(width / cellMinWidth)` columns at this width. */
   cellMinWidth: number;
+  /** Mirrors the measured cells-per-row up to Library so the keyboard
+   *  grid-nav (↑/↓ by a row) can read it without re-measuring. */
+  cellsPerRowRef: React.RefObject<number>;
   selectedRecordId: string | null;
   fixtureBacking: FixtureBackedRecords;
   projectCoverRecordsById: Map<string, CaptureRecord>;
@@ -3744,6 +3798,7 @@ function VirtualizedGrid({
   grouped,
   scrollElement,
   cellMinWidth,
+  cellsPerRowRef,
   selectedRecordId,
   fixtureBacking,
   projectCoverRecordsById,
@@ -3763,6 +3818,10 @@ function VirtualizedGrid({
   purgeCaptureAction
 }: VirtualizedGridProps) {
   const cellsPerRow = useCellsPerRow(scrollElement, cellMinWidth);
+  // Mirror the measured value up to Library for keyboard grid-nav.
+  useEffect(() => {
+    cellsPerRowRef.current = cellsPerRow;
+  }, [cellsPerRow, cellsPerRowRef]);
 
   // Flatten day-groups → 1-D row list. Each header gets one row;
   // each day's items are sliced into rows of cellsPerRow. Memoized

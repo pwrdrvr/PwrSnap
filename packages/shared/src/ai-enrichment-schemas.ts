@@ -20,10 +20,27 @@ export const SuggestedTagSchema = z.object({
 
 export type SuggestedTag = z.infer<typeof SuggestedTagSchema>;
 
+/** Coerce a possibly-string-or-number scalar to a trimmed, length-capped string.
+ *  Weak ACP models (Grok/Kimi/Qwen) over-produce: a 130-char title or a number
+ *  where a string was asked for should CLAMP, not reject. A non-coercible value
+ *  (object/array) DROPS to `undefined` so the field falls back to its default
+ *  rather than failing the whole parse — one bad field must never sink an
+ *  otherwise-good enrichment. The only failure left is a wholly-empty result
+ *  (caught by the empty guard) or a reply that isn't a JSON object at all. */
+function clampString(value: unknown, max: number): unknown {
+  if (typeof value === "string") return value.trim().slice(0, max);
+  if (typeof value === "number" || typeof value === "boolean") return String(value).slice(0, max);
+  return undefined;
+}
+
 export const CaptureEnrichmentSchema = z.object({
   captureId: z.string().min(1),
   latestRunId: z.string().nullable(),
   status: AiRunStatusSchema.nullable(),
+  error: z.preprocess(
+    (v) => (v === null || v === undefined ? v : clampString(v, 2_000)),
+    z.string().max(2_000).nullable().default(null)
+  ),
   ocrText: z.string().max(100_000).nullable(),
   suggestedTitle: z.string().max(120).nullable(),
   acceptedTitle: z.string().max(120).nullable(),
@@ -39,19 +56,6 @@ export const CaptureEnrichmentSchema = z.object({
 });
 
 export type CaptureEnrichment = z.infer<typeof CaptureEnrichmentSchema>;
-
-/** Coerce a possibly-string-or-number scalar to a trimmed, length-capped string.
- *  Weak ACP models (Grok/Kimi/Qwen) over-produce: a 130-char title or a number
- *  where a string was asked for should CLAMP, not reject. A non-coercible value
- *  (object/array) DROPS to `undefined` so the field falls back to its default
- *  rather than failing the whole parse — one bad field must never sink an
- *  otherwise-good enrichment. The only failure left is a wholly-empty result
- *  (caught by the empty guard) or a reply that isn't a JSON object at all. */
-function clampString(value: unknown, max: number): unknown {
-  if (typeof value === "string") return value.trim().slice(0, max);
-  if (typeof value === "number" || typeof value === "boolean") return String(value).slice(0, max);
-  return undefined;
-}
 
 /** Coerce a raw value into ≤`limit` clean, length-capped strings: accepts a
  *  single string (wrapped), drops non-strings/blanks, clips each item, and

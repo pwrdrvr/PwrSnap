@@ -111,6 +111,28 @@ describe("CaptureEnrichmentSchema", () => {
     expect(parsed.captureId).toBe("cap_1");
   });
 
+  test("clamps overlong persisted run errors", () => {
+    const parsed = CaptureEnrichmentSchema.parse({
+      captureId: "cap_1",
+      latestRunId: "run_1",
+      status: "failed",
+      error: `  ${"x".repeat(2_500)}  `,
+      ocrText: null,
+      suggestedTitle: null,
+      acceptedTitle: null,
+      titleAcceptedAt: null,
+      suggestedFilenameStem: null,
+      acceptedFilenameStem: null,
+      filenameAcceptedAt: null,
+      suggestedDescription: null,
+      acceptedDescription: null,
+      descriptionAcceptedAt: null,
+      suggestedTags: [],
+      acceptedTags: []
+    });
+    expect(parsed.error).toHaveLength(2_000);
+  });
+
   test("rejects overlong descriptions", () => {
     expect(() =>
       CaptureEnrichmentSchema.parse({

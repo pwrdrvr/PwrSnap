@@ -30,6 +30,7 @@ function enrichment(patch: Partial<CaptureEnrichment> = {}): CaptureEnrichment {
     captureId: "cap_1",
     latestRunId: "run_1",
     status: "completed",
+    error: null,
     ocrText: "LINE",
     suggestedTitle: null,
     acceptedTitle: null,
@@ -686,6 +687,25 @@ describe("FloatOver Codex suggestions", () => {
 
     expect(el.querySelector(".fo")?.classList.contains("is-thinking")).toBe(true);
     expect(el.querySelector(".fo")?.classList.contains("is-paused")).toBe(true);
+  });
+
+  test("shows ACP authentication failures instead of a generic read failure", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: enrichment({
+        status: "failed",
+        error: "This client is no longer supported for Gemini Code Assist for individuals.",
+        suggestedDescription: null,
+        suggestedTags: []
+      }),
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      enrichmentProviderLabel: "Gemini"
+    });
+
+    expect(el.textContent).toContain("Gemini is not available");
+    expect(el.textContent).toContain("This client is no longer supported");
   });
 
   test("accepts suggested description when the user clicks Use", async () => {

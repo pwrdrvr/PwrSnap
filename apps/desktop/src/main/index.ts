@@ -147,7 +147,12 @@ import { persistCaptureFromTempV2, sweepBundleTrash } from "./persistence/bundle
 import { getCacheSourcePath } from "./persistence/paths";
 import { runBundleFilenameMaintenanceOnBoot } from "./persistence/bundle-filename-maintenance";
 import { runVideoFilenameMaintenanceOnBoot } from "./persistence/video-filename-maintenance";
-import { ensureEffectiveSrcPath, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
+import {
+  ensureEffectiveSrcPath,
+  ensureLayerSourcePath,
+  sweepStaleTempFiles,
+  sweepTrash
+} from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { destroyTextBakePool } from "./render/text-html-bake";
 import { shutdownCompositeThumbnailWorker } from "./workers/composite-thumbnail-worker-client";
@@ -1162,6 +1167,13 @@ const protocolResolver: ProtocolResolver = {
     // lazy-extract source.png from the bundle if the per-capture
     // cache file has been wiped (Storage → Clear/Trim, manual rm).
     return await ensureEffectiveSrcPath(record);
+  },
+  async sourceBytesPath(captureId, sha256) {
+    const record = getCaptureById(captureId);
+    if (record === null) {
+      return null;
+    }
+    return await ensureLayerSourcePath(record, sha256);
   },
   async cacheFile(req) {
     return resolveCacheFile(req);

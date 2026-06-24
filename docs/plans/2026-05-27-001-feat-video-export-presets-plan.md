@@ -27,7 +27,7 @@ arranged in two rows:
 └──────────────────┴──────────────────┴──────────────────┘
 ┌──────────────────┬──────────────────┬──────────────────┐
 │      MP4 LOW     │      MP4 MED     │     MP4 HIGH     │
-│   720p · CRF 28  │  1080p · CRF 23  │  source · copy   │
+│   720p · 2 Mbps  │  1080p · 5 Mbps  │ source · 6 Mbps  │
 │      ⌘4          │       ⌘5         │       ⌘6         │
 ├──────────────────┼──────────────────┼──────────────────┤
 │      ⋮ FILE      │      ⋮ FILE      │      ⋮ FILE      │
@@ -78,9 +78,9 @@ Rationale:
 
 | Preset | GIF | MP4 |
 |---|---|---|
-| **LOW** | 480p · 15 fps · palette-optimized | 720p · CRF 28 · web-friendly |
-| **MED** | 540p · 24 fps · ~geometric midpoint | 1080p · CRF 23 |
-| **HIGH** | 720p · 30 fps · smoothest practical | source resolution · stream-copy |
+| **LOW** | 480p · 15 fps · palette-optimized | 720p · 2 Mbps · web-friendly |
+| **MED** | 540p · 24 fps · ~geometric midpoint | 1080p · 5 Mbps |
+| **HIGH** | 720p · 30 fps · smoothest practical | source resolution · 6 Mbps |
 
 Mirroring the image side, the preset constants live in a single
 source-of-truth file in `apps/desktop/src/main/recording/` and
@@ -108,19 +108,21 @@ for your typical clip; everything scales linearly):
   above 720p — a 1080p 30 fps GIF for 10 seconds is routinely 80+
   MB, over Slack's 50 MB cap, past iMessage's compression sweet
   spot, and triggers most platforms' auto-convert-to-MP4 paths.
-  MP4 keeps the resolution axis up to source because H.264 + CRF
+  MP4 keeps the resolution axis up to source because H.264 +
+  VideoToolbox compression
   handles high-res screen content without exploding; GIF doesn't,
   so HIGH means "smoothest and largest practical", not "source".
-  Users who actually want source-resolution video pick MP4 HIGH
-  (stream-copy, no re-encode, no size hit).
+  Users who actually want source-resolution video pick MP4 HIGH,
+  which still re-encodes so the result is compressed for sharing.
 
 MP4 rationale:
-- 720p / CRF 28 = ~3 Mbps for typical screen content. Drops into
+- 720p / 2 Mbps = web-friendly. Drops into
   Slack / iMessage / email under attachment limits for ~30s clips.
-- 1080p / CRF 23 = visually-lossless for screen content. The
-  reference quality point.
-- source / stream-copy = no re-encode, just trim + remux. Today's
-  HIGH behavior. Largest output, instant encode.
+- 1080p / 5 Mbps = visually-lossless for typical screen content. The
+  reference quality point for most captures.
+- source / 6 Mbps = source-resolution compressed output. Largest MP4
+  preset, but still re-encoded so it is not just the original capture
+  remuxed into the cache.
 
 These values are deliberate first guesses; tune in code review or
 in a follow-up if the field reports differently. The bus contract
@@ -141,7 +143,7 @@ doesn't bake them in — the contract carries `preset: "low" | "med"
             ↓
    ┌───────────────────┐
    │      MP4 LOW      │
-   │  720p · CRF 28    │  ← clipboard written, card re-enabled
+   │  720p · 2 Mbps    │  ← clipboard written, card re-enabled
    │       ⌘4          │
    └───────────────────┘
 ```
@@ -321,11 +323,12 @@ Validators in `apps/desktop/src/main/handlers/settings-validators.ts`
 
 `apps/desktop/src/main/recording/recording-exporter.ts`:
 - Add `PRESET_SPECS` const mapping `(format, preset)` →
-  `{ width, fps, crf, audioPolicy }`.
+  `{ width, fps, bitrate, keyframeInterval, audioPolicy }`.
 - Switch ffmpeg invocations to use the preset spec (replace the
-  hardcoded `fps=15 scale=720:-2` for GIF; add `-vf scale=...,fps=...`
-  + `-crf` for MP4).
-- Preserve stream-copy for MP4 HIGH (no scale, no re-encode).
+  hardcoded `fps=15 scale=720:-2` for GIF; add VideoToolbox bitrate,
+  optional scale filter, and GOP settings for MP4).
+- Preserve source resolution for MP4 HIGH, but still re-encode with
+  VideoToolbox compression.
 - Output filename gains the `<preset>` token.
 
 `apps/desktop/src/main/persistence/video-repo.ts`:

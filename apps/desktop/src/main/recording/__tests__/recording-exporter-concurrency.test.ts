@@ -292,16 +292,26 @@ describe("exportVideoRange concurrency", () => {
     await med;
   });
 
-  test("HIGH MP4 remains a stream-copy without re-encode GOP flags", async () => {
+  test("HIGH MP4 re-encodes at source resolution with GOP flags", async () => {
     const high = exportVideoRange({ ...baseInput, preset: "high" });
     await waitForSpawnCount(1);
 
     const args = spawnQueue[0]?.args ?? [];
-    expect(args).toEqual(expect.arrayContaining(["-c:v", "copy"]));
-    expect(args).not.toContain("-g");
-    expect(args).not.toContain("-keyint_min");
-    expect(args.join(" ")).toContain(".high.s0m0.mp4");
-    expect(args.join(" ")).not.toContain(".high.gop60.s0m0.mp4");
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "-c:v",
+        "h264_videotoolbox",
+        "-b:v",
+        "6000k",
+        "-g",
+        "60",
+        "-keyint_min",
+        "60"
+      ])
+    );
+    expect(args).not.toContain("copy");
+    expect(args).not.toContain("-vf");
+    expect(args.join(" ")).toContain(".high.gop60.s0m0.mp4");
 
     await resolveNextSpawn(0);
     await high;

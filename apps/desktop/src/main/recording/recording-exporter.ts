@@ -19,7 +19,7 @@
 // The preset drives target width + VideoToolbox bitrate:
 //   LOW : 720p  · 2 Mbps · web-friendly
 //   MED : 1080p · 5 Mbps · visually-lossless
-//   HIGH: source resolution · stream-copy (no re-encode)
+//   HIGH: source resolution · 6 Mbps · compressed master
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -44,10 +44,9 @@ import { resolveFfmpegPath } from "./ffmpeg-resolver";
 
 const log = getMainLogger("pwrsnap:recording-exporter");
 
-/** Per-(format, preset) encode profile. Source-resolution presets
- *  (HIGH for MP4) set `width: null` to signal "no downscale". MP4
- *  HIGH also sets `bitrate: null` to signal "stream-copy" (no
- *  re-encode).
+/** Per-(format, preset) encode profile. Source-resolution presets set
+ *  `width: null` to signal "no downscale". MP4 presets all re-encode
+ *  through VideoToolbox with a target bitrate and GOP interval.
  *
  *  GIF tiers are picked to land in roughly log-spaced byte sizes for
  *  a typical PwrSnap recording — each tier ~2× the previous, with
@@ -59,14 +58,13 @@ const log = getMainLogger("pwrsnap:recording-exporter");
  *  (a 1080p 30fps GIF for 10 seconds is routinely 80+ MB — over
  *  Slack's 50 MB cap, way past iMessage's practical limit, and
  *  triggers most platforms' auto-convert-to-MP4 paths). MP4 keeps
- *  the resolution axis up to source because it has the codec
- *  headroom (CRF + H.264 motion compensation) to handle high-res
- *  screen content without exploding. */
+ *  the resolution axis up to source because VideoToolbox H.264 has
+ *  enough codec headroom for high-res screen content. */
 export type GifPresetSpec = { readonly width: number | null; readonly fps: number };
 export type Mp4PresetSpec = {
   readonly width: number | null;
-  readonly bitrate: string | null;
-  readonly keyframeInterval: number | null;
+  readonly bitrate: string;
+  readonly keyframeInterval: number;
 };
 
 export const GIF_PRESETS: Readonly<Record<VideoPreset, GifPresetSpec>> = {
@@ -78,7 +76,7 @@ export const GIF_PRESETS: Readonly<Record<VideoPreset, GifPresetSpec>> = {
 export const MP4_PRESETS: Readonly<Record<VideoPreset, Mp4PresetSpec>> = {
   low: { width: 720, bitrate: "2000k", keyframeInterval: 60 },
   med: { width: 1080, bitrate: "5000k", keyframeInterval: 60 },
-  high: { width: null, bitrate: null, keyframeInterval: null }
+  high: { width: null, bitrate: "6000k", keyframeInterval: 60 }
 };
 
 const MP4_REENCODE_CACHE_TOKEN = "gop60";
@@ -398,38 +396,31 @@ async function encodeMp4(
     src
   ];
 
-  // Video track. HIGH preset = stream-copy (`-c:v copy`) — no
-  // re-encode, no downscale, instant. LOW / MED preset = re-encode
-  // via VideoToolbox with a per-preset bitrate + downscale-to-target-width.
+  // Video track. All MP4 presets re-encode via VideoToolbox with
+  // per-preset bitrate + GOP settings. HIGH keeps source resolution
+  // by omitting the scale filter.
   args.push("-map", "0:v:0");
-  if (spec.width === null || spec.bitrate === null) {
-    // HIGH: stream-copy. The source is already H.264 (per the
-    // recorder config) so this is a trim + remux, ~instant on disk.
-    args.push("-c:v", "copy");
-  } else {
-    if (spec.keyframeInterval === null) {
-      throw new Error("recording-exporter: re-encoded MP4 preset missing keyframeInterval");
-    }
-    // LOW / MED: scale + re-encode through Apple's VideoToolbox
-    // H.264 encoder. Do not use libx264; the bundled ffmpeg is an
-    // LGPL build and this path must stay GPL-clean.
-    args.push(
-      "-vf",
-      `scale=${spec.width}:-2:flags=lanczos`,
-      "-c:v",
-      "h264_videotoolbox",
-      "-allow_sw",
-      "1",
-      "-b:v",
-      spec.bitrate,
-      "-g",
-      String(spec.keyframeInterval),
-      "-keyint_min",
-      String(spec.keyframeInterval),
-      "-pix_fmt",
-      "yuv420p"
-    );
+  // Scale when the preset asks for a target width, then re-encode
+  // through Apple's VideoToolbox H.264 encoder. Do not use libx264;
+  // the bundled ffmpeg is an LGPL build and this path must stay
+  // GPL-clean.
+  if (spec.width !== null) {
+    args.push("-vf", `scale=${spec.width}:-2:flags=lanczos`);
   }
+  args.push(
+    "-c:v",
+    "h264_videotoolbox",
+    "-allow_sw",
+    "1",
+    "-b:v",
+    spec.bitrate,
+    "-g",
+    String(spec.keyframeInterval),
+    "-keyint_min",
+    String(spec.keyframeInterval),
+    "-pix_fmt",
+    "yuv420p"
+  );
 
   // Audio track mapping. The recorder writes system audio as the
   // first audio stream and microphone as the second when both are
@@ -460,8 +451,6 @@ async function encodeMp4(
 
 function cacheEncoderTag(input: ExportInput): string | null {
   if (input.format !== "mp4") return null;
-  const spec = MP4_PRESETS[input.preset];
-  if (spec.width === null || spec.bitrate === null) return null;
   return MP4_REENCODE_CACHE_TOKEN;
 }
 

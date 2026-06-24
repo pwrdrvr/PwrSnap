@@ -298,6 +298,14 @@
   border-color: var(--accent);
 }
 .ps-tray__quick--video:active { transform: translateY(1px); }
+/* The orange Quick Capture button reads as focused via its always-on
+   accent ring; the video variant drops that ring (outline: none above),
+   so it needs an explicit keyboard-focus indicator of its own. Mouse
+   focus stays clean — :focus-visible only. */
+.ps-tray__quick--video:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .ps-tray__quick--video .ps-tray__quick-l { flex: 1; min-width: 0; }
 .ps-tray__quick--video .ps-tray__quick-eyebrow { color: var(--accent-bright); }
 .ps-tray__quick-icon {

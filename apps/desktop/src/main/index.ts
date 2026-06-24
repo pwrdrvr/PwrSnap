@@ -15,7 +15,7 @@ import {
   Notification,
   shell
 } from "electron";
-import { EVENT_CHANNELS, ok } from "@pwrsnap/shared";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type { RecordingSubject, Settings, SettingsChangedEvent } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
@@ -27,6 +27,8 @@ import {
 import { releaseSnapshot } from "./capture/screen-snapshot";
 import { activateApp, selfPidSet } from "./capture/window-list";
 import { appWindowsOverlappingRect } from "./capture/rect-overlap";
+import { guardScreenCapture } from "./capture/screen-permission-gate";
+import { ensureCapturesDirReady } from "./capture/capture-storage-gate";
 import {
   resolveSelectionSourceApp,
   shouldConsiderRaisingOurWindows
@@ -52,6 +54,7 @@ import {
   librarySourceWindowIds,
   registerCaptureHandlers
 } from "./handlers/capture-handlers";
+import { registerCaptureVideoHandler } from "./handlers/capture-video-handler";
 import { registerAcpHandlers } from "./handlers/acp-handlers";
 import { getToolRpcServer } from "./ai/mcp/pwrsnap-tool-rpc-server";
 import { closeAcpAgentPool, warmConfiguredAcpAgents } from "./ai/acp-agent-pool";
@@ -922,6 +925,19 @@ async function runInteractiveRecord(
   protectWindowIds: readonly number[] = []
 ): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
+  // Gate BEFORE pickRegion, exactly like `capture:interactive`. The
+  // selector freezes a screen snapshot on show(), which is all-black on
+  // a Mac without Screen Recording permission — so on a first-ever (or
+  // since-revoked) attempt we must fire the macOS prompt / route to
+  // System Settings here, NOT paint an empty selector and only discover
+  // the wall after the user has dragged a region and committed.
+  // `recording:start` re-checks (idempotent when granted); when blocked
+  // we bail before showing anything, so there's no selector to tear
+  // down and no focus to restore.
+  const blocked = await guardScreenCapture();
+  if (blocked !== null) return;
+  const storageBlocked = await ensureCapturesDirReady();
+  if (storageBlocked !== null) return;
   // Pick a rect / window via the existing region selector. We can't
   // route through capture:interactive (which persists an image on
   // commit), so we drive the region-selector module directly. On
@@ -1584,20 +1600,17 @@ export function bootstrapApp(): void {
       registerFloatOverHandlers();
       registerRecordingHandlers();
       // Renderer-dispatchable entry into the interactive video-record
-      // flow (selector → recording:start). The `videoCapture` global
-      // hotkey calls `runInteractiveRecord()` directly; this verb is the
-      // UI-surface equivalent used by the tray's Record button and the
-      // Library's Video chip. Fire-and-forget — lifecycle broadcasts on
-      // `events:recording:*`, so we ack immediately rather than awaiting
-      // the whole pick→countdown→record chain.
-      bus.register("capture:videoInteractive", async (_req, ctx) => {
-        // Same Library-protection rule as `capture:interactive`: a record
-        // triggered from the Library's own Video chip keeps the Library
-        // out of the frozen snapshot. Tray / hotkey triggers resolve to
-        // an empty list and leave the Library as a valid target.
-        void runInteractiveRecord(librarySourceWindowIds(ctx));
-        return ok(undefined);
-      });
+      // flow (selector → recording:start), used by the tray's Record
+      // button and the Library's Video chip. The `videoCapture` global
+      // hotkey calls `runInteractiveRecord()` directly. `runInteractiveRecord`
+      // and `librarySourceWindowIds` are injected because the registrar
+      // lives in its own module (so the wiring is unit-testable) while
+      // its dependencies live here / in capture-handlers. The latter
+      // applies the same Library-protection rule as `capture:interactive`:
+      // a record triggered from the Library's own button keeps the
+      // Library out of the frozen snapshot; tray / hotkey triggers
+      // resolve to an empty list and leave it as a valid target.
+      registerCaptureVideoHandler(runInteractiveRecord, librarySourceWindowIds);
       registerAppUpdateHandlers();
       // Startup Codex readiness probe — deferred past the library's first
       // contentful paint (#238). The probe's `codex` process spawns

@@ -237,13 +237,17 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
 
   // Pull live chord glyphs for the two wired explicit-mode hotkeys.
   // Empty array = unbound (default for both today) → the chip is
-  // omitted from the mode tile.
+  // omitted from the mode tile. The preview modes carry their static
+  // placeholder glyphs from MODES, looked up by id (not by positional
+  // index) so reordering or adding tiles can't silently mis-map them.
+  const staticHk = (id: Exclude<ModeKind, "auto">): string[] =>
+    MODES.find((m) => m.id === id)?.hk ?? [];
   const liveHkFor: Record<Exclude<ModeKind, "auto">, string[]> = {
     region: acceleratorToDisplayKeys(hotkeys.region),
     window: acceleratorToDisplayKeys(hotkeys.window),
-    full: MODES[2]!.hk,
-    all: MODES[3]!.hk,
-    timed: MODES[4]!.hk
+    full: staticHk("full"),
+    all: staticHk("all"),
+    timed: staticHk("timed")
   };
   const quickHk = acceleratorToDisplayKeys(hotkeys.quickCapture);
   // Record Video is bound by default (⌘⌥C) and editable in Settings →

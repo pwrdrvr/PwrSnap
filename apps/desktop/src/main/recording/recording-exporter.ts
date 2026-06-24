@@ -63,7 +63,11 @@ const log = getMainLogger("pwrsnap:recording-exporter");
  *  headroom (CRF + H.264 motion compensation) to handle high-res
  *  screen content without exploding. */
 export type GifPresetSpec = { readonly width: number | null; readonly fps: number };
-export type Mp4PresetSpec = { readonly width: number | null; readonly bitrate: string | null };
+export type Mp4PresetSpec = {
+  readonly width: number | null;
+  readonly bitrate: string | null;
+  readonly keyframeInterval: number | null;
+};
 
 export const GIF_PRESETS: Readonly<Record<VideoPreset, GifPresetSpec>> = {
   low: { width: 480, fps: 15 },
@@ -72,10 +76,12 @@ export const GIF_PRESETS: Readonly<Record<VideoPreset, GifPresetSpec>> = {
 };
 
 export const MP4_PRESETS: Readonly<Record<VideoPreset, Mp4PresetSpec>> = {
-  low: { width: 720, bitrate: "2000k" },
-  med: { width: 1080, bitrate: "5000k" },
-  high: { width: null, bitrate: null }
+  low: { width: 720, bitrate: "2000k", keyframeInterval: 60 },
+  med: { width: 1080, bitrate: "5000k", keyframeInterval: 60 },
+  high: { width: null, bitrate: null, keyframeInterval: null }
 };
+
+const MP4_REENCODE_CACHE_TOKEN = "gop60";
 
 /** Compute output dimensions for a given preset against a source
  *  width × height. LOW / MED scale down (preserving aspect with even
@@ -195,7 +201,11 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
     preset: input.preset,
     audio: input.audio
   });
-  if (cached !== null && existsSync(cached.path)) {
+  if (
+    cached !== null &&
+    existsSync(cached.path) &&
+    cacheEntryMatchesEncoder(input, cached.path)
+  ) {
     return { ...cached, widthPx, heightPx };
   }
 
@@ -241,14 +251,22 @@ async function encodeAndRecord(
     input.format === "gif"
       ? "silent"
       : `s${input.audio.includeSystemAudio ? 1 : 0}m${input.audio.includeMicrophone ? 1 : 0}`;
+  const encoderTag = cacheEncoderTag(input);
   const ext = input.format === "gif" ? "gif" : "mp4";
-  // Filename layout matches the cache key shape: range, then preset,
-  // then audio tag, then extension. Visible-on-disk grouping makes
-  // debugging cache hits / orphans trivial (`ls -lh <captureId>/`
-  // shows all six format/preset combinations for a given range).
+  // Filename layout matches the cache key shape: range, preset,
+  // optional encoder token, audio tag, then extension. Visible-on-
+  // disk grouping makes debugging cache hits / orphans trivial
+  // (`ls -lh <captureId>/` shows all six format/preset combinations
+  // for a given range).
   const outputPath = join(
     outputDir,
-    `r${input.range.start.toFixed(3)}-${input.range.end.toFixed(3)}.${input.preset}.${audioTag}.${ext}`
+    [
+      `r${input.range.start.toFixed(3)}-${input.range.end.toFixed(3)}`,
+      input.preset,
+      ...(encoderTag === null ? [] : [encoderTag]),
+      audioTag,
+      ext
+    ].join(".")
   );
 
   // Video captures always carry a legacy_src_path (the recorded .mp4
@@ -389,6 +407,9 @@ async function encodeMp4(
     // recorder config) so this is a trim + remux, ~instant on disk.
     args.push("-c:v", "copy");
   } else {
+    if (spec.keyframeInterval === null) {
+      throw new Error("recording-exporter: re-encoded MP4 preset missing keyframeInterval");
+    }
     // LOW / MED: scale + re-encode through Apple's VideoToolbox
     // H.264 encoder. Do not use libx264; the bundled ffmpeg is an
     // LGPL build and this path must stay GPL-clean.
@@ -401,6 +422,10 @@ async function encodeMp4(
       "1",
       "-b:v",
       spec.bitrate,
+      "-g",
+      String(spec.keyframeInterval),
+      "-keyint_min",
+      String(spec.keyframeInterval),
       "-pix_fmt",
       "yuv420p"
     );
@@ -431,6 +456,18 @@ async function encodeMp4(
   args.push("-movflags", "+faststart", outPath);
 
   await runFfmpeg(ffmpeg, args);
+}
+
+function cacheEncoderTag(input: ExportInput): string | null {
+  if (input.format !== "mp4") return null;
+  const spec = MP4_PRESETS[input.preset];
+  if (spec.width === null || spec.bitrate === null) return null;
+  return MP4_REENCODE_CACHE_TOKEN;
+}
+
+function cacheEntryMatchesEncoder(input: ExportInput, path: string): boolean {
+  const encoderTag = cacheEncoderTag(input);
+  return encoderTag === null || path.includes(`.${encoderTag}.`);
 }
 
 function runFfmpeg(ffmpeg: string, args: string[]): Promise<void> {

@@ -253,4 +253,57 @@ describe("exportVideoRange concurrency", () => {
     expect(result.path).toBeDefined();
     expect(totalSpawnCount).toBe(2);
   });
+
+  test("LOW / MED MP4 re-encodes pass an explicit 60-frame GOP to VideoToolbox", async () => {
+    const low = exportVideoRange({ ...baseInput, preset: "low" });
+    await waitForSpawnCount(1);
+
+    expect(spawnQueue[0]?.args).toEqual(
+      expect.arrayContaining([
+        "-c:v",
+        "h264_videotoolbox",
+        "-g",
+        "60",
+        "-keyint_min",
+        "60"
+      ])
+    );
+    expect(spawnQueue[0]?.args.join(" ")).toContain(".low.gop60.s0m0.mp4");
+
+    await resolveNextSpawn(0);
+    await low;
+
+    const med = exportVideoRange({ ...baseInput, preset: "med" });
+    await waitForSpawnCount(1);
+
+    expect(spawnQueue[0]?.args).toEqual(
+      expect.arrayContaining([
+        "-c:v",
+        "h264_videotoolbox",
+        "-g",
+        "60",
+        "-keyint_min",
+        "60"
+      ])
+    );
+    expect(spawnQueue[0]?.args.join(" ")).toContain(".med.gop60.s0m0.mp4");
+
+    await resolveNextSpawn(0);
+    await med;
+  });
+
+  test("HIGH MP4 remains a stream-copy without re-encode GOP flags", async () => {
+    const high = exportVideoRange({ ...baseInput, preset: "high" });
+    await waitForSpawnCount(1);
+
+    const args = spawnQueue[0]?.args ?? [];
+    expect(args).toEqual(expect.arrayContaining(["-c:v", "copy"]));
+    expect(args).not.toContain("-g");
+    expect(args).not.toContain("-keyint_min");
+    expect(args.join(" ")).toContain(".high.s0m0.mp4");
+    expect(args.join(" ")).not.toContain(".high.gop60.s0m0.mp4");
+
+    await resolveNextSpawn(0);
+    await high;
+  });
 });

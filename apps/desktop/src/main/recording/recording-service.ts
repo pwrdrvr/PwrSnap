@@ -740,20 +740,23 @@ class WindowsFfmpegRecorderService implements RecordingService {
     } catch {
       /* ffmpeg may already have closed stdin; the exit wait below handles it */
     }
-    const exit = await Promise.race([
-      exitPromise,
-      new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-        setTimeout(() => {
-          try {
-            child.kill("SIGTERM");
-          } catch {
-            /* ignore */
-          }
-          resolve({ code: null, signal: "SIGTERM" });
-        }, 5_000);
-      })
-    ]);
-    if (exit.code !== 0 && exit.signal === null) {
+    const gracefulExit = await waitForWindowsFfmpegExit(exitPromise, 5_000);
+    let exit = gracefulExit;
+    if (exit === null) {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+      exit = await waitForWindowsFfmpegExit(exitPromise, 5_000);
+    }
+    if (exit === null) {
+      const message = "ffmpeg recorder did not exit after stop timeout";
+      this.cleanup();
+      setRecordingState({ phase: "failed", sessionId, code: "stop_timeout", message });
+      throw new Error(message);
+    }
+    if (exit.code !== 0 || exit.signal !== null) {
       const message = windowsFfmpegFailureMessage(this.stderrTail, exit.code, exit.signal);
       this.cleanup();
       setRecordingState({ phase: "failed", sessionId, code: "stop_failed", message });
@@ -840,6 +843,16 @@ class WindowsFfmpegRecorderService implements RecordingService {
   }
 }
 
+async function waitForWindowsFfmpegExit(
+  exitPromise: Promise<{ code: number | null; signal: NodeJS.Signals | null }>,
+  timeoutMs: number
+): Promise<{ code: number | null; signal: NodeJS.Signals | null } | null> {
+  return await Promise.race([
+    exitPromise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs))
+  ]);
+}
+
 function windowsFfmpegCaptureArgs(
   rect: { x: number; y: number; w: number; h: number },
   outputPath: string
@@ -893,18 +906,38 @@ function subjectToWindowsDesktopRect(subject: RecordingSubject): {
 } {
   if (subject.kind === "display") {
     const display = screen.getAllDisplays().find((d) => d.id === subject.displayId) ?? screen.getPrimaryDisplay();
-    return normalizeWindowsCaptureRect({
+    return dipRectToWindowsScreenPixels({
       x: display.bounds.x,
       y: display.bounds.y,
       w: display.bounds.width,
       h: display.bounds.height
     });
   }
-  return normalizeWindowsCaptureRect({
+  return dipRectToWindowsScreenPixels({
     x: subject.rect.x,
     y: subject.rect.y,
     w: subject.rect.w,
     h: subject.rect.h
+  });
+}
+
+function dipRectToWindowsScreenPixels(rect: { x: number; y: number; w: number; h: number }): {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+} {
+  const physical = screen.dipToScreenRect(null, {
+    x: rect.x,
+    y: rect.y,
+    width: rect.w,
+    height: rect.h
+  });
+  return normalizeWindowsCaptureRect({
+    x: physical.x,
+    y: physical.y,
+    w: physical.width,
+    h: physical.height
   });
 }
 

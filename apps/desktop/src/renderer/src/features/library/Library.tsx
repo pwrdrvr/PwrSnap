@@ -2208,11 +2208,13 @@ export function Library() {
   const prevRecordIdRef = useRef(prevRecordId);
   const nextRecordIdRef = useRef(nextRecordId);
   const selectedRecordRef = useRef(selectedRecord);
-  // Live ordered visible ids + cells-per-row, read by the grid arrow-key
-  // navigation in the keydown handler (refs so the single listener never
-  // goes stale). cellsPerRow is owned by VirtualizedGrid (it measures the
-  // container) and mirrored here.
-  const orderedIdsRef = useRef<string[]>([]);
+  // Day-grouped visible record ids + cells-per-row, read by the grid
+  // arrow-key navigation in the keydown handler (refs so the single
+  // listener never goes stale). The day grouping is what makes ↑/↓
+  // navigate the real visual grid (each day is its own sub-grid) instead
+  // of blindly stepping by cellsPerRow. cellsPerRow is owned by
+  // VirtualizedGrid (it measures the container) and mirrored here.
+  const dayIdGroupsRef = useRef<string[][]>([]);
   const cellsPerRowRef = useRef<number>(4);
   useEffect(() => {
     prevRecordIdRef.current = prevRecordId;
@@ -2224,8 +2226,15 @@ export function Library() {
     selectedRecordRef.current = selectedRecord;
   }, [selectedRecord]);
   useEffect(() => {
-    orderedIdsRef.current = visibleRecords.map((r) => r.id);
-  }, [visibleRecords]);
+    // Map the rendered day groups → record ids per day (dropping any
+    // fixture-only cells, which aren't selectable). This is the exact
+    // visual partition the grid draws, so keyboard ↑/↓ matches it.
+    dayIdGroupsRef.current = grouped.map((g) =>
+      g.items
+        .map((c) => fixtureBacking.recordFor(c.id)?.id)
+        .filter((id): id is string => id != null)
+    );
+  }, [grouped, fixtureBacking]);
   useEffect(() => {
     function onKey(event: KeyboardEvent): void {
       // ⌘F — focus the library search input. Runs BEFORE the
@@ -2346,22 +2355,20 @@ export function Library() {
       // the keyboard without leaving Grid. (Enter on the selection edits.)
       const gridDir = kind === "grid" ? GRID_NAV_KEYS[event.key] : undefined;
       if (gridDir !== undefined) {
-        const ids = orderedIdsRef.current;
-        if (ids.length === 0) return;
-        event.preventDefault();
         const wrap = gridScrollRef.current;
         const rowsPerPage = Math.max(
           1,
           Math.floor((wrap?.clientHeight ?? 720) / GRID_ROW_EST_PX)
         );
         const nextId = nextGridSelectionId(
-          ids,
+          dayIdGroupsRef.current,
           viewRef.current.selectedRecordId,
           gridDir,
           cellsPerRowRef.current,
           rowsPerPage
         );
         if (nextId === null) return;
+        event.preventDefault();
         // For a page jump the target is ~a page away and likely not
         // rendered yet — nudge the scroll first so the virtualizer renders
         // near it, then scroll the cell exactly into view next frame.

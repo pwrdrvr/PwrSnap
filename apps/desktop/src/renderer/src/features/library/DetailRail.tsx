@@ -518,9 +518,36 @@ export function DetailRail({
     }
   }, [gridTabs, gridTab]);
 
-  // No selection → no rail. In Grid, Library passes `record` null
-  // whenever nothing is selected (the standalone cart rail covers the
-  // no-selection + non-empty-cart case), so this single guard covers
+  // Cart-only empty state: in Grid with a non-empty cart but nothing
+  // selected, render the rail with just the Cart tab. This keeps the cart
+  // INSIDE the right bar — toggle-controlled, collapsible, dismissable —
+  // instead of an orphaned separate rail the layout toggle can't reach.
+  // Info/OCR and the export footer all need a selected capture, so none
+  // of them show here. (Hooks all run above this branch — see below.)
+  if (record === null && view.kind === "grid" && cartCount > 0) {
+    const cartOnlyTabs = tabs.filter((t) => t.id === "cart");
+    return (
+      <aside className="psl__right psl__right--vertical" aria-label="Project asset cart">
+        <div className="psl__right-content">
+          <RightActivityBar
+            tabs={cartOnlyTabs}
+            activeTab="cart"
+            pinned={pinned}
+            onTabChange={() => undefined}
+            onPinChange={writePinned}
+            renderPanel={() => (
+              <div className="psl__right-body">
+                <CartPanel />
+              </div>
+            )}
+            testIdPrefix="psl-right"
+            pinnedWidthPx={320}
+          />
+        </div>
+      </aside>
+    );
+  }
+  // No selection (and no cart to show) → no rail. This single guard covers
   // grid-empty, focus, and reel alike. Hooks above this point run every
   // render regardless of view.kind — do NOT move any hook below here
   // (Rules of Hooks; guarded by DetailRail.test + library-*-spec).

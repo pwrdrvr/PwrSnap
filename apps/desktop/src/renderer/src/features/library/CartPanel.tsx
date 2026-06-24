@@ -186,6 +186,10 @@ export function CartPanel(): ReactElement {
     });
   }, []);
 
+  const onClear = useCallback(() => {
+    void dispatch("cart:clear", {});
+  }, []);
+
   const isEmpty = cart.captureIds.length === 0;
 
   return (
@@ -203,6 +207,17 @@ export function CartPanel(): ReactElement {
         <span className="psl__cart-count" aria-label={`${cart.captureIds.length} items`}>
           {cart.captureIds.length}
         </span>
+        {isEmpty ? null : (
+          <button
+            type="button"
+            className="psl__cart-clear"
+            title="Remove all items from the cart"
+            aria-label="Clear the cart"
+            onClick={onClear}
+          >
+            Clear
+          </button>
+        )}
       </div>
 
       {isEmpty ? (

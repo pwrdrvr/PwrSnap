@@ -1632,6 +1632,28 @@
   border-radius: 999px;
   padding: 3px 7px;
 }
+/* Clear-all: empties the cart in one action (vs. removing items one at a
+   time). Subtle by default; reddens on hover to read as destructive. */
+.psl__cart-clear {
+  flex-shrink: 0;
+  font: 600 11px/1 var(--font-sans);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: color 100ms var(--ease-out), background 100ms var(--ease-out),
+    border-color 100ms var(--ease-out);
+}
+.psl__cart-clear:hover {
+  color: var(--danger-text);
+  background: var(--danger-soft);
+}
+.psl__cart-clear:focus-visible {
+  outline: none;
+  border-color: var(--accent-border);
+}
 .psl__cart-empty {
   padding: 16px 14px;
   color: var(--text-muted);

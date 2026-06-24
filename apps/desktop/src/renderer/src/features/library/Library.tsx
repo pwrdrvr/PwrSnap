@@ -60,7 +60,6 @@ import {
 } from "../../lib/pwrsnap";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { useCart, useCartIsEmpty } from "./CartContext";
-import { CartPanel } from "./CartPanel";
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { snapGridZoom, stepGridZoom } from "../../lib/gridZoom";
@@ -1057,18 +1056,15 @@ export function Library() {
   }, [currentHistoryLocation, navHistory, restoreHistoryLocation]);
   const { projects: sizzleProjects } = useSizzleProjects();
   // The Project Asset Cart. Drives the cell checkboxes (which captures
-  // are checked) AND the grid-mode standalone cart rail (which appears
-  // when the cart is non-empty — the "right bar opens when you check"
-  // flow). In focus/reel modes the cart is a DetailRail tab instead.
-  // Library only needs the COARSE empty/non-empty signal (for the
-  // grid-mode rail gate + the data-cart attribute). Consuming the
+  // are checked). Library only needs the COARSE empty/non-empty signal
+  // (it opens the Grid right rail when the cart is non-empty even with
+  // nothing selected, so the cart can show as a tab). Consuming the
   // boolean context means a toggle WITHIN a non-empty cart doesn't
   // re-render Library (and therefore doesn't reflow the un-memoized
   // virtualized grid) — only the empty↔non-empty edge does. Per-cell
   // membership lives in <CartCellCheckbox>, which self-subscribes to
   // the full-cart context so only the checkboxes re-render on a toggle.
   const cartIsEmpty = useCartIsEmpty();
-  const cartIsOpenInGrid = view.kind === "grid" && !cartIsEmpty;
   // Library "Types" multi-pick filter. All three on by default so the
   // library looks the same as before for users who don't touch it.
   // Right-click / shift-click on a row sets that row as "Only" (the
@@ -1780,15 +1776,14 @@ export function Library() {
     );
   }, [isTrashView, records, selectedRecordId, universeRecords]);
 
-  // Grid-first inspector: in Grid, the right rail shows for a SELECTED
-  // capture (Info + OCR + Cart-when-non-empty + the L/M/H export footer).
-  // The cart rides along as a tab here, so selecting a capture no longer
-  // hides the cart — it just changes the cart's form (full rail → tab).
-  const showGridInspector = view.kind === "grid" && selectedRecord !== null;
-  // The standalone cart rail fills the column ONLY when nothing is
-  // selected. Once a capture is selected the inspector takes the column
-  // and the cart becomes its Cart tab — so the two never compete.
-  const cartRailInGrid = cartIsOpenInGrid && selectedRecord === null;
+  // Grid-first right rail: shows when there's something to show — a
+  // SELECTED capture (Info + OCR + Cart-when-non-empty + the L/M/H export
+  // footer) OR a non-empty cart with nothing selected (a cart-only rail
+  // hosting just the Cart tab). Either way the cart lives INSIDE the right
+  // bar, so the layout toggle collapses it and it's dismissable — there's
+  // no separate orphaned cart rail anymore.
+  const showGridInspector =
+    view.kind === "grid" && (selectedRecord !== null || !cartIsEmpty);
   // The right rail is "showing" whenever it occupies the column: always
   // in focus/reel, and in Grid only when the inspector is up. Drives the
   // data-right column-width attribute (undefined until settings hydrate so
@@ -2309,6 +2304,16 @@ export function Library() {
         viewDispatch({ type: "CLOSE_FOCUS" });
         return;
       }
+      // Esc in Grid collapses the right rail (hides the inspector / cart
+      // panel — the cart itself persists, shown as a badge on the spine).
+      // Keyboard alias for the layout toggle; no-op when already collapsed.
+      if (event.key === "Escape" && kind === "grid") {
+        if (rightPinnedRef.current) {
+          event.preventDefault();
+          toggleRightPinned();
+        }
+        return;
+      }
       // Enter on the selected grid tile → open the editor. Reads the
       // selection from viewRef.current (updated synchronously in
       // viewDispatch) — NOT the effect-synced selectedRecordRef, which
@@ -2390,7 +2395,7 @@ export function Library() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [viewDispatch]);
+  }, [viewDispatch, toggleRightPinned]);
 
   /**
    * Grid-cell interaction handler. The grid-first select/edit split routes
@@ -2707,14 +2712,11 @@ export function Library() {
       // `data-right` controls the right column width (38px collapsed vs
       // 360px pinned) AND the footer/overflow rules. Computed as
       // `railDataRight` above: pinned/collapsed whenever the rail is
-      // showing (focus/reel always, Grid only when a capture is
-      // selected), else undefined so the column collapses to 0.
+      // showing (focus/reel always; Grid when a capture is selected OR
+      // the cart is non-empty), else undefined so the column collapses
+      // to 0. The cart now rides in the rail as a tab, so there's no
+      // separate cart rail / data-cart attribute anymore.
       data-right={railDataRight}
-      // `data-cart="open"` widens the right column in GRID mode so the
-      // standalone cart rail has room. In focus/reel the cart lives in
-      // the DetailRail tab strip and the column is already 360px, so
-      // this only matters for grid. See `.psl[data-mode="grid"][data-cart="open"]`.
-      data-cart={cartRailInGrid ? "open" : undefined}
     >
       <header className="psl__topbar">
         <div className="psl__topbar-l">
@@ -3393,7 +3395,7 @@ export function Library() {
           column (360px pinned / 38px collapsed via data-right). */}
       <DetailRail
         view={view}
-        record={view.kind === "grid" && !showGridInspector ? null : selectedRecord}
+        record={selectedRecord}
         copyPulses={copyPulses}
         pinned={rightPinned}
         onPinChange={setRightPinned}
@@ -3420,29 +3422,9 @@ export function Library() {
           document.querySelector(".app-toast-stack") ?? document.body
         )}
 
-      {/* Grid-mode standalone cart rail — shown ONLY when no capture is
-          selected. The moment a capture is selected the DetailRail takes
-          the column and surfaces the cart as its Cart tab instead, so the
-          cart never disappears. With nothing selected there's no inspector
-          to host the tab, so the workspace-global cart gets its own rail
-          here (appears when the user checks their first capture). */}
-      {cartRailInGrid ? (
-        // Render CartPanel DIRECTLY in the base `.psl__right` (which is
-        // a flex column with `overflow: hidden`). Deliberately NOT
-        // `.psl__right--vertical` / `.psl__right-content` /
-        // `.psl__right-body` — those carry `overflow: visible` (a
-        // DetailRail escape hatch so its collapsed hover-pop panel can
-        // bleed leftward into the canvas) which let the cart's content
-        // overflow past the rail's right edge. The cart wants a plain
-        // clipped column; `.psl__cart` fills it and manages its own
-        // scroll + padding.
-        <aside
-          className="psl__right psl__right--cart"
-          aria-label="Project asset cart"
-        >
-          <CartPanel />
-        </aside>
-      ) : null}
+      {/* The grid cart no longer has a separate rail — DetailRail hosts it
+          as a Cart tab (with a cart-only mode when nothing is selected),
+          so it's collapsible via the layout toggle and dismissable. */}
 
       <footer className="psl__status">
         <div className="psl__status-l">

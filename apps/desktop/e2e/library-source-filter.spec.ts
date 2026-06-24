@@ -437,6 +437,13 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
       timeout: 10_000
     });
 
+    // Edit is a takeover — the left nav (filters) is hidden in Focus, so
+    // leave Focus via Esc before navigating filters.
+    await window.keyboard.press("Escape");
+    await expect(window.locator(".psl")).toHaveAttribute("data-mode", "grid", {
+      timeout: 10_000
+    });
+
     await window
       .locator("button.psl__nav")
       .filter({ has: window.locator(".psl__nav-label", { hasText: /^Today$/ }) })

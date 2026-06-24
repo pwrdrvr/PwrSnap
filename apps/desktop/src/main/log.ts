@@ -10,6 +10,9 @@ import { inspect } from "node:util";
 let initialized = false;
 let stdioErrorHandlersInstalled = false;
 
+export const MAIN_LOG_FILE_LEVEL = "info";
+export const MAIN_LOG_FILE_MAX_SIZE_BYTES = 1024 * 1024;
+
 type StdioError = Error & {
   code?: unknown;
 };
@@ -82,6 +85,11 @@ export function initializeMainLogger(): void {
   installStdioErrorHandlers();
   guardConsoleTransport();
   electronLog.initialize();
+  // Keep persistent logs useful without accidentally recreating Codex-style
+  // TRACE/DEBUG write churn. electron-log rotates by default, but we make the
+  // SSD-facing bounds explicit here instead of relying on package defaults.
+  electronLog.transports.file.level = MAIN_LOG_FILE_LEVEL;
+  electronLog.transports.file.maxSize = MAIN_LOG_FILE_MAX_SIZE_BYTES;
   // electron-log's default formatter calls util.inspect with depth=2,
   // which collapses any nested object two levels deep into "[Object]"
   // — useless for diagnostic logs that ship structured rects /

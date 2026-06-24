@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => {
   const fileTransport = Object.assign(vi.fn(), {
     format: "",
     level: "silly" as string | false,
+    maxSize: 0,
     transforms: []
   });
 
@@ -66,6 +67,7 @@ describe("initializeMainLogger", () => {
     mocks.consoleTransport.writeFn = mocks.consoleWriteFn;
     mocks.fileTransport.format = "";
     mocks.fileTransport.level = "silly";
+    mocks.fileTransport.maxSize = 0;
     mocks.fileTransport.transforms = [];
   });
 
@@ -108,13 +110,15 @@ describe("initializeMainLogger", () => {
   });
 
   test("keeps file logging configured when console logging is disabled", async () => {
-    const { initializeMainLogger } = await import("../log");
+    const { initializeMainLogger, MAIN_LOG_FILE_LEVEL, MAIN_LOG_FILE_MAX_SIZE_BYTES } =
+      await import("../log");
     initializeMainLogger();
 
     process.stderr.emit("error", makeBrokenPipeError());
 
     expect(mocks.consoleTransport.level).toBe(false);
-    expect(mocks.fileTransport.level).toBe("silly");
+    expect(mocks.fileTransport.level).toBe(MAIN_LOG_FILE_LEVEL);
+    expect(mocks.fileTransport.maxSize).toBe(MAIN_LOG_FILE_MAX_SIZE_BYTES);
     expect(typeof mocks.fileTransport.format).toBe("function");
   });
 });

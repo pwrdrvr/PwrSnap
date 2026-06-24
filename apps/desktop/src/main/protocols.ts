@@ -39,7 +39,13 @@ import { extname } from "node:path";
 import { app, protocol } from "electron";
 import { getMainLogger } from "./log";
 import { getSnapshotPath } from "./capture/screen-snapshot";
-import { parseAppIconBundleId, parseCacheUrl, parseCaptureId, SCHEMES } from "./protocols-parse";
+import {
+  parseAppIconBundleId,
+  parseCacheUrl,
+  parseCaptureId,
+  parseSourceUrl,
+  SCHEMES
+} from "./protocols-parse";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 import { reportCapturesAccessFailure } from "./storage/captures-access-health";
 
@@ -117,6 +123,14 @@ export type ProtocolResolver = {
    * unknown / soft-deleted captures (renderer gets a 404).
    */
   captureSourcePath(captureId: string): Promise<string | null>;
+  /**
+   * Resolve `(captureId, sha256)` to a non-base raster layer source PNG
+   * path, extracting it from the capture's bundle on first request.
+   * Backs `pwrsnap-capture://s/<id>/<sha>` so the editor can render each
+   * raster layer's bytes without re-baking the composite. Returns null
+   * (renderer 404) for unknown captures or a sha the bundle lacks.
+   */
+  sourceBytesPath(captureId: string, sha256: string): Promise<string | null>;
   /**
    * Resolve `(captureId, width, format)` to a rendered cache file.
    * Phase 1.6 implementation will compose on miss; Phase 1's stub
@@ -240,6 +254,28 @@ async function fileResponse(
  */
 export function installProtocolHandlers(resolver: ProtocolResolver): void {
   protocol.handle(SCHEMES.capture, async (request) => {
+    // Per-layer raster source: `pwrsnap-capture://s/<id>/<sha>`. Checked
+    // before the base `r/<id>` shape since both share the scheme. The
+    // editor's raster LayerView loads each layer's bytes through here.
+    const sourceUrl = parseSourceUrl(request.url);
+    if (sourceUrl !== null) {
+      try {
+        const filePath = await resolver.sourceBytesPath(
+          sourceUrl.captureId,
+          sourceUrl.sha256
+        );
+        if (filePath === null) {
+          return new Response("not found", { status: 404 });
+        }
+        return await fileResponse(filePath, request);
+      } catch (cause) {
+        log.error("capture source handler threw", {
+          captureId: sourceUrl.captureId,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+        return new Response("internal error", { status: 500 });
+      }
+    }
     const captureId = parseCaptureId(request.url);
     if (captureId === null) {
       log.warn("capture: invalid url", { url: request.url });

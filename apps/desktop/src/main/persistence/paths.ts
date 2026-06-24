@@ -120,6 +120,19 @@ export function getCacheSourcePath(captureId: string): string {
 }
 
 /**
+ * Per-capture extracted cache for a NON-base raster layer source,
+ * keyed by content hash. The v2 bundle stores every raster source at
+ * `sources/<sha>.png`; the base capture's bytes materialize at
+ * {@link getCacheSourcePath}, while additional layer sources (pasted
+ * images, the captured cursor) materialize here on first request from
+ * the `pwrsnap-capture://s/<id>/<sha>` resolver. Regenerable from the
+ * bundle; safe to delete (same render-cache root as `source.png`).
+ */
+export function getCacheLayerSourcePath(captureId: string, sha256: string): string {
+  return join(getCacheRoot(), captureId, "sources", `${sha256}.png`);
+}
+
+/**
  * Schema-fail bundles park here, never auto-deleted, so the user
  * (or doctor) can decide whether to recover or discard. Distinct
  * from `.trash/` which is a soft-delete with a 14d retention sweep.

@@ -316,4 +316,32 @@ describe("exportVideoRange concurrency", () => {
     await resolveNextSpawn(0);
     await high;
   });
+
+  test("HIGH MP4 snaps odd source dimensions to even codec-safe dimensions", async () => {
+    const high = exportVideoRange({
+      ...baseInput,
+      preset: "high",
+      record: {
+        ...record,
+        width_px: 1681,
+        height_px: 946
+      }
+    });
+    await waitForSpawnCount(1);
+
+    const args = spawnQueue[0]?.args ?? [];
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "-vf",
+        "scale=1680:946:flags=lanczos",
+        "-c:v",
+        "h264_videotoolbox"
+      ])
+    );
+
+    await resolveNextSpawn(0);
+    const result = await high;
+    expect(result.widthPx).toBe(1680);
+    expect(result.heightPx).toBe(946);
+  });
 });

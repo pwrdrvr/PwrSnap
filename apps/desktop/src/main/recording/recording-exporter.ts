@@ -92,7 +92,7 @@ export function computeOutputDimensions(
   sourceHeight: number
 ): { widthPx: number; heightPx: number } {
   if (targetWidth === null || targetWidth >= sourceWidth) {
-    return { widthPx: sourceWidth, heightPx: sourceHeight };
+    return { widthPx: evenDimension(sourceWidth), heightPx: evenDimension(sourceHeight) };
   }
   // Round to even — H.264 + libvpx + libx265 all require even dims.
   // Also matches `-vf scale=W:-2`'s behavior (which is what ffmpeg
@@ -100,6 +100,10 @@ export function computeOutputDimensions(
   const w = targetWidth - (targetWidth % 2);
   const h = Math.round((sourceHeight * w) / sourceWidth);
   return { widthPx: w, heightPx: h - (h % 2) };
+}
+
+function evenDimension(value: number): number {
+  return Math.max(2, value - (value % 2));
 }
 
 export type ExportInput = {
@@ -297,6 +301,12 @@ async function encodeAndRecord(
         input.range,
         input.audio,
         MP4_PRESETS[input.preset],
+        {
+          sourceWidthPx: input.record.width_px,
+          sourceHeightPx: input.record.height_px,
+          outputWidthPx: widthPx,
+          outputHeightPx: heightPx
+        },
         outputPath
       );
     }
@@ -383,6 +393,12 @@ async function encodeMp4(
   range: VideoRange,
   audio: VideoExportAudio,
   spec: Mp4PresetSpec,
+  dims: {
+    sourceWidthPx: number;
+    sourceHeightPx: number;
+    outputWidthPx: number;
+    outputHeightPx: number;
+  },
   outPath: string
 ): Promise<void> {
   const duration = (range.end - range.start).toFixed(3);
@@ -404,8 +420,14 @@ async function encodeMp4(
   // through Apple's VideoToolbox H.264 encoder. Do not use libx264;
   // the bundled ffmpeg is an LGPL build and this path must stay
   // GPL-clean.
-  if (spec.width !== null) {
-    args.push("-vf", `scale=${spec.width}:-2:flags=lanczos`);
+  if (
+    dims.outputWidthPx !== dims.sourceWidthPx ||
+    dims.outputHeightPx !== dims.sourceHeightPx
+  ) {
+    args.push(
+      "-vf",
+      `scale=${dims.outputWidthPx}:${dims.outputHeightPx}:flags=lanczos`
+    );
   }
   args.push(
     "-c:v",

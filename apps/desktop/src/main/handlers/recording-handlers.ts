@@ -542,13 +542,15 @@ function estimateVideoByteSize(
   // MP4 — model bitrate from the encoder presets. Numbers are deliberate
   // ballpark; the renderer surfaces these as `~N MB` so a 30% miss
   // is acceptable.
-  let bitrateBps: number;
-  if (preset === "low") {
-    bitrateBps = 3_000_000;
-  } else if (preset === "med") {
-    bitrateBps = 6_500_000;
-  } else {
-    bitrateBps = 8_000_000;
-  }
+  const bitrateBps = mp4PresetBitrateBps(preset);
   return Math.round((bitrateBps / 8) * durationSec);
+}
+
+function mp4PresetBitrateBps(preset: VideoPreset): number {
+  const bitrate = MP4_PRESETS[preset].bitrate;
+  const match = /^(\d+)k$/.exec(bitrate);
+  if (match === null) {
+    throw new Error(`recording-handlers: unsupported MP4 preset bitrate ${bitrate}`);
+  }
+  return Number(match[1]) * 1000;
 }

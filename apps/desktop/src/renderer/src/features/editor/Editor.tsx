@@ -64,6 +64,7 @@ import {
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { selectBaseRaster } from "./base-raster";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
+import { RasterLayers } from "./RasterLayers";
 import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor } from "./resolveToolColor";
 import { shapeStrokeGeometry } from "./shape-stroke-geometry";
@@ -4825,6 +4826,21 @@ function EditorLoaded({
   //   • chrome === "chromeless" → Library Focus / Reel; canvas-only.
   // ------------------------------------------------------------------
 
+  // Non-base raster layers (pasted images, the captured cursor) render as
+  // their own positioned <img> elements via the RasterLayers LayerView.
+  // The base raster is the first one (z_index 0) and is already drawn by
+  // the <img> below; everything else stacks above it. Hidden / rejected
+  // layers are excluded so the editor matches what the compositor paints.
+  const baseRasterId =
+    modelLayers.find((l) => l.kind === "raster" && l.parent_id !== null)?.id ?? null;
+  const extraRasterLayers = modelLayers.filter(
+    (l): l is Extract<BundleLayerNode, { kind: "raster" }> =>
+      l.kind === "raster" &&
+      l.id !== baseRasterId &&
+      l.visible &&
+      l.rejected_at === null
+  );
+
   const viewport = (
     <div
       className={
@@ -4987,6 +5003,15 @@ function EditorLoaded({
                 rasterTranslateXPx,
                 rasterTranslateYPx
               })}
+            />
+            {/* Non-base raster layers (pasted images, captured cursor)
+                stacked above the base source, clipped to the canvas by
+                the same .editor-image-clip overflow:hidden. */}
+            <RasterLayers
+              layers={extraRasterLayers}
+              captureId={record.id}
+              canvasWidthPx={record.width_px}
+              canvasHeightPx={record.height_px}
             />
           </div>
           {/* HTML blur layer between the <img> and the SVG so

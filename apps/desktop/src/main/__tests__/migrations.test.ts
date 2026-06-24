@@ -30,6 +30,13 @@ describe("database migrations", () => {
     }
   });
 
+  test("avoid AUTOINCREMENT tables that create sqlite_sequence churn", () => {
+    for (const file of migrationFiles()) {
+      const sql = readFileSync(join(migrationsDir, file), "utf8");
+      expect(sql.toUpperCase(), file).not.toContain("AUTOINCREMENT");
+    }
+  });
+
   test("ai enrichment migration tolerates dev databases that already have old AI tables", () => {
     const db = new Database(":memory:");
     try {

@@ -40,6 +40,9 @@ const log = getMainLogger("pwrsnap:db");
 
 let dbInstance: Database.Database | null = null;
 
+export const WAL_AUTOCHECKPOINT_PAGES = 1_000;
+export const JOURNAL_SIZE_LIMIT_BYTES = 16 * 1024 * 1024;
+
 export type SchemaMigration = {
   version: number;
   appliedAt: string;
@@ -90,15 +93,7 @@ export async function openDatabase(
   log.info("opening database", { dbPath });
   const db = new Database(dbPath, { nativeBinding: getNativeBinding() });
 
-  // Pragmas. All except foreign_keys are persistent; foreign_keys is
-  // per-connection and must be set at every open.
-  db.pragma("journal_mode = WAL");
-  db.pragma("synchronous = NORMAL");
-  db.pragma("temp_store = MEMORY");
-  db.pragma("mmap_size = 268435456"); // 256 MB
-  db.pragma("cache_size = -65536"); // 64 MB
-  db.pragma("busy_timeout = 5000");
-  db.pragma("foreign_keys = ON");
+  configureDatabaseConnection(db);
 
   if ((options.migrations ?? "apply") === "verify") {
     const pending = listPendingMigrationFiles(db);
@@ -166,6 +161,23 @@ export async function openDatabase(
   }
 
   return db;
+}
+
+export function configureDatabaseConnection(db: Database.Database): void {
+  // Pragmas. Some are persistent, but applying them on every connection keeps
+  // test/dev clones and repaired DBs converged. The WAL settings make the
+  // SSD-facing retention bound explicit: checkpoint at SQLite's default 1000
+  // pages (~4 MiB with normal pages) and do not retain an oversized WAL beyond
+  // 16 MiB after checkpoint/reset.
+  db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
+  db.pragma(`wal_autocheckpoint = ${WAL_AUTOCHECKPOINT_PAGES}`);
+  db.pragma(`journal_size_limit = ${JOURNAL_SIZE_LIMIT_BYTES}`);
+  db.pragma("temp_store = MEMORY");
+  db.pragma("mmap_size = 268435456"); // 256 MB
+  db.pragma("cache_size = -65536"); // 64 MB
+  db.pragma("busy_timeout = 5000");
+  db.pragma("foreign_keys = ON");
 }
 
 /** Versions recorded in schema_migrations, or empty when the table

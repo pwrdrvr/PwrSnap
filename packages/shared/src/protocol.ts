@@ -513,6 +513,7 @@ export type SettingsPage =
   | "ai"
   | "storage"
   | "system-permissions"
+  | "experimental"
   | "about";
 
 /** Runtime allowlist of every valid `SettingsPage`. Kept here (not in
@@ -527,6 +528,7 @@ export const SETTINGS_PAGES = [
   "ai",
   "storage",
   "system-permissions",
+  "experimental",
   "about"
 ] as const satisfies readonly SettingsPage[];
 
@@ -2376,6 +2378,7 @@ export type AiUsageRunsPage = {
 export type CaptureEnrichmentSummary = {
   captureId: string;
   status: AiRunStatus | null;
+  error: string | null;
   acceptedTitle: string | null;
   acceptedDescription: string | null;
   acceptedTags: string[];
@@ -2417,6 +2420,18 @@ export type Commands = {
     req: { mode?: "auto" | "region" | "window" | "timed" };
     res: CaptureRecord;
   };
+  /**
+   * Fast Video Capture entry point for UI surfaces (the tray's Record
+   * button, the Library's Video chip). Opens the auto-mode selector to
+   * pick a region / window, then routes the commit to `recording:start`
+   * — the exact flow the `videoCapture` global hotkey drives via
+   * `runInteractiveRecord()`. Fire-and-forget: the selector, countdown,
+   * and recording lifecycle all surface on the `events:recording:*`
+   * broadcasts, so the renderer gets nothing back beyond the ack. The
+   * companion to `capture:interactive` (which persists an image), kept
+   * as its own verb so the snap and video paths stay explicit.
+   */
+  "capture:videoInteractive": { req: Record<string, never>; res: void };
   /**
    * Read the current system clipboard image, persist it as a library
    * capture, and return the resulting record. Pixel bytes stay in the

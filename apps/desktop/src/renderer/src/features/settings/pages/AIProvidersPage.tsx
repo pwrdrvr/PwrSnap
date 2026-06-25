@@ -172,14 +172,17 @@ export function AIProvidersPage(): ReactElement {
   const enabledAgentIds = settings?.ai.acp.enabledAgentIds ?? [];
   const acpChatProviderOptions = buildAcpProviderOptions(enabledAgentIds, acpDiscovery);
 
-  // ACP model lists, fetched lazily per agent (listing spawns the agent in ACP
-  // mode — seconds — so the main process memoizes; here we cache per agent and
-  // fetch only the agents a surface actually selects).
+  // ACP model lists, fetched lazily per in-use agent. The first Settings pass
+  // bypasses the persisted cache so this doubles as a runtime availability/auth
+  // probe; otherwise a stale model cache can make a logged-out or retired CLI
+  // look selectable until the next capture fails.
   const [acpModels, setAcpModels] = useState<Record<string, readonly AcpAgentModelOption[]>>({});
+  const [acpModelErrors, setAcpModelErrors] = useState<Record<string, string | undefined>>({});
   const [acpModelsLoadingIds, setAcpModelsLoadingIds] = useState<readonly string[]>([]);
   const fetchAcpModels = useCallback(async (agentId: string, refresh = false): Promise<void> => {
     setAcpModelsLoadingIds((ids) => (ids.includes(agentId) ? ids : [...ids, agentId]));
     const result = await dispatch("acp:models", { agentId, refresh });
+    setAcpModelErrors((prev) => ({ ...prev, [agentId]: result.ok ? undefined : result.error.message }));
     setAcpModels((prev) => {
       if (result.ok) return { ...prev, [agentId]: result.value.models };
       // A FAILED probe must not blank a list we already have (e.g. a Refresh
@@ -205,7 +208,7 @@ export function AIProvidersPage(): ReactElement {
   useEffect(() => {
     for (const id of acpAgentIdsKey.length > 0 ? acpAgentIdsKey.split(",") : []) {
       if (acpModels[id] === undefined && !acpModelsLoadingIds.includes(id)) {
-        void fetchAcpModels(id);
+        void fetchAcpModels(id, true);
       }
     }
   }, [acpAgentIdsKey, acpModels, acpModelsLoadingIds, fetchAcpModels]);
@@ -234,6 +237,10 @@ export function AIProvidersPage(): ReactElement {
   const acpModelsLoadingForProvider = (provider: string | undefined): boolean => {
     const id = agentIdFromProvider(provider);
     return id !== null && acpModelsLoadingIds.includes(id);
+  };
+  const acpModelErrorForProvider = (provider: string | undefined): string | undefined => {
+    const id = agentIdFromProvider(provider);
+    return id === null ? undefined : acpModelErrors[id];
   };
 
   return (
@@ -268,6 +275,7 @@ export function AIProvidersPage(): ReactElement {
           acpProviderOptions={acpChatProviderOptions}
           acpModelOptions={acpModelsForProvider(settings?.ai.defaults.enrichment.provider)}
           acpModelsLoading={acpModelsLoadingForProvider(settings?.ai.defaults.enrichment.provider)}
+          acpModelError={acpModelErrorForProvider(settings?.ai.defaults.enrichment.provider)}
           onChange={(p) => {
             void patch({ ai: { defaults: { enrichment: p } } });
           }}
@@ -289,6 +297,7 @@ export function AIProvidersPage(): ReactElement {
           acpProviderOptions={acpChatProviderOptions}
           acpModelOptions={acpModelsForProvider(settings?.ai.defaults.libraryChat.provider)}
           acpModelsLoading={acpModelsLoadingForProvider(settings?.ai.defaults.libraryChat.provider)}
+          acpModelError={acpModelErrorForProvider(settings?.ai.defaults.libraryChat.provider)}
           onChange={(p) => {
             void patch({ ai: { defaults: { libraryChat: p } } });
           }}
@@ -303,6 +312,7 @@ export function AIProvidersPage(): ReactElement {
           acpProviderOptions={acpChatProviderOptions}
           acpModelOptions={acpModelsForProvider(settings?.ai.defaults.sizzleChat.provider)}
           acpModelsLoading={acpModelsLoadingForProvider(settings?.ai.defaults.sizzleChat.provider)}
+          acpModelError={acpModelErrorForProvider(settings?.ai.defaults.sizzleChat.provider)}
           onChange={(p) => {
             void patch({ ai: { defaults: { sizzleChat: p } } });
           }}
@@ -507,6 +517,7 @@ export function AIProvidersPage(): ReactElement {
         }}
         enabledAgentIds={settings?.ai.acp.enabledAgentIds ?? []}
         agents={settings?.ai.acp.agents}
+        modelErrors={acpModelErrors}
         onToggle={(id, enabled) => {
           const current = settings?.ai.acp.enabledAgentIds ?? [];
           const next = enabled
@@ -1072,6 +1083,7 @@ type AcpAgentsCardProps = {
   onRefresh: () => void;
   enabledAgentIds: readonly string[];
   agents: Record<string, AcpAgentPreference> | undefined;
+  modelErrors: Record<string, string | undefined>;
   onToggle: (id: string, enabled: boolean) => void;
   onPickInstance: (id: string, command: string) => void;
   onRevertAuto: (id: string) => void;
@@ -1086,6 +1098,7 @@ function AcpAgentsCard({
   onRefresh,
   enabledAgentIds,
   agents,
+  modelErrors,
   onToggle,
   onPickInstance,
   onRevertAuto,
@@ -1118,6 +1131,7 @@ function AcpAgentsCard({
           error={error}
           enabledAgentIds={enabledAgentIds}
           agents={agents}
+          modelErrors={modelErrors}
           onToggle={onToggle}
           onPickInstance={onPickInstance}
           onRevertAuto={onRevertAuto}
@@ -1135,6 +1149,7 @@ type AcpAgentListProps = {
   error: string | null;
   enabledAgentIds: readonly string[];
   agents: Record<string, AcpAgentPreference> | undefined;
+  modelErrors: Record<string, string | undefined>;
   onToggle: (id: string, enabled: boolean) => void;
   onPickInstance: (id: string, command: string) => void;
   onRevertAuto: (id: string) => void;
@@ -1148,6 +1163,7 @@ function AcpAgentList({
   error,
   enabledAgentIds,
   agents,
+  modelErrors,
   onToggle,
   onPickInstance,
   onRevertAuto,
@@ -1180,6 +1196,7 @@ function AcpAgentList({
           agent={agent}
           enabled={enabledAgentIds.includes(agent.id)}
           pref={agents?.[agent.id]}
+          modelError={modelErrors[agent.id]}
           onToggle={(next) => onToggle(agent.id, next)}
           onPickInstance={(command) => onPickInstance(agent.id, command)}
           onRevertAuto={() => onRevertAuto(agent.id)}
@@ -1195,6 +1212,7 @@ function AcpAgentRow({
   agent,
   enabled,
   pref,
+  modelError,
   onToggle,
   onPickInstance,
   onRevertAuto,
@@ -1204,6 +1222,7 @@ function AcpAgentRow({
   agent: AcpAgentDiscoveryEntry;
   enabled: boolean;
   pref: AcpAgentPreference | undefined;
+  modelError: string | undefined;
   onToggle: (enabled: boolean) => void;
   onPickInstance: (command: string) => void;
   onRevertAuto: () => void;
@@ -1214,9 +1233,11 @@ function AcpAgentRow({
   const isAuto =
     (pref?.selectedPath ?? "") === "" && (pref?.overridePath ?? "") === "";
   const summarySub = agent.installed
-    ? `${instanceCount} install${instanceCount === 1 ? "" : "s"} found${
-        agent.version !== undefined ? ` · active v${agent.version}` : ""
-      }${isAuto ? " · auto" : " · pinned"}`
+    ? modelError !== undefined
+      ? `Not available: ${modelError}`
+      : `${instanceCount} install${instanceCount === 1 ? "" : "s"} found${
+          agent.version !== undefined ? ` · active v${agent.version}` : ""
+        }${isAuto ? " · auto" : " · pinned"}`
     : (agent.detail ?? "Not installed");
 
   return (
@@ -1227,7 +1248,9 @@ function AcpAgentRow({
         sub={summarySub}
         using={agent.installed && enabled}
         badges={
-          agent.installed ? (
+          modelError !== undefined ? (
+            <span className="pss__badge is-danger">Unavailable</span>
+          ) : agent.installed ? (
             enabled ? (
               <span className="pss__badge is-using">Enabled</span>
             ) : (
@@ -1614,6 +1637,8 @@ export type AiSurfaceDefaultControlProps = {
   acpModelOptions?: readonly AcpAgentModelOption[] | undefined;
   /** True while the ACP model list for this surface's provider is loading. */
   acpModelsLoading?: boolean | undefined;
+  /** Error from probing the selected ACP agent's runtime model/session state. */
+  acpModelError?: string | undefined;
   onChange: (patch: AiSurfaceDefaultPatch) => void;
 };
 
@@ -1658,6 +1683,7 @@ export function AiSurfaceDefaultControl({
   acpProviderOptions,
   acpModelOptions,
   acpModelsLoading,
+  acpModelError,
   onChange
 }: AiSurfaceDefaultControlProps): ReactElement {
   const providerValue = value.provider ?? "";
@@ -1811,6 +1837,13 @@ export function AiSurfaceDefaultControl({
             ) : null}
           </select>
         </label>
+        {isAcpProvider && acpModelError !== undefined ? (
+          <div className="pss__ai-surface-error" role="alert">
+            {acpProviderOptions.find((o) => o.value === chatProviderValue)?.label ??
+              chatProviderValue.slice("acp:".length)}{" "}
+            is not available: {acpModelError}
+          </div>
+        ) : null}
         <label className="pss__ai-surface-field">
           <span className="pss__ai-surface-field-label">Model</span>
           <select

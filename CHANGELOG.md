@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.0.0-beta.20 - 2026-06-21
+
+This beta brings the post-rollback mainline back into a packaged build: capture
+and video flows disturb the desktop less, videos are easier to recognize in the
+Library, editor bakes preserve more annotation detail, and Settings now exposes
+both update controls and experimental feature switches in clearer places.
+
+- Capture Flow - Fixed Library-triggered captures so the Library can stay on
+  screen without appearing in its own screenshot or stealing focus afterward.
+- Video Capture - Fixed interactive video capture so canceling or finishing a
+  recording no longer re-activates the previous app unnecessarily.
+- Library Video Cards - Added a center play affordance and hover action rail so
+  videos are recognizable at rest and duration stays visible beside actions.
+- Editor Effects - Fixed v2 highlight and blur layers so baked exports preserve
+  their geometry and visibility on dark captures.
+- Editor Paste - Fixed layer paste so copied layers keep their PwrSnap payload
+  and no longer corrupt later bakes during the repack window.
+- Library Grid - Added trackpad pinch-to-zoom for thumbnail density, with a
+  sticky size that survives relaunches and window resizes.
+- Image Export - Added experimental DPI-aware export presets so Low, Med, and
+  High scale from the capture's own resolution instead of collapsing together.
+- Settings Updates - Added release-channel versions, manual update checks, and
+  restart-to-install controls directly in Settings.
+- Settings Experimental - Improved Settings organization by moving soak-only
+  toggles into a dedicated Experimental tab.
+- Developer Workflow - Fixed terminal shutdown handling so Ctrl+C in dev runs
+  follows the normal app cleanup path.
+- Minor - React and Vite dependency updates, release-skill note guidance, and
+  small supporting test and infrastructure updates.
+
 ## v1.0.0-beta.18 - 2026-06-14
 
 This beta tightens the editor and update experience after the first

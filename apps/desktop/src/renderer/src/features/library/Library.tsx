@@ -1137,6 +1137,13 @@ export function Library() {
     () => acceleratorToDisplayKeys(hotkeys.quickCapture).join(""),
     [hotkeys.quickCapture]
   );
+  // Record Video shares the same live-chord treatment (default ⌘⌥C,
+  // editable in Settings → Hotkeys). Sits left of Quick Capture as the
+  // app's second headline verb so the header advertises both.
+  const videoCaptureChord = useMemo(
+    () => acceleratorToDisplayKeys(hotkeys.videoCapture).join(""),
+    [hotkeys.videoCapture]
+  );
 
   // App version for the footer — mirrors AboutPage. One-shot read on
   // mount; the version doesn't change at runtime.
@@ -2754,6 +2761,29 @@ export function Library() {
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.9 2.9l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.9-2.9l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.9-2.9l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.9 2.9l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" />
             </svg>
+          </button>
+          {/* Record Video — the second headline verb, mirroring the
+              tray's Record button. Sits left of Quick Capture so the
+              header advertises both capture types. Routes through
+              `capture:videoInteractive` (selector → recording:start),
+              the same flow the ⌘⌥C hotkey drives. Secondary (non-accent)
+              chip styling keeps Quick Capture the single orange CTA. */}
+          <button
+            className="psl__chip-btn"
+            style={{ height: 28 }}
+            type="button"
+            title="Pick a region or window to capture as a video clip"
+            onClick={() => {
+              void dispatch("capture:videoInteractive", {});
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3" y="6" width="13" height="12" rx="2" />
+              <path d="m16 10 5-3v10l-5-3z" />
+            </svg>
+            {videoCaptureChord.length > 0
+              ? `Record Video · ${videoCaptureChord}`
+              : "Record Video"}
           </button>
           {/* Mirrors the tray's Quick Capture button — same wording,
               same action, same hotkey. Routes through `capture:interactive`

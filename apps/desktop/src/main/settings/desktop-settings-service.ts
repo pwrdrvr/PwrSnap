@@ -133,13 +133,13 @@ export function defaultSettings(): Settings {
     experimental: {
       // macOS two-process split ships default-OFF (plan 2026-06-12-001):
       // regular users get the single-process (combined) app; the split
-      // is opt-in via Settings → General → "Two-process mode" while it
-      // soaks. Ignored off macOS. Read once at process start — relaunch
-      // to apply.
+      // is opt-in via Settings → Experimental → "Two-process mode" while
+      // it soaks. Ignored off macOS. Read once at process start —
+      // relaunch to apply.
       processSplit: false,
       // DPI-aware export ships OFF so the default install keeps the
       // legacy 800 / 1440 / source preset widths. Power users opt in from
-      // Settings → General. `allowRetinaExport` only matters once the
+      // Settings → Experimental. `allowRetinaExport` only matters once the
       // toggle is on; it defaults ON so the opt-in state is "give me the
       // full Retina image at High".
       dpiAwareExport: false,

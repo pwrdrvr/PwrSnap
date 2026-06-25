@@ -355,6 +355,7 @@ describe("AI enrichment repositories", () => {
       {
         captureId: "cap_1",
         status: "queued",
+        error: null,
         acceptedTitle: null,
         acceptedDescription: null,
         acceptedTags: ["bug"],

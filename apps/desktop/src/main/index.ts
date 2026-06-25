@@ -27,6 +27,8 @@ import {
 import { releaseSnapshot } from "./capture/screen-snapshot";
 import { activateApp, selfPidSet } from "./capture/window-list";
 import { appWindowsOverlappingRect } from "./capture/rect-overlap";
+import { guardScreenCapture } from "./capture/screen-permission-gate";
+import { ensureCapturesDirReady } from "./capture/capture-storage-gate";
 import {
   resolveSelectionSourceApp,
   shouldConsiderRaisingOurWindows
@@ -49,8 +51,10 @@ import {
 } from "./handlers/app-handlers";
 import {
   clipboardHasPasteableImage,
+  librarySourceWindowIds,
   registerCaptureHandlers
 } from "./handlers/capture-handlers";
+import { registerCaptureVideoHandler } from "./handlers/capture-video-handler";
 import { registerAcpHandlers } from "./handlers/acp-handlers";
 import { getToolRpcServer } from "./ai/mcp/pwrsnap-tool-rpc-server";
 import { closeAcpAgentPool, warmConfiguredAcpAgents } from "./ai/acp-agent-pool";
@@ -917,8 +921,23 @@ function pickFocusTargetForRecording(overlapping: BrowserWindow[]): BrowserWindo
  * this is the explicit "record" entry point used by the videoCapture
  * hotkey and the tray's Record button.
  */
-async function runInteractiveRecord(): Promise<void> {
+async function runInteractiveRecord(
+  protectWindowIds: readonly number[] = []
+): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
+  // Gate BEFORE pickRegion, exactly like `capture:interactive`. The
+  // selector freezes a screen snapshot on show(), which is all-black on
+  // a Mac without Screen Recording permission — so on a first-ever (or
+  // since-revoked) attempt we must fire the macOS prompt / route to
+  // System Settings here, NOT paint an empty selector and only discover
+  // the wall after the user has dragged a region and committed.
+  // `recording:start` re-checks (idempotent when granted); when blocked
+  // we bail before showing anything, so there's no selector to tear
+  // down and no focus to restore.
+  const blocked = await guardScreenCapture();
+  if (blocked !== null) return;
+  const storageBlocked = await ensureCapturesDirReady();
+  if (storageBlocked !== null) return;
 
   // Pick a rect / window via the existing region selector. We can't
   // route through capture:interactive (which persists an image on
@@ -936,7 +955,14 @@ async function runInteractiveRecord(): Promise<void> {
   const selection = await pickRegion({
     mode: "auto",
     keepPwrSnapChrome: false,
-    intent: "video"
+    intent: "video",
+    // Mirror the snap path: when the record was triggered from the
+    // Library's own button, content-protect the Library out of the
+    // frozen snapshot so it isn't part of the recording (the user
+    // clicked a control ON it — they didn't mean to record it). A
+    // hotkey or tray trigger passes an empty list and leaves the
+    // Library as a valid target.
+    protectWindowIds
   });
   if (!selection.ok) {
     setFloatOverState({ kind: "cancel" });
@@ -1584,6 +1610,18 @@ export function bootstrapApp(): void {
       registerClipboardHandlers();
       registerFloatOverHandlers();
       registerRecordingHandlers();
+      // Renderer-dispatchable entry into the interactive video-record
+      // flow (selector → recording:start), used by the tray's Record
+      // button and the Library's Video chip. The `videoCapture` global
+      // hotkey calls `runInteractiveRecord()` directly. `runInteractiveRecord`
+      // and `librarySourceWindowIds` are injected because the registrar
+      // lives in its own module (so the wiring is unit-testable) while
+      // its dependencies live here / in capture-handlers. The latter
+      // applies the same Library-protection rule as `capture:interactive`:
+      // a record triggered from the Library's own button keeps the
+      // Library out of the frozen snapshot; tray / hotkey triggers
+      // resolve to an empty list and leave it as a valid target.
+      registerCaptureVideoHandler(runInteractiveRecord, librarySourceWindowIds);
       registerAppUpdateHandlers();
       // Startup Codex readiness probe — deferred past the library's first
       // contentful paint (#238). The probe's `codex` process spawns

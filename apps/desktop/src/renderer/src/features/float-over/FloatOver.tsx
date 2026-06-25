@@ -832,6 +832,7 @@ export function FloatOver({
             accepted={allDraftsAccepted}
             needsConsent={aiNeedsConsent}
             safetyDisabled={aiSafetyDisabled}
+            error={enrichment?.error}
             {...(enrichmentProviderLabel !== undefined
               ? { providerLabel: enrichmentProviderLabel }
               : {})}

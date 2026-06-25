@@ -326,6 +326,7 @@ describe("library:listByIdsWithMetadata — handler contract", () => {
       captureId: "a",
       latestRunId: null,
       status: null,
+      error: null,
       ocrText: "Some OCR",
       suggestedTitle: null,
       acceptedTitle: "Title A",

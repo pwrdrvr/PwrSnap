@@ -113,8 +113,12 @@ export function clipboardHasPasteableImage(): boolean {
  * on the Library can't have meant to capture the Library itself. A
  * global-hotkey trigger has no `sourceWindowId`, so this returns empty
  * and the Library stays in the picker as a valid capture target.
+ *
+ * Exported so the video-record path (`capture:videoInteractive` in
+ * index.ts) applies the identical Library-protection rule — the snap
+ * and video paths must treat a Library-triggered capture the same way.
  */
-function librarySourceWindowIds(ctx: CommandContext): number[] {
+export function librarySourceWindowIds(ctx: CommandContext): number[] {
   if (ctx.sourceWindowId === undefined) return [];
   const library = findMainLibraryWindow();
   if (library === null || library.isDestroyed()) return [];

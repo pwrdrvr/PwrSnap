@@ -517,10 +517,9 @@ function computePresetDimensions(
  *  GIF: ~10 KB per frame for 720p, scaled with pixel count. fps
  *  picked from the preset's frame rate.
  *
- *  MP4: bitrate model. HIGH is stream-copy so estimate from source
- *  resolution (we don't know the actual source bitrate, so 0.1 bpp
- *  × pixel count × fps is a reasonable proxy). LOW / MED use the
- *  CRF as a rough bitrate proxy (lower CRF = higher bitrate).
+ *  MP4: bitrate model. The encoder owns the real per-preset bitrate;
+ *  these estimates mirror the LOW / MED / HIGH ladder closely enough
+ *  for pre-click labels.
  *
  *  All of this is replaced by the exact cache row size once the
  *  user clicks the card. Estimates only feed the renderer's
@@ -532,28 +531,26 @@ function estimateVideoByteSize(
   heightPx: number,
   durationSec: number
 ): number {
-  const pixels = widthPx * heightPx;
   if (format === "gif") {
+    const pixels = widthPx * heightPx;
     const fps = GIF_PRESETS[preset].fps;
     // 0.20 bpp per palette-encoded GIF frame — calibrated for
     // screen content with bayer dither at the LMH fps tiers.
     const frameBytes = pixels * 0.20;
     return Math.round(frameBytes * fps * durationSec);
   }
-  // MP4 — model bitrate from CRF / source. Numbers are deliberate
+  // MP4 — model bitrate from the encoder presets. Numbers are deliberate
   // ballpark; the renderer surfaces these as `~N MB` so a 30% miss
   // is acceptable.
-  const sourceFps = 30;
-  let bitrateBps: number;
-  if (preset === "low") {
-    bitrateBps = 3_000_000;
-  } else if (preset === "med") {
-    bitrateBps = 6_500_000;
-  } else {
-    // HIGH: stream-copy. ~0.1 bpp × pixels × fps approximates h.264
-    // at the recorder's quality setting; close enough to "source"
-    // until the cache returns exact bytes.
-    bitrateBps = Math.round(pixels * sourceFps * 0.1);
-  }
+  const bitrateBps = mp4PresetBitrateBps(preset);
   return Math.round((bitrateBps / 8) * durationSec);
+}
+
+function mp4PresetBitrateBps(preset: VideoPreset): number {
+  const bitrate = MP4_PRESETS[preset].bitrate;
+  const match = /^(\d+)k$/.exec(bitrate);
+  if (match === null) {
+    throw new Error(`recording-handlers: unsupported MP4 preset bitrate ${bitrate}`);
+  }
+  return Number(match[1]) * 1000;
 }

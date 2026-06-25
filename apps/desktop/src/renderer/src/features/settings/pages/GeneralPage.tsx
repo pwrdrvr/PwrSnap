@@ -2,10 +2,9 @@
 //
 // Mirrors PwrAgent, whose "General" tab hosts Appearance + Developer
 // mode + Update channel. This page folds in what used to be the
-// standalone Appearance page plus the two cards that previously lived
-// under "Experimental" (Developer mode, Update channel) — the
-// Experimental page is gone now that its only other toggle (the unused
-// PwrSnap1 file-format slot) has been removed.
+// standalone Appearance page. The opt-in soak toggles (two-process
+// mode, DPI-aware export) that briefly lived inline here now have their
+// own "Experimental" tab — see pages/ExperimentalPage.tsx.
 //
 // Theme writes flow through `useSettingsContext().patch`, which the
 // main process validates and broadcasts back; every other PwrSnap
@@ -81,8 +80,6 @@ export function GeneralPage(): ReactElement {
   const developerMode = settings?.general.developerMode ?? false;
   const launchAtLogin = settings?.general.launchAtLogin ?? false;
   const channel: UpdateChannel = settings?.updates.channel ?? "latest";
-  const dpiAwareExport = settings?.experimental.dpiAwareExport ?? false;
-  const allowRetinaExport = settings?.experimental.allowRetinaExport ?? true;
   const platform = window.pwrsnapApi?.platform;
 
   // Live OS-side registration state, distinct from the saved toggle —
@@ -175,29 +172,6 @@ export function GeneralPage(): ReactElement {
         void patch({ updates: { channel: next } });
       }
     : (): void => {};
-
-  // macOS-only: the two-process split doesn't exist on other platforms
-  // (the boot is always single-process there), so don't show a switch
-  // that can't do anything.
-  const isMac = window.pwrsnapApi?.platform === "darwin";
-  const processSplit = settings?.experimental.processSplit ?? false;
-  const onProcessSplitChange = ready
-    ? (next: boolean): void => {
-        void patch({ experimental: { processSplit: next } });
-      }
-    : undefined;
-
-  const onDpiAwareExportChange = ready
-    ? (next: boolean): void => {
-        void patch({ experimental: { dpiAwareExport: next } });
-      }
-    : undefined;
-
-  const onAllowRetinaExportChange = ready
-    ? (next: boolean): void => {
-        void patch({ experimental: { allowRetinaExport: next } });
-      }
-    : undefined;
 
   // Surface the resolved theme when the user is on "System" so the
   // choice doesn't read as ambiguous. Pulled off the documentElement
@@ -406,37 +380,6 @@ export function GeneralPage(): ReactElement {
         >
           <Switch on={developerMode} onChange={onDeveloperModeChange} />
         </Row>
-      </Card>
-
-      {isMac ? (
-        <Card eyebrow="EXPERIMENTAL" title="Two-process mode">
-          <Row
-            label="Run the capture agent and Library as separate processes"
-            sub="The menu-bar capture agent and the Library window run as separate apps, so capture overlays never disturb the Library or flash the Dock. Turn off to revert to single-process mode. Takes effect after PwrSnap is quit and relaunched."
-            tag="process-split"
-          >
-            <Switch on={processSplit} onChange={onProcessSplitChange} />
-          </Row>
-        </Card>
-      ) : null}
-
-      <Card eyebrow="EXPERIMENTAL" title="DPI-aware export">
-        <Row
-          label="Scale exports by display resolution"
-          sub="Maps Low / Med / High to 25% / 50% / 100% of the capture's pixels instead of the fixed 800 / 1440 / full widths. On a Retina display High is the full 2× image; Med lands at the on-screen (1×) size. Off by default — flip it on to try the new sizing."
-          tag="experimental"
-        >
-          <Switch on={dpiAwareExport} onChange={onDpiAwareExportChange} />
-        </Row>
-        {dpiAwareExport ? (
-          <Row
-            label="Allow Retina export"
-            sub="When on, High keeps the full Retina (2×) pixels. Turn off to cap exports at the on-screen 1× resolution — High becomes today's 50%, with two smaller sizes below it."
-            tag="retina"
-          >
-            <Switch on={allowRetinaExport} onChange={onAllowRetinaExportChange} />
-          </Row>
-        ) : null}
       </Card>
     </>
   );

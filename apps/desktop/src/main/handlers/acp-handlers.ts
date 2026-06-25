@@ -43,6 +43,7 @@ import { app } from "electron";
 import { join } from "node:path";
 import { bus } from "../command-bus";
 import { loadAcpModelCacheEntry, saveAcpModelCacheEntry } from "../ai/acp-model-cache";
+import { agentErrorMessage } from "../ai/agent-error-message";
 import { getMainLogger } from "../log";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
 import {
@@ -294,14 +295,15 @@ export function registerAcpHandlers(params?: {
       });
       return ok({ agentId, models: options });
     } catch (cause) {
+      const message = agentErrorMessage(cause);
       log.warn("acp:models: listing failed", {
         agentId,
-        message: cause instanceof Error ? cause.message : String(cause)
+        message
       });
       return err({
         kind: "ai",
         code: "acp_models_failed",
-        message: cause instanceof Error ? cause.message : String(cause),
+        message,
         cause
       });
     } finally {

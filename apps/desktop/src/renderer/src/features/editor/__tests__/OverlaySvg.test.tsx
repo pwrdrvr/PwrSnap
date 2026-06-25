@@ -13,7 +13,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
 
-import { OverlaySvg } from "../OverlaySvg";
+import { OverlaySvg, TransformHandles } from "../OverlaySvg";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -1080,5 +1080,98 @@ describe("OverlaySvg — per-glyph mini-SVG wrappers with CSS z-index", () => {
     expect(chrome).not.toBeNull();
     const chromeZ = Number(chrome!.style.zIndex);
     expect(chromeZ).toBeGreaterThan(9_000_000);
+  });
+});
+
+describe("TransformHandles — body drag rect stroke-reach pad", () => {
+  // The transparent body-hit rect that drives drag-to-move grows
+  // outward by the shape's stroke reach so a selected shape can be
+  // dragged by its visible LINE, not just its interior (mirror of the
+  // hit-test pad for selection). The resize/rotate handles still anchor
+  // on the un-padded bodyBox. These tests assert the body rect's
+  // measured geometry: a square 1000×1000 image keeps px↔normalized 1:1
+  // so the expected percentages are easy to reason about — an auto
+  // stroke is 8px wide with a 2px halo → outer reach 6px → 0.006
+  // normalized → 0.6 percentage points of pad on each side.
+  async function renderTransformHandles(
+    selectedOverlay: OverlayRow,
+    dims = { imageWidthPx: 1000, imageHeightPx: 1000 }
+  ): Promise<HTMLElement> {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(TransformHandles, {
+          selectedOverlay,
+          imageWidthPx: dims.imageWidthPx,
+          imageHeightPx: dims.imageHeightPx,
+          sourceWidthPx: dims.imageWidthPx,
+          sourceHeightPx: dims.imageHeightPx,
+          onGeometryChange: () => undefined
+        })
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const body = container.querySelector<HTMLElement>(
+      "[data-testid='transform-handle-body']"
+    );
+    if (body === null) throw new Error("body-hit rect did not render");
+    return body;
+  }
+
+  function shapeRow(
+    data: Partial<Extract<OverlayRow["data"], { kind: "shape" }>> = {}
+  ): OverlayRow {
+    return {
+      id: "shape_test_1",
+      capture_id: "cap_1",
+      data: {
+        kind: "shape",
+        shape: "rect",
+        rect: { x: 0.2, y: 0.2, w: 0.4, h: 0.4 },
+        color: "auto",
+        ...data
+      },
+      schema_version: 1,
+      created_at: "2026-05-24T00:00:00Z",
+      applied_at: "2026-05-24T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      ai_run_id: null,
+      source: "user",
+      z_index: 0
+    };
+  }
+
+  test("stroked rect: body rect is grown outward by the stroke reach", async () => {
+    const body = await renderTransformHandles(shapeRow());
+    // bodyBox is (0.2, 0.2, 0.4, 0.4) → 20% / 40%. With 0.6pp of pad on
+    // each side the body rect spans 19.4% .. (19.4 + 41.2)%.
+    expect(parseFloat(body.style.left)).toBeCloseTo(19.4, 1);
+    expect(parseFloat(body.style.top)).toBeCloseTo(19.4, 1);
+    expect(parseFloat(body.style.width)).toBeCloseTo(41.2, 1);
+    expect(parseFloat(body.style.height)).toBeCloseTo(41.2, 1);
+  });
+
+  test("FILLED shape: no stroke line → body rect is the un-padded bbox", async () => {
+    const body = await renderTransformHandles(shapeRow({ filled: true }));
+    expect(parseFloat(body.style.left)).toBeCloseTo(20, 4);
+    expect(parseFloat(body.style.top)).toBeCloseTo(20, 4);
+    expect(parseFloat(body.style.width)).toBeCloseTo(40, 4);
+    expect(parseFloat(body.style.height)).toBeCloseTo(40, 4);
+  });
+
+  test("highlight: filled region → body rect is the un-padded bbox", async () => {
+    const highlight: OverlayRow = {
+      ...shapeRow(),
+      id: "hl_1",
+      data: { kind: "highlight", rect: { x: 0.2, y: 0.2, w: 0.4, h: 0.4 } }
+    };
+    const body = await renderTransformHandles(highlight);
+    expect(parseFloat(body.style.left)).toBeCloseTo(20, 4);
+    expect(parseFloat(body.style.width)).toBeCloseTo(40, 4);
   });
 });

@@ -478,6 +478,68 @@ describe("hitTestOverlays", () => {
     });
   });
 
+  describe("stroke-line selection (outward stroke reach)", () => {
+    // A stroked shape renders with `fill="none"` and a stroke CENTERED
+    // on the path, plus a white halo extending further out. Pre-fix the
+    // hit test only covered the path rect, so the outer half of the
+    // line + the halo were dead — users could only catch the thin inner
+    // sliver of a thick line. These tests pin that the VISIBLE LINE
+    // (and the painted pixels just past the path) now select the layer.
+    //
+    // dims threaded so the stroke-reach pad is computed (≈ 6 viewBox px
+    // outer reach at a 1000-px short side → ≈ 0.006 normalized, on top
+    // of the ≈ 0.01 forgiveness pad).
+    const dims = {
+      canvasWidthPx: 1000,
+      canvasHeightPx: 1000,
+      sourceWidthPx: 1000,
+      sourceHeightPx: 1000
+    };
+
+    test("rect: a click on the line just OUTSIDE the path rect selects", () => {
+      const rect = makeRow("r1", {
+        kind: "shape",
+        shape: "rect",
+        rect: { x: 0.2, y: 0.2, w: 0.4, h: 0.4 },
+        color: "auto"
+      });
+      // Left path edge is x=0.2; the visible stroke straddles it and the
+      // pad reaches out to x ≈ 0.184. (0.19, 0.4) lands on the line just
+      // outside the path — pre-fix this MISSED (0.19 < 0.2).
+      expect(hitTestOverlays([rect], 0.19, 0.4, 1000, dims)).toBe("r1");
+      // Still misses well outside the padded line.
+      expect(hitTestOverlays([rect], 0.17, 0.4, 1000, dims)).toBe(null);
+    });
+
+    test("circle: a click on the arc just OUTSIDE the ellipse selects", () => {
+      const circle = makeRow("c1", {
+        kind: "shape",
+        shape: "circle",
+        rect: { x: 0.3, y: 0.3, w: 0.4, h: 0.4 },
+        color: "auto"
+      });
+      // Inscribed circle radius 0.2 at center (0.5, 0.5); right edge of
+      // the path arc at x=0.7. (0.715, 0.5) is just past the path on the
+      // visible stroke — pre-fix this MISSED (0.215 > radius 0.2).
+      expect(hitTestOverlays([circle], 0.715, 0.5, 1000, dims)).toBe("c1");
+      // Still misses well past the padded arc.
+      expect(hitTestOverlays([circle], 0.73, 0.5, 1000, dims)).toBe(null);
+    });
+
+    test("parallelogram: a click on the sheared line just OUTSIDE the path selects", () => {
+      const para = makeRow("p1", {
+        kind: "shape",
+        shape: "parallelogram",
+        rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+        color: "auto",
+        skewDeg: 15
+      });
+      // The sheared left edge at y=0.11 sits at x ≈ 0.124; (0.115, 0.11)
+      // is just outside it, on the visible line — pre-fix this MISSED.
+      expect(hitTestOverlays([para], 0.115, 0.11, 1000, dims)).toBe("p1");
+    });
+  });
+
   describe("parallelogram inverse-shear hit-test", () => {
     // 1000×1000 square canvas — aspect = 1 so the (H/W) divisor
     // collapses out. We add a 1600×900 widescreen case below to lock
@@ -510,11 +572,15 @@ describe("hitTestOverlays", () => {
     });
 
     test("misses the bbox top-left corner that the shear pushes outside the polygon", () => {
-      // (0.11, 0.11) is well inside the AXIS-ALIGNED bbox but OUTSIDE
-      // the drawn polygon (polygon's left edge at y=0.11 sits at
-      // x ≈ 0.124). Pre-fix (wrong sign) this returned "p1" — false
-      // hit. This is THE assertion that locks the sign correction in.
-      expect(hitTestOverlays([paraSquare], 0.11, 0.11, 1000, squareDims)).toBe(null);
+      // (0.105, 0.11) is inside the AXIS-ALIGNED bbox (a plain rect WOULD
+      // hit here, even with the stroke pad) but OUTSIDE the drawn polygon
+      // + its stroke pad — the polygon's padded left edge at y=0.11 sits
+      // at x ≈ 0.108. Pre-fix (wrong sign) the bbox top-left returned
+      // "p1" — false hit. This is THE assertion that locks the sign
+      // correction in. (Moved in from the historical 0.11 to clear the
+      // outward stroke-reach pad that makes the visible LINE grabbable;
+      // the shear-cut wedge it probes is unchanged.)
+      expect(hitTestOverlays([paraSquare], 0.105, 0.11, 1000, squareDims)).toBe(null);
     });
 
     test("hits a point past the bbox right edge but inside the top of the sheared polygon", () => {
@@ -544,17 +610,21 @@ describe("hitTestOverlays", () => {
         sourceWidthPx: 1600,
         sourceHeightPx: 900
       };
-      // (0.115, 0.105) is INSIDE the widescreen polygon's slope (left
-      // edge at y=0.105 sits at x ≈ 0.114) but OUTSIDE the square
-      // canvas's slope (left edge at y=0.105 sits at x ≈ 0.125).
-      // Same click, opposite hit results — that's the aspect
-      // correction at work.
-      expect(hitTestOverlays([paraSquare], 0.115, 0.105, 1600, widescreenDims)).toBe("p1");
-      expect(hitTestOverlays([paraSquare], 0.115, 0.105, 1000, squareDims)).toBe(null);
-      // (0.111, 0.105) is OUTSIDE both — the widescreen polygon's
-      // slope at y=0.105 still wins at x ≈ 0.114. Sanity-pin that
-      // the aspect correction doesn't push the hit area arbitrarily.
-      expect(hitTestOverlays([paraSquare], 0.111, 0.105, 1600, widescreenDims)).toBe(null);
+      // (0.106, 0.105) is INSIDE the widescreen polygon's padded slope
+      // (padded left edge at y=0.105 sits at x ≈ 0.097) but OUTSIDE the
+      // square canvas's padded slope (padded left edge sits at x ≈
+      // 0.109). Same click, opposite hit results — that's the aspect
+      // correction at work. (Points nudged in from the historical 0.115
+      // so the contrast survives the outward stroke-reach pad; the
+      // ≈0.011 slope gap between the two canvases still exceeds the pad.)
+      expect(hitTestOverlays([paraSquare], 0.106, 0.105, 1600, widescreenDims)).toBe("p1");
+      expect(hitTestOverlays([paraSquare], 0.106, 0.105, 1000, squareDims)).toBe(null);
+      // (0.10, 0.105) is OUTSIDE both padded polygons — far enough left
+      // that even the widescreen slope (the more forgiving of the two)
+      // misses. Sanity-pin that the aspect correction doesn't push the
+      // hit area arbitrarily.
+      expect(hitTestOverlays([paraSquare], 0.10, 0.105, 1600, widescreenDims)).toBe(null);
+      expect(hitTestOverlays([paraSquare], 0.10, 0.105, 1000, squareDims)).toBe(null);
     });
 
     test("negative skew shears the opposite direction", () => {
@@ -585,7 +655,7 @@ describe("hitTestOverlays", () => {
         color: "auto"
         // skewDeg intentionally omitted
       });
-      expect(hitTestOverlays([paraLegacy], 0.11, 0.11, 1000, squareDims)).toBe(null);
+      expect(hitTestOverlays([paraLegacy], 0.105, 0.11, 1000, squareDims)).toBe(null);
       expect(hitTestOverlays([paraLegacy], 0.2, 0.2, 1000, squareDims)).toBe("p3");
     });
 
@@ -610,8 +680,11 @@ describe("hitTestOverlays", () => {
       // the un-rotated top-left wedge cut off by the skew. After a
       // 90° CW rotation, the un-rotated top-left lands at the bbox
       // bottom-left in world space.
-      // Bbox is (0.4, 0.4)-(0.6, 0.6); bottom-left corner ≈ (0.41, 0.59).
-      expect(hitTestOverlays([paraRotated], 0.41, 0.59, 1000, squareDims)).toBe(null);
+      // Bbox is (0.4, 0.4)-(0.6, 0.6); bottom-left corner ≈ (0.405, 0.595).
+      // (Nudged toward the corner from the historical 0.41/0.59 so it
+      // clears the outward stroke-reach pad and still lands in the
+      // shear-cut wedge after the inverse-rotate.)
+      expect(hitTestOverlays([paraRotated], 0.405, 0.595, 1000, squareDims)).toBe(null);
     });
   });
 });

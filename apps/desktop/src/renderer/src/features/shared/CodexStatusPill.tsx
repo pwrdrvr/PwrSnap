@@ -61,6 +61,8 @@ export type CodexStatusPillProps = {
   readonly providerLabel?: string | undefined;
   /** Optional model id shown in parens (e.g. "gemini-3-flash-preview"). */
   readonly modelLabel?: string | undefined;
+  /** Failure message from the latest run, when available. */
+  readonly error?: string | null | undefined;
   readonly action?: ReactNode;
   readonly style?: CSSProperties;
   readonly className?: string;
@@ -94,7 +96,31 @@ function resolveKind(
   return "idle";
 }
 
-function labelFor(kind: StatusKind, provider: string, model: string | undefined): ReactNode {
+function failedLabelFor(provider: string, error: string | null | undefined): ReactNode {
+  const message = error?.trim();
+  if (message === undefined || message.length === 0) {
+    return <>{provider} could not read this snap.</>;
+  }
+  if (/(auth|login|logged|credential|ineligibletier|unsupported_client|unsupported client|not supported|no longer supported)/i.test(message)) {
+    return (
+      <>
+        {provider} is not available: {message}
+      </>
+    );
+  }
+  return (
+    <>
+      {provider} could not read this snap: {message}
+    </>
+  );
+}
+
+function labelFor(
+  kind: StatusKind,
+  provider: string,
+  model: string | undefined,
+  error: string | null | undefined
+): ReactNode {
   const withModel = model !== undefined && model.length > 0 ? ` (${model})` : "";
   switch (kind) {
     case "running":
@@ -115,7 +141,7 @@ function labelFor(kind: StatusKind, provider: string, model: string | undefined)
     case "accepted":
       return <>Description filled from {provider}.</>;
     case "failed":
-      return <>{provider} could not read this snap.</>;
+      return failedLabelFor(provider, error);
     case "safety-disabled":
       return <>AI enrichment was disabled for cost safety.</>;
     case "needs-consent":
@@ -155,6 +181,7 @@ export function CodexStatusPill({
   safetyDisabled = false,
   providerLabel = "Codex",
   modelLabel,
+  error,
   action,
   style,
   className
@@ -185,7 +212,7 @@ export function CodexStatusPill({
           <path d="m12 2 2.5 5 5.5.5-4 4 1 5.5-5-3-5 3 1-5.5-4-4 5.5-.5z" />
         </svg>
       </span>
-      <span className="ps-codex-pill__text">{labelFor(kind, providerLabel, modelLabel)}</span>
+      <span className="ps-codex-pill__text">{labelFor(kind, providerLabel, modelLabel, error)}</span>
       {action !== undefined ? <span className="ps-codex-pill__action">{action}</span> : null}
     </div>
   );

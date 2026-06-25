@@ -103,6 +103,7 @@ export function TextHtmlOverlays(props: TextHtmlOverlaysProps): ReactElement {
         return (
           <TextHtml
             key={row.id}
+            overlayId={row.id}
             point={data.point}
             body={data.body}
             size={data.size}

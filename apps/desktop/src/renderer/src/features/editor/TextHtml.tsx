@@ -26,13 +26,19 @@
 // overlays the text and catches the click → enter edit mode. The
 // glyph itself is non-interactive.
 
-import type { CSSProperties, ReactElement } from "react";
+import { useLayoutEffect, useRef, type CSSProperties, type ReactElement } from "react";
 import {
   computeTextHtmlStyle,
   type TextSizeBucket
 } from "@pwrsnap/shared";
+import { clearGlyphSize, reportGlyphSize } from "./text-measure-registry";
 
 export interface TextHtmlProps {
+  /** Overlay row id. The rendered glyph publishes its measured box to
+   *  the shared registry under this id so the selection outline /
+   *  transform handles / hit-test read the REAL extent instead of
+   *  re-deriving it. See text-measure-registry.ts. */
+  overlayId: string;
   /** Overlay anchor point in normalized [0,1] coords. */
   point: { x: number; y: number };
   /** Persisted body. Newlines preserved via `white-space: pre` on the
@@ -113,9 +119,57 @@ export function TextHtml(props: TextHtmlProps): ReactElement {
     userSelect: "none",
     WebkitUserSelect: "none"
   };
+
+  // Measure the REAL laid-out glyph and publish it so the selection
+  // outline / handles / hit-test hug exactly what the user sees rather
+  // than re-deriving the box from font metrics (which drifts — see
+  // text-measure-registry.ts). `offsetWidth` / `offsetHeight` are
+  // transform-INDEPENDENT (the CSS rotate() on the wrapper doesn't
+  // perturb them), so they give the natural un-rotated box that every
+  // consumer wants. The conversion inputs (canvasCssHeight,
+  // imageHeightPx) live in a ref so the ResizeObserver — created once
+  // per overlay — reads fresh values without being re-created on every
+  // window resize.
+  const glyphRef = useRef<HTMLDivElement | null>(null);
+  const convRef = useRef({
+    canvasCssHeight: props.canvasCssHeight,
+    imageHeightPx: props.imageHeightPx
+  });
+  convRef.current = {
+    canvasCssHeight: props.canvasCssHeight,
+    imageHeightPx: props.imageHeightPx
+  };
+  const overlayId = props.overlayId;
+  useLayoutEffect(() => {
+    const el = glyphRef.current;
+    if (el === null) return;
+    const measure = (): void => {
+      const { canvasCssHeight, imageHeightPx } = convRef.current;
+      // scale = CSS px per image px. The editor renders the canvas at a
+      // single uniform scale (aspect preserved — see
+      // computeEditorImageStyle / computeTextHtmlStyle's fontPx), so the
+      // height ratio applies to both axes.
+      if (canvasCssHeight <= 0 || imageHeightPx <= 0) return;
+      const scale = canvasCssHeight / imageHeightPx;
+      const widthImagePx = el.offsetWidth / scale;
+      const heightImagePx = el.offsetHeight / scale;
+      if (widthImagePx <= 0 || heightImagePx <= 0) return;
+      reportGlyphSize(overlayId, { widthImagePx, heightImagePx });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      clearGlyphSize(overlayId);
+    };
+  }, [overlayId]);
+
   return (
     <div style={wrapperStyle}>
-      <div style={glyphStyle}>{props.body}</div>
+      <div ref={glyphRef} style={glyphStyle}>
+        {props.body}
+      </div>
     </div>
   );
 }

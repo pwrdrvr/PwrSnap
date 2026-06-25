@@ -30,11 +30,16 @@ import type { GeometryUpdate } from "./useCaptureModel";
 // Per-axis tolerance in PIXELS. EFFECT layers (highlight / blur) persist
 // geometry as a `clip_rect` in absolute canvas pixels, so a committed
 // move round-trips through `round(normalized × dim)` and back — the
-// persisted normalized value differs from the override by up to ~0.5px.
-// A unitless epsilon (1e-6) is far too tight for that, so the override
-// for an effect layer NEVER matched and lingered forever (no clip,
-// masked undo). 1px of slack absorbs the rounding; it's still ~half the
-// no-drag threshold (0.002) so it never false-matches a real drag.
+// persisted normalized value can differ from the override by up to
+// ~0.5px, which a unitless epsilon (1e-6) is far tighter than.
+//
+// This is DEFENSIVE rather than a fix for an observed bug: today an
+// effect-layer override also clears via the id-churn branch in
+// pruneLandedDraftGeometry. But vector `updateGeometry` already PRESERVES
+// the id, and if an effect update ever did the same, the tight epsilon
+// would never match and the override would linger (no clip, masked
+// undo). 1px of slack absorbs the rounding and is still ~half the no-drag
+// threshold (0.002), so it never false-matches a real drag.
 const PIXEL_TOLERANCE = 1;
 
 function makeNear(
@@ -133,19 +138,33 @@ export function pruneLandedDraftGeometry(
   canvasWidthPx: number,
   canvasHeightPx: number
 ): ReadonlyMap<string, GeometryUpdate> | null {
-  const byId = new Map(overlays.map((row) => [row.id, row] as const));
-  const next = new Map<string, GeometryUpdate>();
-  for (const [id, geom] of draft) {
-    const row = byId.get(id);
-    if (row === undefined) continue; // row gone (v1 id churn)
-    if (overlayMatchesDraftGeometry(row.data, geom, canvasWidthPx, canvasHeightPx)) {
-      continue; // commit landed
+  if (draft.size === 0) return null;
+  // This runs on EVERY drag frame (the override changes on each
+  // pointermove), so don't allocate a Map over the whole — usually
+  // large — `overlays` list. The override map is tiny (typically one
+  // entry), so resolve only its ids with a single pass over `overlays`,
+  // stopping as soon as every override id has matched a row.
+  const rowById = new Map<string, OverlayRow>();
+  for (const row of overlays) {
+    if (draft.has(row.id)) {
+      rowById.set(row.id, row);
+      if (rowById.size === draft.size) break; // found them all
     }
-    next.set(id, geom); // still bridging — keep painting the override
   }
-  // `pruneLandedDraftGeometry` only ever DROPS entries, so an unchanged
-  // size means nothing was pruned — return the original ref to signal
-  // "no change" and let the caller short-circuit.
-  if (next.size === draft.size) return draft;
+  // Clone lazily — most frames during a drag drop NOTHING (the persisted
+  // geometry hasn't caught up yet), so we return the same `draft` ref and
+  // the caller skips a no-op setState (no render loop).
+  let next: Map<string, GeometryUpdate> | null = null;
+  for (const [id, geom] of draft) {
+    const row = rowById.get(id);
+    const landedOrGone =
+      row === undefined || // row gone (v1 delete-plus-insert id churn)
+      overlayMatchesDraftGeometry(row.data, geom, canvasWidthPx, canvasHeightPx);
+    if (landedOrGone) {
+      if (next === null) next = new Map(draft);
+      next.delete(id);
+    }
+  }
+  if (next === null) return draft; // nothing dropped
   return next.size > 0 ? next : null;
 }

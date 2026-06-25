@@ -132,6 +132,103 @@ test("editor-drag-undo: releasing a body-drag OUTSIDE the canvas still commits a
   }
 });
 
+test("editor-drag-undo: MULTI-select body-drag released OUTSIDE the canvas commits every layer", async () => {
+  // With 2+ layers selected there is no per-layer transform-handle-body,
+  // so a body-drag goes through the editor's MULTI-DRAG path (the canvas
+  // pointer handlers) rather than TransformHandles. That path read the
+  // release point through the CLAMPED client→normalized helper, which
+  // returns null off-canvas — so a multi-select drag released past the
+  // edge skipped the commit and stranded a stale override. This exercises
+  // exactly that path (the single-select OUTSIDE test above does not).
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedCapture(app);
+    const win = await openFocus(app, captureId);
+
+    // Two shapes (vectors → shape.rect.x is directly comparable).
+    await selectTool(win, "shape");
+    await drawShapeAt(win, 0.15, 0.3, 0.32, 0.5);
+    await drawShapeAt(win, 0.4, 0.3, 0.57, 0.5);
+    await expectLayerCount(app, captureId, 2);
+    const xsBefore = await allVectorRectXs(app, captureId);
+    expect(xsBefore.length).toBe(2);
+
+    // Select BOTH (click one, ⌘/Ctrl-click the other).
+    await selectTool(win, "pointer");
+    const canvas = win.locator(".editor-canvas");
+    const cbox = await canvas.boundingBox();
+    expect(cbox).not.toBeNull();
+    if (cbox === null) return;
+    const p1 = { x: cbox.x + cbox.width * 0.235, y: cbox.y + cbox.height * 0.4 };
+    const p2 = { x: cbox.x + cbox.width * 0.485, y: cbox.y + cbox.height * 0.4 };
+    await win.mouse.click(p1.x, p1.y);
+    await win.keyboard.down(accel());
+    await win.mouse.click(p2.x, p2.y);
+    await win.keyboard.up(accel());
+
+    // Body-drag the group from inside the first shape, releasing PAST the
+    // right edge — outside the canvas.
+    await win.mouse.move(p1.x, p1.y);
+    await win.mouse.down();
+    await win.mouse.move(p1.x + cbox.width * 0.2, p1.y, { steps: 6 });
+    await win.mouse.move(cbox.x + cbox.width + 80, p1.y, { steps: 6 });
+    await win.mouse.up();
+
+    // EVERY selected layer moved right (the off-canvas release committed
+    // the whole group), not just left as ghost overrides.
+    await expect
+      .poll(async () => {
+        const xs = await allVectorRectXs(app, captureId);
+        if (xs.length < 2) return false;
+        return xs.every((x, i) => x > xsBefore[i]! + 0.05);
+      })
+      .toBe(true);
+  } finally {
+    await app.close();
+  }
+});
+
+/** All vector layers' rect.x, in layer order — for asserting a group
+ *  drag moved every selected shape. */
+async function allVectorRectXs(
+  app: LaunchedApp,
+  captureId: string
+): Promise<number[]> {
+  const result = await app.dispatch("layers:list", { captureId });
+  if (!result.ok) return [];
+  const xs: number[] = [];
+  for (const layer of result.value as Array<{
+    kind: string;
+    shape?: { rect?: { x: number } };
+  }>) {
+    if (layer.kind === "vector" && layer.shape?.rect !== undefined) {
+      xs.push(layer.shape.rect.x);
+    }
+  }
+  return xs;
+}
+
+async function drawShapeAt(
+  win: Page,
+  fromXn: number,
+  fromYn: number,
+  toXn: number,
+  toYn: number
+): Promise<void> {
+  const canvas = win.locator(".editor-canvas");
+  await canvas.waitFor({ state: "visible" });
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  if (box === null) return;
+  const from = { x: box.x + box.width * fromXn, y: box.y + box.height * fromYn };
+  const to = { x: box.x + box.width * toXn, y: box.y + box.height * toYn };
+  await win.mouse.move(from.x, from.y);
+  await win.mouse.down();
+  await win.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 5 });
+  await win.mouse.move(to.x, to.y, { steps: 5 });
+  await win.mouse.up();
+}
+
 /** The x-position of the first drawn annotation — works whether it
  *  landed as a VECTOR (shape.rect, normalized) or an EFFECT (clip_rect,
  *  absolute px). Dragging it right increases x either way. Null until

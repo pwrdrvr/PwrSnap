@@ -11,7 +11,15 @@
      a cropped viewport doesn't bleed past the image edge in the editor —
      matching the bake/export, which composites only within the canvas.
      `.ed-blur-layer` is inset:0 = canvas-sized, so this clips to the
-     canvas (the outer `.editor-canvas-wrap` only clips to the viewport). */
+     canvas (the outer `.editor-canvas-wrap` only clips to the viewport).
+
+     Unlike the SVG glyphs (OverlaySvg), this clips UNCONDITIONALLY — it
+     does not exempt a blur that's being actively dragged off-canvas (the
+     glyph path keeps the dragged one overflow:visible so you can see what
+     you're moving). The exemption would mean per-item overflow control
+     instead of one container clip, and dragging a blur off-screen is rare
+     enough that clipping it mid-drag (which matches the export anyway) is
+     the right trade. */
   overflow: hidden;
 }
 .ed-blur-item {

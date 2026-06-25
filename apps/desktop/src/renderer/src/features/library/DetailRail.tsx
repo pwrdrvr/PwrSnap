@@ -111,6 +111,14 @@ export type DetailRailProps = {
   /** Jump the grid to a cart item (select + scroll). Threaded to the
    *  CartPanel so clicking a collected item navigates back to it. */
   readonly onCartJumpTo?: (captureId: string) => void;
+  /** Bulk-trash the cart's captures (wired through Library's undo stack
+   *  so the toast + ⌘Z restore the batch). Threaded to the CartPanel. */
+  readonly onCartTrashAll?: (captureIds: string[]) => void;
+  /** Controlled grid-mode active tab (Info/OCR/Cart). Lifted to Library so
+   *  a cart-item jump can keep the rail on Cart instead of flipping to
+   *  Info. When omitted, the rail owns it locally. */
+  readonly gridActiveTab?: LibrarySidebarTab;
+  readonly onGridActiveTabChange?: (next: LibrarySidebarTab) => void;
 };
 
 export function DetailRail({
@@ -124,7 +132,10 @@ export function DetailRail({
   onTrash,
   confirmBeforeTrash = true,
   onDontAskAgainTrash,
-  onCartJumpTo
+  onCartJumpTo,
+  onCartTrashAll,
+  gridActiveTab: gridActiveTabProp,
+  onGridActiveTabChange
 }: DetailRailProps): ReactElement | null {
   // Skip the image render-metrics IPC for video captures — the
   // sharp-based preset pipeline is image-only and the video branch
@@ -178,7 +189,18 @@ export function DetailRail({
   // user's focus/reel tab choice (e.g. Chat) every time they drop back
   // to Grid. A local tab side-steps that; it's session-scoped (not
   // persisted) by design for this slice.
-  const [gridTab, setGridTab] = useState<SidebarTab>("info");
+  const [localGridTab, setLocalGridTab] = useState<SidebarTab>("info");
+  // Controlled-or-local grid tab. When Library drives it (gridActiveTab +
+  // onGridActiveTabChange), a cart-item jump can set it to "cart"
+  // synchronously so the rail doesn't flip to Info on the first jump.
+  const gridTab = gridActiveTabProp ?? localGridTab;
+  const setGridTab = useCallback(
+    (next: SidebarTab): void => {
+      if (onGridActiveTabChange !== undefined) onGridActiveTabChange(next);
+      else setLocalGridTab(next);
+    },
+    [onGridActiveTabChange]
+  );
   const [budgetStatus, setBudgetStatus] = useState<AiEnrichmentBudgetStatus | null>(null);
   // Which backend runs enrichment — so the status pill + OCR copy say "Grok" /
   // "Gemini" instead of always "Codex". Derived from the enrichment Settings
@@ -541,7 +563,7 @@ export function DetailRail({
             onPinChange={writePinned}
             renderPanel={() => (
               <div className="psl__right-body">
-                <CartPanel onJumpTo={onCartJumpTo} />
+                <CartPanel onJumpTo={onCartJumpTo} onTrashAll={onCartTrashAll} />
               </div>
             )}
             testIdPrefix="psl-right"
@@ -653,7 +675,7 @@ export function DetailRail({
       // useDraftCart and doesn't need the selected record.
       return (
         <div className="psl__right-body">
-          <CartPanel onJumpTo={onCartJumpTo} />
+          <CartPanel onJumpTo={onCartJumpTo} onTrashAll={onCartTrashAll} />
         </div>
       );
     }
@@ -679,7 +701,15 @@ export function DetailRail({
         />
       </div>
 
-      <div className="psl__right-footer" data-testid="psl-right-footer">
+      {/* The per-capture copy/file footer applies to the SELECTED capture,
+          which is confusing under the Cart tab (whose actions are about the
+          whole collection). Hide it there — the cart's own export (Zip)
+          lives in the Cart panel. */}
+      <div
+        className="psl__right-footer"
+        data-testid="psl-right-footer"
+        style={railActiveTab === "cart" ? { display: "none" } : undefined}
+      >
         <div>
           <div className="psl__copy-eyebrow">
             <span>{isVideo ? "Export" : "Copy to clipboard"}</span>

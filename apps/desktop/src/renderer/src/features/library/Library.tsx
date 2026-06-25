@@ -599,7 +599,7 @@ export function Library() {
   if (deleteUndoRef.current === null) {
     deleteUndoRef.current = new DeleteUndoStack(MAX_DELETE_UNDO);
   }
-  const [lastDeleted, setLastDeleted] = useState<{ id: string } | null>(null);
+  const [lastDeleted, setLastDeleted] = useState<{ ids: string[] } | null>(null);
 
   // "Confirm before moving to Trash" preference (Settings →
   // library.confirmBeforeTrash). Seeded from settings:read + kept live via
@@ -620,30 +620,34 @@ export function Library() {
   // ⌘Z / Edit ▸ Undo / toast "Undo": restore the most-recently trashed
   // capture (the stack moves it onto its redo list).
   const undoDelete = useCallback(() => {
-    const id = deleteUndoRef.current?.undo();
-    if (id === undefined) return;
-    setLastDeleted((cur) => (cur?.id === id ? null : cur));
+    const ids = deleteUndoRef.current?.undo();
+    if (ids === undefined || ids.length === 0) return;
+    // The toast advertised this batch; undoing it clears the toast.
+    setLastDeleted(null);
     void (async () => {
-      const res = await dispatch("library:restore", { id });
-      if (!res.ok) return;
-      // If we're in single-capture Focus, bring the restored capture back into
-      // view — otherwise the undo is invisible (it reappears in the grid behind
-      // the editor). `library:restore` clears `deleted_at` synchronously before
-      // resolving, so editor:open won't reject as deleted; editor:open also
-      // owns the navigate + "not in the fetched page yet" wait via pendingOpen.
-      if (viewRef.current.kind === "focus") {
-        void dispatch("editor:open", { captureId: id });
+      for (const id of ids) {
+        const res = await dispatch("library:restore", { id });
+        // If we're in single-capture Focus and just restored the one
+        // capture, bring it back into view — otherwise the undo is
+        // invisible (it reappears in the grid behind the editor).
+        // `library:restore` clears `deleted_at` synchronously before
+        // resolving, so editor:open won't reject as deleted.
+        if (res.ok && ids.length === 1 && viewRef.current.kind === "focus") {
+          void dispatch("editor:open", { captureId: id });
+        }
       }
     })();
   }, []);
 
-  // ⌘⇧Z / Edit ▸ Redo: re-trash the most-recently restored capture (the
+  // ⌘⇧Z / Edit ▸ Redo: re-trash the most-recently restored batch (the
   // inverse of the undo above; still recoverable, so it's a safe redo).
   const redoDelete = useCallback(() => {
-    const id = deleteUndoRef.current?.redo();
-    if (id === undefined) return;
-    void dispatch("library:delete", { id });
-    setLastDeleted({ id });
+    const ids = deleteUndoRef.current?.redo();
+    if (ids === undefined || ids.length === 0) return;
+    for (const id of ids) {
+      void dispatch("library:delete", { id });
+    }
+    setLastDeleted({ ids });
   }, []);
 
   // Register the capture-level undo/redo with the edit-menu bridge. The bridge
@@ -714,6 +718,10 @@ export function Library() {
   const [rightPinned, setRightPinnedState] = useState<boolean>(true);
   const [rightActiveTab, setRightActiveTabState] =
     useState<LibrarySidebarTab>("info");
+  // Grid-mode rail tab (Info/OCR/Cart), lifted here so a cart-item jump
+  // can keep the rail on Cart instead of flipping to Info. Session-scoped
+  // (not persisted) — the grid tab is a transient browse concern.
+  const [gridActiveTab, setGridActiveTab] = useState<LibrarySidebarTab>("info");
   const [settingsHydrated, setSettingsHydrated] = useState<boolean>(false);
   const userTouchedRailRef = useRef<boolean>(false);
   // Mirror of `rightPinned` kept in a ref so `toggleRightPinned` can
@@ -2258,6 +2266,10 @@ export function Library() {
       setActiveFilter({ kind: "all" });
       setSearchQuery("");
     }
+    // Keep the rail on Cart — you clicked a cart item to find it, not to
+    // inspect it. (Set synchronously with the selection so the inspector
+    // doesn't flip to Info for a frame.)
+    setGridActiveTab("cart");
     viewDispatch({ type: "SELECT_IN_GRID", recordId: captureId }, { history: "replace" });
     cartJumpTargetRef.current = captureId;
   }, [viewDispatch]);
@@ -2591,9 +2603,23 @@ export function Library() {
     // Record on the session undo stack — this is what ⌘Z / Edit ▸ Undo
     // restores from, independent of the toast. Then surface the toast (keyed
     // by id) as the quick, visible affordance for this delete.
-    deleteUndoRef.current?.pushDelete(recordId);
-    setLastDeleted({ id: recordId });
+    deleteUndoRef.current?.pushDelete([recordId]);
+    setLastDeleted({ ids: [recordId] });
   }
+
+  // Bulk soft-delete from the cart: trash every collected capture as ONE
+  // undoable batch (toast "Restore N" + ⌘Z restores all), then empty the
+  // cart. The library refresh + FILTER_CHANGED clears any now-trashed grid
+  // selection, so no manual deselect is needed.
+  const trashCartCaptures = useCallback((captureIds: string[]): void => {
+    if (captureIds.length === 0) return;
+    for (const id of captureIds) {
+      void dispatch("library:delete", { id });
+    }
+    deleteUndoRef.current?.pushDelete(captureIds);
+    setLastDeleted({ ids: captureIds });
+    void dispatch("cart:clear", {});
+  }, []);
 
   function trashCapture(captureId: number): void {
     const record = fixtureBacking.recordFor(captureId);
@@ -3459,6 +3485,9 @@ export function Library() {
         confirmBeforeTrash={confirmBeforeTrash}
         onDontAskAgainTrash={suppressTrashConfirm}
         onCartJumpTo={jumpToCapture}
+        onCartTrashAll={trashCartCaptures}
+        gridActiveTab={gridActiveTab}
+        onGridActiveTabChange={setGridActiveTab}
       />
 
       {/* Capture soft-delete Undo toast — lower-left, in the shared
@@ -3468,8 +3497,12 @@ export function Library() {
       {lastDeleted !== null &&
         createPortal(
           <UndoToast
-            key={lastDeleted.id}
-            message="Moved to Trash"
+            key={lastDeleted.ids.join(",")}
+            message={
+              lastDeleted.ids.length === 1
+                ? "Moved to Trash"
+                : `Moved ${lastDeleted.ids.length} to Trash`
+            }
             durationMs={UNDO_TOAST_MS}
             onUndo={undoDelete}
             onDismiss={clearLastDeleted}

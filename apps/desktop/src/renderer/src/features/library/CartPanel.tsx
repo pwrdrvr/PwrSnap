@@ -16,6 +16,10 @@ export interface CartPanelProps {
    *  view, dropping the active filter if needed). Provided by Library;
    *  omitted in isolation. */
   readonly onJumpTo?: ((captureId: string) => void) | undefined;
+  /** Bulk-trash the collected captures (soft-delete) and empty the cart.
+   *  Provided by Library so it routes through the undo stack (toast + ⌘Z).
+   *  When omitted, the Move-to-Trash button is hidden. */
+  readonly onTrashAll?: ((captureIds: string[]) => void) | undefined;
 }
 
 // The Project Asset Cart panel. Renders the single global draft cart:
@@ -64,7 +68,7 @@ function previewText(row: CartRow): string {
   return "Untitled capture";
 }
 
-export function CartPanel({ onJumpTo }: CartPanelProps = {}): ReactElement {
+export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactElement {
   const cart = useCart();
   const { projects } = useSizzleProjects();
   // Hydrated capture metadata for the cart's ids, keyed by captureId.
@@ -130,16 +134,6 @@ export function CartPanel({ onJumpTo }: CartPanelProps = {}): ReactElement {
   const onRemove = useCallback((captureId: string) => {
     void dispatch("cart:remove", { captureId });
   }, []);
-
-  const onTrashAll = useCallback(() => {
-    // Move every collected capture to Trash (a soft-delete, recoverable
-    // from the Trash filter), then empty the cart. The library refresh +
-    // FILTER_CHANGED clears any now-trashed grid selection.
-    for (const id of cart.captureIds) {
-      void dispatch("library:delete", { id });
-    }
-    void dispatch("cart:clear", {});
-  }, [cart.captureIds]);
 
   const onReorder = useCallback((from: number, to: number) => {
     if (from === to) return;
@@ -288,28 +282,31 @@ export function CartPanel({ onJumpTo }: CartPanelProps = {}): ReactElement {
       )}
 
       <div className="psl__cart-footer">
-        {/* Bulk delete — the cart is a working set you can act on, not
-            just a Sizzle staging area. Confirmed; recoverable from Trash. */}
-        <DeleteConfirm
-          message={`Move ${cart.captureIds.length} ${
-            cart.captureIds.length === 1 ? "capture" : "captures"
-          } to Trash?`}
-          detail="Recoverable from the Trash filter."
-          confirmLabel="Move to Trash"
-          placement="top"
-          onConfirm={onTrashAll}
-        >
-          {(trigger) => (
-            <button
-              type="button"
-              className="psl__cart-btn psl__cart-btn--danger"
-              disabled={isEmpty || committing}
-              {...trigger}
-            >
-              Move to Trash
-            </button>
-          )}
-        </DeleteConfirm>
+        {/* Bulk delete — the cart is a working set you can act on, not just
+            a Sizzle staging area. Confirmed; routes through Library's undo
+            stack so the toast + ⌘Z restore the whole batch. */}
+        {onTrashAll === undefined ? null : (
+          <DeleteConfirm
+            message={`Move ${cart.captureIds.length} ${
+              cart.captureIds.length === 1 ? "capture" : "captures"
+            } to Trash?`}
+            detail="Recoverable from the Trash filter, the toast, or ⌘Z."
+            confirmLabel="Move to Trash"
+            placement="top"
+            onConfirm={() => onTrashAll(cart.captureIds)}
+          >
+            {(trigger) => (
+              <button
+                type="button"
+                className="psl__cart-btn psl__cart-btn--danger"
+                disabled={isEmpty || committing}
+                {...trigger}
+              >
+                Move to Trash
+              </button>
+            )}
+          </DeleteConfirm>
+        )}
 
         {/* Sizzle Reel — now one action among several, not the headline. */}
         <button
@@ -318,7 +315,7 @@ export function CartPanel({ onJumpTo }: CartPanelProps = {}): ReactElement {
           disabled={isEmpty || committing}
           onClick={onCreateProject}
         >
-          Add to Sizzle Reel
+          Create New Sizzle Reel
         </button>
         <div className="psl__cart-add-existing">
           <button
@@ -329,7 +326,7 @@ export function CartPanel({ onJumpTo }: CartPanelProps = {}): ReactElement {
             aria-expanded={pickerOpen}
             onClick={() => setPickerOpen((o) => !o)}
           >
-            Add to existing…
+            Add to Existing Sizzle…
           </button>
           {pickerOpen && projects.length > 0 ? (
             <ul className="psl__cart-picker" role="listbox">

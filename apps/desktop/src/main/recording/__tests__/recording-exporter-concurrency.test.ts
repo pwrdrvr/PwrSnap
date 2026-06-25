@@ -253,4 +253,95 @@ describe("exportVideoRange concurrency", () => {
     expect(result.path).toBeDefined();
     expect(totalSpawnCount).toBe(2);
   });
+
+  test("LOW / MED MP4 re-encodes pass an explicit 60-frame GOP to VideoToolbox", async () => {
+    const low = exportVideoRange({ ...baseInput, preset: "low" });
+    await waitForSpawnCount(1);
+
+    expect(spawnQueue[0]?.args).toEqual(
+      expect.arrayContaining([
+        "-c:v",
+        "h264_videotoolbox",
+        "-g",
+        "60",
+        "-keyint_min",
+        "60"
+      ])
+    );
+    expect(spawnQueue[0]?.args.join(" ")).toContain(".low.gop60.s0m0.mp4");
+
+    await resolveNextSpawn(0);
+    await low;
+
+    const med = exportVideoRange({ ...baseInput, preset: "med" });
+    await waitForSpawnCount(1);
+
+    expect(spawnQueue[0]?.args).toEqual(
+      expect.arrayContaining([
+        "-c:v",
+        "h264_videotoolbox",
+        "-g",
+        "60",
+        "-keyint_min",
+        "60"
+      ])
+    );
+    expect(spawnQueue[0]?.args.join(" ")).toContain(".med.gop60.s0m0.mp4");
+
+    await resolveNextSpawn(0);
+    await med;
+  });
+
+  test("HIGH MP4 re-encodes at source resolution with GOP flags", async () => {
+    const high = exportVideoRange({ ...baseInput, preset: "high" });
+    await waitForSpawnCount(1);
+
+    const args = spawnQueue[0]?.args ?? [];
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "-c:v",
+        "h264_videotoolbox",
+        "-b:v",
+        "6000k",
+        "-g",
+        "60",
+        "-keyint_min",
+        "60"
+      ])
+    );
+    expect(args).not.toContain("copy");
+    expect(args).not.toContain("-vf");
+    expect(args.join(" ")).toContain(".high.gop60.s0m0.mp4");
+
+    await resolveNextSpawn(0);
+    await high;
+  });
+
+  test("HIGH MP4 snaps odd source dimensions to even codec-safe dimensions", async () => {
+    const high = exportVideoRange({
+      ...baseInput,
+      preset: "high",
+      record: {
+        ...record,
+        width_px: 1681,
+        height_px: 946
+      }
+    });
+    await waitForSpawnCount(1);
+
+    const args = spawnQueue[0]?.args ?? [];
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "-vf",
+        "scale=1680:946:flags=lanczos",
+        "-c:v",
+        "h264_videotoolbox"
+      ])
+    );
+
+    await resolveNextSpawn(0);
+    const result = await high;
+    expect(result.widthPx).toBe(1680);
+    expect(result.heightPx).toBe(946);
+  });
 });

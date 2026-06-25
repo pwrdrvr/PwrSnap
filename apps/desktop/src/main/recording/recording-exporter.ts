@@ -19,7 +19,7 @@
 // The preset drives target width + VideoToolbox bitrate:
 //   LOW : 720p  · 2 Mbps · web-friendly
 //   MED : 1080p · 5 Mbps · visually-lossless
-//   HIGH: source resolution · stream-copy (no re-encode)
+//   HIGH: source resolution · 6 Mbps · compressed master
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -44,10 +44,9 @@ import { resolveFfmpegPath } from "./ffmpeg-resolver";
 
 const log = getMainLogger("pwrsnap:recording-exporter");
 
-/** Per-(format, preset) encode profile. Source-resolution presets
- *  (HIGH for MP4) set `width: null` to signal "no downscale". MP4
- *  HIGH also sets `bitrate: null` to signal "stream-copy" (no
- *  re-encode).
+/** Per-(format, preset) encode profile. Source-resolution presets set
+ *  `width: null` to signal "no downscale". MP4 presets all re-encode
+ *  through VideoToolbox with a target bitrate and GOP interval.
  *
  *  GIF tiers are picked to land in roughly log-spaced byte sizes for
  *  a typical PwrSnap recording — each tier ~2× the previous, with
@@ -59,11 +58,14 @@ const log = getMainLogger("pwrsnap:recording-exporter");
  *  (a 1080p 30fps GIF for 10 seconds is routinely 80+ MB — over
  *  Slack's 50 MB cap, way past iMessage's practical limit, and
  *  triggers most platforms' auto-convert-to-MP4 paths). MP4 keeps
- *  the resolution axis up to source because it has the codec
- *  headroom (CRF + H.264 motion compensation) to handle high-res
- *  screen content without exploding. */
+ *  the resolution axis up to source because VideoToolbox H.264 has
+ *  enough codec headroom for high-res screen content. */
 export type GifPresetSpec = { readonly width: number | null; readonly fps: number };
-export type Mp4PresetSpec = { readonly width: number | null; readonly bitrate: string | null };
+export type Mp4PresetSpec = {
+  readonly width: number | null;
+  readonly bitrate: string;
+  readonly keyframeInterval: number;
+};
 
 export const GIF_PRESETS: Readonly<Record<VideoPreset, GifPresetSpec>> = {
   low: { width: 480, fps: 15 },
@@ -72,10 +74,12 @@ export const GIF_PRESETS: Readonly<Record<VideoPreset, GifPresetSpec>> = {
 };
 
 export const MP4_PRESETS: Readonly<Record<VideoPreset, Mp4PresetSpec>> = {
-  low: { width: 720, bitrate: "2000k" },
-  med: { width: 1080, bitrate: "5000k" },
-  high: { width: null, bitrate: null }
+  low: { width: 720, bitrate: "2000k", keyframeInterval: 60 },
+  med: { width: 1080, bitrate: "5000k", keyframeInterval: 60 },
+  high: { width: null, bitrate: "6000k", keyframeInterval: 60 }
 };
+
+const MP4_REENCODE_CACHE_TOKEN = "gop60";
 
 /** Compute output dimensions for a given preset against a source
  *  width × height. LOW / MED scale down (preserving aspect with even
@@ -88,7 +92,7 @@ export function computeOutputDimensions(
   sourceHeight: number
 ): { widthPx: number; heightPx: number } {
   if (targetWidth === null || targetWidth >= sourceWidth) {
-    return { widthPx: sourceWidth, heightPx: sourceHeight };
+    return { widthPx: evenDimension(sourceWidth), heightPx: evenDimension(sourceHeight) };
   }
   // Round to even — H.264 + libvpx + libx265 all require even dims.
   // Also matches `-vf scale=W:-2`'s behavior (which is what ffmpeg
@@ -96,6 +100,10 @@ export function computeOutputDimensions(
   const w = targetWidth - (targetWidth % 2);
   const h = Math.round((sourceHeight * w) / sourceWidth);
   return { widthPx: w, heightPx: h - (h % 2) };
+}
+
+function evenDimension(value: number): number {
+  return Math.max(2, value - (value % 2));
 }
 
 export type ExportInput = {
@@ -195,7 +203,11 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
     preset: input.preset,
     audio: input.audio
   });
-  if (cached !== null && existsSync(cached.path)) {
+  if (
+    cached !== null &&
+    existsSync(cached.path) &&
+    cacheEntryMatchesEncoder(input, cached.path)
+  ) {
     return { ...cached, widthPx, heightPx };
   }
 
@@ -241,14 +253,22 @@ async function encodeAndRecord(
     input.format === "gif"
       ? "silent"
       : `s${input.audio.includeSystemAudio ? 1 : 0}m${input.audio.includeMicrophone ? 1 : 0}`;
+  const encoderTag = cacheEncoderTag(input);
   const ext = input.format === "gif" ? "gif" : "mp4";
-  // Filename layout matches the cache key shape: range, then preset,
-  // then audio tag, then extension. Visible-on-disk grouping makes
-  // debugging cache hits / orphans trivial (`ls -lh <captureId>/`
-  // shows all six format/preset combinations for a given range).
+  // Filename layout matches the cache key shape: range, preset,
+  // optional encoder token, audio tag, then extension. Visible-on-
+  // disk grouping makes debugging cache hits / orphans trivial
+  // (`ls -lh <captureId>/` shows all six format/preset combinations
+  // for a given range).
   const outputPath = join(
     outputDir,
-    `r${input.range.start.toFixed(3)}-${input.range.end.toFixed(3)}.${input.preset}.${audioTag}.${ext}`
+    [
+      `r${input.range.start.toFixed(3)}-${input.range.end.toFixed(3)}`,
+      input.preset,
+      ...(encoderTag === null ? [] : [encoderTag]),
+      audioTag,
+      ext
+    ].join(".")
   );
 
   // Video captures always carry a legacy_src_path (the recorded .mp4
@@ -281,6 +301,12 @@ async function encodeAndRecord(
         input.range,
         input.audio,
         MP4_PRESETS[input.preset],
+        {
+          sourceWidthPx: input.record.width_px,
+          sourceHeightPx: input.record.height_px,
+          outputWidthPx: widthPx,
+          outputHeightPx: heightPx
+        },
         outputPath
       );
     }
@@ -367,6 +393,12 @@ async function encodeMp4(
   range: VideoRange,
   audio: VideoExportAudio,
   spec: Mp4PresetSpec,
+  dims: {
+    sourceWidthPx: number;
+    sourceHeightPx: number;
+    outputWidthPx: number;
+    outputHeightPx: number;
+  },
   outPath: string
 ): Promise<void> {
   const duration = (range.end - range.start).toFixed(3);
@@ -380,31 +412,37 @@ async function encodeMp4(
     src
   ];
 
-  // Video track. HIGH preset = stream-copy (`-c:v copy`) — no
-  // re-encode, no downscale, instant. LOW / MED preset = re-encode
-  // via VideoToolbox with a per-preset bitrate + downscale-to-target-width.
+  // Video track. All MP4 presets re-encode via VideoToolbox with
+  // per-preset bitrate + GOP settings. HIGH keeps source resolution
+  // by omitting the scale filter.
   args.push("-map", "0:v:0");
-  if (spec.width === null || spec.bitrate === null) {
-    // HIGH: stream-copy. The source is already H.264 (per the
-    // recorder config) so this is a trim + remux, ~instant on disk.
-    args.push("-c:v", "copy");
-  } else {
-    // LOW / MED: scale + re-encode through Apple's VideoToolbox
-    // H.264 encoder. Do not use libx264; the bundled ffmpeg is an
-    // LGPL build and this path must stay GPL-clean.
+  // Scale when the preset asks for a target width, then re-encode
+  // through Apple's VideoToolbox H.264 encoder. Do not use libx264;
+  // the bundled ffmpeg is an LGPL build and this path must stay
+  // GPL-clean.
+  if (
+    dims.outputWidthPx !== dims.sourceWidthPx ||
+    dims.outputHeightPx !== dims.sourceHeightPx
+  ) {
     args.push(
       "-vf",
-      `scale=${spec.width}:-2:flags=lanczos`,
-      "-c:v",
-      "h264_videotoolbox",
-      "-allow_sw",
-      "1",
-      "-b:v",
-      spec.bitrate,
-      "-pix_fmt",
-      "yuv420p"
+      `scale=${dims.outputWidthPx}:${dims.outputHeightPx}:flags=lanczos`
     );
   }
+  args.push(
+    "-c:v",
+    "h264_videotoolbox",
+    "-allow_sw",
+    "1",
+    "-b:v",
+    spec.bitrate,
+    "-g",
+    String(spec.keyframeInterval),
+    "-keyint_min",
+    String(spec.keyframeInterval),
+    "-pix_fmt",
+    "yuv420p"
+  );
 
   // Audio track mapping. The recorder writes system audio as the
   // first audio stream and microphone as the second when both are
@@ -431,6 +469,16 @@ async function encodeMp4(
   args.push("-movflags", "+faststart", outPath);
 
   await runFfmpeg(ffmpeg, args);
+}
+
+function cacheEncoderTag(input: ExportInput): string | null {
+  if (input.format !== "mp4") return null;
+  return MP4_REENCODE_CACHE_TOKEN;
+}
+
+function cacheEntryMatchesEncoder(input: ExportInput, path: string): boolean {
+  const encoderTag = cacheEncoderTag(input);
+  return encoderTag === null || path.includes(`.${encoderTag}.`);
 }
 
 function runFfmpeg(ffmpeg: string, args: string[]): Promise<void> {

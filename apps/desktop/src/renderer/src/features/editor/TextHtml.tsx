@@ -167,7 +167,12 @@ export function TextHtml(props: TextHtmlProps): ReactElement {
 
   return (
     <div style={wrapperStyle}>
-      <div ref={glyphRef} style={glyphStyle}>
+      <div
+        ref={glyphRef}
+        style={glyphStyle}
+        data-testid="text-glyph"
+        data-overlay-id={overlayId}
+      >
         {props.body}
       </div>
     </div>

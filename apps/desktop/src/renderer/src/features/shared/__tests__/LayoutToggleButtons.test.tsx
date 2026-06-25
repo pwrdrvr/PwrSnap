@@ -43,6 +43,7 @@ interface RenderArgs {
   primaryOpen?: boolean;
   secondaryOpen?: boolean;
   disableHotkeys?: boolean;
+  primaryDisabled?: boolean;
 }
 
 async function renderToggles(args: RenderArgs = {}): Promise<{
@@ -62,7 +63,8 @@ async function renderToggles(args: RenderArgs = {}): Promise<{
         secondaryOpen: args.secondaryOpen ?? true,
         onTogglePrimary,
         onToggleSecondary,
-        disableHotkeys: args.disableHotkeys ?? false
+        disableHotkeys: args.disableHotkeys ?? false,
+        primaryDisabled: args.primaryDisabled ?? false
       })
     );
     await Promise.resolve();
@@ -125,6 +127,43 @@ describe("LayoutToggleButtons", () => {
     });
     expect(onToggleSecondary).toHaveBeenCalledTimes(1);
     expect(onTogglePrimary).toHaveBeenCalledTimes(1); // unchanged
+  });
+
+  test("primaryDisabled greys out the primary chip + swallows ⌘B (⌘⌥B still works)", async () => {
+    Object.defineProperty(navigator, "platform", {
+      value: "MacIntel",
+      configurable: true
+    });
+    const { el, onTogglePrimary, onToggleSecondary } = await renderToggles({
+      primaryDisabled: true
+    });
+    const primary = el.querySelector<HTMLButtonElement>(
+      '[data-testid="layout-toggle-primary"]'
+    );
+    expect(primary?.disabled).toBe(true);
+
+    // Click on the disabled chip does nothing.
+    await act(async () => {
+      primary?.click();
+      await Promise.resolve();
+    });
+    expect(onTogglePrimary).not.toHaveBeenCalled();
+
+    // ⌘B is swallowed when the primary is disabled…
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "b", metaKey: true }));
+      await Promise.resolve();
+    });
+    expect(onTogglePrimary).not.toHaveBeenCalled();
+
+    // …but ⌘⌥B (secondary) still fires.
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "b", metaKey: true, altKey: true })
+      );
+      await Promise.resolve();
+    });
+    expect(onToggleSecondary).toHaveBeenCalledTimes(1);
   });
 
   test("⌘B (Mac) fires onTogglePrimary", async () => {

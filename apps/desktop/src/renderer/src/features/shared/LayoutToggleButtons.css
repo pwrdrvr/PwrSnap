@@ -58,3 +58,15 @@
 .lyt-toggle__chip.is-closed {
   color: var(--text-muted);
 }
+
+/* Disabled — the bar can't be shown in this mode (e.g. the editor
+   takeover hides the left nav). Greyed out + not interactive, with no
+   hover affordance, so it reads as unavailable rather than broken. */
+.lyt-toggle__chip:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.lyt-toggle__chip:disabled:hover {
+  color: var(--text-muted);
+  background: transparent;
+}

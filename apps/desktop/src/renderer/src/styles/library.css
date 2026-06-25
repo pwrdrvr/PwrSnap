@@ -560,7 +560,11 @@
 .psl[data-mode="focus"] {
   --left-col: 0px;
 }
-.psl[data-mode="focus"] .psl__left {
+/* Hide BOTH the nav aside and its collapsed-state spine (a sibling of
+   .psl__left, rendered when the nav is unpinned). Without the spine rule,
+   entering Edit with the nav collapsed left a stray hamburger sliver. */
+.psl[data-mode="focus"] .psl__left,
+.psl[data-mode="focus"] .psl__left-spine {
   display: none;
 }
 /* Center pane is the absolute-positioning anchor for the future

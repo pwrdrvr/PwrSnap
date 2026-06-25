@@ -2866,6 +2866,10 @@ export function Library() {
             secondaryOpen={rightPinned}
             onTogglePrimary={toggleLeftPinned}
             onToggleSecondary={toggleRightPinned}
+            // The editor takeover hides the left nav, so its toggle is
+            // inert there (greyed out, ⌘B ignored) rather than producing a
+            // stray spine sliver. Reel keeps it (the nav is live there).
+            primaryDisabled={view.kind === "focus"}
             testIdPrefix="psl-layout-toggle"
           />
           {/* Settings gear — opens the Settings window. Sits just

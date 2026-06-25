@@ -720,9 +720,20 @@
   display: inline-flex; align-items: center; gap: 4px;
 }
 .psl__view-btn.is-active { background: var(--accent-soft); color: var(--accent-bright); }
-.psl__topbar-r { display: flex; align-items: center; gap: 8px; }
+/* The right cluster takes the toolbar's slack and right-aligns. Every
+   child holds its size EXCEPT the search field — so when the window gets
+   narrow the search field is what shrinks, and the Quick Capture CTA (and
+   the other chips) stay intact instead of wrapping/clipping ("biffed"). */
+.psl__topbar-r {
+  display: flex; align-items: center; gap: 8px;
+  flex: 1 1 auto; min-width: 0; justify-content: flex-end;
+}
+.psl__topbar-r > :not(.psl__search-wrap) { flex: 0 0 auto; }
+/* Left + center groups must be allowed to yield their min-content so the
+   flex row can fit the right cluster instead of overflowing it off-edge. */
+.psl__topbar-l, .psl__topbar-c { min-width: 0; }
 .psl__search {
-  width: 220px; height: 28px;
+  width: 100%; min-width: 0; height: 28px;
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
@@ -738,7 +749,9 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
-.psl__search-wrap { position: relative; display: inline-flex; align-items: center; }
+/* `flex: 0 1 220px` — natural width 220px, but the only right-cluster
+   child allowed to shrink (down to min-width: 0) when space is tight. */
+.psl__search-wrap { position: relative; display: flex; align-items: center; flex: 0 1 220px; min-width: 0; }
 .psl__search-wrap > svg { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none; }
 .psl__search-clear {
   position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
@@ -749,6 +762,16 @@
   cursor: pointer;
 }
 .psl__search-clear:hover { background: var(--text-primary); }
+
+/* Responsive toolbar — the `.is-narrow` / `.is-tight` classes are set by
+   Library.tsx from `useMediaQuery`, the single source of truth for these
+   breakpoints (the renderer viewport = the Library window content width).
+   Tiers declutter a crowded right cluster so the Quick Capture CTA stays
+   whole; the search field already absorbs the squeeze via flex-shrink. */
+.psl__topbar.is-narrow .psl__icon-btn { display: none; }
+.psl__topbar.is-narrow .psl__search-wrap { flex-basis: 150px; }
+.psl__topbar.is-tight .psl__topbar-r { gap: 6px; }
+.psl__topbar.is-tight .psl__search-wrap { flex-basis: 120px; }
 
 /* Left: Source Apps.
  *
@@ -2591,6 +2614,9 @@
   border-radius: 4px;
   cursor: pointer;
   display: inline-flex; align-items: center; gap: 4px;
+  /* Never wrap the label — a cramped toolbar row was breaking the
+     "Quick Capture · ⌘⇧C" chip onto two lines inside its 28px box. */
+  white-space: nowrap;
 }
 .psl__chip-btn:hover { color: var(--text-primary); border-color: var(--accent-border); }
 .psl__chip-btn:disabled {

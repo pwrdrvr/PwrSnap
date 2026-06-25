@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   rm: vi.fn<() => Promise<void>>(),
   stat: vi.fn<() => Promise<{ size: number }>>(),
   mkdir: vi.fn<() => Promise<void>>(),
+  readdir: vi.fn<() => Promise<string[]>>(),
+  existsSync: vi.fn<(p: string) => boolean>(),
   composeCartDragIcon: vi.fn<() => Promise<void>>()
 }));
 
@@ -68,13 +70,15 @@ vi.mock("node:fs", () => ({
       write(_chunk: unknown, _enc: unknown, cb: () => void): void {
         cb();
       }
-    })
+    }),
+  existsSync: mocks.existsSync
 }));
 vi.mock("node:fs/promises", () => ({
   rename: mocks.rename,
   rm: mocks.rm,
   stat: mocks.stat,
-  mkdir: mocks.mkdir
+  mkdir: mocks.mkdir,
+  readdir: mocks.readdir
 }));
 // yazl is CJS; the handler does `import yazl from "yazl"` then
 // `new yazl.ZipFile()`, so the default export is the whole module object.
@@ -149,7 +153,11 @@ beforeEach(() => {
   mocks.rm.mockReset();
   mocks.stat.mockReset();
   mocks.mkdir.mockReset();
+  mocks.readdir.mockReset();
+  mocks.existsSync.mockReset();
   mocks.composeCartDragIcon.mockReset();
+  mocks.readdir.mockResolvedValue([]); // nothing to prune by default
+  mocks.existsSync.mockReturnValue(false); // no cached drag zip by default
   mocks.composeCartDragIcon.mockResolvedValue(undefined);
   mocks.showSaveDialog.mockResolvedValue({ canceled: false, filePath: "/out/export.zip" });
   mocks.resolveImagePresetFile.mockResolvedValue({ path: "/cache/img.png" });
@@ -267,9 +275,10 @@ describe("cart:prepareZipDrag (drag-out)", () => {
     if (r.ok) {
       expect(r.value.fileCount).toBe(2);
       expect(r.value.path).toContain("pwrsnap-cart-export");
-      expect(r.value.path.endsWith("-med.zip")).toBe(true);
+      // `<base>-<preset>-<8 hex content hash>.zip`
+      expect(r.value.path).toMatch(/-med-[0-9a-f]{8}\.zip$/);
       // Drag icon is the composed badge thumbnail, not the raw render.
-      expect(r.value.iconPath?.endsWith("-med-drag.png")).toBe(true);
+      expect(r.value.iconPath).toMatch(/-med-[0-9a-f]{8}-drag\.png$/);
     }
     // Composed with the right image-count badge (2 images in the zip).
     expect(mocks.composeCartDragIcon).toHaveBeenCalledWith(
@@ -278,6 +287,34 @@ describe("cart:prepareZipDrag (drag-out)", () => {
     // No save dialog on the drag path.
     expect(mocks.showSaveDialog).not.toHaveBeenCalled();
     expect(mocks.mkdir).toHaveBeenCalled();
+  });
+
+  test("reuses a cached zip for the identical cart+preset (no re-render)", async () => {
+    mocks.getCaptureById.mockImplementation((id) => imageRecord(id));
+    mocks.existsSync.mockReturnValue(true); // zip + icon already on disk
+    const r = await callPrepareDrag({ captureIds: ["a", "b"], preset: "med" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.path).toMatch(/-med-[0-9a-f]{8}\.zip$/);
+      expect(r.value.iconPath).toMatch(/-med-[0-9a-f]{8}-drag\.png$/);
+    }
+    // The whole point: no render, no zip, no re-compose on a cache hit.
+    expect(mocks.resolveImagePresetFile).not.toHaveBeenCalled();
+    expect(mocks.addFile).not.toHaveBeenCalled();
+    expect(mocks.composeCartDragIcon).not.toHaveBeenCalled();
+  });
+
+  test("prunes stale drag temp files before building", async () => {
+    mocks.getCaptureById.mockImplementation((id) => imageRecord(id));
+    mocks.readdir.mockResolvedValue(["old-low-deadbeef.zip"]);
+    // Old enough to prune (mtime way in the past).
+    mocks.stat.mockResolvedValue({ size: 10, mtimeMs: 0 } as unknown as { size: number });
+    await callPrepareDrag({ captureIds: ["a"], preset: "low" });
+    expect(mocks.readdir).toHaveBeenCalled();
+    expect(mocks.rm).toHaveBeenCalledWith(
+      expect.stringContaining("old-low-deadbeef.zip"),
+      expect.objectContaining({ force: true })
+    );
   });
 
   test("falls back to the raw image when the badge compose throws", async () => {

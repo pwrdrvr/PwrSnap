@@ -8,9 +8,9 @@
 // because they create / mutate a project the sidebar renders.
 
 import { app, BrowserWindow, dialog, shell } from "electron";
-import { randomUUID } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { createWriteStream, existsSync } from "node:fs";
+import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import yazl from "yazl";
 import {
@@ -62,6 +62,48 @@ function broadcastCartExportProgress(event: CartExportProgressEvent): void {
     if (win.isDestroyed()) continue;
     win.webContents.send(EVENT_CHANNELS.cartExportProgress, event);
   }
+}
+
+// Drag-out temp artifacts (zip + cursor thumbnail) live here. Named by a
+// content hash of (capture id + edits_version + preset), so re-dragging the
+// SAME cart reuses the file (instant, no re-render) and two different carts
+// never collide. Pruned by age on each prepare so they don't pile up — the
+// OS would eventually sweep $TMPDIR, but not promptly.
+function cartDragTempDir(): string {
+  return join(app.getPath("temp"), "pwrsnap-cart-export");
+}
+
+/** Drag temp files older than this are deleted on the next prepare. A drag's
+ *  drop completes in seconds, so anything this old is certainly finished. */
+const CART_DRAG_TEMP_MAX_AGE_MS = 10 * 60_000;
+
+/** Content key for a (cart, preset) — same images+edits+preset → same file. */
+function cartDragKey(records: CaptureRecord[], preset: RenderPreset): string {
+  const sig = records.map((r) => `${r.id}:${r.edits_version}`).join(",") + `:${preset}`;
+  return createHash("sha1").update(sig).digest("hex").slice(0, 8);
+}
+
+/** Best-effort prune of drag temp files older than `maxAgeMs`. Never throws —
+ *  a missing/unreadable dir or a racing delete just means nothing to do. */
+async function pruneCartDragTemp(dir: string, maxAgeMs: number): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return; // dir doesn't exist yet / unreadable
+  }
+  const now = Date.now();
+  await Promise.all(
+    entries.map(async (name) => {
+      const p = join(dir, name);
+      try {
+        const s = await stat(p);
+        if (now - s.mtimeMs > maxAgeMs) await rm(p, { force: true });
+      } catch {
+        // racing delete / stat failure — ignore
+      }
+    })
+  );
 }
 
 /** Resolve cart ids to exportable image records, counting the ones filtered
@@ -484,13 +526,31 @@ export function registerCartHandlers(): void {
     const suggestedSlug =
       v.suggestedName !== undefined ? slugifyFilenameStem(v.suggestedName) : "";
     const baseName = suggestedSlug.length > 0 ? suggestedSlug : `pwrsnap-${records.length}-images`;
-    // A temp file the OS copies during the drag — named so the dropped file
-    // reads nicely. Lives in a dedicated temp subdir (cleaned by the OS).
-    const dir = join(app.getPath("temp"), "pwrsnap-cart-export");
+    // Temp files the OS copies during the drag, named so the dropped file
+    // reads nicely. The content hash makes the name stable per (cart, preset):
+    // re-dragging the same cart reuses the file; different carts never collide.
+    const dir = cartDragTempDir();
+    const key = cartDragKey(records, v.preset);
+    const zipPath = join(dir, `${baseName}-${v.preset}-${key}.zip`);
+    const iconDest = join(dir, `${baseName}-${v.preset}-${key}-drag.png`);
     try {
       await mkdir(dir, { recursive: true });
-      const destPath = join(dir, `${baseName}-${v.preset}.zip`);
-      const result = await writeCartZip(records, v.preset, destPath);
+      // Sweep stale artifacts (this session's earlier drags + anything left
+      // from a prior run) before adding a new one.
+      await pruneCartDragTemp(dir, CART_DRAG_TEMP_MAX_AGE_MS);
+
+      // Reuse an already-built zip for the identical cart+preset — the heavy
+      // render+zip only happens on the first drag of a given cart state, so
+      // repeat drags fire startDrag immediately (mitigates the cold-drag
+      // latency where a slow prepare can outlive the native drag gesture).
+      if (existsSync(zipPath)) {
+        const iconPath = existsSync(iconDest) ? iconDest : null;
+        // fileCount is informational and unused by the drag bridge; the cached
+        // badge already bakes in the real count.
+        return ok({ path: zipPath, fileCount: records.length, iconPath });
+      }
+
+      const result = await writeCartZip(records, v.preset, zipPath);
       if (result.fileCount === 0) {
         return err({
           kind: "render",
@@ -503,7 +563,6 @@ export function registerCartHandlers(): void {
       // first image (the IPC bridge still scales it down) if it can't build.
       let iconPath = result.firstPath;
       if (result.firstPath !== null) {
-        const iconDest = join(dir, `${baseName}-${v.preset}-drag.png`);
         try {
           await composeCartDragIcon({
             imagePath: result.firstPath,
@@ -517,7 +576,7 @@ export function registerCartHandlers(): void {
           });
         }
       }
-      return ok({ path: destPath, fileCount: result.fileCount, iconPath });
+      return ok({ path: zipPath, fileCount: result.fileCount, iconPath });
     } catch (cause) {
       log.warn("cart:prepareZipDrag failed", {
         message: cause instanceof Error ? cause.message : String(cause)

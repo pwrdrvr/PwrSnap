@@ -48,6 +48,7 @@ import {
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
 import { applyGeometryLocally } from "./geometry-projection";
+import { shapeStrokeGeometry } from "./shape-stroke-geometry";
 import { computeTextGlyphSize } from "@pwrsnap/shared";
 import { TEXT_BBOX_CHAR_ADVANCE_OUTLINE } from "./text-bbox-constants";
 import { measureTextWidthPx } from "./text-measure";
@@ -849,18 +850,14 @@ function ShapeGlyph({
   filled?: boolean | undefined;
   isDraft?: boolean;
 }): ReactElement {
-  // Stroke width scaled by image short-side. Same band as ArrowGlyph
-  // — see ArrowGlyph for the calibration rationale. Pixel-space —
-  // readOverlayThickness with shortSide enabled returns pixels directly
-  // and applies the floor-fraction formula on Large/X-Large so high-
-  // DPI captures don't get a hairline shape.
+  // Stroke width + halo scaled by image short-side. Same band as
+  // ArrowGlyph — see ArrowGlyph for the calibration rationale. Pixel-
+  // space: the shared helper applies the floor-fraction formula on
+  // Large/X-Large so high-DPI captures don't get a hairline shape, and
+  // it's the SAME source of truth the click hit-test + drag rect read
+  // so the painted line and the grabbable region can't drift apart.
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
-  const autoStrokeWidthPx = Math.min(
-    shortSide * 0.012,
-    Math.max(shortSide * 0.003, 8)
-  );
-  const strokeWidthPx = readOverlayThickness(thickness, autoStrokeWidthPx, shortSide);
-  const outline = Math.max(strokeWidthPx * 0.25, 1.5);
+  const { strokeWidthPx, outline } = shapeStrokeGeometry(thickness, shortSide);
   // Pixel-space bbox.
   const rx = rect.x * imageWidthPx;
   const ry = rect.y * imageHeightPx;
@@ -2267,12 +2264,40 @@ export function TransformHandles({
             const rotateDeg = (rotation * 180) / Math.PI;
             const transformAttr =
               rotation !== 0 ? `rotate(${rotateDeg}deg)` : undefined;
+            // Grow the DRAG-hit rect outward to cover the visible LINE
+            // of a stroked shape (the stroke is centered on the path
+            // and the halo extends further out). Without this the user
+            // could only drag a selected shape by its interior or the
+            // thin inner sliver of its line — the same gap the hit-test
+            // pad fixes for selection (both read `shapeStrokeGeometry`
+            // so the line and the grabbable region stay in lockstep).
+            // The resize / rotate HANDLES keep anchoring on the un-
+            // padded `bodyBox` (computed above) so they stay pinned to
+            // the glyph corners; only this transparent body rect grows.
+            // Highlight / blur — and FILLED shapes, whose solid body has
+            // no stroke line — already cover their full visible extent,
+            // so no pad.
+            const reachPx =
+              d.kind === "shape" && !readShapeFilled(d)
+                ? shapeStrokeGeometry(
+                    d.thickness,
+                    Math.min(imageWidthPx, imageHeightPx)
+                  ).outerReachPx
+                : 0;
+            const padXN = reachPx / imageWidthPx;
+            const padYN = reachPx / imageHeightPx;
+            const dragBox = {
+              x: bodyBox.x - padXN,
+              y: bodyBox.y - padYN,
+              w: bodyBox.w + padXN * 2,
+              h: bodyBox.h + padYN * 2
+            };
             return {
               position: "absolute" as const,
-              left: `${bodyBox.x * 100}%`,
-              top: `${bodyBox.y * 100}%`,
-              width: `${bodyBox.w * 100}%`,
-              height: `${bodyBox.h * 100}%`,
+              left: `${dragBox.x * 100}%`,
+              top: `${dragBox.y * 100}%`,
+              width: `${dragBox.w * 100}%`,
+              height: `${dragBox.h * 100}%`,
               cursor: d.kind === "text" ? "text" : "move",
               pointerEvents: "auto" as const,
               // Transparent — the body is a hit target only. Painting

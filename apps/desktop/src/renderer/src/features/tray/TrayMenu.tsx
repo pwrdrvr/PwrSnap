@@ -19,25 +19,29 @@ function fmtTrayDuration(seconds: number): string {
   return `${mins}m ${secs}s`;
 }
 
-type ModeKind = "auto" | "region" | "window" | "full" | "all" | "scroll" | "timed";
+type ModeKind = "auto" | "region" | "window" | "full" | "all" | "timed";
 
-/** Phase 1 ships `auto` (the Quick Capture button — promoted out of
- *  the grid), `region`, and `window`. The other four modes are stubbed
- *  with `available: false` so the disabled treatment honestly signals
- *  what works today.
+/** The explicit-mode grid. `auto` (Quick Capture) and video both live
+ *  above the grid as prominent headline buttons; the grid holds the
+ *  explicit snap modes. Every tile here is live — the old `scroll`
+ *  placeholder (a disabled "Scrolling" tile we never shipped) was
+ *  replaced by promoting Video to a headline action.
  *
  *  Chord glyphs for `region` / `window` come from the live settings
  *  snapshot (Settings → Hotkeys is editable). When the binding is
  *  unbound (empty string in settings — the default for those two now
  *  that Quick Capture covers both), the chip is omitted entirely. The
- *  preview modes (full / all / scroll / timed) still carry static
- *  placeholder glyphs because they aren't bound to anything in code. */
+ *  preview modes (full / all / timed) still carry static placeholder
+ *  glyphs because they aren't bound to anything in code. */
 const MODES: Array<{
   id: Exclude<ModeKind, "auto">;
   name: string;
   /** Static fallback for preview modes that aren't wired to settings. */
   hk: string[];
   available: boolean;
+  /** Span both grid columns — used for the lone trailing tile so the
+   *  odd-count grid reads as intentional rather than a clipped gap. */
+  span2?: boolean;
 }> = [
   // Two-column grid order — keeps the most-used in the top row, less-
   // common modes below. Region top-left because once Quick Capture
@@ -47,13 +51,13 @@ const MODES: Array<{
   { id: "window", name: "Window", hk: [], available: true },
   { id: "full", name: "Full Screen", hk: [], available: true },
   { id: "all", name: "All Screens", hk: [], available: true },
-  { id: "scroll", name: "Scrolling", hk: ["⌘", "⇧", "S"], available: false },
   // Timed (5s) is wired to the tray button only; no global chord yet,
   // so the kbd glyphs stay empty to match the Region / Window pattern
   // ("no chord shown when nothing is bound"). The hotkeys settings
   // page still lists ⌘⇧T as a "preview" placeholder for when a
-  // bindable accelerator lands.
-  { id: "timed", name: "Timed (5s)", hk: [], available: true }
+  // bindable accelerator lands. It's the odd fifth tile, so it spans
+  // the full width to close the bottom row cleanly.
+  { id: "timed", name: "Timed (5s)", hk: [], available: true, span2: true }
 ];
 
 /** Three preset widths matching the float-over Low/Med/High buttons,
@@ -134,25 +138,6 @@ function ModeIcon({ kind }: { kind: ModeKind }) {
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5">
           <rect x="2" y="5" width="11" height="9" rx="1" />
           <rect x="11" y="9" width="11" height="9" rx="1" />
-        </svg>
-      );
-    case "scroll":
-      // Scrolling-page glyph: a window with horizontal text rules and
-      // small vertical "scroll track" hashes on either side, signaling
-      // a long page being captured beyond the viewport.
-      return (
-        <svg
-          viewBox="0 0 24 24"
-          width="14"
-          height="14"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <rect x="6" y="3" width="12" height="18" rx="1.5" />
-          <path d="M9 8h6M9 12h6M9 16h6M3 9v6M21 9v6" />
         </svg>
       );
     case "timed":
@@ -252,16 +237,23 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
 
   // Pull live chord glyphs for the two wired explicit-mode hotkeys.
   // Empty array = unbound (default for both today) → the chip is
-  // omitted from the mode tile.
+  // omitted from the mode tile. The preview modes carry their static
+  // placeholder glyphs from MODES, looked up by id (not by positional
+  // index) so reordering or adding tiles can't silently mis-map them.
+  const staticHk = (id: Exclude<ModeKind, "auto">): string[] =>
+    MODES.find((m) => m.id === id)?.hk ?? [];
   const liveHkFor: Record<Exclude<ModeKind, "auto">, string[]> = {
     region: acceleratorToDisplayKeys(hotkeys.region),
     window: acceleratorToDisplayKeys(hotkeys.window),
-    full: MODES[2]!.hk,
-    all: MODES[3]!.hk,
-    scroll: MODES[4]!.hk,
-    timed: MODES[5]!.hk
+    full: staticHk("full"),
+    all: staticHk("all"),
+    timed: staticHk("timed")
   };
   const quickHk = acceleratorToDisplayKeys(hotkeys.quickCapture);
+  // Record Video is bound by default (⌘⌥C) and editable in Settings →
+  // Hotkeys, so its chip reads live from settings — same treatment as
+  // Quick Capture, not a static placeholder.
+  const videoHk = acceleratorToDisplayKeys(hotkeys.videoCapture);
 
   // Measure the popover's natural content height and tell main to
   // setContentSize the BrowserWindow to match. Mirrors the float-
@@ -347,6 +339,12 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const onCaptureAllScreens = (): void => {
     void dispatch("capture:allScreens", { mode: allScreensMode });
   };
+  const onCaptureVideo = (): void => {
+    // Mirrors the videoCapture global hotkey: opens the auto-mode
+    // selector, then records what the user picks. Fire-and-forget — the
+    // recording lifecycle surfaces via the events:recording:* broadcasts.
+    void dispatch("capture:videoInteractive", {});
+  };
   const onCopyLastSnap = (preset: "low" | "med" | "high"): void => {
     if (lastSnap === undefined) return;
     void dispatch("clipboard:copy", { captureId: lastSnap.id, preset });
@@ -395,13 +393,15 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
         </div>
       </div>
 
-      {/* Quick Capture — the prominent default action. Promoted out
-          of the 6-mode grid because it's the single highest-frequency
-          path: smart auto-mode that picks region / window / full
-          screen based on what the cursor is pointing at when the
-          user runs Quick Capture. The orange fill + outlined ring make it
-          unmistakably the default; explicit modes sit below as
-          opt-in specializations. */}
+      {/* Quick Capture + Record Video — the two headline actions, the
+          app's primary verbs. Both are promoted out of the grid because
+          they're the highest-frequency paths and together advertise
+          what PwrSnap does: snap a still or record a clip. Quick Capture
+          (orange fill) is the default snap — smart auto-mode that picks
+          region / window / full screen from where the cursor points;
+          Record Video (accent outline) opens the same selector and
+          records what you pick. The explicit snap modes sit in the grid
+          below as opt-in specializations. */}
       <button
         className="ps-tray__quick"
         type="button"
@@ -420,6 +420,30 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
         </span>
       </button>
 
+      <button
+        className="ps-tray__quick ps-tray__quick--video"
+        type="button"
+        onClick={onCaptureVideo}
+      >
+        <span className="ps-tray__quick-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="6" width="13" height="12" rx="2" />
+            <path d="m16 10 5-3v10l-5-3z" />
+          </svg>
+        </span>
+        <span className="ps-tray__quick-l">
+          <span className="ps-tray__quick-eyebrow">Record Video</span>
+          <span className="ps-tray__quick-sub">
+            Pick a region or window to capture as a clip
+          </span>
+        </span>
+        <span className="ps-tray__quick-hk">
+          {videoHk.length > 0
+            ? videoHk.map((k, i) => <Kbd key={`${k}-${i}`}>{k}</Kbd>)
+            : null}
+        </span>
+      </button>
+
       <div className="ps-tray__modes">
         {MODES.map((m) => {
           const hk = liveHkFor[m.id];
@@ -434,7 +458,11 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
           return (
             <button
               key={m.id}
-              className={"ps-mode" + (m.available ? "" : " is-disabled")}
+              className={
+                "ps-mode" +
+                (m.available ? "" : " is-disabled") +
+                (m.span2 === true ? " ps-mode--wide" : "")
+              }
               type="button"
               disabled={!m.available}
               title={m.available ? undefined : "Coming in a later phase"}

@@ -98,4 +98,36 @@ describe("tray context menu", () => {
     expect(template[0]).toMatchObject({ label: "Quick Capture…" });
     expect(template[0]).not.toHaveProperty("accelerator");
   });
+
+  test("puts Record Video right after Quick Capture, above the rule, with its live hotkey", () => {
+    setTrayHotkeys({
+      ...DEFAULT_HOTKEYS,
+      quickCapture: "CommandOrControl+Shift+C",
+      videoCapture: "CommandOrControl+Alt+C"
+    });
+
+    const template = buildTrayContextMenuTemplate();
+
+    // The two headline verbs sit together, snap then record...
+    expect(template[0]).toMatchObject({ label: "Quick Capture…" });
+    expect(template[1]).toMatchObject({
+      label: "Record Video…",
+      accelerator: "CommandOrControl+Alt+C"
+    });
+    // ...immediately above the first separator (the horizontal rule).
+    expect(template[2]).toMatchObject({ type: "separator" });
+  });
+
+  test("hides the Record Video accelerator when the hotkey is unbound", () => {
+    setTrayHotkeys({
+      ...DEFAULT_HOTKEYS,
+      videoCapture: ""
+    });
+
+    const template = buildTrayContextMenuTemplate();
+
+    const recordVideo = template.find((item) => item.label === "Record Video…");
+    expect(recordVideo).toBeDefined();
+    expect(recordVideo).not.toHaveProperty("accelerator");
+  });
 });

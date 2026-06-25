@@ -279,18 +279,63 @@
   border-bottom-width: 2px;
 }
 
-/* 6-mode grid — region / window / full / all / scroll / timed.
-   Single-row tiles (icon + name + kbd) so the popover stays compact;
-   the prior two-row "card" treatment was overflowing the design's
-   target height. minmax(0, 1fr) keeps the grid from blowing out
-   horizontally when a tile's intrinsic content (e.g. "All Screens"
-   + ⌘⇧A) would be wider than its 1fr column share. */
+/* Record Video — the second headline action, stacked directly under
+   Quick Capture. Co-equal real estate, but an accent OUTLINE rather
+   than the orange fill so the snap path stays the visual default and
+   the two read as distinct verbs (snap vs record). Pure-black +
+   tangerine only, per brand — no off-brand "record red". */
+.ps-tray__quick--video {
+  margin-top: 0;
+  justify-content: flex-start;
+  background: var(--bg-panel-elevated);
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+  outline: none;
+  box-shadow: none;
+}
+.ps-tray__quick--video:hover {
+  background: var(--bg-panel-hover);
+  border-color: var(--accent);
+}
+.ps-tray__quick--video:active { transform: translateY(1px); }
+/* The orange Quick Capture button reads as focused via its always-on
+   accent ring; the video variant drops that ring (outline: none above),
+   so it needs an explicit keyboard-focus indicator of its own. Mouse
+   focus stays clean — :focus-visible only. */
+.ps-tray__quick--video:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.ps-tray__quick--video .ps-tray__quick-l { flex: 1; min-width: 0; }
+.ps-tray__quick--video .ps-tray__quick-eyebrow { color: var(--accent-bright); }
+.ps-tray__quick-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  color: var(--accent-bright);
+}
+/* Reset the orange reverse-video kbd treatment back to the default
+   light-on-dark chip — the video button is dark, not orange. */
+.ps-tray__quick--video .ps-tray__quick-hk .ps-kbd {
+  background: var(--bg-app);
+  border-color: var(--border-default);
+  color: var(--text-secondary);
+}
+
+/* 5-mode grid — region / window / full / all / timed. Single-row tiles
+   (icon + name + kbd) so the popover stays compact; the prior two-row
+   "card" treatment was overflowing the design's target height.
+   minmax(0, 1fr) keeps the grid from blowing out horizontally when a
+   tile's intrinsic content (e.g. "All Screens" + ⌘⇧A) would be wider
+   than its 1fr column share. */
 .ps-tray__modes {
   padding: 4px 6px 6px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 4px;
 }
+/* The lone trailing tile (Timed) spans both columns so the odd-count
+   grid closes cleanly instead of leaving a gap in the bottom-right. */
+.ps-mode--wide { grid-column: 1 / -1; }
 .ps-mode {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 8px;

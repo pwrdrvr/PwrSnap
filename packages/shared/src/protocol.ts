@@ -2421,6 +2421,18 @@ export type Commands = {
     res: CaptureRecord;
   };
   /**
+   * Fast Video Capture entry point for UI surfaces (the tray's Record
+   * button, the Library's Video chip). Opens the auto-mode selector to
+   * pick a region / window, then routes the commit to `recording:start`
+   * — the exact flow the `videoCapture` global hotkey drives via
+   * `runInteractiveRecord()`. Fire-and-forget: the selector, countdown,
+   * and recording lifecycle all surface on the `events:recording:*`
+   * broadcasts, so the renderer gets nothing back beyond the ack. The
+   * companion to `capture:interactive` (which persists an image), kept
+   * as its own verb so the snap and video paths stay explicit.
+   */
+  "capture:videoInteractive": { req: Record<string, never>; res: void };
+  /**
    * Read the current system clipboard image, persist it as a library
    * capture, and return the resulting record. Pixel bytes stay in the
    * main process; renderers only observe the normal captures-changed

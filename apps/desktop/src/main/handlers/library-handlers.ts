@@ -49,6 +49,7 @@ import {
   relayCancellationToPeer,
   relayRendererEventToPeer
 } from "../process-split/event-relay";
+import { getRuntimeProcessRole } from "../process-role";
 import { activateForUserSurface } from "../process-split/activate-user-surface";
 import { signalLibraryWindowReady } from "../process-split/agent-bridge";
 import { getMainLogger } from "../log";
@@ -458,9 +459,12 @@ export function registerLibraryWindowHandlers(): void {
     // create one. Dock-icon show/hide is owned by the window's
     // `ready-to-show` / `closed` handlers — see createMainWindow in
     // ../window.ts.
-    log.info("library:focus handler: begin"); // DIAG (cold-launch race)
+    // Cold-launch breadcrumbs are split-mode-only (this handler also runs
+    // in combined); single-process logs stay unchanged.
+    const splitDiag = getRuntimeProcessRole() === "library";
+    if (splitDiag) log.info("library:focus handler: begin");
     bringLibraryForward();
-    log.info("library:focus handler: done"); // DIAG (cold-launch race)
+    if (splitDiag) log.info("library:focus handler: done");
     return ok(undefined);
   });
 

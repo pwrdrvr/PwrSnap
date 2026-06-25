@@ -95,10 +95,13 @@ export function initializeMainLogger(): void {
   if (roleFlag === "library") {
     electronLog.transports.file.fileName = "library.log";
   }
-  // Short per-process tag in every line so interleaved dev-terminal
-  // output (both processes inherit one stdio) — and any concatenation
-  // of the two log files — stays attributable at a glance.
-  const procTag = roleFlag === "library" ? "lib" : "main";
+  // Short tag on the LIBRARY child's lines only, so interleaved
+  // dev-terminal output (both processes inherit one stdio) — and any
+  // concatenation of the two log files — is attributable at a glance.
+  // Combined/agent get NO tag: single-process mode keeps the exact
+  // pre-split line format, so turning the experiment off changes
+  // nothing about the logs.
+  const tagPrefix = roleFlag === "library" ? "lib " : "";
 
   installStdioErrorHandlers();
   guardConsoleTransport();
@@ -119,7 +122,7 @@ export function initializeMainLogger(): void {
         typeof d === "string" ? d : inspect(d, { depth: 6, breakLength: 120, colors: false })
       );
       return [
-        `${message.date.toISOString().slice(11, 23)} ${procTag} (${message.scope ?? "?"})`,
+        `${message.date.toISOString().slice(11, 23)} ${tagPrefix}(${message.scope ?? "?"})`,
         ...parts
       ];
     };

@@ -419,12 +419,18 @@ function instrumentLibraryLoadTiming(window: BrowserWindow): void {
  * The app stays alive in the background via the tray.
  */
 export function createMainWindow(): BrowserWindow {
-  // DIAG (cold-launch race): synchronous breadcrumbs so a later
-  // main-thread stall still leaves a trail of how far boot got.
-  log.info("createMainWindow: entry", {
-    role: getRuntimeProcessRole(),
-    hasExisting: libraryWindow !== null && !libraryWindow.isDestroyed()
-  });
+  // Cold-launch diagnostics are split-mode-only: createMainWindow runs in
+  // BOTH combined and library roles, but the black-window stall this
+  // traces only exists when the library is a spawned child. Gating keeps
+  // single-process logs byte-for-byte unchanged.
+  const splitDiag = getRuntimeProcessRole() === "library";
+  if (splitDiag) {
+    // Synchronous breadcrumbs so a later main-thread stall still leaves
+    // a trail of how far boot got.
+    log.info("createMainWindow: entry", {
+      hasExisting: libraryWindow !== null && !libraryWindow.isDestroyed()
+    });
+  }
   if (libraryWindow !== null && !libraryWindow.isDestroyed()) {
     return libraryWindow;
   }
@@ -448,13 +454,17 @@ export function createMainWindow(): BrowserWindow {
   attachRendererStartupProfiling(window, "library");
 
   const target = rendererTarget();
-  log.info("createMainWindow: loading renderer", {
-    id: window.id,
-    kind: target.kind,
-    target: target.kind === "url" ? target.url : target.path
-  });
+  if (splitDiag) {
+    log.info("createMainWindow: loading renderer", {
+      id: window.id,
+      kind: target.kind,
+      target: target.kind === "url" ? target.url : target.path
+    });
+  }
   loadRenderer(window, target);
-  instrumentLibraryLoadTiming(window);
+  if (splitDiag) {
+    instrumentLibraryLoadTiming(window);
+  }
 
   // `showWindowWhenReady` handles the Linux `ready-to-show`
   // unreliability (see window-show.ts for the why); on macOS the
@@ -544,7 +554,9 @@ export function createMainWindow(): BrowserWindow {
   // (1, 1) does NOT re-enable. Range must be non-degenerate.
   window.webContents.setVisualZoomLevelLimits(1, 3);
 
-  log.info("createMainWindow: returning", { id: window.id });
+  if (splitDiag) {
+    log.info("createMainWindow: returning", { id: window.id });
+  }
   return window;
 }
 

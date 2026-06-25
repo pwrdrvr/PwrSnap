@@ -36,8 +36,11 @@ describe("Windows release configuration", () => {
     expect(workflow).toContain("windows-signing");
     expect(workflow).toContain("secrets.WIN_CSC_LINK");
     expect(workflow).toContain("secrets.WIN_CSC_KEY_PASSWORD");
-    expect(workflow).toContain("WINDOWS_FFMPEG_URL");
-    expect(workflow).toContain("WINDOWS_FFMPEG_SHA256");
+    expect(workflow).toContain("pwrdrvr/pwrsnap-ffmpeg-builds");
+    expect(workflow).toContain("a72aa24cd310cb3aa684b2481261cb2d8e313bfd");
+    expect(workflow).toContain("ffmpeg-8.1.1-windows-x64");
+    expect(workflow).toContain("manifest.json");
+    expect(workflow).toContain("PWRSNAP_WINDOWS_FFMPEG_PATH=$ffmpeg");
     expect(workflow).toContain("pnpm --filter @pwrsnap/desktop package:win -- --publish");
   });
 });

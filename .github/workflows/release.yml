@@ -226,28 +226,90 @@ jobs:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: pnpm release:check
 
-      - name: Download vetted Windows FFmpeg
+      - name: Download controlled Windows FFmpeg artifact
         shell: pwsh
         env:
-          WINDOWS_FFMPEG_URL: ${{ secrets.WINDOWS_FFMPEG_URL }}
-          WINDOWS_FFMPEG_SHA256: ${{ secrets.WINDOWS_FFMPEG_SHA256 }}
+          # Needs read access to pwrdrvr/pwrsnap-ffmpeg-builds. The default
+          # github.token only has this repository's scope, so production
+          # should provide FFMPEG_BUILDS_PAT from the protected environment.
+          GH_TOKEN: ${{ secrets.FFMPEG_BUILDS_PAT || secrets.RELEASES_PAT || github.token }}
+          FFMPEG_BUILD_REPO: pwrdrvr/pwrsnap-ffmpeg-builds
+          FFMPEG_BUILD_WORKFLOW: build.yml
+          FFMPEG_BUILD_SHA: a72aa24cd310cb3aa684b2481261cb2d8e313bfd
+          FFMPEG_ARTIFACT_NAME: ffmpeg-8.1.1-windows-x64
+          FFMPEG_VERSION: 8.1.1
+          FFMPEG_SOURCE_SHA256: b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3
+          FFMPEG_BUILD_PROFILE: pwrsnap-lgpl-clean-v1
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_FFMPEG_URL)) {
-            throw "WINDOWS_FFMPEG_URL secret is required for Windows releases. It must point at a vetted LGPL ffmpeg.exe."
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw "GH_TOKEN is required to download the private PwrSnap FFmpeg build artifact."
           }
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_FFMPEG_SHA256)) {
-            throw "WINDOWS_FFMPEG_SHA256 secret is required for Windows releases."
+
+          $runsJson = gh run list `
+            --repo $env:FFMPEG_BUILD_REPO `
+            --workflow $env:FFMPEG_BUILD_WORKFLOW `
+            --branch main `
+            --limit 100 `
+            --json databaseId,headSha,conclusion,status
+          $run = $runsJson |
+            ConvertFrom-Json |
+            Where-Object { $_.headSha -eq $env:FFMPEG_BUILD_SHA -and $_.conclusion -eq "success" } |
+            Select-Object -First 1
+          if ($null -eq $run) {
+            throw "No successful $env:FFMPEG_BUILD_WORKFLOW run found for $env:FFMPEG_BUILD_REPO@$env:FFMPEG_BUILD_SHA"
           }
-          $dir = Join-Path $env:RUNNER_TEMP "pwrsnap-ffmpeg"
+
+          $dir = Join-Path $env:RUNNER_TEMP "pwrsnap-ffmpeg-artifact"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          gh run download $run.databaseId `
+            --repo $env:FFMPEG_BUILD_REPO `
+            --name $env:FFMPEG_ARTIFACT_NAME `
+            --dir $dir
+
+          $manifestPath = Join-Path $dir "manifest.json"
+          if (-not (Test-Path $manifestPath)) {
+            throw "Downloaded FFmpeg artifact is missing manifest.json"
+          }
+          $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          if ($manifest.version -ne $env:FFMPEG_VERSION) {
+            throw "Windows FFmpeg version mismatch: expected $env:FFMPEG_VERSION, got $($manifest.version)"
+          }
+          if ($manifest.sourceSha256 -ne $env:FFMPEG_SOURCE_SHA256) {
+            throw "Windows FFmpeg source SHA mismatch: expected $env:FFMPEG_SOURCE_SHA256, got $($manifest.sourceSha256)"
+          }
+          if ($manifest.buildProfile -ne $env:FFMPEG_BUILD_PROFILE) {
+            throw "Windows FFmpeg build profile mismatch: expected $env:FFMPEG_BUILD_PROFILE, got $($manifest.buildProfile)"
+          }
+          if ($manifest.platform -ne "windows" -or $manifest.arch -ne "x64" -or $manifest.binary -ne "ffmpeg.exe") {
+            throw "Windows FFmpeg artifact manifest target mismatch: $($manifest.platform)/$($manifest.arch)/$($manifest.binary)"
+          }
+
           $ffmpeg = Join-Path $dir "ffmpeg.exe"
-          Invoke-WebRequest -Uri $env:WINDOWS_FFMPEG_URL -OutFile $ffmpeg
+          if (-not (Test-Path $ffmpeg)) {
+            throw "Downloaded FFmpeg artifact is missing ffmpeg.exe"
+          }
           $actual = (Get-FileHash -Algorithm SHA256 $ffmpeg).Hash.ToLowerInvariant()
-          $expected = $env:WINDOWS_FFMPEG_SHA256.Trim().ToLowerInvariant()
+          $expected = [string]$manifest.sha256
           if ($actual -ne $expected) {
             throw "Windows ffmpeg SHA-256 mismatch: expected $expected, got $actual"
           }
+
+          foreach ($flag in $manifest.forbiddenConfigFlags) {
+            if ([string]$manifest.configuration -like "*$flag*") {
+              throw "Windows FFmpeg manifest contains forbidden configure flag: $flag"
+            }
+          }
+          foreach ($encoder in @("h264_mf", "aac")) {
+            if ($manifest.requiredEncoders -notcontains $encoder) {
+              throw "Windows FFmpeg manifest is missing required encoder check: $encoder"
+            }
+          }
+          if ($manifest.requiredDevices -notcontains "gdigrab") {
+            throw "Windows FFmpeg manifest is missing required gdigrab check"
+          }
+
           "PWRSNAP_WINDOWS_FFMPEG_PATH=$ffmpeg" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PWRSNAP_WINDOWS_FFMPEG_MANIFEST_PATH=$manifestPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Sign and publish Windows installer
         env:
@@ -268,4 +330,8 @@ jobs:
             apps/desktop/release-stage/dist/*-setup.exe.blockmap
             apps/desktop/release-stage/dist/latest.yml
             apps/desktop/release-stage/dist/builder-debug.yml
+            ${{ runner.temp }}/pwrsnap-ffmpeg-artifact/manifest.json
+            ${{ runner.temp }}/pwrsnap-ffmpeg-artifact/SOURCE-OFFER.txt
+            ${{ runner.temp }}/pwrsnap-ffmpeg-artifact/LGPL-NOTICE.txt
+            ${{ runner.temp }}/pwrsnap-ffmpeg-artifact/source/*
           retention-days: 30

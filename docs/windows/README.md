@@ -232,9 +232,15 @@ For a real signed Windows release, configure the protected GitHub
 
 - `WIN_CSC_LINK`
 - `WIN_CSC_KEY_PASSWORD`
-- `WINDOWS_FFMPEG_URL`
-- `WINDOWS_FFMPEG_SHA256`
+- `FFMPEG_BUILDS_PAT` with read access to the private
+  `pwrdrvr/pwrsnap-ffmpeg-builds` repository
 - optional `RELEASES_PAT`
+
+The release workflow downloads the pinned
+`ffmpeg-8.1.1-windows-x64` artifact from
+`pwrdrvr/pwrsnap-ffmpeg-builds`, verifies `manifest.json`, checks the
+binary SHA-256 from that manifest, and then stages `ffmpeg.exe` as
+`PwrSnapFFmpeg.exe`.
 
 Local release-mode packaging requires Authenticode credentials and a vetted
 FFmpeg path:

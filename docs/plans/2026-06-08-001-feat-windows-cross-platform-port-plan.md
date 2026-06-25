@@ -107,7 +107,7 @@ Cross-cutting:
 ### 🔜 Remaining before Windows is shippable
 
 - [ ] **Provision Windows signing environment** - create the protected `windows-signing` GitHub Environment and set `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` for an Authenticode certificate belonging to PwrDrvr LLC. EV is preferred for SmartScreen reputation, but the repo wiring accepts any valid Authenticode cert.
-- [ ] **Provision vetted Windows FFmpeg binary input** - set `WINDOWS_FFMPEG_URL` + `WINDOWS_FFMPEG_SHA256` in `windows-signing`. The URL must point at a legally-vetted LGPL `ffmpeg.exe`; the packager refuses to publish without it.
+- [ ] **Provision controlled Windows FFmpeg artifact access** - set `FFMPEG_BUILDS_PAT` in `windows-signing` with read access to `pwrdrvr/pwrsnap-ffmpeg-builds`. The release workflow consumes the pinned `ffmpeg-8.1.1-windows-x64` artifact and verifies `manifest.json` before bundling `PwrSnapFFmpeg.exe`.
 - [ ] **First signed Windows release smoke** - publish a prerelease tag, install the signed NSIS artifact on a clean Windows VM, verify `.pwrsnap` double-click, still capture, clipboard copy, and one update from prerelease to prerelease.
 - [ ] **Capture-trigger debounce** — observed one snap firing the capture pipeline 3× in ~600ms on Windows (global-shortcut key-repeat / double-bound trigger). Harmless today (only one persists) but wasteful and race-prone.
 - [ ] **Window picker doesn't highlight the Library window** — cosmetic; the picker works but the own-window highlight is missing.

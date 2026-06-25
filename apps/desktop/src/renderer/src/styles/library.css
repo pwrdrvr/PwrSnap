@@ -2379,6 +2379,12 @@
    single-capture export footer. */
 .psl__right-body--cart {
   height: 100%;
+  /* The cart is a self-contained panel — its header / list / footer carry
+     their own padding. The body's 14px wrapper padding would double-inset
+     it (a margin within a margin), so drop it here and let the cart own its
+     insets. */
+  padding: 0;
+  gap: 0;
 }
 
 .psl__preview {

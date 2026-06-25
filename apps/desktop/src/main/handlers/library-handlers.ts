@@ -49,7 +49,9 @@ import {
   relayCancellationToPeer,
   relayRendererEventToPeer
 } from "../process-split/event-relay";
+import { getRuntimeProcessRole } from "../process-role";
 import { activateForUserSurface } from "../process-split/activate-user-surface";
+import { signalLibraryWindowReady } from "../process-split/agent-bridge";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:library-handlers");
@@ -92,6 +94,9 @@ function bringLibraryForward(): {
   // window behind the user's frontmost app. No-op off-darwin and in
   // other roles.
   activateForUserSurface();
+  // Disarm the agent's cold-launch watchdog: this window is already
+  // loaded, so no `did-finish-load` will fire to signal readiness.
+  signalLibraryWindowReady();
   return { window: existing, justCreated: false };
 }
 
@@ -454,7 +459,12 @@ export function registerLibraryWindowHandlers(): void {
     // create one. Dock-icon show/hide is owned by the window's
     // `ready-to-show` / `closed` handlers — see createMainWindow in
     // ../window.ts.
+    // Cold-launch breadcrumbs are split-mode-only (this handler also runs
+    // in combined); single-process logs stay unchanged.
+    const splitDiag = getRuntimeProcessRole() === "library";
+    if (splitDiag) log.info("library:focus handler: begin");
     bringLibraryForward();
+    if (splitDiag) log.info("library:focus handler: done");
     return ok(undefined);
   });
 

@@ -17,6 +17,7 @@ import { getMainLogger } from "./log";
 import { attachRendererStartupProfiling } from "./startup-profiler";
 import { getRuntimeProcessRole } from "./process-role";
 import { activateForUserSurface } from "./process-split/activate-user-surface";
+import { signalLibraryWindowReady } from "./process-split/agent-bridge";
 import { showWindowWhenReady } from "./window-show";
 
 const log = getMainLogger("pwrsnap:window");
@@ -388,7 +389,23 @@ function instrumentLibraryLoadTiming(window: BrowserWindow): void {
   const id = window.id;
   wc.on("did-start-loading", () => log.info("library wc did-start-loading", { id, ms: ms() }));
   wc.on("dom-ready", () => log.info("library wc dom-ready", { id, ms: ms() }));
-  wc.once("did-finish-load", () => log.info("library wc did-finish-load", { id, ms: ms() }));
+  wc.once("did-finish-load", () => {
+    log.info("library wc did-finish-load", { id, ms: ms() });
+    // Cold-launch watchdog: tell the agent this window actually loaded
+    // so it disarms. No-op outside the library role.
+    signalLibraryWindowReady();
+  });
+  // DIAG (cold-launch race): a load that never starts/finishes is the
+  // split-mode black-window symptom — surface every failure mode.
+  wc.on("did-fail-load", (_e, code, desc, url) =>
+    log.warn("library wc did-fail-load", { id, ms: ms(), code, desc, url })
+  );
+  wc.on("did-fail-provisional-load", (_e, code, desc, url) =>
+    log.warn("library wc did-fail-provisional-load", { id, ms: ms(), code, desc, url })
+  );
+  wc.on("render-process-gone", (_e, details) =>
+    log.warn("library wc render-process-gone", { id, ms: ms(), reason: details.reason })
+  );
 }
 
 /**
@@ -402,6 +419,18 @@ function instrumentLibraryLoadTiming(window: BrowserWindow): void {
  * The app stays alive in the background via the tray.
  */
 export function createMainWindow(): BrowserWindow {
+  // Cold-launch diagnostics are split-mode-only: createMainWindow runs in
+  // BOTH combined and library roles, but the black-window stall this
+  // traces only exists when the library is a spawned child. Gating keeps
+  // single-process logs byte-for-byte unchanged.
+  const splitDiag = getRuntimeProcessRole() === "library";
+  if (splitDiag) {
+    // Synchronous breadcrumbs so a later main-thread stall still leaves
+    // a trail of how far boot got.
+    log.info("createMainWindow: entry", {
+      hasExisting: libraryWindow !== null && !libraryWindow.isDestroyed()
+    });
+  }
   if (libraryWindow !== null && !libraryWindow.isDestroyed()) {
     return libraryWindow;
   }
@@ -424,8 +453,18 @@ export function createMainWindow(): BrowserWindow {
   // before loadRenderer so script evaluation is in the profile.
   attachRendererStartupProfiling(window, "library");
 
-  loadRenderer(window, rendererTarget());
-  instrumentLibraryLoadTiming(window);
+  const target = rendererTarget();
+  if (splitDiag) {
+    log.info("createMainWindow: loading renderer", {
+      id: window.id,
+      kind: target.kind,
+      target: target.kind === "url" ? target.url : target.path
+    });
+  }
+  loadRenderer(window, target);
+  if (splitDiag) {
+    instrumentLibraryLoadTiming(window);
+  }
 
   // `showWindowWhenReady` handles the Linux `ready-to-show`
   // unreliability (see window-show.ts for the why); on macOS the
@@ -515,6 +554,9 @@ export function createMainWindow(): BrowserWindow {
   // (1, 1) does NOT re-enable. Range must be non-degenerate.
   window.webContents.setVisualZoomLevelLimits(1, 3);
 
+  if (splitDiag) {
+    log.info("createMainWindow: returning", { id: window.id });
+  }
   return window;
 }
 

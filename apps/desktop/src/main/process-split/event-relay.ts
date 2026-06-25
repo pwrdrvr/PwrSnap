@@ -14,6 +14,16 @@ type RendererEventForwarder = (channel: string, payload: unknown) => void;
 
 let forwarder: RendererEventForwarder | null = null;
 
+/**
+ * Internal control channel (NOT a renderer event): the library emits it
+ * over the bridge when its main window has actually finished loading, so
+ * the agent's cold-launch watchdog can disarm. The agent intercepts this
+ * channel and does NOT forward it to renderer windows. Distinct
+ * `pwrsnap:internal:` prefix so it can never collide with an
+ * `events:*` renderer channel.
+ */
+export const LIBRARY_WINDOW_READY_CHANNEL = "pwrsnap:internal:library-window-ready";
+
 export function installRendererEventForwarder(next: RendererEventForwarder): void {
   if (forwarder !== null) {
     throw new Error("event-relay: renderer event forwarder already installed");

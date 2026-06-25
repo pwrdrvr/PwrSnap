@@ -6,6 +6,7 @@
 
 import electronLog from "electron-log/main.js";
 import { inspect } from "node:util";
+import { parseProcessRoleFlag } from "./process-role";
 
 let initialized = false;
 let stdioErrorHandlersInstalled = false;
@@ -82,6 +83,26 @@ export function initializeMainLogger(): void {
     return;
   }
   initialized = true;
+
+  // Two-process split: the agent and library are separate Electron
+  // processes that share one app name → one logs dir. Left at the
+  // electron-log default both would append to (and rotate) the SAME
+  // `main.log` — interleaved lines, racing rotations. The library child
+  // is the only process spawned with an explicit role flag (the full
+  // role isn't resolved until later in bootstrap), so key off that: it
+  // writes to its own `library.log`. Combined/agent keep `main.log`.
+  const roleFlag = parseProcessRoleFlag(process.argv);
+  if (roleFlag === "library") {
+    electronLog.transports.file.fileName = "library.log";
+  }
+  // Short tag on the LIBRARY child's lines only, so interleaved
+  // dev-terminal output (both processes inherit one stdio) — and any
+  // concatenation of the two log files — is attributable at a glance.
+  // Combined/agent get NO tag: single-process mode keeps the exact
+  // pre-split line format, so turning the experiment off changes
+  // nothing about the logs.
+  const tagPrefix = roleFlag === "library" ? "lib " : "";
+
   installStdioErrorHandlers();
   guardConsoleTransport();
   electronLog.initialize();
@@ -100,7 +121,10 @@ export function initializeMainLogger(): void {
       const parts = message.data.map((d) =>
         typeof d === "string" ? d : inspect(d, { depth: 6, breakLength: 120, colors: false })
       );
-      return [`${message.date.toISOString().slice(11, 23)} (${message.scope ?? "?"})`, ...parts];
+      return [
+        `${message.date.toISOString().slice(11, 23)} ${tagPrefix}(${message.scope ?? "?"})`,
+        ...parts
+      ];
     };
   }
 }

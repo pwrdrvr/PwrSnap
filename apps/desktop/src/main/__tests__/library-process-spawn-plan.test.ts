@@ -10,7 +10,9 @@ vi.mock("../log", () => ({
   getMainLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })
 }));
 
-const { libraryProcessSpawnPlan } = await import("../process-split/library-process-supervisor");
+const { libraryProcessSpawnPlan, isLibraryWindowSpawnVerb } = await import(
+  "../process-split/library-process-supervisor"
+);
 
 describe("libraryProcessSpawnPlan", () => {
   test("packaged: relaunch our own binary with only the role flag", () => {
@@ -37,5 +39,23 @@ describe("libraryProcessSpawnPlan", () => {
       command: "/repo/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
       args: ["/repo/apps/desktop", "--pwrsnap-role=library"]
     });
+  });
+});
+
+describe("isLibraryWindowSpawnVerb (cold-launch watchdog arming)", () => {
+  test("arms for verbs that must produce a visible library main window", () => {
+    expect(isLibraryWindowSpawnVerb("library:focus")).toBe(true);
+    expect(isLibraryWindowSpawnVerb("library:openInLibrary")).toBe(true);
+    expect(isLibraryWindowSpawnVerb("editor:open")).toBe(true);
+  });
+
+  test("does NOT arm for non-window verbs (no watchdog → no false kill)", () => {
+    // Data/settings/etc. don't create the main window; a watchdog there
+    // would time out (no window-ready signal) and kill a healthy library.
+    expect(isLibraryWindowSpawnVerb("library:list")).toBe(false);
+    expect(isLibraryWindowSpawnVerb("settings:open")).toBe(false);
+    expect(isLibraryWindowSpawnVerb("settings:read")).toBe(false);
+    expect(isLibraryWindowSpawnVerb("app:openDocumentWindow")).toBe(false);
+    expect(isLibraryWindowSpawnVerb("capture:interactive")).toBe(false);
   });
 });

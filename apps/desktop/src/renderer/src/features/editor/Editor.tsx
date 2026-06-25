@@ -1423,6 +1423,28 @@ export function Editor({
     return { xn, yn };
   }
 
+  /** Like `clientToNormalized` but WITHOUT the in-bounds null check — a
+   *  multi-drag IN PROGRESS must keep tracking (and ultimately commit)
+   *  the cursor even when it leaves the canvas, because annotations are
+   *  allowed to sit partially/fully off the (cropped) viewport. Using the
+   *  clamped variant here froze the live preview at the edge and, worse,
+   *  made `onPointerUp` skip the commit when the cursor was released
+   *  outside the canvas — leaving a stale live-drag override that painted
+   *  the layer off-canvas, never clipped, and masked undo. Returns null
+   *  only when the canvas isn't mounted. */
+  function clientToNormalizedUnclamped(
+    clientX: number,
+    clientY: number
+  ): { xn: number; yn: number } | null {
+    const canvas = canvasRef.current;
+    if (canvas === null) return null;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      xn: (clientX - rect.left) / rect.width,
+      yn: (clientY - rect.top) / rect.height
+    };
+  }
+
   /** Translate normalized [0,1] coords back to canvas-pixel coords —
    *  used to anchor the matching-text affordance at the arrow's tail
    *  in the same coordinate space the canvas overlay renders in. */
@@ -1667,7 +1689,9 @@ export function Editor({
     // selected and the user is mid-shape).
     const multiDrag = multiDragStartRef.current;
     if (multiDrag !== null) {
-      const cur = clientToNormalized(event.clientX, event.clientY);
+      // Unclamped: the preview must follow the cursor past the canvas
+      // edge so the user can drag a layer (partially) off the viewport.
+      const cur = clientToNormalizedUnclamped(event.clientX, event.clientY);
       if (cur === null) return;
       const dxn = cur.xn - multiDrag.startXn;
       const dyn = cur.yn - multiDrag.startYn;
@@ -1812,43 +1836,51 @@ export function Editor({
         // Capture may have already been lost (window blur, etc.) —
         // best-effort release.
       }
-      const endPt = clientToNormalized(event.clientX, event.clientY);
-      if (endPt !== null) {
-        const dxn = endPt.xn - multiDrag.startXn;
-        const dyn = endPt.yn - multiDrag.startYn;
-        // No-drag threshold: a click without movement on a selected
-        // group should NOT commit a no-op translation onto every
-        // layer (which would push a noisy "moved by 0" undo entry
-        // and bump every row id via the supersede chain for nothing).
-        // Matches TransformHandles' MIN_DRAG_LENGTH-ish budget but
-        // in normalized coords so the threshold scales with canvas
-        // size. 0.002 ≈ 2px on a 1000px short-side canvas — tight
-        // enough that a deliberate drag always trips it.
-        const MIN_MULTI_DRAG_N = 0.002;
-        if (Math.hypot(dxn, dyn) >= MIN_MULTI_DRAG_N) {
-          const commit = commitMultiDragRef.current;
-          if (commit !== null) {
-            await commit(multiDrag.snapshots, dxn, dyn);
-          }
+      // Unclamped so a release OUTSIDE the canvas (the natural end of a
+      // drag-off-the-viewport gesture) still computes a delta and
+      // commits. With the clamped variant this returned null → the
+      // commit was skipped AND the override was left in place, stranding
+      // a ghost copy off-canvas that never clipped and masked undo.
+      const endPt = clientToNormalizedUnclamped(event.clientX, event.clientY);
+      if (endPt === null) {
+        // Canvas unmounted mid-drag — nothing to commit; drop the
+        // preview so we never strand a stale override.
+        setDraftGeometry(null);
+        return;
+      }
+      const dxn = endPt.xn - multiDrag.startXn;
+      const dyn = endPt.yn - multiDrag.startYn;
+      // No-drag threshold: a click without movement on a selected
+      // group should NOT commit a no-op translation onto every layer
+      // (which would push a noisy "moved by 0" undo entry and bump every
+      // row id via the supersede chain for nothing). Matches
+      // TransformHandles' MIN_DRAG_LENGTH-ish budget but in normalized
+      // coords so the threshold scales with canvas size. 0.002 ≈ 2px on
+      // a 1000px short-side canvas — tight enough that a deliberate drag
+      // always trips it.
+      const MIN_MULTI_DRAG_N = 0.002;
+      if (Math.hypot(dxn, dyn) >= MIN_MULTI_DRAG_N) {
+        const commit = commitMultiDragRef.current;
+        if (commit !== null) {
+          // Above threshold: commit, then LEAVE draftGeometry in place —
+          // the cleanup effect drops it once the persisted geometry
+          // catches up to the override (the broadcast refetch lands).
+          // Note v2 `updateGeometry` PRESERVES the layer id, so the
+          // cleanup keys on geometry match, NOT on the id disappearing —
+          // see pruneLandedDraftGeometry. Zero-flash pointerup →
+          // persisted state, same discipline as single-select drag's
+          // onHandleGeometryChange.
+          await commit(multiDrag.snapshots, dxn, dyn);
         } else {
-          // Under threshold — no commit, but the user may have moved
-          // PAST the threshold during the drag (setting the override
-          // via pointermove) and then back UNDER it before releasing.
-          // Clear the override now so the layers snap to their
-          // persisted positions — otherwise the override would
-          // linger at the last paint location until something else
-          // bumped the overlays list.
           setDraftGeometry(null);
         }
+      } else {
+        // Under threshold — no commit. The user may have moved PAST the
+        // threshold during the drag (setting the override) and then back
+        // UNDER it before releasing; clear the override so the layers
+        // snap to their persisted positions.
+        setDraftGeometry(null);
       }
-      // For above-threshold commits we LEAVE draftGeometry in place;
-      // the cleanup effect drops it once the persisted geometry catches
-      // up to the override (the broadcast refetch lands). Note v2
-      // `updateGeometry` PRESERVES the layer id, so the cleanup keys on
-      // geometry match, NOT on the id disappearing — see
-      // pruneLandedDraftGeometry. Zero-flash pointerup → persisted
-      // state, same discipline as single-select drag's
-      // onHandleGeometryChange.
       return;
     }
     if (draft === null) return;
@@ -4132,9 +4164,14 @@ function EditorLoaded({
   // formats. See draft-geometry.ts.
   useEffect(() => {
     if (draftGeometry === null) return;
-    const next = pruneLandedDraftGeometry(draftGeometry, overlays);
+    const next = pruneLandedDraftGeometry(
+      draftGeometry,
+      overlays,
+      record.width_px,
+      record.height_px
+    );
     if (next !== draftGeometry) setDraftGeometry(next);
-  }, [overlays, draftGeometry]);
+  }, [overlays, draftGeometry, record.width_px, record.height_px]);
 
   // Selected-overlay style edit handler — dispatched when the popover
   // is in selected-overlay mode (selectedOverlay is set). Mirrors the

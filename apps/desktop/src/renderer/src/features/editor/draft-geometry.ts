@@ -27,31 +27,48 @@
 import { readOverlayRotation, type Overlay, type OverlayRow } from "@pwrsnap/shared";
 import type { GeometryUpdate } from "./useCaptureModel";
 
-const GEOMETRY_EPSILON = 1e-6;
+// Per-axis tolerance in PIXELS. EFFECT layers (highlight / blur) persist
+// geometry as a `clip_rect` in absolute canvas pixels, so a committed
+// move round-trips through `round(normalized × dim)` and back — the
+// persisted normalized value differs from the override by up to ~0.5px.
+// A unitless epsilon (1e-6) is far too tight for that, so the override
+// for an effect layer NEVER matched and lingered forever (no clip,
+// masked undo). 1px of slack absorbs the rounding; it's still ~half the
+// no-drag threshold (0.002) so it never false-matches a real drag.
+const PIXEL_TOLERANCE = 1;
 
-function near(a: number, b: number): boolean {
-  return Math.abs(a - b) <= GEOMETRY_EPSILON;
+function makeNear(
+  canvasWidthPx: number,
+  canvasHeightPx: number
+): (a: number, b: number, axis: "x" | "y") => boolean {
+  const epsX = PIXEL_TOLERANCE / Math.max(1, canvasWidthPx);
+  const epsY = PIXEL_TOLERANCE / Math.max(1, canvasHeightPx);
+  return (a, b, axis) => Math.abs(a - b) <= (axis === "x" ? epsX : epsY);
 }
 
 /** True when a persisted overlay's geometry has caught up to a live-drag
  *  override — i.e. the drag committed AND the refetch landed, so the
  *  override is now a redundant no-op that must be dropped. Compares the
- *  positional fields the override carries, plus rotation when the
+ *  positional fields the override carries (with ~1px tolerance to absorb
+ *  the px round-trip of effect-layer clip_rects), plus rotation when the
  *  override specifies it (a rotation-only drag leaves position equal but
  *  changes the angle, so positions alone would clear the override too
  *  early). */
 export function overlayMatchesDraftGeometry(
   data: Overlay,
-  geom: GeometryUpdate
+  geom: GeometryUpdate,
+  canvasWidthPx: number,
+  canvasHeightPx: number
 ): boolean {
+  const near = makeNear(canvasWidthPx, canvasHeightPx);
   switch (geom.kind) {
     case "arrow":
       return (
         data.kind === "arrow" &&
-        near(data.from.x, geom.from.x) &&
-        near(data.from.y, geom.from.y) &&
-        near(data.to.x, geom.to.x) &&
-        near(data.to.y, geom.to.y)
+        near(data.from.x, geom.from.x, "x") &&
+        near(data.from.y, geom.from.y, "y") &&
+        near(data.to.x, geom.to.x, "x") &&
+        near(data.to.y, geom.to.y, "y")
       );
     case "rect": {
       // The `rect` geometry update targets shape / highlight / blur —
@@ -65,33 +82,36 @@ export function overlayMatchesDraftGeometry(
         return false;
       }
       if (
-        !near(data.rect.x, geom.rect.x) ||
-        !near(data.rect.y, geom.rect.y) ||
-        !near(data.rect.w, geom.rect.w) ||
-        !near(data.rect.h, geom.rect.h)
+        !near(data.rect.x, geom.rect.x, "x") ||
+        !near(data.rect.y, geom.rect.y, "y") ||
+        !near(data.rect.w, geom.rect.w, "x") ||
+        !near(data.rect.h, geom.rect.h, "y")
       ) {
         return false;
       }
       return (
         geom.rotation === undefined ||
-        near(readOverlayRotation(data), geom.rotation)
+        Math.abs(readOverlayRotation(data) - geom.rotation) <= 1e-4
       );
     }
     case "text": {
       if (data.kind !== "text") return false;
-      if (!near(data.point.x, geom.point.x) || !near(data.point.y, geom.point.y)) {
+      if (
+        !near(data.point.x, geom.point.x, "x") ||
+        !near(data.point.y, geom.point.y, "y")
+      ) {
         return false;
       }
       return (
         geom.rotation === undefined ||
-        near(readOverlayRotation(data), geom.rotation)
+        Math.abs(readOverlayRotation(data) - geom.rotation) <= 1e-4
       );
     }
     case "step":
       return (
         data.kind === "step" &&
-        near(data.point.x, geom.point.x) &&
-        near(data.point.y, geom.point.y)
+        near(data.point.x, geom.point.x, "x") &&
+        near(data.point.y, geom.point.y, "y")
       );
   }
 }
@@ -109,14 +129,18 @@ export function overlayMatchesDraftGeometry(
  *  null when the map empties. */
 export function pruneLandedDraftGeometry(
   draft: ReadonlyMap<string, GeometryUpdate>,
-  overlays: readonly OverlayRow[]
+  overlays: readonly OverlayRow[],
+  canvasWidthPx: number,
+  canvasHeightPx: number
 ): ReadonlyMap<string, GeometryUpdate> | null {
   const byId = new Map(overlays.map((row) => [row.id, row] as const));
   const next = new Map<string, GeometryUpdate>();
   for (const [id, geom] of draft) {
     const row = byId.get(id);
     if (row === undefined) continue; // row gone (v1 id churn)
-    if (overlayMatchesDraftGeometry(row.data, geom)) continue; // commit landed
+    if (overlayMatchesDraftGeometry(row.data, geom, canvasWidthPx, canvasHeightPx)) {
+      continue; // commit landed
+    }
     next.set(id, geom); // still bridging — keep painting the override
   }
   // `pruneLandedDraftGeometry` only ever DROPS entries, so an unchanged

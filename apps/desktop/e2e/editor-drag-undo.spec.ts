@@ -68,6 +68,95 @@ test("editor-drag-undo: moving a layer then ⌘Z returns the glyph to its origin
   }
 });
 
+test("editor-drag-undo: releasing a body-drag OUTSIDE the canvas still commits and clips (no ghost override)", async () => {
+  // Repro for the off-canvas drag bug: dragging a layer partially off
+  // the viewport means releasing the cursor outside the canvas. The
+  // clamped client→normalized helper returned null there, so the commit
+  // was skipped AND the live override was left in place — the layer
+  // never moved in DATA, but a ghost copy painted off-canvas, never
+  // clipped, and masked undo. Asserts the move COMMITS (geometry
+  // changes) and the glyph CLIPS (override cleared → overflow hidden).
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedCapture(app);
+    const win = await openFocus(app, captureId);
+
+    // A highlight lands as an EFFECT layer (clip_rect in px), which is
+    // exactly the case the px round-trip used to break — the override
+    // never matched the persisted clip_rect and lingered (no clip,
+    // masked undo).
+    await selectTool(win, "highlight");
+    await drawOnCanvas(win);
+    await expectLayerCount(app, captureId, 1);
+    const rectXBefore = await firstAnnotationX(app, captureId);
+    expect(rectXBefore).not.toBeNull();
+
+    // Select the layer and wait for the transform handles (confirms the
+    // selection landed before we start the body-drag).
+    await selectTool(win, "pointer");
+    const canvas = win.locator(".editor-canvas");
+    const cbox = await canvas.boundingBox();
+    expect(cbox).not.toBeNull();
+    if (cbox === null) return;
+    await win.mouse.click(cbox.x + cbox.width * 0.4, cbox.y + cbox.height * 0.4);
+    const body = win.locator('[data-testid="transform-handle-body"]');
+    await body.waitFor({ state: "visible", timeout: 5_000 });
+    const bbox = await body.boundingBox();
+    expect(bbox).not.toBeNull();
+    if (bbox === null) return;
+
+    // Drag the body to the right and release PAST the right edge — the
+    // cursor ends OUTSIDE the canvas.
+    const sx = bbox.x + bbox.width / 2;
+    const sy = bbox.y + bbox.height / 2;
+    await win.mouse.move(sx, sy);
+    await win.mouse.down();
+    await win.mouse.move(sx + cbox.width * 0.25, sy, { steps: 6 });
+    await win.mouse.move(cbox.x + cbox.width + 80, sy, { steps: 6 });
+    await win.mouse.up();
+
+    // The move committed — the layer's geometry actually changed (it was
+    // dragged well to the right), not left as a ghost override with the
+    // persisted data untouched.
+    await expect
+      .poll(async () => (await firstAnnotationX(app, captureId)) ?? -1e9)
+      .toBeGreaterThan(rectXBefore! + 0.05);
+
+    // And the glyph clips to the canvas — the override cleared, so the
+    // resting committed glyph renders overflow:hidden.
+    const glyph = win.locator('[data-testid="persisted-glyph-svg"]').first();
+    await glyph.waitFor({ state: "attached", timeout: 5_000 });
+    await expect(glyph).toHaveAttribute("overflow", "hidden");
+  } finally {
+    await app.close();
+  }
+});
+
+/** The x-position of the first drawn annotation — works whether it
+ *  landed as a VECTOR (shape.rect, normalized) or an EFFECT (clip_rect,
+ *  absolute px). Dragging it right increases x either way. Null until
+ *  the layer lands. */
+async function firstAnnotationX(
+  app: LaunchedApp,
+  captureId: string
+): Promise<number | null> {
+  const result = await app.dispatch("layers:list", { captureId });
+  if (!result.ok) return null;
+  for (const layer of result.value as Array<{
+    kind: string;
+    shape?: { rect?: { x: number } };
+    clip_rect?: { x: number } | null;
+  }>) {
+    if (layer.kind === "vector" && layer.shape?.rect !== undefined) {
+      return layer.shape.rect.x;
+    }
+    if (layer.kind === "effect" && layer.clip_rect != null) {
+      return layer.clip_rect.x;
+    }
+  }
+  return null;
+}
+
 /** Read an element's bounding box, polling until two consecutive reads
  *  agree — so we measure AFTER the dispatch → broadcast → refetch (and
  *  the override cleanup) have settled. */

@@ -107,9 +107,10 @@ export function validateCartCommitToNew(
 
 const MAX_EXPORT_IDS = 1000;
 
-/** `cart:exportZip` — `{ captureIds: string[]; preset; suggestedName? }`.
+/** `cart:exportZip` — `{ captureIds; preset; suggestedName?; jobId }`.
  *  Dedupes ids and caps cardinality so a runaway cart can't fan out into
- *  thousands of renders + a giant zip (disk-fill / OOM at the boundary). */
+ *  thousands of renders + a giant zip (disk-fill / OOM at the boundary).
+ *  `jobId` correlates progress broadcasts + the cancel verb. */
 export function validateCartExportZip(
   req: unknown
 ):
@@ -118,6 +119,7 @@ export function validateCartExportZip(
       captureIds: string[];
       preset: "low" | "med" | "high";
       suggestedName: string | undefined;
+      jobId: string;
     }
   | { ok: false; error: PwrSnapError } {
   if (!isRecord(req)) {
@@ -171,7 +173,29 @@ export function validateCartExportZip(
     }
     suggestedName = req.suggestedName.slice(0, 200);
   }
-  return { ok: true, captureIds, preset: req.preset, suggestedName };
+  if (typeof req.jobId !== "string" || req.jobId.length === 0 || req.jobId.length > 128) {
+    return {
+      ok: false,
+      error: validationError("jobId_invalid", "jobId must be a 1–128 character string")
+    };
+  }
+  return { ok: true, captureIds, preset: req.preset, suggestedName, jobId: req.jobId };
+}
+
+/** `cart:exportZip:cancel` — `{ jobId: string }`. */
+export function validateCartExportZipCancel(
+  req: unknown
+): { ok: true; jobId: string } | { ok: false; error: PwrSnapError } {
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  if (typeof req.jobId !== "string" || req.jobId.length === 0 || req.jobId.length > 128) {
+    return {
+      ok: false,
+      error: validationError("jobId_invalid", "jobId must be a 1–128 character string")
+    };
+  }
+  return { ok: true, jobId: req.jobId };
 }
 
 /** `cart:commitToExisting` — `{ projectId: string }`. */

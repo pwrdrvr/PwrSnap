@@ -177,6 +177,13 @@ export const EVENT_CHANNELS = {
    */
   cartChanged: "events:cart:changed",
   /**
+   * Main → every BrowserWindow: progress for an in-flight `cart:exportZip`.
+   * Correlated to the originating renderer by `jobId`. Drives the
+   * determinate bar + Cancel button in the Cart panel's Zip section.
+   * Type: `CartExportProgressEvent`.
+   */
+  cartExportProgress: "events:cart:export:progress",
+  /**
    * Main → every BrowserWindow: PwrSnap just changed the OS clipboard's
    * image contents (clipboard:copy, clipboard:copyLayerFragment, or
    * any future write). Fires AFTER the write completes so subscribers
@@ -396,6 +403,7 @@ export type PerfMarkPayload =
 
 import type {
   AiUsageThreadSurface,
+  CartExportProgressEvent,
   DraftCart,
   SizzleProject,
   SizzleRenderProgressEvent
@@ -459,6 +467,7 @@ export type EventPayloads = {
   [EVENT_CHANNELS.sizzleProjectsChanged]: { projects: SizzleProject[] };
   [EVENT_CHANNELS.sizzleRenderProgress]: SizzleRenderProgressEvent;
   [EVENT_CHANNELS.cartChanged]: { cart: DraftCart };
+  [EVENT_CHANNELS.cartExportProgress]: CartExportProgressEvent;
   [EVENT_CHANNELS.libraryChatThreadUpdated]: { thread: LibraryChatThreadView };
   [EVENT_CHANNELS.libraryChatStreamDelta]: LibraryChatStreamDeltaEvent;
   [EVENT_CHANNELS.libraryChatToolCall]: LibraryChatToolCallEvent;

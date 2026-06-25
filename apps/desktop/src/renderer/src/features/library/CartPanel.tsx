@@ -6,8 +6,14 @@ import {
   useState,
   type ReactElement
 } from "react";
-import type { CaptureRecord, CaptureEnrichment, RenderPreset } from "@pwrsnap/shared";
-import { cacheUrl, captureSrcUrl, dispatch } from "../../lib/pwrsnap";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import type {
+  CaptureRecord,
+  CaptureEnrichment,
+  CartExportProgressEvent,
+  RenderPreset
+} from "@pwrsnap/shared";
+import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
 import { formatBytes } from "../../lib/format-bytes";
 import { useCart } from "./CartContext";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
@@ -98,6 +104,17 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
   const [zipping, setZipping] = useState<RenderPreset | null>(null);
   const [zipError, setZipError] = useState<string | null>(null);
   const [zipNote, setZipNote] = useState<string | null>(null);
+  // Live progress for the in-flight export, fed by the main-side
+  // `cartExportProgress` broadcasts (matched by jobId). null until the
+  // first render beat arrives (the save dialog is still up before then).
+  const [zipProgress, setZipProgress] = useState<{
+    phase: "rendering" | "zipping";
+    completed: number;
+    total: number;
+  } | null>(null);
+  // The jobId of the export currently owned by THIS panel — gates which
+  // progress broadcasts we react to and what `Cancel` aborts.
+  const activeJobIdRef = useRef<string | null>(null);
   const listEndRef = useRef<HTMLLIElement | null>(null);
   const prevCountRef = useRef(cart.captureIds.length);
 
@@ -152,6 +169,29 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
     prevCountRef.current = cart.captureIds.length;
   }, [cart.captureIds.length]);
 
+
+  // Listen for export progress. Only the broadcast matching our active
+  // jobId moves the bar; a `done` beat (success / cancel / error) clears it.
+  useEffect(() => {
+    const unsubscribe = subscribe(EVENT_CHANNELS.cartExportProgress, (payload) => {
+      const ev = payload as CartExportProgressEvent | null;
+      if (ev === null || typeof ev !== "object" || ev.jobId !== activeJobIdRef.current) {
+        return;
+      }
+      if (ev.phase === "done") {
+        setZipProgress(null);
+        return;
+      }
+      setZipProgress({ phase: ev.phase, completed: ev.completed, total: ev.total });
+    });
+    return unsubscribe;
+  }, []);
+
+  const onCancelZip = useCallback(() => {
+    const jobId = activeJobIdRef.current;
+    if (jobId === null) return;
+    void dispatch("cart:exportZip:cancel", { jobId });
+  }, []);
 
   const onRemove = useCallback((captureId: string) => {
     void dispatch("cart:remove", { captureId });
@@ -209,16 +249,22 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
     (preset: RenderPreset) => {
       setZipError(null);
       setZipNote(null);
+      setZipProgress(null);
       setZipping(preset);
+      const jobId = crypto.randomUUID();
+      activeJobIdRef.current = jobId;
       // Seed the save filename from the first item's title if we have it.
       const firstRow = rowsById.get(cart.captureIds[0] ?? "");
       const suggestedName = firstRow !== undefined ? previewText(firstRow) : undefined;
       void dispatch("cart:exportZip", {
         captureIds: cart.captureIds,
         preset,
+        jobId,
         ...(suggestedName !== undefined ? { suggestedName } : {})
       }).then((r) => {
         setZipping(null);
+        setZipProgress(null);
+        activeJobIdRef.current = null;
         if (r.ok) {
           // Tell the user if some captures didn't make it into the zip.
           const leftOut = r.value.skipped + r.value.failed;
@@ -368,11 +414,41 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
               >
                 <span className="psl__cart-zip-label">{ZIP_PRESET_LABELS[p]}</span>
                 <span className="psl__cart-zip-size">
-                  {zipping === p ? "Zipping…" : `~${formatBytes(zipEstimates.totals[p])}`}
+                  {zipping !== p
+                    ? `~${formatBytes(zipEstimates.totals[p])}`
+                    : zipProgress !== null && zipProgress.phase === "rendering"
+                      ? `${zipProgress.completed}/${zipProgress.total}`
+                      : "Zipping…"}
                 </span>
               </button>
             ))}
           </div>
+          {zipping !== null ? (
+            <div className="psl__cart-zip-progress">
+              <div className="psl__cart-zip-bar" aria-hidden="true">
+                <div
+                  className="psl__cart-zip-bar-fill"
+                  style={{
+                    width:
+                      zipProgress === null
+                        ? "8%"
+                        : zipProgress.phase === "zipping"
+                          ? "100%"
+                          : `${Math.round(
+                              (zipProgress.completed / Math.max(1, zipProgress.total)) * 100
+                            )}%`
+                  }}
+                />
+              </div>
+              <button
+                type="button"
+                className="psl__cart-zip-cancel"
+                onClick={onCancelZip}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : null}
           {zipError !== null ? (
             <div className="psl__cart-zip-error" role="alert">
               {zipError}

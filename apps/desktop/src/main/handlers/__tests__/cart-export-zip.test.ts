@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, Result } from "@pwrsnap/shared";
 
 const mocks = vi.hoisted(() => ({
-  handlers: new Map<string, (req: unknown) => Promise<unknown>>(),
+  handlers: new Map<string, (req: unknown, ctx: unknown) => Promise<unknown>>(),
   getCaptureById: vi.fn<(id: string) => CaptureRecord | null>(),
   resolveImagePresetFile: vi.fn<(rec: CaptureRecord, preset: string) => Promise<{ path: string }>>(),
   showSaveDialog: vi.fn(),
@@ -30,7 +30,7 @@ vi.mock("electron", () => ({
 
 vi.mock("../../command-bus", () => ({
   bus: {
-    register: vi.fn((name: string, handler: (req: unknown) => Promise<unknown>) => {
+    register: vi.fn((name: string, handler: (req: unknown, ctx: unknown) => Promise<unknown>) => {
       mocks.handlers.set(name, handler);
     })
   }
@@ -104,10 +104,22 @@ function videoRecord(id: string): CaptureRecord {
 
 type ZipRes = { path: string; fileCount: number; byteSize: number; skipped: number; failed: number };
 
-async function callExportZip(req: unknown): Promise<Result<ZipRes>> {
+// The bus passes (req, ctx); the handler reads ctx.signal. A never-aborting
+// signal is the renderer-originated default (cart export carries no
+// cancellationKey), so cancellation rides the per-job controller instead.
+const neverAborts = { signal: new AbortController().signal } as unknown;
+
+async function callExportZip(req: Record<string, unknown>): Promise<Result<ZipRes>> {
   const handler = mocks.handlers.get("cart:exportZip");
   if (handler === undefined) throw new Error("handler not registered");
-  return (await handler(req)) as Result<ZipRes>;
+  const withJob = "jobId" in req ? req : { ...req, jobId: "job-1" };
+  return (await handler(withJob, neverAborts)) as Result<ZipRes>;
+}
+
+async function callCancel(jobId: string): Promise<Result<{ cancelled: boolean }>> {
+  const handler = mocks.handlers.get("cart:exportZip:cancel");
+  if (handler === undefined) throw new Error("cancel handler not registered");
+  return (await handler({ jobId }, neverAborts)) as Result<{ cancelled: boolean }>;
 }
 
 beforeEach(() => {
@@ -186,5 +198,43 @@ describe("cart:exportZip", () => {
     const r = await callExportZip({ captureIds: ["a"], preset: "med" });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("cancelled");
+  });
+
+  test("cancelling mid-render bails with cancelled and writes no zip", async () => {
+    mocks.getCaptureById.mockImplementation((id) => imageRecord(id));
+    let rendered = 0;
+    mocks.resolveImagePresetFile.mockImplementation(async () => {
+      rendered++;
+      // Abort the job while the first image is rendering. The loop's
+      // next-iteration checkpoint should bail before image 2.
+      if (rendered === 1) await callCancel("job-cancel");
+      return { path: "/cache/img.png" };
+    });
+    const r = await callExportZip({
+      captureIds: ["a", "b", "c"],
+      preset: "low",
+      jobId: "job-cancel"
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("cancelled");
+    expect(rendered).toBeLessThan(3); // stopped early
+    expect(mocks.rename).not.toHaveBeenCalled(); // no archive moved into place
+    expect(mocks.showItemInFolder).not.toHaveBeenCalled();
+  });
+
+  test("cancelling an unknown / finished job → cancelled: false", async () => {
+    const r = await callCancel("no-such-job");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.cancelled).toBe(false);
+  });
+
+  test("missing jobId → validation error (no dialog)", async () => {
+    mocks.getCaptureById.mockImplementation((id) => imageRecord(id));
+    const handler = mocks.handlers.get("cart:exportZip");
+    if (handler === undefined) throw new Error("handler not registered");
+    const r = (await handler({ captureIds: ["a"], preset: "low" }, neverAborts)) as Result<ZipRes>;
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("jobId_invalid");
+    expect(mocks.showSaveDialog).not.toHaveBeenCalled();
   });
 });

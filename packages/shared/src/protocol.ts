@@ -1022,6 +1022,25 @@ export type SizzleRenderProgressEvent = {
   error?: { code: string; message: string };
 };
 
+/**
+ * Main → every BrowserWindow during a `cart:exportZip`. The renderer that
+ * started the job (matched by `jobId`) shows a determinate bar + a Cancel
+ * button. `rendering` fires once per image as it's rasterized; `zipping`
+ * fires once the render loop finishes and the archive is being written;
+ * `done` is the terminal beat (the dispatch result carries the real
+ * outcome, so subscribers only need this to clear their UI).
+ */
+export type CartExportProgressPhase = "rendering" | "zipping" | "done";
+
+export type CartExportProgressEvent = {
+  jobId: string;
+  phase: CartExportProgressPhase;
+  /** Images rasterized so far (rendered + failed). */
+  completed: number;
+  /** Total images that survived the skip-filter. */
+  total: number;
+};
+
 export type SecretStatus = {
   configured: boolean;
   lastSetAt: string | null;
@@ -3470,6 +3489,12 @@ export type Commands = {
       preset: RenderPreset;
       /** Slug used as the default save filename (before .zip). */
       suggestedName?: string;
+      /**
+       * Renderer-minted id correlating this export to its progress
+       * broadcasts (`EVENT_CHANNELS.cartExportProgress`) and to a
+       * `cart:exportZip:cancel` for the same job.
+       */
+      jobId: string;
     };
     res: {
       path: string;
@@ -3480,6 +3505,16 @@ export type Commands = {
       /** Images that errored during render and were left out of the zip. */
       failed: number;
     };
+  };
+  /**
+   * Cancel an in-flight `cart:exportZip` by its `jobId`. The export bails
+   * at the next inter-render checkpoint and returns its own `cancelled`
+   * error; this verb just trips the abort. `cancelled` is false when no
+   * job by that id is running (already finished / unknown).
+   */
+  "cart:exportZip:cancel": {
+    req: { jobId: string };
+    res: { cancelled: boolean };
   };
 };
 

@@ -1818,6 +1818,41 @@
   font: 500 10px/1 var(--font-mono);
   color: var(--text-muted);
 }
+.psl__cart-zip-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.psl__cart-zip-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-panel-elevated);
+  overflow: hidden;
+}
+.psl__cart-zip-bar-fill {
+  height: 100%;
+  min-width: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 140ms var(--ease-out);
+}
+.psl__cart-zip-cancel {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-panel-elevated);
+  color: var(--text-secondary);
+  font: 600 10px/1 var(--font-sans);
+  cursor: pointer;
+  transition: background 100ms var(--ease-out), border-color 100ms var(--ease-out);
+}
+.psl__cart-zip-cancel:hover {
+  background: var(--bg-panel-hover);
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
 .psl__cart-zip-error {
   font: 500 11px/1.4 var(--font-sans);
   color: var(--danger-text);

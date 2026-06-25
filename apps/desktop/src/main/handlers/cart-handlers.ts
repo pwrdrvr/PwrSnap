@@ -18,6 +18,7 @@ import {
   err,
   ok,
   slugifyFilenameStem,
+  type CartExportProgressEvent,
   type CaptureRecord,
   type DraftCart,
   type EventPayloads,
@@ -38,11 +39,27 @@ import {
   validateCartCommitToExisting,
   validateCartCommitToNew,
   validateCartExportZip,
+  validateCartExportZipCancel,
   validateCartRename,
   validateCartReorder
 } from "./cart-validators";
 
 const log = getMainLogger("pwrsnap:cart-handlers");
+
+/**
+ * In-flight `cart:exportZip` jobs keyed by their renderer-minted `jobId`.
+ * `cart:exportZip:cancel` aborts the matching controller; the export loop
+ * checks `signal.aborted` between renders and bails. The handler deletes
+ * its own entry in a `finally`, so a stale id never accumulates.
+ */
+const exportJobs = new Map<string, AbortController>();
+
+function broadcastCartExportProgress(event: CartExportProgressEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    win.webContents.send(EVENT_CHANNELS.cartExportProgress, event);
+  }
+}
 
 function broadcastCartChanged(cart: DraftCart): void {
   const payload: EventPayloads[typeof EVENT_CHANNELS.cartChanged] = { cart };
@@ -222,7 +239,16 @@ export function registerCartHandlers(): void {
   // Export the cart's images as one Zip at a chosen preset size. Does NOT
   // mutate the cart (you can zip, then still build a reel from the same
   // selection). Image-only — videos/trashed/missing are skipped + counted.
-  bus.register("cart:exportZip", async (req) => {
+  bus.register("cart:exportZip:cancel", async (req) => {
+    const v = validateCartExportZipCancel(req);
+    if (!v.ok) return err(v.error);
+    const controller = exportJobs.get(v.jobId);
+    if (controller === undefined) return ok({ cancelled: false });
+    controller.abort();
+    return ok({ cancelled: true });
+  });
+
+  bus.register("cart:exportZip", async (req, ctx) => {
     const v = validateCartExportZip(req);
     if (!v.ok) return err(v.error);
 
@@ -279,12 +305,26 @@ export function registerCartHandlers(): void {
       `.${basename(destPath)}.tmp-${randomUUID().slice(0, 8)}`
     );
 
+    // Register the job so `cart:exportZip:cancel` can abort the render
+    // loop. Cancellation only covers the slow part (rendering + zip write);
+    // the save dialog above is window-modal, so the renderer can't reach
+    // the Cancel button until rendering starts. Honor the bus signal too,
+    // so a process-level cancel still bails.
+    const controller = new AbortController();
+    exportJobs.set(v.jobId, controller);
+    const isAborted = (): boolean => controller.signal.aborted || ctx.signal.aborted;
+    const total = records.length;
+
     try {
       const zip = new yazl.ZipFile();
       const usedNames = new Set<string>();
       let fileCount = 0;
       let failed = 0;
+      broadcastCartExportProgress({ jobId: v.jobId, phase: "rendering", completed: 0, total });
       for (const rec of records) {
+        if (isAborted()) {
+          return err({ kind: "validation", code: "cancelled", message: "Export cancelled" });
+        }
         try {
           // Renders use the default (legacy) export ladder — same mapping
           // the renderer's cart estimate uses, so the shown ~size matches
@@ -313,6 +353,17 @@ export function registerCartHandlers(): void {
             message: cause instanceof Error ? cause.message : String(cause)
           });
         }
+        broadcastCartExportProgress({
+          jobId: v.jobId,
+          phase: "rendering",
+          completed: fileCount + failed,
+          total
+        });
+      }
+      // A cancel that lands after the last render but before the write still
+      // counts — don't emit a zip the user asked to stop.
+      if (isAborted()) {
+        return err({ kind: "validation", code: "cancelled", message: "Export cancelled" });
       }
       if (fileCount === 0) {
         return err({
@@ -321,6 +372,7 @@ export function registerCartHandlers(): void {
           message: "Could not render any images for the Zip"
         });
       }
+      broadcastCartExportProgress({ jobId: v.jobId, phase: "zipping", completed: total, total });
 
       await new Promise<void>((resolve, reject) => {
         const ws = createWriteStream(tmpPath);
@@ -354,6 +406,11 @@ export function registerCartHandlers(): void {
         message: cause instanceof Error ? cause.message : String(cause)
       });
       return err({ kind: "render", code: "export_failed", message: "Could not build the Zip" });
+    } finally {
+      exportJobs.delete(v.jobId);
+      // Terminal beat — every window clears its progress UI regardless of
+      // outcome (the dispatch result carries the real success/cancel/error).
+      broadcastCartExportProgress({ jobId: v.jobId, phase: "done", completed: total, total });
     }
   });
 }

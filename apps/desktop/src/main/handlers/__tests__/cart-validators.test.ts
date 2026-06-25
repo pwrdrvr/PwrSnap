@@ -4,6 +4,7 @@ import {
   validateCartCommitToExisting,
   validateCartCommitToNew,
   validateCartExportZip,
+  validateCartExportZipCancel,
   validateCartRename,
   validateCartReorder
 } from "../cart-validators";
@@ -12,13 +13,15 @@ describe("validateCartExportZip", () => {
   it("accepts ids + a valid preset, dedupes ids", () => {
     const r = validateCartExportZip({
       captureIds: ["a", "b", "a"],
-      preset: "med"
+      preset: "med",
+      jobId: "job-1"
     });
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.captureIds).toEqual(["a", "b"]);
       expect(r.preset).toBe("med");
       expect(r.suggestedName).toBeUndefined();
+      expect(r.jobId).toBe("job-1");
     }
   });
 
@@ -26,10 +29,21 @@ describe("validateCartExportZip", () => {
     const r = validateCartExportZip({
       captureIds: ["a"],
       preset: "low",
-      suggestedName: "x".repeat(500)
+      suggestedName: "x".repeat(500),
+      jobId: "job-1"
     });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.suggestedName?.length).toBe(200);
+  });
+
+  it("rejects a missing / non-string jobId", () => {
+    expect(validateCartExportZip({ captureIds: ["a"], preset: "low" })).toMatchObject({
+      ok: false,
+      error: { code: "jobId_invalid" }
+    });
+    expect(
+      validateCartExportZip({ captureIds: ["a"], preset: "low", jobId: "" })
+    ).toMatchObject({ ok: false, error: { code: "jobId_invalid" } });
   });
 
   it("rejects empty / non-array captureIds", () => {
@@ -62,6 +76,29 @@ describe("validateCartExportZip", () => {
     expect(validateCartExportZip({ captureIds: ["a"], preset: "ultra" })).toMatchObject({
       ok: false,
       error: { code: "preset_invalid" }
+    });
+  });
+});
+
+describe("validateCartExportZipCancel", () => {
+  it("accepts a non-empty jobId", () => {
+    const r = validateCartExportZipCancel({ jobId: "job-1" });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.jobId).toBe("job-1");
+  });
+
+  it("rejects non-object / empty / over-long jobId", () => {
+    expect(validateCartExportZipCancel(null)).toMatchObject({
+      ok: false,
+      error: { code: "not_object" }
+    });
+    expect(validateCartExportZipCancel({ jobId: "" })).toMatchObject({
+      ok: false,
+      error: { code: "jobId_invalid" }
+    });
+    expect(validateCartExportZipCancel({ jobId: "x".repeat(129) })).toMatchObject({
+      ok: false,
+      error: { code: "jobId_invalid" }
     });
   });
 });

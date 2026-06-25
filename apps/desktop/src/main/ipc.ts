@@ -161,17 +161,27 @@ export function registerIpcDispatcher(): void {
       }
       if (event.sender.isDestroyed()) return;
 
-      const icon =
+      // The icon is the macOS drag cursor image. `iconPath` is the first
+      // cart image at FULL resolution — using it raw paints a giant,
+      // legible screenshot under the cursor (and if that capture is itself
+      // a screenshot of PwrSnap, it reads as a ghost of the app). Scale it
+      // down to a thumbnail, matching the single-capture drag (128px wide).
+      const raw =
         result.value.iconPath !== null
           ? nativeImage.createFromPath(result.value.iconPath)
           : nativeImage.createEmpty();
-      event.sender.startDrag({
-        file: result.value.path,
-        icon: icon.isEmpty() ? nativeImage.createEmpty() : icon
-      });
+      const icon = raw.isEmpty()
+        ? nativeImage.createEmpty()
+        : raw.resize({ width: CART_DRAG_ICON_WIDTH, quality: "better" });
+      event.sender.startDrag({ file: result.value.path, icon });
     })();
   });
 }
+
+/** Drag cursor thumbnail width for the cart Zip drag-out. Matches
+ *  `capture-handlers.ts::DRAG_ICON_WIDTH` so the image and cart drags show a
+ *  consistently-sized ghost instead of a full-resolution screenshot. */
+const CART_DRAG_ICON_WIDTH = 128;
 
 export function disposeIpcDispatcher(): void {
   ipcMain.removeHandler(IPC_CMD);

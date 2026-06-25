@@ -32,6 +32,7 @@ import os from "node:os";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { openEditor, selectTool } from "./fixtures/editor";
 
 test.setTimeout(90_000);
 
@@ -185,24 +186,6 @@ async function seedCapture(app: LaunchedApp): Promise<string> {
     { id: captureId, pngPath }
   );
   return captureId;
-}
-
-async function openEditor(app: LaunchedApp, captureId: string): Promise<Page> {
-  const result = await app.dispatch("editor:open", { captureId });
-  expect(result.ok, "editor:open should succeed").toBe(true);
-  const page = app.window;
-  await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
-  await page
-    .locator('.psl__edit-toolbar button[data-tool="arrow"]')
-    .waitFor({ state: "visible", timeout: 15_000 });
-  return page;
-}
-
-async function selectTool(win: Page, tool: string): Promise<void> {
-  await win.locator(`.psl__edit-toolbar button[data-tool="${tool}"]`).click();
-  await expect(
-    win.locator(`.psl__edit-toolbar button[data-tool="${tool}"].is-active`)
-  ).toHaveCount(1);
 }
 
 /**

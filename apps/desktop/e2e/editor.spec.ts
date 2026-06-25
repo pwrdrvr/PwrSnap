@@ -14,16 +14,14 @@
 // the v1 write path was deleted. The v2 layer-tree equivalent is
 // covered by the layers-handlers unit tests.
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { launchPwrSnap } from "./fixtures/electron-app";
+import { seedImageCapture } from "./fixtures/editor";
 
 test("editor:open opens the capture in Library Focus", async () => {
   const app = await launchPwrSnap();
   try {
-    const captureId = await seedCapture(app);
+    const captureId = await seedImageCapture(app, { idPrefix: "e2e", sourceAppName: "Editor Spec" });
 
     const before = app.electronApp.windows().length;
     const result = await app.dispatch("editor:open", { captureId });
@@ -54,60 +52,3 @@ test("editor:open opens the capture in Library Focus", async () => {
  * file, only insert the metadata. A real PNG header is used so any
  * accidental sharp probe in a future Phase 2 commit doesn't crash.
  */
-async function seedCapture(
-  app: Awaited<ReturnType<typeof launchPwrSnap>>
-): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-editor-spec-"));
-  const pngPath = path.join(dir, "fixture.png");
-  // 1×1 transparent PNG (smallest valid).
-  const pngBytes = Buffer.from(
-    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63000100000005000158d57340000000049454e44ae426082",
-    "hex"
-  );
-  await writeFile(pngPath, pngBytes);
-
-  const captureId = `e2e-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  await app.electronApp.evaluate(
-    (_electron, payload: { id: string; pngPath: string }) => {
-      const bridge = (
-        globalThis as unknown as {
-          __PWRSNAP_TEST__: {
-            seedCapture: (input: {
-              id: string;
-              kind: "image" | "video";
-              captured_at: string;
-              source_app_bundle_id: string | null;
-              source_app_name: string | null;
-              legacy_src_path: string | null;
-              width_px: number;
-              height_px: number;
-              device_pixel_ratio: number;
-              byte_size: number;
-              sha256: string;
-            }) => unknown;
-          };
-        }
-      ).__PWRSNAP_TEST__;
-      bridge.seedCapture({
-        id: payload.id,
-        kind: "image",
-        captured_at: new Date().toISOString(),
-        source_app_bundle_id: "com.test.spec",
-        source_app_name: "Editor Spec",
-        legacy_src_path: payload.pngPath,
-        width_px: 800,
-        height_px: 600,
-        device_pixel_ratio: 1,
-        byte_size: 70,
-        sha256: payload.id // unique sentinel, fine for tests
-      });
-    },
-    { id: captureId, pngPath }
-  );
-
-  // Best-effort tmpdir cleanup — the OS sweeps /tmp anyway, and a
-  // test that fails partway through shouldn't crash trying to clean
-  // up something it never used.
-  void rm; // satisfy unused-import lint without changing the surface
-  return captureId;
-}

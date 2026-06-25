@@ -13,14 +13,12 @@
 // Regression target: the outline used to size itself via
 // `canvas.measureText` with the `-apple-system` stack, which a 2D canvas
 // context resolves to a fallback font — so the box drifted from the
-// glyph (usually too wide). See
+// glyph (usually too wide on the right). See
 // docs/solutions/2026-06-25-text-selection-outline-measure-real-glyph.md.
 
-import { mkdtemp, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { expect, test, type Page } from "@playwright/test";
-import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { expect, test } from "@playwright/test";
+import { launchPwrSnap } from "./fixtures/electron-app";
+import { openEditor, seedImageCapture, selectTool } from "./fixtures/editor";
 
 // First spec cold-starts Electron; mirror the 90s bump used by the other
 // editor specs.
@@ -29,7 +27,10 @@ test.setTimeout(90_000);
 test("editor-text-outline: selection outline hugs the rendered glyph", async () => {
   const app = await launchPwrSnap();
   try {
-    const captureId = await seedCapture(app);
+    const captureId = await seedImageCapture(app, {
+      idPrefix: "text-outline",
+      sourceAppName: "Text Outline Spec"
+    });
     const win = await openEditor(app, captureId);
 
     // 1) Create a text annotation. The text tool turns a canvas
@@ -71,11 +72,14 @@ test("editor-text-outline: selection outline hugs the rendered glyph", async () 
     );
     await outline.waitFor({ state: "visible", timeout: 5_000 });
 
-    // 4) Measure both in screen px and compare. The outline is sized
-    //    from the glyph's measured box plus a small normalized pad
-    //    (0.006 of the canvas per edge ≈ a handful of screen px). So the
-    //    outline should be SLIGHTLY larger than the glyph and track it
-    //    tightly. The old drift made the box tens of px too wide.
+    // 4) Read both boxes in screen px. The outline is the glyph box plus
+    //    a SYMMETRIC pad (SelectionOutline does `x - pad`, `w + 2·pad`
+    //    with the same pad on every edge), so the two boxes share a
+    //    center. Comparing CENTERS is the load-bearing assertion: it's
+    //    independent of the exact pad value, robust to subpixel rounding
+    //    (half the noise of a per-edge inset), AND exactly what the old
+    //    bug broke — a mis-measured width pushed the RIGHT edge out while
+    //    the left edge stayed anchored, shifting the center sideways.
     const m = await win.evaluate(() => {
       const g = document.querySelector('[data-testid="text-glyph"]');
       const r = document.querySelector(
@@ -85,103 +89,43 @@ test("editor-text-outline: selection outline hugs the rendered glyph", async () 
       const gr = g.getBoundingClientRect();
       const rr = r.getBoundingClientRect();
       return {
-        glyphW: gr.width,
-        glyphH: gr.height,
-        outlineW: rr.width,
-        outlineH: rr.height
+        glyph: { left: gr.left, right: gr.right, top: gr.top, bottom: gr.bottom, w: gr.width, h: gr.height },
+        outline: { left: rr.left, right: rr.right, top: rr.top, bottom: rr.bottom }
       };
     });
     expect(m, "should read both boxes").not.toBeNull();
     if (m === null) return;
 
-    // Sanity: real, non-degenerate boxes.
-    expect(m.glyphW).toBeGreaterThan(20);
-    expect(m.glyphH).toBeGreaterThan(8);
+    // Sanity: a real, non-degenerate glyph.
+    expect(m.glyph.w).toBeGreaterThan(20);
+    expect(m.glyph.h).toBeGreaterThan(8);
 
-    // The outline covers the glyph (allow a couple px of subpixel slack)…
-    expect(m.outlineW).toBeGreaterThanOrEqual(m.glyphW - 3);
-    expect(m.outlineH).toBeGreaterThanOrEqual(m.glyphH - 3);
-    // …and hugs it — only the small pad larger, NOT the tens-of-px drift
-    // the fallback-font estimate produced. Width is the load-bearing
-    // assertion (the reported symptom was a too-wide box); height bound
-    // is a looser sanity check since the pad is relatively larger
-    // against a single line's height.
-    expect(m.outlineW).toBeLessThanOrEqual(m.glyphW * 1.2 + 14);
-    expect(m.outlineH).toBeLessThanOrEqual(m.glyphH * 1.6 + 14);
+    const leftInset = m.glyph.left - m.outline.left;
+    const rightInset = m.outline.right - m.glyph.right;
+    const topInset = m.glyph.top - m.outline.top;
+    const bottomInset = m.outline.bottom - m.glyph.bottom;
+
+    // The outline encloses the glyph on every edge (allow ~1.5px of
+    // subpixel slack).
+    for (const inset of [leftInset, rightInset, topInset, bottomInset]) {
+      expect(inset).toBeGreaterThan(-1.5);
+    }
+    // Centers coincide — the outline hugs the glyph with no directional
+    // drift. A mis-measured width (the old bug) shifts the outline center
+    // off the glyph center by half the width error (tens of px); subpixel
+    // rounding keeps the real delta ~1px, so 3px is tight but stable.
+    const glyphCx = (m.glyph.left + m.glyph.right) / 2;
+    const glyphCy = (m.glyph.top + m.glyph.bottom) / 2;
+    const outlineCx = (m.outline.left + m.outline.right) / 2;
+    const outlineCy = (m.outline.top + m.outline.bottom) / 2;
+    expect(Math.abs(outlineCx - glyphCx)).toBeLessThan(3);
+    expect(Math.abs(outlineCy - glyphCy)).toBeLessThan(3);
+    // Sanity: the pad is a small affordance, not a giant box (guards a
+    // uniform over-size that the center check alone would miss).
+    for (const inset of [leftInset, rightInset, topInset, bottomInset]) {
+      expect(inset).toBeLessThan(40);
+    }
   } finally {
     await app.close();
   }
 });
-
-// ---- helpers (mirror editor-tool-styles.spec.ts) --------------------
-
-async function seedCapture(app: LaunchedApp): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-text-outline-spec-"));
-  const pngPath = path.join(dir, "fixture.png");
-  // 1×1 transparent PNG.
-  const pngBytes = Buffer.from(
-    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63000100000005000158d57340000000049454e44ae426082",
-    "hex"
-  );
-  await writeFile(pngPath, pngBytes);
-
-  const captureId = `text-outline-${Date.now().toString(36)}-${Math.random()
-    .toString(36)
-    .slice(2, 8)}`;
-  await app.electronApp.evaluate(
-    (_electron, payload: { id: string; pngPath: string }) => {
-      const bridge = (
-        globalThis as unknown as {
-          __PWRSNAP_TEST__: {
-            seedCapture: (input: {
-              id: string;
-              kind: "image" | "video";
-              captured_at: string;
-              source_app_bundle_id: string | null;
-              source_app_name: string | null;
-              legacy_src_path: string | null;
-              width_px: number;
-              height_px: number;
-              device_pixel_ratio: number;
-              byte_size: number;
-              sha256: string;
-            }) => unknown;
-          };
-        }
-      ).__PWRSNAP_TEST__;
-      bridge.seedCapture({
-        id: payload.id,
-        kind: "image",
-        captured_at: new Date().toISOString(),
-        source_app_bundle_id: "com.test.spec",
-        source_app_name: "Text Outline Spec",
-        legacy_src_path: payload.pngPath,
-        width_px: 800,
-        height_px: 600,
-        device_pixel_ratio: 1,
-        byte_size: 70,
-        sha256: payload.id
-      });
-    },
-    { id: captureId, pngPath }
-  );
-  return captureId;
-}
-
-async function openEditor(app: LaunchedApp, captureId: string): Promise<Page> {
-  const result = await app.dispatch("editor:open", { captureId });
-  expect(result.ok, "editor:open should succeed").toBe(true);
-  const page = app.window;
-  await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
-  await page
-    .locator('.psl__edit-toolbar button[data-tool="text"]')
-    .waitFor({ state: "visible", timeout: 15_000 });
-  return page;
-}
-
-async function selectTool(win: Page, tool: string): Promise<void> {
-  await win.locator(`.psl__edit-toolbar button[data-tool="${tool}"]`).click();
-  await expect(
-    win.locator(`.psl__edit-toolbar button[data-tool="${tool}"].is-active`)
-  ).toHaveCount(1);
-}

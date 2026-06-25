@@ -139,6 +139,14 @@ describe("OverlaySvg text selection outline — measured glyph box", () => {
   // the analytic fallback.
   const OUTLINE_PAD_N = 0.006;
 
+  // The registry is module-level — clear the ids these tests touch so a
+  // seeded box can't leak into the analytic-fallback case (which asserts
+  // on the ABSENCE of a measurement) regardless of test order.
+  afterEach(() => {
+    clearGlyphSize("t_measured");
+    clearGlyphSize("t_analytic");
+  });
+
   test("outline width + height track the published measured box", async () => {
     reportGlyphSize("t_measured", { widthImagePx: 300, heightImagePx: 80 });
     try {

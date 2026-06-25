@@ -17,7 +17,8 @@ const mocks = vi.hoisted(() => ({
   rename: vi.fn<() => Promise<void>>(),
   rm: vi.fn<() => Promise<void>>(),
   stat: vi.fn<() => Promise<{ size: number }>>(),
-  mkdir: vi.fn<() => Promise<void>>()
+  mkdir: vi.fn<() => Promise<void>>(),
+  composeCartDragIcon: vi.fn<() => Promise<void>>()
 }));
 
 vi.mock("electron", () => ({
@@ -56,6 +57,7 @@ vi.mock("../../render/export-filename", () => ({
 vi.mock("../../render/image-presets", () => ({
   resolveImagePresetFile: mocks.resolveImagePresetFile
 }));
+vi.mock("../../render/cart-drag-icon", () => ({ composeCartDragIcon: mocks.composeCartDragIcon }));
 vi.mock("../../window", () => ({ findMainLibraryWindow: () => null }));
 // A Writable that swallows writes and auto-destroys (→ 'close') after the
 // pipe ends it. A PassThrough here would never drain its readable side, so
@@ -147,6 +149,8 @@ beforeEach(() => {
   mocks.rm.mockReset();
   mocks.stat.mockReset();
   mocks.mkdir.mockReset();
+  mocks.composeCartDragIcon.mockReset();
+  mocks.composeCartDragIcon.mockResolvedValue(undefined);
   mocks.showSaveDialog.mockResolvedValue({ canceled: false, filePath: "/out/export.zip" });
   mocks.resolveImagePresetFile.mockResolvedValue({ path: "/cache/img.png" });
   mocks.rename.mockResolvedValue(undefined);
@@ -264,11 +268,24 @@ describe("cart:prepareZipDrag (drag-out)", () => {
       expect(r.value.fileCount).toBe(2);
       expect(r.value.path).toContain("pwrsnap-cart-export");
       expect(r.value.path.endsWith("-med.zip")).toBe(true);
-      expect(r.value.iconPath).toBe("/cache/img.png"); // first rendered image
+      // Drag icon is the composed badge thumbnail, not the raw render.
+      expect(r.value.iconPath?.endsWith("-med-drag.png")).toBe(true);
     }
+    // Composed with the right image-count badge (2 images in the zip).
+    expect(mocks.composeCartDragIcon).toHaveBeenCalledWith(
+      expect.objectContaining({ imagePath: "/cache/img.png", count: 2 })
+    );
     // No save dialog on the drag path.
     expect(mocks.showSaveDialog).not.toHaveBeenCalled();
     expect(mocks.mkdir).toHaveBeenCalled();
+  });
+
+  test("falls back to the raw image when the badge compose throws", async () => {
+    mocks.getCaptureById.mockImplementation((id) => imageRecord(id));
+    mocks.composeCartDragIcon.mockRejectedValue(new Error("sharp boom"));
+    const r = await callPrepareDrag({ captureIds: ["a"], preset: "low" });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.iconPath).toBe("/cache/img.png"); // raw first render
   });
 
   test("all filtered out → nothing_to_export", async () => {

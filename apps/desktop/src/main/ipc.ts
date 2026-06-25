@@ -161,11 +161,12 @@ export function registerIpcDispatcher(): void {
       }
       if (event.sender.isDestroyed()) return;
 
-      // The icon is the macOS drag cursor image. `iconPath` is the first
-      // cart image at FULL resolution — using it raw paints a giant,
-      // legible screenshot under the cursor (and if that capture is itself
-      // a screenshot of PwrSnap, it reads as a ghost of the app). Scale it
-      // down to a thumbnail, matching the single-capture drag (128px wide).
+      // The icon is the macOS drag cursor image. The handler composes a
+      // badged thumbnail (cover photo + count badge + ZIP chip) at
+      // CART_DRAG_ICON_WIDTH; resizing to the same width is a no-op for it.
+      // The resize is the safety net for the rare fallback where iconPath is
+      // the raw first image at FULL resolution — without it that would paint
+      // a giant, legible screenshot (a ghost of the app) under the cursor.
       const raw =
         result.value.iconPath !== null
           ? nativeImage.createFromPath(result.value.iconPath)
@@ -178,10 +179,11 @@ export function registerIpcDispatcher(): void {
   });
 }
 
-/** Drag cursor thumbnail width for the cart Zip drag-out. Matches
- *  `capture-handlers.ts::DRAG_ICON_WIDTH` so the image and cart drags show a
- *  consistently-sized ghost instead of a full-resolution screenshot. */
-const CART_DRAG_ICON_WIDTH = 128;
+/** Drag cursor thumbnail width for the cart Zip drag-out — matches the
+ *  composed badge card in `render/cart-drag-icon.ts` (and the single-capture
+ *  drag's 128px ballpark), so the ghost is a tidy tile, never a full-res
+ *  screenshot. */
+const CART_DRAG_ICON_WIDTH = 160;
 
 export function disposeIpcDispatcher(): void {
   ipcMain.removeHandler(IPC_CMD);

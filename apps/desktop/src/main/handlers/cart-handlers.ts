@@ -32,6 +32,7 @@ import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-sto
 import { getCaptureById } from "../persistence/captures-repo";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 import { resolveImagePresetFile } from "../render/image-presets";
+import { composeCartDragIcon } from "../render/cart-drag-icon";
 import { exportFilenameStem } from "../render/export-filename";
 import { findMainLibraryWindow } from "../window";
 import { getMainLogger } from "../log";
@@ -497,7 +498,26 @@ export function registerCartHandlers(): void {
           message: "Could not render any images for the Zip"
         });
       }
-      return ok({ path: destPath, fileCount: result.fileCount, iconPath: result.firstPath });
+      // Compose the drag cursor thumbnail: first image as a cover photo with
+      // an orange count badge + ZIP chip. Best-effort — fall back to the raw
+      // first image (the IPC bridge still scales it down) if it can't build.
+      let iconPath = result.firstPath;
+      if (result.firstPath !== null) {
+        const iconDest = join(dir, `${baseName}-${v.preset}-drag.png`);
+        try {
+          await composeCartDragIcon({
+            imagePath: result.firstPath,
+            count: result.fileCount,
+            destPath: iconDest
+          });
+          iconPath = iconDest;
+        } catch (cause) {
+          log.warn("cart:prepareZipDrag: drag icon compose failed", {
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        }
+      }
+      return ok({ path: destPath, fileCount: result.fileCount, iconPath });
     } catch (cause) {
       log.warn("cart:prepareZipDrag failed", {
         message: cause instanceof Error ? cause.message : String(cause)

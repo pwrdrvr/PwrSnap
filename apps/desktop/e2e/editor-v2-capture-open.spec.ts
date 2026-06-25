@@ -24,8 +24,9 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { openEditor } from "./fixtures/editor";
 
 // First spec in this file cold-starts Electron; subsequent specs reuse
 // the warm pnpm-store cache. 90s mirrors editor-tool-styles.spec.ts.
@@ -172,15 +173,4 @@ async function seedCapture(
     }
   );
   return captureId;
-}
-
-async function openEditor(app: LaunchedApp, captureId: string): Promise<Page> {
-  const result = await app.dispatch("editor:open", { captureId });
-  expect(result.ok, "editor:open should succeed").toBe(true);
-  const page = app.window;
-  await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
-  await page
-    .locator('.psl__edit-toolbar button[data-tool="arrow"]')
-    .waitFor({ state: "visible", timeout: 15_000 });
-  return page;
 }

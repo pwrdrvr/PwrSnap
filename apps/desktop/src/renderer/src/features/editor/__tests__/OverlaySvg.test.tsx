@@ -14,6 +14,7 @@ import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
 
 import { OverlaySvg, TransformHandles } from "../OverlaySvg";
+import { clearGlyphSize, reportGlyphSize } from "../text-measure-registry";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -128,6 +129,67 @@ afterEach(async () => {
   container?.remove();
   container = null;
   root = null;
+});
+
+describe("OverlaySvg text selection outline — measured glyph box", () => {
+  // The dashed outline must hug the REAL rendered glyph extent (the box
+  // TextHtml measures + publishes), not a re-derived font-metric guess.
+  // jsdom can't lay out text (offsetWidth is 0), so seed the registry
+  // directly to prove the outline consumes the published box instead of
+  // the analytic fallback.
+  const OUTLINE_PAD_N = 0.006;
+
+  // The registry is module-level — clear the ids these tests touch so a
+  // seeded box can't leak into the analytic-fallback case (which asserts
+  // on the ABSENCE of a measurement) regardless of test order.
+  afterEach(() => {
+    clearGlyphSize("t_measured");
+    clearGlyphSize("t_analytic");
+  });
+
+  test("outline width + height track the published measured box", async () => {
+    reportGlyphSize("t_measured", { widthImagePx: 300, heightImagePx: 80 });
+    try {
+      const container = await renderOverlaySvg(
+        [textRow("t_measured", { body: "hello" })],
+        { imageWidthPx: 800, imageHeightPx: 600 },
+        { selectedLayerIds: ["t_measured"] }
+      );
+      const chrome = container.querySelector("[data-testid='chrome-svg']");
+      const outline = chrome?.querySelector("[data-testid='selection-outline']");
+      expect(outline).not.toBeNull();
+      const rect = outline!.querySelector("rect");
+      expect(rect).not.toBeNull();
+      // measured 300×80 image px, + OUTLINE_PAD_N on every edge:
+      //   w = (300/800 + 2·pad)·800 ; h = (80/600 + 2·pad)·600
+      const expectedW = (300 / 800 + OUTLINE_PAD_N * 2) * 800;
+      const expectedH = (80 / 600 + OUTLINE_PAD_N * 2) * 600;
+      expect(Number(rect!.getAttribute("width"))).toBeCloseTo(expectedW, 1);
+      expect(Number(rect!.getAttribute("height"))).toBeCloseTo(expectedH, 1);
+    } finally {
+      clearGlyphSize("t_measured");
+    }
+  });
+
+  test("falls back to the analytic box before any measurement lands", async () => {
+    // No reportGlyphSize for this id → analytic estimate. medium bucket
+    // on a 600px short side = 20px font; "hello" (5 chars) has no canvas
+    // measureText in jsdom, so width = 5·20·0.55 = 55px, height = 20px.
+    const container = await renderOverlaySvg(
+      [textRow("t_analytic", { body: "hello" })],
+      { imageWidthPx: 800, imageHeightPx: 600 },
+      { selectedLayerIds: ["t_analytic"] }
+    );
+    const chrome = container.querySelector("[data-testid='chrome-svg']");
+    const rect = chrome
+      ?.querySelector("[data-testid='selection-outline']")
+      ?.querySelector("rect");
+    expect(rect).not.toBeNull();
+    const analyticW = (55 / 800 + OUTLINE_PAD_N * 2) * 800;
+    const analyticH = (20 / 600 + OUTLINE_PAD_N * 2) * 600;
+    expect(Number(rect!.getAttribute("width"))).toBeCloseTo(analyticW, 1);
+    expect(Number(rect!.getAttribute("height"))).toBeCloseTo(analyticH, 1);
+  });
 });
 
 describe("OverlaySvg ArrowGlyph — endStyle", () => {

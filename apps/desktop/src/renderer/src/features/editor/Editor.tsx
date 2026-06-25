@@ -85,6 +85,7 @@ import {
   TEXT_BBOX_HIT_WIDTH_SLOP
 } from "./text-bbox-constants";
 import { measureTextWidthPx } from "./text-measure";
+import { getGlyphSize } from "./text-measure-registry";
 import { LayerContextMenu } from "./LayerContextMenu";
 import {
   buildLayerContextMenuItems,
@@ -888,26 +889,42 @@ export function hitTestOverlays(
       const lines = o.body.split("\n");
       const lineCount = Math.max(1, lines.length);
       const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 1);
-      // Measure the REAL advance width (same metric the selection outline
-      // now uses) so the click target tracks the glyph extent instead of
-      // a char-count guess that mis-sized wide-cap text like `Hi MOm`.
-      // The hit target stays intentionally MORE forgiving than the
-      // outline: TEXT_BBOX_HIT_WIDTH_SLOP widens the measured width so
-      // clicks landing just past the right edge still register (users
-      // pointing near the right side were misfiring on the empty space
-      // just past the glyph). Falls back to the char-count advance where
-      // a 2D canvas is unavailable (jsdom unit tests). Width floors at
-      // 1× fontSize so a 1-char line still has a reasonable click target.
-      const measuredWidthPx = measureTextWidthPx(
-        o.body,
-        sizePx,
-        readTextWeight(o)
-      );
-      const naturalWidthPx =
-        measuredWidthPx !== null
-          ? Math.max(sizePx, measuredWidthPx * TEXT_BBOX_HIT_WIDTH_SLOP)
-          : Math.max(sizePx, maxChars * sizePx * TEXT_BBOX_CHAR_ADVANCE_HIT);
-      const naturalHeightPx = sizePx * lineCount;
+      // Preferred path: the glyph's REAL measured box (canvas px),
+      // published by TextHtml — the same source the selection outline
+      // reads, so the click target covers exactly what the user sees.
+      // The width still gets TEXT_BBOX_HIT_WIDTH_SLOP for the same
+      // forgiveness as before (clicks just past the right edge register).
+      // Falls back to the canvas/char measurement below before the first
+      // measurement lands or in jsdom (no live DOM). See
+      // text-measure-registry.ts.
+      const glyphMeasured = getGlyphSize(row.id);
+      let naturalWidthPx: number;
+      let naturalHeightPx: number;
+      if (
+        glyphMeasured !== undefined &&
+        glyphMeasured.widthImagePx > 0 &&
+        glyphMeasured.heightImagePx > 0
+      ) {
+        naturalWidthPx = glyphMeasured.widthImagePx * TEXT_BBOX_HIT_WIDTH_SLOP;
+        naturalHeightPx = glyphMeasured.heightImagePx;
+      } else {
+        // Measure the REAL advance width (same metric the selection
+        // outline uses) so the click target tracks the glyph extent
+        // instead of a char-count guess that mis-sized wide-cap text like
+        // `Hi MOm`. Falls back to the char-count advance where a 2D
+        // canvas is unavailable (jsdom unit tests). Width floors at 1×
+        // fontSize so a 1-char line still has a reasonable click target.
+        const measuredWidthPx = measureTextWidthPx(
+          o.body,
+          sizePx,
+          readTextWeight(o)
+        );
+        naturalWidthPx =
+          measuredWidthPx !== null
+            ? Math.max(sizePx, measuredWidthPx * TEXT_BBOX_HIT_WIDTH_SLOP)
+            : Math.max(sizePx, maxChars * sizePx * TEXT_BBOX_CHAR_ADVANCE_HIT);
+        naturalHeightPx = sizePx * lineCount;
+      }
       // Box centered vertically on the anchor (matches the HTML
       // wrapper's `translateY(-50%)` layout); left edge at anchor.x.
       const boxXn = o.point.x;

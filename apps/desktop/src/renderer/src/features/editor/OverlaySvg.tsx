@@ -52,6 +52,10 @@ import { shapeStrokeGeometry } from "./shape-stroke-geometry";
 import { computeTextGlyphSize } from "@pwrsnap/shared";
 import { TEXT_BBOX_CHAR_ADVANCE_OUTLINE } from "./text-bbox-constants";
 import { measureTextWidthPx } from "./text-measure";
+import {
+  useGlyphSize,
+  type MeasuredGlyphSize
+} from "./text-measure-registry";
 
 /** Phase 3.3 — draft style overrides threaded from `useEditorToolState`.
  *  When the user picks "red" for the arrow tool, the draft preview
@@ -316,6 +320,7 @@ export function OverlaySvg({
           return (
             <SelectionOutline
               key={id}
+              overlayId={id}
               data={sel.data}
               imageWidthPx={imageWidthPx}
               imageHeightPx={imageHeightPx}
@@ -1088,7 +1093,14 @@ function textBoundsBox(
   imageWidthPx: number,
   imageHeightPx: number,
   sourceWidthPx: number,
-  sourceHeightPx: number
+  sourceHeightPx: number,
+  /** The glyph's REAL measured box (image px) published by TextHtml.
+   *  When present it wins outright — the outline/handles/hit-test then
+   *  hug exactly what Chromium laid out. Absent only on the very first
+   *  frame before the glyph's layout effect runs, and in jsdom unit
+   *  tests (no live DOM) — both fall back to the analytic estimate
+   *  below. See text-measure-registry.ts. */
+  measured?: MeasuredGlyphSize | undefined
 ): { x: number; y: number; w: number; h: number } {
   // MUST match the HTML rendering's metrics. TextHtml renders the
   // glyph as a `<div>` styled by `computeTextHtmlStyle`, which sets
@@ -1103,6 +1115,26 @@ function textBoundsBox(
   // outline ended up the wrong shape AND offset to the wrong vertical
   // position, drifting further with each added line. Visible
   // regression in the HTML-text unification commit.
+  // Preferred path: the glyph's REAL measured box. The DOM element is
+  // the single source of truth — its `offsetWidth`/`offsetHeight` already
+  // reflect the exact font, kerning, line-height, and multi-line layout
+  // Chromium produced, so no re-derivation can drift from it.
+  if (
+    measured !== undefined &&
+    measured.widthImagePx > 0 &&
+    measured.heightImagePx > 0
+  ) {
+    const naturalWidthPx = measured.widthImagePx;
+    const naturalHeightPx = measured.heightImagePx;
+    return {
+      x: data.point.x,
+      y: data.point.y - naturalHeightPx / 2 / imageHeightPx,
+      w: naturalWidthPx / imageWidthPx,
+      h: naturalHeightPx / imageHeightPx
+    };
+  }
+  // Analytic fallback — first paint (before the glyph's layout effect
+  // publishes) and jsdom unit tests (no live DOM to measure).
   const { sizePx: fontSizePx } = computeTextGlyphSize({
     size: data.size,
     sourceWidthPx,
@@ -1152,18 +1184,27 @@ function textBoundsBox(
  *  coords. The outline is a glyph (not interactive); the pointerdown
  *  handler in Editor.tsx owns selection clear / re-select. */
 function SelectionOutline({
+  overlayId,
   data,
   imageWidthPx,
   imageHeightPx,
   sourceWidthPx,
   sourceHeightPx
 }: {
+  /** Selected overlay's id — used to read the glyph's measured box from
+   *  the registry for text rows (other kinds ignore it). Subscribing
+   *  here re-renders the outline when the glyph re-measures after an
+   *  edit / resize. */
+  overlayId: string;
   data: OverlayRow["data"];
   imageWidthPx: number;
   imageHeightPx: number;
   sourceWidthPx: number;
   sourceHeightPx: number;
 }): ReactElement | null {
+  // Subscribe to this id's measured glyph box (text only; undefined for
+  // every other kind and until the first measurement lands).
+  const measuredGlyph = useGlyphSize(overlayId);
   // Derive a normalized bounding box for each overlay kind.
   let box: { x: number; y: number; w: number; h: number } | null = null;
   if (data.kind === "shape" || data.kind === "highlight" || data.kind === "blur") {
@@ -1210,7 +1251,14 @@ function SelectionOutline({
       </g>
     );
   } else if (data.kind === "text") {
-    box = textBoundsBox(data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx);
+    box = textBoundsBox(
+      data,
+      imageWidthPx,
+      imageHeightPx,
+      sourceWidthPx,
+      sourceHeightPx,
+      measuredGlyph
+    );
   } else if (data.kind === "crop") {
     box = data.rect;
   }
@@ -1609,7 +1657,11 @@ function geometryFromDrag(
   imageWidthPx: number,
   imageHeightPx: number,
   sourceWidthPx: number,
-  sourceHeightPx: number
+  sourceHeightPx: number,
+  /** Measured glyph box for text rows (image px). Used for the text
+   *  rotation pivot (body-box center) so it matches the outline +
+   *  rendered glyph exactly. */
+  measured?: MeasuredGlyphSize | undefined
 ): GeometryUpdate | null {
   // Rotation handle — compute the angle from the layer's pivot point.
   // Pivot:
@@ -1640,7 +1692,8 @@ function geometryFromDrag(
         imageWidthPx,
         imageHeightPx,
         sourceWidthPx,
-        sourceHeightPx
+        sourceHeightPx,
+        measured
       );
       pivotXn = box.x + box.w / 2;
       pivotYn = box.y + box.h / 2;
@@ -1994,14 +2047,27 @@ export function TransformHandles({
   }, [selectedOverlay.id]);
 
   const data = liveData ?? selectedOverlay.data;
+  // The selected glyph's REAL measured box (text rows only). Subscribing
+  // re-renders the handles when the glyph re-measures after an edit /
+  // resize so the body-hit rect + rotation handle track it. Undefined
+  // for non-text kinds and until the first measurement lands.
+  const measuredGlyph = useGlyphSize(selectedOverlay.id);
   // Bounding box for the body-hit rect AND the text-kind rotation
   // handle's position (computed from the same `data` snapshot the
   // handles use so the body + rotate handle follow during a live drag).
   // bodyBox MUST be computed before handles so handlesForOverlay can
   // read it.
   const bodyBox = useMemo(
-    () => bodyBoxForOverlay(data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx),
-    [data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx]
+    () =>
+      bodyBoxForOverlay(
+        data,
+        imageWidthPx,
+        imageHeightPx,
+        sourceWidthPx,
+        sourceHeightPx,
+        measuredGlyph
+      ),
+    [data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx, measuredGlyph]
   );
   const handles = useMemo(
     () => handlesForOverlay(data, bodyBox, imageWidthPx, imageHeightPx),
@@ -2072,7 +2138,8 @@ export function TransformHandles({
         imageWidthPx,
         imageHeightPx,
         sourceWidthPx,
-        sourceHeightPx
+        sourceHeightPx,
+        measuredGlyph
       );
       if (geometry === null) return;
       // Project the geometry onto a fresh data snapshot for live render.
@@ -2086,7 +2153,15 @@ export function TransformHandles({
       // `liveOverride`.
       onGeometryDrag?.(geometry);
     },
-    [clientToNormalized, onGeometryDrag, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx]
+    [
+      clientToNormalized,
+      onGeometryDrag,
+      imageWidthPx,
+      imageHeightPx,
+      sourceWidthPx,
+      sourceHeightPx,
+      measuredGlyph
+    ]
   );
 
   const onPointerUp = useCallback(
@@ -2153,7 +2228,8 @@ export function TransformHandles({
         imageWidthPx,
         imageHeightPx,
         sourceWidthPx,
-        sourceHeightPx
+        sourceHeightPx,
+        measuredGlyph
       );
       if (geometry !== null) {
         onGeometryChange(geometry);
@@ -2172,7 +2248,8 @@ export function TransformHandles({
       imageWidthPx,
       imageHeightPx,
       sourceWidthPx,
-      sourceHeightPx
+      sourceHeightPx,
+      measuredGlyph
     ]
   );
 
@@ -2367,7 +2444,11 @@ function bodyBoxForOverlay(
   imageWidthPx: number,
   imageHeightPx: number,
   sourceWidthPx: number,
-  sourceHeightPx: number
+  sourceHeightPx: number,
+  /** Measured glyph box for text rows (image px). Forwarded to
+   *  `textBoundsBox` so the body-hit rect + rotation handle hug the
+   *  real glyph. Ignored for non-text kinds. */
+  measured?: MeasuredGlyphSize | undefined
 ): { x: number; y: number; w: number; h: number } | null {
   if (data.kind === "shape" || data.kind === "highlight" || data.kind === "blur") {
     return data.rect;
@@ -2389,7 +2470,14 @@ function bodyBoxForOverlay(
     // size approximation that missed multi-line bodies or long
     // single-line text. The hit rect is fully transparent; the only
     // user-visible affordance is the SelectionOutline above.
-    return textBoundsBox(data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx);
+    return textBoundsBox(
+      data,
+      imageWidthPx,
+      imageHeightPx,
+      sourceWidthPx,
+      sourceHeightPx,
+      measured
+    );
   }
   if (data.kind === "step") {
     // Step keeps its small approximate box — no body length to

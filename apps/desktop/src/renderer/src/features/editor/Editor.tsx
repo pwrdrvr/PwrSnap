@@ -69,6 +69,7 @@ import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
 import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUndoRedo";
 import { decideClickSelection } from "./decideClickSelection";
+import { pruneLandedDraftGeometry } from "./draft-geometry";
 import {
   useCaptureModel,
   inverseCropRect,
@@ -1841,10 +1842,13 @@ export function Editor({
         }
       }
       // For above-threshold commits we LEAVE draftGeometry in place;
-      // the cleanup effect drops it once the broadcast lands and the
-      // new ids replace the OLD ones in `overlays` (zero-flash
-      // pointerup → persisted state, same discipline as
-      // single-select drag's onHandleGeometryChange).
+      // the cleanup effect drops it once the persisted geometry catches
+      // up to the override (the broadcast refetch lands). Note v2
+      // `updateGeometry` PRESERVES the layer id, so the cleanup keys on
+      // geometry match, NOT on the id disappearing — see
+      // pruneLandedDraftGeometry. Zero-flash pointerup → persisted
+      // state, same discipline as single-select drag's
+      // onHandleGeometryChange.
       return;
     }
     if (draft === null) return;
@@ -4083,17 +4087,18 @@ function EditorLoaded({
         setSelectionTrustingDispatch([newId]);
         // DON'T clear the live override here. Clearing immediately
         // produces a one-frame flash: at this point the dispatch has
-        // resolved but the events:layers:changed (or v2's
-        // events:layers:changed) broadcast hasn't reached this
-        // renderer yet, so `overlays` STILL contains the OLD row at
-        // its OLD geometry. A bare-list paint would show pre-drag
-        // position briefly, then snap to post-drag once the
-        // broadcast lands. Instead we leave the override in place
-        // (keyed to preDrag.id) so the OLD row keeps painting at
-        // the NEW geometry until the broadcast removes it; the
-        // override is then a visual no-op on the new row and the
-        // cleanup effect below drops it. End result: zero-flash
-        // pointerup → persisted state.
+        // resolved but the events:layers:changed broadcast hasn't
+        // reached this renderer yet, so `overlays` STILL contains the
+        // row at its OLD geometry. A bare-list paint would show the
+        // pre-drag position briefly, then snap to post-drag once the
+        // broadcast lands. Instead we leave the override in place (keyed
+        // to preDrag.id — which v2 PRESERVES across the updateGeometry)
+        // so the row keeps painting at the NEW geometry until the
+        // refetch lands; the cleanup effect below then drops the
+        // override once the persisted geometry MATCHES it (not when the
+        // id changes — it doesn't, under v2). End result: zero-flash
+        // pointerup → persisted state, and no stale override left to
+        // mask a later undo.
         if (!undoApplyingRef.current) {
           const previousGeometry = overlayDataToGeometry(preDrag.data);
           if (previousGeometry !== null) {
@@ -4109,36 +4114,26 @@ function EditorLoaded({
     [dispatchEdit, setSelectionTrustingDispatch, undo, undoApplyingRef]
   );
 
-  // Cleanup effect — drop the live override once the underlying row
-  // it's keyed to is no longer in the overlay list. That happens when
-  // the dispatcher's broadcast lands and the refetched list replaces
-  // the OLD row with the NEW one (different id, delete-plus-insert
-  // semantics). Without this the override would linger forever on a
-  // missing-id row, which is a no-op visually but slowly accumulates
-  // stale state across drags. Note: when both refetches happen in
-  // one tick (effect runs once with overlays = post-refetch list),
-  // the override is cleared in the same render the new row arrives —
-  // so the override paints on the OLD row in render N (no flash) and
-  // is cleaned up in render N+1.
+  // Cleanup effect — drop each live-drag override once the persisted
+  // geometry has CAUGHT UP to it (the commit landed via the broadcast
+  // refetch), OR the row it's keyed to is gone.
+  //
+  // The override is left in place at pointer-up so the row keeps
+  // painting at the dragged geometry until the refetch lands (no
+  // one-frame flash back to the pre-drag position). It must then be
+  // dropped — but the OLD signal ("the dragged row's id disappeared")
+  // only fired for v1's delete-plus-insert (new id). v2's
+  // `updateGeometry` PRESERVES the layer id, so id-presence never
+  // cleared the override: it lingered and MASKED the next undo/redo
+  // (the data reverted, the stale override kept painting the dragged
+  // position → glyph stuck, while the selection outline / handles /
+  // hit-test sat at the reverted position). `pruneLandedDraftGeometry`
+  // clears on geometry match instead, which is correct for both
+  // formats. See draft-geometry.ts.
   useEffect(() => {
     if (draftGeometry === null) return;
-    // After the broadcast refetch lands, every dispatched row gets a
-    // NEW id (delete-plus-insert), so the override's keys point at
-    // rows that no longer exist. We clear the override if NONE of
-    // its keys are still in `overlays` (the post-broadcast list has
-    // fully advanced past the burst). For a partially-landed
-    // broadcast (some new ids arrived, others pending), the override
-    // stays — each entry will be removed individually by future
-    // renderer projections naturally as their keys go missing.
-    const aliveIds = new Set(overlays.map((r) => r.id));
-    let anyStillThere = false;
-    for (const id of draftGeometry.keys()) {
-      if (aliveIds.has(id)) {
-        anyStillThere = true;
-        break;
-      }
-    }
-    if (!anyStillThere) setDraftGeometry(null);
+    const next = pruneLandedDraftGeometry(draftGeometry, overlays);
+    if (next !== draftGeometry) setDraftGeometry(next);
   }, [overlays, draftGeometry]);
 
   // Selected-overlay style edit handler — dispatched when the popover

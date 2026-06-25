@@ -43,7 +43,6 @@ import type {
   HighlightToolStyle,
   Overlay,
   OverlayRow,
-  OverlayThickness,
   PwrSnapError,
   Result,
   ShapeToolStyle,
@@ -55,7 +54,7 @@ import {
   DEFAULT_BLUR_STYLE,
   computeTextGlyphSize,
   matchBucket,
-  readOverlayThickness,
+  readShapeFilled,
   readShapeKind,
   readShapeSkewDeg,
   readHighlightOpacity,
@@ -65,6 +64,7 @@ import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor } from "./resolveToolColor";
+import { shapeStrokeGeometry } from "./shape-stroke-geometry";
 import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
 import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUndoRedo";
@@ -623,34 +623,6 @@ function projectV2LayersToOverlayRows(
  *  `imageDims` is omitted (legacy call sites + most tests), every
  *  overlay is tested in its unrotated frame — the historical
  *  behavior. */
-/** The OUTER reach (in the same px space as `shortSidePx`) from a
- *  stroked shape's PATH to the outside edge of the pixels it actually
- *  paints — half the colored stroke (the stroke is centered on the
- *  path) plus the white halo. Mirrors `ShapeGlyph` in OverlaySvg.tsx so
- *  the hit region tracks the visible line, not the bare path rect.
- *
- *  Without this, the hit test only covered the path rect: the outer
- *  half of the stroke and the whole halo were dead, so a thick-lined
- *  shape could only be grabbed by the thin inner sliver of its line
- *  (pwrdrvr/PwrSnap editor selection complaint). */
-export function shapeStrokeOuterReachPx(
-  thickness: OverlayThickness | undefined,
-  shortSidePx: number
-): number {
-  // Same auto band + thickness resolution ShapeGlyph uses.
-  const autoStrokeWidthPx = Math.min(
-    shortSidePx * 0.012,
-    Math.max(shortSidePx * 0.003, 8)
-  );
-  const strokeWidthPx = readOverlayThickness(
-    thickness,
-    autoStrokeWidthPx,
-    shortSidePx
-  );
-  const outline = Math.max(strokeWidthPx * 0.25, 1.5);
-  return strokeWidthPx / 2 + outline;
-}
-
 export function hitTestOverlays(
   overlays: OverlayRow[],
   xn: number,
@@ -760,15 +732,16 @@ export function hitTestOverlays(
       // forgiveness (the same Skitch/CleanShot-style slop arrows and
       // text already get). Reach needs the viewBox dims — when they're
       // absent (legacy callers) we still apply the forgiveness pad so
-      // selection stays generous. Highlight / blur are filled box
-      // regions with no stroke line, so they get the forgiveness pad
-      // only.
+      // selection stays generous. Highlight / blur (and FILLED shapes,
+      // which paint a solid body with no stroke line) have no outer
+      // stroke to reach for, so they get the forgiveness pad only.
+      const hasStrokeLine = o.kind === "shape" && !readShapeFilled(o);
       const strokeReachPx =
-        o.kind === "shape" && imageDims !== undefined
-          ? shapeStrokeOuterReachPx(
+        hasStrokeLine && imageDims !== undefined
+          ? shapeStrokeGeometry(
               o.thickness,
               Math.min(imageDims.widthPx, imageDims.heightPx)
-            )
+            ).outerReachPx
           : 0;
       const padXN =
         (imageDims !== undefined ? strokeReachPx / imageDims.widthPx : 0) +

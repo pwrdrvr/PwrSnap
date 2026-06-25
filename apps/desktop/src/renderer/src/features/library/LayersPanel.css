@@ -46,6 +46,18 @@
   opacity: 0.45;
 }
 
+/* Pinned base layers (Source + Crop) — visually set apart from the
+   reorderable annotations above, with a hairline separator at the top
+   of the group. They read as a fixed foundation, not a movable layer. */
+.psl-layers__row.is-base .psl-layers__label {
+  color: var(--text-muted);
+}
+.psl-layers__row.is-base-first {
+  margin-top: 5px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 9px;
+}
+
 .psl-layers__icon {
   flex: 0 0 auto;
   width: 16px;

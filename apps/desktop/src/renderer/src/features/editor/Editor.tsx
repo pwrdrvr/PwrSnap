@@ -3571,12 +3571,19 @@ function EditorLoaded({
         }
       },
       moveLayer: async (id, direction) => {
-        // Reorder over the FULL reorderable set (vector + effect),
-        // including hidden layers, sorted by z_index ASC — independent
-        // of the visible-filtered render snapshot the keyboard path
-        // uses. Same pure helpers (computeNewOrder / diffChanges).
+        // Reorder over the reorderable ANNOTATION set (vector except
+        // crop, plus effect), including hidden layers, sorted by z_index
+        // ASC — independent of the visible-filtered render snapshot the
+        // keyboard path uses. The raster (base image) and the crop
+        // (no-op viewport) are excluded: they're pinned base layers with
+        // no meaningful stacking position. Same pure helpers
+        // (computeNewOrder / diffChanges).
         const items = modelLayers
-          .filter((l) => l.kind === "vector" || l.kind === "effect")
+          .filter(
+            (l) =>
+              (l.kind === "vector" && l.shape.kind !== "crop") ||
+              l.kind === "effect"
+          )
           .slice()
           .sort((a, b) => a.z_index - b.z_index)
           .map((l) => ({ id: l.id }));

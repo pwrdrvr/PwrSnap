@@ -167,6 +167,22 @@ function isSpuriousCropArtifact(node: BundleLayerNode): boolean {
   return w > 1 || h > 1;
 }
 
+/** "Base" layers — the Source raster and the Crop viewport — have no
+ *  meaningful stacking position: the raster always composites FIRST (every
+ *  annotation paints on top of it) and crop is a no-op viewport. They're
+ *  pinned at the bottom of the list and aren't reorderable; an annotation
+ *  can never move "below" them (it would change the list order but not the
+ *  actual render — a no-op the panel shouldn't offer). */
+function isBaseLayer(node: BundleLayerNode): boolean {
+  return node.kind === "raster" || isCropLayer(node);
+}
+
+/** Order within the pinned base group: Crop just above Source, so the
+ *  Source image is the very bottom row (the foundation). */
+function baseRank(node: BundleLayerNode): number {
+  return isCropLayer(node) ? 0 : 1;
+}
+
 export function LayersPanel({
   captureId,
   selectedLayerIds,
@@ -176,14 +192,30 @@ export function LayersPanel({
 
   // Top-to-bottom = front-to-back: the topmost row paints last (highest
   // z_index). Groups are hidden — v2.0 only ever has the synthesized
-  // root group, which isn't a user-facing layer.
+  // root group, which isn't a user-facing layer. Annotations sort by
+  // z_index DESC; the base layers (Source + Crop) are pinned at the
+  // BOTTOM regardless of z_index so an annotation never appears below
+  // them (which would be a no-op — see isBaseLayer).
   const rows = useMemo<BundleLayerNode[]>(() => {
     if (model.kind !== "loaded") return [];
-    return model.layers
-      .filter((l) => l.kind !== "group" && !isSpuriousCropArtifact(l))
-      .slice()
+    const all = model.layers.filter(
+      (l) => l.kind !== "group" && !isSpuriousCropArtifact(l)
+    );
+    const annotations = all
+      .filter((l) => !isBaseLayer(l))
       .sort((a, b) => b.z_index - a.z_index);
+    const base = all
+      .filter(isBaseLayer)
+      .sort((a, b) => baseRank(a) - baseRank(b));
+    return [...annotations, ...base];
   }, [model]);
+
+  // Annotations occupy the first `annotationCount` rows; the base layers
+  // follow. Used to disable the reorder arrows at the stack boundaries.
+  const annotationCount = useMemo(
+    () => rows.filter((n) => !isBaseLayer(n)).length,
+    [rows]
+  );
 
   if (model.kind === "loading") {
     return <div className="psl-layers__empty">Loading layers…</div>;
@@ -197,13 +229,18 @@ export function LayersPanel({
 
   return (
     <div className="psl-layers" role="list" aria-label="Layers" data-testid="psl-layers">
-      {rows.map((node) => {
+      {rows.map((node, i) => {
         const id = node.id;
         const selected = selectedLayerIds.includes(id);
         const visible = node.visible !== false;
         const baseRaster = node.kind === "raster";
         const crop = isCropLayer(node);
+        const base = isBaseLayer(node);
         const selectable = isSelectable(node);
+        // Base layers can't be reordered; an annotation can't move above
+        // the top of the stack or below the base group (the wall).
+        const upDisabled = base || i === 0;
+        const downDisabled = base || i === annotationCount - 1;
         return (
           <div
             key={id}
@@ -211,11 +248,14 @@ export function LayersPanel({
             data-testid={`layer-row-${id}`}
             data-kind={node.kind}
             data-selected={selected}
+            data-base={base ? "true" : undefined}
             aria-selected={selected}
             className={[
               "psl-layers__row",
               selectable ? "is-selectable" : "",
               selected ? "is-selected" : "",
+              base ? "is-base" : "",
+              base && i === annotationCount ? "is-base-first" : "",
               visible ? "" : "is-hidden"
             ]
               .filter(Boolean)
@@ -253,7 +293,7 @@ export function LayersPanel({
                 data-testid={`layer-forward-${id}`}
                 aria-label="Bring forward"
                 title="Bring forward"
-                disabled={baseRaster}
+                disabled={upDisabled}
                 onClick={(e): void => {
                   e.stopPropagation();
                   void api?.moveLayer(id, "forward");
@@ -267,7 +307,7 @@ export function LayersPanel({
                 data-testid={`layer-backward-${id}`}
                 aria-label="Send backward"
                 title="Send backward"
-                disabled={baseRaster}
+                disabled={downDisabled}
                 onClick={(e): void => {
                   e.stopPropagation();
                   void api?.moveLayer(id, "backward");

@@ -147,20 +147,42 @@ afterEach(async () => {
 });
 
 describe("LayersPanel", () => {
-  test("hides the root group and orders rows front-to-back (z_index DESC)", async () => {
+  test("annotations on top (z_index DESC); Source + Crop pinned at the bottom", async () => {
+    // Arrow's z_index (100) is BELOW the crop's (1000) — by raw z-order it
+    // would sit under the crop. But Source + Crop are pinned base layers,
+    // so the annotation must appear ABOVE them, with Crop above Source.
     const el = await renderPanel(
-      [rootGroup(), raster(), arrow(), crop()],
+      [rootGroup(), raster(), arrow("ly_arrow", 100), crop()],
       makeApi()
     );
     const rows = Array.from(
       el.querySelectorAll<HTMLElement>('[data-testid^="layer-row-"]')
     );
-    // root group excluded → 3 rows; arrow (2000) > crop (1000) > raster (0).
     expect(rows.map((r) => r.dataset.testid)).toEqual([
       "layer-row-ly_arrow",
       "layer-row-ly_crop",
       "layer-row-ly_raster"
     ]);
+  });
+
+  test("reorder arrows are disabled on base layers and at the annotation walls", async () => {
+    // Two annotations + base. Top annotation: up disabled. Bottom
+    // annotation: down disabled. Base layers (crop, raster): both
+    // disabled — an annotation can never move below them.
+    const el = await renderPanel(
+      [rootGroup(), raster(), arrow("ly_top", 2000), arrow("ly_bottom", 1000), crop()],
+      makeApi()
+    );
+    const dis = (testid: string): boolean =>
+      (byId(el, testid) as HTMLButtonElement).disabled;
+    expect(dis("layer-forward-ly_top")).toBe(true); // top annotation, can't go up
+    expect(dis("layer-backward-ly_top")).toBe(false);
+    expect(dis("layer-forward-ly_bottom")).toBe(false);
+    expect(dis("layer-backward-ly_bottom")).toBe(true); // bottom annotation, can't cross base
+    for (const id of ["ly_crop", "ly_raster"]) {
+      expect(dis(`layer-forward-${id}`)).toBe(true);
+      expect(dis(`layer-backward-${id}`)).toBe(true);
+    }
   });
 
   test("hides no-op expand-crop artifacts (left behind by crop undo) but keeps real crops", async () => {
@@ -204,14 +226,19 @@ describe("LayersPanel", () => {
   });
 
   test("forward / backward buttons call moveLayer with the direction", async () => {
+    // Two annotations so the boundary arrows aren't disabled: click the
+    // bottom one's "forward" (enabled) and the top one's "backward".
     const api = makeApi();
-    const el = await renderPanel([rootGroup(), raster(), arrow()], api);
+    const el = await renderPanel(
+      [rootGroup(), raster(), arrow("ly_top", 2000), arrow("ly_bottom", 1000)],
+      api
+    );
     await act(async () => {
-      byId(el, "layer-forward-ly_arrow").click();
-      byId(el, "layer-backward-ly_arrow").click();
+      byId(el, "layer-forward-ly_bottom").click();
+      byId(el, "layer-backward-ly_top").click();
     });
-    expect(api.moveLayer).toHaveBeenNthCalledWith(1, "ly_arrow", "forward");
-    expect(api.moveLayer).toHaveBeenNthCalledWith(2, "ly_arrow", "backward");
+    expect(api.moveLayer).toHaveBeenNthCalledWith(1, "ly_bottom", "forward");
+    expect(api.moveLayer).toHaveBeenNthCalledWith(2, "ly_top", "backward");
   });
 
   test("row click selects (plain = replace, meta = additive); raster row doesn't select", async () => {

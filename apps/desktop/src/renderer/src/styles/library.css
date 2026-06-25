@@ -1636,8 +1636,17 @@
   border-radius: 999px;
   padding: 3px 7px;
 }
-/* Clear-all: empties the cart in one action (vs. removing items one at a
-   time). Subtle by default; reddens on hover to read as destructive. */
+.psl__cart-title {
+  font: 600 11px/1 var(--font-sans);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.psl__cart-header-spacer {
+  flex: 1;
+}
+/* Clear: empties the cart in one action (vs. removing items one at a
+   time). Does NOT delete the captures. Subtle until hover. */
 .psl__cart-clear {
   flex-shrink: 0;
   font: 600 11px/1 var(--font-sans);
@@ -1682,6 +1691,14 @@
      bleed past the right edge (the "cart dimensions" bug). This lets
      the row shrink so `.psl__cart-body`'s ellipsis engages. */
   min-width: 0;
+}
+/* Clickable to jump back to the capture in the grid (select + scroll). */
+.psl__cart-item.is-jumpable {
+  cursor: pointer;
+}
+.psl__cart-item.is-jumpable:hover {
+  border-color: var(--border-subtle);
+  background: var(--bg-panel-hover);
 }
 .psl__cart-item:hover { background: var(--bg-panel-hover); }
 .psl__cart-item:active { cursor: grabbing; }
@@ -1767,6 +1784,14 @@
 }
 .psl__cart-btn--primary:hover:not(:disabled) {
   background: var(--accent-bright, var(--accent));
+}
+/* Destructive action (Move to Trash) — neutral until hover, then reddens. */
+.psl__cart-btn--danger {
+  color: var(--danger-text);
+}
+.psl__cart-btn--danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger-text) 40%, transparent);
 }
 .psl__cart-add-existing { position: relative; }
 .psl__cart-picker {

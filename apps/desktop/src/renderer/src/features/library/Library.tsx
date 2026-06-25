@@ -2216,6 +2216,12 @@ export function Library() {
   // VirtualizedGrid (it measures the container) and mirrored here.
   const dayIdGroupsRef = useRef<string[][]>([]);
   const cellsPerRowRef = useRef<number>(4);
+  // Imperative scroll handle published by VirtualizedGrid (it owns the
+  // virtualizer). Lets "jump to a cart item" bring an off-screen cell
+  // into view. `cartJumpTargetRef` holds a pending jump until the cell
+  // exists (after a filter drop / re-fetch).
+  const gridScrollApiRef = useRef<GridScrollApi | null>(null);
+  const cartJumpTargetRef = useRef<string | null>(null);
   useEffect(() => {
     prevRecordIdRef.current = prevRecordId;
   }, [prevRecordId]);
@@ -2235,6 +2241,42 @@ export function Library() {
         .filter((id): id is string => id != null)
     );
   }, [grouped, fixtureBacking]);
+
+  // Jump the grid to a collected cart item: return to Grid, drop the
+  // filter/search if the item isn't in the current visible set, select
+  // it, then defer the scroll until the cell actually exists (the
+  // pending-target effect below runs it once the grid reflects any
+  // re-filter / re-fetch).
+  const jumpToCapture = useCallback((captureId: string): void => {
+    const cur = viewRef.current;
+    if (cur.kind === "focus") {
+      viewDispatch({ type: "CLOSE_FOCUS" });
+    } else if (cur.kind === "reel") {
+      viewDispatch({ type: "TOGGLE_VIEW", to: "grid", fallbackId: null });
+    }
+    if (!dayIdGroupsRef.current.flat().includes(captureId)) {
+      setActiveFilter({ kind: "all" });
+      setSearchQuery("");
+    }
+    viewDispatch({ type: "SELECT_IN_GRID", recordId: captureId }, { history: "replace" });
+    cartJumpTargetRef.current = captureId;
+  }, [viewDispatch]);
+
+  useEffect(() => {
+    const target = cartJumpTargetRef.current;
+    if (target === null || view.kind !== "grid") return;
+    // scrollToId returns false until the row exists (records still
+    // loading after a filter drop) — keep the pending target and retry on
+    // the next records/grouped change.
+    const found = gridScrollApiRef.current?.scrollToId(target) ?? false;
+    if (!found) return;
+    cartJumpTargetRef.current = null;
+    requestAnimationFrame(() => {
+      gridScrollRef.current
+        ?.querySelector(`[data-cell-id="${target}"]`)
+        ?.scrollIntoView({ block: "center" });
+    });
+  }, [view, records]);
   useEffect(() => {
     function onKey(event: KeyboardEvent): void {
       // ⌘F — focus the library search input. Runs BEFORE the
@@ -3187,6 +3229,7 @@ export function Library() {
             scrollElement={gridScrollRef}
             cellMinWidth={gridZoom}
             cellsPerRowRef={cellsPerRowRef}
+            scrollApiRef={gridScrollApiRef}
             selectedRecordId={selectedRecordId}
             fixtureBacking={fixtureBacking}
             projectCoverRecordsById={projectCoverRecordsById}
@@ -3415,6 +3458,7 @@ export function Library() {
         onTrash={deleteCaptureById}
         confirmBeforeTrash={confirmBeforeTrash}
         onDontAskAgainTrash={suppressTrashConfirm}
+        onCartJumpTo={jumpToCapture}
       />
 
       {/* Capture soft-delete Undo toast — lower-left, in the shared
@@ -3633,6 +3677,12 @@ type LibraryRow =
       isLastInDay: boolean;
     };
 
+type GridScrollApi = {
+  /** Scroll the (possibly virtualized-out) cell for `captureId` into
+   *  view. Returns false when no row matches (e.g. not loaded yet). */
+  scrollToId: (captureId: string) => boolean;
+};
+
 type VirtualizedGridProps = {
   grouped: DayGroup[];
   scrollElement: React.RefObject<HTMLDivElement | null>;
@@ -3642,6 +3692,9 @@ type VirtualizedGridProps = {
   /** Mirrors the measured cells-per-row up to Library so the keyboard
    *  grid-nav (↑/↓ by a row) can read it without re-measuring. */
   cellsPerRowRef: React.RefObject<number>;
+  /** VirtualizedGrid publishes its imperative scroll handle here so
+   *  Library can jump to an off-screen capture (cart item click). */
+  scrollApiRef: React.RefObject<GridScrollApi | null>;
   selectedRecordId: string | null;
   fixtureBacking: FixtureBackedRecords;
   projectCoverRecordsById: Map<string, CaptureRecord>;
@@ -3792,6 +3845,7 @@ function VirtualizedGrid({
   scrollElement,
   cellMinWidth,
   cellsPerRowRef,
+  scrollApiRef,
   selectedRecordId,
   fixtureBacking,
   projectCoverRecordsById,
@@ -3913,6 +3967,30 @@ function VirtualizedGrid({
   // generous enough that the next page lands before the user runs
   // out of rendered rows.
   const items = virtualizer.getVirtualItems();
+
+  // Publish an imperative scroll handle so Library can jump to an
+  // off-screen capture (cart item click): find the flat-row index whose
+  // cells include the capture, then scroll the virtualizer to it.
+  const scrollToId = useCallback(
+    (captureId: string): boolean => {
+      const idx = flatRows.findIndex(
+        (row) =>
+          row.kind === "cells" &&
+          row.cells.some((c) => fixtureBacking.recordFor(c.id)?.id === captureId)
+      );
+      if (idx < 0) return false;
+      virtualizer.scrollToIndex(idx, { align: "center" });
+      return true;
+    },
+    [flatRows, fixtureBacking, virtualizer]
+  );
+  useEffect(() => {
+    scrollApiRef.current = { scrollToId };
+    return () => {
+      scrollApiRef.current = null;
+    };
+  }, [scrollToId, scrollApiRef]);
+
   const lastItem = items[items.length - 1];
   useEffect(() => {
     if (!hasMore || isLoadingMore) return;

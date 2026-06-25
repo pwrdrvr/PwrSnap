@@ -108,6 +108,9 @@ export type DetailRailProps = {
   /** Flip `library.confirmBeforeTrash` off — wired to the popover's
    *  "Don't ask again". */
   readonly onDontAskAgainTrash?: () => void;
+  /** Jump the grid to a cart item (select + scroll). Threaded to the
+   *  CartPanel so clicking a collected item navigates back to it. */
+  readonly onCartJumpTo?: (captureId: string) => void;
 };
 
 export function DetailRail({
@@ -120,7 +123,8 @@ export function DetailRail({
   onActiveTabChange,
   onTrash,
   confirmBeforeTrash = true,
-  onDontAskAgainTrash
+  onDontAskAgainTrash,
+  onCartJumpTo
 }: DetailRailProps): ReactElement | null {
   // Skip the image render-metrics IPC for video captures — the
   // sharp-based preset pipeline is image-only and the video branch
@@ -537,7 +541,7 @@ export function DetailRail({
             onPinChange={writePinned}
             renderPanel={() => (
               <div className="psl__right-body">
-                <CartPanel />
+                <CartPanel onJumpTo={onCartJumpTo} />
               </div>
             )}
             testIdPrefix="psl-right"
@@ -649,7 +653,7 @@ export function DetailRail({
       // useDraftCart and doesn't need the selected record.
       return (
         <div className="psl__right-body">
-          <CartPanel />
+          <CartPanel onJumpTo={onCartJumpTo} />
         </div>
       );
     }

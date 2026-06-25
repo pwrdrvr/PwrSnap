@@ -9,6 +9,14 @@ import type { CaptureRecord, CaptureEnrichment } from "@pwrsnap/shared";
 import { cacheUrl, captureSrcUrl, dispatch } from "../../lib/pwrsnap";
 import { useCart } from "./CartContext";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
+import { DeleteConfirm } from "../shared/DeleteConfirm";
+
+export interface CartPanelProps {
+  /** Jump the grid to a collected capture (select it + scroll it into
+   *  view, dropping the active filter if needed). Provided by Library;
+   *  omitted in isolation. */
+  readonly onJumpTo?: ((captureId: string) => void) | undefined;
+}
 
 // The Project Asset Cart panel. Renders the single global draft cart:
 // an editable name, the ordered list of collected captures (thumbnail
@@ -56,7 +64,7 @@ function previewText(row: CartRow): string {
   return "Untitled capture";
 }
 
-export function CartPanel(): ReactElement {
+export function CartPanel({ onJumpTo }: CartPanelProps = {}): ReactElement {
   const cart = useCart();
   const { projects } = useSizzleProjects();
   // Hydrated capture metadata for the cart's ids, keyed by captureId.
@@ -118,45 +126,20 @@ export function CartPanel(): ReactElement {
     prevCountRef.current = cart.captureIds.length;
   }, [cart.captureIds.length]);
 
-  // Rename: local-state input + debounced dispatch (M1). The input is
-  // uncontrolled-by-IPC — it tracks `nameDraft` locally so fast typing
-  // never fights the async broadcast round-trip (the controlled-input
-  // cursor race the sizzle composer already hit). We dispatch
-  // `cart:rename` 350ms after the last keystroke, and flush on blur so
-  // the rename always persists even if the user tabs away quickly.
-  const [nameDraft, setNameDraft] = useState(cart.name);
-  const renameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Sync the draft from external cart.name changes (another window
-  // renamed, or our own debounced dispatch landed). Safe mid-typing:
-  // the debounce means cart.name doesn't change until 350ms after the
-  // last keystroke, so this never clobbers in-flight input.
-  useEffect(() => {
-    setNameDraft(cart.name);
-  }, [cart.name]);
-  const flushRename = useCallback((value: string) => {
-    if (renameTimerRef.current !== null) clearTimeout(renameTimerRef.current);
-    renameTimerRef.current = null;
-    void dispatch("cart:rename", { name: value });
-  }, []);
-  const onNameChange = useCallback((value: string) => {
-    setNameDraft(value);
-    if (renameTimerRef.current !== null) clearTimeout(renameTimerRef.current);
-    renameTimerRef.current = setTimeout(() => {
-      renameTimerRef.current = null;
-      void dispatch("cart:rename", { name: value });
-    }, 350);
-  }, []);
-  // Flush any pending rename on unmount so a fast switch-away persists.
-  useEffect(
-    () => () => {
-      if (renameTimerRef.current !== null) clearTimeout(renameTimerRef.current);
-    },
-    []
-  );
 
   const onRemove = useCallback((captureId: string) => {
     void dispatch("cart:remove", { captureId });
   }, []);
+
+  const onTrashAll = useCallback(() => {
+    // Move every collected capture to Trash (a soft-delete, recoverable
+    // from the Trash filter), then empty the cart. The library refresh +
+    // FILTER_CHANGED clears any now-trashed grid selection.
+    for (const id of cart.captureIds) {
+      void dispatch("library:delete", { id });
+    }
+    void dispatch("cart:clear", {});
+  }, [cart.captureIds]);
 
   const onReorder = useCallback((from: number, to: number) => {
     if (from === to) return;
@@ -195,24 +178,17 @@ export function CartPanel(): ReactElement {
   return (
     <div className="psl__cart">
       <div className="psl__cart-header">
-        <input
-          className="psl__cart-name"
-          type="text"
-          value={nameDraft}
-          aria-label="Project draft name"
-          placeholder="Untitled draft"
-          onChange={(e) => onNameChange(e.target.value)}
-          onBlur={(e) => flushRename(e.target.value)}
-        />
+        <span className="psl__cart-title">Cart</span>
         <span className="psl__cart-count" aria-label={`${cart.captureIds.length} items`}>
           {cart.captureIds.length}
         </span>
+        <span className="psl__cart-header-spacer" />
         {isEmpty ? null : (
           <button
             type="button"
             className="psl__cart-clear"
-            title="Remove all items from the cart"
-            aria-label="Clear the cart"
+            title="Empty the cart (does not delete the captures)"
+            aria-label="Empty the cart"
             onClick={onClear}
           >
             Clear
@@ -223,7 +199,7 @@ export function CartPanel(): ReactElement {
       {isEmpty ? (
         <p className="psl__cart-empty">
           Hover a capture in the Library and click its checkbox to start
-          collecting assets for a Sizzle Reel.
+          collecting it here — then zip, delete, or build a Sizzle Reel.
         </p>
       ) : (
         <ol className="psl__cart-list">
@@ -237,8 +213,12 @@ export function CartPanel(): ReactElement {
             return (
               <li
                 key={captureId}
-                className="psl__cart-item"
+                className={
+                  "psl__cart-item" + (onJumpTo !== undefined ? " is-jumpable" : "")
+                }
                 draggable
+                onClick={() => onJumpTo?.(captureId)}
+                title={onJumpTo !== undefined ? "Show in the library" : undefined}
                 onDragStart={(e) => {
                   e.dataTransfer.setData("text/plain", String(idx));
                   e.dataTransfer.effectAllowed = "move";
@@ -291,9 +271,12 @@ export function CartPanel(): ReactElement {
                 <button
                   type="button"
                   className="psl__cart-remove"
-                  aria-label="Remove from draft"
-                  title="Remove from draft"
-                  onClick={() => onRemove(captureId)}
+                  aria-label="Remove from cart"
+                  title="Remove from cart"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRemove(captureId);
+                  }}
                 >
                   ×
                 </button>
@@ -305,13 +288,37 @@ export function CartPanel(): ReactElement {
       )}
 
       <div className="psl__cart-footer">
+        {/* Bulk delete — the cart is a working set you can act on, not
+            just a Sizzle staging area. Confirmed; recoverable from Trash. */}
+        <DeleteConfirm
+          message={`Move ${cart.captureIds.length} ${
+            cart.captureIds.length === 1 ? "capture" : "captures"
+          } to Trash?`}
+          detail="Recoverable from the Trash filter."
+          confirmLabel="Move to Trash"
+          placement="top"
+          onConfirm={onTrashAll}
+        >
+          {(trigger) => (
+            <button
+              type="button"
+              className="psl__cart-btn psl__cart-btn--danger"
+              disabled={isEmpty || committing}
+              {...trigger}
+            >
+              Move to Trash
+            </button>
+          )}
+        </DeleteConfirm>
+
+        {/* Sizzle Reel — now one action among several, not the headline. */}
         <button
           type="button"
-          className="psl__cart-btn psl__cart-btn--primary"
+          className="psl__cart-btn"
           disabled={isEmpty || committing}
           onClick={onCreateProject}
         >
-          Create Sizzle Reel
+          Add to Sizzle Reel
         </button>
         <div className="psl__cart-add-existing">
           <button

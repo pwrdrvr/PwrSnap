@@ -1764,59 +1764,30 @@
   display: flex; flex-direction: column; gap: 6px;
   position: relative;
 }
-/* Export as Zip — Low/Med/High size picker (aggregate estimate). */
+/* Export as Zip — mirrors the per-capture Copy cards: the shared
+   `.psl__copy-eyebrow` header + a `.psl__copy-row` grid of `.fo__copy-btn`
+   cards (same component styling the single-capture export uses). Sits at
+   the BOTTOM of the cart footer, the way single-capture export sits at the
+   bottom of the rail. */
 .psl__cart-zip {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding-bottom: 4px;
-  margin-bottom: 2px;
-  border-bottom: 1px solid var(--border-subtle);
+  gap: 7px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
 }
-.psl__cart-zip-eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font: 600 10px/1 var(--font-sans);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-.psl__cart-zip-eyebrow .psl__copy-eyebrow-line {
-  flex: 1;
-}
-.psl__cart-zip-row {
-  display: flex;
-  gap: 6px;
-}
-.psl__cart-zip-btn {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  padding: 6px 4px;
-  border-radius: 7px;
-  border: 1px solid var(--border-default);
-  background: var(--bg-panel-elevated);
-  color: var(--text-primary);
-  cursor: pointer;
-  transition: background 100ms var(--ease-out), border-color 100ms var(--ease-out);
-}
-.psl__cart-zip-btn:hover:not(:disabled) {
-  background: var(--bg-panel-hover);
-  border-color: var(--accent-border);
-}
-.psl__cart-zip-btn:disabled {
-  opacity: 0.45;
+/* The zip cards reuse the shared `.fo__copy-btn` look; float-over.css has
+   no :disabled rule (its export cards are never disabled), so add one here
+   for the empty / mid-zip / no-images states. */
+.psl__cart-zip .fo__copy-btn:disabled {
+  opacity: 0.4;
   cursor: default;
 }
-.psl__cart-zip-label {
-  font: 600 11px/1 var(--font-sans);
-}
-.psl__cart-zip-size {
-  font: 500 10px/1 var(--font-mono);
-  color: var(--text-muted);
+.psl__cart-zip .fo__copy-btn:disabled:hover {
+  background: var(--bg-panel-elevated);
+  border-color: var(--border-default);
+  transform: none;
 }
 .psl__cart-zip-progress {
   display: flex;
@@ -1882,13 +1853,15 @@
 .psl__cart-btn--primary:hover:not(:disabled) {
   background: var(--accent-bright, var(--accent));
 }
-/* Destructive action (Move to Trash) — neutral until hover, then reddens. */
-.psl__cart-btn--danger {
-  color: var(--danger-text);
-}
+/* Destructive action (Move to Trash) — brand-neutral at rest (matches the
+   other cart buttons), reddens only on hover. The base text stays
+   `--text-primary`; the salmon `--danger-text` at rest read as an
+   off-brand accent on a full-width control. Mirrors the per-capture trash
+   hover treatment (danger-soft + danger-border). */
 .psl__cart-btn--danger:hover:not(:disabled) {
   background: var(--danger-soft);
-  border-color: color-mix(in srgb, var(--danger-text) 40%, transparent);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
 }
 .psl__cart-add-existing { position: relative; }
 .psl__cart-picker {

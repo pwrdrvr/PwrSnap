@@ -417,71 +417,6 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
       )}
 
       <div className="psl__cart-footer">
-        {/* Export as Zip — pick a size; the size shown is the aggregate
-            estimate across the collected images (a batch has no single
-            pixel dimension to report). One flat zip at the chosen size. */}
-        <div className="psl__cart-zip">
-          <div className="psl__cart-zip-eyebrow">
-            <span>Export as Zip</span>
-            <span className="psl__copy-eyebrow-line" />
-          </div>
-          <div className="psl__cart-zip-row">
-            {ZIP_PRESETS.map((p) => (
-              <button
-                key={p}
-                type="button"
-                className="psl__cart-zip-btn"
-                disabled={isEmpty || zipping !== null || zipEstimates.imageCount === 0}
-                onClick={() => onExportZip(p)}
-              >
-                <span className="psl__cart-zip-label">{ZIP_PRESET_LABELS[p]}</span>
-                <span className="psl__cart-zip-size">
-                  {zipping !== p
-                    ? `~${formatBytes(zipEstimates.totals[p])}${estimateSettling ? "…" : ""}`
-                    : zipProgress !== null && zipProgress.phase === "rendering"
-                      ? `${zipProgress.completed}/${zipProgress.total}`
-                      : "Zipping…"}
-                </span>
-              </button>
-            ))}
-          </div>
-          {zipping !== null ? (
-            <div className="psl__cart-zip-progress">
-              <div className="psl__cart-zip-bar" aria-hidden="true">
-                <div
-                  className="psl__cart-zip-bar-fill"
-                  style={{
-                    width:
-                      zipProgress === null
-                        ? "8%"
-                        : zipProgress.phase === "zipping"
-                          ? "100%"
-                          : `${Math.round(
-                              (zipProgress.completed / Math.max(1, zipProgress.total)) * 100
-                            )}%`
-                  }}
-                />
-              </div>
-              <button
-                type="button"
-                className="psl__cart-zip-cancel"
-                onClick={onCancelZip}
-              >
-                Cancel
-              </button>
-            </div>
-          ) : null}
-          {zipError !== null ? (
-            <div className="psl__cart-zip-error" role="alert">
-              {zipError}
-            </div>
-          ) : zipNote !== null ? (
-            <div className="psl__cart-zip-note" role="status">
-              {zipNote}
-            </div>
-          ) : null}
-        </div>
-
         {/* Bulk delete — the cart is a working set you can act on, not just
             a Sizzle staging area. Confirmed; routes through Library's undo
             stack so the toast + ⌘Z restore the whole batch. */}
@@ -547,6 +482,77 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
                 </li>
               ))}
             </ul>
+          ) : null}
+        </div>
+
+        {/* Export as Zip — same visual language as the per-capture Copy
+            cards (shared eyebrow + `.fo__copy-btn` card grid), pinned to the
+            bottom of the footer the way single-capture export sits at the
+            bottom of the rail. The shown size is the aggregate estimate
+            across the collected images (a batch has no single pixel
+            dimension to report); one flat zip at the chosen size. */}
+        <div className="psl__cart-zip">
+          <div className="psl__copy-eyebrow">
+            <span>Export as Zip</span>
+            <span className="psl__copy-eyebrow-line" />
+            <span className="psl__copy-eyebrow-meta">
+              {estimateSettling ? "estimating" : "estimated"}
+            </span>
+          </div>
+          <div className="psl__copy-row">
+            {ZIP_PRESETS.map((p) => (
+              <button
+                key={p}
+                type="button"
+                className="fo__copy-btn"
+                disabled={isEmpty || zipping !== null || zipEstimates.imageCount === 0}
+                onClick={() => onExportZip(p)}
+              >
+                <div className="fo__copy-btn-row1">
+                  <span className="fo__copy-label">{ZIP_PRESET_LABELS[p]}</span>
+                </div>
+                <div className="fo__copy-meta">
+                  <span className="fo__copy-dim">
+                    {zipping !== p
+                      ? `~${formatBytes(zipEstimates.totals[p])}${estimateSettling ? "…" : ""}`
+                      : zipProgress !== null && zipProgress.phase === "rendering"
+                        ? `${zipProgress.completed}/${zipProgress.total}`
+                        : "Zipping…"}
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+          {zipping !== null ? (
+            <div className="psl__cart-zip-progress">
+              <div className="psl__cart-zip-bar" aria-hidden="true">
+                <div
+                  className="psl__cart-zip-bar-fill"
+                  style={{
+                    width:
+                      zipProgress === null
+                        ? "8%"
+                        : zipProgress.phase === "zipping"
+                          ? "100%"
+                          : `${Math.round(
+                              (zipProgress.completed / Math.max(1, zipProgress.total)) * 100
+                            )}%`
+                  }}
+                />
+              </div>
+              <button type="button" className="psl__cart-zip-cancel" onClick={onCancelZip}>
+                Cancel
+              </button>
+            </div>
+          ) : null}
+          {zipError !== null ? (
+            <div className="psl__cart-zip-error" role="alert">
+              {zipError}
+            </div>
+          ) : zipNote !== null ? (
+            <div className="psl__cart-zip-note" role="status">
+              {zipNote}
+            </div>
           ) : null}
         </div>
       </div>

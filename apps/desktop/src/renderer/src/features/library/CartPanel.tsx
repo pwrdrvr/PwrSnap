@@ -145,8 +145,19 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
       if (!mounted || !r.ok) return;
       setRowsById((prev) => {
         const next = new Map(prev);
+        const returned = new Set<string>();
         for (const { record, enrichment } of r.value.rows) {
           next.set(record.id, { captureId: record.id, record, enrichment });
+          returned.add(record.id);
+        }
+        // Requested ids that came back empty (purged / trashed-and-gone)
+        // get an explicit null row so they count as HYDRATED, not pending.
+        // Without this the Zip estimate would read "still loading" forever
+        // whenever the cart holds a since-deleted capture.
+        for (const id of missing) {
+          if (!returned.has(id) && !next.has(id)) {
+            next.set(id, { captureId: id, record: null, enrichment: null });
+          }
         }
         return next;
       });
@@ -244,6 +255,17 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
     }
     return { totals, imageCount };
   }, [cart.captureIds, rowsById]);
+
+  // True while some cart ids haven't hydrated their metadata yet — the
+  // aggregate estimate only sums the rows it has, so it's still climbing.
+  // We mark the shown size as provisional rather than print a confident
+  // number that will jump up once the rest load. (The export itself
+  // re-resolves every id main-side, so a provisional estimate never
+  // affects what actually gets zipped.)
+  const estimateSettling = useMemo(
+    () => cart.captureIds.some((id) => !rowsById.has(id)),
+    [cart.captureIds, rowsById]
+  );
 
   const onExportZip = useCallback(
     (preset: RenderPreset) => {
@@ -415,7 +437,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
                 <span className="psl__cart-zip-label">{ZIP_PRESET_LABELS[p]}</span>
                 <span className="psl__cart-zip-size">
                   {zipping !== p
-                    ? `~${formatBytes(zipEstimates.totals[p])}`
+                    ? `~${formatBytes(zipEstimates.totals[p])}${estimateSettling ? "…" : ""}`
                     : zipProgress !== null && zipProgress.phase === "rendering"
                       ? `${zipProgress.completed}/${zipProgress.total}`
                       : "Zipping…"}

@@ -57,6 +57,7 @@ try {
 import {
   EVENT_CHANNELS,
   IPC_CAPTURE_DRAG_START,
+  IPC_CART_ZIP_DRAG_START,
   IPC_CMD,
   IPC_VIDEO_DRAG_START
 } from "@pwrsnap/shared/ipc";
@@ -279,6 +280,20 @@ const pwrsnapApi = {
     preset: VideoPreset;
   }): void {
     ipcRenderer.send(IPC_VIDEO_DRAG_START, payload);
+  },
+  /**
+   * Renderer -> main native file drag for the Project Asset Cart's Zip
+   * export. Sibling of `startCaptureDrag`. Payload identifies the cart's
+   * captureIds + preset (+ a suggested filename); main renders the images,
+   * zips them to a temp file, and calls WebContents.startDrag with the
+   * `.zip`. No save dialog — this is the drag-out path.
+   */
+  startCartZipDrag(payload: {
+    captureIds: string[];
+    preset: RenderPreset;
+    suggestedName?: string;
+  }): void {
+    ipcRenderer.send(IPC_CART_ZIP_DRAG_START, payload);
   },
   /**
    * Subscribe to forwarded-key events from main. globalShortcut on

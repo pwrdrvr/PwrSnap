@@ -16,10 +16,12 @@ const mocks = vi.hoisted(() => ({
   addFile: vi.fn<(path: string, entry: string) => void>(),
   rename: vi.fn<() => Promise<void>>(),
   rm: vi.fn<() => Promise<void>>(),
-  stat: vi.fn<() => Promise<{ size: number }>>()
+  stat: vi.fn<() => Promise<{ size: number }>>(),
+  mkdir: vi.fn<() => Promise<void>>()
 }));
 
 vi.mock("electron", () => ({
+  app: { getPath: () => "/tmp" },
   BrowserWindow: {
     getFocusedWindow: vi.fn(() => null),
     getAllWindows: vi.fn(() => [])
@@ -66,7 +68,12 @@ vi.mock("node:fs", () => ({
       }
     })
 }));
-vi.mock("node:fs/promises", () => ({ rename: mocks.rename, rm: mocks.rm, stat: mocks.stat }));
+vi.mock("node:fs/promises", () => ({
+  rename: mocks.rename,
+  rm: mocks.rm,
+  stat: mocks.stat,
+  mkdir: mocks.mkdir
+}));
 // yazl is CJS; the handler does `import yazl from "yazl"` then
 // `new yazl.ZipFile()`, so the default export is the whole module object.
 // Inline the class in the factory — a separately-declared class would be in
@@ -122,6 +129,13 @@ async function callCancel(jobId: string): Promise<Result<{ cancelled: boolean }>
   return (await handler({ jobId }, neverAborts)) as Result<{ cancelled: boolean }>;
 }
 
+type DragRes = { path: string; fileCount: number; iconPath: string | null };
+async function callPrepareDrag(req: Record<string, unknown>): Promise<Result<DragRes>> {
+  const handler = mocks.handlers.get("cart:prepareZipDrag");
+  if (handler === undefined) throw new Error("prepareZipDrag handler not registered");
+  return (await handler(req, neverAborts)) as Result<DragRes>;
+}
+
 beforeEach(() => {
   mocks.handlers.clear();
   mocks.getCaptureById.mockReset();
@@ -132,11 +146,13 @@ beforeEach(() => {
   mocks.rename.mockReset();
   mocks.rm.mockReset();
   mocks.stat.mockReset();
+  mocks.mkdir.mockReset();
   mocks.showSaveDialog.mockResolvedValue({ canceled: false, filePath: "/out/export.zip" });
   mocks.resolveImagePresetFile.mockResolvedValue({ path: "/cache/img.png" });
   mocks.rename.mockResolvedValue(undefined);
   mocks.rm.mockResolvedValue(undefined);
   mocks.stat.mockResolvedValue({ size: 4242 });
+  mocks.mkdir.mockResolvedValue(undefined);
   registerCartHandlers();
 });
 
@@ -236,5 +252,37 @@ describe("cart:exportZip", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("jobId_invalid");
     expect(mocks.showSaveDialog).not.toHaveBeenCalled();
+  });
+});
+
+describe("cart:prepareZipDrag (drag-out)", () => {
+  test("zips to a temp path and returns the path + first-image icon", async () => {
+    mocks.getCaptureById.mockImplementation((id) => imageRecord(id));
+    const r = await callPrepareDrag({ captureIds: ["a", "b"], preset: "med" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.fileCount).toBe(2);
+      expect(r.value.path).toContain("pwrsnap-cart-export");
+      expect(r.value.path.endsWith("-med.zip")).toBe(true);
+      expect(r.value.iconPath).toBe("/cache/img.png"); // first rendered image
+    }
+    // No save dialog on the drag path.
+    expect(mocks.showSaveDialog).not.toHaveBeenCalled();
+    expect(mocks.mkdir).toHaveBeenCalled();
+  });
+
+  test("all filtered out → nothing_to_export", async () => {
+    mocks.getCaptureById.mockReturnValue(null);
+    const r = await callPrepareDrag({ captureIds: ["x"], preset: "low" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("nothing_to_export");
+  });
+
+  test("rejects a missing preset before doing any work", async () => {
+    mocks.getCaptureById.mockImplementation((id) => imageRecord(id));
+    const r = await callPrepareDrag({ captureIds: ["a"] });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("preset_invalid");
+    expect(mocks.mkdir).not.toHaveBeenCalled();
   });
 });

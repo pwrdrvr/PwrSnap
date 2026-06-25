@@ -77,6 +77,11 @@ declare global {
         format: "gif" | "mp4";
         preset: VideoPreset;
       }): void;
+      startCartZipDrag(payload: {
+        captureIds: string[];
+        preset: RenderPreset;
+        suggestedName?: string;
+      }): void;
       reportSelectorDiagnostics(payload: {
         innerWidth: number;
         innerHeight: number;

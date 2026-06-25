@@ -1789,6 +1789,12 @@
   border-color: var(--border-default);
   transform: none;
 }
+/* A disabled card (empty cart / mid-zip / no images) can't be dragged out
+   either — dim its FILE chip and swallow the drag to match. */
+.psl__cart-zip .fo__copy-btn:disabled + .fo__copy-file {
+  opacity: 0.4;
+  pointer-events: none;
+}
 .psl__cart-zip-progress {
   display: flex;
   align-items: center;
@@ -2363,6 +2369,16 @@
   margin-top: -1px;
   padding: 14px;
   display: flex; flex-direction: column; gap: 14px;
+}
+/* The cart owns its own bottom-pinned footer (export/trash/sizzle), so it
+   must fill the panel height — `.rab__panel-body` is a plain block, which
+   leaves `flex: 1` here inert and collapses the body to content height
+   (the export section then floats mid-panel). `.rab__panel-body` has a
+   definite flex height, so `height: 100%` makes the cart body fill it and
+   the cart's `flex: 1` list pushes the footer to the bottom, matching the
+   single-capture export footer. */
+.psl__right-body--cart {
+  height: 100%;
 }
 
 .psl__preview {

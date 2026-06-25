@@ -7,10 +7,10 @@
 // The two commit verbs ALSO broadcast `events:sizzle:projects:changed`
 // because they create / mutate a project the sidebar renders.
 
-import { BrowserWindow, dialog, shell } from "electron";
+import { app, BrowserWindow, dialog, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { rename, rm, stat } from "node:fs/promises";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import yazl from "yazl";
 import {
@@ -22,6 +22,7 @@ import {
   type CaptureRecord,
   type DraftCart,
   type EventPayloads,
+  type RenderPreset,
   type SizzleProject,
   type SizzleScene
 } from "@pwrsnap/shared";
@@ -40,6 +41,7 @@ import {
   validateCartCommitToNew,
   validateCartExportZip,
   validateCartExportZipCancel,
+  validateCartPrepareZipDrag,
   validateCartRename,
   validateCartReorder
 } from "./cart-validators";
@@ -59,6 +61,102 @@ function broadcastCartExportProgress(event: CartExportProgressEvent): void {
     if (win.isDestroyed()) continue;
     win.webContents.send(EVENT_CHANNELS.cartExportProgress, event);
   }
+}
+
+/** Resolve cart ids to exportable image records, counting the ones filtered
+ *  out (soft-deleted, purged, or non-image). Shared by the dialog export
+ *  (`cart:exportZip`) and the drag-out (`cart:prepareZipDrag`) so both apply
+ *  the identical skip rule. */
+function resolveExportableImages(captureIds: string[]): {
+  records: CaptureRecord[];
+  skipped: number;
+} {
+  const records: CaptureRecord[] = [];
+  let skipped = 0;
+  for (const id of captureIds) {
+    const rec = getCaptureById(id);
+    if (rec === null || rec.deleted_at !== null || rec.kind !== "image") {
+      skipped++;
+      continue;
+    }
+    records.push(rec);
+  }
+  return { records, skipped };
+}
+
+type CartZipProgress = { phase: "rendering" | "zipping"; completed: number; total: number };
+type CartZipOutcome = {
+  fileCount: number;
+  failed: number;
+  cancelled: boolean;
+  /** First image rendered into the zip — used as the drag cursor icon. */
+  firstPath: string | null;
+};
+
+/**
+ * Render `records` at `preset` and write a flat zip to `destPath`. Each PNG is
+ * stored (already compressed); entry names are re-slugified (zip-slip defense)
+ * and collision-suffixed so no entry overwrites another. One unrenderable
+ * image is counted in `failed`, not fatal. Honors `signal` between renders
+ * (bails with `cancelled: true`, writing nothing). Fires `onProgress` per
+ * render plus once for the write. When zero images render, the zip is NOT
+ * written. Shared by the dialog export and the drag-out.
+ */
+async function writeCartZip(
+  records: CaptureRecord[],
+  preset: RenderPreset,
+  destPath: string,
+  opts: { signal?: AbortSignal; onProgress?: (p: CartZipProgress) => void } = {}
+): Promise<CartZipOutcome> {
+  const total = records.length;
+  const zip = new yazl.ZipFile();
+  const usedNames = new Set<string>();
+  let fileCount = 0;
+  let failed = 0;
+  let firstPath: string | null = null;
+  opts.onProgress?.({ phase: "rendering", completed: 0, total });
+  for (const rec of records) {
+    if (opts.signal?.aborted) return { fileCount, failed, cancelled: true, firstPath };
+    try {
+      // Renders use the default (legacy) export ladder — same mapping the
+      // renderer's cart estimate uses, so the shown ~size matches the zip.
+      // (DPI-aware-export-for-zip is a future enhancement.)
+      const file = await resolveImagePresetFile(rec, preset);
+      if (firstPath === null) firstPath = file.path;
+      const stem = slugifyFilenameStem(exportFilenameStem(rec, getCaptureEnrichment(rec.id)));
+      let entry = `${stem}-${preset}.png`;
+      let n = 2;
+      while (usedNames.has(entry)) {
+        entry = `${stem}-${preset}-${n}.png`;
+        n++;
+      }
+      usedNames.add(entry);
+      zip.addFile(file.path, entry, { compress: false });
+      fileCount++;
+    } catch (cause) {
+      // One unrenderable image (corrupt source, etc.) must not sink the whole
+      // export — skip it, count it, keep going.
+      failed++;
+      log.warn("cart zip: skipping unrenderable capture", {
+        id: rec.id,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+    opts.onProgress?.({ phase: "rendering", completed: fileCount + failed, total });
+  }
+  // A cancel landing after the last render but before the write still counts.
+  if (opts.signal?.aborted) return { fileCount, failed, cancelled: true, firstPath };
+  if (fileCount === 0) return { fileCount, failed, cancelled: false, firstPath };
+  opts.onProgress?.({ phase: "zipping", completed: total, total });
+  await new Promise<void>((resolve, reject) => {
+    const ws = createWriteStream(destPath);
+    ws.on("error", reject);
+    ws.on("close", () => resolve());
+    zip.outputStream.on("error", reject);
+    zip.outputStream.pipe(ws);
+    zip.end();
+  });
+  return { fileCount, failed, cancelled: false, firstPath };
 }
 
 function broadcastCartChanged(cart: DraftCart): void {
@@ -252,17 +350,7 @@ export function registerCartHandlers(): void {
     const v = validateCartExportZip(req);
     if (!v.ok) return err(v.error);
 
-    const records: CaptureRecord[] = [];
-    let skipped = 0;
-    for (const id of v.captureIds) {
-      const rec = getCaptureById(id);
-      // Skip soft-deleted, purged, and non-image captures.
-      if (rec === null || rec.deleted_at !== null || rec.kind !== "image") {
-        skipped++;
-        continue;
-      }
-      records.push(rec);
-    }
+    const { records, skipped } = resolveExportableImages(v.captureIds);
     if (records.length === 0) {
       return err({
         kind: "validation",
@@ -305,83 +393,40 @@ export function registerCartHandlers(): void {
       `.${basename(destPath)}.tmp-${randomUUID().slice(0, 8)}`
     );
 
-    // Register the job so `cart:exportZip:cancel` can abort the render
-    // loop. Cancellation only covers the slow part (rendering + zip write);
-    // the save dialog above is window-modal, so the renderer can't reach
-    // the Cancel button until rendering starts. Honor the bus signal too,
-    // so a process-level cancel still bails.
+    // Register the job so `cart:exportZip:cancel` can abort the render loop.
+    // Cancellation only covers the slow part (rendering + zip write); the
+    // save dialog above is window-modal, so the renderer can't reach the
+    // Cancel button until rendering starts. Combine with the bus signal so a
+    // process-level cancel bails too.
     const controller = new AbortController();
     exportJobs.set(v.jobId, controller);
-    const isAborted = (): boolean => controller.signal.aborted || ctx.signal.aborted;
-    const total = records.length;
+    const signal = AbortSignal.any([controller.signal, ctx.signal]);
+    let lastTotal = records.length;
 
     try {
-      const zip = new yazl.ZipFile();
-      const usedNames = new Set<string>();
-      let fileCount = 0;
-      let failed = 0;
-      broadcastCartExportProgress({ jobId: v.jobId, phase: "rendering", completed: 0, total });
-      for (const rec of records) {
-        if (isAborted()) {
-          return err({ kind: "validation", code: "cancelled", message: "Export cancelled" });
-        }
-        try {
-          // Renders use the default (legacy) export ladder — same mapping
-          // the renderer's cart estimate uses, so the shown ~size matches
-          // the zip. (DPI-aware-export-for-zip is a future enhancement.)
-          const file = await resolveImagePresetFile(rec, v.preset);
-          const stem = slugifyFilenameStem(exportFilenameStem(rec, getCaptureEnrichment(rec.id)));
-          // Re-slugify defends against zip-slip even though yazl rejects
-          // `..` / leading `/`; suffix collisions so no entry overwrites
-          // another.
-          let entry = `${stem}-${v.preset}.png`;
-          let n = 2;
-          while (usedNames.has(entry)) {
-            entry = `${stem}-${v.preset}-${n}.png`;
-            n++;
-          }
-          usedNames.add(entry);
-          // PNGs are already compressed — store, don't re-DEFLATE.
-          zip.addFile(file.path, entry, { compress: false });
-          fileCount++;
-        } catch (cause) {
-          // One unrenderable image (corrupt source, etc.) must not sink the
-          // whole export — skip it, count it, keep going.
-          failed++;
-          log.warn("cart:exportZip: skipping unrenderable capture", {
-            id: rec.id,
-            message: cause instanceof Error ? cause.message : String(cause)
+      const result = await writeCartZip(records, v.preset, tmpPath, {
+        signal,
+        onProgress: (p) => {
+          lastTotal = p.total;
+          broadcastCartExportProgress({
+            jobId: v.jobId,
+            phase: p.phase,
+            completed: p.completed,
+            total: p.total
           });
         }
-        broadcastCartExportProgress({
-          jobId: v.jobId,
-          phase: "rendering",
-          completed: fileCount + failed,
-          total
-        });
-      }
-      // A cancel that lands after the last render but before the write still
-      // counts — don't emit a zip the user asked to stop.
-      if (isAborted()) {
+      });
+      if (result.cancelled) {
+        await rm(tmpPath, { force: true }).catch(() => undefined);
         return err({ kind: "validation", code: "cancelled", message: "Export cancelled" });
       }
-      if (fileCount === 0) {
+      if (result.fileCount === 0) {
         return err({
           kind: "render",
           code: "export_failed",
           message: "Could not render any images for the Zip"
         });
       }
-      broadcastCartExportProgress({ jobId: v.jobId, phase: "zipping", completed: total, total });
-
-      await new Promise<void>((resolve, reject) => {
-        const ws = createWriteStream(tmpPath);
-        ws.on("error", reject);
-        ws.on("close", () => resolve());
-        zip.outputStream.on("error", reject);
-        zip.outputStream.pipe(ws);
-        zip.end();
-      });
       // Move into place. POSIX `rename` overwrites atomically (no window
       // where the user's existing file is gone); only fall back to
       // rm-then-rename on Windows, where rename onto an existing file
@@ -399,7 +444,13 @@ export function registerCartHandlers(): void {
       }
       const stats = await stat(destPath);
       shell.showItemInFolder(destPath);
-      return ok({ path: destPath, fileCount, byteSize: stats.size, skipped, failed });
+      return ok({
+        path: destPath,
+        fileCount: result.fileCount,
+        byteSize: stats.size,
+        skipped,
+        failed: result.failed
+      });
     } catch (cause) {
       await rm(tmpPath, { force: true }).catch(() => undefined);
       log.warn("cart:exportZip failed", {
@@ -410,7 +461,52 @@ export function registerCartHandlers(): void {
       exportJobs.delete(v.jobId);
       // Terminal beat — every window clears its progress UI regardless of
       // outcome (the dispatch result carries the real success/cancel/error).
-      broadcastCartExportProgress({ jobId: v.jobId, phase: "done", completed: total, total });
+      broadcastCartExportProgress({ jobId: v.jobId, phase: "done", completed: lastTotal, total: lastTotal });
+    }
+  });
+
+  // Drag-the-Zip-out: render + zip to a temp file (no save dialog, no
+  // progress UI) and hand the path back to the IPC drag bridge, which calls
+  // WebContents.startDrag. Mirrors `capture:prepareDrag` / `video:prepareDrag`.
+  bus.register("cart:prepareZipDrag", async (req) => {
+    const v = validateCartPrepareZipDrag(req);
+    if (!v.ok) return err(v.error);
+
+    const { records } = resolveExportableImages(v.captureIds);
+    if (records.length === 0) {
+      return err({
+        kind: "validation",
+        code: "nothing_to_export",
+        message: "No exportable images in the cart"
+      });
+    }
+    const suggestedSlug =
+      v.suggestedName !== undefined ? slugifyFilenameStem(v.suggestedName) : "";
+    const baseName = suggestedSlug.length > 0 ? suggestedSlug : `pwrsnap-${records.length}-images`;
+    // A temp file the OS copies during the drag — named so the dropped file
+    // reads nicely. Lives in a dedicated temp subdir (cleaned by the OS).
+    const dir = join(app.getPath("temp"), "pwrsnap-cart-export");
+    try {
+      await mkdir(dir, { recursive: true });
+      const destPath = join(dir, `${baseName}-${v.preset}.zip`);
+      const result = await writeCartZip(records, v.preset, destPath);
+      if (result.fileCount === 0) {
+        return err({
+          kind: "render",
+          code: "export_failed",
+          message: "Could not render any images for the Zip"
+        });
+      }
+      return ok({ path: destPath, fileCount: result.fileCount, iconPath: result.firstPath });
+    } catch (cause) {
+      log.warn("cart:prepareZipDrag failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "render",
+        code: "export_failed",
+        message: "Could not build the Zip for dragging"
+      });
     }
   });
 }

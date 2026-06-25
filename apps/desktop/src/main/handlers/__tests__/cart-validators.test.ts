@@ -5,6 +5,7 @@ import {
   validateCartCommitToNew,
   validateCartExportZip,
   validateCartExportZipCancel,
+  validateCartPrepareZipDrag,
   validateCartRename,
   validateCartReorder
 } from "../cart-validators";
@@ -74,6 +75,33 @@ describe("validateCartExportZip", () => {
 
   it("rejects an invalid preset", () => {
     expect(validateCartExportZip({ captureIds: ["a"], preset: "ultra" })).toMatchObject({
+      ok: false,
+      error: { code: "preset_invalid" }
+    });
+  });
+});
+
+describe("validateCartPrepareZipDrag", () => {
+  it("accepts ids + preset (no jobId), dedupes", () => {
+    const r = validateCartPrepareZipDrag({
+      captureIds: ["a", "b", "a"],
+      preset: "high",
+      suggestedName: "demo"
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.captureIds).toEqual(["a", "b"]);
+      expect(r.preset).toBe("high");
+      expect(r.suggestedName).toBe("demo");
+    }
+  });
+
+  it("rejects empty ids / bad preset", () => {
+    expect(validateCartPrepareZipDrag({ captureIds: [], preset: "low" })).toMatchObject({
+      ok: false,
+      error: { code: "captureIds_required" }
+    });
+    expect(validateCartPrepareZipDrag({ captureIds: ["a"], preset: "ultra" })).toMatchObject({
       ok: false,
       error: { code: "preset_invalid" }
     });

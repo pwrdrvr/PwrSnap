@@ -3516,6 +3516,18 @@ export type Commands = {
     req: { jobId: string };
     res: { cancelled: boolean };
   };
+  /**
+   * Render the cart's images at `preset`, zip them to a temp file, and
+   * return its path — the drag bridge (`IPC_CART_ZIP_DRAG_START`) hands the
+   * file to `WebContents.startDrag` so the user can drag the Zip straight
+   * out to Finder / Slack / a folder. No save dialog (that's
+   * `cart:exportZip`); same skip-filter (image-only). `iconPath` is the
+   * first rendered image, used as the drag cursor image (null if none).
+   */
+  "cart:prepareZipDrag": {
+    req: { captureIds: string[]; preset: RenderPreset; suggestedName?: string };
+    res: { path: string; fileCount: number; iconPath: string | null };
+  };
 };
 
 export type CommandName = keyof Commands;

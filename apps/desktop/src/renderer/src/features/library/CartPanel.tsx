@@ -13,11 +13,18 @@ import type {
   CartExportProgressEvent,
   RenderPreset
 } from "@pwrsnap/shared";
-import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
+import {
+  cacheUrl,
+  captureSrcUrl,
+  dispatch,
+  startCartZipDrag,
+  subscribe
+} from "../../lib/pwrsnap";
 import { formatBytes } from "../../lib/format-bytes";
 import { useCart } from "./CartContext";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
+import { FoIcon } from "../float-over/FoIcons";
 
 const ZIP_PRESETS: readonly RenderPreset[] = ["low", "med", "high"];
 const ZIP_PRESET_LABELS: Record<RenderPreset, string> = {
@@ -500,28 +507,55 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
             </span>
           </div>
           <div className="psl__copy-row">
-            {ZIP_PRESETS.map((p) => (
-              <button
-                key={p}
-                type="button"
-                className="fo__copy-btn"
-                disabled={isEmpty || zipping !== null || zipEstimates.imageCount === 0}
-                onClick={() => onExportZip(p)}
-              >
-                <div className="fo__copy-btn-row1">
-                  <span className="fo__copy-label">{ZIP_PRESET_LABELS[p]}</span>
+            {ZIP_PRESETS.map((p) => {
+              const busy = zipping === p;
+              const disabled = isEmpty || zipping !== null || zipEstimates.imageCount === 0;
+              const sizeLabel = !busy
+                ? `~${formatBytes(zipEstimates.totals[p])}${estimateSettling ? "…" : ""}`
+                : zipProgress !== null && zipProgress.phase === "rendering"
+                  ? `${zipProgress.completed}/${zipProgress.total}`
+                  : "Zipping…";
+              return (
+                <div className="fo__copy-card" key={p}>
+                  <button
+                    type="button"
+                    className="fo__copy-btn"
+                    disabled={disabled}
+                    onClick={() => onExportZip(p)}
+                  >
+                    <div className="fo__copy-btn-row1">
+                      <span className="fo__copy-label">{ZIP_PRESET_LABELS[p]}</span>
+                    </div>
+                    <div className="fo__copy-meta">
+                      <span className="fo__copy-dim" aria-hidden="true" />
+                      <span className="fo__copy-bytes">
+                        <span>{sizeLabel}</span>
+                      </span>
+                    </div>
+                  </button>
+                  <a
+                    className="fo__copy-file"
+                    draggable={!disabled}
+                    href="#"
+                    title={`Drag the ${ZIP_PRESET_LABELS[p]} Zip out`}
+                    aria-label={`Drag the ${ZIP_PRESET_LABELS[p]} Zip file out`}
+                    role="button"
+                    onClick={(e) => e.preventDefault()}
+                    onDragStart={(e) => {
+                      e.preventDefault();
+                      if (disabled) return;
+                      const firstRow = rowsById.get(cart.captureIds[0] ?? "");
+                      const suggestedName =
+                        firstRow !== undefined ? previewText(firstRow) : undefined;
+                      startCartZipDrag(cart.captureIds, p, suggestedName);
+                    }}
+                  >
+                    <FoIcon name="hand" size={10} />
+                    File
+                  </a>
                 </div>
-                <div className="fo__copy-meta">
-                  <span className="fo__copy-dim">
-                    {zipping !== p
-                      ? `~${formatBytes(zipEstimates.totals[p])}${estimateSettling ? "…" : ""}`
-                      : zipProgress !== null && zipProgress.phase === "rendering"
-                        ? `${zipProgress.completed}/${zipProgress.total}`
-                        : "Zipping…"}
-                  </span>
-                </div>
-              </button>
-            ))}
+              );
+            })}
           </div>
           {zipping !== null ? (
             <div className="psl__cart-zip-progress">

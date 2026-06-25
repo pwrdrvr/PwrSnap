@@ -198,6 +198,34 @@ export function validateCartExportZipCancel(
   return { ok: true, jobId: req.jobId };
 }
 
+/** `cart:prepareZipDrag` — `{ captureIds; preset; suggestedName? }`. Same
+ *  shape as the export minus `jobId` (a drag has no progress/cancel UI).
+ *  Reuses the export validator and drops the jobId requirement. */
+export function validateCartPrepareZipDrag(
+  req: unknown
+):
+  | {
+      ok: true;
+      captureIds: string[];
+      preset: "low" | "med" | "high";
+      suggestedName: string | undefined;
+    }
+  | { ok: false; error: PwrSnapError } {
+  // Borrow the export validator with a synthetic jobId so the shared
+  // captureIds/preset/suggestedName checks run, then strip jobId off.
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  const v = validateCartExportZip({ ...req, jobId: "drag" });
+  if (!v.ok) return v;
+  return {
+    ok: true,
+    captureIds: v.captureIds,
+    preset: v.preset,
+    suggestedName: v.suggestedName
+  };
+}
+
 /** `cart:commitToExisting` — `{ projectId: string }`. */
 export function validateCartCommitToExisting(
   req: unknown

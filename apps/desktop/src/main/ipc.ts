@@ -6,6 +6,7 @@
 import { BrowserWindow, ipcMain, nativeImage } from "electron";
 import {
   IPC_CAPTURE_DRAG_START,
+  IPC_CART_ZIP_DRAG_START,
   IPC_CMD,
   IPC_VIDEO_DRAG_START
 } from "@pwrsnap/shared";
@@ -134,12 +135,67 @@ export function registerIpcDispatcher(): void {
       });
     })();
   });
+
+  // Cart Zip drag-out bridge — same fire-and-forget shape as the image /
+  // video variants. Routes through `cart:prepareZipDrag`, which renders the
+  // cart's images and zips them to a temp file, then fills startDrag with
+  // the `.zip` + the first image as the drag cursor icon. Errors are logged,
+  // not surfaced — a native drag handle has no protocol for "prepare failed."
+  ipcMain.on(IPC_CART_ZIP_DRAG_START, (event, req: unknown) => {
+    void (async () => {
+      const parsed = parseCartZipDragRequest(req);
+      if (parsed === null) {
+        log.warn("cart zip drag: invalid request");
+        return;
+      }
+
+      const result = await bus.dispatch("cart:prepareZipDrag", parsed, { principal: "ipc" });
+      if (!result.ok) {
+        log.warn("cart zip drag: prepare failed", {
+          count: parsed.captureIds.length,
+          preset: parsed.preset,
+          code: result.error.code,
+          message: result.error.message
+        });
+        return;
+      }
+      if (event.sender.isDestroyed()) return;
+
+      const icon =
+        result.value.iconPath !== null
+          ? nativeImage.createFromPath(result.value.iconPath)
+          : nativeImage.createEmpty();
+      event.sender.startDrag({
+        file: result.value.path,
+        icon: icon.isEmpty() ? nativeImage.createEmpty() : icon
+      });
+    })();
+  });
 }
 
 export function disposeIpcDispatcher(): void {
   ipcMain.removeHandler(IPC_CMD);
   ipcMain.removeAllListeners(IPC_CAPTURE_DRAG_START);
   ipcMain.removeAllListeners(IPC_VIDEO_DRAG_START);
+  ipcMain.removeAllListeners(IPC_CART_ZIP_DRAG_START);
+}
+
+function parseCartZipDragRequest(
+  req: unknown
+): { captureIds: string[]; preset: RenderPreset; suggestedName?: string } | null {
+  if (typeof req !== "object" || req === null) return null;
+  const value = req as { captureIds?: unknown; preset?: unknown; suggestedName?: unknown };
+  if (!Array.isArray(value.captureIds) || value.captureIds.length === 0) return null;
+  if (!value.captureIds.every((id) => typeof id === "string" && id.length > 0)) return null;
+  if (value.preset !== "low" && value.preset !== "med" && value.preset !== "high") {
+    return null;
+  }
+  const out: { captureIds: string[]; preset: RenderPreset; suggestedName?: string } = {
+    captureIds: value.captureIds as string[],
+    preset: value.preset
+  };
+  if (typeof value.suggestedName === "string") out.suggestedName = value.suggestedName;
+  return out;
 }
 
 function parseDragRequest(req: unknown): { captureId: string; preset: RenderPreset } | null {

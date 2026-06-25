@@ -562,7 +562,7 @@ export function DetailRail({
             onTabChange={() => undefined}
             onPinChange={writePinned}
             renderPanel={() => (
-              <div className="psl__right-body">
+              <div className="psl__right-body psl__right-body--cart">
                 <CartPanel onJumpTo={onCartJumpTo} onTrashAll={onCartTrashAll} />
               </div>
             )}
@@ -674,7 +674,7 @@ export function DetailRail({
       // CartPanel is workspace-global — it reads the cart itself via
       // useDraftCart and doesn't need the selected record.
       return (
-        <div className="psl__right-body">
+        <div className="psl__right-body psl__right-body--cart">
           <CartPanel onJumpTo={onCartJumpTo} onTrashAll={onCartTrashAll} />
         </div>
       );

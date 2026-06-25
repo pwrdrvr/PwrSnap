@@ -684,6 +684,19 @@ export function buildTrayContextMenuTemplate(
         void bus.dispatch("capture:interactive", { mode: "auto" }, { principal: "ipc" });
       }
     },
+    {
+      // The app's two headline verbs sit together above the rule —
+      // snap (Quick Capture) then record (Record Video) — mirroring the
+      // tray popover + Library header. No sourceWindowId on a tray
+      // dispatch, so the record leaves the Library as a valid target.
+      label: "Record Video…",
+      ...(currentTrayHotkeys.videoCapture !== ""
+        ? { accelerator: currentTrayHotkeys.videoCapture }
+        : {}),
+      click: () => {
+        void bus.dispatch("capture:videoInteractive", {}, { principal: "ipc" });
+      }
+    },
     { type: "separator" },
     {
       label: "Open Library",

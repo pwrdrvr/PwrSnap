@@ -72,6 +72,7 @@ import { decideClickSelection } from "./decideClickSelection";
 import {
   useCaptureModel,
   inverseCropRect,
+  cropRectFromCanvas,
   type EditOpResult,
   type GeometryUpdate,
   type LayerEditOp
@@ -3569,12 +3570,30 @@ function EditorLoaded({
         ) {
           return;
         }
-        // Inverse of the forward crop, applied against the CURRENT
-        // (cropped) canvas: the dispatcher re-normalizes every other
-        // overlay, restores off-origin raster/effect transforms, and
-        // grows the canvas back to the pre-crop dims. (Same formula the
-        // crop-undo path uses — see inverseCropRect / useUndoRedo.)
-        const inverse = inverseCropRect(cropNode.shape.rect);
+        // FULL uncrop to the original image — not just a reverse of the
+        // last crop. Crops collapse into one layer that records only the
+        // most recent step, so to undo a STACK of crops we work from the
+        // CUMULATIVE crop (the region of the natural raster the current
+        // canvas shows), derived from canvas dims + the raster's
+        // translation. Inverting that and dispatching it re-normalizes
+        // every overlay back to natural coords, restores the raster
+        // transform to identity, and grows the canvas to the source's
+        // natural size — in one op, whether the user cropped once or N
+        // times. (For a single crop this equals the old reverse-the-rect
+        // behavior.)
+        if (record.width_px >= sourceWidthPx && record.height_px >= sourceHeightPx) {
+          return; // already showing the whole source — nothing to uncrop
+        }
+        const cumulative = cropRectFromCanvas({
+          canvasWidthPx: record.width_px,
+          canvasHeightPx: record.height_px,
+          sourceWidthPx,
+          sourceHeightPx,
+          rasterTranslateXPx,
+          rasterTranslateYPx
+        });
+        if (cumulative === null) return;
+        const inverse = inverseCropRect(cumulative);
         if (inverse === null) return;
         const previousWidthPx = record.width_px;
         const previousHeightPx = record.height_px;
@@ -3625,7 +3644,11 @@ function EditorLoaded({
     dispatchEdit,
     undo,
     undoApplyingRef,
-    recordCropRef
+    recordCropRef,
+    sourceWidthPx,
+    sourceHeightPx,
+    rasterTranslateXPx,
+    rasterTranslateYPx
   ]);
   useEffect(() => {
     if (onLayersApi === undefined) return;

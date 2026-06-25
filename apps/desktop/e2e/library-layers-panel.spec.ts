@@ -96,6 +96,28 @@ test("library-layers-panel: the eye toggle flips a layer's visible flag", async 
   }
 });
 
+test("library-layers-panel: a resting committed annotation clips to the canvas (overflow hidden)", async () => {
+  // Regression guard for the crop-clip fix: committed glyphs render with
+  // overflow:hidden so an annotation outside a cropped viewport doesn't
+  // bleed past the canvas edge (matching the bake/export). An actively-
+  // dragged glyph stays overflow:visible — not exercised here.
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedCapture(app);
+    const win = await openFocus(app, captureId);
+
+    await selectTool(win, "arrow");
+    await drawOnCanvas(win);
+    await expectLayerCount(app, captureId, 1);
+
+    const glyph = win.locator('[data-testid="persisted-glyph-svg"]').first();
+    await glyph.waitFor({ state: "attached", timeout: 5_000 });
+    await expect(glyph).toHaveAttribute("overflow", "hidden");
+  } finally {
+    await app.close();
+  }
+});
+
 // ---- Shared helpers --------------------------------------------------
 
 async function expectLayerCount(

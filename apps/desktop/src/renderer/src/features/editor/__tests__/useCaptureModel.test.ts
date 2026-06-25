@@ -73,6 +73,7 @@ function broadcast(channel: string, payload: unknown): void {
 import {
   useCaptureModel,
   inverseCropRect,
+  cropRectFromCanvas,
   type CaptureModel,
   type LayerView
 } from "../useCaptureModel";
@@ -2220,5 +2221,81 @@ describe("inverseCropRect (uncrop math)", () => {
       const roundY = normalize(normalize(n, forward, "y"), inverse, "y");
       expect(roundY).toBeCloseTo(n, 10);
     }
+  });
+});
+
+describe("cropRectFromCanvas (cumulative crop for full uncrop)", () => {
+  test("origin crop: canvas region as a fraction of the source", () => {
+    // Cropped 1000×1000 source down to a 500×500 top-left region.
+    expect(
+      cropRectFromCanvas({
+        canvasWidthPx: 500,
+        canvasHeightPx: 500,
+        sourceWidthPx: 1000,
+        sourceHeightPx: 1000,
+        rasterTranslateXPx: 0,
+        rasterTranslateYPx: 0
+      })
+    ).toEqual({ x: 0, y: 0, w: 0.5, h: 0.5 });
+  });
+
+  test("off-origin crop: raster translation drives the rect origin", () => {
+    // Canvas shows a 400×300 window; the raster is shifted by (-200,-150)
+    // so the canvas origin sits at source pixel (200,150).
+    expect(
+      cropRectFromCanvas({
+        canvasWidthPx: 400,
+        canvasHeightPx: 300,
+        sourceWidthPx: 1000,
+        sourceHeightPx: 1000,
+        rasterTranslateXPx: -200,
+        rasterTranslateYPx: -150
+      })
+    ).toEqual({ x: 0.2, y: 0.15, w: 0.4, h: 0.3 });
+  });
+
+  test("not cropped → identity rect", () => {
+    expect(
+      cropRectFromCanvas({
+        canvasWidthPx: 800,
+        canvasHeightPx: 600,
+        sourceWidthPx: 800,
+        sourceHeightPx: 600,
+        rasterTranslateXPx: 0,
+        rasterTranslateYPx: 0
+      })
+    ).toEqual({ x: 0, y: 0, w: 1, h: 1 });
+  });
+
+  test("degenerate source → null", () => {
+    expect(
+      cropRectFromCanvas({
+        canvasWidthPx: 100,
+        canvasHeightPx: 100,
+        sourceWidthPx: 0,
+        sourceHeightPx: 100,
+        rasterTranslateXPx: 0,
+        rasterTranslateYPx: 0
+      })
+    ).toBeNull();
+  });
+
+  test("inverse of the cumulative rect grows the canvas back to the source", () => {
+    // Stacked crops: 1000 → 500 → 300. The single crop layer can't
+    // express that, but the canvas/source ratio can: 300/1000 = 0.3.
+    const cumulative = cropRectFromCanvas({
+      canvasWidthPx: 300,
+      canvasHeightPx: 300,
+      sourceWidthPx: 1000,
+      sourceHeightPx: 1000,
+      rasterTranslateXPx: 0,
+      rasterTranslateYPx: 0
+    });
+    if (cumulative === null) throw new Error("unreachable");
+    const inverse = inverseCropRect(cumulative);
+    if (inverse === null) throw new Error("unreachable");
+    // The crop dispatcher computes the new canvas as round(rect.w × W).
+    expect(Math.round(inverse.w * 300)).toBe(1000);
+    expect(Math.round(inverse.h * 300)).toBe(1000);
   });
 });

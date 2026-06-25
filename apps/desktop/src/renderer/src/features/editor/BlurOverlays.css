@@ -7,6 +7,12 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
+  /* Clip blur items to the canvas so a blur (or the part of one) outside
+     a cropped viewport doesn't bleed past the image edge in the editor —
+     matching the bake/export, which composites only within the canvas.
+     `.ed-blur-layer` is inset:0 = canvas-sized, so this clips to the
+     canvas (the outer `.editor-canvas-wrap` only clips to the viewport). */
+  overflow: hidden;
 }
 .ed-blur-item {
   position: absolute;

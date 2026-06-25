@@ -687,6 +687,44 @@ export function inverseCropRect(rect: {
   };
 }
 
+/** The CUMULATIVE crop rect — the region of the natural source raster
+ *  that the current canvas shows — in the source's normalized [0,1]
+ *  space. Derived from the canvas dims + the raster layer's translation,
+ *  NOT from any single crop layer's rect (crops collapse to one layer
+ *  that only records the LAST step, so its rect can't express a stack of
+ *  crops). Feeding this through `inverseCropRect` and dispatching the
+ *  result FULLY uncrops to the original image in one op, regardless of
+ *  how many crops were applied. Returns null for a degenerate source;
+ *  the identity rect {0,0,1,1} when the canvas already shows the whole
+ *  source (not cropped). */
+export function cropRectFromCanvas(args: {
+  canvasWidthPx: number;
+  canvasHeightPx: number;
+  sourceWidthPx: number;
+  sourceHeightPx: number;
+  rasterTranslateXPx: number;
+  rasterTranslateYPx: number;
+}): { x: number; y: number; w: number; h: number } | null {
+  const {
+    canvasWidthPx,
+    canvasHeightPx,
+    sourceWidthPx,
+    sourceHeightPx,
+    rasterTranslateXPx,
+    rasterTranslateYPx
+  } = args;
+  if (sourceWidthPx <= 0 || sourceHeightPx <= 0) return null;
+  return {
+    // The canvas origin shows source pixel (-translate); normalize it.
+    // `+ 0` collapses a signed -0 (from `-0 / w`) to +0 so callers and
+    // equality checks never trip on negative zero.
+    x: -rasterTranslateXPx / sourceWidthPx + 0,
+    y: -rasterTranslateYPx / sourceHeightPx + 0,
+    w: canvasWidthPx / sourceWidthPx,
+    h: canvasHeightPx / sourceHeightPx
+  };
+}
+
 /** Apply a GeometryUpdate to a BundleLayerNode. For vector layers
  *  we update the underlying `shape` (which carries the v1 Overlay
  *  shape verbatim). For blur/highlight effect layers, geometry

@@ -70,6 +70,27 @@ export function computeNewOrder<T extends ZOrderItem>(
   }
 }
 
+/** Move the item with `id` to `toIndex` (0-based, in the same bottom-up
+ *  position space as `computeNewOrder` — position 0 = bottom of stack).
+ *  Drives drag-and-drop / keyboard reorder, which target an arbitrary
+ *  slot rather than a one-step nudge. `toIndex` is clamped to the valid
+ *  range; a no-op move returns the SAME array reference. */
+export function moveToIndex<T extends ZOrderItem>(
+  items: readonly T[],
+  id: string,
+  toIndex: number
+): readonly T[] {
+  const from = items.findIndex((it) => it.id === id);
+  if (from === -1) return items;
+  const clamped = Math.max(0, Math.min(items.length - 1, toIndex));
+  if (clamped === from) return items;
+  const next = items.slice();
+  const [moved] = next.splice(from, 1);
+  if (moved === undefined) return items;
+  next.splice(clamped, 0, moved);
+  return next;
+}
+
 /** Diff the new ordering against the old, producing one ZOrderChange
  *  per item whose POSITION moved. Items that didn't move keep their
  *  current z_index — the renderer only dispatches reorder for the

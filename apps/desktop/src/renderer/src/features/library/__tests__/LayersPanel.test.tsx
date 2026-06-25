@@ -104,7 +104,7 @@ function makeApi() {
     selectLayers: vi.fn(),
     setLayerVisibility: vi.fn(async () => undefined),
     deleteLayer: vi.fn(async () => undefined),
-    moveLayer: vi.fn(async () => undefined),
+    moveLayerToIndex: vi.fn(async () => undefined),
     uncrop: vi.fn(async () => undefined)
   };
 }
@@ -165,24 +165,22 @@ describe("LayersPanel", () => {
     ]);
   });
 
-  test("reorder arrows are disabled on base layers and at the annotation walls", async () => {
-    // Two annotations + base. Top annotation: up disabled. Bottom
-    // annotation: down disabled. Base layers (crop, raster): both
-    // disabled — an annotation can never move below them.
+  test("only annotation rows are draggable + focusable; base layers are not", async () => {
     const el = await renderPanel(
       [rootGroup(), raster(), arrow("ly_top", 2000), arrow("ly_bottom", 1000), crop()],
       makeApi()
     );
-    const dis = (testid: string): boolean =>
-      (byId(el, testid) as HTMLButtonElement).disabled;
-    expect(dis("layer-forward-ly_top")).toBe(true); // top annotation, can't go up
-    expect(dis("layer-backward-ly_top")).toBe(false);
-    expect(dis("layer-forward-ly_bottom")).toBe(false);
-    expect(dis("layer-backward-ly_bottom")).toBe(true); // bottom annotation, can't cross base
-    for (const id of ["ly_crop", "ly_raster"]) {
-      expect(dis(`layer-forward-${id}`)).toBe(true);
-      expect(dis(`layer-backward-${id}`)).toBe(true);
-    }
+    // Annotation rows have a grip + tabIndex 0; base rows have neither.
+    expect(el.querySelector('[data-testid="layer-grip-ly_top"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="layer-grip-ly_bottom"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="layer-grip-ly_crop"]')).toBeNull();
+    expect(el.querySelector('[data-testid="layer-grip-ly_raster"]')).toBeNull();
+    const tab = (id: string): string | null =>
+      byId(el, `layer-row-${id}`).getAttribute("tabindex");
+    expect(tab("ly_top")).toBe("0");
+    expect(tab("ly_bottom")).toBe("0");
+    expect(tab("ly_crop")).toBe("-1");
+    expect(tab("ly_raster")).toBe("-1");
   });
 
   test("hides no-op expand-crop artifacts (left behind by crop undo) but keeps real crops", async () => {
@@ -225,20 +223,49 @@ describe("LayersPanel", () => {
     expect(api.setLayerVisibility).toHaveBeenCalledWith("ly_arrow", false);
   });
 
-  test("forward / backward buttons call moveLayer with the direction", async () => {
-    // Two annotations so the boundary arrows aren't disabled: click the
-    // bottom one's "forward" (enabled) and the top one's "backward".
+  test("keyboard reorder: Arrow / Page keys call moveLayerToIndex with the target index", async () => {
+    // Three annotations (display indices 0,1,2) + base. Arrow keys move
+    // ±1; Page keys move ±5 (clamped by the editor).
     const api = makeApi();
     const el = await renderPanel(
-      [rootGroup(), raster(), arrow("ly_top", 2000), arrow("ly_bottom", 1000)],
+      [
+        rootGroup(),
+        raster(),
+        arrow("ly_a", 3000),
+        arrow("ly_b", 2000),
+        arrow("ly_c", 1000)
+      ],
       api
     );
+    const key = (id: string, k: string): void => {
+      byId(el, `layer-row-${id}`).dispatchEvent(
+        new KeyboardEvent("keydown", { key: k, bubbles: true })
+      );
+    };
     await act(async () => {
-      byId(el, "layer-forward-ly_bottom").click();
-      byId(el, "layer-backward-ly_top").click();
+      key("ly_b", "ArrowUp"); // index 1 → 0
+      key("ly_b", "ArrowDown"); // index 1 → 2
+      key("ly_a", "PageDown"); // index 0 → 5 (editor clamps to bottom)
+      key("ly_c", "PageUp"); // index 2 → -3 (editor clamps to top)
     });
-    expect(api.moveLayer).toHaveBeenNthCalledWith(1, "ly_bottom", "forward");
-    expect(api.moveLayer).toHaveBeenNthCalledWith(2, "ly_top", "backward");
+    expect(api.moveLayerToIndex).toHaveBeenNthCalledWith(1, "ly_b", 0);
+    expect(api.moveLayerToIndex).toHaveBeenNthCalledWith(2, "ly_b", 2);
+    expect(api.moveLayerToIndex).toHaveBeenNthCalledWith(3, "ly_a", 5);
+    expect(api.moveLayerToIndex).toHaveBeenNthCalledWith(4, "ly_c", -3);
+  });
+
+  test("keyboard reorder is a no-op on base layers (Crop / Source)", async () => {
+    const api = makeApi();
+    const el = await renderPanel([rootGroup(), raster(), arrow(), crop()], api);
+    await act(async () => {
+      byId(el, "layer-row-ly_crop").dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true })
+      );
+      byId(el, "layer-row-ly_raster").dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true })
+      );
+    });
+    expect(api.moveLayerToIndex).not.toHaveBeenCalled();
   });
 
   test("row click selects (plain = replace, meta = additive); raster row doesn't select", async () => {

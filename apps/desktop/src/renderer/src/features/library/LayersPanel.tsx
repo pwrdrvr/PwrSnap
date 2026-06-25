@@ -15,7 +15,15 @@
 // `selectedLayerIds` to highlight rows and calls `api.selectLayers`
 // on click. See the architecture note in Editor.tsx (`LayersPanelApi`).
 
-import { useMemo, type ReactElement } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactElement
+} from "react";
 import type { BundleLayerNode } from "@pwrsnap/shared";
 import { useCaptureModel } from "../editor/useCaptureModel";
 import type { LayersPanelApi } from "../editor/Editor";
@@ -69,15 +77,14 @@ const EYE_OFF_ICON: ReactElement = (
   </svg>
 );
 
-const UP_ICON: ReactElement = (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m6 14 6-6 6 6" />
-  </svg>
-);
-
-const DOWN_ICON: ReactElement = (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m6 10 6 6 6-6" />
+const GRIP_ICON: ReactElement = (
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <circle cx="9" cy="6" r="1.4" />
+    <circle cx="15" cy="6" r="1.4" />
+    <circle cx="9" cy="12" r="1.4" />
+    <circle cx="15" cy="12" r="1.4" />
+    <circle cx="9" cy="18" r="1.4" />
+    <circle cx="15" cy="18" r="1.4" />
   </svg>
 );
 
@@ -189,6 +196,15 @@ export function LayersPanel({
   api
 }: LayersPanelProps): ReactElement {
   const model = useCaptureModel(captureId);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  // Active drag-reorder: the layer being dragged + the gap the drop line
+  // shows at (0 = above the first annotation … annotationCount = just
+  // above the pinned base group).
+  const [drag, setDrag] = useState<{
+    id: string;
+    pointerId: number;
+    overGap: number;
+  } | null>(null);
 
   // Top-to-bottom = front-to-back: the topmost row paints last (highest
   // z_index). Groups are hidden — v2.0 only ever has the synthesized
@@ -210,12 +226,68 @@ export function LayersPanel({
     return [...annotations, ...base];
   }, [model]);
 
-  // Annotations occupy the first `annotationCount` rows; the base layers
-  // follow. Used to disable the reorder arrows at the stack boundaries.
+  // Annotations occupy the first `annotationCount` rows (display index ==
+  // annotation index); the pinned base layers follow.
   const annotationCount = useMemo(
     () => rows.filter((n) => !isBaseLayer(n)).length,
     [rows]
   );
+  // PageUp/PageDown jump — bigger over deep stacks.
+  const pageStep = annotationCount > 100 ? 10 : 5;
+
+  // The gap (0..annotationCount) a pointer Y falls into, by counting the
+  // annotation rows whose vertical midpoint sits above the cursor.
+  const gapFromPointerY = useCallback((clientY: number): number => {
+    const list = listRef.current;
+    if (list === null) return 0;
+    const els = list.querySelectorAll<HTMLElement>('[data-annotation="true"]');
+    let gap = 0;
+    for (const el of els) {
+      const r = el.getBoundingClientRect();
+      if (clientY > r.top + r.height / 2) gap += 1;
+    }
+    return Math.max(0, Math.min(els.length, gap));
+  }, []);
+
+  const onGripMove = (e: ReactPointerEvent<HTMLElement>): void => {
+    if (drag === null || e.pointerId !== drag.pointerId) return;
+    const gap = gapFromPointerY(e.clientY);
+    if (gap !== drag.overGap) setDrag({ ...drag, overGap: gap });
+  };
+  const onGripUp = (e: ReactPointerEvent<HTMLElement>): void => {
+    if (drag === null || e.pointerId !== drag.pointerId) return;
+    try {
+      e.currentTarget.releasePointerCapture(drag.pointerId);
+    } catch {
+      // capture may already be lost — ignore
+    }
+    const from = rows.findIndex((n) => n.id === drag.id);
+    // Removing the dragged row shifts everything below it up by one.
+    let target = drag.overGap > from ? drag.overGap - 1 : drag.overGap;
+    target = Math.max(0, Math.min(annotationCount - 1, target));
+    setDrag(null);
+    if (from !== -1 && target !== from) void api?.moveLayerToIndex(drag.id, target);
+  };
+
+  const onRowKeyDown = (
+    e: ReactKeyboardEvent<HTMLDivElement>,
+    id: string,
+    index: number
+  ): void => {
+    let target: number | null = null;
+    if (e.key === "ArrowUp") target = index - 1;
+    else if (e.key === "ArrowDown") target = index + 1;
+    else if (e.key === "PageUp") target = index - pageStep;
+    else if (e.key === "PageDown") target = index + pageStep;
+    else return;
+    // Own the key so the editor's capture-phase pixel-nudge (and the
+    // Library's reel navigation) don't ALSO fire. The editor already
+    // bows out when `.psl-layers` is focused; stopPropagation keeps the
+    // Library handler from seeing it on the way up.
+    e.preventDefault();
+    e.stopPropagation();
+    void api?.moveLayerToIndex(id, target); // Editor clamps
+  };
 
   if (model.kind === "loading") {
     return <div className="psl-layers__empty">Loading layers…</div>;
@@ -228,7 +300,13 @@ export function LayersPanel({
   }
 
   return (
-    <div className="psl-layers" role="list" aria-label="Layers" data-testid="psl-layers">
+    <div
+      ref={listRef}
+      className="psl-layers"
+      role="list"
+      aria-label="Layers"
+      data-testid="psl-layers"
+    >
       {rows.map((node, i) => {
         const id = node.id;
         const selected = selectedLayerIds.includes(id);
@@ -237,25 +315,34 @@ export function LayersPanel({
         const crop = isCropLayer(node);
         const base = isBaseLayer(node);
         const selectable = isSelectable(node);
-        // Base layers can't be reordered; an annotation can't move above
-        // the top of the stack or below the base group (the wall).
-        const upDisabled = base || i === 0;
-        const downDisabled = base || i === annotationCount - 1;
+        const dragging = drag?.id === id;
+        const dropBefore = drag !== null && !base && drag.overGap === i;
+        const dropAfter =
+          drag !== null &&
+          !base &&
+          i === annotationCount - 1 &&
+          drag.overGap === annotationCount;
         return (
           <div
             key={id}
             role="listitem"
+            tabIndex={base ? -1 : 0}
             data-testid={`layer-row-${id}`}
             data-kind={node.kind}
             data-selected={selected}
             data-base={base ? "true" : undefined}
+            data-annotation={base ? undefined : "true"}
             aria-selected={selected}
+            aria-roledescription={base ? undefined : "Reorderable layer"}
             className={[
               "psl-layers__row",
               selectable ? "is-selectable" : "",
               selected ? "is-selected" : "",
               base ? "is-base" : "",
               base && i === annotationCount ? "is-base-first" : "",
+              dragging ? "is-dragging" : "",
+              dropBefore ? "is-drop-before" : "",
+              dropAfter ? "is-drop-after" : "",
               visible ? "" : "is-hidden"
             ]
               .filter(Boolean)
@@ -265,7 +352,33 @@ export function LayersPanel({
                 ? (e): void => api?.selectLayers(id, e.metaKey || e.ctrlKey)
                 : undefined
             }
+            onKeyDown={
+              base ? undefined : (e): void => onRowKeyDown(e, id, i)
+            }
           >
+            {base ? (
+              <span className="psl-layers__grip psl-layers__grip--spacer" aria-hidden="true" />
+            ) : (
+              <span
+                className="psl-layers__grip"
+                data-testid={`layer-grip-${id}`}
+                aria-hidden="true"
+                title="Drag to reorder"
+                onClick={(e): void => e.stopPropagation()}
+                onPointerDown={(e): void => {
+                  if (e.button !== 0) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  setDrag({ id, pointerId: e.pointerId, overGap: i });
+                }}
+                onPointerMove={onGripMove}
+                onPointerUp={onGripUp}
+                onPointerCancel={(): void => setDrag(null)}
+              >
+                {GRIP_ICON}
+              </span>
+            )}
             <span className="psl-layers__icon" aria-hidden="true">
               {iconForNode(node)}
             </span>
@@ -286,34 +399,6 @@ export function LayersPanel({
                 }}
               >
                 {visible ? EYE_ICON : EYE_OFF_ICON}
-              </button>
-              <button
-                type="button"
-                className="psl-layers__btn"
-                data-testid={`layer-forward-${id}`}
-                aria-label="Bring forward"
-                title="Bring forward"
-                disabled={upDisabled}
-                onClick={(e): void => {
-                  e.stopPropagation();
-                  void api?.moveLayer(id, "forward");
-                }}
-              >
-                {UP_ICON}
-              </button>
-              <button
-                type="button"
-                className="psl-layers__btn"
-                data-testid={`layer-backward-${id}`}
-                aria-label="Send backward"
-                title="Send backward"
-                disabled={downDisabled}
-                onClick={(e): void => {
-                  e.stopPropagation();
-                  void api?.moveLayer(id, "backward");
-                }}
-              >
-                {DOWN_ICON}
               </button>
               <button
                 type="button"

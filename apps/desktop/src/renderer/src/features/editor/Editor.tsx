@@ -118,7 +118,7 @@ import {
 } from "./editor-types";
 import type { PasteImagePosition } from "./usePasteImage";
 import { useDropImage } from "./useDropImage";
-import { computeNewOrder, diffChanges } from "./z-order";
+import { computeNewOrder, diffChanges, moveToIndex } from "./z-order";
 import "./editor.css";
 
 /** Three structural shapes for the editor:
@@ -186,10 +186,12 @@ export type LayersPanelApi = {
    *  OverlayRow. Callers must NOT pass the base raster (panel disables
    *  it) or a crop layer (panel routes crop to `uncrop`). */
   deleteLayer: (id: string) => Promise<void>;
-  /** Move a layer one z-order step. Computes over the full reorderable
-   *  set (vector + effect, including hidden) so panel ordering stays
-   *  correct regardless of which layers are currently visible. */
-  moveLayer: (id: string, direction: "forward" | "backward") => Promise<void>;
+  /** Move a layer to `toIndex` in the panel's TOP-DOWN annotation order
+   *  (0 = topmost / front). Drives drag-and-drop and keyboard reorder.
+   *  Computes over the reorderable annotation set (vector except crop,
+   *  plus effect — incl. hidden) so the order is correct regardless of
+   *  which layers are currently visible. `toIndex` is clamped. */
+  moveLayerToIndex: (id: string, toIndex: number) => Promise<void>;
   /** Remove the crop while keeping every other annotation correctly
    *  positioned. Reuses the inverse-crop dispatch (which re-normalizes
    *  overlays + restores off-origin raster/effect transforms + grows
@@ -2782,7 +2784,17 @@ export function Editor({
       // We only do this when the editor IS handling the key —
       // empty-selection arrow keys still fall through so reel
       // navigation works when nothing's selected.
+      // When a row in the Layers panel has focus, IT owns arrow/page
+      // keys (reorder the focused layer). Don't grab them for the
+      // pixel-nudge here, and (crucially) don't stopImmediatePropagation
+      // below — the capture-phase registration would otherwise eat the
+      // key before the panel's bubble-phase handler ever runs.
+      const layersPanelFocused =
+        (document.activeElement as HTMLElement | null)?.closest?.(
+          ".psl-layers"
+        ) != null;
       if (
+        !layersPanelFocused &&
         selectedLayerIds.length > 0 &&
         draft === null &&
         !event.metaKey &&
@@ -3570,14 +3582,15 @@ function EditorLoaded({
           if (row !== undefined) undo.recordDelete(row, { node });
         }
       },
-      moveLayer: async (id, direction) => {
+      moveLayerToIndex: async (id, toIndex) => {
         // Reorder over the reorderable ANNOTATION set (vector except
         // crop, plus effect), including hidden layers, sorted by z_index
-        // ASC — independent of the visible-filtered render snapshot the
-        // keyboard path uses. The raster (base image) and the crop
-        // (no-op viewport) are excluded: they're pinned base layers with
-        // no meaningful stacking position. Same pure helpers
-        // (computeNewOrder / diffChanges).
+        // ASC (bottom-up) — independent of the visible-filtered render
+        // snapshot. The raster (base image) and the crop (no-op viewport)
+        // are excluded: they're pinned base layers with no meaningful
+        // stacking position. `toIndex` is the panel's TOP-DOWN index
+        // (0 = front), so convert to the bottom-up position moveToIndex /
+        // diffChanges use.
         const items = modelLayers
           .filter(
             (l) =>
@@ -3588,7 +3601,8 @@ function EditorLoaded({
           .sort((a, b) => a.z_index - b.z_index)
           .map((l) => ({ id: l.id }));
         if (items.length === 0) return;
-        const newOrder = computeNewOrder(items, [id], direction);
+        const bottomUpIndex = items.length - 1 - toIndex;
+        const newOrder = moveToIndex(items, id, bottomUpIndex);
         const changes = diffChanges(items, newOrder);
         for (const change of changes) {
           // eslint-disable-next-line no-await-in-loop

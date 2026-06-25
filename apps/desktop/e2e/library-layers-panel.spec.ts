@@ -118,7 +118,113 @@ test("library-layers-panel: a resting committed annotation clips to the canvas (
   }
 });
 
+test("library-layers-panel: keyboard reorder moves the focused layer", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedCapture(app);
+    const win = await openLayersTab(app, captureId, 2);
+
+    const before = await layerRowIds(win);
+    expect(before.length).toBe(2);
+
+    // Focus the TOP row and press ArrowDown → it moves to the bottom.
+    await win.locator(`[data-testid="layer-row-${before[0]}"]`).focus();
+    await win.keyboard.press("ArrowDown");
+    await expect
+      .poll(async () => (await layerRowIds(win)).join(","))
+      .toBe([before[1], before[0]].join(","));
+  } finally {
+    await app.close();
+  }
+});
+
+test("library-layers-panel: drag-and-drop reorders a layer", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedCapture(app);
+    const win = await openLayersTab(app, captureId, 2);
+
+    const before = await layerRowIds(win);
+    expect(before.length).toBe(2);
+
+    // Drag the TOP row's grip down past the bottom row → they swap.
+    const grip = win.locator(`[data-testid="layer-grip-${before[0]}"]`);
+    const bottom = win.locator(`[data-testid="layer-row-${before[1]}"]`);
+    const gb = await grip.boundingBox();
+    const bb = await bottom.boundingBox();
+    expect(gb).not.toBeNull();
+    expect(bb).not.toBeNull();
+    if (gb === null || bb === null) return;
+    await win.mouse.move(gb.x + gb.width / 2, gb.y + gb.height / 2);
+    await win.mouse.down();
+    await win.mouse.move(bb.x + bb.width / 2, bb.y + bb.height * 0.5, { steps: 4 });
+    await win.mouse.move(bb.x + bb.width / 2, bb.y + bb.height + 6, { steps: 4 });
+    await win.mouse.up();
+
+    await expect
+      .poll(async () => (await layerRowIds(win)).join(","))
+      .toBe([before[1], before[0]].join(","));
+  } finally {
+    await app.close();
+  }
+});
+
 // ---- Shared helpers --------------------------------------------------
+
+/** Seed a v2 image, draw `count` arrows in SEPARATE regions (so a later
+ *  draw doesn't land on an earlier arrow's transform-handle body and
+ *  move it instead of drawing a new one), then open the Layers tab. */
+async function openLayersTab(
+  app: LaunchedApp,
+  captureId: string,
+  count: number
+): Promise<Page> {
+  const win = await openFocus(app, captureId);
+  // Diagonal, non-overlapping bands across the canvas.
+  for (let i = 0; i < count; i++) {
+    const a = 0.1 + (i * 0.8) / Math.max(1, count);
+    // eslint-disable-next-line no-await-in-loop
+    await selectTool(win, "arrow");
+    // eslint-disable-next-line no-await-in-loop
+    await drawArrowAt(win, a, a, a + 0.08, a + 0.08);
+  }
+  await expectLayerCount(app, captureId, count);
+  await win.locator('[data-testid="psl-right-tab-layers"]').click();
+  await win
+    .locator('[data-testid="psl-layers"]')
+    .waitFor({ state: "visible", timeout: 5_000 });
+  return win;
+}
+
+async function drawArrowAt(
+  win: Page,
+  fromXn: number,
+  fromYn: number,
+  toXn: number,
+  toYn: number
+): Promise<void> {
+  const canvas = win.locator(".editor-canvas");
+  await canvas.waitFor({ state: "visible" });
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  if (box === null) return;
+  const from = { x: box.x + box.width * fromXn, y: box.y + box.height * fromYn };
+  const to = { x: box.x + box.width * toXn, y: box.y + box.height * toYn };
+  await win.mouse.move(from.x, from.y);
+  await win.mouse.down();
+  await win.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 5 });
+  await win.mouse.move(to.x, to.y, { steps: 5 });
+  await win.mouse.up();
+}
+
+/** The layer ids in the panel's current top-to-bottom row order. */
+async function layerRowIds(win: Page): Promise<string[]> {
+  return win.locator('[data-testid^="layer-row-"]').evaluateAll((nodes) =>
+    nodes.map((n) =>
+      (n.getAttribute("data-testid") ?? "").replace("layer-row-", "")
+    )
+  );
+}
 
 async function expectLayerCount(
   app: LaunchedApp,

@@ -15,6 +15,7 @@
 }
 
 .psl-layers__row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -28,6 +29,58 @@
 
 .psl-layers__row.is-selectable {
   cursor: pointer;
+}
+
+.psl-layers__row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Drag handle — the only place a pointer-drag starts (the row body stays
+   a click-to-select target). The spacer keeps base rows aligned. */
+.psl-layers__grip {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-subtle);
+  cursor: grab;
+  touch-action: none;
+}
+.psl-layers__grip svg {
+  width: 14px;
+  height: 14px;
+}
+.psl-layers__grip:hover {
+  color: var(--text-secondary);
+}
+.psl-layers__grip--spacer {
+  cursor: default;
+  visibility: hidden;
+}
+
+.psl-layers__row.is-dragging {
+  opacity: 0.5;
+}
+
+/* Drop-line indicator while dragging. */
+.psl-layers__row.is-drop-before::before,
+.psl-layers__row.is-drop-after::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+}
+.psl-layers__row.is-drop-before::before {
+  top: -1px;
+}
+.psl-layers__row.is-drop-after::after {
+  bottom: -1px;
 }
 
 .psl-layers__row:hover {

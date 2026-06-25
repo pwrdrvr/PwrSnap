@@ -105,6 +105,75 @@ export function validateCartCommitToNew(
   return { ok: true, name: req.name };
 }
 
+const MAX_EXPORT_IDS = 1000;
+
+/** `cart:exportZip` — `{ captureIds: string[]; preset; suggestedName? }`.
+ *  Dedupes ids and caps cardinality so a runaway cart can't fan out into
+ *  thousands of renders + a giant zip (disk-fill / OOM at the boundary). */
+export function validateCartExportZip(
+  req: unknown
+):
+  | {
+      ok: true;
+      captureIds: string[];
+      preset: "low" | "med" | "high";
+      suggestedName: string | undefined;
+    }
+  | { ok: false; error: PwrSnapError } {
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  if (!Array.isArray(req.captureIds) || req.captureIds.length === 0) {
+    return {
+      ok: false,
+      error: validationError("captureIds_required", "captureIds must be a non-empty array")
+    };
+  }
+  if (req.captureIds.length > MAX_EXPORT_IDS) {
+    return {
+      ok: false,
+      error: validationError(
+        "too_many",
+        `cannot export more than ${MAX_EXPORT_IDS} captures at once`
+      )
+    };
+  }
+  const captureIds: string[] = [];
+  const seen = new Set<string>();
+  for (const id of req.captureIds) {
+    if (typeof id !== "string" || id.length === 0) {
+      return {
+        ok: false,
+        error: validationError(
+          "captureId_invalid",
+          "every captureId must be a non-empty string"
+        )
+      };
+    }
+    if (!seen.has(id)) {
+      seen.add(id);
+      captureIds.push(id);
+    }
+  }
+  if (req.preset !== "low" && req.preset !== "med" && req.preset !== "high") {
+    return {
+      ok: false,
+      error: validationError("preset_invalid", "preset must be one of low | med | high")
+    };
+  }
+  let suggestedName: string | undefined;
+  if (req.suggestedName !== undefined && req.suggestedName !== null) {
+    if (typeof req.suggestedName !== "string") {
+      return {
+        ok: false,
+        error: validationError("suggestedName_invalid", "suggestedName must be a string")
+      };
+    }
+    suggestedName = req.suggestedName.slice(0, 200);
+  }
+  return { ok: true, captureIds, preset: req.preset, suggestedName };
+}
+
 /** `cart:commitToExisting` — `{ projectId: string }`. */
 export function validateCartCommitToExisting(
   req: unknown

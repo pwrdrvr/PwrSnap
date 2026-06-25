@@ -1,15 +1,34 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactElement
 } from "react";
-import type { CaptureRecord, CaptureEnrichment } from "@pwrsnap/shared";
+import type { CaptureRecord, CaptureEnrichment, RenderPreset } from "@pwrsnap/shared";
 import { cacheUrl, captureSrcUrl, dispatch } from "../../lib/pwrsnap";
+import { formatBytes } from "../../lib/format-bytes";
 import { useCart } from "./CartContext";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
+
+const ZIP_PRESETS: readonly RenderPreset[] = ["low", "med", "high"];
+const ZIP_PRESET_LABELS: Record<RenderPreset, string> = {
+  low: "Low",
+  med: "Med",
+  high: "High"
+};
+
+/** Rough per-image byte estimate at a preset — mirrors the legacy
+ *  800/1440/source width mapping `presetMetrics` (CopyButton) uses, but
+ *  returns the raw number so the cart can SUM across images. Approximate
+ *  by design (a batch has no single pixel size to report). */
+function estimatePresetBytes(preset: RenderPreset, srcW: number, srcBytes: number): number {
+  const targetW = preset === "low" ? 800 : preset === "med" ? 1440 : srcW;
+  const scale = Math.min(1, targetW / Math.max(1, srcW));
+  return Math.round(srcBytes * scale * scale);
+}
 
 export interface CartPanelProps {
   /** Jump the grid to a collected capture (select it + scroll it into
@@ -76,6 +95,8 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
   const [rowsById, setRowsById] = useState<Map<string, CartRow>>(new Map());
   const [committing, setCommitting] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [zipping, setZipping] = useState<RenderPreset | null>(null);
+  const [zipError, setZipError] = useState<string | null>(null);
   const listEndRef = useRef<HTMLLIElement | null>(null);
   const prevCountRef = useRef(cart.captureIds.length);
 
@@ -166,6 +187,44 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
   const onClear = useCallback(() => {
     void dispatch("cart:clear", {});
   }, []);
+
+  // Aggregate byte estimate per preset across the collected IMAGES (videos
+  // are skipped by the zip). Approximate + grows as metadata hydrates.
+  const zipEstimates = useMemo(() => {
+    const totals: Record<RenderPreset, number> = { low: 0, med: 0, high: 0 };
+    let imageCount = 0;
+    for (const id of cart.captureIds) {
+      const rec = rowsById.get(id)?.record;
+      if (rec == null || rec.kind !== "image") continue;
+      imageCount += 1;
+      for (const p of ZIP_PRESETS) {
+        totals[p] += estimatePresetBytes(p, rec.width_px, rec.byte_size);
+      }
+    }
+    return { totals, imageCount };
+  }, [cart.captureIds, rowsById]);
+
+  const onExportZip = useCallback(
+    (preset: RenderPreset) => {
+      setZipError(null);
+      setZipping(preset);
+      // Seed the save filename from the first item's title if we have it.
+      const firstRow = rowsById.get(cart.captureIds[0] ?? "");
+      const suggestedName = firstRow !== undefined ? previewText(firstRow) : undefined;
+      void dispatch("cart:exportZip", {
+        captureIds: cart.captureIds,
+        preset,
+        ...(suggestedName !== undefined ? { suggestedName } : {})
+      }).then((r) => {
+        setZipping(null);
+        // `cancelled` = the user dismissed the save dialog; not an error.
+        if (!r.ok && r.error.code !== "cancelled") {
+          setZipError(r.error.message);
+        }
+      });
+    },
+    [cart.captureIds, rowsById]
+  );
 
   const isEmpty = cart.captureIds.length === 0;
 
@@ -282,6 +341,37 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
       )}
 
       <div className="psl__cart-footer">
+        {/* Export as Zip — pick a size; the size shown is the aggregate
+            estimate across the collected images (a batch has no single
+            pixel dimension to report). One flat zip at the chosen size. */}
+        <div className="psl__cart-zip">
+          <div className="psl__cart-zip-eyebrow">
+            <span>Export as Zip</span>
+            <span className="psl__copy-eyebrow-line" />
+          </div>
+          <div className="psl__cart-zip-row">
+            {ZIP_PRESETS.map((p) => (
+              <button
+                key={p}
+                type="button"
+                className="psl__cart-zip-btn"
+                disabled={isEmpty || zipping !== null || zipEstimates.imageCount === 0}
+                onClick={() => onExportZip(p)}
+              >
+                <span className="psl__cart-zip-label">{ZIP_PRESET_LABELS[p]}</span>
+                <span className="psl__cart-zip-size">
+                  {zipping === p ? "Zipping…" : `~${formatBytes(zipEstimates.totals[p])}`}
+                </span>
+              </button>
+            ))}
+          </div>
+          {zipError !== null ? (
+            <div className="psl__cart-zip-error" role="alert">
+              {zipError}
+            </div>
+          ) : null}
+        </div>
+
         {/* Bulk delete — the cart is a working set you can act on, not just
             a Sizzle staging area. Confirmed; routes through Library's undo
             stack so the toast + ⌘Z restore the whole batch. */}

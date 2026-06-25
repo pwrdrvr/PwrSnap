@@ -3455,6 +3455,29 @@ export type Commands = {
     req: { projectId: string };
     res: SizzleProject;
   };
+  /**
+   * Export the cart's image captures as a single Zip at one preset size
+   * (Low/Med/High). Prompts for a save location, renders each image at the
+   * preset (reusing the cached export pipeline), zips them, and reveals the
+   * file. Non-image / trashed / missing captures are skipped (counted in
+   * `skipped`). Does NOT mutate the cart. Returns an error with code
+   * `cancelled` if the user dismisses the save dialog, or `nothing_to_export`
+   * if no image survives the filter.
+   */
+  "cart:exportZip": {
+    req: {
+      captureIds: string[];
+      preset: RenderPreset;
+      /** Slug used as the default save filename (before .zip). */
+      suggestedName?: string;
+    };
+    res: {
+      path: string;
+      fileCount: number;
+      byteSize: number;
+      skipped: number;
+    };
+  };
 };
 
 export type CommandName = keyof Commands;

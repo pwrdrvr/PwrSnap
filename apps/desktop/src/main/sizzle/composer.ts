@@ -12,6 +12,7 @@ import { getMainLogger } from "../log";
 import type { VideoFitRenderMode } from "./video-fit";
 
 const log = getMainLogger("pwrsnap:sizzle-composer");
+const SIZZLE_KEYFRAME_INTERVAL = 60;
 
 /**
  * Per-scene input descriptor. Discriminated by `kind`:
@@ -292,6 +293,10 @@ export function buildCompositionArgs(req: ComposeRequest): string[] {
     "1",
     "-b:v",
     videoBitrate(req.width, req.height, req.fps),
+    "-g",
+    String(SIZZLE_KEYFRAME_INTERVAL),
+    "-keyint_min",
+    String(SIZZLE_KEYFRAME_INTERVAL),
     "-pix_fmt",
     "yuv420p",
     // ffmpeg's native AAC (LGPL), NOT nonfree libfdk_aac.

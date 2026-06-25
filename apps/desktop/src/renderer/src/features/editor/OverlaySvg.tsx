@@ -2267,12 +2267,49 @@ export function TransformHandles({
             const rotateDeg = (rotation * 180) / Math.PI;
             const transformAttr =
               rotation !== 0 ? `rotate(${rotateDeg}deg)` : undefined;
+            // Grow the DRAG-hit rect outward to cover the visible LINE
+            // of a stroked shape (the stroke is centered on the path
+            // and the halo extends further out). Without this the user
+            // could only drag a selected shape by its interior or the
+            // thin inner sliver of its line — the same gap the hit-test
+            // pad fixes for selection (see `shapeStrokeOuterReachPx` in
+            // Editor.tsx). The resize / rotate HANDLES keep anchoring
+            // on the un-padded `bodyBox` (computed above) so they stay
+            // pinned to the glyph corners; only this transparent body
+            // rect grows. Highlight / blur are filled regions whose
+            // body box already covers their full visible extent → no
+            // pad.
+            const reachPx =
+              d.kind === "shape"
+                ? (() => {
+                    const shortSide = Math.min(imageWidthPx, imageHeightPx);
+                    const autoStrokeWidthPx = Math.min(
+                      shortSide * 0.012,
+                      Math.max(shortSide * 0.003, 8)
+                    );
+                    const strokeWidthPx = readOverlayThickness(
+                      d.thickness,
+                      autoStrokeWidthPx,
+                      shortSide
+                    );
+                    const outline = Math.max(strokeWidthPx * 0.25, 1.5);
+                    return strokeWidthPx / 2 + outline;
+                  })()
+                : 0;
+            const padXN = reachPx / imageWidthPx;
+            const padYN = reachPx / imageHeightPx;
+            const dragBox = {
+              x: bodyBox.x - padXN,
+              y: bodyBox.y - padYN,
+              w: bodyBox.w + padXN * 2,
+              h: bodyBox.h + padYN * 2
+            };
             return {
               position: "absolute" as const,
-              left: `${bodyBox.x * 100}%`,
-              top: `${bodyBox.y * 100}%`,
-              width: `${bodyBox.w * 100}%`,
-              height: `${bodyBox.h * 100}%`,
+              left: `${dragBox.x * 100}%`,
+              top: `${dragBox.y * 100}%`,
+              width: `${dragBox.w * 100}%`,
+              height: `${dragBox.h * 100}%`,
               cursor: d.kind === "text" ? "text" : "move",
               pointerEvents: "auto" as const,
               // Transparent — the body is a hit target only. Painting

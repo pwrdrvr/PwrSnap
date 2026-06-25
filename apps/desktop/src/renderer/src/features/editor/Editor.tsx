@@ -43,6 +43,7 @@ import type {
   HighlightToolStyle,
   Overlay,
   OverlayRow,
+  OverlayThickness,
   PwrSnapError,
   Result,
   ShapeToolStyle,
@@ -54,6 +55,7 @@ import {
   DEFAULT_BLUR_STYLE,
   computeTextGlyphSize,
   matchBucket,
+  readOverlayThickness,
   readShapeKind,
   readShapeSkewDeg,
   readHighlightOpacity,
@@ -621,6 +623,34 @@ function projectV2LayersToOverlayRows(
  *  `imageDims` is omitted (legacy call sites + most tests), every
  *  overlay is tested in its unrotated frame — the historical
  *  behavior. */
+/** The OUTER reach (in the same px space as `shortSidePx`) from a
+ *  stroked shape's PATH to the outside edge of the pixels it actually
+ *  paints — half the colored stroke (the stroke is centered on the
+ *  path) plus the white halo. Mirrors `ShapeGlyph` in OverlaySvg.tsx so
+ *  the hit region tracks the visible line, not the bare path rect.
+ *
+ *  Without this, the hit test only covered the path rect: the outer
+ *  half of the stroke and the whole halo were dead, so a thick-lined
+ *  shape could only be grabbed by the thin inner sliver of its line
+ *  (pwrdrvr/PwrSnap editor selection complaint). */
+export function shapeStrokeOuterReachPx(
+  thickness: OverlayThickness | undefined,
+  shortSidePx: number
+): number {
+  // Same auto band + thickness resolution ShapeGlyph uses.
+  const autoStrokeWidthPx = Math.min(
+    shortSidePx * 0.012,
+    Math.max(shortSidePx * 0.003, 8)
+  );
+  const strokeWidthPx = readOverlayThickness(
+    thickness,
+    autoStrokeWidthPx,
+    shortSidePx
+  );
+  const outline = Math.max(strokeWidthPx * 0.25, 1.5);
+  return strokeWidthPx / 2 + outline;
+}
+
 export function hitTestOverlays(
   overlays: OverlayRow[],
   xn: number,
@@ -721,12 +751,39 @@ export function hitTestOverlays(
       const halfHn = o.rect.h / 2;
       const localX = tx - cxn;
       const localY = ty - cyn;
+      // Outward padding so the user can grab the VISIBLE LINE — not
+      // just the path-rect interior. A stroked shape renders with
+      // `fill="none"` and a stroke CENTERED on the path (plus a halo
+      // extending further out), so the historical path-rect test left
+      // the outer ~⅔ of the line dead. We pad by the stroke's outer
+      // reach (tracks the painted pixels) PLUS `hitRadiusN` of
+      // forgiveness (the same Skitch/CleanShot-style slop arrows and
+      // text already get). Reach needs the viewBox dims — when they're
+      // absent (legacy callers) we still apply the forgiveness pad so
+      // selection stays generous. Highlight / blur are filled box
+      // regions with no stroke line, so they get the forgiveness pad
+      // only.
+      const strokeReachPx =
+        o.kind === "shape" && imageDims !== undefined
+          ? shapeStrokeOuterReachPx(
+              o.thickness,
+              Math.min(imageDims.widthPx, imageDims.heightPx)
+            )
+          : 0;
+      const padXN =
+        (imageDims !== undefined ? strokeReachPx / imageDims.widthPx : 0) +
+        hitRadiusN;
+      const padYN =
+        (imageDims !== undefined ? strokeReachPx / imageDims.heightPx : 0) +
+        hitRadiusN;
       if (shapeKind === "circle" || shapeKind === "oval") {
-        if (halfWn <= 0 || halfHn <= 0) {
+        const rxN = halfWn + padXN;
+        const ryN = halfHn + padYN;
+        if (rxN <= 0 || ryN <= 0) {
           continue;
         }
-        const ndx = localX / halfWn;
-        const ndy = localY / halfHn;
+        const ndx = localX / rxN;
+        const ndy = localY / ryN;
         if (ndx * ndx + ndy * ndy <= 1) return row.id;
         continue;
       }
@@ -769,21 +826,22 @@ export function hitTestOverlays(
             : 1;
         const unshearedX = localX + (localY * tanS) / aspect;
         if (
-          unshearedX >= -halfWn &&
-          unshearedX <= halfWn &&
-          localY >= -halfHn &&
-          localY <= halfHn
+          unshearedX >= -halfWn - padXN &&
+          unshearedX <= halfWn + padXN &&
+          localY >= -halfHn - padYN &&
+          localY <= halfHn + padYN
         ) {
           return row.id;
         }
         continue;
       }
-      // rect / square (and highlight / blur) — axis-aligned bbox.
+      // rect / square (and highlight / blur) — axis-aligned bbox,
+      // grown outward by the stroke + forgiveness pad.
       if (
-        tx >= o.rect.x &&
-        tx <= o.rect.x + o.rect.w &&
-        ty >= o.rect.y &&
-        ty <= o.rect.y + o.rect.h
+        tx >= o.rect.x - padXN &&
+        tx <= o.rect.x + o.rect.w + padXN &&
+        ty >= o.rect.y - padYN &&
+        ty <= o.rect.y + o.rect.h + padYN
       ) {
         return row.id;
       }

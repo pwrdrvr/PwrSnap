@@ -1822,6 +1822,10 @@
   font: 500 11px/1.4 var(--font-sans);
   color: var(--danger-text);
 }
+.psl__cart-zip-note {
+  font: 500 11px/1.4 var(--font-sans);
+  color: var(--text-muted);
+}
 .psl__cart-btn {
   width: 100%;
   padding: 8px 10px;

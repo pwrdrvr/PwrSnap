@@ -97,6 +97,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
   const [pickerOpen, setPickerOpen] = useState(false);
   const [zipping, setZipping] = useState<RenderPreset | null>(null);
   const [zipError, setZipError] = useState<string | null>(null);
+  const [zipNote, setZipNote] = useState<string | null>(null);
   const listEndRef = useRef<HTMLLIElement | null>(null);
   const prevCountRef = useRef(cart.captureIds.length);
 
@@ -207,6 +208,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
   const onExportZip = useCallback(
     (preset: RenderPreset) => {
       setZipError(null);
+      setZipNote(null);
       setZipping(preset);
       // Seed the save filename from the first item's title if we have it.
       const firstRow = rowsById.get(cart.captureIds[0] ?? "");
@@ -217,8 +219,14 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
         ...(suggestedName !== undefined ? { suggestedName } : {})
       }).then((r) => {
         setZipping(null);
-        // `cancelled` = the user dismissed the save dialog; not an error.
-        if (!r.ok && r.error.code !== "cancelled") {
+        if (r.ok) {
+          // Tell the user if some captures didn't make it into the zip.
+          const leftOut = r.value.skipped + r.value.failed;
+          setZipNote(
+            leftOut > 0 ? `Zipped ${r.value.fileCount} · ${leftOut} left out` : null
+          );
+        } else if (r.error.code !== "cancelled") {
+          // `cancelled` = the user dismissed the save dialog; not an error.
           setZipError(r.error.message);
         }
       });
@@ -368,6 +376,10 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
           {zipError !== null ? (
             <div className="psl__cart-zip-error" role="alert">
               {zipError}
+            </div>
+          ) : zipNote !== null ? (
+            <div className="psl__cart-zip-note" role="status">
+              {zipNote}
             </div>
           ) : null}
         </div>

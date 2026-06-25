@@ -3475,7 +3475,10 @@ export type Commands = {
       path: string;
       fileCount: number;
       byteSize: number;
+      /** Captures filtered out before rendering (video / trashed / missing). */
       skipped: number;
+      /** Images that errored during render and were left out of the zip. */
+      failed: number;
     };
   };
 };

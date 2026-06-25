@@ -1103,6 +1103,12 @@ export function Library() {
   }, []);
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
   const selectedRecordId = view.selectedRecordId;
+  // When the grid selection clears (only possible in grid), reset the grid
+  // rail tab to Info so the NEXT selection shows the capture's details
+  // rather than a stale Cart tab left over from a prior cart-item jump.
+  useEffect(() => {
+    if (selectedRecordId === null) setGridActiveTab("info");
+  }, [selectedRecordId]);
 
   const {
     rows: records,

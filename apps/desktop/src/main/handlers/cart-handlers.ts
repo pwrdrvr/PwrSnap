@@ -31,6 +31,7 @@ import { getCaptureById } from "../persistence/captures-repo";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 import { resolveImagePresetFile } from "../render/image-presets";
 import { exportFilenameStem } from "../render/export-filename";
+import { findMainLibraryWindow } from "../window";
 import { getMainLogger } from "../log";
 import {
   validateCartCaptureId,
@@ -248,7 +249,13 @@ export function registerCartHandlers(): void {
     const suggestedSlug =
       v.suggestedName !== undefined ? slugifyFilenameStem(v.suggestedName) : "";
     const baseName = suggestedSlug.length > 0 ? suggestedSlug : `pwrsnap-${records.length}-images`;
-    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+    // Parent the save sheet to the Library window when it's open (it's the
+    // one that owns the cart), falling back to whatever's focused.
+    const win =
+      findMainLibraryWindow() ??
+      BrowserWindow.getFocusedWindow() ??
+      BrowserWindow.getAllWindows()[0] ??
+      null;
     const saveOpts = {
       defaultPath: `${baseName}-${v.preset}.zip`,
       filters: [{ name: "Zip Archive", extensions: ["zip"] }]
@@ -276,22 +283,43 @@ export function registerCartHandlers(): void {
       const zip = new yazl.ZipFile();
       const usedNames = new Set<string>();
       let fileCount = 0;
+      let failed = 0;
       for (const rec of records) {
-        const stem = slugifyFilenameStem(exportFilenameStem(rec, getCaptureEnrichment(rec.id)));
-        // Re-slugify defends against zip-slip even though yazl rejects
-        // `..` / leading `/`; suffix collisions so no entry overwrites
-        // another.
-        let entry = `${stem}-${v.preset}.png`;
-        let n = 2;
-        while (usedNames.has(entry)) {
-          entry = `${stem}-${v.preset}-${n}.png`;
-          n++;
+        try {
+          // Renders use the default (legacy) export ladder — same mapping
+          // the renderer's cart estimate uses, so the shown ~size matches
+          // the zip. (DPI-aware-export-for-zip is a future enhancement.)
+          const file = await resolveImagePresetFile(rec, v.preset);
+          const stem = slugifyFilenameStem(exportFilenameStem(rec, getCaptureEnrichment(rec.id)));
+          // Re-slugify defends against zip-slip even though yazl rejects
+          // `..` / leading `/`; suffix collisions so no entry overwrites
+          // another.
+          let entry = `${stem}-${v.preset}.png`;
+          let n = 2;
+          while (usedNames.has(entry)) {
+            entry = `${stem}-${v.preset}-${n}.png`;
+            n++;
+          }
+          usedNames.add(entry);
+          // PNGs are already compressed — store, don't re-DEFLATE.
+          zip.addFile(file.path, entry, { compress: false });
+          fileCount++;
+        } catch (cause) {
+          // One unrenderable image (corrupt source, etc.) must not sink the
+          // whole export — skip it, count it, keep going.
+          failed++;
+          log.warn("cart:exportZip: skipping unrenderable capture", {
+            id: rec.id,
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
         }
-        usedNames.add(entry);
-        const file = await resolveImagePresetFile(rec, v.preset);
-        // PNGs are already compressed — store, don't re-DEFLATE.
-        zip.addFile(file.path, entry, { compress: false });
-        fileCount++;
+      }
+      if (fileCount === 0) {
+        return err({
+          kind: "render",
+          code: "export_failed",
+          message: "Could not render any images for the Zip"
+        });
       }
 
       await new Promise<void>((resolve, reject) => {
@@ -302,11 +330,24 @@ export function registerCartHandlers(): void {
         zip.outputStream.pipe(ws);
         zip.end();
       });
-      await rm(destPath, { force: true });
-      await rename(tmpPath, destPath);
+      // Move into place. POSIX `rename` overwrites atomically (no window
+      // where the user's existing file is gone); only fall back to
+      // rm-then-rename on Windows, where rename onto an existing file
+      // throws (the save dialog already confirmed the overwrite).
+      try {
+        await rename(tmpPath, destPath);
+      } catch (cause) {
+        const code = (cause as NodeJS.ErrnoException | null)?.code;
+        if (code === "EEXIST" || code === "EPERM") {
+          await rm(destPath, { force: true });
+          await rename(tmpPath, destPath);
+        } else {
+          throw cause;
+        }
+      }
       const stats = await stat(destPath);
       shell.showItemInFolder(destPath);
-      return ok({ path: destPath, fileCount, byteSize: stats.size, skipped });
+      return ok({ path: destPath, fileCount, byteSize: stats.size, skipped, failed });
     } catch (cause) {
       await rm(tmpPath, { force: true }).catch(() => undefined);
       log.warn("cart:exportZip failed", {

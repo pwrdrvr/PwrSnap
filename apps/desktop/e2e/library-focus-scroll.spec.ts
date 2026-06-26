@@ -182,8 +182,10 @@ test.describe("Library Focus close — scroll restoration (macOS)", () => {
     expect(before.cellId).not.toBe("");
     expect(before.scrollTop).toBeGreaterThan(0);
 
-    // Click the cell to open Focus mode.
-    await window.click(`.psl__cell[data-cell-id="${before.cellId}"]`);
+    // Double-click the cell to open the editor (single-click now only
+    // selects; the explicit triggers — double-click / Enter / Edit CTA —
+    // open Focus).
+    await window.dblclick(`.psl__cell[data-cell-id="${before.cellId}"]`);
 
     // Wait for Focus mode to engage: the root .psl element flips its
     // data-mode attribute, and the grid wrap gets display:none.

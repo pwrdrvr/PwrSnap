@@ -42,6 +42,11 @@ export interface LayoutToggleButtonsProps {
   /** When true, the window-level keydown listener is NOT installed —
    *  for callers that own keyboard handling at a higher level. */
   readonly disableHotkeys?: boolean;
+  /** When true, the PRIMARY (left) toggle is inert — the chip is greyed
+   *  out and the ⌘B chord is ignored (⌘⌥B / the secondary chip keep
+   *  working). Used when the primary bar can't be shown in the current
+   *  mode (e.g. the editor takeover hides the left nav). */
+  readonly primaryDisabled?: boolean;
 }
 
 export function LayoutToggleButtons({
@@ -51,7 +56,8 @@ export function LayoutToggleButtons({
   onToggleSecondary,
   className,
   testIdPrefix = "layout-toggle",
-  disableHotkeys = false
+  disableHotkeys = false,
+  primaryDisabled = false
 }: LayoutToggleButtonsProps): ReactElement {
   useEffect(() => {
     if (disableHotkeys) return;
@@ -61,6 +67,9 @@ export function LayoutToggleButtons({
       // Both shortcuts use `b` (case-insensitive); the modifier
       // distinguishes which bar.
       if (event.key !== "b" && event.key !== "B") return;
+      // Primary (⌘B) is disabled in some modes; swallow the chord then
+      // but keep the secondary chord (⌘⌥B) alive.
+      if (!event.altKey && primaryDisabled) return;
       event.preventDefault();
       if (event.altKey) {
         onToggleSecondary();
@@ -72,7 +81,7 @@ export function LayoutToggleButtons({
     return () => {
       window.removeEventListener("keydown", handler);
     };
-  }, [disableHotkeys, onTogglePrimary, onToggleSecondary]);
+  }, [disableHotkeys, onTogglePrimary, onToggleSecondary, primaryDisabled]);
 
   const rootClass =
     "lyt-toggle" +
@@ -84,6 +93,7 @@ export function LayoutToggleButtons({
         kind="primary"
         open={primaryOpen}
         onClick={onTogglePrimary}
+        disabled={primaryDisabled}
         testId={`${testIdPrefix}-primary`}
       />
       <LayoutChip
@@ -101,9 +111,10 @@ interface LayoutChipProps {
   open: boolean;
   onClick: () => void;
   testId: string;
+  disabled?: boolean;
 }
 
-function LayoutChip({ kind, open, onClick, testId }: LayoutChipProps): ReactElement {
+function LayoutChip({ kind, open, onClick, testId, disabled = false }: LayoutChipProps): ReactElement {
   const label =
     kind === "primary"
       ? open
@@ -124,9 +135,10 @@ function LayoutChip({ kind, open, onClick, testId }: LayoutChipProps): ReactElem
       }
       aria-label={label}
       aria-pressed={open}
-      title={`${label}  (${chord})`}
+      title={disabled ? "Not available here" : `${label}  (${chord})`}
       data-testid={testId}
       data-open={open ? "true" : "false"}
+      disabled={disabled}
       onClick={onClick}
     >
       <LayoutGlyph kind={kind} open={open} />

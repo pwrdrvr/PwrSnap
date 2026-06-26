@@ -1022,6 +1022,25 @@ export type SizzleRenderProgressEvent = {
   error?: { code: string; message: string };
 };
 
+/**
+ * Main → every BrowserWindow during a `cart:exportZip`. The renderer that
+ * started the job (matched by `jobId`) shows a determinate bar + a Cancel
+ * button. `rendering` fires once per image as it's rasterized; `zipping`
+ * fires once the render loop finishes and the archive is being written;
+ * `done` is the terminal beat (the dispatch result carries the real
+ * outcome, so subscribers only need this to clear their UI).
+ */
+export type CartExportProgressPhase = "rendering" | "zipping" | "done";
+
+export type CartExportProgressEvent = {
+  jobId: string;
+  phase: CartExportProgressPhase;
+  /** Images rasterized so far (rendered + failed). */
+  completed: number;
+  /** Total images that survived the skip-filter. */
+  total: number;
+};
+
 export type SecretStatus = {
   configured: boolean;
   lastSetAt: string | null;
@@ -3467,6 +3486,60 @@ export type Commands = {
   "cart:commitToExisting": {
     req: { projectId: string };
     res: SizzleProject;
+  };
+  /**
+   * Export the cart's image captures as a single Zip at one preset size
+   * (Low/Med/High). Prompts for a save location, renders each image at the
+   * preset (reusing the cached export pipeline), zips them, and reveals the
+   * file. Non-image / trashed / missing captures are skipped (counted in
+   * `skipped`). Does NOT mutate the cart. Returns an error with code
+   * `cancelled` if the user dismisses the save dialog, or `nothing_to_export`
+   * if no image survives the filter.
+   */
+  "cart:exportZip": {
+    req: {
+      captureIds: string[];
+      preset: RenderPreset;
+      /** Slug used as the default save filename (before .zip). */
+      suggestedName?: string;
+      /**
+       * Renderer-minted id correlating this export to its progress
+       * broadcasts (`EVENT_CHANNELS.cartExportProgress`) and to a
+       * `cart:exportZip:cancel` for the same job.
+       */
+      jobId: string;
+    };
+    res: {
+      path: string;
+      fileCount: number;
+      byteSize: number;
+      /** Captures filtered out before rendering (video / trashed / missing). */
+      skipped: number;
+      /** Images that errored during render and were left out of the zip. */
+      failed: number;
+    };
+  };
+  /**
+   * Cancel an in-flight `cart:exportZip` by its `jobId`. The export bails
+   * at the next inter-render checkpoint and returns its own `cancelled`
+   * error; this verb just trips the abort. `cancelled` is false when no
+   * job by that id is running (already finished / unknown).
+   */
+  "cart:exportZip:cancel": {
+    req: { jobId: string };
+    res: { cancelled: boolean };
+  };
+  /**
+   * Render the cart's images at `preset`, zip them to a temp file, and
+   * return its path — the drag bridge (`IPC_CART_ZIP_DRAG_START`) hands the
+   * file to `WebContents.startDrag` so the user can drag the Zip straight
+   * out to Finder / Slack / a folder. No save dialog (that's
+   * `cart:exportZip`); same skip-filter (image-only). `iconPath` is the
+   * first rendered image, used as the drag cursor image (null if none).
+   */
+  "cart:prepareZipDrag": {
+    req: { captureIds: string[]; preset: RenderPreset; suggestedName?: string };
+    res: { path: string; fileCount: number; iconPath: string | null };
   };
 };
 

@@ -1,5 +1,6 @@
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -45,6 +46,8 @@ import { nextAfterDelete } from "./delete-nav";
 import { DeleteUndoStack } from "./delete-undo-stack";
 import { mergeOpenedLiveRecords } from "./library-records";
 import { initialLibraryView, libraryReducer, type LibraryAction, type LibraryView } from "./library-view";
+import { resolveCellIntent, toGridCell, type CellTrigger } from "./resolve-cell-intent";
+import { GRID_NAV_KEYS, nextGridSelectionId } from "./grid-nav";
 import { Stage } from "./Stage";
 import { UndoToast } from "./UndoToast";
 import {
@@ -57,7 +60,6 @@ import {
 } from "../../lib/pwrsnap";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { useCart, useCartIsEmpty } from "./CartContext";
-import { CartPanel } from "./CartPanel";
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { snapGridZoom, stepGridZoom } from "../../lib/gridZoom";
@@ -314,6 +316,16 @@ function CellThumb({
   }
   return <Thumb c={capture} />;
 }
+
+// Memoized so a grid re-render driven by SELECT (single-click → the
+// is-selected ring + inspector) skips re-rendering the thumbnail — the
+// dominant per-cell cost. Props are referentially stable across a
+// selection re-render: `capture` comes from the memoized `grouped`,
+// `record`/`project`/`projectCoverRecord` from the memoized
+// `fixtureBacking`, and `width` is a constant. (The cheaper cell chrome
+// still re-renders; collapsing that to only the two affected cells is a
+// tracked follow-up.)
+const CellThumbMemo = memo(CellThumb);
 
 /**
  * Video Library card thumbnail. Renders a silent source preview on
@@ -587,7 +599,7 @@ export function Library() {
   if (deleteUndoRef.current === null) {
     deleteUndoRef.current = new DeleteUndoStack(MAX_DELETE_UNDO);
   }
-  const [lastDeleted, setLastDeleted] = useState<{ id: string } | null>(null);
+  const [lastDeleted, setLastDeleted] = useState<{ ids: string[] } | null>(null);
 
   // "Confirm before moving to Trash" preference (Settings →
   // library.confirmBeforeTrash). Seeded from settings:read + kept live via
@@ -608,30 +620,34 @@ export function Library() {
   // ⌘Z / Edit ▸ Undo / toast "Undo": restore the most-recently trashed
   // capture (the stack moves it onto its redo list).
   const undoDelete = useCallback(() => {
-    const id = deleteUndoRef.current?.undo();
-    if (id === undefined) return;
-    setLastDeleted((cur) => (cur?.id === id ? null : cur));
+    const ids = deleteUndoRef.current?.undo();
+    if (ids === undefined || ids.length === 0) return;
+    // The toast advertised this batch; undoing it clears the toast.
+    setLastDeleted(null);
     void (async () => {
-      const res = await dispatch("library:restore", { id });
-      if (!res.ok) return;
-      // If we're in single-capture Focus, bring the restored capture back into
-      // view — otherwise the undo is invisible (it reappears in the grid behind
-      // the editor). `library:restore` clears `deleted_at` synchronously before
-      // resolving, so editor:open won't reject as deleted; editor:open also
-      // owns the navigate + "not in the fetched page yet" wait via pendingOpen.
-      if (viewRef.current.kind === "focus") {
-        void dispatch("editor:open", { captureId: id });
+      for (const id of ids) {
+        const res = await dispatch("library:restore", { id });
+        // If we're in single-capture Focus and just restored the one
+        // capture, bring it back into view — otherwise the undo is
+        // invisible (it reappears in the grid behind the editor).
+        // `library:restore` clears `deleted_at` synchronously before
+        // resolving, so editor:open won't reject as deleted.
+        if (res.ok && ids.length === 1 && viewRef.current.kind === "focus") {
+          void dispatch("editor:open", { captureId: id });
+        }
       }
     })();
   }, []);
 
-  // ⌘⇧Z / Edit ▸ Redo: re-trash the most-recently restored capture (the
+  // ⌘⇧Z / Edit ▸ Redo: re-trash the most-recently restored batch (the
   // inverse of the undo above; still recoverable, so it's a safe redo).
   const redoDelete = useCallback(() => {
-    const id = deleteUndoRef.current?.redo();
-    if (id === undefined) return;
-    void dispatch("library:delete", { id });
-    setLastDeleted({ id });
+    const ids = deleteUndoRef.current?.redo();
+    if (ids === undefined || ids.length === 0) return;
+    for (const id of ids) {
+      void dispatch("library:delete", { id });
+    }
+    setLastDeleted({ ids });
   }, []);
 
   // Register the capture-level undo/redo with the edit-menu bridge. The bridge
@@ -702,6 +718,10 @@ export function Library() {
   const [rightPinned, setRightPinnedState] = useState<boolean>(true);
   const [rightActiveTab, setRightActiveTabState] =
     useState<LibrarySidebarTab>("info");
+  // Grid-mode rail tab (Info/OCR/Cart), lifted here so a cart-item jump
+  // can keep the rail on Cart instead of flipping to Info. Session-scoped
+  // (not persisted) — the grid tab is a transient browse concern.
+  const [gridActiveTab, setGridActiveTab] = useState<LibrarySidebarTab>("info");
   const [settingsHydrated, setSettingsHydrated] = useState<boolean>(false);
   const userTouchedRailRef = useRef<boolean>(false);
   // Mirror of `rightPinned` kept in a ref so `toggleRightPinned` can
@@ -1044,18 +1064,15 @@ export function Library() {
   }, [currentHistoryLocation, navHistory, restoreHistoryLocation]);
   const { projects: sizzleProjects } = useSizzleProjects();
   // The Project Asset Cart. Drives the cell checkboxes (which captures
-  // are checked) AND the grid-mode standalone cart rail (which appears
-  // when the cart is non-empty — the "right bar opens when you check"
-  // flow). In focus/reel modes the cart is a DetailRail tab instead.
-  // Library only needs the COARSE empty/non-empty signal (for the
-  // grid-mode rail gate + the data-cart attribute). Consuming the
+  // are checked). Library only needs the COARSE empty/non-empty signal
+  // (it opens the Grid right rail when the cart is non-empty even with
+  // nothing selected, so the cart can show as a tab). Consuming the
   // boolean context means a toggle WITHIN a non-empty cart doesn't
   // re-render Library (and therefore doesn't reflow the un-memoized
   // virtualized grid) — only the empty↔non-empty edge does. Per-cell
   // membership lives in <CartCellCheckbox>, which self-subscribes to
   // the full-cart context so only the checkboxes re-render on a toggle.
   const cartIsEmpty = useCartIsEmpty();
-  const cartIsOpenInGrid = view.kind === "grid" && !cartIsEmpty;
   // Library "Types" multi-pick filter. All three on by default so the
   // library looks the same as before for users who don't touch it.
   // Right-click / shift-click on a row sets that row as "Only" (the
@@ -1086,6 +1103,12 @@ export function Library() {
   }, []);
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
   const selectedRecordId = view.selectedRecordId;
+  // When the grid selection clears (only possible in grid), reset the grid
+  // rail tab to Info so the NEXT selection shows the capture's details
+  // rather than a stale Cart tab left over from a prior cart-item jump.
+  useEffect(() => {
+    if (selectedRecordId === null) setGridActiveTab("info");
+  }, [selectedRecordId]);
 
   const {
     rows: records,
@@ -1774,6 +1797,27 @@ export function Library() {
     );
   }, [isTrashView, records, selectedRecordId, universeRecords]);
 
+  // Grid-first right rail: shows when there's something to show — a
+  // SELECTED capture (Info + OCR + Cart-when-non-empty + the L/M/H export
+  // footer) OR a non-empty cart with nothing selected (a cart-only rail
+  // hosting just the Cart tab). Either way the cart lives INSIDE the right
+  // bar, so the layout toggle collapses it and it's dismissable — there's
+  // no separate orphaned cart rail anymore.
+  const showGridInspector =
+    view.kind === "grid" && (selectedRecord !== null || !cartIsEmpty);
+  // The right rail is "showing" whenever it occupies the column: always
+  // in focus/reel, and in Grid only when the inspector is up. Drives the
+  // data-right column-width attribute (undefined until settings hydrate so
+  // it doesn't paint at the wrong width on cold start).
+  const railShowing = view.kind !== "grid" || showGridInspector;
+  const railDataRight = !settingsHydrated
+    ? undefined
+    : railShowing
+      ? rightPinned
+        ? "pinned"
+        : "collapsed"
+      : undefined;
+
   // Records that match the current active filter, mapped from the
   // (already-filtered) `visible` fixture list. Drives ←/→ navigation
   // in Focus + Reel — both modes cycle through this set with wrap-
@@ -2185,6 +2229,20 @@ export function Library() {
   const prevRecordIdRef = useRef(prevRecordId);
   const nextRecordIdRef = useRef(nextRecordId);
   const selectedRecordRef = useRef(selectedRecord);
+  // Day-grouped visible record ids + cells-per-row, read by the grid
+  // arrow-key navigation in the keydown handler (refs so the single
+  // listener never goes stale). The day grouping is what makes ↑/↓
+  // navigate the real visual grid (each day is its own sub-grid) instead
+  // of blindly stepping by cellsPerRow. cellsPerRow is owned by
+  // VirtualizedGrid (it measures the container) and mirrored here.
+  const dayIdGroupsRef = useRef<string[][]>([]);
+  const cellsPerRowRef = useRef<number>(4);
+  // Imperative scroll handle published by VirtualizedGrid (it owns the
+  // virtualizer). Lets "jump to a cart item" bring an off-screen cell
+  // into view. `cartJumpTargetRef` holds a pending jump until the cell
+  // exists (after a filter drop / re-fetch).
+  const gridScrollApiRef = useRef<GridScrollApi | null>(null);
+  const cartJumpTargetRef = useRef<string | null>(null);
   useEffect(() => {
     prevRecordIdRef.current = prevRecordId;
   }, [prevRecordId]);
@@ -2194,6 +2252,56 @@ export function Library() {
   useEffect(() => {
     selectedRecordRef.current = selectedRecord;
   }, [selectedRecord]);
+  useEffect(() => {
+    // Map the rendered day groups → record ids per day (dropping any
+    // fixture-only cells, which aren't selectable). This is the exact
+    // visual partition the grid draws, so keyboard ↑/↓ matches it.
+    dayIdGroupsRef.current = grouped.map((g) =>
+      g.items
+        .map((c) => fixtureBacking.recordFor(c.id)?.id)
+        .filter((id): id is string => id != null)
+    );
+  }, [grouped, fixtureBacking]);
+
+  // Jump the grid to a collected cart item: return to Grid, drop the
+  // filter/search if the item isn't in the current visible set, select
+  // it, then defer the scroll until the cell actually exists (the
+  // pending-target effect below runs it once the grid reflects any
+  // re-filter / re-fetch).
+  const jumpToCapture = useCallback((captureId: string): void => {
+    const cur = viewRef.current;
+    if (cur.kind === "focus") {
+      viewDispatch({ type: "CLOSE_FOCUS" });
+    } else if (cur.kind === "reel") {
+      viewDispatch({ type: "TOGGLE_VIEW", to: "grid", fallbackId: null });
+    }
+    if (!dayIdGroupsRef.current.flat().includes(captureId)) {
+      setActiveFilter({ kind: "all" });
+      setSearchQuery("");
+    }
+    // Keep the rail on Cart — you clicked a cart item to find it, not to
+    // inspect it. (Set synchronously with the selection so the inspector
+    // doesn't flip to Info for a frame.)
+    setGridActiveTab("cart");
+    viewDispatch({ type: "SELECT_IN_GRID", recordId: captureId }, { history: "replace" });
+    cartJumpTargetRef.current = captureId;
+  }, [viewDispatch]);
+
+  useEffect(() => {
+    const target = cartJumpTargetRef.current;
+    if (target === null || view.kind !== "grid") return;
+    // scrollToId returns false until the row exists (records still
+    // loading after a filter drop) — keep the pending target and retry on
+    // the next records/grouped change.
+    const found = gridScrollApiRef.current?.scrollToId(target) ?? false;
+    if (!found) return;
+    cartJumpTargetRef.current = null;
+    requestAnimationFrame(() => {
+      gridScrollRef.current
+        ?.querySelector(`[data-cell-id="${target}"]`)
+        ?.scrollIntoView({ block: "center" });
+    });
+  }, [view, records]);
   useEffect(() => {
     function onKey(event: KeyboardEvent): void {
       // ⌘F — focus the library search input. Runs BEFORE the
@@ -2272,6 +2380,76 @@ export function Library() {
         viewDispatch({ type: "CLOSE_FOCUS" });
         return;
       }
+      // Esc in Grid collapses the right rail (hides the inspector / cart
+      // panel — the cart itself persists, shown as a badge on the spine).
+      // Keyboard alias for the layout toggle; no-op when already collapsed.
+      if (event.key === "Escape" && kind === "grid") {
+        if (rightPinnedRef.current) {
+          event.preventDefault();
+          toggleRightPinned();
+        }
+        return;
+      }
+      // Enter on the selected grid tile → open the editor. Reads the
+      // selection from viewRef.current (updated synchronously in
+      // viewDispatch) — NOT the effect-synced selectedRecordRef, which
+      // lags a commit and would edit the previously-selected tile if the
+      // user clicks then immediately presses Enter. No-op when nothing is
+      // selected; trashed captures resolve to noop (can't be edited).
+      if (event.key === "Enter" && kind === "grid") {
+        const recordId = viewRef.current.selectedRecordId;
+        if (recordId === null) return;
+        const intent = resolveCellIntent("enter", {
+          kind: "capture",
+          recordId,
+          isTrashed: activeFilterRef.current.kind === "trash"
+        });
+        if (intent.kind === "edit") {
+          event.preventDefault();
+          const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
+          gridReturnScrollTopRef.current = savedScrollTop;
+          viewDispatch({
+            type: "OPEN_FOCUS",
+            recordId: intent.recordId,
+            returnAnchor: { scrollTop: savedScrollTop, cellId: intent.recordId }
+          });
+        }
+        return;
+      }
+      // Grid: arrow keys + PageUp/Down move the SELECTION through the
+      // visible cells — ←/→ by one, ↑/↓ by a row, PageUp/Down by a page —
+      // and keep the moved cell in view. Lets you browse + inspect from
+      // the keyboard without leaving Grid. (Enter on the selection edits.)
+      const gridDir = kind === "grid" ? GRID_NAV_KEYS[event.key] : undefined;
+      if (gridDir !== undefined) {
+        const wrap = gridScrollRef.current;
+        const rowsPerPage = Math.max(
+          1,
+          Math.floor((wrap?.clientHeight ?? 720) / GRID_ROW_EST_PX)
+        );
+        const nextId = nextGridSelectionId(
+          dayIdGroupsRef.current,
+          viewRef.current.selectedRecordId,
+          gridDir,
+          cellsPerRowRef.current,
+          rowsPerPage
+        );
+        if (nextId === null) return;
+        event.preventDefault();
+        // For a page jump the target is ~a page away and likely not
+        // rendered yet — nudge the scroll first so the virtualizer renders
+        // near it, then scroll the cell exactly into view next frame.
+        if ((gridDir === "pageup" || gridDir === "pagedown") && wrap !== null) {
+          wrap.scrollTop += gridDir === "pagedown" ? wrap.clientHeight : -wrap.clientHeight;
+        }
+        viewDispatch({ type: "SELECT_IN_GRID", recordId: nextId }, { history: "replace" });
+        requestAnimationFrame(() => {
+          gridScrollRef.current
+            ?.querySelector(`[data-cell-id="${nextId}"]`)
+            ?.scrollIntoView({ block: "nearest" });
+        });
+        return;
+      }
       if (event.key === "ArrowLeft" && (kind === "focus" || kind === "reel")) {
         const id = prevRecordIdRef.current;
         if (id !== null) {
@@ -2291,38 +2469,58 @@ export function Library() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [viewDispatch]);
+  }, [viewDispatch, toggleRightPinned]);
 
   /**
-   * Single-click handler for grid cells. Phase C: dispatches
-   * `OPEN_FOCUS` with the captured grid scroll position + cell id
-   * so the cell-pulse effect can highlight the right cell on
-   * Focus → Grid return. Reel-mode filmstrip frames have their own
-   * NAVIGATE-only click handler (no Focus open from filmstrip).
+   * Grid-cell interaction handler. The grid-first select/edit split routes
+   * EVERY trigger through the one pure resolver (see resolve-cell-intent):
+   *   • plain click → SELECT (update the inspector, stay in grid)
+   *   • double-click / the orange Edit CTA → EDIT (open the Focus takeover)
+   *   • project cell → open the Sizzle window (exempt from the split)
+   *   • fixture / trashed-edit → no-op
+   * Reel-mode filmstrip frames have their own NAVIGATE-only handler.
    */
-  function onSelectCell(c: Capture): void {
-    // Project cell → open the sizzle window for that project.
-    // Click handler doesn't transition into focus/reel for projects;
-    // projects are edited in the dedicated Sizzle Reels window.
-    if (c.kind === "project" && c.projectId !== undefined) {
-      openSizzleProject(c.projectId);
-      return;
-    }
+  function onSelectCell(c: Capture, trigger: CellTrigger): void {
     const record = fixtureBacking.recordFor(c.id);
-    if (record === null) {
-      // Fixture-only cell (dev placeholder) — no real record to open.
-      return;
-    }
-    const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
-    gridReturnScrollTopRef.current = savedScrollTop;
-    viewDispatch({
-      type: "OPEN_FOCUS",
-      recordId: record.id,
-      returnAnchor: {
-        scrollTop: savedScrollTop,
-        cellId: record.id
-      }
+    const cell = toGridCell({
+      recordId: record?.id ?? "",
+      isProject: c.kind === "project",
+      projectId: c.kind === "project" && c.projectId !== undefined ? c.projectId : null,
+      hasBackingRecord: record !== null,
+      // Use the view-level trash signal (same one the Enter handler
+      // reads) so click and keyboard agree on edit-eligibility, and so
+      // the check can't lag behind a record ref.
+      isTrashed: isTrashView
     });
+    const intent = resolveCellIntent(trigger, cell);
+    switch (intent.kind) {
+      case "open-sizzle":
+        // Projects are edited in the dedicated Sizzle Reels window.
+        openSizzleProject(intent.projectId);
+        return;
+      case "select":
+        // Transient inspector update — replace history so a later
+        // double-click doesn't leave a stray grid-selection Back stop.
+        viewDispatch({ type: "SELECT_IN_GRID", recordId: intent.recordId }, { history: "replace" });
+        return;
+      case "edit": {
+        const cur = viewRef.current;
+        // Already-opening guard: a second edit intent for the record we're
+        // already focused on (e.g. a double-click landing on the Edit CTA)
+        // must not push a duplicate history entry.
+        if (cur.kind === "focus" && cur.selectedRecordId === intent.recordId) return;
+        const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
+        gridReturnScrollTopRef.current = savedScrollTop;
+        viewDispatch({
+          type: "OPEN_FOCUS",
+          recordId: intent.recordId,
+          returnAnchor: { scrollTop: savedScrollTop, cellId: intent.recordId }
+        });
+        return;
+      }
+      case "noop":
+        return;
+    }
   }
 
   function duplicateSizzleProject(
@@ -2418,9 +2616,23 @@ export function Library() {
     // Record on the session undo stack — this is what ⌘Z / Edit ▸ Undo
     // restores from, independent of the toast. Then surface the toast (keyed
     // by id) as the quick, visible affordance for this delete.
-    deleteUndoRef.current?.pushDelete(recordId);
-    setLastDeleted({ id: recordId });
+    deleteUndoRef.current?.pushDelete([recordId]);
+    setLastDeleted({ ids: [recordId] });
   }
+
+  // Bulk soft-delete from the cart: trash every collected capture as ONE
+  // undoable batch (toast "Restore N" + ⌘Z restores all), then empty the
+  // cart. The library refresh + FILTER_CHANGED clears any now-trashed grid
+  // selection, so no manual deselect is needed.
+  const trashCartCaptures = useCallback((captureIds: string[]): void => {
+    if (captureIds.length === 0) return;
+    for (const id of captureIds) {
+      void dispatch("library:delete", { id });
+    }
+    deleteUndoRef.current?.pushDelete(captureIds);
+    setLastDeleted({ ids: captureIds });
+    void dispatch("cart:clear", {});
+  }, []);
 
   function trashCapture(captureId: number): void {
     const record = fixtureBacking.recordFor(captureId);
@@ -2585,24 +2797,14 @@ export function Library() {
       className="psl"
       data-mode={view.kind}
       data-left={leftState}
-      // `data-right` controls the right column width (38px collapsed
-      // vs 360px pinned) AND the footer/overflow rules. In Grid mode
-      // DetailRail returns null, so the column is 0 either way and
-      // emitting the attribute would just confuse readers. Likewise,
-      // skip it until settings:read resolves so the rail doesn't
-      // paint at the wrong width for ~50ms on cold start.
-      data-right={
-        !settingsHydrated || view.kind === "grid"
-          ? undefined
-          : rightPinned
-            ? "pinned"
-            : "collapsed"
-      }
-      // `data-cart="open"` widens the right column in GRID mode so the
-      // standalone cart rail has room. In focus/reel the cart lives in
-      // the DetailRail tab strip and the column is already 360px, so
-      // this only matters for grid. See `.psl[data-mode="grid"][data-cart="open"]`.
-      data-cart={cartIsOpenInGrid ? "open" : undefined}
+      // `data-right` controls the right column width (38px collapsed vs
+      // 360px pinned) AND the footer/overflow rules. Computed as
+      // `railDataRight` above: pinned/collapsed whenever the rail is
+      // showing (focus/reel always; Grid when a capture is selected OR
+      // the cart is non-empty), else undefined so the column collapses
+      // to 0. The cart now rides in the rail as a tab, so there's no
+      // separate cart rail / data-cart attribute anymore.
+      data-right={railDataRight}
     >
       <header className="psl__topbar">
         <div className="psl__topbar-l">
@@ -2745,6 +2947,10 @@ export function Library() {
             secondaryOpen={rightPinned}
             onTogglePrimary={toggleLeftPinned}
             onToggleSecondary={toggleRightPinned}
+            // The editor takeover hides the left nav, so its toggle is
+            // inert there (greyed out, ⌘B ignored) rather than producing a
+            // stray spine sliver. Reel keeps it (the nav is live there).
+            primaryDisabled={view.kind === "focus"}
             testIdPrefix="psl-layout-toggle"
           />
           {/* Settings gear — opens the Settings window. Sits just
@@ -3084,6 +3290,8 @@ export function Library() {
             grouped={grouped}
             scrollElement={gridScrollRef}
             cellMinWidth={gridZoom}
+            cellsPerRowRef={cellsPerRowRef}
+            scrollApiRef={gridScrollApiRef}
             selectedRecordId={selectedRecordId}
             fixtureBacking={fixtureBacking}
             projectCoverRecordsById={projectCoverRecordsById}
@@ -3295,11 +3503,12 @@ export function Library() {
         />
       )}
 
-      {/* Detail rail. Renders null in grid mode (Phase B); shows
-          metadata + Codex caption + L/M/H copy row + action row in
-          focus + reel modes. Lives in the third grid column
-          (`grid-template-columns: 220px 1fr 360px` when
-          data-mode is focus/reel, collapsed to 0 in grid mode). */}
+      {/* Detail rail. Shows metadata + Codex caption + L/M/H export row
+          + action row. In focus/reel it's always present; in Grid it
+          renders the restricted Info/OCR inspector for the selected
+          capture (record forced null while the standalone cart rail owns
+          the column, so the two never overlap). Lives in the third grid
+          column (360px pinned / 38px collapsed via data-right). */}
       <DetailRail
         view={view}
         record={selectedRecord}
@@ -3311,6 +3520,10 @@ export function Library() {
         onTrash={deleteCaptureById}
         confirmBeforeTrash={confirmBeforeTrash}
         onDontAskAgainTrash={suppressTrashConfirm}
+        onCartJumpTo={jumpToCapture}
+        onCartTrashAll={trashCartCaptures}
+        gridActiveTab={gridActiveTab}
+        onGridActiveTabChange={setGridActiveTab}
       />
 
       {/* Capture soft-delete Undo toast — lower-left, in the shared
@@ -3320,8 +3533,12 @@ export function Library() {
       {lastDeleted !== null &&
         createPortal(
           <UndoToast
-            key={lastDeleted.id}
-            message="Moved to Trash"
+            key={lastDeleted.ids.join(",")}
+            message={
+              lastDeleted.ids.length === 1
+                ? "Moved to Trash"
+                : `Moved ${lastDeleted.ids.length} to Trash`
+            }
             durationMs={UNDO_TOAST_MS}
             onUndo={undoDelete}
             onDismiss={clearLastDeleted}
@@ -3329,28 +3546,9 @@ export function Library() {
           document.querySelector(".app-toast-stack") ?? document.body
         )}
 
-      {/* Grid-mode standalone cart rail. DetailRail returns null in
-          grid mode (its tabs are all per-capture), so the cart — which
-          is workspace-global — gets its own rail here that appears the
-          moment the user checks their first capture. In focus/reel the
-          cart is a DetailRail tab instead, so this is gated to grid. */}
-      {cartIsOpenInGrid ? (
-        // Render CartPanel DIRECTLY in the base `.psl__right` (which is
-        // a flex column with `overflow: hidden`). Deliberately NOT
-        // `.psl__right--vertical` / `.psl__right-content` /
-        // `.psl__right-body` — those carry `overflow: visible` (a
-        // DetailRail escape hatch so its collapsed hover-pop panel can
-        // bleed leftward into the canvas) which let the cart's content
-        // overflow past the rail's right edge. The cart wants a plain
-        // clipped column; `.psl__cart` fills it and manages its own
-        // scroll + padding.
-        <aside
-          className="psl__right psl__right--cart"
-          aria-label="Project asset cart"
-        >
-          <CartPanel />
-        </aside>
-      ) : null}
+      {/* The grid cart no longer has a separate rail — DetailRail hosts it
+          as a Cart tab (with a cart-only mode when nothing is selected),
+          so it's collapsible via the layout toggle and dismissable. */}
 
       <footer className="psl__status">
         <div className="psl__status-l">
@@ -3517,6 +3715,10 @@ function cellRowEstimatePx(cellMinWidth: number): number {
 // `cellMinWidth` prop and stepped by pinch-to-zoom.
 const CELL_GAP = 12;
 const CELL_GAP_DAY_END = 18; // .psl__grid padding-bottom in the original single-grid layout
+// Approximate rendered grid-cell row height (cell box ~240px +
+// CELL_GAP). Only used to estimate rows-per-page for PageUp/PageDown
+// keyboard nav, so a rough value is fine.
+const GRID_ROW_EST_PX = 252;
 const GRID_HORIZONTAL_PADDING = 18;
 /** Horizontal pixels from the reel's right edge at which to fire
  *  `loadMore`. ~3 viewport-widths of frames at typical filmstrip
@@ -3544,17 +3746,29 @@ type LibraryRow =
       isLastInDay: boolean;
     };
 
+type GridScrollApi = {
+  /** Scroll the (possibly virtualized-out) cell for `captureId` into
+   *  view. Returns false when no row matches (e.g. not loaded yet). */
+  scrollToId: (captureId: string) => boolean;
+};
+
 type VirtualizedGridProps = {
   grouped: DayGroup[];
   scrollElement: React.RefObject<HTMLDivElement | null>;
   /** Target minimum cell width in px (the sticky grid-zoom level). The
    *  grid fits `floor(width / cellMinWidth)` columns at this width. */
   cellMinWidth: number;
+  /** Mirrors the measured cells-per-row up to Library so the keyboard
+   *  grid-nav (↑/↓ by a row) can read it without re-measuring. */
+  cellsPerRowRef: React.RefObject<number>;
+  /** VirtualizedGrid publishes its imperative scroll handle here so
+   *  Library can jump to an off-screen capture (cart item click). */
+  scrollApiRef: React.RefObject<GridScrollApi | null>;
   selectedRecordId: string | null;
   fixtureBacking: FixtureBackedRecords;
   projectCoverRecordsById: Map<string, CaptureRecord>;
   appLabels: Record<string, string>;
-  onSelectCell: (c: Capture) => void;
+  onSelectCell: (c: Capture, trigger: CellTrigger) => void;
   duplicateSizzleProject: (projectId: string, event?: ReactMouseEvent<HTMLElement>) => void;
   openProjectContextMenu: (
     projectId: string,
@@ -3699,6 +3913,8 @@ function VirtualizedGrid({
   grouped,
   scrollElement,
   cellMinWidth,
+  cellsPerRowRef,
+  scrollApiRef,
   selectedRecordId,
   fixtureBacking,
   projectCoverRecordsById,
@@ -3718,6 +3934,10 @@ function VirtualizedGrid({
   purgeCaptureAction
 }: VirtualizedGridProps) {
   const cellsPerRow = useCellsPerRow(scrollElement, cellMinWidth);
+  // Mirror the measured value up to Library for keyboard grid-nav.
+  useEffect(() => {
+    cellsPerRowRef.current = cellsPerRow;
+  }, [cellsPerRow, cellsPerRowRef]);
 
   // Flatten day-groups → 1-D row list. Each header gets one row;
   // each day's items are sliced into rows of cellsPerRow. Memoized
@@ -3816,6 +4036,30 @@ function VirtualizedGrid({
   // generous enough that the next page lands before the user runs
   // out of rendered rows.
   const items = virtualizer.getVirtualItems();
+
+  // Publish an imperative scroll handle so Library can jump to an
+  // off-screen capture (cart item click): find the flat-row index whose
+  // cells include the capture, then scroll the virtualizer to it.
+  const scrollToId = useCallback(
+    (captureId: string): boolean => {
+      const idx = flatRows.findIndex(
+        (row) =>
+          row.kind === "cells" &&
+          row.cells.some((c) => fixtureBacking.recordFor(c.id)?.id === captureId)
+      );
+      if (idx < 0) return false;
+      virtualizer.scrollToIndex(idx, { align: "center" });
+      return true;
+    },
+    [flatRows, fixtureBacking, virtualizer]
+  );
+  useEffect(() => {
+    scrollApiRef.current = { scrollToId };
+    return () => {
+      scrollApiRef.current = null;
+    };
+  }, [scrollToId, scrollApiRef]);
+
   const lastItem = items[items.length - 1];
   useEffect(() => {
     if (!hasMore || isLoadingMore) return;
@@ -3956,7 +4200,7 @@ function CellRow({
   fixtureBacking: FixtureBackedRecords;
   projectCoverRecordsById: Map<string, CaptureRecord>;
   appLabels: Record<string, string>;
-  onSelectCell: (c: Capture) => void;
+  onSelectCell: (c: Capture, trigger: CellTrigger) => void;
   duplicateSizzleProject: (projectId: string, event?: ReactMouseEvent<HTMLElement>) => void;
   openProjectContextMenu: (
     projectId: string,
@@ -4020,7 +4264,8 @@ function CellRow({
               (isProject ? " psl__cell--project" : "")
             }
             data-cell-id={record?.id ?? ""}
-            onClick={() => onSelectCell(c)}
+            onClick={() => onSelectCell(c, "click")}
+            onDoubleClick={() => onSelectCell(c, "dblclick")}
             onContextMenu={(event) => {
               if (projectId !== null) {
                 openProjectContextMenu(projectId, c.n, event);
@@ -4029,7 +4274,7 @@ function CellRow({
             onMouseEnter={() => preloadFullRes(record ?? null)}
           >
             <div className="psl__cell-thumb">
-              <CellThumb
+              <CellThumbMemo
                 capture={c}
                 record={record}
                 project={project}
@@ -4073,6 +4318,28 @@ function CellRow({
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <rect x="8" y="8" width="11" height="11" rx="2" />
                       <path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h9a1 1 0 0 1 1 1v1" />
+                    </svg>
+                  </button>
+                ) : null}
+                {record !== null && !isProject && !isTrashView ? (
+                  <button
+                    type="button"
+                    className="psl__cell-trash psl__cell-edit"
+                    title="Edit"
+                    aria-label={`Edit ${c.n}`}
+                    onClick={(e) => {
+                      // Stop propagation so the CTA doesn't also fire the
+                      // cell's select onClick; stop dblclick too so a
+                      // double-click on the button doesn't bubble to the
+                      // cell's edit handler (one open, not two).
+                      e.stopPropagation();
+                      onSelectCell(c, "edit-cta");
+                    }}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 20h9" />
+                      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
                     </svg>
                   </button>
                 ) : null}

@@ -431,8 +431,16 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
       timeout: 10_000
     });
 
-    await window.locator(".psl__cell[data-cell-id='source-filter-unknown-null-bundle']").click();
+    // Double-click opens Focus (single-click selects in the grid-first model).
+    await window.locator(".psl__cell[data-cell-id='source-filter-unknown-null-bundle']").dblclick();
     await expect(window.locator(".psl")).toHaveAttribute("data-mode", "focus", {
+      timeout: 10_000
+    });
+
+    // Edit is a takeover — the left nav (filters) is hidden in Focus, so
+    // leave Focus via Esc before navigating filters.
+    await window.keyboard.press("Escape");
+    await expect(window.locator(".psl")).toHaveAttribute("data-mode", "grid", {
       timeout: 10_000
     });
 

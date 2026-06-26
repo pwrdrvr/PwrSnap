@@ -105,6 +105,127 @@ export function validateCartCommitToNew(
   return { ok: true, name: req.name };
 }
 
+const MAX_EXPORT_IDS = 1000;
+
+/** `cart:exportZip` — `{ captureIds; preset; suggestedName?; jobId }`.
+ *  Dedupes ids and caps cardinality so a runaway cart can't fan out into
+ *  thousands of renders + a giant zip (disk-fill / OOM at the boundary).
+ *  `jobId` correlates progress broadcasts + the cancel verb. */
+export function validateCartExportZip(
+  req: unknown
+):
+  | {
+      ok: true;
+      captureIds: string[];
+      preset: "low" | "med" | "high";
+      suggestedName: string | undefined;
+      jobId: string;
+    }
+  | { ok: false; error: PwrSnapError } {
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  if (!Array.isArray(req.captureIds) || req.captureIds.length === 0) {
+    return {
+      ok: false,
+      error: validationError("captureIds_required", "captureIds must be a non-empty array")
+    };
+  }
+  if (req.captureIds.length > MAX_EXPORT_IDS) {
+    return {
+      ok: false,
+      error: validationError(
+        "too_many",
+        `cannot export more than ${MAX_EXPORT_IDS} captures at once`
+      )
+    };
+  }
+  const captureIds: string[] = [];
+  const seen = new Set<string>();
+  for (const id of req.captureIds) {
+    if (typeof id !== "string" || id.length === 0) {
+      return {
+        ok: false,
+        error: validationError(
+          "captureId_invalid",
+          "every captureId must be a non-empty string"
+        )
+      };
+    }
+    if (!seen.has(id)) {
+      seen.add(id);
+      captureIds.push(id);
+    }
+  }
+  if (req.preset !== "low" && req.preset !== "med" && req.preset !== "high") {
+    return {
+      ok: false,
+      error: validationError("preset_invalid", "preset must be one of low | med | high")
+    };
+  }
+  let suggestedName: string | undefined;
+  if (req.suggestedName !== undefined && req.suggestedName !== null) {
+    if (typeof req.suggestedName !== "string") {
+      return {
+        ok: false,
+        error: validationError("suggestedName_invalid", "suggestedName must be a string")
+      };
+    }
+    suggestedName = req.suggestedName.slice(0, 200);
+  }
+  if (typeof req.jobId !== "string" || req.jobId.length === 0 || req.jobId.length > 128) {
+    return {
+      ok: false,
+      error: validationError("jobId_invalid", "jobId must be a 1–128 character string")
+    };
+  }
+  return { ok: true, captureIds, preset: req.preset, suggestedName, jobId: req.jobId };
+}
+
+/** `cart:exportZip:cancel` — `{ jobId: string }`. */
+export function validateCartExportZipCancel(
+  req: unknown
+): { ok: true; jobId: string } | { ok: false; error: PwrSnapError } {
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  if (typeof req.jobId !== "string" || req.jobId.length === 0 || req.jobId.length > 128) {
+    return {
+      ok: false,
+      error: validationError("jobId_invalid", "jobId must be a 1–128 character string")
+    };
+  }
+  return { ok: true, jobId: req.jobId };
+}
+
+/** `cart:prepareZipDrag` — `{ captureIds; preset; suggestedName? }`. Same
+ *  shape as the export minus `jobId` (a drag has no progress/cancel UI).
+ *  Reuses the export validator and drops the jobId requirement. */
+export function validateCartPrepareZipDrag(
+  req: unknown
+):
+  | {
+      ok: true;
+      captureIds: string[];
+      preset: "low" | "med" | "high";
+      suggestedName: string | undefined;
+    }
+  | { ok: false; error: PwrSnapError } {
+  // Borrow the export validator with a synthetic jobId so the shared
+  // captureIds/preset/suggestedName checks run, then strip jobId off.
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  const v = validateCartExportZip({ ...req, jobId: "drag" });
+  if (!v.ok) return v;
+  return {
+    ok: true,
+    captureIds: v.captureIds,
+    preset: v.preset,
+    suggestedName: v.suggestedName
+  };
+}
+
 /** `cart:commitToExisting` — `{ projectId: string }`. */
 export function validateCartCommitToExisting(
   req: unknown

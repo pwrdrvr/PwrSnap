@@ -6,6 +6,7 @@
 import { BrowserWindow, ipcMain, nativeImage } from "electron";
 import {
   IPC_CAPTURE_DRAG_START,
+  IPC_CART_ZIP_DRAG_START,
   IPC_CMD,
   IPC_VIDEO_DRAG_START
 } from "@pwrsnap/shared";
@@ -134,12 +135,79 @@ export function registerIpcDispatcher(): void {
       });
     })();
   });
+
+  // Cart Zip drag-out bridge — same fire-and-forget shape as the image /
+  // video variants. Routes through `cart:prepareZipDrag`, which renders the
+  // cart's images and zips them to a temp file, then fills startDrag with
+  // the `.zip` + the first image as the drag cursor icon. Errors are logged,
+  // not surfaced — a native drag handle has no protocol for "prepare failed."
+  ipcMain.on(IPC_CART_ZIP_DRAG_START, (event, req: unknown) => {
+    void (async () => {
+      const parsed = parseCartZipDragRequest(req);
+      if (parsed === null) {
+        log.warn("cart zip drag: invalid request");
+        return;
+      }
+
+      const result = await bus.dispatch("cart:prepareZipDrag", parsed, { principal: "ipc" });
+      if (!result.ok) {
+        log.warn("cart zip drag: prepare failed", {
+          count: parsed.captureIds.length,
+          preset: parsed.preset,
+          code: result.error.code,
+          message: result.error.message
+        });
+        return;
+      }
+      if (event.sender.isDestroyed()) return;
+
+      // The icon is the macOS drag cursor image. The handler composes a
+      // badged thumbnail (cover photo + count badge + ZIP chip) at
+      // CART_DRAG_ICON_WIDTH; resizing to the same width is a no-op for it.
+      // The resize is the safety net for the rare fallback where iconPath is
+      // the raw first image at FULL resolution — without it that would paint
+      // a giant, legible screenshot (a ghost of the app) under the cursor.
+      const raw =
+        result.value.iconPath !== null
+          ? nativeImage.createFromPath(result.value.iconPath)
+          : nativeImage.createEmpty();
+      const icon = raw.isEmpty()
+        ? nativeImage.createEmpty()
+        : raw.resize({ width: CART_DRAG_ICON_WIDTH, quality: "better" });
+      event.sender.startDrag({ file: result.value.path, icon });
+    })();
+  });
 }
+
+/** Drag cursor thumbnail width for the cart Zip drag-out — matches the
+ *  composed badge card in `render/cart-drag-icon.ts` (and the single-capture
+ *  drag's 128px ballpark), so the ghost is a tidy tile, never a full-res
+ *  screenshot. */
+const CART_DRAG_ICON_WIDTH = 160;
 
 export function disposeIpcDispatcher(): void {
   ipcMain.removeHandler(IPC_CMD);
   ipcMain.removeAllListeners(IPC_CAPTURE_DRAG_START);
   ipcMain.removeAllListeners(IPC_VIDEO_DRAG_START);
+  ipcMain.removeAllListeners(IPC_CART_ZIP_DRAG_START);
+}
+
+function parseCartZipDragRequest(
+  req: unknown
+): { captureIds: string[]; preset: RenderPreset; suggestedName?: string } | null {
+  if (typeof req !== "object" || req === null) return null;
+  const value = req as { captureIds?: unknown; preset?: unknown; suggestedName?: unknown };
+  if (!Array.isArray(value.captureIds) || value.captureIds.length === 0) return null;
+  if (!value.captureIds.every((id) => typeof id === "string" && id.length > 0)) return null;
+  if (value.preset !== "low" && value.preset !== "med" && value.preset !== "high") {
+    return null;
+  }
+  const out: { captureIds: string[]; preset: RenderPreset; suggestedName?: string } = {
+    captureIds: value.captureIds as string[],
+    preset: value.preset
+  };
+  if (typeof value.suggestedName === "string") out.suggestedName = value.suggestedName;
+  return out;
 }
 
 function parseDragRequest(req: unknown): { captureId: string; preset: RenderPreset } | null {

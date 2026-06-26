@@ -92,6 +92,26 @@ export function startVideoDrag(
 }
 
 /**
+ * Renderer-side helper for dragging the cart's Zip export out. Mirrors
+ * `startCaptureDrag` for images: fire-and-forget — preload sends
+ * `IPC_CART_ZIP_DRAG_START` with the cart's captureIds + preset (+ a
+ * suggested filename); main renders the images, zips them to a temp file,
+ * and calls `webContents.startDrag` with the `.zip`. Caller invokes this
+ * from an `onDragStart` handler after `event.preventDefault()`.
+ */
+export function startCartZipDrag(
+  captureIds: string[],
+  preset: RenderPreset,
+  suggestedName?: string
+): void {
+  window.pwrsnapApi?.startCartZipDrag({
+    captureIds,
+    preset,
+    ...(suggestedName !== undefined ? { suggestedName } : {})
+  });
+}
+
+/**
  * URL builders for the custom protocol schemes. The literal "r" host
  * is required because Chromium lowercases the URL authority for any
  * standard scheme (RFC 3986 §3.2.2) — putting the capture id in the

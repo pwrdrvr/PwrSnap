@@ -575,12 +575,42 @@
 .psl[data-mode="grid"][data-cart="open"] {
   --right-col: 360px;
 }
+/* Grid-first inspector: when a capture is selected in Grid (and the
+   standalone cart rail isn't taking the column), the right rail opens
+   for the restricted Info/OCR inspector — pinned at 360px, or the 38px
+   activity-bar spine when unpinned, mirroring focus/reel. data-right is
+   only emitted in Grid when the inspector is showing (and never with
+   data-cart="open"), so these don't fight the cart rule above. */
+.psl[data-mode="grid"][data-right="pinned"] {
+  --right-col: 360px;
+}
+.psl[data-mode="grid"][data-right="collapsed"] {
+  --right-col: 38px;
+}
 /* Collapsed left bar — only the 36px spine sticks out. Peek state
    reuses the same column width; the panel itself slides on as an
    absolute-positioned overlay (see .psl__left rules). */
 .psl[data-left="collapsed"],
 .psl[data-left="peek"] {
   --left-col: 36px;
+}
+/* Edit takeover hides the left nav (filters). Focus is a single-capture
+   takeover, not a browse surface, so the filter rail doesn't belong — you
+   leave Edit via Esc / × / Done, not by clicking a filter. Reel KEEPS the
+   nav (it's a browse layout where filters define the strip). Placed after
+   the data-left rule above so it wins the specificity tie and forces the
+   column to 0 regardless of the user's pin/peek state — and because it's
+   pure CSS keyed on data-mode, the nav's pinned/collapsed state is
+   preserved and restored intact when Edit closes. */
+.psl[data-mode="focus"] {
+  --left-col: 0px;
+}
+/* Hide BOTH the nav aside and its collapsed-state spine (a sibling of
+   .psl__left, rendered when the nav is unpinned). Without the spine rule,
+   entering Edit with the nav collapsed left a stray hamburger sliver. */
+.psl[data-mode="focus"] .psl__left,
+.psl[data-mode="focus"] .psl__left-spine {
+  display: none;
 }
 /* Center pane is the absolute-positioning anchor for the future
    Focus overlay (Phase C). */
@@ -1359,6 +1389,10 @@
   border: 1px solid var(--border-subtle);
   overflow: hidden;
   cursor: pointer;
+  /* Double-click = open the editor. Suppress text selection so a quick
+     double-click on the time / app-name overlay doesn't leave a stray
+     highlight. */
+  user-select: none;
   transition: all 120ms var(--ease-out);
   /* Perf hygiene (Phase B.9). content-visibility:auto skips paint +
      layout for offscreen cells; contain-intrinsic-size keeps the
@@ -1510,6 +1544,20 @@
   color: var(--accent-bright, var(--accent));
 }
 
+/* Edit CTA — the primary post-hover action: open the editor. Reuses the
+   .psl__cell-trash slide-in mechanics but reads as the tangerine accent
+   affordance (vs the trash button, which reddens on hover) so "edit" and
+   "delete" never look alike. Single-click still SELECTS the cell; this
+   button is the explicit door into the Focus editor. */
+.psl__cell-edit {
+  color: var(--accent-bright, var(--accent));
+}
+.psl__cell-edit:hover {
+  background: var(--accent-soft);
+  color: var(--accent-bright, var(--accent));
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
 .psl__context-menu {
   position: fixed;
   z-index: 80;
@@ -1633,6 +1681,37 @@
   border-radius: 999px;
   padding: 3px 7px;
 }
+.psl__cart-title {
+  font: 600 11px/1 var(--font-sans);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.psl__cart-header-spacer {
+  flex: 1;
+}
+/* Clear: empties the cart in one action (vs. removing items one at a
+   time). Does NOT delete the captures. Subtle until hover. */
+.psl__cart-clear {
+  flex-shrink: 0;
+  font: 600 11px/1 var(--font-sans);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: color 100ms var(--ease-out), background 100ms var(--ease-out),
+    border-color 100ms var(--ease-out);
+}
+.psl__cart-clear:hover {
+  color: var(--danger-text);
+  background: var(--danger-soft);
+}
+.psl__cart-clear:focus-visible {
+  outline: none;
+  border-color: var(--accent-border);
+}
 .psl__cart-empty {
   padding: 16px 14px;
   color: var(--text-muted);
@@ -1657,6 +1736,14 @@
      bleed past the right edge (the "cart dimensions" bug). This lets
      the row shrink so `.psl__cart-body`'s ellipsis engages. */
   min-width: 0;
+}
+/* Clickable to jump back to the capture in the grid (select + scroll). */
+.psl__cart-item.is-jumpable {
+  cursor: pointer;
+}
+.psl__cart-item.is-jumpable:hover {
+  border-color: var(--border-subtle);
+  background: var(--bg-panel-hover);
 }
 .psl__cart-item:hover { background: var(--bg-panel-hover); }
 .psl__cart-item:active { cursor: grabbing; }
@@ -1722,6 +1809,80 @@
   display: flex; flex-direction: column; gap: 6px;
   position: relative;
 }
+/* Export as Zip — mirrors the per-capture Copy cards: the shared
+   `.psl__copy-eyebrow` header + a `.psl__copy-row` grid of `.fo__copy-btn`
+   cards (same component styling the single-capture export uses). Sits at
+   the BOTTOM of the cart footer, the way single-capture export sits at the
+   bottom of the rail. */
+.psl__cart-zip {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+/* The zip cards reuse the shared `.fo__copy-btn` look; float-over.css has
+   no :disabled rule (its export cards are never disabled), so add one here
+   for the empty / mid-zip / no-images states. */
+.psl__cart-zip .fo__copy-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.psl__cart-zip .fo__copy-btn:disabled:hover {
+  background: var(--bg-panel-elevated);
+  border-color: var(--border-default);
+  transform: none;
+}
+/* A disabled card (empty cart / mid-zip / no images) can't be dragged out
+   either — dim its FILE chip and swallow the drag to match. */
+.psl__cart-zip .fo__copy-btn:disabled + .fo__copy-file {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.psl__cart-zip-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.psl__cart-zip-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-panel-elevated);
+  overflow: hidden;
+}
+.psl__cart-zip-bar-fill {
+  height: 100%;
+  min-width: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 140ms var(--ease-out);
+}
+.psl__cart-zip-cancel {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-panel-elevated);
+  color: var(--text-secondary);
+  font: 600 10px/1 var(--font-sans);
+  cursor: pointer;
+  transition: background 100ms var(--ease-out), border-color 100ms var(--ease-out);
+}
+.psl__cart-zip-cancel:hover {
+  background: var(--bg-panel-hover);
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+.psl__cart-zip-error {
+  font: 500 11px/1.4 var(--font-sans);
+  color: var(--danger-text);
+}
+.psl__cart-zip-note {
+  font: 500 11px/1.4 var(--font-sans);
+  color: var(--text-muted);
+}
 .psl__cart-btn {
   width: 100%;
   padding: 8px 10px;
@@ -1742,6 +1903,16 @@
 }
 .psl__cart-btn--primary:hover:not(:disabled) {
   background: var(--accent-bright, var(--accent));
+}
+/* Destructive action (Move to Trash) — brand-neutral at rest (matches the
+   other cart buttons), reddens only on hover. The base text stays
+   `--text-primary`; the salmon `--danger-text` at rest read as an
+   off-brand accent on a full-width control. Mirrors the per-capture trash
+   hover treatment (danger-soft + danger-border). */
+.psl__cart-btn--danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
 }
 .psl__cart-add-existing { position: relative; }
 .psl__cart-picker {
@@ -2243,6 +2414,22 @@
   margin-top: -1px;
   padding: 14px;
   display: flex; flex-direction: column; gap: 14px;
+}
+/* The cart owns its own bottom-pinned footer (export/trash/sizzle), so it
+   must fill the panel height — `.rab__panel-body` is a plain block, which
+   leaves `flex: 1` here inert and collapses the body to content height
+   (the export section then floats mid-panel). `.rab__panel-body` has a
+   definite flex height, so `height: 100%` makes the cart body fill it and
+   the cart's `flex: 1` list pushes the footer to the bottom, matching the
+   single-capture export footer. */
+.psl__right-body--cart {
+  height: 100%;
+  /* The cart is a self-contained panel — its header / list / footer carry
+     their own padding. The body's 14px wrapper padding would double-inset
+     it (a margin within a margin), so drop it here and let the cart own its
+     insets. */
+  padding: 0;
+  gap: 0;
 }
 
 .psl__preview {

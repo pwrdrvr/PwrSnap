@@ -108,6 +108,17 @@ export type DetailRailProps = {
   /** Flip `library.confirmBeforeTrash` off — wired to the popover's
    *  "Don't ask again". */
   readonly onDontAskAgainTrash?: () => void;
+  /** Jump the grid to a cart item (select + scroll). Threaded to the
+   *  CartPanel so clicking a collected item navigates back to it. */
+  readonly onCartJumpTo?: (captureId: string) => void;
+  /** Bulk-trash the cart's captures (wired through Library's undo stack
+   *  so the toast + ⌘Z restore the batch). Threaded to the CartPanel. */
+  readonly onCartTrashAll?: (captureIds: string[]) => void;
+  /** Controlled grid-mode active tab (Info/OCR/Cart). Lifted to Library so
+   *  a cart-item jump can keep the rail on Cart instead of flipping to
+   *  Info. When omitted, the rail owns it locally. */
+  readonly gridActiveTab?: LibrarySidebarTab;
+  readonly onGridActiveTabChange?: (next: LibrarySidebarTab) => void;
 };
 
 export function DetailRail({
@@ -120,7 +131,11 @@ export function DetailRail({
   onActiveTabChange,
   onTrash,
   confirmBeforeTrash = true,
-  onDontAskAgainTrash
+  onDontAskAgainTrash,
+  onCartJumpTo,
+  onCartTrashAll,
+  gridActiveTab: gridActiveTabProp,
+  onGridActiveTabChange
 }: DetailRailProps): ReactElement | null {
   // Skip the image render-metrics IPC for video captures — the
   // sharp-based preset pipeline is image-only and the video branch
@@ -168,6 +183,24 @@ export function DetailRail({
   // intended to control sees the bug instead of silent fallback.
   const [localActiveTab, setLocalActiveTab] = useState<SidebarTab>("info");
   const [localPinned, setLocalPinned] = useState<boolean>(true);
+  // Grid keeps its OWN active tab, separate from the focus/reel
+  // controlled tab. The grid set is restricted to Info/OCR, so reusing
+  // the shared tab would force a clamp-to-Info that overwrites the
+  // user's focus/reel tab choice (e.g. Chat) every time they drop back
+  // to Grid. A local tab side-steps that; it's session-scoped (not
+  // persisted) by design for this slice.
+  const [localGridTab, setLocalGridTab] = useState<SidebarTab>("info");
+  // Controlled-or-local grid tab. When Library drives it (gridActiveTab +
+  // onGridActiveTabChange), a cart-item jump can set it to "cart"
+  // synchronously so the rail doesn't flip to Info on the first jump.
+  const gridTab = gridActiveTabProp ?? localGridTab;
+  const setGridTab = useCallback(
+    (next: SidebarTab): void => {
+      if (onGridActiveTabChange !== undefined) onGridActiveTabChange(next);
+      else setLocalGridTab(next);
+    },
+    [onGridActiveTabChange]
+  );
   const [budgetStatus, setBudgetStatus] = useState<AiEnrichmentBudgetStatus | null>(null);
   // Which backend runs enrichment — so the status pill + OCR copy say "Grok" /
   // "Gemini" instead of always "Codex". Derived from the enrichment Settings
@@ -480,6 +513,16 @@ export function DetailRail({
     [hasOcrText, sizzleProjects.length, containingProjects.length, cartCount]
   );
 
+  // Grid restricts the rail to Info + OCR + Cart (the cross-asset cart
+  // tab, surfaced when the cart is non-empty). Chat/Project stay
+  // focus/reel-only; the export footer rides along for free. `tabs`
+  // already gates the Cart entry on cartCount > 0, so this picks it up
+  // only when there's actually a cart.
+  const gridTabs = useMemo(
+    () => tabs.filter((t) => t.id === "info" || t.id === "ocr" || t.id === "cart"),
+    [tabs]
+  );
+
   // If the active tab no longer exists in the tab set — e.g. the user
   // was on the Cart tab and then committed/cleared the cart (the Cart
   // tab is gated on cartCount > 0), or the only sizzle project got
@@ -492,10 +535,56 @@ export function DetailRail({
     }
   }, [tabs, activeTab, writeActiveTab]);
 
-  // Grid mode: rail not rendered. Future surfaces that want a rail
-  // in Grid (bulk-select, etc.) only change one component.
-  if (view.kind === "grid") return null;
+  // Same orphan guard for the grid-local tab: if the cart empties while
+  // the grid Cart tab is active, fall back to Info so the bar and panel
+  // don't disagree.
+  useEffect(() => {
+    if (!gridTabs.some((t) => t.id === gridTab)) {
+      setGridTab("info");
+    }
+  }, [gridTabs, gridTab]);
+
+  // Cart-only empty state: in Grid with a non-empty cart but nothing
+  // selected, render the rail with just the Cart tab. This keeps the cart
+  // INSIDE the right bar — toggle-controlled, collapsible, dismissable —
+  // instead of an orphaned separate rail the layout toggle can't reach.
+  // Info/OCR and the export footer all need a selected capture, so none
+  // of them show here. (Hooks all run above this branch — see below.)
+  if (record === null && view.kind === "grid" && cartCount > 0) {
+    const cartOnlyTabs = tabs.filter((t) => t.id === "cart");
+    return (
+      <aside className="psl__right psl__right--vertical" aria-label="Project asset cart">
+        <div className="psl__right-content">
+          <RightActivityBar
+            tabs={cartOnlyTabs}
+            activeTab="cart"
+            pinned={pinned}
+            onTabChange={() => undefined}
+            onPinChange={writePinned}
+            renderPanel={() => (
+              <div className="psl__right-body psl__right-body--cart">
+                <CartPanel onJumpTo={onCartJumpTo} onTrashAll={onCartTrashAll} />
+              </div>
+            )}
+            testIdPrefix="psl-right"
+            pinnedWidthPx={320}
+          />
+        </div>
+      </aside>
+    );
+  }
+  // No selection (and no cart to show) → no rail. This single guard covers
+  // grid-empty, focus, and reel alike. Hooks above this point run every
+  // render regardless of view.kind — do NOT move any hook below here
+  // (Rules of Hooks; guarded by DetailRail.test + library-*-spec).
   if (record === null) return null;
+
+  // Grid uses its own restricted tab set + local tab; focus/reel use the
+  // full set + the parent-controlled tab. Pin is shared across modes.
+  const isGrid = view.kind === "grid";
+  const railTabs = isGrid ? gridTabs : tabs;
+  const railActiveTab = isGrid ? gridTab : activeTab;
+  const onRailTabChange = isGrid ? setGridTab : writeActiveTab;
 
   const capturedAt = formatTimestamp(record.captured_at);
   const sourceName = record.source_app_name ?? "Unknown app";
@@ -585,8 +674,8 @@ export function DetailRail({
       // CartPanel is workspace-global — it reads the cart itself via
       // useDraftCart and doesn't need the selected record.
       return (
-        <div className="psl__right-body">
-          <CartPanel />
+        <div className="psl__right-body psl__right-body--cart">
+          <CartPanel onJumpTo={onCartJumpTo} onTrashAll={onCartTrashAll} />
         </div>
       );
     }
@@ -601,10 +690,10 @@ export function DetailRail({
     <aside className="psl__right psl__right--vertical" aria-label="Capture details">
       <div className="psl__right-content">
         <RightActivityBar
-          tabs={tabs}
-          activeTab={activeTab}
+          tabs={railTabs}
+          activeTab={railActiveTab}
           pinned={pinned}
-          onTabChange={writeActiveTab}
+          onTabChange={onRailTabChange}
           onPinChange={writePinned}
           renderPanel={renderPanel}
           testIdPrefix="psl-right"
@@ -612,7 +701,15 @@ export function DetailRail({
         />
       </div>
 
-      <div className="psl__right-footer" data-testid="psl-right-footer">
+      {/* The per-capture copy/file footer applies to the SELECTED capture,
+          which is confusing under the Cart tab (whose actions are about the
+          whole collection). Hide it there — the cart's own export (Zip)
+          lives in the Cart panel. */}
+      <div
+        className="psl__right-footer"
+        data-testid="psl-right-footer"
+        style={railActiveTab === "cart" ? { display: "none" } : undefined}
+      >
         <div>
           <div className="psl__copy-eyebrow">
             <span>{isVideo ? "Export" : "Copy to clipboard"}</span>

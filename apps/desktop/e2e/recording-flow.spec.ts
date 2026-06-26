@@ -219,7 +219,7 @@ test.describe("video float-over", () => {
       // Wait for our seeded capture to appear in the grid.
       const cell = window.locator(`.psl__cell[data-cell-id="${captureId}"]`);
       await expect(cell).toBeVisible({ timeout: 10_000 });
-      await cell.click();
+      await cell.dblclick();
 
       // Stage's app tag renders source_app_name verbatim. The class
       // is shared with the image path so a renderer-side regression
@@ -289,7 +289,7 @@ test.describe("video float-over", () => {
       const window = app.window;
       const cell = window.locator(`.psl__cell[data-cell-id="${captureId}"]`);
       await expect(cell).toBeVisible({ timeout: 10_000 });
-      await cell.click();
+      await cell.dblclick();
 
       const appTag = window.locator(".psl__stage-meta .ps-app-tag__name").first();
       await expect(appTag).toBeVisible({ timeout: 5000 });

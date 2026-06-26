@@ -3,9 +3,133 @@ import {
   validateCartCaptureId,
   validateCartCommitToExisting,
   validateCartCommitToNew,
+  validateCartExportZip,
+  validateCartExportZipCancel,
+  validateCartPrepareZipDrag,
   validateCartRename,
   validateCartReorder
 } from "../cart-validators";
+
+describe("validateCartExportZip", () => {
+  it("accepts ids + a valid preset, dedupes ids", () => {
+    const r = validateCartExportZip({
+      captureIds: ["a", "b", "a"],
+      preset: "med",
+      jobId: "job-1"
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.captureIds).toEqual(["a", "b"]);
+      expect(r.preset).toBe("med");
+      expect(r.suggestedName).toBeUndefined();
+      expect(r.jobId).toBe("job-1");
+    }
+  });
+
+  it("accepts + truncates a suggestedName", () => {
+    const r = validateCartExportZip({
+      captureIds: ["a"],
+      preset: "low",
+      suggestedName: "x".repeat(500),
+      jobId: "job-1"
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.suggestedName?.length).toBe(200);
+  });
+
+  it("rejects a missing / non-string jobId", () => {
+    expect(validateCartExportZip({ captureIds: ["a"], preset: "low" })).toMatchObject({
+      ok: false,
+      error: { code: "jobId_invalid" }
+    });
+    expect(
+      validateCartExportZip({ captureIds: ["a"], preset: "low", jobId: "" })
+    ).toMatchObject({ ok: false, error: { code: "jobId_invalid" } });
+  });
+
+  it("rejects empty / non-array captureIds", () => {
+    expect(validateCartExportZip({ captureIds: [], preset: "low" })).toMatchObject({
+      ok: false,
+      error: { code: "captureIds_required" }
+    });
+    expect(validateCartExportZip({ captureIds: "a", preset: "low" })).toMatchObject({
+      ok: false,
+      error: { code: "captureIds_required" }
+    });
+  });
+
+  it("caps cardinality", () => {
+    const many = Array.from({ length: 1001 }, (_, i) => `id-${i}`);
+    expect(validateCartExportZip({ captureIds: many, preset: "low" })).toMatchObject({
+      ok: false,
+      error: { code: "too_many" }
+    });
+  });
+
+  it("rejects a non-string id", () => {
+    expect(validateCartExportZip({ captureIds: ["a", 2], preset: "low" })).toMatchObject({
+      ok: false,
+      error: { code: "captureId_invalid" }
+    });
+  });
+
+  it("rejects an invalid preset", () => {
+    expect(validateCartExportZip({ captureIds: ["a"], preset: "ultra" })).toMatchObject({
+      ok: false,
+      error: { code: "preset_invalid" }
+    });
+  });
+});
+
+describe("validateCartPrepareZipDrag", () => {
+  it("accepts ids + preset (no jobId), dedupes", () => {
+    const r = validateCartPrepareZipDrag({
+      captureIds: ["a", "b", "a"],
+      preset: "high",
+      suggestedName: "demo"
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.captureIds).toEqual(["a", "b"]);
+      expect(r.preset).toBe("high");
+      expect(r.suggestedName).toBe("demo");
+    }
+  });
+
+  it("rejects empty ids / bad preset", () => {
+    expect(validateCartPrepareZipDrag({ captureIds: [], preset: "low" })).toMatchObject({
+      ok: false,
+      error: { code: "captureIds_required" }
+    });
+    expect(validateCartPrepareZipDrag({ captureIds: ["a"], preset: "ultra" })).toMatchObject({
+      ok: false,
+      error: { code: "preset_invalid" }
+    });
+  });
+});
+
+describe("validateCartExportZipCancel", () => {
+  it("accepts a non-empty jobId", () => {
+    const r = validateCartExportZipCancel({ jobId: "job-1" });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.jobId).toBe("job-1");
+  });
+
+  it("rejects non-object / empty / over-long jobId", () => {
+    expect(validateCartExportZipCancel(null)).toMatchObject({
+      ok: false,
+      error: { code: "not_object" }
+    });
+    expect(validateCartExportZipCancel({ jobId: "" })).toMatchObject({
+      ok: false,
+      error: { code: "jobId_invalid" }
+    });
+    expect(validateCartExportZipCancel({ jobId: "x".repeat(129) })).toMatchObject({
+      ok: false,
+      error: { code: "jobId_invalid" }
+    });
+  });
+});
 
 describe("validateCartCaptureId", () => {
   it("accepts a non-empty captureId", () => {

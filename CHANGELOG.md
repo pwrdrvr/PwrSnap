@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.0.0-beta.21 - 2026-06-25
+
+This beta makes the Library a stronger everyday workspace: video capture is now
+front and center, grid browsing no longer forces every click into edit mode,
+cart exports can produce shareable ZIPs, and video exports are dramatically
+smaller without losing their practical quality.
+
+- Video Capture - Added Record Video as a headline action in the tray and
+  Library, with live configured hotkeys, pre-capture permission checks, and
+  Library-window protection when recording from the Library.
+- Video Export - Fixed MP4 exports so every preset re-encodes through
+  VideoToolbox with an explicit 60-frame GOP, cutting typical exported file
+  sizes by roughly 50-70% while keeping codec-safe dimensions.
+- Sizzle Reels - Fixed MP4 reel renders to use the same explicit GOP cadence as
+  quick exports, avoiding dense-keyframe output.
+- Library Grid - Improved browsing so single-click selects a capture in the
+  grid, while double-click, Enter, or the Edit button opens the editor.
+- Project Cart - Added ZIP export and drag-out support for image working sets,
+  with preset size estimates, progress, cancellation, and bulk trash undo.
+- Editor Shapes - Fixed stroked shapes so clicking or dragging the visible
+  stroke line selects the shape reliably.
+- Editor Text - Fixed text selection outlines, hit testing, and transform
+  handles so they size from the real rendered glyph box.
+- AI Providers - Fixed ACP provider failures so Float-Over, Library, and
+  Settings show the provider-specific unavailable reason instead of generic or
+  `[object Object]` errors.
+- App Reliability - Improved experimental two-process Library startup with a
+  watchdog that recovers from black-window cold-launch stalls and clearer
+  per-process logs.
+- Diagnostics - Fixed persistent logging and SQLite WAL retention so idle app
+  runs do not churn diagnostic files or leave unbounded journal growth.
+
 ## v1.0.0-beta.20 - 2026-06-21
 
 This beta brings the post-rollback mainline back into a packaged build: capture

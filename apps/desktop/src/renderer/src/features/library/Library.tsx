@@ -1821,10 +1821,17 @@ export function Library() {
   // data-right column-width attribute (undefined until settings hydrate so
   // it doesn't paint at the wrong width on cold start).
   const railShowing = view.kind !== "grid" || showGridInspector;
+  // Auto-collapse the grid right rail to its hover-pop activity bar when the
+  // window is narrow, so the grid keeps its width (the cart/inspector becomes
+  // "on mouse over only"). Focus/reel keep the rail at the user's pin — those
+  // modes are *about* the selected capture, so its rail is the point. The
+  // manual layout toggle still wins whenever there's room.
+  const railEffectivePinned =
+    rightPinned && !(view.kind === "grid" && isToolbarNarrow);
   const railDataRight = !settingsHydrated
     ? undefined
     : railShowing
-      ? rightPinned
+      ? railEffectivePinned
         ? "pinned"
         : "collapsed"
       : undefined;
@@ -3881,55 +3888,61 @@ function useCellsPerRow(
   layoutSignal: string
 ): number {
   const [cellsPerRow, setCellsPerRow] = useState(4);
-  // Read the live zoom level through a ref so the ResizeObserver attaches
-  // ONCE (to the scroll element) instead of being torn down + recreated on
-  // every pinch step. A separate effect recomputes when the zoom changes.
+  // Live zoom read through a ref so `measure`'s identity stays stable (the
+  // ResizeObserver attaches ONCE instead of churning on every pinch step).
   const cellMinWidthRef = useRef(cellMinWidth);
-  const computeRef = useRef<() => void>(() => undefined);
-  useLayoutEffect(() => {
+
+  const measure = useCallback((): void => {
     const el = scrollElement.current;
     if (el === null) return;
-    const compute = (): void => {
-      const width = el.clientWidth;
-      // Skip zero-width measurements (the grid is display:none).
-      // The previous cellsPerRow stays in effect, so flatRows + the
-      // virtualizer's offset cache don't churn while the user is in
-      // focus mode.
-      if (width <= 0) return;
-      const inner = width - 2 * GRID_HORIZONTAL_PADDING;
-      // On a narrow pane, enforce a larger minimum cell so thumbnails stay
-      // big enough to read under the corner app chip. `Math.max` means this
-      // only ever reduces the column count (bigger cells), never the reverse.
-      const effectiveMin =
-        inner < NARROW_GRID_PANE_PX
-          ? Math.max(cellMinWidthRef.current, NARROW_GRID_CELL_MIN)
-          : cellMinWidthRef.current;
-      const next = Math.max(
-        1,
-        Math.floor((inner + CELL_GAP) / (effectiveMin + CELL_GAP))
-      );
-      setCellsPerRow((prev) => (prev === next ? prev : next));
-    };
-    computeRef.current = compute;
-    compute();
-    const ro = new ResizeObserver(compute);
+    const width = el.clientWidth;
+    // Skip zero-width measurements (the grid is display:none in focus/reel).
+    // Keeping the last value avoids churning flatRows + the virtualizer's
+    // offset cache while the user is away from the grid.
+    if (width <= 0) return;
+    const inner = width - 2 * GRID_HORIZONTAL_PADDING;
+    // On a narrow pane, enforce a larger minimum cell so thumbnails stay
+    // big enough to read under the corner app chip. `Math.max` means this
+    // only ever reduces the column count (bigger cells), never the reverse.
+    const effectiveMin =
+      inner < NARROW_GRID_PANE_PX
+        ? Math.max(cellMinWidthRef.current, NARROW_GRID_CELL_MIN)
+        : cellMinWidthRef.current;
+    const next = Math.max(
+      1,
+      Math.floor((inner + CELL_GAP) / (effectiveMin + CELL_GAP))
+    );
+    setCellsPerRow((prev) => (prev === next ? prev : next));
+  }, [scrollElement]);
+
+  // Attach the ResizeObserver once the scroll element is mounted.
+  //
+  // This MUST be a passive `useEffect`, not `useLayoutEffect`. The scroll
+  // element (`.psl__grid-wrap`) is an ANCESTOR of this component, and React
+  // attaches a parent's ref AFTER running its descendants' layout effects
+  // (bottom-up commit). So `scrollElement.current` is still null in a
+  // useLayoutEffect here — the observer never attached and cellsPerRow was
+  // stuck at its initial value (the long-standing "grid never drops columns"
+  // bug). A passive effect runs after all refs are attached, so the element
+  // is present. The virtualizer dodged this by reading the ref lazily.
+  useEffect(() => {
+    const el = scrollElement.current;
+    if (el === null) return;
+    measure();
+    const ro = new ResizeObserver(() => measure());
     ro.observe(el);
     return () => ro.disconnect();
-  }, [scrollElement]);
-  // Zoom changed (pinch): recompute the column count immediately, reusing
-  // the already-attached observer's compute (no observer churn).
+  }, [measure]);
+
+  // Re-measure synchronously when the zoom (pinch) or surrounding layout
+  // changes the pane width (right rail show/hide/collapse, left-bar pin,
+  // view mode). These fire after mount, when the ref is populated, so the
+  // update lands before paint with no flash.
   useLayoutEffect(() => {
     cellMinWidthRef.current = cellMinWidth;
-    computeRef.current();
-  }, [cellMinWidth]);
-  // Layout changed (cart rail opened/closed, left bar pinned, view mode):
-  // the pane width just changed but the ResizeObserver can miss it (the
-  // shrink happens via a CSS-var column resize on an ancestor, in the same
-  // commit). Read the freshly-laid-out width synchronously here — reading
-  // clientWidth forces layout with the new column widths applied.
-  useLayoutEffect(() => {
-    computeRef.current();
-  }, [layoutSignal]);
+    measure();
+  }, [cellMinWidth, layoutSignal, measure]);
+
   return cellsPerRow;
 }
 

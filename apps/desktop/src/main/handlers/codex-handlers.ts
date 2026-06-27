@@ -104,6 +104,69 @@ export type SettingsWriter = (patch: SettingsPatch) => Promise<Settings>;
 
 const activeRuns = new Map<string, AbortController>();
 
+/**
+ * Default ceiling for a single enrichment turn (the agent call itself,
+ * not image prep). A turn that exceeds this is aborted and the run is
+ * failed, so a stalled agent subprocess can't wedge the snap on
+ * "… is reading the snap" until the next relaunch (the boot-time
+ * `failOrphanedRunsOnBoot` sweep is the only other safety net).
+ *
+ * Deliberately generous: a genuine hang never returns, so even a long
+ * ceiling catches it, while a too-short ceiling would kill legitimately
+ * slow turns — ACP "thinking" models (Kimi with thinking on) can take
+ * minutes. Biased toward "only fires on a true stall" to avoid
+ * false-positive failures on slow-but-fine reads.
+ */
+export const ENRICHMENT_TURN_TIMEOUT_MS = 240_000;
+
+/** Thrown by `withTurnTimeout` when an enrichment turn outruns its
+ *  deadline. Distinct from an `AbortError` (user/context cancel) so the
+ *  run handler routes a timeout to `failAiRun` ("could not read … →
+ *  Regenerate"), not the silent `cancelAiRun` path. */
+class EnrichmentTimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(`enrichment turn exceeded ${Math.round(timeoutMs / 1000)}s`);
+    this.name = "EnrichmentTimeoutError";
+  }
+}
+
+/**
+ * Race `promise` against a deadline. If the deadline wins, `onTimeout`
+ * fires (best-effort: abort the turn so the agent/subprocess is told to
+ * stop) and the returned promise rejects with `EnrichmentTimeoutError`.
+ *
+ * The deadline is enforced HERE rather than relying on the backend to
+ * honor the abort: a stalled ACP agent may never reject on abort, so a
+ * race is the only thing guaranteed to unblock `runCaptureEnrichment`.
+ * A non-positive / non-finite `timeoutMs` disables the timeout (returns
+ * the promise unchanged). The `.then(…, …)` rejection handler also
+ * absorbs the loser's late rejection (post-abort), so no
+ * unhandledRejection escapes.
+ */
+function withTurnTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  onTimeout: () => void
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      onTimeout();
+      reject(new EnrichmentTimeoutError(timeoutMs));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error as Error);
+      }
+    );
+  });
+}
+
 function captureMetadataWorkspaceDir(): string {
   return join(app.getPath("documents"), "PwrSnap", "Chats", ".capture-metadata");
 }
@@ -434,6 +497,9 @@ export function registerCodexHandlers(params?: {
   settingsReader?: SettingsReader;
   settingsWriter?: SettingsWriter;
   budget?: AiEnrichmentBudget;
+  /** Override the per-turn enrichment timeout (ms). Defaults to
+   *  `ENRICHMENT_TURN_TIMEOUT_MS`; tests pass a tiny value. */
+  turnTimeoutMs?: number;
 }): void {
   const modelListInFlight = new Map<string, Promise<CodexModelOption[]>>();
   const clientFactory =
@@ -450,6 +516,7 @@ export function registerCodexHandlers(params?: {
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
   const settingsWriter = params?.settingsWriter ?? defaultSettingsWriter;
   const budget = params?.budget ?? aiEnrichmentBudget;
+  const turnTimeoutMs = params?.turnTimeoutMs ?? ENRICHMENT_TURN_TIMEOUT_MS;
 
   bus.register("codex:enrich", async (req, ctx) => {
     const triggerSource = triggerSourceOrDefault(req.triggerSource, "unknown");
@@ -613,7 +680,8 @@ export function registerCodexHandlers(params?: {
       budgetAfter: budgetDecision.after,
       ctx,
       clientFactory,
-      closeClientAfterRun
+      closeClientAfterRun,
+      turnTimeoutMs
     });
     return ok({ runId: run.id });
   });
@@ -938,6 +1006,10 @@ async function runCaptureEnrichment(params: {
   ctx: CommandContext;
   clientFactory: CodexClientFactory;
   closeClientAfterRun: boolean;
+  /** Per-turn deadline (ms). The agent call is aborted + the run failed
+   *  if it outruns this, so a stalled agent can't wedge the run in
+   *  `running` until relaunch. */
+  turnTimeoutMs: number;
 }): Promise<void> {
   const captureId = params.capture.id;
   // The backend actually running this enrichment, for the logs (enrichment is
@@ -1024,20 +1096,29 @@ async function runCaptureEnrichment(params: {
     } else {
       client = params.clientFactory(params.command, params.env);
     }
-    const response = await client.enrichCapture({
-      imagePaths,
-      metadata,
-      // Pass the resolved model for BOTH backends. For ACP this is the user's
-      // chosen agent model (the kit ignores an unknown id and falls back to the
-      // agent default, so a stale value can't break the run); "" → null → agent
-      // default. For Codex it's the caption model.
-      model: params.selectedModel.length > 0 ? params.selectedModel : null,
-      ...(acpAgentId === undefined && params.selectedProvider !== undefined
-        ? { modelProvider: params.selectedProvider }
-        : {}),
-      effort: params.effort,
-      abortSignal: abortController.signal
-    });
+    // Bound the turn: a stalled agent (the ACP path forwards an abort
+    // signal but enforces no deadline) would otherwise leave the run in
+    // `running` forever. On timeout we abort the controller (best-effort
+    // stop) and the race rejects with EnrichmentTimeoutError → the catch
+    // fails the run so the UI shows "could not read … Regenerate".
+    const response = await withTurnTimeout(
+      client.enrichCapture({
+        imagePaths,
+        metadata,
+        // Pass the resolved model for BOTH backends. For ACP this is the user's
+        // chosen agent model (the kit ignores an unknown id and falls back to the
+        // agent default, so a stale value can't break the run); "" → null → agent
+        // default. For Codex it's the caption model.
+        model: params.selectedModel.length > 0 ? params.selectedModel : null,
+        ...(acpAgentId === undefined && params.selectedProvider !== undefined
+          ? { modelProvider: params.selectedProvider }
+          : {}),
+        effort: params.effort,
+        abortSignal: abortController.signal
+      }),
+      params.turnTimeoutMs,
+      () => abortController.abort()
+    );
 
     // A "completed but blank" reply is a failure, not a success. The result
     // schema defaults title/description/ocrText to "", so an agent that returns
@@ -1122,6 +1203,7 @@ async function runCaptureEnrichment(params: {
   } catch (error) {
     const latencyMs = Math.round(performance.now() - startedAt);
     const isAbort = error instanceof DOMException && error.name === "AbortError";
+    const isTimeout = error instanceof EnrichmentTimeoutError;
     try {
       saveAiRunUsage({
         aiRunId: params.runId,
@@ -1137,7 +1219,11 @@ async function runCaptureEnrichment(params: {
         message: usageError instanceof Error ? usageError.message : String(usageError)
       });
     }
-    const message = agentErrorMessage(error);
+    // A timeout is a failure, not a user cancel — phrase it to read after
+    // CodexStatusPill's "{provider} could not read this snap: " prefix.
+    const message = isTimeout
+      ? `the read timed out after ${Math.round(error.timeoutMs / 1000)}s`
+      : agentErrorMessage(error);
     const run = isAbort
       ? cancelAiRun(params.runId)
       : failAiRun(params.runId, message, latencyMs);
@@ -1156,7 +1242,8 @@ async function runCaptureEnrichment(params: {
         codexCommand: params.command,
         provider,
         preparedMedia: preparedMediaShape(prepared),
-        outcome: "failed",
+        outcome: isTimeout ? "timed-out" : "failed",
+        timedOut: isTimeout,
         message
       });
     } else {

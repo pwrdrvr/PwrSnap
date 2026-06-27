@@ -27,6 +27,7 @@ import {
 import type { BundleLayerNode } from "@pwrsnap/shared";
 import { useCaptureModel } from "../editor/useCaptureModel";
 import type { LayersPanelApi } from "../editor/Editor";
+import { isBaseLayer, isCropLayer } from "../editor/layer-roles";
 import { TOOLS } from "../editor/editor-tools";
 import "./LayersPanel.css";
 
@@ -156,10 +157,6 @@ function isSelectable(node: BundleLayerNode): boolean {
   return false;
 }
 
-function isCropLayer(node: BundleLayerNode): boolean {
-  return node.kind === "vector" && node.shape.kind === "crop";
-}
-
 /** A crop layer whose rect EXPANDS (w > 1 or h > 1) isn't a real crop —
  *  it's the no-op "inverse crop" the dispatcher leaves behind when a
  *  crop is undone (crop-undo dispatches an expanding rect; the
@@ -172,16 +169,6 @@ function isSpuriousCropArtifact(node: BundleLayerNode): boolean {
   if (node.kind !== "vector" || node.shape.kind !== "crop") return false;
   const { w, h } = node.shape.rect;
   return w > 1 || h > 1;
-}
-
-/** "Base" layers — the Source raster and the Crop viewport — have no
- *  meaningful stacking position: the raster always composites FIRST (every
- *  annotation paints on top of it) and crop is a no-op viewport. They're
- *  pinned at the bottom of the list and aren't reorderable; an annotation
- *  can never move "below" them (it would change the list order but not the
- *  actual render — a no-op the panel shouldn't offer). */
-function isBaseLayer(node: BundleLayerNode): boolean {
-  return node.kind === "raster" || isCropLayer(node);
 }
 
 /** Order within the pinned base group: Crop just above Source, so the
@@ -197,6 +184,11 @@ export function LayersPanel({
 }: LayersPanelProps): ReactElement {
   const model = useCaptureModel(captureId);
   const listRef = useRef<HTMLDivElement | null>(null);
+  // Annotation-row vertical midpoints, snapshotted once at grip-down. Rows
+  // don't move during a drag (the dragged row only changes opacity and the
+  // drop line is a ::before/::after pseudo), so each pointermove compares
+  // against this cache instead of re-querying + re-measuring every row.
+  const dragMidsRef = useRef<number[] | null>(null);
   // Active drag-reorder: the layer being dragged + the gap the drop line
   // shows at (0 = above the first annotation … annotationCount = just
   // above the pinned base group).
@@ -212,8 +204,11 @@ export function LayersPanel({
   // z_index DESC; the base layers (Source + Crop) are pinned at the
   // BOTTOM regardless of z_index so an annotation never appears below
   // them (which would be a no-op — see isBaseLayer).
-  const rows = useMemo<BundleLayerNode[]>(() => {
-    if (model.kind !== "loaded") return [];
+  const { rows, annotationCount } = useMemo<{
+    rows: BundleLayerNode[];
+    annotationCount: number;
+  }>(() => {
+    if (model.kind !== "loaded") return { rows: [], annotationCount: 0 };
     const all = model.layers.filter(
       (l) => l.kind !== "group" && !isSpuriousCropArtifact(l)
     );
@@ -223,31 +218,34 @@ export function LayersPanel({
     const base = all
       .filter(isBaseLayer)
       .sort((a, b) => baseRank(a) - baseRank(b));
-    return [...annotations, ...base];
+    // Annotations occupy the first `annotationCount` rows (display index
+    // == annotation index); the pinned base layers follow.
+    return { rows: [...annotations, ...base], annotationCount: annotations.length };
   }, [model]);
-
-  // Annotations occupy the first `annotationCount` rows (display index ==
-  // annotation index); the pinned base layers follow.
-  const annotationCount = useMemo(
-    () => rows.filter((n) => !isBaseLayer(n)).length,
-    [rows]
-  );
   // PageUp/PageDown jump — bigger over deep stacks.
   const pageStep = annotationCount > 100 ? 10 : 5;
 
-  // The gap (0..annotationCount) a pointer Y falls into, by counting the
-  // annotation rows whose vertical midpoint sits above the cursor.
-  const gapFromPointerY = useCallback((clientY: number): number => {
+  // Measure the annotation rows' vertical midpoints — called once per
+  // drag (at grip-down) and cached in `dragMidsRef`.
+  const snapshotRowMids = useCallback((): number[] => {
     const list = listRef.current;
-    if (list === null) return 0;
-    const els = list.querySelectorAll<HTMLElement>('[data-annotation="true"]');
-    let gap = 0;
-    for (const el of els) {
+    if (list === null) return [];
+    return Array.from(
+      list.querySelectorAll<HTMLElement>('[data-annotation="true"]')
+    ).map((el) => {
       const r = el.getBoundingClientRect();
-      if (clientY > r.top + r.height / 2) gap += 1;
-    }
-    return Math.max(0, Math.min(els.length, gap));
+      return r.top + r.height / 2;
+    });
   }, []);
+
+  // The gap (0..annotationCount) a pointer Y falls into — counts the cached
+  // row midpoints above the cursor. No DOM access per pointermove.
+  const gapFromPointerY = (clientY: number): number => {
+    const mids = dragMidsRef.current ?? [];
+    let gap = 0;
+    for (const mid of mids) if (clientY > mid) gap += 1;
+    return Math.max(0, Math.min(mids.length, gap));
+  };
 
   const onGripMove = (e: ReactPointerEvent<HTMLElement>): void => {
     if (drag === null || e.pointerId !== drag.pointerId) return;
@@ -266,7 +264,12 @@ export function LayersPanel({
     let target = drag.overGap > from ? drag.overGap - 1 : drag.overGap;
     target = Math.max(0, Math.min(annotationCount - 1, target));
     setDrag(null);
+    dragMidsRef.current = null;
     if (from !== -1 && target !== from) void api?.moveLayerToIndex(drag.id, target);
+  };
+  const endDrag = (): void => {
+    dragMidsRef.current = null;
+    setDrag(null);
   };
 
   const onRowKeyDown = (
@@ -370,11 +373,12 @@ export function LayersPanel({
                   e.preventDefault();
                   e.stopPropagation();
                   e.currentTarget.setPointerCapture(e.pointerId);
+                  dragMidsRef.current = snapshotRowMids();
                   setDrag({ id, pointerId: e.pointerId, overGap: i });
                 }}
                 onPointerMove={onGripMove}
                 onPointerUp={onGripUp}
-                onPointerCancel={(): void => setDrag(null)}
+                onPointerCancel={endDrag}
               >
                 {GRIP_ICON}
               </span>

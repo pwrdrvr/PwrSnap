@@ -70,6 +70,7 @@ import { useZoomPan, type ZoomMode } from "./useZoomPan";
 import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUndoRedo";
 import { decideClickSelection } from "./decideClickSelection";
 import { pruneLandedDraftGeometry } from "./draft-geometry";
+import { isReorderableLayer } from "./layer-roles";
 import {
   useCaptureModel,
   inverseCropRect,
@@ -3583,20 +3584,16 @@ function EditorLoaded({
         }
       },
       moveLayerToIndex: async (id, toIndex) => {
-        // Reorder over the reorderable ANNOTATION set (vector except
-        // crop, plus effect), including hidden layers, sorted by z_index
-        // ASC (bottom-up) — independent of the visible-filtered render
-        // snapshot. The raster (base image) and the crop (no-op viewport)
-        // are excluded: they're pinned base layers with no meaningful
-        // stacking position. `toIndex` is the panel's TOP-DOWN index
-        // (0 = front), so convert to the bottom-up position moveToIndex /
-        // diffChanges use.
+        // Reorder over the reorderable ANNOTATION set (see
+        // `isReorderableLayer` — the same predicate the Layers panel pins
+        // by, so a move the panel offers is a move we honor), including
+        // hidden layers, sorted by z_index ASC (bottom-up) — independent
+        // of the visible-filtered render snapshot. The raster (base image)
+        // and the crop (no-op viewport) are excluded as pinned base
+        // layers. `toIndex` is the panel's TOP-DOWN index (0 = front), so
+        // convert to the bottom-up position moveToIndex / diffChanges use.
         const items = modelLayers
-          .filter(
-            (l) =>
-              (l.kind === "vector" && l.shape.kind !== "crop") ||
-              l.kind === "effect"
-          )
+          .filter(isReorderableLayer)
           .slice()
           .sort((a, b) => a.z_index - b.z_index)
           .map((l) => ({ id: l.id }));

@@ -11,17 +11,19 @@
 // draft-geometry.test.ts (pruneLandedDraftGeometry); this is the
 // end-to-end "the glyph actually moves back" check.
 
-import { mkdtemp, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import {
+  accel,
+  drawAnnotation,
+  drawOnCanvas,
+  expectLayerCount,
+  openEditorFocus,
+  seedImageCapture,
+  selectTool
+} from "./fixtures/editor-helpers";
 
 test.setTimeout(120_000);
-
-function accel(): "Meta" | "Control" {
-  return process.platform === "darwin" ? "Meta" : "Control";
-}
 
 test("editor-drag-undo: moving a layer then ⌘Z returns the glyph to its original position", async () => {
   const app = await launchPwrSnap();
@@ -147,8 +149,8 @@ test("editor-drag-undo: MULTI-select body-drag released OUTSIDE the canvas commi
 
     // Two shapes (vectors → shape.rect.x is directly comparable).
     await selectTool(win, "shape");
-    await drawShapeAt(win, 0.15, 0.3, 0.32, 0.5);
-    await drawShapeAt(win, 0.4, 0.3, 0.57, 0.5);
+    await drawAnnotation(win, 0.15, 0.3, 0.32, 0.5);
+    await drawAnnotation(win, 0.4, 0.3, 0.57, 0.5);
     await expectLayerCount(app, captureId, 2);
     const xsBefore = await allVectorRectXs(app, captureId);
     expect(xsBefore.length).toBe(2);
@@ -208,27 +210,6 @@ async function allVectorRectXs(
   return xs;
 }
 
-async function drawShapeAt(
-  win: Page,
-  fromXn: number,
-  fromYn: number,
-  toXn: number,
-  toYn: number
-): Promise<void> {
-  const canvas = win.locator(".editor-canvas");
-  await canvas.waitFor({ state: "visible" });
-  const box = await canvas.boundingBox();
-  expect(box).not.toBeNull();
-  if (box === null) return;
-  const from = { x: box.x + box.width * fromXn, y: box.y + box.height * fromYn };
-  const to = { x: box.x + box.width * toXn, y: box.y + box.height * toYn };
-  await win.mouse.move(from.x, from.y);
-  await win.mouse.down();
-  await win.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 5 });
-  await win.mouse.move(to.x, to.y, { steps: 5 });
-  await win.mouse.up();
-}
-
 /** The x-position of the first drawn annotation — works whether it
  *  landed as a VECTOR (shape.rect, normalized) or an EFFECT (clip_rect,
  *  absolute px). Dragging it right increases x either way. Null until
@@ -275,95 +256,14 @@ async function stableBox(
   return prev;
 }
 
-// ---- Shared helpers (mirror library-layers-panel.spec.ts) ------------
+// ---- Spec-local seed wrapper ----------------------------------------
 
-async function expectLayerCount(app: LaunchedApp, captureId: string, count: number): Promise<void> {
-  await expect
-    .poll(async () => {
-      const result = await app.dispatch("layers:list", { captureId });
-      if (!result.ok) return -1;
-      return result.value.length;
-    })
-    .toBe(count);
+/** Seed a v2 image tagged for the drag-undo spec. */
+function seedCapture(app: LaunchedApp): Promise<string> {
+  return seedImageCapture(app, {
+    idPrefix: "dragundo",
+    sourceName: "Drag Undo Spec"
+  });
 }
 
-async function seedCapture(app: LaunchedApp): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-drag-undo-spec-"));
-  const pngPath = path.join(dir, "fixture.png");
-  const pngBytes = Buffer.from(
-    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63000100000005000158d57340000000049454e44ae426082",
-    "hex"
-  );
-  await writeFile(pngPath, pngBytes);
-
-  const captureId = `dragundo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  await app.electronApp.evaluate(
-    (_electron, payload: { id: string; pngPath: string }) => {
-      const bridge = (
-        globalThis as unknown as {
-          __PWRSNAP_TEST__: {
-            seedCapture: (input: {
-              id: string;
-              kind: "image" | "video";
-              captured_at: string;
-              source_app_bundle_id: string | null;
-              source_app_name: string | null;
-              legacy_src_path: string | null;
-              width_px: number;
-              height_px: number;
-              device_pixel_ratio: number;
-              byte_size: number;
-              sha256: string;
-              bundle_format_version?: number;
-            }) => unknown;
-          };
-        }
-      ).__PWRSNAP_TEST__;
-      bridge.seedCapture({
-        id: payload.id,
-        kind: "image",
-        captured_at: new Date().toISOString(),
-        source_app_bundle_id: "com.test.spec",
-        source_app_name: "Drag Undo Spec",
-        legacy_src_path: payload.pngPath,
-        width_px: 800,
-        height_px: 600,
-        device_pixel_ratio: 1,
-        byte_size: 70,
-        sha256: payload.id,
-        bundle_format_version: 2
-      });
-    },
-    { id: captureId, pngPath }
-  );
-  return captureId;
-}
-
-async function openFocus(app: LaunchedApp, captureId: string): Promise<Page> {
-  const result = await app.dispatch("editor:open", { captureId });
-  expect(result.ok, "editor:open should succeed").toBe(true);
-  const page = app.window;
-  await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
-  await page.locator('.psl__edit-toolbar button[data-tool="highlight"]').waitFor({ state: "visible", timeout: 15_000 });
-  return page;
-}
-
-async function selectTool(win: Page, tool: string): Promise<void> {
-  await win.locator(`.psl__edit-toolbar button[data-tool="${tool}"]`).click();
-  await expect(win.locator(`.psl__edit-toolbar button[data-tool="${tool}"].is-active`)).toHaveCount(1);
-}
-
-async function drawOnCanvas(win: Page): Promise<void> {
-  const canvas = win.locator(".editor-canvas");
-  await canvas.waitFor({ state: "visible" });
-  const box = await canvas.boundingBox();
-  expect(box).not.toBeNull();
-  if (box === null) return;
-  const from = { x: box.x + box.width * 0.25, y: box.y + box.height * 0.25 };
-  const to = { x: box.x + box.width * 0.55, y: box.y + box.height * 0.55 };
-  await win.mouse.move(from.x, from.y);
-  await win.mouse.down();
-  await win.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 5 });
-  await win.mouse.move(to.x, to.y, { steps: 5 });
-  await win.mouse.up();
-}
+const openFocus = openEditorFocus;

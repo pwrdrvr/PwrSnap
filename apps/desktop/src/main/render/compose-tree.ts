@@ -29,7 +29,8 @@ import { createHash } from "node:crypto";
 import type { BundleLayerNode, Overlay, OverlayRow } from "@pwrsnap/shared";
 import {
   readHighlightColor,
-  readHighlightOpacity
+  readHighlightOpacity,
+  resolveCropViewport
 } from "@pwrsnap/shared";
 
 import { listLayerTree } from "../persistence/layers-repo";
@@ -65,7 +66,22 @@ export type ComposeTreeResult = {
  * URLs work across both formats.
  */
 export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeResult> {
-  const layers = listLayerTree(req.captureId);
+  // When the lone crop layer is HIDDEN, render the FULL source image:
+  // resolveCropViewport gives natural canvas dims + a layer tree
+  // re-projected into source space (overlays inverse-cropped, raster
+  // un-translated) — the exact mirror of the editor's uncropped view, so
+  // a baked/exported/copied image is WYSIWYG with what's on screen. When
+  // the crop is visible or absent this is the IDENTITY (same node refs,
+  // same dims), so existing captures hash + bake byte-for-byte as before.
+  const rawLayers = listLayerTree(req.captureId);
+  const viewport = resolveCropViewport({
+    layers: rawLayers,
+    canvasWidthPx: req.canvasWidthPx,
+    canvasHeightPx: req.canvasHeightPx
+  });
+  const layers = viewport.layers;
+  const canvasWidthPx = viewport.widthPx;
+  const canvasHeightPx = viewport.heightPx;
 
   // Cache key incorporates the tree's content hash. Children-below
   // hash is naturally included because we hash the entire flattened
@@ -76,8 +92,8 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
   // blur" correctly invalidates the cached blurred output.
   const renderHash = computeTreeRenderHash({
     layers,
-    canvasWidthPx: req.canvasWidthPx,
-    canvasHeightPx: req.canvasHeightPx,
+    canvasWidthPx,
+    canvasHeightPx,
     width: req.width,
     format: req.format
   });
@@ -115,9 +131,9 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
   // 800/361 ≈ 2.21× so glyphs are ~14 px tall in the PNG with full
   // RGBA antialiasing on the halo.
   const renderScale =
-    req.width > req.canvasWidthPx ? req.width / req.canvasWidthPx : 1;
-  const renderWidthPx = Math.max(1, Math.round(req.canvasWidthPx * renderScale));
-  const renderHeightPx = Math.max(1, Math.round(req.canvasHeightPx * renderScale));
+    req.width > canvasWidthPx ? req.width / canvasWidthPx : 1;
+  const renderWidthPx = Math.max(1, Math.round(canvasWidthPx * renderScale));
+  const renderHeightPx = Math.max(1, Math.round(canvasHeightPx * renderScale));
 
   const canvasInfo = {
     width: renderWidthPx,
@@ -167,6 +183,8 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
       accumulator,
       canvasInfo,
       req,
+      canvasWidthPx,
+      canvasHeightPx,
       sourceWidthPx,
       sourceHeightPx,
       renderScale
@@ -250,6 +268,13 @@ async function renderNode(
   accumulator: Buffer,
   canvasInfo: { width: number; height: number; channels: 4 },
   req: ComposeTreeRequest,
+  /** EFFECTIVE unscaled canvas dims — the cropped dims normally, or the
+   *  full-source dims when the crop is hidden (resolveCropViewport). The
+   *  text bake anchors sizePx to these, so a hidden-crop bake sizes text
+   *  against the same canvas the editor shows. Distinct from
+   *  `req.canvasWidthPx` (always the stored/cropped dims). */
+  canvasWidthPx: number,
+  canvasHeightPx: number,
   /** Source raster's natural dims — captured upstream by `composeV2`.
    *  Threaded only as far as `compositeVectorOntoAccumulator` cares
    *  (TEXT shapes use it). Raster + effect layers compute their own
@@ -286,12 +311,12 @@ async function renderNode(
         node,
         accumulator,
         canvasInfo,
-        // UNSCALED canvas dims from the request — distinct from
-        // canvasInfo.width/height which are the post-scale RENDER
-        // dims. The HTML text bake needs the unscaled dims for
-        // sizePx math anchored to the source raster's short side.
-        req.canvasWidthPx,
-        req.canvasHeightPx,
+        // UNSCALED canvas dims (effective — full-source when the crop is
+        // hidden) — distinct from canvasInfo.width/height which are the
+        // post-scale RENDER dims. The HTML text bake needs the unscaled
+        // dims for sizePx math anchored to the source raster's short side.
+        canvasWidthPx,
+        canvasHeightPx,
         sourceWidthPx,
         sourceHeightPx
       );

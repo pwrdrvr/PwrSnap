@@ -10,6 +10,9 @@ import {
   resolveCropViewport,
   inverseTransformOverlayByCrop,
   inverseCropRect,
+  forwardCropPoint,
+  forwardCropRect,
+  forwardLayerToStored,
   type CropRect
 } from "../crop-viewport";
 
@@ -184,6 +187,52 @@ describe("resolveCropViewport — STABILITY: toggling never makes annotations wa
 
     const hidden2 = resolveCropViewport({ layers: stored, canvasWidthPx: CROPPED_W, canvasHeightPx: CROPPED_H });
     expect(hidden2.layers).toEqual(hidden1.layers);
+  });
+});
+
+describe("forwardLayerToStored — inverse of the display projection (commit path)", () => {
+  it("a vector projected to source space forwards back to its stored coords", () => {
+    const stored = rectVector("rect000000000000", 0.5, 0.3, 0.2, 0.2);
+    const vp = resolveCropViewport({
+      layers: [RASTER, stored, cropLayer(false)],
+      canvasWidthPx: CROPPED_W,
+      canvasHeightPx: CROPPED_H
+    });
+    const displayed = vp.layers[1]; // source-space
+    const back = forwardLayerToStored(displayed, vp.rect!, 800, 600) as Extract<
+      BundleLayerNode,
+      { kind: "vector" }
+    >;
+    const shape = back.shape as Extract<typeof back.shape, { kind: "shape" }>;
+    expect(shape.rect.x).toBeCloseTo(0.5, 10);
+    expect(shape.rect.y).toBeCloseTo(0.3, 10);
+    expect(shape.rect.w).toBeCloseTo(0.2, 10);
+  });
+
+  it("an effect clip_rect round-trips through source space and back (px)", () => {
+    const vp = resolveCropViewport({
+      layers: [RASTER, effect("fx00000000000000", 100, 50, 40, 30), cropLayer(false)],
+      canvasWidthPx: CROPPED_W,
+      canvasHeightPx: CROPPED_H
+    });
+    const displayed = vp.layers[1];
+    const back = forwardLayerToStored(displayed, vp.rect!, 800, 600) as Extract<
+      BundleLayerNode,
+      { kind: "effect" }
+    >;
+    expect(back.clip_rect?.x).toBeCloseTo(100, 6);
+    expect(back.clip_rect?.y).toBeCloseTo(50, 6);
+    expect(back.clip_rect?.w).toBe(40);
+  });
+
+  it("forwardCropPoint / forwardCropRect invert the source projection", () => {
+    const rect: CropRect = EXPECTED_RECT;
+    // A point displayed at source 0.5 came from stored (0.5-0.2)/0.6.
+    expect(forwardCropPoint({ x: 0.5, y: 0.5 }, rect).x).toBeCloseTo(0.5, 10);
+    expect(forwardCropPoint({ x: 0.02, y: 0.3 }, rect).x).toBeCloseTo(-0.3, 10);
+    const fr = forwardCropRect({ x: 0.02, y: 0.3, w: 0.12, h: 0.2 }, rect);
+    expect(fr.x).toBeCloseTo(-0.3, 10);
+    expect(fr.w).toBeCloseTo(0.2, 10); // 0.12 / 0.6
   });
 });
 

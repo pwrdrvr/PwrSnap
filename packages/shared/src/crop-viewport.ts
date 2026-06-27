@@ -225,6 +225,67 @@ function projectLayerToSource(
   }
 }
 
+/** Map a normalized point from the FULL-SOURCE (displayed) space back
+ *  into STORED (cropped-canvas) space: `n → (n - rect.origin) / rect.size`.
+ *  The inverse of the display projection — use it to persist an overlay
+ *  the user drew on the uncropped view so it lands at the right stored
+ *  coords (and clips correctly when the crop is shown again). */
+export function forwardCropPoint(
+  p: { x: number; y: number },
+  rect: CropRect
+): { x: number; y: number } {
+  return { x: (p.x - rect.x) / rect.w, y: (p.y - rect.y) / rect.h };
+}
+
+/** Map a normalized rect from FULL-SOURCE space back into STORED space.
+ *  Origin shifts + scales by the crop window; size scales only. */
+export function forwardCropRect(
+  r: { x: number; y: number; w: number; h: number },
+  rect: CropRect
+): { x: number; y: number; w: number; h: number } {
+  return {
+    x: (r.x - rect.x) / rect.w,
+    y: (r.y - rect.y) / rect.h,
+    w: r.w / rect.w,
+    h: r.h / rect.h
+  };
+}
+
+/** Inverse of `projectLayerToSource`: map ONE layer from the displayed
+ *  (full-source) space back into STORED (cropped-canvas) space, for
+ *  committing an edit made on the uncropped view. `naturalW/H` are the
+ *  source raster's natural dims. The raster is returned unchanged (a draw
+ *  never creates one); the crop marker is left untouched. */
+export function forwardLayerToStored(
+  layer: BundleLayerNode,
+  rect: CropRect,
+  naturalW: number,
+  naturalH: number
+): BundleLayerNode {
+  switch (layer.kind) {
+    case "vector": {
+      if (layer.shape.kind === "crop") return layer;
+      const shape = inverseTransformOverlayByCrop(layer.shape, rect);
+      return shape === null ? layer : { ...layer, shape };
+    }
+    case "effect": {
+      if (layer.clip_rect === null) return layer;
+      return {
+        ...layer,
+        clip_rect: {
+          x: layer.clip_rect.x - rect.x * naturalW,
+          y: layer.clip_rect.y - rect.y * naturalH,
+          w: layer.clip_rect.w,
+          h: layer.clip_rect.h
+        }
+      };
+    }
+    case "raster":
+    case "group":
+      return layer;
+  }
+}
+
 /** The effective render state of a capture's layer tree once crop
  *  visibility is taken into account. */
 export interface CropViewport {

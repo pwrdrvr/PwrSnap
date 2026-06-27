@@ -58,7 +58,8 @@ import {
   readShapeKind,
   readShapeSkewDeg,
   readHighlightOpacity,
-  readTextWeight
+  readTextWeight,
+  resolveCropViewport
 } from "@pwrsnap/shared";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
@@ -71,6 +72,7 @@ import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUnd
 import { decideClickSelection } from "./decideClickSelection";
 import { pruneLandedDraftGeometry } from "./draft-geometry";
 import { isReorderableLayer } from "./layer-roles";
+import { forwardOpToStored, forwardGeometry } from "./crop-edit-space";
 import {
   useCaptureModel,
   inverseCropRect,
@@ -1075,7 +1077,89 @@ export function Editor({
   // error); we project v2 layers back to OverlayRow[] for the existing
   // OverlaySvg / BlurOverlays render path (read-only — write paths
   // still go through overlays:upsert for v1; v2 writes are Phase 4-5).
-  const model = useCaptureModel(captureId);
+  const rawModel = useCaptureModel(captureId);
+
+  // ----- Hidden-crop "show the full image" viewport ----------------
+  //
+  // When the lone crop layer is HIDDEN (eye toggled off in the Layers
+  // panel), resolveCropViewport projects the layer tree into the full
+  // source image's space at its natural dims. We feed that VIRTUAL model
+  // to the entire editor below — so the canvas, hit-test, projection,
+  // and placement all render/operate on the full image with ZERO
+  // per-seam changes — and wrap dispatchEdit so any draw/move the user
+  // makes on the uncropped view is mapped back into stored (cropped)
+  // coords before it persists. The projection is pure (reads only frozen
+  // storage), so toggling the crop on/off is bit-stable; nothing is ever
+  // re-normalized into storage, so annotations never walk.
+  //
+  // Two ops stay on the RAW model: the Layers panel's `uncrop` (needs
+  // the real cropped dims to compute the inverse — see EditorLoaded) and
+  // re-cropping while uncropped (guarded off in onCropCommit). Both are
+  // handled explicitly below; everything else flows through the wrapper.
+  const loadedRaw = rawModel.kind === "loaded" ? rawModel : null;
+  const cropViewport = useMemo(
+    () =>
+      loadedRaw === null
+        ? null
+        : resolveCropViewport({
+            layers: loadedRaw.layers,
+            canvasWidthPx: loadedRaw.record.width_px,
+            canvasHeightPx: loadedRaw.record.height_px
+          }),
+    [loadedRaw]
+  );
+  const isUncroppedView = cropViewport?.uncropped === true;
+  // Primitive deps keep the wrapped dispatch reference-stable across
+  // plain refetches — only an actual crop change moves these.
+  const vpRectX = isUncroppedView ? cropViewport!.rect!.x : 0;
+  const vpRectY = isUncroppedView ? cropViewport!.rect!.y : 0;
+  const vpRectW = isUncroppedView ? cropViewport!.rect!.w : 1;
+  const vpRectH = isUncroppedView ? cropViewport!.rect!.h : 1;
+  const vpNaturalW = isUncroppedView ? cropViewport!.widthPx : 0;
+  const vpNaturalH = isUncroppedView ? cropViewport!.heightPx : 0;
+  const rawDispatch = loadedRaw?.dispatchEdit;
+  const displayDispatch = useMemo(() => {
+    if (!isUncroppedView || rawDispatch === undefined) return rawDispatch;
+    const rect = { x: vpRectX, y: vpRectY, w: vpRectW, h: vpRectH };
+    return (op: LayerEditOp) =>
+      rawDispatch(forwardOpToStored(op, rect, vpNaturalW, vpNaturalH));
+  }, [isUncroppedView, rawDispatch, vpRectX, vpRectY, vpRectW, vpRectH, vpNaturalW, vpNaturalH]);
+
+  const model = useMemo(() => {
+    if (
+      loadedRaw === null ||
+      cropViewport === null ||
+      !cropViewport.uncropped ||
+      displayDispatch === undefined
+    ) {
+      return rawModel;
+    }
+    return {
+      ...loadedRaw,
+      record: {
+        ...loadedRaw.record,
+        width_px: cropViewport.widthPx,
+        height_px: cropViewport.heightPx
+      },
+      layers: cropViewport.layers,
+      dispatchEdit: displayDispatch
+    };
+  }, [rawModel, loadedRaw, cropViewport, displayDispatch]);
+
+  // Map a geometry from displayed (source) space into STORED space for
+  // UNDO RECORDING. Undo/redo replays through the RAW dispatcher
+  // (rawDispatchEdit), so every recorded artifact must be in stored
+  // (cropped) space; recording the display-space geometry would mis-
+  // position the layer on undo while a crop is hidden. Identity when the
+  // crop is visible. Applied ONLY to the recorded copy — the DISPATCHED
+  // geometry stays in display space (the wrapper maps that one).
+  const toStoredGeometry = useCallback(
+    (g: GeometryUpdate): GeometryUpdate =>
+      isUncroppedView
+        ? forwardGeometry(g, { x: vpRectX, y: vpRectY, w: vpRectW, h: vpRectH })
+        : g,
+    [isUncroppedView, vpRectX, vpRectY, vpRectW, vpRectH]
+  );
 
   // ----- Tool + style state ---------------------------------------
   //
@@ -3019,6 +3103,17 @@ export function Editor({
     sourceHeightPx
   };
 
+  // RAW (stored / cropped-space) values the Layers panel's `uncrop`
+  // needs — it must invert the REAL cropped dims even while the editor
+  // is rendering the virtual uncropped view (`model` is the full-image
+  // projection when the crop is hidden). The fallbacks never fire here
+  // (model is loaded ⇒ rawModel is loaded), they just satisfy types.
+  const storedLayers = rawModel.kind === "loaded" ? rawModel.layers : model.layers;
+  const storedCanvasWidthPx =
+    rawModel.kind === "loaded" ? rawModel.record.width_px : model.record.width_px;
+  const storedCanvasHeightPx =
+    rawModel.kind === "loaded" ? rawModel.record.height_px : model.record.height_px;
+
   return (
     <EditorLoaded
       record={model.record}
@@ -3065,7 +3160,15 @@ export function Editor({
       reorderSelectedRef={reorderSelectedRef}
       commitMultiDragRef={commitMultiDragRef}
       modelLayers={model.layers}
+      storedLayers={storedLayers}
+      storedCanvasWidthPx={storedCanvasWidthPx}
+      storedCanvasHeightPx={storedCanvasHeightPx}
+      isUncroppedView={isUncroppedView}
+      toStoredGeometry={toStoredGeometry}
       dispatchEdit={dispatchEditErased}
+      rawDispatchEdit={
+        rawModel.kind === "loaded" ? rawModel.dispatchEdit : dispatchEditErased
+      }
       sourceWidthPx={sourceWidthPx}
       sourceHeightPx={sourceHeightPx}
       rasterTranslateXPx={rasterTranslateXPx}
@@ -3126,7 +3229,13 @@ function EditorLoaded({
   reorderSelectedRef,
   commitMultiDragRef,
   modelLayers,
+  storedLayers,
+  storedCanvasWidthPx,
+  storedCanvasHeightPx,
+  isUncroppedView,
+  toStoredGeometry,
   dispatchEdit,
+  rawDispatchEdit,
   sourceWidthPx,
   sourceHeightPx,
   rasterTranslateXPx,
@@ -3313,11 +3422,38 @@ function EditorLoaded({
    *  without it, undo of a delete couldn't re-insert the
    *  structurally-identical layer. */
   modelLayers: readonly BundleLayerNode[];
+  /** RAW (stored / cropped-space) layer tree + canvas dims, distinct
+   *  from `modelLayers` / `record` which are the VIRTUAL full-image
+   *  projection while a crop is hidden. The Layers panel's `uncrop`
+   *  reads these so it inverts the real cropped dims, not the displayed
+   *  natural dims. Equal to the virtual values whenever the crop is
+   *  visible or absent. */
+  storedLayers: readonly BundleLayerNode[];
+  storedCanvasWidthPx: number;
+  storedCanvasHeightPx: number;
+  /** True when the lone crop layer is hidden and the editor is showing
+   *  the full source image. Drives the re-crop guard in onCropCommit. */
+  isUncroppedView: boolean;
+  /** Map a geometry from displayed (source) space into STORED (cropped)
+   *  space — applied to the RECORDED geometry at every recordGeometry
+   *  site so undo/redo (which replays via rawDispatchEdit) restores the
+   *  right position. Identity when the crop is visible. */
+  toStoredGeometry: (g: GeometryUpdate) => GeometryUpdate;
   /** dispatchEdit from the resolved CaptureModel. EditorLoaded threads
    *  it into useUndoRedo (so undo/redo route through the same
    *  dispatcher as create writes) and into onCropCommit (which uses
-   *  bundle:updateCanvasDimensions). */
+   *  bundle:updateCanvasDimensions). When the crop is hidden this is the
+   *  WRAPPED dispatcher that maps draw/move coords back into stored
+   *  space — so EditorLoaded's draw paths need no crop awareness. */
   dispatchEdit: (
+    op: LayerEditOp
+  ) => Promise<Result<EditOpResult, PwrSnapError>>;
+  /** The UNWRAPPED dispatcher (no crop-space coord mapping). undo/redo
+   *  REPLAY routes through this: every undo artifact is captured in
+   *  stored (cropped) space (from dispatch results / stored nodes), so
+   *  replaying it must NOT re-map through the wrapper or it double-
+   *  transforms. Equal to `dispatchEdit` whenever the crop is visible. */
+  rawDispatchEdit: (
     op: LayerEditOp
   ) => Promise<Result<EditOpResult, PwrSnapError>>;
   /** Source raster's natural dimensions, distinct from the capture's
@@ -3422,7 +3558,12 @@ function EditorLoaded({
     // hook would fall back to the legacy direct `overlays:*` dispatch
     // path — which the bus rejects on v2 captures with
     // `v2_capture_use_layers_ipc`.
-    dispatchEdit
+    //
+    // RAW (unwrapped) dispatcher on purpose: undo/redo replays artifacts
+    // already in stored (cropped) space, so re-mapping them through the
+    // hidden-crop wrapper would double-transform. Equals `dispatchEdit`
+    // whenever the crop is visible.
+    dispatchEdit: rawDispatchEdit
   });
 
   // Bridge: parent's persistOverlay reads recordCreateRef.current
@@ -3485,8 +3626,11 @@ function EditorLoaded({
     ): Promise<void> => {
       // Find the layer node so recordDelete can re-insert the
       // structurally-identical layer on undo (preserves parent_id /
-      // z_index / transform[] beyond what's in row.data).
-      const node = modelLayers.find((l) => l.id === row.id) ?? null;
+      // z_index / transform[] beyond what's in row.data). Read from the
+      // RAW stored tree so the undo payload carries cropped-space coords
+      // — undo replays through rawDispatchEdit, so a virtual (source-
+      // space) node would be re-inserted at the wrong place.
+      const node = storedLayers.find((l) => l.id === row.id) ?? null;
       const result = await dispatchEdit({ kind: "delete", id: row.id });
       if (!result.ok) {
         // eslint-disable-next-line no-console
@@ -3514,6 +3658,7 @@ function EditorLoaded({
     deleteSelectedRef,
     dispatchEdit,
     modelLayers,
+    storedLayers,
     undo,
     undoApplyingRef
   ]);
@@ -3549,7 +3694,11 @@ function EditorLoaded({
         );
       },
       setLayerVisibility: async (id, visible) => {
-        const node = modelLayers.find((l) => l.id === id);
+        // RAW node: this is a FULL-NODE replace, so it must carry stored
+        // (cropped-space) coords. `modelLayers` is the virtual source-
+        // space projection while a crop is hidden — writing that back
+        // would scramble the layer's persisted geometry.
+        const node = storedLayers.find((l) => l.id === id);
         if (node === undefined) return;
         const result = await dispatch("layers:update", {
           captureId: record.id,
@@ -3561,7 +3710,8 @@ function EditorLoaded({
         }
       },
       deleteLayer: async (id) => {
-        const node = modelLayers.find((l) => l.id === id) ?? null;
+        // RAW node for the undo payload (replays via rawDispatchEdit).
+        const node = storedLayers.find((l) => l.id === id) ?? null;
         const result = await dispatchEdit({ kind: "delete", id });
         if (!result.ok) {
           // eslint-disable-next-line no-console
@@ -3616,7 +3766,7 @@ function EditorLoaded({
         }
       },
       uncrop: async (cropLayerId) => {
-        const cropNode = modelLayers.find((l) => l.id === cropLayerId);
+        const cropNode = storedLayers.find((l) => l.id === cropLayerId);
         if (
           cropNode === undefined ||
           cropNode.kind !== "vector" ||
@@ -3635,22 +3785,41 @@ function EditorLoaded({
         // natural size — in one op, whether the user cropped once or N
         // times. (For a single crop this equals the old reverse-the-rect
         // behavior.)
-        if (record.width_px >= sourceWidthPx && record.height_px >= sourceHeightPx) {
+        //
+        // CRUCIAL: read the RAW stored dims + raster translate here, NOT
+        // the virtual `record`/`sourceWidthPx` (which show the FULL image
+        // when the crop is hidden). Inverting the virtual dims would make
+        // uncrop think the canvas already == the source and bail, so
+        // trashing a HIDDEN crop would silently do nothing.
+        let storedSourceW = storedCanvasWidthPx;
+        let storedSourceH = storedCanvasHeightPx;
+        let storedTx = 0;
+        let storedTy = 0;
+        for (const l of storedLayers) {
+          if (l.kind === "raster" && l.parent_id !== null) {
+            storedSourceW = l.natural_width_px;
+            storedSourceH = l.natural_height_px;
+            storedTx = l.transform[4];
+            storedTy = l.transform[5];
+            break;
+          }
+        }
+        if (storedCanvasWidthPx >= storedSourceW && storedCanvasHeightPx >= storedSourceH) {
           return; // already showing the whole source — nothing to uncrop
         }
         const cumulative = cropRectFromCanvas({
-          canvasWidthPx: record.width_px,
-          canvasHeightPx: record.height_px,
-          sourceWidthPx,
-          sourceHeightPx,
-          rasterTranslateXPx,
-          rasterTranslateYPx
+          canvasWidthPx: storedCanvasWidthPx,
+          canvasHeightPx: storedCanvasHeightPx,
+          sourceWidthPx: storedSourceW,
+          sourceHeightPx: storedSourceH,
+          rasterTranslateXPx: storedTx,
+          rasterTranslateYPx: storedTy
         });
         if (cumulative === null) return;
         const inverse = inverseCropRect(cumulative);
         if (inverse === null) return;
-        const previousWidthPx = record.width_px;
-        const previousHeightPx = record.height_px;
+        const previousWidthPx = storedCanvasWidthPx;
+        const previousHeightPx = storedCanvasHeightPx;
         const result = await dispatchEdit({ kind: "crop", rect: inverse });
         if (!result.ok) {
           // eslint-disable-next-line no-console
@@ -3694,15 +3863,14 @@ function EditorLoaded({
     onLayersApi,
     setSelectedLayerIds,
     modelLayers,
+    storedLayers,
+    storedCanvasWidthPx,
+    storedCanvasHeightPx,
     record,
     dispatchEdit,
     undo,
     undoApplyingRef,
-    recordCropRef,
-    sourceWidthPx,
-    sourceHeightPx,
-    rasterTranslateXPx,
-    rasterTranslateYPx
+    recordCropRef
   ]);
   useEffect(() => {
     if (onLayersApi === undefined) return;
@@ -3860,8 +4028,8 @@ function EditorLoaded({
           if (!undoApplyingRef.current && previousGeometry !== null) {
             undo.recordGeometry({
               currentIdRef: { current: newId },
-              previousGeometry,
-              nextGeometry: geometry
+              previousGeometry: toStoredGeometry(previousGeometry),
+              nextGeometry: toStoredGeometry(geometry)
             });
           }
         }
@@ -3891,6 +4059,7 @@ function EditorLoaded({
     record.width_px,
     record.height_px,
     setSelectionTrustingDispatch,
+    toStoredGeometry,
     undo,
     undoApplyingRef,
     beginInteractionRef,
@@ -3954,8 +4123,8 @@ function EditorLoaded({
             undo.recordGeometry(
               {
                 currentIdRef: { current: newId },
-                previousGeometry,
-                nextGeometry: geometry
+                previousGeometry: toStoredGeometry(previousGeometry),
+                nextGeometry: toStoredGeometry(geometry)
               },
               {
                 opKind: "multi-drag",
@@ -3987,6 +4156,7 @@ function EditorLoaded({
     commitMultiDragRef,
     dispatchEdit,
     setSelectionTrustingDispatch,
+    toStoredGeometry,
     undo,
     undoApplyingRef,
     beginInteractionRef,
@@ -4154,14 +4324,14 @@ function EditorLoaded({
           if (previousGeometry !== null) {
             undo.recordGeometry({
               currentIdRef: { current: newId },
-              previousGeometry,
-              nextGeometry: geometry
+              previousGeometry: toStoredGeometry(previousGeometry),
+              nextGeometry: toStoredGeometry(geometry)
             });
           }
         }
       })();
     },
-    [dispatchEdit, setSelectionTrustingDispatch, undo, undoApplyingRef]
+    [dispatchEdit, setSelectionTrustingDispatch, toStoredGeometry, undo, undoApplyingRef]
   );
 
   // Cleanup effect — drop each live-drag override once the persisted
@@ -4513,6 +4683,16 @@ function EditorLoaded({
   const onCropCommit = useCallback(
     (rect: { x: number; y: number; w: number; h: number }): void => {
       void (async (): Promise<void> => {
+        // Re-cropping while the crop is HIDDEN (the editor is showing the
+        // full image) is ambiguous: the rect is in source space but the
+        // dispatcher re-normalizes the STORED (cropped-space) overlays,
+        // so applying it would scramble them. v1 guards it off — show the
+        // crop again to adjust it, or trash it (full uncrop) first. The
+        // common flow (draw on the revealed image) isn't affected.
+        if (isUncroppedView) {
+          setTool("pointer");
+          return;
+        }
         // Snapshot the pre-crop canvas dims BEFORE dispatching so the
         // undo entry knows what to restore on ⌘Z. Reading after the
         // dispatch would race the events:captures:changed broadcast
@@ -4563,6 +4743,7 @@ function EditorLoaded({
     },
     [
       isControlled,
+      isUncroppedView,
       record,
       dispatchEdit,
       recordCropRef,

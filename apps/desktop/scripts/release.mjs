@@ -69,6 +69,7 @@ const dryrun = args.includes("--dryrun");
 const noPublish = args.includes("--no-publish");
 const prepareOnly = args.includes("--prepare-only");
 const signStageOnly = args.includes("--sign-stage-only");
+const skipFfmpegBuild = process.env.PWRSNAP_SKIP_FFMPEG_BUILD === "1";
 // `--skip-notarize`: produce a Developer-ID-signed but unnotarized
 // build. Useful for fast local iteration where you have a signing
 // keychain but no App Store Connect API key handy, and you're OK
@@ -408,15 +409,20 @@ if (!signStageOnly) {
     env: releaseArch === "universal" ? { PWRSNAP_NATIVE_UNIVERSAL: "1" } : {}
   });
 
-  // 3b. Build the bundled LGPL ffmpeg binary from upstream source.
-  // The previous npm binary was GPL+nonfree; this produces a
-  // redistributable binary and verifies the configure line before
-  // anything is packaged.
-  step("build bundled LGPL ffmpeg");
-  runChecked("pnpm", ["--filter", "@pwrsnap/desktop", "build:ffmpeg"], {
-    cwd: repoRoot,
-    env: releaseArch === "universal" ? { PWRSNAP_FFMPEG_UNIVERSAL: "1" } : {}
-  });
+  if (skipFfmpegBuild) {
+    step("skip bundled LGPL ffmpeg build");
+    console.log("  external FFmpeg artifact will be injected before packaging");
+  } else {
+    // 3b. Build the bundled LGPL ffmpeg binary from upstream source.
+    // The previous npm binary was GPL+nonfree; this produces a
+    // redistributable binary and verifies the configure line before
+    // anything is packaged.
+    step("build bundled LGPL ffmpeg");
+    runChecked("pnpm", ["--filter", "@pwrsnap/desktop", "build:ffmpeg"], {
+      cwd: repoRoot,
+      env: releaseArch === "universal" ? { PWRSNAP_FFMPEG_UNIVERSAL: "1" } : {}
+    });
+  }
 
   // 4. Build (electron-vite -> apps/desktop/out/).
   step("electron-vite build");
@@ -484,6 +490,15 @@ if (!signStageOnly) {
   run(`cp ${join(repoRoot, ".npmrc")} ${join(stageDir, ".npmrc")}`);
   for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md"]) {
     run(`cp ${join(repoRoot, file)} ${join(stageDir, file)}`);
+  }
+
+  if (skipFfmpegBuild) {
+    for (const dir of ["build/ffmpeg", "build/ffmpeg-source"]) {
+      const target = join(stageDir, dir);
+      if (existsSync(target)) {
+        rmSync(target, { recursive: true, force: true });
+      }
+    }
   }
 
   // electron-builder also needs electron-builder.yml to resolve

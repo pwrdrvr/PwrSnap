@@ -232,9 +232,15 @@ For a real signed Windows release, configure the protected GitHub
 
 - `WIN_CSC_LINK`
 - `WIN_CSC_KEY_PASSWORD`
-- `FFMPEG_BUILDS_PAT` with read access to the private
-  `pwrdrvr/pwrsnap-ffmpeg-builds` repository
+- `FFMPEG_BUILDS_APP_CLIENT_ID`
+- `FFMPEG_BUILDS_APP_PRIVATE_KEY`
 - optional `RELEASES_PAT`
+
+The FFmpeg GitHub App must be installed on the private
+`pwrdrvr/pwrsnap-ffmpeg-builds` repository with read-only Actions and
+Contents permissions. The workflow mints a short-lived installation token
+inside the protected signing job and uses it only to download the pinned
+FFmpeg artifact.
 
 The release workflow downloads the pinned
 `ffmpeg-8.1.1-windows-x64` artifact from

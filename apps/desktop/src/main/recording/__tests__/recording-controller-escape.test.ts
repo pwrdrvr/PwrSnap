@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   overlappingWindows: [] as WindowSpy[],
   createdWindows: [] as WindowSpy[]
 }));
+const originalPlatform = process.platform;
 
 type WindowSpy = {
   isDestroyed: ReturnType<typeof vi.fn>;
@@ -105,6 +106,7 @@ vi.mock("../../log", () => ({
 }));
 
 beforeEach(() => {
+  Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
   vi.resetModules();
   mocks.shortcutCallbacks.clear();
   mocks.registerShortcut.mockClear();
@@ -156,5 +158,21 @@ describe("recording-controller lead-in Escape shortcut", () => {
 
     expect(mocks.unregisterShortcut).toHaveBeenCalledWith("Escape");
     expect(mocks.shortcutCallbacks.has("Escape")).toBe(false);
+  });
+
+  test("full-display Windows recordings keep the HUD at the normal tray-stop position", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const { applyRecordingStateToController } = await import("../recording-controller");
+
+    applyRecordingStateToController({
+      phase: "recording",
+      sessionId: "rec-1",
+      startedAt: new Date(0).toISOString(),
+      rect: { x: 0, y: 0, w: 0, h: 0 },
+      displayId: 1
+    });
+
+    const win = mocks.createdWindows[0];
+    expect(win?.setPosition).toHaveBeenCalledWith(510, 16, false);
   });
 });

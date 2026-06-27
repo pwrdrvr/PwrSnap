@@ -115,6 +115,11 @@ function anchorAwayFromRecordedRect(
   rect: { x: number; y: number; w: number; h: number },
   displayId: number
 ): void {
+  if (rect.w <= 0 || rect.h <= 0) {
+    anchorTopCenter(win, displayId);
+    return;
+  }
+
   const display = screen.getAllDisplays().find((d) => d.id === displayId) ?? screen.getPrimaryDisplay();
   const [w, h] = win.getSize();
   const workArea = display.workArea;

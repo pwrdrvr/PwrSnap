@@ -1129,7 +1129,7 @@ async function runInteractiveRecord(
     { subject, capabilities, countdownSeconds: 3 },
     { principal: "ipc" }
   );
-  if (!result.ok) {
+  if (!result.ok && result.error.code !== "cancelled") {
     log.warn("recording:start failed", { code: result.error.code, message: result.error.message });
     try {
       if (Notification.isSupported()) {

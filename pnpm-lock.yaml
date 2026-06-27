@@ -95,8 +95,8 @@ importers:
         specifier: ^3.1.0
         version: 3.1.0
       wavesurfer.js:
-        specifier: ^7.12.7
-        version: 7.12.7
+        specifier: ^7.12.8
+        version: 7.12.8
       yauzl:
         specifier: ^3.3.0
         version: 3.3.0
@@ -3006,8 +3006,8 @@ packages:
     resolution: {integrity: sha512-o8qghlI8NZHU1lLPrpi2+Uq7abh4GGPpYANlalzWxyWteJOCsr/P+oPBA49TOLu5FTZO4d3F9MnWJfiMo4BkmA==}
     engines: {node: '>=18'}
 
-  wavesurfer.js@7.12.7:
-    resolution: {integrity: sha512-TIe7hB6OCZysNOZ2cn2NR8Qpko22POWel6rauNcqOammFoH65NYQUM35unNLLMIlUMVYvjJ6w/TTl/G/m+w0nA==}
+  wavesurfer.js@7.12.8:
+    resolution: {integrity: sha512-G3nxzcC4X+ZWrLtcIV17kCWHVq3ysJCS4dS0YkGKILrQ2esAb8cScw965zKNKYxUvpiZsPK93KLWgWTYdIBQiw==}
 
   webidl-conversions@8.0.1:
     resolution: {integrity: sha512-BMhLD/Sw+GbJC21C/UgyaZX41nPt8bUTg+jWyDeg7e7YN4xOM05YPSIXceACnXVtqyEw/LMClUQMtMZ+PGGpqQ==}
@@ -6007,7 +6007,7 @@ snapshots:
     dependencies:
       xml-name-validator: 5.0.0
 
-  wavesurfer.js@7.12.7: {}
+  wavesurfer.js@7.12.8: {}
 
   webidl-conversions@8.0.1: {}
 

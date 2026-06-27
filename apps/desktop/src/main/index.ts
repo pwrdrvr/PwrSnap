@@ -140,6 +140,7 @@ import {
   listExpiredTrash
 } from "./persistence/captures-repo";
 import { insertVideoMetadata } from "./persistence/video-repo";
+import { failOrphanedRunsOnBoot } from "./persistence/ai-runs-repo";
 import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
 import { persistCaptureFromTempV2, sweepBundleTrash } from "./persistence/bundle-store";
@@ -1531,6 +1532,16 @@ export function bootstrapApp(): void {
     } else {
       await openDatabase();
       markStartup("main: database open");
+      // Reset enrichment runs that were `queued`/`running` when the
+      // owning process last died — their live abort handle didn't
+      // survive the exit, so they're orphaned and would otherwise wedge
+      // the DetailRail on "… is reading the snap" forever (and hide the
+      // Regenerate button). Only the migrating process (agent/combined)
+      // does this; the library opens read-only in verify mode.
+      const orphanedRuns = failOrphanedRunsOnBoot();
+      if (orphanedRuns > 0) {
+        log.info("reset orphaned enrichment runs on boot", { count: orphanedRuns });
+      }
       await migrateLegacyCaptureSources();
       await migrateLegacyRenderCache();
       markStartup("main: legacy migrations done");

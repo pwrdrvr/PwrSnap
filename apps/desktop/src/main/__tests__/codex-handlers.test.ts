@@ -719,6 +719,86 @@ describe("Codex handlers", () => {
     expect(client.aborted).toBe(true);
   });
 
+  test("codex:enrich fails (not cancels) a run whose turn outruns the timeout", async () => {
+    // The ACP enrichment path forwards an abort signal but enforces no
+    // deadline, so a stalled agent would leave the run in `running`
+    // forever — "Kimi is reading the snap…" with the Regenerate button
+    // hidden. The handler's per-turn timeout must fail the run so the UI
+    // recovers without an app restart.
+    const client = new HangingCodexClient();
+    registerCodexHandlers({
+      clientFactory: () => client as never,
+      // Tiny ceiling so the test doesn't actually wait the real default.
+      turnTimeoutMs: 50,
+      settingsReader: async () =>
+        testSettings({
+          ai: {
+            enabled: true,
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            budgetSafetyDisabledAt: null,
+            autoAcceptSuggestions: false,
+
+            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
+            defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} },
+            acp: { enabledAgentIds: [] }
+          }
+        })
+    });
+
+    const started = await bus.dispatch(
+      "codex:enrich",
+      { captureId: "cap_1" },
+      { principal: "ipc", cancellationKey: "cap_1" }
+    );
+
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+
+    // A timeout is a FAILURE, not a silent cancel — the run must land in
+    // `failed` (CodexStatusPill → "could not read … Regenerate"), never
+    // `cancelled` (which the pill renders as idle).
+    await waitFor(() => getAiRun(started.value.runId)?.status === "failed");
+    const run = getAiRun(started.value.runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.error).toMatch(/timed out/i);
+
+    // The timeout aborts the in-flight turn (best-effort stop of the agent).
+    await waitFor(() => client.aborted);
+    expect(client.aborted).toBe(true);
+  });
+
+  test("codex:enrich completes normally when the turn finishes within the timeout", async () => {
+    // The timeout wrapper must not interfere with a fast, healthy turn.
+    registerCodexHandlers({
+      clientFactory: () => new FakeCodexClient() as never,
+      turnTimeoutMs: 5_000,
+      settingsReader: async () =>
+        testSettings({
+          ai: {
+            enabled: true,
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            budgetSafetyDisabledAt: null,
+            autoAcceptSuggestions: false,
+
+            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
+            defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} },
+            acp: { enabledAgentIds: [] }
+          }
+        })
+    });
+
+    const started = await bus.dispatch(
+      "codex:enrich",
+      { captureId: "cap_1" },
+      { principal: "ipc", cancellationKey: "cap_1" }
+    );
+
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    await waitFor(() => getAiRun(started.value.runId)?.status === "completed");
+    expect(getAiRun(started.value.runId)?.error).toBeNull();
+  });
+
   test("codex:acceptTitle persists the title and broadcasts enrichment", async () => {
     registerCodexHandlers({
       clientFactory: () => new FakeCodexClient() as never,

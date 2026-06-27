@@ -135,6 +135,46 @@ export function cancelAiRun(id: string, error = "cancelled"): AiRunSnapshot | nu
   return getAiRun(id);
 }
 
+/**
+ * Error message stamped on runs that were `queued`/`running` when the
+ * owning process died. Phrased to read after `CodexStatusPill`'s
+ * "{provider} could not read this snap: " prefix.
+ */
+export const ORPHANED_RUN_ERROR =
+  "the previous attempt was interrupted when PwrSnap restarted";
+
+/**
+ * Fail every run still sitting in `queued` or `running`. Run ONCE at
+ * boot, before any enrichment is dispatched.
+ *
+ * A run only reaches `running` from the live `runCaptureEnrichment`
+ * task, whose abort handle lives in an in-memory `Map` that does not
+ * survive a process exit. So at process boot any `queued`/`running`
+ * row is orphaned by definition — the task that would have moved it to
+ * `completed`/`failed` is gone (app quit, crash, or the enrichment
+ * subprocess was killed mid-turn). Without this sweep the DetailRail
+ * shows "Kimi is reading the snap…" forever AND hides the Regenerate
+ * button (it's hidden while `queued`/`running`), so the snap is wedged
+ * with no way to retry.
+ *
+ * Resetting to `failed` (not re-queuing) surfaces the existing failure
+ * pill + Regenerate affordance and avoids an auto-retry loop on a snap
+ * that may fail every time. Returns the number of rows reset.
+ */
+export function failOrphanedRunsOnBoot(error: string = ORPHANED_RUN_ERROR): number {
+  const db = getDb();
+  const result = db
+    .prepare(
+      `UPDATE ai_runs
+       SET status = 'failed',
+           error = @error,
+           completed_at = datetime('now')
+       WHERE status IN ('queued', 'running')`
+    )
+    .run({ error });
+  return result.changes;
+}
+
 export function getAiRun(id: string): AiRunSnapshot | null {
   const db = getDb();
   const row = db.prepare("SELECT * FROM ai_runs WHERE id = ?").get(id) as AiRunRow | undefined;

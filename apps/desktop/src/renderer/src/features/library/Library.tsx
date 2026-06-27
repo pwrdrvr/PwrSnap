@@ -1178,6 +1178,10 @@ export function Library() {
   // Quick Capture is never shrunk; the search field absorbs the squeeze.
   const isToolbarNarrow = useMediaQuery("(max-width: 1024px)");
   const isToolbarTight = useMediaQuery("(max-width: 1000px)");
+  // Below this even focus/reel collapse the right rail: the left sidebar
+  // (220) + a pinned rail (360) would otherwise leave the Stage near-zero
+  // width. See `railEffectivePinned`.
+  const isWindowVeryNarrow = useMediaQuery("(max-width: 640px)");
 
   // App version for the footer — mirrors AboutPage. One-shot read on
   // mount; the version doesn't change at runtime.
@@ -1823,11 +1827,14 @@ export function Library() {
   const railShowing = view.kind !== "grid" || showGridInspector;
   // Auto-collapse the grid right rail to its hover-pop activity bar when the
   // window is narrow, so the grid keeps its width (the cart/inspector becomes
-  // "on mouse over only"). Focus/reel keep the rail at the user's pin — those
-  // modes are *about* the selected capture, so its rail is the point. The
-  // manual layout toggle still wins whenever there's room.
+  // "on mouse over only"). Focus/reel normally keep the rail at the user's
+  // pin — those modes are *about* the selected capture, so its rail is the
+  // point — but at a VERY narrow window even they collapse it, otherwise the
+  // 360px rail + sidebar squeeze the Stage to near-nothing. The manual layout
+  // toggle still wins whenever there's room.
   const railEffectivePinned =
-    rightPinned && !(view.kind === "grid" && isToolbarNarrow);
+    rightPinned &&
+    !((view.kind === "grid" && isToolbarNarrow) || isWindowVeryNarrow);
   const railDataRight = !settingsHydrated
     ? undefined
     : railShowing
@@ -3850,18 +3857,6 @@ type VirtualizedGridProps = {
   purgeCaptureAction: CellAction;
 };
 
-/** Compute how many cells fit per row at the current container width.
- *  Defaults to 4 if the container hasn't measured yet.
- *
- *  Stickiness on display:none — when the grid is hidden during focus
- *  mode (`.psl[data-mode="focus"] .psl__grid-wrap { display: none }`),
- *  ResizeObserver fires with `clientWidth = 0` and naive math drops
- *  cellsPerRow to 1. flatRows then re-flattens to 10k cell-rows
- *  (one per cell), the virtualizer relayouts everything, and on
- *  focus close the user lands at a wildly different scroll position.
- *  Stack semantics — opening/closing focus shouldn't reflow the
- *  grid at all. Treat zero-width measurements as "no information"
- *  and keep the last computed value. */
 /** Reactive CSS media-query match. Drives the responsive toolbar: the
  *  renderer viewport is the Library window's content area, so these track
  *  the window width (DevTools-docked included). Single source of truth for
@@ -3887,6 +3882,18 @@ function useMediaQuery(query: string): boolean {
   return matches;
 }
 
+/** Compute how many cells fit per row at the current container width.
+ *  Defaults to 4 if the container hasn't measured yet.
+ *
+ *  Stickiness on display:none — when the grid is hidden during focus
+ *  mode (`.psl[data-mode="focus"] .psl__grid-wrap { display: none }`),
+ *  ResizeObserver fires with `clientWidth = 0` and naive math drops
+ *  cellsPerRow to 1. flatRows then re-flattens to 10k cell-rows
+ *  (one per cell), the virtualizer relayouts everything, and on
+ *  focus close the user lands at a wildly different scroll position.
+ *  Stack semantics — opening/closing focus shouldn't reflow the
+ *  grid at all. Treat zero-width measurements as "no information"
+ *  and keep the last computed value. */
 function useCellsPerRow(
   scrollElement: React.RefObject<HTMLDivElement | null>,
   cellMinWidth: number,

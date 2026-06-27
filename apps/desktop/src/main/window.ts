@@ -438,11 +438,11 @@ export function createMainWindow(): BrowserWindow {
     width: 1440,
     height: 960,
     // Keep this well below the responsive toolbar/grid breakpoints
-    // (≤1024 narrow, ≤940 tight, plus the grid's <560px-pane cell floor)
-    // so the narrow layouts are reachable by resizing the window — not only
-    // by docking DevTools (which shrinks the renderer viewport while the
-    // window frame stays put). The old 1200 floor made every breakpoint
-    // unreachable in normal use.
+    // (≤1024 narrow, ≤1000 tight, ≤640 very-narrow, plus the grid's
+    // <560px-pane cell floor) so the narrow layouts are reachable by
+    // resizing the window — not only by docking DevTools (which shrinks
+    // the renderer viewport while the window frame stays put). The old
+    // 1200 floor made every breakpoint unreachable in normal use.
     minWidth: 480,
     minHeight: 480,
     show: false,

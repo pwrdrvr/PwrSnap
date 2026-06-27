@@ -7,6 +7,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expect, type Page } from "@playwright/test";
+import sharp from "sharp";
 import type { LaunchedApp } from "./electron-app";
 
 /** Primary modifier for the platform (⌘ on macOS, Ctrl elsewhere). */
@@ -87,6 +88,88 @@ export async function seedImageCapture(
     { id: captureId, pngPath, sourceName }
   );
   return captureId;
+}
+
+/** Seed a REAL raster-backed v2 capture (root group + raster at the PNG's
+ *  natural dims) through the production persistCaptureFromTempV2 pipeline —
+ *  for specs that need an actual base image layer (crop / source-hide),
+ *  which the record-only `seedImageCapture` doesn't create. The output dir
+ *  is pinned under a tmpdir so the bundle never lands in the host's real
+ *  ~/Documents/PwrSnap. */
+export async function seedRasterCapture(
+  app: LaunchedApp,
+  opts: { widthPx?: number; heightPx?: number; appName?: string } = {}
+): Promise<string> {
+  const { widthPx = 800, heightPx = 600, appName = "Raster Spec" } = opts;
+  const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-raster-src-"));
+  const pngPath = path.join(dir, "fixture.png");
+  const buf = await sharp({
+    create: { width: widthPx, height: heightPx, channels: 3, background: { r: 30, g: 144, b: 255 } }
+  })
+    .png()
+    .toBuffer();
+  await writeFile(pngPath, buf);
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-raster-out-"));
+  return await app.electronApp.evaluate(
+    async (_electron, payload: { tempPath: string; outputDir: string; appName: string }) => {
+      const bridge = (
+        globalThis as unknown as {
+          __PWRSNAP_TEST__: {
+            persistBundleCapture: (input: {
+              tempPath: string;
+              sourceApp: { bundleId: string | null; appName: string | null } | null;
+              outputDir?: string;
+            }) => Promise<{ record: { id: string } }>;
+          };
+        }
+      ).__PWRSNAP_TEST__;
+      const { record } = await bridge.persistBundleCapture({
+        tempPath: payload.tempPath,
+        sourceApp: { bundleId: "com.test.raster", appName: payload.appName },
+        outputDir: payload.outputDir
+      });
+      return record.id;
+    },
+    { tempPath: pngPath, outputDir, appName }
+  );
+}
+
+/** Flip a layer's `visible` flag by kind (raster / vector-crop) via the
+ *  bridge — mirrors the Layers panel's setLayerVisibility → layers:update. */
+export async function setLayerVisibleByKind(
+  app: LaunchedApp,
+  captureId: string,
+  match: "raster" | "crop",
+  visible: boolean
+): Promise<void> {
+  await app.electronApp.evaluate(
+    async (_electron, payload: { captureId: string; match: string; visible: boolean }) => {
+      const bridge = (
+        globalThis as unknown as {
+          __PWRSNAP_TEST__: {
+            dispatch: (n: string, r: unknown) => Promise<{ ok: boolean; value?: unknown }>;
+          };
+        }
+      ).__PWRSNAP_TEST__;
+      const listed = await bridge.dispatch("layers:list", { captureId: payload.captureId });
+      const layers = (listed.value ?? []) as Array<{
+        id: string;
+        kind: string;
+        shape?: { kind: string };
+      }>;
+      const target =
+        payload.match === "crop"
+          ? layers.find((l) => l.kind === "vector" && l.shape?.kind === "crop")
+          : layers.find((l) => l.kind === "raster");
+      if (target === undefined) throw new Error(`no ${payload.match} layer to toggle`);
+      const up = await bridge.dispatch("layers:update", {
+        captureId: payload.captureId,
+        layer: { ...target, visible: payload.visible }
+      });
+      if (!up.ok) throw new Error("layers:update failed");
+    },
+    { captureId, match, visible }
+  );
 }
 
 /** Open a capture in Library Focus and wait for the editor toolbar. */

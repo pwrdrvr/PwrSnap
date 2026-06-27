@@ -3080,6 +3080,13 @@ export function Editor({
   // side of this contract.
   let rasterTranslateXPx = 0;
   let rasterTranslateYPx = 0;
+  // The base image is hidden when the user toggles the Source row's eye
+  // off. The bake already drops a hidden raster (the compositor skips
+  // !visible onto a transparent canvas), so honoring it here makes the
+  // editor WYSIWYG: the <img> is hidden behind a transparency checker so
+  // you can see every annotation on an empty canvas. Was a silent no-op
+  // before — the editor painted the source regardless of the flag.
+  let isSourceHidden = false;
   for (const layer of model.layers) {
     if (layer.kind === "raster" && layer.parent_id !== null) {
       sourceWidthPx = layer.natural_width_px;
@@ -3087,6 +3094,7 @@ export function Editor({
       // transform[4] = tx, transform[5] = ty, both in source-pixel units.
       rasterTranslateXPx = layer.transform[4];
       rasterTranslateYPx = layer.transform[5];
+      isSourceHidden = layer.visible === false;
       break;
     }
   }
@@ -3164,6 +3172,7 @@ export function Editor({
       storedCanvasWidthPx={storedCanvasWidthPx}
       storedCanvasHeightPx={storedCanvasHeightPx}
       isUncroppedView={isUncroppedView}
+      isSourceHidden={isSourceHidden}
       toStoredGeometry={toStoredGeometry}
       dispatchEdit={dispatchEditErased}
       rawDispatchEdit={
@@ -3233,6 +3242,7 @@ function EditorLoaded({
   storedCanvasWidthPx,
   storedCanvasHeightPx,
   isUncroppedView,
+  isSourceHidden,
   toStoredGeometry,
   dispatchEdit,
   rawDispatchEdit,
@@ -3434,6 +3444,10 @@ function EditorLoaded({
   /** True when the lone crop layer is hidden and the editor is showing
    *  the full source image. Drives the re-crop guard in onCropCommit. */
   isUncroppedView: boolean;
+  /** True when the base raster's eye is toggled off. Hides the editor
+   *  <img> behind a transparency checker so annotations show on an empty
+   *  canvas — matching the bake, which already drops a hidden raster. */
+  isSourceHidden: boolean;
   /** Map a geometry from displayed (source) space into STORED (cropped)
    *  space — applied to the RECORDED geometry at every recordGeometry
    *  site so undo/redo (which replays via rawDispatchEdit) restores the
@@ -4900,7 +4914,17 @@ function EditorLoaded({
               in for this clip: it rounds the img's OWN (412%-tall) box,
               not the canvas, and for off-origin crops it would notch the
               middle of the visible region. */}
-          <div className="editor-image-clip">
+          <div
+            className={
+              "editor-image-clip" +
+              (isSourceHidden ? " editor-image-clip--source-hidden" : "")
+            }
+            data-source-hidden={isSourceHidden ? "true" : undefined}
+          >
+            {/* The <img> stays mounted (BlurOverlays' pixelate preview
+                samples it via editorImageRef) but is hidden via CSS when
+                the Source eye is off; the clip's checkerboard shows
+                through as the "empty canvas". */}
             <img
               ref={editorImageRef}
               src={captureSrcUrl(record.id)}

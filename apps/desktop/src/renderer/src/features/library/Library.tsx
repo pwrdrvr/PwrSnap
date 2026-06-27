@@ -3554,7 +3554,12 @@ export function Library() {
         view={view}
         record={selectedRecord}
         copyPulses={copyPulses}
-        pinned={rightPinned}
+        // Use the EFFECTIVE pin, not the raw one, so the rail's own render
+        // (activity-bar spine + hover-pop when unpinned) matches the
+        // `data-right` column width. Without this they disagree when narrow:
+        // the column collapses to 38px but DetailRail still paints its full
+        // panel, which then bleeds out past the window's right edge.
+        pinned={railEffectivePinned}
         onPinChange={setRightPinned}
         activeTab={rightActiveTab}
         onActiveTabChange={setRightActiveTab}

@@ -12,6 +12,7 @@ export * from "./ipc";
 export * from "./arrow";
 export * from "./appearance-arg";
 export * from "./bundle-manifest-schema-v2";
+export * from "./crop-viewport";
 export * from "./clipboard-layer-fragment";
 export * from "./text-glyph-size";
 export * from "./text-html-style";

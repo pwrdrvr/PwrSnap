@@ -408,6 +408,7 @@ jobs:
           "PWRSNAP_WINDOWS_FFMPEG_MANIFEST_PATH=$manifestPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Sign and publish Windows installer
+        if: ${{ vars.WINDOWS_UNSIGNED_RELEASE != 'true' }}
         env:
           # Authenticode certificate for PwrDrvr LLC. These come from the
           # protected windows-signing environment, not repository-wide secrets.
@@ -415,6 +416,35 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           GH_TOKEN: ${{ secrets.RELEASES_PAT || github.token }}
         run: pnpm --filter @pwrsnap/desktop package:win -- --publish
+
+      - name: Build unsigned Windows installer
+        if: ${{ vars.WINDOWS_UNSIGNED_RELEASE == 'true' }}
+        run: pnpm --filter @pwrsnap/desktop package:win -- --unsigned-release
+
+      - name: Publish unsigned Windows installer
+        if: ${{ vars.WINDOWS_UNSIGNED_RELEASE == 'true' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_PAT || github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw "GH_TOKEN is required to upload unsigned Windows release artifacts."
+          }
+
+          $dist = "apps/desktop/release-stage/dist"
+          $installer = Get-ChildItem -Path $dist -Filter "*-setup.exe" | Select-Object -First 1
+          if ($null -eq $installer) {
+            throw "No Windows installer found in $dist"
+          }
+
+          $unsignedName = $installer.Name -replace "-setup\.exe$", "-unsigned-setup.exe"
+          $unsignedPath = Join-Path $dist $unsignedName
+          Copy-Item -Path $installer.FullName -Destination $unsignedPath -Force
+          gh release upload $env:RELEASE_TAG `
+            $unsignedPath `
+            --repo pwrdrvr/PwrSnap `
+            --clobber
 
       - name: Upload Windows release artifacts (debug retention)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

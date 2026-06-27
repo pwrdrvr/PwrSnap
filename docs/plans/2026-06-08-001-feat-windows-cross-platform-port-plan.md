@@ -107,6 +107,7 @@ Cross-cutting:
 ### 🔜 Remaining before Windows is shippable
 
 - [ ] **Provision Windows signing environment** - create the protected `windows-signing` GitHub Environment and set `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` for an Authenticode certificate belonging to PwrDrvr LLC. EV is preferred for SmartScreen reputation, but the repo wiring accepts any valid Authenticode cert.
+- [ ] **Temporary unsigned installer release** - until the Authenticode certificate is available, set `WINDOWS_UNSIGNED_RELEASE=true` in `windows-signing` to upload a clearly named `*-unsigned-setup.exe` manual-test asset without publishing Windows updater metadata.
 - [ ] **Provision controlled FFmpeg artifact access** - install the FFmpeg GitHub App on `pwrdrvr/pwrsnap-ffmpeg-builds`, then set `FFMPEG_BUILDS_APP_CLIENT_ID` and `FFMPEG_BUILDS_APP_PRIVATE_KEY` in both `windows-signing` and `apple-signing`. The release workflow consumes pinned artifacts from `pwrdrvr/pwrsnap-ffmpeg-builds`, verifies `manifest.json`, and bundles `PwrSnapFFmpeg.exe` on Windows plus `PwrSnapFFmpeg` on macOS.
 - [ ] **First signed Windows release smoke** - publish a prerelease tag, install the signed NSIS artifact on a clean Windows VM, verify `.pwrsnap` double-click, still capture, clipboard copy, and one update from prerelease to prerelease.
 - [ ] **Capture-trigger debounce** — observed one snap firing the capture pipeline 3× in ~600ms on Windows (global-shortcut key-repeat / double-bound trigger). Harmless today (only one persists) but wasteful and race-prone.

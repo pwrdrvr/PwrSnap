@@ -137,6 +137,17 @@ runner that executes untrusted dependency or build code:
    binary SHA-256, then stages the binary and LGPL source evidence under
    `apps/desktop/release-stage/build/`.
 
+The Windows release job is gated by the protected `windows-signing`
+environment. By default it requires `WIN_CSC_LINK` and
+`WIN_CSC_KEY_PASSWORD`, then runs `package-win.mjs --publish` so
+electron-builder publishes the signed NSIS installer and updater metadata. If
+the signing certificate is not ready, set the `windows-signing` environment
+variable `WINDOWS_UNSIGNED_RELEASE=true`. That temporary mode still verifies
+the controlled Windows FFmpeg artifact, runs `package-win.mjs
+--unsigned-release`, and uploads only a manually named
+`*-unsigned-setup.exe` asset. It intentionally does not upload `latest.yml`, so
+unsigned builds are not offered through the Windows updater feed.
+
 The no-secret prepare job:
 
 1. Runs `pnpm licenses:check` so stale `THIRD_PARTY_LICENSES` or package

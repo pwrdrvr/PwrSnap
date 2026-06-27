@@ -22,6 +22,11 @@
  * Modes:
  *   --dryrun  / default: build + pack an unsigned NSIS installer, no publish.
  *   --release: enforce Authenticode + bundled ffmpeg inputs, no publish.
+ *   --unsigned-release: enforce release runtime inputs, but skip Authenticode
+ *                       and electron-builder publishing. This is only for
+ *                       temporary/manual installer testing before the Windows
+ *                       signing cert is available; it must not publish an
+ *                       updater feed.
  *   --publish: same release checks, then publish via electron-builder.
  *
  * Output: apps/desktop/release-stage/dist/PwrSnap-<version>-windows-x64-setup.exe
@@ -41,7 +46,12 @@ const targetArch = "x64";
 
 const args = process.argv.slice(2);
 const publish = args.includes("--publish");
-const releaseMode = publish || args.includes("--release");
+const unsignedRelease = args.includes("--unsigned-release");
+const releaseMode = publish || args.includes("--release") || unsignedRelease;
+
+if (publish && unsignedRelease) {
+  throw new Error("--publish and --unsigned-release cannot be combined");
+}
 
 // Force pnpm to ignore any user-level global-pnpmfile inside child
 // processes — mirrors release.mjs so the staged install resolves the
@@ -112,21 +122,23 @@ function readStagedPackageJson(pkgName) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-function assertWindowsReleaseInputs() {
+function assertWindowsReleaseInputs({ requireSigning }) {
   if (process.platform !== "win32") {
-    throw new Error("Windows release packaging must run on Windows so Authenticode signing is exercised.");
+    throw new Error("Windows release packaging must run on Windows so native packaging is exercised.");
   }
 
   const cscLink = process.env.WIN_CSC_LINK || process.env.CSC_LINK;
   const cscPassword = process.env.WIN_CSC_KEY_PASSWORD || process.env.CSC_KEY_PASSWORD;
-  if (!cscLink || !cscPassword) {
+  if (requireSigning && (!cscLink || !cscPassword)) {
     throw new Error(
       "Windows release packaging requires WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD " +
         "(or CSC_LINK/CSC_KEY_PASSWORD) for Authenticode signing."
     );
   }
-  process.env.CSC_LINK ??= cscLink;
-  process.env.CSC_KEY_PASSWORD ??= cscPassword;
+  if (cscLink && cscPassword) {
+    process.env.CSC_LINK ??= cscLink;
+    process.env.CSC_KEY_PASSWORD ??= cscPassword;
+  }
 
   if (publish && !process.env.GH_TOKEN && !process.env.GITHUB_TOKEN) {
     throw new Error("--publish requires GH_TOKEN or GITHUB_TOKEN so electron-builder can upload artifacts.");
@@ -252,7 +264,7 @@ function injectWin32PlatformPackages() {
 }
 
 if (releaseMode) {
-  assertWindowsReleaseInputs();
+  assertWindowsReleaseInputs({ requireSigning: !unsignedRelease });
 }
 
 // 1. License notices check (cheap, fail-fast).
@@ -320,7 +332,11 @@ assertRequiredWindowsResources();
 //    stage it. Resolve the CLI from the dev node_modules (same approach as
 //    release.mjs's electronBuilderCli fallback). Run with cwd = stageDir so
 //    electron-builder packages the flat, production-only staged tree.
-step(`electron-builder --win nsis --${targetArch} (${publish ? "publish" : "no publish"})`);
+step(
+  `electron-builder --win nsis --${targetArch} (${
+    publish ? "publish" : unsignedRelease ? "unsigned release, no publish" : "no publish"
+  })`
+);
 const builderCli = resolveElectronBuilderCli();
 const builderArgs = [
   builderCli,

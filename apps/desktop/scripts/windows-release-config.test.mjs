@@ -21,8 +21,10 @@ describe("Windows release configuration", () => {
   test("Windows packager has an explicit guarded release mode", () => {
     const script = read("apps/desktop/scripts/package-win.mjs");
 
-    expect(script).toContain('const releaseMode = publish || args.includes("--release");');
-    expect(script).toContain("assertWindowsReleaseInputs();");
+    expect(script).toContain('const unsignedRelease = args.includes("--unsigned-release");');
+    expect(script).toContain("publish || args.includes(\"--release\") || unsignedRelease");
+    expect(script).toContain("--publish and --unsigned-release cannot be combined");
+    expect(script).toContain("assertWindowsReleaseInputs({ requireSigning: !unsignedRelease });");
     expect(script).toContain("assertRequiredWindowsResources();");
     expect(script).toContain("build/native/window-list.exe");
     expect(script).toContain("WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD");
@@ -59,7 +61,12 @@ describe("Windows release configuration", () => {
     expect(workflow).toContain("h264_videotoolbox");
     expect(workflow).toContain("release-stage/build/ffmpeg/ffmpeg");
     expect(workflow).toContain("PWRSNAP_WINDOWS_FFMPEG_PATH=$ffmpeg");
+    expect(workflow).toContain("vars.WINDOWS_UNSIGNED_RELEASE != 'true'");
+    expect(workflow).toContain("vars.WINDOWS_UNSIGNED_RELEASE == 'true'");
     expect(workflow).toContain("pnpm --filter @pwrsnap/desktop package:win -- --publish");
+    expect(workflow).toContain("pnpm --filter @pwrsnap/desktop package:win -- --unsigned-release");
+    expect(workflow).toContain("gh release upload $env:RELEASE_TAG");
+    expect(workflow).toContain("-unsigned-setup.exe");
     expect(workflow).not.toContain("FFMPEG_BUILDS_PAT");
   });
 });

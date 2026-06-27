@@ -259,6 +259,19 @@ $env:PWRSNAP_WINDOWS_FFMPEG_PATH = "C:\secure\ffmpeg.exe"
 corepack pnpm --filter @pwrsnap/desktop package:win:release
 ```
 
+Until the Authenticode certificate is ready, the tagged release workflow can
+publish a manual-test unsigned installer. Set the `windows-signing`
+environment variable `WINDOWS_UNSIGNED_RELEASE=true`. In that mode the job
+still downloads and verifies the controlled Windows FFmpeg artifact, then runs:
+
+```powershell
+corepack pnpm --filter @pwrsnap/desktop package:win -- --unsigned-release
+```
+
+The workflow uploads only a clearly named `*-unsigned-setup.exe` asset. It
+does not publish `latest.yml`, so the unsigned installer is not treated as the
+Windows auto-update feed.
+
 Publishing from CI is wired through `.github/workflows/release.yml`.
 
 ## Verification Checklist

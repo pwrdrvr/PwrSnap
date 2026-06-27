@@ -6,6 +6,7 @@
 // matching the bake (WYSIWYG).
 
 import { expect, test } from "@playwright/test";
+import sharp from "sharp";
 import { launchPwrSnap } from "./fixtures/electron-app";
 import {
   drawOnCanvas,
@@ -16,6 +17,36 @@ import {
 } from "./fixtures/editor-helpers";
 
 test.setTimeout(90_000);
+
+test("editor-source-hide: the BAKE of a source-hidden capture is transparent, not black", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedRasterCapture(app, { widthPx: 400, heightPx: 300 });
+    // Hide the base raster — with no annotations, every baked pixel must be
+    // fully transparent (alpha 0). If the compositor flattened onto an
+    // opaque background, the sampled pixel would come back opaque black
+    // (a=255), which is exactly the "black where the image was" symptom.
+    await setLayerVisibleByKind(app, captureId, "raster", false);
+
+    const res = await app.dispatch("render:composite", { captureId, maxEdgePx: 200 });
+    expect(res.ok, "render:composite should succeed").toBe(true);
+    if (!res.ok) return;
+    const png = Buffer.from((res.value as { base64: string }).base64, "base64");
+    const { data, info } = await sharp(png)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    // Sample the center pixel.
+    const cx = Math.floor(info.width / 2);
+    const cy = Math.floor(info.height / 2);
+    const idx = (cy * info.width + cx) * info.channels;
+    const alpha = data[idx + 3];
+    expect(info.channels, "bake should be RGBA").toBe(4);
+    expect(alpha, "source-hidden bake must be transparent (alpha 0), not opaque").toBe(0);
+  } finally {
+    await app.close();
+  }
+});
 
 test("editor-source-hide: hiding the Source reveals an empty canvas; annotations stay; showing it restores the image", async () => {
   const app = await launchPwrSnap();

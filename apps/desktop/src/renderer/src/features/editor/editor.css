@@ -223,10 +223,26 @@
    Overlays (blur + SVG) are SIBLINGS of the clip, so they keep painting
    on top. */
 .editor-image-clip--source-hidden {
-  background-color: #1a1a1a;
+  /* Two-tone checker derived from tokens so it reads as "transparent /
+     empty" in both themes: lighter squares on the dark editor surface
+     (and darker squares on a light surface) via a faint text-primary
+     overlay. Raw hex isn't allowed outside :root (lint:colors). */
+  background-color: var(--bg-panel-elevated);
   background-image:
-    linear-gradient(45deg, #242424 25%, transparent 25%, transparent 75%, #242424 75%),
-    linear-gradient(45deg, #242424 25%, transparent 25%, transparent 75%, #242424 75%);
+    linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--text-primary) 7%, transparent) 25%,
+      transparent 25%,
+      transparent 75%,
+      color-mix(in srgb, var(--text-primary) 7%, transparent) 75%
+    ),
+    linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--text-primary) 7%, transparent) 25%,
+      transparent 25%,
+      transparent 75%,
+      color-mix(in srgb, var(--text-primary) 7%, transparent) 75%
+    );
   background-size: 24px 24px;
   background-position: 0 0, 12px 12px;
 }

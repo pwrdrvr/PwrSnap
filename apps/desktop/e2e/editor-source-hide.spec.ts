@@ -48,6 +48,59 @@ test("editor-source-hide: the BAKE of a source-hidden capture is transparent, no
   }
 });
 
+test("clipboard round-trip: copying a transparent bake and pasting it back keeps it transparent", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const src = await seedRasterCapture(app, { widthPx: 400, heightPx: 300 });
+    await setLayerVisibleByKind(app, src, "raster", false);
+    const baked = await app.dispatch("render:composite", { captureId: src, maxEdgePx: 200 });
+    expect(baked.ok, "bake should succeed").toBe(true);
+    if (!baked.ok) return;
+    const b64 = (baked.value as { base64: string }).base64;
+
+    // Put the transparent bake on the system clipboard exactly as the
+    // copy path does (clipboard.write({ image })), then paste it back as a
+    // NEW capture via the same handler "File > New > Paste from Clipboard"
+    // uses.
+    const newId = await app.electronApp.evaluate(async (electron, base64) => {
+      const img = electron.nativeImage.createFromBuffer(Buffer.from(base64, "base64"));
+      electron.clipboard.clear();
+      electron.clipboard.write({ image: img });
+      const bridge = (
+        globalThis as unknown as {
+          __PWRSNAP_TEST__: {
+            dispatch: (n: string, r: unknown) => Promise<{ ok: boolean; value?: { id?: string } }>;
+          };
+        }
+      ).__PWRSNAP_TEST__;
+      const res = await bridge.dispatch("capture:pasteFromClipboard", {});
+      if (!res.ok || res.value?.id === undefined) {
+        throw new Error("paste from clipboard failed: " + JSON.stringify(res));
+      }
+      return res.value.id;
+    }, b64);
+
+    expect(typeof newId).toBe("string");
+
+    // The pasted capture's own bake must STILL be transparent — proving
+    // paste-in preserved the alpha channel end-to-end.
+    const rebaked = await app.dispatch("render:composite", { captureId: newId, maxEdgePx: 200 });
+    expect(rebaked.ok).toBe(true);
+    if (!rebaked.ok) return;
+    const png = Buffer.from((rebaked.value as { base64: string }).base64, "base64");
+    const { data, info } = await sharp(png)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const idx =
+      (Math.floor(info.height / 2) * info.width + Math.floor(info.width / 2)) * info.channels;
+    expect(info.channels).toBe(4);
+    expect(data[idx + 3], "pasted-back capture must remain transparent").toBe(0);
+  } finally {
+    await app.close();
+  }
+});
+
 test("editor-source-hide: hiding the Source reveals an empty canvas; annotations stay; showing it restores the image", async () => {
   const app = await launchPwrSnap();
   try {

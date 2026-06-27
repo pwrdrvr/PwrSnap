@@ -204,29 +204,13 @@
   inset: 0;
   overflow: hidden;
   border-radius: 6px;
-}
-.editor-image {
-  display: block;
-  width: 100%;
-  height: 100%;
-  user-select: none;
-  -webkit-user-drag: none;
-  /* No border-radius here: the image is (often) LARGER than the canvas
-     (it overflows for crops), so rounding its own box would round the
-     wrong corners — and for off-origin crops it would notch the middle
-     of the visible region. .editor-image-clip rounds the canvas corners
-     correctly for every crop shape. */
-}
-/* Source eye toggled off — hide the base image and show a transparency
-   checkerboard so annotations read on an "empty canvas". Matches the
-   bake, which already drops a hidden raster onto a transparent canvas.
-   Overlays (blur + SVG) are SIBLINGS of the clip, so they keep painting
-   on top. */
-.editor-image-clip--source-hidden {
-  /* Two-tone checker derived from tokens so it reads as "transparent /
-     empty" in both themes: lighter squares on the dark editor surface
-     (and darker squares on a light surface) via a faint text-primary
-     overlay. Raw hex isn't allowed outside :root (lint:colors). */
+  /* Transparency checker BEHIND the source, so a capture with alpha — a
+     pasted transparent image, a re-imported source-hidden export, or the
+     Source layer toggled off — reads as "empty", not solid black. Opaque
+     captures cover this completely (the <img> fills/overflows the canvas),
+     so normal screenshots look unchanged; only genuinely transparent
+     pixels reveal it. Two-tone checker derived from tokens so it works in
+     both themes (raw hex isn't allowed outside :root — lint:colors). */
   background-color: var(--bg-panel-elevated);
   background-image:
     linear-gradient(
@@ -246,6 +230,23 @@
   background-size: 24px 24px;
   background-position: 0 0, 12px 12px;
 }
+.editor-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+  -webkit-user-drag: none;
+  /* No border-radius here: the image is (often) LARGER than the canvas
+     (it overflows for crops), so rounding its own box would round the
+     wrong corners — and for off-origin crops it would notch the middle
+     of the visible region. .editor-image-clip rounds the canvas corners
+     correctly for every crop shape. */
+}
+/* Source eye toggled off — additionally HIDE the base image so only the
+   annotations paint over the checker (the .editor-image-clip checker
+   above is the "empty canvas"; the bake drops a hidden raster the same
+   way). Overlays (blur + SVG) are SIBLINGS of the clip, so they keep
+   painting on top. */
 .editor-image-clip--source-hidden .editor-image {
   visibility: hidden;
 }

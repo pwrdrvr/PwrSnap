@@ -1168,6 +1168,21 @@ export function Library() {
     [hotkeys.videoCapture]
   );
 
+  // Responsive toolbar. The right cluster (search + sidebar toggles +
+  // Settings + Record Video + Quick Capture) overcrowds a narrow Library
+  // window and squeezes the orange Quick Capture CTA. Two tiers declutter:
+  //   • narrow — hide Settings (still on the menu + ⌘,), drop the search
+  //     placeholder, shrink the search field, drop the "captures" word from
+  //     the count pill (just the number).
+  //   • tight  — collapse Record Video to an icon-only button.
+  // Quick Capture is never shrunk; the search field absorbs the squeeze.
+  const isToolbarNarrow = useMediaQuery("(max-width: 1024px)");
+  const isToolbarTight = useMediaQuery("(max-width: 1000px)");
+  // Below this even focus/reel collapse the right rail: the left sidebar
+  // (220) + a pinned rail (360) would otherwise leave the Stage near-zero
+  // width. See `railEffectivePinned`.
+  const isWindowVeryNarrow = useMediaQuery("(max-width: 640px)");
+
   // App version for the footer — mirrors AboutPage. One-shot read on
   // mount; the version doesn't change at runtime.
   const [appVersion, setAppVersion] = useState<string | null>(null);
@@ -1810,10 +1825,20 @@ export function Library() {
   // data-right column-width attribute (undefined until settings hydrate so
   // it doesn't paint at the wrong width on cold start).
   const railShowing = view.kind !== "grid" || showGridInspector;
+  // Auto-collapse the grid right rail to its hover-pop activity bar when the
+  // window is narrow, so the grid keeps its width (the cart/inspector becomes
+  // "on mouse over only"). Focus/reel normally keep the rail at the user's
+  // pin — those modes are *about* the selected capture, so its rail is the
+  // point — but at a VERY narrow window even they collapse it, otherwise the
+  // 360px rail + sidebar squeeze the Stage to near-nothing. The manual layout
+  // toggle still wins whenever there's room.
+  const railEffectivePinned =
+    rightPinned &&
+    !((view.kind === "grid" && isToolbarNarrow) || isWindowVeryNarrow);
   const railDataRight = !settingsHydrated
     ? undefined
     : railShowing
-      ? rightPinned
+      ? railEffectivePinned
         ? "pinned"
         : "collapsed"
       : undefined;
@@ -2806,7 +2831,13 @@ export function Library() {
       // separate cart rail / data-cart attribute anymore.
       data-right={railDataRight}
     >
-      <header className="psl__topbar">
+      <header
+        className={
+          "psl__topbar" +
+          (isToolbarNarrow ? " is-narrow" : "") +
+          (isToolbarTight ? " is-tight" : "")
+        }
+      >
         <div className="psl__topbar-l">
           <div className="psl__title">
             <span className="psl__title-mark">
@@ -2853,8 +2884,12 @@ export function Library() {
                     ? `${searchResultCount}+ matches`
                     : `${searchResultCount} ${searchResultCount === 1 ? "match" : "matches"}`
               : isTrashView
-                ? `${trashRecords.length} in trash`
-                : `${totalLive} captures`}
+                ? isToolbarNarrow
+                  ? `${trashRecords.length} trash`
+                  : `${trashRecords.length} in trash`
+                : isToolbarNarrow
+                  ? `${totalLive}`
+                  : `${totalLive} captures`}
           </span>
         </div>
         <div className="psl__topbar-c">
@@ -2905,7 +2940,9 @@ export function Library() {
               placeholder={
                 isTrashView
                   ? "Search unavailable in Trash"
-                  : "Search captures, tags, OCR…"
+                  : isToolbarNarrow
+                    ? ""
+                    : "Search captures, tags, OCR…"
               }
               value={searchQuery}
               disabled={isTrashView}
@@ -2979,6 +3016,7 @@ export function Library() {
             style={{ height: 28 }}
             type="button"
             title="Pick a region or window to capture as a video clip"
+            aria-label="Record Video"
             onClick={() => {
               void dispatch("capture:videoInteractive", {});
             }}
@@ -2987,7 +3025,9 @@ export function Library() {
               <rect x="3" y="6" width="13" height="12" rx="2" />
               <path d="m16 10 5-3v10l-5-3z" />
             </svg>
-            {videoCaptureChord.length > 0
+            {/* Below the tight breakpoint the label collapses to free room
+                for the Quick Capture CTA; the icon + aria-label carry it. */}
+            {isToolbarTight ? null : videoCaptureChord.length > 0
               ? `Record Video · ${videoCaptureChord}`
               : "Record Video"}
           </button>
@@ -3292,6 +3332,14 @@ export function Library() {
             cellMinWidth={gridZoom}
             cellsPerRowRef={cellsPerRowRef}
             scrollApiRef={gridScrollApiRef}
+            // Recompute columns whenever the grid pane is resized by a
+            // layout change rather than a window resize — the right rail
+            // showing/hiding or collapsing (it claims/releases its column)
+            // is the main one. `railDataRight` already folds in rail
+            // visibility + the pinned/collapsed width.
+            layoutSignal={`${view.kind}|${leftPinned ? "lp" : "lc"}|${
+              railShowing ? "rail" : "norail"
+            }|${railDataRight ?? "none"}`}
             selectedRecordId={selectedRecordId}
             fixtureBacking={fixtureBacking}
             projectCoverRecordsById={projectCoverRecordsById}
@@ -3513,7 +3561,12 @@ export function Library() {
         view={view}
         record={selectedRecord}
         copyPulses={copyPulses}
-        pinned={rightPinned}
+        // Use the EFFECTIVE pin, not the raw one, so the rail's own render
+        // (activity-bar spine + hover-pop when unpinned) matches the
+        // `data-right` column width. Without this they disagree when narrow:
+        // the column collapses to 38px but DetailRail still paints its full
+        // panel, which then bleeds out past the window's right edge.
+        pinned={railEffectivePinned}
         onPinChange={setRightPinned}
         activeTab={rightActiveTab}
         onActiveTabChange={setRightActiveTab}
@@ -3720,6 +3773,17 @@ const CELL_GAP_DAY_END = 18; // .psl__grid padding-bottom in the original single
 // keyboard nav, so a rough value is fine.
 const GRID_ROW_EST_PX = 252;
 const GRID_HORIZONTAL_PADDING = 18;
+// Narrow-pane grid floor. When the grid pane itself is tight — a small
+// window, or the left sidebar AND the right cart/detail rail both open —
+// a zoomed-out grid packs cells so small the corner app-source chip is
+// the only legible thing left (the "all icons, no image" symptom). Below
+// this inner width we raise the effective per-cell minimum so the layout
+// drops to fewer, bigger cells. It only ever RAISES the floor, so an
+// explicit zoom-in is untouched and at the default zoom (180) — which
+// already yields ≥2 cols / ≥220px cells at these widths — nothing changes;
+// only zoomed-out narrow layouts get bigger images.
+const NARROW_GRID_PANE_PX = 560;
+const NARROW_GRID_CELL_MIN = 220;
 /** Horizontal pixels from the reel's right edge at which to fire
  *  `loadMore`. ~3 viewport-widths of frames at typical filmstrip
  *  scroll speeds buys enough lead time for the next keyset page to
@@ -3764,6 +3828,12 @@ type VirtualizedGridProps = {
   /** VirtualizedGrid publishes its imperative scroll handle here so
    *  Library can jump to an off-screen capture (cart item click). */
   scrollApiRef: React.RefObject<GridScrollApi | null>;
+  /** Changes whenever the surrounding layout resizes the grid pane (cart
+   *  rail open/close, left bar pin, view mode). Forces a synchronous
+   *  column recompute — the ResizeObserver alone misses the pane shrink
+   *  when the cart rail claims its column, leaving cells crammed too
+   *  small (the "4 tiny columns under the cart" bug). */
+  layoutSignal: string;
   selectedRecordId: string | null;
   fixtureBacking: FixtureBackedRecords;
   projectCoverRecordsById: Map<string, CaptureRecord>;
@@ -3787,6 +3857,31 @@ type VirtualizedGridProps = {
   purgeCaptureAction: CellAction;
 };
 
+/** Reactive CSS media-query match. Drives the responsive toolbar: the
+ *  renderer viewport is the Library window's content area, so these track
+ *  the window width (DevTools-docked included). Single source of truth for
+ *  each breakpoint — the matching CSS keys off `.is-narrow` / `.is-tight`
+ *  classes the component sets from these booleans, so thresholds never
+ *  drift between JS and CSS. */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState<boolean>(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia(query).matches
+      : false
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+    const mql = window.matchMedia(query);
+    const onChange = (): void => setMatches(mql.matches);
+    onChange();
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
+
 /** Compute how many cells fit per row at the current container width.
  *  Defaults to 4 if the container hasn't measured yet.
  *
@@ -3801,43 +3896,65 @@ type VirtualizedGridProps = {
  *  and keep the last computed value. */
 function useCellsPerRow(
   scrollElement: React.RefObject<HTMLDivElement | null>,
-  cellMinWidth: number
+  cellMinWidth: number,
+  layoutSignal: string
 ): number {
   const [cellsPerRow, setCellsPerRow] = useState(4);
-  // Read the live zoom level through a ref so the ResizeObserver attaches
-  // ONCE (to the scroll element) instead of being torn down + recreated on
-  // every pinch step. A separate effect recomputes when the zoom changes.
+  // Live zoom read through a ref so `measure`'s identity stays stable (the
+  // ResizeObserver attaches ONCE instead of churning on every pinch step).
   const cellMinWidthRef = useRef(cellMinWidth);
-  const computeRef = useRef<() => void>(() => undefined);
-  useLayoutEffect(() => {
+
+  const measure = useCallback((): void => {
     const el = scrollElement.current;
     if (el === null) return;
-    const compute = (): void => {
-      const width = el.clientWidth;
-      // Skip zero-width measurements (the grid is display:none).
-      // The previous cellsPerRow stays in effect, so flatRows + the
-      // virtualizer's offset cache don't churn while the user is in
-      // focus mode.
-      if (width <= 0) return;
-      const inner = width - 2 * GRID_HORIZONTAL_PADDING;
-      const next = Math.max(
-        1,
-        Math.floor((inner + CELL_GAP) / (cellMinWidthRef.current + CELL_GAP))
-      );
-      setCellsPerRow((prev) => (prev === next ? prev : next));
-    };
-    computeRef.current = compute;
-    compute();
-    const ro = new ResizeObserver(compute);
+    const width = el.clientWidth;
+    // Skip zero-width measurements (the grid is display:none in focus/reel).
+    // Keeping the last value avoids churning flatRows + the virtualizer's
+    // offset cache while the user is away from the grid.
+    if (width <= 0) return;
+    const inner = width - 2 * GRID_HORIZONTAL_PADDING;
+    // On a narrow pane, enforce a larger minimum cell so thumbnails stay
+    // big enough to read under the corner app chip. `Math.max` means this
+    // only ever reduces the column count (bigger cells), never the reverse.
+    const effectiveMin =
+      inner < NARROW_GRID_PANE_PX
+        ? Math.max(cellMinWidthRef.current, NARROW_GRID_CELL_MIN)
+        : cellMinWidthRef.current;
+    const next = Math.max(
+      1,
+      Math.floor((inner + CELL_GAP) / (effectiveMin + CELL_GAP))
+    );
+    setCellsPerRow((prev) => (prev === next ? prev : next));
+  }, [scrollElement]);
+
+  // Attach the ResizeObserver once the scroll element is mounted.
+  //
+  // This MUST be a passive `useEffect`, not `useLayoutEffect`. The scroll
+  // element (`.psl__grid-wrap`) is an ANCESTOR of this component, and React
+  // attaches a parent's ref AFTER running its descendants' layout effects
+  // (bottom-up commit). So `scrollElement.current` is still null in a
+  // useLayoutEffect here — the observer never attached and cellsPerRow was
+  // stuck at its initial value (the long-standing "grid never drops columns"
+  // bug). A passive effect runs after all refs are attached, so the element
+  // is present. The virtualizer dodged this by reading the ref lazily.
+  useEffect(() => {
+    const el = scrollElement.current;
+    if (el === null) return;
+    measure();
+    const ro = new ResizeObserver(() => measure());
     ro.observe(el);
     return () => ro.disconnect();
-  }, [scrollElement]);
-  // Zoom changed (pinch): recompute the column count immediately, reusing
-  // the already-attached observer's compute (no observer churn).
+  }, [measure]);
+
+  // Re-measure synchronously when the zoom (pinch) or surrounding layout
+  // changes the pane width (right rail show/hide/collapse, left-bar pin,
+  // view mode). These fire after mount, when the ref is populated, so the
+  // update lands before paint with no flash.
   useLayoutEffect(() => {
     cellMinWidthRef.current = cellMinWidth;
-    computeRef.current();
-  }, [cellMinWidth]);
+    measure();
+  }, [cellMinWidth, layoutSignal, measure]);
+
   return cellsPerRow;
 }
 
@@ -3915,6 +4032,7 @@ function VirtualizedGrid({
   cellMinWidth,
   cellsPerRowRef,
   scrollApiRef,
+  layoutSignal,
   selectedRecordId,
   fixtureBacking,
   projectCoverRecordsById,
@@ -3933,7 +4051,7 @@ function VirtualizedGrid({
   restoreCaptureAction,
   purgeCaptureAction
 }: VirtualizedGridProps) {
-  const cellsPerRow = useCellsPerRow(scrollElement, cellMinWidth);
+  const cellsPerRow = useCellsPerRow(scrollElement, cellMinWidth, layoutSignal);
   // Mirror the measured value up to Library for keyboard grid-nav.
   useEffect(() => {
     cellsPerRowRef.current = cellsPerRow;

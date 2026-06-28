@@ -16,7 +16,7 @@
 //     initial check fires shortly after boot (after the main window
 //     has had a chance to mount the banner subscription).
 
-import { BrowserWindow } from "electron";
+import { app, BrowserWindow } from "electron";
 import electronUpdater from "electron-updater";
 import type {
   AppUpdateCheckResult,
@@ -30,6 +30,7 @@ import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { broadcastRendererEventToLocalWindows } from "./events";
 import { relayRendererEventToPeer } from "./process-split/event-relay";
 import { getMainLogger } from "./log";
+import { launchStagedMacShipItInstaller } from "./mac-shipit-installer";
 
 // Access `autoUpdater` lazily. electron-updater exposes it as a
 // property getter that constructs `MacUpdater` on first access,
@@ -339,7 +340,25 @@ export function installDownloadedAppUpdate(): AppUpdateInstallResult {
   }
   try {
     log.info("installing downloaded update", { version });
-    autoUpdater().quitAndInstall();
+    const stagedMacInstall = launchStagedMacShipItInstaller({
+      homeDir: app.getPath("home"),
+      platform: process.platform,
+      resourcesPath: process.resourcesPath
+    });
+    if (stagedMacInstall.launched) {
+      log.info("launched staged Squirrel.Mac installer", {
+        shipItPath: stagedMacInstall.shipItPath,
+        statePath: stagedMacInstall.statePath,
+        version
+      });
+      app.quit();
+    } else {
+      log.info("falling back to electron-updater quitAndInstall", {
+        reason: stagedMacInstall.reason,
+        version
+      });
+      autoUpdater().quitAndInstall();
+    }
     return { status: "restarting" };
   } catch (err) {
     return {

@@ -102,7 +102,6 @@ MIT
 - bl@4.1.0 | https://github.com/rvagg/bl
 - body-parser@2.2.2 | expressjs/body-parser
 - buffer@5.7.1 | https://github.com/feross/buffer
-- buffer-crc32@0.2.13 | https://github.com/brianloveswords/buffer-crc32
 - buffer-crc32@1.0.0 | https://github.com/brianloveswords/buffer-crc32
 - builder-util-runtime@9.7.0 | https://github.com/electron-userland/electron-builder
 - bytes@3.1.2 | visionmedia/bytes.js
@@ -222,7 +221,7 @@ MIT
 - unpipe@1.0.0 | stream-utils/unpipe
 - util-deprecate@1.0.2 | https://github.com/TooTallNate/util-deprecate
 - vary@1.1.2 | jshttp/vary
-- yauzl@3.3.0 | https://github.com/thejoshwolfe/yauzl
+- yauzl@3.4.0 | https://github.com/thejoshwolfe/yauzl
 - yazl@3.3.1 | https://github.com/thejoshwolfe/yazl
 - zod@3.25.76 | https://github.com/colinhacks/zod
 - zod@4.4.3 | https://github.com/colinhacks/zod
@@ -1500,34 +1499,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-
-buffer-crc32@0.2.13 (MIT)
--------------------------
-
-Applies to:
-- buffer-crc32@0.2.13 (MIT)
-
-Representative file: buffer-crc32@0.2.13/LICENSE
-
-The MIT License
-
-Copyright (c) 2013 Brian J. Brennan
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to use,
-copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
-Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
-PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
-FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 buffer-crc32@1.0.0 (MIT)
 ------------------------
@@ -5166,14 +5137,14 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-yauzl@3.3.0 (MIT)
+yauzl@3.4.0 (MIT)
 -----------------
 
 Applies to:
-- yauzl@3.3.0 (MIT)
+- yauzl@3.4.0 (MIT)
 - yazl@3.3.1 (MIT)
 
-Representative file: yauzl@3.3.0/LICENSE
+Representative file: yauzl@3.4.0/LICENSE
 
 The MIT License (MIT)
 

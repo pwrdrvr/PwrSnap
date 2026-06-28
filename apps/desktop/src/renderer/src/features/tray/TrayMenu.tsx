@@ -9,6 +9,7 @@ import { useHotkeys } from "../shared/useHotkeys";
 import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
 import { acceleratorToDisplayKeys } from "../../lib/format-hotkey";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
+import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { useLibrary } from "../../lib/useLibrary";
 
 function fmtTrayDuration(seconds: number): string {
@@ -347,7 +348,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   };
   const onCopyLastSnap = (preset: "low" | "med" | "high"): void => {
     if (lastSnap === undefined) return;
-    void dispatch("clipboard:copy", { captureId: lastSnap.id, preset });
+    copyImagePreset(lastSnap.id, preset);
   };
 
   return (
@@ -625,9 +626,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
                       dim={m.dim}
                       bytes={m.bytes}
                       onCopy={onCopyLastSnap}
-                      onCopyPath={(preset) => {
-                        void dispatch("clipboard:copy-path", { captureId: lastSnap.id, preset });
-                      }}
+                      onCopyPath={(preset) => copyImagePresetPath(lastSnap.id, preset)}
                       onDrag={(preset) => startCaptureDrag(lastSnap.id, preset)}
                     />
                   );

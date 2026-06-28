@@ -35,6 +35,7 @@ import { enrichmentBackendLabel } from "../shared/CodexStatusPill";
 import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-availability";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
+import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 
 type HostState =
   | { kind: "idle" }
@@ -326,7 +327,7 @@ export function FloatOverHost(): React.ReactElement {
       const captureId = activeCaptureIdRef.current;
       if (captureId === null) return;
       event.preventDefault();
-      void dispatch("clipboard:copy", { captureId, preset });
+      copyImagePreset(captureId, preset);
       setCopyPulses((current) => ({ ...current, [preset]: current[preset] + 1 }));
     }
     window.addEventListener("keydown", onKeyDown);
@@ -426,10 +427,9 @@ export function FloatOverHost(): React.ReactElement {
           kind: "image" as const,
           src: previewSrc,
           enhancedSrc: enhancedPreviewSrc,
-          onCopy: (preset: "low" | "med" | "high") =>
-            void dispatch("clipboard:copy", { captureId: record.id, preset }),
+          onCopy: (preset: "low" | "med" | "high") => copyImagePreset(record.id, preset),
           onCopyPath: (preset: "low" | "med" | "high") =>
-            void dispatch("clipboard:copy-path", { captureId: record.id, preset }),
+            copyImagePresetPath(record.id, preset),
           onDragFile: () => startCaptureDrag(record.id, "high"),
           onDragPreset: (preset: "low" | "med" | "high") => startCaptureDrag(record.id, preset)
         });
@@ -440,12 +440,8 @@ export function FloatOverHost(): React.ReactElement {
         asset={asset}
         src={previewSrc}
         enhancedSrc={enhancedPreviewSrc}
-        onCopy={(preset) => {
-          void dispatch("clipboard:copy", { captureId: record.id, preset });
-        }}
-        onCopyPath={(preset) => {
-          void dispatch("clipboard:copy-path", { captureId: record.id, preset });
-        }}
+        onCopy={(preset) => copyImagePreset(record.id, preset)}
+        onCopyPath={(preset) => copyImagePresetPath(record.id, preset)}
         srcW={record.width_px}
         srcH={record.height_px}
         srcBytes={record.byte_size}

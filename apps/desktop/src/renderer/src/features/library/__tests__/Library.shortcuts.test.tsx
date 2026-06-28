@@ -170,7 +170,7 @@ beforeEach(() => {
     }
     if (name === "sizzle:list") return ok({ projects: [] });
     if (name === "app:version") return ok({ version: "0.0.0-test" });
-    if (name === "clipboard:copy-file") return ok(undefined);
+    if (name === "clipboard:copy") return ok(undefined);
     return ok(undefined);
   });
   subscribeMock.mockClear();
@@ -192,7 +192,7 @@ afterEach(() => {
 });
 
 describe("Library keyboard shortcuts", () => {
-  test("copies image shortcut presets through file export", async () => {
+  test("copies image shortcut presets as image bytes (clipboard:copy), matching the card body", async () => {
     await act(async () => {
       root?.render(createElement(Library));
       await Promise.resolve();
@@ -223,11 +223,11 @@ describe("Library keyboard shortcuts", () => {
       await Promise.resolve();
     });
 
-    expect(dispatchMock).toHaveBeenCalledWith("clipboard:copy-file", {
+    expect(dispatchMock).toHaveBeenCalledWith("clipboard:copy", {
       captureId: "cap_image",
       preset: "med"
     });
-    expect(dispatchMock.mock.calls.some(([name]) => name === "clipboard:copy")).toBe(false);
+    expect(dispatchMock.mock.calls.some(([name]) => name === "clipboard:copy-file")).toBe(false);
   });
 });
 

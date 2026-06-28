@@ -69,6 +69,7 @@ import { LibraryChatPanel } from "./chat/LibraryChatPanel";
 import { LayersPanel } from "./LayersPanel";
 import type { LayersPanelApi } from "../editor/Editor";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag, subscribe } from "../../lib/pwrsnap";
+import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { useCart } from "./CartContext";
 import { CartPanel } from "./CartPanel";
@@ -818,21 +819,11 @@ export function DetailRail({
                     dim={m.dim}
                     bytes={m.bytes}
                     tag={rung === undefined ? undefined : rungTag(rung)}
-                    onCopy={(preset) => {
-                      // The preset box copies IMAGE BYTES (clipboard:copy),
-                      // same as the post-capture float-over. PR #232
-                      // accidentally swapped this to `clipboard:copy-file`
-                      // (a file URL only) while wiring export filenames —
-                      // which broke image consumers AND PwrSnap's own
-                      // "Paste from Clipboard" (a file URL mangled by
-                      // Universal Clipboard reads back as "no image"). The
-                      // FILE chip (onCopyPath) + drag still provide the
-                      // named-file / path affordances, so nothing is lost.
-                      void dispatch("clipboard:copy", { captureId: record.id, preset });
-                    }}
-                    onCopyPath={(preset) => {
-                      void dispatch("clipboard:copy-path", { captureId: record.id, preset });
-                    }}
+                    // Image BYTES, via the shared helper so every copy
+                    // surface stays in lockstep (see clipboard-copy.ts —
+                    // PR #232 drifted this card body to a file URL).
+                    onCopy={(preset) => copyImagePreset(record.id, preset)}
+                    onCopyPath={(preset) => copyImagePresetPath(record.id, preset)}
                     onDrag={(preset) => startCaptureDrag(record.id, preset)}
                     copyPulse={copyPulses?.[p] ?? 0}
                   />

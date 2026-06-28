@@ -59,6 +59,7 @@ import {
   sizzleOutputUrl,
   subscribe
 } from "../../lib/pwrsnap";
+import { copyImagePreset } from "../../lib/clipboard-copy";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { useCart, useCartIsEmpty } from "./CartContext";
 import { formatBytes } from "../../lib/format-bytes";
@@ -2361,7 +2362,10 @@ export function Library() {
         const record = selectedRecordRef.current;
         if (preset !== null && record !== null && record.kind === "image") {
           event.preventDefault();
-          void dispatch("clipboard:copy-file", { captureId: record.id, preset });
+          // Image BYTES via the shared helper — ⌘1/2/3 mirrors the DetailRail
+          // card body, so they must put the SAME thing on the clipboard
+          // (see clipboard-copy.ts; PR #232 drifted both to a file URL).
+          copyImagePreset(record.id, preset);
           setCopyPulses((current) => ({ ...current, [preset]: current[preset] + 1 }));
           return;
         }

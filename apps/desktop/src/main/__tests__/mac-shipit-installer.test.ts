@@ -108,7 +108,11 @@ describe("launchStagedMacShipItInstaller", () => {
 
   test("skips when ShipIt has not staged an update bundle", () => {
     const fixture = makeFixture();
-    writeFileSync(fixture.statePath, JSON.stringify({ updateBundleURL: "file:///missing.app" }));
+    const missingBundlePath = join(fixture.root, "missing.app");
+    writeFileSync(
+      fixture.statePath,
+      JSON.stringify({ updateBundleURL: pathToFileURL(missingBundlePath).href })
+    );
 
     expect(
       launchStagedMacShipItInstaller({

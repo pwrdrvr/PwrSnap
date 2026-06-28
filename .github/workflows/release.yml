@@ -309,7 +309,7 @@ jobs:
   windows:
     name: Sign and publish Windows installer
     runs-on: windows-latest
-    needs: prepare
+    needs: [prepare, sign]
     timeout-minutes: 45
     environment: windows-signing
     permissions:

@@ -27,81 +27,12 @@
 // Cross-platform: pure Chromium layout — runs on the Linux/xvfb CI
 // subset, not macOS-only.
 
-import { mkdtemp, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import sharp from "sharp";
 import { expect, test, type Page } from "@playwright/test";
 import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { openEditorImage, seedRasterCapture } from "./fixtures/editor-helpers";
 
 // First spec cold-starts Electron; 90s mirrors the other editor specs.
 test.setTimeout(90_000);
-
-async function makeTempPng(widthPx: number, heightPx: number): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-crop-clip-src-"));
-  const pngPath = path.join(dir, "fixture.png");
-  const buf = await sharp({
-    create: {
-      width: widthPx,
-      height: heightPx,
-      channels: 3,
-      background: { r: 30, g: 144, b: 255 }
-    }
-  })
-    .png()
-    .toBuffer();
-  await writeFile(pngPath, buf);
-  return pngPath;
-}
-
-/**
- * Seed a real raster-backed v2 capture (root group + raster at the PNG's
- * natural dims) through the production persistCaptureFromTempV2 pipeline.
- * `outputDir` is pinned under a tmpdir so the bundle never lands in the
- * host's real ~/Documents/PwrSnap (getCapturesRoot() defaults to the OS
- * documents dir, which the launch fixture does NOT rebase).
- */
-async function seedBundleCapture(
-  app: LaunchedApp,
-  widthPx: number,
-  heightPx: number
-): Promise<string> {
-  const tempPath = await makeTempPng(widthPx, heightPx);
-  const outputDir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-crop-clip-out-"));
-  return await app.electronApp.evaluate(
-    async (_electron, payload) => {
-      const bridge = (
-        globalThis as unknown as {
-          __PWRSNAP_TEST__: {
-            persistBundleCapture: (input: {
-              tempPath: string;
-              sourceApp: { bundleId: string | null; appName: string | null } | null;
-              outputDir?: string;
-            }) => Promise<{ record: { id: string } }>;
-          };
-        }
-      ).__PWRSNAP_TEST__;
-      const { record } = await bridge.persistBundleCapture({
-        tempPath: payload.tempPath,
-        sourceApp: { bundleId: "com.test.crop-clip", appName: "Crop Clip Spec" },
-        outputDir: payload.outputDir
-      });
-      return record.id;
-    },
-    { tempPath, outputDir }
-  );
-}
-
-async function openEditor(app: LaunchedApp, captureId: string): Promise<Page> {
-  const result = await app.dispatch("editor:open", { captureId });
-  expect(result.ok, "editor:open should succeed").toBe(true);
-  const page = app.window;
-  await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
-  await page
-    .locator('[data-testid="editor-image"]')
-    .waitFor({ state: "visible", timeout: 15_000 });
-  return page;
-}
 
 /** Shrink the canvas — an edge-aligned crop's authoritative signal. */
 async function cropCanvas(
@@ -334,11 +265,11 @@ async function insertVector(
 test("editor-crop-clip: cropped capture clips the source to the canvas; canvas + clip never collapse", async () => {
   const app = await launchPwrSnap();
   try {
-    const captureId = await seedBundleCapture(app, 800, 600);
+    const captureId = await seedRasterCapture(app, { widthPx: 800, heightPx: 600, appName: "Crop Clip Spec" });
     // Edge-aligned band crop: canvas shrinks to an 800×180 strip while
     // the raster stays 800×600, so the <img> renders at 100% × 333%.
     await cropCanvas(app, captureId, 800, 180);
-    const win = await openEditor(app, captureId);
+    const win = await openEditorImage(app, captureId);
 
     const canvasBox = await win.locator(".editor-canvas").first().boundingBox();
     const clipBox = await win.locator(".editor-image-clip").first().boundingBox();
@@ -386,14 +317,14 @@ test("editor-crop-clip: cropped capture clips the source to the canvas; canvas +
 test("editor-crop-clip: off-origin crop translates the image and clips it to the canvas", async () => {
   const app = await launchPwrSnap();
   try {
-    const captureId = await seedBundleCapture(app, 800, 600);
+    const captureId = await seedRasterCapture(app, { widthPx: 800, heightPx: 600, appName: "Crop Clip Spec" });
     // Off-origin end state: canvas 400×300, raster translated by
     // (-200, -150) so the editor shows the user's chosen interior
     // region. computeEditorImageStyle maps that to translate(-25%, -25%)
     // (tx/sourceW = -200/800, ty/sourceH = -150/600).
     await cropCanvas(app, captureId, 400, 300);
     await translateRaster(app, captureId, -200, -150);
-    const win = await openEditor(app, captureId);
+    const win = await openEditorImage(app, captureId);
 
     const transform = await win
       .locator('[data-testid="editor-image"]')
@@ -424,12 +355,12 @@ test("editor-crop-clip: off-origin crop translates the image and clips it to the
 test("editor-crop-clip: blur renders within the canvas over a cropped capture (clip wrapper preserves the blur layer)", async () => {
   const app = await launchPwrSnap();
   try {
-    const captureId = await seedBundleCapture(app, 800, 600);
+    const captureId = await seedRasterCapture(app, { widthPx: 800, heightPx: 600, appName: "Crop Clip Spec" });
     // Crop to 800×400 (img overflows at 150%) so the clip wrapper is
     // engaged, then drop a gaussian blur over a canvas-pixel rect.
     await cropCanvas(app, captureId, 800, 400);
     await insertGaussianBlur(app, captureId, { x: 120, y: 80, w: 320, h: 160 });
-    const win = await openEditor(app, captureId);
+    const win = await openEditorImage(app, captureId);
 
     // The committed gaussian blur renders as an .ed-blur-item--gaussian
     // div, positioned by canvas-relative percentages. It is a SIBLING of
@@ -465,12 +396,12 @@ test("editor-crop-clip: blur renders within the canvas over a cropped capture (c
 test("editor-crop-clip: off-origin crop translates a blur's clip_rect so it keeps covering the same region", async () => {
   const app = await launchPwrSnap();
   try {
-    const captureId = await seedBundleCapture(app, 800, 600);
+    const captureId = await seedRasterCapture(app, { widthPx: 800, heightPx: 600, appName: "Crop Clip Spec" });
     // Blur over a known source region, fully inside the kept area of the
     // centered-60% default crop (kept region is source [160,640]×[120,480]).
     const blurBefore = { x: 300, y: 240, w: 120, h: 90 };
     await insertGaussianBlur(app, captureId, blurBefore);
-    const win = await openEditor(app, captureId);
+    const win = await openEditorImage(app, captureId);
 
     // Apply an OFF-ORIGIN crop through the REAL crop dispatch. Selecting
     // the Crop tool seeds a centered 60% rect ({0.2, 0.2, 0.6, 0.6} — both
@@ -520,7 +451,7 @@ test("editor-crop-clip: off-origin crop translates a blur's clip_rect so it keep
 test("editor-crop-clip: off-origin crop keeps vector annotations (arrow / rectangle / highlight) in place", async () => {
   const app = await launchPwrSnap();
   try {
-    const captureId = await seedBundleCapture(app, 800, 600);
+    const captureId = await seedRasterCapture(app, { widthPx: 800, heightPx: 600, appName: "Crop Clip Spec" });
     // Arrow, rectangle, and highlight are VECTOR layers (only blur is an
     // effect layer). They take the Step-0 `inverseTransformOverlayByCrop`
     // path — separate from the effect clip_rect fix above — so guard it
@@ -546,7 +477,7 @@ test("editor-crop-clip: off-origin crop keeps vector annotations (arrow / rectan
     await insertVector(app, captureId, "vecArrow00000001", arrowBefore);
     await insertVector(app, captureId, "vecRect000000001", rectBefore);
     await insertVector(app, captureId, "vecHighlight0001", hiBefore);
-    const win = await openEditor(app, captureId);
+    const win = await openEditorImage(app, captureId);
 
     // Off-origin crop via the real Crop tool (centered 60% default rect).
     await win.locator('.psl__edit-toolbar button[data-tool="crop"]').click();

@@ -324,22 +324,26 @@ export function resolveCropViewport(args: {
   canvasHeightPx: number;
 }): CropViewport {
   const { layers, canvasWidthPx, canvasHeightPx } = args;
-  const identity: CropViewport = {
+  // The identity result is the bake hot path (crop visible/absent — almost
+  // every render, including cache hits). Build it lazily and DON'T copy the
+  // layer array: callers treat `layers` read-only, so the identity case
+  // returns the same reference rather than allocating a slice per bake.
+  const identity = (): CropViewport => ({
     uncropped: false,
     widthPx: canvasWidthPx,
     heightPx: canvasHeightPx,
     rect: null,
-    layers: layers.slice()
-  };
+    layers: layers as BundleLayerNode[]
+  });
 
   const cropLayer = layers.find(isCropVectorLayer);
   // Crop absent, or present-and-visible → nothing to reveal.
-  if (cropLayer === undefined || cropLayer.visible !== false) return identity;
+  if (cropLayer === undefined || cropLayer.visible !== false) return identity();
 
   const raster = layers.find(
     (l): l is Extract<BundleLayerNode, { kind: "raster" }> => l.kind === "raster"
   );
-  if (raster === undefined) return identity;
+  if (raster === undefined) return identity();
 
   const naturalW = raster.natural_width_px;
   const naturalH = raster.natural_height_px;
@@ -351,9 +355,9 @@ export function resolveCropViewport(args: {
     rasterTranslateXPx: raster.transform[4],
     rasterTranslateYPx: raster.transform[5]
   });
-  if (rect === null || rect.w <= 0 || rect.h <= 0) return identity;
+  if (rect === null || rect.w <= 0 || rect.h <= 0) return identity();
   const inv = inverseCropRect(rect);
-  if (inv === null) return identity;
+  if (inv === null) return identity();
 
   return {
     uncropped: true,

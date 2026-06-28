@@ -11,6 +11,7 @@ import type {
 } from "@pwrsnap/shared";
 import { DetailRail, AiRunUsageStrip } from "../DetailRail";
 import type { LibraryView } from "../library-view";
+import type { LayersPanelApi } from "../../editor/Editor";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -1398,11 +1399,13 @@ describe("AiRunUsageStrip", () => {
 });
 
 describe("DetailRail — Layers tab", () => {
-  const stubLayersApi = {
+  // Typed as the real LayersPanelApi so a method rename (e.g. moveLayer →
+  // moveLayerToIndex) can't silently drift the stub out of conformance.
+  const stubLayersApi: LayersPanelApi = {
     selectLayers: () => undefined,
     setLayerVisibility: async () => undefined,
     deleteLayer: async () => undefined,
-    moveLayer: async () => undefined,
+    moveLayerToIndex: async () => undefined,
     uncrop: async () => undefined
   };
 

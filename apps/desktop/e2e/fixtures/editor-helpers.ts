@@ -187,6 +187,23 @@ export async function openEditorFocus(
   return page;
 }
 
+/** Open a capture in Library Focus and wait for the source `<img>` to
+ *  render — the variant the crop/source specs use (they measure or toggle
+ *  the rendered image, not the toolbar). */
+export async function openEditorImage(
+  app: LaunchedApp,
+  captureId: string
+): Promise<Page> {
+  const result = await app.dispatch("editor:open", { captureId });
+  expect(result.ok, "editor:open should succeed").toBe(true);
+  const page = app.window;
+  await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
+  await page
+    .locator('[data-testid="editor-image"]')
+    .waitFor({ state: "visible", timeout: 15_000 });
+  return page;
+}
+
 /** Click a tool in the floating edit toolbar and confirm it's active. */
 export async function selectTool(win: Page, tool: string): Promise<void> {
   await win.locator(`.psl__edit-toolbar button[data-tool="${tool}"]`).click();

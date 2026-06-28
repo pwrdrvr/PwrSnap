@@ -1,0 +1,13 @@
+-- Per-capture transparency signal for the Library grid + editor checker.
+--
+-- 1 = the source PNG had at least one non-opaque pixel at persist time
+-- (sharp `stats().isOpaque === false`); 0 = fully opaque, or unknown
+-- (pre-migration rows, or a capture whose alpha couldn't be inspected).
+--
+-- Additive + defaulted so existing rows migrate to "opaque" without a
+-- backfill pass over every bundle on disk. The cost of defaulting an old
+-- transparent capture to 0 is purely cosmetic: its grid thumbnail won't
+-- show the transparency checker until something re-persists it. Nothing
+-- about correctness, storage, or rendering depends on the flag — it only
+-- gates a background paint.
+ALTER TABLE captures ADD COLUMN has_alpha INTEGER NOT NULL DEFAULT 0;

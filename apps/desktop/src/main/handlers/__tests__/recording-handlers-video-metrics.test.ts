@@ -75,6 +75,7 @@ function videoCapture(): CaptureRecord {
     edits_version: 0,
     source_app_bundle_id: null,
     source_app_name: null,
+    has_alpha: false,
     deleted_at: null,
     app_id: null,
     title: null,

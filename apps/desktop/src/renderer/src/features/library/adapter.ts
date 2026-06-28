@@ -94,7 +94,8 @@ export function recordToFixture(record: CaptureRecord, sequence: number, now: Da
     size: Math.round(record.byte_size / 1024),
     w: record.width_px,
     h: record.height_px,
-    kind: record.kind
+    kind: record.kind,
+    hasAlpha: record.has_alpha
   };
 }
 
@@ -130,6 +131,7 @@ export function projectToFixture(
     w: 1920,
     h: 1080,
     kind: "project",
+    hasAlpha: false,
     projectId: project.id
   };
 }

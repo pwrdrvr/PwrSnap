@@ -112,6 +112,7 @@ const imageRecord: CaptureRecord = {
   source_app_bundle_id: "com.example.app",
   source_app_name: "Example",
   edits_version: 0,
+  has_alpha: false,
   deleted_at: null
 };
 

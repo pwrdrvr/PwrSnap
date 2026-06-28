@@ -67,6 +67,7 @@ function makeRecord(overrides: Partial<CaptureRecord> = {}): CaptureRecord {
     source_app_bundle_id: "com.apple.Safari",
     source_app_name: "Safari",
     edits_version: 1,
+    has_alpha: false,
     deleted_at: null,
     ...overrides
   };

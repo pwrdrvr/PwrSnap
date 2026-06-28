@@ -1167,6 +1167,30 @@
   content-visibility: auto;
   contain-intrinsic-size: 70px 56px;
 }
+/* Transparency checker for filmstrip frames whose source PNG has alpha —
+   same gate + rationale as `.psl__cell-thumb--alpha`, scaled down for the
+   70×56 frame. Replaces the flat `--bg-panel` fill so a transparent snap
+   reads as transparent here too. Tokens only (lint:colors). */
+.psl__frame--alpha {
+  background-color: var(--bg-panel-elevated);
+  background-image:
+    linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--text-primary) 7%, transparent) 25%,
+      transparent 25%,
+      transparent 75%,
+      color-mix(in srgb, var(--text-primary) 7%, transparent) 75%
+    ),
+    linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--text-primary) 7%, transparent) 25%,
+      transparent 25%,
+      transparent 75%,
+      color-mix(in srgb, var(--text-primary) 7%, transparent) 75%
+    );
+  background-size: 12px 12px;
+  background-position: 0 0, 6px 6px;
+}
 /* Same hover-flicker fix as .psl__cell: lift via box-shadow, never a
    transform that would move the frame's hit-test box out from under the
    pointer (see the note on .psl__cell:hover below). */
@@ -1419,6 +1443,33 @@
 .psl__cell-thumb {
   aspect-ratio: 16/10;
   position: relative;
+}
+/* Transparency checker behind the thumbnail for captures whose source PNG
+   has alpha (`Capture.hasAlpha`). Gated, not blanket: a blanket checker
+   would also tile the letterbox bars of every OPAQUE capture (contain
+   leaves bars on most aspect ratios). With the gate, only genuinely
+   transparent captures get the checker — through their transparent pixels
+   AND in the bars — so a transparent snap is distinguishable from a
+   black/white fill at a glance in the grid. Tokens only (lint:colors). */
+.psl__cell-thumb--alpha {
+  background-color: var(--bg-panel-elevated);
+  background-image:
+    linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--text-primary) 7%, transparent) 25%,
+      transparent 25%,
+      transparent 75%,
+      color-mix(in srgb, var(--text-primary) 7%, transparent) 75%
+    ),
+    linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--text-primary) 7%, transparent) 25%,
+      transparent 25%,
+      transparent 75%,
+      color-mix(in srgb, var(--text-primary) 7%, transparent) 75%
+    );
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
 }
 /* `contain` — show the entire capture at its real aspect ratio. The
    cell's 16:10 box is just the layout slot; letterboxing keeps the

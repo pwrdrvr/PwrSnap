@@ -78,6 +78,15 @@ export type CaptureRecord = {
   edits_version: number;
   deleted_at: string | null;
   /**
+   * True when the source PNG had at least one non-opaque pixel at persist
+   * time (sharp `stats().isOpaque === false`). The Library grid + editor
+   * paint a transparency checker behind the thumbnail when set, so a
+   * genuinely-transparent capture is distinguishable from a black/white
+   * fill. Always `false` for videos and for pre-0025 rows (defaulted by
+   * migration without a backfill — see migration 0025).
+   */
+  has_alpha: boolean;
+  /**
    * Set for `kind === "video"` rows. Carries duration, audio-track
    * availability, default range, and preview asset path so the
    * float-over and Library can render without a second round-trip.

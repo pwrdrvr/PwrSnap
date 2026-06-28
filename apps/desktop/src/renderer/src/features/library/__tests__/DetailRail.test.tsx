@@ -38,6 +38,7 @@ const record: CaptureRecord = {
   source_app_bundle_id: "jp.naver.line.mac",
   source_app_name: "LINE",
   edits_version: 0,
+  has_alpha: false,
   deleted_at: null
 };
 

@@ -204,13 +204,16 @@
   inset: 0;
   overflow: hidden;
   border-radius: 6px;
-  /* Transparency checker BEHIND the source, so a capture with alpha — a
-     pasted transparent image, a re-imported source-hidden export, or the
-     Source layer toggled off — reads as "empty", not solid black. Opaque
-     captures cover this completely (the <img> fills/overflows the canvas),
-     so normal screenshots look unchanged; only genuinely transparent
-     pixels reveal it. Two-tone checker derived from tokens so it works in
-     both themes (raw hex isn't allowed outside :root — lint:colors). */
+}
+/* Transparency checker BEHIND the source, so a capture with alpha — a
+   pasted transparent image, a re-imported source-hidden export, or the
+   Source layer toggled off — reads as "empty", not solid black. Gated on
+   the --alpha modifier (set when the source is hidden OR the source PNG
+   has transparent pixels); an opaque, visible source never paints it —
+   the <img> would cover it completely, so it'd be pure wasted paint (#3).
+   Two-tone checker derived from tokens so it works in both themes (raw
+   hex isn't allowed outside :root — lint:colors). */
+.editor-image-clip--alpha {
   background-color: var(--bg-panel-elevated);
   background-image:
     linear-gradient(

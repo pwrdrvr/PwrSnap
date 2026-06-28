@@ -3173,6 +3173,7 @@ export function Editor({
       storedCanvasHeightPx={storedCanvasHeightPx}
       isUncroppedView={isUncroppedView}
       isSourceHidden={isSourceHidden}
+      sourceHasAlpha={model.record.has_alpha}
       toStoredGeometry={toStoredGeometry}
       dispatchEdit={dispatchEditErased}
       rawDispatchEdit={
@@ -3243,6 +3244,7 @@ function EditorLoaded({
   storedCanvasHeightPx,
   isUncroppedView,
   isSourceHidden,
+  sourceHasAlpha,
   toStoredGeometry,
   dispatchEdit,
   rawDispatchEdit,
@@ -3448,6 +3450,13 @@ function EditorLoaded({
    *  <img> behind a transparency checker so annotations show on an empty
    *  canvas — matching the bake, which already drops a hidden raster. */
   isSourceHidden: boolean;
+  /** True when the source PNG has transparent pixels
+   *  (`CaptureRecord.has_alpha`). Paints the transparency checker behind
+   *  the <img> so the alpha reads as "empty" rather than black/white,
+   *  WITHOUT hiding the image (unlike isSourceHidden). Opaque captures
+   *  skip the checker entirely (#3 — no wasted paint behind a solid
+   *  screenshot). */
+  sourceHasAlpha: boolean;
   /** Map a geometry from displayed (source) space into STORED (cropped)
    *  space — applied to the RECORDED geometry at every recordGeometry
    *  site so undo/redo (which replays via rawDispatchEdit) restores the
@@ -4917,6 +4926,11 @@ function EditorLoaded({
           <div
             className={
               "editor-image-clip" +
+              // Paint the checker only when there's transparency to reveal:
+              // the source is hidden (whole canvas empty) OR the source PNG
+              // has alpha. An opaque, visible source skips it (#3) — the
+              // <img> would cover it anyway, so it's pure wasted paint.
+              (isSourceHidden || sourceHasAlpha ? " editor-image-clip--alpha" : "") +
               (isSourceHidden ? " editor-image-clip--source-hidden" : "")
             }
             data-source-hidden={isSourceHidden ? "true" : undefined}

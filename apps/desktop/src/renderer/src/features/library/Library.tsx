@@ -3445,7 +3445,9 @@ export function Library() {
                                   key={c.id}
                                   data-frame-id={recordId ?? ""}
                                   className={
-                                    "psl__frame" + (isSelected ? " is-selected" : "")
+                                    "psl__frame" +
+                                    (isSelected ? " is-selected" : "") +
+                                    (c.hasAlpha ? " psl__frame--alpha" : "")
                                   }
                                   onClick={() => onSelectFrame(c)}
                                 >
@@ -4300,7 +4302,7 @@ function CellRow({
             }}
             onMouseEnter={() => preloadFullRes(record ?? null)}
           >
-            <div className="psl__cell-thumb">
+            <div className={"psl__cell-thumb" + (c.hasAlpha ? " psl__cell-thumb--alpha" : "")}>
               <CellThumbMemo
                 capture={c}
                 record={record}

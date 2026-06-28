@@ -29,6 +29,12 @@ export type Capture = {
    *  emitted by `FixtureBackedRecords` so projects flow through the
    *  same day-grouping + virtualizer cell pipeline as captures. */
   kind: "image" | "video" | "project";
+  /** True when the capture's source PNG has transparent pixels
+   *  (`CaptureRecord.has_alpha`). The grid cell paints a transparency
+   *  checker behind the thumbnail when set, so a genuinely-transparent
+   *  capture reads as transparent rather than as a black/white fill.
+   *  Always `false` for videos, projects, and demo fixtures. */
+  hasAlpha: boolean;
   /** Sizzle project id when `kind === "project"`. Click handlers
    *  branch on this to dispatch `sizzle:open` instead of opening
    *  the focus editor. */
@@ -125,7 +131,8 @@ export const CAPTURES: Capture[] = BASE.map((c, i) => {
     size: 220 + Math.round(Math.sin(i * 1.7) * 100 + 280),
     w: WIDTHS[i % 4]!,
     h: HEIGHTS[i % 4]!,
-    kind: "image"
+    kind: "image",
+    hasAlpha: false
   };
 });
 

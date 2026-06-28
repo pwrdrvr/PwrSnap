@@ -33,6 +33,7 @@ function capture(id: string, kind: "image" | "video", durationSec = 1): CaptureR
     source_app_bundle_id: null,
     source_app_name: null,
     edits_version: 0,
+    has_alpha: false,
     deleted_at: null,
     video:
       kind === "video"

@@ -64,6 +64,9 @@ jobs:
             pnpm-lock.yaml \
             pnpm-workspace.yaml \
             .npmrc \
+            CHANGELOG.md \
+            scripts/check-desktop-release-metadata.mjs \
+            apps/desktop/package.json \
             apps/desktop/release-stage \
             apps/desktop/scripts/release.mjs \
             apps/desktop/scripts/rebuild-native-for-electron.mjs \
@@ -267,6 +270,28 @@ jobs:
             "$source_dir"/* \
             --repo pwrdrvr/PwrSnap \
             --clobber
+
+      - name: Publish release notes from changelog
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_PAT || github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/RELEASE_NOTES.md"
+          node scripts/check-desktop-release-metadata.mjs \
+            --tag "$RELEASE_TAG" \
+            --notes-file "$notes"
+          gh release edit "$RELEASE_TAG" \
+            --repo pwrdrvr/PwrSnap \
+            --notes-file "$notes"
+          body_length="$(gh release view "$RELEASE_TAG" \
+            --repo pwrdrvr/PwrSnap \
+            --json body \
+            --jq '.body | length')"
+          if [ "$body_length" -le 0 ]; then
+            echo "::error::Release $RELEASE_TAG still has an empty body" >&2
+            exit 1
+          fi
 
       - name: Upload release artifacts (debug retention)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

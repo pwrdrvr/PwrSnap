@@ -224,6 +224,11 @@ approval. Treat that pause as expected. Before approving, verify the workflow
 run is for the intended tag, the tag points at the intended default-branch
 commit, and the version/changelog metadata match the tag.
 
+A delegated monitor that stops at the `apple-signing` approval gate has not
+completed the release. Resume monitoring after approval and continue until the
+workflow succeeds or fails. Release completion requires the post-publish
+release-notes step to run after the assets are uploaded.
+
 On failure, inspect logs yourself:
 
 ```bash
@@ -240,6 +245,26 @@ ls .local/release/v<version>
 
 Expect signed/notarized universal macOS assets, including DMG/ZIP files and
 `latest-mac.yml`.
+
+The workflow automatically replaces electron-builder's generated/empty GitHub
+Release body with the matching `CHANGELOG.md` entry after publishing assets.
+Verify that the body is present before calling the release done:
+
+```bash
+body_length="$(gh release view v<version> --repo pwrdrvr/PwrSnap --json body --jq '.body | length')"
+test "$body_length" -gt 0
+```
+
+If the automated notes step did not run or must be repaired manually, extract
+the notes with the metadata checker, edit the release, and read the body back:
+
+```bash
+node scripts/check-desktop-release-metadata.mjs \
+  --tag v<version> \
+  --notes-file .local/release-v<version>-notes.md
+gh release edit v<version> --repo pwrdrvr/PwrSnap --notes-file .local/release-v<version>-notes.md
+gh release view v<version> --repo pwrdrvr/PwrSnap --json body --jq '.body | length'
+```
 
 ## Local Fallback
 

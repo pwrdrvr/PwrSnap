@@ -199,6 +199,10 @@ The environment-gated signing job:
    ```text
    https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg
    ```
+7. Publishes the matching `CHANGELOG.md` section into the GitHub Release body
+   with `gh release edit --notes-file`, then reads the release back and fails
+   the workflow if the body is still empty. This replaces electron-builder's
+   generated/default notes after all assets are present.
 
 Do not approve the `apple-signing` environment unless the tag, commit, and
 release metadata are the intended release. Approving the wrong run still
@@ -266,6 +270,16 @@ After launch, spot-check the document surfaces:
 - Help → Changelog opens the bundled changelog.
 - Help → Third-party Licenses opens the bundled notices.
 - Settings → About can open both release notes and third-party notices.
+
+After a local publish, make the GitHub Release body match the changelog entry:
+
+```bash
+node scripts/check-desktop-release-metadata.mjs \
+  --tag v<version> \
+  --notes-file .local/release-v<version>-notes.md
+gh release edit v<version> --repo pwrdrvr/PwrSnap --notes-file .local/release-v<version>-notes.md
+gh release view v<version> --repo pwrdrvr/PwrSnap --json body --jq '.body | length'
+```
 
 ---
 

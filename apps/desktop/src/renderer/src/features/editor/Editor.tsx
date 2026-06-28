@@ -62,6 +62,7 @@ import {
   resolveCropViewport
 } from "@pwrsnap/shared";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
+import { selectBaseRaster } from "./base-raster";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor } from "./resolveToolColor";
@@ -3087,16 +3088,19 @@ export function Editor({
   // you can see every annotation on an empty canvas. Was a silent no-op
   // before — the editor painted the source regardless of the flag.
   let isSourceHidden = false;
-  for (const layer of model.layers) {
-    if (layer.kind === "raster" && layer.parent_id !== null) {
-      sourceWidthPx = layer.natural_width_px;
-      sourceHeightPx = layer.natural_height_px;
-      // transform[4] = tx, transform[5] = ty, both in source-pixel units.
-      rasterTranslateXPx = layer.transform[4];
-      rasterTranslateYPx = layer.transform[5];
-      isSourceHidden = layer.visible === false;
-      break;
-    }
+  // The editor renders exactly ONE raster as its <img>: the base SOURCE
+  // the `pwrsnap-capture://` protocol serves (sha-matched). selectBaseRaster
+  // resolves that layer even when the capture carries multiple rasters, so
+  // the <img>'s dims / translate / source-hidden flag describe the layer
+  // actually shown — not just whichever raster happens to be first.
+  const baseRaster = selectBaseRaster(model.layers, model.record.sha256);
+  if (baseRaster !== undefined) {
+    sourceWidthPx = baseRaster.natural_width_px;
+    sourceHeightPx = baseRaster.natural_height_px;
+    // transform[4] = tx, transform[5] = ty, both in source-pixel units.
+    rasterTranslateXPx = baseRaster.transform[4];
+    rasterTranslateYPx = baseRaster.transform[5];
+    isSourceHidden = baseRaster.visible === false;
   }
 
   // Sync-write the text-hit dims AFTER `sourceWidthPx` / `sourceHeightPx`

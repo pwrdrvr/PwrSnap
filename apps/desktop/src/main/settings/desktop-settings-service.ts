@@ -50,6 +50,7 @@ import {
   DEFAULT_CHAT_SETTINGS,
   DEFAULT_CODEX_CAPTION_MODEL,
   DEFAULT_HOTKEYS,
+  clampGridColumnBias,
   GRID_ZOOM_DEFAULT,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
@@ -195,7 +196,9 @@ function defaultLibrarySettings(): Settings["library"] {
     confirmBeforeTrash: true,
     // Matches the historical CSS `minmax(180px, 1fr)`. Pinch-to-zoom on
     // the grid steps this through GRID_ZOOM_LEVELS.
-    gridZoom: GRID_ZOOM_DEFAULT
+    gridZoom: GRID_ZOOM_DEFAULT,
+    // No column nudge by default — the width-driven count stands.
+    gridColumnBias: 0
   };
 }
 
@@ -822,9 +825,19 @@ function parseLibrarySettings(
   // clamped value to the nearest GRID_ZOOM_LEVELS entry, so we don't
   // force-snap here — any in-band number round-trips.
   const gridZoom = clampGridZoom(pickNumber(raw.gridZoom, defaults.gridZoom));
+  // gridColumnBias is additive (older files won't have it). Clamp +
+  // integer-snap; out-of-range / non-numeric values fall back to default 0.
+  const gridColumnBias = clampGridColumnBias(
+    pickNumber(raw.gridColumnBias, defaults.gridColumnBias)
+  );
   const detailRaw = raw.detailRail;
   if (!isRecord(detailRaw)) {
-    return { detailRail: defaults.detailRail, confirmBeforeTrash, gridZoom };
+    return {
+      detailRail: defaults.detailRail,
+      confirmBeforeTrash,
+      gridZoom,
+      gridColumnBias
+    };
   }
   // Route the on-disk tab value through the shared type guard so the
   // accepted set has a single source of truth (the protocol's
@@ -841,7 +854,8 @@ function parseLibrarySettings(
       lastSelectedTab: pickedTab
     },
     confirmBeforeTrash,
-    gridZoom
+    gridZoom,
+    gridColumnBias
   };
 }
 
@@ -1360,7 +1374,11 @@ function mergeLibrary(
     gridZoom:
       patch.gridZoom !== undefined
         ? clampGridZoom(patch.gridZoom)
-        : current.gridZoom
+        : current.gridZoom,
+    gridColumnBias:
+      patch.gridColumnBias !== undefined
+        ? clampGridColumnBias(patch.gridColumnBias)
+        : current.gridColumnBias
   };
 }
 

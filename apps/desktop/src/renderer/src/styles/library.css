@@ -3050,6 +3050,35 @@
 .psl__status b { color: var(--text-primary); }
 .psl__status .a { color: var(--accent-bright); }
 
+/* Grid column nudge — a compact [−] N cols [+] stepper in the status bar.
+   Steps gridColumnBias around the width-driven default. */
+.psl__colnudge {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-input);
+}
+.psl__colnudge-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 16px;
+  border: 0; border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.psl__colnudge-btn:not(:disabled):hover {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+}
+.psl__colnudge-btn:disabled { opacity: 0.32; cursor: default; }
+.psl__colnudge-count {
+  min-width: 38px; text-align: center;
+  font: 600 10px/1 var(--font-mono);
+  color: var(--text-secondary);
+  user-select: none;
+}
+
 .psl__ai-toggle {
   appearance: none;
   border: 0;

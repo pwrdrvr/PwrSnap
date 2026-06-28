@@ -26,6 +26,7 @@ import {
   isLibrarySidebarTab,
   isRedactionStyle,
   isSettingsPage,
+  GRID_COLUMN_BIAS_MAX,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
   LIBRARY_SIDEBAR_TABS,
@@ -533,6 +534,19 @@ function validateLibraryPatch(raw: unknown): PwrSnapError | null {
       return validationError(
         "invalid_library_gridZoom",
         `settings:write: library.gridZoom must be a number in [${GRID_ZOOM_MIN}, ${GRID_ZOOM_MAX}]`
+      );
+    }
+  }
+  if (!isUndefined(raw.gridColumnBias)) {
+    if (
+      typeof raw.gridColumnBias !== "number" ||
+      !Number.isInteger(raw.gridColumnBias) ||
+      raw.gridColumnBias < -GRID_COLUMN_BIAS_MAX ||
+      raw.gridColumnBias > GRID_COLUMN_BIAS_MAX
+    ) {
+      return validationError(
+        "invalid_library_gridColumnBias",
+        `settings:write: library.gridColumnBias must be an integer in [${-GRID_COLUMN_BIAS_MAX}, ${GRID_COLUMN_BIAS_MAX}]`
       );
     }
   }

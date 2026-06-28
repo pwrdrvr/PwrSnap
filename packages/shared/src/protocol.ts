@@ -1988,6 +1988,15 @@ export type LibrarySettings = {
    *  to the level ladder (readers snap to the nearest level). Clamped to
    *  [{@link GRID_ZOOM_MIN}, {@link GRID_ZOOM_MAX}]. */
   gridZoom: number;
+  /** Sticky per-step column nudge applied ON TOP of the width-driven
+   *  column count: the grid renders `max(1, computed + gridColumnBias)`
+   *  columns. Negative = fewer/larger thumbnails, positive = more/smaller.
+   *  Unlike {@link gridZoom} (which changes the per-cell min width and so
+   *  shifts where the breakpoints land), this keeps the breakpoints fixed
+   *  and just shifts the result by a whole number of columns, so the +/-
+   *  control is a predictable "one more / one fewer column". Clamped to
+   *  [-{@link GRID_COLUMN_BIAS_MAX}, {@link GRID_COLUMN_BIAS_MAX}]. */
+  gridColumnBias: number;
 };
 
 /** Discrete Library-grid zoom levels — target thumbnail min-widths in px,
@@ -2003,6 +2012,18 @@ export const GRID_ZOOM_LEVELS = [120, 150, 180, 220, 280, 360] as const;
 export const GRID_ZOOM_DEFAULT = 180;
 export const GRID_ZOOM_MIN = GRID_ZOOM_LEVELS[0];
 export const GRID_ZOOM_MAX = GRID_ZOOM_LEVELS[GRID_ZOOM_LEVELS.length - 1];
+
+/** Max magnitude of {@link LibrarySettings.gridColumnBias} in either
+ *  direction — the +/- column nudge lets the user step up to this many
+ *  columns away from the width-driven default. */
+export const GRID_COLUMN_BIAS_MAX = 3;
+/** Clamp + integer-snap an arbitrary value to the valid column-bias band
+ *  `[-GRID_COLUMN_BIAS_MAX, GRID_COLUMN_BIAS_MAX]`. Non-finite → 0. Shared
+ *  so the main-process service/validator and the renderer agree. */
+export function clampGridColumnBias(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(GRID_COLUMN_BIAS_MAX, Math.max(-GRID_COLUMN_BIAS_MAX, Math.round(value)));
+}
 
 // ---- Chat substrate types (Library Chat — Phase 0) ---------------------
 //
@@ -2190,6 +2211,9 @@ export type SettingsPatch = {
     /** Sticky grid thumbnail size (target min-width px). See
      *  {@link LibrarySettings.gridZoom}. */
     gridZoom?: number;
+    /** Sticky per-step column nudge. See
+     *  {@link LibrarySettings.gridColumnBias}. */
+    gridColumnBias?: number;
   };
 };
 

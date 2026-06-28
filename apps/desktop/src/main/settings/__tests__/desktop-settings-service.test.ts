@@ -24,6 +24,7 @@ vi.mock("electron", () => ({
 
 import {
   DEFAULT_HOTKEYS,
+  GRID_COLUMN_BIAS_MAX,
   GRID_ZOOM_DEFAULT,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN
@@ -227,9 +228,20 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     );
     const missing = await new DesktopSettingsService({ filePath: missingPath }).read();
     expect(missing.library.gridZoom).toBe(GRID_ZOOM_DEFAULT);
+    // gridColumnBias is additive — absent in this file, falls back to 0.
+    expect(missing.library.gridColumnBias).toBe(0);
     // Sibling library fields from the file are preserved.
     expect(missing.library.detailRail.pinned).toBe(false);
     expect(missing.library.confirmBeforeTrash).toBe(false);
+
+    const biasPath = join(workDir, "settings-bias.json");
+    writeFileSync(
+      biasPath,
+      JSON.stringify({ schemaVersion: 1, library: { gridColumnBias: 99 } }),
+      "utf8"
+    );
+    const bias = await new DesktopSettingsService({ filePath: biasPath }).read();
+    expect(bias.library.gridColumnBias).toBe(GRID_COLUMN_BIAS_MAX);
 
     const oobPath = join(workDir, "settings-oob.json");
     writeFileSync(
@@ -739,6 +751,28 @@ describe("mergeSettings", () => {
     expect(mergeSettings(current, { library: { gridZoom: 10 } }).library.gridZoom).toBe(
       GRID_ZOOM_MIN
     );
+  });
+
+  test("library.gridColumnBias defaults to 0 and clamps/rounds on patch", () => {
+    const current = defaultSettings();
+    expect(current.library.gridColumnBias).toBe(0);
+    expect(mergeSettings(current, { library: { gridColumnBias: -2 } }).library.gridColumnBias).toBe(
+      -2
+    );
+    // Out-of-range clamps to the band ends; non-integers round.
+    expect(
+      mergeSettings(current, { library: { gridColumnBias: 99 } }).library.gridColumnBias
+    ).toBe(GRID_COLUMN_BIAS_MAX);
+    expect(
+      mergeSettings(current, { library: { gridColumnBias: -99 } }).library.gridColumnBias
+    ).toBe(-GRID_COLUMN_BIAS_MAX);
+    expect(
+      mergeSettings(current, { library: { gridColumnBias: 1.6 } }).library.gridColumnBias
+    ).toBe(2);
+    // Sibling field preserved.
+    expect(
+      mergeSettings(current, { library: { gridColumnBias: 1 } }).library.gridZoom
+    ).toBe(current.library.gridZoom);
   });
 
   test("storage.filenameTimestampZone patch overwrites only the specified field", () => {

@@ -23,7 +23,9 @@ import type {
   DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
 import {
+  clampGridColumnBias,
   EVENT_CHANNELS,
+  GRID_COLUMN_BIAS_MAX,
   GRID_ZOOM_DEFAULT,
   resolveSizzleProjectCoverCaptureId,
   type SettingsChangedEvent,
@@ -752,6 +754,20 @@ export function Library() {
   }, [gridZoom]);
   const userTouchedGridZoomRef = useRef<boolean>(false);
 
+  // Sticky per-step column nudge applied ON TOP of the width-driven count
+  // (the grid renders `max(1, computed + gridColumnBias)` columns). The +/-
+  // control steps this; it persists to settings.library.gridColumnBias.
+  // Same hydration-race guard + broadcast-echo handling as gridZoom.
+  const [gridColumnBias, setGridColumnBiasState] = useState<number>(0);
+  const gridColumnBiasRef = useRef<number>(0);
+  useEffect(() => {
+    gridColumnBiasRef.current = gridColumnBias;
+  }, [gridColumnBias]);
+  const userTouchedColumnBiasRef = useRef<boolean>(false);
+  // Live resolved column count, mirrored up from VirtualizedGrid so the
+  // status-bar nudge can show the actual number the user is changing.
+  const [liveColumns, setLiveColumns] = useState<number>(4);
+
   const [aiEnabled, setAiEnabledState] = useState<boolean>(false);
   const [aiConsentAcceptedAt, setAiConsentAcceptedAtState] = useState<string | null>(null);
   const [aiToggleBusy, setAiToggleBusy] = useState<boolean>(false);
@@ -810,6 +826,11 @@ export function Library() {
       if (result.ok && !userTouchedGridZoomRef.current) {
         setGridZoomState(snapGridZoom(result.value.library.gridZoom));
       }
+      if (result.ok && !userTouchedColumnBiasRef.current) {
+        setGridColumnBiasState(
+          clampGridColumnBias(result.value.library.gridColumnBias)
+        );
+      }
       if (result.ok && !userTouchedAiRef.current) {
         applyAiSettings(result.value);
       }
@@ -838,6 +859,11 @@ export function Library() {
       // this preference isn't worth the flicker.)
       if (!userTouchedGridZoomRef.current) {
         setGridZoomState(snapGridZoom(evt.settings.library.gridZoom));
+      }
+      if (!userTouchedColumnBiasRef.current) {
+        setGridColumnBiasState(
+          clampGridColumnBias(evt.settings.library.gridColumnBias)
+        );
       }
       void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
         if (result.ok) setCodexAvailable(codexAvailableInSnapshot(result.value));
@@ -937,6 +963,18 @@ export function Library() {
     gridZoomRef.current = next;
     setGridZoomState(next);
     void dispatch("settings:write", { library: { gridZoom: next } });
+  }, []);
+
+  // Step the column nudge (+1 = more/smaller, -1 = fewer/larger), clamped to
+  // [-GRID_COLUMN_BIAS_MAX, GRID_COLUMN_BIAS_MAX]. Same ref-stable, no-op-at-
+  // the-ends, persist-only-on-change shape as stepGridZoomBy.
+  const stepColumnBias = useCallback((direction: 1 | -1): void => {
+    const next = clampGridColumnBias(gridColumnBiasRef.current + direction);
+    if (next === gridColumnBiasRef.current) return;
+    userTouchedColumnBiasRef.current = true;
+    gridColumnBiasRef.current = next;
+    setGridColumnBiasState(next);
+    void dispatch("settings:write", { library: { gridColumnBias: next } });
   }, []);
 
   const writeAiEnabled = useCallback((next: boolean, consentAcceptedAt: string | null): void => {
@@ -3353,6 +3391,8 @@ export function Library() {
             grouped={grouped}
             scrollElement={gridScrollRef}
             cellMinWidth={gridZoom}
+            columnBias={gridColumnBias}
+            onColumnsChange={setLiveColumns}
             cellsPerRowRef={cellsPerRowRef}
             scrollApiRef={gridScrollApiRef}
             // Recompute columns whenever the grid pane is resized by a
@@ -3739,6 +3779,41 @@ export function Library() {
           </button>
         </div>
         <div className="psl__status-r">
+          {/* Column nudge — steps `gridColumnBias` ±1 around the width-driven
+              default (up to ±GRID_COLUMN_BIAS_MAX). Shows the live resolved
+              count so the user adjusts the number they actually see. Grid
+              view only; in reel/focus the count is meaningless. */}
+          {view.kind === "grid" ? (
+            <div className="psl__colnudge" role="group" aria-label="Grid columns">
+              <button
+                type="button"
+                className="psl__colnudge-btn"
+                title="Fewer, larger thumbnails"
+                aria-label="Fewer columns"
+                disabled={gridColumnBias <= -GRID_COLUMN_BIAS_MAX}
+                onClick={() => stepColumnBias(-1)}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
+                  <path d="M5 12h14" />
+                </svg>
+              </button>
+              <span className="psl__colnudge-count" aria-live="polite">
+                {liveColumns} {liveColumns === 1 ? "col" : "cols"}
+              </span>
+              <button
+                type="button"
+                className="psl__colnudge-btn"
+                title="More, smaller thumbnails"
+                aria-label="More columns"
+                disabled={gridColumnBias >= GRID_COLUMN_BIAS_MAX}
+                onClick={() => stepColumnBias(1)}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+              </button>
+            </div>
+          ) : null}
           <span>
             <b>{appVersion !== null ? `v${appVersion}` : "—"}</b>
           </span>
@@ -3813,6 +3888,10 @@ const GRID_HORIZONTAL_PADDING = 18;
 // only zoomed-out narrow layouts get bigger images.
 const NARROW_GRID_PANE_PX = 560;
 const NARROW_GRID_CELL_MIN = 220;
+// Absolute floor on cell width when the user adds columns via the +/- nudge.
+// A positive bias can't push cells below this — keeps the grid readable even
+// if someone cranks the nudge on a tight pane.
+const HARD_MIN_CELL_PX = 96;
 /** Horizontal pixels from the reel's right edge at which to fire
  *  `loadMore`. ~3 viewport-widths of frames at typical filmstrip
  *  scroll speeds buys enough lead time for the next keyset page to
@@ -3851,6 +3930,12 @@ type VirtualizedGridProps = {
   /** Target minimum cell width in px (the sticky grid-zoom level). The
    *  grid fits `floor(width / cellMinWidth)` columns at this width. */
   cellMinWidth: number;
+  /** Sticky column nudge added to the width-driven count (the grid renders
+   *  `max(1, computed + columnBias)` columns). See gridColumnBias. */
+  columnBias: number;
+  /** Notified with the resolved column count whenever it changes, so the
+   *  status-bar +/- control can display the live number. */
+  onColumnsChange: (columns: number) => void;
   /** Mirrors the measured cells-per-row up to Library so the keyboard
    *  grid-nav (↑/↓ by a row) can read it without re-measuring. */
   cellsPerRowRef: React.RefObject<number>;
@@ -3926,12 +4011,14 @@ function useMediaQuery(query: string): boolean {
 function useCellsPerRow(
   scrollElement: React.RefObject<HTMLDivElement | null>,
   cellMinWidth: number,
+  columnBias: number,
   layoutSignal: string
 ): number {
   const [cellsPerRow, setCellsPerRow] = useState(4);
-  // Live zoom read through a ref so `measure`'s identity stays stable (the
-  // ResizeObserver attaches ONCE instead of churning on every pinch step).
+  // Live zoom + bias read through refs so `measure`'s identity stays stable
+  // (the ResizeObserver attaches ONCE instead of churning on every step).
   const cellMinWidthRef = useRef(cellMinWidth);
+  const columnBiasRef = useRef(columnBias);
 
   const measure = useCallback((): void => {
     const el = scrollElement.current;
@@ -3949,9 +4036,18 @@ function useCellsPerRow(
       inner < NARROW_GRID_PANE_PX
         ? Math.max(cellMinWidthRef.current, NARROW_GRID_CELL_MIN)
         : cellMinWidthRef.current;
-    const next = Math.max(
+    const computed = Math.floor((inner + CELL_GAP) / (effectiveMin + CELL_GAP));
+    // Apply the user's column nudge on top of the width-driven count. The
+    // breakpoints stay put; the result just shifts by whole columns. Floor
+    // at 1; cap at what fits above a ~96px hard-min cell so a +bias can't
+    // shatter the grid into unreadable slivers.
+    const maxByHardMin = Math.max(
       1,
-      Math.floor((inner + CELL_GAP) / (effectiveMin + CELL_GAP))
+      Math.floor((inner + CELL_GAP) / (HARD_MIN_CELL_PX + CELL_GAP))
+    );
+    const next = Math.min(
+      maxByHardMin,
+      Math.max(1, computed + columnBiasRef.current)
     );
     setCellsPerRow((prev) => (prev === next ? prev : next));
   }, [scrollElement]);
@@ -3975,14 +4071,15 @@ function useCellsPerRow(
     return () => ro.disconnect();
   }, [measure]);
 
-  // Re-measure synchronously when the zoom (pinch) or surrounding layout
-  // changes the pane width (right rail show/hide/collapse, left-bar pin,
-  // view mode). These fire after mount, when the ref is populated, so the
-  // update lands before paint with no flash.
+  // Re-measure synchronously when the zoom (pinch), column nudge, or
+  // surrounding layout changes the pane width (right rail show/hide/collapse,
+  // left-bar pin, view mode). These fire after mount, when the ref is
+  // populated, so the update lands before paint with no flash.
   useLayoutEffect(() => {
     cellMinWidthRef.current = cellMinWidth;
+    columnBiasRef.current = columnBias;
     measure();
-  }, [cellMinWidth, layoutSignal, measure]);
+  }, [cellMinWidth, columnBias, layoutSignal, measure]);
 
   return cellsPerRow;
 }
@@ -4059,6 +4156,8 @@ function VirtualizedGrid({
   grouped,
   scrollElement,
   cellMinWidth,
+  columnBias,
+  onColumnsChange,
   cellsPerRowRef,
   scrollApiRef,
   layoutSignal,
@@ -4080,11 +4179,18 @@ function VirtualizedGrid({
   restoreCaptureAction,
   purgeCaptureAction
 }: VirtualizedGridProps) {
-  const cellsPerRow = useCellsPerRow(scrollElement, cellMinWidth, layoutSignal);
-  // Mirror the measured value up to Library for keyboard grid-nav.
+  const cellsPerRow = useCellsPerRow(
+    scrollElement,
+    cellMinWidth,
+    columnBias,
+    layoutSignal
+  );
+  // Mirror the measured value up to Library for keyboard grid-nav + the
+  // status-bar column-nudge readout.
   useEffect(() => {
     cellsPerRowRef.current = cellsPerRow;
-  }, [cellsPerRow, cellsPerRowRef]);
+    onColumnsChange(cellsPerRow);
+  }, [cellsPerRow, cellsPerRowRef, onColumnsChange]);
 
   // Flatten day-groups → 1-D row list. Each header gets one row;
   // each day's items are sliced into rows of cellsPerRow. Memoized

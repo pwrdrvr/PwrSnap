@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.0.0-beta.22 - 2026-06-28
+
+This beta improves the Library as an editing workspace, hardens AI enrichment
+recovery, and expands the release pipeline toward Windows builds while making
+GitHub Release notes publish automatically.
+
+- Library Layers - Added a Layers tab for image captures so layers can be
+  selected, hidden, reordered, deleted, and uncropped without resetting every
+  annotation.
+- Editor Crop - Added crop-aware uncrop from the Layers panel, restoring the
+  full image while preserving other annotations in the right positions.
+- AI Enrichment - Fixed stuck enrichment runs so interrupted or timed-out reads
+  fail cleanly and show the Regenerate action instead of leaving "reading the
+  snap..." forever.
+- Library Layout - Improved narrow-window behavior so the toolbar, grid, Quick
+  Capture, Record Video, and cart rail adapt instead of crowding or wrapping.
+- Windows Capture - Added FFmpeg-backed Windows video recording that saves
+  stopped MP4 recordings through the existing Library pipeline.
+- Windows Release - Added a guarded Windows installer release path with
+  controlled FFmpeg artifact validation and temporary unsigned installer
+  publishing while signing credentials are pending.
+- Release Publishing - Fixed GitHub Releases so the matching changelog entry is
+  published automatically after assets upload, with a readback check that fails
+  the workflow if notes are missing.
+
 ## v1.0.0-beta.21 - 2026-06-25
 
 This beta makes the Library a stronger everyday workspace: video capture is now

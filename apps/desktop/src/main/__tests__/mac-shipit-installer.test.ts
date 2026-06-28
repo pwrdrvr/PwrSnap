@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -51,7 +51,7 @@ function makeFixture(): {
     statePath,
     JSON.stringify({
       bundleIdentifier: "com.pwrdrvr.pwrsnap",
-      launchAfterInstallation: true,
+      launchAfterInstallation: false,
       targetBundleURL: pathToFileURL("/Applications/PwrSnap.app").href,
       updateBundleURL: pathToFileURL(updateBundlePath).href,
       useUpdateBundleName: true
@@ -91,6 +91,10 @@ describe("launchStagedMacShipItInstaller", () => {
       { detached: true, stdio: "ignore" }
     );
     expect(unref).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(readFileSync(fixture.statePath, "utf8"))).toMatchObject({
+      launchAfterInstallation: true,
+      updateBundleURL: pathToFileURL(fixture.updateBundlePath).href
+    });
   });
 
   test("skips non-macOS platforms", () => {
@@ -136,5 +140,23 @@ describe("launchStagedMacShipItInstaller", () => {
         spawn: vi.fn()
       })
     ).toEqual({ launched: false, reason: "shipit_state_invalid" });
+  });
+
+  test("falls back when Squirrel state cannot be prepared to relaunch", () => {
+    const fixture = makeFixture();
+    const spawn = vi.fn();
+
+    expect(
+      launchStagedMacShipItInstaller({
+        homeDir: fixture.homeDir,
+        platform: "darwin",
+        resourcesPath: fixture.resourcesPath,
+        spawn,
+        writeFile: vi.fn(() => {
+          throw new Error("permission denied");
+        })
+      })
+    ).toEqual({ launched: false, reason: "shipit_state_relaunch_prepare_failed" });
+    expect(spawn).not.toHaveBeenCalled();
   });
 });

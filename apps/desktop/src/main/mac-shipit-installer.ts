@@ -1,13 +1,14 @@
 import { spawn, type SpawnOptions } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SHIP_IT_BUNDLE_ID = "com.pwrdrvr.pwrsnap.ShipIt";
 
 type ShipItState = {
+  launchAfterInstallation?: unknown;
   updateBundleURL?: unknown;
-};
+} & Record<string, unknown>;
 
 type SpawnLike = (
   command: string,
@@ -22,6 +23,7 @@ export type LaunchStagedMacShipItInstallerOptions = {
   readFile?: typeof readFileSync;
   resourcesPath: string;
   spawn?: SpawnLike;
+  writeFile?: typeof writeFileSync;
 };
 
 export type LaunchStagedMacShipItInstallerResult =
@@ -55,6 +57,7 @@ export function launchStagedMacShipItInstaller(
   const exists = options.exists ?? existsSync;
   const readFile = options.readFile ?? readFileSync;
   const spawnImpl = options.spawn ?? spawn;
+  const writeFile = options.writeFile ?? writeFileSync;
   const statePath = shipItStatePath(options.homeDir);
   const shipItPath = shipItExecutablePath(options.resourcesPath);
 
@@ -79,6 +82,12 @@ export function launchStagedMacShipItInstaller(
 
   if (!exists(updateBundlePath)) {
     return { launched: false, reason: "shipit_update_bundle_missing" };
+  }
+
+  try {
+    writeFile(statePath, JSON.stringify({ ...state, launchAfterInstallation: true }));
+  } catch {
+    return { launched: false, reason: "shipit_state_relaunch_prepare_failed" };
   }
 
   const child = spawnImpl(shipItPath, [SHIP_IT_BUNDLE_ID, statePath], {

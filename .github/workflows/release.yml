@@ -466,6 +466,29 @@ jobs:
           $unsignedName = $installer.Name -replace "-setup\.exe$", "-unsigned-setup.exe"
           $unsignedPath = Join-Path $dist $unsignedName
           Copy-Item -Path $installer.FullName -Destination $unsignedPath -Force
+
+          gh release view $env:RELEASE_TAG --repo pwrdrvr/PwrSnap *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $createArgs = @(
+              "release",
+              "create",
+              $env:RELEASE_TAG,
+              "--repo",
+              "pwrdrvr/PwrSnap",
+              "--title",
+              $env:RELEASE_TAG,
+              "--notes",
+              "Temporary unsigned Windows installer artifact for $env:RELEASE_TAG."
+            )
+            if ($env:RELEASE_TAG -match "-") {
+              $createArgs += "--prerelease"
+            }
+            gh @createArgs
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create release $env:RELEASE_TAG for unsigned Windows artifact upload."
+            }
+          }
+
           gh release upload $env:RELEASE_TAG `
             $unsignedPath `
             --repo pwrdrvr/PwrSnap `

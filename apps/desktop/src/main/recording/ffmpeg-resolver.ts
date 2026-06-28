@@ -1,8 +1,9 @@
 // ffmpeg binary resolution. The packaged app uses the repo-built
-// LGPL ffmpeg binary shipped under Contents/Resources/PwrSnapFFmpeg.
-// In dev, `pnpm --filter @pwrsnap/desktop build:ffmpeg` writes the
-// same binary under apps/desktop/build/ffmpeg/ffmpeg. We additionally
-// honor `PWRSNAP_FFMPEG_PATH` for CI / debug overrides.
+// LGPL ffmpeg binary shipped under Contents/Resources/PwrSnapFFmpeg
+// (or PwrSnapFFmpeg.exe on Windows). In dev, macOS builds write
+// apps/desktop/build/ffmpeg/ffmpeg; Windows release/QA builds may
+// stage apps/desktop/build/ffmpeg/ffmpeg.exe. We additionally honor
+// `PWRSNAP_FFMPEG_PATH` for CI / debug overrides.
 //
 // Kept in its own module so test code can mock the resolution
 // without pulling the rest of the exporter stack into the Vitest
@@ -14,6 +15,8 @@ import { app } from "electron";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:ffmpeg");
+const PACKAGED_FFMPEG_NAME = process.platform === "win32" ? "PwrSnapFFmpeg.exe" : "PwrSnapFFmpeg";
+const DEV_FFMPEG_NAME = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
 
 let cached: string | null | undefined;
 
@@ -26,13 +29,13 @@ export function resolveFfmpegPath(): string | null {
   }
 
   const candidates = [
-    join(__dirname, "..", "..", "build", "ffmpeg", "ffmpeg")
+    join(__dirname, "..", "..", "build", "ffmpeg", DEV_FFMPEG_NAME)
   ];
   if (typeof process.resourcesPath === "string") {
-    candidates.unshift(join(process.resourcesPath, "PwrSnapFFmpeg"));
+    candidates.unshift(join(process.resourcesPath, PACKAGED_FFMPEG_NAME));
   }
   try {
-    candidates.push(join(app.getAppPath(), "build", "ffmpeg", "ffmpeg"));
+    candidates.push(join(app.getAppPath(), "build", "ffmpeg", DEV_FFMPEG_NAME));
   } catch {
     /* app.getAppPath can be unavailable in narrow test contexts */
   }
@@ -64,10 +67,15 @@ export function __resetFfmpegResolverForTests(): void {
 function findOnPath(bin: string): string | null {
   const pathEnv = process.env.PATH;
   if (pathEnv === undefined || pathEnv.length === 0) return null;
+  const names = process.platform === "win32"
+    ? ["ffmpeg.exe", "ffmpeg.cmd", "ffmpeg.bat", bin]
+    : [bin];
   for (const dir of pathEnv.split(delimiter)) {
     if (dir.length === 0) continue;
-    const candidate = join(dir, bin);
-    if (existsSync(candidate)) return candidate;
+    for (const name of names) {
+      const candidate = join(dir, name);
+      if (existsSync(candidate)) return candidate;
+    }
   }
   return null;
 }

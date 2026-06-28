@@ -939,6 +939,7 @@ async function runInteractiveRecord(
   if (blocked !== null) return;
   const storageBlocked = await ensureCapturesDirReady();
   if (storageBlocked !== null) return;
+
   // Pick a rect / window via the existing region selector. We can't
   // route through capture:interactive (which persists an image on
   // commit), so we drive the region-selector module directly. On
@@ -1129,8 +1130,18 @@ async function runInteractiveRecord(
     { subject, capabilities, countdownSeconds: 3 },
     { principal: "ipc" }
   );
-  if (!result.ok) {
+  if (!result.ok && result.error.code !== "cancelled") {
     log.warn("recording:start failed", { code: result.error.code, message: result.error.message });
+    try {
+      if (Notification.isSupported()) {
+        new Notification({
+          title: "Recording failed",
+          body: result.error.message
+        }).show();
+      }
+    } catch {
+      /* notification support is best-effort */
+    }
   }
 }
 

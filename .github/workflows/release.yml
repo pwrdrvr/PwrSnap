@@ -1,4 +1,4 @@
-name: Release Desktop (macOS universal)
+name: Release Desktop (macOS universal + Windows)
 
 on:
   push:
@@ -38,17 +38,6 @@ jobs:
         with:
           node-version: "24.14.1"
 
-      - name: Restore FFmpeg source/build cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: |
-            ~/Library/Caches/PwrSnap/ffmpeg-builds
-            apps/desktop/build/ffmpeg
-            apps/desktop/build/ffmpeg-source
-          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/desktop/scripts/build-ffmpeg.mjs') }}
-          restore-keys: |
-            ffmpeg-${{ runner.os }}-${{ runner.arch }}-
-
       - name: Check release metadata
         env:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -61,6 +50,8 @@ jobs:
         run: pnpm test
 
       - name: Prepare release stage
+        env:
+          PWRSNAP_SKIP_FFMPEG_BUILD: "1"
         run: node apps/desktop/scripts/release.mjs --prepare-only
 
       - name: Archive signing input
@@ -125,6 +116,104 @@ jobs:
       - name: Expand signing input
         run: tar -xzf .release-input/desktop-release-signing-input.tgz
 
+      - name: Create FFmpeg build repo token
+        id: ffmpeg-builds-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.FFMPEG_BUILDS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.FFMPEG_BUILDS_APP_PRIVATE_KEY }}
+          owner: pwrdrvr
+          repositories: pwrsnap-ffmpeg-builds
+          permission-actions: read
+          permission-contents: read
+
+      - name: Download controlled macOS FFmpeg artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.ffmpeg-builds-token.outputs.token }}
+          FFMPEG_BUILD_REPO: pwrdrvr/pwrsnap-ffmpeg-builds
+          FFMPEG_BUILD_WORKFLOW: build.yml
+          FFMPEG_BUILD_SHA: a72aa24cd310cb3aa684b2481261cb2d8e313bfd
+          FFMPEG_ARTIFACT_NAME: ffmpeg-8.1.1-macos-universal
+          FFMPEG_VERSION: 8.1.1
+          FFMPEG_SOURCE_SHA256: b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3
+          FFMPEG_BUILD_PROFILE: pwrsnap-lgpl-clean-v1
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::GH_TOKEN is required to download the private PwrSnap FFmpeg build artifact." >&2
+            exit 1
+          fi
+
+          run_id="$(
+            gh run list \
+              --repo "$FFMPEG_BUILD_REPO" \
+              --workflow "$FFMPEG_BUILD_WORKFLOW" \
+              --branch main \
+              --limit 100 \
+              --json databaseId,headSha,conclusion,status \
+              --jq ".[] | select(.headSha == \"$FFMPEG_BUILD_SHA\" and .conclusion == \"success\") | .databaseId" \
+              | head -n 1
+          )"
+          if [ -z "$run_id" ]; then
+            echo "::error::No successful $FFMPEG_BUILD_WORKFLOW run found for $FFMPEG_BUILD_REPO@$FFMPEG_BUILD_SHA" >&2
+            exit 1
+          fi
+
+          dir="$RUNNER_TEMP/pwrsnap-ffmpeg-artifact"
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          gh run download "$run_id" \
+            --repo "$FFMPEG_BUILD_REPO" \
+            --name "$FFMPEG_ARTIFACT_NAME" \
+            --dir "$dir"
+
+          manifest="$dir/manifest.json"
+          ffmpeg="$dir/ffmpeg"
+          if [ ! -f "$manifest" ]; then
+            echo "::error::Downloaded FFmpeg artifact is missing manifest.json" >&2
+            exit 1
+          fi
+          if [ ! -f "$ffmpeg" ]; then
+            echo "::error::Downloaded FFmpeg artifact is missing ffmpeg" >&2
+            exit 1
+          fi
+
+          node <<'NODE'
+          const { createHash } = require("node:crypto");
+          const { readFileSync } = require("node:fs");
+          const manifestPath = `${process.env.RUNNER_TEMP}/pwrsnap-ffmpeg-artifact/manifest.json`;
+          const binaryPath = `${process.env.RUNNER_TEMP}/pwrsnap-ffmpeg-artifact/ffmpeg`;
+          const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+          function assert(condition, message) {
+            if (!condition) {
+              throw new Error(message);
+            }
+          }
+          assert(manifest.version === process.env.FFMPEG_VERSION, `macOS FFmpeg version mismatch: expected ${process.env.FFMPEG_VERSION}, got ${manifest.version}`);
+          assert(manifest.sourceSha256 === process.env.FFMPEG_SOURCE_SHA256, `macOS FFmpeg source SHA mismatch: expected ${process.env.FFMPEG_SOURCE_SHA256}, got ${manifest.sourceSha256}`);
+          assert(manifest.buildProfile === process.env.FFMPEG_BUILD_PROFILE, `macOS FFmpeg build profile mismatch: expected ${process.env.FFMPEG_BUILD_PROFILE}, got ${manifest.buildProfile}`);
+          assert(manifest.platform === "macos" && manifest.arch === "universal" && manifest.binary === "ffmpeg", `macOS FFmpeg artifact manifest target mismatch: ${manifest.platform}/${manifest.arch}/${manifest.binary}`);
+          const actual = createHash("sha256").update(readFileSync(binaryPath)).digest("hex");
+          assert(actual === manifest.sha256, `macOS ffmpeg SHA-256 mismatch: expected ${manifest.sha256}, got ${actual}`);
+          for (const flag of manifest.forbiddenConfigFlags ?? []) {
+            assert(!String(manifest.configuration).includes(flag), `macOS FFmpeg manifest contains forbidden configure flag: ${flag}`);
+          }
+          for (const encoder of ["h264_videotoolbox", "aac"]) {
+            assert((manifest.requiredEncoders ?? []).includes(encoder), `macOS FFmpeg manifest is missing required encoder check: ${encoder}`);
+          }
+          NODE
+
+          mkdir -p apps/desktop/release-stage/build/ffmpeg
+          mkdir -p apps/desktop/release-stage/build/ffmpeg-source
+          cp "$ffmpeg" apps/desktop/release-stage/build/ffmpeg/ffmpeg
+          chmod 755 apps/desktop/release-stage/build/ffmpeg/ffmpeg
+          cp "$dir"/source/ffmpeg-*.tar.xz apps/desktop/release-stage/build/ffmpeg-source/
+          cp "$dir"/source/ffmpeg-*.tar.xz.sha256 apps/desktop/release-stage/build/ffmpeg-source/
+          cp "$manifest" apps/desktop/release-stage/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-manifest.json
+          cp "$dir/SOURCE-OFFER.txt" apps/desktop/release-stage/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-SOURCE-OFFER.txt
+          cp "$dir/LGPL-NOTICE.txt" apps/desktop/release-stage/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-LGPL-NOTICE.txt
+
       - name: Sign, notarize, publish
         env:
           # Code signing (Developer ID Application: PwrDrvr LLC, T44CNHC4UH).
@@ -175,8 +264,7 @@ jobs:
           set -euo pipefail
           source_dir="apps/desktop/release-stage/build/ffmpeg-source"
           gh release upload "$RELEASE_TAG" \
-            "$source_dir"/ffmpeg-*.tar.xz \
-            "$source_dir"/ffmpeg-*.tar.xz.sha256 \
+            "$source_dir"/* \
             --repo pwrdrvr/PwrSnap \
             --clobber
 
@@ -192,4 +280,184 @@ jobs:
             apps/desktop/release-stage/dist/latest-mac.yml
             apps/desktop/release-stage/dist/builder-debug.yml
             apps/desktop/release-stage/build/ffmpeg-source/*
+          retention-days: 30
+  windows:
+    name: Sign and publish Windows installer
+    runs-on: windows-latest
+    needs: prepare
+    timeout-minutes: 45
+    environment: windows-signing
+    permissions:
+      contents: write # publish releases to the same repo
+      id-token: none
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.1"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check release metadata
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: pnpm release:check
+
+      - name: Create FFmpeg build repo token
+        id: ffmpeg-builds-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.FFMPEG_BUILDS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.FFMPEG_BUILDS_APP_PRIVATE_KEY }}
+          owner: pwrdrvr
+          repositories: pwrsnap-ffmpeg-builds
+          permission-actions: read
+          permission-contents: read
+
+      - name: Download controlled Windows FFmpeg artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ steps.ffmpeg-builds-token.outputs.token }}
+          FFMPEG_BUILD_REPO: pwrdrvr/pwrsnap-ffmpeg-builds
+          FFMPEG_BUILD_WORKFLOW: build.yml
+          FFMPEG_BUILD_SHA: a72aa24cd310cb3aa684b2481261cb2d8e313bfd
+          FFMPEG_ARTIFACT_NAME: ffmpeg-8.1.1-windows-x64
+          FFMPEG_VERSION: 8.1.1
+          FFMPEG_SOURCE_SHA256: b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3
+          FFMPEG_BUILD_PROFILE: pwrsnap-lgpl-clean-v1
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw "GH_TOKEN is required to download the private PwrSnap FFmpeg build artifact."
+          }
+
+          $runsJson = gh run list `
+            --repo $env:FFMPEG_BUILD_REPO `
+            --workflow $env:FFMPEG_BUILD_WORKFLOW `
+            --branch main `
+            --limit 100 `
+            --json databaseId,headSha,conclusion,status
+          $run = $runsJson |
+            ConvertFrom-Json |
+            Where-Object { $_.headSha -eq $env:FFMPEG_BUILD_SHA -and $_.conclusion -eq "success" } |
+            Select-Object -First 1
+          if ($null -eq $run) {
+            throw "No successful $env:FFMPEG_BUILD_WORKFLOW run found for $env:FFMPEG_BUILD_REPO@$env:FFMPEG_BUILD_SHA"
+          }
+
+          $dir = Join-Path $env:RUNNER_TEMP "pwrsnap-ffmpeg-artifact"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          gh run download $run.databaseId `
+            --repo $env:FFMPEG_BUILD_REPO `
+            --name $env:FFMPEG_ARTIFACT_NAME `
+            --dir $dir
+
+          $manifestPath = Join-Path $dir "manifest.json"
+          if (-not (Test-Path $manifestPath)) {
+            throw "Downloaded FFmpeg artifact is missing manifest.json"
+          }
+          $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          if ($manifest.version -ne $env:FFMPEG_VERSION) {
+            throw "Windows FFmpeg version mismatch: expected $env:FFMPEG_VERSION, got $($manifest.version)"
+          }
+          if ($manifest.sourceSha256 -ne $env:FFMPEG_SOURCE_SHA256) {
+            throw "Windows FFmpeg source SHA mismatch: expected $env:FFMPEG_SOURCE_SHA256, got $($manifest.sourceSha256)"
+          }
+          if ($manifest.buildProfile -ne $env:FFMPEG_BUILD_PROFILE) {
+            throw "Windows FFmpeg build profile mismatch: expected $env:FFMPEG_BUILD_PROFILE, got $($manifest.buildProfile)"
+          }
+          if ($manifest.platform -ne "windows" -or $manifest.arch -ne "x64" -or $manifest.binary -ne "ffmpeg.exe") {
+            throw "Windows FFmpeg artifact manifest target mismatch: $($manifest.platform)/$($manifest.arch)/$($manifest.binary)"
+          }
+
+          $ffmpeg = Join-Path $dir "ffmpeg.exe"
+          if (-not (Test-Path $ffmpeg)) {
+            throw "Downloaded FFmpeg artifact is missing ffmpeg.exe"
+          }
+          $actual = (Get-FileHash -Algorithm SHA256 $ffmpeg).Hash.ToLowerInvariant()
+          $expected = [string]$manifest.sha256
+          if ($actual -ne $expected) {
+            throw "Windows ffmpeg SHA-256 mismatch: expected $expected, got $actual"
+          }
+
+          foreach ($flag in $manifest.forbiddenConfigFlags) {
+            if ([string]$manifest.configuration -like "*$flag*") {
+              throw "Windows FFmpeg manifest contains forbidden configure flag: $flag"
+            }
+          }
+          foreach ($encoder in @("h264_mf", "aac")) {
+            if ($manifest.requiredEncoders -notcontains $encoder) {
+              throw "Windows FFmpeg manifest is missing required encoder check: $encoder"
+            }
+          }
+          if ($manifest.requiredDevices -notcontains "gdigrab") {
+            throw "Windows FFmpeg manifest is missing required gdigrab check"
+          }
+
+          "PWRSNAP_WINDOWS_FFMPEG_PATH=$ffmpeg" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PWRSNAP_WINDOWS_FFMPEG_MANIFEST_PATH=$manifestPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Sign and publish Windows installer
+        if: ${{ vars.WINDOWS_UNSIGNED_RELEASE != 'true' }}
+        env:
+          # Authenticode certificate for PwrDrvr LLC. These come from the
+          # protected windows-signing environment, not repository-wide secrets.
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          GH_TOKEN: ${{ secrets.RELEASES_PAT || github.token }}
+        run: pnpm --filter @pwrsnap/desktop package:win -- --publish
+
+      - name: Build unsigned Windows installer
+        if: ${{ vars.WINDOWS_UNSIGNED_RELEASE == 'true' }}
+        run: pnpm --filter @pwrsnap/desktop package:win -- --unsigned-release
+
+      - name: Publish unsigned Windows installer
+        if: ${{ vars.WINDOWS_UNSIGNED_RELEASE == 'true' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_PAT || github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw "GH_TOKEN is required to upload unsigned Windows release artifacts."
+          }
+
+          $dist = "apps/desktop/release-stage/dist"
+          $installer = Get-ChildItem -Path $dist -Filter "*-setup.exe" | Select-Object -First 1
+          if ($null -eq $installer) {
+            throw "No Windows installer found in $dist"
+          }
+
+          $unsignedName = $installer.Name -replace "-setup\.exe$", "-unsigned-setup.exe"
+          $unsignedPath = Join-Path $dist $unsignedName
+          Copy-Item -Path $installer.FullName -Destination $unsignedPath -Force
+          gh release upload $env:RELEASE_TAG `
+            $unsignedPath `
+            --repo pwrdrvr/PwrSnap `
+            --clobber
+
+      - name: Upload Windows release artifacts (debug retention)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: desktop-release-windows-artifacts
+          path: |
+            apps/desktop/release-stage/dist/*-setup.exe
+            apps/desktop/release-stage/dist/*-setup.exe.blockmap
+            apps/desktop/release-stage/dist/latest.yml
+            apps/desktop/release-stage/dist/builder-debug.yml
+            ${{ runner.temp }}/pwrsnap-ffmpeg-artifact/manifest.json
+            ${{ runner.temp }}/pwrsnap-ffmpeg-artifact/SOURCE-OFFER.txt
+            ${{ runner.temp }}/pwrsnap-ffmpeg-artifact/LGPL-NOTICE.txt
+            ${{ runner.temp }}/pwrsnap-ffmpeg-artifact/source/*
           retention-days: 30

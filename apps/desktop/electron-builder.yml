@@ -292,6 +292,18 @@ dmg:
 # a real filesystem path.
 win:
   icon: build/icon.png
+  requestedExecutionLevel: asInvoker
+  signAndEditExecutable: true
+  verifyUpdateCodeSignature: true
+  # Register `.pwrsnap` with Explorer / Open With for the NSIS install.
+  # macOS keeps its richer UTI declaration under `mac.extendInfo` above.
+  fileAssociations:
+    - ext: pwrsnap
+      name: "PwrSnap Capture Bundle"
+      description: "PwrSnap Capture Bundle"
+      role: Editor
+      icon: build/icon.png
+      mimeType: application/vnd.pwrdrvr.pwrsnap.bundle+zip
   # No win.artifactName: the only target is nsis, whose own artifactName
   # (below) is what names the installer. A win-level name here would be dead
   # config — electron-builder uses the per-target name for the nsis output.

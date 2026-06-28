@@ -51,6 +51,15 @@ release infrastructure plan.
      - `APPLE_API_KEY_BASE64` — `.p8` base64-encoded
      - `APPLE_API_KEY_ID` — the Key ID
      - `APPLE_API_ISSUER` — the Issuer ID
+     - `FFMPEG_BUILDS_APP_PRIVATE_KEY` — the full PEM private key for the
+       read-only FFmpeg build GitHub App
+   - Store the non-secret FFmpeg GitHub App Client ID as an environment
+     variable:
+     - `FFMPEG_BUILDS_APP_CLIENT_ID`
+   - The FFmpeg GitHub App must be installed on
+     `pwrdrvr/pwrsnap-ffmpeg-builds` with read-only Actions and Contents
+     permissions. The signing job uses the one-hour installation token only
+     to download the pinned `ffmpeg-8.1.1-macos-universal` artifact.
    - Optional publish secret, also environment-scoped if used:
      `RELEASES_PAT` — fine-grained PAT scoped to `Contents: Read & Write` on
      `pwrdrvr/PwrSnap`. The workflow falls back to `GITHUB_TOKEN` if absent.
@@ -112,17 +121,32 @@ runner that executes untrusted dependency or build code:
    `id-token: none`, checkout with `persist-credentials: false`, no Apple
    secrets. Installs dependencies, runs `release:check` (tag/version/
    changelog gate) → `typecheck` → `test` →
-   `apps/desktop/scripts/release.mjs --prepare-only`. Archives the prepared
-   stage plus the already-resolved `electron-builder` toolchain into the
-   `desktop-release-signing-input` workflow artifact and emits its SHA-256
-   as a job output.
+   `PWRSNAP_SKIP_FFMPEG_BUILD=1 apps/desktop/scripts/release.mjs --prepare-only`.
+   Archives the prepared stage plus the already-resolved `electron-builder`
+   toolchain into the `desktop-release-signing-input` workflow artifact and
+   emits its SHA-256 as a job output.
 2. **`Sign, notarize, publish`** — gated by the protected `apple-signing`
    environment, with `contents: write` and explicit `id-token: none`. Does
    not check out the repository or run `pnpm install` / postinstall
    lifecycle scripts. Downloads the prepared artifact, verifies the
    SHA-256 against the prepare-job output, expands it, and runs
    `apps/desktop/scripts/release.mjs --sign-stage-only` with the
-   environment-scoped Apple secrets.
+   environment-scoped Apple secrets. Before packaging, it mints a scoped
+   FFmpeg build-repo installation token, downloads the pinned
+   `ffmpeg-8.1.1-macos-universal` artifact, verifies `manifest.json` and the
+   binary SHA-256, then stages the binary and LGPL source evidence under
+   `apps/desktop/release-stage/build/`.
+
+The Windows release job is gated by the protected `windows-signing`
+environment. By default it requires `WIN_CSC_LINK` and
+`WIN_CSC_KEY_PASSWORD`, then runs `package-win.mjs --publish` so
+electron-builder publishes the signed NSIS installer and updater metadata. If
+the signing certificate is not ready, set the `windows-signing` environment
+variable `WINDOWS_UNSIGNED_RELEASE=true`. That temporary mode still verifies
+the controlled Windows FFmpeg artifact, runs `package-win.mjs
+--unsigned-release`, and uploads only a manually named
+`*-unsigned-setup.exe` asset. It intentionally does not upload `latest.yml`, so
+unsigned builds are not offered through the Windows updater feed.
 
 The no-secret prepare job:
 
@@ -130,14 +154,16 @@ The no-secret prepare job:
    license-policy drift stops the release before packaging.
 2. Builds the Swift native helpers (`PwrSnapWindowList`) as a universal
    binary.
-3. Builds main/preload/renderer with electron-vite.
-4. Runs `pnpm deploy --prod` to materialize a flat `node_modules` tree under
+3. Skips the local FFmpeg compile; the protected signing job injects the
+   controlled artifact.
+4. Builds main/preload/renderer with electron-vite.
+5. Runs `pnpm deploy --prod` to materialize a flat `node_modules` tree under
    `apps/desktop/release-stage/`.
-5. Rebuilds the staged `better-sqlite3` for the packaged Electron ABI
+6. Rebuilds the staged `better-sqlite3` for the packaged Electron ABI
    (universal) under `electron-native/`.
-6. Seeds the stage with `out/` + `build/` + `electron-builder.yml` +
+7. Seeds the stage with `out/` + `build/` + `electron-builder.yml` +
    `.npmrc` + `THIRD_PARTY_LICENSES` + `CHANGELOG.md`.
-7. Archives `apps/desktop/release-stage/` plus the resolved
+8. Archives `apps/desktop/release-stage/` plus the resolved
    `apps/desktop/node_modules` (electron-builder + electron-vite),
    `apps/desktop/scripts/{release,verify-asar-contents,rebuild-native-for-electron}.mjs`,
    the root `node_modules`, and the workspace lockfile/config, then uploads

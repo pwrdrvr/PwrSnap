@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   return {
     spawnedChildren: [] as FakeChild[],
+    spawnCalls: [] as Array<{ command: string; args: string[] }>,
     binaryPath: "/fake/PwrSnapRecorder",
     stateLog: [] as Array<{ phase: string }>,
     /** Full broadcast log including rect/displayId payloads — used
@@ -50,7 +51,8 @@ class FakeChild extends EventEmitter {
 }
 
 vi.mock("node:child_process", () => ({
-  spawn: vi.fn(() => {
+  spawn: vi.fn((command: string, args: string[] = []) => {
+    mocks.spawnCalls.push({ command, args });
     const child = new FakeChild();
     mocks.spawnedChildren.push(child);
     return child;
@@ -80,8 +82,28 @@ vi.mock("electron", () => ({
   screen: {
     getAllDisplays: () => [
       { id: 1, bounds: { x: 0, y: 0, width: 1496, height: 967 }, scaleFactor: 2 },
-      { id: 3, bounds: { x: 1496, y: -473, width: 2560, height: 1440 }, scaleFactor: 1 }
-    ]
+      { id: 3, bounds: { x: 1496, y: -473, width: 2560, height: 1440 }, scaleFactor: 1.5 }
+    ],
+    getPrimaryDisplay: () => ({ id: 1, bounds: { x: 0, y: 0, width: 1496, height: 967 }, scaleFactor: 2 }),
+    dipToScreenRect: (_window: unknown, rect: { x: number; y: number; width: number; height: number }) => {
+      const displays = [
+        { id: 1, bounds: { x: 0, y: 0, width: 1496, height: 967 }, scaleFactor: 2 },
+        { id: 3, bounds: { x: 1496, y: -473, width: 2560, height: 1440 }, scaleFactor: 1.5 }
+      ];
+      const display = displays.find((d) =>
+        rect.x >= d.bounds.x &&
+        rect.x < d.bounds.x + d.bounds.width &&
+        rect.y >= d.bounds.y &&
+        rect.y < d.bounds.y + d.bounds.height
+      ) ?? displays[0]!;
+      const scale = display.scaleFactor;
+      return {
+        x: Math.round(display.bounds.x + (rect.x - display.bounds.x) * scale),
+        y: Math.round(display.bounds.y + (rect.y - display.bounds.y) * scale),
+        width: Math.round(rect.width * scale),
+        height: Math.round(rect.height * scale)
+      };
+    }
   },
   // BrowserWindow isn't consulted directly anymore — collectOurPids()
   // delegates to recording-controller for the HUD PID. Keep a no-op
@@ -169,6 +191,7 @@ const originalResourcesPath = (process as { resourcesPath?: string }).resourcesP
 beforeEach(() => {
   vi.resetModules();
   mocks.spawnedChildren.length = 0;
+  mocks.spawnCalls.length = 0;
   mocks.stateLog.length = 0;
   mocks.stateLogFull.length = 0;
   mocks.pendingTimeouts.length = 0;
@@ -578,5 +601,111 @@ describe("RecordingService.start startedPromise timeout", () => {
     expect(child.killCalled).toBe(true);
     // State path includes a `failed` transition for the HUD/tray.
     expect(mocks.stateLog.map((s) => s.phase)).toContain("failed");
+  });
+});
+
+describe("Windows FFmpeg recorder", () => {
+  function argAfter(args: string[], flag: string): string {
+    const index = args.indexOf(flag);
+    expect(index).toBeGreaterThanOrEqual(0);
+    return args[index + 1]!;
+  }
+
+  test("spawns gdigrab and persists the stopped MP4", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+
+    expect(mocks.spawnCalls).toHaveLength(1);
+    const call = mocks.spawnCalls[0]!;
+    expect(call.command).toContain("PwrSnapFFmpeg.exe");
+    expect(call.args).toContain("gdigrab");
+    expect(call.args).toContain("-video_size");
+    expect(call.args).toContain("200x200");
+    expect(call.args).toContain("h264_mf");
+    expect(mocks.stateLog.map((s) => s.phase)).toEqual([
+      "preflight",
+      "starting",
+      "recording"
+    ]);
+
+    const child = mocks.spawnedChildren[0]!;
+    const stopPromise = service.stop();
+    expect(child.stdin.write).toHaveBeenCalledWith("q");
+    child.emit("exit", 0, null);
+    const stopped = await stopPromise;
+
+    expect(stopped.captureId).toBe("cap-1");
+    expect(mocks.stateLog.map((s) => s.phase)).toContain("processing");
+    expect(mocks.stateLog.map((s) => s.phase)).toContain("ready");
+  });
+
+  test("converts selected DIP rects to physical pixels before gdigrab", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    await service.start({
+      subject: {
+        kind: "region",
+        rect: { x: 1496 + 20, y: -473 + 10, w: 100, h: 80 },
+        displayId: 3
+      },
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+
+    const call = mocks.spawnCalls[0]!;
+    expect(argAfter(call.args, "-offset_x")).toBe("1526");
+    expect(argAfter(call.args, "-offset_y")).toBe("-458");
+    expect(argAfter(call.args, "-video_size")).toBe("150x120");
+
+    const cancelPromise = service.cancel();
+    await vi.advanceTimersByTimeAsync(600);
+    await cancelPromise;
+  });
+
+  test("does not persist when ffmpeg only exits after stop timeout kill", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    const child = mocks.spawnedChildren[0]!;
+
+    let stopOutcome: Error | { captureId: string } | null = null;
+    const stopPromise = service
+      .stop()
+      .then((result) => (stopOutcome = result))
+      .catch((err: Error) => (stopOutcome = err));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(child.killCalled).toBe(true);
+    child.emit("exit", null, "SIGTERM");
+    await vi.advanceTimersByTimeAsync(0);
+    await stopPromise;
+
+    const observedStopOutcome: unknown = stopOutcome;
+    expect(observedStopOutcome).toBeInstanceOf(Error);
+    if (!(observedStopOutcome instanceof Error)) {
+      throw new Error("expected stop to fail");
+    }
+    expect(observedStopOutcome.message).toContain("ffmpeg recorder exited unexpectedly");
+    expect(mocks.stateLog.map((s) => s.phase)).toContain("failed");
+    expect(mocks.stateLog.map((s) => s.phase)).not.toContain("processing");
+    expect(mocks.stateLog.map((s) => s.phase)).not.toContain("ready");
   });
 });

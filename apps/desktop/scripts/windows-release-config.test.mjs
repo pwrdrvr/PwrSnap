@@ -61,15 +61,14 @@ describe("Windows release configuration", () => {
     expect(workflow).toContain("h264_videotoolbox");
     expect(workflow).toContain("release-stage/build/ffmpeg/ffmpeg");
     expect(workflow).toContain("PWRSNAP_WINDOWS_FFMPEG_PATH=$ffmpeg");
+    expect(workflow).toContain("needs: [prepare, sign]");
     expect(workflow).toContain("vars.WINDOWS_UNSIGNED_RELEASE != 'true'");
     expect(workflow).toContain("vars.WINDOWS_UNSIGNED_RELEASE == 'true'");
     expect(workflow).toContain("pnpm --filter @pwrsnap/desktop package:win -- --publish");
     expect(workflow).toContain("pnpm --filter @pwrsnap/desktop package:win -- --unsigned-release");
-    expect(workflow).toContain("gh release view $env:RELEASE_TAG");
-    expect(workflow).toContain('"create",');
-    expect(workflow).toContain('"Temporary unsigned Windows installer artifact for $env:RELEASE_TAG."');
     expect(workflow).toContain("gh release upload $env:RELEASE_TAG");
     expect(workflow).toContain("-unsigned-setup.exe");
+    expect(workflow).not.toContain("Temporary unsigned Windows installer artifact");
     expect(workflow).not.toContain("FFMPEG_BUILDS_PAT");
   });
 });

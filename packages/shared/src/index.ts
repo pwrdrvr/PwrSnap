@@ -14,6 +14,7 @@ export * from "./appearance-arg";
 export * from "./bundle-manifest-schema-v2";
 export * from "./crop-viewport";
 export * from "./clipboard-layer-fragment";
+export * from "./clipboard-copy-verbs";
 export * from "./text-glyph-size";
 export * from "./text-html-style";
 export * from "./sizzle-video-fit";

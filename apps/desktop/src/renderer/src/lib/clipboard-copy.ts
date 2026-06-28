@@ -12,20 +12,25 @@
 // calls let that drift slip in twice; funnelling through one helper makes
 // it a single-line, single-test contract.
 
+import {
+  IMAGE_PRESET_COPY_PATH_VERB,
+  IMAGE_PRESET_COPY_VERB
+} from "@pwrsnap/shared";
 import { dispatch } from "./pwrsnap";
 
 export type ImageCopyPreset = "low" | "med" | "high";
 
 /** Copy the capture's rendered preset to the clipboard as raw IMAGE BYTES
  *  (`clipboard:copy`). This is what pastes everywhere — back into PwrSnap
- *  (File → New → Paste from Clipboard), Claude, Slack, Mail. */
+ *  (File → New → Paste from Clipboard), Claude, Slack, Mail. The verb is
+ *  shared with the main-side float-over shortcut so the two can't drift. */
 export function copyImagePreset(captureId: string, preset: ImageCopyPreset): void {
-  void dispatch("clipboard:copy", { captureId, preset });
+  void dispatch(IMAGE_PRESET_COPY_VERB, { captureId, preset });
 }
 
 /** Copy the POSIX path of the capture's rendered preset file as text
  *  (`clipboard:copy-path`) — the FILE chip's secondary affordance. Kept
  *  here so the path copy stays in lockstep across surfaces too. */
 export function copyImagePresetPath(captureId: string, preset: ImageCopyPreset): void {
-  void dispatch("clipboard:copy-path", { captureId, preset });
+  void dispatch(IMAGE_PRESET_COPY_PATH_VERB, { captureId, preset });
 }

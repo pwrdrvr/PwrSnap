@@ -61,6 +61,7 @@ const baseRecord: CaptureRecord = {
   source_app_bundle_id: "com.google.Chrome",
   source_app_name: "Chrome",
   edits_version: 1,
+  has_alpha: false,
   deleted_at: null
 };
 

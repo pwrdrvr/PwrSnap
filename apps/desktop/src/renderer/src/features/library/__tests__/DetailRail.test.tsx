@@ -11,6 +11,7 @@ import type {
 } from "@pwrsnap/shared";
 import { DetailRail, AiRunUsageStrip } from "../DetailRail";
 import type { LibraryView } from "../library-view";
+import type { LayersPanelApi } from "../../editor/Editor";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -37,6 +38,7 @@ const record: CaptureRecord = {
   source_app_bundle_id: "jp.naver.line.mac",
   source_app_name: "LINE",
   edits_version: 0,
+  has_alpha: false,
   deleted_at: null
 };
 
@@ -222,7 +224,8 @@ async function renderDetailRail(
   initial: CaptureEnrichment,
   options?: {
     usageDetail?: () => AiRunUsageDetail;
-  }
+  },
+  extraProps?: Record<string, unknown>
 ): Promise<{
   el: HTMLDivElement;
   dispatch: ReturnType<typeof vi.fn>;
@@ -239,7 +242,8 @@ async function renderDetailRail(
         selectedRecordId: record.id,
         returnAnchor: { scrollTop: 0, cellId: record.id }
       },
-      record
+      record,
+      ...extraProps
     }));
   });
   await act(async () => {
@@ -610,7 +614,7 @@ describe("DetailRail", () => {
     expect(tagCalls).toHaveLength(0);
   });
 
-  test("image LOW/MED/HIGH card body copies a named PNG file, not raw image bytes", async () => {
+  test("image LOW/MED/HIGH card body copies raw image bytes (clipboard:copy), so it pastes everywhere", async () => {
     const { el, dispatch } = await renderDetailRail(
       enrichment({ suggestedFilenameStem: "library-sidebar-export" })
     );
@@ -621,12 +625,14 @@ describe("DetailRail", () => {
       await Promise.resolve();
     });
 
-    const fileCopyCall = dispatch.mock.calls.find(([name]) => name === "clipboard:copy-file");
-    expect(fileCopyCall).toEqual([
-      "clipboard:copy-file",
-      { captureId: "cap_1", preset: "low" }
-    ]);
-    expect(dispatch.mock.calls.some(([name]) => name === "clipboard:copy")).toBe(false);
+    // The card body copies IMAGE BYTES — same as the float-over — so the
+    // result pastes into PwrSnap (Paste from Clipboard), Claude, Slack,
+    // etc. PR #232 regressed this to `clipboard:copy-file` (a file URL),
+    // which Universal Clipboard mangles into "no image" on paste-back; the
+    // named-file affordance lives on the FILE chip + drag instead.
+    const copyCall = dispatch.mock.calls.find(([name]) => name === "clipboard:copy");
+    expect(copyCall).toEqual(["clipboard:copy", { captureId: "cap_1", preset: "low" }]);
+    expect(dispatch.mock.calls.some(([name]) => name === "clipboard:copy-file")).toBe(false);
   });
 
   test("shows latest AI run usage and sent media accounting", async () => {
@@ -1390,5 +1396,40 @@ describe("AiRunUsageStrip", () => {
     detail.selectedModelLabel = "Composer 2.5";
     await renderStrip(detail);
     expect(stripContainer!.querySelector(".psl__ai-usage-override")).toBeNull();
+  });
+});
+
+describe("DetailRail — Layers tab", () => {
+  // Typed as the real LayersPanelApi so a method rename (e.g. moveLayer →
+  // moveLayerToIndex) can't silently drift the stub out of conformance.
+  const stubLayersApi: LayersPanelApi = {
+    selectLayers: () => undefined,
+    setLayerVisibility: async () => undefined,
+    deleteLayer: async () => undefined,
+    moveLayerToIndex: async () => undefined,
+    uncrop: async () => undefined
+  };
+
+  test("shows the Layers tab for an image capture when layersApi is present", async () => {
+    const { el } = await renderDetailRail(enrichment(), undefined, {
+      layersApi: stubLayersApi
+    });
+    expect(el.querySelector('[data-testid="psl-right-tab-layers"]')).not.toBeNull();
+  });
+
+  test("hides the Layers tab when layersApi is null", async () => {
+    const { el } = await renderDetailRail(enrichment(), undefined, {
+      layersApi: null
+    });
+    expect(el.querySelector('[data-testid="psl-right-tab-layers"]')).toBeNull();
+  });
+
+  test("hides the Layers tab for a video capture even with layersApi", async () => {
+    const videoRecord: CaptureRecord = { ...record, kind: "video" };
+    const { el } = await renderDetailRail(enrichment(), undefined, {
+      record: videoRecord,
+      layersApi: stubLayersApi
+    });
+    expect(el.querySelector('[data-testid="psl-right-tab-layers"]')).toBeNull();
   });
 });

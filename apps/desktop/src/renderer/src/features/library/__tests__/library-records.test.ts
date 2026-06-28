@@ -21,6 +21,7 @@ function record(id: string, deletedAt: string | null = null): CaptureRecord {
     source_app_bundle_id: "com.test",
     source_app_name: "Test",
     edits_version: 0,
+    has_alpha: false,
     deleted_at: deletedAt
   };
 }

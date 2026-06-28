@@ -16,9 +16,11 @@ import {
   err,
   EVENT_CHANNELS,
   BundleLayerNode as BundleLayerNodeSchema,
+  // Crop-viewport math is shared with the renderer (one copy) — see
+  // packages/shared/src/crop-viewport.ts.
+  inverseTransformOverlayByCrop,
   type BundleLayerNode
 } from "@pwrsnap/shared";
-import type { Overlay } from "@pwrsnap/shared/overlay";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { scheduleRepack } from "../persistence/bundle-store";
@@ -118,42 +120,6 @@ function validateCropRect(rect: {
     );
   }
   return null;
-}
-
-function inverseTransformOverlayByCrop(
-  overlay: Overlay,
-  rect: { x: number; y: number; w: number; h: number }
-): Overlay | null {
-  if (rect.w <= 0 || rect.h <= 0) return null;
-  const tx = (n: number): number => (n - rect.x) / rect.w;
-  const ty = (n: number): number => (n - rect.y) / rect.h;
-  const sx = (n: number): number => n / rect.w;
-  const sy = (n: number): number => n / rect.h;
-  switch (overlay.kind) {
-    case "arrow":
-      return {
-        ...overlay,
-        from: { x: tx(overlay.from.x), y: ty(overlay.from.y) },
-        to: { x: tx(overlay.to.x), y: ty(overlay.to.y) }
-      };
-    case "shape":
-    case "highlight":
-    case "blur":
-      return {
-        ...overlay,
-        rect: {
-          x: tx(overlay.rect.x),
-          y: ty(overlay.rect.y),
-          w: sx(overlay.rect.w),
-          h: sy(overlay.rect.h)
-        }
-      } as Overlay;
-    case "text":
-    case "step":
-      return { ...overlay, point: { x: tx(overlay.point.x), y: ty(overlay.point.y) } };
-    case "crop":
-      return null;
-  }
 }
 
 function commonCropLayerProps(

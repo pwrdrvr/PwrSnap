@@ -52,6 +52,7 @@ import {
   updateCaptureBundleAfterRepack
 } from "./captures-repo";
 import { getCacheSourcePath, getCapturesRoot, getTrashRoot } from "./paths";
+import { sourceBufferHasAlpha } from "./source-alpha";
 import {
   deletePendingSourcesForCapture,
   PendingSourceMissingError,
@@ -812,6 +813,11 @@ export async function persistCaptureFromTempV2(
     throw new Error(`bundle-store v2: failed to read PNG dimensions from ${args.tempPath}`);
   }
 
+  // Transparency signal for the Library grid + editor checker (see
+  // source-alpha.ts for why metadata().hasAlpha isn't enough). Reuses the
+  // metadata decode above; a probe failure defaults to opaque.
+  const hasAlpha = await sourceBufferHasAlpha(buf, meta);
+
   const now = new Date().toISOString();
   const outputDir = args.outputDir ?? getCapturesRoot();
   const timestampZone = await readBundleFilenameTimestampZone();
@@ -932,7 +938,8 @@ export async function persistCaptureFromTempV2(
     height_px: heightPx,
     device_pixel_ratio: args.devicePixelRatio ?? 2,
     byte_size: buf.length,
-    sha256
+    sha256,
+    has_alpha: hasAlpha
   });
 
   // Seed the layers table so listLayerTree returns the initial tree

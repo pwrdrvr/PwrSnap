@@ -7,11 +7,29 @@
 
 import { describe, expect, test } from "vitest";
 
-import { Z_GAP, computeNewOrder, diffChanges } from "../z-order";
+import { Z_GAP, computeNewOrder, diffChanges, moveToIndex } from "../z-order";
 
 type Item = { id: string };
 const ids = (items: readonly Item[]): string[] => items.map((i) => i.id);
 const mk = (...names: string[]): Item[] => names.map((name) => ({ id: name }));
+
+describe("moveToIndex", () => {
+  test("moves an item to a lower index", () => {
+    expect(ids(moveToIndex(mk("A", "B", "C", "D"), "D", 1))).toEqual(["A", "D", "B", "C"]);
+  });
+  test("moves an item to a higher index", () => {
+    expect(ids(moveToIndex(mk("A", "B", "C", "D"), "A", 2))).toEqual(["B", "C", "A", "D"]);
+  });
+  test("clamps an out-of-range target", () => {
+    expect(ids(moveToIndex(mk("A", "B", "C"), "A", 99))).toEqual(["B", "C", "A"]);
+    expect(ids(moveToIndex(mk("A", "B", "C"), "C", -5))).toEqual(["C", "A", "B"]);
+  });
+  test("a no-op move returns the same reference", () => {
+    const items = mk("A", "B", "C");
+    expect(moveToIndex(items, "B", 1)).toBe(items);
+    expect(moveToIndex(items, "Z", 0)).toBe(items); // unknown id
+  });
+});
 
 describe("computeNewOrder — forward (one step)", () => {
   test("single-select moves up one slot", () => {

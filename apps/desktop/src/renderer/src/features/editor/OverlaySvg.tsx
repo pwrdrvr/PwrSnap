@@ -250,13 +250,25 @@ export function OverlaySvg({
           // not in the SVG path yet.
           return null;
         }
+        // Clip a RESTING committed glyph to the canvas viewBox so the
+        // editor matches the bake/export — an annotation (or the part of
+        // one) outside a cropped viewport must not bleed past the canvas
+        // edge. The exception is a glyph being ACTIVELY DRAGGED (present
+        // in `liveOverride`): keep it overflow:visible so the user can
+        // still see what they're dragging off-canvas (the #125
+        // affordance, which also covers selection outlines + drafts in
+        // the chrome SVG below). Set both the attribute AND inline style
+        // because the SVG `overflow` attribute and CSS don't always
+        // agree on which wins (see the editor-svg note in editor.css).
+        const dragging = liveOverride?.has(row.id) === true;
+        const glyphOverflow = dragging ? "visible" : "hidden";
         return (
           <svg
             key={row.id}
             className="editor-svg"
             viewBox={viewBox}
-            overflow="visible"
-            style={{ zIndex: row.z_index }}
+            overflow={glyphOverflow}
+            style={{ zIndex: row.z_index, overflow: glyphOverflow }}
             data-testid="persisted-glyph-svg"
           >
             {data.kind === "highlight" && (

@@ -72,6 +72,8 @@ function broadcast(channel: string, payload: unknown): void {
 
 import {
   useCaptureModel,
+  inverseCropRect,
+  cropRectFromCanvas,
   type CaptureModel,
   type LayerView
 } from "../useCaptureModel";
@@ -102,6 +104,7 @@ function makeRecord(id: string, formatVersion: number): CaptureRecord {
     source_app_bundle_id: null,
     source_app_name: null,
     edits_version: 0,
+    has_alpha: false,
     deleted_at: null
   };
 }
@@ -2181,5 +2184,119 @@ describe("useCaptureModel", () => {
     if (m.kind === "loaded") {
       expect(m.format).toBe(2);
     }
+  });
+});
+
+describe("inverseCropRect (uncrop math)", () => {
+  test("computes the reversing rect from a forward crop rect", () => {
+    expect(inverseCropRect({ x: 0.1, y: 0.2, w: 0.5, h: 0.4 })).toEqual({
+      x: -0.2, // -0.1 / 0.5
+      y: -0.5, // -0.2 / 0.4
+      w: 2, //  1 / 0.5
+      h: 2.5 //  1 / 0.4
+    });
+  });
+
+  test("returns null for a degenerate rect", () => {
+    expect(inverseCropRect({ x: 0, y: 0, w: 0, h: 1 })).toBeNull();
+    expect(inverseCropRect({ x: 0, y: 0, w: 1, h: -0.5 })).toBeNull();
+  });
+
+  test("forward-then-inverse round-trips a coordinate exactly", () => {
+    // The crop dispatcher normalizes a coord against a rect via
+    // n → (n - rect.x) / rect.w. Applying the forward rect then the
+    // inverse rect must recover the original coord — that's what makes
+    // uncrop reposition every annotation back to where it started.
+    const forward = { x: 0.15, y: 0.3, w: 0.6, h: 0.45 };
+    const inverse = inverseCropRect(forward);
+    if (inverse === null) throw new Error("unreachable");
+    const normalize = (
+      n: number,
+      r: { x?: number; y?: number; w?: number; h?: number },
+      axis: "x" | "y"
+    ): number =>
+      axis === "x" ? (n - (r.x ?? 0)) / (r.w ?? 1) : (n - (r.y ?? 0)) / (r.h ?? 1);
+    for (const n of [0, 0.25, 0.5, 0.95, 1]) {
+      const round = normalize(normalize(n, forward, "x"), inverse, "x");
+      expect(round).toBeCloseTo(n, 10);
+      const roundY = normalize(normalize(n, forward, "y"), inverse, "y");
+      expect(roundY).toBeCloseTo(n, 10);
+    }
+  });
+});
+
+describe("cropRectFromCanvas (cumulative crop for full uncrop)", () => {
+  test("origin crop: canvas region as a fraction of the source", () => {
+    // Cropped 1000×1000 source down to a 500×500 top-left region.
+    expect(
+      cropRectFromCanvas({
+        canvasWidthPx: 500,
+        canvasHeightPx: 500,
+        sourceWidthPx: 1000,
+        sourceHeightPx: 1000,
+        rasterTranslateXPx: 0,
+        rasterTranslateYPx: 0
+      })
+    ).toEqual({ x: 0, y: 0, w: 0.5, h: 0.5 });
+  });
+
+  test("off-origin crop: raster translation drives the rect origin", () => {
+    // Canvas shows a 400×300 window; the raster is shifted by (-200,-150)
+    // so the canvas origin sits at source pixel (200,150).
+    expect(
+      cropRectFromCanvas({
+        canvasWidthPx: 400,
+        canvasHeightPx: 300,
+        sourceWidthPx: 1000,
+        sourceHeightPx: 1000,
+        rasterTranslateXPx: -200,
+        rasterTranslateYPx: -150
+      })
+    ).toEqual({ x: 0.2, y: 0.15, w: 0.4, h: 0.3 });
+  });
+
+  test("not cropped → identity rect", () => {
+    expect(
+      cropRectFromCanvas({
+        canvasWidthPx: 800,
+        canvasHeightPx: 600,
+        sourceWidthPx: 800,
+        sourceHeightPx: 600,
+        rasterTranslateXPx: 0,
+        rasterTranslateYPx: 0
+      })
+    ).toEqual({ x: 0, y: 0, w: 1, h: 1 });
+  });
+
+  test("degenerate source → null", () => {
+    expect(
+      cropRectFromCanvas({
+        canvasWidthPx: 100,
+        canvasHeightPx: 100,
+        sourceWidthPx: 0,
+        sourceHeightPx: 100,
+        rasterTranslateXPx: 0,
+        rasterTranslateYPx: 0
+      })
+    ).toBeNull();
+  });
+
+  test("inverse of the cumulative rect grows the canvas back to the source", () => {
+    // Stacked crops: 1000 → 500 → 300. The single crop layer can't
+    // express that, but the canvas/source ratio can: 300/1000 = 0.3.
+    const cumulative = cropRectFromCanvas({
+      canvasWidthPx: 300,
+      canvasHeightPx: 300,
+      sourceWidthPx: 1000,
+      sourceHeightPx: 1000,
+      rasterTranslateXPx: 0,
+      rasterTranslateYPx: 0
+    });
+    if (cumulative === null) throw new Error("unreachable");
+    const inverse = inverseCropRect(cumulative);
+    if (inverse === null) throw new Error("unreachable");
+    // The crop dispatcher computes the new canvas as round(rect.w × W).
+    expect(Math.round(inverse.w * 300)).toBe(1000);
+    expect(Math.round(inverse.h * 300)).toBe(1000);
   });
 });

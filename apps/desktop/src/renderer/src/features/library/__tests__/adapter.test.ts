@@ -60,6 +60,7 @@ function makeRecord(overrides: Partial<CaptureRecord> = {}): CaptureRecord {
     source_app_bundle_id: null,
     source_app_name: null,
     edits_version: 0,
+    has_alpha: false,
     deleted_at: null,
     ...overrides
   };
@@ -319,5 +320,20 @@ describe("recordToFixture — kind threading", () => {
     const now = new Date(2026, 4, 27, 14, 0, 0);
     const fixture = recordToFixture(makeRecord({ kind: "video" }), 1, now);
     expect(fixture.kind).toBe("video");
+  });
+});
+
+describe("recordToFixture — has_alpha threading", () => {
+  // The grid checker (`.psl__cell-thumb--alpha`) gates on Capture.hasAlpha.
+  // The adapter must thread CaptureRecord.has_alpha straight through so a
+  // transparent capture is flagged in the grid and an opaque one isn't.
+  const now = new Date(2026, 4, 27, 14, 0, 0);
+
+  test("transparent record → hasAlpha=true", () => {
+    expect(recordToFixture(makeRecord({ has_alpha: true }), 1, now).hasAlpha).toBe(true);
+  });
+
+  test("opaque record → hasAlpha=false", () => {
+    expect(recordToFixture(makeRecord({ has_alpha: false }), 1, now).hasAlpha).toBe(false);
   });
 });

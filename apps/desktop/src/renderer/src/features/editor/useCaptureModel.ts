@@ -27,6 +27,12 @@ import {
   readHighlightColor,
   readHighlightOpacity,
   readBlurRadiusPx,
+  // Crop-viewport math now lives in @pwrsnap/shared (one copy for the
+  // renderer + the main-side bake compositor). Re-exported below so the
+  // existing `../useCaptureModel` importers + tests stay put.
+  inverseTransformOverlayByCrop,
+  inverseCropRect,
+  cropRectFromCanvas,
   type BundleLayerNode,
   type CaptureRecord,
   type Overlay,
@@ -34,6 +40,8 @@ import {
   type PwrSnapError,
   type Result
 } from "@pwrsnap/shared";
+
+export { inverseTransformOverlayByCrop, inverseCropRect, cropRectFromCanvas };
 import { dispatch, subscribe } from "../../lib/pwrsnap";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 
@@ -571,93 +579,6 @@ export function applyPatchToOverlay(
   // discriminated-union narrowing since we've already verified the
   // kind compatibility above.
   return { ...overlay, ...patch } as Overlay;
-}
-
-/** Re-normalize an Overlay's coords by the INVERSE of a crop rect.
- *
- *  Overlay coords are normalized [0,1] to the canvas. When the canvas
- *  is cropped, the canvas dims shrink BUT the absolute-pixel position
- *  the user sees the overlay at should NOT move — overlays in the
- *  kept region stay put visually; overlays in the cropped-away region
- *  end up with normalized coords outside [0,1] and get clipped by
- *  the canvas at render time.
- *
- *  Without this transform a text overlay at point.x = 0.95 on an
- *  800-px canvas (absolute pixel 760) would still render at 0.95 of
- *  the NEW 480-px canvas (absolute pixel 456) after a crop to 60%
- *  width — i.e. the text would visually SLIDE LEFT into the kept
- *  region instead of being clipped at the right edge.
- *
- *  Formula (per axis): `new = (old - rect.origin) / rect.size`.
- *  For width / height (no offset, just scale): `new_w = old_w / rect.w`.
- *  The current v2 crop dispatcher collapses rect.x/y to 0, but the
- *  formula handles non-(0,0) crops too in case the off-origin path
- *  ever ships.
- *
- *  Returns null for CropOverlay (the crop layer itself is in the
- *  pre-crop space and is replaced wholesale by the dispatcher, so
- *  re-normalizing it would scramble the rect meaninglessly). Returns
- *  the original overlay unchanged for kinds with no transformable
- *  coords. */
-export function inverseTransformOverlayByCrop(
-  overlay: Overlay,
-  cropRect: { x: number; y: number; w: number; h: number }
-): Overlay | null {
-  const { x: cx, y: cy, w: cw, h: ch } = cropRect;
-  if (cw <= 0 || ch <= 0) return null;
-  const tx = (n: number): number => (n - cx) / cw;
-  const ty = (n: number): number => (n - cy) / ch;
-  const sx = (n: number): number => n / cw;
-  const sy = (n: number): number => n / ch;
-  // Crop is a VIEWPORT change, not a destructive op (the user's
-  // mental model on pwrdrvr/PwrSnap#110 review). Overlays at absolute
-  // source pixels outside the cropped viewport must persist as DATA
-  // (coords > 1 or < 0 in the new canvas's [0,1] space) so that
-  // undoing the crop restores them to their original positions.
-  //
-  // NormalizedScalar was widened from .min(0).max(1) to .finite() to
-  // accept out-of-canvas coords; renderer + bake clip at the canvas
-  // boundary at paint time (SVG overflow + sharp composite).
-  //
-  // Pre-fix this helper deleted (returned null for) overlays whose
-  // transformed coords fell outside [0,1], which made the data loss
-  // PERMANENT — undoing a crop couldn't restore overlays the forward
-  // crop had wiped out. The new behavior just emits the math; nothing
-  // is deleted, undo round-trips back to the original coords exactly.
-  switch (overlay.kind) {
-    case "arrow":
-      return {
-        ...overlay,
-        from: { x: tx(overlay.from.x), y: ty(overlay.from.y) },
-        to: { x: tx(overlay.to.x), y: ty(overlay.to.y) }
-      };
-    case "shape":
-    case "highlight":
-    case "blur":
-      return {
-        ...overlay,
-        rect: {
-          x: tx(overlay.rect.x),
-          y: ty(overlay.rect.y),
-          w: sx(overlay.rect.w),
-          h: sy(overlay.rect.h)
-        }
-      } as Overlay;
-    case "text":
-    case "step":
-      return {
-        ...overlay,
-        point: { x: tx(overlay.point.x), y: ty(overlay.point.y) }
-      };
-    case "crop":
-      // Crop layers are replaced wholesale by the dispatcher (the new
-      // crop's rect is in the old canvas's coord space; the old crop's
-      // rect doesn't make sense in the new canvas). Returning null
-      // here signals "don't re-emit this overlay" — the dispatcher's
-      // Step 1 deletes the old crop layer and Step 2 inserts the
-      // fresh one.
-      return null;
-  }
 }
 
 /** Apply a GeometryUpdate to a BundleLayerNode. For vector layers

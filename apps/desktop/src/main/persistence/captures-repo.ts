@@ -49,6 +49,7 @@ type CaptureRow = {
   sha256: string;
   edits_version: number;
   deleted_at: string | null;
+  has_alpha: number;
 };
 
 function rowToRecord(row: CaptureRow): CaptureRecord {
@@ -71,6 +72,7 @@ function rowToRecord(row: CaptureRow): CaptureRecord {
     source_app_name: row.source_app_name,
     edits_version: row.edits_version,
     deleted_at: row.deleted_at,
+    has_alpha: row.has_alpha === 1,
     // video metadata is hydrated separately by the read APIs below —
     // rowToRecord is shared with insert paths where the metadata
     // doesn't exist yet, so we default to null here.
@@ -110,6 +112,13 @@ export type InsertCapture = {
   device_pixel_ratio: number;
   byte_size: number;
   sha256: string;
+  /**
+   * 1 = the source PNG has at least one non-opaque pixel (transparency
+   * checker shown in the grid / editor); 0 = opaque. Optional on insert —
+   * the legacy-data path and older callers omit it and the row defaults
+   * to 0 (opaque). See migration 0025.
+   */
+  has_alpha?: boolean;
 };
 
 /**
@@ -163,6 +172,7 @@ function insertCaptureInTx(
     bundle_modified_at: input.bundle_modified_at ?? null,
     bundle_format_version: input.bundle_format_version ?? 1,
     bundle_edits_version: input.bundle_edits_version ?? 0,
+    has_alpha: input.has_alpha === true ? 1 : 0,
     legacy_composite_v2_migrated_at:
       input.bundle_path === null || input.bundle_path === undefined
         ? null
@@ -177,7 +187,7 @@ function insertCaptureInTx(
         bundle_format_version, bundle_edits_version,
         legacy_composite_v2_migrated_at,
         width_px, height_px, device_pixel_ratio,
-        byte_size, sha256, edits_version, deleted_at
+        byte_size, sha256, has_alpha, edits_version, deleted_at
       ) VALUES (
         @id, @kind, @captured_at,
         @source_app_bundle_id, @source_app_name, @legacy_src_path,
@@ -185,7 +195,7 @@ function insertCaptureInTx(
         @bundle_format_version, @bundle_edits_version,
         @legacy_composite_v2_migrated_at,
         @width_px, @height_px, @device_pixel_ratio,
-        @byte_size, @sha256, 0, NULL
+        @byte_size, @sha256, @has_alpha, 0, NULL
       )
       RETURNING *`
     )

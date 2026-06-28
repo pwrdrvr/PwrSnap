@@ -21,7 +21,12 @@
 // previous-app activation.
 
 import { BrowserWindow, globalShortcut, ipcMain, screen } from "electron";
-import { EVENT_CHANNELS, type FloatOverEvent, type RenderPreset } from "@pwrsnap/shared";
+import {
+  EVENT_CHANNELS,
+  IMAGE_PRESET_COPY_VERB,
+  type FloatOverEvent,
+  type RenderPreset
+} from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { createFloatOverWindow } from "./window";
@@ -350,15 +355,15 @@ function armCopyShortcuts(captureId: string): void {
   }
   globalShortcut.register("CommandOrControl+1", () => {
     emitCopyPulse("low");
-    void bus.dispatch("clipboard:copy", { captureId, preset: "low" }, { principal: "ipc" });
+    void bus.dispatch(IMAGE_PRESET_COPY_VERB, { captureId, preset: "low" }, { principal: "ipc" });
   });
   globalShortcut.register("CommandOrControl+2", () => {
     emitCopyPulse("med");
-    void bus.dispatch("clipboard:copy", { captureId, preset: "med" }, { principal: "ipc" });
+    void bus.dispatch(IMAGE_PRESET_COPY_VERB, { captureId, preset: "med" }, { principal: "ipc" });
   });
   globalShortcut.register("CommandOrControl+3", () => {
     emitCopyPulse("high");
-    void bus.dispatch("clipboard:copy", { captureId, preset: "high" }, { principal: "ipc" });
+    void bus.dispatch(IMAGE_PRESET_COPY_VERB, { captureId, preset: "high" }, { principal: "ipc" });
   });
   copyShortcutsRegistered = true;
 }

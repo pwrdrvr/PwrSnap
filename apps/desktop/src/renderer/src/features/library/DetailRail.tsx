@@ -819,7 +819,16 @@ export function DetailRail({
                     bytes={m.bytes}
                     tag={rung === undefined ? undefined : rungTag(rung)}
                     onCopy={(preset) => {
-                      void dispatch("clipboard:copy-file", { captureId: record.id, preset });
+                      // The preset box copies IMAGE BYTES (clipboard:copy),
+                      // same as the post-capture float-over. PR #232
+                      // accidentally swapped this to `clipboard:copy-file`
+                      // (a file URL only) while wiring export filenames —
+                      // which broke image consumers AND PwrSnap's own
+                      // "Paste from Clipboard" (a file URL mangled by
+                      // Universal Clipboard reads back as "no image"). The
+                      // FILE chip (onCopyPath) + drag still provide the
+                      // named-file / path affordances, so nothing is lost.
+                      void dispatch("clipboard:copy", { captureId: record.id, preset });
                     }}
                     onCopyPath={(preset) => {
                       void dispatch("clipboard:copy-path", { captureId: record.id, preset });

@@ -612,7 +612,7 @@ describe("DetailRail", () => {
     expect(tagCalls).toHaveLength(0);
   });
 
-  test("image LOW/MED/HIGH card body copies a named PNG file, not raw image bytes", async () => {
+  test("image LOW/MED/HIGH card body copies raw image bytes (clipboard:copy), so it pastes everywhere", async () => {
     const { el, dispatch } = await renderDetailRail(
       enrichment({ suggestedFilenameStem: "library-sidebar-export" })
     );
@@ -623,12 +623,14 @@ describe("DetailRail", () => {
       await Promise.resolve();
     });
 
-    const fileCopyCall = dispatch.mock.calls.find(([name]) => name === "clipboard:copy-file");
-    expect(fileCopyCall).toEqual([
-      "clipboard:copy-file",
-      { captureId: "cap_1", preset: "low" }
-    ]);
-    expect(dispatch.mock.calls.some(([name]) => name === "clipboard:copy")).toBe(false);
+    // The card body copies IMAGE BYTES — same as the float-over — so the
+    // result pastes into PwrSnap (Paste from Clipboard), Claude, Slack,
+    // etc. PR #232 regressed this to `clipboard:copy-file` (a file URL),
+    // which Universal Clipboard mangles into "no image" on paste-back; the
+    // named-file affordance lives on the FILE chip + drag instead.
+    const copyCall = dispatch.mock.calls.find(([name]) => name === "clipboard:copy");
+    expect(copyCall).toEqual(["clipboard:copy", { captureId: "cap_1", preset: "low" }]);
+    expect(dispatch.mock.calls.some(([name]) => name === "clipboard:copy-file")).toBe(false);
   });
 
   test("shows latest AI run usage and sent media accounting", async () => {

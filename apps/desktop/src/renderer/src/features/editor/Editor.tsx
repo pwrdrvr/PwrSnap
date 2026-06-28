@@ -3593,6 +3593,34 @@ function EditorLoaded({
     dispatchEdit: rawDispatchEdit
   });
 
+  // Single choke point for recording a geometry edit on the undo stack.
+  // Maps BOTH recorded geometries from DISPLAYED (source) space into
+  // STORED (cropped) space via toStoredGeometry before handing them to the
+  // undo hook — so undo/redo, which replay against stored coords (via the
+  // raw dispatcher), restore the right position when the crop is hidden.
+  // Centralized on purpose: the three call sites used to hand-wrap each
+  // field, and a new caller (or an edit to one site) could record one
+  // geometry mapped and the other raw, which drifts the layer on undo only
+  // while the crop is hidden — exactly the kind of bug that hides until
+  // someone toggles crop off. Routing every recordGeometry through here
+  // makes the mapping un-forgettable. Identity when the crop is visible.
+  const recordStoredGeometry = useCallback(
+    (
+      entry: Parameters<typeof undo.recordGeometry>[0],
+      opts?: Parameters<typeof undo.recordGeometry>[1]
+    ): void => {
+      undo.recordGeometry(
+        {
+          ...entry,
+          previousGeometry: toStoredGeometry(entry.previousGeometry),
+          nextGeometry: toStoredGeometry(entry.nextGeometry)
+        },
+        opts
+      );
+    },
+    [toStoredGeometry, undo]
+  );
+
   // Bridge: parent's persistOverlay reads recordCreateRef.current
   // to push onto the undo stack. Sync the hook's recorder into
   // the parent's ref every render so callbacks aren't stale.
@@ -4053,10 +4081,10 @@ function EditorLoaded({
           // undo entry that restores every layer's pre-burst
           // geometry in one undo step.
           if (!undoApplyingRef.current && previousGeometry !== null) {
-            undo.recordGeometry({
+            recordStoredGeometry({
               currentIdRef: { current: newId },
-              previousGeometry: toStoredGeometry(previousGeometry),
-              nextGeometry: toStoredGeometry(geometry)
+              previousGeometry,
+              nextGeometry: geometry
             });
           }
         }
@@ -4086,8 +4114,7 @@ function EditorLoaded({
     record.width_px,
     record.height_px,
     setSelectionTrustingDispatch,
-    toStoredGeometry,
-    undo,
+    recordStoredGeometry,
     undoApplyingRef,
     beginInteractionRef,
     endInteractionRef
@@ -4147,11 +4174,11 @@ function EditorLoaded({
           const newId = artifact.node.id;
           newIds.push(newId);
           if (!undoApplyingRef.current && previousGeometry !== null) {
-            undo.recordGeometry(
+            recordStoredGeometry(
               {
                 currentIdRef: { current: newId },
-                previousGeometry: toStoredGeometry(previousGeometry),
-                nextGeometry: toStoredGeometry(geometry)
+                previousGeometry,
+                nextGeometry: geometry
               },
               {
                 opKind: "multi-drag",
@@ -4183,8 +4210,7 @@ function EditorLoaded({
     commitMultiDragRef,
     dispatchEdit,
     setSelectionTrustingDispatch,
-    toStoredGeometry,
-    undo,
+    recordStoredGeometry,
     undoApplyingRef,
     beginInteractionRef,
     endInteractionRef
@@ -4349,16 +4375,16 @@ function EditorLoaded({
         if (!undoApplyingRef.current) {
           const previousGeometry = overlayDataToGeometry(preDrag.data);
           if (previousGeometry !== null) {
-            undo.recordGeometry({
+            recordStoredGeometry({
               currentIdRef: { current: newId },
-              previousGeometry: toStoredGeometry(previousGeometry),
-              nextGeometry: toStoredGeometry(geometry)
+              previousGeometry,
+              nextGeometry: geometry
             });
           }
         }
       })();
     },
-    [dispatchEdit, setSelectionTrustingDispatch, toStoredGeometry, undo, undoApplyingRef]
+    [dispatchEdit, setSelectionTrustingDispatch, recordStoredGeometry, undoApplyingRef]
   );
 
   // Cleanup effect — drop each live-drag override once the persisted

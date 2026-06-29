@@ -54,6 +54,7 @@ const GITHUB_RELEASES_URL =
   "https://api.github.com/repos/pwrdrvr/PwrSnap/releases?per_page=30";
 const RELEASE_FETCH_TIMEOUT_MS = 5_000;
 export const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
+const UPDATE_RETRY_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1_000;
 
 /** Obvious not-a-real-release version that the dev/QA fake update
  *  reports (see `simulateDevUpdateCheck`), so a previewed toast can
@@ -69,6 +70,11 @@ let updateStatus: AppUpdateStatus = { status: "idle" };
 let periodicUpdateCheckTimer: ReturnType<typeof setInterval> | undefined;
 let updateCheckInFlight: Promise<AppUpdateCheckResult> | undefined;
 let installAttemptStore: AppUpdateInstallAttemptStore | undefined;
+const retryDownloadWaiters = new Set<{
+  expectedVersion: string;
+  resolve: (result: AppUpdateCheckResult) => void;
+  timer: ReturnType<typeof setTimeout>;
+}>();
 
 type GitHubRelease = {
   draft?: boolean;
@@ -88,12 +94,52 @@ export function setUpdateChannelResolver(fn: ChannelResolver): void {
 }
 
 function setUpdateStatus(nextStatus: AppUpdateStatus): void {
+  notifyRetryDownloadWaiters(nextStatus);
   updateStatus = nextStatus;
   // Local windows + the peer process (split mode): the updater runs in
   // the agent, but Settings → Updates (a library-process window) shows
   // the live check/download/restart status.
   broadcastRendererEventToLocalWindows(EVENT_CHANNELS.appUpdateStatus, nextStatus);
   relayRendererEventToPeer(EVENT_CHANNELS.appUpdateStatus, nextStatus);
+}
+
+function notifyRetryDownloadWaiters(nextStatus: AppUpdateStatus): void {
+  for (const waiter of retryDownloadWaiters) {
+    if (nextStatus.status === "downloaded" && nextStatus.version === waiter.expectedVersion) {
+      clearTimeout(waiter.timer);
+      retryDownloadWaiters.delete(waiter);
+      waiter.resolve({ status: "downloaded", version: nextStatus.version });
+    } else if (nextStatus.status === "error") {
+      clearTimeout(waiter.timer);
+      retryDownloadWaiters.delete(waiter);
+      waiter.resolve({ status: "error", message: nextStatus.message });
+    } else if (nextStatus.status === "no-update") {
+      clearTimeout(waiter.timer);
+      retryDownloadWaiters.delete(waiter);
+      waiter.resolve({ status: "no-update", version: nextStatus.version });
+    }
+  }
+}
+
+function waitForRetryDownload(expectedVersion: string): Promise<AppUpdateCheckResult> {
+  if (updateStatus.status === "downloaded" && updateStatus.version === expectedVersion) {
+    return Promise.resolve({ status: "downloaded", version: expectedVersion });
+  }
+  return new Promise((resolve) => {
+    const waiter = {
+      expectedVersion,
+      resolve,
+      timer: setTimeout(() => {
+        retryDownloadWaiters.delete(waiter);
+        resolve({
+          status: "error",
+          message: `Timed out waiting for update v${expectedVersion} to finish downloading.`
+        });
+      }, UPDATE_RETRY_DOWNLOAD_TIMEOUT_MS)
+    };
+    waiter.timer.unref?.();
+    retryDownloadWaiters.add(waiter);
+  });
 }
 
 function installableUpdateVersion(): string | undefined {
@@ -252,6 +298,7 @@ function preserveActionableUpdateStatus(nextStatus: AppUpdateStatus): boolean {
 
 function setUpdateStatusUnlessActionable(nextStatus: AppUpdateStatus): void {
   if (preserveActionableUpdateStatus(nextStatus)) {
+    notifyRetryDownloadWaiters(nextStatus);
     log.info("keeping actionable update status during follow-up check", {
       currentStatus: updateStatus.status,
       currentVersion: (updateStatus as { version: string }).version,
@@ -464,16 +511,20 @@ export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResu
         updateChannel: retryChannel
       });
       const retryResult = await checkForAppUpdatesNow("manual", retryChannel);
-      if (retryResult.status !== "downloaded") {
+      const refreshedResult =
+        retryResult.status === "available"
+          ? await waitForRetryDownload(retryResult.version)
+          : retryResult;
+      if (refreshedResult.status !== "downloaded") {
         return {
           status: "error",
           message:
-            retryResult.status === "error"
-              ? retryResult.message
+            refreshedResult.status === "error"
+              ? refreshedResult.message
               : `Update retry did not finish downloading v${version}.`
         };
       }
-      version = retryResult.version;
+      version = refreshedResult.version;
     }
     log.info("installing downloaded update", { version });
     recordInstallAttempt(version, retryChannel ?? currentUpdateChannel());
@@ -555,4 +606,8 @@ export function disposeAutoUpdater(): void {
     periodicUpdateCheckTimer = undefined;
   }
   initialized = false;
+  for (const waiter of retryDownloadWaiters) {
+    clearTimeout(waiter.timer);
+  }
+  retryDownloadWaiters.clear();
 }

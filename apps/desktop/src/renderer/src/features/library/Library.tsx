@@ -67,6 +67,7 @@ import { useCart, useCartIsEmpty } from "./CartContext";
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { snapGridZoom, stepGridZoom } from "../../lib/gridZoom";
+import { resolveColumnCount } from "../../lib/gridColumns";
 import { useGridPinchZoom } from "../../lib/useGridPinchZoom";
 import { registerCaptureUndoFallback } from "../../lib/editMenuBridge";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
@@ -3857,10 +3858,10 @@ const HEADER_ESTIMATE_PX = 60;
 // the exact height after first paint, but a zoom-aware estimate keeps the
 // pre-measure layout and scrollbar close across the ~3× zoom range — a flat
 // 280 (tuned for the 180px level) badly over-/under-shot the extremes.
-// `cellMinWidth` is a lower bound for the real column width (1fr ≥ min), so
-// this slightly under-estimates; that just renders a couple extra rows
-// until measurement, which is the safe direction. At the 180px default this
-// yields ~280, matching the historical constant.
+// `cellMinWidth` is the TARGET column width and real cells land within
+// ~±0.5/N of it (round-to-nearest), so this estimate is close on average;
+// measureElement corrects any drift after first paint. At the 180px default
+// this yields ~280, matching the historical constant.
 const CELL_THUMB_ASPECT = 10 / 16; // thumbnail height / width
 const CELL_ROW_CHROME_PX = 168; // meta + padding + gap below the thumbnail
 function cellRowEstimatePx(cellMinWidth: number): number {
@@ -3877,21 +3878,9 @@ const CELL_GAP_DAY_END = 18; // .psl__grid padding-bottom in the original single
 // keyboard nav, so a rough value is fine.
 const GRID_ROW_EST_PX = 252;
 const GRID_HORIZONTAL_PADDING = 18;
-// Narrow-pane grid floor. When the grid pane itself is tight — a small
-// window, or the left sidebar AND the right cart/detail rail both open —
-// a zoomed-out grid packs cells so small the corner app-source chip is
-// the only legible thing left (the "all icons, no image" symptom). Below
-// this inner width we raise the effective per-cell minimum so the layout
-// drops to fewer, bigger cells. It only ever RAISES the floor, so an
-// explicit zoom-in is untouched and at the default zoom (180) — which
-// already yields ≥2 cols / ≥220px cells at these widths — nothing changes;
-// only zoomed-out narrow layouts get bigger images.
-const NARROW_GRID_PANE_PX = 560;
-const NARROW_GRID_CELL_MIN = 220;
-// Absolute floor on cell width when the user adds columns via the +/- nudge.
-// A positive bias can't push cells below this — keeps the grid readable even
-// if someone cranks the nudge on a tight pane.
-const HARD_MIN_CELL_PX = 96;
+// Grid column-count math (round-to-nearest-target, narrow-pane floor, bias,
+// hard-min cap) lives in ../../lib/gridColumns (DOM-free, unit-tested).
+// `useCellsPerRow` below measures the pane and calls resolveColumnCount.
 /** Horizontal pixels from the reel's right edge at which to fire
  *  `loadMore`. ~3 viewport-widths of frames at typical filmstrip
  *  scroll speeds buys enough lead time for the next keyset page to
@@ -4029,25 +4018,11 @@ function useCellsPerRow(
     // offset cache while the user is away from the grid.
     if (width <= 0) return;
     const inner = width - 2 * GRID_HORIZONTAL_PADDING;
-    // On a narrow pane, enforce a larger minimum cell so thumbnails stay
-    // big enough to read under the corner app chip. `Math.max` means this
-    // only ever reduces the column count (bigger cells), never the reverse.
-    const effectiveMin =
-      inner < NARROW_GRID_PANE_PX
-        ? Math.max(cellMinWidthRef.current, NARROW_GRID_CELL_MIN)
-        : cellMinWidthRef.current;
-    const computed = Math.floor((inner + CELL_GAP) / (effectiveMin + CELL_GAP));
-    // Apply the user's column nudge on top of the width-driven count. The
-    // breakpoints stay put; the result just shifts by whole columns. Floor
-    // at 1; cap at what fits above a ~96px hard-min cell so a +bias can't
-    // shatter the grid into unreadable slivers.
-    const maxByHardMin = Math.max(
-      1,
-      Math.floor((inner + CELL_GAP) / (HARD_MIN_CELL_PX + CELL_GAP))
-    );
-    const next = Math.min(
-      maxByHardMin,
-      Math.max(1, computed + columnBiasRef.current)
+    const next = resolveColumnCount(
+      inner,
+      cellMinWidthRef.current,
+      columnBiasRef.current,
+      CELL_GAP
     );
     setCellsPerRow((prev) => (prev === next ? prev : next));
   }, [scrollElement]);

@@ -7,11 +7,11 @@
 // (the "all icons, no image" symptom).
 export const NARROW_GRID_PANE_PX = 560;
 // The raised target used under NARROW_GRID_PANE_PX.
-export const NARROW_GRID_CELL_MIN = 220;
+const NARROW_GRID_CELL_MIN = 220;
 // Absolute floor on cell width — the column count never produces cells
 // smaller than this, so the grid stays readable even at max zoom-out on a
 // tight pane.
-export const HARD_MIN_CELL_PX = 96;
+const HARD_MIN_CELL_PX = 96;
 
 /** Resolve how many columns to render.
  *

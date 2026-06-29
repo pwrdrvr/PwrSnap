@@ -3846,7 +3846,7 @@ const CELL_GAP_DAY_END = 18; // .psl__grid padding-bottom in the original single
 // keyboard nav, so a rough value is fine.
 const GRID_ROW_EST_PX = 252;
 const GRID_HORIZONTAL_PADDING = 18;
-// Grid column-count math (round-to-nearest-target, narrow-pane floor, bias,
+// Grid column-count math (round-to-nearest-target, narrow-pane floor,
 // hard-min cap) lives in ../../lib/gridColumns (DOM-free, unit-tested).
 // `useCellsPerRow` below measures the pane and calls resolveColumnCount.
 /** Horizontal pixels from the reel's right edge at which to fire

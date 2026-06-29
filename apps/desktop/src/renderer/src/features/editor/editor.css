@@ -296,7 +296,7 @@
   gap: 12px;
   padding: 10px 16px;
   border-top: 1px solid var(--border-default);
-  background: var(--bg-elevated);
+  background: var(--bg-panel-elevated);
 }
 .editor-toolbar-tools {
   display: flex;
@@ -430,7 +430,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 8px 12px;
-  background: var(--bg-elevated);
+  background: var(--bg-panel-elevated);
   border-bottom: 1px solid var(--border-default);
   color: var(--text-primary);
   font: 600 11px/1.4 var(--font-sans);
@@ -1602,7 +1602,7 @@
   z-index: 6;
   padding: 6px 12px;
   border-radius: var(--radius-md, 6px);
-  background: color-mix(in srgb, var(--accent) 24%, var(--bg-elevated));
+  background: color-mix(in srgb, var(--accent) 24%, var(--bg-panel-elevated));
   color: var(--text-primary);
   font: 500 12px/1 var(--font-mono, ui-monospace, monospace);
   box-shadow: 0 4px 12px color-mix(in srgb, var(--shadow-base) 30%, transparent);
@@ -1642,13 +1642,13 @@
   /* OPAQUE — --danger-soft is only ~16% alpha, which let the toolbar
      show through. Mix the solid danger over the opaque panel bg so the
      notice reads as a real card, not a translucent wash. */
-  background: color-mix(in srgb, var(--danger) 18%, var(--bg-elevated));
+  background: color-mix(in srgb, var(--danger) 18%, var(--bg-panel-elevated));
   border: 1px solid var(--danger-border);
   color: var(--danger-text);
 }
 
 .pse-paste-notice.is-info {
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elevated));
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel-elevated));
   border: 1px solid var(--accent-border);
   color: var(--text-primary);
 }

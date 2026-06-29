@@ -48,6 +48,8 @@ const ROOT = "ly_root";
 function rootGroup(): BundleLayerNode {
   return { ...common(ROOT, 0, null), kind: "group", collapsed: false };
 }
+// The base Source raster — its sha matches the capture record's sha256
+// (see loadedModel), so selectBaseRaster pins it.
 function raster(id = "ly_raster"): BundleLayerNode {
   return {
     ...common(id, 0, ROOT),
@@ -55,6 +57,17 @@ function raster(id = "ly_raster"): BundleLayerNode {
     source_ref: { kind: "embedded", sha256: "a".repeat(64) },
     natural_width_px: 100,
     natural_height_px: 100
+  };
+}
+// A non-source raster (pasted image / captured cursor) — different sha,
+// so it's a reorderable, deletable annotation, NOT a pinned base layer.
+function pastedImage(id = "ly_pasted", z = 500): BundleLayerNode {
+  return {
+    ...common(id, z, ROOT),
+    kind: "raster",
+    source_ref: { kind: "embedded", sha256: "b".repeat(64) },
+    natural_width_px: 50,
+    natural_height_px: 50
   };
 }
 function arrow(id = "ly_arrow", z = 2000, visible = true): BundleLayerNode {
@@ -92,7 +105,7 @@ function loadedModel(layers: BundleLayerNode[]): unknown {
     kind: "loaded",
     format: 2,
     captureId: "cap_1",
-    record: { id: "cap_1", width_px: 100, height_px: 100 },
+    record: { id: "cap_1", width_px: 100, height_px: 100, sha256: "a".repeat(64) },
     layers,
     layersView: [],
     dispatchEdit: vi.fn()
@@ -200,6 +213,33 @@ describe("LayersPanel", () => {
     expect((byId(el, "layer-delete-ly_raster") as HTMLButtonElement).disabled).toBe(true);
     expect((byId(el, "layer-delete-ly_arrow") as HTMLButtonElement).disabled).toBe(false);
     expect((byId(el, "layer-delete-ly_crop") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test("non-source raster (pasted image) is a deletable, reorderable annotation; Source stays pinned", async () => {
+    const el = await renderPanel(
+      [rootGroup(), raster(), pastedImage("ly_pasted", 500), crop()],
+      makeApi()
+    );
+    // Source raster: pinned base — delete disabled, no drag grip.
+    expect((byId(el, "layer-delete-ly_raster") as HTMLButtonElement).disabled).toBe(true);
+    expect(el.querySelector('[data-testid="layer-grip-ly_raster"]')).toBeNull();
+    // Pasted image: ordinary annotation — delete enabled, has a grip,
+    // and is tagged as a reorderable (non-base) row.
+    expect((byId(el, "layer-delete-ly_pasted") as HTMLButtonElement).disabled).toBe(false);
+    expect(el.querySelector('[data-testid="layer-grip-ly_pasted"]')).not.toBeNull();
+    const pastedRow = byId(el, "layer-row-ly_pasted");
+    expect(pastedRow.getAttribute("data-base")).toBeNull();
+    expect(pastedRow.getAttribute("data-annotation")).toBe("true");
+  });
+
+  test("deleting a pasted image routes to deleteLayer (not uncrop)", async () => {
+    const api = makeApi();
+    const el = await renderPanel([rootGroup(), raster(), pastedImage()], api);
+    await act(async () => {
+      byId(el, "layer-delete-ly_pasted").click();
+    });
+    expect(api.deleteLayer).toHaveBeenCalledWith("ly_pasted");
+    expect(api.uncrop).not.toHaveBeenCalled();
   });
 
   test("crop trash routes to uncrop; non-crop trash routes to deleteLayer", async () => {

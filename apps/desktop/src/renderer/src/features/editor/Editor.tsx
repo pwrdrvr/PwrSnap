@@ -2501,17 +2501,42 @@ export function Editor({
     // "clipboard doesn't contain an image".
     if (model.kind === "loaded") {
       void (async (): Promise<void> => {
-        const result = await dispatch("clipboard:copyLayerFragment", {
-          captureId,
-          layerIds: selectedLayerIds.slice()
-        });
-        if (!result.ok) {
+        try {
+          const result = await dispatch("clipboard:copyLayerFragment", {
+            captureId,
+            layerIds: selectedLayerIds.slice()
+          });
+          if (!result.ok) {
+            setPasteNotice({
+              text: `Couldn't copy layers: ${result.error.message}`,
+              tone: "error"
+            });
+            return;
+          }
+          // Positive confirmation — also a diagnostic: if Cmd+C shows
+          // NOTHING, copySelected never ran; if it shows this, the copy
+          // landed a fragment and a later cross-capture paste should find
+          // it.
+          const n = result.value.layerCount;
           setPasteNotice({
-            text: `Couldn't copy layers: ${result.error.message}`,
+            text: `Copied ${n} layer${n === 1 ? "" : "s"} to the clipboard`,
+            tone: "info"
+          });
+        } catch (cause) {
+          setPasteNotice({
+            text: `Couldn't copy layers: ${cause instanceof Error ? cause.message : String(cause)}`,
             tone: "error"
           });
         }
       })();
+    } else {
+      // Selection copy was requested but the model isn't loaded — surface
+      // it rather than silently no-op'ing the OS fragment write (the
+      // in-memory copy above still happened for same-capture paste).
+      setPasteNotice({
+        text: "Couldn't copy layers: editor model not loaded",
+        tone: "error"
+      });
     }
   }
 

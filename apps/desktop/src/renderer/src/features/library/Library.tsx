@@ -25,6 +25,8 @@ import type {
 import {
   EVENT_CHANNELS,
   GRID_ZOOM_DEFAULT,
+  GRID_ZOOM_MAX,
+  GRID_ZOOM_MIN,
   resolveSizzleProjectCoverCaptureId,
   type SettingsChangedEvent,
   type SizzleProject
@@ -65,6 +67,7 @@ import { useCart, useCartIsEmpty } from "./CartContext";
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { snapGridZoom, stepGridZoom } from "../../lib/gridZoom";
+import { resolveColumnCount } from "../../lib/gridColumns";
 import { useGridPinchZoom } from "../../lib/useGridPinchZoom";
 import { registerCaptureUndoFallback } from "../../lib/editMenuBridge";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
@@ -751,6 +754,9 @@ export function Library() {
     gridZoomRef.current = gridZoom;
   }, [gridZoom]);
   const userTouchedGridZoomRef = useRef<boolean>(false);
+  // Live resolved column count, mirrored up from VirtualizedGrid so the
+  // status-bar +/- stepper can show the actual number it's changing.
+  const [liveColumns, setLiveColumns] = useState<number>(4);
 
   const [aiEnabled, setAiEnabledState] = useState<boolean>(false);
   const [aiConsentAcceptedAt, setAiConsentAcceptedAtState] = useState<string | null>(null);
@@ -3353,6 +3359,7 @@ export function Library() {
             grouped={grouped}
             scrollElement={gridScrollRef}
             cellMinWidth={gridZoom}
+            onColumnsChange={setLiveColumns}
             cellsPerRowRef={cellsPerRowRef}
             scrollApiRef={gridScrollApiRef}
             // Recompute columns whenever the grid pane is resized by a
@@ -3739,6 +3746,43 @@ export function Library() {
           </button>
         </div>
         <div className="psl__status-r">
+          {/* Grid zoom stepper — the discoverable, labeled face of pinch-to-
+              zoom. Both drive the SAME `gridZoom` target via `stepGridZoomBy`,
+              so they stay in sync; this just shows the live resolved column
+              count and lets you step without the gesture. `−` zooms in (fewer,
+              larger), `+` zooms out (more, smaller); disabled at the ladder
+              ends. Grid view only — the count is meaningless in reel/focus. */}
+          {view.kind === "grid" ? (
+            <div className="psl__colnudge" role="group" aria-label="Grid columns">
+              <button
+                type="button"
+                className="psl__colnudge-btn"
+                title="Fewer, larger thumbnails"
+                aria-label="Fewer columns"
+                disabled={gridZoom >= GRID_ZOOM_MAX}
+                onClick={() => stepGridZoomBy(1)}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
+                  <path d="M5 12h14" />
+                </svg>
+              </button>
+              <span className="psl__colnudge-count" aria-live="polite">
+                {liveColumns} {liveColumns === 1 ? "col" : "cols"}
+              </span>
+              <button
+                type="button"
+                className="psl__colnudge-btn"
+                title="More, smaller thumbnails"
+                aria-label="More columns"
+                disabled={gridZoom <= GRID_ZOOM_MIN}
+                onClick={() => stepGridZoomBy(-1)}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+              </button>
+            </div>
+          ) : null}
           <span>
             <b>{appVersion !== null ? `v${appVersion}` : "—"}</b>
           </span>
@@ -3782,10 +3826,10 @@ const HEADER_ESTIMATE_PX = 60;
 // the exact height after first paint, but a zoom-aware estimate keeps the
 // pre-measure layout and scrollbar close across the ~3× zoom range — a flat
 // 280 (tuned for the 180px level) badly over-/under-shot the extremes.
-// `cellMinWidth` is a lower bound for the real column width (1fr ≥ min), so
-// this slightly under-estimates; that just renders a couple extra rows
-// until measurement, which is the safe direction. At the 180px default this
-// yields ~280, matching the historical constant.
+// `cellMinWidth` is the TARGET column width and real cells land within
+// ~±0.5/N of it (round-to-nearest), so this estimate is close on average;
+// measureElement corrects any drift after first paint. At the 180px default
+// this yields ~280, matching the historical constant.
 const CELL_THUMB_ASPECT = 10 / 16; // thumbnail height / width
 const CELL_ROW_CHROME_PX = 168; // meta + padding + gap below the thumbnail
 function cellRowEstimatePx(cellMinWidth: number): number {
@@ -3802,17 +3846,9 @@ const CELL_GAP_DAY_END = 18; // .psl__grid padding-bottom in the original single
 // keyboard nav, so a rough value is fine.
 const GRID_ROW_EST_PX = 252;
 const GRID_HORIZONTAL_PADDING = 18;
-// Narrow-pane grid floor. When the grid pane itself is tight — a small
-// window, or the left sidebar AND the right cart/detail rail both open —
-// a zoomed-out grid packs cells so small the corner app-source chip is
-// the only legible thing left (the "all icons, no image" symptom). Below
-// this inner width we raise the effective per-cell minimum so the layout
-// drops to fewer, bigger cells. It only ever RAISES the floor, so an
-// explicit zoom-in is untouched and at the default zoom (180) — which
-// already yields ≥2 cols / ≥220px cells at these widths — nothing changes;
-// only zoomed-out narrow layouts get bigger images.
-const NARROW_GRID_PANE_PX = 560;
-const NARROW_GRID_CELL_MIN = 220;
+// Grid column-count math (round-to-nearest-target, narrow-pane floor,
+// hard-min cap) lives in ../../lib/gridColumns (DOM-free, unit-tested).
+// `useCellsPerRow` below measures the pane and calls resolveColumnCount.
 /** Horizontal pixels from the reel's right edge at which to fire
  *  `loadMore`. ~3 viewport-widths of frames at typical filmstrip
  *  scroll speeds buys enough lead time for the next keyset page to
@@ -3848,9 +3884,13 @@ type GridScrollApi = {
 type VirtualizedGridProps = {
   grouped: DayGroup[];
   scrollElement: React.RefObject<HTMLDivElement | null>;
-  /** Target minimum cell width in px (the sticky grid-zoom level). The
-   *  grid fits `floor(width / cellMinWidth)` columns at this width. */
+  /** Target cell width in px (the sticky grid-zoom level). The grid renders
+   *  the column count whose cell width is closest to this (round-to-target;
+   *  see resolveColumnCount). */
   cellMinWidth: number;
+  /** Notified with the resolved column count whenever it changes, so the
+   *  status-bar +/- stepper can display the live number. */
+  onColumnsChange: (columns: number) => void;
   /** Mirrors the measured cells-per-row up to Library so the keyboard
    *  grid-nav (↑/↓ by a row) can read it without re-measuring. */
   cellsPerRowRef: React.RefObject<number>;
@@ -3942,17 +3982,7 @@ function useCellsPerRow(
     // offset cache while the user is away from the grid.
     if (width <= 0) return;
     const inner = width - 2 * GRID_HORIZONTAL_PADDING;
-    // On a narrow pane, enforce a larger minimum cell so thumbnails stay
-    // big enough to read under the corner app chip. `Math.max` means this
-    // only ever reduces the column count (bigger cells), never the reverse.
-    const effectiveMin =
-      inner < NARROW_GRID_PANE_PX
-        ? Math.max(cellMinWidthRef.current, NARROW_GRID_CELL_MIN)
-        : cellMinWidthRef.current;
-    const next = Math.max(
-      1,
-      Math.floor((inner + CELL_GAP) / (effectiveMin + CELL_GAP))
-    );
+    const next = resolveColumnCount(inner, cellMinWidthRef.current, CELL_GAP);
     setCellsPerRow((prev) => (prev === next ? prev : next));
   }, [scrollElement]);
 
@@ -3975,10 +4005,10 @@ function useCellsPerRow(
     return () => ro.disconnect();
   }, [measure]);
 
-  // Re-measure synchronously when the zoom (pinch) or surrounding layout
-  // changes the pane width (right rail show/hide/collapse, left-bar pin,
-  // view mode). These fire after mount, when the ref is populated, so the
-  // update lands before paint with no flash.
+  // Re-measure synchronously when the zoom (pinch / the +/- stepper) or
+  // surrounding layout changes the pane width (right rail show/hide/collapse,
+  // left-bar pin, view mode). These fire after mount, when the ref is
+  // populated, so the update lands before paint with no flash.
   useLayoutEffect(() => {
     cellMinWidthRef.current = cellMinWidth;
     measure();
@@ -4059,6 +4089,7 @@ function VirtualizedGrid({
   grouped,
   scrollElement,
   cellMinWidth,
+  onColumnsChange,
   cellsPerRowRef,
   scrollApiRef,
   layoutSignal,
@@ -4081,10 +4112,12 @@ function VirtualizedGrid({
   purgeCaptureAction
 }: VirtualizedGridProps) {
   const cellsPerRow = useCellsPerRow(scrollElement, cellMinWidth, layoutSignal);
-  // Mirror the measured value up to Library for keyboard grid-nav.
+  // Mirror the measured value up to Library for keyboard grid-nav + the
+  // status-bar stepper's column readout.
   useEffect(() => {
     cellsPerRowRef.current = cellsPerRow;
-  }, [cellsPerRow, cellsPerRowRef]);
+    onColumnsChange(cellsPerRow);
+  }, [cellsPerRow, cellsPerRowRef, onColumnsChange]);
 
   // Flatten day-groups → 1-D row list. Each header gets one row;
   // each day's items are sliced into rows of cellsPerRow. Memoized

@@ -1979,14 +1979,15 @@ export type LibrarySettings = {
    *  (still recoverable via the Undo toast / ⌘Z and the Trash view). Re-
    *  enable from Settings → Storage & retention. */
   confirmBeforeTrash: boolean;
-  /** Sticky Library-grid thumbnail size: the *target minimum thumbnail
-   *  width in px*. The grid fits as many equal columns as fit at this
-   *  width (matching the old `repeat(auto-fill, minmax(180px, 1fr))`),
-   *  so a larger value = bigger thumbnails / fewer columns. Pinch-to-zoom
-   *  on the grid steps this through {@link GRID_ZOOM_LEVELS}. Stored as a
-   *  raw px number rather than a level index so the value survives changes
-   *  to the level ladder (readers snap to the nearest level). Clamped to
-   *  [{@link GRID_ZOOM_MIN}, {@link GRID_ZOOM_MAX}]. */
+  /** Sticky Library-grid thumbnail size: the *target thumbnail width in
+   *  px*. The grid picks the column count whose resulting cell width is
+   *  CLOSEST to this target (round-to-nearest), so cell sizes stay centered
+   *  on the target as the window resizes instead of ballooning before a
+   *  column is added. A larger value = bigger thumbnails / fewer columns.
+   *  Pinch-to-zoom on the grid steps this through {@link GRID_ZOOM_LEVELS}.
+   *  Stored as a raw px number rather than a level index so the value
+   *  survives changes to the level ladder (readers snap to the nearest
+   *  level). Clamped to [{@link GRID_ZOOM_MIN}, {@link GRID_ZOOM_MAX}]. */
   gridZoom: number;
 };
 

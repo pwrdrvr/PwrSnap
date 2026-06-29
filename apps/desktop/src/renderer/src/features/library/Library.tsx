@@ -755,9 +755,10 @@ export function Library() {
   }, [gridZoom]);
   const userTouchedGridZoomRef = useRef<boolean>(false);
 
-  // Sticky per-step column nudge applied ON TOP of the width-driven count
-  // (the grid renders `max(1, computed + gridColumnBias)` columns). The +/-
-  // control steps this; it persists to settings.library.gridColumnBias.
+  // Sticky column nudge. Each notch SCALES the effective target cell size
+  // (~1.25^-bias) rather than offsetting the column count, so cell sizes stay
+  // consistent across column counts at any nudge level (see resolveColumnCount).
+  // The +/- control steps this; it persists to settings.library.gridColumnBias.
   // Same hydration-race guard + broadcast-echo handling as gridZoom.
   const [gridColumnBias, setGridColumnBiasState] = useState<number>(0);
   const gridColumnBiasRef = useRef<number>(0);
@@ -3919,8 +3920,8 @@ type VirtualizedGridProps = {
   /** Target minimum cell width in px (the sticky grid-zoom level). The
    *  grid fits `floor(width / cellMinWidth)` columns at this width. */
   cellMinWidth: number;
-  /** Sticky column nudge added to the width-driven count (the grid renders
-   *  `max(1, computed + columnBias)` columns). See gridColumnBias. */
+  /** Sticky column nudge — scales the effective target cell size (not a
+   *  column offset), keeping cell sizes consistent. See gridColumnBias. */
   columnBias: number;
   /** Notified with the resolved column count whenever it changes, so the
    *  status-bar +/- control can display the live number. */

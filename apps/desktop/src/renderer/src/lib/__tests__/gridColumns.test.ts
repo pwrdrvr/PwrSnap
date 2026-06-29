@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { NARROW_GRID_PANE_PX, resolveColumnCount } from "../gridColumns";
+import {
+  COLUMN_BIAS_RATIO,
+  NARROW_GRID_PANE_PX,
+  resolveColumnCount
+} from "../gridColumns";
 
 const GAP = 12;
 const TARGET = 180;
@@ -38,14 +42,33 @@ describe("resolveColumnCount", () => {
     expect(resolveColumnCount(500, TARGET, 0, GAP)).toBe(2);
   });
 
-  test("applies the column bias on top of the width-driven count", () => {
-    expect(resolveColumnCount(1063, TARGET, -2, GAP)).toBe(4); // 6 − 2
-    expect(resolveColumnCount(1063, TARGET, 1, GAP)).toBe(7); // 6 + 1
+  test("the nudge scales the target (fewer/larger or more/smaller)", () => {
+    // At inner 1063 the un-nudged target (180) rounds to 6 cols. A negative
+    // nudge scales the target UP → fewer columns; positive scales it down →
+    // more columns.
+    expect(resolveColumnCount(1063, TARGET, 0, GAP)).toBe(6);
+    expect(resolveColumnCount(1063, TARGET, -2, GAP)).toBe(4);
+    expect(resolveColumnCount(1063, TARGET, 1, GAP)).toBe(7);
   });
 
-  test("caps a positive bias so added columns can't make sub-hard-min cells", () => {
-    // base 3 cols at inner 600; +3 would be 6, but only 5 fit above the
-    // ~96px hard-min cell, so it's capped at 5.
+  test("a nudge keeps cells consistent — no low-column-count balloon", () => {
+    // The whole reason for scaling the target instead of offsetting the
+    // column count: with a nudge applied, cells still stay in a tight band
+    // around the SCALED target at every column count. The old column-offset
+    // approach inflated low-count cells (250px @ 4 cols → 322px @ 2 cols).
+    const bias = -2;
+    const scaledTarget = TARGET * COLUMN_BIAS_RATIO ** -bias;
+    for (let inner = NARROW_GRID_PANE_PX; inner <= 2400; inner++) {
+      const cols = resolveColumnCount(inner, TARGET, bias, GAP);
+      const cell = (inner - (cols - 1) * GAP) / cols;
+      expect(cell).toBeGreaterThan(scaledTarget * 0.74);
+      expect(cell).toBeLessThan(scaledTarget * 1.3);
+    }
+  });
+
+  test("caps density so the nudge can't make sub-hard-min cells", () => {
+    // A strong +nudge scales the target down toward the ~96px floor; the cap
+    // keeps the column count to what fits above the hard min.
     expect(resolveColumnCount(600, TARGET, 3, GAP)).toBe(5);
   });
 

@@ -1989,14 +1989,15 @@ export type LibrarySettings = {
    *  survives changes to the level ladder (readers snap to the nearest
    *  level). Clamped to [{@link GRID_ZOOM_MIN}, {@link GRID_ZOOM_MAX}]. */
   gridZoom: number;
-  /** Sticky per-step column nudge applied ON TOP of the width-driven
-   *  column count: the grid renders `max(1, computed + gridColumnBias)`
-   *  columns. Negative = fewer/larger thumbnails, positive = more/smaller.
-   *  Unlike {@link gridZoom} (which changes the per-cell min width and so
-   *  shifts where the breakpoints land), this keeps the breakpoints fixed
-   *  and just shifts the result by a whole number of columns, so the +/-
-   *  control is a predictable "one more / one fewer column". Clamped to
-   *  [-{@link GRID_COLUMN_BIAS_MAX}, {@link GRID_COLUMN_BIAS_MAX}]. */
+  /** Sticky column nudge from the grid's +/- control. Each notch SCALES the
+   *  effective target cell size by a fixed ratio (~1.25^-bias) rather than
+   *  offsetting the column count: negative = fewer/larger thumbnails,
+   *  positive = more/smaller. Scaling the target (instead of adding columns)
+   *  keeps cell sizes centered on the target at EVERY column count, so the
+   *  size stays consistent as the window resizes at any nudge level — an
+   *  offset would inflate low-column-count cells and make the breakpoints
+   *  feel uneven. Composes with {@link gridZoom} (the base target). Clamped
+   *  to [-{@link GRID_COLUMN_BIAS_MAX}, {@link GRID_COLUMN_BIAS_MAX}]. */
   gridColumnBias: number;
 };
 

@@ -74,6 +74,7 @@ import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUnd
 import { decideClickSelection } from "./decideClickSelection";
 import { pruneLandedDraftGeometry } from "./draft-geometry";
 import { isReorderableLayer } from "./layer-roles";
+import { hitTestRasterLayers } from "./raster-hit-test";
 import { forwardOpToStored, forwardGeometry } from "./crop-edit-space";
 import {
   useCaptureModel,
@@ -1311,6 +1312,11 @@ export function Editor({
   // (after the model resolves); we project a v1-shaped view of it
   // here for the synchronous click handler.
   const overlaysRef = useRef<OverlayRow[]>([]);
+  // Non-source raster layers (pasted images, captured cursor) — outside
+  // the OverlayRow system, so the pointerdown raster hit-test + Cmd+A +
+  // delete read them from here (synced in render, same pattern as
+  // overlaysRef).
+  const rastersRef = useRef<readonly Extract<BundleLayerNode, { kind: "raster" }>[]>([]);
   // Multi-select drag state. Populated by `onPointerDown` when the
   // user clicks a layer already in a multi-selection (= the
   // `decideClickSelection` "keep" action with selection size > 1).
@@ -1578,13 +1584,37 @@ export function Editor({
       //   • rect / highlight / blur with rotation get inverse-rotated
       //     into local frame before bbox testing so the visible
       //     rotated glyph is what's selectable.
-      const hit = hitTestOverlays(
+      const overlayHit = hitTestOverlays(
         overlays,
         start.xn,
         start.yn,
         shortSide,
         textHitDimsRef.current ?? undefined
       );
+      // Non-source raster layers live outside the OverlayRow system, so
+      // hit-test them separately and pick the topmost (higher z_index
+      // wins; a tie favors the raster). Same canvas-normalized space as
+      // the pointer + the overlay hit-test.
+      const dimsForHit = textHitDimsRef.current;
+      const rasterHit =
+        dimsForHit === null
+          ? null
+          : hitTestRasterLayers(
+              rastersRef.current,
+              start.xn,
+              start.yn,
+              dimsForHit.canvasWidthPx,
+              dimsForHit.canvasHeightPx,
+              0.006
+            );
+      let hit = overlayHit;
+      if (rasterHit !== null) {
+        const overlayZ =
+          overlayHit === null
+            ? Number.NEGATIVE_INFINITY
+            : overlays.find((o) => o.id === overlayHit)?.z_index ?? Number.NEGATIVE_INFINITY;
+        if (overlayHit === null || rasterHit.zIndex >= overlayZ) hit = rasterHit.id;
+      }
       // Decision matrix lives in `decideClickSelection` so both the
       // pointer-tool and drawing-tool branches share one source of
       // truth (and one regression-tested module). The `keep` action
@@ -2615,10 +2645,13 @@ export function Editor({
   function deleteSelected(): void {
     if (selectedLayerIds.length === 0) return;
     const overlaysSnapshot = overlaysRef.current;
+    const rasterIdSet = new Set(rastersRef.current.map((r) => r.id));
     const rows: OverlayRow[] = [];
+    const rasterIds: string[] = [];
     for (const id of selectedLayerIds) {
       const row = overlaysSnapshot.find((o) => o.id === id);
       if (row !== undefined) rows.push(row);
+      else if (rasterIdSet.has(id)) rasterIds.push(id);
     }
     clearSelection();
     const begin = beginInteractionRef.current;
@@ -2634,6 +2667,16 @@ export function Editor({
               layerId: "kbd-multi-delete",
               mergeMode: "append"
             });
+          }
+        }
+        // Non-source rasters aren't OverlayRows, so delete them by id via
+        // the model dispatcher (same path as the Layers panel's Delete;
+        // rasters don't project to a row, so no undo entry — an accepted
+        // v1 edge, matching api.deleteLayer).
+        for (const id of rasterIds) {
+          if (model.kind === "loaded") {
+            // eslint-disable-next-line no-await-in-loop
+            await model.dispatchEdit({ kind: "delete", id });
           }
         }
       } finally {
@@ -2785,7 +2828,18 @@ export function Editor({
         !event.altKey
       ) {
         event.preventDefault();
-        setSelectedLayerIds(overlaysRef.current.map((o) => o.id));
+        // Select all SELECTABLE layers — annotation overlays + non-source
+        // rasters (pasted images, captured cursor). Exclude the Crop and
+        // legacy Step overlays: they aren't click-selectable
+        // (hitTestOverlays skips them), so Cmd+A must skip them too —
+        // otherwise selecting the crop paints a phantom outline box for a
+        // no-op viewport artifact.
+        setSelectedLayerIds([
+          ...overlaysRef.current
+            .filter((o) => o.data.kind !== "crop" && o.data.kind !== "step")
+            .map((o) => o.id),
+          ...rastersRef.current.map((r) => r.id)
+        ]);
         return;
       }
       // ⌘C / ⌃C — copy selected layers into the in-memory clipboard.
@@ -3015,6 +3069,17 @@ export function Editor({
   // we deliberately do this before returning EditorLoaded so a click
   // landing in the same commit reads the up-to-date overlay list.
   overlaysRef.current = overlaysForRender;
+  // Sync the non-source raster layers for the same synchronous handlers.
+  // Same Source-vs-annotation rule + visibility filter as the RasterLayers
+  // render, so a hit-test / Cmd+A / delete only ever sees what's painted.
+  const sourceRasterIdForHit = selectBaseRaster(model.layers, model.record.sha256)?.id ?? null;
+  rastersRef.current = model.layers.filter(
+    (l): l is Extract<BundleLayerNode, { kind: "raster" }> =>
+      l.kind === "raster" &&
+      l.id !== sourceRasterIdForHit &&
+      l.visible &&
+      l.rejected_at === null
+  );
   // `textHitDimsRef` is populated lower in this render — after
   // `sourceWidthPx` / `sourceHeightPx` are resolved via the raster-
   // layer scan below. See the assignment near `return <EditorLoaded
@@ -5011,6 +5076,7 @@ function EditorLoaded({
               captureId={record.id}
               canvasWidthPx={record.width_px}
               canvasHeightPx={record.height_px}
+              selectedLayerIds={selectedLayerIds}
             />
           </div>
           {/* HTML blur layer between the <img> and the SVG so

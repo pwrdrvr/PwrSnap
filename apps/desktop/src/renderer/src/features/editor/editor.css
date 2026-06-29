@@ -253,6 +253,13 @@
 .editor-image-clip--source-hidden .editor-image {
   visibility: hidden;
 }
+/* Non-source raster layers (pasted images, captured cursor). Position is
+   inline (computeRasterLayerStyle); selection adds the accent ring. The
+   <img> is pointer-events:none — the canvas owns hit-testing. */
+.editor-raster-layer.is-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
 .editor-svg {
   position: absolute;
   inset: 0;

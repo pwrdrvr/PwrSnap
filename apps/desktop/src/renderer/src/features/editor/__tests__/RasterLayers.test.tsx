@@ -55,12 +55,15 @@ async function renderLayers(props: {
   captureId: string;
   canvasWidthPx: number;
   canvasHeightPx: number;
+  selectedLayerIds?: readonly string[];
 }): Promise<void> {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => {
-    root?.render(createElement(RasterLayers, props));
+    root?.render(
+      createElement(RasterLayers, { selectedLayerIds: [], ...props })
+    );
   });
 }
 
@@ -123,5 +126,20 @@ describe("RasterLayers", () => {
       el.getAttribute("data-layer-id")
     );
     expect(ids).toEqual(["A", "B", "C"]);
+  });
+
+  test("a selected layer gets the is-selected class", async () => {
+    await renderLayers({
+      layers: [makeRaster({ id: "L1" }), makeRaster({ id: "L2" })],
+      captureId: "c",
+      canvasWidthPx: 200,
+      canvasHeightPx: 100,
+      selectedLayerIds: ["L1"]
+    });
+    const sel = container!.querySelector('[data-layer-id="L1"]')!;
+    const unsel = container!.querySelector('[data-layer-id="L2"]')!;
+    expect(sel.classList.contains("is-selected")).toBe(true);
+    expect(sel.getAttribute("data-selected")).toBe("true");
+    expect(unsel.classList.contains("is-selected")).toBe(false);
   });
 });

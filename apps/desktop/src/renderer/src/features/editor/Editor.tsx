@@ -1317,6 +1317,12 @@ export function Editor({
   // delete read them from here (synced in render, same pattern as
   // overlaysRef).
   const rastersRef = useRef<readonly Extract<BundleLayerNode, { kind: "raster" }>[]>([]);
+  // The base Source raster id. Cmd+A includes it so "select all → copy"
+  // grabs the whole image (base + annotations), not just the overlays.
+  // Kept out of `rastersRef` (the hit-test + delete sets) so the Source
+  // stays non-clickable + non-deletable; it's only ever added to the
+  // select-all set for copy.
+  const sourceRasterIdRef = useRef<string | null>(null);
   // Multi-select drag state. Populated by `onPointerDown` when the
   // user clicks a layer already in a multi-selection (= the
   // `decideClickSelection` "keep" action with selection size > 1).
@@ -2828,17 +2834,18 @@ export function Editor({
         !event.altKey
       ) {
         event.preventDefault();
-        // Select all SELECTABLE layers — annotation overlays + non-source
-        // rasters (pasted images, captured cursor). Exclude the Crop and
-        // legacy Step overlays: they aren't click-selectable
-        // (hitTestOverlays skips them), so Cmd+A must skip them too —
-        // otherwise selecting the crop paints a phantom outline box for a
-        // no-op viewport artifact.
+        // Select the WHOLE image for "select all → copy": annotation
+        // overlays + every raster (the base Source AND non-source pasted
+        // images / cursor). Exclude the Crop and legacy Step overlays —
+        // they aren't click-selectable (hitTestOverlays skips them) and a
+        // crop is a no-op canvas-level viewport that can't transfer to
+        // another capture; selecting it would also paint a phantom outline.
         setSelectedLayerIds([
           ...overlaysRef.current
             .filter((o) => o.data.kind !== "crop" && o.data.kind !== "step")
             .map((o) => o.id),
-          ...rastersRef.current.map((r) => r.id)
+          ...rastersRef.current.map((r) => r.id),
+          ...(sourceRasterIdRef.current !== null ? [sourceRasterIdRef.current] : [])
         ]);
         return;
       }
@@ -3073,6 +3080,7 @@ export function Editor({
   // Same Source-vs-annotation rule + visibility filter as the RasterLayers
   // render, so a hit-test / Cmd+A / delete only ever sees what's painted.
   const sourceRasterIdForHit = selectBaseRaster(model.layers, model.record.sha256)?.id ?? null;
+  sourceRasterIdRef.current = sourceRasterIdForHit;
   rastersRef.current = model.layers.filter(
     (l): l is Extract<BundleLayerNode, { kind: "raster" }> =>
       l.kind === "raster" &&

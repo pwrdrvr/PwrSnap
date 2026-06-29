@@ -3798,8 +3798,9 @@ function EditorLoaded({
         // and the crop (no-op viewport) are excluded as pinned base
         // layers. `toIndex` is the panel's TOP-DOWN index (0 = front), so
         // convert to the bottom-up position moveToIndex / diffChanges use.
+        const sourceRasterId = selectBaseRaster(modelLayers, record.sha256)?.id ?? null;
         const items = modelLayers
-          .filter(isReorderableLayer)
+          .filter((l) => isReorderableLayer(l, sourceRasterId))
           .slice()
           .sort((a, b) => a.z_index - b.z_index)
           .map((l) => ({ id: l.id }));
@@ -4825,15 +4826,16 @@ function EditorLoaded({
 
   // Non-base raster layers (pasted images, the captured cursor) render as
   // their own positioned <img> elements via the RasterLayers LayerView.
-  // The base raster is the first one (z_index 0) and is already drawn by
-  // the <img> below; everything else stacks above it. Hidden / rejected
-  // layers are excluded so the editor matches what the compositor paints.
-  const baseRasterId =
-    modelLayers.find((l) => l.kind === "raster" && l.parent_id !== null)?.id ?? null;
+  // The Source raster is already drawn by the <img> below; every other
+  // raster stacks above it. Hidden / rejected layers are excluded so the
+  // editor matches what the compositor paints. `selectBaseRaster` is the
+  // same sha-matched Source rule the Layers panel pins by (and that the
+  // `isSourceHidden` flag above already used).
+  const sourceRasterId = selectBaseRaster(modelLayers, record.sha256)?.id ?? null;
   const extraRasterLayers = modelLayers.filter(
     (l): l is Extract<BundleLayerNode, { kind: "raster" }> =>
       l.kind === "raster" &&
-      l.id !== baseRasterId &&
+      l.id !== sourceRasterId &&
       l.visible &&
       l.rejected_at === null
   );

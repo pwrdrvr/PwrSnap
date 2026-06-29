@@ -2494,14 +2494,24 @@ export function Editor({
     }
     clipboardRef.current = items;
     // Also push to the OS clipboard for cross-capture / cross-instance
-    // paste. Fire-and-forget — the in-memory clipboard is the load-
-    // bearing path for same-capture paste, and the user shouldn't have
-    // to wait for the OS write to complete on Cmd+C.
+    // paste. The in-memory clipboard is the load-bearing path for
+    // same-capture paste, so we don't block Cmd+C on the OS write — but
+    // we DO surface a failure: a silently-failed fragment copy means a
+    // later cross-capture paste finds nothing and (confusingly) reports
+    // "clipboard doesn't contain an image".
     if (model.kind === "loaded") {
-      void dispatch("clipboard:copyLayerFragment", {
-        captureId,
-        layerIds: selectedLayerIds.slice()
-      });
+      void (async (): Promise<void> => {
+        const result = await dispatch("clipboard:copyLayerFragment", {
+          captureId,
+          layerIds: selectedLayerIds.slice()
+        });
+        if (!result.ok) {
+          setPasteNotice({
+            text: `Couldn't copy layers: ${result.error.message}`,
+            tone: "error"
+          });
+        }
+      })();
     }
   }
 
@@ -2576,6 +2586,19 @@ export function Editor({
           // OS clipboard had a PwrSnap fragment. Select what landed
           // so the user can immediately nudge / re-style / delete it.
           setSelectionTrustingDispatch(result.value.insertedLayerIds);
+          return;
+        }
+        if (!result.ok) {
+          // A PwrSnap fragment WAS on the clipboard but failed to paste
+          // (schema mismatch, source-integrity, insert error). Surface
+          // the real reason instead of masking it with the generic
+          // "doesn't contain an image" image-paste fallback below — that
+          // fallback is only correct when there's genuinely no fragment
+          // (handler returns ok + insertedLayerIds: []).
+          setPasteNotice({
+            text: `Couldn't paste layers: ${result.error.message}`,
+            tone: "error"
+          });
           return;
         }
         if (clipboardRef.current.length > 0) {

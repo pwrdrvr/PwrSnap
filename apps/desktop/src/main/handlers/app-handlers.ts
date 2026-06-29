@@ -165,7 +165,7 @@ export function registerAppUpdateHandlers(): void {
     return ok(readAppUpdateStatus());
   });
   bus.register("app:update:install", async () => {
-    return ok(installDownloadedAppUpdate());
+    return ok(await installDownloadedAppUpdate());
   });
   bus.register("app:update:releases", async () => {
     return ok(await readAppUpdateReleaseVersions());

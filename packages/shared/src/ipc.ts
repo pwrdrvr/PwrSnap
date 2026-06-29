@@ -56,9 +56,10 @@ export const EVENT_CHANNELS = {
    * library window's update banner. The payload shape is
    * `AppUpdateStatus` (see protocol.ts) — discriminated union over
    * `status: "idle" | "checking" | "no-update" | "available" |
-   * "downloading" | "downloaded" | "error" | "skipped"`. Fired by
-   * apps/desktop/src/main/auto-updater.ts on every electron-updater
-   * event transition.
+   * "downloading" | "downloaded" | "install-failed" | "error" |
+   * "skipped"`. Fired by apps/desktop/src/main/auto-updater.ts on
+   * every electron-updater event transition and failed-install boot
+   * reconciliation.
    */
   appUpdateStatus: "events:app-update:status",
   /**

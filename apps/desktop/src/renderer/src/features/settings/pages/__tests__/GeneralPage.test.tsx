@@ -302,9 +302,37 @@ describe("GeneralPage — updates", () => {
       } satisfies AppUpdateStatus);
     });
 
-    expect(container?.textContent).toContain("Downloaded version: 1.3.0-beta.4");
+    expect(container?.textContent).toContain("Update version: 1.3.0-beta.4");
     const button = Array.from(container!.querySelectorAll("button")).find(
       (el) => el.getAttribute("aria-label") === "Restart to Update (1.3.0-beta.4)"
+    );
+    expect(button).toBeDefined();
+
+    await act(async () => {
+      button?.click();
+      await Promise.resolve();
+    });
+
+    expect(api.calls.some((c) => c.name === "app:update:install")).toBe(true);
+  });
+
+  test("failed install status shows a retry action", async () => {
+    const api = await renderGeneral(baseSettings, healthyStatus);
+
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.appUpdateStatus, {
+        status: "install-failed",
+        version: "1.3.0-beta.5",
+        currentVersion: "1.3.0-beta.4",
+        attemptedAt: "2026-06-29T12:00:00.000Z",
+        channel: "prerelease"
+      } satisfies AppUpdateStatus);
+    });
+
+    expect(container?.textContent).toContain("did not finish installing");
+    expect(container?.textContent).toContain("Update version: 1.3.0-beta.5");
+    const button = Array.from(container!.querySelectorAll("button")).find(
+      (el) => el.getAttribute("aria-label") === "Retry Update (1.3.0-beta.5)"
     );
     expect(button).toBeDefined();
 

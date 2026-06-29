@@ -1,13 +1,14 @@
-// Floating toast (lower-left .app-toast-stack) that an update is
-// downloaded and ready to install.
+// Floating toast (lower-left .app-toast-stack) for actionable update
+// states: an update is downloaded and ready to install, or a previous
+// install attempt did not apply and should be retried.
 //
 // Subscribes to `events:app-update:status` from main; reads the
 // initial status once (in case main fired before this component
 // mounted) and races that read against any real event so a fresh
-// event always wins. Visible only when status is `downloaded`; the
-// user can either Restart now (quitAndInstall) or Dismiss (silenced
-// for this version — the banner re-appears when a NEW version is
-// downloaded).
+// event always wins. Visible only when status is `downloaded` or
+// `install-failed`; the user can either Restart/Retry now or Dismiss
+// (silenced for this status + version — the banner re-appears when a
+// new actionable state arrives).
 //
 // Mirrors PwrAgnt's apps/desktop/src/renderer/src/features/update/
 // AppUpdateBanner.tsx, adapted to PwrSnap's `dispatch` + `on` helpers
@@ -22,7 +23,7 @@ export function AppUpdateBanner(): ReactElement | null {
   const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus>({
     status: "idle"
   });
-  const [dismissedVersion, setDismissedVersion] = useState<string | undefined>();
+  const [dismissedKey, setDismissedKey] = useState<string | undefined>();
   const [restartError, setRestartError] = useState<string | undefined>();
   const [restarting, setRestarting] = useState(false);
 
@@ -48,18 +49,36 @@ export function AppUpdateBanner(): ReactElement | null {
     };
   }, []);
 
-  const version =
-    updateStatus.status === "downloaded" ? updateStatus.version : undefined;
+  const notice =
+    updateStatus.status === "downloaded"
+      ? {
+          key: `downloaded:${updateStatus.version}`,
+          eyebrow: "Update ready",
+          message: `Restart to update to v${updateStatus.version}.`,
+          action: "Restart",
+          busyAction: "Restarting..."
+        }
+      : updateStatus.status === "install-failed"
+        ? {
+            key: `install-failed:${updateStatus.version}`,
+            eyebrow: "Update retry needed",
+            message: `The update to v${updateStatus.version} did not finish installing. Retry to download it again and restart.`,
+            action: "Retry update",
+            busyAction: "Retrying..."
+          }
+        : undefined;
+
+  const noticeKey = notice?.key;
 
   useEffect(() => {
-    if (version === undefined || dismissedVersion === version) return;
-    // A NEW version downloaded after the user dismissed an older
-    // banner — clear stale restart-error / restarting state.
+    if (noticeKey === undefined || dismissedKey === noticeKey) return;
+    // A new actionable update state arrived after the user dismissed
+    // an older notice — clear stale restart-error / restarting state.
     setRestartError(undefined);
     setRestarting(false);
-  }, [dismissedVersion, version]);
+  }, [dismissedKey, noticeKey]);
 
-  if (version === undefined || dismissedVersion === version) {
+  if (notice === undefined || dismissedKey === notice.key) {
     return null;
   }
 
@@ -83,10 +102,8 @@ export function AppUpdateBanner(): ReactElement | null {
   return (
     <aside className="app-update-banner" role="status" aria-live="polite">
       <div className="app-update-banner__content">
-        <p className="app-update-banner__eyebrow">Update ready</p>
-        <p className="app-update-banner__message">
-          Restart to update to v{version}.
-        </p>
+        <p className="app-update-banner__eyebrow">{notice.eyebrow}</p>
+        <p className="app-update-banner__message">{notice.message}</p>
         {restartError !== undefined ? (
           <p className="app-update-banner__error">{restartError}</p>
         ) : null}
@@ -100,14 +117,14 @@ export function AppUpdateBanner(): ReactElement | null {
             void handleRestart();
           }}
         >
-          {restarting ? "Restarting…" : "Restart"}
+          {restarting ? notice.busyAction : notice.action}
         </button>
         <button
           className="app-update-banner__dismiss"
           type="button"
           disabled={restarting}
           aria-label="Dismiss update notification"
-          onClick={() => setDismissedVersion(version)}
+          onClick={() => setDismissedKey(notice.key)}
         >
           Dismiss
         </button>

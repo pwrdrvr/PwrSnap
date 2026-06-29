@@ -2901,16 +2901,21 @@ export function Editor({
         ]);
         return;
       }
-      // ⌘C / ⌃C — copy selected layers into the in-memory clipboard.
-      // Skipped when nothing's selected so the system Cmd+C (browser
-      // "Copy" of any selected text on the page) still wins.
+      // ⌘C / ⌃C — copy selected layers.
       if (
         (event.key === "c" || event.key === "C") &&
         (event.metaKey || event.ctrlKey) &&
         !event.altKey &&
-        !event.shiftKey &&
-        selectedLayerIds.length > 0
+        !event.shiftKey
       ) {
+        if (selectedLayerIds.length === 0) {
+          // The editor DID receive Cmd+C, but nothing is selected. Surface
+          // it (distinguishes "nothing selected" from "Cmd+C never reached
+          // the editor" — the latter shows no toast at all). Don't
+          // preventDefault, so a system text copy can still proceed.
+          setPasteNotice({ text: "Nothing selected to copy", tone: "error" });
+          return;
+        }
         event.preventDefault();
         copySelected();
         return;

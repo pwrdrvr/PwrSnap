@@ -1625,7 +1625,9 @@
    (see EditorLoaded's pasteNotice timer). */
 .pse-paste-notice {
   position: absolute;
-  bottom: 16px;
+  /* Sit ABOVE the bottom toolbar (a grid row in full chrome, a floating
+     pill in Focus/chromeless) so the notice never lands on top of it. */
+  bottom: 76px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 7;
@@ -1637,7 +1639,10 @@
 }
 
 .pse-paste-notice.is-error {
-  background: var(--danger-soft);
+  /* OPAQUE — --danger-soft is only ~16% alpha, which let the toolbar
+     show through. Mix the solid danger over the opaque panel bg so the
+     notice reads as a real card, not a translucent wash. */
+  background: color-mix(in srgb, var(--danger) 18%, var(--bg-elevated));
   border: 1px solid var(--danger-border);
   color: var(--danger-text);
 }

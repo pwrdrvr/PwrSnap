@@ -294,13 +294,32 @@ export async function ensureLayerSourcePath(
   const cachePath = getCacheLayerSourcePath(record.id, sha256);
   if (existsSync(cachePath)) return cachePath;
   try {
-    await rematerializeBundleSource(
-      { id: record.id, bundlePath: record.bundle_path, sha256 },
-      cachePath
-    );
+    // Read through the FULL fallback chain — bundle → pending store →
+    // render cache — not bundle-only. A freshly PASTED raster (Cmd+V of
+    // another capture's layers, or an external image) lands in the
+    // pending store and isn't folded into the bundle until the next
+    // repack; a bundle-only read would 404 the layer's <img> in that
+    // window (the "broken image box").
+    const { readSourceForCapture } = await import("./bundle-store");
+    const bytes = await readSourceForCapture(record.id, record.bundle_path, sha256);
+    // Atomic write to the per-source cache (tmp + rename), same pattern
+    // as rematerializeBundleSource; concurrent requests race harmlessly.
+    await mkdir(dirname(cachePath), { recursive: true });
+    tmpCounter += 1;
+    const tmp = `${cachePath}.tmp-${process.pid}-${tmpCounter}`;
+    await writeFile(tmp, bytes);
+    try {
+      await rename(tmp, cachePath);
+    } catch (renameErr) {
+      if (existsSync(cachePath)) {
+        await rm(tmp, { force: true }).catch(() => undefined);
+      } else {
+        throw renameErr;
+      }
+    }
   } catch (cause) {
-    // sha not present in the bundle, or a content-integrity mismatch —
-    // both surface as a 404 to the renderer. readSourceFromBundle has
+    // sha not in bundle/pending/cache, or a content-integrity mismatch —
+    // both surface as a 404 to the renderer. readSourceForCapture has
     // already sanitized the message (no attacker-controlled sha echoed).
     log.warn("source-store: layer source unavailable", {
       captureId: record.id,

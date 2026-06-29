@@ -69,6 +69,9 @@ function updateStatusText(status: AppUpdateStatus): string | undefined {
   if (status.status === "downloaded") {
     return `Update ready: v${status.version}. Restart to install.`;
   }
+  if (status.status === "install-failed") {
+    return `Update to v${status.version} did not finish installing. Retry to download it again and restart.`;
+  }
   if (status.status === "error") return `Update check failed: ${status.message}`;
   return undefined;
 }
@@ -128,7 +131,7 @@ export function GeneralPage(): ReactElement {
       if (cancelled) return;
       const next = payload as AppUpdateStatus;
       setUpdateStatus(next);
-      if (next.status === "downloaded") {
+      if (next.status === "downloaded" || next.status === "install-failed") {
         setUpdateRestartError(undefined);
         setUpdateRestarting(false);
       }
@@ -196,8 +199,22 @@ export function GeneralPage(): ReactElement {
           ? "Loading..."
           : releaseVersionText(releaseVersions[option.id])
     }));
-  const downloadedVersion =
-    updateStatus.status === "downloaded" ? updateStatus.version : undefined;
+  const updateAction =
+    updateStatus.status === "downloaded"
+      ? {
+          version: updateStatus.version,
+          label: "Restart to Update",
+          busyLabel: "Restarting...",
+          ariaLabel: `Restart to Update (${updateStatus.version})`
+        }
+      : updateStatus.status === "install-failed"
+        ? {
+            version: updateStatus.version,
+            label: "Retry Update",
+            busyLabel: "Retrying...",
+            ariaLabel: `Retry Update (${updateStatus.version})`
+          }
+        : undefined;
   const liveUpdateStatus = updateStatusText(updateStatus);
   const visibleUpdateStatus =
     liveUpdateStatus ?? (updateResult !== undefined ? updateResultText(updateResult) : undefined);
@@ -323,17 +340,17 @@ export function GeneralPage(): ReactElement {
               value={channel}
               onChange={onChannelChange}
             />
-            {downloadedVersion !== undefined ? (
+            {updateAction !== undefined ? (
               <button
                 className="pss__top-btn is-active"
                 type="button"
-                aria-label={`Restart to Update (${downloadedVersion})`}
+                aria-label={updateAction.ariaLabel}
                 disabled={updateRestarting}
                 onClick={() => {
                   void restartToUpdate();
                 }}
               >
-                {updateRestarting ? "Restarting..." : "Restart to Update"}
+                {updateRestarting ? updateAction.busyLabel : updateAction.label}
               </button>
             ) : (
               <button
@@ -347,9 +364,9 @@ export function GeneralPage(): ReactElement {
                 {updateChecking ? "Checking..." : "Check for Updates"}
               </button>
             )}
-            {downloadedVersion !== undefined ? (
+            {updateAction !== undefined ? (
               <span className="pss__update-note">
-                Downloaded version: {downloadedVersion}
+                Update version: {updateAction.version}
               </span>
             ) : null}
             {visibleUpdateStatus !== undefined ? (

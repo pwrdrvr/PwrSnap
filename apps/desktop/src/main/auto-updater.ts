@@ -16,7 +16,7 @@
 //     initial check fires shortly after boot (after the main window
 //     has had a chance to mount the banner subscription).
 
-import { BrowserWindow } from "electron";
+import { app, BrowserWindow } from "electron";
 import electronUpdater from "electron-updater";
 import type {
   AppUpdateCheckResult,
@@ -30,6 +30,12 @@ import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { broadcastRendererEventToLocalWindows } from "./events";
 import { relayRendererEventToPeer } from "./process-split/event-relay";
 import { getMainLogger } from "./log";
+import { readMacShipItDiagnostics, type MacShipItDiagnostics } from "./mac-shipit-diagnostics";
+import {
+  createAppUpdateInstallAttemptStore,
+  type AppUpdateInstallAttempt,
+  type AppUpdateInstallAttemptStore
+} from "./update-install-attempt-store";
 
 // Access `autoUpdater` lazily. electron-updater exposes it as a
 // property getter that constructs `MacUpdater` on first access,
@@ -48,6 +54,7 @@ const GITHUB_RELEASES_URL =
   "https://api.github.com/repos/pwrdrvr/PwrSnap/releases?per_page=30";
 const RELEASE_FETCH_TIMEOUT_MS = 5_000;
 export const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
+const UPDATE_RETRY_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1_000;
 
 /** Obvious not-a-real-release version that the dev/QA fake update
  *  reports (see `simulateDevUpdateCheck`), so a previewed toast can
@@ -62,6 +69,12 @@ let initialized = false;
 let updateStatus: AppUpdateStatus = { status: "idle" };
 let periodicUpdateCheckTimer: ReturnType<typeof setInterval> | undefined;
 let updateCheckInFlight: Promise<AppUpdateCheckResult> | undefined;
+let installAttemptStore: AppUpdateInstallAttemptStore | undefined;
+const retryDownloadWaiters = new Set<{
+  expectedVersion: string;
+  resolve: (result: AppUpdateCheckResult) => void;
+  timer: ReturnType<typeof setTimeout>;
+}>();
 
 type GitHubRelease = {
   draft?: boolean;
@@ -81,6 +94,7 @@ export function setUpdateChannelResolver(fn: ChannelResolver): void {
 }
 
 function setUpdateStatus(nextStatus: AppUpdateStatus): void {
+  notifyRetryDownloadWaiters(nextStatus);
   updateStatus = nextStatus;
   // Local windows + the peer process (split mode): the updater runs in
   // the agent, but Settings → Updates (a library-process window) shows
@@ -89,8 +103,156 @@ function setUpdateStatus(nextStatus: AppUpdateStatus): void {
   relayRendererEventToPeer(EVENT_CHANNELS.appUpdateStatus, nextStatus);
 }
 
-function downloadedVersion(): string | undefined {
-  return updateStatus.status === "downloaded" ? updateStatus.version : undefined;
+function notifyRetryDownloadWaiters(nextStatus: AppUpdateStatus): void {
+  for (const waiter of retryDownloadWaiters) {
+    if (nextStatus.status === "downloaded" && nextStatus.version === waiter.expectedVersion) {
+      clearTimeout(waiter.timer);
+      retryDownloadWaiters.delete(waiter);
+      waiter.resolve({ status: "downloaded", version: nextStatus.version });
+    } else if (nextStatus.status === "error") {
+      clearTimeout(waiter.timer);
+      retryDownloadWaiters.delete(waiter);
+      waiter.resolve({ status: "error", message: nextStatus.message });
+    } else if (nextStatus.status === "no-update") {
+      clearTimeout(waiter.timer);
+      retryDownloadWaiters.delete(waiter);
+      waiter.resolve({ status: "no-update", version: nextStatus.version });
+    }
+  }
+}
+
+function waitForRetryDownload(expectedVersion: string): Promise<AppUpdateCheckResult> {
+  if (updateStatus.status === "downloaded" && updateStatus.version === expectedVersion) {
+    return Promise.resolve({ status: "downloaded", version: expectedVersion });
+  }
+  return new Promise((resolve) => {
+    const waiter = {
+      expectedVersion,
+      resolve,
+      timer: setTimeout(() => {
+        retryDownloadWaiters.delete(waiter);
+        resolve({
+          status: "error",
+          message: `Timed out waiting for update v${expectedVersion} to finish downloading.`
+        });
+      }, UPDATE_RETRY_DOWNLOAD_TIMEOUT_MS)
+    };
+    waiter.timer.unref?.();
+    retryDownloadWaiters.add(waiter);
+  });
+}
+
+function installableUpdateVersion(): string | undefined {
+  return updateStatus.status === "downloaded" || updateStatus.status === "install-failed"
+    ? updateStatus.version
+    : undefined;
+}
+
+function installRetryChannel(): UpdateChannel | undefined {
+  return updateStatus.status === "install-failed" ? updateStatus.channel : undefined;
+}
+
+function getInstallAttemptStore(): AppUpdateInstallAttemptStore {
+  installAttemptStore ??= createAppUpdateInstallAttemptStore(app.getPath("userData"));
+  return installAttemptStore;
+}
+
+function currentAppVersion(): string {
+  return app.getVersion();
+}
+
+function readShipItDiagnostics(): MacShipItDiagnostics | undefined {
+  if (process.platform !== "darwin") return undefined;
+  try {
+    return readMacShipItDiagnostics({
+      homeDir: app.getPath("home"),
+      platform: process.platform,
+      resourcesPath: process.resourcesPath
+    });
+  } catch (err) {
+    log.warn("failed to read Squirrel.Mac diagnostics", {
+      message: err instanceof Error ? err.message : String(err)
+    });
+    return undefined;
+  }
+}
+
+function recordInstallAttempt(version: string, channel: UpdateChannel): AppUpdateInstallAttempt | undefined {
+  const attempt = {
+    expectedVersion: version,
+    fromVersion: currentAppVersion(),
+    channel,
+    attemptedAt: new Date().toISOString()
+  };
+  const shipIt = readShipItDiagnostics();
+  try {
+    const written = getInstallAttemptStore().write(attempt);
+    log.info("recorded app update install attempt", {
+      attemptFile: getInstallAttemptStore().filePath(),
+      attempt: written,
+      shipIt
+    });
+    return written;
+  } catch (err) {
+    log.warn("failed to record app update install attempt", {
+      attempt,
+      message: err instanceof Error ? err.message : String(err),
+      shipIt
+    });
+    return undefined;
+  }
+}
+
+function clearInstallAttempt(reason: string, attempt?: AppUpdateInstallAttempt): void {
+  try {
+    getInstallAttemptStore().clear();
+    log.info("cleared app update install attempt", { reason, attempt });
+  } catch (err) {
+    log.warn("failed to clear app update install attempt", {
+      reason,
+      message: err instanceof Error ? err.message : String(err)
+    });
+  }
+}
+
+function reconcilePendingInstallAttemptOnBoot(): boolean {
+  let attempt: AppUpdateInstallAttempt | undefined;
+  try {
+    attempt = getInstallAttemptStore().read();
+  } catch (err) {
+    log.warn("failed to read app update install attempt", {
+      attemptFile: getInstallAttemptStore().filePath(),
+      message: err instanceof Error ? err.message : String(err)
+    });
+    return false;
+  }
+  if (attempt === undefined) return false;
+
+  const currentVersion = currentAppVersion();
+  const shipIt = readShipItDiagnostics();
+  if (currentVersion === attempt.expectedVersion) {
+    log.info("app update install attempt completed", {
+      attempt,
+      currentVersion,
+      shipIt
+    });
+    clearInstallAttempt("installed", attempt);
+    return false;
+  }
+
+  log.warn("app update install attempt did not apply expected version", {
+    attempt,
+    currentVersion,
+    shipIt
+  });
+  setUpdateStatus({
+    status: "install-failed",
+    version: attempt.expectedVersion,
+    currentVersion,
+    attemptedAt: attempt.attemptedAt,
+    channel: attempt.channel
+  });
+  return true;
 }
 
 function currentUpdateChannel(): UpdateChannel {
@@ -104,8 +266,7 @@ function currentUpdateChannel(): UpdateChannel {
   }
 }
 
-function configureAutoUpdaterChannel(): void {
-  const updateChannel = currentUpdateChannel();
+function configureAutoUpdaterChannel(updateChannel: UpdateChannel = currentUpdateChannel()): void {
   autoUpdater().allowPrerelease = updateChannel === "prerelease";
   log.info("configured auto-update channel", {
     allowPrerelease: autoUpdater().allowPrerelease,
@@ -124,8 +285,10 @@ function developmentUpdateCheckResult(): AppUpdateCheckResult {
   };
 }
 
-function preserveDownloadedStatus(nextStatus: AppUpdateStatus): boolean {
-  if (updateStatus.status !== "downloaded") return false;
+function preserveActionableUpdateStatus(nextStatus: AppUpdateStatus): boolean {
+  if (updateStatus.status !== "downloaded" && updateStatus.status !== "install-failed") {
+    return false;
+  }
   return (
     nextStatus.status === "checking" ||
     nextStatus.status === "no-update" ||
@@ -133,9 +296,11 @@ function preserveDownloadedStatus(nextStatus: AppUpdateStatus): boolean {
   );
 }
 
-function setUpdateStatusUnlessDownloaded(nextStatus: AppUpdateStatus): void {
-  if (updateStatus.status === "downloaded" && preserveDownloadedStatus(nextStatus)) {
-    log.info("keeping downloaded update status during follow-up check", {
+function setUpdateStatusUnlessActionable(nextStatus: AppUpdateStatus): void {
+  if (preserveActionableUpdateStatus(nextStatus)) {
+    notifyRetryDownloadWaiters(nextStatus);
+    log.info("keeping actionable update status during follow-up check", {
+      currentStatus: updateStatus.status,
       currentVersion: (updateStatus as { version: string }).version,
       nextStatus: nextStatus.status
     });
@@ -145,7 +310,8 @@ function setUpdateStatusUnlessDownloaded(nextStatus: AppUpdateStatus): void {
 }
 
 export async function checkForAppUpdatesNow(
-  trigger: AppUpdateCheckTrigger = "manual"
+  trigger: AppUpdateCheckTrigger = "manual",
+  updateChannel: UpdateChannel = currentUpdateChannel()
 ): Promise<AppUpdateCheckResult> {
   if (!productionUpdatesEnabled()) {
     return simulateDevUpdateCheck(trigger);
@@ -158,8 +324,8 @@ export async function checkForAppUpdatesNow(
 
   updateCheckInFlight = (async (): Promise<AppUpdateCheckResult> => {
     try {
-      log.info("checking for app updates", { trigger });
-      configureAutoUpdaterChannel();
+      log.info("checking for app updates", { trigger, updateChannel });
+      configureAutoUpdaterChannel(updateChannel);
       const result = await autoUpdater().checkForUpdates();
       if (updateStatus.status === "downloaded") {
         return { status: "downloaded", version: updateStatus.version };
@@ -180,7 +346,7 @@ export async function checkForAppUpdatesNow(
         status: "error",
         message: err instanceof Error ? err.message : String(err)
       };
-      setUpdateStatusUnlessDownloaded(errResult);
+      setUpdateStatusUnlessActionable(errResult);
       log.warn("checkForUpdates failed", {
         message: errResult.message,
         trigger
@@ -316,8 +482,9 @@ export function readAppUpdateStatus(): AppUpdateStatus {
   return updateStatus;
 }
 
-export function installDownloadedAppUpdate(): AppUpdateInstallResult {
-  const version = downloadedVersion();
+export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResult> {
+  const retryChannel = installRetryChannel();
+  let version = installableUpdateVersion();
   if (!version) {
     return {
       status: "error",
@@ -338,7 +505,29 @@ export function installDownloadedAppUpdate(): AppUpdateInstallResult {
     };
   }
   try {
+    if (retryChannel !== undefined) {
+      log.info("retrying failed app update install by refreshing update payload", {
+        version,
+        updateChannel: retryChannel
+      });
+      const retryResult = await checkForAppUpdatesNow("manual", retryChannel);
+      const refreshedResult =
+        retryResult.status === "available"
+          ? await waitForRetryDownload(retryResult.version)
+          : retryResult;
+      if (refreshedResult.status !== "downloaded") {
+        return {
+          status: "error",
+          message:
+            refreshedResult.status === "error"
+              ? refreshedResult.message
+              : `Update retry did not finish downloading v${version}.`
+        };
+      }
+      version = refreshedResult.version;
+    }
     log.info("installing downloaded update", { version });
+    recordInstallAttempt(version, retryChannel ?? currentUpdateChannel());
     autoUpdater().quitAndInstall();
     return { status: "restarting" };
   } catch (err) {
@@ -366,10 +555,11 @@ export function initAppUpdater(): void {
   autoUpdater().autoDownload = true;
   autoUpdater().autoInstallOnAppQuit = true;
   configureAutoUpdaterChannel();
+  const pendingInstallFailed = reconcilePendingInstallAttemptOnBoot();
 
   autoUpdater().on("checking-for-update", () => {
     log.info("checking-for-update");
-    setUpdateStatusUnlessDownloaded({ status: "checking" });
+    setUpdateStatusUnlessActionable({ status: "checking" });
   });
   autoUpdater().on("update-available", (info) => {
     log.info("update-available", { version: info.version });
@@ -377,7 +567,7 @@ export function initAppUpdater(): void {
   });
   autoUpdater().on("update-not-available", (info) => {
     log.info("update-not-available", { version: info.version });
-    setUpdateStatusUnlessDownloaded({ status: "no-update", version: info.version });
+    setUpdateStatusUnlessActionable({ status: "no-update", version: info.version });
   });
   autoUpdater().on("download-progress", (progress) => {
     log.info("download-progress", {
@@ -401,11 +591,13 @@ export function initAppUpdater(): void {
   });
   autoUpdater().on("error", (err: Error) => {
     log.warn("auto-update error", { message: err.message });
-    setUpdateStatusUnlessDownloaded({ status: "error", message: err.message });
+    setUpdateStatusUnlessActionable({ status: "error", message: err.message });
   });
 
   startPeriodicUpdateChecks();
-  void checkForAppUpdatesNow("startup");
+  if (!pendingInstallFailed) {
+    void checkForAppUpdatesNow("startup");
+  }
 }
 
 export function disposeAutoUpdater(): void {
@@ -414,4 +606,8 @@ export function disposeAutoUpdater(): void {
     periodicUpdateCheckTimer = undefined;
   }
   initialized = false;
+  for (const waiter of retryDownloadWaiters) {
+    clearTimeout(waiter.timer);
+  }
+  retryDownloadWaiters.clear();
 }

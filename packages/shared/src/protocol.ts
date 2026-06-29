@@ -2217,6 +2217,13 @@ export type AppUpdateStatus =
   | { status: "available"; version: string }
   | { status: "downloading"; version: string; percent?: number }
   | { status: "downloaded"; version: string }
+  | {
+      status: "install-failed";
+      version: string;
+      currentVersion: string;
+      attemptedAt: string;
+      channel: UpdateChannel;
+    }
   | { status: "error"; message: string };
 
 export type AppUpdateInstallResult =

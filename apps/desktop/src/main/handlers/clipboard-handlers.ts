@@ -464,15 +464,21 @@ export function registerClipboardHandlers(): void {
     }
 
     // ── Defense (1): size cap before JSON.parse ─────────────────────
-    const hasPrivate = clipboard
-      .availableFormats()
-      .some((fmt) => fmt === CLIPBOARD_LAYER_FRAGMENT_UTI);
+    // Read the private fragment buffer DIRECTLY rather than gating on
+    // availableFormats(). On macOS a custom UTI that ISN'T registered with
+    // the system (dev builds — electron-builder.yml's
+    // UTExportedTypeDeclarations only apply to a packaged .app) gets stored
+    // on the pasteboard under a *dynamic* UTI alias. availableFormats()
+    // then reports the `dyn.…` alias, never the literal
+    // `com.pwrdrvr.pwrsnap.layer-fragment`, so the old `=== UTI` match
+    // missed and a real fragment fell through to the "clipboard doesn't
+    // contain an image" path. readBuffer(UTI) resolves the same dynamic
+    // mapping on read, so it returns the bytes whether or not the type is
+    // aliased — and an empty Buffer when nothing is there.
+    const buf = clipboard.readBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI);
+    const hasPrivate = buf.byteLength > 0;
 
     if (hasPrivate) {
-      const buf = clipboard.readBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI);
-      if (buf.byteLength === 0) {
-        return err({ kind: "clipboard", code: "empty_buffer", message: "private UTI buffer was empty" });
-      }
       if (buf.byteLength > CLIPBOARD_FRAGMENT_MAX_BYTES) {
         log.warn("clipboard:paste: oversize fragment rejected", { bytes: buf.byteLength });
         return err({

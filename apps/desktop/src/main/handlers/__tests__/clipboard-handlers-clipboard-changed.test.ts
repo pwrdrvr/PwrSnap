@@ -22,6 +22,7 @@ import { join } from "node:path";
 import sharp from "sharp";
 import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, test, vi } from "vitest";
 
+import { CLIPBOARD_LAYER_FRAGMENT_UTI } from "@pwrsnap/shared";
 import type {
   BundleDocumentV2,
   BundleLayerNode,
@@ -31,6 +32,19 @@ import type {
 
 let testDataRoot: string;
 let testDocumentsRoot: string;
+
+// Stateful pasteboard simulation shared with the hoisted electron mock.
+// Models the macOS dev-build behavior the paste fix targets: an UNDECLARED
+// custom UTI is stored under a `dyn.…` alias, so availableFormats() never
+// reports the literal fragment UTI — but readBuffer(literalUTI) still
+// resolves the bytes. (Packaged builds register the UTI via
+// electron-builder.yml's UTExportedTypeDeclarations and keep the literal.)
+const fakeClipboard = vi.hoisted(() => ({
+  pasteboard: new Map<string, Buffer>(),
+  // Keep in sync with CLIPBOARD_LAYER_FRAGMENT_UTI (can't import into a
+  // hoisted factory).
+  FRAGMENT_UTI: "com.pwrdrvr.pwrsnap.layer-fragment"
+}));
 
 vi.mock("electron", () => ({
   app: {
@@ -47,7 +61,20 @@ vi.mock("electron", () => ({
     write: vi.fn(),
     writeText: vi.fn(),
     writeImage: vi.fn(),
-    writeBuffer: vi.fn()
+    // Each write clears first (macOS ScopedClipboardWriter calls
+    // clearContents on construction), then stores the bytes.
+    writeBuffer: vi.fn((format: string, value: Buffer) => {
+      fakeClipboard.pasteboard.clear();
+      fakeClipboard.pasteboard.set(format, Buffer.from(value));
+    }),
+    readBuffer: vi.fn(
+      (format: string) => fakeClipboard.pasteboard.get(format) ?? Buffer.alloc(0)
+    ),
+    availableFormats: vi.fn(() =>
+      [...fakeClipboard.pasteboard.keys()].map((k) =>
+        k === fakeClipboard.FRAGMENT_UTI ? "dyn.ah62d4rv4ge8085553a" : k
+      )
+    )
   },
   nativeImage: {
     createFromBuffer: (bytes: Buffer) => ({
@@ -112,6 +139,7 @@ let changedSpy: ReturnType<typeof vi.fn<(...args: unknown[]) => void>>;
 beforeEach(() => {
   changedSpy = vi.fn<(...args: unknown[]) => void>();
   clipboardEvents.on("changed", changedSpy);
+  fakeClipboard.pasteboard.clear();
   vi.mocked(clipboard.write).mockClear();
   vi.mocked(clipboard.writeText).mockClear();
   vi.mocked(clipboard.writeImage).mockClear();
@@ -323,6 +351,41 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     expect(result.value.layerCount).toBe(1);
     expect(result.value.sourceCount).toBe(1);
     expect(clipboard.writeBuffer).toHaveBeenCalledTimes(1);
+  });
+
+  test("paste finds the fragment when availableFormats only reports the dynamic UTI alias (dev build)", async () => {
+    // Regression pin for the macOS dev-build bug: copy succeeds and the
+    // bytes ARE on the pasteboard, but because the custom UTI isn't
+    // system-registered, availableFormats() reports only a `dyn.…` alias.
+    // The old paste gated on `availableFormats().some(=== UTI)`, missed the
+    // alias, and fell through to "clipboard doesn't contain an image".
+    // pasteLayerFragment now readBuffer()s directly, which resolves the
+    // alias on read.
+    const captureId = await seedSimpleV2Capture();
+    const copyRes = await bus.dispatch(
+      "clipboard:copyLayerFragment",
+      { captureId, layerIds: ["ras_clipchg_xxxx"] },
+      { principal: "ipc" }
+    );
+    expect(copyRes.ok).toBe(true);
+
+    // The asymmetry the fix relies on: literal UTI absent from
+    // availableFormats(), yet readBuffer(literal UTI) returns the bytes.
+    expect(clipboard.availableFormats()).not.toContain(CLIPBOARD_LAYER_FRAGMENT_UTI);
+    expect(clipboard.readBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI).byteLength).toBeGreaterThan(0);
+
+    const pasteRes = await bus.dispatch(
+      "clipboard:pasteLayerFragment",
+      { captureId },
+      { principal: "ipc" }
+    );
+    if (!pasteRes.ok) {
+      throw new Error(`paste failed: ${pasteRes.error.code} — ${pasteRes.error.message}`);
+    }
+    // Found via readBuffer (not the alias-missing availableFormats), so a
+    // real layer landed and we did NOT fall back to the flattened PNG.
+    expect(pasteRes.value.insertedLayerIds.length).toBeGreaterThan(0);
+    expect(pasteRes.value.fallbackUsedPng).toBe(false);
   });
 });
 

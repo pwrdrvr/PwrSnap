@@ -305,6 +305,25 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     expect(clipboard.writeBuffer).toHaveBeenCalledTimes(1);
     expect(clipboard.writeImage).not.toHaveBeenCalled();
   });
+
+  test("copyLayerFragment with EXPLICIT [sourceRasterId] (whole-image Cmd+A) succeeds and writes a fragment", async () => {
+    // Mirrors the editor's Cmd+A → Cmd+C on a plain screenshot: explicit
+    // layerIds that include the base Source raster but NOT the root group,
+    // so the raster gets reparented to null. This is the path the user hit
+    // returning "doesn't contain an image" on paste.
+    const captureId = await seedSimpleV2Capture();
+    const result = await bus.dispatch(
+      "clipboard:copyLayerFragment",
+      { captureId, layerIds: ["ras_clipchg_xxxx"] },
+      { principal: "ipc" }
+    );
+    if (!result.ok) {
+      throw new Error(`copyLayerFragment([source]) failed: ${result.error.code} — ${result.error.message}`);
+    }
+    expect(result.value.layerCount).toBe(1);
+    expect(result.value.sourceCount).toBe(1);
+    expect(clipboard.writeBuffer).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("image preset exports clamp to source width", () => {

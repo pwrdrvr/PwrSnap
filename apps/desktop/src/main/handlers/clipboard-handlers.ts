@@ -54,6 +54,8 @@ import {
   CLIPBOARD_FRAGMENT_MAX_BYTES,
   CLIPBOARD_LAYER_FRAGMENT_UTI,
   MAX_IMAGE_DIM_PX,
+  computePlacement,
+  placeLayerIntoTarget,
   type ClipboardLayerFragmentV1 as ClipboardLayerFragmentV1Type,
   type BundleLayerNode
 } from "@pwrsnap/shared";
@@ -76,6 +78,107 @@ import { buildPresetExportDisplayName } from "../render/export-filename";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 
 const log = getMainLogger("pwrsnap:clipboard");
+
+/**
+ * Bake the VISIBLE canvas region of a raster layer into a self-contained
+ * PNG sized to the canvas (`canvasWidthPx × canvasHeightPx`). Used on
+ * COPY to collapse the base source raster — whose natural image extends
+ * BEYOND a cropped/off-origin canvas — into an overhang-free raster the
+ * paste path can place coherently into a differently-sized target.
+ *
+ * The clip + placement math MIRRORS compose-tree.ts's
+ * `compositeRasterOntoAccumulator` at `renderScale = 1` (apply the
+ * transform's scale, extract the in-canvas window, composite at the
+ * window's canvas position over a transparent base). Keeping it in
+ * lockstep means the baked pixels equal what the compositor would paint
+ * for this raster, so editor-preview ⇄ bake parity is preserved end to
+ * end: the pasted layer is a plain identity-transform raster that both
+ * render sites already handle identically.
+ */
+async function bakeRasterVisibleRegion(args: {
+  sourceBytes: Buffer;
+  naturalWidthPx: number;
+  naturalHeightPx: number;
+  transform: readonly number[];
+  canvasWidthPx: number;
+  canvasHeightPx: number;
+}): Promise<Buffer> {
+  const {
+    sourceBytes,
+    naturalWidthPx,
+    naturalHeightPx,
+    transform,
+    canvasWidthPx,
+    canvasHeightPx
+  } = args;
+
+  // Transparent canvas-sized base. PNG with palette:false so the output
+  // stays full RGBA (no alpha quantization) — same discipline as the
+  // compositor's final encode.
+  const base = (): sharp.Sharp =>
+    sharp({
+      create: {
+        width: canvasWidthPx,
+        height: canvasHeightPx,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 }
+      }
+    });
+
+  // Apply the affine SCALE first (transform[0]/[3]). v2.0 base rasters
+  // are identity, but mirror the compositor so a future scale handle
+  // bakes consistently.
+  const scaleX = transform[0];
+  const scaleY = transform[3];
+  let layerInput: Buffer = sourceBytes;
+  let layerInfo: { width: number; height: number; channels: 4 } | undefined;
+  let sourceW = naturalWidthPx;
+  let sourceH = naturalHeightPx;
+  if (scaleX !== 1 || scaleY !== 1) {
+    sourceW = Math.max(1, Math.round(naturalWidthPx * scaleX));
+    sourceH = Math.max(1, Math.round(naturalHeightPx * scaleY));
+    layerInput = await sharp(sourceBytes)
+      .resize(sourceW, sourceH, { fit: "fill" })
+      .ensureAlpha()
+      .raw()
+      .toBuffer();
+    layerInfo = { width: sourceW, height: sourceH, channels: 4 };
+  }
+
+  const tx = Math.round(transform[4]);
+  const ty = Math.round(transform[5]);
+  const visibleLeft = Math.max(0, -tx);
+  const visibleTop = Math.max(0, -ty);
+  const visibleRight = Math.min(sourceW, canvasWidthPx - tx);
+  const visibleBottom = Math.min(sourceH, canvasHeightPx - ty);
+  const visibleW = visibleRight - visibleLeft;
+  const visibleH = visibleBottom - visibleTop;
+  if (visibleW <= 0 || visibleH <= 0) {
+    // Raster entirely off-canvas — a fully transparent canvas is the
+    // faithful "visible region" (nothing of it shows).
+    return base().png({ palette: false }).toBuffer();
+  }
+
+  const extractPipeline =
+    layerInfo !== undefined ? sharp(layerInput, { raw: layerInfo }) : sharp(layerInput);
+  const window = await extractPipeline
+    .extract({ left: visibleLeft, top: visibleTop, width: visibleW, height: visibleH })
+    .ensureAlpha()
+    .raw()
+    .toBuffer();
+
+  return base()
+    .composite([
+      {
+        input: window,
+        raw: { width: visibleW, height: visibleH, channels: 4 },
+        top: ty + visibleTop,
+        left: tx + visibleLeft
+      }
+    ])
+    .png({ palette: false })
+    .toBuffer();
+}
 
 export function registerClipboardHandlers(): void {
   // ── clipboard:copy (v1 + v2) ──────────────────────────────────────
@@ -387,21 +490,85 @@ export function registerClipboardHandlers(): void {
         return node;
       });
 
-      // Read source bytes from the bundle. readSourceFromBundle
+      // Read source bytes from the bundle. readSourceForCapture
       // performs sha256 content-integrity verification on the way
-      // out — if the bundle was tampered with, the copy refuses.
-      const sourceRefs: ClipboardLayerFragmentV1Type["source_refs"] = [];
+      // out — if the bundle was tampered with, the copy refuses. Keep a
+      // sha→bytes map: the wire payload needs base64, and the on-copy
+      // bake (below) needs the decoded bytes.
+      const sourceBytesBySha = new Map<string, Buffer>();
       for (const sha of referencedShas) {
         const bytes = await readSourceForCapture(record.id, record.bundle_path, sha);
+        sourceBytesBySha.set(sha, bytes);
+      }
+
+      // ── Bake the base source raster's visible region ────────────────
+      // When the selection includes the capture's BASE source raster
+      // (the screenshot — sha-matched to the capture record), composite
+      // its VISIBLE canvas region into a canvas-sized PNG and swap it in
+      // with an identity transform + natural dims = canvas dims. This
+      // collapses a cropped / off-origin base raster — whose natural
+      // image extends BEYOND the (cropped) canvas — into a
+      // self-contained raster with NO overhang. Without it, pasting into
+      // a differently-sized capture re-reveals the cropped-away pixels
+      // and lands the image off the top-left at the wrong scale (the bug
+      // this fixes). `source_frame` records the canvas the copied coords
+      // were normalized against so paste can scale-to-fit the whole
+      // block. Annotations stay live layers — only the base raster bakes.
+      let layersForFragment: BundleLayerNode[] = reparentedLayers;
+      let sourceFrame: { width_px: number; height_px: number } | undefined;
+      const baseRaster = reparentedLayers.find(
+        (n): n is Extract<BundleLayerNode, { kind: "raster" }> =>
+          n.kind === "raster" && n.source_ref.sha256 === record.sha256
+      );
+      const baseBytes =
+        baseRaster === undefined
+          ? undefined
+          : sourceBytesBySha.get(baseRaster.source_ref.sha256);
+      if (baseRaster !== undefined && baseBytes !== undefined) {
+        const bakedBytes = await bakeRasterVisibleRegion({
+          sourceBytes: baseBytes,
+          naturalWidthPx: baseRaster.natural_width_px,
+          naturalHeightPx: baseRaster.natural_height_px,
+          transform: baseRaster.transform,
+          canvasWidthPx: record.width_px,
+          canvasHeightPx: record.height_px
+        });
+        const bakedSha = createHash("sha256").update(bakedBytes).digest("hex");
+        sourceBytesBySha.set(bakedSha, bakedBytes);
+        const bakedRaster: BundleLayerNode = {
+          ...baseRaster,
+          source_ref: { kind: "embedded", sha256: bakedSha },
+          natural_width_px: record.width_px,
+          natural_height_px: record.height_px,
+          transform: [1, 0, 0, 1, 0, 0]
+        };
+        layersForFragment = reparentedLayers.map((node) =>
+          node.id === baseRaster.id ? bakedRaster : node
+        );
+        sourceFrame = { width_px: record.width_px, height_px: record.height_px };
+      }
+
+      // Rebuild source_refs from the FINAL layer set so the baked sha is
+      // carried and the now-unreferenced original base sha is dropped
+      // (unless some other raster still references it).
+      const finalShas = new Set<string>();
+      for (const node of layersForFragment) {
+        if (node.kind === "raster") finalShas.add(node.source_ref.sha256);
+      }
+      const sourceRefs: ClipboardLayerFragmentV1Type["source_refs"] = [];
+      for (const sha of finalShas) {
+        const bytes = sourceBytesBySha.get(sha);
+        if (bytes === undefined) continue; // defensive; unreachable
         sourceRefs.push({ sha256: sha, png_base64: bytes.toString("base64") });
       }
 
       const fragment: ClipboardLayerFragmentV1Type = {
         format_version: 1,
         source_capture_id: req.captureId,
-        layers: reparentedLayers,
+        layers: layersForFragment,
         source_refs: sourceRefs,
-        copied_at: new Date().toISOString()
+        copied_at: new Date().toISOString(),
+        ...(sourceFrame !== undefined ? { source_frame: sourceFrame } : {})
       };
 
       // zod-validate the constructed payload before writing — defense
@@ -566,12 +733,41 @@ export function registerClipboardHandlers(): void {
         await materializePendingSourceForCapture(req.captureId, sha, bytes);
       }
 
+      // ── Placement: drop the block coherently into THIS canvas ───────
+      // When the copy recorded the source canvas frame (it baked the
+      // base raster, so the block is overhang-free), scale-to-fit the
+      // whole block into the target canvas — preserving aspect, centered,
+      // never upscaling past native — and remap every layer's coords from
+      // the source frame into the placement rect. Image + annotations move
+      // together as one unit. Without a recorded frame (annotation-only
+      // copy) we keep the verbatim relative positions. Same-size paste
+      // resolves to the identity placement, so it still lands 1:1.
+      const placedFragmentLayers: BundleLayerNode[] =
+        fragment.source_frame !== undefined
+          ? (() => {
+              const target = {
+                widthPx: record.width_px,
+                heightPx: record.height_px
+              };
+              const placement = computePlacement(
+                {
+                  widthPx: fragment.source_frame.width_px,
+                  heightPx: fragment.source_frame.height_px
+                },
+                target
+              );
+              return fragment.layers.map((n) =>
+                placeLayerIntoTarget(n, placement, target)
+              );
+            })()
+          : fragment.layers;
+
       // Insert the pasted layers with fresh ids so they don't collide
       // with existing rows in the target capture's layers table.
       const now = new Date().toISOString();
       const idRemap = new Map<string, string>();
       const targetParent = req.parentId ?? null;
-      for (const node of fragment.layers) {
+      for (const node of placedFragmentLayers) {
         idRemap.set(node.id, nanoid(16));
       }
 
@@ -586,13 +782,13 @@ export function registerClipboardHandlers(): void {
         .filter((l) => (l.parent_id ?? null) === targetParent)
         .reduce((max, l) => Math.max(max, l.z_index), -1);
       const rootNewZ = new Map<string, number>();
-      fragment.layers
+      placedFragmentLayers
         .filter((n) => n.parent_id === null)
         .slice()
         .sort((a, b) => a.z_index - b.z_index)
         .forEach((n, i) => rootNewZ.set(n.id, siblingMaxZ + 1 + i));
 
-      const renumberedLayers: BundleLayerNode[] = fragment.layers.map((node) => {
+      const renumberedLayers: BundleLayerNode[] = placedFragmentLayers.map((node) => {
         const newId = idRemap.get(node.id)!;
         const oldParentRemap = node.parent_id === null ? null : idRemap.get(node.parent_id);
         // Layers whose parent was inside the selection get the remapped

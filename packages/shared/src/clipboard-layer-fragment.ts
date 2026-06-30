@@ -23,7 +23,7 @@
 
 import { z } from "zod";
 
-import { BundleLayerNode } from "./bundle-manifest-schema-v2";
+import { BundleLayerNode, MAX_IMAGE_DIM_PX } from "./bundle-manifest-schema-v2";
 
 /**
  * 64 MiB hard cap on the deserialized fragment buffer. A larger
@@ -73,6 +73,14 @@ export const ClipboardSourceRef = z.object({
 });
 export type ClipboardSourceRef = z.infer<typeof ClipboardSourceRef>;
 
+/** The source capture's canvas frame (px) at copy time — the [0,1]²
+ *  frame the copied layer coords were normalized against. */
+export const ClipboardSourceFrame = z.object({
+  width_px: z.number().int().positive().lte(MAX_IMAGE_DIM_PX),
+  height_px: z.number().int().positive().lte(MAX_IMAGE_DIM_PX)
+});
+export type ClipboardSourceFrame = z.infer<typeof ClipboardSourceFrame>;
+
 export const ClipboardLayerFragmentV1 = z.object({
   format_version: z.literal(1),
   /** Originating capture id — informational only; not used by the
@@ -88,7 +96,16 @@ export const ClipboardLayerFragmentV1 = z.object({
    *  present (content-addressable dedup). */
   source_refs: z.array(ClipboardSourceRef).max(CLIPBOARD_FRAGMENT_MAX_SOURCES),
   /** ISO-8601 timestamp of when the copy occurred. */
-  copied_at: z.iso.datetime()
+  copied_at: z.iso.datetime(),
+  /** Source capture's canvas frame (px) the copied layer coords were
+   *  normalized against. Present ONLY when the copy baked the base
+   *  source raster's visible region (so the block is overhang-free and
+   *  can be scale-to-fit into a differently-sized paste target — see
+   *  `placeLayerIntoTarget`). Absent for annotation-only copies, where
+   *  paste keeps the verbatim relative positions. OPTIONAL for
+   *  back-compat with fragments produced before placement-aware paste
+   *  shipped. */
+  source_frame: ClipboardSourceFrame.optional()
 });
 export type ClipboardLayerFragmentV1 = z.infer<typeof ClipboardLayerFragmentV1>;
 

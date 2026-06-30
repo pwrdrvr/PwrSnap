@@ -3116,28 +3116,45 @@ export function Editor({
     model.kind === "loaded" ? model.record.height_px : null
   ]);
 
+  // The set of every still-existing, VISIBLE, user-facing layer id —
+  // RASTERS included (base Source + pasted images / cursor), NOT just
+  // `overlaysForRender` (which projects only vectors + effects). An
+  // overlays-only set pruned every selected raster on the next render —
+  // the Cmd+A "copied 2 layers" bug. The `visible` filter keeps a hidden
+  // layer out of the selection (parity with the old overlaysForRender
+  // behaviour). Memoized like `overlaysForRender` so the cleanup effect
+  // below re-runs only when the layer set changes, not every render.
+  const aliveLayerIds = useMemo<ReadonlySet<string> | null>(() => {
+    if (model.kind !== "loaded") return null;
+    return new Set(
+      model.layers
+        .filter((l) => l.kind !== "group" && l.rejected_at === null && l.visible)
+        .map((l) => l.id)
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model.kind, model.kind === "loaded" ? model.layers : null]);
+
   // Drop any ids from the selection that are no longer in the list
   // (e.g. another window deleted them via the events:overlays:changed
   // broadcast, or the capture switched). This must run after commit:
   // queuing setState from render creates an idle microtask/render loop
   // when a stale id remains selected.
   useEffect(() => {
-    if (overlaysForRender === null) return;
+    if (aliveLayerIds === null) return;
     if (selectedLayerIds.length === 0 && inFlightSelectionIdsRef.current.size === 0) {
       return;
     }
 
-    const alive = new Set(overlaysForRender.map((row) => row.id));
     const nextInFlight = pruneLandedInFlightSelectionIds(
       inFlightSelectionIdsRef.current,
-      alive
+      aliveLayerIds
     );
     inFlightSelectionIdsRef.current = nextInFlight;
 
     setSelectedLayerIds((previous) =>
-      filterSelectionToAliveOrInFlight(previous, alive, nextInFlight)
+      filterSelectionToAliveOrInFlight(previous, aliveLayerIds, nextInFlight)
     );
-  }, [overlaysForRender, selectedLayerIds]);
+  }, [aliveLayerIds, selectedLayerIds]);
 
   if (model.kind === "loading") {
     return (

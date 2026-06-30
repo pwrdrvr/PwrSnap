@@ -573,6 +573,24 @@ export function registerClipboardHandlers(): void {
       for (const node of fragment.layers) {
         idRemap.set(node.id, nanoid(16));
       }
+
+      // Stack the pasted block ABOVE everything already at the destination
+      // parent level, preserving the fragment's internal relative order.
+      // Otherwise the pasted layers' original z_index values interleave
+      // with the target's (e.g. a pasted Source landing between the
+      // target's Text and Rectangle). Only the fragment's ROOTS
+      // (parent_id === null) land at targetParent and need restacking;
+      // nested layers keep their z within their own remapped parent.
+      const siblingMaxZ = listLayerTree(req.captureId)
+        .filter((l) => (l.parent_id ?? null) === targetParent)
+        .reduce((max, l) => Math.max(max, l.z_index), -1);
+      const rootNewZ = new Map<string, number>();
+      fragment.layers
+        .filter((n) => n.parent_id === null)
+        .slice()
+        .sort((a, b) => a.z_index - b.z_index)
+        .forEach((n, i) => rootNewZ.set(n.id, siblingMaxZ + 1 + i));
+
       const renumberedLayers: BundleLayerNode[] = fragment.layers.map((node) => {
         const newId = idRemap.get(node.id)!;
         const oldParentRemap = node.parent_id === null ? null : idRemap.get(node.parent_id);
@@ -585,7 +603,22 @@ export function registerClipboardHandlers(): void {
             : oldParentRemap !== undefined
               ? oldParentRemap
               : targetParent;
-        return { ...node, id: newId, parent_id: newParentId, applied_at: now, created_at: now };
+        const newZIndex = rootNewZ.get(node.id) ?? node.z_index;
+        // A pasted raster carries the SOURCE capture's base-raster name
+        // ("Source"). Clear it so the panel shows it as "Image" and it
+        // doesn't masquerade as THIS capture's pinned base layer.
+        const renamed =
+          node.kind === "raster" && node.name?.trim() === "Source"
+            ? { ...node, name: "" }
+            : node;
+        return {
+          ...renamed,
+          id: newId,
+          parent_id: newParentId,
+          z_index: newZIndex,
+          applied_at: now,
+          created_at: now
+        };
       });
 
       insertLayerTreeForCapture(req.captureId, renumberedLayers);

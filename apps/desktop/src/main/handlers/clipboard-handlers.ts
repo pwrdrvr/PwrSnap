@@ -379,12 +379,27 @@ export function registerClipboardHandlers(): void {
 
       // Reparent any layer whose parent_id points OUTSIDE the
       // selection — these become roots in the pasted fragment.
+      // Also de-name THIS capture's base Source raster in the fragment:
+      // keyed on the sha (the structural base signal `selectBaseRaster`
+      // uses), gated on the default "Source" name. In the target capture
+      // it is NOT the base, so the "Source" label would masquerade as the
+      // target's pinned base. Doing it here (where the base sha is known)
+      // is why the paste side no longer string-matches "Source" — that
+      // blind match could blank a user's non-base layer named "Source".
       const selectedIdSet = new Set(layers.map((n) => n.id));
+      const baseSha = record.sha256;
       const reparentedLayers: BundleLayerNode[] = layers.map((node) => {
-        if (node.parent_id !== null && !selectedIdSet.has(node.parent_id)) {
-          return { ...node, parent_id: null };
+        const denamed =
+          node.kind === "raster" &&
+          node.source_ref.kind === "embedded" &&
+          node.source_ref.sha256 === baseSha &&
+          node.name?.trim() === "Source"
+            ? { ...node, name: "" }
+            : node;
+        if (denamed.parent_id !== null && !selectedIdSet.has(denamed.parent_id)) {
+          return { ...denamed, parent_id: null };
         }
-        return node;
+        return denamed;
       });
 
       // Read source bytes from the bundle. readSourceFromBundle
@@ -605,15 +620,10 @@ export function registerClipboardHandlers(): void {
               ? oldParentRemap
               : targetParent;
         const newZIndex = rootNewZ.get(node.id) ?? node.z_index;
-        // A pasted raster carries the SOURCE capture's base-raster name
-        // ("Source"). Clear it so the panel shows it as "Image" and it
-        // doesn't masquerade as THIS capture's pinned base layer.
-        const renamed =
-          node.kind === "raster" && node.name?.trim() === "Source"
-            ? { ...node, name: "" }
-            : node;
+        // Note: the source capture's base raster was already de-named at
+        // COPY time (by sha, in copyLayerFragment), so no name fix-up here.
         return {
-          ...renamed,
+          ...node,
           id: newId,
           parent_id: newParentId,
           z_index: newZIndex,

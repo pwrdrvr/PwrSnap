@@ -2620,17 +2620,9 @@ export function Editor({
               text: `Couldn't copy layers: ${result.error.message}`,
               tone: "error"
             });
-            return;
           }
-          // Positive confirmation — also a diagnostic: if Cmd+C shows
-          // NOTHING, copySelected never ran; if it shows this, the copy
-          // landed a fragment and a later cross-capture paste should find
-          // it.
-          const n = result.value.layerCount;
-          setPasteNotice({
-            text: `Copied ${n} layer${n === 1 ? "" : "s"} to the clipboard`,
-            tone: "info"
-          });
+          // Success is silent — a toast on every Cmd+C is noise (most
+          // editors show nothing on copy success). Only failures surface.
         } catch (cause) {
           setPasteNotice({
             text: `Couldn't copy layers: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -3267,15 +3259,18 @@ export function Editor({
   // Without this, every nudge wiped the selection the user just had
   // (and the Library reel then stole the next arrow-key press).
   if (selectedLayerIds.length > 0 || inFlightSelectionIdsRef.current.size > 0) {
-    // `alive` = every still-existing (non-deleted) user-facing layer id.
+    // `alive` = every still-existing, VISIBLE, user-facing layer id.
     // CRITICAL: include RASTERS (the base Source + pasted images / cursor),
     // not just `overlaysForRender` (which projects only vectors + effects).
     // Using overlays alone pruned every selected raster on the very next
     // render — that's the bug where Cmd+A "copied 2 layers" silently
     // dropped the Source, and why a raster click-select wouldn't stick.
+    // Keep the `visible` filter (overlaysForRender skipped hidden layers):
+    // hiding a selected layer drops it from the selection, same as before —
+    // so a nudge/delete can't act on something the user can't see.
     const alive = new Set(
       model.layers
-        .filter((l) => l.kind !== "group" && l.rejected_at === null)
+        .filter((l) => l.kind !== "group" && l.rejected_at === null && l.visible)
         .map((l) => l.id)
     );
     const inFlight = inFlightSelectionIdsRef.current;

@@ -22,7 +22,7 @@ import { join } from "node:path";
 import sharp from "sharp";
 import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, test, vi } from "vitest";
 
-import { CLIPBOARD_LAYER_FRAGMENT_UTI } from "@pwrsnap/shared";
+import { CLIPBOARD_LAYER_FRAGMENT_UTI, EVENT_CHANNELS } from "@pwrsnap/shared";
 import type {
   BundleDocumentV2,
   BundleLayerNode,
@@ -45,6 +45,26 @@ const fakeClipboard = vi.hoisted(() => ({
   // hoisted factory).
   FRAGMENT_UTI: "com.pwrdrvr.pwrsnap.layer-fragment"
 }));
+
+// A single fake BrowserWindow that records every webContents.send so we
+// can assert paste broadcasts the layers-changed events that drive the
+// editor canvas refetch.
+const fakeWindows = vi.hoisted(() => {
+  const sent: Array<{ channel: string; payload: unknown }> = [];
+  return {
+    sent,
+    list: [
+      {
+        isDestroyed: (): boolean => false,
+        webContents: {
+          send: (channel: string, payload: unknown): void => {
+            sent.push({ channel, payload });
+          }
+        }
+      }
+    ]
+  };
+});
 
 vi.mock("electron", () => ({
   app: {
@@ -83,7 +103,7 @@ vi.mock("electron", () => ({
     })
   },
   BrowserWindow: {
-    getAllWindows: () => []
+    getAllWindows: () => fakeWindows.list
   }
 }));
 
@@ -142,6 +162,7 @@ beforeEach(() => {
   changedSpy = vi.fn<(...args: unknown[]) => void>();
   clipboardEvents.on("changed", changedSpy);
   fakeClipboard.pasteboard.clear();
+  fakeWindows.sent.length = 0;
   vi.mocked(clipboard.write).mockClear();
   vi.mocked(clipboard.writeText).mockClear();
   vi.mocked(clipboard.writeImage).mockClear();
@@ -422,6 +443,42 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     // it as "Image" and it doesn't masquerade as this capture's base.
     const pastedRaster = pasted.find((l) => l.kind === "raster");
     expect(pastedRaster?.name).toBe("");
+  });
+
+  test("paste broadcasts layers-changed so the editor canvas refetches (no visibility-toggle needed)", async () => {
+    const captureId = await seedSimpleV2Capture();
+    const copyRes = await bus.dispatch(
+      "clipboard:copyLayerFragment",
+      { captureId, layerIds: ["ras_clipchg_xxxx"] },
+      { principal: "ipc" }
+    );
+    expect(copyRes.ok).toBe(true);
+
+    fakeWindows.sent.length = 0;
+    const pasteRes = await bus.dispatch(
+      "clipboard:pasteLayerFragment",
+      { captureId },
+      { principal: "ipc" }
+    );
+    expect(pasteRes.ok).toBe(true);
+
+    // Editor windows refetch on overlaysChanged; Library / float-over on
+    // capturesChanged. Both must fire for this capture, or the pasted
+    // raster stays invisible until an unrelated edit broadcasts.
+    const overlays = fakeWindows.sent.filter(
+      (e) => e.channel === EVENT_CHANNELS.overlaysChanged
+    );
+    const captures = fakeWindows.sent.filter(
+      (e) => e.channel === EVENT_CHANNELS.capturesChanged
+    );
+    expect(overlays).toContainEqual({
+      channel: EVENT_CHANNELS.overlaysChanged,
+      payload: { captureId }
+    });
+    expect(captures).toContainEqual({
+      channel: EVENT_CHANNELS.capturesChanged,
+      payload: { changedIds: [captureId] }
+    });
   });
 });
 

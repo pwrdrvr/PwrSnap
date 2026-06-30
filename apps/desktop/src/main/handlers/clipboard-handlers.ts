@@ -64,6 +64,7 @@ import {
   scheduleRepack
 } from "../persistence/bundle-store";
 import { insertLayerTreeForCapture, listLayerTree } from "../persistence/layers-repo";
+import { broadcastLayersChanged } from "./broadcast-layers";
 import { materializePendingSourceForCapture } from "../persistence/pending-source-store";
 import { notifyClipboardChanged } from "../clipboard-events";
 import { mapVideoResolveError, resolveVideoExport } from "../recording/video-export-resolver";
@@ -622,6 +623,15 @@ export function registerClipboardHandlers(): void {
       });
 
       insertLayerTreeForCapture(req.captureId, renumberedLayers);
+
+      // Notify every renderer that this capture's layer tree changed so
+      // the editor canvas (and Layers panel) refetch and PAINT the pasted
+      // raster immediately. Without this the layer is in the DB but the
+      // canvas doesn't refetch until some other edit fires a broadcast —
+      // the "pasted image stays invisible until you toggle a layer's
+      // visibility" bug. paste mutates the tree outside the layers:*
+      // handlers, so it must broadcast on its own.
+      broadcastLayersChanged(req.captureId);
 
       // Schedule a repack so the bundle picks up the new layers +
       // sources.

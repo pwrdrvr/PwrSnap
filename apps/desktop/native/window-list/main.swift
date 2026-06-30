@@ -65,6 +65,29 @@ struct WindowInfo: Encodable {
     let isFrontmostInApp: Bool
 }
 
+/// Payload for the `--write-clipboard` subcommand, read as a single
+/// JSON object from stdin (NOT argv — the PNG/UTI bodies are multi-MB
+/// and would blow past ARG_MAX). All bodies are base64; the helper
+/// decodes them and performs ONE NSPasteboard write that declares
+/// every type up front so a private UTI and a flattened image land
+/// in the same pasteboard generation. See the dispatch block below
+/// for why Electron can't do this itself.
+struct ClipboardWriteRequest: Decodable {
+    /// The private UTI for the layer-fragment bytes (e.g.
+    /// `com.pwrdrvr.pwrsnap.layer-fragment`).
+    let utiName: String
+    /// Base64 of the private-UTI body — the serialized layer fragment.
+    let utiBase64: String
+    /// Base64 PNG of the flattened composite. Optional so callers can
+    /// write a UTI-only payload, but in practice always present.
+    let pngBase64: String?
+    /// Base64 TIFF of the same composite. Optional — when omitted the
+    /// helper derives TIFF from the PNG so apps that only read
+    /// `public.tiff` (older AppKit text views, Mail, some web apps)
+    /// still receive the image.
+    let tiffBase64: String?
+}
+
 /// Bundle ids whose windows must NEVER appear as snap targets — they
 /// are system chrome (status bar items, accessibility prompts) or
 /// helpers that the user can't sensibly capture.
@@ -177,6 +200,88 @@ if args.count >= 3 && args[1] == "--activate-pid" {
         // is unmistakable) the no-options variant works.
         runningApp.activate()
     }
+    exit(0)
+}
+
+// `--write-clipboard` — perform a SINGLE multi-type NSPasteboard write.
+//
+// Reads one JSON `ClipboardWriteRequest` from stdin and writes the
+// private layer-fragment UTI **and** a flattened image (`public.png`
+// + `public.tiff`) to the general pasteboard in ONE `declareTypes`
+// pass. Prints `{"ok":true}` to stdout on success.
+//
+// Why a native helper instead of Electron's `clipboard.*`:
+//   - Every Electron `clipboard.write*` call wraps a
+//     ScopedClipboardWriter that calls `[pasteboard clearContents]`
+//     on construction, so a `writeImage` after a `writeBuffer`
+//     wipes the buffer (and vice-versa). There's no Electron API to
+//     atomically co-write a custom UTI + standard image —
+//     `clipboard.write({...})` only accepts text/html/image/rtf/
+//     bookmark. So PwrSnap previously had to choose ONE of "private
+//     UTI (PwrSnap→PwrSnap fidelity)" or "PNG (paste into Slack /
+//     Mail / Claude)". This helper writes both at once.
+//   - `declareTypes(_:owner:)` clears the pasteboard and declares all
+//     the types in a single change-count bump; the subsequent
+//     `setData(_:forType:)` calls fill each declared type without
+//     re-clearing. The private UTI and the image therefore coexist:
+//     a non-PwrSnap consumer reads `public.png`/`public.tiff`, while
+//     PwrSnap reads back the private UTI losslessly.
+if args.count >= 2 && args[1] == "--write-clipboard" {
+    let input = FileHandle.standardInput.readDataToEndOfFile()
+    guard let req = try? JSONDecoder().decode(ClipboardWriteRequest.self, from: input) else {
+        FileHandle.standardError.write(
+            "invalid --write-clipboard request JSON on stdin\n".data(using: .utf8) ?? Data()
+        )
+        exit(2)
+    }
+    guard let utiData = Data(base64Encoded: req.utiBase64), !utiData.isEmpty else {
+        FileHandle.standardError.write(
+            "utiBase64 missing or failed to decode\n".data(using: .utf8) ?? Data()
+        )
+        exit(3)
+    }
+
+    var pngData: Data?
+    if let png = req.pngBase64 {
+        guard let decoded = Data(base64Encoded: png), !decoded.isEmpty else {
+            FileHandle.standardError.write(
+                "pngBase64 failed to decode\n".data(using: .utf8) ?? Data()
+            )
+            exit(3)
+        }
+        pngData = decoded
+    }
+
+    // Prefer a caller-supplied TIFF; otherwise derive one from the PNG
+    // so apps that only consume `public.tiff` still get the image.
+    var tiffData: Data?
+    if let tiff = req.tiffBase64 {
+        tiffData = Data(base64Encoded: tiff)
+    } else if let png = pngData, let image = NSImage(data: png) {
+        tiffData = image.tiffRepresentation
+    }
+
+    let pasteboard = NSPasteboard.general
+    let utiType = NSPasteboard.PasteboardType(req.utiName)
+    var declared: [NSPasteboard.PasteboardType] = [utiType]
+    if pngData != nil { declared.append(.png) }
+    if tiffData != nil { declared.append(.tiff) }
+
+    // ONE declareTypes — this clears the pasteboard and declares every
+    // type in a single generation. setData below fills them without
+    // re-clearing, so the private UTI and image coexist.
+    pasteboard.declareTypes(declared, owner: nil)
+    var wroteOk = pasteboard.setData(utiData, forType: utiType)
+    if let png = pngData { wroteOk = pasteboard.setData(png, forType: .png) && wroteOk }
+    if let tiff = tiffData { wroteOk = pasteboard.setData(tiff, forType: .tiff) && wroteOk }
+
+    if !wroteOk {
+        FileHandle.standardError.write(
+            "NSPasteboard.setData reported failure for one or more types\n".data(using: .utf8) ?? Data()
+        )
+        exit(5)
+    }
+    FileHandle.standardOutput.write("{\"ok\":true}".data(using: .utf8) ?? Data())
     exit(0)
 }
 

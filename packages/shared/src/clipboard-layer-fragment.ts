@@ -2,8 +2,14 @@
 // nodes + referenced source bytes across PwrSnap instances via a
 // private macOS UTI (`com.pwrdrvr.pwrsnap.layer-fragment`). Pasting
 // PwrSnap A → PwrSnap B preserves layer transforms / effects / masks
-// exactly; pasting into non-PwrSnap consumers (Slack, Messages) falls
-// back to the standard PNG bytes co-written alongside the UTI buffer.
+// exactly. For non-PwrSnap consumers (Slack, Mail, Claude, Messages)
+// the copy ALSO writes a flattened composite (`public.png` +
+// `public.tiff`) in the SAME pasteboard generation as the UTI bytes.
+// Electron can't co-write a custom UTI and image atomically (each
+// clipboard.write* clears the pasteboard), so the editor layer copy
+// performs that single multi-type write through a native macOS helper
+// — see apps/desktop/src/main/native-clipboard.ts and the
+// `--write-clipboard` subcommand in native/window-list/main.swift.
 //
 // Five layers of defense the receiving paste handler enforces — see
 // docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md

@@ -2624,17 +2624,9 @@ export function Editor({
               text: `Couldn't copy layers: ${result.error.message}`,
               tone: "error"
             });
-            return;
           }
-          // Positive confirmation — also a diagnostic: if Cmd+C shows
-          // NOTHING, copySelected never ran; if it shows this, the copy
-          // landed a fragment and a later cross-capture paste should find
-          // it.
-          const n = result.value.layerCount;
-          setPasteNotice({
-            text: `Copied ${n} layer${n === 1 ? "" : "s"} to the clipboard`,
-            tone: "info"
-          });
+          // Success is silent — a toast on every Cmd+C is noise (most
+          // editors show nothing on copy success). Only failures surface.
         } catch (cause) {
           setPasteNotice({
             text: `Couldn't copy layers: ${cause instanceof Error ? cause.message : String(cause)}`,

@@ -302,21 +302,9 @@ export async function ensureLayerSourcePath(
     // window (the "broken image box").
     const { readSourceForCapture } = await import("./bundle-store");
     const bytes = await readSourceForCapture(record.id, record.bundle_path, sha256);
-    // Atomic write to the per-source cache (tmp + rename), same pattern
-    // as rematerializeBundleSource; concurrent requests race harmlessly.
-    await mkdir(dirname(cachePath), { recursive: true });
-    tmpCounter += 1;
-    const tmp = `${cachePath}.tmp-${process.pid}-${tmpCounter}`;
-    await writeFile(tmp, bytes);
-    try {
-      await rename(tmp, cachePath);
-    } catch (renameErr) {
-      if (existsSync(cachePath)) {
-        await rm(tmp, { force: true }).catch(() => undefined);
-      } else {
-        throw renameErr;
-      }
-    }
+    // Atomic write to the per-source cache; concurrent requests race
+    // harmlessly. Shared protocol — see writeSourceCacheAtomic.
+    await writeSourceCacheAtomic(bytes, cachePath);
   } catch (cause) {
     // sha not in bundle/pending/cache, or a content-integrity mismatch —
     // both surface as a 404 to the renderer. readSourceForCapture has
@@ -335,6 +323,32 @@ export async function ensureLayerSourcePath(
 // tick would collide on `tmp-<pid>-<ms>`; this counter makes the
 // suffix unique within the process regardless of clock granularity.
 let tmpCounter = 0;
+
+/**
+ * Atomic write to a per-source cache file: write to a unique tmp path,
+ * then rename into place so a concurrent reader never sees a partial
+ * file. PID + monotonic counter in the tmp name let two writers for the
+ * same path coexist without stomping each other's tmp. If the rename
+ * loses to a writer that already created the target — OR fails for any
+ * other reason — the tmp is removed so it can't orphan in the cache root;
+ * a genuine failure (target still absent) is rethrown.
+ *
+ * Shared by `ensureLayerSourcePath` (layer sources) and
+ * `rematerializeBundleSource` (base source) so the atomicity protocol
+ * lives in one place.
+ */
+async function writeSourceCacheAtomic(bytes: Buffer, cachePath: string): Promise<void> {
+  await mkdir(dirname(cachePath), { recursive: true });
+  tmpCounter += 1;
+  const tmp = `${cachePath}.tmp-${process.pid}-${tmpCounter}`;
+  await writeFile(tmp, bytes);
+  try {
+    await rename(tmp, cachePath);
+  } catch (renameErr) {
+    await rm(tmp, { force: true }).catch(() => undefined);
+    if (!existsSync(cachePath)) throw renameErr;
+  }
+}
 
 async function rematerializeBundleSource(
   record: {
@@ -357,23 +371,9 @@ async function rematerializeBundleSource(
   }
   const bytes = await readSourceFromBundle(record.bundlePath, record.sha256);
 
-  await mkdir(dirname(cacheSourcePath), { recursive: true });
   // Atomic write — concurrent compose() calls reading the same path
-  // never see a partial file. PID + monotonic counter in the tmp name
-  // lets two re-extracts for the same capture coexist without one
-  // stomping the other's tmp file.
-  tmpCounter += 1;
-  const tmp = `${cacheSourcePath}.tmp-${process.pid}-${tmpCounter}`;
-  await writeFile(tmp, bytes);
-  try {
-    await rename(tmp, cacheSourcePath);
-  } catch (cause) {
-    if (existsSync(cacheSourcePath)) {
-      await rm(tmp, { force: true }).catch(() => undefined);
-    } else {
-      throw cause;
-    }
-  }
+  // never see a partial file. Shared protocol — see writeSourceCacheAtomic.
+  await writeSourceCacheAtomic(bytes, cacheSourcePath);
 
   log.info("re-extracted bundle source to cache", {
     captureId: record.id,

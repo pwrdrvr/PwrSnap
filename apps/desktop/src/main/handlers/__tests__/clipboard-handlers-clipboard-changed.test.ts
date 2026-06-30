@@ -106,7 +106,9 @@ const { packBundleV2, buildCompositeThumbnail } = await import(
 const { materializePendingSourceForCapture } = await import(
   "../../persistence/pending-source-store"
 );
-const { insertLayerTreeForCapture } = await import("../../persistence/layers-repo");
+const { insertLayerTreeForCapture, listLayerTree } = await import(
+  "../../persistence/layers-repo"
+);
 const { clipboardEvents } = await import("../../clipboard-events");
 const { clipboard } = await import("electron");
 
@@ -207,6 +209,7 @@ async function seedSimpleV2Capture(options: { edited?: boolean } = {}): Promise<
       ...common,
       id: rasterId,
       kind: "raster",
+      name: "Source",
       parent_id: rootGroupId,
       z_index: 0,
       source_ref: { kind: "embedded", sha256: sourceSha },
@@ -386,6 +389,39 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     // real layer landed and we did NOT fall back to the flattened PNG.
     expect(pasteRes.value.insertedLayerIds.length).toBeGreaterThan(0);
     expect(pasteRes.value.fallbackUsedPng).toBe(false);
+  });
+
+  test("paste stacks the pasted block above the target's layers and de-names a carried 'Source' raster", async () => {
+    const captureId = await seedSimpleV2Capture({ edited: true });
+    const beforeIds = new Set(listLayerTree(captureId).map((l) => l.id));
+
+    // Copy a FLAT selection (base raster + the vector annotation). Both
+    // reparent to null (their group isn't in the selection), so both are
+    // fragment roots that must restack above the target on paste.
+    const copyRes = await bus.dispatch(
+      "clipboard:copyLayerFragment",
+      { captureId, layerIds: ["ras_clipchg_xxxx", "vec_clipchg_xxxx"] },
+      { principal: "ipc" }
+    );
+    expect(copyRes.ok).toBe(true);
+
+    const pasteRes = await bus.dispatch(
+      "clipboard:pasteLayerFragment",
+      { captureId },
+      { principal: "ipc" }
+    );
+    expect(pasteRes.ok).toBe(true);
+
+    const pasted = listLayerTree(captureId).filter((l) => !beforeIds.has(l.id));
+    expect(pasted).toHaveLength(2);
+    // The target's pre-paste root-level max z was 0 (the root group);
+    // every pasted root must land strictly above it, contiguous, so it
+    // can't interleave between the target's existing layers.
+    for (const p of pasted) expect(p.z_index).toBeGreaterThan(0);
+    // The carried base-raster name "Source" is cleared so the panel shows
+    // it as "Image" and it doesn't masquerade as this capture's base.
+    const pastedRaster = pasted.find((l) => l.kind === "raster");
+    expect(pastedRaster?.name).toBe("");
   });
 });
 

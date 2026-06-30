@@ -3158,7 +3158,17 @@ export function Editor({
   // Without this, every nudge wiped the selection the user just had
   // (and the Library reel then stole the next arrow-key press).
   if (selectedLayerIds.length > 0 || inFlightSelectionIdsRef.current.size > 0) {
-    const alive = new Set(overlaysForRender.map((r) => r.id));
+    // `alive` = every still-existing (non-deleted) user-facing layer id.
+    // CRITICAL: include RASTERS (the base Source + pasted images / cursor),
+    // not just `overlaysForRender` (which projects only vectors + effects).
+    // Using overlays alone pruned every selected raster on the very next
+    // render — that's the bug where Cmd+A "copied 2 layers" silently
+    // dropped the Source, and why a raster click-select wouldn't stick.
+    const alive = new Set(
+      model.layers
+        .filter((l) => l.kind !== "group" && l.rejected_at === null)
+        .map((l) => l.id)
+    );
     const inFlight = inFlightSelectionIdsRef.current;
     // Any in-flight id that has landed in alive = broadcast caught
     // up. Drop those from the set so a LATER unrelated deletion can

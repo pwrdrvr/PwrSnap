@@ -35,6 +35,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
+  AffineTransform,
   ArrowToolStyle,
   BlurStyle,
   BlurToolStyle,
@@ -64,7 +65,7 @@ import {
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { selectBaseRaster } from "./base-raster";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
-import { RasterLayers } from "./RasterLayers";
+import { RasterLayers, type RasterDraftTransform } from "./RasterLayers";
 import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor } from "./resolveToolColor";
 import { shapeStrokeGeometry } from "./shape-stroke-geometry";
@@ -1351,6 +1352,26 @@ export function Editor({
       ) => Promise<void>)
     | null
   >(null);
+  // Raster canvas drag-to-move. Non-base rasters (pasted images, the
+  // captured cursor) live outside the OverlayRow / TransformHandles
+  // system, so they get a dedicated gesture: `rasterDragRef` holds the
+  // in-flight drag; `rasterDraft` is the live preview the RasterLayers
+  // <img> follows; `commitRasterDragRef` is the inner-component closure
+  // (with storedLayers / dispatch access) the outer onPointerUp calls to
+  // persist the move — same ref-handoff pattern as `commitMultiDragRef`.
+  const rasterDragRef = useRef<{
+    id: string;
+    startXn: number;
+    startYn: number;
+    startTransform: AffineTransform;
+    current: AffineTransform;
+    pointerId: number;
+    moved: boolean;
+  } | null>(null);
+  const [rasterDraft, setRasterDraft] = useState<RasterDraftTransform | null>(null);
+  const commitRasterDragRef = useRef<
+    ((id: string, transform: AffineTransform) => Promise<void>) | null
+  >(null);
   // Live-drag preview: a map of layer id → in-progress geometry that
   // every overlay renderer (OverlaySvg / BlurOverlays /
   // TextHtmlOverlays) projects onto the matching row so the painted
@@ -1637,6 +1658,31 @@ export function Editor({
       if (action.type === "replace") replaceSelection(action.id);
       else if (action.type === "toggle") toggleSelection(action.id);
       else if (action.type === "clear") clearSelection();
+      // Raster canvas drag-to-move: a click on a non-base raster (pasted
+      // image / cursor) arms the dedicated raster gesture and captures the
+      // pointer. Rasters have no TransformHandles, so the canvas owns
+      // their drag. Takes priority over the multi-drag arm below — a
+      // raster is never part of the overlay snapshot set.
+      if (
+        rasterHit !== null &&
+        hit === rasterHit.id &&
+        (action.type === "replace" || action.type === "keep")
+      ) {
+        const node = rastersRef.current.find((r) => r.id === rasterHit.id);
+        if (node !== undefined) {
+          rasterDragRef.current = {
+            id: node.id,
+            startXn: start.xn,
+            startYn: start.yn,
+            startTransform: node.transform,
+            current: node.transform,
+            pointerId: event.pointerId,
+            moved: false
+          };
+          (event.target as HTMLElement).setPointerCapture(event.pointerId);
+        }
+        return;
+      }
       // `keep` = selection unchanged.
       // If the click landed on a layer already in a MULTI-selection
       // (selection size > 1) — initiate a group drag-to-move.
@@ -1799,6 +1845,35 @@ export function Editor({
   }
 
   function onPointerMove(event: React.PointerEvent<HTMLDivElement>): void {
+    // Raster canvas drag live preview — runs first, mutually exclusive
+    // with the multi-select drag (a raster never enters the overlay
+    // snapshot set). Translate the raster's start transform by the cursor
+    // delta (normalized → canvas pixels) and stash it in `rasterDraft`;
+    // RasterLayers paints the <img> at the override until commit.
+    const rasterDrag = rasterDragRef.current;
+    if (rasterDrag !== null) {
+      const cur = clientToNormalizedUnclamped(event.clientX, event.clientY);
+      if (cur === null) return;
+      const dxn = cur.xn - rasterDrag.startXn;
+      const dyn = cur.yn - rasterDrag.startYn;
+      const MIN_RASTER_DRAG_N = 0.002;
+      if (!rasterDrag.moved && Math.hypot(dxn, dyn) < MIN_RASTER_DRAG_N) return;
+      rasterDrag.moved = true;
+      const dims = textHitDimsRef.current;
+      if (dims === null) return;
+      const t = rasterDrag.startTransform;
+      const next: AffineTransform = [
+        t[0],
+        t[1],
+        t[2],
+        t[3],
+        t[4] + dxn * dims.canvasWidthPx,
+        t[5] + dyn * dims.canvasHeightPx
+      ];
+      rasterDrag.current = next;
+      setRasterDraft({ id: rasterDrag.id, transform: next });
+      return;
+    }
     // Multi-select drag live preview. While the user is dragging a
     // multi-selection (armed by `onPointerDown` when they clicked an
     // already-selected layer), every pointermove translates each
@@ -1920,6 +1995,21 @@ export function Editor({
   }
 
   function onPointerCancel(event: React.PointerEvent<HTMLDivElement>): void {
+    // Raster drag cancelled mid-gesture — drop the armed gesture + live
+    // override; no commit, so the <img> snaps back to its persisted
+    // transform.
+    if (rasterDragRef.current !== null) {
+      try {
+        (event.target as HTMLElement).releasePointerCapture(
+          rasterDragRef.current.pointerId
+        );
+      } catch {
+        // Best-effort release.
+      }
+      rasterDragRef.current = null;
+      setRasterDraft(null);
+      return;
+    }
     // OS-level pointer cancellation (window blur during a drag,
     // Mission Control, three-finger swipe, etc.) — drop any armed
     // multi-drag state so the next pointerdown doesn't see stale
@@ -1947,6 +2037,25 @@ export function Editor({
   }
 
   async function onPointerUp(event: React.PointerEvent<HTMLDivElement>): Promise<void> {
+    // Raster canvas drag commit — runs first (mutually exclusive with the
+    // multi-drag). If the user actually moved it, persist the new
+    // transform via the inner-component closure; keep the override until
+    // the dispatch resolves (the refetched model then carries the new
+    // transform) so the <img> doesn't snap back to the old spot.
+    const rasterDrag = rasterDragRef.current;
+    if (rasterDrag !== null) {
+      rasterDragRef.current = null;
+      try {
+        (event.target as HTMLElement).releasePointerCapture(rasterDrag.pointerId);
+      } catch {
+        // Best-effort release; capture may already be gone.
+      }
+      if (rasterDrag.moved) {
+        await commitRasterDragRef.current?.(rasterDrag.id, rasterDrag.current);
+      }
+      setRasterDraft(null);
+      return;
+    }
     // Multi-select drag commit runs BEFORE the draft branch. If
     // `multiDragStartRef` is set the user dragged a group; compute
     // the cursor delta in normalized coords and call into the
@@ -3290,6 +3399,7 @@ export function Editor({
       setContextMenuState={setContextMenuState}
       dispatchContextMenuItem={dispatchContextMenuItem}
       draftGeometry={draftGeometry}
+      rasterDraft={rasterDraft}
       setDraftGeometry={setDraftGeometry}
       commitText={commitText}
       onZoomChange={onZoomChange}
@@ -3308,6 +3418,7 @@ export function Editor({
       nudgeSelectedRef={nudgeSelectedRef}
       reorderSelectedRef={reorderSelectedRef}
       commitMultiDragRef={commitMultiDragRef}
+      commitRasterDragRef={commitRasterDragRef}
       modelLayers={model.layers}
       storedLayers={storedLayers}
       storedCanvasWidthPx={storedCanvasWidthPx}
@@ -3362,6 +3473,7 @@ function EditorLoaded({
   dispatchContextMenuItem,
   draftGeometry,
   setDraftGeometry,
+  rasterDraft,
   commitText,
   onZoomChange,
   onSelectionChange,
@@ -3379,6 +3491,7 @@ function EditorLoaded({
   nudgeSelectedRef,
   reorderSelectedRef,
   commitMultiDragRef,
+  commitRasterDragRef,
   modelLayers,
   storedLayers,
   storedCanvasWidthPx,
@@ -3570,6 +3683,15 @@ function EditorLoaded({
       ) => Promise<void>)
     | null
   >;
+  /** Outer onPointerUp calls this to persist a raster canvas drag.
+   *  EditorLoaded populates it with a closure that writes the new
+   *  transform onto the STORED node via a full-node layers:update. */
+  commitRasterDragRef: React.RefObject<
+    ((id: string, transform: AffineTransform) => Promise<void>) | null
+  >;
+  /** In-progress raster drag override painted by RasterLayers (null when
+   *  not dragging a raster). */
+  rasterDraft: RasterDraftTransform | null;
   /** The v2 layer tree. The deleter looks up the matching layer node
    *  by id so `recordDelete` can pass `node` to the undo entry —
    *  without it, undo of a delete couldn't re-insert the
@@ -4353,6 +4475,31 @@ function EditorLoaded({
     beginInteractionRef,
     endInteractionRef
   ]);
+
+  // Raster canvas drag commit — the outer onPointerUp calls this with the
+  // moved raster's id + new transform. Write the transform onto the
+  // STORED node via a full-node layers:update — same rule as
+  // setLayerVisibility: `modelLayers` is the crop-space projection, so we
+  // round-trip the stored node to avoid scrambling persisted coords.
+  // (Move only; resize + undo-stack integration are follow-ups, so a
+  // raster move is not yet on the ⌘Z stack.)
+  useEffect(() => {
+    commitRasterDragRef.current = async (id, transform): Promise<void> => {
+      const node = storedLayers.find((l) => l.id === id);
+      if (node === undefined || node.kind !== "raster") return;
+      const result = await dispatch("layers:update", {
+        captureId: record.id,
+        layer: { ...node, transform }
+      });
+      if (!result.ok) {
+        // eslint-disable-next-line no-console
+        console.error("raster move dispatch failed", result.error);
+      }
+    };
+    return () => {
+      commitRasterDragRef.current = null;
+    };
+  }, [commitRasterDragRef, storedLayers, record.id]);
 
   // Z-order ops — bring forward / send backward / bring to front /
   // send to back. Computes the new ordering on the renderer side via
@@ -5148,6 +5295,7 @@ function EditorLoaded({
               canvasWidthPx={record.width_px}
               canvasHeightPx={record.height_px}
               selectedLayerIds={selectedLayerIds}
+              draftTransform={rasterDraft}
             />
           </div>
           {/* HTML blur layer between the <img> and the SVG so

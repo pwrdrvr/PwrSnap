@@ -56,6 +56,10 @@ async function renderLayers(props: {
   canvasWidthPx: number;
   canvasHeightPx: number;
   selectedLayerIds?: readonly string[];
+  draftTransform?: {
+    id: string;
+    transform: [number, number, number, number, number, number];
+  } | null;
 }): Promise<void> {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -141,5 +145,28 @@ describe("RasterLayers", () => {
     expect(sel.classList.contains("is-selected")).toBe(true);
     expect(sel.getAttribute("data-selected")).toBe("true");
     expect(unsel.classList.contains("is-selected")).toBe(false);
+  });
+
+  test("draftTransform repositions ONLY the dragged layer (live drag preview)", async () => {
+    await renderLayers({
+      layers: [
+        makeRaster({ id: "L1", transform: [1, 0, 0, 1, 0, 0] }),
+        makeRaster({ id: "L2", transform: [1, 0, 0, 1, 0, 0] })
+      ],
+      captureId: "c",
+      canvasWidthPx: 200,
+      canvasHeightPx: 100,
+      // Mid-drag override for L1: moved to canvas px (40, 20).
+      draftTransform: { id: "L1", transform: [1, 0, 0, 1, 40, 20] }
+    });
+    const dragged = container!.querySelector('[data-layer-id="L1"]') as HTMLElement;
+    const other = container!.querySelector('[data-layer-id="L2"]') as HTMLElement;
+    // L1 follows the draft (40/200, 20/100), not its persisted transform.
+    expect(dragged.style.left).toBe("20%");
+    expect(dragged.style.top).toBe("20%");
+    expect(dragged.classList.contains("is-dragging")).toBe(true);
+    // L2 is untouched — the override is scoped to the dragged id.
+    expect(other.style.left).toBe("0%");
+    expect(other.classList.contains("is-dragging")).toBe(false);
   });
 });

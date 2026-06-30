@@ -199,9 +199,14 @@ mac:
     # Private UTI carrying PwrSnap layer-fragment payloads on the macOS
     # pasteboard. Pasting between two PwrSnap instances preserves layer
     # transforms, effects, and masks losslessly; non-PwrSnap consumers
-    # see the co-written PNG fallback. Receiving paste handler enforces
-    # five defense layers (size cap, count cap, zod, sha256 verify,
-    # sharp decode-probe) — see packages/shared/src/clipboard-layer-fragment.ts.
+    # read the `public.png` / `public.tiff` co-written in the same
+    # pasteboard write (those are system UTIs — no declaration needed
+    # here). The single multi-type write happens in the native helper
+    # (apps/desktop/src/main/native-clipboard.ts → window-list's
+    # `--write-clipboard`), since Electron can't co-write a custom UTI
+    # and an image atomically. Receiving paste handler enforces five
+    # defense layers (size cap, count cap, zod, sha256 verify, sharp
+    # decode-probe) — see packages/shared/src/clipboard-layer-fragment.ts.
     UTExportedTypeDeclarations:
       - UTTypeIdentifier: com.pwrdrvr.pwrsnap.layer-fragment
         UTTypeDescription: "PwrSnap Layer Fragment"

@@ -16,7 +16,7 @@
 // integration paths.
 
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
@@ -130,6 +130,7 @@ const { insertLayerTreeForCapture, listLayerTree } = await import(
   "../../persistence/layers-repo"
 );
 const { clipboardEvents } = await import("../../clipboard-events");
+const { __setNativeClipboardHelperForTests } = await import("../../native-clipboard");
 const { clipboard } = await import("electron");
 
 const CANVAS_W = 100;
@@ -356,6 +357,56 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     ).toHaveBeenCalledTimes(1);
     expect(clipboard.writeBuffer).toHaveBeenCalledTimes(1);
     expect(clipboard.writeImage).not.toHaveBeenCalled();
+  });
+
+  test("issue #259/#257 — copyLayerFragment co-writes the fragment + full composite PNG through the native helper", async () => {
+    // When the native NSPasteboard helper is available, copyLayerFragment
+    // hands it the private fragment AND a flattened composite in ONE write
+    // (so Claude / Slack / Mail get an image), and does NOT fall back to
+    // Electron's writeBuffer. Inject a fake helper that just records the
+    // stdin payload and exits 0.
+    const captureId = await seedSimpleV2Capture({ edited: true });
+    const helperPath = join(workDir, "fake-clip-helper.sh");
+    const stdinCapture = join(workDir, "native-stdin.json");
+    await writeFile(
+      helperPath,
+      ["#!/bin/sh", 'cat > "$FAKE_CLIP_OUT"', "exit 0", ""].join("\n")
+    );
+    await chmod(helperPath, 0o755);
+    process.env.FAKE_CLIP_OUT = stdinCapture;
+    __setNativeClipboardHelperForTests(helperPath);
+    try {
+      const result = await bus.dispatch(
+        "clipboard:copyLayerFragment",
+        { captureId, layerIds: ["ras_clipchg_xxxx", "vec_clipchg_xxxx"] },
+        { principal: "ipc" }
+      );
+      expect(result.ok).toBe(true);
+
+      // Native write succeeded → no writeBuffer fallback, no writeImage.
+      expect(clipboard.writeBuffer).not.toHaveBeenCalled();
+      expect(clipboard.writeImage).not.toHaveBeenCalled();
+      // Still exactly one clipboard-changed signal.
+      expect(changedSpy).toHaveBeenCalledTimes(1);
+
+      const payload = JSON.parse(await readFile(stdinCapture, "utf8"));
+      expect(payload.utiName).toBe(CLIPBOARD_LAYER_FRAGMENT_UTI);
+      // The private UTI body is the real serialized fragment.
+      const fragment = JSON.parse(
+        Buffer.from(payload.utiBase64, "base64").toString("utf8")
+      );
+      expect(fragment.format_version).toBe(1);
+      expect(fragment.layers.length).toBe(2);
+      // The PNG body is the full-capture composite (PNG magic + dims).
+      const png = Buffer.from(payload.pngBase64, "base64");
+      expect([...png.subarray(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const meta = await sharp(png).metadata();
+      expect(meta.width).toBe(CANVAS_W);
+      expect(meta.height).toBe(CANVAS_H);
+    } finally {
+      __setNativeClipboardHelperForTests(null);
+      delete process.env.FAKE_CLIP_OUT;
+    }
   });
 
   test("copyLayerFragment with EXPLICIT [sourceRasterId] (whole-image Cmd+A) succeeds and writes a fragment", async () => {

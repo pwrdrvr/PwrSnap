@@ -27,7 +27,7 @@
 // Cross-platform: pure Chromium layout — runs on the Linux/xvfb CI
 // subset, not macOS-only.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
 import { openEditorImage, seedRasterCapture } from "./fixtures/editor-helpers";
 
@@ -165,6 +165,42 @@ function approxEqual(a: number, b: number, tol = 1.5): boolean {
   return Math.abs(a - b) <= tol;
 }
 
+type MeasuredBox = { x: number; y: number; width: number; height: number };
+
+/**
+ * Poll a locator's boundingBox until two consecutive reads agree on all
+ * four edges, so we measure AFTER the fit-zoom (useZoomPan's
+ * ResizeObserver) settles instead of racing it. Extreme-aspect crops
+ * (e.g. an 800×180 strip) fit-zoom into place over a few frames, so a
+ * single immediate read is flaky. Mirrors `stableCanvasAspect` in
+ * editor-crop-hide.spec.ts (poll ~40×50ms). Returns null only if the box
+ * never measured, so the existing per-test null guards still apply.
+ */
+async function stableBox(
+  locator: Locator,
+  tol = 0.5
+): Promise<MeasuredBox | null> {
+  let prev: MeasuredBox | null = null;
+  for (let i = 0; i < 40; i++) {
+    // eslint-disable-next-line no-await-in-loop
+    await locator.page().waitForTimeout(50);
+    // eslint-disable-next-line no-await-in-loop
+    const box = await locator.boundingBox();
+    if (box === null || box.height === 0) continue;
+    if (
+      prev !== null &&
+      Math.abs(box.x - prev.x) < tol &&
+      Math.abs(box.y - prev.y) < tol &&
+      Math.abs(box.width - prev.width) < tol &&
+      Math.abs(box.height - prev.height) < tol
+    ) {
+      return box;
+    }
+    prev = box;
+  }
+  return prev;
+}
+
 type Pt = { x: number; y: number };
 type RectN = { x: number; y: number; w: number; h: number };
 type CropClipLayer = {
@@ -271,12 +307,12 @@ test("editor-crop-clip: cropped capture clips the source to the canvas; canvas +
     await cropCanvas(app, captureId, 800, 180);
     const win = await openEditorImage(app, captureId);
 
-    const canvasBox = await win.locator(".editor-canvas").first().boundingBox();
-    const clipBox = await win.locator(".editor-image-clip").first().boundingBox();
-    const imgBox = await win
-      .locator('[data-testid="editor-image"]')
-      .first()
-      .boundingBox();
+    // Stabilize each box past the fit-zoom settle before comparing.
+    const canvasBox = await stableBox(win.locator(".editor-canvas").first());
+    const clipBox = await stableBox(win.locator(".editor-image-clip").first());
+    const imgBox = await stableBox(
+      win.locator('[data-testid="editor-image"]').first()
+    );
     expect(canvasBox, "canvas box").not.toBeNull();
     expect(clipBox, "clip box").not.toBeNull();
     expect(imgBox, "img box").not.toBeNull();
@@ -332,12 +368,12 @@ test("editor-crop-clip: off-origin crop translates the image and clips it to the
       .evaluate((el) => (el as HTMLElement).style.transform);
     expect(transform).toBe("translate(-25%, -25%)");
 
-    const canvasBox = await win.locator(".editor-canvas").first().boundingBox();
-    const clipBox = await win.locator(".editor-image-clip").first().boundingBox();
-    const imgBox = await win
-      .locator('[data-testid="editor-image"]')
-      .first()
-      .boundingBox();
+    // Stabilize each box past the fit-zoom settle before comparing.
+    const canvasBox = await stableBox(win.locator(".editor-canvas").first());
+    const clipBox = await stableBox(win.locator(".editor-image-clip").first());
+    const imgBox = await stableBox(
+      win.locator('[data-testid="editor-image"]').first()
+    );
     if (canvasBox === null || clipBox === null || imgBox === null) {
       throw new Error("missing editor layout boxes");
     }
@@ -368,8 +404,9 @@ test("editor-crop-clip: blur renders within the canvas over a cropped capture (c
     // zero it.
     const blur = win.locator(".ed-blur-item--gaussian").first();
     await blur.waitFor({ state: "attached", timeout: 10_000 });
-    const blurBox = await blur.boundingBox();
-    const canvasBox = await win.locator(".editor-canvas").first().boundingBox();
+    // Stabilize each box past the fit-zoom settle before comparing.
+    const blurBox = await stableBox(blur);
+    const canvasBox = await stableBox(win.locator(".editor-canvas").first());
     expect(blurBox, "blur box").not.toBeNull();
     expect(canvasBox, "canvas box").not.toBeNull();
     if (blurBox === null || canvasBox === null) return;

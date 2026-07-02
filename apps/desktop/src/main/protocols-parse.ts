@@ -52,6 +52,29 @@ export function parseCaptureId(url: string, scheme: string = SCHEMES.capture): s
 }
 
 /**
+ * Parse `pwrsnap-capture://s/<id>/<sha256>` → `{ captureId, sha256 }`.
+ * The "s" host marks a per-layer raster source (vs "r" = base source).
+ * Both the capture id and the 64-char lowercase-hex content hash sit in
+ * the path so their case survives Chromium's authority-lowercasing pass.
+ * Strips any `?...` cache-buster suffix. Returns `null` for any
+ * malformed URL (the sha must be exactly 64 hex chars — the editor only
+ * ever requests sources that exist in the capture's bundle).
+ */
+export function parseSourceUrl(
+  url: string
+): { captureId: string; sha256: string } | null {
+  const prefix = `${SCHEMES.capture}://s/`;
+  if (!url.startsWith(prefix)) return null;
+  const noQuery = url.split(/[?#]/, 1)[0]!;
+  const rest = noQuery.slice(prefix.length).replace(/\/+$/, "");
+  const match = rest.match(/^([a-zA-Z0-9_-]+)\/([a-f0-9]{64})$/);
+  if (match === null) return null;
+  const [, captureId, sha256] = match;
+  if (captureId === undefined || sha256 === undefined) return null;
+  return { captureId, sha256 };
+}
+
+/**
  * Parse `pwrsnap-cache://r/<id>/<width>w.<format>` → structured.
  * Width is clamped to [1, 8192] (DoS guard — refuse a 1024×Infinity
  * request that would exhaust the render coordinator's worker pool).

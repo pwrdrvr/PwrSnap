@@ -171,6 +171,11 @@ export type SelectorResult =
        *  captures whatever's visible — overlapping windows included,
        *  just like the user sees on screen. */
       fullWindow?: boolean;
+      /** Video-only: whether the recording should bake in the mouse
+       *  cursor. Set from the selector's `C` toggle (seeded from
+       *  `settings.recording.videoCaptureCursor`). Undefined for image
+       *  captures, which don't consume it yet (Phase 3). */
+      captureCursor?: boolean;
     }
   | {
       ok: false;
@@ -340,6 +345,9 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           if (payload.fullWindow === true) {
             result.fullWindow = true;
           }
+          if (typeof payload.captureCursor === "boolean") {
+            result.captureCursor = payload.captureCursor;
+          }
           resolver(result);
         }
       } else {
@@ -407,12 +415,17 @@ export async function pickRegion(
      *  recording, not a snap. No behavioral effect on selection
      *  itself — both intents return the same rect / window payload. */
     intent?: "snap" | "video";
+    /** Video-only seed for the selector's cursor toggle. Forwarded to
+     *  the renderer in the mode signal; the committed value rides back
+     *  on the result as `captureCursor`. */
+    cursorDefault?: boolean;
   } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
   const keepPwrSnapChrome = opts.keepPwrSnapChrome ?? false;
   const protectWindowIds = opts.protectWindowIds ?? [];
   const intent = opts.intent ?? "snap";
+  const cursorDefault = opts.cursorDefault;
   const requestStartedAt = Date.now();
   const elapsedFromRequest = (): number => Date.now() - requestStartedAt;
   log.info("capture selector requested", {
@@ -637,7 +650,12 @@ export async function pickRegion(
     // snapshot landed. ("compose → load image → show in one go.")
     const modePayload =
       activeScreenSnapshot !== null
-        ? { mode, screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}`, intent }
+        ? {
+            mode,
+            screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}`,
+            intent,
+            cursor: cursorDefault
+          }
         : null;
     if (!win.isDestroyed() && modePayload !== null) {
       win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
@@ -1531,6 +1549,7 @@ function isSelectorPayload(value: unknown): value is {
   displayId: number;
   snappedWindowId?: number;
   fullWindow?: boolean;
+  captureCursor?: boolean;
 } {
   if (value === null || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -1551,6 +1570,9 @@ function isSelectorPayload(value: unknown): value is {
     return false;
   }
   if (v.fullWindow !== undefined && typeof v.fullWindow !== "boolean") {
+    return false;
+  }
+  if (v.captureCursor !== undefined && typeof v.captureCursor !== "boolean") {
     return false;
   }
   return true;

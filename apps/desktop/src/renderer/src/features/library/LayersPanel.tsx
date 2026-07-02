@@ -27,7 +27,8 @@ import {
 import type { BundleLayerNode } from "@pwrsnap/shared";
 import { useCaptureModel } from "../editor/useCaptureModel";
 import type { LayersPanelApi } from "../editor/Editor";
-import { isBaseLayer, isCropLayer } from "../editor/layer-roles";
+import { isBaseLayer, isCropLayer, isSourceRaster } from "../editor/layer-roles";
+import { selectBaseRaster } from "../editor/base-raster";
 import { TOOLS } from "../editor/editor-tools";
 import "./LayersPanel.css";
 
@@ -204,23 +205,33 @@ export function LayersPanel({
   // z_index DESC; the base layers (Source + Crop) are pinned at the
   // BOTTOM regardless of z_index so an annotation never appears below
   // them (which would be a no-op — see isBaseLayer).
-  const { rows, annotationCount } = useMemo<{
+  const { rows, annotationCount, sourceRasterId } = useMemo<{
     rows: BundleLayerNode[];
     annotationCount: number;
+    sourceRasterId: string | null;
   }>(() => {
-    if (model.kind !== "loaded") return { rows: [], annotationCount: 0 };
+    if (model.kind !== "loaded") {
+      return { rows: [], annotationCount: 0, sourceRasterId: null };
+    }
+    // Only the Source raster is pinned; pasted images + the captured
+    // cursor are reorderable annotations like any vector.
+    const srcId = selectBaseRaster(model.layers, model.record.sha256)?.id ?? null;
     const all = model.layers.filter(
       (l) => l.kind !== "group" && !isSpuriousCropArtifact(l)
     );
     const annotations = all
-      .filter((l) => !isBaseLayer(l))
+      .filter((l) => !isBaseLayer(l, srcId))
       .sort((a, b) => b.z_index - a.z_index);
     const base = all
-      .filter(isBaseLayer)
+      .filter((l) => isBaseLayer(l, srcId))
       .sort((a, b) => baseRank(a) - baseRank(b));
     // Annotations occupy the first `annotationCount` rows (display index
     // == annotation index); the pinned base layers follow.
-    return { rows: [...annotations, ...base], annotationCount: annotations.length };
+    return {
+      rows: [...annotations, ...base],
+      annotationCount: annotations.length,
+      sourceRasterId: srcId
+    };
   }, [model]);
   // PageUp/PageDown jump — bigger over deep stacks.
   const pageStep = annotationCount > 100 ? 10 : 5;
@@ -314,9 +325,9 @@ export function LayersPanel({
         const id = node.id;
         const selected = selectedLayerIds.includes(id);
         const visible = node.visible !== false;
-        const baseRaster = node.kind === "raster";
+        const sourceRaster = isSourceRaster(node, sourceRasterId);
         const crop = isCropLayer(node);
-        const base = isBaseLayer(node);
+        const base = isBaseLayer(node, sourceRasterId);
         const selectable = isSelectable(node);
         const dragging = drag?.id === id;
         const dropBefore = drag !== null && !base && drag.overGap === i;
@@ -410,7 +421,7 @@ export function LayersPanel({
                 data-testid={`layer-delete-${id}`}
                 aria-label={crop ? "Remove crop (restore full image)" : "Delete layer"}
                 title={crop ? "Remove crop" : "Delete"}
-                disabled={baseRaster}
+                disabled={sourceRaster}
                 onClick={(e): void => {
                   e.stopPropagation();
                   if (crop) {

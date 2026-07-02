@@ -14,18 +14,22 @@ const mocks = vi.hoisted(() => ({
   capturesRoot: "",
   trashRoot: "",
   cacheRoot: "",
-  readSourceFromBundle: vi.fn()
+  readSourceFromBundle: vi.fn(),
+  readSourceForCapture: vi.fn()
 }));
 
 vi.mock("../paths", () => ({
   getCapturesRoot: () => mocks.capturesRoot,
   getTrashRoot: () => mocks.trashRoot,
   getCacheRoot: () => mocks.cacheRoot,
-  getCacheSourcePath: (id: string) => join(mocks.cacheRoot, id, "source.png")
+  getCacheSourcePath: (id: string) => join(mocks.cacheRoot, id, "source.png"),
+  getCacheLayerSourcePath: (id: string, sha: string) =>
+    join(mocks.cacheRoot, id, "sources", `${sha}.png`)
 }));
 
 vi.mock("../bundle-store", () => ({
-  readSourceFromBundle: (...args: unknown[]) => mocks.readSourceFromBundle(...args)
+  readSourceFromBundle: (...args: unknown[]) => mocks.readSourceFromBundle(...args),
+  readSourceForCapture: (...args: unknown[]) => mocks.readSourceForCapture(...args)
 }));
 
 vi.mock("../../log", () => ({
@@ -49,6 +53,7 @@ beforeEach(async () => {
   await mkdir(mocks.trashRoot, { recursive: true });
   await mkdir(mocks.cacheRoot, { recursive: true });
   mocks.readSourceFromBundle.mockReset();
+  mocks.readSourceForCapture.mockReset();
 });
 
 afterEach(async () => {
@@ -230,5 +235,58 @@ describe("ensureEffectiveSrcPath — lazy re-extract after cache wipe", () => {
       })
     ).rejects.toThrow(/sha256 missing/);
     expect(mocks.readSourceFromBundle).not.toHaveBeenCalled();
+  });
+});
+
+describe("ensureLayerSourcePath — per-layer raster source resolution", () => {
+  const RECORD = {
+    id: "cap_layers",
+    legacy_src_path: null,
+    bundle_path: "/fake/bundle.pwrsnap",
+    sha256: "a".repeat(64), // the BASE source sha
+    deleted_at: null
+  } as const;
+  const LAYER_SHA = "b".repeat(64); // a pasted raster — different sha
+
+  test("resolves a non-base layer source via readSourceForCapture (pending/cache fallback) and caches it", async () => {
+    // The fix for the "broken image box": a freshly pasted raster lives in
+    // the pending store, NOT the bundle, so resolution must go through the
+    // full fallback chain (readSourceForCapture), not bundle-only.
+    const bytes = Buffer.from("pasted-png-bytes");
+    mocks.readSourceForCapture.mockResolvedValue(bytes);
+    const { ensureLayerSourcePath } = await import("../source-store");
+
+    const path = await ensureLayerSourcePath(RECORD, LAYER_SHA);
+    expect(path).toBe(join(mocks.cacheRoot, "cap_layers", "sources", `${LAYER_SHA}.png`));
+    expect(mocks.readSourceForCapture).toHaveBeenCalledWith(
+      "cap_layers",
+      "/fake/bundle.pwrsnap",
+      LAYER_SHA
+    );
+    expect(existsSync(path!)).toBe(true);
+    expect((await readFile(path!)).equals(bytes)).toBe(true);
+  });
+
+  test("returns the cached file without re-reading on the second request", async () => {
+    mocks.readSourceForCapture.mockResolvedValue(Buffer.from("x"));
+    const { ensureLayerSourcePath } = await import("../source-store");
+    await ensureLayerSourcePath(RECORD, LAYER_SHA);
+    mocks.readSourceForCapture.mockClear();
+    const second = await ensureLayerSourcePath(RECORD, LAYER_SHA);
+    expect(second).not.toBeNull();
+    expect(mocks.readSourceForCapture).not.toHaveBeenCalled();
+  });
+
+  test("returns null (→ 404) when the source isn't in bundle/pending/cache", async () => {
+    mocks.readSourceForCapture.mockRejectedValue(new Error("missing everywhere"));
+    const { ensureLayerSourcePath } = await import("../source-store");
+    expect(await ensureLayerSourcePath(RECORD, LAYER_SHA)).toBeNull();
+  });
+
+  test("a legacy / non-bundle capture has no layer sources → null", async () => {
+    const { ensureLayerSourcePath } = await import("../source-store");
+    const legacy = { ...RECORD, bundle_path: null };
+    expect(await ensureLayerSourcePath(legacy, LAYER_SHA)).toBeNull();
+    expect(mocks.readSourceForCapture).not.toHaveBeenCalled();
   });
 });

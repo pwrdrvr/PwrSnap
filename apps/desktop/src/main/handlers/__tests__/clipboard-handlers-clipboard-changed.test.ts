@@ -22,6 +22,7 @@ import { join } from "node:path";
 import sharp from "sharp";
 import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, test, vi } from "vitest";
 
+import { CLIPBOARD_LAYER_FRAGMENT_UTI, EVENT_CHANNELS } from "@pwrsnap/shared";
 import type {
   BundleDocumentV2,
   BundleLayerNode,
@@ -31,6 +32,39 @@ import type {
 
 let testDataRoot: string;
 let testDocumentsRoot: string;
+
+// Stateful pasteboard simulation shared with the hoisted electron mock.
+// Models the macOS dev-build behavior the paste fix targets: an UNDECLARED
+// custom UTI is stored under a `dyn.…` alias, so availableFormats() never
+// reports the literal fragment UTI — but readBuffer(literalUTI) still
+// resolves the bytes. (Packaged builds register the UTI via
+// electron-builder.yml's UTExportedTypeDeclarations and keep the literal.)
+const fakeClipboard = vi.hoisted(() => ({
+  pasteboard: new Map<string, Buffer>(),
+  // Keep in sync with CLIPBOARD_LAYER_FRAGMENT_UTI (can't import into a
+  // hoisted factory).
+  FRAGMENT_UTI: "com.pwrdrvr.pwrsnap.layer-fragment"
+}));
+
+// A single fake BrowserWindow that records every webContents.send so we
+// can assert paste broadcasts the layers-changed events that drive the
+// editor canvas refetch.
+const fakeWindows = vi.hoisted(() => {
+  const sent: Array<{ channel: string; payload: unknown }> = [];
+  return {
+    sent,
+    list: [
+      {
+        isDestroyed: (): boolean => false,
+        webContents: {
+          send: (channel: string, payload: unknown): void => {
+            sent.push({ channel, payload });
+          }
+        }
+      }
+    ]
+  };
+});
 
 vi.mock("electron", () => ({
   app: {
@@ -47,7 +81,20 @@ vi.mock("electron", () => ({
     write: vi.fn(),
     writeText: vi.fn(),
     writeImage: vi.fn(),
-    writeBuffer: vi.fn()
+    // Each write clears first (macOS ScopedClipboardWriter calls
+    // clearContents on construction), then stores the bytes.
+    writeBuffer: vi.fn((format: string, value: Buffer) => {
+      fakeClipboard.pasteboard.clear();
+      fakeClipboard.pasteboard.set(format, Buffer.from(value));
+    }),
+    readBuffer: vi.fn(
+      (format: string) => fakeClipboard.pasteboard.get(format) ?? Buffer.alloc(0)
+    ),
+    availableFormats: vi.fn(() =>
+      [...fakeClipboard.pasteboard.keys()].map((k) =>
+        k === fakeClipboard.FRAGMENT_UTI ? "dyn.ah62d4rv4ge8085553a" : k
+      )
+    )
   },
   nativeImage: {
     createFromBuffer: (bytes: Buffer) => ({
@@ -56,7 +103,7 @@ vi.mock("electron", () => ({
     })
   },
   BrowserWindow: {
-    getAllWindows: () => []
+    getAllWindows: () => fakeWindows.list
   }
 }));
 
@@ -79,7 +126,9 @@ const { packBundleV2, buildCompositeThumbnail } = await import(
 const { materializePendingSourceForCapture } = await import(
   "../../persistence/pending-source-store"
 );
-const { insertLayerTreeForCapture } = await import("../../persistence/layers-repo");
+const { insertLayerTreeForCapture, listLayerTree } = await import(
+  "../../persistence/layers-repo"
+);
 const { clipboardEvents } = await import("../../clipboard-events");
 const { clipboard } = await import("electron");
 
@@ -112,6 +161,8 @@ let changedSpy: ReturnType<typeof vi.fn<(...args: unknown[]) => void>>;
 beforeEach(() => {
   changedSpy = vi.fn<(...args: unknown[]) => void>();
   clipboardEvents.on("changed", changedSpy);
+  fakeClipboard.pasteboard.clear();
+  fakeWindows.sent.length = 0;
   vi.mocked(clipboard.write).mockClear();
   vi.mocked(clipboard.writeText).mockClear();
   vi.mocked(clipboard.writeImage).mockClear();
@@ -179,6 +230,7 @@ async function seedSimpleV2Capture(options: { edited?: boolean } = {}): Promise<
       ...common,
       id: rasterId,
       kind: "raster",
+      name: "Source",
       parent_id: rootGroupId,
       z_index: 0,
       source_ref: { kind: "embedded", sha256: sourceSha },
@@ -304,6 +356,129 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     ).toHaveBeenCalledTimes(1);
     expect(clipboard.writeBuffer).toHaveBeenCalledTimes(1);
     expect(clipboard.writeImage).not.toHaveBeenCalled();
+  });
+
+  test("copyLayerFragment with EXPLICIT [sourceRasterId] (whole-image Cmd+A) succeeds and writes a fragment", async () => {
+    // Mirrors the editor's Cmd+A → Cmd+C on a plain screenshot: explicit
+    // layerIds that include the base Source raster but NOT the root group,
+    // so the raster gets reparented to null. This is the path the user hit
+    // returning "doesn't contain an image" on paste.
+    const captureId = await seedSimpleV2Capture();
+    const result = await bus.dispatch(
+      "clipboard:copyLayerFragment",
+      { captureId, layerIds: ["ras_clipchg_xxxx"] },
+      { principal: "ipc" }
+    );
+    if (!result.ok) {
+      throw new Error(`copyLayerFragment([source]) failed: ${result.error.code} — ${result.error.message}`);
+    }
+    expect(result.value.layerCount).toBe(1);
+    expect(result.value.sourceCount).toBe(1);
+    expect(clipboard.writeBuffer).toHaveBeenCalledTimes(1);
+  });
+
+  test("paste finds the fragment when availableFormats only reports the dynamic UTI alias (dev build)", async () => {
+    // Regression pin for the macOS dev-build bug: copy succeeds and the
+    // bytes ARE on the pasteboard, but because the custom UTI isn't
+    // system-registered, availableFormats() reports only a `dyn.…` alias.
+    // The old paste gated on `availableFormats().some(=== UTI)`, missed the
+    // alias, and fell through to "clipboard doesn't contain an image".
+    // pasteLayerFragment now readBuffer()s directly, which resolves the
+    // alias on read.
+    const captureId = await seedSimpleV2Capture();
+    const copyRes = await bus.dispatch(
+      "clipboard:copyLayerFragment",
+      { captureId, layerIds: ["ras_clipchg_xxxx"] },
+      { principal: "ipc" }
+    );
+    expect(copyRes.ok).toBe(true);
+
+    // The asymmetry the fix relies on: literal UTI absent from
+    // availableFormats(), yet readBuffer(literal UTI) returns the bytes.
+    expect(clipboard.availableFormats()).not.toContain(CLIPBOARD_LAYER_FRAGMENT_UTI);
+    expect(clipboard.readBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI).byteLength).toBeGreaterThan(0);
+
+    const pasteRes = await bus.dispatch(
+      "clipboard:pasteLayerFragment",
+      { captureId },
+      { principal: "ipc" }
+    );
+    if (!pasteRes.ok) {
+      throw new Error(`paste failed: ${pasteRes.error.code} — ${pasteRes.error.message}`);
+    }
+    // Found via readBuffer (not the alias-missing availableFormats), so a
+    // real layer landed and we did NOT fall back to the flattened PNG.
+    expect(pasteRes.value.insertedLayerIds.length).toBeGreaterThan(0);
+    expect(pasteRes.value.fallbackUsedPng).toBe(false);
+  });
+
+  test("paste stacks the pasted block above the target's layers and de-names a carried 'Source' raster", async () => {
+    const captureId = await seedSimpleV2Capture({ edited: true });
+    const beforeIds = new Set(listLayerTree(captureId).map((l) => l.id));
+
+    // Copy a FLAT selection (base raster + the vector annotation). Both
+    // reparent to null (their group isn't in the selection), so both are
+    // fragment roots that must restack above the target on paste.
+    const copyRes = await bus.dispatch(
+      "clipboard:copyLayerFragment",
+      { captureId, layerIds: ["ras_clipchg_xxxx", "vec_clipchg_xxxx"] },
+      { principal: "ipc" }
+    );
+    expect(copyRes.ok).toBe(true);
+
+    const pasteRes = await bus.dispatch(
+      "clipboard:pasteLayerFragment",
+      { captureId },
+      { principal: "ipc" }
+    );
+    expect(pasteRes.ok).toBe(true);
+
+    const pasted = listLayerTree(captureId).filter((l) => !beforeIds.has(l.id));
+    expect(pasted).toHaveLength(2);
+    // The target's pre-paste root-level max z was 0 (the root group);
+    // every pasted root must land strictly above it, contiguous, so it
+    // can't interleave between the target's existing layers.
+    for (const p of pasted) expect(p.z_index).toBeGreaterThan(0);
+    // The carried base-raster name "Source" is cleared so the panel shows
+    // it as "Image" and it doesn't masquerade as this capture's base.
+    const pastedRaster = pasted.find((l) => l.kind === "raster");
+    expect(pastedRaster?.name).toBe("");
+  });
+
+  test("paste broadcasts layers-changed so the editor canvas refetches (no visibility-toggle needed)", async () => {
+    const captureId = await seedSimpleV2Capture();
+    const copyRes = await bus.dispatch(
+      "clipboard:copyLayerFragment",
+      { captureId, layerIds: ["ras_clipchg_xxxx"] },
+      { principal: "ipc" }
+    );
+    expect(copyRes.ok).toBe(true);
+
+    fakeWindows.sent.length = 0;
+    const pasteRes = await bus.dispatch(
+      "clipboard:pasteLayerFragment",
+      { captureId },
+      { principal: "ipc" }
+    );
+    expect(pasteRes.ok).toBe(true);
+
+    // Editor windows refetch on overlaysChanged; Library / float-over on
+    // capturesChanged. Both must fire for this capture, or the pasted
+    // raster stays invisible until an unrelated edit broadcasts.
+    const overlays = fakeWindows.sent.filter(
+      (e) => e.channel === EVENT_CHANNELS.overlaysChanged
+    );
+    const captures = fakeWindows.sent.filter(
+      (e) => e.channel === EVENT_CHANNELS.capturesChanged
+    );
+    expect(overlays).toContainEqual({
+      channel: EVENT_CHANNELS.overlaysChanged,
+      payload: { captureId }
+    });
+    expect(captures).toContainEqual({
+      channel: EVENT_CHANNELS.capturesChanged,
+      payload: { changedIds: [captureId] }
+    });
   });
 });
 

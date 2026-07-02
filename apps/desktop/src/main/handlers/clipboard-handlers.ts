@@ -64,6 +64,7 @@ import {
   scheduleRepack
 } from "../persistence/bundle-store";
 import { insertLayerTreeForCapture, listLayerTree } from "../persistence/layers-repo";
+import { broadcastLayersChanged } from "./broadcast-layers";
 import { materializePendingSourceForCapture } from "../persistence/pending-source-store";
 import { notifyClipboardChanged } from "../clipboard-events";
 import { mapVideoResolveError, resolveVideoExport } from "../recording/video-export-resolver";
@@ -378,12 +379,27 @@ export function registerClipboardHandlers(): void {
 
       // Reparent any layer whose parent_id points OUTSIDE the
       // selection — these become roots in the pasted fragment.
+      // Also de-name THIS capture's base Source raster in the fragment:
+      // keyed on the sha (the structural base signal `selectBaseRaster`
+      // uses), gated on the default "Source" name. In the target capture
+      // it is NOT the base, so the "Source" label would masquerade as the
+      // target's pinned base. Doing it here (where the base sha is known)
+      // is why the paste side no longer string-matches "Source" — that
+      // blind match could blank a user's non-base layer named "Source".
       const selectedIdSet = new Set(layers.map((n) => n.id));
+      const baseSha = record.sha256;
       const reparentedLayers: BundleLayerNode[] = layers.map((node) => {
-        if (node.parent_id !== null && !selectedIdSet.has(node.parent_id)) {
-          return { ...node, parent_id: null };
+        const denamed =
+          node.kind === "raster" &&
+          node.source_ref.kind === "embedded" &&
+          node.source_ref.sha256 === baseSha &&
+          node.name?.trim() === "Source"
+            ? { ...node, name: "" }
+            : node;
+        if (denamed.parent_id !== null && !selectedIdSet.has(denamed.parent_id)) {
+          return { ...denamed, parent_id: null };
         }
-        return node;
+        return denamed;
       });
 
       // Read source bytes from the bundle. readSourceFromBundle
@@ -464,15 +480,21 @@ export function registerClipboardHandlers(): void {
     }
 
     // ── Defense (1): size cap before JSON.parse ─────────────────────
-    const hasPrivate = clipboard
-      .availableFormats()
-      .some((fmt) => fmt === CLIPBOARD_LAYER_FRAGMENT_UTI);
+    // Read the private fragment buffer DIRECTLY rather than gating on
+    // availableFormats(). On macOS a custom UTI that ISN'T registered with
+    // the system (dev builds — electron-builder.yml's
+    // UTExportedTypeDeclarations only apply to a packaged .app) gets stored
+    // on the pasteboard under a *dynamic* UTI alias. availableFormats()
+    // then reports the `dyn.…` alias, never the literal
+    // `com.pwrdrvr.pwrsnap.layer-fragment`, so the old `=== UTI` match
+    // missed and a real fragment fell through to the "clipboard doesn't
+    // contain an image" path. readBuffer(UTI) resolves the same dynamic
+    // mapping on read, so it returns the bytes whether or not the type is
+    // aliased — and an empty Buffer when nothing is there.
+    const buf = clipboard.readBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI);
+    const hasPrivate = buf.byteLength > 0;
 
     if (hasPrivate) {
-      const buf = clipboard.readBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI);
-      if (buf.byteLength === 0) {
-        return err({ kind: "clipboard", code: "empty_buffer", message: "private UTI buffer was empty" });
-      }
       if (buf.byteLength > CLIPBOARD_FRAGMENT_MAX_BYTES) {
         log.warn("clipboard:paste: oversize fragment rejected", { bytes: buf.byteLength });
         return err({
@@ -567,6 +589,24 @@ export function registerClipboardHandlers(): void {
       for (const node of fragment.layers) {
         idRemap.set(node.id, nanoid(16));
       }
+
+      // Stack the pasted block ABOVE everything already at the destination
+      // parent level, preserving the fragment's internal relative order.
+      // Otherwise the pasted layers' original z_index values interleave
+      // with the target's (e.g. a pasted Source landing between the
+      // target's Text and Rectangle). Only the fragment's ROOTS
+      // (parent_id === null) land at targetParent and need restacking;
+      // nested layers keep their z within their own remapped parent.
+      const siblingMaxZ = listLayerTree(req.captureId)
+        .filter((l) => (l.parent_id ?? null) === targetParent)
+        .reduce((max, l) => Math.max(max, l.z_index), -1);
+      const rootNewZ = new Map<string, number>();
+      fragment.layers
+        .filter((n) => n.parent_id === null)
+        .slice()
+        .sort((a, b) => a.z_index - b.z_index)
+        .forEach((n, i) => rootNewZ.set(n.id, siblingMaxZ + 1 + i));
+
       const renumberedLayers: BundleLayerNode[] = fragment.layers.map((node) => {
         const newId = idRemap.get(node.id)!;
         const oldParentRemap = node.parent_id === null ? null : idRemap.get(node.parent_id);
@@ -579,10 +619,29 @@ export function registerClipboardHandlers(): void {
             : oldParentRemap !== undefined
               ? oldParentRemap
               : targetParent;
-        return { ...node, id: newId, parent_id: newParentId, applied_at: now, created_at: now };
+        const newZIndex = rootNewZ.get(node.id) ?? node.z_index;
+        // Note: the source capture's base raster was already de-named at
+        // COPY time (by sha, in copyLayerFragment), so no name fix-up here.
+        return {
+          ...node,
+          id: newId,
+          parent_id: newParentId,
+          z_index: newZIndex,
+          applied_at: now,
+          created_at: now
+        };
       });
 
       insertLayerTreeForCapture(req.captureId, renumberedLayers);
+
+      // Notify every renderer that this capture's layer tree changed so
+      // the editor canvas (and Layers panel) refetch and PAINT the pasted
+      // raster immediately. Without this the layer is in the DB but the
+      // canvas doesn't refetch until some other edit fires a broadcast —
+      // the "pasted image stays invisible until you toggle a layer's
+      // visibility" bug. paste mutates the tree outside the layers:*
+      // handlers, so it must broadcast on its own.
+      broadcastLayersChanged(req.captureId);
 
       // Schedule a repack so the bundle picks up the new layers +
       // sources.

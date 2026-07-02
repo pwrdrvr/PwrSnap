@@ -35,6 +35,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
+  AffineTransform,
   ArrowToolStyle,
   BlurStyle,
   BlurToolStyle,
@@ -64,6 +65,7 @@ import {
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { selectBaseRaster } from "./base-raster";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
+import { RasterLayers, type RasterDraftTransform } from "./RasterLayers";
 import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor } from "./resolveToolColor";
 import { shapeStrokeGeometry } from "./shape-stroke-geometry";
@@ -73,6 +75,7 @@ import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUnd
 import { decideClickSelection } from "./decideClickSelection";
 import { pruneLandedDraftGeometry } from "./draft-geometry";
 import { isReorderableLayer } from "./layer-roles";
+import { hitTestRasterLayers } from "./raster-hit-test";
 import { forwardOpToStored, forwardGeometry } from "./crop-edit-space";
 import {
   useCaptureModel,
@@ -1310,6 +1313,17 @@ export function Editor({
   // (after the model resolves); we project a v1-shaped view of it
   // here for the synchronous click handler.
   const overlaysRef = useRef<OverlayRow[]>([]);
+  // Non-source raster layers (pasted images, captured cursor) — outside
+  // the OverlayRow system, so the pointerdown raster hit-test + Cmd+A +
+  // delete read them from here (synced in render, same pattern as
+  // overlaysRef).
+  const rastersRef = useRef<readonly Extract<BundleLayerNode, { kind: "raster" }>[]>([]);
+  // The base Source raster id. Cmd+A includes it so "select all → copy"
+  // grabs the whole image (base + annotations), not just the overlays.
+  // Kept out of `rastersRef` (the hit-test + delete sets) so the Source
+  // stays non-clickable + non-deletable; it's only ever added to the
+  // select-all set for copy.
+  const sourceRasterIdRef = useRef<string | null>(null);
   // Multi-select drag state. Populated by `onPointerDown` when the
   // user clicks a layer already in a multi-selection (= the
   // `decideClickSelection` "keep" action with selection size > 1).
@@ -1337,6 +1351,26 @@ export function Editor({
         dyn: number
       ) => Promise<void>)
     | null
+  >(null);
+  // Raster canvas drag-to-move. Non-base rasters (pasted images, the
+  // captured cursor) live outside the OverlayRow / TransformHandles
+  // system, so they get a dedicated gesture: `rasterDragRef` holds the
+  // in-flight drag; `rasterDraft` is the live preview the RasterLayers
+  // <img> follows; `commitRasterDragRef` is the inner-component closure
+  // (with storedLayers / dispatch access) the outer onPointerUp calls to
+  // persist the move — same ref-handoff pattern as `commitMultiDragRef`.
+  const rasterDragRef = useRef<{
+    id: string;
+    startXn: number;
+    startYn: number;
+    startTransform: AffineTransform;
+    current: AffineTransform;
+    pointerId: number;
+    moved: boolean;
+  } | null>(null);
+  const [rasterDraft, setRasterDraft] = useState<RasterDraftTransform | null>(null);
+  const commitRasterDragRef = useRef<
+    ((id: string, transform: AffineTransform) => Promise<void>) | null
   >(null);
   // Live-drag preview: a map of layer id → in-progress geometry that
   // every overlay renderer (OverlaySvg / BlurOverlays /
@@ -1577,13 +1611,37 @@ export function Editor({
       //   • rect / highlight / blur with rotation get inverse-rotated
       //     into local frame before bbox testing so the visible
       //     rotated glyph is what's selectable.
-      const hit = hitTestOverlays(
+      const overlayHit = hitTestOverlays(
         overlays,
         start.xn,
         start.yn,
         shortSide,
         textHitDimsRef.current ?? undefined
       );
+      // Non-source raster layers live outside the OverlayRow system, so
+      // hit-test them separately and pick the topmost (higher z_index
+      // wins; a tie favors the raster). Same canvas-normalized space as
+      // the pointer + the overlay hit-test.
+      const dimsForHit = textHitDimsRef.current;
+      const rasterHit =
+        dimsForHit === null
+          ? null
+          : hitTestRasterLayers(
+              rastersRef.current,
+              start.xn,
+              start.yn,
+              dimsForHit.canvasWidthPx,
+              dimsForHit.canvasHeightPx,
+              0.006
+            );
+      let hit = overlayHit;
+      if (rasterHit !== null) {
+        const overlayZ =
+          overlayHit === null
+            ? Number.NEGATIVE_INFINITY
+            : overlays.find((o) => o.id === overlayHit)?.z_index ?? Number.NEGATIVE_INFINITY;
+        if (overlayHit === null || rasterHit.zIndex >= overlayZ) hit = rasterHit.id;
+      }
       // Decision matrix lives in `decideClickSelection` so both the
       // pointer-tool and drawing-tool branches share one source of
       // truth (and one regression-tested module). The `keep` action
@@ -1600,6 +1658,31 @@ export function Editor({
       if (action.type === "replace") replaceSelection(action.id);
       else if (action.type === "toggle") toggleSelection(action.id);
       else if (action.type === "clear") clearSelection();
+      // Raster canvas drag-to-move: a click on a non-base raster (pasted
+      // image / cursor) arms the dedicated raster gesture and captures the
+      // pointer. Rasters have no TransformHandles, so the canvas owns
+      // their drag. Takes priority over the multi-drag arm below — a
+      // raster is never part of the overlay snapshot set.
+      if (
+        rasterHit !== null &&
+        hit === rasterHit.id &&
+        (action.type === "replace" || action.type === "keep")
+      ) {
+        const node = rastersRef.current.find((r) => r.id === rasterHit.id);
+        if (node !== undefined) {
+          rasterDragRef.current = {
+            id: node.id,
+            startXn: start.xn,
+            startYn: start.yn,
+            startTransform: node.transform,
+            current: node.transform,
+            pointerId: event.pointerId,
+            moved: false
+          };
+          (event.target as HTMLElement).setPointerCapture(event.pointerId);
+        }
+        return;
+      }
       // `keep` = selection unchanged.
       // If the click landed on a layer already in a MULTI-selection
       // (selection size > 1) — initiate a group drag-to-move.
@@ -1762,6 +1845,35 @@ export function Editor({
   }
 
   function onPointerMove(event: React.PointerEvent<HTMLDivElement>): void {
+    // Raster canvas drag live preview — runs first, mutually exclusive
+    // with the multi-select drag (a raster never enters the overlay
+    // snapshot set). Translate the raster's start transform by the cursor
+    // delta (normalized → canvas pixels) and stash it in `rasterDraft`;
+    // RasterLayers paints the <img> at the override until commit.
+    const rasterDrag = rasterDragRef.current;
+    if (rasterDrag !== null) {
+      const cur = clientToNormalizedUnclamped(event.clientX, event.clientY);
+      if (cur === null) return;
+      const dxn = cur.xn - rasterDrag.startXn;
+      const dyn = cur.yn - rasterDrag.startYn;
+      const MIN_RASTER_DRAG_N = 0.002;
+      if (!rasterDrag.moved && Math.hypot(dxn, dyn) < MIN_RASTER_DRAG_N) return;
+      rasterDrag.moved = true;
+      const dims = textHitDimsRef.current;
+      if (dims === null) return;
+      const t = rasterDrag.startTransform;
+      const next: AffineTransform = [
+        t[0],
+        t[1],
+        t[2],
+        t[3],
+        t[4] + dxn * dims.canvasWidthPx,
+        t[5] + dyn * dims.canvasHeightPx
+      ];
+      rasterDrag.current = next;
+      setRasterDraft({ id: rasterDrag.id, transform: next });
+      return;
+    }
     // Multi-select drag live preview. While the user is dragging a
     // multi-selection (armed by `onPointerDown` when they clicked an
     // already-selected layer), every pointermove translates each
@@ -1883,6 +1995,21 @@ export function Editor({
   }
 
   function onPointerCancel(event: React.PointerEvent<HTMLDivElement>): void {
+    // Raster drag cancelled mid-gesture — drop the armed gesture + live
+    // override; no commit, so the <img> snaps back to its persisted
+    // transform.
+    if (rasterDragRef.current !== null) {
+      try {
+        (event.target as HTMLElement).releasePointerCapture(
+          rasterDragRef.current.pointerId
+        );
+      } catch {
+        // Best-effort release.
+      }
+      rasterDragRef.current = null;
+      setRasterDraft(null);
+      return;
+    }
     // OS-level pointer cancellation (window blur during a drag,
     // Mission Control, three-finger swipe, etc.) — drop any armed
     // multi-drag state so the next pointerdown doesn't see stale
@@ -1910,6 +2037,25 @@ export function Editor({
   }
 
   async function onPointerUp(event: React.PointerEvent<HTMLDivElement>): Promise<void> {
+    // Raster canvas drag commit — runs first (mutually exclusive with the
+    // multi-drag). If the user actually moved it, persist the new
+    // transform via the inner-component closure; keep the override until
+    // the dispatch resolves (the refetched model then carries the new
+    // transform) so the <img> doesn't snap back to the old spot.
+    const rasterDrag = rasterDragRef.current;
+    if (rasterDrag !== null) {
+      rasterDragRef.current = null;
+      try {
+        (event.target as HTMLElement).releasePointerCapture(rasterDrag.pointerId);
+      } catch {
+        // Best-effort release; capture may already be gone.
+      }
+      if (rasterDrag.moved) {
+        await commitRasterDragRef.current?.(rasterDrag.id, rasterDrag.current);
+      }
+      setRasterDraft(null);
+      return;
+    }
     // Multi-select drag commit runs BEFORE the draft branch. If
     // `multiDragStartRef` is set the user dragged a group; compute
     // the cursor delta in normalized coords and call into the
@@ -2457,13 +2603,40 @@ export function Editor({
     }
     clipboardRef.current = items;
     // Also push to the OS clipboard for cross-capture / cross-instance
-    // paste. Fire-and-forget — the in-memory clipboard is the load-
-    // bearing path for same-capture paste, and the user shouldn't have
-    // to wait for the OS write to complete on Cmd+C.
+    // paste. The in-memory clipboard is the load-bearing path for
+    // same-capture paste, so we don't block Cmd+C on the OS write — but
+    // we DO surface a failure: a silently-failed fragment copy means a
+    // later cross-capture paste finds nothing and (confusingly) reports
+    // "clipboard doesn't contain an image".
     if (model.kind === "loaded") {
-      void dispatch("clipboard:copyLayerFragment", {
-        captureId,
-        layerIds: selectedLayerIds.slice()
+      void (async (): Promise<void> => {
+        try {
+          const result = await dispatch("clipboard:copyLayerFragment", {
+            captureId,
+            layerIds: selectedLayerIds.slice()
+          });
+          if (!result.ok) {
+            setPasteNotice({
+              text: `Couldn't copy layers: ${result.error.message}`,
+              tone: "error"
+            });
+          }
+          // Success is silent — a toast on every Cmd+C is noise (most
+          // editors show nothing on copy success). Only failures surface.
+        } catch (cause) {
+          setPasteNotice({
+            text: `Couldn't copy layers: ${cause instanceof Error ? cause.message : String(cause)}`,
+            tone: "error"
+          });
+        }
+      })();
+    } else {
+      // Selection copy was requested but the model isn't loaded — surface
+      // it rather than silently no-op'ing the OS fragment write (the
+      // in-memory copy above still happened for same-capture paste).
+      setPasteNotice({
+        text: "Couldn't copy layers: editor model not loaded",
+        tone: "error"
       });
     }
   }
@@ -2541,6 +2714,19 @@ export function Editor({
           setSelectionTrustingDispatch(result.value.insertedLayerIds);
           return;
         }
+        if (!result.ok) {
+          // A PwrSnap fragment WAS on the clipboard but failed to paste
+          // (schema mismatch, source-integrity, insert error). Surface
+          // the real reason instead of masking it with the generic
+          // "doesn't contain an image" image-paste fallback below — that
+          // fallback is only correct when there's genuinely no fragment
+          // (handler returns ok + insertedLayerIds: []).
+          setPasteNotice({
+            text: `Couldn't paste layers: ${result.error.message}`,
+            tone: "error"
+          });
+          return;
+        }
         if (clipboardRef.current.length > 0) {
           // OS clipboard had no PwrSnap fragment — fall back to the
           // in-memory clipboard so same-capture copy → paste still
@@ -2614,10 +2800,13 @@ export function Editor({
   function deleteSelected(): void {
     if (selectedLayerIds.length === 0) return;
     const overlaysSnapshot = overlaysRef.current;
+    const rasterIdSet = new Set(rastersRef.current.map((r) => r.id));
     const rows: OverlayRow[] = [];
+    const rasterIds: string[] = [];
     for (const id of selectedLayerIds) {
       const row = overlaysSnapshot.find((o) => o.id === id);
       if (row !== undefined) rows.push(row);
+      else if (rasterIdSet.has(id)) rasterIds.push(id);
     }
     clearSelection();
     const begin = beginInteractionRef.current;
@@ -2633,6 +2822,16 @@ export function Editor({
               layerId: "kbd-multi-delete",
               mergeMode: "append"
             });
+          }
+        }
+        // Non-source rasters aren't OverlayRows, so delete them by id via
+        // the model dispatcher (same path as the Layers panel's Delete;
+        // rasters don't project to a row, so no undo entry — an accepted
+        // v1 edge, matching api.deleteLayer).
+        for (const id of rasterIds) {
+          if (model.kind === "loaded") {
+            // eslint-disable-next-line no-await-in-loop
+            await model.dispatchEdit({ kind: "delete", id });
           }
         }
       } finally {
@@ -2784,19 +2983,36 @@ export function Editor({
         !event.altKey
       ) {
         event.preventDefault();
-        setSelectedLayerIds(overlaysRef.current.map((o) => o.id));
+        // Select the WHOLE image for "select all → copy": annotation
+        // overlays + every raster (the base Source AND non-source pasted
+        // images / cursor). Exclude the Crop and legacy Step overlays —
+        // they aren't click-selectable (hitTestOverlays skips them) and a
+        // crop is a no-op canvas-level viewport that can't transfer to
+        // another capture; selecting it would also paint a phantom outline.
+        setSelectedLayerIds([
+          ...overlaysRef.current
+            .filter((o) => o.data.kind !== "crop" && o.data.kind !== "step")
+            .map((o) => o.id),
+          ...rastersRef.current.map((r) => r.id),
+          ...(sourceRasterIdRef.current !== null ? [sourceRasterIdRef.current] : [])
+        ]);
         return;
       }
-      // ⌘C / ⌃C — copy selected layers into the in-memory clipboard.
-      // Skipped when nothing's selected so the system Cmd+C (browser
-      // "Copy" of any selected text on the page) still wins.
+      // ⌘C / ⌃C — copy selected layers.
       if (
         (event.key === "c" || event.key === "C") &&
         (event.metaKey || event.ctrlKey) &&
         !event.altKey &&
-        !event.shiftKey &&
-        selectedLayerIds.length > 0
+        !event.shiftKey
       ) {
+        if (selectedLayerIds.length === 0) {
+          // The editor DID receive Cmd+C, but nothing is selected. Surface
+          // it (distinguishes "nothing selected" from "Cmd+C never reached
+          // the editor" — the latter shows no toast at all). Don't
+          // preventDefault, so a system text copy can still proceed.
+          setPasteNotice({ text: "Nothing selected to copy", tone: "error" });
+          return;
+        }
         event.preventDefault();
         copySelected();
         return;
@@ -3014,6 +3230,18 @@ export function Editor({
   // we deliberately do this before returning EditorLoaded so a click
   // landing in the same commit reads the up-to-date overlay list.
   overlaysRef.current = overlaysForRender;
+  // Sync the non-source raster layers for the same synchronous handlers.
+  // Same Source-vs-annotation rule + visibility filter as the RasterLayers
+  // render, so a hit-test / Cmd+A / delete only ever sees what's painted.
+  const sourceRasterIdForHit = selectBaseRaster(model.layers, model.record.sha256)?.id ?? null;
+  sourceRasterIdRef.current = sourceRasterIdForHit;
+  rastersRef.current = model.layers.filter(
+    (l): l is Extract<BundleLayerNode, { kind: "raster" }> =>
+      l.kind === "raster" &&
+      l.id !== sourceRasterIdForHit &&
+      l.visible &&
+      l.rejected_at === null
+  );
   // `textHitDimsRef` is populated lower in this render — after
   // `sourceWidthPx` / `sourceHeightPx` are resolved via the raster-
   // layer scan below. See the assignment near `return <EditorLoaded
@@ -3031,7 +3259,20 @@ export function Editor({
   // Without this, every nudge wiped the selection the user just had
   // (and the Library reel then stole the next arrow-key press).
   if (selectedLayerIds.length > 0 || inFlightSelectionIdsRef.current.size > 0) {
-    const alive = new Set(overlaysForRender.map((r) => r.id));
+    // `alive` = every still-existing, VISIBLE, user-facing layer id.
+    // CRITICAL: include RASTERS (the base Source + pasted images / cursor),
+    // not just `overlaysForRender` (which projects only vectors + effects).
+    // Using overlays alone pruned every selected raster on the very next
+    // render — that's the bug where Cmd+A "copied 2 layers" silently
+    // dropped the Source, and why a raster click-select wouldn't stick.
+    // Keep the `visible` filter (overlaysForRender skipped hidden layers):
+    // hiding a selected layer drops it from the selection, same as before —
+    // so a nudge/delete can't act on something the user can't see.
+    const alive = new Set(
+      model.layers
+        .filter((l) => l.kind !== "group" && l.rejected_at === null && l.visible)
+        .map((l) => l.id)
+    );
     const inFlight = inFlightSelectionIdsRef.current;
     // Any in-flight id that has landed in alive = broadcast caught
     // up. Drop those from the set so a LATER unrelated deletion can
@@ -3153,6 +3394,7 @@ export function Editor({
       setContextMenuState={setContextMenuState}
       dispatchContextMenuItem={dispatchContextMenuItem}
       draftGeometry={draftGeometry}
+      rasterDraft={rasterDraft}
       setDraftGeometry={setDraftGeometry}
       commitText={commitText}
       onZoomChange={onZoomChange}
@@ -3171,6 +3413,7 @@ export function Editor({
       nudgeSelectedRef={nudgeSelectedRef}
       reorderSelectedRef={reorderSelectedRef}
       commitMultiDragRef={commitMultiDragRef}
+      commitRasterDragRef={commitRasterDragRef}
       modelLayers={model.layers}
       storedLayers={storedLayers}
       storedCanvasWidthPx={storedCanvasWidthPx}
@@ -3225,6 +3468,7 @@ function EditorLoaded({
   dispatchContextMenuItem,
   draftGeometry,
   setDraftGeometry,
+  rasterDraft,
   commitText,
   onZoomChange,
   onSelectionChange,
@@ -3242,6 +3486,7 @@ function EditorLoaded({
   nudgeSelectedRef,
   reorderSelectedRef,
   commitMultiDragRef,
+  commitRasterDragRef,
   modelLayers,
   storedLayers,
   storedCanvasWidthPx,
@@ -3433,6 +3678,15 @@ function EditorLoaded({
       ) => Promise<void>)
     | null
   >;
+  /** Outer onPointerUp calls this to persist a raster canvas drag.
+   *  EditorLoaded populates it with a closure that writes the new
+   *  transform onto the STORED node via a full-node layers:update. */
+  commitRasterDragRef: React.RefObject<
+    ((id: string, transform: AffineTransform) => Promise<void>) | null
+  >;
+  /** In-progress raster drag override painted by RasterLayers (null when
+   *  not dragging a raster). */
+  rasterDraft: RasterDraftTransform | null;
   /** The v2 layer tree. The deleter looks up the matching layer node
    *  by id so `recordDelete` can pass `node` to the undo entry —
    *  without it, undo of a delete couldn't re-insert the
@@ -3797,8 +4051,9 @@ function EditorLoaded({
         // and the crop (no-op viewport) are excluded as pinned base
         // layers. `toIndex` is the panel's TOP-DOWN index (0 = front), so
         // convert to the bottom-up position moveToIndex / diffChanges use.
+        const sourceRasterId = selectBaseRaster(modelLayers, record.sha256)?.id ?? null;
         const items = modelLayers
-          .filter(isReorderableLayer)
+          .filter((l) => isReorderableLayer(l, sourceRasterId))
           .slice()
           .sort((a, b) => a.z_index - b.z_index)
           .map((l) => ({ id: l.id }));
@@ -4215,6 +4470,31 @@ function EditorLoaded({
     beginInteractionRef,
     endInteractionRef
   ]);
+
+  // Raster canvas drag commit — the outer onPointerUp calls this with the
+  // moved raster's id + new transform. Write the transform onto the
+  // STORED node via a full-node layers:update — same rule as
+  // setLayerVisibility: `modelLayers` is the crop-space projection, so we
+  // round-trip the stored node to avoid scrambling persisted coords.
+  // (Move only; resize + undo-stack integration are follow-ups, so a
+  // raster move is not yet on the ⌘Z stack.)
+  useEffect(() => {
+    commitRasterDragRef.current = async (id, transform): Promise<void> => {
+      const node = storedLayers.find((l) => l.id === id);
+      if (node === undefined || node.kind !== "raster") return;
+      const result = await dispatch("layers:update", {
+        captureId: record.id,
+        layer: { ...node, transform }
+      });
+      if (!result.ok) {
+        // eslint-disable-next-line no-console
+        console.error("raster move dispatch failed", result.error);
+      }
+    };
+    return () => {
+      commitRasterDragRef.current = null;
+    };
+  }, [commitRasterDragRef, storedLayers, record.id]);
 
   // Z-order ops — bring forward / send backward / bring to front /
   // send to back. Computes the new ordering on the renderer side via
@@ -4822,6 +5102,22 @@ function EditorLoaded({
   //   • chrome === "chromeless" → Library Focus / Reel; canvas-only.
   // ------------------------------------------------------------------
 
+  // Non-base raster layers (pasted images, the captured cursor) render as
+  // their own positioned <img> elements via the RasterLayers LayerView.
+  // The Source raster is already drawn by the <img> below; every other
+  // raster stacks above it. Hidden / rejected layers are excluded so the
+  // editor matches what the compositor paints. `selectBaseRaster` is the
+  // same sha-matched Source rule the Layers panel pins by (and that the
+  // `isSourceHidden` flag above already used).
+  const sourceRasterId = selectBaseRaster(modelLayers, record.sha256)?.id ?? null;
+  const extraRasterLayers = modelLayers.filter(
+    (l): l is Extract<BundleLayerNode, { kind: "raster" }> =>
+      l.kind === "raster" &&
+      l.id !== sourceRasterId &&
+      l.visible &&
+      l.rejected_at === null
+  );
+
   const viewport = (
     <div
       className={
@@ -4984,6 +5280,17 @@ function EditorLoaded({
                 rasterTranslateXPx,
                 rasterTranslateYPx
               })}
+            />
+            {/* Non-base raster layers (pasted images, captured cursor)
+                stacked above the base source, clipped to the canvas by
+                the same .editor-image-clip overflow:hidden. */}
+            <RasterLayers
+              layers={extraRasterLayers}
+              captureId={record.id}
+              canvasWidthPx={record.width_px}
+              canvasHeightPx={record.height_px}
+              selectedLayerIds={selectedLayerIds}
+              draftTransform={rasterDraft}
             />
           </div>
           {/* HTML blur layer between the <img> and the SVG so

@@ -16,7 +16,13 @@ import { nanoid } from "nanoid";
 import sharp from "sharp";
 
 import { deletePendingSourcesForCapture } from "./pending-source-store";
-import { getCacheRoot, getCacheSourcePath, getCapturesRoot, getTrashRoot } from "./paths";
+import {
+  getCacheLayerSourcePath,
+  getCacheRoot,
+  getCacheSourcePath,
+  getCapturesRoot,
+  getTrashRoot
+} from "./paths";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:source-store");
@@ -245,11 +251,104 @@ export async function ensureEffectiveSrcPath(record: {
   return path;
 }
 
+/**
+ * Resolve a NON-base raster layer source (`sources/<sha>.png` in the
+ * v2 bundle) to a cached filesystem path, extracting it from the bundle
+ * on first request. Backs the `pwrsnap-capture://s/<id>/<sha>` resolver
+ * so the editor can render each raster layer's bytes without re-baking
+ * the whole composite.
+ *
+ * Returns `null` (→ renderer 404) for:
+ *   • unknown / legacy / soft-deleted captures (no bundle to read);
+ *   • a sha the bundle doesn't contain (or that fails the content-hash
+ *     integrity check in `readSourceFromBundle`).
+ *
+ * Short-circuits to {@link ensureEffectiveSrcPath} when the requested
+ * sha IS the base capture's sha — those bytes already materialize at
+ * `source.png`, so there's no reason to duplicate them under
+ * `sources/<sha>.png`.
+ *
+ * Extraction is atomic (tmp + rename) and idempotent — concurrent
+ * requests for the same source race harmlessly on identical bytes.
+ */
+export async function ensureLayerSourcePath(
+  record: {
+    id: string;
+    legacy_src_path: string | null;
+    bundle_path?: string | null;
+    sha256?: string;
+    deleted_at: string | null;
+  },
+  sha256: string
+): Promise<string | null> {
+  // Base source bytes live at `source.png` — reuse the existing lazy
+  // re-extract rather than writing a duplicate under `sources/`.
+  if (record.sha256 !== undefined && record.sha256 === sha256) {
+    return ensureEffectiveSrcPath(record);
+  }
+  // Additional layer sources only exist inside a v2 bundle. Legacy /
+  // soft-deleted captures have none.
+  if (record.deleted_at !== null) return null;
+  if (record.bundle_path === null || record.bundle_path === undefined) return null;
+
+  const cachePath = getCacheLayerSourcePath(record.id, sha256);
+  if (existsSync(cachePath)) return cachePath;
+  try {
+    // Read through the FULL fallback chain — bundle → pending store →
+    // render cache — not bundle-only. A freshly PASTED raster (Cmd+V of
+    // another capture's layers, or an external image) lands in the
+    // pending store and isn't folded into the bundle until the next
+    // repack; a bundle-only read would 404 the layer's <img> in that
+    // window (the "broken image box").
+    const { readSourceForCapture } = await import("./bundle-store");
+    const bytes = await readSourceForCapture(record.id, record.bundle_path, sha256);
+    // Atomic write to the per-source cache; concurrent requests race
+    // harmlessly. Shared protocol — see writeSourceCacheAtomic.
+    await writeSourceCacheAtomic(bytes, cachePath);
+  } catch (cause) {
+    // sha not in bundle/pending/cache, or a content-integrity mismatch —
+    // both surface as a 404 to the renderer. readSourceForCapture has
+    // already sanitized the message (no attacker-controlled sha echoed).
+    log.warn("source-store: layer source unavailable", {
+      captureId: record.id,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    return null;
+  }
+  return cachePath;
+}
+
 // Monotonic counter for tmp-file suffixes. Date.now() alone has
 // millisecond resolution and two concurrent re-extracts in the same
 // tick would collide on `tmp-<pid>-<ms>`; this counter makes the
 // suffix unique within the process regardless of clock granularity.
 let tmpCounter = 0;
+
+/**
+ * Atomic write to a per-source cache file: write to a unique tmp path,
+ * then rename into place so a concurrent reader never sees a partial
+ * file. PID + monotonic counter in the tmp name let two writers for the
+ * same path coexist without stomping each other's tmp. If the rename
+ * loses to a writer that already created the target — OR fails for any
+ * other reason — the tmp is removed so it can't orphan in the cache root;
+ * a genuine failure (target still absent) is rethrown.
+ *
+ * Shared by `ensureLayerSourcePath` (layer sources) and
+ * `rematerializeBundleSource` (base source) so the atomicity protocol
+ * lives in one place.
+ */
+async function writeSourceCacheAtomic(bytes: Buffer, cachePath: string): Promise<void> {
+  await mkdir(dirname(cachePath), { recursive: true });
+  tmpCounter += 1;
+  const tmp = `${cachePath}.tmp-${process.pid}-${tmpCounter}`;
+  await writeFile(tmp, bytes);
+  try {
+    await rename(tmp, cachePath);
+  } catch (renameErr) {
+    await rm(tmp, { force: true }).catch(() => undefined);
+    if (!existsSync(cachePath)) throw renameErr;
+  }
+}
 
 async function rematerializeBundleSource(
   record: {
@@ -272,23 +371,9 @@ async function rematerializeBundleSource(
   }
   const bytes = await readSourceFromBundle(record.bundlePath, record.sha256);
 
-  await mkdir(dirname(cacheSourcePath), { recursive: true });
   // Atomic write — concurrent compose() calls reading the same path
-  // never see a partial file. PID + monotonic counter in the tmp name
-  // lets two re-extracts for the same capture coexist without one
-  // stomping the other's tmp file.
-  tmpCounter += 1;
-  const tmp = `${cacheSourcePath}.tmp-${process.pid}-${tmpCounter}`;
-  await writeFile(tmp, bytes);
-  try {
-    await rename(tmp, cacheSourcePath);
-  } catch (cause) {
-    if (existsSync(cacheSourcePath)) {
-      await rm(tmp, { force: true }).catch(() => undefined);
-    } else {
-      throw cause;
-    }
-  }
+  // never see a partial file. Shared protocol — see writeSourceCacheAtomic.
+  await writeSourceCacheAtomic(bytes, cacheSourcePath);
 
   log.info("re-extracted bundle source to cache", {
     captureId: record.id,

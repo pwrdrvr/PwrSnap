@@ -607,6 +607,9 @@ async function seedPlacementCapture(opts: {
   naturalH?: number;
   rasterTransform?: [number, number, number, number, number, number];
   annotations?: Overlay[];
+  /** Optional crop VectorLayer (`shape.kind === "crop"`). `visible:false`
+   *  models a crop toggled OFF (editor shows the full uncropped image). */
+  cropMarker?: { rect: { x: number; y: number; w: number; h: number }; visible: boolean };
 }): Promise<{ captureId: string; rasterId: string; sourceSha: string }> {
   placeSeedCounter += 1;
   const captureId = `t_place_${String(placeSeedCounter).padStart(6, "0")}`;
@@ -674,7 +677,20 @@ async function seedPlacementCapture(opts: {
         z_index: 1 + i,
         shape
       })
-    )
+    ),
+    ...(opts.cropMarker !== undefined
+      ? [
+          {
+            ...common,
+            id: nanoid(16),
+            kind: "vector" as const,
+            parent_id: rootGroupId,
+            z_index: 900,
+            visible: opts.cropMarker.visible,
+            shape: { kind: "crop" as const, rect: opts.cropMarker.rect }
+          }
+        ]
+      : [])
   ];
   const document: BundleDocumentV2 = {
     document_format_version: 1,
@@ -996,6 +1012,91 @@ describe("cross-capture layer paste — placement (bake on copy, scale-to-fit on
     expect(pastedRect.shape.rect.y).toBeCloseTo(0.1, 6);
     expect(pastedRect.shape.rect.w).toBeCloseTo(0.4, 6);
     expect(pastedRect.shape.rect.h).toBeCloseTo(0.3, 6);
+  });
+
+  test("crop toggled OFF (uncropped view): copy bakes the FULL image the editor shows, not the cropped sub-region", async () => {
+    // A 120x120 screenshot cropped to a 60x40 off-origin viewport, but the
+    // crop marker is HIDDEN — so the editor + export render the whole
+    // 120x120 image (resolveCropViewport). Copy must match: it should
+    // capture the full 120x120, NOT the stored 60x40 cropped window.
+    const src = await seedPlacementCapture({
+      canvasW: 60,
+      canvasH: 40,
+      naturalW: 120,
+      naturalH: 120,
+      rasterTransform: [1, 0, 0, 1, -30, -40],
+      cropMarker: { rect: { x: 0.25, y: 0.333, w: 0.5, h: 0.333 }, visible: false }
+    });
+
+    const copyRes = await bus.dispatch(
+      "clipboard:copyLayerFragment",
+      { captureId: src.captureId },
+      { principal: "ipc" }
+    );
+    if (!copyRes.ok) {
+      throw new Error(`copy failed: ${copyRes.error.code} — ${copyRes.error.message}`);
+    }
+
+    const fragment = JSON.parse(
+      clipboard.readBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI).toString("utf-8")
+    ) as { source_frame?: { width_px: number; height_px: number }; layers: BundleLayerNode[] };
+
+    // source_frame is the FULL image (120x120), not the 60x40 crop.
+    expect(fragment.source_frame).toEqual({ width_px: 120, height_px: 120 });
+    const fragRaster = fragment.layers.find((l) => l.kind === "raster");
+    if (fragRaster === undefined || fragRaster.kind !== "raster") {
+      throw new Error("fragment has no raster");
+    }
+    expect(fragRaster.natural_width_px).toBe(120);
+    expect(fragRaster.natural_height_px).toBe(120);
+    // Full image fills the frame 1:1, so the base raster is reused as-is
+    // (identity transform) — no cropped-window bake.
+    expect([...fragRaster.transform]).toEqual([1, 0, 0, 1, 0, 0]);
+    // The crop marker was baked-in / uncropped, so it must NOT ride along.
+    expect(
+      fragment.layers.some((l) => l.kind === "vector" && l.shape.kind === "crop"),
+      "carried crop marker would hijack the target's resolveCropViewport"
+    ).toBe(false);
+  });
+
+  test("applied (visible) crop: copy bakes the cropped region AND drops the crop marker", async () => {
+    // Same geometry, but the crop is APPLIED (visible) — the editor shows
+    // the 60x40 cropped viewport. Copy bakes that 60x40 region and must
+    // still strip the crop marker (the crop is now baked into the raster).
+    const src = await seedPlacementCapture({
+      canvasW: 60,
+      canvasH: 40,
+      naturalW: 120,
+      naturalH: 120,
+      rasterTransform: [1, 0, 0, 1, -30, -40],
+      cropMarker: { rect: { x: 0.25, y: 0.333, w: 0.5, h: 0.333 }, visible: true }
+    });
+
+    const copyRes = await bus.dispatch(
+      "clipboard:copyLayerFragment",
+      { captureId: src.captureId },
+      { principal: "ipc" }
+    );
+    if (!copyRes.ok) {
+      throw new Error(`copy failed: ${copyRes.error.code} — ${copyRes.error.message}`);
+    }
+
+    const fragment = JSON.parse(
+      clipboard.readBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI).toString("utf-8")
+    ) as { source_frame?: { width_px: number; height_px: number }; layers: BundleLayerNode[] };
+
+    expect(fragment.source_frame).toEqual({ width_px: 60, height_px: 40 });
+    const fragRaster = fragment.layers.find((l) => l.kind === "raster");
+    if (fragRaster === undefined || fragRaster.kind !== "raster") {
+      throw new Error("fragment has no raster");
+    }
+    // Cropped region baked into a 60x40 canvas-sized raster (overhang gone).
+    expect(fragRaster.natural_width_px).toBe(60);
+    expect(fragRaster.natural_height_px).toBe(40);
+    expect([...fragRaster.transform]).toEqual([1, 0, 0, 1, 0, 0]);
+    expect(
+      fragment.layers.some((l) => l.kind === "vector" && l.shape.kind === "crop")
+    ).toBe(false);
   });
 });
 

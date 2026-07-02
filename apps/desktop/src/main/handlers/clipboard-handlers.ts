@@ -56,6 +56,7 @@ import {
   MAX_IMAGE_DIM_PX,
   computePlacement,
   placeLayerIntoTarget,
+  resolveCropViewport,
   type ClipboardLayerFragmentV1 as ClipboardLayerFragmentV1Type,
   type BundleLayerNode
 } from "@pwrsnap/shared";
@@ -457,12 +458,31 @@ export function registerClipboardHandlers(): void {
     }
 
     try {
-      // Resolve the selection. If no layerIds specified, take the
-      // entire live tree.
-      const allLayers = listLayerTree(req.captureId);
+      // Copy WHAT THE EDITOR SHOWS. When the lone crop layer is HIDDEN,
+      // the editor canvas (Editor.tsx) and the export bake (composeV2)
+      // both render the FULL uncropped image via `resolveCropViewport`
+      // — so copy must too, or ⌘C on a crop-toggled-off capture would
+      // silently bake only the cropped sub-region. For the common
+      // crop-visible / no-crop case this is the IDENTITY (same layer
+      // refs, same dims), so nothing changes there. The resolved frame
+      // dims are also the reference `source_frame` the paste placement
+      // scales against.
+      const rawLayers = listLayerTree(req.captureId);
+      const viewport = resolveCropViewport({
+        layers: rawLayers,
+        canvasWidthPx: record.width_px,
+        canvasHeightPx: record.height_px
+      });
+      const frameWidthPx = viewport.widthPx;
+      const frameHeightPx = viewport.heightPx;
+      // Resolve the selection against the viewport-projected layers
+      // (projection preserves layer ids, so selection ids still match).
+      // If no layerIds specified, take the entire live tree.
       const selectedIds = req.layerIds === undefined ? null : new Set(req.layerIds);
       const layers =
-        selectedIds === null ? allLayers : allLayers.filter((n) => selectedIds.has(n.id));
+        selectedIds === null
+          ? viewport.layers
+          : viewport.layers.filter((n) => selectedIds.has(n.id));
 
       if (layers.length === 0) {
         return err({
@@ -525,27 +545,53 @@ export function registerClipboardHandlers(): void {
           ? undefined
           : sourceBytesBySha.get(baseRaster.source_ref.sha256);
       if (baseRaster !== undefined && baseBytes !== undefined) {
-        const bakedBytes = await bakeRasterVisibleRegion({
-          sourceBytes: baseBytes,
-          naturalWidthPx: baseRaster.natural_width_px,
-          naturalHeightPx: baseRaster.natural_height_px,
-          transform: baseRaster.transform,
-          canvasWidthPx: record.width_px,
-          canvasHeightPx: record.height_px
-        });
-        const bakedSha = createHash("sha256").update(bakedBytes).digest("hex");
-        sourceBytesBySha.set(bakedSha, bakedBytes);
-        const bakedRaster: BundleLayerNode = {
-          ...baseRaster,
-          source_ref: { kind: "embedded", sha256: bakedSha },
-          natural_width_px: record.width_px,
-          natural_height_px: record.height_px,
-          transform: [1, 0, 0, 1, 0, 0]
-        };
-        layersForFragment = reparentedLayers.map((node) =>
-          node.id === baseRaster.id ? bakedRaster : node
-        );
-        sourceFrame = { width_px: record.width_px, height_px: record.height_px };
+        // Skip the bake when the base raster already FILLS the frame
+        // 1:1 (identity transform + natural dims === frame dims) — the
+        // common uncropped capture, and the uncropped-view of a hidden
+        // crop. The baked pixels would be byte-identical to the source,
+        // so reuse the existing source_ref and avoid a decode→encode
+        // round-trip (+ a redundant new sha) on the copy hot path. The
+        // bake only earns its cost for a real crop / off-origin / scaled
+        // base raster whose natural image spills past the frame.
+        const t = baseRaster.transform;
+        const fillsFrame =
+          t[0] === 1 &&
+          t[1] === 0 &&
+          t[2] === 0 &&
+          t[3] === 1 &&
+          t[4] === 0 &&
+          t[5] === 0 &&
+          baseRaster.natural_width_px === frameWidthPx &&
+          baseRaster.natural_height_px === frameHeightPx;
+        let replacementRaster: BundleLayerNode = baseRaster;
+        if (!fillsFrame) {
+          const bakedBytes = await bakeRasterVisibleRegion({
+            sourceBytes: baseBytes,
+            naturalWidthPx: baseRaster.natural_width_px,
+            naturalHeightPx: baseRaster.natural_height_px,
+            transform: baseRaster.transform,
+            canvasWidthPx: frameWidthPx,
+            canvasHeightPx: frameHeightPx
+          });
+          const bakedSha = createHash("sha256").update(bakedBytes).digest("hex");
+          sourceBytesBySha.set(bakedSha, bakedBytes);
+          replacementRaster = {
+            ...baseRaster,
+            source_ref: { kind: "embedded", sha256: bakedSha },
+            natural_width_px: frameWidthPx,
+            natural_height_px: frameHeightPx,
+            transform: [1, 0, 0, 1, 0, 0]
+          };
+        }
+        // The crop is now baked INTO the base raster (or the view was
+        // already uncropped), so any crop VectorLayer is dead weight —
+        // and worse, carried into the target it would hijack that
+        // capture's `resolveCropViewport` (the marker's geometry no
+        // longer describes anything). Drop it from the fragment.
+        layersForFragment = reparentedLayers
+          .filter((node) => !(node.kind === "vector" && node.shape.kind === "crop"))
+          .map((node) => (node.id === baseRaster.id ? replacementRaster : node));
+        sourceFrame = { width_px: frameWidthPx, height_px: frameHeightPx };
       }
 
       // Rebuild source_refs from the FINAL layer set so the baked sha is

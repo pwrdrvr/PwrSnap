@@ -1,6 +1,7 @@
 // Native multi-format clipboard write — the one place PwrSnap performs
 // a SINGLE NSPasteboard write that declares BOTH the private layer-
-// fragment UTI and a flattened image (`public.png` + `public.tiff`).
+// fragment UTI and a flattened image (`public.png`; macOS lazily offers
+// `public.tiff` from it for consumers that ask for TIFF).
 //
 // Why this exists: Electron cannot co-write a custom UTI and a standard
 // image atomically. Every `clipboard.write*` call wraps a
@@ -22,7 +23,7 @@
 // `writeBuffer` (private UTI only), preserving PwrSnap→PwrSnap
 // fidelity at the cost of the cross-app image co-write.
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { getMainLogger } from "./log";
@@ -99,9 +100,11 @@ export type MultiFormatClipboardPayload = {
   /** Flattened composite PNG. Optional, but in practice always present;
    *  without it the helper writes a UTI-only payload. */
   pngBytes?: Buffer;
-  /** Flattened composite TIFF. Optional — the helper derives TIFF from
-   *  the PNG when omitted, so apps that only read `public.tiff` still
-   *  get the image. */
+  /** Flattened composite TIFF. Normally omitted: macOS lazily
+   *  synthesizes `public.tiff` from the co-written `public.png` for apps
+   *  that request TIFF, so the helper doesn't eagerly write a large
+   *  uncompressed one. Supply only to force specific (e.g. compressed)
+   *  TIFF bytes. */
   tiffBytes?: Buffer;
 };
 
@@ -134,7 +137,7 @@ export async function writeMultiFormatClipboard(
       resolve(ok);
     };
 
-    let child;
+    let child: ChildProcessWithoutNullStreams;
     try {
       child = spawn(helper, ["--write-clipboard"], {
         stdio: ["pipe", "pipe", "pipe"]
@@ -165,6 +168,12 @@ export async function writeMultiFormatClipboard(
     child.stderr.on("data", (chunk: string) => {
       stderr += chunk;
     });
+    // Drain stdout (the helper only prints a tiny `{"ok":true}` ack, which
+    // we don't read — we key off the exit code). Leaving a `pipe`d stdout
+    // undrained would let the OS pipe buffer back-pressure the child if it
+    // ever became chatty on stdout while we're still pushing the multi-MB
+    // stdin. resume() puts it in flowing mode and discards the bytes.
+    child.stdout.resume();
     child.on("error", (cause) => {
       clearTimeout(timer);
       log.warn("native clipboard helper errored", {
@@ -186,9 +195,26 @@ export async function writeMultiFormatClipboard(
     });
 
     // EPIPE if the child died before reading stdin — the exit / error
-    // handlers above settle the promise, so swallow it here.
+    // handlers above settle the promise, so swallow the async error here.
     child.stdin.on("error", () => undefined);
-    child.stdin.write(request);
-    child.stdin.end();
+    // write()/end() can ALSO throw synchronously (e.g. ERR_STREAM_DESTROYED
+    // if the child exited between spawn and this line). Guard it so the
+    // executor never throws — a rejected promise here would bypass the
+    // caller's writeBuffer fallback and fail the copy outright.
+    try {
+      child.stdin.write(request);
+      child.stdin.end();
+    } catch (cause) {
+      log.warn("native clipboard helper stdin write threw", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* ignore */
+      }
+      clearTimeout(timer);
+      settle(false);
+    }
   });
 }

@@ -81,10 +81,12 @@ struct ClipboardWriteRequest: Decodable {
     /// Base64 PNG of the flattened composite. Optional so callers can
     /// write a UTI-only payload, but in practice always present.
     let pngBase64: String?
-    /// Base64 TIFF of the same composite. Optional — when omitted the
-    /// helper derives TIFF from the PNG so apps that only read
-    /// `public.tiff` (older AppKit text views, Mail, some web apps)
-    /// still receive the image.
+    /// Base64 TIFF of the same composite. Optional and normally omitted:
+    /// once `public.png` is on the pasteboard macOS lazily synthesizes
+    /// `public.tiff` from it for apps that request TIFF (older AppKit
+    /// text views, Mail, some web apps), so we don't eagerly write a
+    /// large uncompressed TIFF. Present only if a caller wants to supply
+    /// its own (e.g. already-compressed) TIFF bytes.
     let tiffBase64: String?
 }
 
@@ -206,9 +208,11 @@ if args.count >= 3 && args[1] == "--activate-pid" {
 // `--write-clipboard` — perform a SINGLE multi-type NSPasteboard write.
 //
 // Reads one JSON `ClipboardWriteRequest` from stdin and writes the
-// private layer-fragment UTI **and** a flattened image (`public.png`
-// + `public.tiff`) to the general pasteboard in ONE `declareTypes`
-// pass. Prints `{"ok":true}` to stdout on success.
+// private layer-fragment UTI **and** a flattened `public.png` (plus an
+// optional caller-supplied `public.tiff`) to the general pasteboard in
+// ONE `declareTypes` pass. macOS lazily offers `public.tiff` from the
+// PNG for consumers that request it, so we don't eagerly write one.
+// Prints `{"ok":true}` to stdout on success.
 //
 // Why a native helper instead of Electron's `clipboard.*`:
 //   - Every Electron `clipboard.write*` call wraps a
@@ -252,13 +256,22 @@ if args.count >= 2 && args[1] == "--write-clipboard" {
         pngData = decoded
     }
 
-    // Prefer a caller-supplied TIFF; otherwise derive one from the PNG
-    // so apps that only consume `public.tiff` still get the image.
+    // Only write `public.tiff` if the caller explicitly supplies it. We
+    // do NOT derive a TIFF from the PNG: `NSImage.tiffRepresentation`
+    // produces an UNCOMPRESSED buffer (~w·h·4 bytes — ~33 MB for a 4K
+    // composite) that we'd write to the pasteboard on every copy, when
+    // macOS already lazily synthesizes `public.tiff` from `public.png`
+    // for any consumer that requests it. Decode failure here is a caller
+    // error — exit 3 for parity with the PNG path (no silent drop).
     var tiffData: Data?
     if let tiff = req.tiffBase64 {
-        tiffData = Data(base64Encoded: tiff)
-    } else if let png = pngData, let image = NSImage(data: png) {
-        tiffData = image.tiffRepresentation
+        guard let decoded = Data(base64Encoded: tiff), !decoded.isEmpty else {
+            FileHandle.standardError.write(
+                "tiffBase64 failed to decode\n".data(using: .utf8) ?? Data()
+            )
+            exit(3)
+        }
+        tiffData = decoded
     }
 
     let pasteboard = NSPasteboard.general

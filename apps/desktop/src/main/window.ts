@@ -6,8 +6,18 @@ import {
   type Rectangle
 } from "electron";
 import { join } from "node:path";
-import type { AppDocumentKind } from "@pwrsnap/shared";
+import {
+  EVENT_CHANNELS,
+  type AppDocumentKind,
+  type Settings
+} from "@pwrsnap/shared";
+import { bus } from "./command-bus";
 import { installDevelopmentDockIcon, showDockWithDevelopmentIcon } from "./development-dock-icon";
+import { createHotCpuProfileSession } from "./diagnostics/hot-cpu-profile-session";
+import { resolveHotCpuProfileConfig } from "./diagnostics/hot-cpu-profile-config";
+import { RendererHotCpuProfiler } from "./diagnostics/renderer-hot-cpu-profiler";
+import { broadcastRendererEventToLocalWindows } from "./events";
+import { relayRendererEventToPeer } from "./process-split/event-relay";
 import {
   getStartupAppearanceArgs,
   getStartupBackgroundColor,
@@ -19,8 +29,11 @@ import { getRuntimeProcessRole } from "./process-role";
 import { activateForUserSurface } from "./process-split/activate-user-surface";
 import { signalLibraryWindowReady } from "./process-split/agent-bridge";
 import { showWindowWhenReady } from "./window-show";
+import { DesktopSettingsService } from "./settings/desktop-settings-service";
 
 const log = getMainLogger("pwrsnap:window");
+const hotCpuLog = getMainLogger("pwrsnap:hot-cpu");
+const hotCpuProfilerSyncHandlers = new Map<number, (reason: string) => void>();
 
 /**
  * Per-platform window chrome for the main + secondary app windows.
@@ -225,6 +238,27 @@ function themedWebPreferences(): Electron.WebPreferences {
 
 function isE2E(): boolean {
   return process.env.PWRSNAP_E2E === "1";
+}
+
+function serializeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function diagnosticsOutputRoot(): string {
+  return join(app.getPath("userData"), "diagnostics", "hot-cpu");
+}
+
+async function readHotCpuSettings(): Promise<Settings> {
+  const service = new DesktopSettingsService({
+    filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
+  });
+  return service.read();
+}
+
+export function syncHotCpuProfilersFromSettings(reason: string): void {
+  for (const sync of hotCpuProfilerSyncHandlers.values()) {
+    sync(reason);
+  }
 }
 
 function centeredWindowBoundsOnDisplay(
@@ -458,6 +492,158 @@ export function createMainWindow(): BrowserWindow {
   // profile + heap snapshot covering library startup. Must attach
   // before loadRenderer so script evaluation is in the profile.
   attachRendererStartupProfiling(window, "library");
+  const { webContents } = window;
+
+  let rendererLoaded = false;
+  let hotCpuProfilerConfigKey: string | null = null;
+  let hotCpuProfilerPromise: Promise<RendererHotCpuProfiler | null> | null = null;
+  let hotCpuProfilerGeneration = 0;
+  let hotCpuProfilerSyncQueue: Promise<void> = Promise.resolve();
+
+  const createHotCpuProfiler = async (
+    hotCpuConfig: Extract<ReturnType<typeof resolveHotCpuProfileConfig>, { enabled: true }>
+  ): Promise<RendererHotCpuProfiler | null> => {
+    const created = await createHotCpuProfileSession({
+      config: hotCpuConfig,
+      versions: {
+        appVersion: app.getVersion(),
+        electronVersion: process.versions.electron ?? "unknown",
+        chromeVersion: process.versions.chrome ?? "unknown",
+        nodeVersion: process.versions.node
+      }
+    });
+
+    if (!created.ok) {
+      hotCpuLog.error("failed to initialize hot CPU diagnostics", {
+        message: created.message
+      });
+      return null;
+    }
+
+    hotCpuLog.info("session directory", {
+      sessionDirectory: created.session.directoryPath
+    });
+
+    return new RendererHotCpuProfiler({
+      config: hotCpuConfig,
+      getAppMetrics: () => app.getAppMetrics(),
+      onHeapSnapshotLimitReached: async () => {
+        await bus.dispatch(
+          "settings:write",
+          { general: { hotCpuProfilingCaptureHeapSnapshot: false } },
+          { principal: "bridge" }
+        );
+        syncHotCpuProfilersFromSettings("heap-snapshot-limit-reached");
+      },
+      onProfileWritten: (event) => {
+        broadcastRendererEventToLocalWindows(EVENT_CHANNELS.hotCpuProfileCaptured, event);
+        relayRendererEventToPeer(EVENT_CHANNELS.hotCpuProfileCaptured, event);
+      },
+      session: created.session,
+      target: webContents
+    });
+  };
+
+  const stopHotCpuProfiler = async (reason: string): Promise<void> => {
+    hotCpuProfilerGeneration += 1;
+    const profilerPromise = hotCpuProfilerPromise;
+    hotCpuProfilerConfigKey = null;
+    hotCpuProfilerPromise = null;
+    if (profilerPromise === null) return;
+
+    try {
+      const profiler = await profilerPromise;
+      await profiler?.stop(reason);
+    } catch (error) {
+      hotCpuLog.warn("failed to stop hot CPU diagnostics", {
+        reason,
+        error: serializeError(error)
+      });
+    }
+  };
+
+  const hotCpuConfigKey = (
+    hotCpuConfig: Extract<ReturnType<typeof resolveHotCpuProfileConfig>, { enabled: true }>
+  ): string =>
+    JSON.stringify({
+      startDelayMs: hotCpuConfig.startDelayMs,
+      triggerMode: hotCpuConfig.triggerMode,
+      intervalMs: hotCpuConfig.intervalMs,
+      thresholdPercent: hotCpuConfig.thresholdPercent,
+      slowburnThresholdPercent: hotCpuConfig.slowburnThresholdPercent,
+      consecutiveSamples: hotCpuConfig.consecutiveSamples,
+      profileDurationMs: hotCpuConfig.profileDurationMs,
+      cooldownMs: hotCpuConfig.cooldownMs,
+      maxProfiles: hotCpuConfig.maxProfiles,
+      captureHeapSnapshot: hotCpuConfig.captureHeapSnapshot,
+      heapSnapshotLimit: hotCpuConfig.heapSnapshotLimit
+    });
+
+  const runHotCpuProfilerSync = async (reason: string): Promise<void> => {
+    try {
+      if (!rendererLoaded || window.isDestroyed() || webContents.isDestroyed()) return;
+
+      const settings = await readHotCpuSettings();
+      const captureHeapSnapshot = settings.general.hotCpuProfilingCaptureHeapSnapshot;
+      const hotCpuConfig = resolveHotCpuProfileConfig({
+        captureHeapSnapshot,
+        enabled: settings.general.hotCpuProfilingEnabled || captureHeapSnapshot,
+        heapSnapshotLimit: settings.general.hotCpuProfilingHeapSnapshotLimit,
+        outputRoot: diagnosticsOutputRoot(),
+        repoRoot: process.cwd(),
+        slowburnThresholdPercent:
+          settings.general.hotCpuProfilingSlowburnThresholdPercent,
+        startDelayMs: settings.general.hotCpuProfilingStartDelayMs,
+        triggerMode: settings.general.hotCpuProfilingTriggerMode
+      });
+
+      if (!hotCpuConfig.enabled) {
+        await stopHotCpuProfiler(reason);
+        return;
+      }
+
+      const nextConfigKey = hotCpuConfigKey(hotCpuConfig);
+      if (hotCpuProfilerPromise !== null) {
+        if (hotCpuProfilerConfigKey === nextConfigKey) return;
+        await stopHotCpuProfiler(reason);
+      }
+
+      const generation = hotCpuProfilerGeneration;
+      hotCpuProfilerConfigKey = nextConfigKey;
+      hotCpuProfilerPromise = createHotCpuProfiler(hotCpuConfig);
+      const profiler = await hotCpuProfilerPromise;
+      if (generation !== hotCpuProfilerGeneration) {
+        await profiler?.stop("settings-changed");
+        return;
+      }
+
+      if (profiler === null) {
+        hotCpuProfilerPromise = null;
+        hotCpuProfilerConfigKey = null;
+        return;
+      }
+
+      await profiler.start();
+    } catch (error) {
+      hotCpuLog.warn("failed to sync hot CPU diagnostics", {
+        reason,
+        error: serializeError(error)
+      });
+    }
+  };
+
+  const syncHotCpuProfiler = (reason: string): void => {
+    hotCpuProfilerSyncQueue = hotCpuProfilerSyncQueue.then(
+      () => runHotCpuProfilerSync(reason),
+      () => runHotCpuProfilerSync(reason)
+    );
+    void hotCpuProfilerSyncQueue;
+  };
+  hotCpuProfilerSyncHandlers.set(window.id, syncHotCpuProfiler);
+  webContents.once("did-finish-load", () => {
+    rendererLoaded = true;
+    syncHotCpuProfiler("renderer-loaded");
+  });
 
   const target = rendererTarget();
   if (splitDiag) {
@@ -530,6 +716,8 @@ export function createMainWindow(): BrowserWindow {
   window.on("closed", () => {
     log.info("main window closed", { id: window.id });
     if (libraryWindow === window) libraryWindow = null;
+    hotCpuProfilerSyncHandlers.delete(window.id);
+    void stopHotCpuProfiler("window-closed");
     // Combined mode: no library = no dock icon; the tray keeps the
     // app alive and the user re-opens via right-click → "Open
     // Library". The split-mode library PROCESS keeps its Dock icon

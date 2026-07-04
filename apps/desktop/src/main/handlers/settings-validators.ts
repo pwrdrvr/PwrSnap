@@ -28,6 +28,8 @@ import {
   isSettingsPage,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
+  isHotCpuProfileStartDelayMs,
+  isHotCpuProfileTriggerMode,
   LIBRARY_SIDEBAR_TABS,
   MAX_HIGHLIGHT_OPACITY,
   REDACTION_STYLES
@@ -306,6 +308,94 @@ export function validateSettingsWrite(
         error: validationError(
           "invalid_general_developerMode",
           "settings:write: general.developerMode must be a boolean"
+        )
+      };
+    }
+    if (
+      !isUndefined(general.hotCpuProfilingEnabled) &&
+      !isBoolean(general.hotCpuProfilingEnabled)
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_general_hotCpuProfilingEnabled",
+          "settings:write: general.hotCpuProfilingEnabled must be a boolean"
+        )
+      };
+    }
+    if (
+      !isUndefined(general.hotCpuProfilingStartDelayMs) &&
+      !(
+        typeof general.hotCpuProfilingStartDelayMs === "number" &&
+        isHotCpuProfileStartDelayMs(general.hotCpuProfilingStartDelayMs)
+      )
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_general_hotCpuProfilingStartDelayMs",
+          "settings:write: general.hotCpuProfilingStartDelayMs must be 0, 5000, or 10000"
+        )
+      };
+    }
+    if (
+      !isUndefined(general.hotCpuProfilingTriggerMode) &&
+      !(
+        typeof general.hotCpuProfilingTriggerMode === "string" &&
+        isHotCpuProfileTriggerMode(general.hotCpuProfilingTriggerMode)
+      )
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_general_hotCpuProfilingTriggerMode",
+          "settings:write: general.hotCpuProfilingTriggerMode must be \"spike\", \"sustained\", or \"slowburn\""
+        )
+      };
+    }
+    if (
+      !isUndefined(general.hotCpuProfilingSlowburnThresholdPercent) &&
+      !(
+        typeof general.hotCpuProfilingSlowburnThresholdPercent === "number" &&
+        Number.isFinite(general.hotCpuProfilingSlowburnThresholdPercent) &&
+        general.hotCpuProfilingSlowburnThresholdPercent >= 1 &&
+        general.hotCpuProfilingSlowburnThresholdPercent <= 100
+      )
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_general_hotCpuProfilingSlowburnThresholdPercent",
+          "settings:write: general.hotCpuProfilingSlowburnThresholdPercent must be a number from 1 to 100"
+        )
+      };
+    }
+    if (
+      !isUndefined(general.hotCpuProfilingCaptureHeapSnapshot) &&
+      !isBoolean(general.hotCpuProfilingCaptureHeapSnapshot)
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_general_hotCpuProfilingCaptureHeapSnapshot",
+          "settings:write: general.hotCpuProfilingCaptureHeapSnapshot must be a boolean"
+        )
+      };
+    }
+    if (
+      !isUndefined(general.hotCpuProfilingHeapSnapshotLimit) &&
+      !(
+        typeof general.hotCpuProfilingHeapSnapshotLimit === "number" &&
+        Number.isInteger(general.hotCpuProfilingHeapSnapshotLimit) &&
+        general.hotCpuProfilingHeapSnapshotLimit >= 1 &&
+        general.hotCpuProfilingHeapSnapshotLimit <= 3
+      )
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_general_hotCpuProfilingHeapSnapshotLimit",
+          "settings:write: general.hotCpuProfilingHeapSnapshotLimit must be an integer from 1 to 3"
         )
       };
     }

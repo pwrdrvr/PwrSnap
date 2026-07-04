@@ -50,7 +50,16 @@ const baseSettings: Settings = {
     videoCapture: "CommandOrControl+Alt+C",
     reshowFloatOver: "CommandOrControl+Alt+Shift+F"
   },
-  general: { developerMode: false, launchAtLogin: false },
+  general: {
+    developerMode: false,
+    hotCpuProfilingEnabled: false,
+    hotCpuProfilingStartDelayMs: 0,
+    hotCpuProfilingTriggerMode: "sustained",
+    hotCpuProfilingSlowburnThresholdPercent: 15,
+    hotCpuProfilingCaptureHeapSnapshot: false,
+    hotCpuProfilingHeapSnapshotLimit: 2,
+    launchAtLogin: false
+  },
   experimental: { processSplit: true, dpiAwareExport: false, allowRetinaExport: true },
   appearance: { theme: "system" },
   updates: { channel: "latest" },
@@ -208,7 +217,16 @@ describe("useSettings", () => {
 
     const nextSettings: Settings = {
       ...baseSettings,
-      general: { developerMode: true, launchAtLogin: false }
+      general: {
+    developerMode: true,
+    hotCpuProfilingEnabled: false,
+    hotCpuProfilingStartDelayMs: 0,
+    hotCpuProfilingTriggerMode: "sustained",
+    hotCpuProfilingSlowburnThresholdPercent: 15,
+    hotCpuProfilingCaptureHeapSnapshot: false,
+    hotCpuProfilingHeapSnapshotLimit: 2,
+    launchAtLogin: false
+  }
     };
     await act(async () => {
       api.pushEvent(EVENT_CHANNELS.settingsChanged, {
@@ -224,7 +242,16 @@ describe("useSettings", () => {
     let lastReq: unknown = null;
     const nextSettings: Settings = {
       ...baseSettings,
-      general: { developerMode: true, launchAtLogin: false }
+      general: {
+    developerMode: true,
+    hotCpuProfilingEnabled: false,
+    hotCpuProfilingStartDelayMs: 0,
+    hotCpuProfilingTriggerMode: "sustained",
+    hotCpuProfilingSlowburnThresholdPercent: 15,
+    hotCpuProfilingCaptureHeapSnapshot: false,
+    hotCpuProfilingHeapSnapshotLimit: 2,
+    launchAtLogin: false
+  }
     };
     const api = buildApi({
       onWrite: (req) => {
@@ -261,11 +288,29 @@ describe("useSettings", () => {
     let resolveB: ((r: AnyResult) => void) | null = null;
     const settingsA: Settings = {
       ...baseSettings,
-      general: { developerMode: false, launchAtLogin: false }
+      general: {
+    developerMode: false,
+    hotCpuProfilingEnabled: false,
+    hotCpuProfilingStartDelayMs: 0,
+    hotCpuProfilingTriggerMode: "sustained",
+    hotCpuProfilingSlowburnThresholdPercent: 15,
+    hotCpuProfilingCaptureHeapSnapshot: false,
+    hotCpuProfilingHeapSnapshotLimit: 2,
+    launchAtLogin: false
+  }
     };
     const settingsB: Settings = {
       ...baseSettings,
-      general: { developerMode: true, launchAtLogin: false }
+      general: {
+    developerMode: true,
+    hotCpuProfilingEnabled: false,
+    hotCpuProfilingStartDelayMs: 0,
+    hotCpuProfilingTriggerMode: "sustained",
+    hotCpuProfilingSlowburnThresholdPercent: 15,
+    hotCpuProfilingCaptureHeapSnapshot: false,
+    hotCpuProfilingHeapSnapshotLimit: 2,
+    launchAtLogin: false
+  }
     };
     let writeIndex = 0;
     const api = buildApi({
@@ -335,11 +380,29 @@ describe("useSettings", () => {
     let resolveRead: ((r: AnyResult) => void) | null = null;
     const broadcastSettings: Settings = {
       ...baseSettings,
-      general: { developerMode: true, launchAtLogin: false }
+      general: {
+    developerMode: true,
+    hotCpuProfilingEnabled: false,
+    hotCpuProfilingStartDelayMs: 0,
+    hotCpuProfilingTriggerMode: "sustained",
+    hotCpuProfilingSlowburnThresholdPercent: 15,
+    hotCpuProfilingCaptureHeapSnapshot: false,
+    hotCpuProfilingHeapSnapshotLimit: 2,
+    launchAtLogin: false
+  }
     };
     const staleReadSettings: Settings = {
       ...baseSettings,
-      general: { developerMode: false, launchAtLogin: false }
+      general: {
+    developerMode: false,
+    hotCpuProfilingEnabled: false,
+    hotCpuProfilingStartDelayMs: 0,
+    hotCpuProfilingTriggerMode: "sustained",
+    hotCpuProfilingSlowburnThresholdPercent: 15,
+    hotCpuProfilingCaptureHeapSnapshot: false,
+    hotCpuProfilingHeapSnapshotLimit: 2,
+    launchAtLogin: false
+  }
     };
 
     const api = buildApi();

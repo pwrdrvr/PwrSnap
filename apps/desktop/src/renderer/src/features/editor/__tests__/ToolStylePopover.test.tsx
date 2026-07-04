@@ -106,7 +106,16 @@ function makeSettings(overrides?: {
       videoCapture: "CommandOrControl+Alt+C",
       reshowFloatOver: "CommandOrControl+Alt+Shift+F"
     },
-    general: { developerMode: false, launchAtLogin: false },
+    general: {
+    developerMode: false,
+    hotCpuProfilingEnabled: false,
+    hotCpuProfilingStartDelayMs: 0,
+    hotCpuProfilingTriggerMode: "sustained",
+    hotCpuProfilingSlowburnThresholdPercent: 15,
+    hotCpuProfilingCaptureHeapSnapshot: false,
+    hotCpuProfilingHeapSnapshotLimit: 2,
+    launchAtLogin: false
+  },
     experimental: { processSplit: true, dpiAwareExport: false, allowRetinaExport: true },
     appearance: { theme: "system" },
     updates: { channel: "latest" },

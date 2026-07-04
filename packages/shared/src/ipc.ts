@@ -126,6 +126,12 @@ export const EVENT_CHANNELS = {
    */
   capturesAccessChanged: "events:storage:captures-access",
   /**
+   * Main → every BrowserWindow: a hot renderer CPU profile was captured
+   * by the developer diagnostics monitor. Payload type:
+   * `HotCpuProfileCapturedEvent` (see protocol.ts).
+   */
+  hotCpuProfileCaptured: "events:diagnostics:hot-cpu-profile-captured",
+  /**
    * Tells the Library renderer to navigate to a specific capture and
    * open it in Focus mode. Used by `library:openInLibrary` so the
    * float-over toast's Edit button can hand off into the inline

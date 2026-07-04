@@ -33,6 +33,8 @@ import type {
   EditorSidebarSettings,
   EditorToolStyles,
   FilenameTimestampZone,
+  HotCpuProfileStartDelayMs,
+  HotCpuProfileTriggerMode,
   LibrarySidebarTab,
   HighlightBlendMode,
   HighlightToolStyle,
@@ -50,6 +52,9 @@ import {
   DEFAULT_CHAT_SETTINGS,
   DEFAULT_CODEX_CAPTION_MODEL,
   DEFAULT_HOTKEYS,
+  HOT_CPU_PROFILE_SLOWBURN_THRESHOLD_DEFAULT_PERCENT,
+  HOT_CPU_PROFILE_START_DELAY_DEFAULT_MS,
+  HOT_CPU_PROFILE_TRIGGER_MODE_DEFAULT,
   GRID_ZOOM_DEFAULT,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
@@ -62,6 +67,8 @@ import {
   isCodexCaptionModel,
   isColorToken,
   isEditorSidebarPanel,
+  isHotCpuProfileStartDelayMs,
+  isHotCpuProfileTriggerMode,
   isLibrarySidebarTab,
   isRedactionStyle
 } from "@pwrsnap/shared";
@@ -125,6 +132,13 @@ export function defaultSettings(): Settings {
     hotkeys: { ...DEFAULT_HOTKEYS },
     general: {
       developerMode: false,
+      hotCpuProfilingEnabled: false,
+      hotCpuProfilingStartDelayMs: HOT_CPU_PROFILE_START_DELAY_DEFAULT_MS,
+      hotCpuProfilingTriggerMode: HOT_CPU_PROFILE_TRIGGER_MODE_DEFAULT,
+      hotCpuProfilingSlowburnThresholdPercent:
+        HOT_CPU_PROFILE_SLOWBURN_THRESHOLD_DEFAULT_PERCENT,
+      hotCpuProfilingCaptureHeapSnapshot: false,
+      hotCpuProfilingHeapSnapshotLimit: 2,
       // Login-item registration is opt-in — silently installing
       // ourselves into the user's startup sequence on first run would
       // be hostile. The user flips it on in Settings -> General.
@@ -314,6 +328,34 @@ function pickFilenameTimestampZone(
 
 function pickNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function pickHotCpuProfileStartDelayMs(
+  value: unknown,
+  fallback: HotCpuProfileStartDelayMs
+): HotCpuProfileStartDelayMs {
+  return typeof value === "number" && isHotCpuProfileStartDelayMs(value)
+    ? value
+    : fallback;
+}
+
+function pickHotCpuProfileTriggerMode(
+  value: unknown,
+  fallback: HotCpuProfileTriggerMode
+): HotCpuProfileTriggerMode {
+  return typeof value === "string" && isHotCpuProfileTriggerMode(value)
+    ? value
+    : fallback;
+}
+
+function pickHotCpuHeapSnapshotLimit(value: unknown, fallback: number): number {
+  const picked = pickNumber(value, fallback);
+  return Math.min(Math.max(Math.round(picked), 1), 3);
+}
+
+function pickPercent(value: unknown, fallback: number): number {
+  const picked = pickNumber(value, fallback);
+  return Math.min(Math.max(picked, 1), 100);
 }
 
 // ---- Editor settings picks (Phase 1) ----------------------------------
@@ -585,6 +627,30 @@ function parseV1(raw: unknown): Settings | null {
       // fills in the default (false) so the fields are always present
       // in-memory.
       developerMode: pickBoolean(general.developerMode, defaults.general.developerMode),
+      hotCpuProfilingEnabled: pickBoolean(
+        general.hotCpuProfilingEnabled,
+        defaults.general.hotCpuProfilingEnabled
+      ),
+      hotCpuProfilingStartDelayMs: pickHotCpuProfileStartDelayMs(
+        general.hotCpuProfilingStartDelayMs,
+        defaults.general.hotCpuProfilingStartDelayMs
+      ),
+      hotCpuProfilingTriggerMode: pickHotCpuProfileTriggerMode(
+        general.hotCpuProfilingTriggerMode,
+        defaults.general.hotCpuProfilingTriggerMode
+      ),
+      hotCpuProfilingSlowburnThresholdPercent: pickPercent(
+        general.hotCpuProfilingSlowburnThresholdPercent,
+        defaults.general.hotCpuProfilingSlowburnThresholdPercent
+      ),
+      hotCpuProfilingCaptureHeapSnapshot: pickBoolean(
+        general.hotCpuProfilingCaptureHeapSnapshot,
+        defaults.general.hotCpuProfilingCaptureHeapSnapshot
+      ),
+      hotCpuProfilingHeapSnapshotLimit: pickHotCpuHeapSnapshotLimit(
+        general.hotCpuProfilingHeapSnapshotLimit,
+        defaults.general.hotCpuProfilingHeapSnapshotLimit
+      ),
       launchAtLogin: pickBoolean(general.launchAtLogin, defaults.general.launchAtLogin)
     },
     experimental: {

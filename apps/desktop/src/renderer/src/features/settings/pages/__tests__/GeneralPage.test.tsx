@@ -49,7 +49,16 @@ const baseSettings: Settings = {
     videoCapture: "CommandOrControl+Alt+C",
     reshowFloatOver: "CommandOrControl+Alt+Shift+F"
   },
-  general: { developerMode: false, launchAtLogin: false },
+  general: {
+    developerMode: false,
+    hotCpuProfilingEnabled: false,
+    hotCpuProfilingStartDelayMs: 0,
+    hotCpuProfilingTriggerMode: "sustained",
+    hotCpuProfilingSlowburnThresholdPercent: 15,
+    hotCpuProfilingCaptureHeapSnapshot: false,
+    hotCpuProfilingHeapSnapshotLimit: 2,
+    launchAtLogin: false
+  },
   experimental: { processSplit: true, dpiAwareExport: false, allowRetinaExport: true },
   appearance: { theme: "system" },
   updates: { channel: "latest" },
@@ -218,7 +227,16 @@ describe("GeneralPage — launch at login", () => {
 
   test("blocked-by-OS status surfaces the recovery row + opens startup settings", async () => {
     const { calls } = await renderGeneral(
-      { ...baseSettings, general: { developerMode: false, launchAtLogin: true } },
+      { ...baseSettings, general: {
+        developerMode: false,
+        hotCpuProfilingEnabled: false,
+        hotCpuProfilingStartDelayMs: 0,
+        hotCpuProfilingTriggerMode: "sustained",
+        hotCpuProfilingSlowburnThresholdPercent: 15,
+        hotCpuProfilingCaptureHeapSnapshot: false,
+        hotCpuProfilingHeapSnapshotLimit: 2,
+        launchAtLogin: true
+      } },
       { supported: true, registered: true, blockedByOs: true }
     );
     expect(container?.textContent).toContain("Disabled by the operating system");
@@ -234,7 +252,16 @@ describe("GeneralPage — launch at login", () => {
 
   test("blocked-by-OS on Linux renders the row but no dead deep-link button", async () => {
     await renderGeneral(
-      { ...baseSettings, general: { developerMode: false, launchAtLogin: true } },
+      { ...baseSettings, general: {
+        developerMode: false,
+        hotCpuProfilingEnabled: false,
+        hotCpuProfilingStartDelayMs: 0,
+        hotCpuProfilingTriggerMode: "sustained",
+        hotCpuProfilingSlowburnThresholdPercent: 15,
+        hotCpuProfilingCaptureHeapSnapshot: false,
+        hotCpuProfilingHeapSnapshotLimit: 2,
+        launchAtLogin: true
+      } },
       { supported: true, registered: true, blockedByOs: true },
       "linux"
     );

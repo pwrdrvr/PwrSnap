@@ -1,7 +1,6 @@
 // Settings → General.
 //
-// Mirrors PwrAgent, whose "General" tab hosts Appearance + Developer
-// mode + Update channel. This page folds in what used to be the
+// This page folds in what used to be the
 // standalone Appearance page. The opt-in soak toggles (two-process
 // mode, DPI-aware export) that briefly lived inline here now have their
 // own "Experimental" tab — see pages/ExperimentalPage.tsx.
@@ -9,8 +8,7 @@
 // Theme writes flow through `useSettingsContext().patch`, which the
 // main process validates and broadcasts back; every other PwrSnap
 // window receives the broadcast via `useAppearanceSync` and re-paints
-// in lock-step. Developer mode re-installs the application menu's View
-// submenu on the main side; Update channel is re-read by the
+// in lock-step. Update channel is re-read by the
 // auto-updater on the next check; Launch at login syncs the OS
 // login-item registration on the main side (launch-at-login.ts) and
 // re-reads the live OS state via `app:launchAtLoginStatus` so the card
@@ -80,7 +78,6 @@ export function GeneralPage(): ReactElement {
   const { settings, patch } = useSettingsContext();
   const ready = settings !== null;
   const theme: AppearanceTheme = settings?.appearance.theme ?? "system";
-  const developerMode = settings?.general.developerMode ?? false;
   const launchAtLogin = settings?.general.launchAtLogin ?? false;
   const channel: UpdateChannel = settings?.updates.channel ?? "latest";
   const platform = window.pwrsnapApi?.platform;
@@ -157,12 +154,6 @@ export function GeneralPage(): ReactElement {
            pattern; readers don't expect the control to look disabled
            before the very first IPC roundtrip completes (<50ms). */
       };
-
-  const onDeveloperModeChange = ready
-    ? (next: boolean): void => {
-        void patch({ general: { developerMode: next } });
-      }
-    : undefined;
 
   const onLaunchAtLoginChange = ready
     ? (next: boolean): void => {
@@ -260,9 +251,7 @@ export function GeneralPage(): ReactElement {
         <div className="pss__main-hdr-l">
           <div className="pss__main-eyebrow">General</div>
           <h1 className="pss__main-title">General</h1>
-          <p className="pss__main-sub">
-            Appearance, startup, update channel, and developer options.
-          </p>
+          <p className="pss__main-sub">Appearance, startup, and update channel.</p>
         </div>
       </div>
 
@@ -389,15 +378,6 @@ export function GeneralPage(): ReactElement {
         </Row>
       </Card>
 
-      <Card eyebrow="DEVELOPER" title="Developer mode">
-        <Row
-          label="Show developer menu items"
-          sub="Expose Reload, Force Reload, and Toggle Developer Tools in the View menu. Useful for filing bug reports or hacking on PwrSnap."
-          tag="developer"
-        >
-          <Switch on={developerMode} onChange={onDeveloperModeChange} />
-        </Row>
-      </Card>
     </>
   );
 }

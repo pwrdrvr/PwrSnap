@@ -3,7 +3,7 @@
 // CaptureModel); tests stub that callback so we can assert the op shape
 // without spinning up the main process.
 
-import { act, createElement, useEffect, useRef } from "react";
+import { act, createElement, useEffect, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   afterEach,
@@ -118,6 +118,28 @@ function Probe(props: ProbeProps): null {
   return null;
 }
 
+type RerenderProbeProps = {
+  readonly onSnapshot: (api: UseUndoRedoResult) => void;
+  readonly onReady: (rerender: () => void) => void;
+};
+
+function RerenderProbe(props: RerenderProbeProps): null {
+  const internal = useRef(false);
+  const [, setTick] = useState(0);
+  const api = useUndoRedo({
+    captureId: "cap-1",
+    applyingRef: internal,
+    dispatchEdit: dispatchEditMock
+  });
+  useEffect(() => {
+    props.onReady(() => setTick((tick) => tick + 1));
+  }, [props]);
+  useEffect(() => {
+    props.onSnapshot(api);
+  });
+  return null;
+}
+
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 
@@ -142,6 +164,28 @@ afterEach(() => {
 });
 
 describe("useUndoRedo", () => {
+  test("keeps API identity stable across unrelated renders", () => {
+    const snapshots: UseUndoRedoResult[] = [];
+    let rerender: (() => void) | null = null;
+    render(
+      createElement(RerenderProbe, {
+        onSnapshot: (api) => {
+          snapshots.push(api);
+        },
+        onReady: (fn) => {
+          rerender = fn;
+        }
+      })
+    );
+
+    const first = snapshots.at(-1)!;
+    act(() => {
+      rerender!();
+    });
+
+    expect(snapshots.at(-1)).toBe(first);
+  });
+
   test("recordCreate then undo → dispatches layers:delete with the layer id", async () => {
     let api: UseUndoRedoResult | null = null;
     render(

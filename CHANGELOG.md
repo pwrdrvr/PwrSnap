@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.0.0-beta.23 - 2026-07-04
+
+This beta fixes the editor idle CPU drain, makes Library grid sizing easier to
+control, improves failed-update recovery, and hardens release publishing so new
+GitHub Releases are created as Pre-releases from the start.
+
+- Editor Performance - Fixed the editor idle render loop so leaving an image
+  open in the editor no longer burns a renderer CPU core while nothing is
+  changing.
+- Library Grid - Added discoverable zoom stepper controls and round-to-target
+  column sizing so thumbnail density changes land on predictable column counts
+  with more consistent cell sizes.
+- Updates - Fixed failed app update installs so PwrSnap records install
+  attempts, detects when the expected version did not land, surfaces retry
+  actions, and keeps better updater diagnostics.
+- Diagnostics - Added developer diagnostics settings for capturing Library CPU
+  profiles and optional heap snapshots from packaged builds when the renderer
+  gets hot.
+- Windows Release - Fixed unsigned Windows installer publishing so the Windows
+  job waits for the canonical macOS publish path to create the GitHub Release
+  before uploading the installer asset.
+- Release Publishing - Fixed CI-published GitHub Releases so they are born as
+  GitHub Pre-releases by default, with local and workflow checks that fail if a
+  release would become Latest before validation.
+
 ## v1.0.0-beta.22 - 2026-06-28
 
 This beta improves the Library as an editing workspace, hardens AI enrichment

@@ -258,6 +258,23 @@ function electronBuilderCli() {
   );
 }
 
+function forcePrereleasePublishConfig() {
+  const configPath = join(stageDir, "electron-builder.yml");
+  const config = readFileSync(configPath, "utf8");
+  const rewritten = config.replace(/^(\s*releaseType:\s*)release\s*$/m, "$1prerelease");
+
+  if (!/^\s*releaseType:\s*prerelease\s*$/m.test(rewritten)) {
+    throw new Error(
+      "electron-builder.yml must publish GitHub releases with releaseType: prerelease"
+    );
+  }
+
+  if (rewritten !== config) {
+    writeFileSync(configPath, rewritten);
+    console.log("  patched staged electron-builder.yml releaseType -> prerelease");
+  }
+}
+
 // 1. Decode CI-provided Apple API key (if present) to a real .p8 file.
 function maybeDecodeAppleApiKey() {
   if (process.env.APPLE_API_KEY && existsSync(process.env.APPLE_API_KEY)) {
@@ -544,6 +561,9 @@ if (!dryrun) {
 // silently produce an unnotarized artifact that Gatekeeper
 // rejects on first open).
 assertNotarizationCreds();
+if (publish) {
+  forcePrereleasePublishConfig();
+}
 const builderArgs = ["--mac"];
 if (dryrun) {
   builderArgs.push("dmg");

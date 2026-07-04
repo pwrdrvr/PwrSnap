@@ -33,6 +33,10 @@ Read these files before changing release metadata:
 - Always use a leading-`v` tag such as `v0.0.1-alpha.5`.
 - The tag version, `apps/desktop/package.json` version, and
   `CHANGELOG.md` release heading must match.
+- Every GitHub Release must be born as a GitHub **Pre-release**. Do not let
+  electron-builder create a normal `Latest` release and rely on a later
+  `gh release edit --prerelease` as the normal path. Promotion to Latest is a
+  separate operator action after the build is validated.
 - Do not create or push the tag until the version and changelog are committed
   and present on the repository default branch.
 - Before pushing a release tag, verify the `apple-signing` GitHub Environment
@@ -248,15 +252,19 @@ Expect signed/notarized universal macOS assets, including DMG/ZIP files and
 
 The workflow automatically replaces electron-builder's generated/empty GitHub
 Release body with the matching `CHANGELOG.md` entry after publishing assets.
-Verify that the body is present before calling the release done:
+Verify that the body is present and the release is still marked as a GitHub
+Pre-release before calling the release done:
 
 ```bash
 body_length="$(gh release view v<version> --repo pwrdrvr/PwrSnap --json body --jq '.body | length')"
 test "$body_length" -gt 0
+is_prerelease="$(gh release view v<version> --repo pwrdrvr/PwrSnap --json isPrerelease --jq '.isPrerelease')"
+test "$is_prerelease" = true
 ```
 
 If the automated notes step did not run or must be repaired manually, extract
-the notes with the metadata checker, edit the release, and read the body back:
+the notes with the metadata checker, edit the release, and read the body /
+pre-release state back:
 
 ```bash
 node scripts/check-desktop-release-metadata.mjs \
@@ -264,6 +272,7 @@ node scripts/check-desktop-release-metadata.mjs \
   --notes-file .local/release-v<version>-notes.md
 gh release edit v<version> --repo pwrdrvr/PwrSnap --notes-file .local/release-v<version>-notes.md
 gh release view v<version> --repo pwrdrvr/PwrSnap --json body --jq '.body | length'
+gh release view v<version> --repo pwrdrvr/PwrSnap --json isPrerelease --jq '.isPrerelease'
 ```
 
 ## Local Fallback

@@ -332,4 +332,6 @@ publish:
   owner: pwrdrvr
   repo: PwrSnap
   private: true
-  releaseType: release
+  # Every CI-published build is born as a GitHub Pre-release. Promotion to
+  # Latest is a separate operator action after the release is validated.
+  releaseType: prerelease

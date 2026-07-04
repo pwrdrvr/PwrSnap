@@ -16,6 +16,7 @@ describe("Windows release configuration", () => {
     expect(config).toMatch(/win:\r?\n[\s\S]*fileAssociations:\r?\n[\s\S]*ext: pwrsnap/);
     expect(config).toContain("mimeType: application/vnd.pwrdrvr.pwrsnap.bundle+zip");
     expect(config).toContain("artifactName: \"${productName}-${version}-windows-${arch}-setup.${ext}\"");
+    expect(config).toContain("releaseType: prerelease");
   });
 
   test("Windows packager has an explicit guarded release mode", () => {
@@ -38,6 +39,7 @@ describe("Windows release configuration", () => {
     expect(script).toContain("PWRSNAP_SKIP_FFMPEG_BUILD");
     expect(script).toContain("external FFmpeg artifact will be injected before packaging");
     expect(script).toContain('for (const dir of ["build/ffmpeg", "build/ffmpeg-source"])');
+    expect(script).toContain("forcePrereleasePublishConfig");
     expect(script).toContain("build:ffmpeg");
   });
 
@@ -68,6 +70,8 @@ describe("Windows release configuration", () => {
     expect(workflow).toContain("pnpm --filter @pwrsnap/desktop package:win -- --unsigned-release");
     expect(workflow).toContain("gh release upload $env:RELEASE_TAG");
     expect(workflow).toContain("-unsigned-setup.exe");
+    expect(workflow).toContain("--json isPrerelease");
+    expect(workflow).toContain("was not born as a GitHub Pre-release");
     expect(workflow).not.toContain("Temporary unsigned Windows installer artifact");
     expect(workflow).not.toContain("FFMPEG_BUILDS_PAT");
   });

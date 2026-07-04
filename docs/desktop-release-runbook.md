@@ -10,6 +10,11 @@ the Mac App Store via signed/notarized DMG with auto-update through
 `electron-updater` against the `pwrdrvr/PwrSnap` repo. Cross-
 platform (Windows / Linux) is deferred to Phase 8.
 
+All CI-published GitHub Releases are created as **Pre-release** entries by
+default, even when the version string has no prerelease suffix. Promotion to
+Latest is a separate operator action after the build, assets, updater metadata,
+and smoke checks are validated.
+
 ---
 
 ## One-time setup
@@ -194,7 +199,8 @@ The environment-gated signing job:
    `THIRD_PARTY_LICENSES` / `CHANGELOG.md` are missing from
    `Contents/Resources`.
 6. Copies the versioned DMG to `PwrSnap.dmg` and uploads it to the release
-   as a stable-name alias. Marketing + docs sites link to this URL:
+   as a stable-name alias. After a later explicit promotion to Latest,
+   marketing + docs sites can link to this URL:
 
    ```text
    https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg
@@ -203,6 +209,9 @@ The environment-gated signing job:
    with `gh release edit --notes-file`, then reads the release back and fails
    the workflow if the body is still empty. This replaces electron-builder's
    generated/default notes after all assets are present.
+8. Reads the release back and fails if GitHub reports `isPrerelease=false`.
+   This catches any regression where electron-builder would create the release
+   as Latest before validation.
 
 Do not approve the `apple-signing` environment unless the tag, commit, and
 release metadata are the intended release. Approving the wrong run still
@@ -271,7 +280,8 @@ After launch, spot-check the document surfaces:
 - Help → Third-party Licenses opens the bundled notices.
 - Settings → About can open both release notes and third-party notices.
 
-After a local publish, make the GitHub Release body match the changelog entry:
+After a local publish, make the GitHub Release body match the changelog entry
+and verify the release is still a GitHub Pre-release:
 
 ```bash
 node scripts/check-desktop-release-metadata.mjs \
@@ -279,6 +289,7 @@ node scripts/check-desktop-release-metadata.mjs \
   --notes-file .local/release-v<version>-notes.md
 gh release edit v<version> --repo pwrdrvr/PwrSnap --notes-file .local/release-v<version>-notes.md
 gh release view v<version> --repo pwrdrvr/PwrSnap --json body --jq '.body | length'
+gh release view v<version> --repo pwrdrvr/PwrSnap --json isPrerelease --jq '.isPrerelease'
 ```
 
 ---

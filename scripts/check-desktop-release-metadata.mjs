@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopPackagePath = resolve(repoRoot, "apps/desktop/package.json");
+const electronBuilderPath = resolve(repoRoot, "apps/desktop/electron-builder.yml");
 const changelogPath = resolve(repoRoot, "CHANGELOG.md");
 
 function usage() {
@@ -93,6 +94,11 @@ if (desktopPackage.version !== expectedVersion) {
   fail(
     `apps/desktop/package.json version is ${desktopPackage.version}, but release tag ${tag} requires ${expectedVersion}`,
   );
+}
+
+const electronBuilder = readFileSync(electronBuilderPath, "utf8");
+if (!/^\s*releaseType:\s*prerelease\s*$/m.test(electronBuilder)) {
+  fail("apps/desktop/electron-builder.yml publish.releaseType must be prerelease");
 }
 
 let changelog = "";

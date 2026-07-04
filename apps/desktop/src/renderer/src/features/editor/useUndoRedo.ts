@@ -45,7 +45,7 @@
 //   bracketing keeps the original "every call → one entry" semantics
 //   except when the grace window catches a follow-up.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BundleLayerNode, OverlayRow, PwrSnapError, Result } from "@pwrsnap/shared";
 import { registerEditorUndoRedo } from "../../lib/editMenuBridge";
 import type {
@@ -789,17 +789,32 @@ export function useUndoRedo(opts: {
     });
   }, [undo, redo]);
 
-  return {
-    recordCreate,
-    recordDelete,
-    recordCrop,
-    recordGeometry,
-    recordStyle,
-    beginInteraction,
-    endInteraction,
-    undo,
-    redo,
-    canUndo: past.length > 0,
-    canRedo: future.length > 0
-  };
+  return useMemo(
+    () => ({
+      recordCreate,
+      recordDelete,
+      recordCrop,
+      recordGeometry,
+      recordStyle,
+      beginInteraction,
+      endInteraction,
+      undo,
+      redo,
+      canUndo: past.length > 0,
+      canRedo: future.length > 0
+    }),
+    [
+      recordCreate,
+      recordDelete,
+      recordCrop,
+      recordGeometry,
+      recordStyle,
+      beginInteraction,
+      endInteraction,
+      undo,
+      redo,
+      past.length,
+      future.length
+    ]
+  );
 }

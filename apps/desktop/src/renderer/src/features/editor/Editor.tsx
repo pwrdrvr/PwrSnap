@@ -123,6 +123,10 @@ import {
 import type { PasteImagePosition } from "./usePasteImage";
 import { useDropImage } from "./useDropImage";
 import { computeNewOrder, diffChanges, moveToIndex } from "./z-order";
+import {
+  filterSelectionToAliveOrInFlight,
+  pruneLandedInFlightSelectionIds
+} from "./selection-cleanup";
 import "./editor.css";
 
 /** Three structural shapes for the editor:
@@ -1271,9 +1275,9 @@ export function Editor({
   // Without this, nudge looked broken: arrow-key dispatched, row id
   // changed to a NEW value, setSelectedLayerIds([newId]) ran, render
   // ran with overlaysForRender STILL pointing at the old row → the
-  // cleanup saw [newId] absent from alive → queueMicrotask wiped the
-  // selection → the user saw the layer move 1px and the grippers
-  // vanish. Subsequent arrow keys fell through to the Library reel.
+  // cleanup saw [newId] absent from alive → wiped the selection →
+  // the user saw the layer move 1px and the grippers vanish.
+  // Subsequent arrow keys fell through to the Library reel.
   const inFlightSelectionIdsRef = useRef<Set<string>>(new Set());
   /** Replace selection with ids that just came back from a successful
    *  dispatch. The ids exist in the DB but may not be in
@@ -2983,6 +2987,43 @@ export function Editor({
   // (`clipboard:copyLayerFragment` / `pasteLayerFragment`).
   const clipboardRef = useRef<readonly Overlay[]>([]);
 
+  const overlaysForRender = useMemo<OverlayRow[] | null>(() => {
+    if (model.kind !== "loaded") return null;
+    return projectV2LayersToOverlayRows(model.layers, captureId, {
+      widthPx: model.record.width_px,
+      heightPx: model.record.height_px
+    });
+  }, [
+    captureId,
+    model.kind,
+    model.kind === "loaded" ? model.layers : null,
+    model.kind === "loaded" ? model.record.width_px : null,
+    model.kind === "loaded" ? model.record.height_px : null
+  ]);
+
+  // Drop any ids from the selection that are no longer in the list
+  // (e.g. another window deleted them via the events:overlays:changed
+  // broadcast, or the capture switched). This must run after commit:
+  // queuing setState from render creates an idle microtask/render loop
+  // when a stale id remains selected.
+  useEffect(() => {
+    if (overlaysForRender === null) return;
+    if (selectedLayerIds.length === 0 && inFlightSelectionIdsRef.current.size === 0) {
+      return;
+    }
+
+    const alive = new Set(overlaysForRender.map((row) => row.id));
+    const nextInFlight = pruneLandedInFlightSelectionIds(
+      inFlightSelectionIdsRef.current,
+      alive
+    );
+    inFlightSelectionIdsRef.current = nextInFlight;
+
+    setSelectedLayerIds((previous) =>
+      filterSelectionToAliveOrInFlight(previous, alive, nextInFlight)
+    );
+  }, [overlaysForRender, selectedLayerIds]);
+
   if (model.kind === "loading") {
     return (
       <div className="editor-loading" data-testid="editor-loading">
@@ -3001,14 +3042,13 @@ export function Editor({
   // Resolve OverlayRow[] for the existing renderer code path by
   // projecting the v2 layer tree back to OverlayRow shape (vector +
   // blur-effect cover the editor surface).
-  const overlaysForRender: OverlayRow[] = projectV2LayersToOverlayRows(
-    model.layers,
-    captureId,
-    {
-      widthPx: model.record.width_px,
-      heightPx: model.record.height_px
-    }
-  );
+  if (overlaysForRender === null) {
+    return (
+      <div className="editor-error" data-testid="editor-error">
+        Capture model was not ready.
+      </div>
+    );
+  }
   // Sync the synchronous-read ref the outer pointerdown handler reads.
   // Render-phase write to a ref is safe (refs don't trigger renders);
   // we deliberately do this before returning EditorLoaded so a click
@@ -3018,43 +3058,6 @@ export function Editor({
   // `sourceWidthPx` / `sourceHeightPx` are resolved via the raster-
   // layer scan below. See the assignment near `return <EditorLoaded
   // ... />`.
-  // Drop any ids from the selection that are no longer in the list
-  // (e.g. another window deleted them via the events:overlays:changed
-  // broadcast, or the capture switched). Skip the setState when no
-  // ids fell out — avoids a render loop.
-  //
-  // In-flight discipline: ids passed through
-  // `setSelectionTrustingDispatch` (post-nudge / paste / duplicate /
-  // create) are kept in `inFlightSelectionIdsRef` until they land in
-  // `alive`. Filter respects them so the cleanup doesn't wipe a
-  // just-dispatched selection while the broadcast is still mid-flight.
-  // Without this, every nudge wiped the selection the user just had
-  // (and the Library reel then stole the next arrow-key press).
-  if (selectedLayerIds.length > 0 || inFlightSelectionIdsRef.current.size > 0) {
-    const alive = new Set(overlaysForRender.map((r) => r.id));
-    const inFlight = inFlightSelectionIdsRef.current;
-    // Any in-flight id that has landed in alive = broadcast caught
-    // up. Drop those from the set so a LATER unrelated deletion can
-    // still kick them out of the selection via the normal path.
-    if (inFlight.size > 0) {
-      let landedCount = 0;
-      for (const id of inFlight) if (alive.has(id)) landedCount += 1;
-      if (landedCount > 0) {
-        const stillInFlight = new Set<string>();
-        for (const id of inFlight) if (!alive.has(id)) stillInFlight.add(id);
-        inFlightSelectionIdsRef.current = stillInFlight;
-      }
-    }
-    if (selectedLayerIds.length > 0) {
-      const filtered = selectedLayerIds.filter(
-        (id) => alive.has(id) || inFlightSelectionIdsRef.current.has(id)
-      );
-      if (filtered.length !== selectedLayerIds.length) {
-        // Schedule via microtask so we don't setState during render.
-        queueMicrotask(() => setSelectedLayerIds(filtered));
-      }
-    }
-  }
 
   const dispatchEditErased = model.dispatchEdit;
 

@@ -22,6 +22,7 @@ import { AIProvidersPage } from "./pages/AIProvidersPage";
 import { StoragePage } from "./pages/StoragePage";
 import { SystemPermissionsPage } from "./pages/SystemPermissionsPage";
 import { ExperimentalPage } from "./pages/ExperimentalPage";
+import { DeveloperPage } from "./pages/DeveloperPage";
 
 export function SettingsApp(): ReactElement {
   const active = useActivePage();
@@ -49,6 +50,9 @@ export function SettingsApp(): ReactElement {
       break;
     case "experimental":
       page = <ExperimentalPage />;
+      break;
+    case "developer":
+      page = <DeveloperPage />;
       break;
     default: {
       // Exhaustiveness guard: if a new SettingsPage member is added

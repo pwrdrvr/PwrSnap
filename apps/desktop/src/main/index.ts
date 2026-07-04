@@ -168,7 +168,8 @@ import {
   findMainLibraryWindow,
   reclaimDockIconIfLibraryAlive,
   scheduleDockReclaim,
-  refreshWindowsTitleBarOverlay
+  refreshWindowsTitleBarOverlay,
+  syncHotCpuProfilersFromSettings
 } from "./window";
 import { installLaunchAtLoginSync, wasLaunchedAtLogin } from "./launch-at-login";
 import { wireAppMenuBridge } from "./app-menu-bridge";
@@ -690,6 +691,7 @@ async function wireHotkeyRegistrations(): Promise<void> {
     // Theme may have changed — re-color the Windows title-bar overlay so the
     // caption strip tracks the active theme (no-op off win32).
     refreshWindowsTitleBarOverlay();
+    syncHotCpuProfilersFromSettings("settings-changed");
   });
   // System appearance flip (theme = "system" following the OS) — same re-color.
   nativeTheme.on("updated", refreshWindowsTitleBarOverlay);
@@ -1730,6 +1732,7 @@ export function bootstrapApp(): void {
         if (settings.general.developerMode !== lastKnownDeveloperMode) {
           installApplicationMenu(settings.general.developerMode);
         }
+        syncHotCpuProfilersFromSettings("settings-changed");
       });
     }
     if (!isE2E && role !== "library") {

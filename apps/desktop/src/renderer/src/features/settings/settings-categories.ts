@@ -9,8 +9,9 @@
 // `CATEGORIES` array (design/src/Settings.jsx), but intentionally
 // diverges now: the release trim dropped the unbuilt placeholder pages
 // (Startup & Menu Bar, Notifications, Capture defaults, Output & format,
-// Annotate, App detection) and folded Appearance + Developer mode +
-// Update channel into a single "General" page. The "Experimental" page
+// Annotate, App detection) and folded Appearance + Update channel into
+// a single "General" page. Developer diagnostics live under Advanced.
+// The "Experimental" page
 // is back — it hosts the opt-in soak toggles (two-process mode,
 // DPI-aware export) that previously lived inline on General, mirroring
 // PwrAgnt's Experimental tab.
@@ -48,7 +49,8 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
     group: "Advanced",
     items: [
       { id: "experimental", name: "Experimental" },
-      { id: "about", name: "About" }
+      { id: "about", name: "About" },
+      { id: "developer", name: "Developer" }
     ]
   }
 ] as const;

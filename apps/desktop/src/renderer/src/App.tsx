@@ -2,6 +2,7 @@ import { AppDocumentWindow } from "./features/documents/AppDocumentWindow";
 import { Library } from "./features/library/Library";
 import { CapturesAccessBanner } from "./features/library/CapturesAccessBanner";
 import { CartProvider } from "./features/library/CartContext";
+import { HotCpuProfileBanner } from "./features/library/HotCpuProfileBanner";
 import { FloatOverHost } from "./features/float-over/FloatOverHost";
 import { RecordingController } from "./features/recording/RecordingController";
 import { RegionSelector } from "./features/region/RegionSelector";
@@ -143,6 +144,7 @@ export function App() {
             neutral container. */}
         <div className="app-toast-stack">
           <CapturesAccessBanner />
+          <HotCpuProfileBanner />
           <AppUpdateBanner />
         </div>
       </div>

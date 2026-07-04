@@ -523,6 +523,7 @@ export type SettingsPage =
   | "storage"
   | "system-permissions"
   | "experimental"
+  | "developer"
   | "about";
 
 /** Runtime allowlist of every valid `SettingsPage`. Kept here (not in
@@ -538,8 +539,119 @@ export const SETTINGS_PAGES = [
   "storage",
   "system-permissions",
   "experimental",
+  "developer",
   "about"
 ] as const satisfies readonly SettingsPage[];
+
+export const HOT_CPU_PROFILE_START_DELAYS_MS = [0, 5_000, 10_000] as const;
+export type HotCpuProfileStartDelayMs =
+  (typeof HOT_CPU_PROFILE_START_DELAYS_MS)[number];
+export const HOT_CPU_PROFILE_START_DELAY_DEFAULT_MS: HotCpuProfileStartDelayMs = 0;
+
+export const HOT_CPU_PROFILE_TRIGGER_MODES = [
+  "spike",
+  "sustained",
+  "slowburn"
+] as const;
+export type HotCpuProfileTriggerMode =
+  (typeof HOT_CPU_PROFILE_TRIGGER_MODES)[number];
+export const HOT_CPU_PROFILE_TRIGGER_MODE_DEFAULT: HotCpuProfileTriggerMode = "sustained";
+export const HOT_CPU_PROFILE_SLOWBURN_THRESHOLD_DEFAULT_PERCENT = 15;
+
+export function isHotCpuProfileStartDelayMs(
+  value: number
+): value is HotCpuProfileStartDelayMs {
+  return HOT_CPU_PROFILE_START_DELAYS_MS.includes(value as HotCpuProfileStartDelayMs);
+}
+
+export function isHotCpuProfileTriggerMode(
+  value: string
+): value is HotCpuProfileTriggerMode {
+  return HOT_CPU_PROFILE_TRIGGER_MODES.includes(value as HotCpuProfileTriggerMode);
+}
+
+export type HotCpuProfileHeapSnapshotArtifact = {
+  filename: string;
+  path: string;
+  phase: string;
+};
+
+export type HotCpuProfileCapturedEvent = {
+  capturedAt: string;
+  heapSnapshotArtifacts?: HotCpuProfileHeapSnapshotArtifact[];
+  profileFilename: string;
+  profilePath: string;
+  sessionDirectory: string;
+  sessionDirectoryName: string;
+  triggerConsecutiveSamples: number;
+  triggerCpuPercent: number;
+  triggerMode: HotCpuProfileTriggerMode;
+  triggerThresholdPercent: number;
+};
+
+function formatPercent(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+export function formatHotCpuProfileTriggerMode(
+  mode: HotCpuProfileTriggerMode
+): string {
+  switch (mode) {
+    case "spike":
+      return "Spike";
+    case "sustained":
+      return "Sustained";
+    case "slowburn":
+      return "Slowburn";
+  }
+}
+
+export function formatHotCpuProfileTriggerSummary(
+  event: Pick<
+    HotCpuProfileCapturedEvent,
+    | "triggerConsecutiveSamples"
+    | "triggerCpuPercent"
+    | "triggerMode"
+    | "triggerThresholdPercent"
+  >
+): string {
+  const sampleLabel =
+    event.triggerConsecutiveSamples === 1
+      ? "1 sample"
+      : `${event.triggerConsecutiveSamples} consecutive samples`;
+  return [
+    `${formatHotCpuProfileTriggerMode(event.triggerMode)} (`,
+    `${sampleLabel} >= ${formatPercent(event.triggerThresholdPercent)}%; `,
+    `trigger sample ${formatPercent(event.triggerCpuPercent)}%)`
+  ].join("");
+}
+
+export function buildHotCpuProfileHandoffMessage(
+  event: HotCpuProfileCapturedEvent
+): string {
+  const heapSnapshotArtifacts = event.heapSnapshotArtifacts ?? [];
+  const heapSnapshotLines =
+    heapSnapshotArtifacts.length > 0
+      ? [
+          `Heap snapshots captured: ${heapSnapshotArtifacts.length}`,
+          ...heapSnapshotArtifacts.flatMap((artifact) => [
+            `Heap snapshot ${artifact.phase} basename: ${artifact.filename}`,
+            `Heap snapshot ${artifact.phase} path: ${artifact.path}`
+          ])
+        ]
+      : [];
+
+  return [
+    "PwrSnap captured a renderer CPU profile.",
+    `Trigger: ${formatHotCpuProfileTriggerSummary(event)}`,
+    `Session basename: ${event.sessionDirectoryName}`,
+    `Session directory path: ${event.sessionDirectory}`,
+    `CPU profile basename: ${event.profileFilename}`,
+    `CPU profile path: ${event.profilePath}`,
+    ...heapSnapshotLines,
+    "Open the .cpuprofile in Chrome DevTools Performance, or inspect the full session directory for samples, events, and optional heap snapshots."
+  ].join("\n");
+}
 
 export function isSettingsPage(value: unknown): value is SettingsPage {
   return (
@@ -1621,6 +1733,25 @@ export type Settings = {
      *  reporters flip it on in Settings. Mirrors PwrAgnt's
      *  `general.developerMode`. */
     developerMode: boolean;
+    /** Developer diagnostics: when true, the Library renderer is monitored
+     *  for hot CPU samples and writes bounded `.cpuprofile` artifacts
+     *  for troubleshooting. The monitor can also be armed via
+     *  `PWRSNAP_HOT_CPU_PROFILING=1` for field builds where Settings
+     *  is not reachable. */
+    hotCpuProfilingEnabled: boolean;
+    /** Delay before hot CPU monitoring starts after the user arms it,
+     *  giving them time to set up the scenario they want to capture. */
+    hotCpuProfilingStartDelayMs: HotCpuProfileStartDelayMs;
+    /** Trigger shape for starting the CPU profile. */
+    hotCpuProfilingTriggerMode: HotCpuProfileTriggerMode;
+    /** Lower threshold used when trigger mode is `slowburn`. */
+    hotCpuProfilingSlowburnThresholdPercent: number;
+    /** Capture bounded renderer heap snapshots around the next hot CPU
+     *  profile, then auto-disable after the limit is reached. */
+    hotCpuProfilingCaptureHeapSnapshot: boolean;
+    /** Bound heap snapshots to avoid repeatedly stalling the app or
+     *  filling disk while debugging a hot renderer. */
+    hotCpuProfilingHeapSnapshotLimit: number;
     /** When true, PwrSnap registers itself as an OS login item so the
      *  tray + capture hotkeys are ready right after sign-in. Login
      *  launches boot tray-only (no Library window). This is the saved

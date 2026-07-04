@@ -67,6 +67,7 @@ jobs:
             CHANGELOG.md \
             scripts/check-desktop-release-metadata.mjs \
             apps/desktop/package.json \
+            apps/desktop/electron-builder.yml \
             apps/desktop/release-stage \
             apps/desktop/scripts/release.mjs \
             apps/desktop/scripts/rebuild-native-for-electron.mjs \

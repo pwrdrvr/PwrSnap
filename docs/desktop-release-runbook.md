@@ -170,6 +170,7 @@ The no-secret prepare job:
    `.npmrc` + `THIRD_PARTY_LICENSES` + `CHANGELOG.md`.
 8. Archives `apps/desktop/release-stage/` plus the resolved
    `apps/desktop/node_modules` (electron-builder + electron-vite),
+   `apps/desktop/electron-builder.yml`,
    `apps/desktop/scripts/{release,verify-asar-contents,rebuild-native-for-electron}.mjs`,
    the root `node_modules`, and the workspace lockfile/config, then uploads
    them with a SHA-256 digest.

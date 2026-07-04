@@ -59,6 +59,7 @@ describe("Windows release configuration", () => {
     expect(workflow).toContain("a72aa24cd310cb3aa684b2481261cb2d8e313bfd");
     expect(workflow).toContain("ffmpeg-8.1.1-macos-universal");
     expect(workflow).toContain("ffmpeg-8.1.1-windows-x64");
+    expect(workflow).toContain("apps/desktop/electron-builder.yml");
     expect(workflow).toContain("manifest.json");
     expect(workflow).toContain("h264_videotoolbox");
     expect(workflow).toContain("release-stage/build/ffmpeg/ffmpeg");

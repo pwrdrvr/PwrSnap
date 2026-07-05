@@ -59,7 +59,11 @@ afterEach(async () => {
   await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
 });
 
-describe("writeMultiFormatClipboard", () => {
+// macOS-only: the plumbing is exercised via a `#!/bin/sh` fake helper,
+// which Windows can't spawn directly (no shebang; chmod is a no-op), and
+// the real NSPasteboard helper is macOS-only anyway. Skip off darwin —
+// same policy as the tray/clipboard E2E specs (see CLAUDE.md).
+describe.skipIf(process.platform !== "darwin")("writeMultiFormatClipboard", () => {
   test("returns false (no spawn) when no helper is resolvable", async () => {
     // Default: helper override cleared + VITEST set → auto-resolution
     // is gated off, so the caller falls back to clipboard.writeBuffer.

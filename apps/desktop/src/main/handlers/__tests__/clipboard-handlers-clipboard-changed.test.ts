@@ -140,6 +140,11 @@ const CANVAS_H = 80;
 let workDir: string;
 
 beforeAll(async () => {
+  // The cross-capture placement tests bake rasters via sharp (resize +
+  // extract + composite), which is slow enough on the Windows CI runner to
+  // blow the 5s default. Give the whole file headroom — fast tests are
+  // unaffected (the timeout is only a ceiling).
+  vi.setConfig({ testTimeout: 30_000 });
   workDir = await mkdtemp(join(tmpdir(), "pwrsnap-clipboard-changed-"));
   testDataRoot = workDir;
   testDocumentsRoot = join(workDir, "documents");
@@ -360,7 +365,9 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     expect(clipboard.writeImage).not.toHaveBeenCalled();
   });
 
-  test("issue #259/#257 — copyLayerFragment co-writes the fragment + full composite PNG through the native helper", async () => {
+  // Injects a `#!/bin/sh` fake helper (Windows can't spawn it) to exercise
+  // the native multi-write path — macOS-only, skip off darwin.
+  test.skipIf(process.platform !== "darwin")("issue #259/#257 — copyLayerFragment co-writes the fragment + full composite PNG through the native helper", async () => {
     // When the native NSPasteboard helper is available, copyLayerFragment
     // hands it the private fragment AND a flattened composite in ONE write
     // (so Claude / Slack / Mail get an image), and does NOT fall back to

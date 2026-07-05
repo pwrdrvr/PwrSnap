@@ -240,6 +240,45 @@ describe("useUndoRedo", () => {
     expect(dispatchEditMock).toHaveBeenCalledWith({ kind: "upsert", node });
   });
 
+  test("recordDelete with a bare { id } ref (raster — no OverlayRow) round-trips undo/redo", async () => {
+    // Rasters (pasted images, the captured cursor) have no overlay
+    // projection, so their delete records an id-ref + the full node.
+    // Pre-fix they recorded NOTHING: deleting the Cursor layer left the
+    // editor history empty and Cmd+Z fell through to the Library's
+    // capture-restore fallback, resurrecting an unrelated trashed
+    // capture instead of the layer.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    const rasterNode = {
+      ...makeNode("ras-cursor"),
+      kind: "raster" as const,
+      source_ref: { kind: "embedded" as const, sha256: "c".repeat(64) },
+      natural_width_px: 32,
+      natural_height_px: 48
+    };
+    act(() => {
+      api!.recordDelete({ id: "ras-cursor" }, { node: rasterNode as never });
+    });
+    await act(async () => {
+      await api!.undo();
+    });
+    // Undo restores the raster via its node.
+    expect(dispatchEditMock).toHaveBeenCalledWith({ kind: "upsert", node: rasterNode });
+    await act(async () => {
+      await api!.redo();
+    });
+    // Redo re-deletes by the recorded id — the only field replay reads.
+    expect(dispatchEditMock).toHaveBeenCalledWith({ kind: "delete", id: "ras-cursor" });
+  });
+
   test("undo then redo replays the original op", async () => {
     let api: UseUndoRedoResult | null = null;
     render(

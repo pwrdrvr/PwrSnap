@@ -2901,14 +2901,24 @@ export function Editor({
             });
           }
         }
-        // Non-source rasters aren't OverlayRows, so delete them by id via
-        // the model dispatcher (same path as the Layers panel's Delete;
-        // rasters don't project to a row, so no undo entry — an accepted
-        // v1 edge, matching api.deleteLayer).
+        // Non-source rasters aren't OverlayRows, but the deleter only
+        // needs the id — route them through the SAME closure so a
+        // raster delete is undoable and a mixed raster+overlay delete
+        // coalesces into ONE undo entry (pre-fix rasters bypassed the
+        // deleter entirely: no undo entry, so Cmd+Z fell through to the
+        // Library's capture-restore fallback).
         for (const id of rasterIds) {
-          if (model.kind === "loaded") {
+          const deleter = deleteSelectedRef.current;
+          if (deleter !== null) {
             // eslint-disable-next-line no-await-in-loop
-            await model.dispatchEdit({ kind: "delete", id });
+            await deleter(
+              { id },
+              {
+                opKind: "delete",
+                layerId: "kbd-multi-delete",
+                mergeMode: "append"
+              }
+            );
           }
         }
       } finally {
@@ -3246,8 +3256,12 @@ export function Editor({
   // re-upsert on undo, plus the matching v2 layer node when
   // applicable. The outer keyboard handler grabs the row from
   // overlaysRef before calling in.
+  // Takes an id-ref (Pick<OverlayRow,"id">) rather than a full row:
+  // the deleter only ever reads `.id`, and RASTER layers (pasted
+  // images, the captured cursor) have no OverlayRow — they delete +
+  // undo-record through this same closure via a bare `{ id }`.
   const deleteSelectedRef = useRef<
-    ((row: OverlayRow, opts?: RecordOptions) => Promise<void>) | null
+    ((row: Pick<OverlayRow, "id">, opts?: RecordOptions) => Promise<void>) | null
   >(null);
   // Hook-owned nudger (same pattern as deleteSelectedRef). Translates
   // every selected overlay by (dxn, dyn) in normalized [0,1]² space —
@@ -3725,7 +3739,7 @@ function EditorLoaded({
    *  EditorLoaded populates it with a format-aware deleter (v1 →
    *  overlays:delete, v2 → layers:delete). */
   deleteSelectedRef: React.RefObject<
-    ((row: OverlayRow, opts?: RecordOptions) => Promise<void>) | null
+    ((row: Pick<OverlayRow, "id">, opts?: RecordOptions) => Promise<void>) | null
   >;
   /** Outer keyboard handler calls into this on arrow-key presses with
    *  source-pixel deltas; EditorLoaded's closure converts to normalized
@@ -4016,7 +4030,7 @@ function EditorLoaded({
   // useCaptureModel to refetch and the deleted row drops out.
   useEffect(() => {
     deleteSelectedRef.current = async (
-      row: OverlayRow,
+      row: Pick<OverlayRow, "id">,
       opts?: RecordOptions
     ): Promise<void> => {
       // Find the layer node so recordDelete can re-insert the
@@ -4113,19 +4127,25 @@ function EditorLoaded({
           console.error("layer delete failed", result.error);
           return;
         }
-        // Record undo when the layer projects to an OverlayRow (vector
-        // + blur effect). Force `visible: true` for the projection so a
-        // hidden layer still yields a row (the live projection skips
-        // invisible layers). Other kinds delete without an undo entry —
-        // an accepted v1 edge.
+        // Record undo for EVERY deletable kind. Vector + effect layers
+        // project to an OverlayRow (force `visible: true` so a hidden
+        // layer still yields one — the live projection skips invisible
+        // layers); RASTERS (pasted images, the captured cursor) have no
+        // overlay projection, so they record a bare { id } ref — the
+        // undo replay only reads row.id, and `node` carries the full
+        // restore payload. Pre-fix rasters recorded NOTHING ("an
+        // accepted v1 edge"), so deleting the Cursor layer + Cmd+Z fell
+        // through the empty editor history to the Library's
+        // capture-restore fallback and resurrected an unrelated
+        // trashed capture.
         if (node !== null && !undoApplyingRef.current) {
           const rows = projectV2LayersToOverlayRows(
             [{ ...node, visible: true }],
             record.id,
             { widthPx: record.width_px, heightPx: record.height_px }
           );
-          const row = rows[0];
-          if (row !== undefined) undo.recordDelete(row, { node });
+          const row = rows[0] ?? { id: node.id };
+          undo.recordDelete(row, { node });
         }
       },
       moveLayerToIndex: async (id, toIndex) => {

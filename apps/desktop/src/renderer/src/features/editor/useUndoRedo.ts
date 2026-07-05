@@ -77,7 +77,12 @@ import type {
  *  path REPLACED it with the latest push — silently discarding
  *  earlier rows in a multi-delete / multi-paste burst). */
 export type CreateDeleteItem = {
-  row: OverlayRow;
+  /** Reference to the affected row. Replay only ever reads `.id` (see
+   *  applyInverse) — full OverlayRows satisfy this, and RASTER layers
+   *  (which have no overlay projection: pasted images, the captured
+   *  cursor) record a bare `{ id }` ref. The `node` carries the whole
+   *  restore payload either way. */
+  row: Pick<OverlayRow, "id">;
   node: BundleLayerNode | null;
 };
 
@@ -183,8 +188,11 @@ export type UseUndoRedoResult = {
     row: OverlayRow,
     opts?: RecordOptions & { node?: BundleLayerNode | null }
   ) => void;
+  /** Record a layer delete. `row` needs only `.id` (replay reads
+   *  nothing else) — rasters, which have no OverlayRow projection,
+   *  pass a bare `{ id }`; `node` carries the full restore payload. */
   recordDelete: (
-    row: OverlayRow,
+    row: Pick<OverlayRow, "id">,
     opts?: RecordOptions & { node?: BundleLayerNode | null }
   ) => void;
   /** Record a crop. `rect` is the normalized rect that was committed.
@@ -468,7 +476,7 @@ export function useUndoRedo(opts: {
   );
   const recordDelete = useCallback(
     (
-      row: OverlayRow,
+      row: Pick<OverlayRow, "id">,
       opts?: RecordOptions & { node?: BundleLayerNode | null }
     ) =>
       push(

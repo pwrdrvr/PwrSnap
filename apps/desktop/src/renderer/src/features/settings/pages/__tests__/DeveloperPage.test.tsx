@@ -82,6 +82,7 @@ const baseSettings: Settings = {
 };
 
 const patchMock = vi.fn(async (): Promise<void> => undefined);
+const dispatchCalls: { name: string; req: unknown }[] = [];
 
 let contextValue: Pick<UseSettingsValue, "settings" | "patch">;
 let container: HTMLDivElement | null = null;
@@ -92,6 +93,27 @@ vi.mock("../../SettingsContext", () => ({
 }));
 
 async function renderDeveloper(settings: Settings = baseSettings): Promise<void> {
+  Object.defineProperty(window, "pwrsnapApi", {
+    configurable: true,
+    value: {
+      dispatch: async (name: string, req: unknown) => {
+        dispatchCalls.push({ name, req });
+        if (name === "diagnostics:clearHotCpuSessions") {
+          return {
+            ok: true,
+            value: {
+              deletedSessions: 2,
+              errors: [],
+              freedBytes: 123,
+              skippedEntries: 1
+            }
+          };
+        }
+        return { ok: true, value: undefined };
+      },
+      on: () => () => undefined
+    }
+  });
   contextValue = { settings, patch: patchMock as unknown as UseSettingsValue["patch"] };
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -126,6 +148,7 @@ afterEach(async () => {
   container = null;
   root = null;
   patchMock.mockClear();
+  dispatchCalls.length = 0;
 });
 
 describe("DeveloperPage", () => {
@@ -163,5 +186,40 @@ describe("DeveloperPage", () => {
     expect(patchMock).toHaveBeenCalledWith({
       general: { hotCpuProfilingTriggerMode: "slowburn" }
     });
+  });
+
+  test("diagnostics folder controls dispatch reveal and cleanup commands", async () => {
+    await renderDeveloper();
+
+    await act(async () => {
+      buttonByText("Reveal Folder").click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      buttonByText("Clear Old Sessions").click();
+      await Promise.resolve();
+    });
+
+    expect(dispatchCalls).toContainEqual({
+      name: "diagnostics:revealHotCpuRoot",
+      req: {}
+    });
+    expect(dispatchCalls).toContainEqual({
+      name: "diagnostics:clearHotCpuSessions",
+      req: {}
+    });
+    expect(container?.textContent).toContain("Cleared 2 sessions; skipped 1.");
+  });
+
+  test("cleanup is disabled while hot CPU profiling is armed", async () => {
+    await renderDeveloper({
+      ...baseSettings,
+      general: {
+        ...baseSettings.general,
+        hotCpuProfilingEnabled: true
+      }
+    });
+
+    expect(buttonByText("Clear Old Sessions").disabled).toBe(true);
   });
 });

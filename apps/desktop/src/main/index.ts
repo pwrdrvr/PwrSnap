@@ -61,6 +61,7 @@ import { closeAcpAgentPool, warmConfiguredAcpAgents } from "./ai/acp-agent-pool"
 import { closeCodexAgentPool } from "./ai/codex-agent-pool";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
+import { registerDiagnosticsHandlers } from "./handlers/diagnostics-handlers";
 import {
   disposeCodexProfileHandlers,
   registerCodexProfileHandlers
@@ -1671,6 +1672,7 @@ export function bootstrapApp(): void {
       // or organizes captures inside them — chat surfaces included.
       registerSettingsWindowHandlers();
       registerAppWindowHandlers();
+      registerDiagnosticsHandlers();
       registerLibraryChatHandlers();
       registerSizzleChatHandlers();
       registerLibraryWindowHandlers();

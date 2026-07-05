@@ -42,6 +42,7 @@ describe("commandOwner", () => {
     expect(commandOwner("editor:open")).toBe("library");
     expect(commandOwner("layers:upsert")).toBe("library");
     expect(commandOwner("render:composite")).toBe("library");
+    expect(commandOwner("diagnostics:revealHotCpuRoot")).toBe("library");
     expect(commandOwner("app:openDocumentWindow")).toBe("library");
     // Exact override beats the clipboard: → agent prefix: copyText is
     // registered with its only callers, the library surfaces.

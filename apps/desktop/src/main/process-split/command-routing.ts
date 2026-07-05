@@ -66,6 +66,7 @@ const PREFIX_OWNERS: ReadonlyArray<readonly [string, CommandOwner]> = [
   // which are windows-with-state, not background pipelines.
   ["codex:libraryChat:", "library"],
   ["codex:sizzleChat:", "library"],
+  ["diagnostics:", "library"],
   ["editor:", "library"],
   ["layers:", "library"],
   ["render:", "library"],

@@ -184,8 +184,11 @@ export type UseUndoRedoResult = {
   /** Record a layer create. Pass the inserted BundleLayerNode under
    *  `node` — required so the redo path can re-dispatch `layers:upsert`
    *  with the original layer shape. */
+  /** Record a layer create. Like recordDelete, `row` needs only `.id`
+   *  (create-undo deletes by id; redo re-upserts via `node`) — raster
+   *  creates (duplicate / in-memory paste) pass a bare `{ id }`. */
   recordCreate: (
-    row: OverlayRow,
+    row: Pick<OverlayRow, "id">,
     opts?: RecordOptions & { node?: BundleLayerNode | null }
   ) => void;
   /** Record a layer delete. `row` needs only `.id` (replay reads
@@ -462,7 +465,7 @@ export function useUndoRedo(opts: {
 
   const recordCreate = useCallback(
     (
-      row: OverlayRow,
+      row: Pick<OverlayRow, "id">,
       opts?: RecordOptions & { node?: BundleLayerNode | null }
     ) =>
       push(

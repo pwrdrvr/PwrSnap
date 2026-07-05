@@ -1287,6 +1287,28 @@ export function useCaptureModel(captureId: string): CaptureModel {
               message: `updateGeometry: cannot apply ${op.geometry.kind} geometry to layer kind ${current.kind}`
             });
           }
+          if (current.kind === "raster") {
+            // Raster geometry is a pure transform swap on a stable id —
+            // commit it as ONE atomic in-place layers:update. The
+            // delete-plus-upsert dance below exists for vector/effect
+            // shape merges (the upsert restore path); routing rasters
+            // through it was non-atomic (an upsert failure after the
+            // delete stranded the raster soft-deleted with no undo
+            // entry) and doubled the IPC + broadcast-refetch cost of
+            // every drag/nudge commit.
+            const updResult = await dispatch("layers:update", {
+              captureId,
+              layer: merged
+            });
+            if (!updResult.ok) return err(updResult.error);
+            return {
+              ok: true,
+              value: {
+                kind: "update",
+                artifact: { format: 2, node: updResult.value }
+              }
+            };
+          }
           const delResult = await dispatch("layers:delete", { id: op.layerId });
           if (!delResult.ok) return err(delResult.error);
           const insResult = await dispatch("layers:upsert", {

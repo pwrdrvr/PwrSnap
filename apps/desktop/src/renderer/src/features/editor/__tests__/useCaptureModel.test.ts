@@ -1486,6 +1486,80 @@ describe("useCaptureModel", () => {
     expect(result.value.artifact.node.effect.rotation).toBeCloseTo(Math.PI / 4);
   });
 
+  test("13d-raster. v2 dispatchEdit: raster updateGeometry commits via ONE atomic layers:update (no delete+upsert)", async () => {
+    // The delete-plus-upsert dance exists for vector/effect shape merges;
+    // routing rasters through it was non-atomic (an upsert failure after
+    // the delete stranded the raster soft-deleted with no undo entry) and
+    // doubled the IPC per drag/nudge commit. Rasters have a stable id and
+    // a pure transform swap — one in-place layers:update.
+    const record = makeRecord("cap_2", 2);
+    const rasterLayer: BundleLayerNode = {
+      id: "ly_pasted",
+      parent_id: "grp_root",
+      name: "",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 10, 20],
+      z_index: 3,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-24T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-24T00:00:00Z",
+      kind: "raster",
+      source_ref: { kind: "embedded", sha256: "b".repeat(64) },
+      natural_width_px: 200,
+      natural_height_px: 100
+    };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list") return Promise.resolve({ ok: true, value: [rasterLayer] });
+      if (name === "layers:update") {
+        const r = req as { layer: BundleLayerNode };
+        return Promise.resolve({ ok: true, value: r.layer });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+    const result = await m.dispatchEdit({
+      kind: "updateGeometry",
+      layerId: "ly_pasted",
+      geometry: { kind: "transform", transform: [1, 0, 0, 1, 150, 240] }
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.kind).toBe("update");
+    if (result.value.kind !== "update") throw new Error("unreachable");
+    expect(result.value.artifact.node.id).toBe("ly_pasted");
+
+    // In-place update carried the merged transform, preserving the id.
+    const update = dispatchMock.mock.calls.find((c) => c[0] === "layers:update");
+    expect(update).toBeDefined();
+    const sentLayer = (update?.[1] as { layer: BundleLayerNode }).layer;
+    expect(sentLayer.id).toBe("ly_pasted");
+    if (sentLayer.kind !== "raster") throw new Error("expected raster");
+    expect(sentLayer.transform).toEqual([1, 0, 0, 1, 150, 240]);
+    // The non-atomic pair must NOT run for rasters.
+    expect(dispatchMock.mock.calls.some((c) => c[0] === "layers:delete")).toBe(false);
+    expect(dispatchMock.mock.calls.some((c) => c[0] === "layers:upsert")).toBe(false);
+  });
+
   test("13d-blur-style. v2 dispatchEdit: updateOverlay persists blur radius/style and stable id", async () => {
     const record = makeRecord("cap_2", 2);
     const blurLayer: BundleLayerNode = {

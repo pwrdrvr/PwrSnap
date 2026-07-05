@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { HotCpuProfileConfig } from "./hot-cpu-profile-config";
+import { pruneHotCpuProfileSessions } from "./hot-cpu-profile-retention";
 
 export type HotCpuProfileSample = {
   capturedAt: string;
@@ -148,6 +149,22 @@ export async function createHotCpuProfileSession(options: {
   async function registerArtifact(filename: string): Promise<void> {
     artifacts.push(filename);
     await writeManifest(manifestPath, manifest);
+  }
+
+  const retention = await pruneHotCpuProfileSessions({
+    currentSessionDirectoryName: directoryName,
+    root: options.config.outputRoot
+  });
+  if (
+    retention.deletedSessions > 0 ||
+    retention.skippedEntries > 0 ||
+    retention.errors.length > 0
+  ) {
+    await appendRecord(eventsPath, {
+      capturedAt: new Date().toISOString(),
+      type: "retention-pruned",
+      detail: retention
+    });
   }
 
   return {

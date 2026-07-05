@@ -7,9 +7,11 @@
 
 import { useEffect, useState, type ReactElement } from "react";
 import type {
+  HotCpuProfileCleanupResult,
   HotCpuProfileStartDelayMs,
   HotCpuProfileTriggerMode
 } from "@pwrsnap/shared";
+import { dispatch } from "../../../lib/pwrsnap";
 import { Card, Row, Switch } from "../components";
 import { useSettingsContext } from "../SettingsContext";
 
@@ -96,6 +98,7 @@ export function DeveloperPage(): ReactElement {
   const heapSnapshotLimit = settings?.general.hotCpuProfilingHeapSnapshotLimit ?? 2;
   const [countdownEndsAt, setCountdownEndsAt] = useState<number | null>(null);
   const [countdownRemainingMs, setCountdownRemainingMs] = useState(0);
+  const [diagnosticsStatus, setDiagnosticsStatus] = useState<string | null>(null);
 
   useEffect(() => {
     if (countdownEndsAt === null) return;
@@ -112,6 +115,7 @@ export function DeveloperPage(): ReactElement {
   const countdownActive = countdownRemainingMs > 0;
   const countdownSeconds = Math.ceil(countdownRemainingMs / 1_000);
   const startDelayText = formatStartDelay(startDelayMs);
+  const cleanupDisabled = !ready || hotCpuEnabled || captureHeapSnapshot || countdownActive;
 
   const startHotCpuCapture = async (): Promise<void> => {
     await patch({ general: { hotCpuProfilingEnabled: true } });
@@ -129,6 +133,24 @@ export function DeveloperPage(): ReactElement {
     setCountdownEndsAt(null);
     setCountdownRemainingMs(0);
     await patch({ general: { hotCpuProfilingEnabled: false } });
+  };
+
+  const revealDiagnosticsRoot = async (): Promise<void> => {
+    setDiagnosticsStatus(null);
+    const result = await dispatch("diagnostics:revealHotCpuRoot", {});
+    if (!result.ok) {
+      setDiagnosticsStatus(`Reveal failed: ${result.error.message}`);
+    }
+  };
+
+  const clearDiagnostics = async (): Promise<void> => {
+    setDiagnosticsStatus(null);
+    const result = await dispatch("diagnostics:clearHotCpuSessions", {});
+    if (!result.ok) {
+      setDiagnosticsStatus(`Cleanup failed: ${result.error.message}`);
+      return;
+    }
+    setDiagnosticsStatus(formatCleanupResult(result.value));
   };
 
   return (
@@ -268,7 +290,49 @@ export function DeveloperPage(): ReactElement {
             }}
           />
         </Row>
+
+        <Row
+          label="Diagnostics folder"
+          sub="Reveal captured CPU profiles, heap snapshots, and sidecar logs in Finder."
+          tag="folder"
+        >
+          <div className="pss__update-channel">
+            <button
+              className="pss__top-btn"
+              type="button"
+              disabled={!ready}
+              onClick={() => {
+                void revealDiagnosticsRoot();
+              }}
+            >
+              Reveal Folder
+            </button>
+            <button
+              className="pss__top-btn"
+              type="button"
+              disabled={cleanupDisabled}
+              onClick={() => {
+                void clearDiagnostics();
+              }}
+            >
+              Clear Old Sessions
+            </button>
+            {diagnosticsStatus !== null ? (
+              <span className="pss__update-note" aria-live="polite">
+                {diagnosticsStatus}
+              </span>
+            ) : null}
+          </div>
+        </Row>
       </Card>
     </>
   );
+}
+
+function formatCleanupResult(result: HotCpuProfileCleanupResult): string {
+  const deleted = result.deletedSessions;
+  const skipped = result.skippedEntries;
+  const suffix =
+    result.errors.length > 0 ? `, ${result.errors.length} errors` : "";
+  return `Cleared ${deleted} session${deleted === 1 ? "" : "s"}; skipped ${skipped}${suffix}.`;
 }

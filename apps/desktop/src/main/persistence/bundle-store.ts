@@ -645,6 +645,24 @@ export type PersistCaptureFromTempArgs = {
    * for thumbnail / preset-rendering math.
    */
   devicePixelRatio?: number | undefined;
+  /**
+   * Cursor sprite sampled at capture-trigger time (cursor-capture plan,
+   * Phase 3). When present, the sprite is embedded as a second bundle
+   * source and a deletable "Cursor" raster layer is placed above the
+   * base Source at (xPx, yPx) canvas pixels, drawn at drawWidth/HeightPx
+   * (the transform scale maps the sprite's natural raster to that box —
+   * Retina/XL-cursor sprites exceed their point size). Undefined = no
+   * cursor layer (setting off, sampling failed, cursor outside region).
+   */
+  cursorLayer?:
+    | {
+        pngBytes: Buffer;
+        xPx: number;
+        yPx: number;
+        drawWidthPx: number;
+        drawHeightPx: number;
+      }
+    | undefined;
 };
 
 export type PersistCaptureFromTempResult = {
@@ -885,6 +903,60 @@ export async function persistCaptureFromTempV2(
     }
   ];
 
+  // Optional cursor layer (cursor-capture Phase 3): embed the sampled
+  // sprite as a second content-addressed source and stack a deletable
+  // "Cursor" raster above the base Source. The transform's scale maps
+  // the sprite's natural raster onto its on-canvas draw box (Retina /
+  // enlarged-cursor sprites carry more pixels than their point size).
+  // A sprite that fails to decode is dropped — the capture itself
+  // never fails on this nicety.
+  let cursorSource: { sha256: string; bytes: Buffer } | null = null;
+  if (args.cursorLayer !== undefined) {
+    try {
+      const cursorMeta = await sharp(args.cursorLayer.pngBytes).metadata();
+      const cw = cursorMeta.width ?? 0;
+      const chh = cursorMeta.height ?? 0;
+      if (cw > 0 && chh > 0) {
+        const cursorSha = createHash("sha256")
+          .update(args.cursorLayer.pngBytes)
+          .digest("hex");
+        cursorSource = { sha256: cursorSha, bytes: args.cursorLayer.pngBytes };
+        initialLayers.push({
+          id: nanoid(16),
+          parent_id: rootGroupId,
+          kind: "raster" as const,
+          source_ref: { kind: "embedded" as const, sha256: cursorSha },
+          natural_width_px: cw,
+          natural_height_px: chh,
+          name: "Cursor",
+          visible: true,
+          locked: false,
+          opacity: 1,
+          blend_mode: "normal" as const,
+          transform: [
+            args.cursorLayer.drawWidthPx / cw,
+            0,
+            0,
+            args.cursorLayer.drawHeightPx / chh,
+            args.cursorLayer.xPx,
+            args.cursorLayer.yPx
+          ] as [number, number, number, number, number, number],
+          z_index: 1,
+          source: "user" as const,
+          ai_run_id: null,
+          applied_at: now,
+          rejected_at: null,
+          superseded_by: null,
+          created_at: now
+        });
+      }
+    } catch (cause) {
+      log.warn("cursor layer dropped: sprite decode failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  }
+
   const document: BundleDocumentV2 = {
     document_format_version: 1,
     edits_version: 0,
@@ -904,7 +976,13 @@ export async function persistCaptureFromTempV2(
   const bundleBuf = await packBundleV2({
     manifest,
     document,
-    sources: new Map([[sha256, buf]]),
+    sources:
+      cursorSource === null
+        ? new Map([[sha256, buf]])
+        : new Map([
+            [sha256, buf],
+            [cursorSource.sha256, cursorSource.bytes]
+          ]),
     layerBytes: new Map(),
     thumbnailJpg
   });
@@ -946,6 +1024,11 @@ export async function persistCaptureFromTempV2(
   // without re-reading the bundle. The bundle's document.json is the
   // durable record; the layers table is the cached projection.
   insertLayerTreeForCapture(id, initialLayers);
+
+  // The initial thumbnail was built from the bare source; when a cursor
+  // layer landed, schedule a repack so the composite thumbnail picks it
+  // up (plan: "accept a one-cycle stale thumb fixed on first repack").
+  if (cursorSource !== null) scheduleRepack(id);
 
   log.info("bundle-store: persisted new v2 capture", {
     id,

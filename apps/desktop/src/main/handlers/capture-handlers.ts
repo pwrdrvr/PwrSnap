@@ -62,12 +62,18 @@ import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
 import { getCaptureById, insertCapture } from "../persistence/captures-repo";
 import { ensureEffectiveSrcPath, putCaptureSource } from "../persistence/source-store";
 import { persistCaptureFromTempV2 } from "../persistence/bundle-store";
+import {
+  resolveCursorLayerForRect,
+  sampleCursor,
+  type CursorLayerPlacement,
+  type CursorSample
+} from "../capture/cursor-sample";
 import { getMainLogger } from "../log";
 import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
-import { getActiveExportStrategy } from "./settings-handlers";
+import { getActiveExportStrategy, readDesktopSettings } from "./settings-handlers";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
@@ -191,6 +197,40 @@ export function registerCaptureHandlers(): void {
       });
     }
     const selectorMode = mode === "timed" ? "auto" : mode;
+
+    // Cursor sample (cursor-capture Phase 3): kicked off HERE — after
+    // the timed countdown (so the sample matches where the user parked
+    // the cursor, not where it was at trigger) and BEFORE pickRegion.
+    // NOTHING here is awaited on the hotkey→selector path: the settings
+    // read (uncached disk parse) and the helper spawn chain off a
+    // promise that runs while nothing else is happening.
+    let cursorSamplePromise: Promise<CursorSample | null> | null =
+      startCursorSampleIfEnabled();
+
+    // The sample must land BEFORE the selector swaps the OS cursor for
+    // its synthetic crosshair — NSCursor.currentSystem reads the LIVE
+    // cursor at read time, and the pre-warmed selector can show in
+    // ~10ms while a cold helper spawn takes 50-200ms. Wait a bounded
+    // beat for the sample; if it hasn't resolved in time, DROP it (a
+    // later resolution would have photographed our own crosshair).
+    // Warm spawns land well inside the budget; a cold first-capture
+    // miss just means no cursor layer that one time.
+    if (cursorSamplePromise !== null) {
+      const settled = await Promise.race([
+        cursorSamplePromise.then(
+          () => true,
+          () => true
+        ),
+        new Promise<boolean>((resolve) =>
+          setTimeout(() => resolve(false), CURSOR_SAMPLE_PRE_SELECTOR_BUDGET_MS)
+        )
+      ]);
+      if (!settled) {
+        log.info("cursor sample missed the pre-selector budget — dropped (tainted)");
+        cursorSamplePromise = null;
+      }
+    }
+
     // Timed mode leaves PwrSnap chrome alone — the user may have
     // re-opened the tray menu during the 5 s precisely to capture
     // it. Every other mode keeps the default behavior of hiding our
@@ -370,7 +410,48 @@ export function registerCaptureHandlers(): void {
       // on a clean screen, never under the picker.
       await tearDownSelector();
 
-      const persisted = await persistAndBroadcast(captureResult.tempPath, sourceApp);
+      // Resolve the cursor layer (if sampling ran): place the sprite
+      // relative to the captured rect in canvas pixels. Skipped for
+      // full-window captures — the window's backing buffer has its own
+      // coordinate space and may be occluded, so a screen-space cursor
+      // position is meaningless there (computing via the window frame
+      // is a possible follow-up for the frontmost-window case).
+      let cursorLayer: CursorLayerPlacement | undefined;
+      if (
+        cursorSamplePromise !== null &&
+        !(selection.fullWindow === true && selection.snappedWindowId !== undefined)
+      ) {
+        const display = screen.getAllDisplays().find((d) => d.id === selection.displayId);
+        if (display !== undefined) {
+          // selection.rect is GLOBAL logical px (cropScreenSnapshot
+          // subtracts display.bounds to localize) — the same top-left
+          // global point space CGEvent reports the cursor in. CLAMP the
+          // rect to display.bounds exactly like cropScreenSnapshot
+          // clamps its crop window (Math.max(0, local)): a snapped
+          // window overhanging the display edge is cropped at the edge,
+          // so the CANVAS origin is the clamped origin — placing
+          // against the raw rect would offset the sprite by the
+          // overhang.
+          const bx = display.bounds.x;
+          const by = display.bounds.y;
+          const clampedX = Math.max(selection.rect.x, bx);
+          const clampedY = Math.max(selection.rect.y, by);
+          const clampedW =
+            Math.min(selection.rect.x + selection.rect.w, bx + display.bounds.width) -
+            clampedX;
+          const clampedH =
+            Math.min(selection.rect.y + selection.rect.h, by + display.bounds.height) -
+            clampedY;
+          cursorLayer = await resolveCursorLayerForRect(
+            cursorSamplePromise,
+            { x: clampedX, y: clampedY, w: clampedW, h: clampedH },
+            display.scaleFactor
+          );
+        }
+      }
+      const persisted = await persistAndBroadcast(captureResult.tempPath, sourceApp, {
+        cursorLayer
+      });
       if (persisted.ok) {
         // Selector is already gone; this swaps the idle float-over to the
         // loaded preview in place (the window stays at floating level).
@@ -452,6 +533,10 @@ export function registerCaptureHandlers(): void {
         message: `unknown display id: ${displayId}`
       });
     }
+    // No selector on this path — no crosshair race. The sample runs
+    // concurrently with chrome-hide + screencapture (~100ms+), so it's
+    // normally settled by persist time.
+    const cursorSamplePromise = startCursorSampleIfEnabled();
     await hidePwrSnapChromeAndSettle();
     const captureResult = await captureScreen(displayId);
     if (!captureResult.ok) {
@@ -462,7 +547,17 @@ export function registerCaptureHandlers(): void {
       });
     }
     const persisted = await persistAndBroadcast(captureResult.tempPath, null, {
-      devicePixelRatio: display.scaleFactor
+      devicePixelRatio: display.scaleFactor,
+      cursorLayer: await resolveCursorLayerForRect(
+        cursorSamplePromise,
+        {
+          x: display.bounds.x,
+          y: display.bounds.y,
+          w: display.bounds.width,
+          h: display.bounds.height
+        },
+        display.scaleFactor
+      )
     });
     if (persisted.ok) {
       setFloatOverState({
@@ -499,6 +594,10 @@ export function registerCaptureHandlers(): void {
       });
     }
     await hidePwrSnapChromeAndSettle();
+    // One sample serves both modes — the cursor sits on exactly one
+    // display; the per-region hotspot check places it there and skips
+    // everywhere else. No selector on this path, so no crosshair race.
+    const cursorSamplePromise = startCursorSampleIfEnabled();
 
     if (req.mode === "split") {
       // One capture record per display. We serialize the screencapture
@@ -534,7 +633,12 @@ export function registerCaptureHandlers(): void {
           });
         }
         const persisted = await persistAndBroadcast(captureResult.tempPath, null, {
-          devicePixelRatio: d.scaleFactor
+          devicePixelRatio: d.scaleFactor,
+          cursorLayer: await resolveCursorLayerForRect(
+            cursorSamplePromise,
+            { x: d.bounds.x, y: d.bounds.y, w: d.bounds.width, h: d.bounds.height },
+            d.scaleFactor
+          )
         });
         if (!persisted.ok) {
           await rollback(persisted.error.code);
@@ -588,8 +692,21 @@ export function registerCaptureHandlers(): void {
       // succeeded or threw, since either way we're done with them.
       await unlinkTempPaths(parts.map((p) => p.tempPath));
     }
+    // Stitched canvas = the displays' union rect rendered at the max
+    // scale factor (stitchDisplays scales every display to maxScale and
+    // offsets by bounds − union origin) — the same mapping places the
+    // cursor.
+    const unionX = Math.min(...displays.map((d) => d.bounds.x));
+    const unionY = Math.min(...displays.map((d) => d.bounds.y));
+    const unionRight = Math.max(...displays.map((d) => d.bounds.x + d.bounds.width));
+    const unionBottom = Math.max(...displays.map((d) => d.bounds.y + d.bounds.height));
     const persisted = await persistAndBroadcast(stitched.tempPath, null, {
-      devicePixelRatio: stitched.scaleFactor
+      devicePixelRatio: stitched.scaleFactor,
+      cursorLayer: await resolveCursorLayerForRect(
+        cursorSamplePromise,
+        { x: unionX, y: unionY, w: unionRight - unionX, h: unionBottom - unionY },
+        stitched.scaleFactor
+      )
     });
     if (!persisted.ok) return persisted;
     setFloatOverState({
@@ -1032,10 +1149,32 @@ async function runTimedDelay(): Promise<Result<void, PwrSnapError>> {
   }
 }
 
+/** Pre-selector wait budget for the cursor sample (interactive path).
+ *  Warm helper spawns land in ~30-80ms; the budget only bites on a
+ *  cold first spawn, where we prefer "no cursor layer once" over
+ *  delaying the selector further or sampling our own crosshair. */
+const CURSOR_SAMPLE_PRE_SELECTOR_BUDGET_MS = 350;
+
+/** Kick off the cursor sample IF the setting allows — fully
+ *  non-blocking (the uncached settings disk read and the helper spawn
+ *  both live inside the returned promise chain) and never rejecting.
+ *  Shared by every image-capture entry point so the Settings toggle
+ *  means what it says: "screenshots", not "one kind of screenshot". */
+function startCursorSampleIfEnabled(): Promise<CursorSample | null> {
+  return readDesktopSettings()
+    .then((settings) =>
+      settings.recording.imageCaptureCursor ? sampleCursor() : null
+    )
+    .catch(() => null);
+}
+
 async function persistAndBroadcast(
   tempPath: string,
   sourceApp: CaptureSource,
-  options: { devicePixelRatio?: number | undefined } = {}
+  options: {
+    devicePixelRatio?: number | undefined;
+    cursorLayer?: CursorLayerPlacement | undefined;
+  } = {}
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
   // New captures land as v2 layer-tree bundles. The read path in
   // coordinator.ts still handles v1 transparently, and the v1→v2
@@ -1052,7 +1191,8 @@ async function persistAndBroadcast(
       sourceApp === null
         ? null
         : { bundleId: sourceApp.bundleId, appName: sourceApp.appName },
-    devicePixelRatio: options.devicePixelRatio
+    devicePixelRatio: options.devicePixelRatio,
+    cursorLayer: options.cursorLayer
   });
 
   log.info("capture persisted", {

@@ -486,6 +486,100 @@ if args.count >= 4 && args[1] == "--extract-app-icon" {
     exit(0)
 }
 
+// `--sample-cursor` — one-shot sample of the CURRENT system cursor:
+// sprite PNG (with alpha) + hotspot + global position. Called by the
+// image-capture flow at hotkey-trigger time — BEFORE the region
+// selector replaces the OS cursor with its synthetic crosshair — so
+// the sample matches what the frozen screen snapshot would have shown.
+// The main process places the sprite as a deletable "Cursor" raster
+// layer at persist time (cursor-capture plan, Phase 3).
+//
+// Primary API: `NSCursor.currentSystem` — returns the FOREGROUND app's
+// live cursor cross-process. Deprecated in macOS 15 with no public
+// replacement (Finding B in the plan); it still works, and the caller
+// treats any failure as "no cursor layer this capture" — never fatal.
+// Position via CGEvent(source: nil) — GLOBAL points, top-left origin,
+// no flip needed. Read adjacent to the sprite read: the cursor can
+// change between the two.
+//
+// stdout JSON: { pngBase64, pixelWidth, pixelHeight, pointWidth,
+//   pointHeight, hotspotX, hotspotY, posX, posY } — hotspot/pos/point*
+//   in POINTS; pixel* is the PNG's actual raster size (Retina sprites
+//   are typically 2x the point size).
+//
+// Exit codes:
+//   0 — success
+//   5 — cursor sprite unavailable (NSCursor.currentSystem nil / no rep)
+//   6 — output encode failure (sprite PNG or the JSON envelope)
+if args.count >= 2 && args[1] == "--sample-cursor" {
+    // NSCursor needs an AppKit connection; NSApplication.shared
+    // establishes one without running the event loop.
+    _ = NSApplication.shared
+
+    let position = CGEvent(source: nil)?.location
+    guard let cursor = NSCursor.currentSystem, let pos = position else {
+        FileHandle.standardError.write(
+            "cursor sample unavailable (currentSystem nil or no event source)\n"
+                .data(using: .utf8) ?? Data()
+        )
+        exit(5)
+    }
+
+    let image = cursor.image
+    let hotSpot = cursor.hotSpot
+    // Pick the LARGEST bitmap rep. `tiffRepresentation` → NSBitmapImageRep
+    // decodes only the FIRST rep of a multi-rep cursor image — typically
+    // the 1× rep — which would then be upscaled onto a Retina-sized draw
+    // box downstream (blurry cursor). Standard cursors carry 1× + 2×
+    // reps; prefer the densest one and fall back to the TIFF path for
+    // exotic single-rep images.
+    let bestBitmapRep =
+        image.representations
+            .compactMap { $0 as? NSBitmapImageRep }
+            .max(by: { $0.pixelsWide < $1.pixelsWide })
+        ?? image.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0) }
+    guard let rep = bestBitmapRep,
+          let png = rep.representation(using: .png, properties: [:])
+    else {
+        FileHandle.standardError.write(
+            "cursor sprite PNG encode failed\n".data(using: .utf8) ?? Data()
+        )
+        exit(6)
+    }
+
+    struct CursorSample: Encodable {
+        let pngBase64: String
+        let pixelWidth: Int
+        let pixelHeight: Int
+        let pointWidth: Double
+        let pointHeight: Double
+        let hotspotX: Double
+        let hotspotY: Double
+        let posX: Double
+        let posY: Double
+    }
+    let sample = CursorSample(
+        pngBase64: png.base64EncodedString(),
+        pixelWidth: rep.pixelsWide,
+        pixelHeight: rep.pixelsHigh,
+        pointWidth: Double(image.size.width),
+        pointHeight: Double(image.size.height),
+        hotspotX: Double(hotSpot.x),
+        hotspotY: Double(hotSpot.y),
+        posX: Double(pos.x),
+        posY: Double(pos.y)
+    )
+    let encoder = JSONEncoder()
+    if let out = try? encoder.encode(sample) {
+        FileHandle.standardOutput.write(out)
+        exit(0)
+    }
+    FileHandle.standardError.write(
+        "cursor sample JSON encode failed\n".data(using: .utf8) ?? Data()
+    )
+    exit(6)
+}
+
 /// Snapshot envelope. Wraps the on-screen window list with the
 /// pid / bundle id of `NSWorkspace.shared.frontmostApplication` —
 /// the system's "currently active app". The TS side cross-checks

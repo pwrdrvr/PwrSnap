@@ -80,6 +80,8 @@ export function GeneralPage(): ReactElement {
   const theme: AppearanceTheme = settings?.appearance.theme ?? "system";
   const launchAtLogin = settings?.general.launchAtLogin ?? false;
   const channel: UpdateChannel = settings?.updates.channel ?? "latest";
+  const videoCaptureCursor = settings?.recording.videoCaptureCursor ?? true;
+  const imageCaptureCursor = settings?.recording.imageCaptureCursor ?? true;
   const platform = window.pwrsnapApi?.platform;
 
   // Live OS-side registration state, distinct from the saved toggle —
@@ -261,6 +263,35 @@ export function GeneralPage(): ReactElement {
             options={THEME_OPTIONS}
             value={theme}
             onChange={onThemeChange}
+          />
+        </Row>
+      </Card>
+
+      <Card eyebrow="CAPTURE" title="Cursor capture">
+        <Row
+          label="Capture the cursor in screenshots"
+          sub="Adds the mouse pointer to new screenshots as its own layer — select, move, or delete it in the editor like any annotation."
+          tag="images"
+        >
+          <Switch
+            on={imageCaptureCursor}
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ recording: { imageCaptureCursor: next } });
+            }}
+          />
+        </Row>
+        <Row
+          label="Capture the cursor in recordings"
+          sub="Bakes the pointer into new video recordings. Press C in the recording selector to override per-recording."
+          tag="video"
+        >
+          <Switch
+            on={videoCaptureCursor}
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ recording: { videoCaptureCursor: next } });
+            }}
           />
         </Row>
       </Card>

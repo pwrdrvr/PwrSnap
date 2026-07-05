@@ -13,6 +13,7 @@ export * from "./arrow";
 export * from "./appearance-arg";
 export * from "./bundle-manifest-schema-v2";
 export * from "./crop-viewport";
+export * from "./base-raster";
 export * from "./clipboard-layer-fragment";
 export * from "./clipboard-placement";
 export * from "./clipboard-copy-verbs";

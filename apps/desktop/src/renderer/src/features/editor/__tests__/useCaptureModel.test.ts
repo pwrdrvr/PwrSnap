@@ -74,6 +74,7 @@ import {
   useCaptureModel,
   inverseCropRect,
   cropRectFromCanvas,
+  applyGeometryToLayer,
   type CaptureModel,
   type LayerView
 } from "../useCaptureModel";
@@ -2298,5 +2299,83 @@ describe("cropRectFromCanvas (cumulative crop for full uncrop)", () => {
     // The crop dispatcher computes the new canvas as round(rect.w × W).
     expect(Math.round(inverse.w * 300)).toBe(1000);
     expect(Math.round(inverse.h * 300)).toBe(1000);
+  });
+});
+
+// --- Raster `transform` geometry (raster unification) -----------------
+//
+// Pure-function contract for the new GeometryUpdate kind: a raster move
+// merges the full affine transform onto the raster node (id preserved —
+// the delete-plus-insert restore path depends on it), and every other
+// pairing kind-mismatches to null so a stray transform op can't corrupt
+// a vector/effect layer (and vice versa).
+
+describe("applyGeometryToLayer — raster transform kind", () => {
+  const rasterNode: BundleLayerNode = {
+    id: "ly_raster",
+    parent_id: "grp_root",
+    name: "",
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend_mode: "normal",
+    transform: [1, 0, 0, 1, 10, 20],
+    z_index: 3,
+    source: "user",
+    ai_run_id: null,
+    applied_at: "2026-05-24T00:00:00Z",
+    rejected_at: null,
+    superseded_by: null,
+    created_at: "2026-05-24T00:00:00Z",
+    kind: "raster",
+    source_ref: { kind: "embedded", sha256: "b".repeat(64) },
+    natural_width_px: 200,
+    natural_height_px: 100
+  };
+  const canvas = { width: 800, height: 600 };
+
+  test("merges the new transform onto a raster, preserving the id", () => {
+    const merged = applyGeometryToLayer(
+      rasterNode,
+      { kind: "transform", transform: [1, 0, 0, 1, 150, 240] },
+      canvas
+    );
+    expect(merged).not.toBeNull();
+    expect(merged!.id).toBe("ly_raster");
+    expect(merged!.kind).toBe("raster");
+    expect((merged as Extract<BundleLayerNode, { kind: "raster" }>).transform).toEqual([
+      1, 0, 0, 1, 150, 240
+    ]);
+  });
+
+  test("rejects non-transform geometry on a raster (kind mismatch → null)", () => {
+    expect(
+      applyGeometryToLayer(
+        rasterNode,
+        { kind: "rect", rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } },
+        canvas
+      )
+    ).toBeNull();
+  });
+
+  test("rejects transform geometry on a vector (kind mismatch → null)", () => {
+    const vector: BundleLayerNode = {
+      ...rasterNode,
+      id: "ly_vec",
+      kind: "vector",
+      shape: {
+        kind: "shape",
+        rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+        color: "#ff0000",
+        filled: false
+      }
+    } as unknown as BundleLayerNode;
+    expect(
+      applyGeometryToLayer(
+        vector,
+        { kind: "transform", transform: [1, 0, 0, 1, 5, 5] },
+        canvas
+      )
+    ).toBeNull();
   });
 });

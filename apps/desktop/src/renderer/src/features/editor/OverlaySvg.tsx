@@ -105,6 +105,7 @@ export function OverlaySvg({
   sourceWidthPx,
   sourceHeightPx,
   selectedLayerIds = [],
+  selectedRasterBoxesN = [],
   liveOverride = null
 }: {
   overlays: OverlayRow[];
@@ -130,6 +131,19 @@ export function OverlaySvg({
    *  Delete/Backspace. Defaults to `[]` so existing tests that don't
    *  pass the prop keep working. */
   selectedLayerIds?: readonly string[];
+  /** Selected NON-BASE raster layers' normalized bounding boxes
+   *  (pasted images / captured cursor). Rasters live outside the
+   *  OverlayRow projection, so the editor computes each selected
+   *  raster's box (rasterLayerBoundsN, draft-override-aware) and
+   *  passes it here to get the SAME dashed selection chrome as
+   *  every other layer kind — one visual language for "selected". */
+  selectedRasterBoxesN?: readonly {
+    id: string;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  }[];
   /** Live-drag geometry override. When set, the row whose id matches
    *  `id` IS A KEY in the map is rendered with the overridden
    *  geometry instead of its persisted `data.*` fields — so e.g.
@@ -341,6 +355,14 @@ export function OverlaySvg({
             />
           );
         })}
+        {selectedRasterBoxesN.map((box) => (
+          <RasterSelectionOutline
+            key={box.id}
+            box={box}
+            imageWidthPx={imageWidthPx}
+            imageHeightPx={imageHeightPx}
+          />
+        ))}
         {/* Drafts (live-drag preview) rendered last so they're on
             top of selection outlines. Phase 3.3 — the draft now
             consumes `draftStyle.color` so the live preview matches
@@ -1189,6 +1211,63 @@ function textBoundsBox(
     w: naturalWidthPx / imageWidthPx,
     h: naturalHeightPx / imageHeightPx
   };
+}
+
+/** Dashed selection chrome for a selected NON-BASE raster layer —
+ *  IDENTICAL visual constants to `SelectionOutline`'s dashed box
+ *  (pad 0.006, stroke shortSide*0.003, dash 0.012/0.008, white halo
+ *  under accent) so a selected pasted image reads exactly like a
+ *  selected rect/text. Kept as its own tiny component because
+ *  SelectionOutline's box derivation + rotation pivots are
+ *  overlay-kind-specific; rasters arrive pre-boxed (rasterLayerBoundsN,
+ *  draft-override-aware) and don't rotate in v2.0. If the constants
+ *  here ever change, change SelectionOutline's to match (and vice
+ *  versa). */
+function RasterSelectionOutline({
+  box,
+  imageWidthPx,
+  imageHeightPx
+}: {
+  box: { x: number; y: number; w: number; h: number };
+  imageWidthPx: number;
+  imageHeightPx: number;
+}): ReactElement {
+  const pad = 0.006;
+  const x = (box.x - pad) * imageWidthPx;
+  const y = (box.y - pad) * imageHeightPx;
+  const w = (box.w + pad * 2) * imageWidthPx;
+  const h = (box.h + pad * 2) * imageHeightPx;
+  const stroke = "var(--accent, #ff8a1f)";
+  const shortSide = Math.min(imageWidthPx, imageHeightPx);
+  const strokeW = Math.max(1, shortSide * 0.003);
+  const dashOn = shortSide * 0.012;
+  const dashOff = shortSide * 0.008;
+  const dashArray = `${dashOn} ${dashOff}`;
+  return (
+    <g data-testid="selection-outline" data-kind="raster">
+      {/* White halo for contrast on dark images. */}
+      <rect
+        x={x}
+        y={y}
+        width={w}
+        height={h}
+        fill="none"
+        stroke="white"
+        strokeWidth={strokeW * 2}
+        strokeDasharray={dashArray}
+      />
+      <rect
+        x={x}
+        y={y}
+        width={w}
+        height={h}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={strokeW}
+        strokeDasharray={dashArray}
+      />
+    </g>
+  );
 }
 
 /** Phase 3.2 selection outline. Draws a 1px accent dashed rectangle

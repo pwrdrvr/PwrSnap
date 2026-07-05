@@ -480,7 +480,8 @@ export function registerClipboardHandlers(): void {
       const viewport = resolveCropViewport({
         layers: rawLayers,
         canvasWidthPx: record.width_px,
-        canvasHeightPx: record.height_px
+        canvasHeightPx: record.height_px,
+        sourceSha256: record.sha256
       });
       const frameWidthPx = viewport.widthPx;
       const frameHeightPx = viewport.heightPx;

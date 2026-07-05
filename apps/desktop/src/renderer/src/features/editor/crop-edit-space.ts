@@ -21,7 +21,17 @@ import {
 } from "@pwrsnap/shared";
 import type { LayerEditOp, GeometryUpdate, OverlayPatch } from "./useCaptureModel";
 
-export function forwardGeometry(geometry: GeometryUpdate, rect: CropRect): GeometryUpdate {
+export function forwardGeometry(
+  geometry: GeometryUpdate,
+  rect: CropRect,
+  /** Source raster natural dims — needed ONLY by the `transform` kind,
+   *  whose coords are canvas PIXELS (the normalized kinds shift via
+   *  forwardCropPoint/Rect without them). In the uncropped view the
+   *  displayed canvas IS the full source, so these equal the display
+   *  canvas dims. */
+  naturalW: number,
+  naturalH: number
+): GeometryUpdate {
   switch (geometry.kind) {
     case "arrow":
       return {
@@ -36,6 +46,23 @@ export function forwardGeometry(geometry: GeometryUpdate, rect: CropRect): Geome
       return { ...geometry, point: forwardCropPoint(geometry.point, rect) };
     case "step":
       return { kind: "step", point: forwardCropPoint(geometry.point, rect) };
+    case "transform":
+      // Raster transform tx/ty are in display-canvas px (source space
+      // while uncropped); stored space is the cropped canvas whose
+      // origin sits at (rect.x·naturalW, rect.y·naturalH). Scale is
+      // untouched — crop windows, never scales (same rule as effect
+      // clip_rect). Mirrors projectLayerToSource's non-base raster arm.
+      return {
+        kind: "transform",
+        transform: [
+          geometry.transform[0],
+          geometry.transform[1],
+          geometry.transform[2],
+          geometry.transform[3],
+          geometry.transform[4] - rect.x * naturalW,
+          geometry.transform[5] - rect.y * naturalH
+        ]
+      };
   }
 }
 
@@ -74,7 +101,7 @@ export function forwardOpToStored(
         nodes: op.nodes.map((n) => forwardLayerToStored(n, rect, naturalW, naturalH))
       };
     case "updateGeometry":
-      return { ...op, geometry: forwardGeometry(op.geometry, rect) };
+      return { ...op, geometry: forwardGeometry(op.geometry, rect, naturalW, naturalH) };
     case "updateOverlay":
       return { ...op, patch: forwardPatch(op.patch, rect) };
     case "delete":

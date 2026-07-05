@@ -65,7 +65,7 @@ import {
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { selectBaseRaster } from "./base-raster";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
-import { RasterLayers, type RasterDraftTransform } from "./RasterLayers";
+import { RasterLayers } from "./RasterLayers";
 import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor } from "./resolveToolColor";
 import { shapeStrokeGeometry } from "./shape-stroke-geometry";
@@ -75,7 +75,7 @@ import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUnd
 import { decideClickSelection } from "./decideClickSelection";
 import { pruneLandedDraftGeometry } from "./draft-geometry";
 import { isReorderableLayer } from "./layer-roles";
-import { hitTestRasterLayers } from "./raster-hit-test";
+import { hitTestRasterLayers, rasterLayerBoundsN } from "./raster-hit-test";
 import { forwardOpToStored, forwardGeometry } from "./crop-edit-space";
 import {
   useCaptureModel,
@@ -1112,7 +1112,8 @@ export function Editor({
         : resolveCropViewport({
             layers: loadedRaw.layers,
             canvasWidthPx: loadedRaw.record.width_px,
-            canvasHeightPx: loadedRaw.record.height_px
+            canvasHeightPx: loadedRaw.record.height_px,
+            sourceSha256: loadedRaw.record.sha256
           }),
     [loadedRaw]
   );
@@ -1164,9 +1165,16 @@ export function Editor({
   const toStoredGeometry = useCallback(
     (g: GeometryUpdate): GeometryUpdate =>
       isUncroppedView
-        ? forwardGeometry(g, { x: vpRectX, y: vpRectY, w: vpRectW, h: vpRectH })
+        ? forwardGeometry(
+            g,
+            { x: vpRectX, y: vpRectY, w: vpRectW, h: vpRectH },
+            // Natural source dims — used only by the raster `transform`
+            // kind (px-space shift); normalized kinds ignore them.
+            vpNaturalW,
+            vpNaturalH
+          )
         : g,
-    [isUncroppedView, vpRectX, vpRectY, vpRectW, vpRectH]
+    [isUncroppedView, vpRectX, vpRectY, vpRectW, vpRectH, vpNaturalW, vpNaturalH]
   );
 
   // ----- Tool + style state ---------------------------------------
@@ -1343,6 +1351,11 @@ export function Editor({
     startYn: number;
     pointerId: number;
     snapshots: { id: string; data: OverlayRow["data"] }[];
+    /** Selected non-base rasters riding the same group drag. Their
+     *  transforms translate by the same normalized delta (converted to
+     *  canvas px) and commit through the same undo bracket, so a mixed
+     *  selection moves — and undoes — as one unit. */
+    rasterSnapshots: { id: string; transform: AffineTransform }[];
   } | null>(null);
   // EditorLoaded populates this with a closure over `dispatchEdit` +
   // `undo` so the outer onPointerUp (which doesn't have direct access
@@ -1351,6 +1364,7 @@ export function Editor({
   const commitMultiDragRef = useRef<
     | ((
         snapshots: readonly { id: string; data: OverlayRow["data"] }[],
+        rasterSnapshots: readonly { id: string; transform: AffineTransform }[],
         dxn: number,
         dyn: number
       ) => Promise<void>)
@@ -1358,11 +1372,13 @@ export function Editor({
   >(null);
   // Raster canvas drag-to-move. Non-base rasters (pasted images, the
   // captured cursor) live outside the OverlayRow / TransformHandles
-  // system, so they get a dedicated gesture: `rasterDragRef` holds the
-  // in-flight drag; `rasterDraft` is the live preview the RasterLayers
-  // <img> follows; `commitRasterDragRef` is the inner-component closure
-  // (with storedLayers / dispatch access) the outer onPointerUp calls to
-  // persist the move — same ref-handoff pattern as `commitMultiDragRef`.
+  // system, so a SOLO raster click gets a dedicated gesture:
+  // `rasterDragRef` holds the in-flight drag; `rasterDrafts` is the
+  // live-preview override map the RasterLayers <img>s follow (shared
+  // with the group drag, which writes an entry per selected raster);
+  // `commitRasterDragRef` is the inner-component closure the outer
+  // onPointerUp calls to persist + undo-record the move — same
+  // ref-handoff pattern as `commitMultiDragRef`.
   const rasterDragRef = useRef<{
     id: string;
     startXn: number;
@@ -1372,9 +1388,17 @@ export function Editor({
     pointerId: number;
     moved: boolean;
   } | null>(null);
-  const [rasterDraft, setRasterDraft] = useState<RasterDraftTransform | null>(null);
+  const [rasterDrafts, setRasterDrafts] = useState<ReadonlyMap<
+    string,
+    AffineTransform
+  > | null>(null);
   const commitRasterDragRef = useRef<
-    ((id: string, transform: AffineTransform) => Promise<void>) | null
+    | ((
+        id: string,
+        startTransform: AffineTransform,
+        nextTransform: AffineTransform
+      ) => Promise<void>)
+    | null
   >(null);
   // Live-drag preview: a map of layer id → in-progress geometry that
   // every overlay renderer (OverlaySvg / BlurOverlays /
@@ -1662,11 +1686,46 @@ export function Editor({
       if (action.type === "replace") replaceSelection(action.id);
       else if (action.type === "toggle") toggleSelection(action.id);
       else if (action.type === "clear") clearSelection();
-      // Raster canvas drag-to-move: a click on a non-base raster (pasted
-      // image / cursor) arms the dedicated raster gesture and captures the
-      // pointer. Rasters have no TransformHandles, so the canvas owns
-      // their drag. Takes priority over the multi-drag arm below — a
-      // raster is never part of the overlay snapshot set.
+      // `keep` = selection unchanged.
+      // GROUP drag first: if the click landed on a layer — overlay OR
+      // raster — already in a MULTI-selection, arm the group drag with
+      // BOTH kinds of snapshot so the whole selection moves together
+      // (the pre-unification code armed the solo raster gesture first,
+      // which dragged the raster alone out of a mixed selection).
+      // Single-selected overlay drags still go through TransformHandles'
+      // body-hit rect (which catches the pointerdown before this code
+      // runs), so the multi-drag only arms at >1 member.
+      if (
+        action.type === "keep" &&
+        hit !== null &&
+        selectedLayerIds.length > 1 &&
+        selectedLayerIds.includes(hit)
+      ) {
+        const snapshots = selectedLayerIds
+          .map((id) => {
+            const row = overlays.find((o) => o.id === id);
+            return row !== undefined ? { id, data: row.data } : null;
+          })
+          .filter((s): s is { id: string; data: OverlayRow["data"] } => s !== null);
+        const rasterSnapshots = selectedLayerIds
+          .map((id) => rastersRef.current.find((r) => r.id === id))
+          .filter((r): r is NonNullable<typeof r> => r !== undefined)
+          .map((r) => ({ id: r.id, transform: r.transform }));
+        if (snapshots.length > 0 || rasterSnapshots.length > 0) {
+          multiDragStartRef.current = {
+            startXn: start.xn,
+            startYn: start.yn,
+            pointerId: event.pointerId,
+            snapshots,
+            rasterSnapshots
+          };
+          (event.target as HTMLElement).setPointerCapture(event.pointerId);
+        }
+        return;
+      }
+      // SOLO raster drag: a click on a non-base raster (pasted image /
+      // cursor) outside a multi-selection. Rasters have no
+      // TransformHandles, so the canvas owns their single-drag.
       if (
         rasterHit !== null &&
         hit === rasterHit.id &&
@@ -1686,35 +1745,6 @@ export function Editor({
           (event.target as HTMLElement).setPointerCapture(event.pointerId);
         }
         return;
-      }
-      // `keep` = selection unchanged.
-      // If the click landed on a layer already in a MULTI-selection
-      // (selection size > 1) — initiate a group drag-to-move.
-      // Single-selected drags still go through TransformHandles'
-      // body-hit rect (which catches the pointerdown before this
-      // code runs), so we only kick off the multi-drag when the
-      // selection actually has >1 member.
-      if (
-        action.type === "keep" &&
-        hit !== null &&
-        selectedLayerIds.length > 1 &&
-        selectedLayerIds.includes(hit)
-      ) {
-        const snapshots = selectedLayerIds
-          .map((id) => {
-            const row = overlays.find((o) => o.id === id);
-            return row !== undefined ? { id, data: row.data } : null;
-          })
-          .filter((s): s is { id: string; data: OverlayRow["data"] } => s !== null);
-        if (snapshots.length > 0) {
-          multiDragStartRef.current = {
-            startXn: start.xn,
-            startYn: start.yn,
-            pointerId: event.pointerId,
-            snapshots
-          };
-          (event.target as HTMLElement).setPointerCapture(event.pointerId);
-        }
       }
       return;
     }
@@ -1763,7 +1793,9 @@ export function Editor({
         if (action.type === "replace") replaceSelection(action.id);
         else if (action.type === "toggle") toggleSelection(action.id);
         else if (action.type === "clear") clearSelection();
-        // Multi-drag init — mirror of the pointer-tool branch.
+        // Multi-drag init — mirror of the pointer-tool branch (incl.
+        // selected rasters riding the group, even though drawing-tool
+        // clicks only hit-test overlays).
         if (
           action.type === "keep" &&
           selectedLayerIds.length > 1 &&
@@ -1777,12 +1809,17 @@ export function Editor({
             .filter(
               (s): s is { id: string; data: OverlayRow["data"] } => s !== null
             );
-          if (snapshots.length > 0) {
+          const rasterSnapshots = selectedLayerIds
+            .map((id) => rastersRef.current.find((r) => r.id === id))
+            .filter((r): r is NonNullable<typeof r> => r !== undefined)
+            .map((r) => ({ id: r.id, transform: r.transform }));
+          if (snapshots.length > 0 || rasterSnapshots.length > 0) {
             multiDragStartRef.current = {
               startXn: start.xn,
               startYn: start.yn,
               pointerId: event.pointerId,
-              snapshots
+              snapshots,
+              rasterSnapshots
             };
             (event.target as HTMLElement).setPointerCapture(event.pointerId);
           }
@@ -1852,7 +1889,7 @@ export function Editor({
     // Raster canvas drag live preview — runs first, mutually exclusive
     // with the multi-select drag (a raster never enters the overlay
     // snapshot set). Translate the raster's start transform by the cursor
-    // delta (normalized → canvas pixels) and stash it in `rasterDraft`;
+    // delta (normalized → canvas pixels) and stash it in `rasterDrafts`;
     // RasterLayers paints the <img> at the override until commit.
     const rasterDrag = rasterDragRef.current;
     if (rasterDrag !== null) {
@@ -1862,9 +1899,13 @@ export function Editor({
       const dyn = cur.yn - rasterDrag.startYn;
       const MIN_RASTER_DRAG_N = 0.002;
       if (!rasterDrag.moved && Math.hypot(dxn, dyn) < MIN_RASTER_DRAG_N) return;
-      rasterDrag.moved = true;
+      // Read dims BEFORE latching `moved` — latching first meant a
+      // momentarily-null dims frame locked moved=true with the start
+      // transform still in `current`, and pointerup then committed a
+      // no-op write.
       const dims = textHitDimsRef.current;
       if (dims === null) return;
+      rasterDrag.moved = true;
       const t = rasterDrag.startTransform;
       const next: AffineTransform = [
         t[0],
@@ -1875,7 +1916,7 @@ export function Editor({
         t[5] + dyn * dims.canvasHeightPx
       ];
       rasterDrag.current = next;
-      setRasterDraft({ id: rasterDrag.id, transform: next });
+      setRasterDrafts(new Map([[rasterDrag.id, next]]));
       return;
     }
     // Multi-select drag live preview. While the user is dragging a
@@ -1916,6 +1957,26 @@ export function Editor({
         if (geom !== null) next.set(snapshot.id, geom);
       }
       setDraftGeometry(next.size > 0 ? next : null);
+      // Selected rasters ride the same delta — normalized → canvas px
+      // via the same dims the solo raster drag uses.
+      if (multiDrag.rasterSnapshots.length > 0) {
+        const dims = textHitDimsRef.current;
+        if (dims !== null) {
+          const rasterNext = new Map<string, AffineTransform>();
+          for (const snap of multiDrag.rasterSnapshots) {
+            const t = snap.transform;
+            rasterNext.set(snap.id, [
+              t[0],
+              t[1],
+              t[2],
+              t[3],
+              t[4] + dxn * dims.canvasWidthPx,
+              t[5] + dyn * dims.canvasHeightPx
+            ]);
+          }
+          setRasterDrafts(rasterNext);
+        }
+      }
       return;
     }
     if (draft === null) return;
@@ -2011,7 +2072,7 @@ export function Editor({
         // Best-effort release.
       }
       rasterDragRef.current = null;
-      setRasterDraft(null);
+      setRasterDrafts(null);
       return;
     }
     // OS-level pointer cancellation (window blur during a drag,
@@ -2037,6 +2098,7 @@ export function Editor({
       // drag's override alone (TransformHandles owns that lifecycle
       // and may still be mid-drag through its own capture).
       setDraftGeometry(null);
+      setRasterDrafts(null);
     }
   }
 
@@ -2055,9 +2117,13 @@ export function Editor({
         // Best-effort release; capture may already be gone.
       }
       if (rasterDrag.moved) {
-        await commitRasterDragRef.current?.(rasterDrag.id, rasterDrag.current);
+        await commitRasterDragRef.current?.(
+          rasterDrag.id,
+          rasterDrag.startTransform,
+          rasterDrag.current
+        );
       }
-      setRasterDraft(null);
+      setRasterDrafts(null);
       return;
     }
     // Multi-select drag commit runs BEFORE the draft branch. If
@@ -2108,9 +2174,15 @@ export function Editor({
           // see pruneLandedDraftGeometry. Zero-flash pointerup →
           // persisted state, same discipline as single-select drag's
           // onHandleGeometryChange.
-          await commit(multiDrag.snapshots, dxn, dyn);
+          await commit(multiDrag.snapshots, multiDrag.rasterSnapshots, dxn, dyn);
+          // Raster overrides don't have a pruneLanded equivalent yet —
+          // the commit above awaited the dispatches, so the refetch is
+          // already in flight; drop the raster override now (worst case
+          // a one-frame settle, vs a stale override masking undo).
+          setRasterDrafts(null);
         } else {
           setDraftGeometry(null);
+          setRasterDrafts(null);
         }
       } else {
         // Under threshold — no commit. The user may have moved PAST the
@@ -2118,6 +2190,7 @@ export function Editor({
         // UNDER it before releasing; clear the override so the layers
         // snap to their persisted positions.
         setDraftGeometry(null);
+        setRasterDrafts(null);
       }
       return;
     }
@@ -3401,7 +3474,7 @@ export function Editor({
       setContextMenuState={setContextMenuState}
       dispatchContextMenuItem={dispatchContextMenuItem}
       draftGeometry={draftGeometry}
-      rasterDraft={rasterDraft}
+      rasterDrafts={rasterDrafts}
       setDraftGeometry={setDraftGeometry}
       commitText={commitText}
       onZoomChange={onZoomChange}
@@ -3475,7 +3548,7 @@ function EditorLoaded({
   dispatchContextMenuItem,
   draftGeometry,
   setDraftGeometry,
-  rasterDraft,
+  rasterDrafts,
   commitText,
   onZoomChange,
   onSelectionChange,
@@ -3680,6 +3753,7 @@ function EditorLoaded({
   commitMultiDragRef: React.RefObject<
     | ((
         snapshots: readonly { id: string; data: OverlayRow["data"] }[],
+        rasterSnapshots: readonly { id: string; transform: AffineTransform }[],
         dxn: number,
         dyn: number
       ) => Promise<void>)
@@ -3689,11 +3763,16 @@ function EditorLoaded({
    *  EditorLoaded populates it with a closure that writes the new
    *  transform onto the STORED node via a full-node layers:update. */
   commitRasterDragRef: React.RefObject<
-    ((id: string, transform: AffineTransform) => Promise<void>) | null
+    | ((
+        id: string,
+        startTransform: AffineTransform,
+        nextTransform: AffineTransform
+      ) => Promise<void>)
+    | null
   >;
   /** In-progress raster drag override painted by RasterLayers (null when
    *  not dragging a raster). */
-  rasterDraft: RasterDraftTransform | null;
+  rasterDrafts: ReadonlyMap<string, AffineTransform> | null;
   /** The v2 layer tree. The deleter looks up the matching layer node
    *  by id so `recordDelete` can pass `node` to the undo entry —
    *  without it, undo of a delete couldn't re-insert the
@@ -4394,10 +4473,11 @@ function EditorLoaded({
   useEffect(() => {
     commitMultiDragRef.current = async (
       snapshots,
+      rasterSnapshots,
       dxn,
       dyn
     ): Promise<void> => {
-      if (snapshots.length === 0) return;
+      if (snapshots.length === 0 && rasterSnapshots.length === 0) return;
       // Open the coalescing bracket — same key shape the multi-delete
       // handler uses. Every recordGeometry inside the loop tags with
       // the same { opKind, layerId } so push()'s `insideInteraction`
@@ -4406,6 +4486,15 @@ function EditorLoaded({
       const end = endInteractionRef.current;
       const token =
         begin !== null ? begin("multi-drag", "pointer-multi-drag") : null;
+      const recordOpts = {
+        opKind: "multi-drag",
+        layerId: "pointer-multi-drag",
+        // Multi-drag bursts each push a DIFFERENT layer's geometry.
+        // "append" → push() accumulates every item into the entry's
+        // items[] so undo restores every layer's pre-drag geometry,
+        // not just the first dragged layer.
+        mergeMode: "append"
+      } as const;
       try {
         const newIds: string[] = [];
         for (const snapshot of snapshots) {
@@ -4442,16 +4531,47 @@ function EditorLoaded({
                 previousGeometry,
                 nextGeometry: geometry
               },
+              recordOpts
+            );
+          }
+        }
+        // Selected rasters ride the same bracket: translate each
+        // snapshot's transform by the delta (normalized → DISPLAY
+        // canvas px — `record` here is the display-projected record)
+        // and dispatch the same updateGeometry verb, so a mixed drag
+        // commits — and undoes — as one step with the overlays.
+        for (const snap of rasterSnapshots) {
+          const t = snap.transform;
+          const nextTransform: AffineTransform = [
+            t[0],
+            t[1],
+            t[2],
+            t[3],
+            t[4] + dxn * record.width_px,
+            t[5] + dyn * record.height_px
+          ];
+          const result = await dispatchEdit({
+            kind: "updateGeometry",
+            layerId: snap.id,
+            geometry: { kind: "transform", transform: nextTransform }
+          });
+          if (!result.ok) {
+            // eslint-disable-next-line no-console
+            console.error("multi-drag raster dispatch failed", result.error);
+            newIds.push(snap.id);
+            continue;
+          }
+          const newId =
+            result.value.kind === "update" ? result.value.artifact.node.id : snap.id;
+          newIds.push(newId);
+          if (!undoApplyingRef.current) {
+            recordStoredGeometry(
               {
-                opKind: "multi-drag",
-                layerId: "pointer-multi-drag",
-                // Multi-drag bursts each push a DIFFERENT layer's
-                // geometry. "append" → push() accumulates every
-                // item into the entry's items[] so undo restores
-                // every layer's pre-drag geometry, not just the
-                // first dragged layer.
-                mergeMode: "append"
-              }
+                currentIdRef: { current: newId },
+                previousGeometry: { kind: "transform", transform: t },
+                nextGeometry: { kind: "transform", transform: nextTransform }
+              },
+              recordOpts
             );
           }
         }
@@ -4475,33 +4595,56 @@ function EditorLoaded({
     recordStoredGeometry,
     undoApplyingRef,
     beginInteractionRef,
-    endInteractionRef
+    endInteractionRef,
+    record.width_px,
+    record.height_px
   ]);
 
-  // Raster canvas drag commit — the outer onPointerUp calls this with the
-  // moved raster's id + new transform. Write the transform onto the
-  // STORED node via a full-node layers:update — same rule as
-  // setLayerVisibility: `modelLayers` is the crop-space projection, so we
-  // round-trip the stored node to avoid scrambling persisted coords.
-  // (Move only; resize + undo-stack integration are follow-ups, so a
-  // raster move is not yet on the ⌘Z stack.)
+  // Raster canvas drag commit — the outer onPointerUp calls this with
+  // the moved raster's id + start/next transforms (DISPLAY space).
+  // Routes through dispatchEdit's `updateGeometry` with the raster
+  // `transform` geometry kind — the same undo-integrated path every
+  // overlay move takes: the wrapped dispatcher maps display → stored
+  // under a hidden crop, and recordStoredGeometry puts the move on the
+  // ⌘Z stack (the pre-unification raw `layers:update` bypassed both,
+  // which is why a raster move couldn't be undone).
   useEffect(() => {
-    commitRasterDragRef.current = async (id, transform): Promise<void> => {
-      const node = storedLayers.find((l) => l.id === id);
-      if (node === undefined || node.kind !== "raster") return;
-      const result = await dispatch("layers:update", {
-        captureId: record.id,
-        layer: { ...node, transform }
+    commitRasterDragRef.current = async (
+      id,
+      startTransform,
+      nextTransform
+    ): Promise<void> => {
+      const result = await dispatchEdit({
+        kind: "updateGeometry",
+        layerId: id,
+        geometry: { kind: "transform", transform: nextTransform }
       });
       if (!result.ok) {
         // eslint-disable-next-line no-console
         console.error("raster move dispatch failed", result.error);
+        return;
+      }
+      const newId =
+        result.value.kind === "update" ? result.value.artifact.node.id : id;
+      setSelectionTrustingDispatch([newId]);
+      if (!undoApplyingRef.current) {
+        recordStoredGeometry({
+          currentIdRef: { current: newId },
+          previousGeometry: { kind: "transform", transform: startTransform },
+          nextGeometry: { kind: "transform", transform: nextTransform }
+        });
       }
     };
     return () => {
       commitRasterDragRef.current = null;
     };
-  }, [commitRasterDragRef, storedLayers, record.id]);
+  }, [
+    commitRasterDragRef,
+    dispatchEdit,
+    setSelectionTrustingDispatch,
+    recordStoredGeometry,
+    undoApplyingRef
+  ]);
 
   // Z-order ops — bring forward / send backward / bring to front /
   // send to back. Computes the new ordering on the renderer side via
@@ -5124,6 +5267,21 @@ function EditorLoaded({
       l.visible &&
       l.rejected_at === null
   );
+  // Selected rasters' normalized boxes for the shared dashed selection
+  // chrome (OverlaySvg renders them next to the overlay outlines, so a
+  // selected pasted image reads exactly like a selected rect/text).
+  // Draft-override-aware: during a drag the chrome follows the live
+  // transform, not the persisted one.
+  const selectedRasterBoxesN = extraRasterLayers
+    .filter((l) => selectedLayerIds.includes(l.id))
+    .map((l) => {
+      const draft = rasterDrafts?.get(l.id);
+      const boxed = draft !== undefined ? { ...l, transform: draft } : l;
+      return {
+        id: l.id,
+        ...rasterLayerBoundsN(boxed, record.width_px, record.height_px)
+      };
+    });
 
   const viewport = (
     <div
@@ -5297,7 +5455,7 @@ function EditorLoaded({
               canvasWidthPx={record.width_px}
               canvasHeightPx={record.height_px}
               selectedLayerIds={selectedLayerIds}
-              draftTransform={rasterDraft}
+              draftTransforms={rasterDrafts}
             />
           </div>
           {/* HTML blur layer between the <img> and the SVG so
@@ -5322,6 +5480,7 @@ function EditorLoaded({
           <OverlaySvg
             overlays={overlays}
             draft={draft}
+            selectedRasterBoxesN={selectedRasterBoxesN}
             // Phase 3.3 — thread the active tool's color through to the
             // live-drag preview so a draft renders in the picked color
             // (not just on commit). Resolves the live activeStyle for

@@ -118,6 +118,10 @@ export function overlayMatchesDraftGeometry(
         near(data.point.x, geom.point.x, "x") &&
         near(data.point.y, geom.point.y, "y")
       );
+    case "transform":
+      // Raster-only geometry — never carried by an overlay draft
+      // override (raster live-drag rides RasterLayers' draftTransforms).
+      return false;
   }
 }
 

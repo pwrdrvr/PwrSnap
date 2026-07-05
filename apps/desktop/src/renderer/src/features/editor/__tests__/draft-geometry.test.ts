@@ -219,20 +219,20 @@ describe("pruneLandedRasterDrafts", () => {
       natural_height_px: 50
     }) as unknown as BundleLayerNode;
 
-  it("keeps an entry while the persisted transform still lags the draft", () => {
+  test("keeps an entry while the persisted transform still lags the draft", () => {
     const drafts = new Map<string, AffineTransform>([["L1", [1, 0, 0, 1, 100, 50]]]);
     const layers = [rasterNode("L1", [1, 0, 0, 1, 10, 20])];
     // Same reference back — caller skips the setState.
     expect(pruneLandedRasterDrafts(drafts, layers)).toBe(drafts);
   });
 
-  it("drops an entry once the persisted transform catches up (±0.5px)", () => {
+  test("drops an entry once the persisted transform catches up (±0.5px)", () => {
     const drafts = new Map<string, AffineTransform>([["L1", [1, 0, 0, 1, 100, 50]]]);
     const layers = [rasterNode("L1", [1, 0, 0, 1, 100.4, 49.6])];
     expect(pruneLandedRasterDrafts(drafts, layers)).toBeNull();
   });
 
-  it("drops entries whose layer is gone; keeps the rest", () => {
+  test("drops entries whose layer is gone; keeps the rest", () => {
     const drafts = new Map<string, AffineTransform>([
       ["gone", [1, 0, 0, 1, 5, 5]],
       ["lagging", [1, 0, 0, 1, 100, 50]]

@@ -7,6 +7,7 @@ import type {
 } from "@pwrsnap/shared";
 import type { HotCpuProfileConfig } from "./hot-cpu-profile-config";
 import type { HotCpuProfileSession } from "./hot-cpu-profile-session";
+import { markHotCpuProfileSessionInactive } from "./hot-cpu-profile-active-sessions";
 import { getMainLogger } from "../log";
 
 const CHROME_DEBUGGER_PROTOCOL_VERSION = "1.3";
@@ -148,24 +149,28 @@ export class RendererHotCpuProfiler {
   async stop(reason = "stopped"): Promise<void> {
     if (this.stopped) return;
 
-    this.stopped = true;
-    if (this.intervalTimer) {
-      clearTimeout(this.intervalTimer);
-      this.intervalTimer = null;
-    }
-    this.clearProfileDurationTimer();
-    this.clearHeapSnapshotMidTimer();
+    try {
+      this.stopped = true;
+      if (this.intervalTimer) {
+        clearTimeout(this.intervalTimer);
+        this.intervalTimer = null;
+      }
+      this.clearProfileDurationTimer();
+      this.clearHeapSnapshotMidTimer();
 
-    if (this.profiling || this.stopProfilePromise) {
-      await this.stopProfile(reason);
-    }
+      if (this.profiling || this.stopProfilePromise) {
+        await this.stopProfile(reason);
+      }
 
-    this.detachDebugger();
-    await this.session.appendEvent({
-      capturedAt: this.now().toISOString(),
-      type: "monitor-stopped",
-      detail: { reason }
-    });
+      this.detachDebugger();
+      await this.session.appendEvent({
+        capturedAt: this.now().toISOString(),
+        type: "monitor-stopped",
+        detail: { reason }
+      });
+    } finally {
+      markHotCpuProfileSessionInactive(this.session.directoryName);
+    }
   }
 
   private scheduleNextSample(delayMs = this.config.intervalMs): void {

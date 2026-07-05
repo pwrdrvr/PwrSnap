@@ -23,6 +23,10 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
 }));
 
 import { bus } from "../../command-bus";
+import {
+  clearActiveHotCpuProfileSessionsForTests,
+  markHotCpuProfileSessionActive
+} from "../../diagnostics/hot-cpu-profile-active-sessions";
 import { registerDiagnosticsHandlers } from "../diagnostics-handlers";
 
 registerDiagnosticsHandlers();
@@ -40,6 +44,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  delete process.env.PWRSNAP_HOT_CPU_PROFILING_OUTPUT_ROOT;
+  clearActiveHotCpuProfileSessionsForTests();
   await fs.rm(mocks.userDataPath, { recursive: true, force: true });
 });
 
@@ -53,6 +59,21 @@ describe("diagnostics handlers", () => {
 
     expect(result.ok).toBe(true);
     expect(mocks.openPath).toHaveBeenCalledWith(hotCpuRoot());
+  });
+
+  test("reveals the configured hot CPU diagnostics root", async () => {
+    const configuredRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pwrsnap-diag-env-"));
+    process.env.PWRSNAP_HOT_CPU_PROFILING_OUTPUT_ROOT = configuredRoot;
+
+    const result = await bus.dispatch(
+      "diagnostics:revealHotCpuRoot",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mocks.openPath).toHaveBeenCalledWith(configuredRoot);
+    await fs.rm(configuredRoot, { recursive: true, force: true });
   });
 
   test("returns an error when the diagnostics root cannot be revealed", async () => {
@@ -79,7 +100,22 @@ describe("diagnostics handlers", () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(mocks.showItemInFolder).toHaveBeenCalledWith(sessionPath);
+    expect(mocks.openPath).toHaveBeenCalledWith(sessionPath);
+  });
+
+  test("returns an error when a session directory cannot be revealed", async () => {
+    const sessionPath = path.join(hotCpuRoot(), sessionName);
+    await fs.mkdir(sessionPath, { recursive: true });
+    mocks.openPath.mockResolvedValueOnce("finder refused");
+
+    const result = await bus.dispatch(
+      "diagnostics:revealHotCpuSession",
+      { sessionDirectoryName: sessionName },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("hot_cpu_diagnostics_reveal_failed");
   });
 
   test("rejects traversal and absolute session names without shell access", async () => {
@@ -133,5 +169,27 @@ describe("diagnostics handlers", () => {
     expect(result.value.skippedEntries).toBe(1);
     await expect(fs.stat(sessionPath)).rejects.toThrow();
     expect(await fs.stat(otherPath)).toBeDefined();
+  });
+
+  test("clear skips sessions that are active in this process", async () => {
+    const activePath = path.join(hotCpuRoot(), sessionName);
+    const inactiveName = "hot-cpu-2026-07-04-1644-9abcde";
+    const inactivePath = path.join(hotCpuRoot(), inactiveName);
+    await fs.mkdir(activePath, { recursive: true });
+    await fs.mkdir(inactivePath, { recursive: true });
+    markHotCpuProfileSessionActive(sessionName);
+
+    const result = await bus.dispatch(
+      "diagnostics:clearHotCpuSessions",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.deletedSessions).toBe(1);
+    expect(result.value.skippedEntries).toBe(1);
+    expect(await fs.stat(activePath)).toBeDefined();
+    await expect(fs.stat(inactivePath)).rejects.toThrow();
   });
 });

@@ -19,6 +19,7 @@ type RetentionOptions = {
 };
 
 type ClearOptions = {
+  excludeSessionDirectoryNames?: readonly string[];
   root: string;
 };
 
@@ -162,7 +163,12 @@ export async function clearHotCpuProfileSessions(
     return result;
   }
 
+  const excluded = new Set(options.excludeSessionDirectoryNames ?? []);
   for (const candidate of candidates) {
+    if (excluded.has(candidate.name)) {
+      result.skippedEntries += 1;
+      continue;
+    }
     await removeSession(candidate, result);
   }
 

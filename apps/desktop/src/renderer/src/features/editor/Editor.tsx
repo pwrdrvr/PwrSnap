@@ -74,7 +74,7 @@ import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
 import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUndoRedo";
 import { decideClickSelection } from "./decideClickSelection";
-import { pruneLandedDraftGeometry } from "./draft-geometry";
+import { pruneLandedDraftGeometry, pruneLandedRasterDrafts } from "./draft-geometry";
 import { isReorderableLayer } from "./layer-roles";
 import { hitTestRasterLayers, rasterLayerBoundsN } from "./raster-hit-test";
 import { forwardOpToStored, forwardGeometry } from "./crop-edit-space";
@@ -1393,12 +1393,25 @@ export function Editor({
     string,
     AffineTransform
   > | null>(null);
+  // Landed-prune for raster drag overrides — the raster twin of the
+  // draftGeometry pruner: a committed drag LEAVES its override in place
+  // so the <img> keeps painting at the dropped position, and this
+  // effect drops each entry once the refetched model carries the new
+  // transform (or the layer is gone). Without the hold, the raster
+  // visibly snapped back to its pre-drag spot for the refetch window
+  // while overlays in the same gesture stayed put.
+  useEffect(() => {
+    if (rasterDrafts === null) return;
+    if (model.kind !== "loaded") return;
+    const next = pruneLandedRasterDrafts(rasterDrafts, model.layers);
+    if (next !== rasterDrafts) setRasterDrafts(next);
+  }, [model, rasterDrafts]);
   const commitRasterDragRef = useRef<
     | ((
         id: string,
         startTransform: AffineTransform,
         nextTransform: AffineTransform
-      ) => Promise<void>)
+      ) => Promise<boolean>)
     | null
   >(null);
   // Live-drag preview: a map of layer id → in-progress geometry that
@@ -2124,13 +2137,20 @@ export function Editor({
         // Best-effort release; capture may already be gone.
       }
       if (rasterDrag.moved) {
-        await commitRasterDragRef.current?.(
-          rasterDrag.id,
-          rasterDrag.startTransform,
-          rasterDrag.current
-        );
+        const committed =
+          (await commitRasterDragRef.current?.(
+            rasterDrag.id,
+            rasterDrag.startTransform,
+            rasterDrag.current
+          )) ?? false;
+        // Success: LEAVE the override — the landed-prune effect drops it
+        // once the refetched model carries the new transform, so the
+        // <img> never snaps back to the pre-drag spot. Failure: clear
+        // now (snap-back is the honest state).
+        if (!committed) setRasterDrafts(null);
+      } else {
+        setRasterDrafts(null);
       }
-      setRasterDrafts(null);
       return;
     }
     // Multi-select drag commit runs BEFORE the draft branch. If
@@ -2185,11 +2205,11 @@ export function Editor({
           // persisted state, same discipline as single-select drag's
           // onHandleGeometryChange.
           await commit(multiDrag.snapshots, multiDrag.rasterSnapshots, dxn, dyn);
-          // Raster overrides don't have a pruneLanded equivalent yet —
-          // the commit above awaited the dispatches, so the refetch is
-          // already in flight; drop the raster override now (worst case
-          // a one-frame settle, vs a stale override masking undo).
-          setRasterDrafts(null);
+          // Raster overrides are LEFT in place like draftGeometry — the
+          // landed-prune effect drops each once the refetched model
+          // carries its committed transform, so rasters hold position
+          // through the refetch window exactly like the overlays
+          // dragged alongside them.
         } else {
           setDraftGeometry(null);
           setRasterDrafts(null);
@@ -3858,7 +3878,7 @@ function EditorLoaded({
         id: string,
         startTransform: AffineTransform,
         nextTransform: AffineTransform
-      ) => Promise<void>)
+      ) => Promise<boolean>)
     | null
   >;
   /** In-progress raster drag override painted by RasterLayers (null when
@@ -4395,6 +4415,27 @@ function EditorLoaded({
   const nudgeBracketTokenRef = useRef<InteractionToken | null>(null);
   const nudgeIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const NUDGE_IDLE_MS = 500;
+  // Held-key burst accumulator. Auto-repeat fires presses FASTER than a
+  // dispatch → broadcast → refetch round-trip, and each press used to
+  // recompute "current position + 1 step" from the closure's STALE model
+  // snapshot — so N repeats dispatched N absolute writes of the SAME
+  // position (lost update: net movement 1 step, log spam N entries).
+  // The burst instead snapshots each target's BASE geometry once at
+  // burst start, presses only bump an accumulator, and a single
+  // in-flight flusher drains the accumulator with absolute writes of
+  // base + total — correct final position, a handful of dispatches
+  // instead of one per repeat. Cleared with the bracket (idle timer) or
+  // when the selection changes under the burst.
+  const nudgeBurstRef = useRef<{
+    selectionKey: string;
+    accumX: number;
+    accumY: number;
+    lastFlushedX: number;
+    lastFlushedY: number;
+    inFlight: boolean;
+    baseOverlays: { id: string; data: OverlayRow["data"] }[];
+    baseRasters: { id: string; transform: AffineTransform }[];
+  } | null>(null);
   // Set TRUE by nudgeSelectedRef just before its own
   // `setSelectedLayerIds(newIds)` so the selection-change effect
   // below can distinguish "nudge replaced the ids of the same
@@ -4447,30 +4488,141 @@ function EditorLoaded({
   }, [selectedLayerIds, endInteractionRef]);
 
   useEffect(() => {
+    // Drain the burst accumulator with at most ONE dispatch chain in
+    // flight. Every write is ABSOLUTE (base snapshot + total
+    // accumulated steps), so held-key repeats can never lose updates
+    // to the dispatch → refetch latency; presses that arrive mid-
+    // flight just bump the accumulator and the while-loop bundles
+    // them into the next flush.
+    const flushNudgeBurst = async (
+      burst: NonNullable<typeof nudgeBurstRef.current>
+    ): Promise<void> => {
+      if (burst.inFlight) return;
+      burst.inFlight = true;
+      try {
+        while (
+          burst.accumX !== burst.lastFlushedX ||
+          burst.accumY !== burst.lastFlushedY
+        ) {
+          const fx = burst.accumX;
+          const fy = burst.accumY;
+          const dxn = fx / record.width_px;
+          const dyn = fy / record.height_px;
+          const newIds: string[] = [];
+          for (const target of burst.baseOverlays) {
+            const geometry = translateOverlayGeometry(target.data, dxn, dyn);
+            if (geometry === null) {
+              newIds.push(target.id);
+              continue;
+            }
+            // previous = the BASE (pre-burst) geometry — constant across
+            // flushes, so the bracket's coalesced entry always restores
+            // the true pre-burst position on undo.
+            const previousGeometry = overlayDataToGeometry(target.data);
+            const result = await dispatchEdit({
+              kind: "updateGeometry",
+              layerId: target.id,
+              geometry
+            });
+            if (!result.ok || result.value.kind !== "update") {
+              newIds.push(target.id);
+              continue;
+            }
+            const newId = result.value.artifact.node.id;
+            newIds.push(newId);
+            if (!undoApplyingRef.current && previousGeometry !== null) {
+              recordStoredGeometry({
+                currentIdRef: { current: newId },
+                previousGeometry,
+                nextGeometry: geometry
+              });
+            }
+          }
+          // Rasters ride the same flush: fx/fy are DISPLAY canvas px
+          // (dxn · record.width_px === fx), exactly the raster
+          // transform's coordinate space.
+          for (const node of burst.baseRasters) {
+            const t = node.transform;
+            const nextTransform: AffineTransform = [
+              t[0],
+              t[1],
+              t[2],
+              t[3],
+              t[4] + fx,
+              t[5] + fy
+            ];
+            const result = await dispatchEdit({
+              kind: "updateGeometry",
+              layerId: node.id,
+              geometry: { kind: "transform", transform: nextTransform }
+            });
+            const newId =
+              result.ok && result.value.kind === "update"
+                ? result.value.artifact.node.id
+                : node.id;
+            newIds.push(newId);
+            if (result.ok && !undoApplyingRef.current) {
+              recordStoredGeometry({
+                currentIdRef: { current: newId },
+                previousGeometry: { kind: "transform", transform: t },
+                nextGeometry: { kind: "transform", transform: nextTransform }
+              });
+            }
+          }
+          burst.lastFlushedX = fx;
+          burst.lastFlushedY = fy;
+          // Flag the impending selection change as "self-inflicted" so
+          // the selection-change effect doesn't tear down the bracket.
+          nudgeAdvancingSelectionRef.current = true;
+          setSelectionTrustingDispatch(newIds);
+        }
+      } finally {
+        burst.inFlight = false;
+      }
+    };
+
     nudgeSelectedRef.current = (dxnSteps: number, dynSteps: number): void => {
       if (selectedLayerIds.length === 0) return;
       if (record.width_px <= 0 || record.height_px <= 0) return;
-      const dxn = dxnSteps / record.width_px;
-      const dyn = dynSteps / record.height_px;
-      const snapshot = overlays;
-      const targets = selectedLayerIds
-        .map((id) => snapshot.find((o) => o.id === id))
-        .filter((o): o is OverlayRow => o !== undefined);
-      // Selected non-base rasters (pasted images, the captured cursor)
-      // nudge too — they have no OverlayRow, so resolve them from the
-      // layer tree. Pre-fix a solo-selected raster made arrow keys a
-      // DEAD KEY (the handler ate the event, nothing moved) and a
-      // mixed-selection nudge silently DESELECTED the rasters (newIds
-      // was built from overlay results only).
-      const nudgeSourceRasterId =
-        selectBaseRaster(modelLayers, record.sha256)?.id ?? null;
-      const rasterTargets = selectedLayerIds
-        .map((id) => modelLayers.find((l) => l.id === id))
-        .filter(
-          (l): l is Extract<BundleLayerNode, { kind: "raster" }> =>
-            l !== undefined && l.kind === "raster" && l.id !== nudgeSourceRasterId
-        );
-      if (targets.length === 0 && rasterTargets.length === 0) return;
+      const selectionKey = selectedLayerIds.join("\n");
+      // Selection changed under an open burst (user clicked mid-burst
+      // before the idle timer fired) — restart from a fresh snapshot.
+      if (
+        nudgeBurstRef.current !== null &&
+        nudgeBurstRef.current.selectionKey !== selectionKey
+      ) {
+        nudgeBurstRef.current = null;
+      }
+      if (nudgeBurstRef.current === null) {
+        const snapshot = overlays;
+        const baseOverlays = selectedLayerIds
+          .map((id) => snapshot.find((o) => o.id === id))
+          .filter((o): o is OverlayRow => o !== undefined)
+          .map((o) => ({ id: o.id, data: o.data }));
+        // Selected non-base rasters (pasted images, the captured
+        // cursor) nudge too — they have no OverlayRow, so resolve them
+        // from the layer tree.
+        const nudgeSourceRasterId =
+          selectBaseRaster(modelLayers, record.sha256)?.id ?? null;
+        const baseRasters = selectedLayerIds
+          .map((id) => modelLayers.find((l) => l.id === id))
+          .filter(
+            (l): l is Extract<BundleLayerNode, { kind: "raster" }> =>
+              l !== undefined && l.kind === "raster" && l.id !== nudgeSourceRasterId
+          )
+          .map((l) => ({ id: l.id, transform: l.transform }));
+        if (baseOverlays.length === 0 && baseRasters.length === 0) return;
+        nudgeBurstRef.current = {
+          selectionKey,
+          accumX: 0,
+          accumY: 0,
+          lastFlushedX: 0,
+          lastFlushedY: 0,
+          inFlight: false,
+          baseOverlays,
+          baseRasters
+        };
+      }
 
       // Open or refresh the coalescing bracket. The bracket lives in
       // refs (not effect-scoped locals) so it survives selection-
@@ -4494,98 +4646,15 @@ function EditorLoaded({
         }
         nudgeBracketTokenRef.current = null;
         nudgeIdleTimerRef.current = null;
+        // Burst ends with the bracket — the next press snapshots fresh
+        // base geometries (the model has long since caught up).
+        nudgeBurstRef.current = null;
       }, NUDGE_IDLE_MS);
 
-      void (async (): Promise<void> => {
-        const newIds: string[] = [];
-        for (const target of targets) {
-          const geometry = translateOverlayGeometry(target.data, dxn, dyn);
-          if (geometry === null) {
-            // Kind has no geometry semantics (crop) — preserve in
-            // selection as-is.
-            newIds.push(target.id);
-            continue;
-          }
-          // Capture the pre-nudge geometry NOW (before dispatch) so
-          // the undo entry can restore it without a refetch race.
-          const previousGeometry = overlayDataToGeometry(target.data);
-          const result = await dispatchEdit({
-            kind: "updateGeometry",
-            layerId: target.id,
-            geometry
-          });
-          if (!result.ok) {
-            newIds.push(target.id);
-            continue;
-          }
-          if (result.value.kind !== "update") {
-            newIds.push(target.id);
-            continue;
-          }
-          const artifact = result.value.artifact;
-          const newId = artifact.node.id;
-          newIds.push(newId);
-          // Record on the undo stack. Without this, nudge was
-          // silently unundoable (the dispatcher itself doesn't auto-
-          // record; only recordCreate runs through the auto-bridge).
-          // The recordGeometry call lands inside the bracket opened
-          // above, so every nudge in the burst collapses into one
-          // undo entry that restores every layer's pre-burst
-          // geometry in one undo step.
-          if (!undoApplyingRef.current && previousGeometry !== null) {
-            recordStoredGeometry({
-              currentIdRef: { current: newId },
-              previousGeometry,
-              nextGeometry: geometry
-            });
-          }
-        }
-        // Rasters ride the same burst: dxnSteps/dynSteps are DISPLAY
-        // canvas pixels (dxn · record.width_px === dxnSteps), which is
-        // exactly the raster transform's coordinate space — the crop
-        // wrapper maps display → stored like every geometry kind.
-        for (const node of rasterTargets) {
-          const t = node.transform;
-          const nextTransform: AffineTransform = [
-            t[0],
-            t[1],
-            t[2],
-            t[3],
-            t[4] + dxnSteps,
-            t[5] + dynSteps
-          ];
-          const result = await dispatchEdit({
-            kind: "updateGeometry",
-            layerId: node.id,
-            geometry: { kind: "transform", transform: nextTransform }
-          });
-          const newId =
-            result.ok && result.value.kind === "update"
-              ? result.value.artifact.node.id
-              : node.id;
-          newIds.push(newId);
-          if (result.ok && !undoApplyingRef.current) {
-            recordStoredGeometry({
-              currentIdRef: { current: newId },
-              previousGeometry: { kind: "transform", transform: t },
-              nextGeometry: { kind: "transform", transform: nextTransform }
-            });
-          }
-        }
-        // Flag the impending selection change as "self-inflicted" so
-        // the selection-change effect (which closes the coalescing
-        // bracket on user-initiated changes) doesn't tear down the
-        // in-flight nudge burst. Reset by the effect on next run.
-        nudgeAdvancingSelectionRef.current = true;
-        // Use the in-flight-aware setter — newIds come from the
-        // dispatch result (so they exist in the DB) but may not have
-        // landed in `overlaysForRender` by the next render, and the
-        // outer stale-id cleanup would otherwise wipe them. Without
-        // this the user saw the layer move 1px then the grippers
-        // vanish, and the next arrow-key was stolen by the Library
-        // reel because nothing was selected.
-        setSelectionTrustingDispatch(newIds);
-      })();
+      const burst = nudgeBurstRef.current;
+      burst.accumX += dxnSteps;
+      burst.accumY += dynSteps;
+      void flushNudgeBurst(burst);
     };
     return () => {
       nudgeSelectedRef.current = null;
@@ -4758,7 +4827,7 @@ function EditorLoaded({
       id,
       startTransform,
       nextTransform
-    ): Promise<void> => {
+    ): Promise<boolean> => {
       const result = await dispatchEdit({
         kind: "updateGeometry",
         layerId: id,
@@ -4767,7 +4836,9 @@ function EditorLoaded({
       if (!result.ok) {
         // eslint-disable-next-line no-console
         console.error("raster move dispatch failed", result.error);
-        return;
+        // FALSE → the outer pointerup clears the live override so the
+        // <img> honestly snaps back to its persisted position.
+        return false;
       }
       const newId =
         result.value.kind === "update" ? result.value.artifact.node.id : id;
@@ -4779,6 +4850,7 @@ function EditorLoaded({
           nextGeometry: { kind: "transform", transform: nextTransform }
         });
       }
+      return true;
     };
     return () => {
       commitRasterDragRef.current = null;

@@ -15,10 +15,17 @@
 //     `public.file-url` so chat/file consumers receive the named PNG.
 //
 //   • clipboard:copyLayerFragment — v2 only: serializes selected
-//     layers + referenced sources into a private UTI buffer
-//     (`com.pwrdrvr.pwrsnap.layer-fragment`). Standard image copy is
-//     handled by clipboard:copy; Electron cannot atomically write an
-//     arbitrary private UTI and image bytes in one clipboard update.
+//     layers + referenced sources into the private UTI
+//     (`com.pwrdrvr.pwrsnap.layer-fragment`) AND co-writes a flattened
+//     composite (`public.png` + `public.tiff`) so non-PwrSnap apps
+//     (Slack, Mail, Claude, Messages) receive an image. Electron can't
+//     atomically write a private UTI and image bytes in one update —
+//     each clipboard.write* clears the pasteboard first — so the
+//     multi-type write goes through the native helper
+//     (native-clipboard.ts → native/window-list/main.swift
+//     `--write-clipboard`). When the helper is unavailable (non-macOS /
+//     unbuilt dev binary) it falls back to writeBuffer (private UTI
+//     only), keeping PwrSnap→PwrSnap paste working everywhere.
 //
 //   • clipboard:pasteLayerFragment — v2 only: reads the private UTI
 //     buffer if present. Standard image paste is handled by
@@ -70,6 +77,8 @@ import { insertLayerTreeForCapture, listLayerTree } from "../persistence/layers-
 import { broadcastLayersChanged } from "./broadcast-layers";
 import { materializePendingSourceForCapture } from "../persistence/pending-source-store";
 import { notifyClipboardChanged } from "../clipboard-events";
+import { writeMultiFormatClipboard } from "../native-clipboard";
+import { composeV2 } from "../render/compose-tree";
 import { mapVideoResolveError, resolveVideoExport } from "../recording/video-export-resolver";
 import { getMainLogger } from "../log";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
@@ -646,18 +655,67 @@ export function registerClipboardHandlers(): void {
         });
       }
 
-      // Write the private UTI buffer for PwrSnap-to-PwrSnap fidelity.
-      clipboard.writeBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI, buf);
+      // Render the flattened composite so NON-PwrSnap consumers (Slack,
+      // Mail, Claude, Messages) get an image — without it they receive
+      // nothing, because they can't read the private UTI. composeV2
+      // renders the WHOLE live layer tree at native resolution; for a
+      // Cmd+A "select all" copy that is exactly the composite the user
+      // sees on the canvas. A PARTIAL selection still co-writes the
+      // full-capture composite for now — the private UTI carries the
+      // exact selected layers, so PwrSnap→PwrSnap fidelity is unchanged;
+      // only the cross-app raster is the whole capture. Compositing just
+      // the selected subtree is a follow-up (needs a layer-filtered
+      // composeV2 variant). Best-effort: a render failure must not block
+      // the copy — we still write the private UTI below.
+      let pngBytes: Buffer | null = null;
+      try {
+        const composite = await composeV2({
+          captureId: req.captureId,
+          bundlePath: record.bundle_path,
+          canvasWidthPx: record.width_px,
+          canvasHeightPx: record.height_px,
+          width: record.width_px,
+          format: "png"
+        });
+        pngBytes = await readFile(composite.cachePath);
+      } catch (cause) {
+        log.warn("copyLayerFragment: composite render failed; writing UTI only", {
+          captureId: req.captureId,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
 
-      // Notify subscribers — the private UTI buffer was written, so
-      // the OS clipboard changed under us.
+      // Single native NSPasteboard write: private UTI + public.png +
+      // public.tiff in ONE declareTypes pass. Electron can't co-write a
+      // custom UTI and an image (each clipboard.write* clears the
+      // pasteboard first — see native-clipboard.ts), so this routes
+      // through the bundled native helper. If the helper is unavailable
+      // (non-macOS, or a dev build before the Swift binary is compiled)
+      // OR we have no image, fall back to Electron's writeBuffer so at
+      // least the private UTI lands for PwrSnap→PwrSnap paste.
+      let wroteNative = false;
+      if (pngBytes !== null) {
+        wroteNative = await writeMultiFormatClipboard({
+          utiName: CLIPBOARD_LAYER_FRAGMENT_UTI,
+          utiBytes: buf,
+          pngBytes
+        });
+      }
+      if (!wroteNative) {
+        clipboard.writeBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI, buf);
+      }
+
+      // Notify subscribers — the OS clipboard changed under us
+      // (whichever path wrote it).
       notifyClipboardChanged();
 
       log.info("copied layer fragment to clipboard", {
         captureId: req.captureId,
         layerCount: layers.length,
         sourceCount: sourceRefs.length,
-        bytes: buf.byteLength
+        bytes: buf.byteLength,
+        wroteImage: pngBytes !== null,
+        wroteNative
       });
 
       return ok({

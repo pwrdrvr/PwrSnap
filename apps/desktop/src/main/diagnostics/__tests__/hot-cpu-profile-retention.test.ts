@@ -78,4 +78,32 @@ describe("hot CPU profile retention", () => {
     expect(result.skippedEntries).toBe(1);
     expect(result.errors).toEqual([]);
   });
+
+  test("manual clear skips excluded hot CPU session directories", async () => {
+    const activeName = "hot-cpu-2026-07-04-1000-000001";
+    const inactiveName = "hot-cpu-2026-07-04-1100-000002";
+    await writeSession(activeName, "2026-07-04T10:00:00.000Z");
+    await writeSession(inactiveName, "2026-07-04T11:00:00.000Z");
+
+    const result = await clearHotCpuProfileSessions({
+      excludeSessionDirectoryNames: [activeName],
+      root
+    });
+
+    expect(await fs.stat(path.join(root, activeName))).toBeDefined();
+    await expect(fs.stat(path.join(root, inactiveName))).rejects.toThrow();
+    expect(result.deletedSessions).toBe(1);
+    expect(result.skippedEntries).toBe(1);
+    expect(result.errors).toEqual([]);
+  });
+
+  test("manual clear reports listing failures without throwing", async () => {
+    const fileRoot = path.join(root, "not-a-directory");
+    await fs.writeFile(fileRoot, "not a directory", "utf8");
+
+    const result = await clearHotCpuProfileSessions({ root: fileRoot });
+
+    expect(result.deletedSessions).toBe(0);
+    expect(result.errors[0]).toContain("list:");
+  });
 });

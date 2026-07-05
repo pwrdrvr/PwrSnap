@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { HotCpuProfileConfig } from "./hot-cpu-profile-config";
+import { markHotCpuProfileSessionActive } from "./hot-cpu-profile-active-sessions";
 import { pruneHotCpuProfileSessions } from "./hot-cpu-profile-retention";
 
 export type HotCpuProfileSample = {
@@ -129,6 +130,7 @@ export async function createHotCpuProfileSession(options: {
     await fs.mkdir(options.config.outputRoot, { recursive: true });
     await fs.mkdir(directoryPath);
     await writeManifest(manifestPath, manifest);
+    markHotCpuProfileSessionActive(directoryName);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return {
@@ -160,11 +162,15 @@ export async function createHotCpuProfileSession(options: {
     retention.skippedEntries > 0 ||
     retention.errors.length > 0
   ) {
-    await appendRecord(eventsPath, {
-      capturedAt: new Date().toISOString(),
-      type: "retention-pruned",
-      detail: retention
-    });
+    try {
+      await appendRecord(eventsPath, {
+        capturedAt: new Date().toISOString(),
+        type: "retention-pruned",
+        detail: retention
+      });
+    } catch {
+      // Retention logging is best-effort; the diagnostics session is still usable.
+    }
   }
 
   return {

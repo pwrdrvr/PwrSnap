@@ -77,7 +77,11 @@ vi.mock("../../capture/screen-snapshot", () => ({
 
 vi.mock("../../capture/window-list", () => ({
   activateApp: async () => undefined,
-  findWindowAt: () => null
+  findWindowAt: () => null,
+  // cursor-sample.ts (imported by capture-handlers) resolves the helper
+  // path through here; null = "helper unavailable" so sampleCursor
+  // degrades to no-cursor-layer in any future spec that reaches it.
+  resolveWindowListHelperPath: () => null
 }));
 
 vi.mock("../../events", () => ({

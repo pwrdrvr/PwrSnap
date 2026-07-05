@@ -276,6 +276,7 @@ export function GeneralPage(): ReactElement {
           <Switch
             on={imageCaptureCursor}
             onChange={(next) => {
+              if (!ready) return;
               void patch({ recording: { imageCaptureCursor: next } });
             }}
           />
@@ -288,6 +289,7 @@ export function GeneralPage(): ReactElement {
           <Switch
             on={videoCaptureCursor}
             onChange={(next) => {
+              if (!ready) return;
               void patch({ recording: { videoCaptureCursor: next } });
             }}
           />

@@ -510,7 +510,7 @@ if args.count >= 4 && args[1] == "--extract-app-icon" {
 // Exit codes:
 //   0 — success
 //   5 — cursor sprite unavailable (NSCursor.currentSystem nil / no rep)
-//   6 — PNG encode failure
+//   6 — output encode failure (sprite PNG or the JSON envelope)
 if args.count >= 2 && args[1] == "--sample-cursor" {
     // NSCursor needs an AppKit connection; NSApplication.shared
     // establishes one without running the event loop.
@@ -527,8 +527,18 @@ if args.count >= 2 && args[1] == "--sample-cursor" {
 
     let image = cursor.image
     let hotSpot = cursor.hotSpot
-    guard let tiff = image.tiffRepresentation,
-          let rep = NSBitmapImageRep(data: tiff),
+    // Pick the LARGEST bitmap rep. `tiffRepresentation` → NSBitmapImageRep
+    // decodes only the FIRST rep of a multi-rep cursor image — typically
+    // the 1× rep — which would then be upscaled onto a Retina-sized draw
+    // box downstream (blurry cursor). Standard cursors carry 1× + 2×
+    // reps; prefer the densest one and fall back to the TIFF path for
+    // exotic single-rep images.
+    let bestBitmapRep =
+        image.representations
+            .compactMap { $0 as? NSBitmapImageRep }
+            .max(by: { $0.pixelsWide < $1.pixelsWide })
+        ?? image.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0) }
+    guard let rep = bestBitmapRep,
           let png = rep.representation(using: .png, properties: [:])
     else {
         FileHandle.standardError.write(

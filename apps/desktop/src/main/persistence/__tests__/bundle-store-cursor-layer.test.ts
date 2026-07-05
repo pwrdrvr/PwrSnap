@@ -158,3 +158,103 @@ describe("persistCaptureFromTempV2 — cursor layer", () => {
     expect(layers.map((l) => l.kind).sort()).toEqual(["group", "raster"]);
   });
 });
+
+// --- Thumbnail composite (replaces the per-capture repack) ------------
+//
+// The initial in-bundle thumbnail must show the cursor WITHOUT paying a
+// full bundle repack: compositeCursorForThumbnail paints the sprite
+// onto a copy of the source at its draw box, clipping edge overhang
+// (sharp.composite refuses negative offsets).
+
+describe("compositeCursorForThumbnail", () => {
+  async function pixelAt(png: Buffer, x: number, y: number): Promise<number[]> {
+    const raw = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const idx = (y * raw.info.width + x) * raw.info.channels;
+    return [raw.data[idx]!, raw.data[idx + 1]!, raw.data[idx + 2]!];
+  }
+
+  test("paints the sprite at its placement on a copy of the source", async () => {
+    const { compositeCursorForThumbnail } = await import("../bundle-store");
+    const dark = await sharp({
+      create: { width: 100, height: 80, channels: 3, background: { r: 10, g: 10, b: 10 } }
+    })
+      .png()
+      .toBuffer();
+    const whiteSprite = await sharp({
+      create: {
+        width: 20,
+        height: 20,
+        channels: 4,
+        background: { r: 255, g: 255, b: 255, alpha: 1 }
+      }
+    })
+      .png()
+      .toBuffer();
+    const out = await compositeCursorForThumbnail(dark, 100, 80, {
+      pngBytes: whiteSprite,
+      xPx: 40,
+      yPx: 30,
+      drawWidthPx: 10,
+      drawHeightPx: 10
+    });
+    // Inside the draw box → white; outside → untouched dark.
+    expect(await pixelAt(out, 44, 34)).toEqual([255, 255, 255]);
+    expect(await pixelAt(out, 20, 20)).toEqual([10, 10, 10]);
+  });
+
+  test("clips edge overhang instead of throwing (negative placement)", async () => {
+    const { compositeCursorForThumbnail } = await import("../bundle-store");
+    const dark = await sharp({
+      create: { width: 50, height: 50, channels: 3, background: { r: 10, g: 10, b: 10 } }
+    })
+      .png()
+      .toBuffer();
+    const whiteSprite = await sharp({
+      create: {
+        width: 16,
+        height: 16,
+        channels: 4,
+        background: { r: 255, g: 255, b: 255, alpha: 1 }
+      }
+    })
+      .png()
+      .toBuffer();
+    const out = await compositeCursorForThumbnail(dark, 50, 50, {
+      pngBytes: whiteSprite,
+      xPx: -8,
+      yPx: -8,
+      drawWidthPx: 16,
+      drawHeightPx: 16
+    });
+    // Visible quarter of the sprite at the origin; rest untouched.
+    expect(await pixelAt(out, 2, 2)).toEqual([255, 255, 255]);
+    expect(await pixelAt(out, 20, 20)).toEqual([10, 10, 10]);
+  });
+
+  test("fully off-canvas placement returns the source unchanged", async () => {
+    const { compositeCursorForThumbnail } = await import("../bundle-store");
+    const dark = await sharp({
+      create: { width: 50, height: 50, channels: 3, background: { r: 10, g: 10, b: 10 } }
+    })
+      .png()
+      .toBuffer();
+    const sprite = await sharp({
+      create: {
+        width: 8,
+        height: 8,
+        channels: 4,
+        background: { r: 255, g: 255, b: 255, alpha: 1 }
+      }
+    })
+      .png()
+      .toBuffer();
+    const out = await compositeCursorForThumbnail(dark, 50, 50, {
+      pngBytes: sprite,
+      xPx: 500,
+      yPx: 500,
+      drawWidthPx: 8,
+      drawHeightPx: 8
+    });
+    expect(out).toBe(dark);
+  });
+});

@@ -21,10 +21,24 @@ import { resolveWindowListHelperPath } from "./window-list";
 const execFileAsync = promisify(execFile);
 const log = getMainLogger("pwrsnap:cursor-sample");
 
-/** Sprite payloads are small (a cursor is tens of KB); anything huge is
- *  a malfunction, not a cursor. Cap well below Node's default. */
+/** Sprite payloads are small (a cursor is tens-to-low-hundreds of KB
+ *  base64); anything huge is a malfunction, not a cursor. Node's
+ *  execFile default maxBuffer is 1 MiB — we RAISE it to 4 MiB so an
+ *  accessibility-enlarged Retina sprite never trips the ceiling. */
 const MAX_SAMPLE_JSON_BYTES = 4 * 1024 * 1024;
 const SAMPLE_TIMEOUT_MS = 2_000;
+
+/** The persist-side cursor-layer contract: sprite bytes + placement in
+ *  CANVAS PIXELS. One named type shared by the capture handlers and
+ *  `persistCaptureFromTempV2` (imported type-only there) so the shape
+ *  can't drift between the three sites that used to inline it. */
+export type CursorLayerPlacement = {
+  pngBytes: Buffer;
+  xPx: number;
+  yPx: number;
+  drawWidthPx: number;
+  drawHeightPx: number;
+};
 
 export type CursorSample = {
   /** Decoded sprite PNG bytes (RGBA, alpha preserved). */
@@ -93,14 +107,56 @@ export async function sampleCursor(): Promise<CursorSample | null> {
       posY: p.posY
     };
   } catch (cause) {
-    // Exit 5 = cursor unavailable (expected on macOS 15+ if the
-    // deprecated API stops returning); anything else is logged the
-    // same — the capture proceeds without a cursor layer either way.
-    log.info("cursor sample unavailable", {
-      message: cause instanceof Error ? cause.message : String(cause)
-    });
+    // Exit 5 = NSCursor.currentSystem returned nil — the deprecated
+    // API's expected failure mode on a future macOS. That's a
+    // PERSISTENT capability loss while the Settings toggle keeps
+    // promising cursor capture, so surface it once at warn level
+    // (info would bury it); subsequent captures log info like every
+    // other transient failure. The capture itself always proceeds.
+    const code = (cause as { code?: unknown }).code;
+    if (code === 5 && !warnedCursorUnavailable) {
+      warnedCursorUnavailable = true;
+      log.warn(
+        "cursor sample unavailable (NSCursor.currentSystem nil) — screenshots will not carry a cursor layer",
+        { message: cause instanceof Error ? cause.message : String(cause) }
+      );
+    } else {
+      log.info("cursor sample unavailable", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
     return null;
   }
+}
+
+let warnedCursorUnavailable = false;
+
+/**
+ * Await a pending sample and place it for a captured region — the one
+ * call every image-capture path makes right before persist. `region`
+ * is the captured rect in GLOBAL logical points (clamped to what the
+ * screenshot actually shows); `scaleFactor` maps points → the
+ * capture's physical px. Resolves `undefined` when there's no sample
+ * (sampling off/failed/tainted) or the hotspot missed the region.
+ */
+export async function resolveCursorLayerForRect(
+  samplePromise: Promise<CursorSample | null> | null,
+  region: { x: number; y: number; w: number; h: number },
+  scaleFactor: number
+): Promise<CursorLayerPlacement | undefined> {
+  if (samplePromise === null) return undefined;
+  const sample = await samplePromise;
+  if (sample === null) return undefined;
+  const placement = computeCursorPlacement({
+    sample,
+    regionOriginX: region.x,
+    regionOriginY: region.y,
+    regionWidth: region.w,
+    regionHeight: region.h,
+    scaleFactor
+  });
+  if (placement === null) return undefined;
+  return { pngBytes: sample.pngBytes, ...placement };
 }
 
 /**

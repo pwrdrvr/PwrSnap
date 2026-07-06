@@ -2137,6 +2137,21 @@ export function TransformHandles({
     dragStartPtRef.current = null;
   }, [selectedOverlay.id]);
 
+  // Also drop stale live geometry when the PERSISTED data changes while
+  // no drag is active. The id-keyed reset above only fired for v1's
+  // delete-plus-insert (new id per edit) — v2's updateGeometry PRESERVES
+  // the id, so it never fires across refetches. Post-commit that was
+  // invisible (liveData equals the refetched data), but an UNDO reverts
+  // the data while liveData still holds the dragged geometry: the
+  // handles + outline stayed at the pre-undo position until a reselect
+  // remounted the component. Guarded on "not mid-drag" so a concurrent
+  // refetch (another window's edit landing) can't wipe an active
+  // gesture's live preview.
+  useEffect(() => {
+    if (dragHandleRef.current !== null) return;
+    setLiveData(null);
+  }, [selectedOverlay.data]);
+
   const data = liveData ?? selectedOverlay.data;
   // The selected glyph's REAL measured box (text rows only). Subscribing
   // re-renders the handles when the glyph re-measures after an edit /
@@ -2326,8 +2341,9 @@ export function TransformHandles({
         onGeometryChange(geometry);
       }
       // Don't immediately clear liveData — wait for the refetch to land
-      // so we don't blink to the pre-drag position. The useEffect on
-      // selectedOverlay.id above clears it when the new layer arrives.
+      // so we don't blink to the pre-drag position. The data-keyed
+      // useEffect above clears it when the refetched geometry arrives
+      // (v2 preserves the layer id, so the id-keyed reset never fires).
       onDragEnd?.();
     },
     [

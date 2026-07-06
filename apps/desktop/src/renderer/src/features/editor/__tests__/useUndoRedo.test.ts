@@ -257,15 +257,29 @@ describe("useUndoRedo", () => {
       })
     );
 
-    const rasterNode = {
-      ...makeNode("ras-cursor"),
-      kind: "raster" as const,
-      source_ref: { kind: "embedded" as const, sha256: "c".repeat(64) },
+    const rasterNode: BundleLayerNode = {
+      id: "ras-cursor",
+      parent_id: "grp_root",
+      name: "Cursor",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 10, 20],
+      z_index: 1,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-01-01T00:00:00.000Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-01-01T00:00:00.000Z",
+      kind: "raster",
+      source_ref: { kind: "embedded", sha256: "c".repeat(64) },
       natural_width_px: 32,
       natural_height_px: 48
     };
     act(() => {
-      api!.recordDelete({ id: "ras-cursor" }, { node: rasterNode as never });
+      api!.recordDelete({ id: "ras-cursor" }, { node: rasterNode });
     });
     await act(async () => {
       await api!.undo();

@@ -1,12 +1,28 @@
 ---
 title: Cursor Capture Control
 type: feat
-status: active
+status: shipped
 date: 2026-06-15
 origin: docs/brainstorms/2026-06-15-cursor-capture-control-requirements.md
 ---
 
 # ✨ Cursor Capture Control
+
+## Shipping Status
+
+**✅ SHIPPED 2026-07-06** via PR #297 (`feat/editor-raster-layerview` → `main`).
+All three phases landed:
+
+| Phase | Delivered by |
+|---|---|
+| **Phase 1** — Shared control + video cursor toggle | #270 (cherry-picked into #297) |
+| **Phase 2** — Editor Raster LayerView (option **C-max**) | #297 core (render → panel → select/delete → canvas drag → paste) + #298 (cross-capture paste placement / crop bake) + #299 (multi-format clipboard, #259/#257) + #306 (raster interaction unification: group drag, undo, crop coords) |
+| **Phase 3** — Image cursor as a deletable/movable layer | #307 (native `NSCursor` sample → "Cursor" `RasterLayer` + in-bounds gate + crop translate) |
+
+**One deferred follow-up:** raster **resize** handles. Move, group-drag,
+z-order, delete, undo, and paste all shipped; resize is the documented "next
+brick" (`RasterLayers.tsx`). Everything else in the acceptance criteria below
+is met.
 
 ## Enhancement Summary
 
@@ -171,7 +187,7 @@ cursor can change between position read and sprite read (read them adjacent).
 Split into a clean, ship-now video phase and an image phase whose scope is the
 one open decision.
 
-### Phase 1 — Shared control + Video cursor toggle  ✅ low risk, ship independently
+### Phase 1 — Shared control + Video cursor toggle  ✅ SHIPPED (#270) — low risk
 
 Delivers the origin doc's R1/R2/R5/R6 for video and stands alone.
 
@@ -222,7 +238,7 @@ stays **ON** (the cursor is fully deletable, so default-ON is safe). **A** was t
 cheap dead-end (contradicts the brief); **B/C** are valid earlier-ship intermediates
 that this plan could fall back to if Phase 2 must be descoped.
 
-### Phase 2 — Editor Raster LayerView  ⬅ the long pole (general, not cursor-specific)
+### Phase 2 — Editor Raster LayerView  ✅ SHIPPED (#297 + #298 + #299 + #306) — the long pole (general, not cursor-specific)
 
 Make non-base raster layers first-class on the editor canvas. This is a real
 editor-architecture change and is large enough to warrant its own deepened sub-plan;
@@ -347,7 +363,7 @@ name/`z_index` conventions are fragile.)
 > via bus params (settings + capture/recording request fields), not only the
 > selector GUI.
 
-### Phase 3 — Image cursor (rides on Phase 2)
+### Phase 3 — Image cursor (rides on Phase 2)  ✅ SHIPPED (#307)
 
 1. **Native cursor sampling helper.** Add a one-shot `cursor` command to the
    existing `PwrSnapRecorder` Swift binary (it already links ScreenCaptureKit/AVFoundation
@@ -419,34 +435,37 @@ name/`z_index` conventions are fragile.)
 
 ### Functional
 
-- [ ] Settings → Recording exposes "Capture cursor in video" (default on) and
-      "Capture cursor in screenshots" (default per chosen option).
-- [ ] Video: with the setting/toggle OFF, the recording contains no cursor; ON
-      (default) it does, exactly as today.
-- [ ] Inline cursor toggle appears on the region selector and overrides the
+- [x] Settings → Recording exposes "Capture cursor in video" (default on) and
+      "Capture cursor in screenshots" (default per chosen option). *(#270)*
+- [x] Video: with the setting/toggle OFF, the recording contains no cursor; ON
+      (default) it does, exactly as today. *(#270)*
+- [x] Inline cursor toggle appears on the region selector and overrides the
       default for that one capture; never adds a blocking window; capture speed is
-      unchanged when untouched; toggle state never leaks to the next capture.
-- [ ] Editor raster LayerView (Phase 2): non-base raster layers render as real
-      pixels on the canvas, can be selected, moved/resized, z-ordered, and deleted;
+      unchanged when untouched; toggle state never leaks to the next capture. *(#270)*
+- [x] Editor raster LayerView (Phase 2): non-base raster layers render as real
+      pixels on the canvas, can be selected, moved, z-ordered, and deleted;
       pasted-image layers become editable; live preview matches `composeV2` export.
-- [ ] Image cursor (Phase 3, C-max): with cursor enabled, the capture shows the
+      **Resize handles deferred** — the one documented "next brick" follow-up;
+      everything else here shipped (#297 + #298 + #306).
+- [x] Image cursor (Phase 3, C-max): with cursor enabled, the capture shows the
       real system cursor (correct glyph, position, retina scale) as a "Cursor"
       layer; the user can see it in the editor, move it, and delete it; export and
-      clipboard reflect the edit — with no cursor-specific editor code.
-- [ ] Image (R6): for region/window captures the cursor layer is added only when
-      the pointer was inside the captured bounds.
-- [ ] Cursor sampling failure degrades to a normal cursor-less capture (no error
-      surfaced to the user).
-- [ ] Off-origin crop keeps the cursor correctly positioned (crop translation).
+      clipboard reflect the edit — with no cursor-specific editor code. *(#307)*
+- [x] Image (R6): for region/window captures the cursor layer is added only when
+      the pointer was inside the captured bounds. *(#307)*
+- [x] Cursor sampling failure degrades to a normal cursor-less capture (no error
+      surfaced to the user). *(#307)*
+- [x] Off-origin crop keeps the cursor correctly positioned (crop translation).
+      *(#306 crop-viewport + #307)*
 
 ### Non-Functional / Quality Gates
 
-- [ ] No `schemaVersion` bump; old settings files load (parseV1 back-fill).
-- [ ] No `BAKE_PIPELINE_VERSION` bump (verify: cursor layer hashing only).
-- [ ] Renderers stay sandboxed; native cursor read runs in the helper, not a renderer.
-- [ ] Private-API fallback (if implemented) resolved via `dlsym` with graceful
-      degradation; off by default.
-- [ ] Tests: settings round-trip + validator; recorder `showsCursor` plumbing;
+- [x] No `schemaVersion` bump; old settings files load (parseV1 back-fill).
+- [x] No `BAKE_PIPELINE_VERSION` bump (cursor layer hashing only).
+- [x] Renderers stay sandboxed; native cursor read runs in the helper, not a renderer.
+- [x] Private-API fallback: not needed — the primary `NSCursor` sample path is
+      sufficient; no private API shipped.
+- [x] Tests: settings round-trip + validator; recorder `showsCursor` plumbing;
       selector toggle state scrub; cursor-layer insert + in-bounds gate + crop
       translate; export/clipboard include the cursor.
 

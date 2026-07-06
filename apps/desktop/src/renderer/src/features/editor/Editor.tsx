@@ -3582,6 +3582,7 @@ export function Editor({
       dispatchContextMenuItem={dispatchContextMenuItem}
       draftGeometry={draftGeometry}
       rasterDrafts={rasterDrafts}
+      setRasterDrafts={setRasterDrafts}
       setDraftGeometry={setDraftGeometry}
       commitText={commitText}
       onZoomChange={onZoomChange}
@@ -3655,6 +3656,7 @@ function EditorLoaded({
   dispatchContextMenuItem,
   draftGeometry,
   setDraftGeometry,
+  setRasterDrafts,
   rasterDrafts,
   commitText,
   onZoomChange,
@@ -3789,6 +3791,11 @@ function EditorLoaded({
   draftGeometry: ReadonlyMap<string, GeometryUpdate> | null;
   setDraftGeometry: React.Dispatch<
     React.SetStateAction<ReadonlyMap<string, GeometryUpdate> | null>
+  >;
+  /** Raster live-override setter — the nudge burst paints raster
+   *  movement through the same override map the drag gestures use. */
+  setRasterDrafts: React.Dispatch<
+    React.SetStateAction<ReadonlyMap<string, AffineTransform> | null>
   >;
   commitText: () => Promise<void>;
   onZoomChange: ((api: ZoomApi) => void) | undefined;
@@ -4488,94 +4495,86 @@ function EditorLoaded({
   }, [selectedLayerIds, endInteractionRef]);
 
   useEffect(() => {
-    // Drain the burst accumulator with at most ONE dispatch chain in
-    // flight. Every write is ABSOLUTE (base snapshot + total
-    // accumulated steps), so held-key repeats can never lose updates
-    // to the dispatch → refetch latency; presses that arrive mid-
-    // flight just bump the accumulator and the while-loop bundles
-    // them into the next flush.
+    // Commit the burst's TOTAL as one absolute write set (base
+    // snapshot + accumulated steps). Called exactly once per burst —
+    // when the idle timer fires, or when the selection changes under
+    // an open burst. During the burst, presses paint through the live
+    // OVERRIDE maps only (zero IPC): committing per press flooded the
+    // broadcast → refetch pipeline so hard that every refetch resolved
+    // stale (seq-guard dropped) and the canvas froze until key
+    // release, while the Library re-baked composites per write.
     const flushNudgeBurst = async (
       burst: NonNullable<typeof nudgeBurstRef.current>
     ): Promise<void> => {
       if (burst.inFlight) return;
+      if (
+        burst.accumX === burst.lastFlushedX &&
+        burst.accumY === burst.lastFlushedY
+      ) {
+        return;
+      }
       burst.inFlight = true;
       try {
-        while (
-          burst.accumX !== burst.lastFlushedX ||
-          burst.accumY !== burst.lastFlushedY
-        ) {
-          const fx = burst.accumX;
-          const fy = burst.accumY;
-          const dxn = fx / record.width_px;
-          const dyn = fy / record.height_px;
-          const newIds: string[] = [];
-          for (const target of burst.baseOverlays) {
-            const geometry = translateOverlayGeometry(target.data, dxn, dyn);
-            if (geometry === null) {
-              newIds.push(target.id);
-              continue;
-            }
-            // previous = the BASE (pre-burst) geometry — constant across
-            // flushes, so the bracket's coalesced entry always restores
-            // the true pre-burst position on undo.
-            const previousGeometry = overlayDataToGeometry(target.data);
-            const result = await dispatchEdit({
-              kind: "updateGeometry",
-              layerId: target.id,
-              geometry
+        const fx = burst.accumX;
+        const fy = burst.accumY;
+        const dxn = fx / record.width_px;
+        const dyn = fy / record.height_px;
+        for (const target of burst.baseOverlays) {
+          const geometry = translateOverlayGeometry(target.data, dxn, dyn);
+          if (geometry === null) continue;
+          // previous = the BASE (pre-burst) geometry, so undo restores
+          // the true pre-burst position in one step.
+          const previousGeometry = overlayDataToGeometry(target.data);
+          const result = await dispatchEdit({
+            kind: "updateGeometry",
+            layerId: target.id,
+            geometry
+          });
+          if (!result.ok || result.value.kind !== "update") continue;
+          if (!undoApplyingRef.current && previousGeometry !== null) {
+            recordStoredGeometry({
+              currentIdRef: { current: result.value.artifact.node.id },
+              previousGeometry,
+              nextGeometry: geometry
             });
-            if (!result.ok || result.value.kind !== "update") {
-              newIds.push(target.id);
-              continue;
-            }
-            const newId = result.value.artifact.node.id;
-            newIds.push(newId);
-            if (!undoApplyingRef.current && previousGeometry !== null) {
-              recordStoredGeometry({
-                currentIdRef: { current: newId },
-                previousGeometry,
-                nextGeometry: geometry
-              });
-            }
           }
-          // Rasters ride the same flush: fx/fy are DISPLAY canvas px
-          // (dxn · record.width_px === fx), exactly the raster
-          // transform's coordinate space.
-          for (const node of burst.baseRasters) {
-            const t = node.transform;
-            const nextTransform: AffineTransform = [
-              t[0],
-              t[1],
-              t[2],
-              t[3],
-              t[4] + fx,
-              t[5] + fy
-            ];
-            const result = await dispatchEdit({
-              kind: "updateGeometry",
-              layerId: node.id,
-              geometry: { kind: "transform", transform: nextTransform }
-            });
-            const newId =
-              result.ok && result.value.kind === "update"
-                ? result.value.artifact.node.id
-                : node.id;
-            newIds.push(newId);
-            if (result.ok && !undoApplyingRef.current) {
-              recordStoredGeometry({
-                currentIdRef: { current: newId },
-                previousGeometry: { kind: "transform", transform: t },
-                nextGeometry: { kind: "transform", transform: nextTransform }
-              });
-            }
-          }
-          burst.lastFlushedX = fx;
-          burst.lastFlushedY = fy;
-          // Flag the impending selection change as "self-inflicted" so
-          // the selection-change effect doesn't tear down the bracket.
-          nudgeAdvancingSelectionRef.current = true;
-          setSelectionTrustingDispatch(newIds);
         }
+        // Rasters ride the same commit: fx/fy are DISPLAY canvas px
+        // (dxn · record.width_px === fx), exactly the raster
+        // transform's coordinate space.
+        for (const node of burst.baseRasters) {
+          const t = node.transform;
+          const nextTransform: AffineTransform = [
+            t[0],
+            t[1],
+            t[2],
+            t[3],
+            t[4] + fx,
+            t[5] + fy
+          ];
+          const result = await dispatchEdit({
+            kind: "updateGeometry",
+            layerId: node.id,
+            geometry: { kind: "transform", transform: nextTransform }
+          });
+          if (result.ok && !undoApplyingRef.current) {
+            recordStoredGeometry({
+              currentIdRef: {
+                current:
+                  result.value.kind === "update"
+                    ? result.value.artifact.node.id
+                    : node.id
+              },
+              previousGeometry: { kind: "transform", transform: t },
+              nextGeometry: { kind: "transform", transform: nextTransform }
+            });
+          }
+        }
+        burst.lastFlushedX = fx;
+        burst.lastFlushedY = fy;
+        // No selection churn: v2 updateGeometry preserves overlay ids
+        // and the raster path updates in place, so the selection stays
+        // valid across the commit.
       } finally {
         burst.inFlight = false;
       }
@@ -4586,12 +4585,17 @@ function EditorLoaded({
       if (record.width_px <= 0 || record.height_px <= 0) return;
       const selectionKey = selectedLayerIds.join("\n");
       // Selection changed under an open burst (user clicked mid-burst
-      // before the idle timer fired) — restart from a fresh snapshot.
+      // before the idle timer fired) — COMMIT the old burst (its
+      // movement lives only in the override maps until flushed; a
+      // plain discard would lose it and leave overrides masking
+      // stale positions forever), then restart from a fresh snapshot.
       if (
         nudgeBurstRef.current !== null &&
         nudgeBurstRef.current.selectionKey !== selectionKey
       ) {
+        const stale = nudgeBurstRef.current;
         nudgeBurstRef.current = null;
+        void flushNudgeBurst(stale);
       }
       if (nudgeBurstRef.current === null) {
         const snapshot = overlays;
@@ -4640,21 +4644,53 @@ function EditorLoaded({
         clearTimeout(nudgeIdleTimerRef.current);
       }
       nudgeIdleTimerRef.current = setTimeout(() => {
-        const token = nudgeBracketTokenRef.current;
-        if (token !== null && endInteractionRef.current !== null) {
-          endInteractionRef.current(token);
-        }
-        nudgeBracketTokenRef.current = null;
         nudgeIdleTimerRef.current = null;
-        // Burst ends with the bracket — the next press snapshots fresh
-        // base geometries (the model has long since caught up).
+        const burst = nudgeBurstRef.current;
         nudgeBurstRef.current = null;
+        void (async (): Promise<void> => {
+          // Commit the whole burst as ONE write set, with the records
+          // landing inside the still-open bracket, THEN close it. The
+          // live overrides stay up through the commit's refetch — the
+          // landed-pruners drop them once the model carries the final
+          // position, so nothing snaps back.
+          if (burst !== null) await flushNudgeBurst(burst);
+          const token = nudgeBracketTokenRef.current;
+          if (token !== null && endInteractionRef.current !== null) {
+            endInteractionRef.current(token);
+          }
+          nudgeBracketTokenRef.current = null;
+        })();
       }, NUDGE_IDLE_MS);
 
       const burst = nudgeBurstRef.current;
       burst.accumX += dxnSteps;
       burst.accumY += dynSteps;
-      void flushNudgeBurst(burst);
+      // LIVE PREVIEW — pure renderer state, zero IPC per press. Overlays
+      // paint through draftGeometry, rasters through rasterDrafts, both
+      // at base + total. The commit happens once, at burst end.
+      const previewDxn = burst.accumX / record.width_px;
+      const previewDyn = burst.accumY / record.height_px;
+      const overlayOverrides = new Map<string, GeometryUpdate>();
+      for (const target of burst.baseOverlays) {
+        const g = translateOverlayGeometry(target.data, previewDxn, previewDyn);
+        if (g !== null) overlayOverrides.set(target.id, g);
+      }
+      if (overlayOverrides.size > 0) setDraftGeometry(overlayOverrides);
+      if (burst.baseRasters.length > 0) {
+        const rasterOverrides = new Map<string, AffineTransform>();
+        for (const node of burst.baseRasters) {
+          const t = node.transform;
+          rasterOverrides.set(node.id, [
+            t[0],
+            t[1],
+            t[2],
+            t[3],
+            t[4] + burst.accumX,
+            t[5] + burst.accumY
+          ]);
+        }
+        setRasterDrafts(rasterOverrides);
+      }
     };
     return () => {
       nudgeSelectedRef.current = null;
@@ -4668,7 +4704,8 @@ function EditorLoaded({
     record.width_px,
     record.height_px,
     record.sha256,
-    setSelectionTrustingDispatch,
+    setDraftGeometry,
+    setRasterDrafts,
     recordStoredGeometry,
     undoApplyingRef,
     beginInteractionRef,

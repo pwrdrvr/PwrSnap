@@ -34,6 +34,7 @@ import {
 } from "@pwrsnap/shared";
 
 import { listLayerTree } from "../persistence/layers-repo";
+import { getCaptureById } from "../persistence/captures-repo";
 import { readSourceForCapture } from "../persistence/bundle-store";
 import { getCacheRoot } from "../persistence/paths";
 import { getMainLogger } from "../log";
@@ -77,7 +78,11 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
   const viewport = resolveCropViewport({
     layers: rawLayers,
     canvasWidthPx: req.canvasWidthPx,
-    canvasHeightPx: req.canvasHeightPx
+    canvasHeightPx: req.canvasHeightPx,
+    // Identifies the BASE raster for the projection (sha-matched) so
+    // pasted/cursor rasters keep their real positions in the uncropped
+    // view. Cheap indexed row read next to the listLayerTree read above.
+    sourceSha256: getCaptureById(req.captureId)?.sha256
   });
   const layers = viewport.layers;
   const canvasWidthPx = viewport.widthPx;

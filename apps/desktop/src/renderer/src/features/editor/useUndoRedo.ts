@@ -77,7 +77,12 @@ import type {
  *  path REPLACED it with the latest push — silently discarding
  *  earlier rows in a multi-delete / multi-paste burst). */
 export type CreateDeleteItem = {
-  row: OverlayRow;
+  /** Reference to the affected row. Replay only ever reads `.id` (see
+   *  applyInverse) — full OverlayRows satisfy this, and RASTER layers
+   *  (which have no overlay projection: pasted images, the captured
+   *  cursor) record a bare `{ id }` ref. The `node` carries the whole
+   *  restore payload either way. */
+  row: Pick<OverlayRow, "id">;
   node: BundleLayerNode | null;
 };
 
@@ -179,12 +184,18 @@ export type UseUndoRedoResult = {
   /** Record a layer create. Pass the inserted BundleLayerNode under
    *  `node` — required so the redo path can re-dispatch `layers:upsert`
    *  with the original layer shape. */
+  /** Record a layer create. Like recordDelete, `row` needs only `.id`
+   *  (create-undo deletes by id; redo re-upserts via `node`) — raster
+   *  creates (duplicate / in-memory paste) pass a bare `{ id }`. */
   recordCreate: (
-    row: OverlayRow,
+    row: Pick<OverlayRow, "id">,
     opts?: RecordOptions & { node?: BundleLayerNode | null }
   ) => void;
+  /** Record a layer delete. `row` needs only `.id` (replay reads
+   *  nothing else) — rasters, which have no OverlayRow projection,
+   *  pass a bare `{ id }`; `node` carries the full restore payload. */
   recordDelete: (
-    row: OverlayRow,
+    row: Pick<OverlayRow, "id">,
     opts?: RecordOptions & { node?: BundleLayerNode | null }
   ) => void;
   /** Record a crop. `rect` is the normalized rect that was committed.
@@ -289,6 +300,14 @@ export function useUndoRedo(opts: {
    *  for the bus directly — every undo/redo IPC goes through this
    *  callback, which emits the right `layers:*` verb. */
   dispatchEdit: UndoRedoDispatchEdit;
+  /** Called at the top of every undo()/redo() BEFORE the stack is
+   *  touched. Lets the editor reconcile deferred-commit state (the
+   *  arrow-key nudge burst, whose movement lives only in live-override
+   *  maps until its idle flush). Return TRUE to CONSUME the history
+   *  keystroke: the editor cancelled a pending un-committed burst —
+   *  visually reverting it — which IS the undo the user asked for, so
+   *  the stack must not also pop. Return false to proceed normally. */
+  onBeforeHistory?: (() => Promise<boolean>) | undefined;
 }): UseUndoRedoResult {
   const [past, setPast] = useState<EditOp[]>([]);
   const [future, setFuture] = useState<EditOp[]>([]);
@@ -297,6 +316,8 @@ export function useUndoRedo(opts: {
   // refetches, which is every layer write).
   const dispatchEditRef = useRef<UndoRedoDispatchEdit>(opts.dispatchEdit);
   dispatchEditRef.current = opts.dispatchEdit;
+  const onBeforeHistoryRef = useRef(opts.onBeforeHistory);
+  onBeforeHistoryRef.current = opts.onBeforeHistory;
   // Internal ref used to suppress recording when WE are the ones
   // re-issuing an op via undo/redo. If the caller passed an
   // `applyingRef`, we expose ours through that one too — but the
@@ -454,7 +475,7 @@ export function useUndoRedo(opts: {
 
   const recordCreate = useCallback(
     (
-      row: OverlayRow,
+      row: Pick<OverlayRow, "id">,
       opts?: RecordOptions & { node?: BundleLayerNode | null }
     ) =>
       push(
@@ -468,7 +489,7 @@ export function useUndoRedo(opts: {
   );
   const recordDelete = useCallback(
     (
-      row: OverlayRow,
+      row: Pick<OverlayRow, "id">,
       opts?: RecordOptions & { node?: BundleLayerNode | null }
     ) =>
       push(
@@ -736,6 +757,10 @@ export function useUndoRedo(opts: {
   );
 
   const undo = useCallback(async () => {
+    // Deferred-state reconciliation: a pending nudge burst is not on
+    // the stack yet — cancelling it (reverting the on-screen movement)
+    // IS the undo the user asked for, so consume the keystroke.
+    if ((await onBeforeHistoryRef.current?.()) === true) return;
     const op = past[past.length - 1];
     if (op === undefined) return;
     await wrapApplying(async () => {
@@ -749,6 +774,7 @@ export function useUndoRedo(opts: {
   }, [past, applyInverse, wrapApplying]);
 
   const redo = useCallback(async () => {
+    if ((await onBeforeHistoryRef.current?.()) === true) return;
     const op = future[future.length - 1];
     if (op === undefined) return;
     await wrapApplying(async () => {

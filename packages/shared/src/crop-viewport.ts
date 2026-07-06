@@ -22,6 +22,7 @@
 
 import type { Overlay } from "./overlay-schemas";
 import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
+import { selectBaseRaster } from "./base-raster";
 
 /** A rectangle in normalized [0,1] coordinates (origin + size). */
 export interface CropRect {
@@ -174,8 +175,16 @@ function isCropVectorLayer(layer: BundleLayerNode): boolean {
  *  cropped canvas currently shows (`cropRectFromCanvas`); `naturalW/H`
  *  are the source raster's natural dims (the full-image canvas size).
  *
- *  • raster — reset the crop translate to 0 so the full source paints
- *    from the origin (scale components preserved).
+ *  • BASE raster — reset the crop translate to 0 so the full source
+ *    paints from the origin (scale components preserved). The base's
+ *    stored translate IS the crop offset, nothing more.
+ *  • non-base raster (pasted image / captured cursor) — its stored
+ *    translate is a REAL position on the cropped canvas, not a crop
+ *    offset. Add back the crop origin in px (`rect.x * naturalW`) —
+ *    the same shift as effect clip_rect. Zeroing it (the pre-fix
+ *    behavior) painted every pasted raster at the source origin and
+ *    scrambled its stored position on drag-commit whenever the crop
+ *    was toggled hidden.
  *  • vector — map normalized shape coords `n → n*rect.w + rect.x` via
  *    `inverseTransformOverlayByCrop(shape, inverseCropRect(rect))`. The
  *    crop marker itself is left untouched (it's hidden, paints nothing).
@@ -188,10 +197,24 @@ function projectLayerToSource(
   rect: CropRect,
   naturalW: number,
   naturalH: number,
-  inv: CropRect
+  inv: CropRect,
+  baseRasterId: string | null
 ): BundleLayerNode {
   switch (layer.kind) {
     case "raster":
+      if (layer.id === baseRasterId) {
+        return {
+          ...layer,
+          transform: [
+            layer.transform[0],
+            layer.transform[1],
+            layer.transform[2],
+            layer.transform[3],
+            0,
+            0
+          ]
+        };
+      }
       return {
         ...layer,
         transform: [
@@ -199,8 +222,8 @@ function projectLayerToSource(
           layer.transform[1],
           layer.transform[2],
           layer.transform[3],
-          0,
-          0
+          layer.transform[4] + rect.x * naturalW,
+          layer.transform[5] + rect.y * naturalH
         ]
       };
     case "vector": {
@@ -281,6 +304,22 @@ export function forwardLayerToStored(
       };
     }
     case "raster":
+      // Non-base rasters carry a real position in canvas px — shift by
+      // the crop origin, mirroring projectLayerToSource's read-side
+      // offset. The BASE raster never flows through here: it's pinned
+      // (never dragged/upserted through the display-space dispatcher),
+      // and its translate is managed by the crop dispatcher itself.
+      return {
+        ...layer,
+        transform: [
+          layer.transform[0],
+          layer.transform[1],
+          layer.transform[2],
+          layer.transform[3],
+          layer.transform[4] - rect.x * naturalW,
+          layer.transform[5] - rect.y * naturalH
+        ]
+      };
     case "group":
       return layer;
   }
@@ -322,8 +361,16 @@ export function resolveCropViewport(args: {
   layers: readonly BundleLayerNode[];
   canvasWidthPx: number;
   canvasHeightPx: number;
+  /** The capture record's source sha256 — identifies the BASE raster
+   *  (sha-matched via `selectBaseRaster`) so the projection can treat
+   *  it differently from pasted/cursor rasters, and so the crop-rect
+   *  math reads the base's naturals/translate rather than whichever
+   *  raster happens to come first in tree order. Optional for callers
+   *  that predate multi-raster captures; the selectBaseRaster
+   *  first-raster fallback keeps single-raster behavior identical. */
+  sourceSha256?: string | undefined;
 }): CropViewport {
-  const { layers, canvasWidthPx, canvasHeightPx } = args;
+  const { layers, canvasWidthPx, canvasHeightPx, sourceSha256 } = args;
   // The identity result is the bake hot path (crop visible/absent — almost
   // every render, including cache hits). Build it lazily and DON'T copy the
   // layer array: callers treat `layers` read-only, so the identity case
@@ -340,9 +387,11 @@ export function resolveCropViewport(args: {
   // Crop absent, or present-and-visible → nothing to reveal.
   if (cropLayer === undefined || cropLayer.visible !== false) return identity();
 
-  const raster = layers.find(
-    (l): l is Extract<BundleLayerNode, { kind: "raster" }> => l.kind === "raster"
-  );
+  // The BASE raster (sha-matched, first-raster fallback) — NOT simply the
+  // first raster in tree order, which can be a pasted image once captures
+  // carry multiple rasters. The crop-rect math below must read the base's
+  // naturals + translate; a pasted raster's would produce a nonsense rect.
+  const raster = selectBaseRaster(layers, sourceSha256 ?? "");
   if (raster === undefined) return identity();
 
   const naturalW = raster.natural_width_px;
@@ -364,6 +413,8 @@ export function resolveCropViewport(args: {
     widthPx: naturalW,
     heightPx: naturalH,
     rect,
-    layers: layers.map((l) => projectLayerToSource(l, rect, naturalW, naturalH, inv))
+    layers: layers.map((l) =>
+      projectLayerToSource(l, rect, naturalW, naturalH, inv, raster.id)
+    )
   };
 }

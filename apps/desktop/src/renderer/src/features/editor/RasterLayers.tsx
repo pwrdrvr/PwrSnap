@@ -9,9 +9,10 @@
 // outline in editor.css). Hit-testing lives in `raster-hit-test.ts` and
 // is wired into Editor.tsx's pointerdown; the <img> itself stays
 // `pointer-events: none` so the canvas owns the gesture. Drag-to-move is
-// wired (Editor.tsx's raster gesture passes a live `draftTransform` here
-// during the drag, then commits via layers:update); resize handles + undo
-// integration are the next brick.
+// wired: Editor.tsx's raster gesture (solo drag) and the group multi-drag
+// both pass live transforms via `draftTransforms` during the drag, then
+// commit through dispatchEdit's `transform` geometry (undo-integrated).
+// Resize handles are the next brick.
 //
 // Positioning math lives in `computeRasterLayerStyle`, which mirrors the
 // compositor (compose-tree.ts `compositeRasterOntoAccumulator`) so a
@@ -26,23 +27,13 @@ import { computeRasterLayerStyle } from "./raster-layer-style";
 
 type RasterLayer = Extract<BundleLayerNode, { kind: "raster" }>;
 
-/** Live drag-preview override: while the user drags a raster on the
- *  canvas, the editor passes the in-progress transform here so the `<img>`
- *  follows the cursor immediately, without a round-trip through the model.
- *  Cleared when the drag commits (the refetched model carries the new
- *  transform). */
-export interface RasterDraftTransform {
-  id: string;
-  transform: AffineTransform;
-}
-
 export function RasterLayers({
   layers,
   captureId,
   canvasWidthPx,
   canvasHeightPx,
   selectedLayerIds,
-  draftTransform = null
+  draftTransforms = null
 }: {
   /** Non-base raster layers, in paint order (caller filters out the
    *  base raster and any hidden / rejected layers). */
@@ -52,15 +43,20 @@ export function RasterLayers({
   canvasHeightPx: number;
   /** Canvas selection (owned by the editor) — drives the accent outline. */
   selectedLayerIds: readonly string[];
-  /** In-progress drag override for one raster (null when not dragging). */
-  draftTransform?: RasterDraftTransform | null;
+  /** Live drag-preview overrides, id → in-progress transform: while the
+   *  user drags raster(s) on the canvas — solo gesture or a mixed group
+   *  drag — the editor passes each raster's in-flight transform here so
+   *  the `<img>`s follow the cursor without a model round-trip. Cleared
+   *  when the drag commits (the refetched model carries the result). */
+  draftTransforms?: ReadonlyMap<string, AffineTransform> | null;
 }): ReactElement | null {
   if (layers.length === 0) return null;
   return (
     <>
       {layers.map((layer) => {
         const selected = selectedLayerIds.includes(layer.id);
-        const dragging = draftTransform !== null && draftTransform.id === layer.id;
+        const draft = draftTransforms?.get(layer.id);
+        const dragging = draft !== undefined;
         return (
           <img
             key={layer.id}
@@ -77,7 +73,7 @@ export function RasterLayers({
             data-selected={selected ? "true" : undefined}
             style={{
               ...computeRasterLayerStyle({
-                transform: dragging ? draftTransform.transform : layer.transform,
+                transform: draft ?? layer.transform,
                 naturalWidthPx: layer.natural_width_px,
                 naturalHeightPx: layer.natural_height_px,
                 canvasWidthPx,

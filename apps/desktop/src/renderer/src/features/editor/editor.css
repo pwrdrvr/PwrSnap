@@ -256,10 +256,10 @@
 /* Non-source raster layers (pasted images, captured cursor). Position is
    inline (computeRasterLayerStyle); selection adds the accent ring. The
    <img> is pointer-events:none — the canvas owns hit-testing. */
-.editor-raster-layer.is-selected {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
-}
+/* Selected-raster chrome is drawn by OverlaySvg's RasterSelectionOutline
+   (same dashed glyph as every other layer kind) — no CSS outline here,
+   or the raster would show TWO competing selection styles. The
+   .is-selected class stays on the <img> as a test/query hook. */
 .editor-svg {
   position: absolute;
   inset: 0;

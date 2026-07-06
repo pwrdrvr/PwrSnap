@@ -259,3 +259,81 @@ describe("input round-trip — drawing on the full image stores into cropped spa
     expect(shownRect.y).toBeCloseTo(0.3, 10);
   });
 });
+
+// --- Raster unification: multi-raster captures under a hidden crop ----
+//
+// A capture can carry rasters BEYOND the base source (pasted images, the
+// captured cursor). Their stored translate is a REAL position on the
+// cropped canvas — not a crop offset — so the uncropped projection must
+// shift them by the crop origin (like effect clip_rects), never zero
+// them (which painted every pasted raster at the source origin and
+// scrambled its position on drag-commit). The base is identified by
+// sha256 via selectBaseRaster, NOT by tree order.
+
+function pastedRaster(id: string, tx: number, ty: number): BundleLayerNode {
+  return {
+    ...common({ id, transform: [1, 0, 0, 1, tx, ty] }),
+    kind: "raster",
+    source_ref: { kind: "embedded", sha256: "b".repeat(64) },
+    natural_width_px: 200,
+    natural_height_px: 100
+  } as unknown as BundleLayerNode;
+}
+
+describe("resolveCropViewport — non-base rasters keep their position (hidden crop)", () => {
+  const BASE_SHA = "a".repeat(64);
+
+  it("offsets a pasted raster by the crop origin; still zeroes the base", () => {
+    const layers = [RASTER, pastedRaster("pasted0000000000", 50, 40), cropLayer(false)];
+    const vp = resolveCropViewport({
+      layers,
+      canvasWidthPx: CROPPED_W,
+      canvasHeightPx: CROPPED_H,
+      sourceSha256: BASE_SHA
+    });
+    const base = vp.layers[0] as Extract<BundleLayerNode, { kind: "raster" }>;
+    const pasted = vp.layers[1] as Extract<BundleLayerNode, { kind: "raster" }>;
+    expect(base.transform[4]).toBe(0);
+    expect(base.transform[5]).toBe(0);
+    // Stored (50, 40) on the cropped canvas → +crop origin in source px
+    // (0.2·800 = 160, 0·600 = 0), same shift rule as effect clip_rect.
+    expect(pasted.transform[4]).toBeCloseTo(50 + 160, 10);
+    expect(pasted.transform[5]).toBeCloseTo(40, 10);
+  });
+
+  it("identifies the base by sha even when a pasted raster comes FIRST in tree order", () => {
+    const layers = [pastedRaster("pasted0000000000", 50, 40), RASTER, cropLayer(false)];
+    const vp = resolveCropViewport({
+      layers,
+      canvasWidthPx: CROPPED_W,
+      canvasHeightPx: CROPPED_H,
+      sourceSha256: BASE_SHA
+    });
+    // The crop-rect math must read the BASE raster's naturals/translate —
+    // a first-raster pick would compute a nonsense window from the
+    // pasted raster's 200×100 naturals.
+    expect(vp.uncropped).toBe(true);
+    expect(vp.rect).toEqual(EXPECTED_RECT);
+    const pasted = vp.layers[0] as Extract<BundleLayerNode, { kind: "raster" }>;
+    const base = vp.layers[1] as Extract<BundleLayerNode, { kind: "raster" }>;
+    expect(pasted.transform[4]).toBeCloseTo(210, 10);
+    expect(base.transform[4]).toBe(0);
+  });
+
+  it("forwardLayerToStored round-trips a non-base raster (display → stored)", () => {
+    const layers = [RASTER, pastedRaster("pasted0000000000", 50, 40), cropLayer(false)];
+    const vp = resolveCropViewport({
+      layers,
+      canvasWidthPx: CROPPED_W,
+      canvasHeightPx: CROPPED_H,
+      sourceSha256: BASE_SHA
+    });
+    const projected = vp.layers[1];
+    const roundTripped = forwardLayerToStored(projected, vp.rect!, 800, 600) as Extract<
+      BundleLayerNode,
+      { kind: "raster" }
+    >;
+    expect(roundTripped.transform[4]).toBeCloseTo(50, 10);
+    expect(roundTripped.transform[5]).toBeCloseTo(40, 10);
+  });
+});

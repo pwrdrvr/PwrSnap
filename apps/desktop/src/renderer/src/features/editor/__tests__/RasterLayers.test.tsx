@@ -56,10 +56,10 @@ async function renderLayers(props: {
   canvasWidthPx: number;
   canvasHeightPx: number;
   selectedLayerIds?: readonly string[];
-  draftTransform?: {
-    id: string;
-    transform: [number, number, number, number, number, number];
-  } | null;
+  draftTransforms?: ReadonlyMap<
+    string,
+    [number, number, number, number, number, number]
+  > | null;
 }): Promise<void> {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -157,7 +157,7 @@ describe("RasterLayers", () => {
       canvasWidthPx: 200,
       canvasHeightPx: 100,
       // Mid-drag override for L1: moved to canvas px (40, 20).
-      draftTransform: { id: "L1", transform: [1, 0, 0, 1, 40, 20] }
+      draftTransforms: new Map([["L1", [1, 0, 0, 1, 40, 20] as const]])
     });
     const dragged = container!.querySelector('[data-layer-id="L1"]') as HTMLElement;
     const other = container!.querySelector('[data-layer-id="L2"]') as HTMLElement;

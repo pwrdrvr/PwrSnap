@@ -24,7 +24,13 @@
 // (the commit landed), independent of whether the id changed. These are
 // pure functions so the lifecycle is unit-tested in isolation.
 
-import { readOverlayRotation, type Overlay, type OverlayRow } from "@pwrsnap/shared";
+import {
+  readOverlayRotation,
+  type AffineTransform,
+  type BundleLayerNode,
+  type Overlay,
+  type OverlayRow
+} from "@pwrsnap/shared";
 import type { GeometryUpdate } from "./useCaptureModel";
 
 // Per-axis tolerance in PIXELS. EFFECT layers (highlight / blur) persist
@@ -118,6 +124,10 @@ export function overlayMatchesDraftGeometry(
         near(data.point.x, geom.point.x, "x") &&
         near(data.point.y, geom.point.y, "y")
       );
+    case "transform":
+      // Raster-only geometry — never carried by an overlay draft
+      // override (raster live-drag rides RasterLayers' draftTransforms).
+      return false;
   }
 }
 
@@ -166,5 +176,48 @@ export function pruneLandedDraftGeometry(
     }
   }
   if (next === null) return draft; // nothing dropped
+  return next.size > 0 ? next : null;
+}
+
+/** Raster twin of `pruneLandedDraftGeometry`: drop a raster's live-drag
+ *  transform override once the persisted layer has caught up (the
+ *  commit's broadcast → refetch landed) or the layer is gone. Until
+ *  then the override keeps the `<img>` painting at the dragged
+ *  position — without this hold, a committed raster drag visibly
+ *  snapped BACK to its pre-drag spot for the refetch window while
+ *  overlays in the same gesture (which have always had the landed-
+ *  prune hold) stayed put.
+ *
+ *  Returns the SAME map reference when nothing landed (callers skip
+ *  the setState), a smaller map when some entries landed, or null when
+ *  the map emptied. Translate tolerance ±0.5px absorbs any px
+ *  round-trip; scale compares within 1e-4. */
+export function pruneLandedRasterDrafts(
+  drafts: ReadonlyMap<string, AffineTransform>,
+  layers: readonly BundleLayerNode[]
+): ReadonlyMap<string, AffineTransform> | null {
+  let changed = false;
+  const next = new Map<string, AffineTransform>();
+  for (const [id, draft] of drafts) {
+    const layer = layers.find((l) => l.id === id);
+    if (layer === undefined || layer.kind !== "raster") {
+      // Layer gone (deleted while the override bridged the gap) —
+      // nothing left to mask; drop the entry.
+      changed = true;
+      continue;
+    }
+    const t = layer.transform;
+    const landed =
+      Math.abs(t[4] - draft[4]) <= 0.5 &&
+      Math.abs(t[5] - draft[5]) <= 0.5 &&
+      Math.abs(t[0] - draft[0]) <= 1e-4 &&
+      Math.abs(t[3] - draft[3]) <= 1e-4;
+    if (landed) {
+      changed = true;
+      continue;
+    }
+    next.set(id, draft);
+  }
+  if (!changed) return drafts;
   return next.size > 0 ? next : null;
 }

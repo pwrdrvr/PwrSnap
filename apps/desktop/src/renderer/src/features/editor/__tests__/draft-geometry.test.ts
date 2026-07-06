@@ -7,11 +7,15 @@
 // masked the undo. See draft-geometry.ts.
 
 import { describe, expect, test } from "vitest";
-import type { Overlay, OverlayRow } from "@pwrsnap/shared";
+import type { Overlay, OverlayRow,
+  AffineTransform,
+  BundleLayerNode
+} from "@pwrsnap/shared";
 import type { GeometryUpdate } from "../useCaptureModel";
 import {
   overlayMatchesDraftGeometry,
-  pruneLandedDraftGeometry
+  pruneLandedDraftGeometry,
+  pruneLandedRasterDrafts
 } from "../draft-geometry";
 
 type Rect = { x: number; y: number; w: number; h: number };
@@ -183,5 +187,60 @@ describe("pruneLandedDraftGeometry", () => {
     const result = pruneLandedDraftGeometry(draft, overlays, W, H);
     expect(result).not.toBeNull();
     expect([...result!.keys()]).toEqual(["B"]);
+  });
+});
+
+// --- pruneLandedRasterDrafts (raster twin of the landed-prune) --------
+
+describe("pruneLandedRasterDrafts", () => {
+  const rasterNode = (
+    id: string,
+    transform: [number, number, number, number, number, number]
+  ): BundleLayerNode =>
+    ({
+      id,
+      parent_id: "grp",
+      name: "",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform,
+      z_index: 1,
+      source: "user",
+      ai_run_id: null,
+      applied_at: null,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-01-01T00:00:00.000Z",
+      kind: "raster",
+      source_ref: { kind: "embedded", sha256: "a".repeat(64) },
+      natural_width_px: 100,
+      natural_height_px: 50
+    }) as unknown as BundleLayerNode;
+
+  test("keeps an entry while the persisted transform still lags the draft", () => {
+    const drafts = new Map<string, AffineTransform>([["L1", [1, 0, 0, 1, 100, 50]]]);
+    const layers = [rasterNode("L1", [1, 0, 0, 1, 10, 20])];
+    // Same reference back — caller skips the setState.
+    expect(pruneLandedRasterDrafts(drafts, layers)).toBe(drafts);
+  });
+
+  test("drops an entry once the persisted transform catches up (±0.5px)", () => {
+    const drafts = new Map<string, AffineTransform>([["L1", [1, 0, 0, 1, 100, 50]]]);
+    const layers = [rasterNode("L1", [1, 0, 0, 1, 100.4, 49.6])];
+    expect(pruneLandedRasterDrafts(drafts, layers)).toBeNull();
+  });
+
+  test("drops entries whose layer is gone; keeps the rest", () => {
+    const drafts = new Map<string, AffineTransform>([
+      ["gone", [1, 0, 0, 1, 5, 5]],
+      ["lagging", [1, 0, 0, 1, 100, 50]]
+    ]);
+    const layers = [rasterNode("lagging", [1, 0, 0, 1, 0, 0])];
+    const next = pruneLandedRasterDrafts(drafts, layers);
+    expect(next).not.toBeNull();
+    expect(next!.size).toBe(1);
+    expect(next!.has("lagging")).toBe(true);
   });
 });

@@ -140,11 +140,6 @@ const CANVAS_H = 80;
 let workDir: string;
 
 beforeAll(async () => {
-  // The cross-capture placement tests bake rasters via sharp (resize +
-  // extract + composite), which is slow enough on the Windows CI runner to
-  // blow the 5s default. Give the whole file headroom — fast tests are
-  // unaffected (the timeout is only a ceiling).
-  vi.setConfig({ testTimeout: 30_000 });
   workDir = await mkdtemp(join(tmpdir(), "pwrsnap-clipboard-changed-"));
   testDataRoot = workDir;
   testDocumentsRoot = join(workDir, "documents");
@@ -1156,7 +1151,12 @@ describe("cross-capture layer paste — placement (bake on copy, scale-to-fit on
       fragment.layers.some((l) => l.kind === "vector" && l.shape.kind === "crop")
     ).toBe(false);
   });
-});
+  // 30s suite timeout (inherited by every test here): these tests bake
+  // rasters via sharp (resize + extract + composite), and the off-origin
+  // crop case blows the 5s default on the slower Windows CI runner. A
+  // suite-level timeout is captured at collection (unlike vi.setConfig in
+  // a beforeAll, which runs too late).
+}, 30_000);
 
 function toPosixPath(path: string): string {
   return path.replaceAll("\\", "/");

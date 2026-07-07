@@ -240,6 +240,59 @@ describe("useUndoRedo", () => {
     expect(dispatchEditMock).toHaveBeenCalledWith({ kind: "upsert", node });
   });
 
+  test("recordDelete with a bare { id } ref (raster — no OverlayRow) round-trips undo/redo", async () => {
+    // Rasters (pasted images, the captured cursor) have no overlay
+    // projection, so their delete records an id-ref + the full node.
+    // Pre-fix they recorded NOTHING: deleting the Cursor layer left the
+    // editor history empty and Cmd+Z fell through to the Library's
+    // capture-restore fallback, resurrecting an unrelated trashed
+    // capture instead of the layer.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    const rasterNode: BundleLayerNode = {
+      id: "ras-cursor",
+      parent_id: "grp_root",
+      name: "Cursor",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 10, 20],
+      z_index: 1,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-01-01T00:00:00.000Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-01-01T00:00:00.000Z",
+      kind: "raster",
+      source_ref: { kind: "embedded", sha256: "c".repeat(64) },
+      natural_width_px: 32,
+      natural_height_px: 48
+    };
+    act(() => {
+      api!.recordDelete({ id: "ras-cursor" }, { node: rasterNode });
+    });
+    await act(async () => {
+      await api!.undo();
+    });
+    // Undo restores the raster via its node.
+    expect(dispatchEditMock).toHaveBeenCalledWith({ kind: "upsert", node: rasterNode });
+    await act(async () => {
+      await api!.redo();
+    });
+    // Redo re-deletes by the recorded id — the only field replay reads.
+    expect(dispatchEditMock).toHaveBeenCalledWith({ kind: "delete", id: "ras-cursor" });
+  });
+
   test("undo then redo replays the original op", async () => {
     let api: UseUndoRedoResult | null = null;
     render(

@@ -45,6 +45,11 @@ export type StartOptions = {
   subject: RecordingSubject;
   capabilities: RecordingCapabilities;
   countdownSeconds: number;
+  /** Whether the recording bakes in the mouse cursor. Omitted = the
+   *  native recorder's default (`showsCursor ?? true`). `| undefined`
+   *  is explicit so restart() can forward a possibly-unset snapshot
+   *  under exactOptionalPropertyTypes. */
+  captureCursor?: boolean | undefined;
 };
 
 export type RecordingService = {
@@ -110,6 +115,10 @@ class NativeRecorderService implements RecordingService {
   private sessionId: string | null = null;
   private subject: RecordingSubject | null = null;
   private capabilities: RecordingCapabilities | null = null;
+  /** Snapshotted alongside subject/capabilities so restart() can
+   *  preserve the cursor choice across the cancel→start round-trip.
+   *  `undefined` lets the recorder apply its own default. */
+  private captureCursor: boolean | undefined = undefined;
   private outputPath: string | null = null;
   private startedPromise: Promise<void> | null = null;
   private stoppedPromise: Promise<RecorderStoppedEvent> | null = null;
@@ -157,6 +166,7 @@ class NativeRecorderService implements RecordingService {
     this.sessionId = sessionId;
     this.subject = opts.subject;
     this.capabilities = opts.capabilities;
+    this.captureCursor = opts.captureCursor;
     this.outputPath = outputPath;
 
     const physicalRect = subjectToPhysicalRect(opts.subject);
@@ -227,6 +237,9 @@ class NativeRecorderService implements RecordingService {
         outputPath,
         systemAudio: opts.capabilities.systemAudio,
         microphone: opts.capabilities.microphone,
+        // Omitted when undefined (JSON.stringify drops it), so the
+        // recorder falls back to its `showsCursor ?? true` default.
+        showsCursor: opts.captureCursor,
         captureAtMs,
         excludePids
       }) + "\n"
@@ -425,8 +438,9 @@ class NativeRecorderService implements RecordingService {
     }
     const subject = this.subject;
     const capabilities = this.capabilities;
+    const captureCursor = this.captureCursor;
     await this.cancel();
-    return this.start({ subject, capabilities, countdownSeconds: 3 });
+    return this.start({ subject, capabilities, captureCursor, countdownSeconds: 3 });
   }
 
   async cancel(): Promise<void> {
@@ -529,6 +543,7 @@ class NativeRecorderService implements RecordingService {
     this.sessionId = null;
     this.subject = null;
     this.capabilities = null;
+    this.captureCursor = undefined;
     this.outputPath = null;
     this.startedPromise = null;
     this.stoppedPromise = null;

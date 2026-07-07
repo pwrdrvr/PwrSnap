@@ -1825,6 +1825,17 @@ export type Settings = {
     includeSystemAudio: boolean;
     /** Default toggle for the microphone MP4 export option. */
     includeMicrophone: boolean;
+    /** Whether VIDEO recordings include the mouse cursor. Defaults
+     *  ON — recordings have always baked in the cursor (the native
+     *  recorder hardcoded it before this setting existed), so the
+     *  default preserves that. The pre-capture selector toggle can
+     *  override it per recording. */
+    videoCaptureCursor: boolean;
+    /** Whether IMAGE captures include the mouse cursor. Defaults ON.
+     *  Reserved for the Phase 3 image-cursor work — the field is
+     *  persisted now so adding it later needs no schema change, but
+     *  the image capture path does not consume it yet. */
+    imageCaptureCursor: boolean;
     /** Last permission fingerprint we routed the user to System
      *  Permissions for. Empty string = never routed. Recomputed at
      *  startup; if the current fingerprint differs and any permission
@@ -3173,6 +3184,12 @@ export type Commands = {
       subject: RecordingSubject;
       capabilities: RecordingCapabilities;
       countdownSeconds?: number | undefined;
+      /** Whether the recording bakes in the mouse cursor. Omitted =
+       *  defaults to ON in the native recorder (`showsCursor ?? true`),
+       *  preserving pre-setting behavior. The hotkey path resolves this
+       *  from `settings.recording.videoCaptureCursor` (and the selector
+       *  toggle override) before dispatching. */
+      captureCursor?: boolean | undefined;
     };
     res: { sessionId: string };
   };

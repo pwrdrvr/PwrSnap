@@ -33,6 +33,7 @@ import {
   inverseTransformOverlayByCrop,
   inverseCropRect,
   cropRectFromCanvas,
+  type AffineTransform,
   type BundleLayerNode,
   type CaptureRecord,
   type Overlay,
@@ -105,7 +106,16 @@ export type GeometryUpdate =
        *  point. See `rect.rotation` above. */
       readonly rotation?: number;
     }
-  | { readonly kind: "step"; readonly point: NormalizedPoint };
+  | { readonly kind: "step"; readonly point: NormalizedPoint }
+  /** Raster move (Phase 2 raster unification): the layer's full affine
+   *  transform `[sx, 0, 0, sy, tx, ty]` in CANVAS PIXELS of the space
+   *  the edit was made in (display space for user drags — the crop
+   *  wrapper maps to stored space like every other kind). Only rasters
+   *  accept it; applyGeometryToLayer returns null for other kinds.
+   *  Routing raster moves through updateGeometry (instead of a raw
+   *  layers:update) is what puts them on the undo stack and in the
+   *  multi-drag group commit. */
+  | { readonly kind: "transform"; readonly transform: AffineTransform };
 
 /** Generic patch applied to the overlay's `data.*` JSON. Only the
  *  fields present in the patch overwrite — every other field is left
@@ -560,6 +570,10 @@ export function applyGeometryToOverlay(
     case "step":
       if (overlay.kind !== "step") return null;
       return { ...overlay, point: geometry.point };
+    case "transform":
+      // Raster-only geometry — never applies to an Overlay shape.
+      // Rasters merge via applyGeometryToLayer's raster arm instead.
+      return null;
   }
 }
 
@@ -640,7 +654,14 @@ export function applyGeometryToLayer(
       }
     };
   }
-  // group / raster: no Phase 3.5 surface.
+  if (layer.kind === "raster") {
+    // Raster moves carry the full affine transform. Keep `layer.id`
+    // (carried by the spread) — same id-stability rationale as the
+    // vector branch above.
+    if (geometry.kind !== "transform") return null;
+    return { ...layer, transform: geometry.transform };
+  }
+  // group: no geometry surface.
   return null;
 }
 
@@ -1265,6 +1286,28 @@ export function useCaptureModel(captureId: string): CaptureModel {
               code: "geometry_kind_mismatch",
               message: `updateGeometry: cannot apply ${op.geometry.kind} geometry to layer kind ${current.kind}`
             });
+          }
+          if (current.kind === "raster") {
+            // Raster geometry is a pure transform swap on a stable id —
+            // commit it as ONE atomic in-place layers:update. The
+            // delete-plus-upsert dance below exists for vector/effect
+            // shape merges (the upsert restore path); routing rasters
+            // through it was non-atomic (an upsert failure after the
+            // delete stranded the raster soft-deleted with no undo
+            // entry) and doubled the IPC + broadcast-refetch cost of
+            // every drag/nudge commit.
+            const updResult = await dispatch("layers:update", {
+              captureId,
+              layer: merged
+            });
+            if (!updResult.ok) return err(updResult.error);
+            return {
+              ok: true,
+              value: {
+                kind: "update",
+                artifact: { format: 2, node: updResult.value }
+              }
+            };
           }
           const delResult = await dispatch("layers:delete", { id: op.layerId });
           if (!delResult.ok) return err(delResult.error);

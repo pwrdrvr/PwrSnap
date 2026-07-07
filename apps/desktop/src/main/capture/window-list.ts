@@ -82,6 +82,15 @@ function helperSupportsMacSubcommands(): boolean {
   return process.platform === "darwin";
 }
 
+/** Resolve the window-list helper binary's path (production
+ *  Resources/ or dev build/native/). Exported for sibling one-shot
+ *  subcommand wrappers (cursor-sample.ts) so the lookup + cache stay
+ *  in one place. Null on unsupported platforms / unbuilt dev helper —
+ *  callers degrade gracefully. */
+export function resolveWindowListHelperPath(): string | null {
+  return resolveHelperPath();
+}
+
 function resolveHelperPath(): string | null {
   if (cachedHelperPath !== null) return cachedHelperPath;
   // macOS (Swift) + Windows (C++) both ship a window-list helper; other

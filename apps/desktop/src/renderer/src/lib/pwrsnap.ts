@@ -138,6 +138,18 @@ export function captureSrcUrl(captureId: string): string {
   return `pwrsnap-capture://r/${captureId}`;
 }
 
+/**
+ * URL for a non-base raster layer's source bytes, served by the
+ * `pwrsnap-capture://s/<id>/<sha>` protocol handler. The editor's
+ * raster LayerView loads each raster layer's `source_ref.sha256`
+ * through here so a layer renders its real pixels without re-baking
+ * the composite. Content-addressed, so the bytes are immutable — no
+ * cache-buster needed.
+ */
+export function layerSourceUrl(captureId: string, sha256: string): string {
+  return `pwrsnap-capture://s/${captureId}/${sha256}`;
+}
+
 export function cacheUrl(
   captureId: string,
   width: number,

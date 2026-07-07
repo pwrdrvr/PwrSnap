@@ -9,12 +9,10 @@
 // record.bundle_format_version when deciding which IPC namespace to
 // hit.
 
-import { BrowserWindow } from "electron";
 import { nanoid } from "nanoid";
 import {
   ok,
   err,
-  EVENT_CHANNELS,
   BundleLayerNode as BundleLayerNodeSchema,
   // Crop-viewport math is shared with the renderer (one copy) — see
   // packages/shared/src/crop-viewport.ts.
@@ -22,6 +20,7 @@ import {
   type BundleLayerNode
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
+import { broadcastLayersChanged } from "./broadcast-layers";
 import { getMainLogger } from "../log";
 import { scheduleRepack } from "../persistence/bundle-store";
 import { getCaptureById, updateCaptureCanvasDimensions } from "../persistence/captures-repo";
@@ -37,20 +36,6 @@ import {
 } from "../persistence/layers-repo";
 
 const log = getMainLogger("pwrsnap:layers-handlers");
-
-function broadcastLayersChanged(captureId: string): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed()) continue;
-    // Layers-changed for Editor windows that subscribe to the
-    // v2-specific event; captures-changed for Library / float-over
-    // which only know about the higher-level capture row. The
-    // edits_version bump on the captures row was committed in the
-    // same transaction as the layer write, so the cache buster on
-    // pwrsnap-cache:// URLs is already stale.
-    win.webContents.send(EVENT_CHANNELS.overlaysChanged, { captureId });
-    win.webContents.send(EVENT_CHANNELS.capturesChanged, { changedIds: [captureId] });
-  }
-}
 
 /**
  * Refuse `layers:*` IPC on v1 captures — they use the `overlays:*`

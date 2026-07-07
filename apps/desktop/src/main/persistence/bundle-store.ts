@@ -62,6 +62,8 @@ import { getMainLogger } from "../log";
 import { buildCaptureBundleFilenameStem, bundleStemFromPath } from "./bundle-filename";
 import { readBundleFilenameTimestampZone } from "./bundle-filename-settings";
 
+import type { CursorLayerPlacement } from "../capture/cursor-sample";
+
 const log = getMainLogger("pwrsnap:bundle-store");
 
 export class BundleSourceMissingError extends Error {
@@ -645,6 +647,16 @@ export type PersistCaptureFromTempArgs = {
    * for thumbnail / preset-rendering math.
    */
   devicePixelRatio?: number | undefined;
+  /**
+   * Cursor sprite sampled at capture-trigger time (cursor-capture plan,
+   * Phase 3). When present, the sprite is embedded as a second bundle
+   * source and a deletable "Cursor" raster layer is placed above the
+   * base Source at (xPx, yPx) canvas pixels, drawn at drawWidth/HeightPx
+   * (the transform scale maps the sprite's natural raster to that box —
+   * Retina/XL-cursor sprites exceed their point size). Undefined = no
+   * cursor layer (setting off, sampling failed, cursor outside region).
+   */
+  cursorLayer?: CursorLayerPlacement | undefined;
 };
 
 export type PersistCaptureFromTempResult = {
@@ -795,6 +807,54 @@ function uniqueBundleFilenameStem(outputDir: string, preferredStem: string): str
  * v1 path, but the bundle/document/DB tree is the v2 shape. The
  * editor can then add overlay / vector / effect layers on top.
  */
+/**
+ * Composite the sampled cursor sprite onto a copy of the source PNG for
+ * the initial in-bundle thumbnail (Finder/QuickLook). Mirrors how the
+ * compositor will draw the cursor layer: sprite resized to its draw box
+ * (transform scale), placed at (xPx, yPx), clipped at the canvas edges
+ * (sharp.composite refuses negative offsets, so edge overhang is
+ * pre-cropped here). Exported for tests.
+ */
+export async function compositeCursorForThumbnail(
+  sourcePng: Buffer,
+  canvasWidthPx: number,
+  canvasHeightPx: number,
+  cursor: CursorLayerPlacement
+): Promise<Buffer> {
+  const drawW = Math.max(1, Math.round(cursor.drawWidthPx));
+  const drawH = Math.max(1, Math.round(cursor.drawHeightPx));
+  const x = Math.round(cursor.xPx);
+  const y = Math.round(cursor.yPx);
+  // Visible window of the draw box inside the canvas.
+  const visLeft = Math.max(0, -x);
+  const visTop = Math.max(0, -y);
+  const visRight = Math.min(drawW, canvasWidthPx - x);
+  const visBottom = Math.min(drawH, canvasHeightPx - y);
+  const visW = visRight - visLeft;
+  const visH = visBottom - visTop;
+  if (visW <= 0 || visH <= 0) return sourcePng;
+
+  let overlay = sharp(cursor.pngBytes).resize(drawW, drawH, { fit: "fill" });
+  if (visW !== drawW || visH !== drawH) {
+    overlay = sharp(await overlay.png().toBuffer()).extract({
+      left: visLeft,
+      top: visTop,
+      width: visW,
+      height: visH
+    });
+  }
+  return sharp(sourcePng)
+    .composite([
+      {
+        input: await overlay.png().toBuffer(),
+        left: Math.max(0, x),
+        top: Math.max(0, y)
+      }
+    ])
+    .png()
+    .toBuffer();
+}
+
 export async function persistCaptureFromTempV2(
   args: PersistCaptureFromTempArgs
 ): Promise<PersistCaptureFromTempResult> {
@@ -885,6 +945,60 @@ export async function persistCaptureFromTempV2(
     }
   ];
 
+  // Optional cursor layer (cursor-capture Phase 3): embed the sampled
+  // sprite as a second content-addressed source and stack a deletable
+  // "Cursor" raster above the base Source. The transform's scale maps
+  // the sprite's natural raster onto its on-canvas draw box (Retina /
+  // enlarged-cursor sprites carry more pixels than their point size).
+  // A sprite that fails to decode is dropped — the capture itself
+  // never fails on this nicety.
+  let cursorSource: { sha256: string; bytes: Buffer } | null = null;
+  if (args.cursorLayer !== undefined) {
+    try {
+      const cursorMeta = await sharp(args.cursorLayer.pngBytes).metadata();
+      const cw = cursorMeta.width ?? 0;
+      const chh = cursorMeta.height ?? 0;
+      if (cw > 0 && chh > 0) {
+        const cursorSha = createHash("sha256")
+          .update(args.cursorLayer.pngBytes)
+          .digest("hex");
+        cursorSource = { sha256: cursorSha, bytes: args.cursorLayer.pngBytes };
+        initialLayers.push({
+          id: nanoid(16),
+          parent_id: rootGroupId,
+          kind: "raster" as const,
+          source_ref: { kind: "embedded" as const, sha256: cursorSha },
+          natural_width_px: cw,
+          natural_height_px: chh,
+          name: "Cursor",
+          visible: true,
+          locked: false,
+          opacity: 1,
+          blend_mode: "normal" as const,
+          transform: [
+            args.cursorLayer.drawWidthPx / cw,
+            0,
+            0,
+            args.cursorLayer.drawHeightPx / chh,
+            args.cursorLayer.xPx,
+            args.cursorLayer.yPx
+          ] as [number, number, number, number, number, number],
+          z_index: 1,
+          source: "user" as const,
+          ai_run_id: null,
+          applied_at: now,
+          rejected_at: null,
+          superseded_by: null,
+          created_at: now
+        });
+      }
+    } catch (cause) {
+      log.warn("cursor layer dropped: sprite decode failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  }
+
   const document: BundleDocumentV2 = {
     document_format_version: 1,
     edits_version: 0,
@@ -899,12 +1013,40 @@ export async function persistCaptureFromTempV2(
   // the thumbnail is built from the source PNG directly.
   const bundlePath = join(outputDir, `${filenameStem}.pwrsnap`);
 
-  const thumbnailJpg = await buildCompositeThumbnail(buf);
+  const sources = new Map<string, Buffer>([[sha256, buf]]);
+  if (cursorSource !== null) sources.set(cursorSource.sha256, cursorSource.bytes);
+
+  // Thumbnail: when a cursor layer landed, composite the sprite onto a
+  // throwaway copy of the source FIRST so the in-bundle thumbnail
+  // (Finder/QuickLook) shows the cursor from the start. This replaces
+  // an earlier scheduleRepack(id) — a full compose + whole-bundle
+  // rewrite seconds after every capture (and an iCloud re-upload for
+  // synced bundles) just to refresh a thumbnail, which also silently
+  // never happened if the app quit inside the debounce window. The
+  // composite here is a few ms of sharp work on bytes already in hand.
+  let thumbnailSourceBuf: Buffer = buf;
+  if (cursorSource !== null && args.cursorLayer !== undefined) {
+    try {
+      thumbnailSourceBuf = await compositeCursorForThumbnail(
+        buf,
+        widthPx,
+        heightPx,
+        args.cursorLayer
+      );
+    } catch (cause) {
+      // Best-effort — a stale (cursor-less) thumbnail until the first
+      // natural repack is acceptable; failing the capture is not.
+      log.warn("cursor thumbnail composite failed — using bare source", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  }
+  const thumbnailJpg = await buildCompositeThumbnail(thumbnailSourceBuf);
 
   const bundleBuf = await packBundleV2({
     manifest,
     document,
-    sources: new Map([[sha256, buf]]),
+    sources,
     layerBytes: new Map(),
     thumbnailJpg
   });

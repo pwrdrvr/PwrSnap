@@ -65,6 +65,31 @@ struct WindowInfo: Encodable {
     let isFrontmostInApp: Bool
 }
 
+/// Payload for the `--write-clipboard` subcommand, read as a single
+/// JSON object from stdin (NOT argv — the PNG/UTI bodies are multi-MB
+/// and would blow past ARG_MAX). All bodies are base64; the helper
+/// decodes them and performs ONE NSPasteboard write that declares
+/// every type up front so a private UTI and a flattened image land
+/// in the same pasteboard generation. See the dispatch block below
+/// for why Electron can't do this itself.
+struct ClipboardWriteRequest: Decodable {
+    /// The private UTI for the layer-fragment bytes (e.g.
+    /// `com.pwrdrvr.pwrsnap.layer-fragment`).
+    let utiName: String
+    /// Base64 of the private-UTI body — the serialized layer fragment.
+    let utiBase64: String
+    /// Base64 PNG of the flattened composite. Optional so callers can
+    /// write a UTI-only payload, but in practice always present.
+    let pngBase64: String?
+    /// Base64 TIFF of the same composite. Optional and normally omitted:
+    /// once `public.png` is on the pasteboard macOS lazily synthesizes
+    /// `public.tiff` from it for apps that request TIFF (older AppKit
+    /// text views, Mail, some web apps), so we don't eagerly write a
+    /// large uncompressed TIFF. Present only if a caller wants to supply
+    /// its own (e.g. already-compressed) TIFF bytes.
+    let tiffBase64: String?
+}
+
 /// Bundle ids whose windows must NEVER appear as snap targets — they
 /// are system chrome (status bar items, accessibility prompts) or
 /// helpers that the user can't sensibly capture.
@@ -177,6 +202,99 @@ if args.count >= 3 && args[1] == "--activate-pid" {
         // is unmistakable) the no-options variant works.
         runningApp.activate()
     }
+    exit(0)
+}
+
+// `--write-clipboard` — perform a SINGLE multi-type NSPasteboard write.
+//
+// Reads one JSON `ClipboardWriteRequest` from stdin and writes the
+// private layer-fragment UTI **and** a flattened `public.png` (plus an
+// optional caller-supplied `public.tiff`) to the general pasteboard in
+// ONE `declareTypes` pass. macOS lazily offers `public.tiff` from the
+// PNG for consumers that request it, so we don't eagerly write one.
+// Prints `{"ok":true}` to stdout on success.
+//
+// Why a native helper instead of Electron's `clipboard.*`:
+//   - Every Electron `clipboard.write*` call wraps a
+//     ScopedClipboardWriter that calls `[pasteboard clearContents]`
+//     on construction, so a `writeImage` after a `writeBuffer`
+//     wipes the buffer (and vice-versa). There's no Electron API to
+//     atomically co-write a custom UTI + standard image —
+//     `clipboard.write({...})` only accepts text/html/image/rtf/
+//     bookmark. So PwrSnap previously had to choose ONE of "private
+//     UTI (PwrSnap→PwrSnap fidelity)" or "PNG (paste into Slack /
+//     Mail / Claude)". This helper writes both at once.
+//   - `declareTypes(_:owner:)` clears the pasteboard and declares all
+//     the types in a single change-count bump; the subsequent
+//     `setData(_:forType:)` calls fill each declared type without
+//     re-clearing. The private UTI and the image therefore coexist:
+//     a non-PwrSnap consumer reads `public.png`/`public.tiff`, while
+//     PwrSnap reads back the private UTI losslessly.
+if args.count >= 2 && args[1] == "--write-clipboard" {
+    let input = FileHandle.standardInput.readDataToEndOfFile()
+    guard let req = try? JSONDecoder().decode(ClipboardWriteRequest.self, from: input) else {
+        FileHandle.standardError.write(
+            "invalid --write-clipboard request JSON on stdin\n".data(using: .utf8) ?? Data()
+        )
+        exit(2)
+    }
+    guard let utiData = Data(base64Encoded: req.utiBase64), !utiData.isEmpty else {
+        FileHandle.standardError.write(
+            "utiBase64 missing or failed to decode\n".data(using: .utf8) ?? Data()
+        )
+        exit(3)
+    }
+
+    var pngData: Data?
+    if let png = req.pngBase64 {
+        guard let decoded = Data(base64Encoded: png), !decoded.isEmpty else {
+            FileHandle.standardError.write(
+                "pngBase64 failed to decode\n".data(using: .utf8) ?? Data()
+            )
+            exit(3)
+        }
+        pngData = decoded
+    }
+
+    // Only write `public.tiff` if the caller explicitly supplies it. We
+    // do NOT derive a TIFF from the PNG: `NSImage.tiffRepresentation`
+    // produces an UNCOMPRESSED buffer (~w·h·4 bytes — ~33 MB for a 4K
+    // composite) that we'd write to the pasteboard on every copy, when
+    // macOS already lazily synthesizes `public.tiff` from `public.png`
+    // for any consumer that requests it. Decode failure here is a caller
+    // error — exit 3 for parity with the PNG path (no silent drop).
+    var tiffData: Data?
+    if let tiff = req.tiffBase64 {
+        guard let decoded = Data(base64Encoded: tiff), !decoded.isEmpty else {
+            FileHandle.standardError.write(
+                "tiffBase64 failed to decode\n".data(using: .utf8) ?? Data()
+            )
+            exit(3)
+        }
+        tiffData = decoded
+    }
+
+    let pasteboard = NSPasteboard.general
+    let utiType = NSPasteboard.PasteboardType(req.utiName)
+    var declared: [NSPasteboard.PasteboardType] = [utiType]
+    if pngData != nil { declared.append(.png) }
+    if tiffData != nil { declared.append(.tiff) }
+
+    // ONE declareTypes — this clears the pasteboard and declares every
+    // type in a single generation. setData below fills them without
+    // re-clearing, so the private UTI and image coexist.
+    pasteboard.declareTypes(declared, owner: nil)
+    var wroteOk = pasteboard.setData(utiData, forType: utiType)
+    if let png = pngData { wroteOk = pasteboard.setData(png, forType: .png) && wroteOk }
+    if let tiff = tiffData { wroteOk = pasteboard.setData(tiff, forType: .tiff) && wroteOk }
+
+    if !wroteOk {
+        FileHandle.standardError.write(
+            "NSPasteboard.setData reported failure for one or more types\n".data(using: .utf8) ?? Data()
+        )
+        exit(5)
+    }
+    FileHandle.standardOutput.write("{\"ok\":true}".data(using: .utf8) ?? Data())
     exit(0)
 }
 
@@ -366,6 +484,100 @@ if args.count >= 4 && args[1] == "--extract-app-icon" {
     // when to invalidate.
     FileHandle.standardOutput.write(appUrl.path.data(using: .utf8) ?? Data())
     exit(0)
+}
+
+// `--sample-cursor` — one-shot sample of the CURRENT system cursor:
+// sprite PNG (with alpha) + hotspot + global position. Called by the
+// image-capture flow at hotkey-trigger time — BEFORE the region
+// selector replaces the OS cursor with its synthetic crosshair — so
+// the sample matches what the frozen screen snapshot would have shown.
+// The main process places the sprite as a deletable "Cursor" raster
+// layer at persist time (cursor-capture plan, Phase 3).
+//
+// Primary API: `NSCursor.currentSystem` — returns the FOREGROUND app's
+// live cursor cross-process. Deprecated in macOS 15 with no public
+// replacement (Finding B in the plan); it still works, and the caller
+// treats any failure as "no cursor layer this capture" — never fatal.
+// Position via CGEvent(source: nil) — GLOBAL points, top-left origin,
+// no flip needed. Read adjacent to the sprite read: the cursor can
+// change between the two.
+//
+// stdout JSON: { pngBase64, pixelWidth, pixelHeight, pointWidth,
+//   pointHeight, hotspotX, hotspotY, posX, posY } — hotspot/pos/point*
+//   in POINTS; pixel* is the PNG's actual raster size (Retina sprites
+//   are typically 2x the point size).
+//
+// Exit codes:
+//   0 — success
+//   5 — cursor sprite unavailable (NSCursor.currentSystem nil / no rep)
+//   6 — output encode failure (sprite PNG or the JSON envelope)
+if args.count >= 2 && args[1] == "--sample-cursor" {
+    // NSCursor needs an AppKit connection; NSApplication.shared
+    // establishes one without running the event loop.
+    _ = NSApplication.shared
+
+    let position = CGEvent(source: nil)?.location
+    guard let cursor = NSCursor.currentSystem, let pos = position else {
+        FileHandle.standardError.write(
+            "cursor sample unavailable (currentSystem nil or no event source)\n"
+                .data(using: .utf8) ?? Data()
+        )
+        exit(5)
+    }
+
+    let image = cursor.image
+    let hotSpot = cursor.hotSpot
+    // Pick the LARGEST bitmap rep. `tiffRepresentation` → NSBitmapImageRep
+    // decodes only the FIRST rep of a multi-rep cursor image — typically
+    // the 1× rep — which would then be upscaled onto a Retina-sized draw
+    // box downstream (blurry cursor). Standard cursors carry 1× + 2×
+    // reps; prefer the densest one and fall back to the TIFF path for
+    // exotic single-rep images.
+    let bestBitmapRep =
+        image.representations
+            .compactMap { $0 as? NSBitmapImageRep }
+            .max(by: { $0.pixelsWide < $1.pixelsWide })
+        ?? image.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0) }
+    guard let rep = bestBitmapRep,
+          let png = rep.representation(using: .png, properties: [:])
+    else {
+        FileHandle.standardError.write(
+            "cursor sprite PNG encode failed\n".data(using: .utf8) ?? Data()
+        )
+        exit(6)
+    }
+
+    struct CursorSample: Encodable {
+        let pngBase64: String
+        let pixelWidth: Int
+        let pixelHeight: Int
+        let pointWidth: Double
+        let pointHeight: Double
+        let hotspotX: Double
+        let hotspotY: Double
+        let posX: Double
+        let posY: Double
+    }
+    let sample = CursorSample(
+        pngBase64: png.base64EncodedString(),
+        pixelWidth: rep.pixelsWide,
+        pixelHeight: rep.pixelsHigh,
+        pointWidth: Double(image.size.width),
+        pointHeight: Double(image.size.height),
+        hotspotX: Double(hotSpot.x),
+        hotspotY: Double(hotSpot.y),
+        posX: Double(pos.x),
+        posY: Double(pos.y)
+    )
+    let encoder = JSONEncoder()
+    if let out = try? encoder.encode(sample) {
+        FileHandle.standardOutput.write(out)
+        exit(0)
+    }
+    FileHandle.standardError.write(
+        "cursor sample JSON encode failed\n".data(using: .utf8) ?? Data()
+    )
+    exit(6)
 }
 
 /// Snapshot envelope. Wraps the on-screen window list with the

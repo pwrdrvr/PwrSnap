@@ -2,8 +2,14 @@
 // nodes + referenced source bytes across PwrSnap instances via a
 // private macOS UTI (`com.pwrdrvr.pwrsnap.layer-fragment`). Pasting
 // PwrSnap A → PwrSnap B preserves layer transforms / effects / masks
-// exactly; pasting into non-PwrSnap consumers (Slack, Messages) falls
-// back to the standard PNG bytes co-written alongside the UTI buffer.
+// exactly. For non-PwrSnap consumers (Slack, Mail, Claude, Messages)
+// the copy ALSO writes a flattened composite (`public.png` +
+// `public.tiff`) in the SAME pasteboard generation as the UTI bytes.
+// Electron can't co-write a custom UTI and image atomically (each
+// clipboard.write* clears the pasteboard), so the editor layer copy
+// performs that single multi-type write through a native macOS helper
+// — see apps/desktop/src/main/native-clipboard.ts and the
+// `--write-clipboard` subcommand in native/window-list/main.swift.
 //
 // Five layers of defense the receiving paste handler enforces — see
 // docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md
@@ -23,7 +29,7 @@
 
 import { z } from "zod";
 
-import { BundleLayerNode } from "./bundle-manifest-schema-v2";
+import { BundleLayerNode, MAX_IMAGE_DIM_PX } from "./bundle-manifest-schema-v2";
 
 /**
  * 64 MiB hard cap on the deserialized fragment buffer. A larger
@@ -73,6 +79,14 @@ export const ClipboardSourceRef = z.object({
 });
 export type ClipboardSourceRef = z.infer<typeof ClipboardSourceRef>;
 
+/** The source capture's canvas frame (px) at copy time — the [0,1]²
+ *  frame the copied layer coords were normalized against. */
+export const ClipboardSourceFrame = z.object({
+  width_px: z.number().int().positive().lte(MAX_IMAGE_DIM_PX),
+  height_px: z.number().int().positive().lte(MAX_IMAGE_DIM_PX)
+});
+export type ClipboardSourceFrame = z.infer<typeof ClipboardSourceFrame>;
+
 export const ClipboardLayerFragmentV1 = z.object({
   format_version: z.literal(1),
   /** Originating capture id — informational only; not used by the
@@ -88,7 +102,16 @@ export const ClipboardLayerFragmentV1 = z.object({
    *  present (content-addressable dedup). */
   source_refs: z.array(ClipboardSourceRef).max(CLIPBOARD_FRAGMENT_MAX_SOURCES),
   /** ISO-8601 timestamp of when the copy occurred. */
-  copied_at: z.iso.datetime()
+  copied_at: z.iso.datetime(),
+  /** Source capture's canvas frame (px) the copied layer coords were
+   *  normalized against. Present ONLY when the copy baked the base
+   *  source raster's visible region (so the block is overhang-free and
+   *  can be scale-to-fit into a differently-sized paste target — see
+   *  `placeLayerIntoTarget`). Absent for annotation-only copies, where
+   *  paste keeps the verbatim relative positions. OPTIONAL for
+   *  back-compat with fragments produced before placement-aware paste
+   *  shipped. */
+  source_frame: ClipboardSourceFrame.optional()
 });
 export type ClipboardLayerFragmentV1 = z.infer<typeof ClipboardLayerFragmentV1>;
 

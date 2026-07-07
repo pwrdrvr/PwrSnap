@@ -6,7 +6,16 @@
 // in commit 8d92916; lock it down.
 
 import { describe, expect, test } from "vitest";
-import { parseAppIconBundleId, parseCacheUrl, parseCaptureId, SCHEMES } from "../protocols-parse";
+import {
+  parseAppIconBundleId,
+  parseCacheUrl,
+  parseCaptureId,
+  parseSourceUrl,
+  SCHEMES
+} from "../protocols-parse";
+
+// A valid 64-char lowercase-hex content hash for the per-layer-source URL.
+const SHA = "deadbeef".repeat(8);
 
 describe("parseCaptureId", () => {
   test("parses a typical nanoid id from the path", () => {
@@ -63,6 +72,49 @@ describe("parseCaptureId", () => {
       .toBe("sz_76a98a1b-b4a");
     expect(parseCaptureId(`${SCHEMES.sizzle}://r/sz_76a98a1b-b4a?v=rendered`, SCHEMES.sizzle))
       .toBe("sz_76a98a1b-b4a");
+  });
+});
+
+describe("parseSourceUrl", () => {
+  test("parses captureId + sha from the `s/` shape", () => {
+    expect(parseSourceUrl(`pwrsnap-capture://s/AbCdEf_GhIjKl/${SHA}`)).toEqual({
+      captureId: "AbCdEf_GhIjKl",
+      sha256: SHA
+    });
+  });
+
+  test("preserves mixed-case capture id (same case-survival rule as `r/`)", () => {
+    expect(parseSourceUrl(`pwrsnap-capture://s/Xy9_Zq/${SHA}`)?.captureId).toBe("Xy9_Zq");
+  });
+
+  test("tolerates a trailing slash and strips query/hash", () => {
+    expect(parseSourceUrl(`pwrsnap-capture://s/abc123/${SHA}/`)?.sha256).toBe(SHA);
+    expect(parseSourceUrl(`pwrsnap-capture://s/abc123/${SHA}?v=1`)?.sha256).toBe(SHA);
+    expect(parseSourceUrl(`pwrsnap-capture://s/abc123/${SHA}#x`)?.sha256).toBe(SHA);
+  });
+
+  test("rejects a sha that isn't exactly 64 lowercase-hex chars", () => {
+    expect(parseSourceUrl("pwrsnap-capture://s/abc/" + "a".repeat(63))).toBeNull();
+    expect(parseSourceUrl("pwrsnap-capture://s/abc/" + "a".repeat(65))).toBeNull();
+    expect(parseSourceUrl("pwrsnap-capture://s/abc/" + "A".repeat(64))).toBeNull(); // uppercase
+    expect(parseSourceUrl("pwrsnap-capture://s/abc/" + "g".repeat(64))).toBeNull(); // non-hex
+  });
+
+  test("rejects the base `r/` shape and missing segments", () => {
+    expect(parseSourceUrl(`pwrsnap-capture://r/${SHA}`)).toBeNull();
+    expect(parseSourceUrl("pwrsnap-capture://s/abc123")).toBeNull(); // no sha
+    expect(parseSourceUrl(`pwrsnap-capture://s/${SHA}`)).toBeNull(); // no id segment
+  });
+
+  test("rejects path traversal and the wrong scheme", () => {
+    expect(parseSourceUrl(`pwrsnap-capture://s/../etc/${SHA}`)).toBeNull();
+    expect(parseSourceUrl(`pwrsnap-cache://s/abc/${SHA}`)).toBeNull();
+  });
+
+  test("does not match `parseCaptureId` (the two shapes are disjoint)", () => {
+    // A base-source URL must not parse as a layer-source URL and vice-versa.
+    expect(parseSourceUrl("pwrsnap-capture://r/abc123")).toBeNull();
+    expect(parseCaptureId(`pwrsnap-capture://s/abc123/${SHA}`)).toBeNull();
   });
 });
 

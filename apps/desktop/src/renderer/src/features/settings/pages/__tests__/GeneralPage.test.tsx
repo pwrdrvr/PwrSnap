@@ -66,6 +66,8 @@ const baseSettings: Settings = {
   recording: {
     includeSystemAudio: false,
     includeMicrophone: false,
+    videoCaptureCursor: true,
+    imageCaptureCursor: true,
     lastRoutedPermissionFingerprint: "",
     screenCapturePrompted: false
   },
@@ -207,6 +209,29 @@ function findSwitchIn(label: string): HTMLButtonElement {
   if (!toggle) throw new Error(`no switch found in row "${label}"`);
   return toggle;
 }
+
+describe("GeneralPage — cursor capture", () => {
+  test("image toggle patches recording.imageCaptureCursor", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+    const toggle = findSwitchIn("Capture the cursor in screenshots");
+    // Default ON (defaultSettings seeds both cursor booleans true).
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ recording: { imageCaptureCursor: false } });
+  });
+
+  test("video toggle patches recording.videoCaptureCursor", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+    const toggle = findSwitchIn("Capture the cursor in recordings");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ recording: { videoCaptureCursor: false } });
+  });
+});
 
 describe("GeneralPage — launch at login", () => {
   test("toggle patches general.launchAtLogin through the substrate", async () => {

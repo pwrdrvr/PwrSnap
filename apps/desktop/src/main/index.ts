@@ -1993,6 +1993,7 @@ export function bootstrapApp(): void {
         readClipboardBookmark: () => clipboard.readBookmark(),
         readClipboardText: () => clipboard.readText(),
         readClipboardFormats: () => clipboard.availableFormats(),
+        readClipboardBufferText: (format: string) => clipboard.readBuffer(format).toString("utf8"),
         // Clear clipboard before the spec runs so we know any image
         // we read back came from THIS test's dispatch, not a stale
         // earlier paste.

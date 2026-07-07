@@ -19,8 +19,9 @@
 //   3. preset='high' produces a clipboard image at SOURCE width
 //      (no resize when targetWidth >= source width).
 //   4. The clipboard NativeImage is non-empty (has decoded bytes).
-//   5. The pasteboard does not expose a plain-text file URL that
-//      paste targets can choose instead of image bytes.
+//   5. The pasteboard does not expose a plain-text file URL, but on
+//      macOS it does expose a file-url flavor with a PwrSnap-prefixed
+//      PNG filename for apps like Slack.
 //
 // macOS-only because clipboard image handling differs across
 // platforms; the macOS clipboard supports NativeImage natively
@@ -48,14 +49,12 @@ const isMac = process.platform === "darwin";
 async function makeFixturePng(
   widthPx: number,
   heightPx: number
-): Promise<{ pngPath: string; sha256: string }> {
+): Promise<{ pngPath: string }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-clipboard-spec-"));
   const pngPath = path.join(dir, "fixture.png");
 
   // Solid color image — sharp's `create` factory produces a real PNG
-  // sized to whatever we ask for. Constant fill keeps the sha256
-  // deterministic across re-runs; that's fine because the captures
-  // table no longer dedupes by sha256 (migration 0021).
+  // sized to whatever we ask for.
   const buf = await sharp({
     create: {
       width: widthPx,
@@ -68,52 +67,62 @@ async function makeFixturePng(
     .toBuffer();
 
   await writeFile(pngPath, buf);
-  // sha256 isn't critical for the test — captures no longer dedupes
-  // by sha256, so any string is fine. Use the file size + dims as a
-  // pseudo-hash for human-readable logging.
-  const sha256 = `clipboard-spec-${widthPx}x${heightPx}-${buf.length}`;
-  return { pngPath, sha256 };
+  return { pngPath };
 }
 
 /**
- * Seed a real capture row backed by `pngPath`. Returns the
- * captureId. Same pattern as float-over-visibility.spec.ts /
- * editor.spec.ts; duplicated locally for spec-isolation rules.
+ * Seed a real v2 bundle-backed capture. `clipboard:copy` renders through
+ * the v2 coordinator, so a row-only fixture with `bundle_path=null` is not
+ * renderable.
  */
 async function seedCapture(
   app: Awaited<ReturnType<typeof launchPwrSnap>>,
-  pngPath: string,
-  widthPx: number,
-  heightPx: number,
-  sha256: string
+  pngPath: string
 ): Promise<string> {
-  const captureId = `clip-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  await app.electronApp.evaluate(
+  return await app.electronApp.evaluate(
     (_electron, payload) => {
       const bridge = (
         globalThis as unknown as {
           __PWRSNAP_TEST__: {
-            seedCapture: (input: Record<string, unknown>) => unknown;
+            persistBundleCapture: (input: {
+              tempPath: string;
+              sourceApp: { bundleId: string | null; appName: string | null };
+              devicePixelRatio: number;
+            }) => Promise<{ record: { id: string } }>;
           };
         }
       ).__PWRSNAP_TEST__;
-      bridge.seedCapture({
-        id: payload.captureId,
-        kind: "image",
-        captured_at: new Date().toISOString(),
-        source_app_bundle_id: "com.test.clipboard-spec",
-        source_app_name: "Clipboard Spec",
-        legacy_src_path: payload.pngPath,
-        width_px: payload.widthPx,
-        height_px: payload.heightPx,
-        device_pixel_ratio: 2,
-        byte_size: 1024,
-        sha256: payload.sha256
+      return bridge.persistBundleCapture({
+        tempPath: payload.pngPath,
+        sourceApp: {
+          bundleId: "com.test.clipboard-spec",
+          appName: "Clipboard Spec"
+        },
+        devicePixelRatio: 2
       });
     },
-    { captureId, pngPath, widthPx, heightPx, sha256 }
-  );
-  return captureId;
+    { pngPath }
+  ).then((result) => result.record.id);
+}
+
+async function acceptSuggestedFilename(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>,
+  captureId: string,
+  filenameStem: string
+): Promise<void> {
+  const result = await app.dispatch("codex:acceptFilenameStem", { captureId, filenameStem });
+  expect(result.ok, `codex:acceptFilenameStem failed: ${JSON.stringify(result)}`).toBe(true);
+}
+
+async function makeCapture(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>,
+  widthPx: number,
+  heightPx: number
+): Promise<{ captureId: string }> {
+  const { pngPath } = await makeFixturePng(widthPx, heightPx);
+  const captureId = await seedCapture(app, pngPath);
+  await acceptSuggestedFilename(app, captureId, "clipboard-spec");
+  return { captureId };
 }
 
 async function readClipboardImage(
@@ -189,6 +198,22 @@ async function readClipboardFormats(
   });
 }
 
+async function readClipboardBufferText(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>,
+  format: string
+): Promise<string> {
+  return await app.electronApp.evaluate((_electron, payload) => {
+    const bridge = (
+      globalThis as unknown as {
+        __PWRSNAP_TEST__: {
+          readClipboardBufferText: (format: string) => string;
+        };
+      }
+    ).__PWRSNAP_TEST__;
+    return bridge.readClipboardBufferText(payload.format);
+  }, { format });
+}
+
 test.describe("clipboard copy preset widths", () => {
   test.skip(
     !isMac,
@@ -204,8 +229,7 @@ test.describe("clipboard copy preset widths", () => {
   test("preset='low' → clipboard image ≈800px wide", async () => {
     const app = await launchPwrSnap();
     try {
-      const { pngPath, sha256 } = await makeFixturePng(SRC_W, SRC_H);
-      const captureId = await seedCapture(app, pngPath, SRC_W, SRC_H, sha256);
+      const { captureId } = await makeCapture(app, SRC_W, SRC_H);
 
       await clearClipboard(app);
       const result = await app.dispatch("clipboard:copy", { captureId, preset: "low" });
@@ -227,8 +251,7 @@ test.describe("clipboard copy preset widths", () => {
   test("preset='med' → clipboard image ≈1440px wide", async () => {
     const app = await launchPwrSnap();
     try {
-      const { pngPath, sha256 } = await makeFixturePng(SRC_W, SRC_H);
-      const captureId = await seedCapture(app, pngPath, SRC_W, SRC_H, sha256);
+      const { captureId } = await makeCapture(app, SRC_W, SRC_H);
 
       await clearClipboard(app);
       const result = await app.dispatch("clipboard:copy", { captureId, preset: "med" });
@@ -244,11 +267,10 @@ test.describe("clipboard copy preset widths", () => {
     }
   });
 
-  test("preset='med' advertises image bytes without a plain-text file URL", async () => {
+  test("preset='med' advertises image bytes with a PwrSnap filename and no plain-text URL", async () => {
     const app = await launchPwrSnap();
     try {
-      const { pngPath, sha256 } = await makeFixturePng(SRC_W, SRC_H);
-      const captureId = await seedCapture(app, pngPath, SRC_W, SRC_H, sha256);
+      const { captureId } = await makeCapture(app, SRC_W, SRC_H);
 
       await clearClipboard(app);
       const result = await app.dispatch("clipboard:copy", { captureId, preset: "med" });
@@ -258,7 +280,7 @@ test.describe("clipboard copy preset widths", () => {
       if (!drag.ok) {
         throw new Error(`capture:prepareDrag failed: ${JSON.stringify(drag)}`);
       }
-      expect(path.basename(drag.value.path)).toBe("image.png");
+      expect(path.basename(drag.value.path)).toBe("clipboard-spec-med.png");
 
       expect(await readClipboardText(app)).toBe("");
       const bookmark = await readClipboardBookmark(app);
@@ -267,7 +289,13 @@ test.describe("clipboard copy preset widths", () => {
 
       const formats = await readClipboardFormats(app);
       expect(formats).not.toContain("text/plain");
-      expect(formats).not.toContain("text/uri-list");
+      expect(formats.some((format) => format === "public.file-url" || format === "text/uri-list")).toBe(
+        true
+      );
+      const fileUrl =
+        (await readClipboardBufferText(app, "public.file-url")) ||
+        (await readClipboardBufferText(app, "text/uri-list"));
+      expect(fileUrl).toContain("PwrSnap-clipboard-spec-med.png");
 
       const img = await readClipboardImage(app);
       expect(img).not.toBeNull();
@@ -281,8 +309,7 @@ test.describe("clipboard copy preset widths", () => {
   test("preset='high' → clipboard image at source width (no resize)", async () => {
     const app = await launchPwrSnap();
     try {
-      const { pngPath, sha256 } = await makeFixturePng(SRC_W, SRC_H);
-      const captureId = await seedCapture(app, pngPath, SRC_W, SRC_H, sha256);
+      const { captureId } = await makeCapture(app, SRC_W, SRC_H);
 
       await clearClipboard(app);
       const result = await app.dispatch("clipboard:copy", { captureId, preset: "high" });
@@ -308,8 +335,7 @@ test.describe("clipboard copy preset widths", () => {
     // hold the LAST one's bytes.
     const app = await launchPwrSnap();
     try {
-      const { pngPath, sha256 } = await makeFixturePng(SRC_W, SRC_H);
-      const captureId = await seedCapture(app, pngPath, SRC_W, SRC_H, sha256);
+      const { captureId } = await makeCapture(app, SRC_W, SRC_H);
 
       await clearClipboard(app);
 

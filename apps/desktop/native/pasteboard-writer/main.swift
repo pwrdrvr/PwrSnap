@@ -80,15 +80,14 @@ func run() throws {
   let imageItem = NSPasteboardItem()
   imageItem.setData(pngData, forType: NSPasteboard.PasteboardType.png)
   imageItem.setData(tiffData, forType: NSPasteboard.PasteboardType.tiff)
-  let urlItem = NSPasteboardItem()
-  urlItem.setData(
+  imageItem.setData(
     fileUrlString.data(using: .utf8)!,
     forType: NSPasteboard.PasteboardType.fileURL
   )
 
   let pasteboard = NSPasteboard.general
   pasteboard.clearContents()
-  guard pasteboard.writeObjects([imageItem, urlItem]) else {
+  guard pasteboard.writeObjects([imageItem]) else {
     throw PasteboardWriterError.pasteboardWriteFailed
   }
   _ = pasteboard.types

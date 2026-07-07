@@ -70,6 +70,7 @@ type ClipboardCapture =
   | { kind: "writeBuffer"; uti: string; bytes: Buffer };
 
 const clipboardCaptured: ClipboardCapture[] = [];
+const namedPasteboardCalls: Array<{ pngPath: string; fileUrlPath: string }> = [];
 
 // We'll set this from the test setup once the temp dir exists.
 let testDataRoot: string;
@@ -135,6 +136,15 @@ vi.mock("../log", () => ({
   })
 }));
 
+vi.mock("../clipboard/named-image-pasteboard", () => ({
+  writeNamedPngToPasteboard: vi.fn(
+    async (args: { pngPath: string; fileUrlPath: string }) => {
+      namedPasteboardCalls.push(args);
+      return false;
+    }
+  )
+}));
+
 // ---------------------------------------------------------------------
 // Test fixture setup.
 // ---------------------------------------------------------------------
@@ -193,6 +203,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   clipboardCaptured.length = 0;
+  namedPasteboardCalls.length = 0;
 });
 
 afterEach(() => {
@@ -598,6 +609,38 @@ describe("clipboard:copy-file export filename", () => {
     const fileUrl = writeBuf.bytes.toString("utf8");
     expect(fileUrl.endsWith("/library-sidebar-export-med.png")).toBe(true);
     expect(fileUrl).not.toContain("image.png");
+  });
+});
+
+describe("clipboard:copy pasted image filename", () => {
+  test("prepares a PwrSnap-prefixed filename for macOS paste targets", async () => {
+    const captureId = "t_clipboard_named_paste";
+    await seedV2Capture({ id: captureId, annotated: false });
+    getDb()
+      .prepare(
+        `INSERT INTO capture_enrichments (
+          capture_id, suggested_filename_stem, updated_at
+        ) VALUES (
+          @captureId, @suggestedFilenameStem, datetime('now')
+        )`
+      )
+      .run({
+        captureId,
+        suggestedFilenameStem: "incident-latency-chart"
+      });
+
+    const result = await bus.dispatch(
+      "clipboard:copy",
+      { captureId, preset: "med" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(namedPasteboardCalls).toHaveLength(1);
+    expect(basename(namedPasteboardCalls[0]!.fileUrlPath)).toBe(
+      "PwrSnap-incident-latency-chart-med.png"
+    );
+    expect(clipboardCaptured.at(-1)?.kind).toBe("writeImage");
   });
 });
 

@@ -2,6 +2,7 @@ import type { CaptureEnrichment, CaptureRecord, RenderPreset, VideoPreset } from
 import { slugifyFilenameStem } from "@pwrsnap/shared";
 
 const FALLBACK_STEM = "pwrsnap";
+const PASTEBOARD_IMAGE_PREFIX = "PwrSnap";
 const STEM_MAX = 120;
 
 export type ExportFilenamePreset = RenderPreset | VideoPreset;
@@ -15,6 +16,15 @@ export function buildPresetExportDisplayName(args: {
   const stem = exportFilenameStem(args.record, args.enrichment);
   const ext = normalizeExtension(args.ext);
   return `${stem}-${args.preset}.${ext}`;
+}
+
+export function buildPastedImageDisplayName(args: {
+  record: Pick<CaptureRecord, "id" | "source_app_name">;
+  enrichment: Pick<CaptureEnrichment, "acceptedFilenameStem" | "suggestedFilenameStem"> | null;
+  preset: RenderPreset;
+}): string {
+  const stem = exportFilenameStem(args.record, args.enrichment);
+  return `${PASTEBOARD_IMAGE_PREFIX}-${stem}-${args.preset}.png`;
 }
 
 export function exportFilenameStem(

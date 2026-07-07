@@ -1,14 +1,17 @@
 // Clipboard handlers. Main image commands:
 //
 //   • clipboard:copy — v1 + v2: renders the capture at a preset
-//     width and writes image bytes to the system clipboard. Stays
+//     width and writes image bytes to the system clipboard. On macOS,
+//     a Swift helper writes those bytes plus a file URL item for
+//     a PwrSnap-prefixed PNG alias so paste targets such as Slack can
+//     show a friendly filename. If that helper is unavailable, the
+//     handler falls back to image bytes only. Rendering stays
 //     entirely in the main process — never round-trips the buffer
 //     through the renderer (Electron's structured-clone boundary
 //     turns multi-MB PNGs into noticeable jank). PR #39 removed an
-//     earlier file-URL co-write because some consumers pasted the
-//     plain-text URL instead of the image bytes; native file drag is
-//     the right path for file URLs (see capture-handlers' drag
-//     payload).
+//     earlier text/bookmark co-write because some consumers pasted the
+//     plain-text URL instead of the image bytes; this path deliberately
+//     does not write a plain-text URL flavor.
 //
 //   • clipboard:copy-file — v2 image export: renders the capture at a
 //     preset width, creates a friendly filename alias, and writes only
@@ -84,8 +87,12 @@ import { getMainLogger } from "../log";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
 import { getActiveExportStrategy } from "./settings-handlers";
 import { prepareRenderedFileAlias } from "../render/file-alias";
-import { buildPresetExportDisplayName } from "../render/export-filename";
+import {
+  buildPastedImageDisplayName,
+  buildPresetExportDisplayName
+} from "../render/export-filename";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
+import { writeNamedPngToPasteboard } from "../clipboard/named-image-pasteboard";
 
 const log = getMainLogger("pwrsnap:clipboard");
 
@@ -190,6 +197,25 @@ async function bakeRasterVisibleRegion(args: {
     .toBuffer();
 }
 
+async function writeNamedImageToPasteboard(args: {
+  pngPath: string;
+  displayName: string;
+}): Promise<boolean> {
+  try {
+    const aliasPath = await prepareRenderedFileAlias(args.pngPath, args.displayName);
+    return await writeNamedPngToPasteboard({
+      pngPath: args.pngPath,
+      fileUrlPath: aliasPath
+    });
+  } catch (cause) {
+    log.warn("named image pasteboard setup failed; falling back to image bytes", {
+      displayName: args.displayName,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    return false;
+  }
+}
+
 export function registerClipboardHandlers(): void {
   // ── clipboard:copy (v1 + v2) ──────────────────────────────────────
   bus.register("clipboard:copy", async (req) => {
@@ -216,12 +242,18 @@ export function registerClipboardHandlers(): void {
           message: "nativeImage decoded to empty buffer"
         });
       }
-      // Image bytes only. PR #25 originally also wrote a file URL via
-      // text+bookmark, but PR #39 reverted that because some consumers
-      // (Cursor, certain web apps) preferred the plain-text URL over
-      // the image. Native file drag (capture-handlers' drag payload)
-      // is the right path for callers that need a file URL.
-      clipboard.write({ image });
+      const displayName = buildPastedImageDisplayName({
+        record,
+        enrichment: getCaptureEnrichment(record.id),
+        preset: req.preset
+      });
+      const namedPasteboardWritten = await writeNamedImageToPasteboard({
+        pngPath: result.path,
+        displayName
+      });
+      if (!namedPasteboardWritten) {
+        clipboard.write({ image });
+      }
       // Issue #139 — the "File > New > Paste from Clipboard" menu item
       // relied on `menu-will-show` to refresh, which lagged on macOS
       // after an in-app copy. Fire the event so the menu refresh
@@ -235,7 +267,8 @@ export function registerClipboardHandlers(): void {
         targetWidth,
         byteSize: buf.length,
         fromCache: result.fromCache,
-        sourceReused: result.sourceReused
+        sourceReused: result.sourceReused,
+        namedPasteboardWritten
       });
       return ok(undefined);
     } catch (cause) {

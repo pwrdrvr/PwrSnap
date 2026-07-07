@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { buildPresetExportDisplayName, exportFilenameStem } from "../export-filename";
+import {
+  buildPastedImageDisplayName,
+  buildPresetExportDisplayName,
+  exportFilenameStem
+} from "../export-filename";
 
 const record = {
   id: "cap_123",
@@ -33,6 +37,19 @@ describe("export display filenames", () => {
         ext: ".PNG"
       })
     ).toBe("manual-export-name-med.png");
+  });
+
+  test("pasted image filename includes the PwrSnap product prefix", () => {
+    expect(
+      buildPastedImageDisplayName({
+        record,
+        enrichment: {
+          acceptedFilenameStem: null,
+          suggestedFilenameStem: "incident-latency-chart"
+        },
+        preset: "med"
+      })
+    ).toBe("PwrSnap-incident-latency-chart-med.png");
   });
 
   test("falls back to source app or capture id when no enrichment stem exists", () => {

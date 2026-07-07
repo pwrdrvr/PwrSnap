@@ -117,6 +117,10 @@ vi.mock("../../render/file-alias", () => ({
     `/cache/video/cap_1/clipboard/r0-10.med.silent/${displayName}`
 }));
 
+vi.mock("../../clipboard/named-image-pasteboard", () => ({
+  writeNamedPngToPasteboard: async () => false
+}));
+
 vi.mock("../../clipboard-events", () => ({
   notifyClipboardChanged: () => undefined
 }));

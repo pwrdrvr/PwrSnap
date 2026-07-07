@@ -133,6 +133,10 @@ vi.mock("../log", () => ({
   })
 }));
 
+vi.mock("../clipboard/named-image-pasteboard", () => ({
+  writeNamedPngToPasteboard: vi.fn(async () => false)
+}));
+
 const { bus } = await import("../command-bus");
 const { registerClipboardHandlers } = await import("../handlers/clipboard-handlers");
 const { registerLibraryHandlers } = await import("../handlers/library-handlers");

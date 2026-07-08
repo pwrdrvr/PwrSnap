@@ -7,6 +7,9 @@
 // rasterDrafts) and undo-integrated commit (`onResizeCommit` →
 // commitRasterDragRef → dispatchEdit `{ kind: "transform" }`).
 //
+// Corner handles PRESERVE the aspect ratio by default (Shift to distort);
+// edge handles stretch a single axis. Matches Preview / Keynote / PowerPoint.
+//
 // Rendered in the same absolute, inset:0, pointer-events:none chrome layer
 // as TransformHandles — the container maps normalized [0,1] onto the canvas
 // (so `left: xn*100%` lands the handle on the box), and each handle is a
@@ -19,7 +22,7 @@ import { useRef, type PointerEvent, type ReactElement } from "react";
 import type { AffineTransform } from "@pwrsnap/shared";
 
 import { Z_INDEX_CHROME } from "./OverlaySvg";
-import { resizeRasterTransform, type ResizeHandle } from "./raster-resize";
+import { isCornerHandle, resizeRasterTransform, type ResizeHandle } from "./raster-resize";
 
 /** Screen-constant handle square, matching TransformHandles. */
 const HANDLE_SIZE_PX = 10;
@@ -114,6 +117,11 @@ export function RasterResizeHandles({
     if (g === null) return;
     const dxPx = ((e.clientX - g.startClientX) / g.rectW) * imageWidthPx;
     const dyPx = ((e.clientY - g.startClientY) / g.rectH) * imageHeightPx;
+    // Corner handles PRESERVE the aspect ratio by default (the natural
+    // expectation for an image — you rarely mean to distort a screenshot or
+    // the captured cursor); hold Shift to distort freely. Edge handles always
+    // stretch a single axis. Mirrors Preview / Keynote / PowerPoint.
+    const lockAspect = isCornerHandle(g.handle) && !e.shiftKey;
     const next = resizeRasterTransform({
       handle: g.handle,
       dxPx,
@@ -121,7 +129,7 @@ export function RasterResizeHandles({
       startTransform: g.startTransform,
       naturalWidthPx,
       naturalHeightPx,
-      lockAspect: e.shiftKey
+      lockAspect
     });
     g.current = next;
     onResizeDrag(next);

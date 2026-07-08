@@ -74,7 +74,7 @@ describe("RasterResizeHandles", () => {
     expect(handle("e").style.cursor).toBe("ew-resize");
   });
 
-  test("dragging the SE handle previews then commits the resized transform", async () => {
+  test("SE corner preserves the aspect ratio by default (previews + commits)", async () => {
     const drags: AffineTransform[] = [];
     let committed: { start: AffineTransform; next: AffineTransform } | null = null;
     await render({
@@ -104,9 +104,11 @@ describe("RasterResizeHandles", () => {
         new PointerEvent("pointermove", { clientX: 350, clientY: 180, pointerId: 1, bubbles: true })
       );
     });
-    // dx=50, dy=30 → SE grows the box to 250×130 at the same NW origin.
-    const expected: AffineTransform = [250 / 200, 0, 0, 130 / 100, 100, 50];
+    // Δ(50,30), NO Shift → aspect locked (start ratio 2:1). The dominant axis
+    // (dy, +30%) drives width: dx = 30·2 = 60 → box 260×130, ratio preserved.
+    const expected: AffineTransform = [260 / 200, 0, 0, 130 / 100, 100, 50];
     expect(drags.at(-1)).toEqual(expected);
+    expect((expected[0] * 200) / (expected[3] * 100)).toBeCloseTo(2, 6); // 2:1 kept
     expect(se.setPointerCapture).toHaveBeenCalledWith(1);
 
     await act(async () => {
@@ -115,6 +117,50 @@ describe("RasterResizeHandles", () => {
       );
     });
     expect(committed).toEqual({ start: START, next: expected });
+  });
+
+  test("Shift on a corner distorts freely (aspect NOT preserved)", async () => {
+    const drags: AffineTransform[] = [];
+    await render({ onResizeDrag: (t) => drags.push(t) });
+    const se = handle("se");
+    const outer = container!.querySelector(
+      '[data-testid="raster-resize-handles"]'
+    ) as HTMLElement;
+    outer.getBoundingClientRect = () =>
+      ({ width: 400, height: 300, left: 0, top: 0, right: 400, bottom: 300, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+    se.setPointerCapture = vi.fn();
+    se.releasePointerCapture = vi.fn();
+    await act(async () => {
+      se.dispatchEvent(new PointerEvent("pointerdown", { clientX: 300, clientY: 150, pointerId: 1, bubbles: true }));
+    });
+    await act(async () => {
+      // Shift held → each axis independent → 250×130 (ratio 2.5:1, distorted).
+      se.dispatchEvent(new PointerEvent("pointermove", { clientX: 350, clientY: 180, shiftKey: true, pointerId: 1, bubbles: true }));
+    });
+    expect(drags.at(-1)).toEqual([250 / 200, 0, 0, 130 / 100, 100, 50]);
+  });
+
+  test("edge handles stretch a single axis and ignore Shift", async () => {
+    const drags: AffineTransform[] = [];
+    await render({ onResizeDrag: (t) => drags.push(t) });
+    const e = handle("e");
+    const outer = container!.querySelector(
+      '[data-testid="raster-resize-handles"]'
+    ) as HTMLElement;
+    outer.getBoundingClientRect = () =>
+      ({ width: 400, height: 300, left: 0, top: 0, right: 400, bottom: 300, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+    e.setPointerCapture = vi.fn();
+    e.releasePointerCapture = vi.fn();
+    // E handle sits at (0.75, 0.5) → (300, 150).
+    await act(async () => {
+      e.dispatchEvent(new PointerEvent("pointerdown", { clientX: 300, clientY: 150, pointerId: 1, bubbles: true }));
+    });
+    await act(async () => {
+      // Shift held + a big vertical delta — both ignored by an edge handle.
+      e.dispatchEvent(new PointerEvent("pointermove", { clientX: 340, clientY: 250, shiftKey: true, pointerId: 1, bubbles: true }));
+    });
+    // Width only: 200 + 40 = 240; height + origin unchanged.
+    expect(drags.at(-1)).toEqual([240 / 200, 0, 0, 1, 100, 50]);
   });
 
   test("scales the client delta by the container rect (zoomed canvas)", async () => {
@@ -136,10 +182,11 @@ describe("RasterResizeHandles", () => {
       se.dispatchEvent(new PointerEvent("pointerdown", { clientX: 150, clientY: 75, pointerId: 1, bubbles: true }));
     });
     await act(async () => {
-      se.dispatchEvent(new PointerEvent("pointermove", { clientX: 175, clientY: 90, pointerId: 1, bubbles: true }));
+      // Shift = free resize, to isolate the scale-factor check from aspect lock.
+      se.dispatchEvent(new PointerEvent("pointermove", { clientX: 175, clientY: 90, shiftKey: true, pointerId: 1, bubbles: true }));
     });
     // client Δ(25,15) ÷ rect(200,150) × canvas(400,300) = canvas Δ(50,30)
-    // → the same 250×130 box as the 1:1 drag test above.
+    // → a 250×130 box (Shift held, so axes are independent).
     expect(drags.at(-1)).toEqual([250 / 200, 0, 0, 130 / 100, 100, 50]);
   });
 

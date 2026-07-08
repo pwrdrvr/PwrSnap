@@ -78,9 +78,12 @@ describe("resizeRasterTransform", () => {
 describe("affineTransformsEqual", () => {
   test("true only when all six components match", () => {
     expect(affineTransformsEqual(START, [1, 0, 0, 1, 100, 50])).toBe(true);
-    // Differ in each slot in turn.
-    expect(affineTransformsEqual(START, [1.5, 0, 0, 1, 100, 50])).toBe(false);
-    expect(affineTransformsEqual(START, [1, 0, 0, 1, 101, 50])).toBe(false);
-    expect(affineTransformsEqual(START, [1, 0, 0, 1, 100, 51])).toBe(false);
+    // Differ in each of the six slots in turn — all must break equality.
+    expect(affineTransformsEqual(START, [1.5, 0, 0, 1, 100, 50])).toBe(false); // sx
+    expect(affineTransformsEqual(START, [1, 0.5, 0, 1, 100, 50])).toBe(false); // shear y
+    expect(affineTransformsEqual(START, [1, 0, 0.5, 1, 100, 50])).toBe(false); // shear x
+    expect(affineTransformsEqual(START, [1, 0, 0, 1.5, 100, 50])).toBe(false); // sy
+    expect(affineTransformsEqual(START, [1, 0, 0, 1, 101, 50])).toBe(false); // tx
+    expect(affineTransformsEqual(START, [1, 0, 0, 1, 100, 51])).toBe(false); // ty
   });
 });

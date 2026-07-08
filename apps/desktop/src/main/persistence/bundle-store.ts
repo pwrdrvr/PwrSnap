@@ -30,6 +30,7 @@ import yazl from "yazl";
 import {
   BundleDocumentV2,
   BundleManifestV2,
+  cloneAffineTransform,
   validateBundleZipEntryNamesV2
 } from "@pwrsnap/shared";
 
@@ -935,7 +936,9 @@ export async function persistCaptureFromTempV2(
       opacity: 1,
       blend_mode: "normal" as const,
       transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
-      // Home transform for Layers-panel Reset (the base fills the frame 1:1).
+      // Home transform, set for uniformity. Identity at creation (the base
+      // fills the frame 1:1); the base never shows a Reset control, so this
+      // is only ever carried, never applied. Separate literal — not aliased.
       original_transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
       z_index: 0,
       source: "user" as const,
@@ -989,7 +992,9 @@ export async function persistCaptureFromTempV2(
           opacity: 1,
           blend_mode: "normal" as const,
           transform: cursorTransform,
-          original_transform: cursorTransform,
+          // Independent copy — never an alias of `transform` — so a future
+          // in-place edit of one can't silently corrupt the stored home.
+          original_transform: cloneAffineTransform(cursorTransform),
           z_index: 1,
           source: "user" as const,
           ai_run_id: null,

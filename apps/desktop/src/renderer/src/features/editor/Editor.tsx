@@ -4368,6 +4368,8 @@ function EditorLoaded({
         }
         // Reuse the drag/resize commit: dispatch the home transform +
         // record undo (current → home) so Cmd+Z restores the moved state.
+        // Also re-selects the raster on the canvas (setSelectionTrustingDispatch
+        // inside the commit) — intended, so the user sees what was reset.
         await commitRasterDragRef.current?.(id, node.transform, home);
       },
       moveLayerToIndex: async (id, toIndex) => {

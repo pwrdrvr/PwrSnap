@@ -79,6 +79,13 @@ export const AffineTransform = z.tuple([
 ]);
 export type AffineTransform = z.infer<typeof AffineTransform>;
 
+/** A fresh, independent copy of an affine transform. Used to stamp a
+ *  raster's `original_transform` (home) without aliasing its live
+ *  `transform` — so a future in-place edit of one can't corrupt the other. */
+export function cloneAffineTransform(t: AffineTransform): AffineTransform {
+  return [t[0], t[1], t[2], t[3], t[4], t[5]];
+}
+
 export const CanvasRect = z.object({
   x: FiniteNumber,
   y: FiniteNumber,

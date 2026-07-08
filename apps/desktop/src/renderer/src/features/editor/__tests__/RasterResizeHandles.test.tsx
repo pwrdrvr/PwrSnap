@@ -117,6 +117,32 @@ describe("RasterResizeHandles", () => {
     expect(committed).toEqual({ start: START, next: expected });
   });
 
+  test("scales the client delta by the container rect (zoomed canvas)", async () => {
+    const drags: AffineTransform[] = [];
+    await render({ onResizeDrag: (t) => drags.push(t) });
+    const se = handle("se");
+    const outer = container!.querySelector(
+      '[data-testid="raster-resize-handles"]'
+    ) as HTMLElement;
+    // Container is HALF the canvas dims on screen (200×150 for a 400×300
+    // canvas) — a 50% zoom, so each screen px is worth 2 canvas px. The math
+    // must divide by the rect and multiply by the canvas dims, not assume 1:1.
+    outer.getBoundingClientRect = () =>
+      ({ width: 200, height: 150, left: 0, top: 0, right: 200, bottom: 150, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+    se.setPointerCapture = vi.fn();
+    se.releasePointerCapture = vi.fn();
+    // SE handle sits at (0.75, 0.5) → (150, 75) in the 200×150 container.
+    await act(async () => {
+      se.dispatchEvent(new PointerEvent("pointerdown", { clientX: 150, clientY: 75, pointerId: 1, bubbles: true }));
+    });
+    await act(async () => {
+      se.dispatchEvent(new PointerEvent("pointermove", { clientX: 175, clientY: 90, pointerId: 1, bubbles: true }));
+    });
+    // client Δ(25,15) ÷ rect(200,150) × canvas(400,300) = canvas Δ(50,30)
+    // → the same 250×130 box as the 1:1 drag test above.
+    expect(drags.at(-1)).toEqual([250 / 200, 0, 0, 130 / 100, 100, 50]);
+  });
+
   test("a click on a handle with no drag does not commit", async () => {
     let commits = 0;
     await render({ onResizeCommit: () => (commits += 1) });

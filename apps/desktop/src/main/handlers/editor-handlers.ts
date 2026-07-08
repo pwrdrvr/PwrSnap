@@ -27,7 +27,7 @@
 import { clipboard } from "electron";
 import { nanoid } from "nanoid";
 import type { BundleLayerNode } from "@pwrsnap/shared";
-import { ok, err } from "@pwrsnap/shared";
+import { cloneAffineTransform, ok, err } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getCaptureById } from "../persistence/captures-repo";
 import { insertLayerTreeForCapture, listLayerTree } from "../persistence/layers-repo";
@@ -199,7 +199,9 @@ async function persistRasterFromBytes(args: {
     opacity: 1,
     blend_mode: "normal",
     transform: pastedTransform,
-    original_transform: pastedTransform,
+    // Independent copy — NOT an alias of `transform` — so a future in-place
+    // edit of one can never silently corrupt the stored home.
+    original_transform: cloneAffineTransform(pastedTransform),
     z_index: 0,
     source: "user",
     ai_run_id: null,

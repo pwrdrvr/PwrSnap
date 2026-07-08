@@ -2,7 +2,12 @@ import { describe, expect, test } from "vitest";
 
 import type { AffineTransform } from "@pwrsnap/shared";
 
-import { affineTransformsEqual, isCornerHandle, resizeRasterTransform } from "../raster-resize";
+import {
+  affineTransformsEqual,
+  isCornerHandle,
+  resizeRasterTransform,
+  snapToHome
+} from "../raster-resize";
 
 // Start box: transform [1,0,0,1,100,50], natural 200×100 → on-canvas box
 // { left: 100, top: 50, w: 200, h: 100 }.
@@ -72,6 +77,48 @@ describe("resizeRasterTransform", () => {
   test("isCornerHandle distinguishes corners from edges", () => {
     expect((["nw", "ne", "se", "sw"] as const).every(isCornerHandle)).toBe(true);
     expect((["n", "e", "s", "w"] as const).some(isCornerHandle)).toBe(false);
+  });
+
+  test("home-size detent snaps the box back to the original size within radius", () => {
+    // Start box 180×90 (transform 0.9). Drag SE by (18,9) → 198×99, both
+    // within 5px of the home 200×100 → snaps to the exact home box.
+    const t = resizeRasterTransform({
+      handle: "se",
+      dxPx: 18,
+      dyPx: 9,
+      startTransform: [0.9, 0, 0, 0.9, 100, 50],
+      naturalWidthPx: NAT_W,
+      naturalHeightPx: NAT_H,
+      lockAspect: false,
+      snapToHomeSize: { homeWidthPx: 200, homeHeightPx: 100, radiusWidthPx: 5, radiusHeightPx: 5 }
+    });
+    expect(t).toEqual([1, 0, 0, 1, 100, 50]);
+  });
+
+  test("home-size detent leaves the box alone outside the radius", () => {
+    // Drag SE by (40,40) → 220×130, both far from home → no snap.
+    const t = resizeRasterTransform({
+      handle: "se",
+      dxPx: 40,
+      dyPx: 40,
+      startTransform: [0.9, 0, 0, 0.9, 100, 50],
+      naturalWidthPx: NAT_W,
+      naturalHeightPx: NAT_H,
+      lockAspect: false,
+      snapToHomeSize: { homeWidthPx: 200, homeHeightPx: 100, radiusWidthPx: 5, radiusHeightPx: 5 }
+    });
+    expect(t).toEqual([220 / 200, 0, 0, 130 / 100, 100, 50]);
+  });
+});
+
+describe("snapToHome", () => {
+  test("pulls to home within the radius, passes through outside it", () => {
+    expect(snapToHome(103, 100, 5)).toBe(100); // within, above
+    expect(snapToHome(96, 100, 5)).toBe(100); // within, below
+    expect(snapToHome(100, 100, 5)).toBe(100); // exact
+    expect(snapToHome(105, 100, 5)).toBe(100); // on the boundary (inclusive)
+    expect(snapToHome(107, 100, 5)).toBe(107); // outside
+    expect(snapToHome(103, 100, 0)).toBe(103); // radius 0 disables
   });
 });
 

@@ -22,7 +22,12 @@ import { useRef, type PointerEvent, type ReactElement } from "react";
 import type { AffineTransform } from "@pwrsnap/shared";
 
 import { Z_INDEX_CHROME } from "./OverlaySvg";
-import { isCornerHandle, resizeRasterTransform, type ResizeHandle } from "./raster-resize";
+import {
+  HOME_SNAP_SCREEN_PX,
+  isCornerHandle,
+  resizeRasterTransform,
+  type ResizeHandle
+} from "./raster-resize";
 
 /** Screen-constant handle square, matching TransformHandles. */
 const HANDLE_SIZE_PX = 10;
@@ -51,6 +56,7 @@ function handleSpecs(x: number, y: number, w: number, h: number): HandleSpec[] {
 export function RasterResizeHandles({
   layerId,
   transform,
+  originalTransform = null,
   naturalWidthPx,
   naturalHeightPx,
   imageWidthPx,
@@ -62,6 +68,9 @@ export function RasterResizeHandles({
   /** The raster's CURRENT transform (draft-aware — the editor passes the
    *  live override during a resize so the handles track the preview). */
   transform: AffineTransform;
+  /** The raster's stored home transform, if any — drives the "sticks at the
+   *  original size" detent while resizing. Null for rasters with no home. */
+  originalTransform?: AffineTransform | null;
   naturalWidthPx: number;
   naturalHeightPx: number;
   /** Canvas (cropped) dims in px — the box's normalized space. */
@@ -122,6 +131,18 @@ export function RasterResizeHandles({
     // the captured cursor); hold Shift to distort freely. Edge handles always
     // stretch a single axis. Mirrors Preview / Keynote / PowerPoint.
     const lockAspect = isCornerHandle(g.handle) && !e.shiftKey;
+    // Home-size detent — the canvas-px radius is derived from the screen
+    // radius via the container scale (g.rectW ↔ imageWidthPx), so it feels
+    // the same at any zoom.
+    const snapToHomeSize =
+      originalTransform !== null
+        ? {
+            homeWidthPx: naturalWidthPx * originalTransform[0],
+            homeHeightPx: naturalHeightPx * originalTransform[3],
+            radiusWidthPx: (HOME_SNAP_SCREEN_PX * imageWidthPx) / g.rectW,
+            radiusHeightPx: (HOME_SNAP_SCREEN_PX * imageHeightPx) / g.rectH
+          }
+        : undefined;
     const next = resizeRasterTransform({
       handle: g.handle,
       dxPx,
@@ -129,7 +150,8 @@ export function RasterResizeHandles({
       startTransform: g.startTransform,
       naturalWidthPx,
       naturalHeightPx,
-      lockAspect
+      lockAspect,
+      ...(snapToHomeSize !== undefined ? { snapToHomeSize } : {})
     });
     g.current = next;
     onResizeDrag(next);

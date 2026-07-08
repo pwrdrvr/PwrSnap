@@ -190,6 +190,34 @@ describe("RasterResizeHandles", () => {
     expect(drags.at(-1)).toEqual([250 / 200, 0, 0, 130 / 100, 100, 50]);
   });
 
+  test("resize detents back to the home size when dragged near it", async () => {
+    const drags: AffineTransform[] = [];
+    await render({
+      transform: [0.9, 0, 0, 0.9, 0, 0], // current box 180×90 at the origin
+      originalTransform: [1, 0, 0, 1, 0, 0], // home box 200×100
+      onResizeDrag: (t) => drags.push(t)
+    });
+    const se = handle("se");
+    const outer = container!.querySelector(
+      '[data-testid="raster-resize-handles"]'
+    ) as HTMLElement;
+    // 1:1 rect → the capture radius is HOME_SNAP_SCREEN_PX (7) canvas px.
+    outer.getBoundingClientRect = () =>
+      ({ width: 400, height: 300, left: 0, top: 0, right: 400, bottom: 300, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+    se.setPointerCapture = vi.fn();
+    se.releasePointerCapture = vi.fn();
+    // SE handle sits at ((0+180)/400, (0+90)/300) = (0.45, 0.30) → (180, 90).
+    await act(async () => {
+      se.dispatchEvent(new PointerEvent("pointerdown", { clientX: 180, clientY: 90, pointerId: 1, bubbles: true }));
+    });
+    await act(async () => {
+      // Δ(19,9) → box ~199×99, both within 7px of the home 200×100. Shift =
+      // free, so each axis snaps independently to the exact home dimension.
+      se.dispatchEvent(new PointerEvent("pointermove", { clientX: 199, clientY: 99, shiftKey: true, pointerId: 1, bubbles: true }));
+    });
+    expect(drags.at(-1)).toEqual([1, 0, 0, 1, 0, 0]); // snapped exactly to home
+  });
+
   test("a click on a handle with no drag does not commit", async () => {
     let commits = 0;
     await render({ onResizeCommit: () => (commits += 1) });

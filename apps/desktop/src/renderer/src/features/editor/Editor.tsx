@@ -68,7 +68,7 @@ import { selectBaseRaster } from "./base-raster";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 import { RasterLayers } from "./RasterLayers";
 import { RasterResizeHandles } from "./RasterResizeHandles";
-import { affineTransformsEqual } from "./raster-resize";
+import { affineTransformsEqual, HOME_SNAP_SCREEN_PX, snapToHome } from "./raster-resize";
 import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor } from "./resolveToolColor";
 import { shapeStrokeGeometry } from "./shape-stroke-geometry";
@@ -1398,6 +1398,12 @@ export function Editor({
     current: AffineTransform;
     pointerId: number;
     moved: boolean;
+    // For the drag-back-to-home-position detent: the raster's stored home
+    // transform (null if none) + the canvas's on-screen size at drag start,
+    // used to convert the screen-px capture radius to canvas px.
+    homeTransform: AffineTransform | null;
+    canvasScreenW: number;
+    canvasScreenH: number;
   } | null>(null);
   const [rasterDrafts, setRasterDrafts] = useState<ReadonlyMap<
     string,
@@ -1789,6 +1795,7 @@ export function Editor({
           // is the position the user SEES. Arming from the raw model
           // would snap the raster back by the pending delta.
           const startTransform = rasterDrafts?.get(node.id) ?? node.transform;
+          const canvasRect = canvasRef.current?.getBoundingClientRect() ?? null;
           rasterDragRef.current = {
             id: node.id,
             startXn: start.xn,
@@ -1796,7 +1803,10 @@ export function Editor({
             startTransform,
             current: startTransform,
             pointerId: event.pointerId,
-            moved: false
+            moved: false,
+            homeTransform: node.original_transform ?? null,
+            canvasScreenW: canvasRect?.width ?? 0,
+            canvasScreenH: canvasRect?.height ?? 0
           };
           (event.target as HTMLElement).setPointerCapture(event.pointerId);
         }
@@ -1973,14 +1983,20 @@ export function Editor({
       if (dims === null) return;
       rasterDrag.moved = true;
       const t = rasterDrag.startTransform;
-      const next: AffineTransform = [
-        t[0],
-        t[1],
-        t[2],
-        t[3],
-        t[4] + dxn * dims.canvasWidthPx,
-        t[5] + dyn * dims.canvasHeightPx
-      ];
+      let tx = t[4] + dxn * dims.canvasWidthPx;
+      let ty = t[5] + dyn * dims.canvasHeightPx;
+      // Home-position detent: pull back to the original translate when the
+      // drag lands within the capture radius. The screen-px radius is scaled
+      // to canvas px via the start-of-drag canvas size, so it feels the same
+      // at any zoom. (Solo drag only — a group has no single home.)
+      const home = rasterDrag.homeTransform;
+      if (home !== null && rasterDrag.canvasScreenW > 0 && rasterDrag.canvasScreenH > 0) {
+        const radiusX = (HOME_SNAP_SCREEN_PX * dims.canvasWidthPx) / rasterDrag.canvasScreenW;
+        const radiusY = (HOME_SNAP_SCREEN_PX * dims.canvasHeightPx) / rasterDrag.canvasScreenH;
+        tx = snapToHome(tx, home[4], radiusX);
+        ty = snapToHome(ty, home[5], radiusY);
+      }
+      const next: AffineTransform = [t[0], t[1], t[2], t[3], tx, ty];
       rasterDrag.current = next;
       setRasterDrafts(new Map([[rasterDrag.id, next]]));
       return;
@@ -5992,6 +6008,7 @@ function EditorLoaded({
                 rasterDrafts?.get(selectedRasterForHandles.id) ??
                 selectedRasterForHandles.transform
               }
+              originalTransform={selectedRasterForHandles.original_transform ?? null}
               naturalWidthPx={selectedRasterForHandles.natural_width_px}
               naturalHeightPx={selectedRasterForHandles.natural_height_px}
               imageWidthPx={record.width_px}

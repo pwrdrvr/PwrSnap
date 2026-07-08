@@ -28,6 +28,15 @@ export interface ResizeRasterArgs {
   lockAspect: boolean;
   /** Minimum on-canvas box size, canvas px. Default 8. */
   minSizePx?: number;
+  /** Optional home-size detent: when the resized box lands within the given
+   *  per-axis radius (canvas px) of the home dimensions, snap exactly to
+   *  them — so dragging back to the original size "sticks". */
+  snapToHomeSize?: {
+    homeWidthPx: number;
+    homeHeightPx: number;
+    radiusWidthPx: number;
+    radiusHeightPx: number;
+  };
 }
 
 const movesWest = (h: ResizeHandle): boolean => h === "nw" || h === "w" || h === "sw";
@@ -54,6 +63,20 @@ export function affineTransformsEqual(a: AffineTransform, b: AffineTransform): b
   );
 }
 
+/** Screen-pixel capture radius for the "home" detents — resize-back-to-
+ *  original-size and drag-back-to-original-position. Each gesture converts
+ *  this to canvas px using its current zoom, so the magnetic feel is the
+ *  same on screen regardless of how the canvas is scaled. */
+export const HOME_SNAP_SCREEN_PX = 7;
+
+/** Magnetic detent: pull `value` to `home` when within `radiusPx`, else pass
+ *  it through unchanged. Stateless — the "sticks briefly, then unsticks when
+ *  you drag past it" feel comes from the flat home output across the ±radius
+ *  capture zone. `radiusPx <= 0` disables the snap. */
+export function snapToHome(value: number, home: number, radiusPx: number): number {
+  return radiusPx > 0 && Math.abs(value - home) <= radiusPx ? home : value;
+}
+
 /**
  * Compute the resized transform. The anchor (the edge/corner OPPOSITE the
  * dragged handle) stays fixed; the dragged edges move by the cursor delta.
@@ -69,7 +92,8 @@ export function resizeRasterTransform(args: ResizeRasterArgs): AffineTransform {
     naturalWidthPx,
     naturalHeightPx,
     lockAspect,
-    minSizePx = 8
+    minSizePx = 8,
+    snapToHomeSize
   } = args;
 
   const sx0 = startTransform[0];
@@ -104,8 +128,17 @@ export function resizeRasterTransform(args: ResizeRasterArgs): AffineTransform {
   }
 
   // New box size, clamped so it never inverts or collapses below minSize.
-  const newW = Math.max(minSizePx, w0 + dx);
-  const newH = Math.max(minSizePx, h0 + dy);
+  let newW = Math.max(minSizePx, w0 + dx);
+  let newH = Math.max(minSizePx, h0 + dy);
+
+  // Home-size detent: pull each axis to the original dimension when the drag
+  // lands within its capture radius. For a proportional (aspect-locked) drag
+  // both axes cross home together, so this snaps cleanly back to the exact
+  // original size; edge / distorted drags snap per-axis.
+  if (snapToHomeSize !== undefined) {
+    newW = snapToHome(newW, snapToHomeSize.homeWidthPx, snapToHomeSize.radiusWidthPx);
+    newH = snapToHome(newH, snapToHomeSize.homeHeightPx, snapToHomeSize.radiusHeightPx);
+  }
 
   // Anchor the opposite edge: west handles move `left` (right pinned at
   // left0 + w0); east handles keep `left`. Same for north/south.

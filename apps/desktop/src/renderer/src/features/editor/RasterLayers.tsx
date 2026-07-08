@@ -12,7 +12,9 @@
 // wired: Editor.tsx's raster gesture (solo drag) and the group multi-drag
 // both pass live transforms via `draftTransforms` during the drag, then
 // commit through dispatchEdit's `transform` geometry (undo-integrated).
-// Resize handles are the next brick.
+// Resize is wired too: `RasterResizeHandles` draws 8 corner/edge handles on
+// a single-selected raster and drives the same `draftTransforms` preview +
+// transform-geometry commit via `resizeRasterTransform`.
 //
 // Positioning math lives in `computeRasterLayerStyle`, which mirrors the
 // compositor (compose-tree.ts `compositeRasterOntoAccumulator`) so a

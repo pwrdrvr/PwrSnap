@@ -67,6 +67,7 @@ import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { selectBaseRaster } from "./base-raster";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 import { RasterLayers } from "./RasterLayers";
+import { RasterResizeHandles } from "./RasterResizeHandles";
 import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor } from "./resolveToolColor";
 import { shapeStrokeGeometry } from "./shape-stroke-geometry";
@@ -5680,6 +5681,14 @@ function EditorLoaded({
         ...rasterLayerBoundsN(boxed, record.width_px, record.height_px)
       };
     });
+  // Single-selected non-base raster → resize handles (the parallel of
+  // TransformHandles for a single overlay). Move / group-drag / undo are
+  // the existing raster gesture; the handles add the SCALE gesture, reusing
+  // the same rasterDrafts preview + commitRasterDragRef (undo-integrated).
+  const selectedRasterForHandles =
+    selectedLayerIds.length === 1
+      ? (extraRasterLayers.find((l) => l.id === selectedLayerIds[0]) ?? null)
+      : null;
 
   const viewport = (
     <div
@@ -5944,6 +5953,35 @@ function EditorLoaded({
               onDragStart={onHandleDragStart}
               onDragEnd={onHandleDragEnd}
               onRequestEdit={onRequestEditOverlay}
+            />
+          )}
+          {/* Raster resize handles — single-selected non-base raster only,
+              mutually exclusive with the overlay TransformHandles above (a
+              single selection is either an overlay or a raster). The box +
+              handles follow the live rasterDrafts override during a resize;
+              commit routes through the same transform-geometry path as
+              raster drag (undo-integrated). */}
+          {selectedRasterForHandles !== null && (
+            <RasterResizeHandles
+              layerId={selectedRasterForHandles.id}
+              transform={
+                rasterDrafts?.get(selectedRasterForHandles.id) ??
+                selectedRasterForHandles.transform
+              }
+              naturalWidthPx={selectedRasterForHandles.natural_width_px}
+              naturalHeightPx={selectedRasterForHandles.natural_height_px}
+              imageWidthPx={record.width_px}
+              imageHeightPx={record.height_px}
+              onResizeDrag={(t) =>
+                setRasterDrafts(new Map([[selectedRasterForHandles.id, t]]))
+              }
+              onResizeCommit={(start, t) => {
+                void commitRasterDragRef.current?.(
+                  selectedRasterForHandles.id,
+                  start,
+                  t
+                );
+              }}
             />
           )}
           {draft?.kind === "text" &&

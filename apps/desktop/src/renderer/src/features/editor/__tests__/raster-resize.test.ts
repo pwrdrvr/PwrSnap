@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { AffineTransform } from "@pwrsnap/shared";
 
-import { isCornerHandle, resizeRasterTransform } from "../raster-resize";
+import { affineTransformsEqual, isCornerHandle, resizeRasterTransform } from "../raster-resize";
 
 // Start box: transform [1,0,0,1,100,50], natural 200×100 → on-canvas box
 // { left: 100, top: 50, w: 200, h: 100 }.
@@ -72,5 +72,15 @@ describe("resizeRasterTransform", () => {
   test("isCornerHandle distinguishes corners from edges", () => {
     expect((["nw", "ne", "se", "sw"] as const).every(isCornerHandle)).toBe(true);
     expect((["n", "e", "s", "w"] as const).some(isCornerHandle)).toBe(false);
+  });
+});
+
+describe("affineTransformsEqual", () => {
+  test("true only when all six components match", () => {
+    expect(affineTransformsEqual(START, [1, 0, 0, 1, 100, 50])).toBe(true);
+    // Differ in each slot in turn.
+    expect(affineTransformsEqual(START, [1.5, 0, 0, 1, 100, 50])).toBe(false);
+    expect(affineTransformsEqual(START, [1, 0, 0, 1, 101, 50])).toBe(false);
+    expect(affineTransformsEqual(START, [1, 0, 0, 1, 100, 51])).toBe(false);
   });
 });

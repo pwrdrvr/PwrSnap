@@ -40,6 +40,20 @@ export function isCornerHandle(h: ResizeHandle): boolean {
   return h === "nw" || h === "ne" || h === "se" || h === "sw";
 }
 
+/** Element-wise equality of two affine transforms (the 6-tuple). Used to
+ *  decide whether a raster still sits at its home transform — i.e. whether
+ *  the Layers-panel Reset control has anything to do. */
+export function affineTransformsEqual(a: AffineTransform, b: AffineTransform): boolean {
+  return (
+    a[0] === b[0] &&
+    a[1] === b[1] &&
+    a[2] === b[2] &&
+    a[3] === b[3] &&
+    a[4] === b[4] &&
+    a[5] === b[5]
+  );
+}
+
 /**
  * Compute the resized transform. The anchor (the edge/corner OPPOSITE the
  * dragged handle) stays fixed; the dragged edges move by the cursor delta.

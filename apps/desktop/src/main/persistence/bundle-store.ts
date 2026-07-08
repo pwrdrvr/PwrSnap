@@ -935,6 +935,8 @@ export async function persistCaptureFromTempV2(
       opacity: 1,
       blend_mode: "normal" as const,
       transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+      // Home transform for Layers-panel Reset (the base fills the frame 1:1).
+      original_transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
       z_index: 0,
       source: "user" as const,
       ai_run_id: null,
@@ -963,6 +965,17 @@ export async function persistCaptureFromTempV2(
           .update(args.cursorLayer.pngBytes)
           .digest("hex");
         cursorSource = { sha256: cursorSha, bytes: args.cursorLayer.pngBytes };
+        // The sprite's on-canvas draw box — also the cursor layer's "home"
+        // transform, so Layers-panel Reset restores it to the true captured
+        // pointer position + size.
+        const cursorTransform: [number, number, number, number, number, number] = [
+          args.cursorLayer.drawWidthPx / cw,
+          0,
+          0,
+          args.cursorLayer.drawHeightPx / chh,
+          args.cursorLayer.xPx,
+          args.cursorLayer.yPx
+        ];
         initialLayers.push({
           id: nanoid(16),
           parent_id: rootGroupId,
@@ -975,14 +988,8 @@ export async function persistCaptureFromTempV2(
           locked: false,
           opacity: 1,
           blend_mode: "normal" as const,
-          transform: [
-            args.cursorLayer.drawWidthPx / cw,
-            0,
-            0,
-            args.cursorLayer.drawHeightPx / chh,
-            args.cursorLayer.xPx,
-            args.cursorLayer.yPx
-          ] as [number, number, number, number, number, number],
+          transform: cursorTransform,
+          original_transform: cursorTransform,
           z_index: 1,
           source: "user" as const,
           ai_run_id: null,

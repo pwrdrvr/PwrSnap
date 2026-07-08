@@ -68,6 +68,7 @@ import { selectBaseRaster } from "./base-raster";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 import { RasterLayers } from "./RasterLayers";
 import { RasterResizeHandles } from "./RasterResizeHandles";
+import { affineTransformsEqual } from "./raster-resize";
 import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor } from "./resolveToolColor";
 import { shapeStrokeGeometry } from "./shape-stroke-geometry";
@@ -212,6 +213,13 @@ export type LayersPanelApi = {
    *  the canvas back), then deletes the leftover crop layer that
    *  dispatch inserts. */
   uncrop: (cropLayerId: string) => Promise<void>;
+  /** Reset a non-base raster (pasted image / captured cursor) to its
+   *  stored `original_transform` — the position + size + orientation it
+   *  had when first placed. Routes through the same transform-geometry
+   *  commit as drag/resize, so it's undo-integrated (Cmd+Z restores the
+   *  moved state). No-op when the raster has no stored home (created
+   *  before this shipped) or already sits at it. */
+  resetRasterTransform: (id: string) => Promise<void>;
 };
 
 const STYLED_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
@@ -4349,6 +4357,19 @@ function EditorLoaded({
           undo.recordDelete(row, { node });
         }
       },
+      resetRasterTransform: async (id) => {
+        const node = storedLayers.find((l) => l.id === id);
+        if (node === undefined || node.kind !== "raster") return;
+        const home = node.original_transform;
+        // No stored home (raster predates the feature) or already home →
+        // nothing to reset. Skipping keeps a no-op entry off the undo stack.
+        if (home === undefined || affineTransformsEqual(node.transform, home)) {
+          return;
+        }
+        // Reuse the drag/resize commit: dispatch the home transform +
+        // record undo (current → home) so Cmd+Z restores the moved state.
+        await commitRasterDragRef.current?.(id, node.transform, home);
+      },
       moveLayerToIndex: async (id, toIndex) => {
         // Reorder over the reorderable ANNOTATION set (see
         // `isReorderableLayer` — the same predicate the Layers panel pins
@@ -4487,7 +4508,8 @@ function EditorLoaded({
     dispatchEdit,
     undo,
     undoApplyingRef,
-    recordCropRef
+    recordCropRef,
+    commitRasterDragRef
   ]);
   useEffect(() => {
     if (onLayersApi === undefined) return;

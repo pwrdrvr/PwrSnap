@@ -109,18 +109,19 @@ export function placeLayerIntoTarget(
 ): BundleLayerNode {
   const { scale, originXPx, originYPx } = placement;
   switch (layer.kind) {
-    case "raster":
-      return {
-        ...layer,
-        transform: [
-          layer.transform[0] * scale,
-          layer.transform[1] * scale,
-          layer.transform[2] * scale,
-          layer.transform[3] * scale,
-          originXPx + layer.transform[4] * scale,
-          originYPx + layer.transform[5] * scale
-        ]
-      };
+    case "raster": {
+      const placedTransform: [number, number, number, number, number, number] = [
+        layer.transform[0] * scale,
+        layer.transform[1] * scale,
+        layer.transform[2] * scale,
+        layer.transform[3] * scale,
+        originXPx + layer.transform[4] * scale,
+        originYPx + layer.transform[5] * scale
+      ];
+      // A pasted raster's "home" (for the Layers-panel Reset) is where it
+      // lands in THIS document — overwrite any source-doc home it carried.
+      return { ...layer, transform: placedTransform, original_transform: placedTransform };
+    }
     case "vector": {
       if (layer.shape.kind === "crop") return layer;
       // The placement rect expressed in the TARGET canvas's normalized

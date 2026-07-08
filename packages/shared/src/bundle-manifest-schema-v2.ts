@@ -152,7 +152,16 @@ export const RasterLayer = z.object({
   kind: z.literal("raster"),
   source_ref: RasterSourceRef,
   natural_width_px: z.number().int().positive().lte(MAX_IMAGE_DIM_PX),
-  natural_height_px: z.number().int().positive().lte(MAX_IMAGE_DIM_PX)
+  natural_height_px: z.number().int().positive().lte(MAX_IMAGE_DIM_PX),
+  // The raster's "home" transform — where it FIRST landed in this
+  // document (identity for the base Source, the placement transform for
+  // a pasted image, the sprite draw-box for the captured cursor). Stamped
+  // once at creation and never mutated (edits spread `{...layer}`, which
+  // carries it through), so the Layers-panel Reset control can restore a
+  // moved / resized raster to its original position + size + orientation
+  // — undoably. Optional: rasters created before this shipped have no
+  // stored home, so Reset simply isn't offered for them.
+  original_transform: AffineTransform.optional()
 });
 export type RasterLayer = z.infer<typeof RasterLayer>;
 

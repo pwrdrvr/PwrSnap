@@ -21,7 +21,8 @@ import type {
   DesktopCodexAuthProfile,
   DesktopCodexAuthProfileList,
   DesktopCodexDiscoveryCandidate,
-  DesktopCodexDiscoverySnapshot
+  DesktopCodexDiscoverySnapshot,
+  Settings
 } from "@pwrsnap/shared";
 import {
   AI_REASONING_EFFORTS,
@@ -170,6 +171,7 @@ export function AIProvidersPage(): ReactElement {
   // agent enabled before discovery resolves is shown by its id until names
   // arrive.
   const enabledAgentIds = settings?.ai.acp.enabledAgentIds ?? [];
+  const enabledAgentIdSet = new Set(enabledAgentIds);
   const acpChatProviderOptions = buildAcpProviderOptions(enabledAgentIds, acpDiscovery);
 
   // ACP model lists, fetched lazily per in-use agent. The first Settings pass
@@ -197,13 +199,7 @@ export function AIProvidersPage(): ReactElement {
     provider !== undefined && provider.startsWith("acp:")
       ? provider.slice("acp:".length)
       : null;
-  const acpAgentIdsInUse = [
-    settings?.ai.defaults.enrichment.provider,
-    settings?.ai.defaults.libraryChat.provider,
-    settings?.ai.defaults.sizzleChat.provider
-  ]
-    .map(agentIdFromProvider)
-    .filter((id): id is string => id !== null);
+  const acpAgentIdsInUse = enabledAcpAgentIdsForModelProbes(settings);
   const acpAgentIdsKey = [...new Set(acpAgentIdsInUse)].sort().join(",");
   useEffect(() => {
     for (const id of acpAgentIdsKey.length > 0 ? acpAgentIdsKey.split(",") : []) {
@@ -232,15 +228,16 @@ export function AIProvidersPage(): ReactElement {
     provider: string | undefined
   ): readonly AcpAgentModelOption[] | undefined => {
     const id = agentIdFromProvider(provider);
-    return id === null ? undefined : acpModels[id];
+    if (id === null) return undefined;
+    return enabledAgentIdSet.has(id) ? acpModels[id] : [];
   };
   const acpModelsLoadingForProvider = (provider: string | undefined): boolean => {
     const id = agentIdFromProvider(provider);
-    return id !== null && acpModelsLoadingIds.includes(id);
+    return id !== null && enabledAgentIdSet.has(id) && acpModelsLoadingIds.includes(id);
   };
   const acpModelErrorForProvider = (provider: string | undefined): string | undefined => {
     const id = agentIdFromProvider(provider);
-    return id === null ? undefined : acpModelErrors[id];
+    return id === null || !enabledAgentIdSet.has(id) ? undefined : acpModelErrors[id];
   };
 
   return (
@@ -1617,6 +1614,29 @@ export function buildAcpProviderOptions(
     const entry = discovery?.agents.find((a) => a.id === id);
     return { value: `acp:${id}`, label: entry?.displayName ?? builtInAcpAgentDisplayName(id) };
   });
+}
+
+export function enabledAcpAgentIdsForModelProbes(
+  settings: Settings | null | undefined
+): string[] {
+  if (settings === null || settings === undefined) return [];
+  const enabled = new Set(settings.ai.acp.enabledAgentIds);
+  const providers = [
+    settings.ai.defaults.enrichment.provider,
+    settings.ai.defaults.libraryChat.provider,
+    settings.ai.defaults.sizzleChat.provider
+  ];
+  return [
+    ...new Set(
+      providers
+        .map((provider) =>
+          provider !== undefined && provider.startsWith("acp:")
+            ? provider.slice("acp:".length)
+            : null
+        )
+        .filter((id): id is string => id !== null && enabled.has(id))
+    )
+  ];
 }
 
 export type AiSurfaceDefaultControlProps = {

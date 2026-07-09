@@ -32,6 +32,7 @@ import {
 import { broadcastRendererEventToLocalWindows } from "../events";
 import { relayRendererEventToPeer } from "../process-split/event-relay";
 import { AcpCaptureEnrichmentClient } from "../ai/acp-enrichment-client";
+import { acpDiscoveryOptionsForEnabledAgent } from "../ai/acp-enabled-discovery";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
 import { findAcpModelLabel } from "../ai/acp-model-cache";
 import { findCodexModelLabel, saveCodexModelLabels } from "../ai/codex-model-cache";
@@ -395,10 +396,9 @@ async function buildAcpEnrichmentClient(
   cwd: string
 ): Promise<AcpCaptureEnrichmentClient | null> {
   const pref = settings.ai.acp.agents?.[agentId];
-  const override = pref?.overridePath?.trim();
-  const groups = await discoverLocalAcpAgentInstances(
-    override ? { overrides: { [agentId]: override } } : {}
-  );
+  const discoveryOptions = acpDiscoveryOptionsForEnabledAgent(settings, agentId);
+  if (discoveryOptions === null) return null;
+  const groups = await discoverLocalAcpAgentInstances(discoveryOptions);
   const group = groups.find((g) => g.strategyId === agentId);
   if (group === undefined || group.instances.length === 0) return null;
   const strategy = strategyById(agentId);

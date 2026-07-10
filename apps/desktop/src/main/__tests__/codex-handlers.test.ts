@@ -326,6 +326,41 @@ describe("Codex handlers", () => {
     ).toBe("completed");
   });
 
+  test("codex:enrich falls back to Codex when the saved ACP enrichment provider is disabled", async () => {
+    const fakeClient = new FakeCodexClient();
+    registerCodexHandlers({
+      clientFactory: () => fakeClient as never,
+      settingsReader: async () =>
+        testSettings({
+          codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" },
+          ai: {
+            enabled: true,
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            budgetSafetyDisabledAt: null,
+            autoAcceptSuggestions: false,
+            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
+            defaults: {
+              ...defaultSettings().ai.defaults,
+              enrichment: { provider: "acp:gemini", model: "gemini-2.5-pro" }
+            },
+            acp: { enabledAgentIds: [], agents: { gemini: { overridePath: "/custom/gemini" } } }
+          }
+        })
+    });
+
+    const result = await bus.dispatch(
+      "codex:enrich",
+      { captureId: "cap_1" },
+      { principal: "ipc", cancellationKey: "cap_1" }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    await waitFor(() => getAiRun(result.value.runId)?.status === "completed");
+    expect(fakeClient.lastRequest?.model).toBe("gpt-5.5");
+    expect(getAiRun(result.value.runId)?.selectedModel).toBe("gpt-5.5");
+  });
+
   test("usage commands expose token, cost, and media accounting", async () => {
     const fakeClient = new FakeCodexClient();
     registerCodexHandlers({
@@ -902,6 +937,21 @@ describe("enrichmentSelectedModel", () => {
       }
     });
     expect(enrichmentSelectedModel(noModel, "grok")).toBe("");
+  });
+
+  test("disabled ACP enrichment provider falls back to the Codex caption model", () => {
+    const disabledAcp = testSettings({
+      codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" },
+      ai: {
+        ...defaultSettings().ai,
+        defaults: {
+          ...defaultSettings().ai.defaults,
+          enrichment: { provider: "acp:gemini", model: "gemini-2.5-pro" }
+        },
+        acp: { enabledAgentIds: [], agents: {} }
+      }
+    });
+    expect(enrichmentSelectedModel(disabledAcp, undefined)).toBe("gpt-5.5");
   });
 });
 

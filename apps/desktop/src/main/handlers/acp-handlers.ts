@@ -45,7 +45,7 @@ import { bus } from "../command-bus";
 import { loadAcpModelCacheEntry, saveAcpModelCacheEntry } from "../ai/acp-model-cache";
 import {
   acpDiscoveryOptionsForEnabledAgent,
-  acpDiscoveryOptionsForEnabledAgents
+  acpDiscoveryOptionsForInstallScan
 } from "../ai/acp-enabled-discovery";
 import { agentErrorMessage } from "../ai/agent-error-message";
 import { getMainLogger } from "../log";
@@ -156,7 +156,7 @@ export function registerAcpHandlers(params?: {
       groups =
         settings === undefined
           ? []
-          : await discover(acpDiscoveryOptionsForEnabledAgents(settings));
+          : await discover(acpDiscoveryOptionsForInstallScan(settings));
     } catch (cause) {
       // The kit isolates per-strategy probe failures internally, so a
       // throw here is an unexpected, list-wide failure (e.g. a bug in the

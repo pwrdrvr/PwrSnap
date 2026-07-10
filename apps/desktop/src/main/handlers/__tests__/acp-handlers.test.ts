@@ -153,7 +153,7 @@ describe("acp:discover", () => {
 
     await bus.dispatch("acp:discover", {}, { principal: "ipc" });
     expect(discover).toHaveBeenCalledWith({
-      strategies: [expect.objectContaining({ id })],
+      strategies: expect.arrayContaining([expect.objectContaining({ id })]),
       overrides: { [id]: "/custom/path" }
     });
   });
@@ -170,12 +170,15 @@ describe("acp:discover", () => {
 
     await bus.dispatch("acp:discover", {}, { principal: "ipc" });
     expect(discover).toHaveBeenCalledWith({
-      strategies: [expect.objectContaining({ id: enabledId })],
+      strategies: expect.arrayContaining([
+        expect.objectContaining({ id: disabledId }),
+        expect.objectContaining({ id: enabledId })
+      ]),
       overrides: { [enabledId]: `/custom/${enabledId}` }
     });
   });
 
-  test("a throwing probe (no result for that strategy) reads as not-installed, not a list failure", async () => {
+  test("fresh installs still scan every built-in strategy so agents can be enabled", async () => {
     agentsPref = {};
     enabledAgentIds = [];
     discover.mockResolvedValue([]);
@@ -186,6 +189,11 @@ describe("acp:discover", () => {
 
     expect(result.value.agents).toHaveLength(KNOWN_IDS.length);
     expect(result.value.agents.every((a) => a.installed === false)).toBe(true);
+    expect(discover).toHaveBeenCalledWith({
+      strategies: expect.arrayContaining(
+        KNOWN_IDS.map((id) => expect.objectContaining({ id }))
+      )
+    });
   });
 
   test("a list-wide discovery throw surfaces as Result.err", async () => {

@@ -3,6 +3,7 @@ import type { Settings } from "@pwrsnap/shared";
 import {
   acpDiscoveryOptionsForEnabledAgent,
   acpDiscoveryOptionsForEnabledAgents,
+  acpDiscoveryOptionsForInstallScan,
   enabledChatAcpAgentIdsInUse
 } from "../acp-enabled-discovery";
 
@@ -44,6 +45,26 @@ describe("enabled ACP discovery options", () => {
     );
 
     expect(options.strategies?.map((strategy) => strategy.id)).toEqual(["qwen"]);
+    expect(options.overrides).toEqual({ qwen: "/custom/qwen" });
+  });
+
+  test("install scan keeps all strategies but only enabled overrides", () => {
+    const options = acpDiscoveryOptionsForInstallScan(
+      settings({
+        enabledAgentIds: ["qwen"],
+        agents: {
+          gemini: { overridePath: "/custom/gemini" },
+          qwen: { overridePath: "/custom/qwen" }
+        }
+      })
+    );
+
+    expect(options.strategies?.map((strategy) => strategy.id).sort()).toEqual([
+      "gemini",
+      "grok",
+      "kimi",
+      "qwen"
+    ].sort());
     expect(options.overrides).toEqual({ qwen: "/custom/qwen" });
   });
 

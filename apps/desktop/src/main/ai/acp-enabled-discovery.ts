@@ -48,6 +48,19 @@ export function acpDiscoveryOptionsForEnabledAgents(
   );
 }
 
+/** Discovery options for the Settings install scanner. Unlike runtime paths,
+ * this must probe every built-in strategy so a fresh user can discover an
+ * installed-but-disabled agent and enable it. Manual override paths remain
+ * gated by enablement so a disabled custom Gemini path is not invoked. */
+export function acpDiscoveryOptionsForInstallScan(
+  settings: Settings
+): LocalAcpDiscoveryOptions {
+  return withOverrides(
+    BUILT_IN_ACP_STRATEGIES,
+    overridesFromPreferences(settings.ai.acp.agents, enabledAcpAgentIdSet(settings))
+  );
+}
+
 /** Discovery options for one enabled ACP agent. Returns null when the requested
  * agent is unknown or disabled, so callers can skip discovery/spawn entirely. */
 export function acpDiscoveryOptionsForEnabledAgent(

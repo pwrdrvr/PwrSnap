@@ -368,6 +368,9 @@ export function withUsageModelLabels(
  *  For Codex, keep the legacy fallback chain. Exported for testing. */
 export function enrichmentSelectedModel(settings: Settings, acpAgentId: string | undefined): string {
   if (acpAgentId !== undefined) return settings.ai.defaults.enrichment.model ?? "";
+  if (settings.ai.defaults.enrichment.provider?.startsWith("acp:") === true) {
+    return settings.codex.captionModel || DEFAULT_CODEX_CAPTION_MODEL;
+  }
   return enrichmentModelForSettings(settings);
 }
 
@@ -384,7 +387,8 @@ function enrichmentEffortForSettings(settings: Settings): string {
 function enrichmentAcpAgentId(settings: Settings): string | undefined {
   const provider = settings.ai.defaults.enrichment.provider;
   if (provider === undefined || !provider.startsWith("acp:")) return undefined;
-  return provider.slice("acp:".length);
+  const agentId = provider.slice("acp:".length);
+  return settings.ai.acp.enabledAgentIds.includes(agentId) ? agentId : undefined;
 }
 
 /** Discover the selected ACP agent + build an enrichment client bound to its

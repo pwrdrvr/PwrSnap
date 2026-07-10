@@ -89,6 +89,20 @@ describe("placeLayerIntoTarget", () => {
     expect(placed.natural_height_px).toBe(40);
   });
 
+  test("raster: original_transform (home) is stamped to the PLACED transform", () => {
+    // A pasted raster's home is where it lands in the target document —
+    // even if the source carried a different home. The Layers-panel Reset
+    // reads this to restore position + size + orientation.
+    const src = {
+      ...raster([1, 0, 0, 1, 0, 0]),
+      original_transform: [9, 0, 0, 9, 9, 9] as [number, number, number, number, number, number]
+    };
+    const placed = placeLayerIntoTarget(src, native, target);
+    if (placed.kind !== "raster") throw new Error("expected raster");
+    expect(placed.original_transform).toEqual(placed.transform);
+    expect([...(placed.original_transform ?? [])]).toEqual([1, 0, 0, 1, 70, 60]);
+  });
+
   test("raster: scale-down composes onto an existing translate", () => {
     const smallTarget = { widthPx: 100, heightPx: 80 };
     const p = computePlacement({ widthPx: 400, heightPx: 300 }, smallTarget); // scale 0.25, origin (0, 2.5)

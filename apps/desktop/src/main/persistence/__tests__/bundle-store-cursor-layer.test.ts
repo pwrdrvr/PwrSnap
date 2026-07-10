@@ -125,11 +125,18 @@ describe("persistCaptureFromTempV2 — cursor layer", () => {
     // Draw box 16×24 from a 32×48 natural → scale 0.5 on both axes;
     // positioned at the given canvas pixels.
     expect(cursor.transform).toEqual([0.5, 0, 0, 0.5, 100, 80]);
+    // Home transform for the Layers-panel Reset + drag/resize detents. This
+    // MUST survive the SQLite split/reconstruct — it's a raster kind-specific
+    // column, not a common one, so `splitNodeForStorage` has to list it or it
+    // silently evaporates on write (regression guard).
+    expect(cursor.original_transform).toEqual([0.5, 0, 0, 0.5, 100, 80]);
     // Stacked above the base Source (z 0) — deletable annotation, not base.
     expect(cursor.z_index).toBe(1);
     const base = layers.find((l) => l.kind === "raster" && l.name === "Source");
     expect(base).toBeDefined();
     expect(base!.z_index).toBe(0);
+    if (base === undefined || base.kind !== "raster") throw new Error("unreachable");
+    expect(base.original_transform).toEqual([1, 0, 0, 1, 0, 0]);
   });
 
   test("a corrupt sprite is dropped without failing the capture", async () => {

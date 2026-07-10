@@ -67,6 +67,8 @@ import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { selectBaseRaster } from "./base-raster";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 import { RasterLayers } from "./RasterLayers";
+import { RasterResizeHandles } from "./RasterResizeHandles";
+import { affineTransformsEqual, HOME_SNAP_SCREEN_PX, snapToHome } from "./raster-resize";
 import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor } from "./resolveToolColor";
 import { shapeStrokeGeometry } from "./shape-stroke-geometry";
@@ -211,6 +213,13 @@ export type LayersPanelApi = {
    *  the canvas back), then deletes the leftover crop layer that
    *  dispatch inserts. */
   uncrop: (cropLayerId: string) => Promise<void>;
+  /** Reset a non-base raster (pasted image / captured cursor) to its
+   *  stored `original_transform` — the position + size + orientation it
+   *  had when first placed. Routes through the same transform-geometry
+   *  commit as drag/resize, so it's undo-integrated (Cmd+Z restores the
+   *  moved state). No-op when the raster has no stored home (created
+   *  before this shipped) or already sits at it. */
+  resetRasterTransform: (id: string) => Promise<void>;
 };
 
 const STYLED_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
@@ -1389,6 +1398,12 @@ export function Editor({
     current: AffineTransform;
     pointerId: number;
     moved: boolean;
+    // For the drag-back-to-home-position detent: the raster's stored home
+    // transform (null if none) + the canvas's on-screen size at drag start,
+    // used to convert the screen-px capture radius to canvas px.
+    homeTransform: AffineTransform | null;
+    canvasScreenW: number;
+    canvasScreenH: number;
   } | null>(null);
   const [rasterDrafts, setRasterDrafts] = useState<ReadonlyMap<
     string,
@@ -1780,6 +1795,7 @@ export function Editor({
           // is the position the user SEES. Arming from the raw model
           // would snap the raster back by the pending delta.
           const startTransform = rasterDrafts?.get(node.id) ?? node.transform;
+          const canvasRect = canvasRef.current?.getBoundingClientRect() ?? null;
           rasterDragRef.current = {
             id: node.id,
             startXn: start.xn,
@@ -1787,7 +1803,10 @@ export function Editor({
             startTransform,
             current: startTransform,
             pointerId: event.pointerId,
-            moved: false
+            moved: false,
+            homeTransform: node.original_transform ?? null,
+            canvasScreenW: canvasRect?.width ?? 0,
+            canvasScreenH: canvasRect?.height ?? 0
           };
           (event.target as HTMLElement).setPointerCapture(event.pointerId);
         }
@@ -1964,14 +1983,20 @@ export function Editor({
       if (dims === null) return;
       rasterDrag.moved = true;
       const t = rasterDrag.startTransform;
-      const next: AffineTransform = [
-        t[0],
-        t[1],
-        t[2],
-        t[3],
-        t[4] + dxn * dims.canvasWidthPx,
-        t[5] + dyn * dims.canvasHeightPx
-      ];
+      let tx = t[4] + dxn * dims.canvasWidthPx;
+      let ty = t[5] + dyn * dims.canvasHeightPx;
+      // Home-position detent: pull back to the original translate when the
+      // drag lands within the capture radius. The screen-px radius is scaled
+      // to canvas px via the start-of-drag canvas size, so it feels the same
+      // at any zoom. (Solo drag only — a group has no single home.)
+      const home = rasterDrag.homeTransform;
+      if (home !== null && rasterDrag.canvasScreenW > 0 && rasterDrag.canvasScreenH > 0) {
+        const radiusX = (HOME_SNAP_SCREEN_PX * dims.canvasWidthPx) / rasterDrag.canvasScreenW;
+        const radiusY = (HOME_SNAP_SCREEN_PX * dims.canvasHeightPx) / rasterDrag.canvasScreenH;
+        tx = snapToHome(tx, home[4], radiusX);
+        ty = snapToHome(ty, home[5], radiusY);
+      }
+      const next: AffineTransform = [t[0], t[1], t[2], t[3], tx, ty];
       rasterDrag.current = next;
       setRasterDrafts(new Map([[rasterDrag.id, next]]));
       return;
@@ -4348,6 +4373,21 @@ function EditorLoaded({
           undo.recordDelete(row, { node });
         }
       },
+      resetRasterTransform: async (id) => {
+        const node = storedLayers.find((l) => l.id === id);
+        if (node === undefined || node.kind !== "raster") return;
+        const home = node.original_transform;
+        // No stored home (raster predates the feature) or already home →
+        // nothing to reset. Skipping keeps a no-op entry off the undo stack.
+        if (home === undefined || affineTransformsEqual(node.transform, home)) {
+          return;
+        }
+        // Reuse the drag/resize commit: dispatch the home transform +
+        // record undo (current → home) so Cmd+Z restores the moved state.
+        // Also re-selects the raster on the canvas (setSelectionTrustingDispatch
+        // inside the commit) — intended, so the user sees what was reset.
+        await commitRasterDragRef.current?.(id, node.transform, home);
+      },
       moveLayerToIndex: async (id, toIndex) => {
         // Reorder over the reorderable ANNOTATION set (see
         // `isReorderableLayer` — the same predicate the Layers panel pins
@@ -4486,7 +4526,8 @@ function EditorLoaded({
     dispatchEdit,
     undo,
     undoApplyingRef,
-    recordCropRef
+    recordCropRef,
+    commitRasterDragRef
   ]);
   useEffect(() => {
     if (onLayersApi === undefined) return;
@@ -5680,6 +5721,14 @@ function EditorLoaded({
         ...rasterLayerBoundsN(boxed, record.width_px, record.height_px)
       };
     });
+  // Single-selected non-base raster → resize handles (the parallel of
+  // TransformHandles for a single overlay). Move / group-drag / undo are
+  // the existing raster gesture; the handles add the SCALE gesture, reusing
+  // the same rasterDrafts preview + commitRasterDragRef (undo-integrated).
+  const selectedRasterForHandles =
+    selectedLayerIds.length === 1
+      ? (extraRasterLayers.find((l) => l.id === selectedLayerIds[0]) ?? null)
+      : null;
 
   const viewport = (
     <div
@@ -5944,6 +5993,36 @@ function EditorLoaded({
               onDragStart={onHandleDragStart}
               onDragEnd={onHandleDragEnd}
               onRequestEdit={onRequestEditOverlay}
+            />
+          )}
+          {/* Raster resize handles — single-selected non-base raster only,
+              mutually exclusive with the overlay TransformHandles above (a
+              single selection is either an overlay or a raster). The box +
+              handles follow the live rasterDrafts override during a resize;
+              commit routes through the same transform-geometry path as
+              raster drag (undo-integrated). */}
+          {selectedRasterForHandles !== null && (
+            <RasterResizeHandles
+              layerId={selectedRasterForHandles.id}
+              transform={
+                rasterDrafts?.get(selectedRasterForHandles.id) ??
+                selectedRasterForHandles.transform
+              }
+              originalTransform={selectedRasterForHandles.original_transform ?? null}
+              naturalWidthPx={selectedRasterForHandles.natural_width_px}
+              naturalHeightPx={selectedRasterForHandles.natural_height_px}
+              imageWidthPx={record.width_px}
+              imageHeightPx={record.height_px}
+              onResizeDrag={(t) =>
+                setRasterDrafts(new Map([[selectedRasterForHandles.id, t]]))
+              }
+              onResizeCommit={(start, t) => {
+                void commitRasterDragRef.current?.(
+                  selectedRasterForHandles.id,
+                  start,
+                  t
+                );
+              }}
             />
           )}
           {draft?.kind === "text" &&

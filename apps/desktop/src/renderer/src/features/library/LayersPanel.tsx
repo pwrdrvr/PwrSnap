@@ -29,6 +29,7 @@ import { useCaptureModel } from "../editor/useCaptureModel";
 import type { LayersPanelApi } from "../editor/Editor";
 import { isBaseLayer, isCropLayer, isSourceRaster } from "../editor/layer-roles";
 import { selectBaseRaster } from "../editor/base-raster";
+import { affineTransformsEqual } from "../editor/raster-resize";
 import { TOOLS } from "../editor/editor-tools";
 import "./LayersPanel.css";
 
@@ -93,6 +94,14 @@ const GRIP_ICON: ReactElement = (
 const TRASH_ICON: ReactElement = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
     <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m2 0-.7 12a2 2 0 0 1-2 1.9H8.7a2 2 0 0 1-2-1.9L6 7" />
+  </svg>
+);
+
+// Counterclockwise circular arrow — "restore to original".
+const RESET_ICON: ReactElement = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+    <path d="M3 3v5h5" />
   </svg>
 );
 
@@ -329,6 +338,11 @@ export function LayersPanel({
         const crop = isCropLayer(node);
         const base = isBaseLayer(node, sourceRasterId);
         const selectable = isSelectable(node);
+        // Non-base rasters (pasted image / captured cursor) with a stored
+        // home transform get a Reset control — enabled once they've been
+        // moved / resized away from it.
+        const rasterHome =
+          node.kind === "raster" && !base ? node.original_transform : undefined;
         const dragging = drag?.id === id;
         const dropBefore = drag !== null && !base && drag.overGap === i;
         const dropAfter =
@@ -415,6 +429,22 @@ export function LayersPanel({
               >
                 {visible ? EYE_ICON : EYE_OFF_ICON}
               </button>
+              {rasterHome !== undefined && (
+                <button
+                  type="button"
+                  className="psl-layers__btn"
+                  data-testid={`layer-reset-${id}`}
+                  aria-label="Reset position and size"
+                  title="Reset to original position & size"
+                  disabled={affineTransformsEqual(node.transform, rasterHome)}
+                  onClick={(e): void => {
+                    e.stopPropagation();
+                    void api?.resetRasterTransform(id);
+                  }}
+                >
+                  {RESET_ICON}
+                </button>
+              )}
               <button
                 type="button"
                 className="psl-layers__btn psl-layers__btn--danger"

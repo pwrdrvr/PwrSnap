@@ -776,7 +776,11 @@ function splitNodeForStorage(node: BundleLayerNode): {
       kindSpecific = {
         source_ref: node.source_ref,
         natural_width_px: node.natural_width_px,
-        natural_height_px: node.natural_height_px
+        natural_height_px: node.natural_height_px,
+        // Home transform for the Layers-panel Reset + drag/resize detents.
+        // Optional — JSON.stringify drops it when undefined (raster has no
+        // stored home), and tryRowToNode spreads it back through the schema.
+        original_transform: node.original_transform
       };
       break;
     case "vector":

@@ -21,6 +21,7 @@
 // scale 1 / origin (0,0) and every remap is a no-op — same-size paste
 // lands 1:1, exactly as before this module existed.
 
+import { cloneAffineTransform } from "./bundle-manifest-schema-v2";
 import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
 import { inverseCropRect, inverseTransformOverlayByCrop } from "./crop-viewport";
 
@@ -109,18 +110,25 @@ export function placeLayerIntoTarget(
 ): BundleLayerNode {
   const { scale, originXPx, originYPx } = placement;
   switch (layer.kind) {
-    case "raster":
+    case "raster": {
+      const placedTransform: [number, number, number, number, number, number] = [
+        layer.transform[0] * scale,
+        layer.transform[1] * scale,
+        layer.transform[2] * scale,
+        layer.transform[3] * scale,
+        originXPx + layer.transform[4] * scale,
+        originYPx + layer.transform[5] * scale
+      ];
+      // A pasted raster's "home" (for the Layers-panel Reset) is where it
+      // lands in THIS document — overwrite any source-doc home it carried.
+      // `original_transform` is an independent copy, never an alias of
+      // `transform`, so a later in-place edit of one can't corrupt the other.
       return {
         ...layer,
-        transform: [
-          layer.transform[0] * scale,
-          layer.transform[1] * scale,
-          layer.transform[2] * scale,
-          layer.transform[3] * scale,
-          originXPx + layer.transform[4] * scale,
-          originYPx + layer.transform[5] * scale
-        ]
+        transform: placedTransform,
+        original_transform: cloneAffineTransform(placedTransform)
       };
+    }
     case "vector": {
       if (layer.shape.kind === "crop") return layer;
       // The placement rect expressed in the TARGET canvas's normalized

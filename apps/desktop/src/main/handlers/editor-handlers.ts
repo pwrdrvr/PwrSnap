@@ -27,7 +27,7 @@
 import { clipboard } from "electron";
 import { nanoid } from "nanoid";
 import type { BundleLayerNode } from "@pwrsnap/shared";
-import { ok, err } from "@pwrsnap/shared";
+import { cloneAffineTransform, ok, err } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getCaptureById } from "../persistence/captures-repo";
 import { insertLayerTreeForCapture, listLayerTree } from "../persistence/layers-repo";
@@ -176,6 +176,16 @@ async function persistRasterFromBytes(args: {
 
   const now = new Date().toISOString();
   const rasterId = nanoid(16);
+  // Placement transform — also the pasted raster's "home" for the
+  // Layers-panel Reset control (where it first landed in this document).
+  const pastedTransform = buildTransform(
+    args.positionXn,
+    args.positionYn,
+    args.canvasWidthPx,
+    args.canvasHeightPx,
+    args.widthPx,
+    args.heightPx
+  );
   const rasterLayer: BundleLayerNode = {
     id: rasterId,
     parent_id: args.parentId,
@@ -188,14 +198,10 @@ async function persistRasterFromBytes(args: {
     locked: false,
     opacity: 1,
     blend_mode: "normal",
-    transform: buildTransform(
-      args.positionXn,
-      args.positionYn,
-      args.canvasWidthPx,
-      args.canvasHeightPx,
-      args.widthPx,
-      args.heightPx
-    ),
+    transform: pastedTransform,
+    // Independent copy — NOT an alias of `transform` — so a future in-place
+    // edit of one can never silently corrupt the stored home.
+    original_transform: cloneAffineTransform(pastedTransform),
     z_index: 0,
     source: "user",
     ai_run_id: null,

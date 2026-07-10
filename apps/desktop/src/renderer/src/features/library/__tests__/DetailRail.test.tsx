@@ -1407,7 +1407,8 @@ describe("DetailRail — Layers tab", () => {
     setLayerVisibility: async () => undefined,
     deleteLayer: async () => undefined,
     moveLayerToIndex: async () => undefined,
-    uncrop: async () => undefined
+    uncrop: async () => undefined,
+    resetRasterTransform: async () => undefined
   };
 
   test("shows the Layers tab for an image capture when layersApi is present", async () => {

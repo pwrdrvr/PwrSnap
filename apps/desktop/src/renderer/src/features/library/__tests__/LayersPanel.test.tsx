@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import type { BundleLayerNode } from "@pwrsnap/shared";
+import type { AffineTransform, BundleLayerNode } from "@pwrsnap/shared";
 import { LayersPanel } from "../LayersPanel";
 import type { LayersPanelApi } from "../../editor/Editor";
 
@@ -118,7 +118,8 @@ function makeApi() {
     setLayerVisibility: vi.fn(async () => undefined),
     deleteLayer: vi.fn(async () => undefined),
     moveLayerToIndex: vi.fn(async () => undefined),
-    uncrop: vi.fn(async () => undefined)
+    uncrop: vi.fn(async () => undefined),
+    resetRasterTransform: vi.fn(async () => undefined)
   };
 }
 
@@ -337,5 +338,56 @@ describe("LayersPanel", () => {
     );
     expect(byId(el, "layer-row-ly_arrow").getAttribute("aria-selected")).toBe("true");
     expect(byId(el, "layer-row-ly_raster").getAttribute("aria-selected")).toBe("false");
+  });
+});
+
+describe("LayersPanel — raster reset", () => {
+  const HOME: AffineTransform = [1, 0, 0, 1, 0, 0];
+  const MOVED: AffineTransform = [1.5, 0, 0, 1.5, 40, 20];
+  // A non-base raster (pasted image / cursor) with an explicit current +
+  // home transform. `home === undefined` models a raster created before
+  // the reset feature shipped (no stored home).
+  function pasted(
+    transform: AffineTransform,
+    home: AffineTransform | undefined,
+    id = "ly_pasted"
+  ): BundleLayerNode {
+    return {
+      ...common(id, 500, ROOT),
+      transform,
+      kind: "raster",
+      source_ref: { kind: "embedded", sha256: "b".repeat(64) },
+      natural_width_px: 50,
+      natural_height_px: 50,
+      ...(home !== undefined ? { original_transform: home } : {})
+    };
+  }
+
+  test("moved raster shows an ENABLED reset button; clicking calls resetRasterTransform", async () => {
+    const api = makeApi();
+    const el = await renderPanel([rootGroup(), raster(), pasted(MOVED, HOME)], api);
+    const btn = byId(el, "layer-reset-ly_pasted") as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    await act(async () => {
+      btn.click();
+    });
+    expect(api.resetRasterTransform).toHaveBeenCalledWith("ly_pasted");
+  });
+
+  test("a raster already at its home shows a DISABLED reset button", async () => {
+    const el = await renderPanel([rootGroup(), raster(), pasted(HOME, HOME)], makeApi());
+    expect((byId(el, "layer-reset-ly_pasted") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test("no reset button without a stored home, nor on base / vector rows", async () => {
+    const el = await renderPanel(
+      [rootGroup(), raster(), pasted(MOVED, undefined), arrow("ly_arrow", 2000)],
+      makeApi()
+    );
+    // Pre-feature raster (no home): no button.
+    expect(el.querySelector('[data-testid="layer-reset-ly_pasted"]')).toBeNull();
+    // Base Source raster + vector annotation: never resettable.
+    expect(el.querySelector('[data-testid="layer-reset-ly_raster"]')).toBeNull();
+    expect(el.querySelector('[data-testid="layer-reset-ly_arrow"]')).toBeNull();
   });
 });

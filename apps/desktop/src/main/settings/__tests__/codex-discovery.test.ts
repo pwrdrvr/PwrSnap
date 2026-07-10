@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 type DiscoverCommandsOptions = {
   autoCandidates: Array<{ command: string; source: string }>;
@@ -23,11 +23,25 @@ vi.mock("@pwrdrvr/codex-discovery", () => ({
 const { discoverCodexCommands } = await import("../codex-discovery");
 
 describe("discoverCodexCommands", () => {
+  const platform = process.platform;
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      value: platform
+    });
+  });
+
   test("passes ChatGPT app and Homebrew macOS candidates to discovery", async () => {
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      value: "darwin"
+    });
+
     await discoverCodexCommands({ env: {} });
 
     const options = mocks.discoverCommands.mock.calls[0]?.[0] as

@@ -49,7 +49,7 @@ describe("chatSurfaceDefaultsFromSettings", () => {
 
 const noopSettings = (): Promise<Settings> =>
   Promise.resolve({
-    ai: { acp: { enabledAgentIds: [], agents: {} } }
+    ai: { acp: { enabledAgentIds: ["gemini", "grok", "kimi", "qwen"], agents: {} } }
   } as unknown as Settings);
 
 function baseConfig(overrides: Partial<ChatSurfaceConfig>): ChatSurfaceConfig {
@@ -117,11 +117,12 @@ function discoveredGeminiGroup(
 /** Settings stub with a per-agent ACP preference for the given agent. */
 function settingsWithAcpPref(
   agentId: string,
-  pref: { overridePath?: string; selectedPath?: string }
+  pref: { overridePath?: string; selectedPath?: string },
+  enabled = true
 ): () => Promise<Settings> {
   return () =>
     Promise.resolve({
-      ai: { acp: { enabledAgentIds: [], agents: { [agentId]: pref } } }
+      ai: { acp: { enabledAgentIds: enabled ? [agentId] : [], agents: { [agentId]: pref } } }
     } as unknown as Settings);
 }
 
@@ -223,11 +224,35 @@ describe("buildChatSurface — backend selection", () => {
     );
 
     expect(discoverAcpAgentInstances).toHaveBeenCalledWith({
+      strategies: [expect.objectContaining({ id: "gemini" })],
       overrides: { gemini: "/custom/gemini" }
     });
     expect(vi.mocked(makeAcpClient).mock.calls[0]?.[0]?.agent?.command).toBe(
       "/custom/gemini"
     );
+  });
+
+  test("does not discover or spawn a disabled acp provider", async () => {
+    const makeCodexClient = vi.fn(() => stubBackend());
+    const makeAcpClient = vi.fn(() => stubAcpResult());
+    const discoverAcpAgentInstances = vi.fn(async () => [discoveredGeminiGroup()]);
+    const deps: ChatBackendDeps = {
+      makeCodexClient,
+      makeAcpClient,
+      discoverAcpAgentInstances
+    };
+
+    await buildChatSurface(
+      baseConfig({
+        provider: "acp:gemini",
+        readSettings: settingsWithAcpPref("gemini", { overridePath: "/custom/gemini" }, false)
+      }),
+      deps
+    );
+
+    expect(discoverAcpAgentInstances).not.toHaveBeenCalled();
+    expect(makeAcpClient).not.toHaveBeenCalled();
+    expect(makeCodexClient).toHaveBeenCalledTimes(1);
   });
 
   test("falls back to Codex when the ACP agent is not installed", async () => {

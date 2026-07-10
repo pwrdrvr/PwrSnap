@@ -4,10 +4,12 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { AcpAgentDiscovery } from "@pwrsnap/shared";
+import type { Settings } from "@pwrsnap/shared";
 import {
   AiSurfaceDefaultControl,
   type AiSurfaceDefaultControlProps,
   buildAcpProviderOptions,
+  enabledAcpAgentIdsForModelProbes,
   formatCostMicros,
   formatLastSetAt,
   formatNextTokenAt,
@@ -474,6 +476,57 @@ describe("buildAcpProviderOptions", () => {
     } as unknown as AcpAgentDiscovery;
     const opts = buildAcpProviderOptions(["gemini"], discovery);
     expect(opts[0]?.label).toBe("Gemini CLI (v0.4)");
+  });
+});
+
+describe("enabledAcpAgentIdsForModelProbes", () => {
+  function settings(input: {
+    enabledAgentIds: string[];
+    enrichmentProvider?: string;
+    libraryProvider?: string;
+    sizzleProvider?: string;
+  }): Settings {
+    return {
+      ai: {
+        acp: { enabledAgentIds: input.enabledAgentIds, agents: {} },
+        defaults: {
+          enrichment: {
+            ...(input.enrichmentProvider !== undefined ? { provider: input.enrichmentProvider } : {})
+          },
+          libraryChat: {
+            ...(input.libraryProvider !== undefined ? { provider: input.libraryProvider } : {})
+          },
+          sizzleChat: {
+            ...(input.sizzleProvider !== undefined ? { provider: input.sizzleProvider } : {})
+          }
+        }
+      }
+    } as unknown as Settings;
+  }
+
+  test("filters saved ACP providers to enabled agents before model refresh", () => {
+    expect(
+      enabledAcpAgentIdsForModelProbes(
+        settings({
+          enabledAgentIds: ["qwen"],
+          enrichmentProvider: "acp:gemini",
+          libraryProvider: "acp:qwen",
+          sizzleProvider: "codex"
+        })
+      )
+    ).toEqual(["qwen"]);
+  });
+
+  test("deduplicates enabled agents used by multiple surfaces", () => {
+    expect(
+      enabledAcpAgentIdsForModelProbes(
+        settings({
+          enabledAgentIds: ["gemini"],
+          enrichmentProvider: "acp:gemini",
+          libraryProvider: "acp:gemini"
+        })
+      )
+    ).toEqual(["gemini"]);
   });
 });
 

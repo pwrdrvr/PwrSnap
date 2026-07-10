@@ -21,6 +21,10 @@ import {
 } from "@pwrdrvr/agent-acp";
 import type { Settings } from "@pwrsnap/shared";
 import { resolveActiveAcpInstance } from "./acp-instance-resolver";
+import {
+  acpDiscoveryOptionsForEnabledAgent,
+  enabledChatAcpAgentIdsInUse
+} from "./acp-enabled-discovery";
 import { PWRSNAP_CLIENT_NAME, PWRSNAP_CLIENT_TITLE, toAgentKitLogger } from "./agent-kit-bindings";
 import { makePooledAcpApprovalHandler } from "./acp-approval-policy";
 import { getMainLogger } from "../log";
@@ -96,29 +100,11 @@ export async function closeAcpAgentPool(): Promise<void> {
   if (pool !== undefined) await pool.closeAll();
 }
 
-/** Strategy ids configured as the provider for a surface that USES the pool —
- *  the long-lived chat surfaces (library / sizzle). Enrichment runs as a
- *  one-shot client (not pooled yet), so warming an enrichment-only agent would
- *  spawn an unused process; it's excluded until enrichment shares the pool. An
- *  agent installed but not selected for chat (e.g. Kimi) is never spawned. */
-function configuredAcpAgentIds(settings: Settings): string[] {
-  const providers = [
-    settings.ai.defaults.libraryChat.provider,
-    settings.ai.defaults.sizzleChat.provider
-  ];
-  return [
-    ...new Set(
-      providers
-        .map((p) => (p !== undefined && p.startsWith("acp:") ? p.slice("acp:".length) : null))
-        .filter((id): id is string => id !== null)
-    )
-  ];
-}
-
 /**
- * Non-blocking startup warm-up: spawn + initialize every ACP agent configured
- * for a surface and hold it in the pool, so the first chat / enrichment doesn't
- * pay the multi-second spawn. Fire-and-forget per agent; failures are logged.
+ * Non-blocking startup warm-up: spawn + initialize every enabled ACP agent
+ * configured for a chat surface and hold it in the pool, so the first chat
+ * doesn't pay the multi-second spawn. Fire-and-forget per agent; failures are
+ * logged.
  */
 export async function warmConfiguredAcpAgents(input: {
   settings: Settings;
@@ -127,15 +113,16 @@ export async function warmConfiguredAcpAgents(input: {
     overrides?: Record<string, string>;
   }) => Promise<DiscoveredAcpAgentGroup[]>;
 }): Promise<void> {
-  const agentIds = configuredAcpAgentIds(input.settings);
+  const agentIds = enabledChatAcpAgentIdsInUse(input.settings);
   if (agentIds.length === 0) return;
   const cwd = join(input.chatsDir, ".acp-chat");
   const discover = input.discover ?? discoverLocalAcpAgentInstances;
   for (const agentId of agentIds) {
     try {
       const pref = input.settings.ai.acp.agents?.[agentId];
-      const override = pref?.overridePath?.trim();
-      const groups = await discover(override ? { overrides: { [agentId]: override } } : {});
+      const discoveryOptions = acpDiscoveryOptionsForEnabledAgent(input.settings, agentId);
+      if (discoveryOptions === null) continue;
+      const groups = await discover(discoveryOptions);
       const group = groups.find((g) => g.strategyId === agentId);
       if (group === undefined || group.instances.length === 0) continue;
       const active = resolveActiveAcpInstance(group.instances, pref);

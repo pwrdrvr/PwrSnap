@@ -43,6 +43,10 @@ import { app } from "electron";
 import { join } from "node:path";
 import { bus } from "../command-bus";
 import { loadAcpModelCacheEntry, saveAcpModelCacheEntry } from "../ai/acp-model-cache";
+import {
+  acpDiscoveryOptionsForEnabledAgent,
+  acpDiscoveryOptionsForInstallScan
+} from "../ai/acp-enabled-discovery";
 import { agentErrorMessage } from "../ai/agent-error-message";
 import { getMainLogger } from "../log";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
@@ -76,20 +80,6 @@ function installHintForStrategy(repositoryUrl: string | undefined): string {
   return repositoryUrl !== undefined && repositoryUrl.length > 0
     ? `Not installed — see ${repositoryUrl}`
     : "Not installed";
-}
-
-/** Per-agent override paths from settings, shaped for the kit's `overrides`
- *  option (id → trimmed override path). */
-function overridesFromSettings(
-  agents: Record<string, AcpAgentPreference> | undefined
-): Record<string, string> {
-  const overrides: Record<string, string> = {};
-  if (agents === undefined) return overrides;
-  for (const [id, pref] of Object.entries(agents)) {
-    const override = pref.overridePath?.trim();
-    if (override) overrides[id] = override;
-  }
-  return overrides;
 }
 
 /** Map the kit's instance groups + the full strategy table + the user's
@@ -147,12 +137,15 @@ export function registerAcpHandlers(params?: {
     Result<AcpAgentDiscovery, PwrSnapError>
   > => {
     let agents: Record<string, AcpAgentPreference> | undefined;
+    let settings: Settings | undefined;
     try {
-      agents = (await readSettings()).ai.acp.agents;
+      settings = await readSettings();
+      agents = settings.ai.acp.agents;
     } catch (cause) {
-      // Settings unreadable is non-fatal for discovery — proceed with no
-      // overrides rather than failing the whole list.
-      log.warn("acp:discover: settings read failed; discovering without overrides", {
+      // Settings unreadable is non-fatal for listing the known rows, but it
+      // means we don't know which agents are enabled. Do not probe everything
+      // as a fallback; that can wake disabled CLIs such as Gemini.
+      log.warn("acp:discover: settings read failed; skipping local probes", {
         message: cause instanceof Error ? cause.message : String(cause)
       });
       agents = undefined;
@@ -160,7 +153,10 @@ export function registerAcpHandlers(params?: {
 
     let groups: DiscoveredAcpAgentGroup[];
     try {
-      groups = await discover({ overrides: overridesFromSettings(agents) });
+      groups =
+        settings === undefined
+          ? []
+          : await discover(acpDiscoveryOptionsForInstallScan(settings));
     } catch (cause) {
       // The kit isolates per-strategy probe failures internally, so a
       // throw here is an unexpected, list-wide failure (e.g. a bug in the
@@ -233,15 +229,18 @@ export function registerAcpHandlers(params?: {
       });
     }
     const pref = settings.ai.acp.agents?.[agentId];
-    const override = pref?.overridePath?.trim();
     const strategy = strategyById(agentId);
     if (strategy === undefined) {
       return err({ kind: "settings", code: "acp_unknown_agent", message: `Unknown ACP agent ${agentId}` });
     }
+    const discoveryOptions = acpDiscoveryOptionsForEnabledAgent(settings, agentId);
+    if (discoveryOptions === null) {
+      return ok({ agentId, models: [] });
+    }
 
     let groups: DiscoveredAcpAgentGroup[];
     try {
-      groups = await discover(override ? { overrides: { [agentId]: override } } : {});
+      groups = await discover(discoveryOptions);
     } catch (cause) {
       return err({
         kind: "settings",

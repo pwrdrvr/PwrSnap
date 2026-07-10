@@ -25,6 +25,7 @@ import {
   type LocalAcpDiscoveryOptions
 } from "@pwrdrvr/agent-acp";
 import { resolveActiveAcpInstance } from "./acp-instance-resolver";
+import { acpDiscoveryOptionsForEnabledAgent } from "./acp-enabled-discovery";
 import { acpReasoningEffort } from "./acp-effort";
 import { buildPwrSnapMcpServer } from "./mcp/pwrsnap-mcp-server-config";
 import { acquireAcpAgentClient } from "./acp-agent-pool";
@@ -293,12 +294,19 @@ async function resolveChatBackend(
   // manual override is fed into discovery so it's probed even outside PATH; the
   // active instance (override → picked → first) is resolved by the SAME helper
   // the discovery handler uses, so the spawned binary matches the "Using" badge.
-  const pref = (await config.readSettings()).ai.acp.agents?.[strategyId];
-  const override = pref?.overridePath?.trim();
+  const settings = await config.readSettings();
+  const pref = settings.ai.acp.agents?.[strategyId];
+  const discoveryOptions = acpDiscoveryOptionsForEnabledAgent(settings, strategyId);
+  if (discoveryOptions === null) {
+    log.warn("chat backend: ACP agent is disabled; falling back to Codex", {
+      provider
+    });
+    return codex();
+  }
 
   let groups: DiscoveredAcpAgentGroup[];
   try {
-    groups = await discover(override ? { overrides: { [strategyId]: override } } : {});
+    groups = await discover(discoveryOptions);
   } catch (cause) {
     log.warn("chat backend: ACP discovery failed; falling back to Codex", {
       provider,

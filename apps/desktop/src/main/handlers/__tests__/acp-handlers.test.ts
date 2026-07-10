@@ -12,7 +12,7 @@
 //   • the user's per-agent preference picks the active instance;
 //   • a list-wide discovery throw surfaces as a Result.err.
 
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("../../log", () => ({
   getMainLogger: () => ({
@@ -46,9 +46,10 @@ import { registerAcpHandlers } from "../acp-handlers";
 
 const discover = vi.fn<(options?: unknown) => Promise<DiscoveredAcpAgentGroup[]>>();
 let agentsPref: Record<string, AcpAgentPreference> = {};
+let enabledAgentIds: string[] = [];
 const readSettings = vi.fn(
   async (): Promise<Settings> =>
-    ({ ai: { acp: { enabledAgentIds: [], agents: agentsPref } } }) as unknown as Settings
+    ({ ai: { acp: { enabledAgentIds, agents: agentsPref } } }) as unknown as Settings
 );
 
 // Register once — the bus throws on duplicate register and vitest reuses the
@@ -56,6 +57,14 @@ const readSettings = vi.fn(
 registerAcpHandlers({ discover, readSettings });
 
 const KNOWN_IDS = BUILT_IN_ACP_STRATEGIES.map((s) => s.id);
+
+beforeEach(() => {
+  agentsPref = {};
+  enabledAgentIds = [];
+  discover.mockReset();
+  readSettings.mockClear();
+  vi.mocked(loadAcpModelCacheEntry).mockReset();
+});
 
 function makeGroup(
   strategyId: string,
@@ -78,6 +87,7 @@ describe("acp:discover", () => {
   test("maps installed agents + surfaces every known agent (installed or not)", async () => {
     agentsPref = {};
     const installedId = KNOWN_IDS[0]!;
+    enabledAgentIds = [installedId];
     discover.mockResolvedValue([
       makeGroup(installedId, [
         { command: `/usr/local/bin/${installedId}`, version: "1.2.3", source: "path" }
@@ -118,6 +128,7 @@ describe("acp:discover", () => {
     const nvm = `/Users/me/.nvm/bin/${id}`;
     const brew = `/opt/homebrew/bin/${id}`;
     agentsPref = { [id]: { selectedPath: brew } };
+    enabledAgentIds = [id];
     discover.mockResolvedValue([
       makeGroup(id, [
         { command: nvm, version: "0.16.1", source: "path" },
@@ -134,17 +145,42 @@ describe("acp:discover", () => {
     expect(entry?.version).toBe("0.15.0");
   });
 
-  test("passes per-agent override paths into discovery", async () => {
+  test("passes enabled per-agent override paths into discovery", async () => {
     const id = KNOWN_IDS[0]!;
     agentsPref = { [id]: { overridePath: "/custom/path" } };
+    enabledAgentIds = [id];
     discover.mockResolvedValue([]);
 
     await bus.dispatch("acp:discover", {}, { principal: "ipc" });
-    expect(discover).toHaveBeenCalledWith({ overrides: { [id]: "/custom/path" } });
+    expect(discover).toHaveBeenCalledWith({
+      strategies: expect.arrayContaining([expect.objectContaining({ id })]),
+      overrides: { [id]: "/custom/path" }
+    });
   });
 
-  test("a throwing probe (no result for that strategy) reads as not-installed, not a list failure", async () => {
+  test("does not pass disabled override paths into discovery", async () => {
+    const disabledId = "gemini";
+    const enabledId = KNOWN_IDS.find((id) => id !== disabledId) ?? KNOWN_IDS[0]!;
+    agentsPref = {
+      [disabledId]: { overridePath: "/custom/gemini" },
+      [enabledId]: { overridePath: `/custom/${enabledId}` }
+    };
+    enabledAgentIds = [enabledId];
+    discover.mockResolvedValue([]);
+
+    await bus.dispatch("acp:discover", {}, { principal: "ipc" });
+    expect(discover).toHaveBeenCalledWith({
+      strategies: expect.arrayContaining([
+        expect.objectContaining({ id: disabledId }),
+        expect.objectContaining({ id: enabledId })
+      ]),
+      overrides: { [enabledId]: `/custom/${enabledId}` }
+    });
+  });
+
+  test("fresh installs still scan every built-in strategy so agents can be enabled", async () => {
     agentsPref = {};
+    enabledAgentIds = [];
     discover.mockResolvedValue([]);
 
     const result = await bus.dispatch("acp:discover", {}, { principal: "ipc" });
@@ -153,10 +189,16 @@ describe("acp:discover", () => {
 
     expect(result.value.agents).toHaveLength(KNOWN_IDS.length);
     expect(result.value.agents.every((a) => a.installed === false)).toBe(true);
+    expect(discover).toHaveBeenCalledWith({
+      strategies: expect.arrayContaining(
+        KNOWN_IDS.map((id) => expect.objectContaining({ id }))
+      )
+    });
   });
 
   test("a list-wide discovery throw surfaces as Result.err", async () => {
     agentsPref = {};
+    enabledAgentIds = [KNOWN_IDS[0]!];
     discover.mockRejectedValue(new Error("spawn EACCES"));
 
     const result = await bus.dispatch("acp:discover", {}, { principal: "ipc" });
@@ -178,6 +220,7 @@ describe("acp:models cache freshness", () => {
     // discover() being called even though `refresh` is false.
     const agentId = KNOWN_IDS[0]!;
     agentsPref = {};
+    enabledAgentIds = [agentId];
     loadEntry.mockReturnValue({
       models: [],
       command: `/usr/local/bin/${agentId}`,
@@ -200,6 +243,7 @@ describe("acp:models cache freshness", () => {
 
   test("a NON-empty persisted model list is served from cache — no re-probe", async () => {
     const agentId = KNOWN_IDS[1]!;
+    enabledAgentIds = [];
     const cached: AcpAgentModelOption[] = [
       { id: "kimi-code/kimi-for-coding", label: "Kimi-k2.6", isDefault: true }
     ];
@@ -218,6 +262,23 @@ describe("acp:models cache freshness", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.value.models).toEqual(cached);
+    expect(discover).not.toHaveBeenCalled();
+  });
+
+  test("refreshing models for a disabled agent does not discover or spawn it", async () => {
+    const agentId = "gemini";
+    agentsPref = { [agentId]: { overridePath: "/custom/gemini" } };
+    enabledAgentIds = [];
+    discover.mockClear();
+
+    const result = await bus.dispatch(
+      "acp:models",
+      { agentId, refresh: true },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.models).toEqual([]);
     expect(discover).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.0.0-beta.24 - 2026-07-09
+
+This beta makes captured cursors and pasted images real editable layers, fixes
+PwrSnap's AI setup after Codex Desktop became ChatGPT.app, and tightens
+clipboard and release publishing behavior.
+
+- Image Cursor Layer - Added captured cursors and pasted images as first-class
+  raster layers in the editor, with Layers panel selection, on-canvas dragging,
+  delete, z-order, undo, copy/paste, resize handles, and reset-to-home support.
+- ChatGPT Desktop - Fixed Codex discovery so PwrSnap can find the renamed
+  ChatGPT.app desktop install and Homebrew Codex binaries when launched from
+  the macOS GUI.
+- AI Providers - Fixed disabled ACP providers so they are skipped during model
+  refresh, enrichment, chat backend resolution, and startup warm-up instead of
+  unexpectedly probing CLIs or opening auth flows.
+- Clipboard Sharing - Fixed pasted image attachments so supported macOS paste
+  targets receive PwrSnap-branded PNG filenames instead of generic `image.png`
+  names.
+- Release Publishing - Fixed signed prerelease publishing so GitHub Release
+  notes are written automatically after macOS assets upload.
+
 ## v1.0.0-beta.23 - 2026-07-04
 
 This beta fixes the editor idle CPU drain, makes Library grid sizing easier to

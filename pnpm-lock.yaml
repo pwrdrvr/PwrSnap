@@ -56,8 +56,8 @@ importers:
         specifier: 0.133.0
         version: 0.133.0
       '@pwrdrvr/codex-discovery':
-        specifier: ^0.1.3
-        version: 0.1.3
+        specifier: ^0.1.4
+        version: 0.1.4
       '@pwrsnap/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -917,8 +917,8 @@ packages:
     resolution: {integrity: sha512-mt+geA0RZEz5A3kEK8poDE3wYDrteWGb2syfXS4/kzzgWEe26DUbQlbdQyFYoa7Zs/Z6L64gNGIfFHgemfzj8g==}
     engines: {node: '>=20'}
 
-  '@pwrdrvr/codex-discovery@0.1.3':
-    resolution: {integrity: sha512-9i6ZuDujKougP3JP+KRFf/V/wLmCxd73vLVwld4YTPqihQtlygjFHyqMCopTcDoIhMkSPogFcv5jzBxyAcX8qg==}
+  '@pwrdrvr/codex-discovery@0.1.4':
+    resolution: {integrity: sha512-jCk4LtJJFret0o8Mlzb53X8zrllA6dX1XX0Gvut+05bYjKRzXF/x9Y7mV3yfO1B5xdyp7ftw6FN8+qzxb1vH0w==}
 
   '@rolldown/pluginutils@1.0.0-rc.3':
     resolution: {integrity: sha512-eybk3TjzzzV97Dlj5c+XrBFW57eTNhzod66y9HrBlzJ6NsCrWCp/2kaPS3K9wJmurBC0Tdw4yPjXKZqlznim3Q==}
@@ -3752,7 +3752,7 @@ snapshots:
       '@pwrdrvr/agent-core': 0.2.0
       '@pwrdrvr/agent-transport': 0.1.6
       '@pwrdrvr/codex-app-server-protocol': 0.133.0
-      '@pwrdrvr/codex-discovery': 0.1.3
+      '@pwrdrvr/codex-discovery': 0.1.4
       zod: 4.4.3
 
   '@pwrdrvr/agent-core@0.2.0': {}
@@ -3763,7 +3763,7 @@ snapshots:
 
   '@pwrdrvr/codex-app-server-protocol@0.133.0': {}
 
-  '@pwrdrvr/codex-discovery@0.1.3':
+  '@pwrdrvr/codex-discovery@0.1.4':
     dependencies:
       '@pwrdrvr/agent-core': 0.2.0
 

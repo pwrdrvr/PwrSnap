@@ -23,7 +23,8 @@
 //   2. user-configured path saved in Settings.
 //   3. `codex` on $PATH (plus `codex.exe` first on Windows).
 //   4. Platform install locations:
-//      - macOS: /Applications + ~/Applications Codex.app/Contents/Resources/codex.
+//      - macOS: /Applications + ~/Applications ChatGPT.app/Codex.app bundled
+//        binaries plus explicit Homebrew prefixes for GUI-launched sparse PATHs.
 //      - Windows: %LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe
 //        (and the Program Files equivalent).
 
@@ -168,8 +169,12 @@ function getCodexAppCandidatePaths(): string[] {
     ];
   }
   return [
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
     "/Applications/Codex.app/Contents/Resources/codex",
-    path.join(os.homedir(), "Applications/Codex.app/Contents/Resources/codex")
+    path.join(os.homedir(), "Applications/ChatGPT.app/Contents/Resources/codex"),
+    path.join(os.homedir(), "Applications/Codex.app/Contents/Resources/codex"),
+    "/opt/homebrew/bin/codex",
+    "/usr/local/bin/codex"
   ];
 }
 

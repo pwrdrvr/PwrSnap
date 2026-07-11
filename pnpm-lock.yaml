@@ -53,8 +53,8 @@ importers:
         specifier: ^0.1.6
         version: 0.1.6
       '@pwrdrvr/codex-app-server-protocol':
-        specifier: 0.133.0
-        version: 0.133.0
+        specifier: 0.144.0
+        version: 0.144.0
       '@pwrdrvr/codex-discovery':
         specifier: ^0.1.4
         version: 0.1.4
@@ -915,6 +915,10 @@ packages:
 
   '@pwrdrvr/codex-app-server-protocol@0.133.0':
     resolution: {integrity: sha512-mt+geA0RZEz5A3kEK8poDE3wYDrteWGb2syfXS4/kzzgWEe26DUbQlbdQyFYoa7Zs/Z6L64gNGIfFHgemfzj8g==}
+    engines: {node: '>=20'}
+
+  '@pwrdrvr/codex-app-server-protocol@0.144.0':
+    resolution: {integrity: sha512-WmURXzmmNEY8lmnNZunNQj/Bnn3yjzS6Rc0gzlDU7sBHMd0kvtskXE9BCMcR+E7sVJ53V/gwjfksRUli0xUgdA==}
     engines: {node: '>=20'}
 
   '@pwrdrvr/codex-discovery@0.1.4':
@@ -1906,6 +1910,10 @@ packages:
 
   fs-extra@11.3.5:
     resolution: {integrity: sha512-eKpRKAovdpZtR1WopLHxlBWvAgPny3c4gX1G5Jhwmmw4XJj0ifSD5qB5TOo8hmA0wlRKDAOAhEE1yVPgs6Fgcg==}
+    engines: {node: '>=14.14'}
+
+  fs-extra@11.3.6:
+    resolution: {integrity: sha512-w8ZNZr2mKIc7qeNaQ9AVPT1+iFaI+Avd4xudVOvdDJ8VytREi1Ft5Ih7hd9jjehod8vAM5GMsfQ/TpPf4EyoEA==}
     engines: {node: '>=14.14'}
 
   fs-extra@7.0.1:
@@ -3388,7 +3396,7 @@ snapshots:
     dependencies:
       cross-dirname: 0.1.0
       debug: 4.4.3
-      fs-extra: 11.3.5
+      fs-extra: 11.3.6
       minimist: 1.2.8
       postject: 1.0.0-alpha.6
     transitivePeerDependencies:
@@ -3762,6 +3770,8 @@ snapshots:
       '@pwrdrvr/agent-core': 0.2.0
 
   '@pwrdrvr/codex-app-server-protocol@0.133.0': {}
+
+  '@pwrdrvr/codex-app-server-protocol@0.144.0': {}
 
   '@pwrdrvr/codex-discovery@0.1.4':
     dependencies:
@@ -4879,6 +4889,13 @@ snapshots:
       graceful-fs: 4.2.11
       jsonfile: 6.2.1
       universalify: 2.0.1
+
+  fs-extra@11.3.6:
+    dependencies:
+      graceful-fs: 4.2.11
+      jsonfile: 6.2.1
+      universalify: 2.0.1
+    optional: true
 
   fs-extra@7.0.1:
     dependencies:

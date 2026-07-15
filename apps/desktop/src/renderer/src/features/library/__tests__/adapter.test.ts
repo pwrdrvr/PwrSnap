@@ -10,6 +10,7 @@ import { describe, expect, test } from "vitest";
 import type { CaptureRecord, SizzleProject } from "@pwrsnap/shared";
 import {
   FixtureBackedRecords,
+  isSameLocalDay,
   mapBundleIdToAppId,
   projectToFixture,
   recordToFixture
@@ -302,6 +303,149 @@ describe("FixtureBackedRecords — mixed records + projects", () => {
     const fixtures = backed.fixtures();
     expect(fixtures[0]?.kind).toBe("image");
     expect(fixtures[1]?.kind).toBe("project");
+  });
+});
+
+describe("recordToFixture — date/time label parity", () => {
+  // The adapter formats day-bucket + time labels with cached
+  // module-level Intl.DateTimeFormat instances (per-record
+  // `toLocaleString(undefined, opts)` calls construct a fresh
+  // formatter each time — the Library-grid page-append hot spot).
+  // These tests pin the output against the equivalent one-shot
+  // `toLocaleString` / `toLocaleTimeString` calls so the cached
+  // formatters can never drift from what the old per-record calls
+  // produced, whatever the runtime locale is.
+  const monthShort = (d: Date): string =>
+    d.toLocaleString(undefined, { month: "short" });
+  const weekdayShort = (d: Date): string =>
+    d.toLocaleString(undefined, { weekday: "short" });
+  const timeShort = (d: Date): string =>
+    d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+
+  // Pinned "now": 2026-05-27 14:00 local.
+  const now = new Date(2026, 4, 27, 14, 0, 0);
+
+  test("same day → day=Today, date carries the absolute date", () => {
+    const captured = new Date(2026, 4, 27, 9, 5, 0);
+    const fixture = recordToFixture(
+      makeRecord({ captured_at: captured.toISOString() }),
+      1,
+      now
+    );
+    expect(fixture.day).toBe("Today");
+    expect(fixture.date).toBe(`${monthShort(captured)} 27`);
+    expect(fixture.time).toBe(timeShort(captured));
+  });
+
+  test("day before → day=Yesterday, date carries the absolute date", () => {
+    const captured = new Date(2026, 4, 26, 23, 30, 0);
+    const fixture = recordToFixture(
+      makeRecord({ captured_at: captured.toISOString() }),
+      1,
+      now
+    );
+    expect(fixture.day).toBe("Yesterday");
+    expect(fixture.date).toBe(`${monthShort(captured)} 26`);
+  });
+
+  test("yesterday across a year boundary keeps the year in the date", () => {
+    // now = Jan 1: yesterday is Dec 31 of the PREVIOUS year, so the
+    // absolute date must disambiguate with the year.
+    const janFirst = new Date(2026, 0, 1, 10, 0, 0);
+    const captured = new Date(2025, 11, 31, 18, 45, 0);
+    const fixture = recordToFixture(
+      makeRecord({ captured_at: captured.toISOString() }),
+      1,
+      janFirst
+    );
+    expect(fixture.day).toBe("Yesterday");
+    expect(fixture.date).toBe(`${monthShort(captured)} 31, 2025`);
+  });
+
+  test("same year, older → weekday-prefixed day label, empty date", () => {
+    const captured = new Date(2026, 4, 4, 11, 0, 0);
+    const fixture = recordToFixture(
+      makeRecord({ captured_at: captured.toISOString() }),
+      1,
+      now
+    );
+    expect(fixture.day).toBe(
+      `${weekdayShort(captured)}, ${monthShort(captured)} 4`
+    );
+    expect(fixture.date).toBe("");
+  });
+
+  test("different year → day label includes the year, empty date", () => {
+    const captured = new Date(2025, 11, 15, 11, 0, 0);
+    const fixture = recordToFixture(
+      makeRecord({ captured_at: captured.toISOString() }),
+      1,
+      now
+    );
+    expect(fixture.day).toBe(
+      `${weekdayShort(captured)}, ${monthShort(captured)} 15, 2025`
+    );
+    expect(fixture.date).toBe("");
+  });
+
+  test("time label matches toLocaleTimeString incl. 2-digit minute padding", () => {
+    // 9:05 exercises the minute:"2-digit" padding.
+    const captured = new Date(2026, 4, 27, 9, 5, 0);
+    const fixture = recordToFixture(
+      makeRecord({ captured_at: captured.toISOString() }),
+      1,
+      now
+    );
+    expect(fixture.time).toBe(timeShort(captured));
+  });
+
+  test("name suffix and time field agree (single timeLabel per record)", () => {
+    const captured = new Date(2026, 4, 27, 16, 20, 0);
+    const named = recordToFixture(
+      makeRecord({
+        captured_at: captured.toISOString(),
+        source_app_name: "Safari"
+      }),
+      1,
+      now
+    );
+    expect(named.n).toBe(`Safari · ${named.time}`);
+    const unnamed = recordToFixture(
+      makeRecord({ captured_at: captured.toISOString() }),
+      1,
+      now
+    );
+    expect(unnamed.n).toBe(`Snap · ${unnamed.time}`);
+  });
+
+  test("projectToFixture time label uses the same formatter", () => {
+    const created = new Date(2026, 4, 26, 8, 7, 0);
+    const fixture = projectToFixture(
+      makeProject({ createdAt: created.toISOString() }),
+      1,
+      now
+    );
+    expect(fixture.time).toBe(timeShort(created));
+  });
+});
+
+describe("isSameLocalDay", () => {
+  test("same calendar day, different times → true", () => {
+    expect(
+      isSameLocalDay(new Date(2026, 4, 27, 0, 0, 1), new Date(2026, 4, 27, 23, 59, 59))
+    ).toBe(true);
+  });
+
+  test("adjacent days across midnight → false", () => {
+    expect(
+      isSameLocalDay(new Date(2026, 4, 26, 23, 59, 59), new Date(2026, 4, 27, 0, 0, 1))
+    ).toBe(false);
+  });
+
+  test("same month+day in different years → false", () => {
+    expect(
+      isSameLocalDay(new Date(2025, 4, 27, 12, 0, 0), new Date(2026, 4, 27, 12, 0, 0))
+    ).toBe(false);
   });
 });
 

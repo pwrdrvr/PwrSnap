@@ -8,6 +8,36 @@ import type { CaptureRecord, SizzleProject } from "@pwrsnap/shared";
 import type { AppId } from "../shared/AppIcons";
 import { PROJECT_APP_KEY, type Capture } from "./captures";
 
+// Cached formatters — `toLocaleString(undefined, opts)` constructs a
+// fresh Intl.DateTimeFormat on EVERY call (V8 only caches the
+// no-options default), and recordToFixture runs per record on every
+// pagination page-append. The per-record constructions showed up as
+// 90–140ms main-thread stalls while scrolling the Library grid.
+// `.format()` on a cached instance is cheap. The `undefined` locale
+// resolves once at module load; the user's OS locale doesn't change
+// within a renderer's lifetime.
+const MONTH_SHORT_FORMAT = new Intl.DateTimeFormat(undefined, { month: "short" });
+const WEEKDAY_SHORT_FORMAT = new Intl.DateTimeFormat(undefined, { weekday: "short" });
+const TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit"
+});
+
+/**
+ * Same LOCAL calendar day — the grid's "Today" semantics. Exported so
+ * Library.tsx can compute the sidebar Today count directly from
+ * CaptureRecords without building fixture objects (see
+ * `liveFixturesForCounts` removal — the count only needs this check
+ * plus `mapBundleIdToAppId`, not formatted date strings).
+ */
+export function isSameLocalDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
 /**
  * Bucket a capture's date into a section header. The returned `day`
  * string is the section's grouping key (so it must be UNIQUE per
@@ -33,18 +63,12 @@ import { PROJECT_APP_KEY, type Capture } from "./captures";
  * — recent labels stay short, cross-year labels disambiguate.
  */
 function dayBucket(captured: Date, now: Date): { day: string; date: string } {
-  const sameDay =
-    captured.getFullYear() === now.getFullYear() &&
-    captured.getMonth() === now.getMonth() &&
-    captured.getDate() === now.getDate();
+  const sameDay = isSameLocalDay(captured, now);
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
-  const isYesterday =
-    captured.getFullYear() === yesterday.getFullYear() &&
-    captured.getMonth() === yesterday.getMonth() &&
-    captured.getDate() === yesterday.getDate();
+  const isYesterday = isSameLocalDay(captured, yesterday);
 
-  const monthShort = captured.toLocaleString(undefined, { month: "short" });
+  const monthShort = MONTH_SHORT_FORMAT.format(captured);
   const sameYear = captured.getFullYear() === now.getFullYear();
   const absoluteDate = sameYear
     ? `${monthShort} ${captured.getDate()}`
@@ -52,7 +76,7 @@ function dayBucket(captured: Date, now: Date): { day: string; date: string } {
 
   if (sameDay) return { day: "Today", date: absoluteDate };
   if (isYesterday) return { day: "Yesterday", date: absoluteDate };
-  const weekday = captured.toLocaleString(undefined, { weekday: "short" });
+  const weekday = WEEKDAY_SHORT_FORMAT.format(captured);
   const day = `${weekday}, ${absoluteDate}`;
   // Date is empty for explicit-date labels — the day field already
   // contains the absolute date; the renderers omit the "·" + date
@@ -61,7 +85,7 @@ function dayBucket(captured: Date, now: Date): { day: string; date: string } {
 }
 
 function timeLabel(captured: Date): string {
-  return captured.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return TIME_FORMAT.format(captured);
 }
 
 /**
@@ -77,10 +101,8 @@ export function recordToFixture(record: CaptureRecord, sequence: number, now: Da
     record.source_app_name !== null && record.source_app_name.length > 0
       ? record.source_app_name
       : null;
-  const name =
-    appName !== null
-      ? `${appName} · ${timeLabel(captured)}`
-      : `Snap · ${timeLabel(captured)}`;
+  const time = timeLabel(captured);
+  const name = appName !== null ? `${appName} · ${time}` : `Snap · ${time}`;
   return {
     id: sequence,
     app,
@@ -90,7 +112,7 @@ export function recordToFixture(record: CaptureRecord, sequence: number, now: Da
     tags: [],
     day,
     date,
-    time: timeLabel(captured),
+    time,
     size: Math.round(record.byte_size / 1024),
     w: record.width_px,
     h: record.height_px,

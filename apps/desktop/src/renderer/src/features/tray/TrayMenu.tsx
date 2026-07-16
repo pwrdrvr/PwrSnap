@@ -313,18 +313,43 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     post();
     const ro = new ResizeObserver(() => post());
     ro.observe(el);
-    // Main pings us on `webContents.zoom-changed` because Chromium's
-    // ResizeObserver doesn't reliably fire on zoom-only changes —
-    // and even if our CSS-pixel measurement is unchanged, main needs
-    // to re-run its CSS→DIP conversion against the new zoomFactor,
-    // so we force a post that bypasses the `posted` cache.
-    const unsubRemeasure = window.pwrsnapApi?.on(
-      "events:popover:remeasure",
-      () => post(true)
-    );
+    // Zoom self-detection. The session zoom factor can change out
+    // from under us — the user presses ⌘+ in the library (View-menu
+    // zoomIn/zoomOut roles) and Chromium's HostZoomMap propagates the
+    // new factor to every webContents on the same origin, including
+    // this popover. When that happens we must re-post even if our
+    // CSS-pixel measurement is unchanged, because main's CSS→DIP
+    // conversion multiplies by the new zoomFactor. Neither of the
+    // other candidate triggers works: the ResizeObserver above stays
+    // silent when the wrapper's CSS height lands on the same value
+    // (`.ps-tray` has a fixed CSS width, so zoom often doesn't
+    // reflow at all), and main's `zoom-changed` event is mouse-
+    // wheel-only — it does NOT fire for setZoomFactor / zoomLevel /
+    // HostZoomMap propagation (verified empirically; see
+    // docs/solutions/2026-07-15-popover-zoom-remeasure-dpr.md).
+    // The page-visible signal that always moves with effective zoom
+    // is window.devicePixelRatio (displayScale × pageZoom): a
+    // matchMedia resolution query fires `change` whenever it does.
+    // The query is pinned to the current value, so re-arm after
+    // every fire. (Display-scale changes also land here — the forced
+    // re-post is a no-op in main when the DIP result is unchanged.)
+    let dprQuery: MediaQueryList | null = null;
+    const onDprChange = (): void => {
+      armDprQuery();
+      post(true);
+    };
+    const armDprQuery = (): void => {
+      // jsdom (unit tests) doesn't implement matchMedia — same guard
+      // every other matchMedia call site in the renderer carries.
+      if (typeof window.matchMedia !== "function") return;
+      dprQuery?.removeEventListener("change", onDprChange);
+      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      dprQuery.addEventListener("change", onDprChange);
+    };
+    armDprQuery();
     return () => {
       ro.disconnect();
-      unsubRemeasure?.();
+      dprQuery?.removeEventListener("change", onDprChange);
     };
   }, []);
 

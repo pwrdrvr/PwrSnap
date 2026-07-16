@@ -463,17 +463,21 @@ function labelFromBundleId(bundleId: string): string {
 }
 
 /**
- * Local-date stamp as YYYY-MM-DD. Used as a memo key so date-derived
- * UI (the "Today" filter, day-bucket headers) rebuilds when the local
- * date changes — including across midnight while the app stays open.
- * Date-only on purpose; intra-day re-renders shouldn't invalidate
- * fixture caches.
+ * Local-day stamp as "YYYY-MM-DD@tzOffsetMinutes". Used as a memo key
+ * so date-derived UI (the "Today" filter, day-bucket headers, cached
+ * date formatters) rebuilds when the local date changes — across
+ * midnight while the app stays open — or when the OS time zone
+ * changes (the offset suffix; a same-date zone hop shifts every time
+ * label without moving the date string). Day-granular on purpose;
+ * intra-day re-renders shouldn't invalidate fixture caches. DST
+ * transitions move the offset too, but they also coincide with a
+ * normal in-zone relabel, so the extra rebuild is correct anyway.
  */
-function formatLocalDate(d: Date): string {
+function localDayStamp(d: Date): string {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+  return `${yyyy}-${mm}-${dd}@${d.getTimezoneOffset()}`;
 }
 
 type SourceAppRowsState = {
@@ -1246,10 +1250,18 @@ export function Library() {
   // built, then frozen on the fixture object. If the user keeps the
   // app open across midnight, yesterday's captures still claim
   // `day: "Today"` until the next records refetch, which can be hours
-  // away. This watcher tracks the local date as a YYYY-MM-DD string;
-  // when it changes, the fixture-backing memos below take it as a dep
-  // and rebuild against a fresh `now`, so day-hdrs, the Today badge,
-  // and the Today filter all re-flow at the same moment.
+  // away. This watcher tracks a "YYYY-MM-DD@tzOffset" stamp; when it
+  // changes, the fixture-backing memos below take it as a dep and
+  // rebuild against a fresh `now`, so day-hdrs, the Today badge, and
+  // the Today filter all re-flow at the same moment.
+  //
+  // The stamp includes the UTC-offset minutes, not just the local
+  // date, so an OS time-zone change (laptop travel) with the app open
+  // also triggers the rebuild — the adapter's cached formatters
+  // refresh at build time (see adapter.ts:refreshFormattersIfTimeZoneChanged),
+  // but without a stamp change nothing would rebuild the already-built
+  // fixtures until midnight or the next page-append. A same-date zone
+  // hop is exactly the case the date string alone misses.
   //
   // Two trigger sources, both needed:
   //   • setTimeout scheduled for ~5s past the next midnight — handles
@@ -1257,13 +1269,14 @@ export function Library() {
   //     awake.
   //   • window 'focus' event — setTimeout pauses while the machine is
   //     asleep, so a wake-from-sleep doesn't fire the midnight timer
-  //     on time. Refocusing PwrSnap re-checks; if the date moved, we
-  //     update.
-  const [todayDateStr, setTodayDateStr] = useState(() => formatLocalDate(new Date()));
+  //     on time (and a time-zone change usually comes with a
+  //     sleep/wake). Refocusing PwrSnap re-checks; if the stamp moved,
+  //     we update.
+  const [todayDateStr, setTodayDateStr] = useState(() => localDayStamp(new Date()));
   useEffect(() => {
     let nextTimer: ReturnType<typeof setTimeout> | undefined;
     function checkDate(): void {
-      const next = formatLocalDate(new Date());
+      const next = localDayStamp(new Date());
       setTodayDateStr((prev) => (prev === next ? prev : next));
     }
     function scheduleMidnight(): void {

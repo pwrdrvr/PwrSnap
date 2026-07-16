@@ -470,6 +470,66 @@ describe("fixture building — perf regression guard (no per-record formatter co
   });
 });
 
+describe("time-zone change — cached formatters refresh", () => {
+  // The formatter cache freezes the time zone it resolved at
+  // construction; adapter.ts guards every fixture build with an
+  // offset compare against the passed `now` and rebuilds the three
+  // formatters only when the offset moved (OS zone change or DST).
+  // Stubbing getTimezoneOffset on the `now` instance simulates the
+  // zone change deterministically — actually switching the process
+  // TZ mid-test is unreliable across platforms (Windows node ignores
+  // TZ env changes).
+  test("offset change rebuilds formatters once; stable offset rebuilds none", () => {
+    const realNow = new Date(2026, 4, 27, 14, 0, 0);
+    // Sync the module-level cache to the real offset before spying.
+    recordToFixture(makeRecord(), 1, realNow);
+
+    const shiftedNow = new Date(2026, 4, 27, 14, 0, 0);
+    vi.spyOn(shiftedNow, "getTimezoneOffset").mockReturnValue(
+      realNow.getTimezoneOffset() + 60
+    );
+
+    // Count constructions while still producing REAL formatter
+    // instances — a bare spyOn doesn't proxy `new` through to the
+    // native constructor, and the rebuilt cache must actually work.
+    const RealDateTimeFormat = Intl.DateTimeFormat;
+    const dtfSpy = vi.spyOn(Intl, "DateTimeFormat").mockImplementation(function (
+      ...args: ConstructorParameters<typeof Intl.DateTimeFormat>
+    ) {
+      // Constructible (not an arrow fn) — `new` on the spy lands here
+      // and the returned real instance wins per constructor-return
+      // semantics.
+      return new RealDateTimeFormat(...args);
+    } as unknown as typeof Intl.DateTimeFormat);
+    try {
+      // First build under the shifted offset: exactly one rebuild —
+      // the three cached formatters (month, weekday, time).
+      recordToFixture(makeRecord(), 1, shiftedNow);
+      expect(dtfSpy).toHaveBeenCalledTimes(3);
+
+      // Same offset again: cache holds, zero constructions.
+      recordToFixture(makeRecord(), 2, shiftedNow);
+      expect(dtfSpy).toHaveBeenCalledTimes(3);
+
+      // Back to the real offset: one more rebuild, and — critically
+      // for the rest of this suite — the cache is now synced to the
+      // real offset again. Labels still match the one-shot API.
+      const captured = new Date(2026, 4, 27, 9, 5, 0);
+      const fixture = recordToFixture(
+        makeRecord({ captured_at: captured.toISOString() }),
+        3,
+        realNow
+      );
+      expect(dtfSpy).toHaveBeenCalledTimes(6);
+      expect(fixture.time).toBe(
+        captured.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+      );
+    } finally {
+      dtfSpy.mockRestore();
+    }
+  });
+});
+
 describe("isSameLocalDay", () => {
   test("same calendar day, different times → true", () => {
     expect(

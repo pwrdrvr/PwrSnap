@@ -13,15 +13,42 @@ import { PROJECT_APP_KEY, type Capture } from "./captures";
 // no-options default), and recordToFixture runs per record on every
 // pagination page-append. The per-record constructions showed up as
 // 90–140ms main-thread stalls while scrolling the Library grid.
-// `.format()` on a cached instance is cheap. The `undefined` locale
-// resolves once at module load; the user's OS locale doesn't change
+// `.format()` on a cached instance is cheap.
+//
+// The one thing a cached instance freezes is the TIME ZONE (and
+// locale) resolved at construction: Chromium picks up a mid-session
+// OS time-zone change for `Date` getters and for NEW formatter
+// instances, but not for existing ones. Left alone, a user who
+// changes zones with the app open would get time labels in the stale
+// zone — and worse, day labels that mix the new zone's `getDate()`
+// with the old zone's weekday name. `refreshFormattersIfTimeZoneChanged`
+// guards every fixture build: an integer compare of the reference
+// date's UTC offset per call (effectively free), rebuilding the three
+// formatters only when the offset moved. DST transitions also move
+// the offset — that costs one harmless rebuild into the same zone
+// twice a year. Locale is intentionally NOT re-checked: Chromium
+// resolves the app locale once at process start, so it can't change
 // within a renderer's lifetime.
-const MONTH_SHORT_FORMAT = new Intl.DateTimeFormat(undefined, { month: "short" });
-const WEEKDAY_SHORT_FORMAT = new Intl.DateTimeFormat(undefined, { weekday: "short" });
-const TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
-  hour: "numeric",
-  minute: "2-digit"
-});
+function makeFormatters(): {
+  monthShort: Intl.DateTimeFormat;
+  weekdayShort: Intl.DateTimeFormat;
+  time: Intl.DateTimeFormat;
+} {
+  return {
+    monthShort: new Intl.DateTimeFormat(undefined, { month: "short" }),
+    weekdayShort: new Intl.DateTimeFormat(undefined, { weekday: "short" }),
+    time: new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" })
+  };
+}
+let formatters = makeFormatters();
+let formattersTzOffsetMinutes = new Date().getTimezoneOffset();
+
+function refreshFormattersIfTimeZoneChanged(now: Date): void {
+  const offset = now.getTimezoneOffset();
+  if (offset === formattersTzOffsetMinutes) return;
+  formattersTzOffsetMinutes = offset;
+  formatters = makeFormatters();
+}
 
 /**
  * Same LOCAL calendar day — the grid's "Today" semantics. Exported so
@@ -68,7 +95,7 @@ function dayBucket(captured: Date, now: Date): { day: string; date: string } {
   yesterday.setDate(now.getDate() - 1);
   const isYesterday = isSameLocalDay(captured, yesterday);
 
-  const monthShort = MONTH_SHORT_FORMAT.format(captured);
+  const monthShort = formatters.monthShort.format(captured);
   const sameYear = captured.getFullYear() === now.getFullYear();
   const absoluteDate = sameYear
     ? `${monthShort} ${captured.getDate()}`
@@ -76,7 +103,7 @@ function dayBucket(captured: Date, now: Date): { day: string; date: string } {
 
   if (sameDay) return { day: "Today", date: absoluteDate };
   if (isYesterday) return { day: "Yesterday", date: absoluteDate };
-  const weekday = WEEKDAY_SHORT_FORMAT.format(captured);
+  const weekday = formatters.weekdayShort.format(captured);
   const day = `${weekday}, ${absoluteDate}`;
   // Date is empty for explicit-date labels — the day field already
   // contains the absolute date; the renderers omit the "·" + date
@@ -85,7 +112,7 @@ function dayBucket(captured: Date, now: Date): { day: string; date: string } {
 }
 
 function timeLabel(captured: Date): string {
-  return TIME_FORMAT.format(captured);
+  return formatters.time.format(captured);
 }
 
 /**
@@ -94,6 +121,7 @@ function timeLabel(captured: Date): string {
  * until Phase 3's NSWorkspace bridge populates source_app_bundle_id.
  */
 export function recordToFixture(record: CaptureRecord, sequence: number, now: Date): Capture {
+  refreshFormattersIfTimeZoneChanged(now);
   const captured = new Date(record.captured_at);
   const { day, date } = dayBucket(captured, now);
   const app: AppId = mapBundleIdToAppId(record.source_app_bundle_id);
@@ -137,6 +165,7 @@ export function projectToFixture(
   sequence: number,
   now: Date
 ): Capture {
+  refreshFormattersIfTimeZoneChanged(now);
   const created = new Date(project.createdAt);
   const { day, date } = dayBucket(created, now);
   return {

@@ -95,17 +95,6 @@ export const EVENT_CHANNELS = {
    */
   floatOverCopyPulse: "events:float-over:copy-pulse",
   /**
-   * Tells a popover renderer (tray or float-over) to re-measure its
-   * content and re-post the resize IPC. Sent by main when the
-   * webContents `zoom-changed` fires — Electron's ResizeObserver
-   * doesn't reliably fire on zoom changes, so we drive the re-measure
-   * explicitly. Renderer should bypass any "no-op" cache and post
-   * unconditionally.
-   *
-   * Payload: empty object `{}` (the channel itself is the signal).
-   */
-  popoverRemeasure: "events:popover:remeasure",
-  /**
    * Main → renderer storage accounting progress. Full scans are
    * singleton and async; this event lets detailed storage UI update
    * from cached/partial snapshots while the command that requested the

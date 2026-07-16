@@ -243,13 +243,13 @@ function getOrCreate(): BrowserWindow {
   } else {
     window.webContents.once("did-finish-load", markRendererReadyAfterReactMount);
   }
-  // Re-measure on zoom changes — see the matching block in
-  // tray.ts/ensureTrayWindow for why ResizeObserver alone isn't
-  // sufficient.
-  window.webContents.on("zoom-changed", () => {
-    if (window.isDestroyed()) return;
-    window.webContents.send(EVENT_CHANNELS.popoverRemeasure, {});
-  });
+  // NOTE: deliberately no `zoom-changed` hook — that event is
+  // mouse-wheel-only and never fires for programmatic zoom or
+  // HostZoomMap propagation. The renderer detects effective-zoom
+  // changes itself via a devicePixelRatio media-query listener
+  // (see FloatOverHost.tsx) and re-posts through the resize channel.
+  // Matches tray.ts/ensureTrayWindow; see
+  // docs/solutions/2026-07-15-popover-zoom-remeasure-dpr.md.
   window.on("closed", () => {
     if (singleton === window) {
       singleton = null;

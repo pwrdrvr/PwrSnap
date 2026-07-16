@@ -103,18 +103,33 @@ export function FloatOverHost(): React.ReactElement {
     post();
     const ro = new ResizeObserver(post);
     ro.observe(el);
-    // Main pings us on `webContents.zoom-changed` so the toast
-    // resizes correctly when the session zoom factor changes —
-    // ResizeObserver alone doesn't reliably catch zoom-only layout
-    // changes, and main's CSS→DIP conversion needs us to re-post
-    // through it so the new zoomFactor lands.
-    const unsubRemeasure = window.pwrsnapApi?.on(
-      "events:popover:remeasure",
-      () => post()
-    );
+    // Zoom self-detection — identical machinery to TrayMenu.tsx (see
+    // the long comment there). Short version: a session zoom change
+    // (⌘+ in the library propagates here via Chromium's HostZoomMap)
+    // requires a re-post so main re-runs its CSS→DIP conversion, but
+    // ResizeObserver stays silent when the CSS height doesn't move
+    // and main's `zoom-changed` event is mouse-wheel-only (it never
+    // fires for programmatic zoom). window.devicePixelRatio tracks
+    // effective zoom, and a matchMedia resolution query fires
+    // `change` whenever it moves; the query is pinned to the current
+    // value, so re-arm after every fire.
+    let dprQuery: MediaQueryList | null = null;
+    const onDprChange = (): void => {
+      armDprQuery();
+      post();
+    };
+    const armDprQuery = (): void => {
+      // jsdom (unit tests) doesn't implement matchMedia — same guard
+      // every other matchMedia call site in the renderer carries.
+      if (typeof window.matchMedia !== "function") return;
+      dprQuery?.removeEventListener("change", onDprChange);
+      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      dprQuery.addEventListener("change", onDprChange);
+    };
+    armDprQuery();
     return () => {
       ro.disconnect();
-      unsubRemeasure?.();
+      dprQuery?.removeEventListener("change", onDprChange);
     };
   }, [state.kind]);
 

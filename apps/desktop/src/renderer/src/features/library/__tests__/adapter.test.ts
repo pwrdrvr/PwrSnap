@@ -6,7 +6,7 @@
 // from the OS-extracted app icon (keyed off the raw bundle id) or the
 // two-letter procedural initials, never a brand facsimile.
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, SizzleProject } from "@pwrsnap/shared";
 import {
   FixtureBackedRecords,
@@ -426,6 +426,47 @@ describe("recordToFixture — date/time label parity", () => {
       now
     );
     expect(fixture.time).toBe(timeShort(created));
+  });
+});
+
+describe("fixture building — perf regression guard (no per-record formatter construction)", () => {
+  // The hot-cpu-2026-07-10 profile traced 90–140ms page-append stalls
+  // to per-record `toLocaleString(undefined, opts)` calls — each one
+  // constructs a fresh Intl.DateTimeFormat (V8 only caches the
+  // no-options default). The fix is module-level cached formatters,
+  // so building fixtures must perform ZERO locale-API constructions
+  // per record. A wall-clock assertion would be flaky in CI; spying
+  // on the construction paths pins the mechanism deterministically.
+  // If this test fails, someone reintroduced a per-record
+  // `new Intl.DateTimeFormat` / `toLocaleString` / `toLocaleTimeString`
+  // call into the recordToFixture path — hoist it to a cached
+  // module-level formatter instead.
+  test("building 500 fixtures performs zero Intl/locale-API calls", () => {
+    const records = Array.from({ length: 500 }, (_, i) =>
+      makeRecord({
+        id: `rec-${i}`,
+        captured_at: new Date(2026, i % 12, (i % 27) + 1, i % 24, i % 60).toISOString(),
+        source_app_bundle_id: i % 2 === 0 ? "com.apple.Safari" : null,
+        source_app_name: i % 2 === 0 ? "Safari" : null
+      })
+    );
+    const projects = Array.from({ length: 20 }, (_, i) =>
+      makeProject({ id: `proj-${i}` })
+    );
+    const dtfSpy = vi.spyOn(Intl, "DateTimeFormat");
+    const localeStringSpy = vi.spyOn(Date.prototype, "toLocaleString");
+    const localeTimeSpy = vi.spyOn(Date.prototype, "toLocaleTimeString");
+    try {
+      const backed = new FixtureBackedRecords(records, projects);
+      expect(backed.fixtures()).toHaveLength(520);
+      expect(dtfSpy).not.toHaveBeenCalled();
+      expect(localeStringSpy).not.toHaveBeenCalled();
+      expect(localeTimeSpy).not.toHaveBeenCalled();
+    } finally {
+      dtfSpy.mockRestore();
+      localeStringSpy.mockRestore();
+      localeTimeSpy.mockRestore();
+    }
   });
 });
 

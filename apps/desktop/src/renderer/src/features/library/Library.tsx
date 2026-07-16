@@ -39,7 +39,7 @@ import type { CopyPreset } from "../shared/CopyButton";
 import type { Tool } from "../editor/editor-tools";
 import { useEditorToolState } from "../editor/useEditorToolState";
 import { DEFAULT_BLUR_STYLE, type BlurStyle } from "@pwrsnap/shared";
-import { FixtureBackedRecords, mapBundleIdToAppId } from "./adapter";
+import { FixtureBackedRecords, isSameLocalDay, mapBundleIdToAppId } from "./adapter";
 import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
@@ -463,17 +463,21 @@ function labelFromBundleId(bundleId: string): string {
 }
 
 /**
- * Local-date stamp as YYYY-MM-DD. Used as a memo key so date-derived
- * UI (the "Today" filter, day-bucket headers) rebuilds when the local
- * date changes — including across midnight while the app stays open.
- * Date-only on purpose; intra-day re-renders shouldn't invalidate
- * fixture caches.
+ * Local-day stamp as "YYYY-MM-DD@tzOffsetMinutes". Used as a memo key
+ * so date-derived UI (the "Today" filter, day-bucket headers, cached
+ * date formatters) rebuilds when the local date changes — across
+ * midnight while the app stays open — or when the OS time zone
+ * changes (the offset suffix; a same-date zone hop shifts every time
+ * label without moving the date string). Day-granular on purpose;
+ * intra-day re-renders shouldn't invalidate fixture caches. DST
+ * transitions move the offset too, but they also coincide with a
+ * normal in-zone relabel, so the extra rebuild is correct anyway.
  */
-function formatLocalDate(d: Date): string {
+function localDayStamp(d: Date): string {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+  return `${yyyy}-${mm}-${dd}@${d.getTimezoneOffset()}`;
 }
 
 type SourceAppRowsState = {
@@ -1246,10 +1250,18 @@ export function Library() {
   // built, then frozen on the fixture object. If the user keeps the
   // app open across midnight, yesterday's captures still claim
   // `day: "Today"` until the next records refetch, which can be hours
-  // away. This watcher tracks the local date as a YYYY-MM-DD string;
-  // when it changes, the fixture-backing memos below take it as a dep
-  // and rebuild against a fresh `now`, so day-hdrs, the Today badge,
-  // and the Today filter all re-flow at the same moment.
+  // away. This watcher tracks a "YYYY-MM-DD@tzOffset" stamp; when it
+  // changes, the fixture-backing memos below take it as a dep and
+  // rebuild against a fresh `now`, so day-hdrs, the Today badge, and
+  // the Today filter all re-flow at the same moment.
+  //
+  // The stamp includes the UTC-offset minutes, not just the local
+  // date, so an OS time-zone change (laptop travel) with the app open
+  // also triggers the rebuild — the adapter's cached formatters
+  // refresh at build time (see adapter.ts:refreshFormattersIfTimeZoneChanged),
+  // but without a stamp change nothing would rebuild the already-built
+  // fixtures until midnight or the next page-append. A same-date zone
+  // hop is exactly the case the date string alone misses.
   //
   // Two trigger sources, both needed:
   //   • setTimeout scheduled for ~5s past the next midnight — handles
@@ -1257,13 +1269,14 @@ export function Library() {
   //     awake.
   //   • window 'focus' event — setTimeout pauses while the machine is
   //     asleep, so a wake-from-sleep doesn't fire the midnight timer
-  //     on time. Refocusing PwrSnap re-checks; if the date moved, we
-  //     update.
-  const [todayDateStr, setTodayDateStr] = useState(() => formatLocalDate(new Date()));
+  //     on time (and a time-zone change usually comes with a
+  //     sleep/wake). Refocusing PwrSnap re-checks; if the stamp moved,
+  //     we update.
+  const [todayDateStr, setTodayDateStr] = useState(() => localDayStamp(new Date()));
   useEffect(() => {
     let nextTimer: ReturnType<typeof setTimeout> | undefined;
     function checkDate(): void {
-      const next = formatLocalDate(new Date());
+      const next = localDayStamp(new Date());
       setTodayDateStr((prev) => (prev === next ? prev : next));
     }
     function scheduleMidnight(): void {
@@ -1672,20 +1685,6 @@ export function Library() {
       : fixtureCaptures.filter((c) => c.app === activeSourceAppId);
   const grouped = useMemo(() => groupByDay(visible), [visible]);
 
-  // Per-app capture counts — memoized so the per-render `filter().length`
-  // cost (N apps × M captures = NM ops/render) doesn't accumulate. Used
-  // to (a) drive the count badge in the left-rail Source App list and
-  // (b) data-filter the list to only apps that have ≥1 capture (B.8).
-  // Always sourced from LIVE records: trash is a separate surface, not
-  // a slice of the per-app counts.
-  const liveFixturesForCounts = useMemo(() => {
-    const backing = new FixtureBackedRecords(liveRecords);
-    return backing.fixtures();
-    // todayDateStr — see comment on `fixtureBacking` above. Same
-    // reason: rebuilds the day-bucket against the new local date so
-    // the Today badge resets to 0 at midnight without a refetch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveRecords, todayDateStr]);
   // Per-app counts come from the denormalized `app_stats` table via
   // useLibrary's head-page response — stable on first paint, doesn't
   // climb as keyset pages stream in. The app key is the lowercased
@@ -1701,13 +1700,25 @@ export function Library() {
     return counts;
   }, [appStats]);
 
-  // "Today" sidebar count — live records whose adapter-bucket landed
+  // "Today" sidebar count — live records whose adapter-bucket lands
   // in the Today bucket (see adapter.ts:dayBucket). Live-only because
-  // soft-deleted captures don't show up in the Today filter.
-  const todayCount = useMemo(
-    () => liveFixturesForCounts.filter((c) => c.day === "Today").length,
-    [liveFixturesForCounts]
-  );
+  // soft-deleted captures don't show up in the Today filter. Counted
+  // directly off the records with the adapter's same-local-day check —
+  // building a second FixtureBackedRecords (with per-record formatted
+  // date strings) just for this count doubled the page-append fixture
+  // cost on the main thread.
+  const todayCount = useMemo(() => {
+    const now = new Date();
+    let count = 0;
+    for (const r of liveRecords) {
+      if (isSameLocalDay(new Date(r.captured_at), now)) count += 1;
+    }
+    return count;
+    // todayDateStr — see comment on `fixtureBacking` above. Same
+    // reason: recounts against the new local date so the Today badge
+    // resets to 0 at midnight without a refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveRecords, todayDateStr]);
 
   // Display name per app key. Like appCounts, derived from app_stats
   // so the sidebar is stable on first paint instead of filling in as
@@ -1743,14 +1754,17 @@ export function Library() {
     // Pass 2: fill with OS-supplied `source_app_name` only when the
     // stats payload did not already provide a captured name. Otherwise
     // labels can oscillate as different pages enter the loaded window.
-    for (const c of liveFixturesForCounts) {
-      if (APP_INFO[c.app]?.name !== undefined) continue; // curated already picked
-      if (capturedStatLabels.has(c.app)) continue;
-      if (c.appName === null) continue;
-      labels[c.app] = c.appName;
+    // Reads the raw live records (app key + name need no fixture
+    // projection — see todayCount above).
+    for (const r of liveRecords) {
+      const appId = mapBundleIdToAppId(r.source_app_bundle_id);
+      if (APP_INFO[appId]?.name !== undefined) continue; // curated already picked
+      if (capturedStatLabels.has(appId)) continue;
+      if (r.source_app_name === null || r.source_app_name.length === 0) continue;
+      labels[appId] = r.source_app_name;
     }
     return labels;
-  }, [appStats, liveFixturesForCounts]);
+  }, [appStats, liveRecords]);
 
   // Representative bundle id per app key — used by `<AppIcon>` to
   // resolve the full-color icon from the installed .app via the

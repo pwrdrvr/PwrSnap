@@ -2,28 +2,37 @@
 // monitor writes a profile. The text is intentionally copyable so bug
 // reports can include the exact artifact paths without hunting logs.
 
-import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   buildHotCpuProfileHandoffMessage,
   EVENT_CHANNELS,
   formatHotCpuProfileTriggerSummary,
   type HotCpuProfileCapturedEvent
 } from "@pwrsnap/shared";
+import { dispatch } from "../../lib/pwrsnap";
+
+function hotCpuProfileEventKey(event: HotCpuProfileCapturedEvent): string {
+  return `${event.capturedAt}:${event.sessionDirectoryName}:${event.profileFilename}`;
+}
 
 export function HotCpuProfileBanner(): ReactElement | null {
   const [event, setEvent] = useState<HotCpuProfileCapturedEvent | null>(null);
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [revealError, setRevealError] = useState<string | null>(null);
+  const visibleEventKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     return window.pwrsnapApi?.on(EVENT_CHANNELS.hotCpuProfileCaptured, (payload) => {
+      const nextEvent = payload as HotCpuProfileCapturedEvent;
+      visibleEventKeyRef.current = hotCpuProfileEventKey(nextEvent);
       setCopied(false);
-      setEvent(payload as HotCpuProfileCapturedEvent);
+      setRevealError(null);
+      setEvent(nextEvent);
     });
   }, []);
 
-  const key =
-    event === null ? null : `${event.capturedAt}:${event.profileFilename}`;
+  const key = event === null ? null : hotCpuProfileEventKey(event);
   const handoff = useMemo(
     () => (event === null ? "" : buildHotCpuProfileHandoffMessage(event)),
     [event]
@@ -47,12 +56,29 @@ export function HotCpuProfileBanner(): ReactElement | null {
     }
   };
 
+  const reveal = async (): Promise<void> => {
+    if (key === null) return;
+    const requestKey = key;
+    setRevealError(null);
+    const result = await dispatch("diagnostics:revealHotCpuSession", {
+      sessionDirectoryName: event.sessionDirectoryName
+    });
+    if (visibleEventKeyRef.current !== requestKey) return;
+    if (!result.ok) {
+      setRevealError(result.error.message);
+    }
+  };
+
   return (
     <aside className="app-update-banner hot-cpu-profile-banner" role="status" aria-live="polite">
       <div className="app-update-banner__content">
         <p className="app-update-banner__eyebrow">CPU profile captured</p>
         <p className="app-update-banner__message">{message}</p>
-        <p className="app-update-banner__error">Session: {event.sessionDirectoryName}</p>
+        <p className="app-update-banner__error">
+          {revealError === null
+            ? `Session: ${event.sessionDirectoryName}`
+            : `Failed to reveal session: ${revealError}`}
+        </p>
       </div>
       <div className="app-update-banner__actions">
         <button
@@ -63,6 +89,15 @@ export function HotCpuProfileBanner(): ReactElement | null {
           }}
         >
           {copied ? "Copied" : "Copy"}
+        </button>
+        <button
+          className="app-update-banner__restart"
+          type="button"
+          onClick={() => {
+            void reveal();
+          }}
+        >
+          Reveal
         </button>
         <button
           className="app-update-banner__dismiss"

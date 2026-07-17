@@ -7,9 +7,11 @@
 
 import { useEffect, useState, type ReactElement } from "react";
 import type {
+  HotCpuProfileCleanupResult,
   HotCpuProfileStartDelayMs,
   HotCpuProfileTriggerMode
 } from "@pwrsnap/shared";
+import { dispatch } from "../../../lib/pwrsnap";
 import { Card, Row, Switch } from "../components";
 import { useSettingsContext } from "../SettingsContext";
 
@@ -96,6 +98,10 @@ export function DeveloperPage(): ReactElement {
   const heapSnapshotLimit = settings?.general.hotCpuProfilingHeapSnapshotLimit ?? 2;
   const [countdownEndsAt, setCountdownEndsAt] = useState<number | null>(null);
   const [countdownRemainingMs, setCountdownRemainingMs] = useState(0);
+  const [diagnosticsStatus, setDiagnosticsStatus] = useState<string | null>(null);
+  const [diagnosticsAction, setDiagnosticsAction] = useState<
+    "idle" | "revealing" | "clearing"
+  >("idle");
 
   useEffect(() => {
     if (countdownEndsAt === null) return;
@@ -112,8 +118,13 @@ export function DeveloperPage(): ReactElement {
   const countdownActive = countdownRemainingMs > 0;
   const countdownSeconds = Math.ceil(countdownRemainingMs / 1_000);
   const startDelayText = formatStartDelay(startDelayMs);
+  const diagnosticsBusy = diagnosticsAction !== "idle";
+  const cleanupDisabled =
+    !ready || diagnosticsBusy || hotCpuEnabled || captureHeapSnapshot || countdownActive;
+  const hotCpuControlsDisabled = !ready || diagnosticsAction === "clearing";
 
   const startHotCpuCapture = async (): Promise<void> => {
+    if (diagnosticsAction === "clearing") return;
     await patch({ general: { hotCpuProfilingEnabled: true } });
     if (startDelayMs > 0) {
       const endsAt = Date.now() + startDelayMs;
@@ -129,6 +140,36 @@ export function DeveloperPage(): ReactElement {
     setCountdownEndsAt(null);
     setCountdownRemainingMs(0);
     await patch({ general: { hotCpuProfilingEnabled: false } });
+  };
+
+  const revealDiagnosticsRoot = async (): Promise<void> => {
+    if (!ready || diagnosticsBusy) return;
+    setDiagnosticsStatus(null);
+    setDiagnosticsAction("revealing");
+    try {
+      const result = await dispatch("diagnostics:revealHotCpuRoot", {});
+      if (!result.ok) {
+        setDiagnosticsStatus(`Reveal failed: ${result.error.message}`);
+      }
+    } finally {
+      setDiagnosticsAction("idle");
+    }
+  };
+
+  const clearDiagnostics = async (): Promise<void> => {
+    if (cleanupDisabled) return;
+    setDiagnosticsStatus(null);
+    setDiagnosticsAction("clearing");
+    try {
+      const result = await dispatch("diagnostics:clearHotCpuSessions", {});
+      if (!result.ok) {
+        setDiagnosticsStatus(`Cleanup failed: ${result.error.message}`);
+        return;
+      }
+      setDiagnosticsStatus(formatCleanupResult(result.value));
+    } finally {
+      setDiagnosticsAction("idle");
+    }
   };
 
   return (
@@ -173,7 +214,7 @@ export function DeveloperPage(): ReactElement {
               <button
                 className="pss__top-btn"
                 type="button"
-                disabled={!ready}
+                disabled={hotCpuControlsDisabled}
                 onClick={() => {
                   void stopHotCpuCapture();
                 }}
@@ -184,7 +225,7 @@ export function DeveloperPage(): ReactElement {
               <button
                 className="pss__top-btn is-active"
                 type="button"
-                disabled={!ready}
+                disabled={hotCpuControlsDisabled}
                 onClick={() => {
                   void startHotCpuCapture();
                 }}
@@ -209,7 +250,7 @@ export function DeveloperPage(): ReactElement {
         >
           <SegmentButtons
             ariaLabel="Profiling start delay"
-            disabled={!ready}
+            disabled={hotCpuControlsDisabled}
             options={START_DELAY_OPTIONS}
             value={startDelayMs}
             onChange={(next) => {
@@ -225,7 +266,7 @@ export function DeveloperPage(): ReactElement {
         >
           <SegmentButtons
             ariaLabel="CPU profile trigger"
-            disabled={!ready}
+            disabled={hotCpuControlsDisabled}
             options={TRIGGER_MODE_OPTIONS}
             value={triggerMode}
             onChange={(next) => {
@@ -242,7 +283,7 @@ export function DeveloperPage(): ReactElement {
           <Switch
             on={captureHeapSnapshot}
             onChange={
-              ready
+              !hotCpuControlsDisabled
                 ? (next) => {
                     void patch({
                       general: { hotCpuProfilingCaptureHeapSnapshot: next }
@@ -260,7 +301,7 @@ export function DeveloperPage(): ReactElement {
         >
           <SegmentButtons
             ariaLabel="Heap snapshot limit"
-            disabled={!ready || !captureHeapSnapshot}
+            disabled={hotCpuControlsDisabled || !captureHeapSnapshot}
             options={HEAP_SNAPSHOT_LIMIT_OPTIONS}
             value={heapSnapshotLimit}
             onChange={(next) => {
@@ -268,7 +309,49 @@ export function DeveloperPage(): ReactElement {
             }}
           />
         </Row>
+
+        <Row
+          label="Diagnostics folder"
+          sub="Reveal captured CPU profiles, heap snapshots, and sidecar logs in Finder."
+          tag="folder"
+        >
+          <div className="pss__update-channel">
+            <button
+              className="pss__top-btn"
+              type="button"
+              disabled={!ready || diagnosticsBusy}
+              onClick={() => {
+                void revealDiagnosticsRoot();
+              }}
+            >
+              Reveal Folder
+            </button>
+            <button
+              className="pss__top-btn"
+              type="button"
+              disabled={cleanupDisabled}
+              onClick={() => {
+                void clearDiagnostics();
+              }}
+            >
+              Clear Old Sessions
+            </button>
+            {diagnosticsStatus !== null ? (
+              <span className="pss__update-note" aria-live="polite">
+                {diagnosticsStatus}
+              </span>
+            ) : null}
+          </div>
+        </Row>
       </Card>
     </>
   );
+}
+
+function formatCleanupResult(result: HotCpuProfileCleanupResult): string {
+  const deleted = result.deletedSessions;
+  const skipped = result.skippedEntries;
+  const suffix =
+    result.errors.length > 0 ? `, ${result.errors.length} errors` : "";
+  return `Cleared ${deleted} session${deleted === 1 ? "" : "s"}; skipped ${skipped}${suffix}.`;
 }

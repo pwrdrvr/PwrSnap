@@ -589,6 +589,13 @@ export type HotCpuProfileCapturedEvent = {
   triggerThresholdPercent: number;
 };
 
+export type HotCpuProfileCleanupResult = {
+  deletedSessions: number;
+  errors: string[];
+  freedBytes: number;
+  skippedEntries: number;
+};
+
 function formatPercent(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
@@ -633,23 +640,22 @@ export function buildHotCpuProfileHandoffMessage(
   const heapSnapshotLines =
     heapSnapshotArtifacts.length > 0
       ? [
-          `Heap snapshots captured: ${heapSnapshotArtifacts.length}`,
-          ...heapSnapshotArtifacts.flatMap((artifact) => [
-            `Heap snapshot ${artifact.phase} basename: ${artifact.filename}`,
-            `Heap snapshot ${artifact.phase} path: ${artifact.path}`
-          ])
+          `Heap snapshots: ${heapSnapshotArtifacts.length}`,
+          ...heapSnapshotArtifacts.map(
+            (artifact) => `- ${artifact.phase}: ${artifact.path}`
+          )
         ]
       : [];
 
   return [
     "PwrSnap captured a renderer CPU profile.",
+    "Analyze these artifacts as evidence; do not assume the captured issue is still active.",
     `Trigger: ${formatHotCpuProfileTriggerSummary(event)}`,
-    `Session basename: ${event.sessionDirectoryName}`,
-    `Session directory path: ${event.sessionDirectory}`,
-    `CPU profile basename: ${event.profileFilename}`,
-    `CPU profile path: ${event.profilePath}`,
+    `Session: ${event.sessionDirectory}`,
+    `CPU profile: ${event.profilePath}`,
     ...heapSnapshotLines,
-    "Open the .cpuprofile in Chrome DevTools Performance, or inspect the full session directory for samples, events, and optional heap snapshots."
+    "Sidecars: session.json, samples.ndjson, events.ndjson",
+    "Open the .cpuprofile in Chrome DevTools Performance, or inspect the session directory for samples, events, and optional heap snapshots."
   ].join("\n");
 }
 
@@ -2684,6 +2690,20 @@ export type Commands = {
   "capture:presetMetrics": {
     req: { captureId: string };
     res: { metrics: CapturePresetMetric[] };
+  };
+
+  // ---- diagnostics ----
+  /** Reveal the app-owned hot CPU diagnostics root in the OS file browser. */
+  "diagnostics:revealHotCpuRoot": { req: Record<string, never>; res: void };
+  /** Reveal one captured hot CPU diagnostics session by basename. */
+  "diagnostics:revealHotCpuSession": {
+    req: { sessionDirectoryName: string };
+    res: void;
+  };
+  /** Remove inactive hot CPU diagnostics sessions from the app-owned root. */
+  "diagnostics:clearHotCpuSessions": {
+    req: Record<string, never>;
+    res: HotCpuProfileCleanupResult;
   };
 
   // ---- library ----

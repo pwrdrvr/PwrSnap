@@ -84,6 +84,11 @@ const baseSettings: Settings = {
 };
 
 const patchMock = vi.fn(async (): Promise<void> => undefined);
+const dispatchCalls: { name: string; req: unknown }[] = [];
+type DispatchResult =
+  | { ok: true; value: unknown }
+  | { ok: false; error: { message: string } };
+type DispatchImpl = (name: string, req: unknown) => Promise<DispatchResult>;
 
 let contextValue: Pick<UseSettingsValue, "settings" | "patch">;
 let container: HTMLDivElement | null = null;
@@ -93,7 +98,32 @@ vi.mock("../../SettingsContext", () => ({
   useSettingsContext: (): Pick<UseSettingsValue, "settings" | "patch"> => contextValue
 }));
 
-async function renderDeveloper(settings: Settings = baseSettings): Promise<void> {
+async function renderDeveloper(
+  settings: Settings | null = baseSettings,
+  dispatchImpl?: DispatchImpl
+): Promise<void> {
+  Object.defineProperty(window, "pwrsnapApi", {
+    configurable: true,
+    value: {
+      dispatch: async (name: string, req: unknown) => {
+        dispatchCalls.push({ name, req });
+        if (dispatchImpl !== undefined) return dispatchImpl(name, req);
+        if (name === "diagnostics:clearHotCpuSessions") {
+          return {
+            ok: true,
+            value: {
+              deletedSessions: 2,
+              errors: [],
+              freedBytes: 123,
+              skippedEntries: 1
+            }
+          };
+        }
+        return { ok: true, value: undefined };
+      },
+      on: () => () => undefined
+    }
+  });
   contextValue = { settings, patch: patchMock as unknown as UseSettingsValue["patch"] };
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -128,6 +158,7 @@ afterEach(async () => {
   container = null;
   root = null;
   patchMock.mockClear();
+  dispatchCalls.length = 0;
 });
 
 describe("DeveloperPage", () => {
@@ -165,5 +196,114 @@ describe("DeveloperPage", () => {
     expect(patchMock).toHaveBeenCalledWith({
       general: { hotCpuProfilingTriggerMode: "slowburn" }
     });
+  });
+
+  test("diagnostics folder controls dispatch reveal and cleanup commands", async () => {
+    await renderDeveloper();
+
+    await act(async () => {
+      buttonByText("Reveal Folder").click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      buttonByText("Clear Old Sessions").click();
+      await Promise.resolve();
+    });
+
+    expect(dispatchCalls).toContainEqual({
+      name: "diagnostics:revealHotCpuRoot",
+      req: {}
+    });
+    expect(dispatchCalls).toContainEqual({
+      name: "diagnostics:clearHotCpuSessions",
+      req: {}
+    });
+    expect(container?.textContent).toContain("Cleared 2 sessions; skipped 1.");
+  });
+
+  test("cleanup is disabled while hot CPU profiling is armed", async () => {
+    await renderDeveloper({
+      ...baseSettings,
+      general: {
+        ...baseSettings.general,
+        hotCpuProfilingEnabled: true
+      }
+    });
+
+    expect(buttonByText("Clear Old Sessions").disabled).toBe(true);
+  });
+
+  test("cleanup is disabled while smart heap snapshots are armed", async () => {
+    await renderDeveloper({
+      ...baseSettings,
+      general: {
+        ...baseSettings.general,
+        hotCpuProfilingCaptureHeapSnapshot: true
+      }
+    });
+
+    expect(buttonByText("Clear Old Sessions").disabled).toBe(true);
+  });
+
+  test("cleanup is disabled while a delayed capture is counting down", async () => {
+    await renderDeveloper({
+      ...baseSettings,
+      general: {
+        ...baseSettings.general,
+        hotCpuProfilingStartDelayMs: 5_000
+      }
+    });
+
+    await act(async () => {
+      buttonByText("Start Capture").click();
+    });
+
+    expect(buttonByText("Clear Old Sessions").disabled).toBe(true);
+  });
+
+  test("cleanup is disabled before settings are ready", async () => {
+    await renderDeveloper(null);
+
+    expect(buttonByText("Clear Old Sessions").disabled).toBe(true);
+  });
+
+  test("pending cleanup disables hot CPU capture controls until it settles", async () => {
+    let resolveClear: ((result: DispatchResult) => void) | null = null;
+    const clearPromise = new Promise<DispatchResult>((resolve) => {
+      resolveClear = resolve;
+    });
+    await renderDeveloper(baseSettings, async (name) => {
+      if (name === "diagnostics:clearHotCpuSessions") return clearPromise;
+      return { ok: true, value: undefined };
+    });
+
+    await act(async () => {
+      buttonByText("Clear Old Sessions").click();
+      await Promise.resolve();
+    });
+
+    expect(buttonByText("Start Capture").disabled).toBe(true);
+    expect(buttonByText("Clear Old Sessions").disabled).toBe(true);
+    await act(async () => {
+      buttonByText("Start Capture").click();
+    });
+    expect(patchMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveClear?.({
+        ok: true,
+        value: {
+          deletedSessions: 1,
+          errors: [],
+          freedBytes: 64,
+          skippedEntries: 1
+        }
+      });
+      await clearPromise;
+    });
+
+    expect(buttonByText("Start Capture").disabled).toBe(false);
+    expect(buttonByText("Clear Old Sessions").disabled).toBe(false);
+    expect(container?.textContent).toContain("Cleared 1 session; skipped 1.");
   });
 });

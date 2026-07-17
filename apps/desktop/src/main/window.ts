@@ -14,6 +14,7 @@ import {
 import { bus } from "./command-bus";
 import { installDevelopmentDockIcon, showDockWithDevelopmentIcon } from "./development-dock-icon";
 import { createHotCpuProfileSession } from "./diagnostics/hot-cpu-profile-session";
+import { hotCpuDiagnosticsRoot } from "./diagnostics/hot-cpu-profile-paths";
 import { resolveHotCpuProfileConfig } from "./diagnostics/hot-cpu-profile-config";
 import { RendererHotCpuProfiler } from "./diagnostics/renderer-hot-cpu-profiler";
 import { broadcastRendererEventToLocalWindows } from "./events";
@@ -245,7 +246,7 @@ function serializeError(error: unknown): string {
 }
 
 function diagnosticsOutputRoot(): string {
-  return join(app.getPath("userData"), "diagnostics", "hot-cpu");
+  return hotCpuDiagnosticsRoot();
 }
 
 async function readHotCpuSettings(): Promise<Settings> {
@@ -623,7 +624,12 @@ export function createMainWindow(): BrowserWindow {
         return;
       }
 
-      await profiler.start();
+      try {
+        await profiler.start();
+      } catch (error) {
+        await profiler.stop("start-failed");
+        throw error;
+      }
     } catch (error) {
       hotCpuLog.warn("failed to sync hot CPU diagnostics", {
         reason,

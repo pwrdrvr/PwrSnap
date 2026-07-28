@@ -271,12 +271,29 @@ test.describe("tray popover sizing", () => {
       // toward the zoomed value before settling; a height that never
       // grows fails here (a genuine remeasure-plumbing regression)
       // instead of passing through at the unzoomed value.
-      await expect
-        .poll(async () => (await inspectTray(app)).contentSize?.height ?? 0, {
-          timeout: 8000,
-          message: "tray contentSize never grew after zoom — remeasure round-trip didn't land"
-        })
-        .toBeGreaterThan(beforeHeight + 20);
+      //
+      // Budget is generous (20s vs the old 8s): the same runner image
+      // has been observed starving a *shown* renderer's ordinary
+      // resize posts for ~10s (see tray-first-paint's bridge-timeout
+      // history), and this gate exists to catch "never lands", not
+      // "lands slowly". On timeout, include the full inspect snapshot:
+      // zoomFactor still 1 → setZoomFactor didn't apply;
+      // zoomFactor 1.5 but height unchanged → dpr-change → re-post →
+      // setContentSize chain broke somewhere.
+      {
+        const growthDeadline = Date.now() + 20_000;
+        for (;;) {
+          const now = await inspectTray(app);
+          if ((now.contentSize?.height ?? 0) > beforeHeight + 20) break;
+          if (Date.now() > growthDeadline) {
+            throw new Error(
+              "tray contentSize never grew after zoom — remeasure round-trip didn't land; " +
+                `beforeHeight=${beforeHeight} last=${JSON.stringify(now)}`
+            );
+          }
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
 
       // contentSize should re-stabilize at a value matching the new
       // measurement × zoomFactor.

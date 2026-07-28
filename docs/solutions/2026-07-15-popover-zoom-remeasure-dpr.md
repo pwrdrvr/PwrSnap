@@ -1,9 +1,13 @@
 # Popover zoom remeasure — `zoom-changed` never fires; use devicePixelRatio
 
-**Status**: Root-cause fix for the intermittent Windows E2E failure in
+**Status**: Fix for the intermittent Windows E2E failure in
 `tray-sizing.spec.ts` › "sizes correctly under non-1.0 zoom"
 (“tray contentSize never grew after zoom — remeasure round-trip didn't
 land”, e.g. PR #317 run 29465287755). Prior hardening was PR #252.
+Two parts: the dead-trigger root cause (below) and a throttling
+hardening (`backgroundThrottling: false`, see "Residual flake" at the
+end) after the first CI run with the DPR listener alone still flaked
+once on the starved VS2026 runner.
 
 **TL;DR** — Electron's `webContents.on("zoom-changed")` fires **only**
 for a user mouse-wheel zoom *request*. It does **not** fire for
@@ -95,4 +99,35 @@ zoom" drives `setZoomFactor` on the tray webContents (same programmatic
 path as the menu roles — deliberately NOT hand-delivering a remeasure
 event) and polls for the contentSize to actually grow before asserting
 `ceil(cssHeight × zoomFactor)`. If the renderer trigger regresses, the
-poll times out with "tray contentSize never grew after zoom".
+poll times out with "tray contentSize never grew after zoom" and dumps
+the full inspect snapshot (`zoomFactor` still 1 → setZoomFactor never
+applied; 1.5 with an unchanged height → the dpr → re-post →
+setContentSize chain broke).
+
+## Residual flake → `backgroundThrottling: false`
+
+The first CI run with only the DPR listener (PR #318 run 29466571400)
+still flaked once on windows-latest: attempt 1 timed out the 8s growth
+poll, retry passed in 2.6s — and in the same job, `tray-first-paint`'s
+"cold | 1 seeded capture" timed out its bridge window twice on
+ordinary, zoom-free resize posts. So the runner starves renderers for
+multi-second stretches, and there's a specific mechanism that makes the
+DPR trigger vulnerable to it: **MediaQueryList `change` events are
+delivered during Chromium's rendering-update steps**, which are
+throttled or paused for backgrounded/occluded renderers. (Forcing
+layout from outside via `executeJavaScript` + `getBoundingClientRect`
+does NOT run the evaluate-media-queries step — the E2E's polling can't
+un-stick it.)
+
+This also matters in production: the tray is prewarmed and hidden for
+most of its life, and the float-over parks pseudo-hidden. A ⌘+ in the
+library while a popover is hidden could defer the dpr-change event
+until (or past) the next show, leaving the first paint at a stale size.
+
+Hardening: both popover BrowserWindows now set
+`backgroundThrottling: false` in their webPreferences
+(`createTrayWindow` / `createFloatOverWindow` in `main/window.ts`).
+Note `themedWebPreferences()` already does this in split mode for
+different reasons; the popovers need it unconditionally. The E2E
+growth poll was also widened 8s → 20s with snapshot diagnostics —
+the gate exists to catch "never lands", not "lands slowly".

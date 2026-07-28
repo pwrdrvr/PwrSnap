@@ -462,6 +462,18 @@ export function hideTrayPopoverForE2E(): void {
  */
 export async function measureTrayFirstPaintForE2E(options: {
   stableMs?: number;
+  /**
+   * Per-measurement deadline. The default must comfortably exceed the
+   * ~10s scheduler-starvation stretches the VS2026 `windows-latest`
+   * runner image exhibits (see docs/solutions/
+   * 2026-06-13-windows-vs2026-runner-image-e2e-flakes.md §4): in the
+   * 2026-07-16 recurrence, boot + first paint ran at normal speed and
+   * the seeded-content reflow — normally ~60ms behind the first
+   * measurement — stalled just past the then-10s budget, so a
+   * starved-but-working renderer timed out by construction. A genuine
+   * regression (the reflow never happens) still times out, just
+   * slower.
+   */
   timeoutMs?: number;
   /**
    * Minimum content height (DIP) the popover must reach before its size
@@ -495,7 +507,7 @@ export async function measureTrayFirstPaintForE2E(options: {
   timedOut: boolean;
 }> {
   const stableMs = options.stableMs ?? 300;
-  const timeoutMs = options.timeoutMs ?? 10_000;
+  const timeoutMs = options.timeoutMs ?? 30_000;
   const minStableHeight = options.minStableHeight ?? 0;
 
   const alreadyExists = trayWindow !== null && !trayWindow.isDestroyed();

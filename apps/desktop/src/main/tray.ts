@@ -26,7 +26,6 @@ import {
 } from "electron";
 import {
   DEFAULT_HOTKEYS,
-  EVENT_CHANNELS,
   type RecordingState,
   type Settings
 } from "@pwrsnap/shared";
@@ -143,18 +142,16 @@ function ensureTrayWindow(): BrowserWindow {
   const window = createTrayWindow();
   trayWindow = window;
   wireBlurDismiss(window);
-  // Tell the renderer to re-measure whenever the session zoom factor
-  // changes. We can't rely on ResizeObserver alone — Chromium does
-  // not fire layout-resize observations for pure zoom changes when
-  // the underlying CSS-pixel content height happens to land at the
-  // same value, and `setContentSize` is in DIP, so a stale
-  // CSS-pixel-height post would compute a wrong DIP after zoom
-  // changed. The IPC kicks the renderer to re-post; the resize
-  // handler reads the new zoomFactor and converts.
-  window.webContents.on("zoom-changed", () => {
-    if (window.isDestroyed()) return;
-    window.webContents.send(EVENT_CHANNELS.popoverRemeasure, {});
-  });
+  // NOTE: there is deliberately no `zoom-changed` hook here. That
+  // event is mouse-wheel-only — it does NOT fire for setZoomFactor,
+  // the View-menu zoomIn/zoomOut roles, or Chromium HostZoomMap
+  // same-origin propagation (verified empirically), so main cannot
+  // observe the zoom changes that actually happen in production.
+  // Instead the renderer detects effective-zoom changes itself via a
+  // devicePixelRatio media-query listener (see TrayMenu.tsx) and
+  // re-posts through the resize channel; wireTrayResizeChannel then
+  // re-converts CSS px → DIP with the current zoomFactor. See
+  // docs/solutions/2026-07-15-popover-zoom-remeasure-dpr.md.
   window.on("closed", () => {
     if (trayWindow === window) trayWindow = null;
   });

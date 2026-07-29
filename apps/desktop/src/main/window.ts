@@ -978,7 +978,21 @@ export function createTrayWindow(): BrowserWindow {
     alwaysOnTop: true,
     hasShadow: true,
     backgroundColor: "#00000000",
-    webPreferences: themedWebPreferences()
+    webPreferences: {
+      ...themedWebPreferences(),
+      // Never throttle the popover renderer. Chromium delivers
+      // MediaQueryList `change` events — the zoom self-detection
+      // trigger in TrayMenu.tsx — during the rendering-update steps,
+      // which are throttled/paused for backgrounded or occluded
+      // renderers. The tray spends most of its life hidden
+      // (prewarmed at boot), and a session zoom change while hidden
+      // must still remeasure before the next show; with default
+      // throttling the dpr-change event can defer until (or past)
+      // the show, leaving the first paint at a stale size. Also
+      // de-flakes the zoom E2E on starved CI runners, where even a
+      // *shown* popover's rendering updates can lag for seconds.
+      backgroundThrottling: false
+    }
   });
   // ⚠️  IMPORTANT — load-bearing for the renderer's resize-to-fit IPC
   // (see wireTrayResizeChannel in tray.ts). When a BrowserWindow is
@@ -1084,7 +1098,14 @@ export function createFloatOverWindow(): BrowserWindow {
     // outside the BrowserWindow without enlarging the transparent
     // hit-test region around the toast.
     hasShadow: true,
-    webPreferences: themedWebPreferences()
+    webPreferences: {
+      ...themedWebPreferences(),
+      // Never throttle — the parked (pseudo-hidden) toast must keep
+      // delivering MediaQueryList `change` events so the zoom
+      // self-detection in FloatOverHost.tsx can remeasure before the
+      // next show. Same rationale + comment as createTrayWindow.
+      backgroundThrottling: false
+    }
   });
   // ⚠️  Same gotcha as createTrayWindow — see that function's comment
   // for the full story. Lifting the implicit minimum size to 0×0

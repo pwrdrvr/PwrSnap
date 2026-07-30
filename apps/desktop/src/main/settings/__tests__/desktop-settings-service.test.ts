@@ -297,7 +297,7 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     );
     const svc = new DesktopSettingsService({ filePath });
     const settings = await svc.read();
-    expect(settings.codex.captionModel).toBe("gpt-5.4-mini");
+    expect(settings.codex.captionModel).toBe("gpt-5.6-luna");
   });
 
   test("v1 shape with a newer `codex.captionModel` preserves the model id", async () => {

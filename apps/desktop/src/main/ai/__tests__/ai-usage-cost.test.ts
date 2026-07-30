@@ -2,6 +2,35 @@ import { describe, expect, test } from "vitest";
 import { estimateAiUsageCost } from "../ai-usage-cost";
 
 describe("estimateAiUsageCost", () => {
+  test.each([
+    ["gpt-5.6-luna", null, 0.2, 0.02, 1.2],
+    ["gpt-5.6-luna", "fast", 0.4, 0.04, 2.4],
+    ["gpt-5.6-terra", null, 2, 0.2, 12],
+    ["gpt-5.6-terra", "fast", 4, 0.4, 24]
+  ])("prices %s %s API usage at the July 30 effective rate", (model, serviceTier, input, cached, output) => {
+    const estimate = estimateAiUsageCost({
+      model,
+      provider: "openai",
+      serviceTier,
+      tokens: {
+        totalTokens: 1_000_000,
+        inputTokens: 600_000,
+        cachedInputTokens: 100_000,
+        outputTokens: 400_000,
+        reasoningOutputTokens: 0,
+        modelContextWindow: null
+      }
+    });
+
+    expect(estimate.status).toBe("available");
+    if (estimate.status === "available") {
+      expect(estimate.pricedAt).toBe("2026-07-30T00:00:00.000Z");
+      expect(estimate.uncachedInputCostMicros).toBe(Math.round(500_000 * input));
+      expect(estimate.cachedInputCostMicros).toBe(Math.round(100_000 * cached));
+      expect(estimate.outputCostMicros).toBe(Math.round(400_000 * output));
+    }
+  });
+
   test("prices gpt-5.4-mini usage with cached, uncached, and output buckets", () => {
     const estimate = estimateAiUsageCost({
       model: "gpt-5.4-mini",

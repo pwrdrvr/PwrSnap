@@ -1287,9 +1287,9 @@ export type CodexTestResult = {
 /** Fallback Codex CLI models PwrSnap can show before `model/list` returns.
  *  The actual model picker is populated from the user's installed Codex
  *  App Server so newly-available models don't require an app release. */
-export const CODEX_CAPTION_MODELS = ["gpt-5.4-mini"] as const;
+export const CODEX_CAPTION_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini"] as const;
 export type CodexCaptionModel = string;
-export const DEFAULT_CODEX_CAPTION_MODEL: CodexCaptionModel = "gpt-5.4-mini";
+export const DEFAULT_CODEX_CAPTION_MODEL: CodexCaptionModel = "gpt-5.6-luna";
 
 export function isCodexCaptionModel(value: unknown): value is CodexCaptionModel {
   return (
@@ -1650,9 +1650,8 @@ export type Settings = {
     profile: string;
     /** Codex model ID used for the capture-enrichment turn (captions,
      *  tag suggestions, OCR — all one Codex call). MUST be a member of
-     *  `CODEX_CAPTION_MODELS`. Mini-tier is the only allowed option
-     *  today because captioning is high-volume + cost-sensitive; widen
-     *  the list when we want users to opt into a larger model. */
+     *  `CODEX_CAPTION_MODELS`. Luna is the default because captioning is
+     *  high-volume + cost-sensitive; users may retain an explicit older model. */
     captionModel: CodexCaptionModel;
   };
   ai: {

@@ -149,6 +149,56 @@ teardown completes in seconds, the worker stops gracefully, and the retry passes
 — flaky, but **green**. And fewer wedges happen at all because the process tree
 no longer leaks.
 
+### 4. 2026-07-16 recurrence: the stall can exceed the bridge timeout entirely
+
+Run `29466571400` (PR #318 branch, commit `b28cdd8`) failed the seeded
+cold scenario of `tray-first-paint.spec.ts` on **both** attempts with
+"tray popover never reached stable size within bridge timeout" — the §1
+`minStableHeight` gate working as designed, but the content never arriving
+inside the then-10s `timeoutMs`. The per-iteration checkpoints show this is
+a different shape from §1's "reflow lands >300ms late":
+
+| iteration | domReady | firstResize | resizeCount | height | outcome |
+|---|---|---|---|---|---|
+| attempt 1, runs 1–3 | ~265–307ms | ~323–370ms | 2 | 688 | pass |
+| attempt 1, runs 4–5 | ~293–307ms | ~360–370ms | **1** | **302** | timeout |
+| retry, run 1 | ~355ms | ~417ms | **1** | **302** | timeout |
+| retry, runs 2–5 | ~233–242ms | ~287–297ms | 2 | 688 | pass |
+
+Boot and first paint ran at **normal speed** in the failing iterations —
+the renderer wasn't uniformly starved. What stalled was the async
+seeded-content pipeline (last-snap IPC fetch → `pwrsnap-capture://` image
+fetch/decode → reflow → second resize post), which in clean runs lands
+~60ms after the first measurement and in the failing runs never landed in
+~9.6s. The three failing iterations are **consecutive in wall clock**
+(02:31:05 → 02:31:32) across three independent app launches, then
+everything recovered permanently — a machine-level stall burst, not an
+app bug. With `timeoutMs` at exactly 10s and the image's documented ~10s
+starvation stretches, a stall of that length timed out by construction.
+The retry attempt was 4/5 clean at the correct height; one straggler
+iteration failed the job.
+
+**Fix (two layers, both must hold for the job to fail):**
+
+- `measureTrayFirstPaintForE2E` default `timeoutMs` 10s → **30s**, so a
+  stall the length of the observed bursts finishes as a slow pass instead
+  of a timeout. A genuine regression still times out — just slower — and
+  the spec's per-test timeout now scales (`max(240s, ITERATIONS × 40s)`)
+  so that worst case surfaces the bridge's diagnostics rather than an
+  opaque Playwright test timeout.
+- The spec tolerates a **strict minority** of timed-out iterations
+  (`> floor(N/2)` fails), warn-logging tolerated ones with their full
+  checkpoint JSON. A genuine first-paint regression kills every
+  iteration, so it can't hide behind the tolerance; per-run height-band
+  assertions stay strict on the clean runs.
+
+Related but separate: PR #318's tip (`1be7432`) added
+`backgroundThrottling: false` to the popover renderers. It's likely
+orthogonal to this failure — the tray window was *visible* during the
+stall (`isVisible` ~30ms) and throttling targets hidden/occluded windows
+— and the failing run predates it, so treat it as an independent
+mitigation, not the fix for this flake.
+
 ## If you need green CI *now* (escape hatches, in order)
 
 1. **Preferred:** the fixes above (root cause, survives the image).

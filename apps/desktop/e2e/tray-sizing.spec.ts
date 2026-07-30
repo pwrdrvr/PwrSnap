@@ -233,8 +233,15 @@ test.describe("tray popover sizing", () => {
   test("sizes correctly under non-1.0 zoom", async () => {
     // Three things this spec guards:
     //   • The CSS-px → DIP conversion (ceil(cssHeight × zoomFactor))
-    //   • The remeasure-on-zoom-changed IPC plumbing (main →
-    //     events:popover:remeasure → renderer → re-post)
+    //   • The renderer's zoom self-detection (devicePixelRatio
+    //     media-query listener in TrayMenu.tsx → forced re-post
+    //     through the resize channel → main re-converts). This is the
+    //     ONLY trigger: Electron's `zoom-changed` is mouse-wheel-only
+    //     and never fires for setZoomFactor / the View-menu zoom
+    //     roles / HostZoomMap propagation, and ResizeObserver stays
+    //     silent when the wrapper's CSS height doesn't move (the
+    //     fixed-CSS-width .ps-tray usually doesn't reflow under
+    //     zoom). See docs/solutions/2026-07-15-popover-zoom-remeasure-dpr.md.
     //   • The popover sizing recovers if zoom is non-1.0 from the
     //     start (e.g. user Cmd-+'d in the library before opening
     //     the tray)
@@ -246,29 +253,47 @@ test.describe("tray popover sizing", () => {
       const before = await inspectTray(app);
       expect(before.zoomFactor).toBe(1);
 
-      // Bump zoom on the tray's webContents. HostZoomMap propagates
-      // this to all webContents on the same origin, then fires
-      // `zoom-changed` on each, which (per main/tray.ts) sends
-      // `events:popover:remeasure` to the renderer, which re-posts
+      // Bump zoom on the tray's webContents — the same programmatic
+      // path the library's View-menu zoom roles use, so this
+      // exercises the production trigger, not a test-only shortcut.
+      // Chromium updates the renderer's devicePixelRatio, the
+      // renderer's media-query listener fires, and it re-posts
       // through the resize channel.
       const ZOOM = 1.5;
       const beforeHeight = before.contentSize!.height;
       await setTrayZoom(app, ZOOM);
 
-      // setZoomFactor → zoom-changed → events:popover:remeasure →
-      // renderer re-post → setContentSize spans several frames. On the
-      // slower VS2026 runner image that round-trip can outlast
-      // waitForStableSize's stability window, so a bare waitForStableSize()
-      // returns the *pre-zoom* size — the flake. Gate on the contentSize
-      // actually growing toward the zoomed value before settling; a height
-      // that never grows fails here (a genuine remeasure-plumbing
-      // regression) instead of passing through at the unzoomed value.
-      await expect
-        .poll(async () => (await inspectTray(app)).contentSize?.height ?? 0, {
-          timeout: 8000,
-          message: "tray contentSize never grew after zoom — remeasure round-trip didn't land"
-        })
-        .toBeGreaterThan(beforeHeight + 20);
+      // setZoomFactor → renderer dpr-change → forced re-post →
+      // setContentSize spans several frames. On the slower VS2026
+      // runner image that round-trip can outlast waitForStableSize's
+      // stability window, so a bare waitForStableSize() can return the
+      // *pre-zoom* size. Gate on the contentSize actually growing
+      // toward the zoomed value before settling; a height that never
+      // grows fails here (a genuine remeasure-plumbing regression)
+      // instead of passing through at the unzoomed value.
+      //
+      // Budget is generous (20s vs the old 8s): the same runner image
+      // has been observed starving a *shown* renderer's ordinary
+      // resize posts for ~10s (see tray-first-paint's bridge-timeout
+      // history), and this gate exists to catch "never lands", not
+      // "lands slowly". On timeout, include the full inspect snapshot:
+      // zoomFactor still 1 → setZoomFactor didn't apply;
+      // zoomFactor 1.5 but height unchanged → dpr-change → re-post →
+      // setContentSize chain broke somewhere.
+      {
+        const growthDeadline = Date.now() + 20_000;
+        for (;;) {
+          const now = await inspectTray(app);
+          if ((now.contentSize?.height ?? 0) > beforeHeight + 20) break;
+          if (Date.now() > growthDeadline) {
+            throw new Error(
+              "tray contentSize never grew after zoom — remeasure round-trip didn't land; " +
+                `beforeHeight=${beforeHeight} last=${JSON.stringify(now)}`
+            );
+          }
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
 
       // contentSize should re-stabilize at a value matching the new
       // measurement × zoomFactor.

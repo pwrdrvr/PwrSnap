@@ -204,7 +204,8 @@ export function defaultSettings(): Settings {
     editor: defaultEditorSettings(),
     library: defaultLibrarySettings(),
     localAgents: {
-      grants: []
+      grants: [],
+      audit: []
     }
   };
 }
@@ -980,7 +981,49 @@ function parseLocalAgentsSettings(
     seen.add(grant.id);
     grants.push(grant);
   }
-  return { grants };
+  const auditRaw = Array.isArray(raw.audit) ? raw.audit : [];
+  const audit = auditRaw
+    .map(parseLocalAgentAuditEntry)
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+    .slice(-500);
+  return { grants, audit };
+}
+
+function parseLocalAgentAuditEntry(
+  raw: unknown
+): Settings["localAgents"]["audit"][number] | null {
+  if (!isRecord(raw)) return null;
+  if (
+    typeof raw.id !== "string" ||
+    typeof raw.clientId !== "string" ||
+    typeof raw.action !== "string" ||
+    typeof raw.subjectId !== "string" ||
+    typeof raw.occurredAt !== "string" ||
+    !isLocalAgentCapability(raw.capability) ||
+    (raw.subjectKind !== "capture" && raw.subjectKind !== "sizzle") ||
+    (raw.outcome !== "success" && raw.outcome !== "failure")
+  ) {
+    return null;
+  }
+  const actions = new Set([
+    "capture.original.read",
+    "capture.export",
+    "capture.edit",
+    "trash.write",
+    "sizzle.preview.read",
+    "sizzle.full.read"
+  ]);
+  if (!actions.has(raw.action)) return null;
+  return {
+    id: raw.id.slice(0, 128),
+    clientId: raw.clientId.slice(0, 128),
+    action: raw.action as Settings["localAgents"]["audit"][number]["action"],
+    capability: raw.capability,
+    subjectKind: raw.subjectKind,
+    subjectId: raw.subjectId.slice(0, 256),
+    outcome: raw.outcome,
+    occurredAt: raw.occurredAt
+  };
 }
 
 function parseLocalAgentGrant(raw: unknown): LocalAgentClientGrant | null {
@@ -1549,7 +1592,8 @@ function mergeLocalAgents(
 ): Settings["localAgents"] {
   if (patch === undefined) return current;
   return {
-    grants: patch.grants !== undefined ? patch.grants : current.grants
+    grants: patch.grants !== undefined ? patch.grants : current.grants,
+    audit: patch.audit !== undefined ? patch.audit : current.audit
   };
 }
 

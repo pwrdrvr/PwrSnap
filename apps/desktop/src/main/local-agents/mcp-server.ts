@@ -4,10 +4,11 @@ import {
   type Server as HttpServer,
   type ServerResponse
 } from "node:http";
-import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { dirname } from "node:path";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
@@ -16,13 +17,17 @@ import {
   LOCAL_AGENT_CAPABILITIES,
   err,
   ok,
-  type LocalAgentCapability
+  type LocalAgentAuditAction,
+  type LocalAgentCapability,
+  type Result,
+  type PwrSnapError
 } from "@pwrsnap/shared";
 import { z } from "zod";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { DesktopSecretStore } from "../settings/desktop-secret-store";
 import { DesktopSettingsService } from "../settings/desktop-settings-service";
+import { TRASH_RETENTION_DAYS } from "../persistence/trash-retention";
 import {
   LocalAgentGrantService,
   type LocalAgentAuthResult
@@ -33,16 +38,24 @@ import {
   toCaptureSearchRequest
 } from "./local-agent-search";
 import {
+  LocalAgentMcpResourceRegistry,
+  type LocalAgentMcpResource
+} from "./mcp-resource-registry";
+import { LocalAgentSignedUrlService } from "./signed-url";
+import { LocalAgentToolService } from "./local-agent-tool-service";
+import { LocalAgentAuditService } from "./local-agent-audit";
+import {
   createDefaultLocalAgentMcpTools,
   toMcpToolResult,
   validateToolCapability,
-  type LocalAgentMcpTool,
+  type AnyLocalAgentMcpTool,
   type LocalAgentToolContext
 } from "./mcp-tool-registry";
 
 const log = getMainLogger("pwrsnap:local-agent-mcp");
 const MCP_PATH = "/mcp";
 const PAIR_PATH = "/pair";
+const MEDIA_PATH = "/media";
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 
 const PairingRequestSchema = z.object({
@@ -54,18 +67,21 @@ const PairingRequestSchema = z.object({
 
 type GrantService = Pick<
   LocalAgentGrantService,
-  "authenticate" | "createGrant" | "recordUsage"
+  "authenticate" | "authorizeClient" | "createGrant" | "recordUsage"
 >;
 
 export type LocalAgentMcpServerOptions = {
   settings: DesktopSettingsService;
   secrets: DesktopSecretStore;
   grantService?: GrantService;
-  tools?: readonly LocalAgentMcpTool<z.ZodRawShape>[];
+  tools?: readonly AnyLocalAgentMcpTool[];
   host?: string;
   port?: number;
   discoveryFilePath?: string;
   approvePairing?: (request: LocalAgentPairingApprovalRequest) => Promise<boolean>;
+  resourceRegistry?: LocalAgentMcpResourceRegistry;
+  signedUrls?: LocalAgentSignedUrlService;
+  auditService?: LocalAgentAuditService;
 };
 
 export type LocalAgentMcpServerAddress = {
@@ -87,11 +103,14 @@ export class LocalAgentMcpServer {
   private readonly grantService: GrantService;
   private readonly host: string;
   private readonly port: number;
-  private readonly tools: readonly LocalAgentMcpTool<z.ZodRawShape>[];
+  private readonly tools: readonly AnyLocalAgentMcpTool[];
   private readonly discoveryFilePath: string | undefined;
   private readonly approvePairing:
     | ((request: LocalAgentPairingApprovalRequest) => Promise<boolean>)
     | undefined;
+  private readonly resourceRegistry: LocalAgentMcpResourceRegistry;
+  private readonly signedUrls: LocalAgentSignedUrlService;
+  private readonly auditService: LocalAgentAuditService;
   private server: HttpServer | null = null;
   private address: LocalAgentMcpServerAddress | null = null;
   private closed = false;
@@ -102,9 +121,22 @@ export class LocalAgentMcpServer {
     this.port = options.port ?? 0;
     this.discoveryFilePath = options.discoveryFilePath;
     this.approvePairing = options.approvePairing;
+    this.resourceRegistry =
+      options.resourceRegistry ?? new LocalAgentMcpResourceRegistry();
+    this.signedUrls = options.signedUrls ?? new LocalAgentSignedUrlService();
+    this.auditService =
+      options.auditService ?? new LocalAgentAuditService(options.settings);
     this.grantService =
       options.grantService ??
       new LocalAgentGrantService({ settings: options.settings, secrets: options.secrets });
+    const toolService = new LocalAgentToolService(
+      this.resourceRegistry,
+      this.signedUrls,
+      () =>
+        this.address === null
+          ? null
+          : `http://${this.address.host}:${this.address.port}`
+    );
     this.tools =
       options.tools ??
       createDefaultLocalAgentMcpTools({
@@ -120,11 +152,59 @@ export class LocalAgentMcpServer {
           if (!result.ok) return result;
           return ok({ rows: projectLocalAgentSearchRows(result.value.rows) });
         },
-        deleteToTrash: async (input, ctx) =>
-          bus.dispatch("library:delete", { id: input.captureId }, {
+        deleteToTrash: async (input, ctx) => {
+          const commandContext = {
             principal: "mcp",
             localAgent: ctx.commandContext.localAgent
-          })
+          } as const;
+          const existing = await bus.dispatch(
+            "library:byId",
+            { id: input.captureId },
+            commandContext
+          );
+          if (!existing.ok) return existing;
+          if (existing.value === null) {
+            return err({
+              kind: "validation",
+              code: "not_found",
+              message: `capture not found: ${input.captureId}`
+            });
+          }
+          if (existing.value.deleted_at !== null) {
+            return ok({
+              captureId: input.captureId,
+              deletedAt: existing.value.deleted_at,
+              alreadyInTrash: true,
+              restoreAvailable: true,
+              retentionDays: TRASH_RETENTION_DAYS
+            });
+          }
+          const deleted = await bus.dispatch(
+            "library:delete",
+            { id: input.captureId },
+            commandContext
+          );
+          if (!deleted.ok) return deleted;
+          return ok({
+            captureId: input.captureId,
+            deletedAt: new Date().toISOString(),
+            alreadyInTrash: false,
+            restoreAvailable: true,
+            retentionDays: TRASH_RETENTION_DAYS
+          });
+        },
+        metadata: (input, ctx) => toolService.metadata(input, ctx),
+        captureResource: (input, ctx) => toolService.captureResource(input, ctx),
+        captureExport: (input, ctx) => toolService.captureExport(input, ctx),
+        imageEditSend: (input, ctx) => toolService.imageEditSend(input, ctx),
+        imageEditStatus: (input, ctx) => toolService.imageEditStatus(input, ctx),
+        sizzleCreate: (input, ctx) => toolService.sizzleCreate(input, ctx),
+        sizzleSend: (input, ctx) => toolService.sizzleSend(input, ctx),
+        sizzleStatus: (input, ctx) => toolService.sizzleStatus(input, ctx),
+        sizzleRenderPreview: (input, ctx) =>
+          toolService.sizzleRender(input, ctx, "preview"),
+        sizzleRenderFull: (input, ctx) =>
+          toolService.sizzleRender(input, ctx, "full")
       });
   }
 
@@ -200,7 +280,56 @@ export class LocalAgentMcpServer {
       }
     );
     this.registerTools(mcp);
+    this.registerResources(mcp);
     return mcp;
+  }
+
+  private registerResources(mcp: McpServer): void {
+    const templates = [
+      ["capture-composite", "pwrsnap://capture/{captureId}/composite"],
+      ["capture-original", "pwrsnap://capture/{captureId}/original"],
+      ["capture-export", "pwrsnap://capture/{captureId}/export/{exportId}"],
+      [
+        "capture-edit-preview",
+        "pwrsnap://capture/{captureId}/edit/{threadId}/composite"
+      ],
+      ["sizzle-render", "pwrsnap://sizzle/{projectId}/{mode}/{renderId}"]
+    ] as const;
+    for (const [name, template] of templates) {
+      mcp.registerResource(
+        name,
+        new ResourceTemplate(template, { list: undefined }),
+        {
+          title: `PwrSnap ${name}`,
+          description: "Capability-protected local PwrSnap media",
+          mimeType: "application/octet-stream"
+        },
+        async (uri, _variables, extra) => {
+          const auth = this.authFromExtra(extra);
+          if (auth === null) throw new Error("unauthorized");
+          const resource = this.resourceRegistry.get(uri.toString());
+          try {
+            const resolved = await this.resourceRegistry.read(uri.toString(), auth);
+            await this.recordUsage(auth.clientId);
+            await this.auditResourceRead(resolved.resource, auth.clientId, "success");
+            return {
+              contents: [
+                {
+                  uri: uri.toString(),
+                  blob: resolved.bytes.toString("base64"),
+                  mimeType: resolved.resource.mimeType
+                }
+              ]
+            };
+          } catch (cause) {
+            if (resource !== undefined) {
+              await this.auditResourceRead(resource, auth.clientId, "failure");
+            }
+            throw cause;
+          }
+        }
+      );
+    }
   }
 
   private registerTools(mcp: McpServer): void {
@@ -213,7 +342,10 @@ export class LocalAgentMcpServer {
           inputSchema: tool.inputSchema,
           annotations: tool.annotations
         },
-        async (input, extra) => {
+        async (
+          input: Record<string, unknown>,
+          extra: RequestHandlerExtra<ServerRequest, ServerNotification>
+        ) => {
           const auth = this.authFromExtra(extra);
           if (auth === null) {
             return toMcpToolResult(
@@ -237,10 +369,12 @@ export class LocalAgentMcpServer {
               }
             }
           };
-          const allowed = validateToolCapability(tool, ctx);
+          const allowed = validateToolCapability(tool, ctx, input);
           if (!allowed.ok) return toMcpToolResult(allowed);
           await this.recordUsage(auth.clientId);
-          return toMcpToolResult(await tool.dispatch(input, ctx));
+          const result = await tool.dispatch(input, ctx);
+          await this.auditToolCall(tool.name, input, ctx, result);
+          return toMcpToolResult(result);
         }
       );
     }
@@ -271,11 +405,70 @@ export class LocalAgentMcpServer {
       await this.handlePairingRequest(req, res);
       return;
     }
+    if (requestUrl.pathname === MEDIA_PATH) {
+      await this.handleMediaRequest(req, res, requestUrl);
+      return;
+    }
     if (requestUrl.pathname !== MCP_PATH) {
       writeJsonResponse(res, 404, { error: "not_found" });
       return;
     }
     await this.handleMcpRequest(req, res, requestUrl);
+  }
+
+  private async handleMediaRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    requestUrl: URL
+  ): Promise<void> {
+    if (req.method !== "GET") {
+      res.setHeader("allow", "GET");
+      writeJsonResponse(res, 405, { error: "method_not_allowed" });
+      return;
+    }
+    const payload = this.signedUrls.verify(requestUrl);
+    if (payload === null) {
+      writeJsonResponse(res, 403, { error: "invalid_or_expired_media_grant" });
+      return;
+    }
+    const context = await this.grantService.authorizeClient(payload.clientId);
+    if (context === null) {
+      writeJsonResponse(res, 403, { error: "revoked_or_unknown_client" });
+      return;
+    }
+    try {
+      const resolved = await this.resourceRegistry.resolve(
+        payload.resourceUri,
+        context
+      );
+      const metadata = await stat(resolved.path);
+      res.writeHead(200, {
+        "cache-control": "private, no-store",
+        "content-type": resolved.resource.mimeType,
+        "content-length": String(metadata.size),
+        "x-content-type-options": "nosniff"
+      });
+      await this.recordUsage(context.clientId);
+      await this.auditResourceRead(resolved.resource, context.clientId, "success");
+      await new Promise<void>((resolve, reject) => {
+        const stream = createReadStream(resolved.path);
+        stream.once("error", reject);
+        res.once("close", resolve);
+        stream.pipe(res);
+      });
+    } catch (cause) {
+      if (!res.headersSent) {
+        const resource = this.resourceRegistry.get(payload.resourceUri);
+        if (resource !== undefined) {
+          await this.auditResourceRead(resource, context.clientId, "failure");
+        }
+        writeJsonResponse(res, 403, {
+          error: cause instanceof Error ? cause.message : "resource_forbidden"
+        });
+      } else if (!res.writableEnded) {
+        res.destroy();
+      }
+    }
   }
 
   private async handlePairingRequest(
@@ -407,6 +600,109 @@ export class LocalAgentMcpServer {
     } catch (cause) {
       log.warn("failed to record local agent usage", {
         clientId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  }
+
+  private async auditToolCall(
+    toolName: string,
+    input: Record<string, unknown>,
+    ctx: LocalAgentToolContext,
+    result: Result<unknown, PwrSnapError>
+  ): Promise<void> {
+    const captureId =
+      typeof input.captureId === "string" ? input.captureId : null;
+    const projectId =
+      typeof input.projectId === "string" ? input.projectId : null;
+    let audit:
+      | {
+          action: LocalAgentAuditAction;
+          capability: LocalAgentCapability;
+          subjectKind: "capture" | "sizzle";
+          subjectId: string;
+        }
+      | null = null;
+    if (
+      toolName === "pwrsnap_capture_export" &&
+      captureId !== null
+    ) {
+      audit = {
+        action: "capture.export",
+        capability: "capture.export",
+        subjectKind: "capture",
+        subjectId: captureId
+      };
+    } else if (
+      toolName === "pwrsnap_capture_delete_to_trash" &&
+      captureId !== null
+    ) {
+      audit = {
+        action: "trash.write",
+        capability: "trash.write",
+        subjectKind: "capture",
+        subjectId: captureId
+      };
+    } else if (toolName === "pwrsnap_image_edit_send" && captureId !== null) {
+      audit = {
+        action: "capture.edit",
+        capability: "capture.edit",
+        subjectKind: "capture",
+        subjectId: captureId
+      };
+    } else if (
+      toolName === "pwrsnap_sizzle_render_preview" &&
+      projectId !== null
+    ) {
+      audit = {
+        action: "sizzle.preview.read",
+        capability: "sizzle.preview.read",
+        subjectKind: "sizzle",
+        subjectId: projectId
+      };
+    } else if (
+      toolName === "pwrsnap_sizzle_render_full" &&
+      projectId !== null
+    ) {
+      audit = {
+        action: "sizzle.full.read",
+        capability: "sizzle.full.read",
+        subjectKind: "sizzle",
+        subjectId: projectId
+      };
+    }
+    if (audit === null) return;
+    try {
+      await this.auditService.record({
+        clientId: ctx.clientId,
+        ...audit,
+        outcome: result.ok ? "success" : "failure"
+      });
+    } catch (cause) {
+      log.warn("failed to record local agent audit entry", {
+        clientId: ctx.clientId,
+        action: audit.action,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  }
+
+  private async auditResourceRead(
+    resource: LocalAgentMcpResource,
+    clientId: string,
+    outcome: "success" | "failure"
+  ): Promise<void> {
+    if (resource.audit === undefined) return;
+    try {
+      await this.auditService.record({
+        clientId,
+        ...resource.audit,
+        outcome
+      });
+    } catch (cause) {
+      log.warn("failed to record local agent resource audit entry", {
+        clientId,
+        action: resource.audit.action,
         message: cause instanceof Error ? cause.message : String(cause)
       });
     }

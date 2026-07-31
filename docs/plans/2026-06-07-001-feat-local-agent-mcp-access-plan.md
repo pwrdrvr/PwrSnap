@@ -258,15 +258,22 @@ toggles even when a broad preset is selected.
 
 - `pwrsnap_image_edit_send`
   - Requires: `capture.edit`
-  - Args: capture id, instruction, requested model, optional thread id, reuse
-    policy.
+  - Args: capture id, instruction, requested PwrSnap provider/model, optional
+    thread id, reuse policy.
   - Wraps: Library Chat thread create/list/send substrate.
   - Returns: PwrSnap thread id, turn id, and a composite preview resource when
     the turn completes.
 
+- `pwrsnap_image_edit_status`
+  - Requires: `capture.edit`
+  - Args: capture id and PwrSnap thread id.
+  - Returns: the persistent thread status and a signed composite preview when
+    the turn is idle.
+
 - `pwrsnap_sizzle_create`
   - Requires: `sizzle.compose`
-  - Args: name, capture ids, optional brief/instructions.
+  - Args: name, capture ids, optional brief/instructions and PwrSnap
+    provider/model.
   - Wraps: `sizzle:create`, project scene mutation, Sizzle Chat create/send.
   - Returns: project id, thread id, project view.
 
@@ -275,6 +282,11 @@ toggles even when a broad preset is selected.
   - Args: project id or thread id, instruction.
   - Wraps: Sizzle Chat send.
   - Returns: thread id and turn id.
+
+- `pwrsnap_sizzle_status`
+  - Requires: `sizzle.compose`
+  - Args: project id and PwrSnap thread id.
+  - Returns: the persistent project-scoped composition thread status.
 
 - `pwrsnap_sizzle_render_preview`
   - Requires: `sizzle.preview.read`

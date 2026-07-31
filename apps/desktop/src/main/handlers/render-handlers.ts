@@ -18,6 +18,10 @@ import { getMainLogger } from "../log";
 import { getCaptureById } from "../persistence/captures-repo";
 import { ensureEffectiveSrcPath } from "../persistence/source-store";
 import { renderViaCoordinator } from "../render/coordinator";
+import {
+  CaptureExportError,
+  exportCapture
+} from "../render/export-coordinator";
 
 const log = getMainLogger("pwrsnap:render-handlers");
 
@@ -30,6 +34,27 @@ const DEFAULT_MAX_EDGE_PX = 1024;
 const HARD_MAX_EDGE_PX = 2000;
 
 export function registerRenderHandlers(): void {
+  bus.register("render:captureExport", async (req) => {
+    try {
+      return ok(await exportCapture(req));
+    } catch (cause) {
+      if (cause instanceof CaptureExportError) {
+        return err({
+          kind: cause.code === "export_failed" ? "render" : "validation",
+          code: cause.code,
+          message: cause.message,
+          cause
+        });
+      }
+      return err({
+        kind: "render",
+        code: "export_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
+  });
+
   bus.register("render:composite", async (req) => {
     const record = getCaptureById(req.captureId);
     if (record === null || record.deleted_at !== null) {

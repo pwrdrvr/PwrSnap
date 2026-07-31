@@ -1,7 +1,7 @@
 import { BrowserWindow, app, shell } from "electron";
 import { join } from "node:path";
 import { mkdir, readFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   EVENT_CHANNELS,
   err,
@@ -62,6 +62,7 @@ import {
   SecretUnavailableError
 } from "../settings/desktop-secret-store";
 import { resolveCacheFile } from "../render/coordinator";
+import { getCacheRoot } from "../persistence/paths";
 import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
 import {
   validateSizzleCreate,
@@ -776,7 +777,13 @@ export function registerSizzleHandlers(): void {
     return ok(undefined);
   });
 
-  bus.register("sizzle:render", async (req, ctx): Promise<Result<{ outputPath: string; durationSec: number }, PwrSnapError>> => {
+  bus.register("sizzle:render", async (req, ctx): Promise<Result<{
+    outputPath: string;
+    durationSec: number;
+    renderId: string;
+    widthPx: number;
+    heightPx: number;
+  }, PwrSnapError>> => {
     const v = validateSizzleIdRequest(req);
     if (!v.ok) return err(v.error);
     const project = await store.get(v.id);
@@ -791,7 +798,20 @@ export function registerSizzleHandlers(): void {
       });
     }
 
-    const dims = project.resolution === "720p" ? { w: 1280, h: 720 } : { w: 1920, h: 1080 };
+    if (req.mode !== undefined && req.mode !== "preview" && req.mode !== "full") {
+      return err({
+        kind: "validation",
+        code: "invalid_render_mode",
+        message: "render mode must be preview or full"
+      });
+    }
+    const renderMode = req.mode ?? "full";
+    const dims =
+      renderMode === "preview"
+        ? { w: 640, h: 360 }
+        : project.resolution === "720p"
+          ? { w: 1280, h: 720 }
+          : { w: 1920, h: 1080 };
 
     broadcastRenderProgress({ projectId: project.id, phase: "tts", message: "Resolving scenes", ratio: 0 });
 
@@ -1025,9 +1045,25 @@ export function registerSizzleHandlers(): void {
 
     broadcastRenderProgress({ projectId: project.id, phase: "compose", message: "Composing video", ratio: 0.5 });
 
-    const outDir = join(app.getPath("videos"), "PwrSnap");
+    const renderId = createHash("sha256")
+      .update(JSON.stringify({
+        projectId: project.id,
+        modifiedAt: project.modifiedAt,
+        renderMode,
+        width: dims.w,
+        height: dims.h
+      }))
+      .digest("hex")
+      .slice(0, 24);
+    const outDir =
+      renderMode === "preview"
+        ? join(getCacheRoot(), "sizzle-previews", project.id)
+        : join(app.getPath("videos"), "PwrSnap");
     await mkdir(outDir, { recursive: true });
-    const outputPath = join(outDir, `${sanitizeProjectFilename(project.name)}-${project.id}.mp4`);
+    const outputPath =
+      renderMode === "preview"
+        ? join(outDir, `${renderId}.mp4`)
+        : join(outDir, `${sanitizeProjectFilename(project.name)}-${project.id}.mp4`);
 
     try {
       await compose({
@@ -1053,19 +1089,32 @@ export function registerSizzleHandlers(): void {
     }
 
     const totalSec = sceneInputs.reduce((acc, s) => acc + s.durationSec, 0);
-    const next = await store.update(project.id, {
-      outputPath,
-      lastRenderedAt: new Date().toISOString()
+    if (renderMode === "full") {
+      await store.update(project.id, {
+        outputPath,
+        lastRenderedAt: new Date().toISOString()
+      });
+      await pushProjectsChanged();
+    }
+    log.info("sizzle:render done", {
+      id: project.id,
+      renderMode,
+      totalSec,
+      outputPath
     });
-    await pushProjectsChanged();
-    log.info("sizzle:render done", { id: next.id, totalSec, outputPath });
     broadcastRenderProgress({ projectId: project.id, phase: "done", message: "Render complete", ratio: 1 });
     void store.list().then((projects) => pruneTtsCache(projects)).catch((cause) => {
       log.warn("tts cache sweep failed", {
         message: cause instanceof Error ? cause.message : String(cause)
       });
     });
-    return ok({ outputPath, durationSec: totalSec });
+    return ok({
+      outputPath,
+      durationSec: totalSec,
+      renderId,
+      widthPx: dims.w,
+      heightPx: dims.h
+    });
   });
 }
 

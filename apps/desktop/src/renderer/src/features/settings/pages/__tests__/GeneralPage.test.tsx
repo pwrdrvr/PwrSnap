@@ -90,7 +90,7 @@ const baseSettings: Settings = {
     sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
   },
   library: { detailRail: { pinned: true, lastSelectedTab: "info" }, confirmBeforeTrash: true, gridZoom: 180 },
-  localAgents: { grants: [] }
+  localAgents: { grants: [], audit: [] }
 };
 
 const patchMock = vi.fn(async (): Promise<void> => undefined);

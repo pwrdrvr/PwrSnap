@@ -88,4 +88,44 @@ describe("createDefaultLocalAgentMcpTools", () => {
       limit: expect.anything()
     }));
   });
+
+  test("full tool set exposes media, edit, and Sizzle workflows", () => {
+    const noop = async () => ok({});
+    const tools = createDefaultLocalAgentMcpTools({
+      search: noop,
+      deleteToTrash: noop,
+      metadata: noop,
+      captureResource: noop,
+      captureExport: noop,
+      imageEditSend: noop,
+      imageEditStatus: noop,
+      sizzleCreate: noop,
+      sizzleSend: noop,
+      sizzleStatus: noop,
+      sizzleRenderPreview: noop,
+      sizzleRenderFull: noop
+    });
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "pwrsnap_library_search",
+      "pwrsnap_capture_delete_to_trash",
+      "pwrsnap_capture_metadata",
+      "pwrsnap_capture_resource",
+      "pwrsnap_capture_export",
+      "pwrsnap_image_edit_send",
+      "pwrsnap_image_edit_status",
+      "pwrsnap_sizzle_create",
+      "pwrsnap_sizzle_send",
+      "pwrsnap_sizzle_status",
+      "pwrsnap_sizzle_render_preview",
+      "pwrsnap_sizzle_render_full"
+    ]);
+
+    const resource = tools.find((tool) => tool.name === "pwrsnap_capture_resource");
+    expect(resource?.requiredCapabilitiesForInput?.({
+      captureId: "cap_1",
+      variant: "original"
+    })).toEqual(["capture.original.read"]);
+    const captureExport = tools.find((tool) => tool.name === "pwrsnap_capture_export");
+    expect(captureExport?.requiredCapabilities).toEqual(["capture.export"]);
+  });
 });

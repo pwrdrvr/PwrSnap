@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -28,7 +29,9 @@ vi.mock("electron", () => ({
 import { DesktopSecretStore } from "../../settings/desktop-secret-store";
 import { DesktopSettingsService } from "../../settings/desktop-settings-service";
 import { LocalAgentGrantService } from "../local-agent-grants";
+import { LocalAgentMcpResourceRegistry } from "../mcp-resource-registry";
 import { LocalAgentMcpServer } from "../mcp-server";
+import { LocalAgentSignedUrlService } from "../signed-url";
 import type { LocalAgentMcpTool } from "../mcp-tool-registry";
 
 let workDir = "";
@@ -371,6 +374,145 @@ describe("LocalAgentMcpServer", () => {
     const address = await server.start();
     const res = await fetch(`http://${address.host}:${address.port}/other`);
     expect(res.status).toBe(404);
+  });
+
+  test("streams signed media and revocation invalidates an existing URL", async () => {
+    const mediaPath = join(workDir, "original.png");
+    writeFileSync(mediaPath, "sensitive-media");
+    const resources = new LocalAgentMcpResourceRegistry();
+    resources.register({
+      uri: "pwrsnap://capture/cap_1/original",
+      name: "original",
+      mimeType: "image/png",
+      requiredCapabilities: ["capture.original.read"],
+      ownerClientId: "lag_mcp",
+      audit: {
+        action: "capture.original.read",
+        capability: "capture.original.read",
+        subjectKind: "capture",
+        subjectId: "cap_1"
+      },
+      resolvePath: async () => mediaPath
+    });
+    const signedUrls = new LocalAgentSignedUrlService(Buffer.alloc(32, 3));
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["capture.original.read"]
+    });
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0,
+      resourceRegistry: resources,
+      signedUrls
+    });
+    const address = await server.start();
+    const signed = signedUrls.mint({
+      baseUrl: `http://${address.host}:${address.port}`,
+      resourceUri: "pwrsnap://capture/cap_1/original",
+      clientId: "lag_mcp"
+    });
+
+    const first = await fetch(signed.url);
+    expect(first.status).toBe(200);
+    expect(first.headers.get("cache-control")).toBe("private, no-store");
+    expect(first.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await first.text()).toBe("sensitive-media");
+
+    client = await connect(address.url, "pws_local_mcp-token");
+    const resource = await client.readResource({
+      uri: "pwrsnap://capture/cap_1/original"
+    });
+    expect(resource.contents[0]).toMatchObject({
+      uri: "pwrsnap://capture/cap_1/original",
+      mimeType: "image/png",
+      blob: Buffer.from("sensitive-media").toString("base64")
+    });
+    expect((await settings.read()).localAgents.audit).toHaveLength(2);
+
+    await grantService.revokeGrant("lag_mcp");
+    const revoked = await fetch(signed.url);
+    expect(revoked.status).toBe(403);
+    expect((await settings.read()).localAgents.audit).toHaveLength(2);
+  });
+
+  test("rejects signed media replay through a different Host header", async () => {
+    const mediaPath = join(workDir, "media.png");
+    writeFileSync(mediaPath, "media");
+    const resources = new LocalAgentMcpResourceRegistry();
+    resources.register({
+      uri: "pwrsnap://capture/cap_1/composite",
+      name: "composite",
+      mimeType: "image/png",
+      requiredCapabilities: ["capture.composite.read"],
+      resolvePath: async () => mediaPath
+    });
+    const signedUrls = new LocalAgentSignedUrlService(Buffer.alloc(32, 4));
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["capture.composite.read"]
+    });
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0,
+      resourceRegistry: resources,
+      signedUrls
+    });
+    const address = await server.start();
+    const signed = signedUrls.mint({
+      baseUrl: `http://${address.host}:${address.port}`,
+      resourceUri: "pwrsnap://capture/cap_1/composite",
+      clientId: "lag_mcp"
+    });
+
+    const responseStatus = await new Promise<number | undefined>((resolve, reject) => {
+      const target = new URL(signed.url);
+      const req = httpRequest({
+        hostname: address.host,
+        port: address.port,
+        path: `${target.pathname}${target.search}`,
+        headers: { host: `localhost:${address.port}` }
+      }, (response) => {
+        response.resume();
+        response.once("end", () => resolve(response.statusCode));
+      });
+      req.once("error", reject);
+      req.end();
+    });
+
+    expect(responseStatus).toBe(403);
+  });
+
+  test("rejects request bodies larger than one MiB", async () => {
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0,
+      approvePairing: async () => true
+    });
+    const address = await server.start();
+
+    const response = await fetch(address.pairUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "oversize",
+        capabilities: ["library.read"],
+        padding: "x".repeat(1024 * 1024)
+      })
+    });
+
+    expect(response.status).toBe(413);
   });
 
   test("shutdown closes the socket and rejects subsequent requests", async () => {

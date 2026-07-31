@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
-import type { LocalAgentCapability, LocalAgentClientGrant } from "@pwrsnap/shared";
+import type {
+  LocalAgentAuditEntry,
+  LocalAgentCapability,
+  LocalAgentClientGrant
+} from "@pwrsnap/shared";
 import { dispatch } from "../../../lib/pwrsnap";
 import { Card, Row } from "../components";
 import { useSettingsContext } from "../SettingsContext";
@@ -25,25 +29,34 @@ const SENSITIVE_CAPABILITIES = new Set<LocalAgentCapability>([
 export function LocalAgentsPage(): ReactElement {
   const { settings } = useSettingsContext();
   const [grants, setGrants] = useState<LocalAgentClientGrant[]>([]);
+  const [audit, setAudit] = useState<LocalAgentAuditEntry[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
-    const result = await dispatch("localAgents:list", {});
+    const [result, auditResult] = await Promise.all([
+      dispatch("localAgents:list", {}),
+      dispatch("localAgents:audit", { limit: 50 })
+    ]);
     if (result.ok) {
       setGrants(result.value.grants);
       setError(null);
     } else {
       setError(result.error.message);
     }
+    if (auditResult.ok) {
+      setAudit(auditResult.value.entries);
+    } else {
+      setError(auditResult.error.message);
+    }
     setLoading(false);
   }, []);
 
   useEffect(() => {
     void load();
-  }, [load, settings?.localAgents.grants]);
+  }, [load, settings?.localAgents.grants, settings?.localAgents.audit]);
 
   const activeCount = useMemo(
     () => grants.filter((grant) => grant.revokedAt === null).length,
@@ -132,8 +145,55 @@ export function LocalAgentsPage(): ReactElement {
           <span className="pss__badge">soft delete</span>
         </Row>
       </Card>
+
+      <Card eyebrow="ACTIVITY" title="Recent sensitive access">
+        {audit.length === 0 ? (
+          <Row
+            label="No sensitive activity"
+            sub="Original reads, exports, edits, Trash moves, and Sizzle renders appear here."
+          >
+            <span className="pss__badge">none</span>
+          </Row>
+        ) : (
+          audit.map((entry) => (
+            <Row
+              key={entry.id}
+              label={auditActionLabel(entry)}
+              sub={`${grantName(entry.clientId, grants)} · ${entry.subjectId} · ${formatDate(entry.occurredAt)}`}
+            >
+              <span className={"pss__badge" + (entry.outcome === "failure" ? " is-bad" : "")}>
+                {entry.outcome}
+              </span>
+            </Row>
+          ))
+        )}
+      </Card>
     </>
   );
+}
+
+function grantName(
+  clientId: string,
+  grants: readonly LocalAgentClientGrant[]
+): string {
+  return grants.find((grant) => grant.id === clientId)?.name ?? clientId;
+}
+
+function auditActionLabel(entry: LocalAgentAuditEntry): string {
+  switch (entry.action) {
+    case "capture.original.read":
+      return "Original image read";
+    case "capture.export":
+      return "Capture exported";
+    case "capture.edit":
+      return "Image edit requested";
+    case "trash.write":
+      return "Capture moved to Trash";
+    case "sizzle.preview.read":
+      return "Sizzle preview rendered";
+    case "sizzle.full.read":
+      return "Full Sizzle rendered";
+  }
 }
 
 function LocalAgentGrantRow({

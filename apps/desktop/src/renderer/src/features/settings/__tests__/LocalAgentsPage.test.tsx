@@ -3,7 +3,11 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import type { LocalAgentClientGrant, Settings } from "@pwrsnap/shared";
+import type {
+  LocalAgentAuditEntry,
+  LocalAgentClientGrant,
+  Settings
+} from "@pwrsnap/shared";
 import { SettingsContext } from "../SettingsContext";
 import type { UseSettingsValue } from "../useSettings";
 import { LocalAgentsPage } from "../pages/LocalAgentsPage";
@@ -25,17 +29,21 @@ const grant: LocalAgentClientGrant = {
 };
 
 const baseSettings = {
-  localAgents: { grants: [grant] }
-} as Settings;
+  localAgents: { grants: [grant], audit: [] }
+} as unknown as Settings;
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-function installFakeApi(currentGrant: LocalAgentClientGrant = grant): {
+function installFakeApi(
+  currentGrant: LocalAgentClientGrant = grant,
+  audit: LocalAgentAuditEntry[] = []
+): {
   dispatch: ReturnType<typeof vi.fn>;
 } {
   const dispatch = vi.fn(async (name: string, req: unknown): Promise<AnyResult> => {
     if (name === "localAgents:list") return { ok: true, value: { grants: [currentGrant] } };
+    if (name === "localAgents:audit") return { ok: true, value: { entries: audit } };
     if (name === "localAgents:revoke") {
       return {
         ok: true,
@@ -121,5 +129,24 @@ describe("LocalAgentsPage", () => {
     });
     expect(dispatch).toHaveBeenCalledWith("localAgents:revoke", { id: "lag_test" });
     expect(el.textContent).toContain("Revoked");
+  });
+
+  test("renders metadata-only sensitive activity", async () => {
+    installFakeApi(grant, [{
+      id: "lae_1",
+      clientId: grant.id,
+      action: "capture.original.read",
+      capability: "capture.original.read",
+      subjectKind: "capture",
+      subjectId: "cap_1",
+      outcome: "success",
+      occurredAt: "2026-06-07T13:00:00.000Z"
+    }]);
+
+    const el = await renderPage();
+
+    expect(el.textContent).toContain("Original image read");
+    expect(el.textContent).toContain("cap_1");
+    expect(el.textContent).toContain("success");
   });
 });

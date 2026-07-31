@@ -45,7 +45,16 @@ export function toCaptureSearchRequest(input: LocalAgentSearchInput): CaptureSea
 export function projectLocalAgentSearchRows(
   rows: readonly CaptureSearchResultRow[]
 ): LocalAgentSearchRow[] {
-  return rows.map(({ record, enrichment, matchSnippet }) => ({
+  return rows.map(({ record, enrichment, matchSnippet }) =>
+    projectLocalAgentCapture({ record, enrichment, matchSnippet })
+  );
+}
+
+export function projectLocalAgentCapture(
+  row: CaptureSearchResultRow
+): LocalAgentSearchRow {
+  const { record, enrichment, matchSnippet } = row;
+  return {
     id: record.id,
     kind: record.kind,
     capturedAt: record.captured_at,
@@ -63,5 +72,5 @@ export function projectLocalAgentSearchRows(
     tags: enrichment?.acceptedTags ?? [],
     hasOcr: (enrichment?.ocrText?.trim().length ?? 0) > 0,
     matchSnippet
-  }));
+  };
 }

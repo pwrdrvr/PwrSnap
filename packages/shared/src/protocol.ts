@@ -423,6 +423,33 @@ export type CaptureSearchResultRow = {
 
 export type RenderPreset = "low" | "med" | "high";
 
+export type CaptureExportVariant = "composite" | "original";
+export type CaptureExportFormat = "png" | "jpeg" | "webp" | "pdf" | "heic";
+
+export type CaptureExportRequest = {
+  captureId: string;
+  variant?: CaptureExportVariant;
+  format?: CaptureExportFormat;
+  maxWidth?: number;
+  maxHeight?: number;
+  scale?: number;
+  quality?: number;
+  background?: string;
+};
+
+export type CaptureExportResult = {
+  captureId: string;
+  variant: CaptureExportVariant;
+  format: CaptureExportFormat;
+  path: string;
+  mimeType: string;
+  widthPx: number;
+  heightPx: number;
+  byteSize: number;
+  fromCache: boolean;
+  exportId: string;
+};
+
 export type CapturePresetMetric = {
   preset: RenderPreset;
   widthPx: number;
@@ -710,6 +737,25 @@ export type LocalAgentClientGrantPatch = {
   capabilities?: LocalAgentCapability[];
   revokedAt?: string | null;
   lastUsedAt?: string | null;
+};
+
+export type LocalAgentAuditAction =
+  | "capture.original.read"
+  | "capture.export"
+  | "capture.edit"
+  | "trash.write"
+  | "sizzle.preview.read"
+  | "sizzle.full.read";
+
+export type LocalAgentAuditEntry = {
+  id: string;
+  clientId: string;
+  action: LocalAgentAuditAction;
+  capability: LocalAgentCapability;
+  subjectKind: "capture" | "sizzle";
+  subjectId: string;
+  outcome: "success" | "failure";
+  occurredAt: string;
 };
 
 /** Every secret the app persists. Plaintext values never cross the IPC
@@ -1937,6 +1983,7 @@ export type Settings = {
    *  only renderer-safe metadata and capability grants. */
   localAgents: {
     grants: LocalAgentClientGrant[];
+    audit: LocalAgentAuditEntry[];
   };
 };
 
@@ -2404,6 +2451,7 @@ export type SettingsPatch = {
   };
   localAgents?: {
     grants?: LocalAgentClientGrant[];
+    audit?: LocalAgentAuditEntry[];
   };
 };
 
@@ -3003,6 +3051,10 @@ export type Commands = {
     req: { captureId: string; maxEdgePx?: number };
     res: { base64: string; mimeType: "image/png"; widthPx: number; heightPx: number };
   };
+  "render:captureExport": {
+    req: CaptureExportRequest;
+    res: CaptureExportResult;
+  };
 
   // ---- canvas (v2 captures only) ----
   /** Update the canvas dimensions of a v2 capture. Writes the new
@@ -3140,6 +3192,10 @@ export type Commands = {
   "localAgents:update": {
     req: { id: string; patch: LocalAgentClientGrantPatch };
     res: LocalAgentClientGrant;
+  };
+  "localAgents:audit": {
+    req: { limit?: number };
+    res: { entries: LocalAgentAuditEntry[] };
   };
 
   // ---- app ----
@@ -3663,8 +3719,14 @@ export type Commands = {
   };
   "sizzle:delete": { req: { id: string }; res: void };
   "sizzle:render": {
-    req: { id: string };
-    res: { outputPath: string; durationSec: number };
+    req: { id: string; mode?: "preview" | "full" };
+    res: {
+      outputPath: string;
+      durationSec: number;
+      renderId: string;
+      widthPx: number;
+      heightPx: number;
+    };
   };
   "sizzle:revealOutput": { req: { id: string }; res: void };
   /**

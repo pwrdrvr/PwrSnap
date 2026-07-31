@@ -85,6 +85,7 @@ import { getRecordingService } from "./recording/recording-service";
 import { isRecordingActive } from "./recording/recording-state";
 import {
   getDesktopSettingsServices,
+  getLocalAgentAuditService,
   getLocalAgentGrantService,
   onSettingsChanged,
   registerSettingsDataHandlers,
@@ -1895,6 +1896,7 @@ export function bootstrapApp(): void {
           settings: service,
           secrets,
           grantService: getLocalAgentGrantService(),
+          auditService: getLocalAgentAuditService(),
           discoveryFilePath: join(userData, "local-agent-mcp.json"),
           approvePairing: approveLocalAgentPairing
         });

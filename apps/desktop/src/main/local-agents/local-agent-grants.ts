@@ -211,6 +211,22 @@ export class LocalAgentGrantService {
     };
   }
 
+  async authorizeClient(
+    clientId: string,
+    requiredCapabilities: readonly LocalAgentCapability[] = []
+  ): Promise<NonNullable<CommandContext["localAgent"]> | null> {
+    const settings = await this.settings.read();
+    const grant = settings.localAgents.grants.find((item) => item.id === clientId);
+    if (
+      grant === undefined ||
+      grant.revokedAt !== null ||
+      !hasCapabilities(grant, requiredCapabilities)
+    ) {
+      return null;
+    }
+    return localAgentContextFromGrant(grant);
+  }
+
   private async notifySettingsChanged(settings: Settings): Promise<void> {
     await this.onSettingsChanged?.(settings);
   }

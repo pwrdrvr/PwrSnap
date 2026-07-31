@@ -610,7 +610,7 @@ export function registerCaptureHandlers(): void {
       // so the user isn't left with orphan rows alongside an error.
       // Rollback goes through `library:delete` (soft-delete + move to
       // trash + broadcast) — if they want to recover, they're in
-      // trash for 14 days.
+      // trash for 30 days.
       const records: CaptureRecord[] = [];
       const rollback = async (cause: string): Promise<void> => {
         if (records.length === 0) return;

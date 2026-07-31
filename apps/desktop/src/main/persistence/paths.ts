@@ -135,7 +135,7 @@ export function getCacheLayerSourcePath(captureId: string, sha256: string): stri
 /**
  * Schema-fail bundles park here, never auto-deleted, so the user
  * (or doctor) can decide whether to recover or discard. Distinct
- * from `.trash/` which is a soft-delete with a 14d retention sweep.
+ * from `.trash/` which is a soft-delete with a 30d retention sweep.
  */
 export function getQuarantineRoot(): string {
   return join(getDataRoot(), ".quarantine");

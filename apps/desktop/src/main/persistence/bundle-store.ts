@@ -62,6 +62,7 @@ import {
 import { getMainLogger } from "../log";
 import { buildCaptureBundleFilenameStem, bundleStemFromPath } from "./bundle-filename";
 import { readBundleFilenameTimestampZone } from "./bundle-filename-settings";
+import { TRASH_RETENTION_DAYS } from "./trash-retention";
 
 import type { CursorLayerPlacement } from "../capture/cursor-sample";
 
@@ -1230,8 +1231,6 @@ async function runRepackV2(captureId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 // Trash + GC for bundle pairs.
 // ---------------------------------------------------------------------------
-
-const TRASH_RETENTION_DAYS = 14;
 
 /**
  * Move a bundle + paired PNG to `<userData>/.trash/<id>/`. Two

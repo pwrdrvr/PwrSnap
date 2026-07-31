@@ -1286,9 +1286,9 @@ export type CodexTestResult = {
 /** Fallback Codex CLI models PwrSnap can show before `model/list` returns.
  *  The actual model picker is populated from the user's installed Codex
  *  App Server so newly-available models don't require an app release. */
-export const CODEX_CAPTION_MODELS = ["gpt-5.4-mini"] as const;
+export const CODEX_CAPTION_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini"] as const;
 export type CodexCaptionModel = string;
-export const DEFAULT_CODEX_CAPTION_MODEL: CodexCaptionModel = "gpt-5.4-mini";
+export const DEFAULT_CODEX_CAPTION_MODEL: CodexCaptionModel = "gpt-5.6-luna";
 
 export function isCodexCaptionModel(value: unknown): value is CodexCaptionModel {
   return (
@@ -1330,6 +1330,7 @@ export type CodexModelList = {
  *  this as an open string and advertises the valid values per model, so this
  *  must not be narrowed to a fixed union. */
 export type AiReasoningEffort = string;
+export const DEFAULT_ENRICHMENT_REASONING_EFFORT: AiReasoningEffort = "low";
 
 /** Compatibility fallback used when a backend/model does not advertise its
  *  supported efforts. Live Codex model choices come from `model/list`. */
@@ -1364,7 +1365,7 @@ export type AiSurfaceDefault = {
 
 /** Patch shape for ONE surface's defaults. Distinct from
  *  `Partial<AiSurfaceDefault>` because the wire/patch form lets the
- *  renderer CLEAR a field back to "Codex default": an explicit empty
+ *  renderer CLEAR a field back to its managed default: an explicit empty
  *  string on `provider` / `model` / `reasoning` drops the stored field
  *  (substrate hygiene rule `undefined ≠ null ≠ ""`). `reasoning` accepts
  *  the empty string as its clear sentinel since it can't be `null` (the
@@ -1401,10 +1402,9 @@ export function isAiSurfaceId(value: unknown): value is AiSurfaceId {
 }
 
 /** Default `ai.defaults` state. Mirrored by `defaultSettings()` in the
- *  desktop service. Empty objects = "use the Codex default for every
- *  surface" — but note the desktop service's `parseV1` seeds
- *  `enrichment.model` from the legacy `codex.captionModel` for back-compat
- *  so existing enrichment behavior is preserved. */
+ *  desktop service. Empty objects are intentional: they mean "follow the
+ *  managed default", so a later app release can move unpinned users without
+ *  rewriting their settings. */
 export const DEFAULT_AI_SURFACE_DEFAULTS: AiSurfaceDefaults = {
   libraryChat: {},
   sizzleChat: {},
@@ -1645,6 +1645,11 @@ export type Settings = {
    *  version go through the legacy-shape catalog in the service before
    *  being normalized. */
   schemaVersion: 1;
+  /** Last release whose managed-defaults migrations were applied. Internal,
+   *  additive, and not writable through `SettingsPatch`. The desktop service
+   *  uses an ordered release ledger so skipped app versions still run every
+   *  missing cleanup exactly once. Optional for pre-ledger settings files. */
+  lastDefaultsMigrationVersion?: string;
   codex: {
     mode: "auto" | "pinned";
     /** Path the user pinned. Empty string = no pin. Kept across mode
@@ -1652,11 +1657,9 @@ export type Settings = {
     pinnedPath: string;
     /** CODEX_HOME / profile dir. Empty string = system default (`~/.codex`). */
     profile: string;
-    /** Codex model ID used for the capture-enrichment turn (captions,
-     *  tag suggestions, OCR — all one Codex call). MUST be a member of
-     *  `CODEX_CAPTION_MODELS`. Mini-tier is the only allowed option
-     *  today because captioning is high-volume + cost-sensitive; widen
-     *  the list when we want users to opt into a larger model. */
+    /** Legacy capture-enrichment model setting retained only for backward
+     *  compatibility with older settings files. Active selection lives at
+     *  `ai.defaults.enrichment`; runtime intentionally ignores this field. */
     captionModel: CodexCaptionModel;
   };
   ai: {

@@ -8,6 +8,7 @@ import {
   AcceptTagRequestSchema,
   EVENT_CHANNELS,
   DEFAULT_CODEX_CAPTION_MODEL,
+  DEFAULT_ENRICHMENT_REASONING_EFFORT,
   RejectTagRequestSchema,
   err,
   ok
@@ -326,16 +327,14 @@ function codexCommandForSettings(settings: Settings): string {
     : "codex";
 }
 
-/** Resolve the enrichment model from the per-surface AI default,
- *  falling back to the legacy `codex.captionModel` and then the
- *  hardcoded default. `parseV1` seeds `ai.defaults.enrichment.model`
- *  from `codex.captionModel` for upgraded settings, so existing
- *  behavior is preserved; a fresh install (empty enrichment.model)
- *  falls through to captionModel here. */
+/** Resolve the enrichment model from an explicit per-surface selection or
+ *  PwrSnap's managed default. `codex.captionModel` is a read-compatibility
+ *  field only; using it here would materialize an old product default as a
+ *  permanent user pin. */
 function enrichmentModelForSettings(settings: Settings): string {
   const surfaceModel = settings.ai.defaults.enrichment.model;
   if (surfaceModel !== undefined && surfaceModel.length > 0) return surfaceModel;
-  return settings.codex.captionModel || DEFAULT_CODEX_CAPTION_MODEL;
+  return DEFAULT_CODEX_CAPTION_MODEL;
 }
 
 /** Enrich a usage detail with friendly model labels for the UI. `lookupLabel`
@@ -364,12 +363,13 @@ export function withUsageModelLabels(
 
 /** Backend-aware enrichment model selection. For an ACP agent, use the
  *  per-surface model id verbatim ("" → the agent's own default) — the Codex
- *  caption-model fallback is meaningless there and a Codex id would be wrong.
- *  For Codex, keep the legacy fallback chain. Exported for testing. */
+ *  managed Codex fallback is meaningless there and a Codex id would be wrong.
+ *  A disabled ACP selection falls back to PwrSnap's managed Codex default.
+ *  Exported for testing. */
 export function enrichmentSelectedModel(settings: Settings, acpAgentId: string | undefined): string {
   if (acpAgentId !== undefined) return settings.ai.defaults.enrichment.model ?? "";
   if (settings.ai.defaults.enrichment.provider?.startsWith("acp:") === true) {
-    return settings.codex.captionModel || DEFAULT_CODEX_CAPTION_MODEL;
+    return DEFAULT_CODEX_CAPTION_MODEL;
   }
   return enrichmentModelForSettings(settings);
 }
@@ -379,7 +379,7 @@ export function enrichmentSelectedModel(settings: Settings, acpAgentId: string |
  *  historical default is "low" — preserved when the user hasn't pinned
  *  a reasoning value. */
 function enrichmentEffortForSettings(settings: Settings): string {
-  return settings.ai.defaults.enrichment.reasoning ?? "low";
+  return settings.ai.defaults.enrichment.reasoning ?? DEFAULT_ENRICHMENT_REASONING_EFFORT;
 }
 
 /** The ACP agent id to run enrichment on, when `ai.defaults.enrichment.provider`
@@ -834,11 +834,12 @@ export function registerCodexHandlers(params?: {
     const env = codexEnvForProfile(settings.codex.profile);
     const codexHome = env["CODEX_HOME"] ?? null;
     const profile = settings.codex.profile.length > 0 ? settings.codex.profile : "(default)";
+    const selectedModel = enrichmentModelForSettings(settings);
     log.info("codex:models listing", {
       command,
       codexHome,
       profile,
-      selectedModel: settings.codex.captionModel,
+      selectedModel,
       includeHidden
     });
     try {
@@ -852,7 +853,7 @@ export function registerCodexHandlers(params?: {
           command,
           codexHome,
           profile,
-          selectedModel: settings.codex.captionModel,
+          selectedModel,
           includeHidden
         });
       }
@@ -878,7 +879,7 @@ export function registerCodexHandlers(params?: {
         command,
         codexHome,
         profile,
-        selectedModel: settings.codex.captionModel,
+        selectedModel,
         includeHidden,
         count: models.length,
         imageCapableCount: imageCapableModelIds.length,
@@ -891,13 +892,13 @@ export function registerCodexHandlers(params?: {
       } else {
         log.info("codex:models listed models", logPayload);
       }
-      return ok({ models, selectedModel: settings.codex.captionModel });
+      return ok({ models, selectedModel });
     } catch (error) {
       log.warn("codex:models failed", {
         command,
         codexHome,
         profile,
-        selectedModel: settings.codex.captionModel,
+        selectedModel,
         includeHidden,
         durationMs: Math.round(performance.now() - startedAt),
         message: error instanceof Error ? error.message : String(error)

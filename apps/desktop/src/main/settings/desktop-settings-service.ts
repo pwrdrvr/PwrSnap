@@ -49,8 +49,10 @@ import type {
   ToolSizePreset
 } from "@pwrsnap/shared";
 import {
+  DEFAULT_AI_SURFACE_DEFAULTS,
   DEFAULT_CHAT_SETTINGS,
   DEFAULT_CODEX_CAPTION_MODEL,
+  DEFAULT_ENRICHMENT_REASONING_EFFORT,
   DEFAULT_HOTKEYS,
   HOT_CPU_PROFILE_SLOWBURN_THRESHOLD_DEFAULT_PERCENT,
   HOT_CPU_PROFILE_START_DELAY_DEFAULT_MS,
@@ -87,6 +89,9 @@ const execFile = promisify(execFileCallback);
  *  PwrAgnt's `DEFAULT_PROBE_TIMEOUT_MS`. */
 const CODEX_TEST_TIMEOUT_MS = 7500;
 const ERROR_MESSAGE_LIMIT = 240;
+const LEGACY_ENRICHMENT_DEFAULT_MODEL = "gpt-5.4-mini";
+const DEFAULTS_MIGRATION_VERSIONS: readonly string[] = ["1.0.0-beta.26"];
+const CURRENT_DEFAULTS_MIGRATION_VERSION = "1.0.0-beta.26";
 
 type Logger = ReturnType<typeof getMainLogger>;
 
@@ -98,6 +103,7 @@ export type DesktopSettingsServiceConfig = {
 export function defaultSettings(): Settings {
   return {
     schemaVersion: 1,
+    lastDefaultsMigrationVersion: CURRENT_DEFAULTS_MIGRATION_VERSION,
     codex: {
       mode: "auto",
       pinnedPath: "",
@@ -110,16 +116,13 @@ export function defaultSettings(): Settings {
       budgetSafetyDisabledAt: null,
       autoAcceptSuggestions: false,
       chat: { ...DEFAULT_CHAT_SETTINGS, sensitiveDataPatterns: [] },
-      // Per-surface defaults start empty (= "use the Codex default for
-      // every surface"). `parseV1` seeds `enrichment.model` from the
-      // legacy `codex.captionModel` so existing enrichment behavior is
-      // preserved; a fresh install (this function) has no legacy file to
-      // read from, so enrichment.model is left empty here and the
-      // enrichment path falls back to `codex.captionModel` at call time.
+      // Empty surface objects mean "follow the managed default". Runtime and
+      // Settings resolve enrichment to Luna Low without persisting that pair,
+      // so future default changes automatically carry unpinned users forward.
       defaults: {
-        libraryChat: {},
-        sizzleChat: {},
-        enrichment: {}
+        libraryChat: { ...DEFAULT_AI_SURFACE_DEFAULTS.libraryChat },
+        sizzleChat: { ...DEFAULT_AI_SURFACE_DEFAULTS.sizzleChat },
+        enrichment: { ...DEFAULT_AI_SURFACE_DEFAULTS.enrichment }
       },
       // No ACP agents enabled on a fresh install. The user opts agents
       // into the enabled set from Settings → AI → ACP agents (additive,
@@ -543,6 +546,30 @@ function parseEditorSettings(raw: unknown, defaults: EditorSettings): EditorSett
   };
 }
 
+/** beta.26 stops materializing PwrSnap's managed enrichment default in user
+ *  settings. Clear the exact historical GPT-5.4 Mini/Low shape back to `{}` so
+ *  subsequent managed-default changes carry the user forward automatically. */
+function migrateEnrichmentDefaultToManagedLuna(defaults: AiSurfaceDefaults): AiSurfaceDefaults {
+  const enrichment = defaults.enrichment;
+  const hasHistoricalEffort =
+    enrichment.reasoning === undefined ||
+    enrichment.reasoning === DEFAULT_ENRICHMENT_REASONING_EFFORT;
+  const isMaterializedHistoricalDefault =
+    enrichment.model === LEGACY_ENRICHMENT_DEFAULT_MODEL;
+
+  if (
+    enrichment.provider !== undefined ||
+    !hasHistoricalEffort ||
+    !isMaterializedHistoricalDefault
+  ) {
+    return defaults;
+  }
+  return {
+    ...defaults,
+    enrichment: {}
+  };
+}
+
 function parseV1(raw: unknown): Settings | null {
   if (!isRecord(raw)) return null;
   if (raw.schemaVersion !== 1) return null;
@@ -556,8 +583,38 @@ function parseV1(raw: unknown): Settings | null {
   const updates = isRecord(raw.updates) ? raw.updates : {};
   const storage = isRecord(raw.storage) ? raw.storage : {};
   const recording = isRecord(raw.recording) ? raw.recording : {};
+  const storedDefaultsMigrationVersion =
+    typeof raw.lastDefaultsMigrationVersion === "string" &&
+    raw.lastDefaultsMigrationVersion.trim().length > 0
+      ? raw.lastDefaultsMigrationVersion.trim()
+      : undefined;
+  const storedCaptionModel = isCodexCaptionModel(codex.captionModel)
+    ? codex.captionModel
+    : defaults.codex.captionModel;
+  let aiSurfaceDefaults = parseAiSurfaceDefaults(ai.defaults);
+  const storedDefaultsMigrationIndex =
+    storedDefaultsMigrationVersion === undefined
+      ? -1
+      : DEFAULTS_MIGRATION_VERSIONS.indexOf(storedDefaultsMigrationVersion);
+  const recognizesDefaultsMigrationVersion =
+    storedDefaultsMigrationVersion === undefined || storedDefaultsMigrationIndex >= 0;
+  if (recognizesDefaultsMigrationVersion) {
+    for (
+      let index = storedDefaultsMigrationIndex + 1;
+      index < DEFAULTS_MIGRATION_VERSIONS.length;
+      index += 1
+    ) {
+      const version = DEFAULTS_MIGRATION_VERSIONS[index];
+      if (version === "1.0.0-beta.26") {
+        aiSurfaceDefaults = migrateEnrichmentDefaultToManagedLuna(aiSurfaceDefaults);
+      }
+    }
+  }
   return {
     schemaVersion: 1,
+    lastDefaultsMigrationVersion: recognizesDefaultsMigrationVersion
+      ? CURRENT_DEFAULTS_MIGRATION_VERSION
+      : storedDefaultsMigrationVersion,
     codex: {
       mode: pickMode(codex.mode ?? defaults.codex.mode),
       pinnedPath: pickString(codex.pinnedPath, defaults.codex.pinnedPath),
@@ -566,9 +623,7 @@ function parseV1(raw: unknown): Settings | null {
       // it. Codex model availability is account/build dependent, so keep
       // valid model-id strings instead of pinning this parser to a stale
       // hardcoded allowlist.
-      captionModel: isCodexCaptionModel(codex.captionModel)
-        ? codex.captionModel
-        : defaults.codex.captionModel
+      captionModel: storedCaptionModel
     },
     ai: {
       enabled: pickBoolean(ai.enabled, defaults.ai.enabled),
@@ -589,19 +644,13 @@ function parseV1(raw: unknown): Settings | null {
       // convention. See docs/plans/2026-05-28-001-feat-library-chat-
       // editor-interface-plan.md and §F13 substrate compliance.
       chat: parseChatSettings(ai.chat, defaults.ai.chat),
-      // `ai.defaults.*` is additive — older files won't have it. Falls
-      // through to empty per-surface objects (= "Codex default"). For
-      // back-compat, when the file has no explicit enrichment model we
-      // seed it from the legacy `codex.captionModel` so existing
-      // enrichment behavior (model selection) is preserved across the
-      // upgrade. No `schemaVersion` bump per the additive convention.
-      defaults: parseAiSurfaceDefaults(
-        ai.defaults,
-        defaults.ai.defaults,
-        isCodexCaptionModel(codex.captionModel)
-          ? (codex.captionModel as string)
-          : defaults.codex.captionModel
-      ),
+      // `ai.defaults.*` is additive — older files won't have it. Missing
+      // surface fields stay empty (= follow the managed default); the legacy
+      // `codex.captionModel` is intentionally ignored. The defaults migration
+      // above clears only the exact materialized historical Mini/Low default.
+      // Explicit provider/model/effort choices are preserved.
+      // No `schemaVersion` bump per the additive convention.
+      defaults: aiSurfaceDefaults,
       // `ai.acp.*` is additive — older files won't have it. Falls through
       // to an empty enabled set; only recognized built-in agent ids
       // survive the parse so a stale/forged file can't enable an unknown
@@ -781,13 +830,8 @@ function parseChatSettings(raw: unknown, defaults: ChatSettings): ChatSettings {
 /** Parse one `ai.defaults.<surface>` object. Only keeps a leaf when it's
  *  a non-empty string (provider / model) or a recognized reasoning value;
  *  everything else is dropped so the in-memory shape omits the field
- *  entirely (= "use the Codex default"). `seedModel`, when provided, fills
- *  `model` if the on-disk file has no explicit model — used to carry the
- *  legacy `codex.captionModel` into `enrichment.model`. */
-function parseAiSurfaceDefault(
-  raw: unknown,
-  seedModel?: string
-): AiSurfaceDefault {
+ *  entirely (= "use the managed default"). */
+function parseAiSurfaceDefault(raw: unknown): AiSurfaceDefault {
   const out: AiSurfaceDefault = {};
   const rec = isRecord(raw) ? raw : {};
   if (typeof rec.provider === "string") {
@@ -802,18 +846,6 @@ function parseAiSurfaceDefault(
   }
   if (typeof rec.model === "string" && rec.model.trim().length > 0) {
     out.model = rec.model.trim();
-  } else if (
-    seedModel !== undefined &&
-    seedModel.trim().length > 0 &&
-    out.provider === undefined
-  ) {
-    // The legacy `codex.captionModel` seed is meaningful ONLY for the Codex
-    // backend. When this surface routes to an ACP agent (`out.provider` set),
-    // a Codex model id is wrong — the agent rejects it (e.g. Kimi: "Invalid
-    // params") and falls back to its own default while the run misreports the
-    // rejected id. Leave `model` empty so the ACP path resolves to "" (= the
-    // agent's own default). A genuinely ACP-specific pick still rides `rec.model`.
-    out.model = seedModel.trim();
   }
   if (isAiReasoningEffort(rec.reasoning)) {
     out.reasoning = rec.reasoning;
@@ -822,19 +854,13 @@ function parseAiSurfaceDefault(
 }
 
 /** Parse `ai.defaults` from an on-disk JSON value. Each surface falls
- *  through to an empty object when missing. `enrichmentSeedModel` seeds
- *  the enrichment surface's `model` for back-compat with the legacy
- *  `codex.captionModel` field. */
-function parseAiSurfaceDefaults(
-  raw: unknown,
-  _defaults: AiSurfaceDefaults,
-  enrichmentSeedModel: string
-): AiSurfaceDefaults {
+ *  through to an empty object when missing. */
+function parseAiSurfaceDefaults(raw: unknown): AiSurfaceDefaults {
   const rec = isRecord(raw) ? raw : {};
   return {
     libraryChat: parseAiSurfaceDefault(rec.libraryChat),
     sizzleChat: parseAiSurfaceDefault(rec.sizzleChat),
-    enrichment: parseAiSurfaceDefault(rec.enrichment, enrichmentSeedModel)
+    enrichment: parseAiSurfaceDefault(rec.enrichment)
   };
 }
 
@@ -1257,6 +1283,8 @@ function isNodeError(value: unknown): value is NodeJS.ErrnoException {
 export function mergeSettings(current: Settings, patch: SettingsPatch): Settings {
   return {
     schemaVersion: 1,
+    lastDefaultsMigrationVersion:
+      current.lastDefaultsMigrationVersion ?? CURRENT_DEFAULTS_MIGRATION_VERSION,
     codex: mergeSection(current.codex, patch.codex),
     ai: mergeAi(current.ai, patch.ai),
     hotkeys: mergeSection(current.hotkeys, patch.hotkeys),

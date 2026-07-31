@@ -134,6 +134,47 @@ jobs:
       - name: Build preview installer (unsigned)
         run: pnpm --filter @pwrsnap/desktop package:win
 
+      # electron-builder 26.15.3 could produce a successful NSIS build whose
+      # BCJ2-filtered payload silently omitted the application at install time.
+      # Exercise the installer itself so artifact existence alone cannot hide
+      # that regression.
+      - name: Verify installed Windows payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dist = Resolve-Path "apps/desktop/release-stage/dist"
+          $installers = @(Get-ChildItem -Path $dist -Filter "*-setup.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer in $dist; found $($installers.Count)."
+          }
+
+          $installDir = Join-Path $env:RUNNER_TEMP "pwrsnap-nsis-smoke"
+          $process = Start-Process `
+            -FilePath $installers[0].FullName `
+            -ArgumentList @("/S", "/D=$installDir") `
+            -Wait `
+            -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "NSIS installer exited with code $($process.ExitCode)."
+          }
+
+          $requiredFiles = @(
+            (Join-Path $installDir "PwrSnap.exe"),
+            (Join-Path $installDir "resources/app.asar"),
+            (Join-Path $installDir "resources/PwrSnapWindowList.exe")
+          )
+          foreach ($file in $requiredFiles) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Installed NSIS payload is missing $file."
+            }
+          }
+          if (@(Get-ChildItem -Path $installDir -Filter "*.dll" -File -Recurse).Count -eq 0) {
+            throw "Installed NSIS payload contains no DLLs."
+          }
+          if (@(Get-ChildItem -Path $installDir -Filter "*.node" -File -Recurse).Count -eq 0) {
+            throw "Installed NSIS payload contains no native .node binaries."
+          }
+
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v7
         with:

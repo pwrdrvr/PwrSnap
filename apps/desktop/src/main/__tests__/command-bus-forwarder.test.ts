@@ -38,8 +38,27 @@ describe("command-bus remote forwarder", () => {
 
     const result = await dispatch("library:list", { page: 2 });
 
-    expect(forward).toHaveBeenCalledWith("library:list", { page: 2 });
+    expect(forward).toHaveBeenCalledWith("library:list", { page: 2 }, { principal: "ipc" });
     expect(result).toEqual(ok({ from: "peer" }));
+  });
+
+  test("preserves authenticated command context when forwarding", async () => {
+    const forward = vi.fn(async () => ok(null));
+    bus.installRemoteForwarder({ canForward: () => true, forward });
+    const options = {
+      principal: "mcp" as const,
+      cancellationKey: "capture-123",
+      sourceWindowId: 7,
+      sourceBounds: { x: 1, y: 2, width: 3, height: 4 },
+      localAgent: {
+        clientId: "agent-1",
+        capabilities: ["library.read", "capture.composite.read"] as const
+      }
+    };
+
+    await bus.dispatch("library:list", {} as never, options);
+
+    expect(forward).toHaveBeenCalledWith("library:list", {}, options);
   });
 
   test("a local handler wins over the forwarder", async () => {

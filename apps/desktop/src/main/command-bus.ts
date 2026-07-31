@@ -51,6 +51,16 @@ export type CommandContext = {
   };
 };
 
+/** Serializable command metadata that can cross a transport boundary.
+ *  The receiving bus creates its own AbortSignal from cancellationKey. */
+export type CommandDispatchOptions = {
+  principal: CommandPrincipal;
+  cancellationKey?: string | undefined;
+  sourceWindowId?: number | undefined;
+  sourceBounds?: CommandSourceBounds | undefined;
+  localAgent?: CommandContext["localAgent"];
+};
+
 export type CommandHandler<C extends CommandName> = (
   req: Req<C>,
   ctx: CommandContext
@@ -67,7 +77,11 @@ export type CommandHandler<C extends CommandName> = (
 export type RemoteCommandForwarder = {
   /** True when `name` is owned by the peer process and reachable. */
   canForward(name: string): boolean;
-  forward(name: string, req: unknown): Promise<Result<unknown, PwrSnapError>>;
+  forward(
+    name: string,
+    req: unknown,
+    options: CommandDispatchOptions
+  ): Promise<Result<unknown, PwrSnapError>>;
 };
 
 // Storage type is intentionally a wide function — TS can't represent a
@@ -131,20 +145,14 @@ class CommandBus {
   async dispatch<C extends CommandName>(
     name: C,
     req: Req<C>,
-    options: {
-      principal: CommandPrincipal;
-      cancellationKey?: string | undefined;
-      sourceWindowId?: number | undefined;
-      sourceBounds?: CommandSourceBounds | undefined;
-      localAgent?: CommandContext["localAgent"];
-    }
+    options: CommandDispatchOptions
   ): Promise<Result<Res<C>, PwrSnapError>> {
     const handler = this.handlers.get(name);
     if (!handler) {
       const forwarder = this.remoteForwarder;
       if (forwarder !== null && forwarder.canForward(name)) {
         try {
-          return (await forwarder.forward(name, req)) as Result<Res<C>, PwrSnapError>;
+          return (await forwarder.forward(name, req, options)) as Result<Res<C>, PwrSnapError>;
         } catch (cause) {
           // Forwarders normally return Result (the bridge never
           // rejects); this catches supervisor spawn failures and the

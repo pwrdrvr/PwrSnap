@@ -6,7 +6,7 @@
 
 import { BrowserWindow, app } from "electron";
 import { err, type PwrSnapError, type Result } from "@pwrsnap/shared";
-import { bus } from "../command-bus";
+import { bus, type CommandDispatchOptions } from "../command-bus";
 import { broadcastRendererEventToLocalWindows } from "../events";
 import { getMainLogger } from "../log";
 import { channelForParentProcess } from "../process-bridge/channel";
@@ -54,12 +54,12 @@ export function connectAgentBridge(): boolean {
   endpoint = new BridgeEndpoint({
     role: "library",
     channel,
-    dispatchLocal: (name, req) => {
+    dispatchLocal: (name, req, context) => {
       // DIAG (cold-launch race): proves a bridge request (e.g.
       // library:focus) actually reached the library, and brackets the
       // synchronous dispatch so a stall inside it is attributable.
       log.info("bridge dispatchLocal: begin", { name });
-      const result = bus.dispatch(name as never, req as never, { principal: "bridge" });
+      const result = bus.dispatch(name as never, req as never, context);
       void result.finally(() => log.info("bridge dispatchLocal: settled", { name }));
       return result;
     },
@@ -85,7 +85,8 @@ export function isAgentBridgeConnected(): boolean {
 /** The library's RemoteCommandForwarder body. Never rejects. */
 export async function dispatchToAgentProcess(
   name: string,
-  req: unknown
+  req: unknown,
+  context: CommandDispatchOptions
 ): Promise<Result<unknown, PwrSnapError>> {
   if (endpoint === null) {
     return err({
@@ -94,7 +95,7 @@ export async function dispatchToAgentProcess(
       message: `no agent bridge; cannot dispatch ${name}`
     });
   }
-  return endpoint.dispatchRemote(name, req);
+  return endpoint.dispatchRemote(name, req, context);
 }
 
 /** Renderer-event relay toward the agent (e.g. library edits → the

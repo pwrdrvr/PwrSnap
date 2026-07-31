@@ -1,14 +1,14 @@
 // Symmetric endpoint for the agent ↔ library process bridge. Each main
 // process constructs one over its side of the pipe:
 //
-//   • outbound: `dispatchRemote(name, req)` runs a command on the peer
+//   • outbound: `dispatchRemote(name, req, context)` runs a command on the peer
 //     and resolves the peer's Result. Never rejects — transport failures
 //     come back as `Result.err` (`bridge_closed` / `bridge_send_failed`),
 //     matching the repo-wide rule that errors never throw across process
 //     boundaries.
 //   • inbound: requests from the peer flow into the injected
-//     `dispatchLocal` (Phase 2 wires `bus.dispatch` with
-//     `principal: "bridge"`).
+//     `dispatchLocal`, preserving the original command identity and
+//     capability context while the receiving bus creates a fresh signal.
 //   • events: `emitEvent` forwards a renderer broadcast to the peer once;
 //     incoming peer events surface via `onRemoteEvent`. There is no
 //     automatic re-forwarding, so relay loops are impossible at this
@@ -20,6 +20,7 @@
 // channel pair.
 
 import { err, ok, type PwrSnapError, type Result } from "@pwrsnap/shared";
+import type { CommandDispatchOptions } from "../command-bus";
 import type { ProcessRole } from "../process-role";
 import type { BridgeChannel } from "./channel";
 import {
@@ -31,7 +32,8 @@ import {
 
 export type BridgeLocalDispatch = (
   name: string,
-  req: unknown
+  req: unknown,
+  context: CommandDispatchOptions
 ) => Promise<Result<unknown, PwrSnapError>>;
 
 export type BridgeEndpointOptions = {
@@ -105,7 +107,11 @@ export class BridgeEndpoint {
     });
   }
 
-  async dispatchRemote(name: string, req: unknown): Promise<Result<unknown, PwrSnapError>> {
+  async dispatchRemote(
+    name: string,
+    req: unknown,
+    context: CommandDispatchOptions
+  ): Promise<Result<unknown, PwrSnapError>> {
     if (this.closed) {
       return bridgeError("bridge_closed", `bridge closed; cannot dispatch ${name}`);
     }
@@ -119,7 +125,8 @@ export class BridgeEndpoint {
       kind: "request",
       id,
       name,
-      req
+      req,
+      context
     });
     if (!sent) {
       this.pending.delete(id);
@@ -188,7 +195,7 @@ export class BridgeEndpoint {
         return;
       }
       case "request":
-        void this.serveRequest(message.id, message.name, message.req);
+        void this.serveRequest(message.id, message.name, message.req, message.context);
         return;
       case "response": {
         const resolve = this.pending.get(message.id);
@@ -209,10 +216,15 @@ export class BridgeEndpoint {
     }
   }
 
-  private async serveRequest(id: number, name: string, req: unknown): Promise<void> {
+  private async serveRequest(
+    id: number,
+    name: string,
+    req: unknown,
+    context: CommandDispatchOptions
+  ): Promise<void> {
     let result: Result<unknown, PwrSnapError>;
     try {
-      result = await this.options.dispatchLocal(name, req);
+      result = await this.options.dispatchLocal(name, req, context);
     } catch (cause) {
       // dispatchLocal is bus.dispatch, which already catches and wraps —
       // this is a second net for wiring mistakes, not a normal path.

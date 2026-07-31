@@ -1441,7 +1441,7 @@ export function bootstrapApp(): void {
       if (role === "agent") {
         // Split mode: the library window lives in the supervised child.
         // library:focus spawns it on demand and raises the singleton.
-        void dispatchToLibraryProcess("library:focus", {});
+        void dispatchToLibraryProcess("library:focus", {}, { principal: "bridge" });
         handleSecondInstanceArgv(argv, additionalData);
         return;
       }
@@ -1769,7 +1769,7 @@ export function bootstrapApp(): void {
     if (role === "agent") {
       bus.installRemoteForwarder({
         canForward: (name) => peerOwnsCommand("agent", name),
-        forward: (name, req) => dispatchToLibraryProcess(name, req)
+        forward: (name, req, context) => dispatchToLibraryProcess(name, req, context)
       });
       installRendererEventForwarder(forwardRendererEventToLibrary);
       installCancellationForwarder(forwardCancellationToLibrary);
@@ -1777,7 +1777,7 @@ export function bootstrapApp(): void {
       connectAgentBridge();
       bus.installRemoteForwarder({
         canForward: (name) => isAgentBridgeConnected() && peerOwnsCommand("library", name),
-        forward: (name, req) => dispatchToAgentProcess(name, req)
+        forward: (name, req, context) => dispatchToAgentProcess(name, req, context)
       });
       installRendererEventForwarder(forwardRendererEventToAgent);
       installCancellationForwarder(forwardCancellationToAgent);
@@ -1859,7 +1859,7 @@ export function bootstrapApp(): void {
       // roles). User-initiated launch should land in the Library, like
       // double-clicking any app. The library:focus forward spawns the
       // library child; its handler shows + activates the window.
-      void dispatchToLibraryProcess("library:focus", {});
+      void dispatchToLibraryProcess("library:focus", {}, { principal: "bridge" });
     }
     markStartup("main: createMainWindow returned");
     // Library role: no boot-time window here — the verb that spawned

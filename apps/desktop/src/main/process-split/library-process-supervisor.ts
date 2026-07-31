@@ -8,7 +8,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { app } from "electron";
 import type { PwrSnapError, Result } from "@pwrsnap/shared";
-import { bus } from "../command-bus";
+import { bus, type CommandDispatchOptions } from "../command-bus";
 import { broadcastRendererEventToLocalWindows } from "../events";
 import { getMainLogger } from "../log";
 import { channelForChildProcess } from "../process-bridge/channel";
@@ -128,8 +128,8 @@ function spawnLibraryProcess(): BridgeEndpoint {
   const ep = new BridgeEndpoint({
     role: "agent",
     channel: channelForChildProcess(spawned),
-    dispatchLocal: (name, req) =>
-      bus.dispatch(name as never, req as never, { principal: "bridge" }),
+    dispatchLocal: (name, req, context) =>
+      bus.dispatch(name as never, req as never, context),
     onRemoteEvent: (channel, payload) => {
       // Internal control signal — the library's window is up; disarm the
       // cold-launch watchdog. Not a renderer event: don't fan it out to
@@ -188,7 +188,8 @@ export function isLibraryProcessRunning(): boolean {
  */
 export async function dispatchToLibraryProcess(
   name: string,
-  req: unknown
+  req: unknown,
+  context: CommandDispatchOptions
 ): Promise<Result<unknown, PwrSnapError>> {
   // Name the trigger whenever a dispatch is what pulls the process up
   // — a spawn the user didn't ask for traces back to one log line.
@@ -209,7 +210,7 @@ export async function dispatchToLibraryProcess(
   if (isLibraryWindowSpawnVerb(name)) {
     armWindowWatchdog(name);
   }
-  const result = await ep.dispatchRemote(name, req);
+  const result = await ep.dispatchRemote(name, req, context);
   log.info("dispatchToLibraryProcess: remote returned", {
     name,
     ok: result.ok,

@@ -3,16 +3,22 @@
 // server. Messages travel over the parent↔child Node IPC channel, which
 // JSON-serializes payloads; everything here must survive that round trip.
 //
-// The `pwrsnapBridge: 1` marker discriminates bridge traffic from any
+// The `pwrsnapBridge` marker discriminates bridge traffic from any
 // other `process.send` user sharing the pipe; the value doubles as the
 // protocol version. Both processes run from the same binary, so version
 // skew is impossible today — the field exists so a future mixed-version
 // window (e.g. update-restart ordering) fails loudly instead of weirdly.
 
-import { err, type PwrSnapError, type Result } from "@pwrsnap/shared";
+import {
+  err,
+  isLocalAgentCapability,
+  type PwrSnapError,
+  type Result
+} from "@pwrsnap/shared";
+import type { CommandDispatchOptions, CommandPrincipal } from "../command-bus";
 import type { ProcessRole } from "../process-role";
 
-export const BRIDGE_PROTOCOL_VERSION = 1;
+export const BRIDGE_PROTOCOL_VERSION = 2;
 
 export type BridgeHelloMessage = {
   pwrsnapBridge: typeof BRIDGE_PROTOCOL_VERSION;
@@ -29,6 +35,8 @@ export type BridgeRequestMessage = {
   /** Command-bus name, e.g. "library:openInLibrary". */
   name: string;
   req: unknown;
+  /** Auth identity and other serializable command-bus metadata. */
+  context: CommandDispatchOptions;
 };
 
 export type BridgeResponseMessage = {
@@ -66,6 +74,57 @@ function isProcessRole(value: unknown): value is ProcessRole {
   return value === "combined" || value === "agent" || value === "library";
 }
 
+function isCommandPrincipal(value: unknown): value is CommandPrincipal {
+  return (
+    value === "ipc" ||
+    value === "rpc" ||
+    value === "mcp" ||
+    value === "seeder" ||
+    value === "bridge"
+  );
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
+}
+
+function isOptionalInteger(value: unknown): value is number | undefined {
+  return value === undefined || (typeof value === "number" && Number.isInteger(value));
+}
+
+function isSourceBounds(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const bounds = value as Record<string, unknown>;
+  return ["x", "y", "width", "height"].every(
+    (key) => typeof bounds[key] === "number" && Number.isFinite(bounds[key])
+  );
+}
+
+function isLocalAgentContext(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const localAgent = value as Record<string, unknown>;
+  return (
+    typeof localAgent["clientId"] === "string" &&
+    localAgent["clientId"].length > 0 &&
+    Array.isArray(localAgent["capabilities"]) &&
+    localAgent["capabilities"].every(isLocalAgentCapability)
+  );
+}
+
+function isCommandDispatchOptions(value: unknown): value is CommandDispatchOptions {
+  if (typeof value !== "object" || value === null) return false;
+  const context = value as Record<string, unknown>;
+  return (
+    isCommandPrincipal(context["principal"]) &&
+    isOptionalString(context["cancellationKey"]) &&
+    isOptionalInteger(context["sourceWindowId"]) &&
+    isSourceBounds(context["sourceBounds"]) &&
+    isLocalAgentContext(context["localAgent"])
+  );
+}
+
 /**
  * Narrow an incoming pipe message to a well-formed bridge message.
  * Anything else — other pipe traffic, garbage, future-version frames —
@@ -79,7 +138,11 @@ export function isBridgeMessage(value: unknown): value is BridgeMessage {
     case "hello":
       return isProcessRole(message["role"]) && typeof message["pid"] === "number";
     case "request":
-      return typeof message["id"] === "number" && typeof message["name"] === "string";
+      return (
+        typeof message["id"] === "number" &&
+        typeof message["name"] === "string" &&
+        isCommandDispatchOptions(message["context"])
+      );
     case "response": {
       if (typeof message["id"] !== "number") return false;
       const result = message["result"];

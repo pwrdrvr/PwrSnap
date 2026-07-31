@@ -84,6 +84,11 @@ const baseSettings: Settings = {
 };
 
 const patchMock = vi.fn(async (): Promise<void> => undefined);
+const dispatchCalls: { name: string; req: unknown }[] = [];
+type DispatchResult =
+  | { ok: true; value: unknown }
+  | { ok: false; error: { message: string } };
+type DispatchImpl = (name: string, req: unknown) => Promise<DispatchResult>;
 
 let contextValue: Pick<UseSettingsValue, "settings" | "patch">;
 let container: HTMLDivElement | null = null;
@@ -93,7 +98,21 @@ vi.mock("../../SettingsContext", () => ({
   useSettingsContext: (): Pick<UseSettingsValue, "settings" | "patch"> => contextValue
 }));
 
-async function renderDeveloper(settings: Settings = baseSettings): Promise<void> {
+async function renderDeveloper(
+  settings: Settings = baseSettings,
+  dispatchImpl?: DispatchImpl
+): Promise<void> {
+  Object.defineProperty(window, "pwrsnapApi", {
+    configurable: true,
+    value: {
+      dispatch: async (name: string, req: unknown) => {
+        dispatchCalls.push({ name, req });
+        if (dispatchImpl !== undefined) return dispatchImpl(name, req);
+        return { ok: true, value: undefined };
+      },
+      on: () => () => undefined
+    }
+  });
   contextValue = { settings, patch: patchMock as unknown as UseSettingsValue["patch"] };
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -128,6 +147,7 @@ afterEach(async () => {
   container = null;
   root = null;
   patchMock.mockClear();
+  dispatchCalls.length = 0;
 });
 
 describe("DeveloperPage", () => {
@@ -165,5 +185,34 @@ describe("DeveloperPage", () => {
     expect(patchMock).toHaveBeenCalledWith({
       general: { hotCpuProfilingTriggerMode: "slowburn" }
     });
+  });
+
+  test("diagnostics folder control dispatches the reveal command", async () => {
+    await renderDeveloper();
+
+    await act(async () => {
+      buttonByText("Reveal Folder").click();
+      await Promise.resolve();
+    });
+
+    expect(dispatchCalls).toContainEqual({
+      name: "diagnostics:revealHotCpuRoot",
+      req: {}
+    });
+    expect(container?.textContent).not.toContain("Clear Old Sessions");
+  });
+
+  test("shows reveal failures without changing profiler settings", async () => {
+    await renderDeveloper(baseSettings, async () => {
+      return { ok: false, error: { message: "finder refused" } };
+    });
+
+    await act(async () => {
+      buttonByText("Reveal Folder").click();
+      await Promise.resolve();
+    });
+
+    expect(patchMock).not.toHaveBeenCalled();
+    expect(container?.textContent).toContain("Reveal failed: finder refused");
   });
 });

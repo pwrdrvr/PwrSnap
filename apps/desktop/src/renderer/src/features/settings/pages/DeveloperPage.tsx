@@ -10,6 +10,7 @@ import type {
   HotCpuProfileStartDelayMs,
   HotCpuProfileTriggerMode
 } from "@pwrsnap/shared";
+import { dispatch } from "../../../lib/pwrsnap";
 import { Card, Row, Switch } from "../components";
 import { useSettingsContext } from "../SettingsContext";
 
@@ -96,6 +97,8 @@ export function DeveloperPage(): ReactElement {
   const heapSnapshotLimit = settings?.general.hotCpuProfilingHeapSnapshotLimit ?? 2;
   const [countdownEndsAt, setCountdownEndsAt] = useState<number | null>(null);
   const [countdownRemainingMs, setCountdownRemainingMs] = useState(0);
+  const [diagnosticsStatus, setDiagnosticsStatus] = useState<string | null>(null);
+  const [revealingDiagnostics, setRevealingDiagnostics] = useState(false);
 
   useEffect(() => {
     if (countdownEndsAt === null) return;
@@ -129,6 +132,20 @@ export function DeveloperPage(): ReactElement {
     setCountdownEndsAt(null);
     setCountdownRemainingMs(0);
     await patch({ general: { hotCpuProfilingEnabled: false } });
+  };
+
+  const revealDiagnosticsRoot = async (): Promise<void> => {
+    if (!ready || revealingDiagnostics) return;
+    setDiagnosticsStatus(null);
+    setRevealingDiagnostics(true);
+    try {
+      const result = await dispatch("diagnostics:revealHotCpuRoot", {});
+      if (!result.ok) {
+        setDiagnosticsStatus(`Reveal failed: ${result.error.message}`);
+      }
+    } finally {
+      setRevealingDiagnostics(false);
+    }
   };
 
   return (
@@ -267,6 +284,30 @@ export function DeveloperPage(): ReactElement {
               void patch({ general: { hotCpuProfilingHeapSnapshotLimit: next } });
             }}
           />
+        </Row>
+
+        <Row
+          label="Diagnostics folder"
+          sub="Reveal captured CPU profiles, heap snapshots, and sidecar logs in Finder."
+          tag="folder"
+        >
+          <div className="pss__update-channel">
+            <button
+              className="pss__top-btn"
+              type="button"
+              disabled={!ready || revealingDiagnostics}
+              onClick={() => {
+                void revealDiagnosticsRoot();
+              }}
+            >
+              {revealingDiagnostics ? "Revealing..." : "Reveal Folder"}
+            </button>
+            {diagnosticsStatus !== null ? (
+              <span className="pss__update-note" aria-live="polite">
+                {diagnosticsStatus}
+              </span>
+            ) : null}
+          </div>
         </Row>
       </Card>
     </>

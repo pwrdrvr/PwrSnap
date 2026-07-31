@@ -66,7 +66,6 @@ async function renderPage(settings: Settings = baseSettings): Promise<HTMLDivEle
   const value: UseSettingsValue = {
     settings,
     secrets: {
-      grokApiKey: { configured: false, lastSetAt: null },
       openaiApiKey: { configured: false, lastSetAt: null }
     },
     loading: false,

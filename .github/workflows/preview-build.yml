@@ -136,9 +136,9 @@ jobs:
 
       # electron-builder 26.15.3 could produce a successful NSIS build whose
       # BCJ2-filtered payload silently omitted the application at install time.
-      # Exercise the installer itself so artifact existence alone cannot hide
-      # that regression.
-      - name: Verify installed Windows payload
+      # Inspect the embedded archive filters and exercise the installer itself
+      # so artifact existence alone cannot hide that regression.
+      - name: Verify Windows installer artifact and installed payload
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -148,9 +148,73 @@ jobs:
             throw "Expected exactly one NSIS installer in $dist; found $($installers.Count)."
           }
 
+          $installer = $installers[0]
+          $sevenZip = (Get-Command "7z").Source
+          $nsisDir = Join-Path $env:RUNNER_TEMP "pwrsnap-nsis-artifact"
+          & $sevenZip x -y "-o$nsisDir" $installer.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract the NSIS installer for artifact inspection."
+          }
+
+          $embeddedArchive = Join-Path $nsisDir '$PLUGINSDIR/app-64.7z'
+          if (-not (Test-Path -LiteralPath $embeddedArchive -PathType Leaf)) {
+            throw "NSIS installer is missing the embedded app-64.7z payload."
+          }
+          $archiveList = @(& $sevenZip l -slt $embeddedArchive)
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to list the embedded app-64.7z payload."
+          }
+          $separatorIndex = [Array]::IndexOf($archiveList, "----------")
+          if ($separatorIndex -lt 0 -or $separatorIndex -eq ($archiveList.Count - 1)) {
+            throw "Could not locate entries in the embedded app-64.7z listing."
+          }
+          $entryLines = $archiveList[($separatorIndex + 1)..($archiveList.Count - 1)]
+          $entryMethods = @(
+            $entryLines |
+              Where-Object { $_ -like "Method = *" } |
+              ForEach-Object { $_.Substring(9) }
+          )
+          $entryPaths = @(
+            $entryLines |
+              Where-Object { $_ -like "Path = *" } |
+              ForEach-Object { $_.Substring(7) }
+          )
+          $forbiddenPattern = '(^| )(BCJ2|ARM64|ARMT|ARM|IA64|PPC|SPARC|DELTA)(:| |$)'
+          $forbiddenMethods = @($entryMethods | Where-Object { $_ -match $forbiddenPattern })
+          if ($forbiddenMethods.Count -ne 0) {
+            throw "Embedded NSIS payload uses unsupported filters: $($forbiddenMethods -join ', ')."
+          }
+          $requiredArchivePaths = @(
+            "PwrSnap.exe",
+            "resources/elevate.exe",
+            "resources/PwrSnapWindowList.exe"
+          )
+          foreach ($path in $requiredArchivePaths) {
+            if ($entryPaths -notcontains $path) {
+              throw "Embedded NSIS payload is missing $path."
+            }
+          }
+          $dllCount = @($entryPaths | Where-Object { $_ -like "*.dll" }).Count
+          $nativeModuleCount = @($entryPaths | Where-Object { $_ -like "*.node" }).Count
+          if ($dllCount -eq 0 -or $nativeModuleCount -eq 0) {
+            throw "Embedded NSIS payload is missing DLLs or native .node binaries."
+          }
+          $entryMethods |
+            Group-Object |
+            Sort-Object Name |
+            ForEach-Object {
+              $label = if ($_.Name -eq "") { "<uncompressed>" } else { $_.Name }
+              Write-Host "NSIS payload method: $label = $($_.Count) entries"
+            }
+          Write-Host "NSIS payload binaries: $dllCount DLLs, $nativeModuleCount native .node files"
+          & $sevenZip t $embeddedArchive
+          if ($LASTEXITCODE -ne 0) {
+            throw "Embedded app-64.7z payload failed its integrity test."
+          }
+
           $installDir = Join-Path $env:RUNNER_TEMP "pwrsnap-nsis-smoke"
           $process = Start-Process `
-            -FilePath $installers[0].FullName `
+            -FilePath $installer.FullName `
             -ArgumentList @("/S", "/D=$installDir") `
             -Wait `
             -PassThru

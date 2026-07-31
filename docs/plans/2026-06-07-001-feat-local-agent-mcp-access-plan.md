@@ -150,6 +150,15 @@ runs through PwrSnap's configured Codex App Server connection.
   trigger accidentally from an agent loop; the UI and existing trash view remain
   the recovery path.
 
+- KTD9. Match PwrAgent's current general agent-tool transport: Streamable HTTP
+  MCP on an ephemeral loopback port, capability-gated by clients that advertise
+  HTTP MCP support, with a stateless transport created per request. Do not add a
+  generic stdio bridge; PwrAgent's remaining stdio command is a narrow legacy
+  automation-inspection path, not its current agent-tool architecture. Because
+  PwrSnap does not own every caller's ACP session and cannot inject credentials
+  directly, it additionally publishes a mode-`0600` discovery descriptor and
+  requires a native PwrSnap approval prompt before returning a per-client token.
+
 ---
 
 ## High-Level Technical Design
@@ -333,8 +342,10 @@ does not make the bytes readable after a grant is revoked.
   - `apps/desktop/src/renderer/src/features/settings/SettingsApp.tsx`
   - `apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx` new
   - `apps/desktop/src/renderer/src/features/settings/__tests__/LocalAgentsPage.test.tsx` new
-- **Patterns:** Use Settings pages through `SettingsContext`. Window-to-renderer
-  navigation uses typed event channels, never `executeJavaScript`.
+- **Patterns:** Use a native deny-by-default approval dialog for pairing and
+  Settings pages through `SettingsContext` for grant review/revocation.
+  Window-to-renderer navigation uses typed event channels, never
+  `executeJavaScript`.
 - **Test Scenarios:**
   - Pairing request opens a native PwrSnap approval surface with client name,
     requested capabilities, and risk labels.
@@ -358,7 +369,9 @@ does not make the bytes readable after a grant is revoked.
   - `apps/desktop/src/main/local-agents/mcp-resource-registry.ts` new
   - `apps/desktop/src/main/local-agents/__tests__/mcp-server.test.ts` new
 - **Patterns:** Keep the MCP layer as transport glue over command-bus and
-  resource registries. Do not bypass existing handlers for convenience.
+  resource registries. Mirror PwrAgent's stateless per-request Streamable HTTP
+  transport, exact loopback Host/Origin checks, bearer authentication, and
+  bounded request bodies. Do not bypass existing handlers for convenience.
 - **Test Scenarios:**
   - Server binds only to a local transport and refuses unpaired calls.
   - Tool schemas are generated from zod definitions and include MCP

@@ -42,11 +42,24 @@ describe("createDefaultLocalAgentMcpTools", () => {
     const del = tools.find((tool) => tool.name === "pwrsnap_capture_delete_to_trash");
     if (search === undefined || del === undefined) throw new Error("expected default tools");
 
-    await search.dispatch({ query: "pairing" }, ctx(["library.read"]));
+    await search.dispatch({
+      query: "pairing",
+      kinds: ["image"],
+      hasOcr: true,
+      limit: 25
+    }, ctx(["library.read"]));
     await del.dispatch({ captureId: "cap_123" }, ctx(["trash.write"]));
 
     expect(calls).toEqual([
-      { name: "search", input: { query: "pairing" } },
+      {
+        name: "search",
+        input: {
+          query: "pairing",
+          kinds: ["image"],
+          hasOcr: true,
+          limit: 25
+        }
+      },
       { name: "delete", input: { captureId: "cap_123" } }
     ]);
   });
@@ -58,5 +71,21 @@ describe("createDefaultLocalAgentMcpTools", () => {
     });
     const del = tools.find((tool) => tool.name === "pwrsnap_capture_delete_to_trash");
     expect(del?.inputSchema).toHaveProperty("captureId");
+  });
+
+  test("search schema exposes structured library filters", () => {
+    const tools = createDefaultLocalAgentMcpTools({
+      search: async () => ok({}),
+      deleteToTrash: async () => ok({})
+    });
+    const search = tools.find((tool) => tool.name === "pwrsnap_library_search");
+    expect(search?.inputSchema).toEqual(expect.objectContaining({
+      query: expect.anything(),
+      appBundleIds: expect.anything(),
+      kinds: expect.anything(),
+      dateRange: expect.anything(),
+      hasOcr: expect.anything(),
+      limit: expect.anything()
+    }));
   });
 });

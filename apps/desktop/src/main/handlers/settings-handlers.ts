@@ -45,6 +45,7 @@ const log = getMainLogger("pwrsnap:settings-handlers");
 
 let settingsService: DesktopSettingsService | null = null;
 let secretStore: DesktopSecretStore | null = null;
+let localAgentGrantService: LocalAgentGrantService | null = null;
 
 function ensureServices(): {
   service: DesktopSettingsService;
@@ -65,12 +66,20 @@ function ensureServices(): {
   return { service: settingsService, secrets: secretStore };
 }
 
+export function getDesktopSettingsServices(): {
+  service: DesktopSettingsService;
+  secrets: DesktopSecretStore;
+} {
+  return ensureServices();
+}
+
 export function __setSettingsServicesForTests(injected: {
   service?: DesktopSettingsService | null;
   secrets?: DesktopSecretStore | null;
 }): void {
   if (injected.service !== undefined) settingsService = injected.service;
   if (injected.secrets !== undefined) secretStore = injected.secrets;
+  localAgentGrantService = null;
 }
 
 /** Read the live settings snapshot for non-`settings:*` main handlers
@@ -159,9 +168,17 @@ function toSettingsError(
   return { kind: "settings", code, message, cause };
 }
 
-function ensureLocalAgentGrantService(): LocalAgentGrantService {
+export function getLocalAgentGrantService(): LocalAgentGrantService {
+  if (localAgentGrantService !== null) return localAgentGrantService;
   const { service, secrets } = ensureServices();
-  return new LocalAgentGrantService({ settings: service, secrets });
+  localAgentGrantService = new LocalAgentGrantService({
+    settings: service,
+    secrets,
+    onSettingsChanged: async (settings) => {
+      await broadcastSettingsChanged(service, secrets, { settings });
+    }
+  });
+  return localAgentGrantService;
 }
 
 function toLocalAgentError(cause: unknown): PwrSnapError {
@@ -360,7 +377,7 @@ export function registerSettingsDataHandlers(): void {
   });
 
   bus.register("localAgents:list", async () => {
-    const service = ensureLocalAgentGrantService();
+    const service = getLocalAgentGrantService();
     try {
       const grants = await service.list();
       return ok({ grants });
@@ -377,11 +394,9 @@ export function registerSettingsDataHandlers(): void {
         message: "localAgents:revoke: id must be a non-empty string"
       });
     }
-    const { service, secrets } = ensureServices();
-    const grantService = new LocalAgentGrantService({ settings: service, secrets });
+    const grantService = getLocalAgentGrantService();
     try {
       const grant = await grantService.revokeGrant(req.id);
-      await broadcastSettingsChanged(service, secrets);
       return ok(grant);
     } catch (cause) {
       return err(toLocalAgentError(cause));
@@ -396,11 +411,9 @@ export function registerSettingsDataHandlers(): void {
         message: "localAgents:update: id must be a non-empty string"
       });
     }
-    const { service, secrets } = ensureServices();
-    const grantService = new LocalAgentGrantService({ settings: service, secrets });
+    const grantService = getLocalAgentGrantService();
     try {
       const grant = await grantService.updateGrant(req.id, req.patch);
-      await broadcastSettingsChanged(service, secrets);
       return ok(grant);
     } catch (cause) {
       return err(toLocalAgentError(cause));
@@ -412,4 +425,5 @@ export function registerSettingsDataHandlers(): void {
 export function __resetSettingsHandlersForTests(): void {
   settingsService = null;
   secretStore = null;
+  localAgentGrantService = null;
 }

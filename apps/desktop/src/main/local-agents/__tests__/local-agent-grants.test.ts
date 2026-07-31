@@ -85,7 +85,7 @@ describe("LocalAgentGrantService", () => {
     expect(onDisk.includes("pws_local_test-token")).toBe(false);
   });
 
-  test("authenticate returns local-agent command context and updates lastUsedAt", async () => {
+  test("authenticate is read-only and recordUsage updates lastUsedAt", async () => {
     const service = makeService();
     await service.createGrant({
       name: "PwrAgent",
@@ -104,7 +104,57 @@ describe("LocalAgentGrantService", () => {
       clientId: "lag_test",
       capabilities: ["library.read", "capture.composite.read"]
     });
-    expect(auth.grant.lastUsedAt).toBe("2026-06-07T12:00:00.000Z");
+    expect(auth.grant.lastUsedAt).toBeNull();
+
+    await service.recordUsage("lag_test");
+    const reread = await service.list();
+    expect(reread[0]?.lastUsedAt).toBe("2026-06-07T12:00:00.000Z");
+  });
+
+  test("recordUsage throttles settings writes", async () => {
+    let now = new Date("2026-06-07T12:00:00.000Z");
+    const service = new LocalAgentGrantService({
+      settings,
+      secrets,
+      now: () => now,
+      makeId: () => "lag_usage",
+      makeToken: () => "pws_local_usage-token",
+      usageWriteIntervalMs: 60_000
+    });
+    await service.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const write = vi.spyOn(settings, "write");
+
+    await service.recordUsage("lag_usage");
+    now = new Date("2026-06-07T12:00:30.000Z");
+    await service.recordUsage("lag_usage");
+    now = new Date("2026-06-07T12:01:01.000Z");
+    await service.recordUsage("lag_usage");
+
+    expect(write).toHaveBeenCalledTimes(2);
+    expect((await service.list())[0]?.lastUsedAt).toBe("2026-06-07T12:01:01.000Z");
+  });
+
+  test("serializes concurrent grant mutations without dropping grants", async () => {
+    let nextId = 0;
+    const service = new LocalAgentGrantService({
+      settings,
+      secrets,
+      makeId: () => `lag_${++nextId}`,
+      makeToken: () => `pws_local_token_${nextId}`
+    });
+
+    await Promise.all([
+      service.createGrant({ name: "Agent A", capabilities: ["library.read"] }),
+      service.createGrant({ name: "Agent B", capabilities: ["capture.composite.read"] })
+    ]);
+
+    expect((await service.list()).map((grant) => grant.id)).toEqual([
+      "lag_1",
+      "lag_2"
+    ]);
   });
 
   test("authenticate rejects missing, invalid, revoked, and under-scoped tokens", async () => {

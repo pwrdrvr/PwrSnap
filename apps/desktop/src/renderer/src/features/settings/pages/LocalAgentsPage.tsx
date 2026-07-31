@@ -89,7 +89,7 @@ export function LocalAgentsPage(): ReactElement {
         ) : grants.length === 0 ? (
           <Row
             label="No paired agents"
-            sub="External agents must be approved here before they can use PwrSnap."
+            sub="A native PwrSnap approval prompt opens when a local agent requests access."
           >
             <span className="pss__badge">none</span>
           </Row>

@@ -13,6 +13,7 @@ import { DesktopSettingsService } from "../settings/desktop-settings-service";
 const TOKEN_PREFIX = "pws_local_";
 const TOKEN_BYTES = 32;
 const TOKEN_SECRET_PREFIX = "localAgentToken:";
+const DEFAULT_USAGE_WRITE_INTERVAL_MS = 60_000;
 
 export type LocalAgentPairingResult = {
   grant: LocalAgentClientGrant;
@@ -29,6 +30,8 @@ export type LocalAgentGrantServiceConfig = {
   now?: () => Date;
   makeId?: () => string;
   makeToken?: () => string;
+  usageWriteIntervalMs?: number;
+  onSettingsChanged?: (settings: Settings) => void | Promise<void>;
 };
 
 type LocalAgentGrantPatchInput = Omit<LocalAgentClientGrantPatch, "capabilities"> & {
@@ -41,6 +44,9 @@ export class LocalAgentGrantService {
   private readonly now: () => Date;
   private readonly makeId: () => string;
   private readonly makeToken: () => string;
+  private readonly usageWriteIntervalMs: number;
+  private readonly onSettingsChanged: ((settings: Settings) => void | Promise<void>) | undefined;
+  private mutationQueue: Promise<unknown> = Promise.resolve();
 
   constructor(config: LocalAgentGrantServiceConfig) {
     this.settings = config.settings;
@@ -48,6 +54,9 @@ export class LocalAgentGrantService {
     this.now = config.now ?? (() => new Date());
     this.makeId = config.makeId ?? (() => `lag_${randomBytes(12).toString("hex")}`);
     this.makeToken = config.makeToken ?? (() => `${TOKEN_PREFIX}${randomBytes(TOKEN_BYTES).toString("base64url")}`);
+    this.usageWriteIntervalMs =
+      config.usageWriteIntervalMs ?? DEFAULT_USAGE_WRITE_INTERVAL_MS;
+    this.onSettingsChanged = config.onSettingsChanged;
   }
 
   async list(): Promise<LocalAgentClientGrant[]> {
@@ -80,20 +89,73 @@ export class LocalAgentGrantService {
       lastUsedAt: null,
       revokedAt: null
     };
-    const settings = await this.settings.read();
-    if (settings.localAgents.grants.some((existing) => existing.id === id)) {
-      throw new LocalAgentGrantError("duplicate_id", `local agent grant already exists: ${id}`);
-    }
-    await this.secrets.replace(secretNameForClient(id), hashToken(token));
-    await this.settings.write({
-      localAgents: {
-        grants: [...settings.localAgents.grants, grant]
+    return this.serializeMutation(async () => {
+      const settings = await this.settings.read();
+      if (settings.localAgents.grants.some((existing) => existing.id === id)) {
+        throw new LocalAgentGrantError("duplicate_id", `local agent grant already exists: ${id}`);
       }
+      await this.secrets.replace(secretNameForClient(id), hashToken(token));
+      let nextSettings: Settings;
+      try {
+        nextSettings = await this.settings.write({
+          localAgents: {
+            grants: [...settings.localAgents.grants, grant]
+          }
+        });
+      } catch (cause) {
+        await this.secrets.clear(secretNameForClient(id)).catch(() => undefined);
+        throw cause;
+      }
+      await this.notifySettingsChanged(nextSettings);
+      return { grant, token };
     });
-    return { grant, token };
   }
 
   async updateGrant(id: string, patch: LocalAgentGrantPatchInput): Promise<LocalAgentClientGrant> {
+    return this.serializeMutation(async () => {
+      const { grant, settings } = await this.updateGrantNow(id, patch);
+      await this.notifySettingsChanged(settings);
+      return grant;
+    });
+  }
+
+  async revokeGrant(id: string): Promise<LocalAgentClientGrant> {
+    return this.serializeMutation(async () => {
+      const revokedAt = this.now().toISOString();
+      const { grant, settings } = await this.updateGrantNow(id, { revokedAt });
+      await this.secrets.clear(secretNameForClient(id));
+      await this.notifySettingsChanged(settings);
+      return grant;
+    });
+  }
+
+  async recordUsage(clientId: string): Promise<void> {
+    await this.serializeMutation(async () => {
+      const settings = await this.settings.read();
+      const existing = settings.localAgents.grants.find(
+        (grant) => grant.id === clientId
+      );
+      if (existing === undefined || existing.revokedAt !== null) return;
+      const now = this.now();
+      const lastUsedMs =
+        existing.lastUsedAt === null ? Number.NEGATIVE_INFINITY : Date.parse(existing.lastUsedAt);
+      if (
+        Number.isFinite(lastUsedMs) &&
+        now.getTime() - lastUsedMs < this.usageWriteIntervalMs
+      ) {
+        return;
+      }
+      const { settings: nextSettings } = await this.updateGrantNow(clientId, {
+        lastUsedAt: now.toISOString()
+      });
+      await this.notifySettingsChanged(nextSettings);
+    });
+  }
+
+  private async updateGrantNow(
+    id: string,
+    patch: LocalAgentGrantPatchInput
+  ): Promise<{ grant: LocalAgentClientGrant; settings: Settings }> {
     const settings = await this.settings.read();
     const existing = settings.localAgents.grants.find((grant) => grant.id === id);
     if (existing === undefined) {
@@ -117,15 +179,8 @@ export class LocalAgentGrantService {
       throw new LocalAgentGrantError("invalid_capabilities", "at least one capability is required");
     }
     const grants = settings.localAgents.grants.map((grant) => grant.id === id ? next : grant);
-    await this.settings.write({ localAgents: { grants } });
-    return next;
-  }
-
-  async revokeGrant(id: string): Promise<LocalAgentClientGrant> {
-    const revokedAt = this.now().toISOString();
-    const grant = await this.updateGrant(id, { revokedAt });
-    await this.secrets.clear(secretNameForClient(id));
-    return grant;
+    const nextSettings = await this.settings.write({ localAgents: { grants } });
+    return { grant: next, settings: nextSettings };
   }
 
   async authenticate(args: {
@@ -146,16 +201,24 @@ export class LocalAgentGrantService {
     }
     const required = args.requiredCapabilities ?? [];
     if (!hasCapabilities(grant, required)) return { ok: false, code: "missing_capability" };
-    const lastUsedAt = this.now().toISOString();
-    const updatedGrant = await this.updateGrant(args.clientId, { lastUsedAt });
     return {
       ok: true,
-      grant: updatedGrant,
+      grant,
       context: {
-        clientId: updatedGrant.id,
-        capabilities: updatedGrant.capabilities
+        clientId: grant.id,
+        capabilities: grant.capabilities
       }
     };
+  }
+
+  private async notifySettingsChanged(settings: Settings): Promise<void> {
+    await this.onSettingsChanged?.(settings);
+  }
+
+  private serializeMutation<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.mutationQueue.catch(() => undefined).then(task);
+    this.mutationQueue = run;
+    return run;
   }
 }
 

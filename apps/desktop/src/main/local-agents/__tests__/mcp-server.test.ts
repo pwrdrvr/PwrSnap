@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -219,7 +219,7 @@ describe("LocalAgentMcpServer", () => {
     });
   });
 
-  test("keeps independent streamable HTTP sessions for multiple clients", async () => {
+  test("serves multiple clients without allocating MCP session state", async () => {
     const serviceA = new LocalAgentGrantService({
       settings,
       secrets,
@@ -241,9 +241,8 @@ describe("LocalAgentMcpServer", () => {
     client = await connectAs(url, "lag_a", "token-a", new Client({ name: "a", version: "1.0.0" }));
     extraClient = await connectAs(url, "lag_b", "token-b", new Client({ name: "b", version: "1.0.0" }));
 
-    expect(client.transport?.sessionId).toBeTruthy();
-    expect(extraClient.transport?.sessionId).toBeTruthy();
-    expect(client.transport?.sessionId).not.toBe(extraClient.transport?.sessionId);
+    expect(client.transport?.sessionId).toBeUndefined();
+    expect(extraClient.transport?.sessionId).toBeUndefined();
 
     const a = (await client.callTool({
       name: "pwrsnap_library_search",
@@ -256,6 +255,122 @@ describe("LocalAgentMcpServer", () => {
 
     expect(a.structuredContent).toMatchObject({ clientId: "lag_a", query: "from-a" });
     expect(b.structuredContent).toMatchObject({ clientId: "lag_b", query: "from-b" });
+  });
+
+  test("discovers and pairs through a native approval callback", async () => {
+    const discoveryFilePath = join(workDir, "local-agent-mcp.json");
+    const approvePairing = vi.fn(async () => true);
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0,
+      discoveryFilePath,
+      approvePairing
+    });
+    const address = await server.start();
+    const descriptorText = readFileSync(discoveryFilePath, "utf8");
+    const descriptor = JSON.parse(descriptorText) as Record<string, unknown>;
+
+    expect(descriptor).toMatchObject({
+      schemaVersion: 1,
+      mcpUrl: address.url,
+      pairUrl: address.pairUrl,
+      pid: process.pid
+    });
+    expect(descriptorText).not.toContain("token");
+    if (process.platform !== "win32") {
+      expect(statSync(discoveryFilePath).mode & 0o777).toBe(0o600);
+    }
+
+    const paired = await fetch(address.pairUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "PwrAgent",
+        capabilities: ["library.read"]
+      })
+    });
+    expect(paired.status).toBe(201);
+    const credential = await paired.json() as {
+      clientId: string;
+      token: string;
+      mcpUrl: string;
+    };
+    expect(approvePairing).toHaveBeenCalledWith({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    expect(credential).toMatchObject({
+      clientId: "lag_mcp",
+      token: "pws_local_mcp-token",
+      mcpUrl: address.url
+    });
+
+    client = await connectAs(
+      credential.mcpUrl,
+      credential.clientId,
+      credential.token,
+      new Client({ name: "paired", version: "1.0.0" })
+    );
+    await expect(client.listTools()).resolves.toMatchObject({
+      tools: expect.arrayContaining([
+        expect.objectContaining({ name: "pwrsnap_library_search" })
+      ])
+    });
+  });
+
+  test("denies pairing without creating a grant and rejects hostile origins", async () => {
+    const approvePairing = vi.fn(async () => false);
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0,
+      approvePairing
+    });
+    const address = await server.start();
+    const body = JSON.stringify({
+      name: "Untrusted Agent",
+      capabilities: ["capture.original.read"]
+    });
+
+    const hostile = await fetch(address.pairUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://attacker.example"
+      },
+      body
+    });
+    expect(hostile.status).toBe(403);
+    expect(approvePairing).not.toHaveBeenCalled();
+
+    const denied = await fetch(address.pairUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body
+    });
+    expect(denied.status).toBe(403);
+    expect(await grantService.list()).toEqual([]);
+  });
+
+  test("rejects requests outside the exact MCP and pairing paths", async () => {
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0
+    });
+    const address = await server.start();
+    const res = await fetch(`http://${address.host}:${address.port}/other`);
+    expect(res.status).toBe(404);
   });
 
   test("shutdown closes the socket and rejects subsequent requests", async () => {

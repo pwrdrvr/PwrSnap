@@ -84,6 +84,8 @@ import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
 import { isRecordingActive } from "./recording/recording-state";
 import {
+  getDesktopSettingsServices,
+  getLocalAgentGrantService,
   onSettingsChanged,
   registerSettingsDataHandlers,
   registerSettingsWindowHandlers
@@ -102,6 +104,7 @@ import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import { loginShellPath } from "./login-shell-path";
 import { LocalAgentMcpServer } from "./local-agents/mcp-server";
+import { approveLocalAgentPairing } from "./local-agents/local-agent-pairing";
 import {
   getRuntimeProcessRole,
   resolveProcessRole,
@@ -134,7 +137,6 @@ import {
   openDatabase,
   PendingMigrationsError
 } from "./persistence/db";
-import { DesktopSecretStore } from "./settings/desktop-secret-store";
 import {
   getCaptureById,
   insertCapture,
@@ -1888,13 +1890,13 @@ export function bootstrapApp(): void {
     if (role !== "library") {
       if (!isE2E && process.env.PWRSNAP_DISABLE_LOCAL_AGENT_MCP !== "1") {
         const userData = app.getPath("userData");
+        const { service, secrets } = getDesktopSettingsServices();
         localAgentMcpServer = new LocalAgentMcpServer({
-          settings: new DesktopSettingsService({
-            filePath: join(userData, "pwrsnap-settings.json")
-          }),
-          secrets: new DesktopSecretStore({
-            filePath: join(userData, "pwrsnap-secrets.bin")
-          })
+          settings: service,
+          secrets,
+          grantService: getLocalAgentGrantService(),
+          discoveryFilePath: join(userData, "local-agent-mcp.json"),
+          approvePairing: approveLocalAgentPairing
         });
         await localAgentMcpServer.start();
       }

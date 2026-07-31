@@ -3,6 +3,7 @@ import type { LocalAgentCapability, PwrSnapError } from "@pwrsnap/shared";
 import { err, ok, type Result } from "@pwrsnap/shared";
 import { z } from "zod";
 import type { CommandContext } from "../command-bus";
+import type { LocalAgentSearchInput } from "./local-agent-search";
 
 export type LocalAgentToolContext = {
   clientId: string;
@@ -67,7 +68,7 @@ export function capabilityDenied(
 
 export function createDefaultLocalAgentMcpTools(deps: {
   search: (
-    input: { query?: string | undefined },
+    input: LocalAgentSearchInput,
     ctx: LocalAgentToolContext
   ) => Promise<Result<unknown, PwrSnapError>>;
   deleteToTrash: (
@@ -75,13 +76,22 @@ export function createDefaultLocalAgentMcpTools(deps: {
     ctx: LocalAgentToolContext
   ) => Promise<Result<unknown, PwrSnapError>>;
 }): LocalAgentMcpTool<z.ZodRawShape>[] {
-  const searchTool: LocalAgentMcpTool<{ query: z.ZodOptional<z.ZodString> }> = {
+  const searchInputSchema = {
+    query: z.string().max(1_000).optional(),
+    appBundleIds: z.array(z.string().max(1_000).nullable()).max(100).optional(),
+    kinds: z.array(z.enum(["image", "video"])).max(2).optional(),
+    dateRange: z.object({
+      start: z.string().min(1).max(100),
+      end: z.string().min(1).max(100)
+    }).optional(),
+    hasOcr: z.boolean().optional(),
+    limit: z.number().int().min(1).max(500).optional()
+  } satisfies z.ZodRawShape;
+  const searchTool: LocalAgentMcpTool<typeof searchInputSchema> = {
     name: "pwrsnap_library_search",
     title: "Search PwrSnap Library",
     description: "Search live, non-trashed PwrSnap captures and return compact metadata rows.",
-    inputSchema: {
-      query: z.string().optional()
-    },
+    inputSchema: searchInputSchema,
     requiredCapabilities: ["library.read"],
     annotations: {
       readOnlyHint: true,

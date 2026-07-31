@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.0.0-beta.25 - 2026-07-31
+
+This beta keeps PwrSnap's Codex integration current, makes large Libraries
+more responsive, and keeps tray and Float-Over content correctly sized when
+you change zoom.
+
+- Codex Compatibility - Improved PwrSnap's AI connection for Codex 0.144,
+  including GPT-5.6 models, current reasoning choices, tool registration, and
+  accurate usage-cost estimates.
+- Library Performance - Improved pagination and large Library updates by
+  eliminating repeated formatter creation and redundant fixture rebuilding,
+  reducing UI stalls.
+- Tray and Float-Over - Fixed popovers so changing the app zoom reliably
+  resizes their content, including when the surfaces are hidden before use.
+
 ## v1.0.0-beta.24 - 2026-07-09
 
 This beta makes captured cursors and pasted images real editable layers, fixes

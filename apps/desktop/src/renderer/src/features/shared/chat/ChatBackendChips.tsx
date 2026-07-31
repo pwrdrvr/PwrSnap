@@ -23,13 +23,26 @@ export type ChatBackendChoice = {
   provider: string;
   /** Pinned model id (required before the first message). null = unset. */
   model: string | null;
-  /** "low" | "medium" | "high" | null. Codex only. */
+  /** Model-advertised reasoning effort, or null. Codex only. */
   reasoning: string | null;
 };
 
-type ModelOption = { id: string; label: string; isDefault?: boolean };
+type ModelOption = {
+  id: string;
+  label: string;
+  isDefault?: boolean;
+  supportedReasoningEfforts?: string[];
+  defaultReasoningEffort?: string | null;
+};
 
-const REASONING_LABEL: Record<string, string> = { low: "Low", medium: "Medium", high: "High" };
+const REASONING_LABEL: Record<string, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+  ultra: "Ultra"
+};
 
 function providerLabel(provider: string): string {
   if (provider === "" || provider === "codex") return "Codex";
@@ -38,8 +51,8 @@ function providerLabel(provider: string): string {
 }
 
 /** Reasoning applies only to the Codex backend — ACP agents use arbitrary,
- *  agent-defined modes the kit can't map to low/medium/high, so we don't offer
- *  it there (it would be silently ignored). */
+ *  agent-defined modes the kit can't map onto Codex's model-specific efforts,
+ *  so we don't offer it there (it would be silently ignored). */
 function providerSupportsReasoning(provider: string): boolean {
   return provider === "" || provider === "codex";
 }
@@ -53,7 +66,13 @@ function toModelOptions(provider: string, raw: unknown): ModelOption[] {
           .map((m) => ({
             id: m.id,
             label: m.displayName && m.displayName !== m.id ? `${m.displayName}` : m.id,
-            ...(m.isDefault ? { isDefault: true } : {})
+            ...(m.isDefault ? { isDefault: true } : {}),
+            ...(m.supportedReasoningEfforts !== undefined
+              ? { supportedReasoningEfforts: m.supportedReasoningEfforts }
+              : {}),
+            ...(m.defaultReasoningEffort !== undefined
+              ? { defaultReasoningEffort: m.defaultReasoningEffort }
+              : {})
           }))
       : [];
     return liveOptions.length > 0 ? liveOptions : CODEX_CAPTION_MODELS.map((id) => ({ id, label: id }));
@@ -64,6 +83,25 @@ function toModelOptions(provider: string, raw: unknown): ModelOption[] {
     label: m.label || m.id,
     ...(m.isDefault === true ? { isDefault: true } : {})
   }));
+}
+
+function reasoningEffortsForModel(model: ModelOption | undefined): string[] {
+  const advertised = model?.supportedReasoningEfforts ?? [];
+  return advertised.length > 0 ? advertised : [...AI_REASONING_EFFORTS];
+}
+
+function reasoningForModel(model: ModelOption | undefined, current: string | null): string | null {
+  const efforts = reasoningEffortsForModel(model);
+  if (current !== null && efforts.includes(current)) return current;
+  if (
+    model?.defaultReasoningEffort !== null &&
+    model?.defaultReasoningEffort !== undefined &&
+    efforts.includes(model.defaultReasoningEffort)
+  ) {
+    return model.defaultReasoningEffort;
+  }
+  if (efforts.includes("medium")) return "medium";
+  return efforts[0] ?? null;
 }
 
 // ---- Locked (read-only) chips ------------------------------------------
@@ -118,12 +156,22 @@ export function NewChatConfigChips({
       // If the current model isn't valid for this provider, clear it so the
       // user must pick one (required) rather than silently carrying a stale id.
       if (value.model !== null && !opts.some((o) => o.id === value.model)) {
-        onChange({ ...value, model: null });
+        onChange({ ...value, model: null, reasoning: null });
         return;
       }
       const defaultModel = opts.find((o) => o.isDefault === true);
       if (value.model === null && defaultModel !== undefined) {
-        onChange({ ...value, model: defaultModel.id });
+        onChange({
+          ...value,
+          model: defaultModel.id,
+          reasoning: reasoningForModel(defaultModel, value.reasoning)
+        });
+        return;
+      }
+      const selectedModel = opts.find((option) => option.id === value.model);
+      const nextReasoning = reasoningForModel(selectedModel, value.reasoning);
+      if (nextReasoning !== value.reasoning) {
+        onChange({ ...value, reasoning: nextReasoning });
       }
     })();
     // Only refetch when the provider changes.
@@ -131,6 +179,9 @@ export function NewChatConfigChips({
   }, [value.provider]);
 
   const showReasoning = providerSupportsReasoning(value.provider);
+  const selectedModel = models.find((model) => model.id === value.model);
+  const reasoningEfforts = reasoningEffortsForModel(selectedModel);
+  const selectedReasoning = reasoningForModel(selectedModel, value.reasoning);
 
   return (
     <div className="ps-bchips" data-testid="chat-backend-chips-draft">
@@ -165,7 +216,15 @@ export function NewChatConfigChips({
           aria-label="New chat model"
           disabled={modelsLoading}
           value={value.model ?? ""}
-          onChange={(e) => onChange({ ...value, model: e.target.value === "" ? null : e.target.value })}
+          onChange={(e) => {
+            const nextModelId = e.target.value === "" ? null : e.target.value;
+            const nextModel = models.find((model) => model.id === nextModelId);
+            onChange({
+              ...value,
+              model: nextModelId,
+              reasoning: reasoningForModel(nextModel, value.reasoning)
+            });
+          }}
         >
           {modelsLoading ? (
             <option value="">Loading…</option>
@@ -190,10 +249,10 @@ export function NewChatConfigChips({
           <select
             className="ps-bchip-select"
             aria-label="New chat reasoning"
-            value={value.reasoning ?? "medium"}
+            value={selectedReasoning ?? ""}
             onChange={(e) => onChange({ ...value, reasoning: e.target.value })}
           >
-            {AI_REASONING_EFFORTS.map((r) => (
+            {reasoningEfforts.map((r) => (
               <option key={r} value={r}>
                 {REASONING_LABEL[r] ?? r}
               </option>

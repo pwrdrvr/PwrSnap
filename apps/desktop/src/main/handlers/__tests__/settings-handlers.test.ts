@@ -383,7 +383,7 @@ describe("settings:* validation", () => {
     const result = await bus.dispatch(
       "settings:write",
       {
-        ai: { defaults: { sizzleChat: { reasoning: "ultra" } } }
+        ai: { defaults: { sizzleChat: { reasoning: "not an effort!" } } }
       } as unknown as Record<string, never>,
       { principal: "ipc" }
     );

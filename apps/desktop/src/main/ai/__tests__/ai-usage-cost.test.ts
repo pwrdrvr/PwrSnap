@@ -1,7 +1,103 @@
 import { describe, expect, test } from "vitest";
 import { estimateAiUsageCost } from "../ai-usage-cost";
+import {
+  CODEX_CREDITS_PRICING_CATALOG,
+  findCodexCreditsPricingEntry
+} from "../pricing-catalog";
 
 describe("estimateAiUsageCost", () => {
+  test.each([
+    ["gpt-5.6-luna", null, 0.2, 0.02, 1.2, null],
+    ["gpt-5.6-luna", "fast", 0.4, 0.04, 2.4, "fast"],
+    ["gpt-5.6-luna", "priority", 0.4, 0.04, 2.4, "fast"],
+    ["gpt-5.6-terra", null, 2, 0.2, 12, null],
+    ["gpt-5.6-terra", "fast", 4, 0.4, 24, "fast"],
+    ["gpt-5.6-terra", "priority", 4, 0.4, 24, "fast"]
+  ] as const)(
+    "prices %s service tier %s at the July 30 API rate",
+    (model, serviceTier, input, cached, output, catalogTier) => {
+      const estimate = estimateAiUsageCost({
+        model,
+        provider: "openai",
+        serviceTier,
+        tokens: {
+          totalTokens: 1_000_000,
+          inputTokens: 600_000,
+          cachedInputTokens: 100_000,
+          outputTokens: 400_000,
+          reasoningOutputTokens: 0,
+          modelContextWindow: null
+        }
+      });
+
+      expect(estimate.status).toBe("available");
+      if (estimate.status === "available") {
+        expect(estimate.catalogVersion).toBe("2026-07-30-gpt-5.6");
+        expect(estimate.pricedAt).toBe("2026-07-30T00:00:00.000Z");
+        expect(estimate.pricingSourceUrl).toBe(
+          "https://openai.com/index/advancing-the-price-performance-frontier-with-gpt-5-6/"
+        );
+        expect(estimate.rateSnapshot.serviceTier).toBe(catalogTier);
+        expect(estimate.rateSnapshot.inputUsdPerMillion).toBe(input);
+        expect(estimate.rateSnapshot.cachedInputUsdPerMillion).toBe(cached);
+        expect(estimate.rateSnapshot.outputUsdPerMillion).toBe(output);
+        expect(estimate.uncachedInputCostMicros).toBe(Math.round(500_000 * input));
+        expect(estimate.cachedInputCostMicros).toBe(Math.round(100_000 * cached));
+        expect(estimate.outputCostMicros).toBe(Math.round(400_000 * output));
+      }
+    }
+  );
+
+  test("records the July 30 GPT-5.6 Codex credit catalog and maps priority to Fast", () => {
+    expect(CODEX_CREDITS_PRICING_CATALOG).toEqual([
+      {
+        model: "gpt-5.6-luna",
+        serviceTier: "standard",
+        effectiveFrom: "2026-07-30",
+        inputCreditsPerMillion: 5,
+        cachedInputCreditsPerMillion: 0.5,
+        outputCreditsPerMillion: 30
+      },
+      {
+        model: "gpt-5.6-luna",
+        serviceTier: "fast",
+        effectiveFrom: "2026-07-30",
+        inputCreditsPerMillion: 12.5,
+        cachedInputCreditsPerMillion: 1.25,
+        outputCreditsPerMillion: 75
+      },
+      {
+        model: "gpt-5.6-terra",
+        serviceTier: "standard",
+        effectiveFrom: "2026-07-30",
+        inputCreditsPerMillion: 50,
+        cachedInputCreditsPerMillion: 5,
+        outputCreditsPerMillion: 300
+      },
+      {
+        model: "gpt-5.6-terra",
+        serviceTier: "fast",
+        effectiveFrom: "2026-07-30",
+        inputCreditsPerMillion: 125,
+        cachedInputCreditsPerMillion: 12.5,
+        outputCreditsPerMillion: 750
+      }
+    ]);
+    expect(
+      findCodexCreditsPricingEntry({
+        model: "gpt-5.6-luna",
+        serviceTier: "priority"
+      })
+    ).toEqual(
+      expect.objectContaining({
+        serviceTier: "fast",
+        inputCreditsPerMillion: 12.5,
+        cachedInputCreditsPerMillion: 1.25,
+        outputCreditsPerMillion: 75
+      })
+    );
+  });
+
   test("prices gpt-5.4-mini usage with cached, uncached, and output buckets", () => {
     const estimate = estimateAiUsageCost({
       model: "gpt-5.4-mini",
@@ -19,6 +115,7 @@ describe("estimateAiUsageCost", () => {
 
     expect(estimate.status).toBe("available");
     if (estimate.status === "available") {
+      expect(estimate.pricedAt).toBe("2026-06-04T00:00:00.000Z");
       expect(estimate.pricingSourceUrl).toBe(
         "https://developers.openai.com/api/docs/models/gpt-5.4-mini"
       );
@@ -71,6 +168,7 @@ describe("estimateAiUsageCost", () => {
 
     expect(estimate.status).toBe("available");
     if (estimate.status === "available") {
+      expect(estimate.pricedAt).toBe("2026-06-04T00:00:00.000Z");
       expect(estimate.pricingSourceUrl).toBe(
         "https://developers.openai.com/api/docs/models/gpt-5.5"
       );

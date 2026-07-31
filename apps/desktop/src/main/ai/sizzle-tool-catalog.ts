@@ -4,12 +4,12 @@
 // is built per chat instance because its mutations are bound to the
 // thread's project (see `buildSizzleToolAllowlist`).
 
+import { buildToolCatalog } from "@pwrdrvr/agent-client";
 import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
   DynamicToolSpec
 } from "@pwrdrvr/codex-app-server-protocol/v2";
-import { toDynamicToolSpec } from "./define-tool";
 import { dispatchLibraryToolCall } from "./library-tool-catalog";
 import { buildSizzleToolAllowlist, type SizzleToolDeps } from "./sizzle-tool-allowlist";
 
@@ -42,7 +42,7 @@ export function makeSizzleChatTools(deps: SizzleToolDeps): {
 } {
   const allowlist = buildSizzleToolAllowlist(deps);
   return {
-    catalog: allowlist.map(toDynamicToolSpec),
+    catalog: buildToolCatalog(allowlist),
     dispatch: (params) => dispatchLibraryToolCall(params, allowlist)
   };
 }

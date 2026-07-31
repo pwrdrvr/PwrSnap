@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Pure-function unit tests for the AI Providers page helpers.
 
 import { act, createElement } from "react";
@@ -242,14 +243,39 @@ describe("AiSurfaceDefaultControl — job routing", () => {
     expect(reasoning!.value).toBe("high");
   });
 
-  test("keeps graded low/medium/high reasoning for a Codex provider", async () => {
+  test("uses the selected Codex model's advertised reasoning efforts", async () => {
     const onChange = vi.fn();
     const el = await renderSurfaceControl({
       surface: "libraryChat",
       name: "Library chat",
       sub: "",
-      value: { provider: "" },
-      models: [],
+      value: { provider: "", model: "gpt-5.6-terra" },
+      models: [
+        {
+          id: "gpt-5.6-terra",
+          model: "gpt-5.6-terra",
+          displayName: "GPT-5.6-Terra",
+          description: "",
+          hidden: false,
+          supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+          defaultReasoningEffort: "medium",
+          inputModalities: ["text", "image"],
+          defaultServiceTier: null,
+          isDefault: true
+        },
+        {
+          id: "gpt-5.6-luna",
+          model: "gpt-5.6-luna",
+          displayName: "GPT-5.6-Luna",
+          description: "",
+          hidden: false,
+          supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+          defaultReasoningEffort: "high",
+          inputModalities: ["text", "image"],
+          defaultServiceTier: null,
+          isDefault: false
+        }
+      ],
       modelsLoading: false,
       acpProviderOptions: [],
       acpModelOptions: undefined,
@@ -257,8 +283,100 @@ describe("AiSurfaceDefaultControl — job routing", () => {
       onChange
     });
     const reasoning = el.querySelector<HTMLSelectElement>('[aria-label="Library chat reasoning effort"]');
-    const values = Array.from(reasoning!.options).map((o) => o.value);
-    expect(values).toEqual(["", "low", "medium", "high"]);
+    expect(Array.from(reasoning!.options).map((o) => o.value)).toEqual([
+      "",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ]);
+    expect(reasoning!.options[0]?.textContent).toBe("Default (medium)");
+
+    const model = el.querySelector<HTMLSelectElement>('[aria-label="Library chat model"]');
+    await act(async () => {
+      model!.value = "gpt-5.6-luna";
+      model!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledWith({ model: "gpt-5.6-luna" });
+  });
+
+  test("drops an effort that the newly selected Codex model does not support", async () => {
+    const onChange = vi.fn();
+    const el = await renderSurfaceControl({
+      surface: "libraryChat",
+      name: "Library chat",
+      sub: "",
+      value: {
+        provider: "",
+        model: "gpt-5.6-luna",
+        reasoning: "ultra"
+      },
+      models: [
+        {
+          id: "gpt-5.6-luna",
+          model: "gpt-5.6-luna",
+          displayName: "GPT-5.6-Luna",
+          description: "",
+          hidden: false,
+          supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+          defaultReasoningEffort: "high",
+          inputModalities: ["text", "image"],
+          defaultServiceTier: null,
+          isDefault: true
+        }
+      ],
+      modelsLoading: false,
+      acpProviderOptions: [],
+      acpModelOptions: undefined,
+      acpModelsLoading: false,
+      onChange
+    });
+
+    const reasoning = el.querySelector<HTMLSelectElement>(
+      '[aria-label="Library chat reasoning effort"]'
+    );
+    expect(Array.from(reasoning!.options).map((option) => option.value)).toEqual([
+      "",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]);
+    expect(reasoning!.value).toBe("");
+    expect(onChange).toHaveBeenCalledWith({ reasoning: "" });
+  });
+
+  test("preserves extended reasoning when the live Codex model catalog is unavailable", async () => {
+    const onChange = vi.fn();
+    const el = await renderSurfaceControl({
+      surface: "libraryChat",
+      name: "Library chat",
+      sub: "",
+      value: {
+        provider: "",
+        model: "gpt-5.6-terra",
+        reasoning: "ultra"
+      },
+      // An initial codex:models failure leaves the list empty and marks loading
+      // complete. The low/medium/high fallback is not evidence that Terra
+      // stopped supporting ultra.
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [],
+      acpModelOptions: undefined,
+      acpModelsLoading: false,
+      onChange
+    });
+
+    const reasoning = el.querySelector<HTMLSelectElement>(
+      '[aria-label="Library chat reasoning effort"]'
+    );
+    expect(reasoning!.value).toBe("ultra");
+    expect(Array.from(reasoning!.options).map((option) => option.value)).toContain("ultra");
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   test("normalizes a stale cross-provider model to Default once the ACP list loads", async () => {

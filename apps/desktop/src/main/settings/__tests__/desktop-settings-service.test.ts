@@ -503,9 +503,9 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
         ai: {
           enabled: true,
           defaults: {
-            // Empty / whitespace strings and a bad reasoning value are
+            // Empty / whitespace strings and a malformed reasoning value are
             // dropped so the in-memory shape omits them (= Codex default).
-            libraryChat: { provider: "  ", model: "", reasoning: "ultra" }
+            libraryChat: { provider: "  ", model: "", reasoning: "not an effort!" }
           }
         }
       }),
@@ -514,6 +514,30 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     const svc = new DesktopSettingsService({ filePath });
     const settings = await svc.read();
     expect(settings.ai.defaults.libraryChat).toEqual({});
+  });
+
+  test("v1 shape preserves protocol-advertised extended reasoning efforts", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: {
+          enabled: true,
+          defaults: {
+            libraryChat: { model: "gpt-5.6-terra", reasoning: "ultra" }
+          }
+        }
+      }),
+      "utf8"
+    );
+
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.ai.defaults.libraryChat).toEqual({
+      model: "gpt-5.6-terra",
+      reasoning: "ultra"
+    });
   });
 
   test("fresh defaults have an empty `ai.acp.enabledAgentIds`", () => {

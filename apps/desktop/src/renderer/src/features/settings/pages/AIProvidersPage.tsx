@@ -1693,6 +1693,11 @@ function surfaceModelOptions(models: readonly CodexModelOption[]): CodexModelOpt
   }));
 }
 
+function codexReasoningEfforts(model: CodexModelOption | undefined): AiReasoningEffort[] {
+  const advertised = model?.supportedReasoningEfforts?.filter(isAiReasoningEffort) ?? [];
+  return advertised.length > 0 ? advertised : [...AI_REASONING_EFFORTS];
+}
+
 export function AiSurfaceDefaultControl({
   surface,
   name,
@@ -1718,11 +1723,18 @@ export function AiSurfaceDefaultControl({
   // Model choices follow the selected BACKEND: Codex models for Codex, the ACP
   // agent's advertised models for an acp:<id> provider.
   const isAcpProvider = chatProviderValue.startsWith("acp:");
+  const codexModels = surfaceModelOptions(models);
+  const liveSelectedCodexModel =
+    models.find((model) => model.id === modelValue) ??
+    models.find((model) => model.isDefault);
+  const selectedCodexModel =
+    liveSelectedCodexModel ??
+    codexModels.find((model) => model.id === modelValue) ??
+    codexModels.find((model) => model.isDefault);
   // The ACP model list spawns the agent to fetch — disable the picker (showing
   // "Loading…") until it arrives, instead of a stale Codex value next to
   // "loading". Codex models load fast and the stored value is valid, so the
   // Codex picker is never disabled (it just shows the stored model meanwhile).
-  void modelsLoading;
   const modelLoading =
     isAcpProvider && (acpModelsLoading === true || acpModelOptions === undefined);
   // Mark the backend's PROTOCOL-CONFIRMED default model (isDefault) with a
@@ -1736,7 +1748,7 @@ export function AiSurfaceDefaultControl({
   const defaultModelName: string | undefined = isAcpProvider
     ? (acpModelOptions ?? []).find((m) => m.isDefault)?.label
     : (() => {
-        const def = surfaceModelOptions(models).find((m) => m.isDefault);
+        const def = codexModels.find((m) => m.isDefault);
         return def !== undefined ? modelLabel(def) : undefined;
       })();
   const modelChoices: Array<{ id: string; label: string }> = isAcpProvider
@@ -1744,7 +1756,7 @@ export function AiSurfaceDefaultControl({
         id: m.id,
         label: m.isDefault === true ? `${m.label} (default)` : m.label
       }))
-    : surfaceModelOptions(models).map((m) => ({
+    : codexModels.map((m) => ({
         id: m.id,
         label: m.isDefault === true ? `${modelLabel(m)} (default)` : modelLabel(m)
       }));
@@ -1785,37 +1797,78 @@ export function AiSurfaceDefaultControl({
   const showsStaleAcp =
     chatProviderValue.startsWith("acp:") &&
     !acpProviderOptions.some((o) => o.value === chatProviderValue);
-  // Reasoning options follow the backend. Codex exposes graded effort
-  // (low/medium/high). ACP "thinking" agents (Kimi) expose an on/off thinking
-  // pass — surface it as the same two choices everywhere: "Fast" (no thinking)
-  // and "Thinking". We reuse the existing `reasoning` field: "low" → thinking
-  // OFF, "high" → thinking ON, which the ACP backend maps onto the agent's
-  // `thought_level` config option at turn start (agents without one ignore it).
+  // Reasoning options follow the backend and selected model. Codex advertises
+  // model-specific effort values from `model/list` (for example, GPT-5.6 model
+  // variants do not all expose the same ceiling). ACP "thinking" agents (Kimi)
+  // expose an on/off thinking pass — surface it as the same two choices
+  // everywhere: "Fast" (no thinking) and "Thinking".
+  const selectedCodexReasoningEfforts = codexReasoningEfforts(selectedCodexModel);
+  const liveCodexReasoningEfforts =
+    liveSelectedCodexModel?.supportedReasoningEfforts?.filter(isAiReasoningEffort) ?? [];
+  // When the live catalog is temporarily unavailable, retain an extended
+  // persisted value in the picker instead of making the controlled <select>
+  // look blank against the low/medium/high fallback.
+  const displayedCodexReasoningEfforts =
+    liveCodexReasoningEfforts.length === 0 &&
+    reasoningValue !== "" &&
+    !selectedCodexReasoningEfforts.includes(reasoningValue)
+      ? [...selectedCodexReasoningEfforts, reasoningValue]
+      : selectedCodexReasoningEfforts;
   const reasoningChoices: Array<{ value: AiReasoningEffort; label: string }> = isAcpProvider
     ? [
         { value: "low", label: "Fast" },
         { value: "high", label: "Thinking" }
       ]
-    : AI_REASONING_EFFORTS.map((effort) => ({ value: effort, label: effort }));
+    : displayedCodexReasoningEfforts.map((effort) => ({ value: effort, label: effort }));
   // What "Default" (empty reasoning) actually resolves to differs by surface and
   // backend, so spell it out rather than leave it ambiguous. For ACP the kit
   // collapses to Fast/Thinking: enrichment defaults Fast (its effort default is
   // "low"); the chat surfaces default Thinking ("medium" → thinking on). Codex
-  // keeps a plain "Default" (the backend picks its own graded effort).
+  // names the selected model's advertised default when one is available.
+  const codexDefaultReasoning =
+    selectedCodexModel !== undefined &&
+    isAiReasoningEffort(selectedCodexModel.defaultReasoningEffort) &&
+    selectedCodexReasoningEfforts.includes(selectedCodexModel.defaultReasoningEffort)
+      ? selectedCodexModel.defaultReasoningEffort
+      : undefined;
   const defaultReasoningLabel = isAcpProvider
     ? surface === "enrichment"
       ? "Default (Fast)"
       : "Default (Thinking)"
-    : "Default";
+    : codexDefaultReasoning !== undefined
+      ? `Default (${codexDefaultReasoning})`
+      : "Default";
   // A surface can carry a stale Codex "medium" from before its provider was
   // switched to an ACP agent. "medium" isn't an ACP choice, so a controlled
   // <select> would render a BLANK selection. Show what the ACP backend will
   // actually do with it — collapse anything non-"low" to Thinking — so the
   // control never looks empty and matches the value that gets sent.
-  const reasoningSelectValue: AiReasoningEffort | "" =
-    isAcpProvider && reasoningValue !== "" && !reasoningChoices.some((c) => c.value === reasoningValue)
+  const reasoningInChoices = reasoningChoices.some((choice) => choice.value === reasoningValue);
+  const reasoningSelectValue: AiReasoningEffort | "" = isAcpProvider
+    ? reasoningValue !== "" && !reasoningInChoices
       ? "high"
+      : reasoningValue
+    : reasoningValue !== "" && !reasoningInChoices
+      ? ""
       : reasoningValue;
+  // A saved Codex effort can become invalid when the selected model changes.
+  // Clear it only when a successful live catalog identified the selected or
+  // default model and proved the effort unsupported. An empty list may mean a
+  // transient `codex:models` failure and must never mutate persisted settings.
+  const staleCodexReasoning =
+    !isAcpProvider &&
+    !modelsLoading &&
+    liveCodexReasoningEfforts.length > 0 &&
+    reasoningValue !== "" &&
+    !liveCodexReasoningEfforts.includes(reasoningValue);
+  const normalizedReasoningKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!staleCodexReasoning) return;
+    const key = `${modelValue}|${reasoningValue}`;
+    if (normalizedReasoningKeyRef.current === key) return;
+    normalizedReasoningKeyRef.current = key;
+    onChange({ reasoning: "" });
+  }, [modelValue, onChange, reasoningValue, staleCodexReasoning]);
 
   return (
     <div className="pss__role pss__role--routable" data-surface={surface}>
@@ -1872,7 +1925,21 @@ export function AiSurfaceDefaultControl({
             aria-label={`${name} model`}
             disabled={modelLoading}
             onChange={(e) => {
-              onChange({ model: e.target.value });
+              const nextModelId = e.target.value;
+              if (isAcpProvider) {
+                onChange({ model: nextModelId });
+                return;
+              }
+              const nextModel =
+                codexModels.find((model) => model.id === nextModelId) ??
+                (nextModelId === "" ? codexModels.find((model) => model.isDefault) : undefined);
+              const nextEfforts = codexReasoningEfforts(nextModel);
+              onChange({
+                model: nextModelId,
+                ...(reasoningValue !== "" && !nextEfforts.includes(reasoningValue)
+                  ? { reasoning: "" }
+                  : {})
+              });
             }}
           >
             {modelLoading ? (
@@ -1893,10 +1960,10 @@ export function AiSurfaceDefaultControl({
             )}
           </select>
         </label>
-        {/* Reasoning: graded effort for Codex (low/medium/high), Fast/Thinking
-            for ACP "thinking" agents. Shown for every backend now — for ACP it
-            drives the agent's thinking pass (the kit ignores it for agents that
-            have none, so the worst case is a no-op control). */}
+        {/* Reasoning: protocol-advertised, per-model effort for Codex;
+            Fast/Thinking for ACP "thinking" agents. Shown for every backend
+            now — for ACP it drives the agent's thinking pass (the kit ignores
+            it for agents that have none, so the worst case is a no-op control). */}
         <label className="pss__ai-surface-field">
           <span className="pss__ai-surface-field-label">Reasoning</span>
           <select

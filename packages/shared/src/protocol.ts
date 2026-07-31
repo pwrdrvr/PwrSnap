@@ -1306,6 +1306,10 @@ export type CodexModelOption = {
   displayName: string;
   description: string;
   hidden: boolean;
+  /** Model-specific values advertised by Codex App Server's `model/list`. */
+  supportedReasoningEfforts?: string[];
+  /** Protocol-selected default for this model, when advertised. */
+  defaultReasoningEffort?: string | null;
   inputModalities: Array<"text" | "image">;
   defaultServiceTier: string | null;
   isDefault: boolean;
@@ -1323,14 +1327,13 @@ export type CodexModelList = {
 // Enrichment). These DEFAULTS drive the kit controller / one-shot client;
 // per-thread overrides are out of scope.
 
-/** Reasoning effort the per-surface defaults expose in the UI. This is a
- *  deliberate subset of the protocol's `ReasoningEffort`
- *  (`none|minimal|low|medium|high|xhigh`) — PwrSnap only surfaces the
- *  three the user-facing picker offers. The chosen value is sent verbatim
- *  as Codex's `effort`; widen this union (and `AI_REASONING_EFFORTS`) if
- *  we want to expose more tiers. */
-export type AiReasoningEffort = "low" | "medium" | "high";
+/** Reasoning effort sent to the selected backend. Codex App Server defines
+ *  this as an open string and advertises the valid values per model, so this
+ *  must not be narrowed to a fixed union. */
+export type AiReasoningEffort = string;
 
+/** Compatibility fallback used when a backend/model does not advertise its
+ *  supported efforts. Live Codex model choices come from `model/list`. */
 export const AI_REASONING_EFFORTS = [
   "low",
   "medium",
@@ -1340,7 +1343,9 @@ export const AI_REASONING_EFFORTS = [
 export function isAiReasoningEffort(value: unknown): value is AiReasoningEffort {
   return (
     typeof value === "string" &&
-    (AI_REASONING_EFFORTS as readonly string[]).includes(value)
+    value.length > 0 &&
+    value.length <= 40 &&
+    /^[a-z0-9_-]+$/.test(value)
   );
 }
 

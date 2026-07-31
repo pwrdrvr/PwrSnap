@@ -12,14 +12,16 @@
 // errors all return `{ success: false }` with a text contentItem describing
 // the problem, so the agent can self-correct on its next turn.
 
-import { z } from "zod";
+import {
+  buildToolCatalog,
+  dispatchToolCall
+} from "@pwrdrvr/agent-client";
 import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
   DynamicToolSpec
 } from "@pwrdrvr/codex-app-server-protocol/v2";
 import type { ToolSpec } from "./define-tool";
-import { toDynamicToolSpec } from "./define-tool";
 import { LIBRARY_TOOL_ALLOWLIST } from "./library-tool-allowlist";
 
 /**
@@ -31,7 +33,7 @@ import { LIBRARY_TOOL_ALLOWLIST } from "./library-tool-allowlist";
 export function buildLibraryToolCatalog(
   allowlist: ReadonlyArray<ToolSpec<unknown>> = LIBRARY_TOOL_ALLOWLIST
 ): DynamicToolSpec[] {
-  return allowlist.map(toDynamicToolSpec);
+  return buildToolCatalog(allowlist);
 }
 
 /**
@@ -46,66 +48,5 @@ export async function dispatchLibraryToolCall(
   params: DynamicToolCallParams,
   allowlist: ReadonlyArray<ToolSpec<unknown>> = LIBRARY_TOOL_ALLOWLIST
 ): Promise<DynamicToolCallResponse> {
-  const entry = allowlist.find((tool) => tool.name === params.tool);
-  if (entry === undefined) {
-    return errorResponse(`Unknown tool: ${params.tool}`);
-  }
-
-  // `namespace` is `string | null` on the wire. We accept a missing/null
-  // namespace (Codex may omit it) but reject an explicit mismatch.
-  if (params.namespace !== null && params.namespace !== entry.namespace) {
-    return errorResponse(
-      `Tool "${params.tool}" is not in namespace "${params.namespace}".`
-    );
-  }
-
-  const parsed = entry.argsSchema.safeParse(params.arguments);
-  if (!parsed.success) {
-    return errorResponse(
-      `Invalid arguments for "${params.tool}": ${formatZodError(parsed.error)}`
-    );
-  }
-
-  let result: Awaited<ReturnType<ToolSpec<unknown>["dispatch"]>>;
-  try {
-    result = await entry.dispatch(parsed.data, { threadId: params.threadId });
-  } catch (cause) {
-    return errorResponse(
-      `Tool "${params.tool}" failed: ${
-        cause instanceof Error ? cause.message : String(cause)
-      }`
-    );
-  }
-
-  if (!result.ok) {
-    return errorResponse(result.error);
-  }
-
-  // A tool that returns pre-built content items (e.g. render_composite's
-  // inputImage) passes them through verbatim so the model SEES the image
-  // rather than a JSON blob.
-  if ("contentItems" in result) {
-    return { success: true, contentItems: result.contentItems };
-  }
-
-  return {
-    success: true,
-    contentItems: [{ type: "inputText", text: JSON.stringify(result.data) }]
-  };
-}
-
-function errorResponse(message: string): DynamicToolCallResponse {
-  return {
-    success: false,
-    contentItems: [{ type: "inputText", text: message }]
-  };
-}
-
-function formatZodError(error: z.ZodError): string {
-  return error.issues
-    .map((issue) => {
-      const path = issue.path.join(".");
-      return path.length > 0 ? `${path}: ${issue.message}` : issue.message;
-    })
-    .join("; ");
+  return dispatchToolCall(params, allowlist);
 }

@@ -21,7 +21,11 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { DynamicToolCallParams, DynamicToolSpec } from "@pwrdrvr/codex-app-server-protocol/v2";
 import { ToolRpcClient } from "./pwrsnap-tool-rpc-client";
-import { toCallToolResult, toMcpTool } from "./mcp-translate";
+import {
+  flattenDynamicToolCatalog,
+  toCallToolResult,
+  toMcpTool
+} from "./mcp-translate";
 
 function logStderr(message: string, extra?: unknown): void {
   // stderr only — stdout is reserved for the MCP transport.
@@ -50,8 +54,11 @@ async function main(): Promise<void> {
     });
     process.exit(1);
   }
-  const byName = new Map(catalog.map((t) => [t.name, t]));
-  logStderr("catalog loaded", { tools: catalog.map((t) => t.name) });
+  const flatCatalog = flattenDynamicToolCatalog(catalog);
+  const byName = new Map(flatCatalog.map((entry) => [entry.spec.name, entry]));
+  logStderr("catalog loaded", {
+    tools: flatCatalog.map((entry) => entry.spec.name)
+  });
 
   const server = new Server(
     { name: "pwrsnap", version: "1.0.0" },
@@ -59,18 +66,18 @@ async function main(): Promise<void> {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: catalog.map(toMcpTool)
+    tools: flatCatalog.map((entry) => toMcpTool(entry.spec))
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const spec = byName.get(request.params.name);
+    const entry = byName.get(request.params.name);
     const params: DynamicToolCallParams = {
       // dispatchLibraryToolCall keys on tool/namespace/arguments only; the
       // thread/turn/call ids are unused by the dispatcher, so stub them.
       threadId: "",
       turnId: "",
       callId: `mcp-${request.params.name}`,
-      namespace: spec?.namespace ?? null,
+      namespace: entry?.namespace ?? null,
       tool: request.params.name,
       arguments: (request.params.arguments ?? {}) as DynamicToolCallParams["arguments"]
     };

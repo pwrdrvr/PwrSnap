@@ -9,10 +9,9 @@
 //     `discoverCodexCommands` hardcodes PWRDRVR_CODEX_COMMAND, so we drive the
 //     GENERIC `discoverCommands` with our own env name instead).
 //   • PwrSnap's selection/no-throw semantics: `resolveCodexCommand` falls back
-//     to the configured command (or `codex`) when discovery finds nothing
-//     rather than throwing — the spawn then surfaces a clean ENOENT through the
-//     existing codex_unreachable path. (The kit's `resolveCodexCommand` throws
-//     `CodexCliNotInstalledError`; PwrSnap's callers never expected a throw.)
+//     to the configured command (or `codex`) when discovery finds nothing.
+//     Discovery marks old candidates unavailable, and the App Server pool
+//     independently guards the exact command before spawning it.
 //   • `probeCodexAuth` (a `codex login status` probe) which the kit doesn't
 //     surface in this shape.
 //   • The `Desktop*` type names + `MINIMUM_CODEX_CLI_VERSION`, kept so
@@ -45,11 +44,10 @@ import { PWRSNAP_CODEX_COMMAND_ENV } from "./env";
 
 const execFile = promisify(execFileCallback);
 
-/** Minimum Codex CLI version PwrSnap will spawn. Mirrors PwrAgnt's
- *  threshold; older binaries miss protocol features we rely on. The
- *  settings-service applies this check; discovery itself does not filter on
- *  it (parity with the prior in-tree behavior). */
-export const MINIMUM_CODEX_CLI_VERSION = "0.125.0";
+/** Minimum Codex CLI version PwrSnap will spawn. The protocol package version
+ *  tracks the target CLI release; older binaries cannot consume its tool wire
+ *  format. */
+export const MINIMUM_CODEX_CLI_VERSION = "0.144.0";
 
 export type DesktopCodexCandidateSource = "env" | "config" | "path" | "application";
 
@@ -96,6 +94,7 @@ export async function pathIsExecutable(candidate: string): Promise<boolean> {
 
 const AUTH_PROBE_TIMEOUT_MS = 2_500;
 const AUTH_PROBE_MESSAGE_LIMIT = 240;
+const VERSION_PROBE_TIMEOUT_MS = 2_500;
 
 function trimProbeMessage(value: string): string {
   return value.trim().replace(/\s+/g, " ").slice(0, AUTH_PROBE_MESSAGE_LIMIT);
@@ -153,6 +152,36 @@ export async function probeCodexAuth(
 function parseCodexVersion(output: string): string | undefined {
   const match = output.match(/\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/);
   return match?.[1];
+}
+
+export function validateCodexCliVersion(version: string): string | undefined {
+  return compareCodexCliVersions(version, MINIMUM_CODEX_CLI_VERSION) < 0
+    ? "codex_too_old"
+    : undefined;
+}
+
+/** Guard the exact command the App Server client is about to spawn. Discovery
+ *  filters old candidates for Settings, while this check prevents a direct
+ *  configured/PATH command from bypassing that UI-level selection. */
+export async function assertCodexCliVersion(
+  command: string,
+  env: NodeJS.ProcessEnv
+): Promise<string> {
+  const result = await execFile(command, ["--version"], {
+    env,
+    timeout: VERSION_PROBE_TIMEOUT_MS
+  });
+  const output = `${result.stdout}\n${result.stderr ?? ""}`;
+  const version = parseCodexVersion(output);
+  if (version === undefined) {
+    throw new Error(`Codex CLI version banner was not recognized: ${command}`);
+  }
+  if (validateCodexCliVersion(version) !== undefined) {
+    throw new Error(
+      `Codex CLI ${version} is older than the minimum supported version ${MINIMUM_CODEX_CLI_VERSION}: ${command}`
+    );
+  }
+  return version;
 }
 
 function getCodexAppCandidatePaths(): string[] {
@@ -229,11 +258,8 @@ export async function discoverCodexCommands(params?: {
       }))
     ],
     parseVersion: parseCodexVersion,
-    compareVersions: kitCompareCodexCliVersions
-    // Deliberately NO `validateVersion`: PwrSnap's discovery never filtered
-    // candidates on MINIMUM_CODEX_CLI_VERSION — the settings-service applies
-    // that check separately so a too-old binary still surfaces in the list
-    // with a banner rather than vanishing.
+    compareVersions: kitCompareCodexCliVersions,
+    validateVersion: validateCodexCliVersion
   });
 
   const candidates = snapshot.candidates.map(toDesktopCandidate);
@@ -257,14 +283,15 @@ export async function resolveCodexCommand(params: {
   });
   const selected = discovery.candidates.find((candidate) => candidate.selected);
 
-  return selected
-    ? {
-        command: selected.command,
-        source: selected.source,
-        version: selected.version
-      }
-    : {
-        command: params.command.trim() || "codex",
-        source: "path"
-      };
+  if (selected !== undefined) {
+    return {
+      command: selected.command,
+      source: selected.source,
+      version: selected.version
+    };
+  }
+  return {
+    command: params.command.trim() || "codex",
+    source: "path"
+  };
 }

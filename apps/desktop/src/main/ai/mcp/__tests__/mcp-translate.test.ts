@@ -1,18 +1,23 @@
 import { describe, expect, test } from "vitest";
 import type {
   DynamicToolCallResponse,
+  DynamicToolNamespaceTool,
   DynamicToolSpec
 } from "@pwrdrvr/codex-app-server-protocol/v2";
-import { toCallToolResult, toMcpTool } from "../mcp-translate";
+import {
+  flattenDynamicToolCatalog,
+  toCallToolResult,
+  toMcpTool
+} from "../mcp-translate";
 
 describe("toMcpTool", () => {
   test("carries name/description and the inputSchema through", () => {
-    const spec = {
-      namespace: "library",
+    const spec: DynamicToolNamespaceTool = {
+      type: "function",
       name: "draw_arrow",
       description: "Draw an arrow",
       inputSchema: { type: "object", properties: { capture_id: { type: "string" } } }
-    } as unknown as DynamicToolSpec;
+    };
     const tool = toMcpTool(spec);
     expect(tool.name).toBe("draw_arrow");
     expect(tool.description).toBe("Draw an arrow");
@@ -23,8 +28,49 @@ describe("toMcpTool", () => {
   });
 
   test("falls back to an object schema when inputSchema is missing", () => {
-    const spec = { name: "x", description: "y" } as unknown as DynamicToolSpec;
+    const spec = {
+      type: "function",
+      name: "x",
+      description: "y"
+    } as unknown as DynamicToolNamespaceTool;
     expect(toMcpTool(spec).inputSchema).toEqual({ type: "object" });
+  });
+});
+
+describe("flattenDynamicToolCatalog", () => {
+  test("flattens namespace groups while preserving each function's namespace", () => {
+    const libraryFunction: DynamicToolNamespaceTool = {
+      type: "function",
+      name: "draw_arrow",
+      description: "Draw an arrow",
+      inputSchema: { type: "object" }
+    };
+    const topLevelFunction: DynamicToolNamespaceTool = {
+      type: "function",
+      name: "health_check",
+      description: "Check health",
+      inputSchema: { type: "object" }
+    };
+    const catalog: DynamicToolSpec[] = [
+      {
+        type: "namespace",
+        name: "pwrsnap_library",
+        description: "Library tools",
+        tools: [libraryFunction]
+      },
+      topLevelFunction
+    ];
+
+    expect(flattenDynamicToolCatalog(catalog)).toEqual([
+      {
+        namespace: "pwrsnap_library",
+        spec: libraryFunction
+      },
+      {
+        namespace: null,
+        spec: topLevelFunction
+      }
+    ]);
   });
 });
 

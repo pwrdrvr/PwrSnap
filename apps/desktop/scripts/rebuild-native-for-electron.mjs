@@ -176,7 +176,7 @@ function ensureDefaultNodeBinding() {
     npm_config_target: process.versions.node,
     npm_config_target_arch: process.arch
   };
-  execFileSync("npm", ["run", "install"], { cwd: betterSqlite3Dir, env, stdio: "inherit" });
+  execSync("npm run install", { cwd: betterSqlite3Dir, env, stdio: "inherit" });
 
   if (!isDefaultNodeBindingUsable()) {
     throw new Error("better-sqlite3 default Node binding is still unusable after rebuild");

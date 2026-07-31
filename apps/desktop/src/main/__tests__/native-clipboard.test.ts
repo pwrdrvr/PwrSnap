@@ -4,8 +4,8 @@
 // so instead of the bundled Swift helper we inject a fake stdin-reading
 // shell script via __setNativeClipboardHelperForTests and assert the
 // spawn / stdin-payload / exit-code plumbing. The actual NSPasteboard
-// behavior (single declareTypes pass carrying the private UTI + PNG +
-// TIFF) is verified at the binary level and via the manual dev paste
+// behavior (single declareTypes pass carrying the private UTI + PNG)
+// is verified at the binary level and via the manual dev paste
 // round-trip documented in the PR.
 
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -94,24 +94,9 @@ describe.skipIf(process.platform !== "darwin")("writeMultiFormatClipboard", () =
     expect(payload.utiName).toBe("com.pwrdrvr.pwrsnap.layer-fragment");
     expect(payload.utiBase64).toBe(utiBytes.toString("base64"));
     expect(payload.pngBase64).toBe(pngBytes.toString("base64"));
-    // No TIFF supplied → key omitted; the helper derives it from PNG.
+    // Clipboard writes intentionally contain only the private UTI and PNG;
+    // do not add an eager TIFF payload.
     expect("tiffBase64" in payload).toBe(false);
-  });
-
-  test("passes through a caller-supplied TIFF body", async () => {
-    __setNativeClipboardHelperForTests(await installFakeHelper());
-    const tiffBytes = Buffer.from([0x49, 0x49, 0x2a, 0x00]); // little-endian TIFF magic
-
-    const result = await writeMultiFormatClipboard({
-      utiName: "com.pwrdrvr.pwrsnap.layer-fragment",
-      utiBytes: Buffer.from("frag"),
-      pngBytes: Buffer.from("png"),
-      tiffBytes
-    });
-
-    expect(result).toBe(true);
-    const payload = JSON.parse(await readFile(capturePath, "utf8"));
-    expect(payload.tiffBase64).toBe(tiffBytes.toString("base64"));
   });
 
   test("returns false when the helper exits non-zero", async () => {

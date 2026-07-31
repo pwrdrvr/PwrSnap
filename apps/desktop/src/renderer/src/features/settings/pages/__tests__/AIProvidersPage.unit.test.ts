@@ -500,7 +500,7 @@ describe("AiSurfaceDefaultControl — job routing", () => {
     expect(optionValues).toContain("gpt-5.5");
   });
 
-  test("Codex: annotates Default with the default model + shows friendly names (no id in parens)", async () => {
+  test("Codex enrichment shows the managed Luna Low default instead of the protocol default", async () => {
     const codexModels = [
       {
         id: "gpt-5.4-mini",
@@ -511,6 +511,18 @@ describe("AiSurfaceDefaultControl — job routing", () => {
         inputModalities: ["text", "image"] as Array<"text" | "image">,
         defaultServiceTier: null,
         isDefault: true
+      },
+      {
+        id: "gpt-5.6-luna",
+        model: "gpt-5.6-luna",
+        displayName: "GPT-5.6-Luna",
+        description: "",
+        hidden: false,
+        inputModalities: ["text", "image"] as Array<"text" | "image">,
+        defaultServiceTier: null,
+        isDefault: false,
+        defaultReasoningEffort: "high" as const,
+        supportedReasoningEfforts: ["low", "medium", "high"] as string[]
       },
       {
         id: "gpt-5.5",
@@ -537,10 +549,15 @@ describe("AiSurfaceDefaultControl — job routing", () => {
     const modelSelect = el.querySelector<HTMLSelectElement>('[aria-label="Enrichment model"]');
     const options = Array.from(modelSelect!.options).map((o) => o.textContent);
     expect(options).toEqual([
-      "Default (GPT-5.4-Mini)", // annotated with the default model's friendly name
-      "GPT-5.4-Mini (default)", // friendly name + (default), NOT "GPT-5.4-Mini (gpt-5.4-mini)"
+      "Default (GPT-5.6-Luna)",
+      "GPT-5.4-Mini",
+      "GPT-5.6-Luna (default)",
       "GPT-5.5"
     ]);
+    const reasoningSelect = el.querySelector<HTMLSelectElement>(
+      '[aria-label="Enrichment reasoning effort"]'
+    );
+    expect(reasoningSelect!.options[0]?.textContent).toBe("Default (low)");
   });
 
   test("does NOT keep a stored model that isn't valid for the provider (Sizzle bug)", async () => {

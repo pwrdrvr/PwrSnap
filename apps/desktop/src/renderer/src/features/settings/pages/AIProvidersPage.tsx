@@ -29,6 +29,7 @@ import {
   builtInAcpAgentDisplayName,
   CODEX_CAPTION_MODELS,
   DEFAULT_CODEX_CAPTION_MODEL,
+  DEFAULT_ENRICHMENT_REASONING_EFFORT,
   EVENT_CHANNELS,
   isAiReasoningEffort
 } from "@pwrsnap/shared";
@@ -258,8 +259,8 @@ export function AIProvidersPage(): ReactElement {
       <Card eyebrow="ROLES" title="Job routing">
         <p className="pss__role-intro">
           Route each AI job to a backend — Codex or an enabled ACP agent — and
-          pick its model + reasoning effort. Leave a field on Default to let the
-          backend choose. Applies to new runs / threads; existing conversations
+          pick its model + reasoning effort. Leave a field on Default to use its
+          managed choice. Applies to new runs / threads; existing conversations
           aren&apos;t rewritten.
         </p>
         <AiSurfaceDefaultControl
@@ -1724,22 +1725,29 @@ export function AiSurfaceDefaultControl({
   // agent's advertised models for an acp:<id> provider.
   const isAcpProvider = chatProviderValue.startsWith("acp:");
   const codexModels = surfaceModelOptions(models);
+  const managedCodexDefaultModelId =
+    surface === "enrichment" ? DEFAULT_CODEX_CAPTION_MODEL : undefined;
+  const isCodexDefaultForSurface = (model: CodexModelOption): boolean =>
+    managedCodexDefaultModelId !== undefined
+      ? model.id === managedCodexDefaultModelId
+      : model.isDefault;
   const liveSelectedCodexModel =
     models.find((model) => model.id === modelValue) ??
-    models.find((model) => model.isDefault);
+    models.find(isCodexDefaultForSurface);
   const selectedCodexModel =
     liveSelectedCodexModel ??
     codexModels.find((model) => model.id === modelValue) ??
-    codexModels.find((model) => model.isDefault);
+    codexModels.find(isCodexDefaultForSurface);
   // The ACP model list spawns the agent to fetch — disable the picker (showing
   // "Loading…") until it arrives, instead of a stale Codex value next to
   // "loading". Codex models load fast and the stored value is valid, so the
   // Codex picker is never disabled (it just shows the stored model meanwhile).
   const modelLoading =
     isAcpProvider && (acpModelsLoading === true || acpModelOptions === undefined);
-  // Mark the backend's PROTOCOL-CONFIRMED default model (isDefault) with a
-  // "(default)" suffix so the user can see which one "Default" resolves to —
-  // for BOTH Codex and ACP. Do NOT guess: if no model carries isDefault (e.g. a
+  // Mark the model that "Default" resolves to with a "(default)" suffix. Chat
+  // uses the backend's protocol-confirmed default; enrichment uses PwrSnap's
+  // managed default. Do NOT guess for backend-managed surfaces when no model
+  // carries isDefault (e.g. a
   // cached ACP list captured before the agent reported a currentModelId), leave
   // it undefined and show a plain "Default". Guessing the first-listed model
   // actively misleads — Grok lists "Composer 2.5" first but its real default is
@@ -1748,8 +1756,9 @@ export function AiSurfaceDefaultControl({
   const defaultModelName: string | undefined = isAcpProvider
     ? (acpModelOptions ?? []).find((m) => m.isDefault)?.label
     : (() => {
-        const def = codexModels.find((m) => m.isDefault);
-        return def !== undefined ? modelLabel(def) : undefined;
+        const def = codexModels.find(isCodexDefaultForSurface);
+        if (def !== undefined) return modelLabel(def);
+        return managedCodexDefaultModelId;
       })();
   const modelChoices: Array<{ id: string; label: string }> = isAcpProvider
     ? (acpModelOptions ?? []).map((m) => ({
@@ -1758,7 +1767,7 @@ export function AiSurfaceDefaultControl({
       }))
     : codexModels.map((m) => ({
         id: m.id,
-        label: m.isDefault === true ? `${modelLabel(m)} (default)` : modelLabel(m)
+        label: isCodexDefaultForSurface(m) ? `${modelLabel(m)} (default)` : modelLabel(m)
       }));
   // A stored model that isn't in the selected backend's list (e.g. a Gemini id
   // left on a now-Codex surface) is NOT kept as a phantom option — the select
@@ -1785,9 +1794,9 @@ export function AiSurfaceDefaultControl({
     normalizedKeyRef.current = key;
     onChange({ model: "" });
   }, [staleAcpModel, chatProviderValue, modelValue, onChange]);
-  // "Default" means "let the backend pick its own default model" (runtime sends
-  // null). When we know the backend's default model, annotate the entry —
-  // "Default (GPT-5.4-Mini)" / "Default (Grok Build)" — instead of leaving it a
+  // "Default" means "use the managed default". When we know that model,
+  // annotate the entry —
+  // "Default (GPT-5.6-Luna)" / "Default (Grok Build)" — instead of leaving it a
   // mystery. Falls back to a plain "Default" when the default is unknown.
   const defaultOptionLabel =
     defaultModelName !== undefined ? `Default (${defaultModelName})` : "Default";
@@ -1835,7 +1844,9 @@ export function AiSurfaceDefaultControl({
     ? surface === "enrichment"
       ? "Default (Fast)"
       : "Default (Thinking)"
-    : codexDefaultReasoning !== undefined
+    : surface === "enrichment"
+      ? `Default (${DEFAULT_ENRICHMENT_REASONING_EFFORT})`
+      : codexDefaultReasoning !== undefined
       ? `Default (${codexDefaultReasoning})`
       : "Default";
   // A surface can carry a stale Codex "medium" from before its provider was
@@ -1932,7 +1943,9 @@ export function AiSurfaceDefaultControl({
               }
               const nextModel =
                 codexModels.find((model) => model.id === nextModelId) ??
-                (nextModelId === "" ? codexModels.find((model) => model.isDefault) : undefined);
+                (nextModelId === ""
+                  ? codexModels.find(isCodexDefaultForSurface)
+                  : undefined);
               const nextEfforts = codexReasoningEfforts(nextModel);
               onChange({
                 model: nextModelId,
@@ -1946,10 +1959,9 @@ export function AiSurfaceDefaultControl({
               <option value="__loading__">Loading…</option>
             ) : (
               <>
-                {/* "Default" = let the backend choose its own default model. For
-                    ACP it's annotated with the agent's actual default (e.g.
-                    "Default (kimi-k2)") so it's not a mystery; for Codex it's
-                    resolved server-side. */}
+                {/* "Default" uses the surface's managed choice. ACP is annotated
+                    with the agent's actual default; Codex enrichment is annotated
+                    with PwrSnap's managed model; Codex chat resolves server-side. */}
                 <option value="">{defaultOptionLabel}</option>
                 {modelChoices.map((m) => (
                   <option key={m.id} value={m.id}>

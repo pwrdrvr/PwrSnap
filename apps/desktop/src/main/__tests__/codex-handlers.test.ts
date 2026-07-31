@@ -357,8 +357,8 @@ describe("Codex handlers", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     await waitFor(() => getAiRun(result.value.runId)?.status === "completed");
-    expect(fakeClient.lastRequest?.model).toBe("gpt-5.5");
-    expect(getAiRun(result.value.runId)?.selectedModel).toBe("gpt-5.5");
+    expect(fakeClient.lastRequest?.model).toBe("gpt-5.6-luna");
+    expect(getAiRun(result.value.runId)?.selectedModel).toBe("gpt-5.6-luna");
   });
 
   test("usage commands expose token, cost, and media accounting", async () => {
@@ -379,7 +379,7 @@ describe("Codex handlers", () => {
             autoAcceptSuggestions: false,
             defaults: {
               ...defaultSettings().ai.defaults,
-              enrichment: {}
+              enrichment: { model: "gpt-5.5" }
             }
           }
         })
@@ -481,7 +481,7 @@ describe("Codex handlers", () => {
     expect(fakeClient.lastRequest?.effort).toBe("high");
   });
 
-  test("enrichment falls back to captionModel + low effort when no surface default is set", async () => {
+  test("enrichment ignores legacy captionModel and uses managed Luna Low", async () => {
     const fakeClient = new FakeCodexClient();
     registerCodexHandlers({
       clientFactory: () => fakeClient as never,
@@ -495,8 +495,8 @@ describe("Codex handlers", () => {
             ...defaultSettings().ai,
             enabled: true,
             consentAcceptedAt: "2026-05-12T12:00:00.000Z",
-            // Exercise the legacy fallback chain explicitly; fresh settings
-            // now pin Luna Low on the enrichment surface.
+            // `codex.captionModel` is retained only to read old settings. An
+            // empty surface follows PwrSnap's managed enrichment default.
             defaults: {
               ...defaultSettings().ai.defaults,
               enrichment: {}
@@ -513,7 +513,7 @@ describe("Codex handlers", () => {
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     await waitFor(() => getAiRun(started.value.runId)?.status === "completed");
-    expect(fakeClient.lastRequest?.model).toBe("gpt-5.4-mini");
+    expect(fakeClient.lastRequest?.model).toBe("gpt-5.6-luna");
     expect(fakeClient.lastRequest?.effort).toBe("low");
   });
 
@@ -533,7 +533,7 @@ describe("Codex handlers", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.selectedModel).toBe("gpt-5.5");
+    expect(result.value.selectedModel).toBe("gpt-5.6-luna");
     expect(result.value.models).toEqual([
       expect.objectContaining({
         id: "gpt-5.5",
@@ -907,7 +907,7 @@ describe("Codex handlers", () => {
 });
 
 describe("enrichmentSelectedModel", () => {
-  test("Codex: uses the surface model, then captionModel, then the hardcoded default", () => {
+  test("Codex: uses the surface model, then the managed default, ignoring captionModel", () => {
     const withSurface = testSettings({
       codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" },
       ai: {
@@ -917,14 +917,14 @@ describe("enrichmentSelectedModel", () => {
     });
     expect(enrichmentSelectedModel(withSurface, undefined)).toBe("gpt-5.4");
 
-    const captionFallback = testSettings({
+    const managedFallback = testSettings({
       codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" },
       ai: {
         ...defaultSettings().ai,
         defaults: { ...defaultSettings().ai.defaults, enrichment: {} }
       }
     });
-    expect(enrichmentSelectedModel(captionFallback, undefined)).toBe("gpt-5.5");
+    expect(enrichmentSelectedModel(managedFallback, undefined)).toBe("gpt-5.6-luna");
   });
 
   test("ACP: uses the per-surface model verbatim, with NO Codex caption fallback", () => {
@@ -952,7 +952,7 @@ describe("enrichmentSelectedModel", () => {
     expect(enrichmentSelectedModel(noModel, "grok")).toBe("");
   });
 
-  test("disabled ACP enrichment provider falls back to the Codex caption model", () => {
+  test("disabled ACP enrichment provider falls back to the managed Codex model", () => {
     const disabledAcp = testSettings({
       codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" },
       ai: {
@@ -964,7 +964,7 @@ describe("enrichmentSelectedModel", () => {
         acp: { enabledAgentIds: [], agents: {} }
       }
     });
-    expect(enrichmentSelectedModel(disabledAcp, undefined)).toBe("gpt-5.5");
+    expect(enrichmentSelectedModel(disabledAcp, undefined)).toBe("gpt-5.6-luna");
   });
 });
 

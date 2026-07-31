@@ -15,10 +15,15 @@ const mockCodexThreadClients = vi.hoisted(() => [] as MockCodexThreadClient[]);
 const mockConnectionRequest = vi.hoisted(() => vi.fn(async () => ({})));
 const mockAssertCodexCliVersion = vi.hoisted(() => vi.fn(async () => "0.144.0"));
 const mockResolveCodexCommand = vi.hoisted(() =>
-  vi.fn(async ({ command }: { command: string }) => ({
-    command,
-    source: "path" as const
-  }))
+  vi.fn(
+    async ({ command }: { command: string }): Promise<{
+      command: string;
+      source: "path" | "application";
+    }> => ({
+      command,
+      source: "path"
+    })
+  )
 );
 
 vi.mock("../../settings/codex-discovery", () => ({

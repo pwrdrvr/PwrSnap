@@ -12,10 +12,18 @@ import { PwrSnapToolRpcServer } from "../pwrsnap-tool-rpc-server";
 
 const catalog: DynamicToolSpec[] = [
   {
-    name: "draw_arrow",
-    description: "Draw an arrow",
-    parameters: { type: "object", properties: {} }
-  } as unknown as DynamicToolSpec
+    type: "namespace",
+    name: "pwrsnap_library",
+    description: "Library tools",
+    tools: [
+      {
+        type: "function",
+        name: "draw_arrow",
+        description: "Draw an arrow",
+        inputSchema: { type: "object", properties: {} }
+      }
+    ]
+  }
 ];
 
 /** A minimal valid tool response (`{ success, contentItems }`). */
@@ -71,7 +79,7 @@ describe("PwrSnapToolRpcServer", () => {
       tools: DynamicToolSpec[];
     };
     expect(res.ok).toBe(true);
-    expect(res.tools.map((t) => t.name)).toEqual(["draw_arrow"]);
+    expect(res.tools).toEqual(catalog);
   });
 
   test("call routes to the surface dispatch with the params", async () => {
@@ -138,7 +146,7 @@ describe("PwrSnapToolRpcServer", () => {
     });
     const client = new ToolRpcClient({ socketPath: reg.socketPath, token: reg.token });
     const tools = await client.list();
-    expect(tools.map((t) => t.name)).toEqual(["draw_arrow"]);
+    expect(tools).toEqual(catalog);
     const response = await client.call({
       threadId: "",
       turnId: "",
@@ -164,10 +172,18 @@ describe("PwrSnapToolRpcServer", () => {
   test("a surface's token cannot reach another surface's tools (isolation)", async () => {
     const sizzleCatalog: DynamicToolSpec[] = [
       {
-        name: "sizzle_only",
-        description: "Sizzle tool",
-        parameters: { type: "object", properties: {} }
-      } as unknown as DynamicToolSpec
+        type: "namespace",
+        name: "pwrsnap_sizzle",
+        description: "Sizzle tools",
+        tools: [
+          {
+            type: "function",
+            name: "sizzle_only",
+            description: "Sizzle tool",
+            inputSchema: { type: "object", properties: {} }
+          }
+        ]
+      }
     ];
     let libraryDispatched = false;
     const library = server.register({
@@ -185,7 +201,7 @@ describe("PwrSnapToolRpcServer", () => {
     const list = (await rpc(sizzle.socketPath, { token: sizzle.token, op: "list" })) as {
       tools: DynamicToolSpec[];
     };
-    expect(list.tools.map((t) => t.name)).toEqual(["sizzle_only"]);
+    expect(list.tools).toEqual(sizzleCatalog);
     // A call on the Sizzle token routes to the Sizzle dispatch, never Library's.
     await rpc(sizzle.socketPath, {
       token: sizzle.token,

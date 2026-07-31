@@ -8,11 +8,38 @@ import type {
 } from "@modelcontextprotocol/sdk/types.js";
 import type {
   DynamicToolCallResponse,
+  DynamicToolNamespaceTool,
   DynamicToolSpec
 } from "@pwrdrvr/codex-app-server-protocol/v2";
 
-/** Translate a PwrSnap `DynamicToolSpec` into an MCP `Tool`. */
-export function toMcpTool(spec: DynamicToolSpec): Tool {
+export type FlatDynamicTool = {
+  namespace: string | null;
+  spec: DynamicToolNamespaceTool;
+};
+
+/**
+ * MCP exposes one flat tool list, while Codex 0.144 groups namespaced dynamic
+ * tools under namespace objects. Flatten the Codex catalog without losing the
+ * namespace needed when forwarding an MCP call back to PwrSnap main.
+ */
+export function flattenDynamicToolCatalog(
+  catalog: ReadonlyArray<DynamicToolSpec>
+): FlatDynamicTool[] {
+  const flattened: FlatDynamicTool[] = [];
+  for (const entry of catalog) {
+    if (entry.type === "function") {
+      flattened.push({ namespace: null, spec: entry });
+      continue;
+    }
+    for (const spec of entry.tools) {
+      flattened.push({ namespace: entry.name, spec });
+    }
+  }
+  return flattened;
+}
+
+/** Translate one flat Codex function spec into an MCP `Tool`. */
+export function toMcpTool(spec: DynamicToolNamespaceTool): Tool {
   const schema = spec.inputSchema as Record<string, unknown> | undefined;
   return {
     name: spec.name,

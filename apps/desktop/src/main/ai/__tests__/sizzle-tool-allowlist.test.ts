@@ -20,6 +20,7 @@ vi.mock("../../sizzle/speech-timing", () => ({
 }));
 
 const { buildSizzleToolAllowlist } = await import("../sizzle-tool-allowlist");
+const { makeSizzleChatTools } = await import("../sizzle-tool-catalog");
 
 const PROJECT_ID = "sz_demo";
 const CTX = { threadId: "thread-1" };
@@ -136,6 +137,24 @@ describe("buildSizzleToolAllowlist", () => {
         "project_render"
       ])
     );
+  });
+
+  it("registers one protocol 0.144 namespace containing all Sizzle functions", () => {
+    const { catalog } = makeSizzleChatTools({
+      resolveProjectId: async () => PROJECT_ID
+    });
+
+    expect(catalog).toHaveLength(1);
+    expect(catalog[0]).toMatchObject({
+      type: "namespace",
+      name: "pwrsnap_sizzle"
+    });
+    const namespace = catalog[0];
+    if (namespace?.type !== "namespace") {
+      throw new Error("expected the Sizzle catalog to contain one namespace");
+    }
+    expect(namespace.tools).toHaveLength(17);
+    expect(namespace.tools.every((tool) => tool.type === "function")).toBe(true);
   });
 
   it("library_search dispatches library:search and returns compact rows", async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { defineTool, toDynamicToolSpec, type ToolSpec } from "../define-tool";
+import { toDynamicToolFunctionSpec } from "@pwrdrvr/agent-client";
+import { defineTool, type ToolSpec } from "../define-tool";
 import {
   LIBRARY_TOOL_ALLOWLIST
 } from "../library-tool-allowlist";
@@ -75,9 +76,16 @@ describe("library tool allowlist", () => {
 
   it("every entry builds a valid DynamicToolSpec (exercises z.toJSONSchema on the real arg schemas incl. the Overlay union)", () => {
     const catalog = buildLibraryToolCatalog();
-    expect(catalog).toHaveLength(LIBRARY_TOOL_ALLOWLIST.length);
-    for (const spec of catalog) {
-      expect(spec.namespace).toBe("pwrsnap_library");
+    expect(catalog).toHaveLength(1);
+    const namespace = catalog[0];
+    expect(namespace?.type).toBe("namespace");
+    if (namespace?.type !== "namespace") {
+      throw new Error("expected the library catalog to contain one namespace");
+    }
+    expect(namespace.name).toBe("pwrsnap_library");
+    expect(namespace.tools).toHaveLength(LIBRARY_TOOL_ALLOWLIST.length);
+    for (const spec of namespace.tools) {
+      expect(spec.type).toBe("function");
       expect(typeof spec.name).toBe("string");
       expect(spec.description.length).toBeGreaterThan(0);
       // inputSchema must be a non-null JSON-Schema object — this is the
@@ -95,12 +103,12 @@ describe("library tool allowlist", () => {
   });
 });
 
-describe("toDynamicToolSpec", () => {
-  it("derives namespace, name, description, and a JSON Schema inputSchema", () => {
+describe("toDynamicToolFunctionSpec", () => {
+  it("derives the nested function wire shape and a JSON Schema inputSchema", () => {
     const tool = makeFixtureTool(async (args) => ({ ok: true, data: args }));
-    const spec = toDynamicToolSpec(tool);
+    const spec = toDynamicToolFunctionSpec(tool);
 
-    expect(spec.namespace).toBe("pwrsnap_library");
+    expect(spec.type).toBe("function");
     expect(spec.name).toBe("fixture_echo");
     expect(spec.description).toContain("Echo the given id");
     expect(spec.inputSchema).toMatchObject({
@@ -117,7 +125,16 @@ describe("buildLibraryToolCatalog", () => {
     const catalog = buildLibraryToolCatalog([tool]);
 
     expect(catalog).toHaveLength(1);
-    expect(catalog[0]?.name).toBe("fixture_echo");
+    expect(catalog[0]).toMatchObject({
+      type: "namespace",
+      name: "pwrsnap_library",
+      tools: [
+        {
+          type: "function",
+          name: "fixture_echo"
+        }
+      ]
+    });
   });
 });
 
@@ -186,7 +203,7 @@ describe("dispatchLibraryToolCall", () => {
     expect(response.success).toBe(false);
   });
 
-  it("accepts a null namespace from the wire", async () => {
+  it("rejects a null namespace for a namespaced tool", async () => {
     const tool = makeFixtureTool(async (args) => ({ ok: true, data: args }));
 
     const response = await dispatchLibraryToolCall(
@@ -194,7 +211,10 @@ describe("dispatchLibraryToolCall", () => {
       [tool]
     );
 
-    expect(response.success).toBe(true);
+    expect(response.success).toBe(false);
+    if (response.contentItems[0]?.type === "inputText") {
+      expect(response.contentItems[0].text).toContain("not a top-level tool");
+    }
   });
 
   it("maps a dispatch error result to success:false", async () => {

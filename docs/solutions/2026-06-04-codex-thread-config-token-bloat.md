@@ -7,6 +7,52 @@ tags: [codex, tokens, cost, config, prompt, skills, regression]
 
 # Codex enrichment/chat input tokens 6x'd after a Codex CLI update
 
+## Amendment — 2026-07-31: one-shot rollback retained ambient context
+
+A second token-bloat path was found after an enrichment for a 610×656 capture
+reported **26,733 uncached input tokens**. The image was not the cause. The
+shared App Server process reused one persistent enrichment thread and called
+deprecated `thread/rollback` after every turn. Codex removed the capture turn,
+but retained automatically injected developer/user items. Each capture left
+about 880 tokens behind, so the worker grew monotonically:
+
+- 28 prior rollbacks before the affected capture
+- 25,927 tokens already present before its turn
+- 26,733 input tokens for the affected turn (only ~806 beyond the contaminated
+  baseline)
+
+The rollout's world state showed that most original suppressions still worked:
+apps, environment, and skill instructions were off. Two ambient sources were
+still enabled and repeated on every turn:
+
+- `plugins_instructions: true`, including the recommended-plugin catalog
+- the selected Codex profile's global `AGENTS.md`
+
+PwrSnap's own MCP/dynamic tools were never attached to enrichment. The fix is
+therefore two-layered:
+
+1. Pool the App Server **process/connection only**. Start a fresh
+   `ephemeral: true` thread for every enrichment and unsubscribe after the
+   turn. Never use `thread/rollback` to simulate a one-shot thread.
+2. Add a Codex 0.144+ config marker that restores explicit feature suppression
+   (`features.plugins = false`, etc.) and sets `project_doc_max_bytes = 0` so
+   project AGENTS instructions cannot enter a metadata job. Before each
+   one-shot thread starts, read only the effective MCP server names and pin
+   every one to `enabled: false` in the thread overlay. An empty table is not
+   sufficient because Codex recursively merges config layers.
+
+Codex 0.146 has no thread-level switch for the selected profile's global
+`$CODEX_HOME/AGENTS.md`; it is loaded by the process-owned instruction provider.
+Keeping the shared App Server process therefore leaves one bounded global
+instruction block in each fresh enrichment thread. The zero-cost
+`codex debug prompt-input` renderer confirmed that the modern overlay removes
+plugin and skill instruction blocks while retaining that one global block. The
+fresh-thread lifecycle prevents it from accumulating across captures.
+
+Regression tests require distinct thread ids across consecutive one-shot runs,
+`ephemeral: true`, cleanup via `thread/unsubscribe`, no `thread/rollback`, no
+dynamic tools, and the modern config's plugin/AGENTS suppression fields.
+
 ## Symptom
 
 Per-screenshot AI enrichment input tokens jumped from ~4k to ~24k (mostly
@@ -111,7 +157,10 @@ the config against the Codex source (`codex-rs/config/src/config_toml.rs`,
 
 ## Note on agent-kit
 
-The kit was NOT at fault and needs no change. `CodexOneShotClient` forwards
-`threadConfig` → Codex `config`, and `AgentStartThreadOptions.config` does the
-same for the chat clients. The feature-control seam is cleanly exposed; the bug
-was purely the stale config CONTENT on PwrSnap's side.
+The original June incident was not an agent-kit forwarding bug:
+`CodexOneShotClient` correctly forwarded `threadConfig` → Codex `config`, and
+`AgentStartThreadOptions.config` did the same for chat. The July incident
+exposed a separate lifecycle problem: using a persistent worker plus rollback
+for logically one-shot work allowed Codex's ambient injected items to survive.
+PwrSnap now owns the safer lifecycle explicitly while continuing to share the
+underlying App Server process.

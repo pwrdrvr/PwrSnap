@@ -4,10 +4,10 @@
 // Capture enrichment (annotate / describe / tag / filename / sensitive-scan)
 // is a one-shot structured-output turn: one prompt + one or more local images
 // in, one JSON object out (validated against `CAPTURE_ENRICHMENT_SCHEMA`). The
-// pooled owner owns the persistent worker thread, `outputSchema` plumbing,
-// localImage inputs, per-turn rollback, and token-usage normalization. This
-// keeps capture enrichment from spawning a second Codex process alongside chat
-// or model listing.
+// pooled owner keeps one App Server process/connection while every enrichment
+// gets a fresh ephemeral thread. It also owns `outputSchema` plumbing,
+// localImage inputs, and token-usage normalization. This avoids a second Codex
+// process without leaking context between captures.
 //
 // This wrapper preserves the `enrichCapture(...)` / `close()` surface that
 // `codex-handlers.ts` consumes, mapping PwrSnap's caller-supplied args (prompt
@@ -126,7 +126,6 @@ export class CaptureEnrichmentClient {
       command: this.command,
       ...(this.env !== undefined ? { env: this.env } : {}),
       workspaceDir: this.workspaceDir,
-      workerThreadName: "PwrSnap Capture Metadata Worker",
       threadConfig: this.threadConfig,
       ...(this.requestTimeoutMs !== undefined
         ? { requestTimeoutMs: this.requestTimeoutMs }

@@ -282,6 +282,16 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(defaultSettings().hotkeys).toEqual(DEFAULT_HOTKEYS);
   });
 
+  test("defaultSettings() uses GPT-5.6 Luna Low for enrichment", () => {
+    const settings = defaultSettings();
+    expect(settings.settingsMigrationVersion).toBe(1);
+    expect(settings.codex.captionModel).toBe("gpt-5.6-luna");
+    expect(settings.ai.defaults.enrichment).toEqual({
+      model: "gpt-5.6-luna",
+      reasoning: "low"
+    });
+  });
+
   test("v1 shape missing `codex.captionModel` gets the default filled in", async () => {
     // Same pattern as videoCapture above: `captionModel` landed after
     // v1 shipped, so older settings files won't have it. parseV1 fills
@@ -297,7 +307,7 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     );
     const svc = new DesktopSettingsService({ filePath });
     const settings = await svc.read();
-    expect(settings.codex.captionModel).toBe("gpt-5.4-mini");
+    expect(settings.codex.captionModel).toBe("gpt-5.6-luna");
   });
 
   test("v1 shape with a newer `codex.captionModel` preserves the model id", async () => {
@@ -367,7 +377,7 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.recording.imageCaptureCursor).toBe(false);
   });
 
-  test("v1 shape missing `ai.defaults` gets empty per-surface defaults filled in", async () => {
+  test("migrates the beta.25 enrichment default to GPT-5.6 Luna Low", async () => {
     // `ai.defaults.*` is additive. Older files won't have it; parseV1
     // fills empty objects for the two chat surfaces (= "Codex default").
     const filePath = join(workDir, "settings.json");
@@ -384,9 +394,101 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     const settings = await svc.read();
     expect(settings.ai.defaults.libraryChat).toEqual({});
     expect(settings.ai.defaults.sizzleChat).toEqual({});
-    // Enrichment model is seeded from the legacy captionModel for
-    // back-compat (existing enrichment model selection is preserved).
-    expect(settings.ai.defaults.enrichment.model).toBe("gpt-5.4-mini");
+    expect(settings.settingsMigrationVersion).toBe(1);
+    expect(settings.codex.captionModel).toBe("gpt-5.6-luna");
+    expect(settings.ai.defaults.enrichment).toEqual({
+      model: "gpt-5.6-luna",
+      reasoning: "low"
+    });
+
+    // The additive watermark is written on the next normal settings write,
+    // matching the service's lazy-migration convention.
+    await svc.write({ general: { developerMode: true } });
+    const persisted = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, unknown>;
+    expect(persisted.settingsMigrationVersion).toBe(1);
+  });
+
+  test("the migration watermark preserves a later explicit gpt-5.4-mini choice", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        settingsMigrationVersion: 1,
+        codex: {
+          mode: "auto",
+          pinnedPath: "",
+          profile: "",
+          captionModel: "gpt-5.4-mini"
+        },
+        ai: {
+          defaults: {
+            enrichment: { model: "gpt-5.4-mini" }
+          }
+        }
+      }),
+      "utf8"
+    );
+
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.codex.captionModel).toBe("gpt-5.4-mini");
+    expect(settings.ai.defaults.enrichment).toEqual({ model: "gpt-5.4-mini" });
+  });
+
+  test("migrates the explicitly persisted historical gpt-5.4-mini Low pair", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: {
+          mode: "auto",
+          pinnedPath: "",
+          profile: "",
+          captionModel: "gpt-5.4-mini"
+        },
+        ai: {
+          defaults: {
+            enrichment: { model: "gpt-5.4-mini", reasoning: "low" }
+          }
+        }
+      }),
+      "utf8"
+    );
+
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.ai.defaults.enrichment).toEqual({
+      model: "gpt-5.6-luna",
+      reasoning: "low"
+    });
+  });
+
+  test("preserves an explicit enrichment effort instead of treating it as the old default", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: {
+          mode: "auto",
+          pinnedPath: "",
+          profile: "",
+          captionModel: "gpt-5.4-mini"
+        },
+        ai: {
+          defaults: {
+            enrichment: { model: "gpt-5.4-mini", reasoning: "high" }
+          }
+        }
+      }),
+      "utf8"
+    );
+
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.ai.defaults.enrichment).toEqual({
+      model: "gpt-5.4-mini",
+      reasoning: "high"
+    });
   });
 
   test("v1 shape seeds `ai.defaults.enrichment.model` from a newer captionModel", async () => {
@@ -830,7 +932,10 @@ describe("mergeSettings", () => {
     });
     // Other surfaces untouched.
     expect(merged.ai.defaults.sizzleChat).toEqual({});
-    expect(merged.ai.defaults.enrichment).toEqual({});
+    expect(merged.ai.defaults.enrichment).toEqual({
+      model: "gpt-5.6-luna",
+      reasoning: "low"
+    });
     // Other ai fields untouched.
     expect(merged.ai.enabled).toBe(current.ai.enabled);
   });

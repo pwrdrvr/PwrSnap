@@ -49,6 +49,7 @@ import type {
   ToolSizePreset
 } from "@pwrsnap/shared";
 import {
+  DEFAULT_AI_SURFACE_DEFAULTS,
   DEFAULT_CHAT_SETTINGS,
   DEFAULT_CODEX_CAPTION_MODEL,
   DEFAULT_HOTKEYS,
@@ -87,6 +88,8 @@ const execFile = promisify(execFileCallback);
  *  PwrAgnt's `DEFAULT_PROBE_TIMEOUT_MS`. */
 const CODEX_TEST_TIMEOUT_MS = 7500;
 const ERROR_MESSAGE_LIMIT = 240;
+const SETTINGS_MIGRATION_VERSION = 1;
+const LEGACY_ENRICHMENT_DEFAULT_MODEL = "gpt-5.4-mini";
 
 type Logger = ReturnType<typeof getMainLogger>;
 
@@ -98,6 +101,7 @@ export type DesktopSettingsServiceConfig = {
 export function defaultSettings(): Settings {
   return {
     schemaVersion: 1,
+    settingsMigrationVersion: SETTINGS_MIGRATION_VERSION,
     codex: {
       mode: "auto",
       pinnedPath: "",
@@ -110,16 +114,12 @@ export function defaultSettings(): Settings {
       budgetSafetyDisabledAt: null,
       autoAcceptSuggestions: false,
       chat: { ...DEFAULT_CHAT_SETTINGS, sensitiveDataPatterns: [] },
-      // Per-surface defaults start empty (= "use the Codex default for
-      // every surface"). `parseV1` seeds `enrichment.model` from the
-      // legacy `codex.captionModel` so existing enrichment behavior is
-      // preserved; a fresh install (this function) has no legacy file to
-      // read from, so enrichment.model is left empty here and the
-      // enrichment path falls back to `codex.captionModel` at call time.
+      // Chat surfaces use the backend default. Enrichment is high-volume,
+      // so it explicitly starts on the lower-cost Luna model at low effort.
       defaults: {
-        libraryChat: {},
-        sizzleChat: {},
-        enrichment: {}
+        libraryChat: { ...DEFAULT_AI_SURFACE_DEFAULTS.libraryChat },
+        sizzleChat: { ...DEFAULT_AI_SURFACE_DEFAULTS.sizzleChat },
+        enrichment: { ...DEFAULT_AI_SURFACE_DEFAULTS.enrichment }
       },
       // No ACP agents enabled on a fresh install. The user opts agents
       // into the enabled set from Settings → AI → ACP agents (additive,
@@ -556,8 +556,53 @@ function parseV1(raw: unknown): Settings | null {
   const updates = isRecord(raw.updates) ? raw.updates : {};
   const storage = isRecord(raw.storage) ? raw.storage : {};
   const recording = isRecord(raw.recording) ? raw.recording : {};
+  const storedMigrationVersion =
+    typeof raw.settingsMigrationVersion === "number" &&
+    Number.isSafeInteger(raw.settingsMigrationVersion) &&
+    raw.settingsMigrationVersion >= 0
+      ? raw.settingsMigrationVersion
+      : 0;
+  const storedCaptionModel = isCodexCaptionModel(codex.captionModel)
+    ? codex.captionModel
+    : defaults.codex.captionModel;
+  let captionModel = storedCaptionModel;
+  let aiSurfaceDefaults = parseAiSurfaceDefaults(
+    ai.defaults,
+    defaults.ai.defaults,
+    storedCaptionModel
+  );
+
+  if (storedMigrationVersion < 1) {
+    // beta.25 and earlier persisted gpt-5.4-mini as the enrichment default.
+    // Move only the exact old-default shape to Luna Low (including an
+    // explicitly persisted `low`, which was the historical runtime default).
+    // Any ACP provider, different model, or higher explicit effort is a user
+    // choice and remains untouched. The watermark prevents a later explicit
+    // switch back to gpt-5.4-mini from being migrated again.
+    if (captionModel === LEGACY_ENRICHMENT_DEFAULT_MODEL) {
+      captionModel = DEFAULT_CODEX_CAPTION_MODEL;
+    }
+    const enrichment = aiSurfaceDefaults.enrichment;
+    if (
+      enrichment.provider === undefined &&
+      enrichment.model === LEGACY_ENRICHMENT_DEFAULT_MODEL &&
+      (enrichment.reasoning === undefined || enrichment.reasoning === "low")
+    ) {
+      aiSurfaceDefaults = {
+        ...aiSurfaceDefaults,
+        enrichment: {
+          model: DEFAULT_CODEX_CAPTION_MODEL,
+          reasoning: "low"
+        }
+      };
+    }
+  }
   return {
     schemaVersion: 1,
+    settingsMigrationVersion: Math.max(
+      storedMigrationVersion,
+      SETTINGS_MIGRATION_VERSION
+    ),
     codex: {
       mode: pickMode(codex.mode ?? defaults.codex.mode),
       pinnedPath: pickString(codex.pinnedPath, defaults.codex.pinnedPath),
@@ -566,9 +611,7 @@ function parseV1(raw: unknown): Settings | null {
       // it. Codex model availability is account/build dependent, so keep
       // valid model-id strings instead of pinning this parser to a stale
       // hardcoded allowlist.
-      captionModel: isCodexCaptionModel(codex.captionModel)
-        ? codex.captionModel
-        : defaults.codex.captionModel
+      captionModel
     },
     ai: {
       enabled: pickBoolean(ai.enabled, defaults.ai.enabled),
@@ -589,19 +632,12 @@ function parseV1(raw: unknown): Settings | null {
       // convention. See docs/plans/2026-05-28-001-feat-library-chat-
       // editor-interface-plan.md and §F13 substrate compliance.
       chat: parseChatSettings(ai.chat, defaults.ai.chat),
-      // `ai.defaults.*` is additive — older files won't have it. Falls
-      // through to empty per-surface objects (= "Codex default"). For
-      // back-compat, when the file has no explicit enrichment model we
-      // seed it from the legacy `codex.captionModel` so existing
-      // enrichment behavior (model selection) is preserved across the
-      // upgrade. No `schemaVersion` bump per the additive convention.
-      defaults: parseAiSurfaceDefaults(
-        ai.defaults,
-        defaults.ai.defaults,
-        isCodexCaptionModel(codex.captionModel)
-          ? (codex.captionModel as string)
-          : defaults.codex.captionModel
-      ),
+      // `ai.defaults.*` is additive — older files won't have it. The legacy
+      // `codex.captionModel` first seeds the enrichment model; the semantic
+      // migration above then recognizes the exact beta.25 default and moves
+      // it to Luna Low. Explicit provider/model/effort choices are preserved.
+      // No `schemaVersion` bump per the additive convention.
+      defaults: aiSurfaceDefaults,
       // `ai.acp.*` is additive — older files won't have it. Falls through
       // to an empty enabled set; only recognized built-in agent ids
       // survive the parse so a stale/forged file can't enable an unknown
@@ -1257,6 +1293,8 @@ function isNodeError(value: unknown): value is NodeJS.ErrnoException {
 export function mergeSettings(current: Settings, patch: SettingsPatch): Settings {
   return {
     schemaVersion: 1,
+    settingsMigrationVersion:
+      current.settingsMigrationVersion ?? SETTINGS_MIGRATION_VERSION,
     codex: mergeSection(current.codex, patch.codex),
     ai: mergeAi(current.ai, patch.ai),
     hotkeys: mergeSection(current.hotkeys, patch.hotkeys),

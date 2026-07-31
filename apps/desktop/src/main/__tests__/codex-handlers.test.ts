@@ -376,7 +376,11 @@ describe("Codex handlers", () => {
             enabled: true,
             consentAcceptedAt: "2026-05-12T12:00:00.000Z",
             budgetSafetyDisabledAt: null,
-            autoAcceptSuggestions: false
+            autoAcceptSuggestions: false,
+            defaults: {
+              ...defaultSettings().ai.defaults,
+              enrichment: {}
+            }
           }
         })
     });
@@ -490,8 +494,13 @@ describe("Codex handlers", () => {
           ai: {
             ...defaultSettings().ai,
             enabled: true,
-            consentAcceptedAt: "2026-05-12T12:00:00.000Z"
-            // defaults left at defaultSettings() (all empty).
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            // Exercise the legacy fallback chain explicitly; fresh settings
+            // now pin Luna Low on the enrichment surface.
+            defaults: {
+              ...defaultSettings().ai.defaults,
+              enrichment: {}
+            }
           }
         })
     });
@@ -909,7 +918,11 @@ describe("enrichmentSelectedModel", () => {
     expect(enrichmentSelectedModel(withSurface, undefined)).toBe("gpt-5.4");
 
     const captionFallback = testSettings({
-      codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" }
+      codex: { ...defaultSettings().codex, captionModel: "gpt-5.5" },
+      ai: {
+        ...defaultSettings().ai,
+        defaults: { ...defaultSettings().ai.defaults, enrichment: {} }
+      }
     });
     expect(enrichmentSelectedModel(captionFallback, undefined)).toBe("gpt-5.5");
   });

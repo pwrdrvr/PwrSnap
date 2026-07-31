@@ -1286,9 +1286,9 @@ export type CodexTestResult = {
 /** Fallback Codex CLI models PwrSnap can show before `model/list` returns.
  *  The actual model picker is populated from the user's installed Codex
  *  App Server so newly-available models don't require an app release. */
-export const CODEX_CAPTION_MODELS = ["gpt-5.4-mini"] as const;
+export const CODEX_CAPTION_MODELS = ["gpt-5.6-luna", "gpt-5.4-mini"] as const;
 export type CodexCaptionModel = string;
-export const DEFAULT_CODEX_CAPTION_MODEL: CodexCaptionModel = "gpt-5.4-mini";
+export const DEFAULT_CODEX_CAPTION_MODEL: CodexCaptionModel = "gpt-5.6-luna";
 
 export function isCodexCaptionModel(value: unknown): value is CodexCaptionModel {
   return (
@@ -1401,14 +1401,12 @@ export function isAiSurfaceId(value: unknown): value is AiSurfaceId {
 }
 
 /** Default `ai.defaults` state. Mirrored by `defaultSettings()` in the
- *  desktop service. Empty objects = "use the Codex default for every
- *  surface" — but note the desktop service's `parseV1` seeds
- *  `enrichment.model` from the legacy `codex.captionModel` for back-compat
- *  so existing enrichment behavior is preserved. */
+ *  desktop service. Chat surfaces use the Codex default; high-volume
+ *  enrichment explicitly uses the lower-cost Luna model at low effort. */
 export const DEFAULT_AI_SURFACE_DEFAULTS: AiSurfaceDefaults = {
   libraryChat: {},
   sizzleChat: {},
-  enrichment: {}
+  enrichment: { model: DEFAULT_CODEX_CAPTION_MODEL, reasoning: "low" }
 };
 
 // ---- ACP agents (discovery + enable in Settings → AI) -------------------
@@ -1645,6 +1643,11 @@ export type Settings = {
    *  version go through the legacy-shape catalog in the service before
    *  being normalized. */
   schemaVersion: 1;
+  /** Internal, additive migration watermark. Not writable through
+   *  `SettingsPatch`; the desktop service advances it after applying
+   *  one-time semantic defaults migrations. Optional only so older
+   *  renderer/test payloads remain structurally compatible. */
+  settingsMigrationVersion?: number;
   codex: {
     mode: "auto" | "pinned";
     /** Path the user pinned. Empty string = no pin. Kept across mode
@@ -1652,11 +1655,10 @@ export type Settings = {
     pinnedPath: string;
     /** CODEX_HOME / profile dir. Empty string = system default (`~/.codex`). */
     profile: string;
-    /** Codex model ID used for the capture-enrichment turn (captions,
-     *  tag suggestions, OCR — all one Codex call). MUST be a member of
-     *  `CODEX_CAPTION_MODELS`. Mini-tier is the only allowed option
-     *  today because captioning is high-volume + cost-sensitive; widen
-     *  the list when we want users to opt into a larger model. */
+    /** Legacy Codex model fallback used for the capture-enrichment turn
+     *  (captions, tag suggestions, OCR — all one Codex call). The active
+     *  Settings surface lives at `ai.defaults.enrichment`; this field stays
+     *  for backward compatibility with older settings files. */
     captionModel: CodexCaptionModel;
   };
   ai: {

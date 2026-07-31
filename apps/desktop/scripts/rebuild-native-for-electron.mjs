@@ -185,9 +185,15 @@ function ensureDefaultNodeBinding() {
 
 function isDefaultNodeBindingUsable() {
   try {
-    execFileSync(process.execPath, ["-e", "require(process.argv[1])", betterSqlite3Dir], {
-      stdio: "ignore"
-    });
+    execFileSync(
+      process.execPath,
+      [
+        "-e",
+        'const Database = require(process.argv[1]); const database = new Database(":memory:"); database.close();',
+        betterSqlite3Dir
+      ],
+      { stdio: "ignore" }
+    );
     return true;
   } catch {
     return false;

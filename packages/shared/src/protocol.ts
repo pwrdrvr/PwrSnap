@@ -589,13 +589,6 @@ export type HotCpuProfileCapturedEvent = {
   triggerThresholdPercent: number;
 };
 
-export type HotCpuProfileCleanupResult = {
-  deletedSessions: number;
-  errors: string[];
-  freedBytes: number;
-  skippedEntries: number;
-};
-
 function formatPercent(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
@@ -2705,12 +2698,6 @@ export type Commands = {
     req: { sessionDirectoryName: string };
     res: void;
   };
-  /** Remove inactive hot CPU diagnostics sessions from the app-owned root. */
-  "diagnostics:clearHotCpuSessions": {
-    req: Record<string, never>;
-    res: HotCpuProfileCleanupResult;
-  };
-
   // ---- library ----
   /**
    * Keyset-paginated timeline read. When `cursor` is omitted, returns

@@ -99,7 +99,7 @@ vi.mock("../../SettingsContext", () => ({
 }));
 
 async function renderDeveloper(
-  settings: Settings | null = baseSettings,
+  settings: Settings = baseSettings,
   dispatchImpl?: DispatchImpl
 ): Promise<void> {
   Object.defineProperty(window, "pwrsnapApi", {
@@ -108,17 +108,6 @@ async function renderDeveloper(
       dispatch: async (name: string, req: unknown) => {
         dispatchCalls.push({ name, req });
         if (dispatchImpl !== undefined) return dispatchImpl(name, req);
-        if (name === "diagnostics:clearHotCpuSessions") {
-          return {
-            ok: true,
-            value: {
-              deletedSessions: 2,
-              errors: [],
-              freedBytes: 123,
-              skippedEntries: 1
-            }
-          };
-        }
         return { ok: true, value: undefined };
       },
       on: () => () => undefined
@@ -198,15 +187,11 @@ describe("DeveloperPage", () => {
     });
   });
 
-  test("diagnostics folder controls dispatch reveal and cleanup commands", async () => {
+  test("diagnostics folder control dispatches the reveal command", async () => {
     await renderDeveloper();
 
     await act(async () => {
       buttonByText("Reveal Folder").click();
-      await Promise.resolve();
-    });
-    await act(async () => {
-      buttonByText("Clear Old Sessions").click();
       await Promise.resolve();
     });
 
@@ -214,96 +199,20 @@ describe("DeveloperPage", () => {
       name: "diagnostics:revealHotCpuRoot",
       req: {}
     });
-    expect(dispatchCalls).toContainEqual({
-      name: "diagnostics:clearHotCpuSessions",
-      req: {}
-    });
-    expect(container?.textContent).toContain("Cleared 2 sessions; skipped 1.");
+    expect(container?.textContent).not.toContain("Clear Old Sessions");
   });
 
-  test("cleanup is disabled while hot CPU profiling is armed", async () => {
-    await renderDeveloper({
-      ...baseSettings,
-      general: {
-        ...baseSettings.general,
-        hotCpuProfilingEnabled: true
-      }
-    });
-
-    expect(buttonByText("Clear Old Sessions").disabled).toBe(true);
-  });
-
-  test("cleanup is disabled while smart heap snapshots are armed", async () => {
-    await renderDeveloper({
-      ...baseSettings,
-      general: {
-        ...baseSettings.general,
-        hotCpuProfilingCaptureHeapSnapshot: true
-      }
-    });
-
-    expect(buttonByText("Clear Old Sessions").disabled).toBe(true);
-  });
-
-  test("cleanup is disabled while a delayed capture is counting down", async () => {
-    await renderDeveloper({
-      ...baseSettings,
-      general: {
-        ...baseSettings.general,
-        hotCpuProfilingStartDelayMs: 5_000
-      }
+  test("shows reveal failures without changing profiler settings", async () => {
+    await renderDeveloper(baseSettings, async () => {
+      return { ok: false, error: { message: "finder refused" } };
     });
 
     await act(async () => {
-      buttonByText("Start Capture").click();
-    });
-
-    expect(buttonByText("Clear Old Sessions").disabled).toBe(true);
-  });
-
-  test("cleanup is disabled before settings are ready", async () => {
-    await renderDeveloper(null);
-
-    expect(buttonByText("Clear Old Sessions").disabled).toBe(true);
-  });
-
-  test("pending cleanup disables hot CPU capture controls until it settles", async () => {
-    let resolveClear: ((result: DispatchResult) => void) | null = null;
-    const clearPromise = new Promise<DispatchResult>((resolve) => {
-      resolveClear = resolve;
-    });
-    await renderDeveloper(baseSettings, async (name) => {
-      if (name === "diagnostics:clearHotCpuSessions") return clearPromise;
-      return { ok: true, value: undefined };
-    });
-
-    await act(async () => {
-      buttonByText("Clear Old Sessions").click();
+      buttonByText("Reveal Folder").click();
       await Promise.resolve();
     });
 
-    expect(buttonByText("Start Capture").disabled).toBe(true);
-    expect(buttonByText("Clear Old Sessions").disabled).toBe(true);
-    await act(async () => {
-      buttonByText("Start Capture").click();
-    });
     expect(patchMock).not.toHaveBeenCalled();
-
-    await act(async () => {
-      resolveClear?.({
-        ok: true,
-        value: {
-          deletedSessions: 1,
-          errors: [],
-          freedBytes: 64,
-          skippedEntries: 1
-        }
-      });
-      await clearPromise;
-    });
-
-    expect(buttonByText("Start Capture").disabled).toBe(false);
-    expect(buttonByText("Clear Old Sessions").disabled).toBe(false);
-    expect(container?.textContent).toContain("Cleared 1 session; skipped 1.");
+    expect(container?.textContent).toContain("Reveal failed: finder refused");
   });
 });

@@ -624,12 +624,7 @@ export function createMainWindow(): BrowserWindow {
         return;
       }
 
-      try {
-        await profiler.start();
-      } catch (error) {
-        await profiler.stop("start-failed");
-        throw error;
-      }
+      await profiler.start();
     } catch (error) {
       hotCpuLog.warn("failed to sync hot CPU diagnostics", {
         reason,

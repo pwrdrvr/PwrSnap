@@ -14,10 +14,10 @@ execution: code
 
 | Field | Decision |
 |---|---|
-| Objective | Make the merged hot renderer CPU diagnostics workflow easier to use, hand off, verify in packaged builds, and clean up safely. |
+| Objective | Make the merged hot renderer CPU diagnostics workflow easier to use, hand off, and verify in packaged builds. |
 | Authority | User request and the shipped developer diagnostics behavior are the source of truth; this plan must not chase or fix the already-resolved CPU issue. |
 | Execution profile | Standard followup across shared protocol text, command-bus diagnostics actions, renderer controls, main-process artifact lifecycle, docs, and tests. |
-| Stop conditions | Stop if implementation requires deleting non-diagnostics persisted state, widening renderer access to arbitrary filesystem paths, or changing profiler trigger semantics beyond usability/cleanup needs. |
+| Stop conditions | Stop if implementation requires deleting persisted state, widening renderer access to arbitrary filesystem paths, or changing profiler trigger semantics. |
 
 ---
 
@@ -25,13 +25,14 @@ execution: code
 
 ### Summary
 
-This plan follows the merged developer diagnostics feature with a usability and operability pass: document how to use captured artifacts, make copied handoff text more useful, add a reveal action for the diagnostics folder, verify packaged-build profiles, and add bounded cleanup for large hot CPU sessions.
+This plan follows the merged developer diagnostics feature with a focused usability pass: document how to use captured artifacts, make copied handoff text more useful, add reveal actions for diagnostics folders, and verify packaged-build profiles.
 It intentionally does not investigate or fix the CPU behavior that prompted the capture.
+
+Scope amendment (2026-07-31): automatic retention and manual in-app deletion were removed after review. Diagnostic artifacts are troubleshooting evidence, and deletion needs a separate design with explicit confirmation, precise retention semantics, and serialized capture/delete operations.
 
 ### Problem Frame
 
 The first captured session produced valid artifacts, but the workflow still depends on a developer reading long copied text and manually navigating app-data paths.
-Heap snapshots are intentionally large, and repeated diagnostics sessions can accumulate in `diagnostics/hot-cpu` unless the app owns a clear cleanup policy.
 The feature was validated in a dev renderer; packaged-build validation should be a formal exit criterion because packaged profile URLs and source maps can differ from `localhost` dev output.
 
 ### Requirements
@@ -42,29 +43,29 @@ The feature was validated in a dev renderer; packaged-build validation should be
 - R2. The handoff text should tell the recipient to analyze the artifacts as evidence, not assume the captured issue is still active.
 - R3. The Library banner should expose a one-click action to reveal the captured diagnostics session in Finder when a session is available.
 
-**Artifact Lifecycle**
+**Artifact Access**
 
-- R4. Hot CPU diagnostics cleanup must delete only files under the app-owned hot CPU diagnostics root and must never touch captures, settings, secrets, render cache, or the app database.
-- R5. The app should bound old hot CPU sessions automatically so repeated heap-snapshot captures do not grow without limit.
-- R6. Developer settings should provide a clear manual cleanup or reveal-root affordance for the hot CPU diagnostics directory.
+- R4. Developer settings should reveal the hot CPU diagnostics root without accepting an arbitrary renderer-provided path.
+- R5. In-app diagnostics commands must not delete captured evidence.
 
 **Verification and Documentation**
 
-- R7. Documentation should explain where hot CPU artifacts live, how to open `.cpuprofile` and `.heapsnapshot` files, what `session.json`, `samples.ndjson`, and `events.ndjson` are for, and when to turn heap capture off.
-- R8. Packaged-build verification should confirm that a captured `.cpuprofile` is valid, opens in DevTools, and contains useful renderer attribution before any source-map or packaging changes are made.
+- R6. Documentation should explain where hot CPU artifacts live, how to open `.cpuprofile` and `.heapsnapshot` files, what `session.json`, `samples.ndjson`, and `events.ndjson` are for, and when to turn heap capture off.
+- R7. Packaged-build verification should confirm that a captured `.cpuprofile` is valid, opens in DevTools, and contains useful renderer attribution before any source-map or packaging changes are made.
 
 ### Scope Boundaries
 
 #### Deferred to Follow-Up Work
 
 - Shared-library extraction between PwrSnap and PwrAgent remains deferred until both implementations have stabilized through real troubleshooting use.
-- Rich in-app diagnostics browsing, profile visualization, and automatic profile analysis are deferred; this pass only improves capture handoff, reveal, cleanup, and docs.
+- Rich in-app diagnostics browsing, profile visualization, and automatic profile analysis are deferred; this pass only improves capture handoff, reveal, and docs.
+- Automatic retention and manual in-app deletion are deferred to a separately reviewed design.
 
 #### Outside This Plan
 
 - Fixing the historical high-CPU behavior is outside this plan.
-- Changing the hot CPU trigger algorithm, sample interval defaults, or heap snapshot capture mechanics is outside this plan except where cleanup needs metadata already produced by the current mechanism.
-- Deleting any persisted user data outside `diagnostics/hot-cpu` is outside this plan.
+- Changing the hot CPU trigger algorithm, sample interval defaults, or heap snapshot capture mechanics is outside this plan.
+- Deleting persisted user data is outside this plan.
 
 ---
 
@@ -72,23 +73,20 @@ The feature was validated in a dev renderer; packaged-build validation should be
 
 ### Key Technical Decisions
 
-- KTD1. Add a diagnostics command namespace instead of passing paths through generic app commands. Renderer actions should call command-bus verbs such as `diagnostics:revealHotCpuSession`, `diagnostics:revealHotCpuRoot`, and `diagnostics:clearHotCpuSessions`; main resolves all paths from its own diagnostics root.
-- KTD2. Use session directory names as renderer-provided identifiers, not raw filesystem paths. Main should reject names with separators, traversal, or unknown session directories before calling Electron shell APIs or deleting anything.
-- KTD3. Put retention in the hot CPU session lifecycle, not only in the UI. Session creation is the natural point to prune old sessions because it runs when diagnostics are active and can keep the root bounded even if the user never opens Settings.
-- KTD4. Keep cleanup conservative and diagnosable. Default retention should prefer deleting oldest complete session directories under `diagnostics/hot-cpu`, preserving the newest sessions and logging failures rather than failing profile capture because cleanup could not remove an old directory.
-- KTD5. Treat packaged-build profile quality as a validation gate before changing packaging. If the packaged `.cpuprofile` is valid and usable, the plan ends with documentation; if attribution is poor, implementation should add the minimum source-map or artifact packaging change needed and test it.
+- KTD1. Add a diagnostics command namespace instead of passing paths through generic app commands. Renderer actions call `diagnostics:revealHotCpuSession` and `diagnostics:revealHotCpuRoot`; main resolves all paths from its own diagnostics root.
+- KTD2. Use session directory names as renderer-provided identifiers, not raw filesystem paths. Main should reject names with separators, traversal, or unknown session directories before calling Electron shell APIs.
+- KTD3. Do not add an in-app deletion command in this pass. Reveal the folder and leave evidence removal as an explicit Finder action until retention semantics are designed separately.
+- KTD4. Treat packaged-build profile quality as a validation gate before changing packaging. If the packaged `.cpuprofile` is valid and usable, the plan ends with documentation; if attribution is poor, implementation should add the minimum source-map or artifact packaging change needed and test it.
 
 ### High-Level Technical Design
 
 ```mermaid
 flowchart TB
-  Settings[Advanced Developer settings] -->|arm, reveal root, clear old sessions| DiagnosticsCommands[diagnostics:* command handlers]
+  Settings[Advanced Developer settings] -->|arm, reveal root| DiagnosticsCommands[diagnostics:* command handlers]
   Banner[Library CPU profile banner] -->|copy handoff, reveal captured session| DiagnosticsCommands
   DiagnosticsCommands --> RootResolver[main-owned diagnostics root resolver]
   RootResolver --> Finder[Electron shell reveal/open]
-  RootResolver --> Cleanup[bounded hot-cpu cleanup]
   Profiler[RendererHotCpuProfiler] --> Session[HotCpuProfileSession]
-  Session --> Cleanup
   Session --> Artifacts[session.json, samples.ndjson, events.ndjson, .cpuprofile, .heapsnapshot]
   Artifacts --> Handoff[shared handoff formatter]
   Handoff --> Banner
@@ -97,7 +95,6 @@ flowchart TB
 ### Assumptions
 
 - The hot CPU diagnostics root remains `app.getPath("userData")/diagnostics/hot-cpu` unless an env override is already active for profiling tests.
-- Keeping a small number of recent sessions is better than age-only cleanup because a single troubleshooting day can produce several useful captures.
 - Existing command-bus and result-pattern conventions are sufficient; no new IPC channel is needed.
 - The packaged-build smoke can be manual or semi-automated during implementation, but the result should be recorded in the docs note or PR description.
 
@@ -113,17 +110,14 @@ flowchart TB
 
 ### System-Wide Impact
 
-This work adds a narrow diagnostics command surface visible to sandboxed renderers, so validation must prevent arbitrary path reveal or deletion.
-It also adds filesystem cleanup under app data, so the implementation must keep the target root narrow and covered by tests.
+This work adds a narrow diagnostics command surface visible to sandboxed renderers, so validation must prevent arbitrary path reveal.
 No database schema, capture bundle format, settings schema migration, or startup profiling behavior is required.
 
 ### Risks and Mitigations
 
 | Risk | Mitigation |
 |---|---|
-| Renderer can trick main into revealing or deleting arbitrary paths. | Accept only session directory names or root-level actions and resolve them under the main-owned hot CPU diagnostics root. |
-| Cleanup deletes an in-progress capture. | Prune before creating a new session or skip directories with missing/active-looking manifests; never delete the current session. |
-| Cleanup failure prevents capture. | Log cleanup failures and continue profiling unless session creation itself fails. |
+| A forged renderer request reveals an arbitrary path. | Accept only a strict session-directory basename and resolve it beneath the main-owned diagnostics root. |
 | Packaged profiles lack useful source attribution. | Treat packaged-build inspection as a required validation gate and add source-map packaging only if the smoke proves the need. |
 | Handoff copy becomes too terse for agent use. | Preserve exact session/profile paths, heap paths, and sidecar directory guidance while cutting redundant basename/path repetition. |
 
@@ -134,7 +128,7 @@ No database schema, capture bundle format, settings schema migration, or startup
 ### U1. Document the Hot CPU Diagnostics Workflow
 
 - **Goal:** Add a durable runbook for using hot CPU diagnostics after a capture.
-- **Requirements:** R7, R8
+- **Requirements:** R6, R7
 - **Dependencies:** None
 - **Files:** `docs/solutions/2026-07-05-hot-cpu-diagnostics-workflow.md`
 - **Approach:** Document the artifact directory shape, DevTools opening steps for CPU and heap artifacts, sidecar log meanings, heap snapshot cautions, packaged-build smoke expectations, and the rule that diagnostics should not be used as proof that an already-fixed bug is still active.
@@ -160,7 +154,7 @@ No database schema, capture bundle format, settings schema migration, or startup
 ### U3. Add Safe Reveal Commands for Diagnostics Artifacts
 
 - **Goal:** Let the Library banner and Developer settings reveal diagnostics locations without exposing arbitrary filesystem access to renderers.
-- **Requirements:** R3, R6
+- **Requirements:** R3, R4
 - **Dependencies:** U2
 - **Files:** `packages/shared/src/protocol.ts`, `apps/desktop/src/main/handlers/diagnostics-handlers.ts`, `apps/desktop/src/main/handlers/__tests__/diagnostics-handlers.test.ts`, `apps/desktop/src/main/index.ts`, `apps/desktop/src/main/process-split/command-routing.ts`, `apps/desktop/src/main/__tests__/command-routing.test.ts`
 - **Approach:** Add command-bus handlers for revealing the hot CPU root and a specific hot CPU session by directory name. Resolve all paths in main from the diagnostics root, reject invalid or unknown session names, and use Electron shell reveal/open APIs only after validation. Register the handlers in the same process role that owns Library diagnostics so split mode can answer the renderer dispatch.
@@ -180,7 +174,7 @@ No database schema, capture bundle format, settings schema migration, or startup
 ### U4. Wire Reveal Actions into the Banner and Developer Page
 
 - **Goal:** Surface the safe reveal commands where developers naturally look after capture.
-- **Requirements:** R3, R6
+- **Requirements:** R3, R4
 - **Dependencies:** U3
 - **Files:** `apps/desktop/src/renderer/src/features/library/HotCpuProfileBanner.tsx`, `apps/desktop/src/renderer/src/features/library/__tests__/HotCpuProfileBanner.test.tsx`, `apps/desktop/src/renderer/src/features/settings/pages/DeveloperPage.tsx`, `apps/desktop/src/renderer/src/features/settings/pages/__tests__/DeveloperPage.test.tsx`
 - **Approach:** Add a secondary action to the capture banner for revealing the captured session. Add a Developer page action to reveal the diagnostics root. Keep actions disabled while settings are unavailable and show compact status text rather than a new explanatory panel.
@@ -193,32 +187,17 @@ No database schema, capture bundle format, settings schema migration, or startup
   - Accessibility: banner actions remain keyboard buttons with clear labels and the status region remains `aria-live`.
 - **Verification:** A captured session can be revealed from the banner and the diagnostics root can be revealed from Settings without hand-copying app-data paths.
 
-### U5. Add Bounded Hot CPU Session Retention and Manual Cleanup
+### U5. Defer Diagnostics Retention and Deletion
 
-- **Goal:** Keep hot CPU diagnostics from accumulating indefinitely while preserving recent troubleshooting sessions.
-- **Requirements:** R4, R5, R6
-- **Dependencies:** U3
-- **Files:** `apps/desktop/src/main/diagnostics/hot-cpu-profile-retention.ts`, `apps/desktop/src/main/diagnostics/__tests__/hot-cpu-profile-retention.test.ts`, `apps/desktop/src/main/diagnostics/hot-cpu-profile-session.ts`, `apps/desktop/src/main/handlers/diagnostics-handlers.ts`, `apps/desktop/src/main/handlers/__tests__/diagnostics-handlers.test.ts`, `apps/desktop/src/renderer/src/features/settings/pages/DeveloperPage.tsx`, `apps/desktop/src/renderer/src/features/settings/pages/__tests__/DeveloperPage.test.tsx`
-- **Approach:** Introduce a small retention helper that lists direct child directories matching the hot CPU session naming shape, reads available `session.json` timestamps when present, and prunes oldest sessions after session creation. Use conservative constants for max retained sessions and optional max total bytes; manual cleanup should call the same helper with a mode that removes all inactive hot CPU sessions under the root, and Developer settings should dispatch that manual cleanup action with a compact result status.
-- **Technical design:** Directionally, retention should:
-  - operate only on direct children under the hot CPU diagnostics root.
-  - skip the current session and any directory it cannot classify safely.
-  - prefer `session.json.createdAt` for ordering and fall back to directory stat time.
-  - return a summary with deleted count, skipped count, freed bytes when knowable, and non-fatal errors.
-- **Patterns to follow:** Follow the narrow-root cleanup discipline from render-cache maintenance and the defensive filesystem handling style in cart export cleanup tests.
-- **Test scenarios:**
-  - Happy path: creating a new session prunes oldest matching sessions beyond the retention limit and preserves the newest sessions.
-  - Edge case: non-matching files and directories under the diagnostics root are ignored.
-  - Error path: filesystem errors are reported in the cleanup summary but do not delete outside the root or crash session creation.
-  - Error path: traversal-like names are never considered valid session candidates.
-  - Integration scenario: manual cleanup removes inactive hot CPU session directories and returns a summary the renderer can display.
-- **Verification:** Repeated hot CPU sessions remain bounded under the app-owned diagnostics root, and cleanup tests prove no non-diagnostics path is targeted.
+- **Decision:** No automatic retention or renderer-dispatchable deletion ships in this follow-up.
+- **Rationale:** Review found that a one-click "clear old sessions" action could erase all inactive evidence, count empty sessions against useful captures, and race with session creation. A future implementation needs explicit confirmation, a precise completed-profile retention policy, size accounting, and serialized capture/delete operations.
+- **Verification:** The shared command map and Developer page expose reveal actions only.
 
 ### U6. Verify and Document Packaged-Build Profile Quality
 
 - **Goal:** Prove that the workflow remains useful outside the dev renderer before adding packaging/source-map changes.
-- **Requirements:** R8
-- **Dependencies:** U1, U2, U3, U4, U5
+- **Requirements:** R7
+- **Dependencies:** U1, U2, U3, U4
 - **Files:** `docs/solutions/2026-07-05-hot-cpu-diagnostics-workflow.md`
 - **Approach:** During implementation, run a packaged or built-app smoke with hot CPU profiling armed, inspect the resulting `.cpuprofile`, and update the docs note with the expected packaged profile shape. Only change packaging/source-map behavior if the smoke shows the profile is valid but too opaque to troubleshoot PwrSnap renderer code.
 - **Patterns to follow:** Use the built-output profiling posture from `docs/solutions/2026-06-12-library-startup-black-window-profiling.md`; keep the runtime feature env-gated/settings-gated rather than adding default-on diagnostics.
@@ -232,20 +211,20 @@ No database schema, capture bundle format, settings schema migration, or startup
 | Gate | Scope | Done Signal |
 |---|---|---|
 | `pnpm typecheck` | Shared protocol, main handlers, renderer settings/banner changes | TypeScript accepts new diagnostics commands, event formatting, and renderer dispatches. |
-| `pnpm test` | Unit and renderer tests | Formatter, retention, command validation, settings, and banner tests pass with the existing suite. |
+| `pnpm test` | Unit and renderer tests | Formatter, reveal command validation, settings, and banner tests pass with the existing suite. |
 | `pnpm build` | Desktop build | Main/renderer bundles compile with the new diagnostics command surface. |
 | Packaged/built-app smoke | Runtime diagnostic usefulness | A hot CPU capture from built output produces a valid `.cpuprofile`; source attribution is documented as sufficient or a followup packaging change is made. |
-| Manual safety inspection | Filesystem cleanup | Cleanup targets only `diagnostics/hot-cpu` session children and never capture storage, settings, secrets, render cache, or SQLite files. |
+| Manual safety inspection | Command surface | Diagnostics commands reveal validated locations and expose no deletion operation. |
 
 ---
 
 ## Definition of Done
 
-- The hot CPU diagnostics docs note exists and explains artifact usage, heap snapshot caution, cleanup, and packaged-build expectations.
+- The hot CPU diagnostics docs note exists and explains artifact usage, heap snapshot caution, and packaged-build expectations.
 - The copied handoff text is shorter, still includes exact artifact paths, and frames artifacts as evidence for analysis.
 - The Library banner can reveal the captured session, and Developer settings can reveal the diagnostics root.
-- Hot CPU sessions are bounded by conservative retention and can be manually cleaned from Developer settings.
-- Renderer-originated reveal and cleanup requests cannot carry arbitrary filesystem paths.
+- Renderer-originated reveal requests cannot carry arbitrary filesystem paths.
+- No renderer-dispatchable diagnostics deletion command is exposed.
 - Packaged-build profile usefulness is verified and recorded.
 - All unit tests and build/typecheck gates in the Verification Contract pass.
 - Dead-end implementation attempts and temporary diagnostics code are removed from the final diff.

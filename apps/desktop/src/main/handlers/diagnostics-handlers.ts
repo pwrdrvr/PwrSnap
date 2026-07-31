@@ -2,8 +2,6 @@ import fs from "node:fs/promises";
 import { shell } from "electron";
 import { err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
-import { listActiveHotCpuProfileSessionDirectoryNames } from "../diagnostics/hot-cpu-profile-active-sessions";
-import { clearHotCpuProfileSessions } from "../diagnostics/hot-cpu-profile-retention";
 import {
   hotCpuDiagnosticsRoot,
   hotCpuSessionDirectoryPath,
@@ -61,14 +59,5 @@ export function registerDiagnosticsHandlers(): void {
       });
     }
     return ok(undefined);
-  });
-
-  bus.register("diagnostics:clearHotCpuSessions", async () => {
-    return ok(
-      await clearHotCpuProfileSessions({
-        excludeSessionDirectoryNames: listActiveHotCpuProfileSessionDirectoryNames(),
-        root: hotCpuDiagnosticsRoot()
-      })
-    );
   });
 }

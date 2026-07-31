@@ -7,7 +7,6 @@
 
 import { useEffect, useState, type ReactElement } from "react";
 import type {
-  HotCpuProfileCleanupResult,
   HotCpuProfileStartDelayMs,
   HotCpuProfileTriggerMode
 } from "@pwrsnap/shared";
@@ -99,9 +98,7 @@ export function DeveloperPage(): ReactElement {
   const [countdownEndsAt, setCountdownEndsAt] = useState<number | null>(null);
   const [countdownRemainingMs, setCountdownRemainingMs] = useState(0);
   const [diagnosticsStatus, setDiagnosticsStatus] = useState<string | null>(null);
-  const [diagnosticsAction, setDiagnosticsAction] = useState<
-    "idle" | "revealing" | "clearing"
-  >("idle");
+  const [revealingDiagnostics, setRevealingDiagnostics] = useState(false);
 
   useEffect(() => {
     if (countdownEndsAt === null) return;
@@ -118,13 +115,8 @@ export function DeveloperPage(): ReactElement {
   const countdownActive = countdownRemainingMs > 0;
   const countdownSeconds = Math.ceil(countdownRemainingMs / 1_000);
   const startDelayText = formatStartDelay(startDelayMs);
-  const diagnosticsBusy = diagnosticsAction !== "idle";
-  const cleanupDisabled =
-    !ready || diagnosticsBusy || hotCpuEnabled || captureHeapSnapshot || countdownActive;
-  const hotCpuControlsDisabled = !ready || diagnosticsAction === "clearing";
 
   const startHotCpuCapture = async (): Promise<void> => {
-    if (diagnosticsAction === "clearing") return;
     await patch({ general: { hotCpuProfilingEnabled: true } });
     if (startDelayMs > 0) {
       const endsAt = Date.now() + startDelayMs;
@@ -143,32 +135,16 @@ export function DeveloperPage(): ReactElement {
   };
 
   const revealDiagnosticsRoot = async (): Promise<void> => {
-    if (!ready || diagnosticsBusy) return;
+    if (!ready || revealingDiagnostics) return;
     setDiagnosticsStatus(null);
-    setDiagnosticsAction("revealing");
+    setRevealingDiagnostics(true);
     try {
       const result = await dispatch("diagnostics:revealHotCpuRoot", {});
       if (!result.ok) {
         setDiagnosticsStatus(`Reveal failed: ${result.error.message}`);
       }
     } finally {
-      setDiagnosticsAction("idle");
-    }
-  };
-
-  const clearDiagnostics = async (): Promise<void> => {
-    if (cleanupDisabled) return;
-    setDiagnosticsStatus(null);
-    setDiagnosticsAction("clearing");
-    try {
-      const result = await dispatch("diagnostics:clearHotCpuSessions", {});
-      if (!result.ok) {
-        setDiagnosticsStatus(`Cleanup failed: ${result.error.message}`);
-        return;
-      }
-      setDiagnosticsStatus(formatCleanupResult(result.value));
-    } finally {
-      setDiagnosticsAction("idle");
+      setRevealingDiagnostics(false);
     }
   };
 
@@ -214,7 +190,7 @@ export function DeveloperPage(): ReactElement {
               <button
                 className="pss__top-btn"
                 type="button"
-                disabled={hotCpuControlsDisabled}
+                disabled={!ready}
                 onClick={() => {
                   void stopHotCpuCapture();
                 }}
@@ -225,7 +201,7 @@ export function DeveloperPage(): ReactElement {
               <button
                 className="pss__top-btn is-active"
                 type="button"
-                disabled={hotCpuControlsDisabled}
+                disabled={!ready}
                 onClick={() => {
                   void startHotCpuCapture();
                 }}
@@ -250,7 +226,7 @@ export function DeveloperPage(): ReactElement {
         >
           <SegmentButtons
             ariaLabel="Profiling start delay"
-            disabled={hotCpuControlsDisabled}
+            disabled={!ready}
             options={START_DELAY_OPTIONS}
             value={startDelayMs}
             onChange={(next) => {
@@ -266,7 +242,7 @@ export function DeveloperPage(): ReactElement {
         >
           <SegmentButtons
             ariaLabel="CPU profile trigger"
-            disabled={hotCpuControlsDisabled}
+            disabled={!ready}
             options={TRIGGER_MODE_OPTIONS}
             value={triggerMode}
             onChange={(next) => {
@@ -283,7 +259,7 @@ export function DeveloperPage(): ReactElement {
           <Switch
             on={captureHeapSnapshot}
             onChange={
-              !hotCpuControlsDisabled
+              ready
                 ? (next) => {
                     void patch({
                       general: { hotCpuProfilingCaptureHeapSnapshot: next }
@@ -301,7 +277,7 @@ export function DeveloperPage(): ReactElement {
         >
           <SegmentButtons
             ariaLabel="Heap snapshot limit"
-            disabled={hotCpuControlsDisabled || !captureHeapSnapshot}
+            disabled={!ready || !captureHeapSnapshot}
             options={HEAP_SNAPSHOT_LIMIT_OPTIONS}
             value={heapSnapshotLimit}
             onChange={(next) => {
@@ -319,22 +295,12 @@ export function DeveloperPage(): ReactElement {
             <button
               className="pss__top-btn"
               type="button"
-              disabled={!ready || diagnosticsBusy}
+              disabled={!ready || revealingDiagnostics}
               onClick={() => {
                 void revealDiagnosticsRoot();
               }}
             >
-              Reveal Folder
-            </button>
-            <button
-              className="pss__top-btn"
-              type="button"
-              disabled={cleanupDisabled}
-              onClick={() => {
-                void clearDiagnostics();
-              }}
-            >
-              Clear Old Sessions
+              {revealingDiagnostics ? "Revealing..." : "Reveal Folder"}
             </button>
             {diagnosticsStatus !== null ? (
               <span className="pss__update-note" aria-live="polite">
@@ -346,12 +312,4 @@ export function DeveloperPage(): ReactElement {
       </Card>
     </>
   );
-}
-
-function formatCleanupResult(result: HotCpuProfileCleanupResult): string {
-  const deleted = result.deletedSessions;
-  const skipped = result.skippedEntries;
-  const suffix =
-    result.errors.length > 0 ? `, ${result.errors.length} errors` : "";
-  return `Cleared ${deleted} session${deleted === 1 ? "" : "s"}; skipped ${skipped}${suffix}.`;
 }

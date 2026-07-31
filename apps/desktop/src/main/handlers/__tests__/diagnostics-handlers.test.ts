@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   openPath: vi.fn(async () => ""),
-  showItemInFolder: vi.fn(),
   userDataPath: ""
 }));
 
@@ -17,16 +16,11 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
     }
   } as unknown as typeof import("electron").app,
   shell: {
-    openPath: mocks.openPath,
-    showItemInFolder: mocks.showItemInFolder
+    openPath: mocks.openPath
   } as unknown as typeof import("electron").shell
 }));
 
 import { bus } from "../../command-bus";
-import {
-  clearActiveHotCpuProfileSessionsForTests,
-  markHotCpuProfileSessionActive
-} from "../../diagnostics/hot-cpu-profile-active-sessions";
 import { registerDiagnosticsHandlers } from "../diagnostics-handlers";
 
 registerDiagnosticsHandlers();
@@ -40,12 +34,10 @@ function hotCpuRoot(): string {
 beforeEach(async () => {
   mocks.userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), "pwrsnap-diag-test-"));
   mocks.openPath.mockClear();
-  mocks.showItemInFolder.mockClear();
 });
 
 afterEach(async () => {
   delete process.env.PWRSNAP_HOT_CPU_PROFILING_OUTPUT_ROOT;
-  clearActiveHotCpuProfileSessionsForTests();
   await fs.rm(mocks.userDataPath, { recursive: true, force: true });
 });
 
@@ -135,7 +127,7 @@ describe("diagnostics handlers", () => {
       if (!result.ok) expect(result.error.code).toBe("invalid_hot_cpu_session");
     }
 
-    expect(mocks.showItemInFolder).not.toHaveBeenCalled();
+    expect(mocks.openPath).not.toHaveBeenCalled();
   });
 
   test("rejects unknown hot CPU sessions without shell access", async () => {
@@ -147,49 +139,6 @@ describe("diagnostics handlers", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("hot_cpu_session_not_found");
-    expect(mocks.showItemInFolder).not.toHaveBeenCalled();
-  });
-
-  test("clears matching hot CPU sessions and leaves non-session entries", async () => {
-    const sessionPath = path.join(hotCpuRoot(), sessionName);
-    const otherPath = path.join(hotCpuRoot(), "not-a-session");
-    await fs.mkdir(sessionPath, { recursive: true });
-    await fs.mkdir(otherPath, { recursive: true });
-    await fs.writeFile(path.join(sessionPath, "session.json"), "{}", "utf8");
-
-    const result = await bus.dispatch(
-      "diagnostics:clearHotCpuSessions",
-      {},
-      { principal: "ipc" }
-    );
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("expected ok");
-    expect(result.value.deletedSessions).toBe(1);
-    expect(result.value.skippedEntries).toBe(1);
-    await expect(fs.stat(sessionPath)).rejects.toThrow();
-    expect(await fs.stat(otherPath)).toBeDefined();
-  });
-
-  test("clear skips sessions that are active in this process", async () => {
-    const activePath = path.join(hotCpuRoot(), sessionName);
-    const inactiveName = "hot-cpu-2026-07-04-1644-9abcde";
-    const inactivePath = path.join(hotCpuRoot(), inactiveName);
-    await fs.mkdir(activePath, { recursive: true });
-    await fs.mkdir(inactivePath, { recursive: true });
-    markHotCpuProfileSessionActive(sessionName);
-
-    const result = await bus.dispatch(
-      "diagnostics:clearHotCpuSessions",
-      {},
-      { principal: "ipc" }
-    );
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("expected ok");
-    expect(result.value.deletedSessions).toBe(1);
-    expect(result.value.skippedEntries).toBe(1);
-    expect(await fs.stat(activePath)).toBeDefined();
-    await expect(fs.stat(inactivePath)).rejects.toThrow();
+    expect(mocks.openPath).not.toHaveBeenCalled();
   });
 });

@@ -16,7 +16,7 @@ Each hot CPU session contains:
 
 - `session.json` - manifest with the session id, creation time, artifact list, configuration, and runtime versions.
 - `samples.ndjson` - CPU and memory samples taken before a profile starts.
-- `events.ndjson` - monitor lifecycle events such as monitor start, profile start, profile write, heap snapshot write, and cleanup/limit events.
+- `events.ndjson` - monitor lifecycle events such as monitor start, profile start, profile write, heap snapshot write, and capture-limit events.
 - `renderer-hot-0001.cpuprofile` - Chrome DevTools CPU profile for the hot window.
 - `renderer-hot-0001-<phase>.heapsnapshot` - optional V8 heap snapshots when smart heap snapshots were enabled.
 
@@ -33,6 +33,8 @@ Open `.cpuprofile` files in Chrome DevTools Performance or a compatible profile 
 
 The copied handoff text includes exact artifact paths. It should be enough for an agent or human reviewer to inspect the artifacts without hunting logs.
 
+PwrSnap does not automatically delete diagnostics sessions. After the evidence is no longer useful, reveal the diagnostics folder from Settings and remove the session directories intentionally in Finder.
+
 ## Packaged-build verification
 
 Development captures usually contain `localhost` source URLs. Packaged builds may show bundled paths or source-map-derived names instead. Before treating diagnostics as release-ready after changes to this area, capture at least one hot CPU profile from built output and verify:
@@ -46,6 +48,6 @@ Do not add source-map or packaging changes until a packaged capture proves the p
 
 ## Safety boundaries
 
-Diagnostics cleanup must target only `diagnostics/hot-cpu` session directories. It must never delete captures, settings, secrets, render cache entries, SQLite files, or files under `~/Documents/PwrSnap`.
+The in-app diagnostics commands only reveal the app-owned diagnostics root or a validated session directory. PwrSnap does not expose a renderer command that deletes diagnostics artifacts.
 
-Profiling and cleanup are developer diagnostics, not normal app maintenance. Keep the controls under Advanced -> Developer and keep heap capture opt-in.
+Profiling is a developer diagnostic, not normal app maintenance. Keep the controls under Advanced -> Developer and keep heap capture opt-in.

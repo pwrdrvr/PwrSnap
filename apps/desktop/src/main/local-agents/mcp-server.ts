@@ -1,18 +1,29 @@
-import {
-  createServer,
-  type IncomingMessage,
-  type Server as HttpServer,
-  type ServerResponse
+import type {
+  IncomingMessage,
+  Server as HttpServer,
+  ServerResponse
 } from "node:http";
 import { createReadStream } from "node:fs";
-import { mkdir, rename, stat, unlink, writeFile } from "node:fs/promises";
-import type { AddressInfo } from "node:net";
-import { dirname } from "node:path";
+import { stat } from "node:fs/promises";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import {
+  getOAuthProtectedResourceMetadataUrl,
+  mcpAuthMetadataRouter
+} from "@modelcontextprotocol/sdk/server/auth/router.js";
+import { clientRegistrationHandler } from "@modelcontextprotocol/sdk/server/auth/handlers/register.js";
+import { revocationHandler } from "@modelcontextprotocol/sdk/server/auth/handlers/revoke.js";
+import { tokenHandler } from "@modelcontextprotocol/sdk/server/auth/handlers/token.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { OAuthMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
+import type {
+  NextFunction,
+  Request as ExpressRequest,
+  Response as ExpressResponse
+} from "express";
 import {
   LOCAL_AGENT_CAPABILITIES,
   err,
@@ -22,17 +33,19 @@ import {
   type Result,
   type PwrSnapError
 } from "@pwrsnap/shared";
-import { z } from "zod";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { DesktopSecretStore } from "../settings/desktop-secret-store";
 import { DesktopSettingsService } from "../settings/desktop-settings-service";
 import { TRASH_RETENTION_DAYS } from "../persistence/trash-retention";
 import {
-  LocalAgentGrantService,
-  type LocalAgentAuthResult
+  LocalAgentGrantService
 } from "./local-agent-grants";
-import type { LocalAgentPairingApprovalRequest } from "./local-agent-pairing";
+import {
+  LOCAL_AGENT_CAPABILITY_LABELS,
+  LocalAgentOAuthProvider,
+  type LocalAgentAuthorizationResult
+} from "./local-agent-oauth";
 import {
   projectLocalAgentSearchRows,
   toCaptureSearchRequest
@@ -54,20 +67,18 @@ import {
 
 const log = getMainLogger("pwrsnap:local-agent-mcp");
 const MCP_PATH = "/mcp";
-const PAIR_PATH = "/pair";
 const MEDIA_PATH = "/media";
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
-
-const PairingRequestSchema = z.object({
-  name: z.string().trim().min(1).max(200),
-  capabilities: z.array(z.enum(LOCAL_AGENT_CAPABILITIES))
-    .min(1)
-    .max(LOCAL_AGENT_CAPABILITIES.length)
-}).strict();
+export const LOCAL_AGENT_MCP_PORT = 51_729;
 
 type GrantService = Pick<
   LocalAgentGrantService,
-  "authenticate" | "authorizeClient" | "createGrant" | "recordUsage"
+  | "authenticate"
+  | "authorizeClient"
+  | "issueOAuthGrant"
+  | "list"
+  | "recordUsage"
+  | "revokeGrant"
 >;
 
 export type LocalAgentMcpServerOptions = {
@@ -77,8 +88,6 @@ export type LocalAgentMcpServerOptions = {
   tools?: readonly AnyLocalAgentMcpTool[];
   host?: string;
   port?: number;
-  discoveryFilePath?: string;
-  approvePairing?: (request: LocalAgentPairingApprovalRequest) => Promise<boolean>;
   resourceRegistry?: LocalAgentMcpResourceRegistry;
   signedUrls?: LocalAgentSignedUrlService;
   auditService?: LocalAgentAuditService;
@@ -86,17 +95,9 @@ export type LocalAgentMcpServerOptions = {
 
 export type LocalAgentMcpServerAddress = {
   url: string;
-  pairUrl: string;
+  authorizationUrl: string;
   host: string;
   port: number;
-};
-
-export type LocalAgentMcpDiscoveryDescriptor = {
-  schemaVersion: 1;
-  mcpUrl: string;
-  pairUrl: string;
-  pid: number;
-  startedAt: string;
 };
 
 export class LocalAgentMcpServer {
@@ -104,23 +105,17 @@ export class LocalAgentMcpServer {
   private readonly host: string;
   private readonly port: number;
   private readonly tools: readonly AnyLocalAgentMcpTool[];
-  private readonly discoveryFilePath: string | undefined;
-  private readonly approvePairing:
-    | ((request: LocalAgentPairingApprovalRequest) => Promise<boolean>)
-    | undefined;
   private readonly resourceRegistry: LocalAgentMcpResourceRegistry;
   private readonly signedUrls: LocalAgentSignedUrlService;
   private readonly auditService: LocalAgentAuditService;
   private server: HttpServer | null = null;
   private address: LocalAgentMcpServerAddress | null = null;
+  private oauth: LocalAgentOAuthProvider | null = null;
   private closed = false;
-  private pairingPending = false;
 
   constructor(options: LocalAgentMcpServerOptions) {
     this.host = options.host ?? "127.0.0.1";
-    this.port = options.port ?? 0;
-    this.discoveryFilePath = options.discoveryFilePath;
-    this.approvePairing = options.approvePairing;
+    this.port = options.port ?? LOCAL_AGENT_MCP_PORT;
     this.resourceRegistry =
       options.resourceRegistry ?? new LocalAgentMcpResourceRegistry();
     this.signedUrls = options.signedUrls ?? new LocalAgentSignedUrlService();
@@ -211,48 +206,125 @@ export class LocalAgentMcpServer {
   async start(): Promise<LocalAgentMcpServerAddress> {
     if (this.server !== null && this.address !== null) return this.address;
     if (this.closed) throw new Error("MCP server cannot restart after stop");
-    this.server = createServer((req, res) => {
-      void this.handleRequest(req, res).catch((cause) => {
-        log.warn("MCP request failed", {
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
-        if (!res.headersSent) {
-          writeJsonResponse(
-            res,
-            cause instanceof RequestBodyTooLargeError ? 413 : 500,
-            { error: cause instanceof RequestBodyTooLargeError ? "request_too_large" : "internal_error" }
-          );
-        } else if (!res.writableEnded) {
-          res.end();
-        }
-      });
+    const app = createMcpExpressApp({ host: this.host });
+    app.use((req: ExpressRequest, res: ExpressResponse, next: NextFunction) => {
+      if (!isLoopbackRemoteAddress(req.socket.remoteAddress)) {
+        res.status(403).json({ error: "non_loopback_client" });
+        return;
+      }
+      if (!isAllowedOrigin(req.headers.origin)) {
+        res.status(403).json({ error: "invalid_origin" });
+        return;
+      }
+      if (
+        this.address !== null &&
+        req.headers.host !== `${this.address.host}:${this.address.port}`
+      ) {
+        res.status(403).json({ error: "invalid_host" });
+        return;
+      }
+      next();
     });
-    await listen(this.server, this.port, this.host);
-    const addr = this.server.address();
-    if (addr === null || typeof addr === "string") {
-      throw new Error("MCP server did not bind to a TCP loopback address");
-    }
-    const boundPort = (addr as AddressInfo).port;
-    this.address = {
-      host: this.host,
-      port: boundPort,
-      url: `http://${this.host}:${boundPort}${MCP_PATH}`,
-      pairUrl: `http://${this.host}:${boundPort}${PAIR_PATH}`
-    };
     try {
-      await this.writeDiscoveryDescriptor();
+      this.server = await listenExpress(app, this.port, this.host);
+      const addr = this.server.address();
+      if (addr === null || typeof addr === "string") {
+        throw new Error("MCP server did not bind to a TCP loopback address");
+      }
+      const boundPort = addr.port;
+      this.address = {
+        host: this.host,
+        port: boundPort,
+        url: `http://${this.host}:${boundPort}${MCP_PATH}`,
+        authorizationUrl: `http://${this.host}:${boundPort}/authorize`
+      };
+      const issuerUrl = new URL(`http://${this.host}:${boundPort}`);
+      const resourceUrl = new URL(this.address.url);
+      this.oauth = new LocalAgentOAuthProvider({
+        grantService: this.grantService,
+        resourceUrl
+      });
+      app.get("/authorize", (req: ExpressRequest, res: ExpressResponse) => {
+        void this.handleAuthorizationRequest(
+          new URL(req.originalUrl, issuerUrl),
+          res
+        ).catch((cause) => {
+          log.warn("OAuth authorization request failed", {
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+          if (!res.headersSent) {
+            writeJsonResponse(res, 500, { error: "server_error" });
+          } else if (!res.writableEnded) {
+            res.end();
+          }
+        });
+      });
+      app.post("/authorize", (_req: ExpressRequest, res: ExpressResponse) => {
+        res.status(405).set("allow", "GET").json({ error: "method_not_allowed" });
+      });
+      app.use("/token", tokenHandler({ provider: this.oauth }));
+      app.use(
+        "/register",
+        clientRegistrationHandler({
+          clientsStore: this.oauth.clientsStore,
+          clientIdGeneration: false
+        })
+      );
+      app.use("/revoke", revocationHandler({ provider: this.oauth }));
+      const oauthMetadata: OAuthMetadata = {
+        issuer: issuerUrl.href,
+        authorization_endpoint: new URL("/authorize", issuerUrl).href,
+        token_endpoint: new URL("/token", issuerUrl).href,
+        registration_endpoint: new URL("/register", issuerUrl).href,
+        revocation_endpoint: new URL("/revoke", issuerUrl).href,
+        response_types_supported: ["code"],
+        grant_types_supported: ["authorization_code"],
+        token_endpoint_auth_methods_supported: ["none"],
+        revocation_endpoint_auth_methods_supported: ["none"],
+        code_challenge_methods_supported: ["S256"],
+        scopes_supported: [...LOCAL_AGENT_CAPABILITIES]
+      };
+      app.use(mcpAuthMetadataRouter({
+        oauthMetadata,
+        resourceServerUrl: resourceUrl,
+        resourceName: "PwrSnap",
+        scopesSupported: [...LOCAL_AGENT_CAPABILITIES]
+      }));
+      app.use((req: ExpressRequest, res: ExpressResponse) => {
+        void this.handleRequest(req, res).catch((cause) => {
+          log.warn("MCP request failed", {
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+          if (!res.headersSent) {
+            writeJsonResponse(
+              res,
+              cause instanceof RequestBodyTooLargeError ? 413 : 500,
+              {
+                error:
+                  cause instanceof RequestBodyTooLargeError
+                    ? "request_too_large"
+                    : "internal_error"
+              }
+            );
+          } else if (!res.writableEnded) {
+            res.end();
+          }
+        });
+      });
+      log.info("local MCP server listening", {
+        host: this.address.host,
+        port: this.address.port,
+        transport: "streamable_http"
+      });
+      return this.address;
     } catch (cause) {
-      await closeHttpServer(this.server);
+      const server = this.server;
       this.server = null;
       this.address = null;
+      this.oauth = null;
+      if (server !== null) await closeHttpServer(server).catch(() => undefined);
       throw cause;
     }
-    log.info("local MCP server listening", {
-      host: this.address.host,
-      port: this.address.port,
-      transport: "streamable_http"
-    });
-    return this.address;
   }
 
   getAddress(): LocalAgentMcpServerAddress | null {
@@ -265,10 +337,8 @@ export class LocalAgentMcpServer {
     const server = this.server;
     this.server = null;
     this.address = null;
+    this.oauth = null;
     if (server !== null) await closeHttpServer(server);
-    if (this.discoveryFilePath !== undefined) {
-      await unlink(this.discoveryFilePath).catch(() => undefined);
-    }
   }
 
   private createMcpServer(): McpServer {
@@ -276,7 +346,7 @@ export class LocalAgentMcpServer {
       { name: "PwrSnap", version: "1.0.0" },
       {
         instructions:
-          "Use PwrSnap tools only for captures and sizzle assets the paired user granted to this local client."
+          "Use PwrSnap tools only for captures and sizzle assets the user authorized for this local client."
       }
     );
     this.registerTools(mcp);
@@ -385,26 +455,10 @@ export class LocalAgentMcpServer {
       writeJsonResponse(res, 503, { error: "closed" });
       return;
     }
-    if (!isLoopbackRemoteAddress(req.socket.remoteAddress)) {
-      writeJsonResponse(res, 403, { error: "non_loopback_client" });
-      return;
-    }
-    if (req.headers.host !== `${this.host}:${this.address.port}`) {
-      writeJsonResponse(res, 403, { error: "invalid_host" });
-      return;
-    }
-    if (!isAllowedOrigin(req.headers.origin)) {
-      writeJsonResponse(res, 403, { error: "invalid_origin" });
-      return;
-    }
     const requestUrl = new URL(
       req.url ?? "/",
       `http://${this.host}:${this.address.port}`
     );
-    if (requestUrl.pathname === PAIR_PATH) {
-      await this.handlePairingRequest(req, res);
-      return;
-    }
     if (requestUrl.pathname === MEDIA_PATH) {
       await this.handleMediaRequest(req, res, requestUrl);
       return;
@@ -414,6 +468,31 @@ export class LocalAgentMcpServer {
       return;
     }
     await this.handleMcpRequest(req, res, requestUrl);
+  }
+
+  private async handleAuthorizationRequest(
+    requestUrl: URL,
+    res: ServerResponse
+  ): Promise<void> {
+    const oauth = this.oauth;
+    if (oauth === null) {
+      writeJsonResponse(res, 503, { error: "authorization_unavailable" });
+      return;
+    }
+    const result = await oauth.handleAuthorizationRequest(requestUrl);
+    if (result.kind === "redirect") {
+      res.writeHead(302, { location: result.url, "cache-control": "no-store" });
+      res.end();
+      return;
+    }
+    if (result.kind === "error") {
+      writeJsonResponse(res, result.status, {
+        error: result.error,
+        error_description: result.description
+      });
+      return;
+    }
+    writeHtmlResponse(res, 200, renderConsentPage(result));
   }
 
   private async handleMediaRequest(
@@ -471,79 +550,21 @@ export class LocalAgentMcpServer {
     }
   }
 
-  private async handlePairingRequest(
-    req: IncomingMessage,
-    res: ServerResponse
-  ): Promise<void> {
-    if (req.method !== "POST") {
-      res.setHeader("allow", "POST");
-      writeJsonResponse(res, 405, { error: "method_not_allowed" });
-      return;
-    }
-    if (this.approvePairing === undefined) {
-      writeJsonResponse(res, 404, { error: "pairing_unavailable" });
-      return;
-    }
-    if (this.pairingPending) {
-      writeJsonResponse(res, 409, { error: "pairing_in_progress" });
-      return;
-    }
-    const body = await readJsonBody(req);
-    const parsed = PairingRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      writeJsonResponse(res, 400, {
-        error: "invalid_pairing_request",
-        issues: parsed.error.issues.map((issue) => issue.message)
-      });
-      return;
-    }
-    const capabilities = [...new Set(parsed.data.capabilities)];
-    this.pairingPending = true;
-    try {
-      const approved = await this.approvePairing({
-        name: parsed.data.name,
-        capabilities
-      });
-      if (!approved) {
-        writeJsonResponse(res, 403, { error: "pairing_denied" });
-        return;
-      }
-      const result = await this.grantService.createGrant({
-        name: parsed.data.name,
-        capabilities
-      });
-      res.setHeader("cache-control", "no-store");
-      writeJsonResponse(res, 201, {
-        clientId: result.grant.id,
-        token: result.token,
-        mcpUrl: this.address?.url,
-        capabilities: result.grant.capabilities
-      });
-    } finally {
-      this.pairingPending = false;
-    }
-  }
-
   private async handleMcpRequest(
     req: IncomingMessage,
     res: ServerResponse,
     requestUrl: URL
   ): Promise<void> {
-    const auth = await this.authenticateRequest(req);
-    if (auth === null) {
-      res.setHeader("www-authenticate", 'Bearer realm="pwrsnap-mcp"');
+    const authInfo = await this.authenticateRequest(req);
+    if (authInfo === null) {
+      const metadataUrl = getOAuthProtectedResourceMetadataUrl(requestUrl);
+      res.setHeader(
+        "www-authenticate",
+        `Bearer resource_metadata="${metadataUrl}"`
+      );
       writeJsonResponse(res, 401, { error: "unauthorized" });
       return;
     }
-    const credential = req.headers.authorization?.replace(/^Bearer\s+/i, "") ?? "";
-    const authInfo: AuthInfo = {
-      token: credential,
-      clientId: auth.context.clientId,
-      scopes: [...auth.context.capabilities],
-      extra: {
-        capabilities: [...auth.context.capabilities]
-      }
-    };
     const transport = new WebStandardStreamableHTTPServerTransport({
       enableJsonResponse: true
     });
@@ -564,19 +585,17 @@ export class LocalAgentMcpServer {
     }
   }
 
-  private async authenticateRequest(
-    req: IncomingMessage
-  ): Promise<Extract<LocalAgentAuthResult, { ok: true }> | null> {
+  private async authenticateRequest(req: IncomingMessage): Promise<AuthInfo | null> {
     const authorization = req.headers.authorization;
-    if (typeof authorization !== "string") return null;
-    const match = /^Bearer\s+([A-Za-z0-9_-]+:[A-Za-z0-9_-]+)$/u.exec(
-      authorization.trim()
-    );
+    const oauth = this.oauth;
+    if (typeof authorization !== "string" || oauth === null) return null;
+    const match = /^Bearer\s+(.+)$/iu.exec(authorization.trim());
     if (match === null) return null;
-    const [clientId, token] = splitBearerCredential(match[1]);
-    if (clientId.length === 0) return null;
-    const auth = await this.grantService.authenticate({ clientId, token });
-    return auth.ok ? auth : null;
+    try {
+      return await oauth.verifyAccessToken(match[1]);
+    } catch {
+      return null;
+    }
   }
 
   private authFromExtra(
@@ -708,36 +727,98 @@ export class LocalAgentMcpServer {
     }
   }
 
-  private async writeDiscoveryDescriptor(): Promise<void> {
-    if (this.discoveryFilePath === undefined || this.address === null) return;
-    const descriptor: LocalAgentMcpDiscoveryDescriptor = {
-      schemaVersion: 1,
-      mcpUrl: this.address.url,
-      pairUrl: this.address.pairUrl,
-      pid: process.pid,
-      startedAt: new Date().toISOString()
-    };
-    await mkdir(dirname(this.discoveryFilePath), { recursive: true });
-    const tempPath = `${this.discoveryFilePath}.${process.pid}.${Date.now()}.tmp`;
-    try {
-      await writeFile(tempPath, `${JSON.stringify(descriptor, null, 2)}\n`, {
-        encoding: "utf8",
-        mode: 0o600
-      });
-      await rename(tempPath, this.discoveryFilePath);
-    } catch (cause) {
-      await unlink(tempPath).catch(() => undefined);
-      throw cause;
-    }
-  }
 }
 
 class RequestBodyTooLargeError extends Error {}
 
-function splitBearerCredential(value: string): [clientId: string, token: string | null] {
-  const idx = value.indexOf(":");
-  if (idx <= 0) return ["", null];
-  return [value.slice(0, idx), value.slice(idx + 1)];
+type ConsentResult = Extract<LocalAgentAuthorizationResult, { kind: "consent" }>;
+
+function renderConsentPage(result: ConsentResult): string {
+  const hidden = [...result.requestUrl.searchParams.entries()]
+    .filter(([name]) => name !== "pwrsnap_decision" && name !== "capability")
+    .map(
+      ([name, value]) =>
+        `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`
+    )
+    .join("\n");
+  const requested = new Set(result.requestedCapabilities);
+  const permissions = LOCAL_AGENT_CAPABILITIES.map((capability) => {
+    const sensitive =
+      capability === "capture.original.read" ||
+      capability === "trash.write" ||
+      capability === "sizzle.full.read";
+    return `<label class="permission">
+      <input type="checkbox" name="capability" value="${capability}"${
+        requested.has(capability) ? " checked" : ""
+      }>
+      <span class="permission-copy">
+        <strong>${escapeHtml(LOCAL_AGENT_CAPABILITY_LABELS[capability])}</strong>
+        <small>${escapeHtml(capability)}${sensitive ? " · sensitive" : ""}</small>
+      </span>
+    </label>`;
+  }).join("\n");
+  const clientName = result.client.client_name?.trim() || "Local MCP client";
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Authorize ${escapeHtml(clientName)} · PwrSnap</title>
+  <style>
+    :root { color-scheme: dark; font-family: Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #000; color: #f5f5f5; }
+    main { width: min(680px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0; }
+    .brand { margin: 0 0 36px; font-size: 20px; font-weight: 750; }
+    .brand span { color: #ff8a1f; }
+    h1 { margin: 0 0 12px; font-size: 32px; line-height: 1.15; letter-spacing: 0; }
+    .intro { margin: 0 0 32px; color: #a8a8a8; font-size: 16px; line-height: 1.55; }
+    fieldset { margin: 0; padding: 0; border: 0; }
+    legend { margin-bottom: 12px; font-size: 13px; font-weight: 700; color: #c8c8c8; text-transform: uppercase; }
+    .permissions { border-top: 1px solid #282828; }
+    .permission { display: flex; gap: 14px; align-items: center; min-height: 68px; border-bottom: 1px solid #282828; cursor: pointer; }
+    .permission input { width: 18px; height: 18px; margin: 0; accent-color: #ff8a1f; }
+    .permission-copy { display: grid; gap: 4px; min-width: 0; }
+    .permission strong { font-size: 15px; font-weight: 650; }
+    .permission small { color: #858585; font: 12px/1.3 "Geist Mono", ui-monospace, monospace; }
+    .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 28px; }
+    button { min-height: 40px; padding: 0 18px; border: 1px solid #3a3a3a; border-radius: 6px; background: #111; color: #f5f5f5; font: inherit; font-weight: 650; cursor: pointer; }
+    button[value="allow"] { border-color: #ff8a1f; background: #ff8a1f; color: #111; }
+    button:hover { border-color: #777; }
+    button[value="allow"]:hover { background: #ffa24d; border-color: #ffa24d; }
+    .note { margin: 20px 0 0; color: #777; font-size: 12px; line-height: 1.5; }
+    @media (max-width: 520px) { main { padding: 28px 0; } h1 { font-size: 26px; } .actions { flex-direction: column-reverse; } button { width: 100%; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand">Pwr<span>Snap</span></div>
+    <h1>${escapeHtml(clientName)} wants to access PwrSnap</h1>
+    <p class="intro">Choose exactly what this local agent may search, read, create, or change. You can revoke this access later in PwrSnap Settings.</p>
+    <form method="get" action="/authorize">
+      ${hidden}
+      <fieldset>
+        <legend>Permissions</legend>
+        <div class="permissions">${permissions}</div>
+      </fieldset>
+      <div class="actions">
+        <button type="submit" name="pwrsnap_decision" value="deny">Deny</button>
+        <button type="submit" name="pwrsnap_decision" value="allow">Allow selected</button>
+      </div>
+    </form>
+    <p class="note">Only approve this request if you initiated it on this computer.</p>
+  </main>
+</body>
+</html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function isAllowedOrigin(origin: string | undefined): boolean {
@@ -769,13 +850,21 @@ function writeJsonResponse(
   response.end(JSON.stringify(body));
 }
 
-async function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  const body = await readRequestBody(request);
-  try {
-    return JSON.parse(body.toString("utf8")) as unknown;
-  } catch {
-    return null;
-  }
+function writeHtmlResponse(
+  response: ServerResponse,
+  statusCode: number,
+  body: string
+): void {
+  response.writeHead(statusCode, {
+    "cache-control": "no-store",
+    "content-type": "text/html; charset=utf-8",
+    "content-security-policy":
+      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY"
+  });
+  response.end(body);
 }
 
 async function toWebRequest(request: IncomingMessage, url: URL): Promise<Request> {
@@ -788,9 +877,11 @@ async function toWebRequest(request: IncomingMessage, url: URL): Promise<Request
     }
   }
   const method = request.method ?? "GET";
-  const body =
-    method === "GET" || method === "HEAD"
-      ? undefined
+  const parsedBody = (request as IncomingMessage & { body?: unknown }).body;
+  const body = method === "GET" || method === "HEAD"
+    ? undefined
+    : parsedBody !== undefined
+      ? Buffer.from(JSON.stringify(parsedBody), "utf8")
       : await readRequestBody(request);
   return new Request(url, {
     method,
@@ -817,19 +908,23 @@ async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-async function listen(server: HttpServer, port: number, host: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
+async function listenExpress(
+  app: ReturnType<typeof createMcpExpressApp>,
+  port: number,
+  host: string
+): Promise<HttpServer> {
+  return new Promise<HttpServer>((resolve, reject) => {
+    const server = app.listen(port, host);
     const handleError = (cause: Error): void => {
       server.off("listening", handleListening);
       reject(cause);
     };
     const handleListening = (): void => {
       server.off("error", handleError);
-      resolve();
+      resolve(server);
     };
     server.once("error", handleError);
     server.once("listening", handleListening);
-    server.listen(port, host);
   });
 }
 

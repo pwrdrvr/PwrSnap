@@ -1040,6 +1040,7 @@ function parseLocalAgentGrant(raw: unknown): LocalAgentClientGrant | null {
   const lastUsedAt = pickIsoishStringOrNull(raw.lastUsedAt);
   const revokedAt = pickIsoishStringOrNull(raw.revokedAt);
   if (lastUsedAt === undefined || revokedAt === undefined) return null;
+  const oauthClient = parseLocalAgentOAuthClient(raw.oauthClient);
   return {
     id,
     name,
@@ -1047,8 +1048,74 @@ function parseLocalAgentGrant(raw: unknown): LocalAgentClientGrant | null {
     createdAt,
     updatedAt,
     lastUsedAt,
-    revokedAt
+    revokedAt,
+    ...(oauthClient !== null && oauthClient.clientId === id ? { oauthClient } : {})
   };
+}
+
+function parseLocalAgentOAuthClient(
+  raw: unknown
+): NonNullable<LocalAgentClientGrant["oauthClient"]> | null {
+  if (!isRecord(raw)) return null;
+  const clientId = typeof raw.clientId === "string" ? raw.clientId.trim() : "";
+  const clientName = typeof raw.clientName === "string" ? raw.clientName.trim() : "";
+  const registeredAt = typeof raw.registeredAt === "string" ? raw.registeredAt : "";
+  if (
+    clientId.length === 0 ||
+    clientId.length > 128 ||
+    clientName.length === 0 ||
+    clientName.length > 200 ||
+    registeredAt.length === 0 ||
+    !Number.isFinite(Date.parse(registeredAt))
+  ) {
+    return null;
+  }
+  const redirectUris = parseBoundedStringArray(raw.redirectUris, 8, 2_048);
+  const grantTypes = parseBoundedStringArray(raw.grantTypes, 8, 128);
+  const responseTypes = parseBoundedStringArray(raw.responseTypes, 8, 128);
+  if (
+    redirectUris.length === 0 ||
+    redirectUris.some((uri) => !URL.canParse(uri)) ||
+    !grantTypes.includes("authorization_code") ||
+    !responseTypes.includes("code")
+  ) {
+    return null;
+  }
+  return {
+    clientId,
+    clientName,
+    redirectUris,
+    clientUri: parseNullableBoundedString(raw.clientUri, 2_048),
+    scope: parseNullableBoundedString(raw.scope, 2_048),
+    grantTypes,
+    responseTypes,
+    softwareId: parseNullableBoundedString(raw.softwareId, 256),
+    softwareVersion: parseNullableBoundedString(raw.softwareVersion, 128),
+    registeredAt
+  };
+}
+
+function parseBoundedStringArray(
+  raw: unknown,
+  maxItems: number,
+  maxLength: number
+): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (value): value is string =>
+        typeof value === "string" && value.length > 0 && value.length <= maxLength
+    )
+    .slice(0, maxItems);
+}
+
+function parseNullableBoundedString(
+  raw: unknown,
+  maxLength: number
+): string | null {
+  return typeof raw === "string" && raw.length > 0 && raw.length <= maxLength
+    ? raw
+    : null;
 }
 
 function parseLocalAgentCapabilities(raw: unknown): LocalAgentCapability[] {

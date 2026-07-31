@@ -20,7 +20,7 @@ delete captures only into PwrSnap Trash, and create or render Sizzle Reels.
 
 The implementation reuses the existing command bus, Library Chat tool catalog,
 Sizzle Chat tool catalog, bake/render pipeline, and soft-delete model. The new
-work is the external trust boundary: local pairing, capability enforcement,
+work is the external trust boundary: browser OAuth authorization, capability enforcement,
 MCP resources for media bytes, export/conversion verbs, and settings/audit UI.
 
 ---
@@ -102,10 +102,11 @@ runs through PwrSnap's configured Codex App Server connection.
 
 **Local Trust Boundary**
 
-- R19. Pairing a local agent requires a native PwrSnap approval ceremony, not
-  just access to localhost.
-- R20. Pairing creates a named, revocable client grant with a scoped capability
-  set stored through the settings/secret substrate.
+- R19. Authorizing a local agent requires a PwrSnap-hosted browser consent page,
+  not just access to localhost. The page shows every permission, marks sensitive
+  permissions, and lets the user add or remove permissions before granting.
+- R20. OAuth authorization creates a named, revocable client grant with a scoped
+  capability set stored through the settings/secret substrate.
 - R21. Every external request carries a client identity and capability context
   into command dispatch, media resource resolution, and audit logging.
 - R22. Sensitive capability use is auditable, especially original image reads,
@@ -129,9 +130,11 @@ runs through PwrSnap's configured Codex App Server connection.
   the default because it reflects user-visible edits; original requires a
   distinct `capture.original.read` capability because it can bypass redaction.
 
-- KTD4. Pairing is local approval plus per-client token, not localhost trust.
+- KTD4. Authorization is browser consent plus a per-client token, not localhost trust.
   A local browser, script, or compromised process can reach loopback. PwrSnap
-  must require a user-visible grant and must support revocation.
+  must require a user-visible grant and must support revocation. OAuth clients
+  are public clients and use authorization code + PKCE; no client secret is
+  generated or stored.
 
 - KTD5. Edits route through PwrSnap-owned Codex threads. The external agent is
   a requester, not the editor brain. This preserves PwrSnap model/provider
@@ -151,13 +154,14 @@ runs through PwrSnap's configured Codex App Server connection.
   the recovery path.
 
 - KTD9. Match PwrAgent's current general agent-tool transport: Streamable HTTP
-  MCP on an ephemeral loopback port, capability-gated by clients that advertise
-  HTTP MCP support, with a stateless transport created per request. Do not add a
-  generic stdio bridge; PwrAgent's remaining stdio command is a narrow legacy
-  automation-inspection path, not its current agent-tool architecture. Because
-  PwrSnap does not own every caller's ACP session and cannot inject credentials
-  directly, it additionally publishes a mode-`0600` discovery descriptor and
-  requires a native PwrSnap approval prompt before returning a per-client token.
+  MCP with a stateless transport created per request. Bind only to the stable
+  endpoint `http://127.0.0.1:51729/mcp`; if the port is occupied, disable local
+  agent access and show a clear error instead of silently selecting another
+  port. Do not add a generic stdio bridge; PwrAgent's remaining stdio command is
+  a narrow legacy automation-inspection path, not its current agent-tool
+  architecture. MCP authorization uses RFC 9728 protected-resource metadata,
+  OAuth authorization-server metadata, dynamic client registration, PKCE, and
+  resource indicators. There is no discovery file or custom pairing endpoint.
 
 ---
 
@@ -168,7 +172,7 @@ flowchart TB
   Agent[PwrAgent / Local Agent] --> MCP[PwrSnap MCP Server]
   Agent --> HTTP[Signed Local HTTP Media URL]
 
-  MCP --> Pairing[Pairing + Capability Gate]
+  MCP --> Pairing[OAuth + Capability Gate]
   HTTP --> Pairing
 
   Pairing --> Bus[Command Bus]
@@ -341,29 +345,31 @@ does not make the bytes readable after a grant is revoked.
 - **Verification:** Unit tests for grant parsing/storage and command-bus
   context compatibility.
 
-### U2. Native Pairing and Settings UI
+### U2. Browser OAuth Consent and Settings UI
 
-- **Goal:** Add a local pairing approval ceremony and revocation UI so the user
-  can grant named external agents scoped access.
+- **Goal:** Add a local browser OAuth consent ceremony and revocation UI so the
+  user can grant named external agents scoped access.
 - **Files:**
   - `packages/shared/src/protocol.ts`
   - `packages/shared/src/ipc.ts`
   - `apps/desktop/src/main/handlers/settings-handlers.ts`
-  - `apps/desktop/src/main/window.ts`
+  - `apps/desktop/src/main/local-agents/local-agent-oauth.ts` new
   - `apps/desktop/src/renderer/src/features/settings/pages/AIProvidersPage.tsx`
   - `apps/desktop/src/renderer/src/features/settings/SettingsApp.tsx`
   - `apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx` new
   - `apps/desktop/src/renderer/src/features/settings/__tests__/LocalAgentsPage.test.tsx` new
-- **Patterns:** Use a native deny-by-default approval dialog for pairing and
-  Settings pages through `SettingsContext` for grant review/revocation.
-  Window-to-renderer navigation uses typed event channels, never
-  `executeJavaScript`.
+- **Patterns:** Serve a deny-by-default consent page from the fixed loopback
+  origin. Use OAuth authorization code + PKCE, public dynamic clients, exact
+  resource indicators, and no client secrets. Use Settings pages through
+  `SettingsContext` for grant review/revocation.
 - **Test Scenarios:**
-  - Pairing request opens a native PwrSnap approval surface with client name,
-    requested capabilities, and risk labels.
-  - User approval returns a one-time pairing result to the waiting local client.
-  - User denial returns a structured auth error without creating a secret.
-  - Settings lists paired clients, last used time, capabilities, and revoke.
+  - `codex mcp login pwrsnap` opens a PwrSnap browser consent page with client
+    name, requested capabilities, editable checkboxes, and risk labels.
+  - User approval returns a short-lived authorization code to the registered
+    loopback callback; token exchange requires the original PKCE verifier.
+  - User denial returns an OAuth `access_denied` response without creating a
+    grant or secret.
+  - Settings lists authorized clients, last used time, capabilities, and revoke.
   - Original-read and full-render capabilities are visually distinct from
     lower-risk read/search capabilities.
 - **Verification:** Renderer unit tests for capability display and main tests
@@ -371,8 +377,9 @@ does not make the bytes readable after a grant is revoked.
 
 ### U3. MCP Server Transport
 
-- **Goal:** Run a local MCP server that exposes PwrSnap tools/resources to
-  paired clients and dispatches through the capability gate.
+- **Goal:** Run a fixed-port local MCP server that exposes PwrSnap
+  tools/resources to authorized clients and dispatches through the capability
+  gate.
 - **Files:**
   - `apps/desktop/package.json`
   - `apps/desktop/src/main/index.ts`
@@ -382,10 +389,15 @@ does not make the bytes readable after a grant is revoked.
   - `apps/desktop/src/main/local-agents/__tests__/mcp-server.test.ts` new
 - **Patterns:** Keep the MCP layer as transport glue over command-bus and
   resource registries. Mirror PwrAgent's stateless per-request Streamable HTTP
-  transport, exact loopback Host/Origin checks, bearer authentication, and
-  bounded request bodies. Do not bypass existing handlers for convenience.
+  transport, bind to `127.0.0.1:51729`, enforce the exact Host and loopback
+  Origin, use OAuth bearer authentication, and bound request bodies. Do not
+  bypass existing handlers for convenience.
 - **Test Scenarios:**
-  - Server binds only to a local transport and refuses unpaired calls.
+  - Server binds only to the fixed loopback endpoint and refuses unauthorized
+    calls.
+  - Protected-resource and authorization-server metadata support normal MCP
+    OAuth discovery and advertise only implemented grant/auth methods.
+  - Approved client metadata and access remain valid after PwrSnap restarts.
   - Tool schemas are generated from zod definitions and include MCP
     read-only/destructive annotations where applicable.
   - A paired client with `library.read` can search but cannot read media.
@@ -551,7 +563,7 @@ does not make the bytes readable after a grant is revoked.
 ### U10. Audit Log and Activity Surfaces
 
 - **Goal:** Record externally-triggered sensitive actions and expose them in
-  Settings so the user can understand what paired agents accessed.
+  Settings so the user can understand what authorized agents accessed.
 - **Files:**
   - `packages/shared/src/protocol.ts`
   - `apps/desktop/src/main/local-agents/local-agent-audit.ts` new
@@ -573,11 +585,11 @@ does not make the bytes readable after a grant is revoked.
 
 ## Acceptance Examples
 
-- AE1. A paired PwrAgent with `library.read` searches for "pairing code" and
+- AE1. An authorized PwrAgent with `library.read` searches for "pairing code" and
   receives matching capture ids and snippets, but attempts to read
   `pwrsnap://capture/{id}/composite` fail with a capability error.
 
-- AE2. A paired PwrAgent with `capture.composite.read` asks for "that capture
+- AE2. An authorized PwrAgent with `capture.composite.read` asks for "that capture
   as a JPG at good quality." PwrSnap returns a JPEG export resource generated
   from the composite, including arrows and redactions visible in the editor.
 
@@ -599,7 +611,7 @@ does not make the bytes readable after a grant is revoked.
 
 - AE7. An agent creates a Sizzle Reel from five captures and asks for a preview.
   PwrSnap creates a project-scoped chat, renders a low-resolution preview, and
-  refuses full-resolution render until the paired client has
+  refuses full-resolution render until the authorized client has
   `sizzle.full.read`.
 
 ---
@@ -608,9 +620,9 @@ does not make the bytes readable after a grant is revoked.
 
 ### In Scope
 
-- Local MCP tools and resources for paired clients.
+- Local MCP tools and resources for authorized clients.
 - Signed local HTTP media URLs as a compatibility layer.
-- Capability-scoped pairing, revocation, and audit.
+- Capability-scoped OAuth authorization, revocation, and audit.
 - Image exports for original/composite variants.
 - PwrSnap-owned image edit and Sizzle chat requests.
 - Soft-delete-only external deletion.
@@ -666,9 +678,9 @@ operation even though the bytes are local.
 - **Long-running renders:** Sizzle full renders can outlive a single MCP call.
   The resource model should represent pending/running/done states or return a
   job id if the MCP client cannot wait.
-- **User confusion over original vs composite:** The Settings UI and pairing
-  prompt must make the difference concrete without burying it in technical
-  wording.
+- **User confusion over original vs composite:** The Settings UI and OAuth
+  consent page must make the difference concrete without burying it in
+  technical wording.
 
 ---
 
@@ -679,8 +691,11 @@ operation even though the bytes are local.
   this focused plan as the active external-agent access plan.
 - Update trash-retention references in older plans after U9 lands so future
   agents do not reintroduce the 14-day value.
-- Add a Settings help blurb explaining paired local agents, capability scopes,
+- Add a Settings help blurb explaining authorized local agents, capability scopes,
   original-vs-composite access, and revocation.
+- Codex installation is stable and contains no generated pairing URL:
+  `codex mcp add pwrsnap --url http://127.0.0.1:51729/mcp`, followed once by
+  `codex mcp login pwrsnap` to open browser consent.
 - Add a short developer note near the MCP tool registry explaining that every
   external tool must declare capabilities and must not bypass the command bus.
 

@@ -104,8 +104,10 @@ import {
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import { loginShellPath } from "./login-shell-path";
-import { LocalAgentMcpServer } from "./local-agents/mcp-server";
-import { approveLocalAgentPairing } from "./local-agents/local-agent-pairing";
+import {
+  LOCAL_AGENT_MCP_PORT,
+  LocalAgentMcpServer
+} from "./local-agents/mcp-server";
 import {
   getRuntimeProcessRole,
   resolveProcessRole,
@@ -1890,17 +1892,34 @@ export function bootstrapApp(): void {
     }
     if (role !== "library") {
       if (!isE2E && process.env.PWRSNAP_DISABLE_LOCAL_AGENT_MCP !== "1") {
-        const userData = app.getPath("userData");
         const { service, secrets } = getDesktopSettingsServices();
         localAgentMcpServer = new LocalAgentMcpServer({
           settings: service,
           secrets,
           grantService: getLocalAgentGrantService(),
-          auditService: getLocalAgentAuditService(),
-          discoveryFilePath: join(userData, "local-agent-mcp.json"),
-          approvePairing: approveLocalAgentPairing
+          auditService: getLocalAgentAuditService()
         });
-        await localAgentMcpServer.start();
+        try {
+          await localAgentMcpServer.start();
+        } catch (cause) {
+          localAgentMcpServer = null;
+          const message = cause instanceof Error ? cause.message : String(cause);
+          log.error("local-agent MCP server failed to start", {
+            port: LOCAL_AGENT_MCP_PORT,
+            message
+          });
+          void dialog.showMessageBox({
+            type: "error",
+            title: "Local agent access unavailable",
+            message: `PwrSnap could not use local port ${LOCAL_AGENT_MCP_PORT}.`,
+            detail:
+              "Another process may already be using PwrSnap's MCP port. " +
+              "Local agent access is disabled until the conflict is resolved and PwrSnap restarts.",
+            buttons: ["OK"],
+            defaultId: 0,
+            noLink: true
+          });
+        }
       }
       scheduleAssetFilenameMaintenance();
       scheduleAcpAgentWarmup();

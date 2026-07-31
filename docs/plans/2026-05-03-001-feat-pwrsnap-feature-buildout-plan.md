@@ -1027,8 +1027,8 @@ Acceptance:
 **Goal:** `<base>/500w.png` sharing for humans **and** a JSON-RPC namespace for external agents (Codex App Server, MCP, PwrAgnt). The internal `pwrsnap-cache://` protocol from Phase 1 already handles in-app rendering; this phase exposes it externally.
 
 Tasks:
-- [ ] **Server.** `apps/desktop/src/main/http-server.ts` already exists from Phase 1 (custom protocol). Extend with HTTP routes bound to `127.0.0.1:51729` (random port written to settings on first boot, falls back to next free port).
-- [ ] **DNS-rebinding defense.** Reject any request whose `Host:` header is not exactly `127.0.0.1:51729` or `localhost:51729`. Reject any non-empty `Origin` not in the allowlist (empty Origin from local tools is fine).
+- [ ] **Server.** The active external-agent design is the focused [local-agent MCP access plan](2026-06-07-001-feat-local-agent-mcp-access-plan.md). Bind Streamable HTTP MCP to the fixed endpoint `http://127.0.0.1:51729/mcp`; never publish an ephemeral port or silently fall back. A port conflict disables local-agent access and surfaces an app error.
+- [ ] **DNS-rebinding defense.** Reject any request whose `Host:` header is not exactly `127.0.0.1:51729`. Reject any non-empty `Origin` outside the loopback allowlist (empty Origin from local tools is fine).
 - [ ] **HMAC-signed URLs** (replace simple bearer tokens — they leak into clipboard managers, browser history, server logs, HTTP referer). Each share URL is `/captures/<id>/<width>w.<format>?exp=<unix>&sig=<hmac>`. Master key rotated per app launch unless user explicitly opts into "Persistent links" in Settings. Validate before serving; reject expired or bad-sig.
 - [ ] **Width clamping.** `target_width ∈ [1, 8192]` — rejects DoS attempts via `99999999w.png`.
 - [ ] **Headers.** `Cache-Control: private, no-store`, `X-Content-Type-Options: nosniff`. Bind only to `127.0.0.1` (never `0.0.0.0`).
@@ -1036,7 +1036,7 @@ Tasks:
   - `GET /captures/<id>/<width>w.png|webp` — proxies to `pwrsnap-cache://` internally.
   - `GET /captures/<id>/raw.png` — source.
   - `POST /rpc/<command-name>` — dispatches to `command-bus`, JSON body. Examples: `capture.region`, `capture.window`, `library.list`, `overlays.upsert`, `clipboard.copy`. Same handler as ipcMain — single source of truth.
-- [ ] **Agent authentication.** Bearer-token-on-pair flow. `pwrsnap pair --client codex` creates a Keychain-stored token scoped to a capability set:
+- [ ] **Agent authentication.** MCP OAuth authorization-code flow with PKCE, public dynamic clients, protected-resource metadata, resource indicators, browser consent, and per-client revocable bearer credentials stored through the settings/secret substrate. The consent page exposes the capability set:
   - `read` — list/preview captures.
   - `capture` — region/window/full-screen capture.
   - `annotate` — upsert overlays.
@@ -1044,7 +1044,7 @@ Tasks:
   - `upload` — trigger destination uploads.
   Tokens are HMAC-signed by the master key and bound to a `client_id` for revocation. Token presented in `Authorization: Bearer <token>` header on every RPC call.
 - [ ] **Headless capture support** — the agent-native review caught that Phase 1's `capture:region` flow gates on a UI window. The split made in the IPC contract (`capture:interactive` vs `capture:region({rect, displayId})`) means external agents have a deterministic path. Verify both round-trip cleanly.
-- [ ] **MCP server (optional, same week).** Expose the same command-bus as an MCP server bound to a local Unix socket. PwrAgnt and Claude Desktop can attach. Same auth mechanism. The MCP server is a thin transport over `command-bus.dispatch`.
+- [ ] **MCP server.** Expose the command bus through stateless-per-request Streamable HTTP at the fixed loopback endpoint. PwrAgent and Codex attach directly; no generic stdio bridge or custom discovery descriptor is required. The MCP server remains a thin transport over `command-bus.dispatch`.
 - [ ] **Capability-map test (`pnpm test:parity`).** CI test that scans renderer `onClick`/`onSubmit` handlers for `command-bus.dispatch` calls, scans the `Commands` map for registered names, and **fails if a UI handler invokes anything not also reachable via the external RPC namespace.** Locks in the agent-native parity invariant.
 - [ ] **Clipboard "Copy URL" preset** — writes a markdown image link with the HMAC-signed URL.
 - [ ] **FUSE / mounted filesystem — explicitly deferred.** Not worth the kext / signing pain. Local HTTP gets 95% of the value with 5% of the cost.

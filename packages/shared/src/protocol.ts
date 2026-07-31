@@ -688,7 +688,7 @@ export function isSettingsPage(value: unknown): value is SettingsPage {
   );
 }
 
-/** Every external-agent capability PwrSnap can grant to a paired local
+/** Every external-agent capability PwrSnap can grant to an authorized local
  *  client. Capabilities are deliberately finer-grained than "local
  *  access" because original image bytes can bypass redactions visible
  *  in the composite. */
@@ -722,6 +722,22 @@ export function isLocalAgentCapability(value: unknown): value is LocalAgentCapab
   );
 }
 
+/** Public OAuth client metadata retained with an approved local-agent grant.
+ *  PwrSnap forces loopback MCP clients to PKCE-only public clients, so no
+ *  client secret is stored here. */
+export type LocalAgentOAuthClient = {
+  clientId: string;
+  clientName: string;
+  redirectUris: string[];
+  clientUri: string | null;
+  scope: string | null;
+  grantTypes: string[];
+  responseTypes: string[];
+  softwareId: string | null;
+  softwareVersion: string | null;
+  registeredAt: string;
+};
+
 export type LocalAgentClientGrant = {
   id: string;
   name: string;
@@ -730,6 +746,7 @@ export type LocalAgentClientGrant = {
   updatedAt: string;
   lastUsedAt: string | null;
   revokedAt: string | null;
+  oauthClient?: LocalAgentOAuthClient;
 };
 
 export type LocalAgentClientGrantPatch = {

@@ -26,6 +26,8 @@ const SENSITIVE_CAPABILITIES = new Set<LocalAgentCapability>([
   "trash.write"
 ]);
 
+const LOCAL_AGENT_MCP_URL = "http://127.0.0.1:51729/mcp";
+
 export function LocalAgentsPage(): ReactElement {
   const { settings } = useSettingsContext();
   const [grants, setGrants] = useState<LocalAgentClientGrant[]>([]);
@@ -82,7 +84,7 @@ export function LocalAgentsPage(): ReactElement {
           <div className="pss__main-eyebrow">General</div>
           <h1 className="pss__main-title">Local agents</h1>
           <p className="pss__main-sub">
-            Paired agents can search PwrSnap and request media through scoped
+            Authorized agents can search PwrSnap and request media through scoped
             local grants. Original images and full renders stay separate from
             edited previews.
           </p>
@@ -94,15 +96,24 @@ export function LocalAgentsPage(): ReactElement {
         </div>
       </div>
 
-      <Card eyebrow="ACCESS" title="Paired clients">
+      <Card eyebrow="CONNECT" title="MCP endpoint">
+        <Row
+          label="PwrSnap"
+          sub={LOCAL_AGENT_MCP_URL}
+        >
+          <span className="pss__badge">fixed port</span>
+        </Row>
+      </Card>
+
+      <Card eyebrow="ACCESS" title="Authorized clients">
         {loading ? (
           <Row label="Loading" sub="Reading local-agent grants.">
             <span className="pss__badge">loading</span>
           </Row>
         ) : grants.length === 0 ? (
           <Row
-            label="No paired agents"
-            sub="A native PwrSnap approval prompt opens when a local agent requests access."
+            label="No authorized agents"
+            sub="Your browser opens a PwrSnap permission page when an MCP client requests access."
           >
             <span className="pss__badge">none</span>
           </Row>
@@ -216,7 +227,7 @@ function LocalAgentGrantRow({
   ].filter((value): value is string => value !== null).join(" · ");
 
   return (
-    <Row label={grant.name} sub={sub} tag={revoked ? "revoked" : "paired"}>
+    <Row label={grant.name} sub={sub} tag={revoked ? "revoked" : "authorized"}>
       <div className="pss__agent-row">
         <div className="pss__agent-caps">
           {grant.capabilities.map((capability) => (

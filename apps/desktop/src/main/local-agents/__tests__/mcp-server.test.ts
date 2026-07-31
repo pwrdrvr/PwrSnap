@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,7 +31,11 @@ import { DesktopSecretStore } from "../../settings/desktop-secret-store";
 import { DesktopSettingsService } from "../../settings/desktop-settings-service";
 import { LocalAgentGrantService } from "../local-agent-grants";
 import { LocalAgentMcpResourceRegistry } from "../mcp-resource-registry";
-import { LocalAgentMcpServer } from "../mcp-server";
+import {
+  LOCAL_AGENT_MCP_PORT,
+  LocalAgentMcpServer,
+  type LocalAgentMcpServerAddress
+} from "../mcp-server";
 import { LocalAgentSignedUrlService } from "../signed-url";
 import type { LocalAgentMcpTool } from "../mcp-tool-registry";
 
@@ -153,8 +158,122 @@ async function connectAs(
   return targetClient;
 }
 
+async function connectWithAccessToken(
+  url: string,
+  accessToken: string,
+  targetClient: Client
+): Promise<Client> {
+  const transport = new StreamableHTTPClientTransport(new URL(url), {
+    fetch: (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("authorization", `Bearer ${accessToken}`);
+      return fetch(input, { ...init, headers });
+    }
+  });
+  await targetClient.connect(transport as unknown as Transport);
+  return targetClient;
+}
+
+type RegisteredOAuthClient = {
+  client_id: string;
+  client_name: string;
+  redirect_uris: string[];
+  token_endpoint_auth_method: "none";
+};
+
+const OAUTH_CALLBACK = "http://127.0.0.1:43123/callback";
+const PKCE_VERIFIER = "pwrsnap-test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789";
+
+function endpoint(address: LocalAgentMcpServerAddress, path: string): string {
+  return new URL(path, `http://${address.host}:${address.port}`).href;
+}
+
+async function registerOAuthClient(
+  address: LocalAgentMcpServerAddress,
+  clientName = "Codex"
+): Promise<RegisteredOAuthClient> {
+  const response = await fetch(endpoint(address, "/register"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      client_name: clientName,
+      redirect_uris: [OAUTH_CALLBACK],
+      grant_types: ["authorization_code"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none"
+    })
+  });
+  expect(response.status).toBe(201);
+  return await response.json() as RegisteredOAuthClient;
+}
+
+function makeAuthorizationUrl(
+  address: LocalAgentMcpServerAddress,
+  oauthClient: RegisteredOAuthClient,
+  scopes?: readonly string[]
+): URL {
+  const url = new URL(address.authorizationUrl);
+  url.searchParams.set("client_id", oauthClient.client_id);
+  url.searchParams.set("redirect_uri", OAUTH_CALLBACK);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("code_challenge", createHash("sha256")
+    .update(PKCE_VERIFIER)
+    .digest("base64url"));
+  url.searchParams.set("code_challenge_method", "S256");
+  url.searchParams.set("resource", address.url);
+  url.searchParams.set("state", "test-state");
+  if (scopes !== undefined) url.searchParams.set("scope", scopes.join(" "));
+  return url;
+}
+
+async function approveAndExchange(
+  address: LocalAgentMcpServerAddress,
+  oauthClient: RegisteredOAuthClient,
+  capabilities: readonly string[],
+  requestedScopes?: readonly string[]
+): Promise<string> {
+  const authorizationUrl = makeAuthorizationUrl(
+    address,
+    oauthClient,
+    requestedScopes
+  );
+  authorizationUrl.searchParams.set("pwrsnap_decision", "allow");
+  for (const capability of capabilities) {
+    authorizationUrl.searchParams.append("capability", capability);
+  }
+  const authorized = await fetch(authorizationUrl, { redirect: "manual" });
+  expect(authorized.status).toBe(302);
+  const callback = new URL(authorized.headers.get("location") ?? "");
+  expect(callback.origin + callback.pathname).toBe(OAUTH_CALLBACK);
+  expect(callback.searchParams.get("state")).toBe("test-state");
+  const code = callback.searchParams.get("code");
+  expect(code).not.toBeNull();
+
+  const tokenResponse = await fetch(endpoint(address, "/token"), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: oauthClient.client_id,
+      code: code ?? "",
+      code_verifier: PKCE_VERIFIER,
+      redirect_uri: OAUTH_CALLBACK,
+      resource: address.url
+    })
+  });
+  expect(tokenResponse.status).toBe(200);
+  const tokens = await tokenResponse.json() as {
+    access_token: string;
+    token_type: string;
+    scope: string;
+  };
+  expect(tokens.token_type.toLowerCase()).toBe("bearer");
+  expect(tokens.scope).toBe(capabilities.join(" "));
+  return tokens.access_token;
+}
+
 describe("LocalAgentMcpServer", () => {
-  test("refuses unpaired clients before MCP initialization", async () => {
+  test("refuses unauthorized clients before MCP initialization", async () => {
     const url = await startServer();
     const res = await fetch(url, {
       method: "POST",
@@ -174,6 +293,9 @@ describe("LocalAgentMcpServer", () => {
     });
 
     expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toContain(
+      "/.well-known/oauth-protected-resource/mcp"
+    );
   });
 
   test("lists tool schemas with read-only and destructive annotations", async () => {
@@ -192,7 +314,7 @@ describe("LocalAgentMcpServer", () => {
     expect(trash?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
   });
 
-  test("paired client with library.read can search but cannot delete without trash.write", async () => {
+  test("authorized client with library.read can search but cannot delete without trash.write", async () => {
     await grantService.createGrant({
       name: "PwrAgent",
       capabilities: ["library.read"]
@@ -260,63 +382,149 @@ describe("LocalAgentMcpServer", () => {
     expect(b.structuredContent).toMatchObject({ clientId: "lag_b", query: "from-b" });
   });
 
-  test("discovers and pairs through a native approval callback", async () => {
-    const discoveryFilePath = join(workDir, "local-agent-mcp.json");
-    const approvePairing = vi.fn(async () => true);
+  test("authorizes a dynamically registered client through editable browser consent", async () => {
     server = new LocalAgentMcpServer({
       settings,
       secrets,
       grantService,
       tools: toolSet(),
       host: "127.0.0.1",
-      port: 0,
-      discoveryFilePath,
-      approvePairing
+      port: 0
     });
     const address = await server.start();
-    const descriptorText = readFileSync(discoveryFilePath, "utf8");
-    const descriptor = JSON.parse(descriptorText) as Record<string, unknown>;
+    const oauthClient = await registerOAuthClient(address, "Codex Desktop");
+    expect(oauthClient.token_endpoint_auth_method).toBe("none");
+    expect(oauthClient).not.toHaveProperty("client_secret");
 
-    expect(descriptor).toMatchObject({
-      schemaVersion: 1,
-      mcpUrl: address.url,
-      pairUrl: address.pairUrl,
-      pid: process.pid
+    const defaultConsent = await fetch(makeAuthorizationUrl(address, oauthClient));
+    const defaultPage = await defaultConsent.text();
+    expect(defaultPage).toMatch(/value="library\.read" checked/u);
+    expect(defaultPage).toMatch(/value="capture\.composite\.read" checked/u);
+    expect(defaultPage).not.toMatch(/value="capture\.original\.read" checked/u);
+
+    const consent = await fetch(
+      makeAuthorizationUrl(address, oauthClient, ["library.read"])
+    );
+    expect(consent.status).toBe(200);
+    expect(consent.headers.get("content-security-policy")).toContain(
+      "frame-ancestors 'none'"
+    );
+    const page = await consent.text();
+    expect(page).toContain("Codex Desktop wants to access PwrSnap");
+    expect(page).toContain("Search library metadata");
+    expect(page).toContain("Move captures to Trash");
+
+    const accessToken = await approveAndExchange(
+      address,
+      oauthClient,
+      ["library.read", "trash.write"],
+      ["library.read"]
+    );
+    const grants = await grantService.list();
+    expect(grants).toHaveLength(1);
+    expect(grants[0]).toMatchObject({
+      id: oauthClient.client_id,
+      name: "Codex Desktop",
+      capabilities: ["library.read", "trash.write"],
+      revokedAt: null,
+      oauthClient: {
+        clientId: oauthClient.client_id,
+        redirectUris: [OAUTH_CALLBACK]
+      }
     });
-    expect(descriptorText).not.toContain("token");
-    if (process.platform !== "win32") {
-      expect(statSync(discoveryFilePath).mode & 0o777).toBe(0o600);
-    }
 
-    const paired = await fetch(address.pairUrl, {
+    client = await connectWithAccessToken(
+      address.url,
+      accessToken,
+      new Client({ name: "oauth-client", version: "1.0.0" })
+    );
+    const result = await client.callTool({
+      name: "pwrsnap_capture_delete_to_trash",
+      arguments: { captureId: "cap_1" }
+    }) as CallToolResult;
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ deleted: "cap_1" });
+
+    const revoked = await fetch(endpoint(address, "/revoke"), {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        name: "PwrAgent",
-        capabilities: ["library.read"]
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: oauthClient.client_id,
+        token: accessToken,
+        token_type_hint: "access_token"
       })
     });
-    expect(paired.status).toBe(201);
-    const credential = await paired.json() as {
-      clientId: string;
-      token: string;
-      mcpUrl: string;
-    };
-    expect(approvePairing).toHaveBeenCalledWith({
-      name: "PwrAgent",
-      capabilities: ["library.read"]
-    });
-    expect(credential).toMatchObject({
-      clientId: "lag_mcp",
-      token: "pws_local_mcp-token",
-      mcpUrl: address.url
-    });
+    expect(revoked.status).toBe(200);
+    expect((await grantService.list())[0]?.revokedAt).not.toBeNull();
+    await expect(client.listTools()).rejects.toThrow();
+  });
 
-    client = await connectAs(
-      credential.mcpUrl,
-      credential.clientId,
-      credential.token,
-      new Client({ name: "paired", version: "1.0.0" })
+  test("publishes standards-based OAuth metadata without refresh-token claims", async () => {
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0
+    });
+    const address = await server.start();
+    const protectedResource = await fetch(
+      endpoint(address, "/.well-known/oauth-protected-resource/mcp")
+    );
+    expect(await protectedResource.json()).toMatchObject({
+      resource: address.url,
+      authorization_servers: [`http://${address.host}:${address.port}/`],
+      resource_name: "PwrSnap"
+    });
+    const authorizationServer = await fetch(
+      endpoint(address, "/.well-known/oauth-authorization-server")
+    );
+    expect(await authorizationServer.json()).toMatchObject({
+      authorization_endpoint: address.authorizationUrl,
+      token_endpoint: endpoint(address, "/token"),
+      registration_endpoint: endpoint(address, "/register"),
+      grant_types_supported: ["authorization_code"],
+      token_endpoint_auth_methods_supported: ["none"]
+    });
+  });
+
+  test("restores approved OAuth clients and access tokens after server restart", async () => {
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0
+    });
+    const firstAddress = await server.start();
+    const oauthClient = await registerOAuthClient(firstAddress);
+    const accessToken = await approveAndExchange(
+      firstAddress,
+      oauthClient,
+      ["library.read"]
+    );
+    await server.stop();
+
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0
+    });
+    const secondAddress = await server.start();
+    const consent = await fetch(
+      makeAuthorizationUrl(secondAddress, oauthClient, ["library.read"])
+    );
+    expect(consent.status).toBe(200);
+
+    client = await connectWithAccessToken(
+      secondAddress.url,
+      accessToken,
+      new Client({ name: "restored-oauth-client", version: "1.0.0" })
     );
     await expect(client.listTools()).resolves.toMatchObject({
       tools: expect.arrayContaining([
@@ -325,44 +533,40 @@ describe("LocalAgentMcpServer", () => {
     });
   });
 
-  test("denies pairing without creating a grant and rejects hostile origins", async () => {
-    const approvePairing = vi.fn(async () => false);
+  test("denies consent without creating a grant and rejects hostile origins", async () => {
     server = new LocalAgentMcpServer({
       settings,
       secrets,
       grantService,
       tools: toolSet(),
       host: "127.0.0.1",
-      port: 0,
-      approvePairing
+      port: 0
     });
     const address = await server.start();
-    const body = JSON.stringify({
-      name: "Untrusted Agent",
-      capabilities: ["capture.original.read"]
-    });
 
-    const hostile = await fetch(address.pairUrl, {
+    const hostile = await fetch(endpoint(address, "/register"), {
       method: "POST",
       headers: {
         "content-type": "application/json",
         origin: "https://attacker.example"
       },
-      body
+      body: "{}"
     });
     expect(hostile.status).toBe(403);
-    expect(approvePairing).not.toHaveBeenCalled();
 
-    const denied = await fetch(address.pairUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body
-    });
-    expect(denied.status).toBe(403);
+    const oauthClient = await registerOAuthClient(address, "Untrusted Agent");
+    const authorizationUrl = makeAuthorizationUrl(address, oauthClient, [
+      "capture.original.read"
+    ]);
+    authorizationUrl.searchParams.set("pwrsnap_decision", "deny");
+    const denied = await fetch(authorizationUrl, { redirect: "manual" });
+    expect(denied.status).toBe(302);
+    const callback = new URL(denied.headers.get("location") ?? "");
+    expect(callback.searchParams.get("error")).toBe("access_denied");
     expect(await grantService.list()).toEqual([]);
   });
 
-  test("rejects requests outside the exact MCP and pairing paths", async () => {
+  test("rejects requests outside known routes and with an alternate Host", async () => {
     server = new LocalAgentMcpServer({
       settings,
       secrets,
@@ -374,6 +578,21 @@ describe("LocalAgentMcpServer", () => {
     const address = await server.start();
     const res = await fetch(`http://${address.host}:${address.port}/other`);
     expect(res.status).toBe(404);
+
+    const responseStatus = await new Promise<number | undefined>((resolve, reject) => {
+      const req = httpRequest({
+        hostname: address.host,
+        port: address.port,
+        path: "/.well-known/oauth-authorization-server",
+        headers: { host: `localhost:${address.port}` }
+      }, (response) => {
+        response.resume();
+        response.once("end", () => resolve(response.statusCode));
+      });
+      req.once("error", reject);
+      req.end();
+    });
+    expect(responseStatus).toBe(403);
   });
 
   test("streams signed media and revocation invalidates an existing URL", async () => {
@@ -497,22 +716,25 @@ describe("LocalAgentMcpServer", () => {
       grantService,
       tools: toolSet(),
       host: "127.0.0.1",
-      port: 0,
-      approvePairing: async () => true
+      port: 0
     });
     const address = await server.start();
 
-    const response = await fetch(address.pairUrl, {
+    const response = await fetch(endpoint(address, "/register"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        name: "oversize",
-        capabilities: ["library.read"],
+        client_name: "oversize",
+        redirect_uris: [OAUTH_CALLBACK],
         padding: "x".repeat(1024 * 1024)
       })
     });
 
     expect(response.status).toBe(413);
+  });
+
+  test("uses a stable default port", () => {
+    expect(LOCAL_AGENT_MCP_PORT).toBe(51_729);
   });
 
   test("shutdown closes the socket and rejects subsequent requests", async () => {

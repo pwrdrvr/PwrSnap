@@ -111,6 +111,60 @@ describe("LocalAgentGrantService", () => {
     expect(reread[0]?.lastUsedAt).toBe("2026-06-07T12:00:00.000Z");
   });
 
+  test("OAuth authorization persists public client metadata and reauthorization rotates access", async () => {
+    let tokenNumber = 0;
+    const service = new LocalAgentGrantService({
+      settings,
+      secrets,
+      now: () => new Date("2026-06-07T12:00:00.000Z"),
+      makeToken: () => `pws_local_oauth-token-${++tokenNumber}`
+    });
+    const oauthClient = {
+      clientId: "lag_oauth",
+      clientName: "Codex Desktop",
+      redirectUris: ["http://127.0.0.1:43123/callback"],
+      clientUri: null,
+      scope: null,
+      grantTypes: ["authorization_code"],
+      responseTypes: ["code"],
+      softwareId: null,
+      softwareVersion: "1.2.3",
+      registeredAt: "2026-06-07T12:00:00.000Z"
+    };
+
+    const first = await service.issueOAuthGrant({
+      name: "Codex Desktop",
+      capabilities: ["library.read"],
+      oauthClient
+    });
+    expect(first.grant).toMatchObject({
+      id: "lag_oauth",
+      capabilities: ["library.read"],
+      oauthClient
+    });
+
+    await service.revokeGrant("lag_oauth");
+    const second = await service.issueOAuthGrant({
+      name: "Codex Desktop",
+      capabilities: ["library.read", "capture.composite.read"],
+      oauthClient
+    });
+    expect(second.grant).toMatchObject({
+      id: "lag_oauth",
+      capabilities: ["library.read", "capture.composite.read"],
+      revokedAt: null
+    });
+    expect(await service.list()).toHaveLength(1);
+    await expect(service.authenticate({
+      clientId: "lag_oauth",
+      token: first.token
+    })).resolves.toEqual({ ok: false, code: "invalid_token" });
+    await expect(service.authenticate({
+      clientId: "lag_oauth",
+      token: second.token
+    })).resolves.toMatchObject({ ok: true });
+  });
+
   test("recordUsage throttles settings writes", async () => {
     let now = new Date("2026-06-07T12:00:00.000Z");
     const service = new LocalAgentGrantService({
@@ -242,6 +296,46 @@ describe("LocalAgentGrantService", () => {
         revokedAt: null
       }
     ]);
+  });
+
+  test("settings parser retains valid OAuth metadata and drops mismatched metadata", async () => {
+    const baseGrant = {
+      id: "lag_oauth",
+      name: "Codex",
+      capabilities: ["library.read" as const],
+      createdAt: "2026-06-07T12:00:00.000Z",
+      updatedAt: "2026-06-07T12:00:00.000Z",
+      lastUsedAt: null,
+      revokedAt: null
+    };
+    const oauthClient = {
+      clientId: "lag_oauth",
+      clientName: "Codex",
+      redirectUris: ["http://127.0.0.1:43123/callback"],
+      clientUri: null,
+      scope: "library.read",
+      grantTypes: ["authorization_code"],
+      responseTypes: ["code"],
+      softwareId: null,
+      softwareVersion: null,
+      registeredAt: "2026-06-07T12:00:00.000Z"
+    };
+    await settings.write({
+      localAgents: {
+        grants: [
+          { ...baseGrant, oauthClient },
+          {
+            ...baseGrant,
+            id: "lag_other",
+            oauthClient
+          }
+        ]
+      }
+    });
+
+    const grants = (await settings.read()).localAgents.grants;
+    expect(grants[0]?.oauthClient).toEqual(oauthClient);
+    expect(grants[1]).not.toHaveProperty("oauthClient");
   });
 
   test("command bus carries local-agent identity without affecting IPC callers", async () => {

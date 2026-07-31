@@ -3,6 +3,7 @@ import type {
   LocalAgentCapability,
   LocalAgentClientGrant,
   LocalAgentClientGrantPatch,
+  LocalAgentOAuthClient,
   Settings
 } from "@pwrsnap/shared";
 import { isLocalAgentCapability } from "@pwrsnap/shared";
@@ -15,7 +16,7 @@ const TOKEN_BYTES = 32;
 const TOKEN_SECRET_PREFIX = "localAgentToken:";
 const DEFAULT_USAGE_WRITE_INTERVAL_MS = 60_000;
 
-export type LocalAgentPairingResult = {
+export type LocalAgentCredentialIssueResult = {
   grant: LocalAgentClientGrant;
   token: string;
 };
@@ -67,7 +68,7 @@ export class LocalAgentGrantService {
   async createGrant(args: {
     name: string;
     capabilities: readonly LocalAgentCapability[];
-  }): Promise<LocalAgentPairingResult> {
+  }): Promise<LocalAgentCredentialIssueResult> {
     const name = normalizeName(args.name);
     const capabilities = normalizeCapabilities(args.capabilities);
     if (name.length === 0) {
@@ -104,6 +105,84 @@ export class LocalAgentGrantService {
         });
       } catch (cause) {
         await this.secrets.clear(secretNameForClient(id)).catch(() => undefined);
+        throw cause;
+      }
+      await this.notifySettingsChanged(nextSettings);
+      return { grant, token };
+    });
+  }
+
+  /** Issue or rotate the bearer credential for one registered OAuth client.
+   *  Reauthorization edits the existing grant instead of accumulating duplicate
+   *  Codex entries in Settings. */
+  async issueOAuthGrant(args: {
+    name: string;
+    capabilities: readonly LocalAgentCapability[];
+    oauthClient: LocalAgentOAuthClient;
+  }): Promise<LocalAgentCredentialIssueResult> {
+    const name = normalizeName(args.name);
+    const capabilities = normalizeCapabilities(args.capabilities);
+    if (name.length === 0) {
+      throw new LocalAgentGrantError("invalid_name", "local agent name is required");
+    }
+    if (capabilities.length === 0) {
+      throw new LocalAgentGrantError(
+        "invalid_capabilities",
+        "at least one capability is required"
+      );
+    }
+    const token = this.makeToken();
+    return this.serializeMutation(async () => {
+      const settings = await this.settings.read();
+      const existing = settings.localAgents.grants.find(
+        (grant) => grant.oauthClient?.clientId === args.oauthClient.clientId
+      );
+      const now = this.now().toISOString();
+      const grant: LocalAgentClientGrant = existing === undefined
+        ? {
+            id: args.oauthClient.clientId,
+            name,
+            capabilities,
+            createdAt: now,
+            updatedAt: now,
+            lastUsedAt: null,
+            revokedAt: null,
+            oauthClient: args.oauthClient
+          }
+        : {
+            ...existing,
+            name,
+            capabilities,
+            updatedAt: now,
+            revokedAt: null,
+            oauthClient: args.oauthClient
+          };
+      if (
+        existing === undefined &&
+        settings.localAgents.grants.some((item) => item.id === grant.id)
+      ) {
+        throw new LocalAgentGrantError(
+          "duplicate_id",
+          `local agent grant already exists: ${grant.id}`
+        );
+      }
+      const secretName = secretNameForClient(grant.id);
+      const previousHash = await this.secrets.getValue(secretName);
+      await this.secrets.replace(secretName, hashToken(token));
+      let nextSettings: Settings;
+      try {
+        const grants = existing === undefined
+          ? [...settings.localAgents.grants, grant]
+          : settings.localAgents.grants.map((item) =>
+              item.id === existing.id ? grant : item
+            );
+        nextSettings = await this.settings.write({ localAgents: { grants } });
+      } catch (cause) {
+        if (previousHash === null) {
+          await this.secrets.clear(secretName).catch(() => undefined);
+        } else {
+          await this.secrets.replace(secretName, previousHash).catch(() => undefined);
+        }
         throw cause;
       }
       await this.notifySettingsChanged(nextSettings);

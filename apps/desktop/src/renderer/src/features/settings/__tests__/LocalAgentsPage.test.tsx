@@ -109,8 +109,9 @@ describe("LocalAgentsPage", () => {
     installFakeApi();
   });
 
-  test("renders paired clients and sensitive capability labels", async () => {
+  test("renders the stable endpoint, authorized clients, and sensitive labels", async () => {
     const el = await renderPage();
+    expect(el.textContent).toContain("http://127.0.0.1:51729/mcp");
     expect(el.textContent).toContain("PwrAgent");
     expect(el.textContent).toContain("Original images");
     expect(el.textContent).toContain("sensitive");

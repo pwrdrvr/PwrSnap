@@ -14,9 +14,16 @@ type MockCodexThreadClient = {
 const mockCodexThreadClients = vi.hoisted(() => [] as MockCodexThreadClient[]);
 const mockConnectionRequest = vi.hoisted(() => vi.fn(async () => ({})));
 const mockAssertCodexCliVersion = vi.hoisted(() => vi.fn(async () => "0.144.0"));
+const mockResolveCodexCommand = vi.hoisted(() =>
+  vi.fn(async ({ command }: { command: string }) => ({
+    command,
+    source: "path" as const
+  }))
+);
 
 vi.mock("../../settings/codex-discovery", () => ({
-  assertCodexCliVersion: mockAssertCodexCliVersion
+  assertCodexCliVersion: mockAssertCodexCliVersion,
+  resolveCodexCommand: mockResolveCodexCommand
 }));
 
 vi.mock("@pwrdrvr/agent-client", () => {
@@ -92,6 +99,29 @@ describe("Codex agent pool", () => {
       expect.objectContaining({ threadId: "thread-1" })
     );
     expect(mockCodexThreadClients[0]?.startThread).toHaveBeenCalledTimes(1);
+  });
+
+  test("probes the command resolved by discovery in auto mode", async () => {
+    mockResolveCodexCommand.mockResolvedValueOnce({
+      command: "/Applications/ChatGPT.app/Contents/Resources/codex",
+      source: "application"
+    });
+    const view = acquireCodexAgentBackendView({
+      command: "codex",
+      env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-discovery-test" },
+      loggerScope: "pwrsnap:test-codex-pool"
+    });
+
+    await view.startThread();
+
+    expect(mockResolveCodexCommand).toHaveBeenCalledWith({
+      command: "codex",
+      env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-discovery-test" }
+    });
+    expect(mockAssertCodexCliVersion).toHaveBeenCalledWith(
+      "/Applications/ChatGPT.app/Contents/Resources/codex",
+      { CODEX_HOME: "/tmp/pwrsnap-codex-pool-discovery-test" }
+    );
   });
 
   test("preserves each model's advertised reasoning efforts and default", async () => {

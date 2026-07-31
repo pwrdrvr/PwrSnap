@@ -32,7 +32,10 @@ import {
   toAgentKitLogger
 } from "./agent-kit-bindings";
 import { getMainLogger } from "../log";
-import { assertCodexCliVersion } from "../settings/codex-discovery";
+import {
+  assertCodexCliVersion,
+  resolveCodexCommand
+} from "../settings/codex-discovery";
 
 const log = getMainLogger("pwrsnap:codex-pool");
 const MODEL_LIST_TIMEOUT_MS = 20_000;
@@ -214,9 +217,14 @@ class CodexAgentOwner {
   async compatibleClient(): Promise<CodexThreadClient> {
     const check =
       this.compatibilityCheck ??
-      assertCodexCliVersion(this.options.command, this.options.env ?? process.env).then(
-        () => undefined
-      );
+      (async () => {
+        const env = this.options.env ?? process.env;
+        const resolved = await resolveCodexCommand({
+          command: this.options.command,
+          env
+        });
+        await assertCodexCliVersion(resolved.command, env);
+      })();
     this.compatibilityCheck = check;
     try {
       await check;

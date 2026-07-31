@@ -172,7 +172,7 @@ MIT
 - minimist@1.2.8 | https://github.com/minimistjs/minimist
 - mkdirp-classic@0.5.3 | https://github.com/mafintosh/mkdirp-classic
 - ms@2.1.3 | vercel/ms
-- nanoid@5.1.11 | ai/nanoid
+- nanoid@5.1.16 | ai/nanoid
 - napi-build-utils@2.0.0 | https://github.com/inspiredware/napi-build-utils
 - negotiator@1.0.0 | jshttp/negotiator
 - node-abi@3.92.0 | https://github.com/electron/node-abi
@@ -3655,13 +3655,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-nanoid@5.1.11 (MIT)
+nanoid@5.1.16 (MIT)
 -------------------
 
 Applies to:
-- nanoid@5.1.11 (MIT)
+- nanoid@5.1.16 (MIT)
 
-Representative file: nanoid@5.1.11/LICENSE
+Representative file: nanoid@5.1.16/LICENSE
 
 The MIT License (MIT)
 

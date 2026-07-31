@@ -31,9 +31,14 @@ still enabled and repeated on every turn:
 PwrSnap's own MCP/dynamic tools were never attached to enrichment. The fix is
 therefore two-layered:
 
-1. Pool the App Server **process/connection only**. Start a fresh
-   `ephemeral: true` thread for every enrichment and unsubscribe after the
-   turn. Never use `thread/rollback` to simulate a one-shot thread.
+1. Start a fresh `ephemeral: true` thread for every enrichment on a dedicated
+   one-shot App Server process, then close that process immediately after the
+   turn. Codex keeps an unsubscribed ephemeral thread loaded for a 30-minute
+   inactivity grace period and rejects `thread/delete` for non-persisted
+   threads, so process recycling is the only prompt-private, immediate unload
+   lifecycle. One-shot runs remain serialized per (command, `CODEX_HOME`) so a
+   capture burst cannot fan out App Server processes. Never use
+   `thread/rollback` to simulate a one-shot thread.
 2. Add a Codex 0.144+ config marker that restores explicit feature suppression
    (`features.plugins = false`, etc.) and sets `project_doc_max_bytes = 0` so
    project AGENTS instructions cannot enter a metadata job. Before each
@@ -43,14 +48,14 @@ therefore two-layered:
 
 Codex 0.146 has no thread-level switch for the selected profile's global
 `$CODEX_HOME/AGENTS.md`; it is loaded by the process-owned instruction provider.
-Keeping the shared App Server process therefore leaves one bounded global
-instruction block in each fresh enrichment thread. The zero-cost
+The dedicated one-shot process therefore loads that bounded global instruction
+block once for its fresh enrichment thread. The zero-cost
 `codex debug prompt-input` renderer confirmed that the modern overlay removes
 plugin and skill instruction blocks while retaining that one global block. The
 fresh-thread lifecycle prevents it from accumulating across captures.
 
-Regression tests require distinct thread ids across consecutive one-shot runs,
-`ephemeral: true`, cleanup via `thread/unsubscribe`, no `thread/rollback`, no
+Regression tests require distinct thread ids and closed App Server clients
+across consecutive one-shot runs, `ephemeral: true`, no `thread/rollback`, no
 dynamic tools, and the modern config's plugin/AGENTS suppression fields.
 
 ## Symptom
@@ -162,5 +167,6 @@ The original June incident was not an agent-kit forwarding bug:
 `AgentStartThreadOptions.config` did the same for chat. The July incident
 exposed a separate lifecycle problem: using a persistent worker plus rollback
 for logically one-shot work allowed Codex's ambient injected items to survive.
-PwrSnap now owns the safer lifecycle explicitly while continuing to share the
-underlying App Server process.
+PwrSnap now owns the safer lifecycle explicitly and recycles the dedicated
+one-shot App Server process after every enrichment; interactive chat surfaces
+continue to share their separate long-lived owner.

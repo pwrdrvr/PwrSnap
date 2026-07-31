@@ -1,10 +1,13 @@
-// App-wide Codex App Server owner.
+// Codex App Server lifecycle owners.
 //
 // agent-kit exposes a pooled ACP client, but the published Codex client owns a
 // stdio App Server process per `CodexThreadClient`/`CodexOneShotClient`
-// instance. PwrSnap needs one Codex process per (command, CODEX_HOME), with
-// per-surface backend views so each chat controller can keep its own tool and
-// approval handlers without clobbering siblings.
+// instance. Interactive chat + model-list surfaces share one long-lived process
+// per (command, CODEX_HOME), with per-surface backend views so handlers do not
+// clobber siblings. One-shot enrichment is deliberately different: Codex keeps
+// unsubscribed ephemeral threads loaded for 30 minutes and exposes no immediate
+// close/delete method for them, so every enrichment gets a short-lived isolated
+// process that is closed as soon as its turn finishes.
 
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -188,7 +191,6 @@ class CodexAgentOwner {
   private readonly rawNotificationListeners = new Set<
     (method: string, params: unknown) => void
   >();
-  private oneShotQueue: Promise<void> = Promise.resolve();
   private rawNotificationTapInstalled = false;
 
   constructor(readonly key: string, private readonly options: CodexBackendViewOptions) {
@@ -297,14 +299,7 @@ class CodexAgentOwner {
   }
 
   async runOneShot(options: CodexOneShotPoolRunOptions): Promise<CodexOneShotPoolRunResult> {
-    const run = this.oneShotQueue
-      .catch(() => undefined)
-      .then(() => this.runOneShotInner(options));
-    this.oneShotQueue = run.then(
-      () => undefined,
-      () => undefined
-    );
-    return await run;
+    return await this.runOneShotInner(options);
   }
 
   async close(): Promise<void> {
@@ -525,9 +520,10 @@ class CodexAgentOwner {
         ...(options.modelProvider !== null && options.modelProvider !== undefined
           ? { modelProvider: options.modelProvider }
           : {}),
-        // Pool the App Server process, not the conversation. A fresh in-memory
-        // thread prevents ambient developer / AGENTS / plugin messages from
-        // accumulating across captures. Do not replace this with
+        // A fresh in-memory thread prevents ambient developer / AGENTS / plugin
+        // messages from accumulating across captures. The dedicated one-shot
+        // App Server process is closed after this run because unsubscribe alone
+        // retains ephemeral threads for 30 minutes. Do not replace this with
         // thread/rollback: that method is deprecated and does not remove every
         // per-turn injected context item.
         ephemeral: true,
@@ -637,6 +633,8 @@ class CodexAgentOwner {
 }
 
 const owners = new Map<string, CodexAgentOwner>();
+const oneShotQueues = new Map<string, Promise<void>>();
+const activeOneShotOwners = new Set<CodexAgentOwner>();
 const ONE_SHOT_HANDLERS: CodexViewHandlers = {
   events: new Set(),
   toolCall: null,
@@ -675,16 +673,37 @@ export async function listCodexModelsFromPool(options: CodexModelListOptions): P
 export async function runCodexOneShotFromPool(
   options: CodexOneShotPoolRunOptions
 ): Promise<CodexOneShotPoolRunResult> {
-  return await getCodexOwner({
-    command: options.command,
-    ...(options.env !== undefined ? { env: options.env } : {}),
-    loggerScope: "pwrsnap:codex-pool"
-  }).runOneShot(options);
+  const key = codexOwnerKey(options.command, options.env);
+  const prior = oneShotQueues.get(key) ?? Promise.resolve();
+  const run = prior.catch(() => undefined).then(async () => {
+    const owner = new CodexAgentOwner(`one-shot:${key}`, {
+      command: options.command,
+      ...(options.env !== undefined ? { env: options.env } : {}),
+      loggerScope: "pwrsnap:codex-pool"
+    });
+    activeOneShotOwners.add(owner);
+    try {
+      return await owner.runOneShot(options);
+    } finally {
+      await owner.close();
+      activeOneShotOwners.delete(owner);
+    }
+  });
+  const tail = run.then(
+    () => undefined,
+    () => undefined
+  );
+  oneShotQueues.set(key, tail);
+  void tail.then(() => {
+    if (oneShotQueues.get(key) === tail) oneShotQueues.delete(key);
+  });
+  return await run;
 }
 
 export async function closeCodexAgentPool(): Promise<void> {
-  const closing = [...owners.values()];
+  const closing = [...owners.values(), ...activeOneShotOwners];
   owners.clear();
+  activeOneShotOwners.clear();
   await Promise.all(closing.map((owner) => owner.close().catch(() => undefined)));
 }
 

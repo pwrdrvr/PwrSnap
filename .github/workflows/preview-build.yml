@@ -177,7 +177,7 @@ jobs:
           $entryPaths = @(
             $entryLines |
               Where-Object { $_ -like "Path = *" } |
-              ForEach-Object { $_.Substring(7) }
+              ForEach-Object { $_.Substring(7) -replace '\\', '/' }
           )
           $forbiddenPattern = '(^| )(BCJ2|ARM64|ARMT|ARM|IA64|PPC|SPARC|DELTA)(:| |$)'
           $forbiddenMethods = @($entryMethods | Where-Object { $_ -match $forbiddenPattern })

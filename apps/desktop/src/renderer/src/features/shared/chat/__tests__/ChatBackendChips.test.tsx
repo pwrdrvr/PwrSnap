@@ -118,4 +118,36 @@ describe("NewChatConfigChips", () => {
       Array.from(modelSelect.options).some((option) => option.value === "gpt-5.3-codex-spark")
     ).toBe(false);
   });
+
+  test("Codex reasoning picker follows the selected model's advertised efforts", async () => {
+    const el = await mountWithModels([
+      {
+        id: "gpt-5.6-terra",
+        model: "gpt-5.6-terra",
+        displayName: "GPT-5.6-Terra",
+        description: "",
+        hidden: false,
+        supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+        defaultReasoningEffort: "medium",
+        inputModalities: ["text", "image"],
+        defaultServiceTier: null,
+        isDefault: true
+      }
+    ]);
+
+    const reasoningSelect = el.querySelector<HTMLSelectElement>(
+      'select[aria-label="New chat reasoning"]'
+    );
+    expect(reasoningSelect).not.toBeNull();
+    if (reasoningSelect === null) return;
+
+    expect(Array.from(reasoningSelect.options).map((option) => option.value)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ]);
+  });
 });

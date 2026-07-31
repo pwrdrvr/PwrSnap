@@ -10,7 +10,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CodexThreadClient } from "@pwrdrvr/agent-client";
-import type { CodexModelOption } from "@pwrsnap/shared";
+import { isAiReasoningEffort, type CodexModelOption } from "@pwrsnap/shared";
 import type {
   AgentBackend,
   AgentBackendApprovalHandler,
@@ -32,6 +32,7 @@ import {
   toAgentKitLogger
 } from "./agent-kit-bindings";
 import { getMainLogger } from "../log";
+import { assertCodexCliVersion } from "../settings/codex-discovery";
 
 const log = getMainLogger("pwrsnap:codex-pool");
 const MODEL_LIST_TIMEOUT_MS = 20_000;
@@ -114,35 +115,41 @@ class CodexBackendView implements AgentBackend {
   constructor(private readonly owner: CodexAgentOwner) {}
 
   async startThread(options?: AgentStartThreadOptions): Promise<AgentBackendStartThreadResult> {
-    const started = await this.owner.client.startThread(options);
+    const client = await this.owner.compatibleClient();
+    const started = await client.startThread(options);
     this.owner.claimThread(started.threadId, this.handlers);
     return started;
   }
 
   async startTurn(options: AgentStartTurnOptions): Promise<{ turnId: string }> {
+    const client = await this.owner.compatibleClient();
     this.owner.claimThread(options.threadId, this.handlers);
     this.owner.markActiveTurn(options.threadId, this.handlers);
-    return await this.owner.client.startTurn(options);
+    return await client.startTurn(options);
   }
 
   async interruptTurn(threadId: string): Promise<void> {
-    await this.owner.client.interruptTurn(threadId);
+    const client = await this.owner.compatibleClient();
+    await client.interruptTurn(threadId);
   }
 
   async forkThread(options: AgentForkThreadOptions): Promise<AgentBackendStartThreadResult> {
-    const forked = await this.owner.client.forkThread(options);
+    const client = await this.owner.compatibleClient();
+    const forked = await client.forkThread(options);
     this.owner.claimThread(forked.threadId, this.handlers);
     return forked;
   }
 
   async archiveThread(threadId: string): Promise<void> {
-    await this.owner.client.archiveThread(threadId);
+    const client = await this.owner.compatibleClient();
+    await client.archiveThread(threadId);
     this.owner.releaseThread(threadId, this.handlers);
   }
 
   async clearThreadGitInfo(threadId: string): Promise<void> {
+    const client = await this.owner.compatibleClient();
     this.owner.claimThread(threadId, this.handlers);
-    await this.owner.client.clearThreadGitInfo(threadId);
+    await client.clearThreadGitInfo(threadId);
   }
 
   onEvent(cb: (event: NormalizedThreadEvent) => void): Unsubscribe {
@@ -174,6 +181,7 @@ class CodexBackendView implements AgentBackend {
 
 class CodexAgentOwner {
   readonly client: CodexThreadClient;
+  private compatibilityCheck: Promise<void> | null = null;
   private readonly threadHandlers = new Map<string, CodexViewHandlers>();
   private readonly activeTurns = new Map<string, CodexViewHandlers>();
   private readonly workerThreads = new Map<string, CodexWorkerThread>();
@@ -183,7 +191,7 @@ class CodexAgentOwner {
   private oneShotQueue: Promise<void> = Promise.resolve();
   private rawNotificationTapInstalled = false;
 
-  constructor(readonly key: string, options: CodexBackendViewOptions) {
+  constructor(readonly key: string, private readonly options: CodexBackendViewOptions) {
     this.client = new CodexThreadClient({
       command: options.command,
       ...(options.env !== undefined ? { env: options.env } : {}),
@@ -201,6 +209,24 @@ class CodexAgentOwner {
 
   view(): AgentBackend {
     return new CodexBackendView(this);
+  }
+
+  async compatibleClient(): Promise<CodexThreadClient> {
+    const check =
+      this.compatibilityCheck ??
+      assertCodexCliVersion(this.options.command, this.options.env ?? process.env).then(
+        () => undefined
+      );
+    this.compatibilityCheck = check;
+    try {
+      await check;
+      return this.client;
+    } catch (error) {
+      // Let a user upgrade/fix the configured CLI and retry without restarting
+      // PwrSnap. Concurrent callers still share the same in-flight probe.
+      if (this.compatibilityCheck === check) this.compatibilityCheck = null;
+      throw error;
+    }
   }
 
   claimThread(threadId: string, handlers: CodexViewHandlers): void {
@@ -437,7 +463,8 @@ class CodexAgentOwner {
     connection: JsonRpcLikeConnection;
     initialized: { userAgent?: unknown };
   }> {
-    const rawClient = this.client as unknown as CodexThreadClientInternals;
+    const client = await this.compatibleClient();
+    const rawClient = client as unknown as CodexThreadClientInternals;
     const connection = await rawClient.getConnection();
     this.installRawNotificationTap(connection, rawClient);
     const initialized = (await rawClient.initialize()) as { userAgent?: unknown };
@@ -749,17 +776,38 @@ function toCodexModelOption(raw: unknown): CodexModelOption {
     displayName?: unknown;
     description?: unknown;
     hidden?: unknown;
+    supportedReasoningEfforts?: unknown;
+    defaultReasoningEffort?: unknown;
     inputModalities?: unknown;
     defaultServiceTier?: unknown;
     isDefault?: unknown;
   };
   const id = typeof model.id === "string" ? model.id : "";
+  const supportedReasoningEfforts = Array.isArray(model.supportedReasoningEfforts)
+    ? [
+        ...new Set(
+          model.supportedReasoningEfforts
+            .map((item) =>
+              typeof item === "string"
+                ? item
+                : typeof item === "object" && item !== null
+                  ? (item as { reasoningEffort?: unknown }).reasoningEffort
+                  : undefined
+            )
+            .filter(isAiReasoningEffort)
+        )
+      ]
+    : [];
   return {
     id,
     model: typeof model.model === "string" ? model.model : id,
     displayName: typeof model.displayName === "string" ? model.displayName : id,
     description: typeof model.description === "string" ? model.description : "",
     hidden: model.hidden === true,
+    supportedReasoningEfforts,
+    defaultReasoningEffort: isAiReasoningEffort(model.defaultReasoningEffort)
+      ? model.defaultReasoningEffort
+      : null,
     inputModalities: Array.isArray(model.inputModalities)
       ? model.inputModalities.filter(
           (item): item is "text" | "image" => item === "text" || item === "image"

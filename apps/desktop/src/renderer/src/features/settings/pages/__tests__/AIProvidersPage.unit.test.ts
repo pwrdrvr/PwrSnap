@@ -349,6 +349,36 @@ describe("AiSurfaceDefaultControl — job routing", () => {
     expect(onChange).toHaveBeenCalledWith({ reasoning: "" });
   });
 
+  test("preserves extended reasoning when the live Codex model catalog is unavailable", async () => {
+    const onChange = vi.fn();
+    const el = await renderSurfaceControl({
+      surface: "libraryChat",
+      name: "Library chat",
+      sub: "",
+      value: {
+        provider: "",
+        model: "gpt-5.6-terra",
+        reasoning: "ultra"
+      },
+      // An initial codex:models failure leaves the list empty and marks loading
+      // complete. The low/medium/high fallback is not evidence that Terra
+      // stopped supporting ultra.
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [],
+      acpModelOptions: undefined,
+      acpModelsLoading: false,
+      onChange
+    });
+
+    const reasoning = el.querySelector<HTMLSelectElement>(
+      '[aria-label="Library chat reasoning effort"]'
+    );
+    expect(reasoning!.value).toBe("ultra");
+    expect(Array.from(reasoning!.options).map((option) => option.value)).toContain("ultra");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   test("normalizes a stale cross-provider model to Default once the ACP list loads", async () => {
     // The live Grok bug: provider switched to an ACP agent but a Codex model id
     // ("gpt-5.4-mini") lingered → it was sent to the agent every run. Once the

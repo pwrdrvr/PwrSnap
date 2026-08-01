@@ -25,7 +25,9 @@ const dispatch = (name: string, req: unknown = {}) =>
 
 afterEach(() => {
   bus.uninstallRemoteForwarderForTests();
+  bus.uninstallLocalAgentAuthorizerForTests();
   bus.unregister("capture:region" as never);
+  bus.unregister("sizzle:render");
 });
 
 describe("command-bus remote forwarder", () => {
@@ -45,6 +47,10 @@ describe("command-bus remote forwarder", () => {
   test("preserves authenticated command context when forwarding", async () => {
     const forward = vi.fn(async () => ok(null));
     bus.installRemoteForwarder({ canForward: () => true, forward });
+    bus.installLocalAgentAuthorizer(async (clientId) => ({
+      clientId,
+      capabilities: ["library.read"]
+    }));
     const options = {
       principal: "mcp" as const,
       cancellationKey: "capture-123",
@@ -58,7 +64,156 @@ describe("command-bus remote forwarder", () => {
 
     await bus.dispatch("library:list", {} as never, options);
 
-    expect(forward).toHaveBeenCalledWith("library:list", {}, options);
+    expect(forward).toHaveBeenCalledWith("library:list", {}, {
+      ...options,
+      localAgent: { clientId: "agent-1", capabilities: ["library.read"] }
+    });
+  });
+
+  test("rejects MCP commands without a live authenticated grant", async () => {
+    const forward = vi.fn(async () => ok(null));
+    bus.installRemoteForwarder({ canForward: () => true, forward });
+
+    const result = await bus.dispatch("library:list", {} as never, {
+      principal: "mcp",
+      localAgent: { clientId: "forged", capabilities: ["library.read"] }
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("local_agent_context_required");
+    expect(forward).not.toHaveBeenCalled();
+  });
+
+  test("uses current grant capabilities instead of caller-supplied capabilities", async () => {
+    const forward = vi.fn(async () => ok(null));
+    bus.installRemoteForwarder({ canForward: () => true, forward });
+    bus.installLocalAgentAuthorizer(async (clientId) => ({
+      clientId,
+      capabilities: ["capture.edit"]
+    }));
+
+    const result = await bus.dispatch("library:search", { query: "secret" } as never, {
+      principal: "mcp",
+      localAgent: {
+        clientId: "agent-1",
+        capabilities: ["library.read", "capture.edit"]
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("local_agent_capability_denied");
+    expect(forward).not.toHaveBeenCalled();
+  });
+
+  test("capture.edit cannot read OCR or composite media", async () => {
+    const forward = vi.fn(async () => ok(null));
+    bus.installRemoteForwarder({ canForward: () => true, forward });
+    bus.installLocalAgentAuthorizer(async (clientId) => ({
+      clientId,
+      capabilities: ["capture.edit"]
+    }));
+    const options = {
+      principal: "mcp" as const,
+      localAgent: { clientId: "agent-1", capabilities: ["capture.edit"] as const }
+    };
+
+    const ocr = await bus.dispatch("codex:enrichment", { captureId: "cap_1" }, options);
+    const composite = await bus.dispatch(
+      "render:composite",
+      { captureId: "cap_1", maxEdgePx: 800 },
+      options
+    );
+
+    expect(ocr.ok).toBe(false);
+    expect(composite.ok).toBe(false);
+    expect(forward).not.toHaveBeenCalled();
+  });
+
+  test("sizzle.compose cannot read the library or render media", async () => {
+    const forward = vi.fn(async () => ok(null));
+    bus.installRemoteForwarder({ canForward: () => true, forward });
+    bus.installLocalAgentAuthorizer(async (clientId) => ({
+      clientId,
+      capabilities: ["sizzle.compose"]
+    }));
+    const options = {
+      principal: "mcp" as const,
+      localAgent: { clientId: "agent-1", capabilities: ["sizzle.compose"] as const }
+    };
+
+    const search = await bus.dispatch("library:search", { query: "secret" }, options);
+    const render = await bus.dispatch(
+      "sizzle:render",
+      { id: "s1", mode: "preview" },
+      options
+    );
+
+    expect(search.ok).toBe(false);
+    expect(render.ok).toBe(false);
+    expect(forward).not.toHaveBeenCalled();
+  });
+
+  test("render side effects run only under a sufficient live grant", async () => {
+    const effects = { ttsSecretReads: 0, artifactWrites: 0, projectUpdates: 0 };
+    let capabilities: readonly ("sizzle.compose" | "sizzle.preview.read")[] = [
+      "sizzle.compose"
+    ];
+    bus.installLocalAgentAuthorizer(async (clientId) => ({ clientId, capabilities }));
+    bus.register("sizzle:render", async () => {
+      effects.ttsSecretReads += 1;
+      effects.artifactWrites += 1;
+      effects.projectUpdates += 1;
+      return ok({
+        outputPath: "/tmp/preview.mp4",
+        durationSec: 1,
+        renderId: "render_1",
+        widthPx: 640,
+        heightPx: 360
+      });
+    });
+    const options = {
+      principal: "mcp" as const,
+      localAgent: { clientId: "agent-1", capabilities: ["sizzle.compose"] as const }
+    };
+
+    const denied = await bus.dispatch(
+      "sizzle:render",
+      { id: "s1", mode: "preview" },
+      options
+    );
+    expect(denied.ok).toBe(false);
+    expect(effects).toEqual({ ttsSecretReads: 0, artifactWrites: 0, projectUpdates: 0 });
+
+    capabilities = ["sizzle.compose", "sizzle.preview.read"];
+    const allowed = await bus.dispatch(
+      "sizzle:render",
+      { id: "s1", mode: "preview" },
+      options
+    );
+    expect(allowed.ok).toBe(true);
+    expect(effects).toEqual({ ttsSecretReads: 1, artifactWrites: 1, projectUpdates: 1 });
+  });
+
+  test("requires the render capability selected by explicit render mode", async () => {
+    const forward = vi.fn(async () => ok(null));
+    bus.installRemoteForwarder({ canForward: () => true, forward });
+    bus.installLocalAgentAuthorizer(async (clientId) => ({
+      clientId,
+      capabilities: ["sizzle.compose", "sizzle.preview.read"]
+    }));
+    const options = {
+      principal: "mcp" as const,
+      localAgent: {
+        clientId: "agent-1",
+        capabilities: ["sizzle.compose", "sizzle.preview.read"] as const
+      }
+    };
+
+    expect((await bus.dispatch("sizzle:render", { id: "s1", mode: "preview" }, options)).ok)
+      .toBe(true);
+    const full = await bus.dispatch("sizzle:render", { id: "s1", mode: "full" }, options);
+    expect(full.ok).toBe(false);
+    if (!full.ok) expect(full.error.code).toBe("local_agent_capability_denied");
   });
 
   test("a local handler wins over the forwarder", async () => {

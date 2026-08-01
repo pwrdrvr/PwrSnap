@@ -590,6 +590,8 @@ function parseV1(raw: unknown): Settings | null {
   const updates = isRecord(raw.updates) ? raw.updates : {};
   const storage = isRecord(raw.storage) ? raw.storage : {};
   const recording = isRecord(raw.recording) ? raw.recording : {};
+  const localAgents = parseLocalAgentsSettings(raw.localAgents, defaults.localAgents);
+  if (localAgents === null) return null;
   const storedDefaultsMigrationVersion =
     typeof raw.lastDefaultsMigrationVersion === "string" &&
     raw.lastDefaultsMigrationVersion.trim().length > 0
@@ -788,10 +790,10 @@ function parseV1(raw: unknown): Settings | null {
     // `library.*` is additive too — older files won't have it. Falls
     // through to defaultLibrarySettings() (pinned + Info) when missing.
     library: parseLibrarySettings(raw.library, defaults.library),
-    // `localAgents.*` is metadata only; bearer tokens live in
-    // DesktopSecretStore. Malformed grants are dropped so a bad
-    // hand-edited settings file cannot create a privileged client.
-    localAgents: parseLocalAgentsSettings(raw.localAgents, defaults.localAgents)
+    // `localAgents.*` is security and audit state. A malformed entry
+    // invalidates the settings shape so read() quarantines the complete
+    // source file instead of silently erasing grant or audit history.
+    localAgents
   };
 }
 
@@ -969,23 +971,30 @@ function clampGridZoom(value: number): number {
 function parseLocalAgentsSettings(
   raw: unknown,
   defaults: Settings["localAgents"]
-): Settings["localAgents"] {
-  if (!isRecord(raw)) return defaults;
-  const grantsRaw = Array.isArray(raw.grants) ? raw.grants : [];
+): Settings["localAgents"] | null {
+  if (raw === undefined) return defaults;
+  if (!isRecord(raw)) return null;
+  if (raw.grants !== undefined && !Array.isArray(raw.grants)) return null;
+  if (raw.audit !== undefined && !Array.isArray(raw.audit)) return null;
+  const grantsRaw = raw.grants ?? [];
   const seen = new Set<string>();
   const grants: LocalAgentClientGrant[] = [];
   for (const grantRaw of grantsRaw) {
     const grant = parseLocalAgentGrant(grantRaw);
-    if (grant === null) continue;
-    if (seen.has(grant.id)) continue;
+    if (grant === null || seen.has(grant.id)) return null;
     seen.add(grant.id);
     grants.push(grant);
   }
-  const auditRaw = Array.isArray(raw.audit) ? raw.audit : [];
-  const audit = auditRaw
-    .map(parseLocalAgentAuditEntry)
-    .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
-    .slice(-500);
+  const auditRaw = raw.audit ?? [];
+  if (auditRaw.length > 500) return null;
+  const audit: Settings["localAgents"]["audit"] = [];
+  const auditIds = new Set<string>();
+  for (const auditEntryRaw of auditRaw) {
+    const entry = parseLocalAgentAuditEntry(auditEntryRaw);
+    if (entry === null || auditIds.has(entry.id)) return null;
+    auditIds.add(entry.id);
+    audit.push(entry);
+  }
   return { grants, audit };
 }
 
@@ -1014,6 +1023,14 @@ function parseLocalAgentAuditEntry(
     "sizzle.full.read"
   ]);
   if (!actions.has(raw.action)) return null;
+  const expectedCapability = raw.action as LocalAgentCapability;
+  const expectedSubjectKind = raw.action.startsWith("sizzle.") ? "sizzle" : "capture";
+  if (
+    raw.capability !== expectedCapability ||
+    raw.subjectKind !== expectedSubjectKind
+  ) {
+    return null;
+  }
   return {
     id: raw.id.slice(0, 128),
     clientId: raw.clientId.slice(0, 128),
@@ -1032,6 +1049,12 @@ function parseLocalAgentGrant(raw: unknown): LocalAgentClientGrant | null {
   const name = typeof raw.name === "string" ? raw.name.trim() : "";
   if (id.length === 0 || id.length > 128) return null;
   if (name.length === 0 || name.length > 200) return null;
+  if (
+    !Array.isArray(raw.capabilities) ||
+    raw.capabilities.some((capability) => !isLocalAgentCapability(capability))
+  ) {
+    return null;
+  }
   const capabilities = parseLocalAgentCapabilities(raw.capabilities);
   if (capabilities.length === 0) return null;
   const createdAt = pickIsoishString(raw.createdAt);
@@ -1041,6 +1064,12 @@ function parseLocalAgentGrant(raw: unknown): LocalAgentClientGrant | null {
   const revokedAt = pickIsoishStringOrNull(raw.revokedAt);
   if (lastUsedAt === undefined || revokedAt === undefined) return null;
   const oauthClient = parseLocalAgentOAuthClient(raw.oauthClient);
+  if (
+    raw.oauthClient !== undefined &&
+    (oauthClient === null || oauthClient.clientId !== id)
+  ) {
+    return null;
+  }
   return {
     id,
     name,

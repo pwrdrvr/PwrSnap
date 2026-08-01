@@ -42,7 +42,9 @@ const mocks = vi.hoisted(() => ({
   findSizzleWindow: vi.fn(),
   positionSizzleWindowForSource: vi.fn(),
   send: vi.fn(),
-  getValue: vi.fn()
+  getValue: vi.fn(),
+  dispatch: vi.fn(),
+  synthesize: vi.fn()
 }));
 
 vi.mock("electron", () => ({
@@ -62,7 +64,8 @@ vi.mock("../../command-bus", () => ({
   bus: {
     register: vi.fn((name: string, handler: MockHandler) => {
       mocks.handlers.set(name, handler);
-    })
+    }),
+    dispatch: mocks.dispatch
   }
 }));
 
@@ -84,7 +87,7 @@ vi.mock("../sizzle-chat-handlers", () => ({
 }));
 
 vi.mock("../../sizzle/tts", () => ({
-  synthesize: vi.fn(),
+  synthesize: mocks.synthesize,
   TtsError: class TtsError extends Error {
     constructor(public readonly code: string, message: string) {
       super(message);
@@ -199,6 +202,12 @@ beforeEach(() => {
   mocks.findSizzleWindow.mockReset();
   mocks.positionSizzleWindowForSource.mockReset();
   mocks.send.mockReset();
+  mocks.dispatch.mockReset();
+  mocks.dispatch.mockImplementation(async (_name, req: { id?: string }) => ({
+    ok: true,
+    value: { id: req.id, kind: "image", deleted_at: null }
+  }));
+  mocks.synthesize.mockReset();
   // Default: store.list returns whatever store.update returned, in
   // an array. Most tests just need "some projects exist" — they can
   // override per-case.
@@ -236,6 +245,14 @@ function commandCtx(sourceWindowId?: number): Partial<CommandContext> {
     signal: new AbortController().signal,
     principal: "ipc",
     ...(sourceWindowId !== undefined ? { sourceWindowId } : {})
+  };
+}
+
+function localAgentCtx(): Partial<CommandContext> {
+  return {
+    signal: new AbortController().signal,
+    principal: "mcp",
+    localAgent: { clientId: "lag_test", capabilities: ["sizzle.compose"] }
   };
 }
 
@@ -326,6 +343,24 @@ describe("sizzle:toggleScene — project not found", () => {
 });
 
 describe("sizzle:toggleScene — add path", () => {
+  test("rejects a trashed capture for an external caller", async () => {
+    const project = makeProject({ scenes: [] });
+    mocks.store.get.mockResolvedValue(project);
+    mocks.dispatch.mockResolvedValue({
+      ok: true,
+      value: { id: "cap-trashed", kind: "image", deleted_at: "2026-08-01T00:00:00.000Z" }
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(
+      { projectId: "proj-1", captureId: "cap-trashed" },
+      localAgentCtx()
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "capture_missing" } });
+    expect(mocks.store.update).not.toHaveBeenCalled();
+  });
+
   test("appends a new scene with sensible defaults when captureId isn't yet in the project", async () => {
     const project = makeProject({ scenes: [] });
     mocks.store.get.mockResolvedValue(project);
@@ -399,6 +434,67 @@ describe("sizzle:toggleScene — add path", () => {
     const [channel, payload] = mocks.send.mock.calls[0]!;
     expect(channel).toBe("events:sizzle:projects:changed");
     expect(payload).toMatchObject({ projects: expect.any(Array) });
+  });
+});
+
+describe("external Sizzle live-capture enforcement", () => {
+  test("rejects sequence-beat updates containing a trashed capture", async () => {
+    mocks.dispatch.mockImplementation(async (_name, req: { id: string }) => ({
+      ok: true,
+      value: {
+        id: req.id,
+        kind: "image",
+        deleted_at: req.id === "cap-trashed" ? "2026-08-01T00:00:00.000Z" : null
+      }
+    }));
+    const handler = await loadHandler("sizzle:update");
+    const sequence = makeScene({
+      kind: "sequence",
+      beats: [
+        {
+          id: "beat-1",
+          captureId: "cap-live",
+          timing: { kind: "auto" },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        },
+        {
+          id: "beat-2",
+          captureId: "cap-trashed",
+          timing: { kind: "auto" },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        }
+      ]
+    } as Partial<SizzleScene>);
+
+    const result = await handler(
+      { id: "proj-1", patch: { scenes: [sequence] } },
+      localAgentCtx()
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "capture_missing" } });
+    expect(mocks.store.update).not.toHaveBeenCalled();
+  });
+
+  test("rejects render after a project capture is moved to Trash before TTS", async () => {
+    const project = makeProject({ scenes: [makeScene({ captureId: "cap-trashed" })] });
+    mocks.store.get.mockResolvedValue(project);
+    mocks.dispatch.mockResolvedValue({
+      ok: true,
+      value: { id: "cap-trashed", kind: "image", deleted_at: "2026-08-01T00:00:00.000Z" }
+    });
+    const handler = await loadHandler("sizzle:render");
+
+    const result = await handler(
+      { id: "proj-1", mode: "preview" },
+      localAgentCtx()
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "capture_missing" } });
+    expect(mocks.synthesize).not.toHaveBeenCalled();
   });
 });
 

@@ -81,8 +81,10 @@ export const LOCAL_AGENT_CAPABILITY_LABELS: Record<LocalAgentCapability, string>
   "capture.edit": "Edit images with AI",
   "trash.write": "Move captures to Trash",
   "sizzle.compose": "Create sizzle reels",
-  "sizzle.preview.read": "Read low-resolution reel previews",
-  "sizzle.full.read": "Read full-resolution reels"
+  "sizzle.preview.read":
+    "Render low-resolution reel previews (may use billable TTS/network access, write cache files, and update project state)",
+  "sizzle.full.read":
+    "Render full-resolution reels (may use billable TTS/network access, write to Videos, and update project state)"
 };
 
 export const LOCAL_AGENT_CAPABILITY_DETAILS: Record<LocalAgentCapability, string> = {

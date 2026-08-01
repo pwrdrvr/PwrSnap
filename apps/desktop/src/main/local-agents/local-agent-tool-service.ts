@@ -40,14 +40,14 @@ export class LocalAgentToolService {
       return notFound(input.captureId);
     }
     const availableResources: Array<{ variant: CaptureExportVariant; uri: string }> = [];
-    if (ctx.capabilities.includes("capture.composite.read")) {
+    if (capture.value.kind === "image" && ctx.capabilities.includes("capture.composite.read")) {
       const resource = this.registerCaptureResource(
         input.captureId,
         "composite"
       );
       availableResources.push({ variant: "composite", uri: resource.uri });
     }
-    if (ctx.capabilities.includes("capture.original.read")) {
+    if (capture.value.kind === "image" && ctx.capabilities.includes("capture.original.read")) {
       const resource = this.registerCaptureResource(
         input.captureId,
         "original"
@@ -159,6 +159,16 @@ export class LocalAgentToolService {
           readCapabilityForVariant(exported.variant)
         ],
         ownerClientId: ctx.clientId,
+        ...(exported.variant === "original"
+          ? {
+              audit: {
+                action: "capture.original.read" as const,
+                capability: "capture.original.read" as const,
+                subjectKind: "capture" as const,
+                subjectId: input.captureId
+              }
+            }
+          : {}),
         refresh: (readContext) =>
           this.refreshExport(request, toolContextForRead(readContext))
       });
@@ -336,6 +346,18 @@ export class LocalAgentToolService {
     },
     ctx: LocalAgentToolContext
   ): Promise<Result<unknown, PwrSnapError>> {
+    const captureIds = [...new Set(input.captureIds)];
+    for (const captureId of captureIds) {
+      const capture = await bus.dispatch(
+        "library:byId",
+        { id: captureId },
+        ctx.commandContext
+      );
+      if (!capture.ok) return capture;
+      if (capture.value === null || capture.value.deleted_at !== null) {
+        return notFound(captureId);
+      }
+    }
     const created = await bus.dispatch(
       "sizzle:create",
       { name: input.name },
@@ -344,7 +366,7 @@ export class LocalAgentToolService {
     if (!created.ok) return created;
     let project = created.value;
     try {
-      for (const captureId of [...new Set(input.captureIds)]) {
+      for (const captureId of captureIds) {
         const toggled = await bus.dispatch(
           "sizzle:toggleScene",
           { projectId: project.id, captureId },
@@ -555,7 +577,7 @@ export class LocalAgentToolService {
       uri,
       name: "completed image edit composite",
       mimeType: "image/png",
-      requiredCapabilities: ["capture.edit"],
+      requiredCapabilities: ["capture.edit", "capture.composite.read"],
       ownerClientId: ctx.clientId,
       resolvePath: async (readContext) => {
         const readCtx = toolContextForRead(readContext);

@@ -23,6 +23,8 @@ import type {
 } from "@pwrdrvr/codex-app-server-protocol/v2";
 import type { ToolSpec } from "./define-tool";
 import { LIBRARY_TOOL_ALLOWLIST } from "./library-tool-allowlist";
+import type { CommandDispatchOptions } from "../command-bus";
+import { runWithChatToolCommandContext } from "./chat-tool-command-context";
 
 /**
  * Build the `DynamicToolSpec[]` registered with Codex on `thread/start`.
@@ -46,7 +48,10 @@ export function buildLibraryToolCatalog(
  */
 export async function dispatchLibraryToolCall(
   params: DynamicToolCallParams,
-  allowlist: ReadonlyArray<ToolSpec<unknown>> = LIBRARY_TOOL_ALLOWLIST
+  allowlist: ReadonlyArray<ToolSpec<unknown>> = LIBRARY_TOOL_ALLOWLIST,
+  commandContext: CommandDispatchOptions = { principal: "ipc" }
 ): Promise<DynamicToolCallResponse> {
-  return dispatchToolCall(params, allowlist);
+  return runWithChatToolCommandContext(commandContext, () =>
+    dispatchToolCall(params, allowlist)
+  );
 }

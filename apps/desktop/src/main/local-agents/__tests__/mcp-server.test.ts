@@ -7,7 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { ok } from "@pwrsnap/shared";
+import { err, ok } from "@pwrsnap/shared";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 
@@ -390,6 +390,68 @@ describe("LocalAgentMcpServer", () => {
     });
   });
 
+  test("audits original-derived exports as both export and original access", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["capture.export", "capture.original.read"]
+    });
+    const exportTool: LocalAgentMcpTool<{
+      captureId: z.ZodString;
+      variant: z.ZodEnum<{ composite: "composite"; original: "original" }>;
+    }> = {
+      name: "pwrsnap_capture_export",
+      title: "Export capture",
+      description: "Test export",
+      inputSchema: {
+        captureId: z.string(),
+        variant: z.enum(["composite", "original"])
+      },
+      requiredCapabilities: ["capture.export"],
+      requiredCapabilitiesForInput: (input) =>
+        input.variant === "original" ? ["capture.original.read"] : [],
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
+      dispatch: async (input) =>
+        input.captureId === "missing"
+          ? err({ kind: "validation", code: "not_found", message: "missing" })
+          : ok({ exported: input.captureId })
+    };
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: [exportTool],
+      host: "127.0.0.1",
+      port: 0
+    });
+    const address = await server.start();
+    const connected = await connect(address.url, "pws_local_mcp-token");
+
+    await connected.callTool({
+      name: "pwrsnap_capture_export",
+      arguments: { captureId: "cap_1", variant: "original" }
+    });
+    await connected.callTool({
+      name: "pwrsnap_capture_export",
+      arguments: { captureId: "missing", variant: "original" }
+    });
+
+    expect((await settings.read()).localAgents.audit.map((entry) => ({
+      action: entry.action,
+      outcome: entry.outcome,
+      subjectId: entry.subjectId
+    }))).toEqual([
+      { action: "capture.export", outcome: "success", subjectId: "cap_1" },
+      { action: "capture.original.read", outcome: "success", subjectId: "cap_1" },
+      { action: "capture.export", outcome: "failure", subjectId: "missing" },
+      { action: "capture.original.read", outcome: "failure", subjectId: "missing" }
+    ]);
+  });
+
   test("serves multiple clients without allocating MCP session state", async () => {
     const serviceA = new LocalAgentGrantService({
       settings,
@@ -447,6 +509,8 @@ describe("LocalAgentMcpServer", () => {
     expect(defaultPage).toMatch(/value="library\.read" checked/u);
     expect(defaultPage).toMatch(/value="capture\.composite\.read" checked/u);
     expect(defaultPage).not.toMatch(/value="capture\.original\.read" checked/u);
+    expect(defaultPage).toContain("billable TTS/network access");
+    expect(defaultPage).toContain("write to Videos");
 
     const consent = await fetch(
       makeAuthorizationUrl(address, oauthClient, ["library.read"])
@@ -817,6 +881,15 @@ describe("LocalAgentMcpServer", () => {
     expect(first.headers.get("x-content-type-options")).toBe("nosniff");
     expect(await first.text()).toBe("sensitive-media");
 
+    const ranged = await fetch(signed.url, {
+      headers: { range: "bytes=0-0" }
+    });
+    expect(ranged.status).toBe(206);
+    expect(ranged.headers.get("accept-ranges")).toBe("bytes");
+    expect(ranged.headers.get("content-range")).toBe("bytes 0-0/15");
+    expect(ranged.headers.get("content-length")).toBe("1");
+    expect(await ranged.text()).toBe("s");
+
     client = await connect(address.url, "pws_local_mcp-token");
     const resource = await client.readResource({
       uri: "pwrsnap://capture/cap_1/original"
@@ -826,12 +899,12 @@ describe("LocalAgentMcpServer", () => {
       mimeType: "image/png",
       blob: Buffer.from("sensitive-media").toString("base64")
     });
-    expect((await settings.read()).localAgents.audit).toHaveLength(2);
+    expect((await settings.read()).localAgents.audit).toHaveLength(3);
 
     await grantService.revokeGrant("lag_mcp");
     const revoked = await fetch(signed.url);
     expect(revoked.status).toBe(403);
-    expect((await settings.read()).localAgents.audit).toHaveLength(2);
+    expect((await settings.read()).localAgents.audit).toHaveLength(3);
   });
 
   test("rejects signed media replay through a different Host header", async () => {

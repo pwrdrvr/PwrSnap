@@ -132,7 +132,9 @@ export const chatThreadSidecarSchema = z.object({
   // before this feature normalize cleanly.
   provider: z.string().nullable().default(null),
   model: z.string().nullable().default(null),
-  reasoning: z.string().nullable().default(null)
+  reasoning: z.string().nullable().default(null),
+  /** Authenticated local-agent owner. NULL identifies a human-owned thread. */
+  ownerClientId: z.string().nullable().default(null)
 });
 export type ChatThreadSidecar = z.infer<typeof chatThreadSidecarSchema>;
 

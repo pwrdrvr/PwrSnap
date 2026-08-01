@@ -16,7 +16,7 @@ import {
   type SizzleScene,
   type SizzleSequencePreviewPlan
 } from "@pwrsnap/shared";
-import { bus } from "../command-bus";
+import { bus, type CommandContext, type CommandDispatchOptions } from "../command-bus";
 import { getMainLogger } from "../log";
 import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-store";
 import { cleanupProjectChats, forkProjectChats } from "./sizzle-chat-handlers";
@@ -152,14 +152,54 @@ function toError(cause: unknown, fallbackCode: string): PwrSnapError {
   return { kind: "unknown", code: fallbackCode, message: String(cause), cause };
 }
 
-async function loadCapture(captureId: string): Promise<CaptureRecord | null> {
+function dispatchOptionsForContext(ctx?: CommandContext): CommandDispatchOptions {
+  if (ctx?.principal === "mcp") {
+    return {
+      principal: "mcp",
+      ...(ctx.localAgent !== undefined ? { localAgent: ctx.localAgent } : {})
+    };
+  }
+  return { principal: "ipc" };
+}
+
+async function loadCapture(
+  captureId: string,
+  ctx?: CommandContext
+): Promise<CaptureRecord | null> {
   const result = await bus.dispatch(
     "library:byId",
     { id: captureId },
-    { principal: "ipc" }
+    dispatchOptionsForContext(ctx)
   );
   if (!result.ok) return null;
+  if (ctx?.principal === "mcp" && result.value?.deleted_at !== null) return null;
   return result.value;
+}
+
+function captureIdsForScenes(scenes: readonly SizzleScene[]): string[] {
+  return [...new Set(scenes.flatMap((scene) =>
+    scene.kind === "sequence" && scene.beats !== undefined
+      ? [scene.captureId, ...scene.beats.map((beat) => beat.captureId)]
+      : [scene.captureId]
+  ))];
+}
+
+async function validateExternalLiveCaptures(
+  scenes: readonly SizzleScene[],
+  ctx: CommandContext
+): Promise<Result<void, PwrSnapError>> {
+  if (ctx.principal !== "mcp") return ok(undefined);
+  for (const captureId of captureIdsForScenes(scenes)) {
+    const capture = await loadCapture(captureId, ctx);
+    if (capture === null) {
+      return err({
+        kind: "validation",
+        code: "capture_missing",
+        message: `Capture ${captureId} was not found or is in Trash`
+      });
+    }
+  }
+  return ok(undefined);
 }
 
 async function resolveImagePath(
@@ -415,9 +455,13 @@ export function registerSizzleHandlers(): void {
     }
   });
 
-  bus.register("sizzle:update", async (req) => {
+  bus.register("sizzle:update", async (req, ctx) => {
     const v = validateSizzleUpdate(req);
     if (!v.ok) return err(v.error);
+    if (v.value.patch.scenes !== undefined) {
+      const live = await validateExternalLiveCaptures(v.value.patch.scenes, ctx);
+      if (!live.ok) return live;
+    }
     try {
       const project = await store.update(v.value.id, v.value.patch);
       await pushProjectsChanged();
@@ -444,7 +488,7 @@ export function registerSizzleHandlers(): void {
     return ok(undefined);
   });
 
-  bus.register("sizzle:toggleScene", async (req) => {
+  bus.register("sizzle:toggleScene", async (req, ctx) => {
     const v = validateSizzleToggleScene(req);
     if (!v.ok) return err(v.error);
     const project = await store.get(v.projectId);
@@ -457,6 +501,16 @@ export function registerSizzleHandlers(): void {
       // Remove the existing scene
       nextScenes = project.scenes.filter((_, i) => i !== existingIdx);
     } else {
+      if (ctx?.principal === "mcp") {
+        const capture = await loadCapture(v.captureId, ctx);
+        if (capture === null) {
+          return err({
+            kind: "validation",
+            code: "capture_missing",
+            message: `Capture ${v.captureId} was not found or is in Trash`
+          });
+        }
+      }
       // Append a new scene with empty script — the user fills it in
       // from the sizzle editor. (The editor's "Add scene" flow does
       // a separate Codex enrichment prefill; for the in-library +/✓
@@ -836,7 +890,7 @@ export function registerSizzleHandlers(): void {
       )
     ];
     const loadedCaptures = await Promise.all(
-      captureIds.map(async (captureId) => [captureId, await loadCapture(captureId)] as const)
+      captureIds.map(async (captureId) => [captureId, await loadCapture(captureId, ctx)] as const)
     );
     const captureMap = new Map<string, CaptureRecord>();
     for (const [captureId, capture] of loadedCaptures) {

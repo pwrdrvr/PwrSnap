@@ -25,6 +25,10 @@ import type {
 } from "@pwrsnap/shared";
 import { err, type PwrSnapError, type Result } from "@pwrsnap/shared";
 import { getMainLogger } from "./log";
+import {
+  localAgentCommandRequirement,
+  satisfiesLocalAgentCommandRequirement
+} from "./local-agents/local-agent-command-policy";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 
 const log = getMainLogger("pwrsnap:command-bus");
@@ -84,6 +88,10 @@ export type RemoteCommandForwarder = {
   ): Promise<Result<unknown, PwrSnapError>>;
 };
 
+export type LocalAgentCommandAuthorizer = (
+  clientId: string
+) => Promise<NonNullable<CommandContext["localAgent"]> | null>;
+
 // Storage type is intentionally a wide function — TS can't represent a
 // "for some C, CommandHandler<C>" existential, so we erase to any-shape
 // and cast on the way out. Type safety lives at the public register/
@@ -100,6 +108,7 @@ class CommandBus {
   private readonly cancellation = new Map<string, AbortController>();
 
   private remoteForwarder: RemoteCommandForwarder | null = null;
+  private localAgentAuthorizer: LocalAgentCommandAuthorizer | null = null;
 
   register<C extends CommandName>(name: C, handler: CommandHandler<C>): void {
     if (this.handlers.has(name)) {
@@ -125,6 +134,17 @@ class CommandBus {
     this.remoteForwarder = null;
   }
 
+  installLocalAgentAuthorizer(authorizer: LocalAgentCommandAuthorizer): void {
+    if (this.localAgentAuthorizer !== null) {
+      throw new Error("command-bus: local-agent authorizer already installed");
+    }
+    this.localAgentAuthorizer = authorizer;
+  }
+
+  uninstallLocalAgentAuthorizerForTests(): void {
+    this.localAgentAuthorizer = null;
+  }
+
   isRegistered(name: string): name is CommandName {
     if (this.handlers.has(name as CommandName)) return true;
     return this.remoteForwarder?.canForward(name) ?? false;
@@ -147,6 +167,9 @@ class CommandBus {
     req: Req<C>,
     options: CommandDispatchOptions
   ): Promise<Result<Res<C>, PwrSnapError>> {
+    const authorizedOptions = await this.authorizeLocalAgent(name, req, options);
+    if (!authorizedOptions.ok) return authorizedOptions;
+    options = authorizedOptions.value;
     const handler = this.handlers.get(name);
     if (!handler) {
       const forwarder = this.remoteForwarder;
@@ -232,6 +255,48 @@ class CommandBus {
         // ephemeral controller, can drop reference
       }
     }
+  }
+
+  private async authorizeLocalAgent<C extends CommandName>(
+    name: C,
+    req: Req<C>,
+    options: CommandDispatchOptions
+  ): Promise<Result<CommandDispatchOptions, PwrSnapError>> {
+    if (options.principal !== "mcp") return { ok: true, value: options };
+    const presented = options.localAgent;
+    if (presented === undefined || this.localAgentAuthorizer === null) {
+      return err({
+        kind: "permission",
+        code: "local_agent_context_required",
+        message: "authenticated local-agent context is required"
+      });
+    }
+    const authenticated = await this.localAgentAuthorizer(presented.clientId);
+    if (authenticated === null) {
+      return err({
+        kind: "permission",
+        code: "local_agent_grant_invalid",
+        message: "local-agent grant is missing or revoked"
+      });
+    }
+    const requirement = localAgentCommandRequirement(name, req);
+    if (
+      requirement === null ||
+      !satisfiesLocalAgentCommandRequirement(authenticated.capabilities, requirement)
+    ) {
+      return err({
+        kind: "permission",
+        code: "local_agent_capability_denied",
+        message: `local-agent grant does not authorize command: ${name}`
+      });
+    }
+    return {
+      ok: true,
+      value: {
+        ...options,
+        localAgent: authenticated
+      }
+    };
   }
 }
 

@@ -23,7 +23,7 @@ import type {
   TypedEventChannel
 } from "@pwrsnap/shared";
 import { acpAgentIdFromThreadId, EVENT_CHANNELS, err, ok } from "@pwrsnap/shared";
-import { bus } from "../command-bus";
+import { bus, type CommandDispatchOptions } from "../command-bus";
 import { getMainLogger } from "../log";
 import { resolveCodexThreadConfigForCommand } from "../ai/codex-thread-config";
 import { buildChatSurface, toKitApprovalDecision } from "../ai/chat-controller-factory";
@@ -160,6 +160,9 @@ export function registerLibraryChatHandlers(params?: {
   // Reads each thread's persisted backend config (for routing) + writes it on
   // create. Lazy DB access — constructing it touches nothing.
   const store = new ChatThreadStore({ chatsDir });
+  // sendMessage returns at turn start; backend tool calls arrive later. Keep
+  // the last turn origin per thread until a subsequent send replaces it.
+  const activeToolContexts = new Map<string, CommandDispatchOptions>();
 
   // ONE controller per distinct (provider, model, reasoning) config. Each thread
   // routes to the controller matching ITS config, so different threads on this
@@ -191,7 +194,12 @@ export function registerLibraryChatHandlers(params?: {
         buildTurnContext: buildCurrentCaptureContext,
         toolLabels: LIBRARY_TOOL_LABELS,
         catalog: buildLibraryToolCatalog(),
-        dispatchToolCall: dispatchLibraryToolCall,
+        dispatchToolCall: (toolCall) =>
+          dispatchLibraryToolCall(
+            toolCall,
+            undefined,
+            activeToolContexts.get(toolCall.threadId) ?? { principal: "ipc" }
+          ),
         threadConfig: resolveCodexThreadConfigForCommand(command, env),
         threadEnvironments: LIBRARY_CHAT_THREAD_ENVIRONMENTS,
         // The THREAD's chosen config (not the surface default) — null leaves
@@ -236,7 +244,7 @@ export function registerLibraryChatHandlers(params?: {
     };
   };
 
-  bus.register("codex:libraryChat:list", async (req) => {
+  bus.register("codex:libraryChat:list", async (req, ctx) => {
     try {
       const c = await controllerFor(await defaultConfig());
       const threads = await c.listThreads({
@@ -249,7 +257,12 @@ export function registerLibraryChatHandlers(params?: {
         .catch(() => []);
       const byId = new Map(sidecars.map((s) => [s.threadId, s]));
       return ok({
-        threads: threads.map((t) => {
+        threads: threads.filter((thread) => {
+          const ownerClientId = byId.get(thread.threadId)?.ownerClientId ?? null;
+          return ctx.principal === "mcp"
+            ? ownerClientId === ctx.localAgent?.clientId
+            : ownerClientId === null;
+        }).map((t) => {
           const s = byId.get(t.threadId);
           return toLibraryThreadView(
             t,
@@ -262,7 +275,7 @@ export function registerLibraryChatHandlers(params?: {
     }
   });
 
-  bus.register("codex:libraryChat:create", async (req) => {
+  bus.register("codex:libraryChat:create", async (req, ctx) => {
     try {
       const d = await defaultConfig();
       // The chosen config: chips override, else the Settings default.
@@ -279,15 +292,29 @@ export function registerLibraryChatHandlers(params?: {
       // Persist the locked config on the thread (skip in injected-controller
       // tests, which have no DB).
       if (injected === null) store.setBackendConfig(view.threadId, config);
+      if (injected === null && ctx.principal === "mcp" && ctx.localAgent !== undefined) {
+        store.setOwnerClientId(view.threadId, ctx.localAgent.clientId);
+      }
       return ok(toLibraryThreadView(view, config));
     } catch (cause) {
       return codexUnreachable(cause);
     }
   });
 
-  bus.register("codex:libraryChat:send", async (req) => {
+  bus.register("codex:libraryChat:send", async (req, ctx) => {
     try {
+      if (ctx.principal === "mcp") {
+        const sidecar = await store.get(req.threadId);
+        if (sidecar?.ownerClientId !== ctx.localAgent?.clientId) {
+          return aiError("thread_owner_mismatch", "This chat belongs to another user or local client.");
+        }
+      }
       const c = await controllerFor(await configForThread(req.threadId));
+      const commandContext: CommandDispatchOptions = {
+        principal: ctx.principal,
+        ...(ctx.localAgent !== undefined ? { localAgent: ctx.localAgent } : {})
+      };
+      activeToolContexts.set(req.threadId, commandContext);
       const result = await c.sendMessage({
         threadId: req.threadId,
         text: req.text,

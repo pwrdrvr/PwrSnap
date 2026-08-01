@@ -21,6 +21,45 @@ revocation. However, the browser consent ceremony can be bypassed completely,
 and authorization does not survive entry into the command bus and PwrSnap-owned
 chat tool catalogs.
 
+## Resolution Notes
+
+Implemented on `codex/local-agent-mcp-access-plan` after this audit:
+
+- OAuth approval now uses a short-lived, server-issued, browser-cookie-bound,
+  single-use consent transaction. The decision POST contains only that opaque
+  transaction and the selected subset; the server retains the validated client,
+  redirect URI, PKCE challenge, resource, state, scopes, and requested
+  capabilities. Forged GET decisions, cookie mismatches, expiry, and replay are
+  covered by integration tests.
+- The command bus now default-denies MCP commands, reloads the current grant by
+  client ID, replaces caller-supplied capabilities with the live grant, and
+  applies command/request-specific capability policy before local execution or
+  split-process forwarding. The receiving process performs the same check.
+- Library and Sizzle model tool calls retain the originating command context for
+  the full asynchronous turn. Whole-library/OCR reads and composite/Sizzle
+  renders are independently authorized; Sizzle's model render tool requires an
+  explicit `preview` or `full` mode.
+- External Sizzle creation preflights every capture before project creation.
+  Toggle, scene/sequence mutation, and render reject missing or trashed captures,
+  with render validation occurring before TTS, artifact writes, or project
+  updates.
+- Render consent now discloses TTS/network access, possible provider charges,
+  cache or Videos writes, and project-state changes. Preview and full remain
+  separate capabilities.
+- Original-derived exports record both `capture.export` and
+  `capture.original.read`, including failed attempts; original export resources
+  preserve the source-read audit on retrieval.
+- MCP-created chats are **isolated per authenticated client**. The persisted
+  `owner_client_id` is enforced for create, list/reuse, explicit selection,
+  status, send, and preview resolution. Human-owned threads use `NULL` and are
+  excluded from MCP reuse; externally owned threads are excluded from human
+  thread lists. Capture/project anchoring remains an additional constraint.
+- Signed media implements single HTTP byte ranges, video metadata omits
+  image-only resources, and malformed local-agent grant/audit state now invokes
+  the existing whole-file corruption quarantine rather than dropping entries.
+
+No audit finding was disputed.
+
 ## Findings
 
 ### Critical — OAuth approval can be forged from request parameters

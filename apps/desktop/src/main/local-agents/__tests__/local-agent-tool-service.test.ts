@@ -1,5 +1,5 @@
 import { err, ok, type CommandName, type LocalAgentCapability } from "@pwrsnap/shared";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { bus, type CommandContext } from "../../command-bus";
 import { LocalAgentToolService } from "../local-agent-tool-service";
 import { LocalAgentMcpResourceRegistry } from "../mcp-resource-registry";
@@ -7,9 +7,19 @@ import { LocalAgentSignedUrlService } from "../signed-url";
 import type { LocalAgentToolContext } from "../mcp-tool-registry";
 
 const registered: CommandName[] = [];
+const grantCapabilities = new Map<string, readonly LocalAgentCapability[]>();
+
+beforeEach(() => {
+  bus.installLocalAgentAuthorizer(async (clientId) => {
+    const capabilities = grantCapabilities.get(clientId);
+    return capabilities === undefined ? null : { clientId, capabilities };
+  });
+});
 
 afterEach(() => {
   for (const command of registered.splice(0)) bus.unregister(command);
+  grantCapabilities.clear();
+  bus.uninstallLocalAgentAuthorizerForTests();
 });
 
 function register(command: CommandName, handler: (req: any) => Promise<any>): void {
@@ -21,6 +31,7 @@ function context(
   clientId = "lag_test",
   capabilities: readonly LocalAgentCapability[] = ["capture.edit", "sizzle.compose"]
 ): LocalAgentToolContext {
+  grantCapabilities.set(clientId, capabilities);
   const signal = new AbortController().signal;
   const commandContext: CommandContext = {
     principal: "mcp",
@@ -60,6 +71,29 @@ function service(resources = new LocalAgentMcpResourceRegistry()): LocalAgentToo
     () => null
   );
 }
+
+describe("LocalAgentToolService metadata", () => {
+  test("does not advertise image-only resources for video captures", async () => {
+    register("library:byId", async () =>
+      ok({ id: "vid_1", kind: "video", deleted_at: null })
+    );
+    register("codex:enrichment", async () => ok(null));
+
+    const result = await service().metadata(
+      { captureId: "vid_1" },
+      context("lag_video", [
+        "library.read",
+        "capture.composite.read",
+        "capture.original.read"
+      ])
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: { availableResources: [] }
+    });
+  });
+});
 
 describe("LocalAgentToolService image edits", () => {
   test("reuses the latest model-compatible capture thread and exposes completion status", async () => {
@@ -127,9 +161,10 @@ describe("LocalAgentToolService image edits", () => {
       }
     ]);
     const previewUri = (sent.value as any).compositePreviewResourceUri as string;
+    context("lag_test", ["capture.edit", "capture.composite.read"]);
     await expect(resources.resolve(previewUri, {
       clientId: "lag_test",
-      capabilities: ["capture.edit"]
+      capabilities: ["capture.edit", "capture.composite.read"]
     })).rejects.toThrow("edit is not complete");
 
     status = { kind: "idle" };
@@ -151,9 +186,10 @@ describe("LocalAgentToolService image edits", () => {
         message: "capture moved to Trash"
       })
     );
+    context("lag_test", ["capture.edit", "capture.composite.read"]);
     await expect(resources.resolve(previewUri, {
       clientId: "lag_test",
-      capabilities: ["capture.edit"]
+      capabilities: ["capture.edit", "capture.composite.read"]
     })).rejects.toThrow("capture moved to Trash");
   });
 
@@ -223,6 +259,9 @@ describe("LocalAgentToolService Sizzle workflows", () => {
   test("creates scenes in input order and starts a project-scoped composition turn", async () => {
     const calls: Array<{ command: string; req: any }> = [];
     let scenes: Array<{ captureId: string }> = [];
+    register("library:byId", async (req) =>
+      ok({ id: req.id, kind: "image", deleted_at: null })
+    );
     register("sizzle:create", async (req) => {
       calls.push({ command: "create", req });
       return ok({ id: "sz_1", name: req.name, scenes });
@@ -281,26 +320,16 @@ describe("LocalAgentToolService Sizzle workflows", () => {
     });
   });
 
-  test("rolls back a partially-created project when a scene cannot be added", async () => {
+  test("rejects a missing capture before creating a project", async () => {
     const calls: string[] = [];
+    register("library:byId", async (req) =>
+      req.id === "cap_bad"
+        ? ok(null)
+        : ok({ id: req.id, kind: "image", deleted_at: null })
+    );
     register("sizzle:create", async () => {
       calls.push("create");
       return ok({ id: "sz_1", scenes: [] });
-    });
-    register("sizzle:toggleScene", async (req) => {
-      calls.push(`toggle:${req.captureId}`);
-      if (req.captureId === "cap_bad") {
-        return err({
-          kind: "validation",
-          code: "not_found",
-          message: "capture missing"
-        });
-      }
-      return ok({ id: "sz_1", scenes: [{ captureId: req.captureId }] });
-    });
-    register("sizzle:delete", async () => {
-      calls.push("delete");
-      return ok(undefined);
     });
 
     const result = await service().sizzleCreate(
@@ -312,7 +341,26 @@ describe("LocalAgentToolService Sizzle workflows", () => {
     );
 
     expect(result).toMatchObject({ ok: false, error: { code: "not_found" } });
-    expect(calls).toEqual(["create", "toggle:cap_1", "toggle:cap_bad", "delete"]);
+    expect(calls).toEqual([]);
+  });
+
+  test("rejects a trashed capture before creating a project", async () => {
+    const creates: string[] = [];
+    register("library:byId", async (req) =>
+      ok({ id: req.id, kind: "image", deleted_at: "2026-08-01T00:00:00.000Z" })
+    );
+    register("sizzle:create", async () => {
+      creates.push("create");
+      return ok({ id: "sz_1", scenes: [] });
+    });
+
+    const result = await service().sizzleCreate(
+      { name: "Launch", captureIds: ["cap_trashed"] },
+      context()
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(creates).toEqual([]);
   });
 
   test("keeps Sizzle follow-ups project-scoped and reports thread status", async () => {

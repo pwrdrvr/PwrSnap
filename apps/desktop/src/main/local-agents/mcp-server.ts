@@ -612,16 +612,37 @@ export class LocalAgentMcpServer {
         context
       );
       const metadata = await stat(resolved.path);
-      res.writeHead(200, {
+      const range = parseSingleByteRange(req.headers.range, metadata.size);
+      if (range === "invalid") {
+        res.writeHead(416, {
+          "cache-control": "private, no-store",
+          "content-range": `bytes */${metadata.size}`,
+          "accept-ranges": "bytes",
+          "x-content-type-options": "nosniff"
+        });
+        res.end();
+        return;
+      }
+      const start = range?.start ?? 0;
+      const end = range?.end ?? Math.max(0, metadata.size - 1);
+      const contentLength = metadata.size === 0 ? 0 : end - start + 1;
+      res.writeHead(range === null ? 200 : 206, {
         "cache-control": "private, no-store",
         "content-type": resolved.resource.mimeType,
-        "content-length": String(metadata.size),
+        "content-length": String(contentLength),
+        "accept-ranges": "bytes",
+        ...(range !== null
+          ? { "content-range": `bytes ${start}-${end}/${metadata.size}` }
+          : {}),
         "x-content-type-options": "nosniff"
       });
       await this.recordUsage(context.clientId);
       await this.auditResourceRead(resolved.resource, context.clientId, "success");
       await new Promise<void>((resolve, reject) => {
-        const stream = createReadStream(resolved.path);
+        const stream = createReadStream(
+          resolved.path,
+          range === null ? undefined : { start, end }
+        );
         stream.once("error", reject);
         res.once("close", resolve);
         stream.pipe(res);
@@ -725,75 +746,82 @@ export class LocalAgentMcpServer {
       typeof input.captureId === "string" ? input.captureId : null;
     const projectId =
       typeof input.projectId === "string" ? input.projectId : null;
-    let audit:
-      | {
-          action: LocalAgentAuditAction;
-          capability: LocalAgentCapability;
-          subjectKind: "capture" | "sizzle";
-          subjectId: string;
-        }
-      | null = null;
+    const audits: Array<{
+      action: LocalAgentAuditAction;
+      capability: LocalAgentCapability;
+      subjectKind: "capture" | "sizzle";
+      subjectId: string;
+    }> = [];
     if (
       toolName === "pwrsnap_capture_export" &&
       captureId !== null
     ) {
-      audit = {
+      audits.push({
         action: "capture.export",
         capability: "capture.export",
         subjectKind: "capture",
         subjectId: captureId
-      };
+      });
+      if ((input.variant ?? "composite") === "original") {
+        audits.push({
+          action: "capture.original.read",
+          capability: "capture.original.read",
+          subjectKind: "capture",
+          subjectId: captureId
+        });
+      }
     } else if (
       toolName === "pwrsnap_capture_delete_to_trash" &&
       captureId !== null
     ) {
-      audit = {
+      audits.push({
         action: "trash.write",
         capability: "trash.write",
         subjectKind: "capture",
         subjectId: captureId
-      };
+      });
     } else if (toolName === "pwrsnap_image_edit_send" && captureId !== null) {
-      audit = {
+      audits.push({
         action: "capture.edit",
         capability: "capture.edit",
         subjectKind: "capture",
         subjectId: captureId
-      };
+      });
     } else if (
       toolName === "pwrsnap_sizzle_render_preview" &&
       projectId !== null
     ) {
-      audit = {
+      audits.push({
         action: "sizzle.preview.read",
         capability: "sizzle.preview.read",
         subjectKind: "sizzle",
         subjectId: projectId
-      };
+      });
     } else if (
       toolName === "pwrsnap_sizzle_render_full" &&
       projectId !== null
     ) {
-      audit = {
+      audits.push({
         action: "sizzle.full.read",
         capability: "sizzle.full.read",
         subjectKind: "sizzle",
         subjectId: projectId
-      };
+      });
     }
-    if (audit === null) return;
-    try {
-      await this.auditService.record({
-        clientId: ctx.clientId,
-        ...audit,
-        outcome: result.ok ? "success" : "failure"
-      });
-    } catch (cause) {
-      log.warn("failed to record local agent audit entry", {
-        clientId: ctx.clientId,
-        action: audit.action,
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
+    for (const audit of audits) {
+      try {
+        await this.auditService.record({
+          clientId: ctx.clientId,
+          ...audit,
+          outcome: result.ok ? "success" : "failure"
+        });
+      } catch (cause) {
+        log.warn("failed to record local agent audit entry", {
+          clientId: ctx.clientId,
+          action: audit.action,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
     }
   }
 
@@ -902,6 +930,35 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function parseSingleByteRange(
+  header: string | undefined,
+  size: number
+): { start: number; end: number } | null | "invalid" {
+  if (header === undefined) return null;
+  if (size <= 0 || !header.startsWith("bytes=") || header.includes(",")) {
+    return "invalid";
+  }
+  const match = /^bytes=(\d*)-(\d*)$/u.exec(header.trim());
+  if (match === null || (match[1] === "" && match[2] === "")) return "invalid";
+  if (match[1] === "") {
+    const suffixLength = Number(match[2]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return "invalid";
+    return { start: Math.max(0, size - suffixLength), end: size - 1 };
+  }
+  const start = Number(match[1]);
+  const requestedEnd = match[2] === "" ? size - 1 : Number(match[2]);
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(requestedEnd) ||
+    start < 0 ||
+    requestedEnd < start ||
+    start >= size
+  ) {
+    return "invalid";
+  }
+  return { start, end: Math.min(requestedEnd, size - 1) };
 }
 
 function isAllowedOrigin(origin: string | undefined): boolean {

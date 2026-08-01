@@ -83,6 +83,7 @@ describe("ChatThreadStore.create / get", () => {
     expect(created.focusHistory).toEqual([]);
     expect(created.archived).toBe(false);
     expect(created.pinned).toBe(false);
+    expect(created.ownerClientId).toBeNull();
 
     const got = await store.get("thread-abc");
     expect(got).not.toBeNull();
@@ -96,6 +97,23 @@ describe("ChatThreadStore.create / get", () => {
     // attachments dir exists on disk.
     const attachmentsStat = await stat(join(chatsDir, dirName as string, "attachments"));
     expect(attachmentsStat.isDirectory()).toBe(true);
+  });
+
+  it("persists an MCP owner without changing the capture anchor", async () => {
+    const store = makeStore();
+    await store.create({
+      threadId: "owned",
+      name: "External edit",
+      anchorCaptureId: "cap-123"
+    });
+
+    store.setOwnerClientId("owned", "lag_client_a");
+
+    expect(await store.get("owned")).toMatchObject({
+      threadId: "owned",
+      anchorCaptureId: "cap-123",
+      ownerClientId: "lag_client_a"
+    });
   });
 
   it("writes the anchor in the SAME insert (one write, no follow-up update)", async () => {
@@ -305,7 +323,8 @@ describe("ChatThreadStore legacy-sidecar import", () => {
       pinned: true,
       provider: null,
       model: null,
-      reasoning: null
+      reasoning: null,
+      ownerClientId: null
     };
     await writeFile(join(legacyDir, "pwrsnap-thread.json"), JSON.stringify(sidecar), "utf8");
 
@@ -339,7 +358,8 @@ describe("ChatThreadStore legacy-sidecar import", () => {
       pinned: false,
       provider: null,
       model: null,
-      reasoning: null
+      reasoning: null,
+      ownerClientId: null
     };
     await writeFile(join(goodDir, "pwrsnap-thread.json"), JSON.stringify(good), "utf8");
     await writeFile(join(badDir, "pwrsnap-thread.json"), "this is not json {[", "utf8");

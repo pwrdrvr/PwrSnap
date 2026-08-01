@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
@@ -249,10 +249,9 @@ describe("LocalAgentGrantService", () => {
     expect(defaultSettings().localAgents.grants).toEqual([]);
   });
 
-  test("settings parser drops malformed grants and dedupes valid ids", async () => {
-    await settings.write({
-      localAgents: {
-        grants: [
+  test("settings parser quarantines malformed or duplicate grants", async () => {
+    const raw = defaultSettings();
+    raw.localAgents.grants = [
           {
             id: "lag_a",
             name: "Agent A",
@@ -280,25 +279,47 @@ describe("LocalAgentGrantService", () => {
             lastUsedAt: null,
             revokedAt: null
           }
-        ]
-      }
-    });
+        ];
+    writeFileSync(settings.getFilePath(), JSON.stringify(raw), "utf8");
 
     const reread = await settings.read();
-    expect(reread.localAgents.grants).toEqual([
-      {
-        id: "lag_a",
-        name: "Agent A",
-        capabilities: ["library.read"],
-        createdAt: "2026-06-07T12:00:00.000Z",
-        updatedAt: "2026-06-07T12:00:00.000Z",
-        lastUsedAt: null,
-        revokedAt: null
-      }
-    ]);
+    expect(reread.localAgents.grants).toEqual([]);
+    expect(readdirSync(workDir).some((name) => name.includes("corrupt-"))).toBe(true);
   });
 
-  test("settings parser retains valid OAuth metadata and drops mismatched metadata", async () => {
+  test("settings parser quarantines malformed audit state and preserves the source file", async () => {
+    const raw = defaultSettings();
+    (raw.localAgents as { audit: unknown[] }).audit = [
+      {
+        id: "lae_valid",
+        clientId: "lag_a",
+        action: "capture.export",
+        capability: "capture.export",
+        subjectKind: "capture",
+        subjectId: "cap_preserved",
+        outcome: "success",
+        occurredAt: "2026-06-07T12:00:00.000Z"
+      },
+      {
+        id: "lae_invalid",
+        clientId: "lag_a",
+        action: "capture.original.read",
+        capability: "library.read",
+        subjectKind: "capture",
+        subjectId: "cap_invalid",
+        outcome: "success",
+        occurredAt: "2026-06-07T12:00:00.000Z"
+      }
+    ];
+    writeFileSync(settings.getFilePath(), JSON.stringify(raw), "utf8");
+
+    expect((await settings.read()).localAgents.audit).toEqual([]);
+    const quarantine = readdirSync(workDir).find((name) => name.includes("corrupt-"));
+    expect(quarantine).toBeDefined();
+    expect(readFileSync(join(workDir, quarantine!), "utf8")).toContain("cap_preserved");
+  });
+
+  test("settings parser quarantines mismatched OAuth metadata without dropping it silently", async () => {
     const baseGrant = {
       id: "lag_oauth",
       name: "Codex",
@@ -333,13 +354,12 @@ describe("LocalAgentGrantService", () => {
       }
     });
 
-    const grants = (await settings.read()).localAgents.grants;
-    expect(grants[0]?.oauthClient).toEqual(oauthClient);
-    expect(grants[1]).not.toHaveProperty("oauthClient");
+    expect((await settings.read()).localAgents.grants).toEqual([]);
+    expect(readdirSync(workDir).some((name) => name.includes("corrupt-"))).toBe(true);
   });
 
   test("command bus carries local-agent identity without affecting IPC callers", async () => {
-    const command = "__test:localAgentContext";
+    const command = "library:list";
     const handler = vi.fn(async (_req, ctx) => ({
       ok: true as const,
       value: {
@@ -349,7 +369,11 @@ describe("LocalAgentGrantService", () => {
     }));
     // Register a one-off command name by bypassing the compile-time
     // command map. This test only verifies CommandBus context plumbing.
-    bus.register(command as never, handler as never);
+    bus.installLocalAgentAuthorizer(async (clientId) => ({
+      clientId,
+      capabilities: ["library.read"]
+    }));
+    bus.register(command, handler as never);
     const withAgent = await bus.dispatch(command as never, {} as never, {
       principal: "mcp",
       localAgent: {
@@ -367,6 +391,7 @@ describe("LocalAgentGrantService", () => {
       }
     });
 
-    bus.unregister(command as never);
+    bus.unregister(command);
+    bus.uninstallLocalAgentAuthorizerForTests();
   });
 });

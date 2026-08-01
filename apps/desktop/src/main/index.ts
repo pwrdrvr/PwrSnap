@@ -1762,6 +1762,9 @@ export function bootstrapApp(): void {
     if (role !== "agent") {
       registerExportHandler();
     }
+    bus.installLocalAgentAuthorizer((clientId) =>
+      getLocalAgentGrantService().authorizeClient(clientId)
+    );
     registerIpcDispatcher();
     markStartup("main: handlers registered");
     // ── Cross-process bridge wiring (split mode only, §D2/§D4) ─────

@@ -37,6 +37,7 @@ import {
   type LocalAgentMcpServerAddress
 } from "../mcp-server";
 import { LocalAgentSignedUrlService } from "../signed-url";
+import { LocalAgentOAuthProvider } from "../local-agent-oauth";
 import type { LocalAgentMcpTool } from "../mcp-tool-registry";
 
 let workDir = "";
@@ -239,11 +240,29 @@ async function approveAndExchange(
     oauthClient,
     requestedScopes
   );
-  authorizationUrl.searchParams.set("pwrsnap_decision", "allow");
+  const consent = await fetch(authorizationUrl);
+  expect(consent.status).toBe(200);
+  const page = await consent.text();
+  const transactionId = /name="consent_transaction" value="([^"]+)"/u.exec(page)?.[1];
+  expect(transactionId).toBeDefined();
+  const cookie = consent.headers.get("set-cookie")?.split(";", 1)[0];
+  expect(cookie).toMatch(/^pwrsnap_consent=/u);
+  const decision = new URLSearchParams({
+    consent_transaction: transactionId ?? "",
+    pwrsnap_decision: "allow"
+  });
   for (const capability of capabilities) {
-    authorizationUrl.searchParams.append("capability", capability);
+    decision.append("capability", capability);
   }
-  const authorized = await fetch(authorizationUrl, { redirect: "manual" });
+  const authorized = await fetch(address.authorizationUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      cookie: cookie ?? ""
+    },
+    body: decision,
+    redirect: "manual"
+  });
   expect(authorized.status).toBe(302);
   const callback = new URL(authorized.headers.get("location") ?? "");
   expect(callback.origin + callback.pathname).toBe(OAUTH_CALLBACK);
@@ -445,6 +464,9 @@ describe("LocalAgentMcpServer", () => {
     expect(page).toContain("may reveal content hidden by crops or redactions");
     expect(page).toContain("Changes captures by sending edit instructions");
     expect(page).not.toContain("· sensitive");
+    expect(page).toContain('<form method="post" action="/authorize">');
+    expect(page).toContain('name="consent_transaction"');
+    expect(page).not.toContain('name="client_id"');
 
     const accessToken = await approveAndExchange(
       address,
@@ -590,12 +612,134 @@ describe("LocalAgentMcpServer", () => {
     const authorizationUrl = makeAuthorizationUrl(address, oauthClient, [
       "capture.original.read"
     ]);
-    authorizationUrl.searchParams.set("pwrsnap_decision", "deny");
-    const denied = await fetch(authorizationUrl, { redirect: "manual" });
+    const consent = await fetch(authorizationUrl);
+    const page = await consent.text();
+    const transactionId = /name="consent_transaction" value="([^"]+)"/u.exec(page)?.[1];
+    const cookie = consent.headers.get("set-cookie")?.split(";", 1)[0];
+    const denied = await fetch(address.authorizationUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: cookie ?? ""
+      },
+      body: new URLSearchParams({
+        consent_transaction: transactionId ?? "",
+        pwrsnap_decision: "deny"
+      }),
+      redirect: "manual"
+    });
     expect(denied.status).toBe(302);
     const callback = new URL(denied.headers.get("location") ?? "");
     expect(callback.searchParams.get("error")).toBe("access_denied");
     expect(await grantService.list()).toEqual([]);
+  });
+
+  test("rejects forged, browser-mismatched, and replayed consent decisions", async () => {
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0
+    });
+    const address = await server.start();
+    const oauthClient = await registerOAuthClient(address, "Forging Agent");
+
+    const forgedUrl = makeAuthorizationUrl(address, oauthClient, ["library.read"]);
+    forgedUrl.searchParams.set("pwrsnap_decision", "allow");
+    forgedUrl.searchParams.append("capability", "trash.write");
+    const forged = await fetch(forgedUrl, { redirect: "manual" });
+    expect(forged.status).toBe(400);
+    expect(await forged.json()).toMatchObject({ error: "invalid_request" });
+    expect(await grantService.list()).toEqual([]);
+
+    const consent = await fetch(makeAuthorizationUrl(address, oauthClient));
+    const page = await consent.text();
+    const transactionId = /name="consent_transaction" value="([^"]+)"/u.exec(page)?.[1] ?? "";
+    const cookie = consent.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
+    const decision = new URLSearchParams({
+      consent_transaction: transactionId,
+      pwrsnap_decision: "allow",
+      capability: "library.read"
+    });
+
+    const mismatchedBrowser = await fetch(address.authorizationUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: decision,
+      redirect: "manual"
+    });
+    expect(mismatchedBrowser.status).toBe(400);
+
+    const approved = await fetch(address.authorizationUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie
+      },
+      body: decision,
+      redirect: "manual"
+    });
+    expect(approved.status).toBe(302);
+
+    const replayed = await fetch(address.authorizationUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie
+      },
+      body: decision,
+      redirect: "manual"
+    });
+    expect(replayed.status).toBe(400);
+    expect(await replayed.json()).toMatchObject({ error: "invalid_request" });
+  });
+
+  test("expires server-issued consent transactions before a decision", async () => {
+    let nowMs = Date.parse("2026-08-01T12:00:00.000Z");
+    const resourceUrl = new URL("http://127.0.0.1:51729/mcp");
+    const provider = new LocalAgentOAuthProvider({
+      grantService,
+      resourceUrl,
+      now: () => new Date(nowMs),
+      makeClientId: () => "lag_expiring_consent",
+      makeConsentId: () => "consent_expiring"
+    });
+    const oauthClient = await provider.clientsStore.registerClient?.({
+      client_name: "Expiring Agent",
+      redirect_uris: [OAUTH_CALLBACK],
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code"],
+      response_types: ["code"]
+    });
+    expect(oauthClient).toBeDefined();
+    const result = await provider.handleAuthorizationRequest(
+      makeAuthorizationUrl(
+        {
+          host: "127.0.0.1",
+          port: 51_729,
+          url: resourceUrl.href,
+          authorizationUrl: "http://127.0.0.1:51729/authorize"
+        },
+        oauthClient as RegisteredOAuthClient
+      )
+    );
+    expect(result).toMatchObject({
+      kind: "consent",
+      transactionId: "consent_expiring"
+    });
+
+    nowMs += 5 * 60_000 + 1;
+    expect(provider.handleConsentDecision({
+      transactionId: "consent_expiring",
+      decision: "allow",
+      capabilities: ["library.read"]
+    })).toMatchObject({
+      kind: "error",
+      status: 400,
+      error: "invalid_request"
+    });
   });
 
   test("rejects requests outside known routes and with an alternate Host", async () => {

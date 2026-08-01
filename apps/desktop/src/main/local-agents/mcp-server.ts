@@ -266,8 +266,27 @@ export class LocalAgentMcpServer {
           }
         });
       });
-      app.post("/authorize", (_req: ExpressRequest, res: ExpressResponse) => {
-        res.status(405).set("allow", "GET").json({ error: "method_not_allowed" });
+      app.post("/authorize", (req: ExpressRequest, res: ExpressResponse) => {
+        void this.handleConsentDecisionRequest(req, res).catch((cause) => {
+          log.warn("OAuth consent decision failed", {
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+          if (!res.headersSent) {
+            clearConsentCookie(res);
+            writeJsonResponse(
+              res,
+              cause instanceof RequestBodyTooLargeError ? 413 : 500,
+              {
+                error:
+                  cause instanceof RequestBodyTooLargeError
+                    ? "request_too_large"
+                    : "server_error"
+              }
+            );
+          } else if (!res.writableEnded) {
+            res.end();
+          }
+        });
       });
       app.use("/token", tokenHandler({ provider: this.oauth }));
       app.use(
@@ -516,8 +535,55 @@ export class LocalAgentMcpServer {
       res,
       200,
       renderConsentPage(result),
-      result.params.redirectUri
+      result.params.redirectUri,
+      result.transactionId
     );
+  }
+
+  private async handleConsentDecisionRequest(
+    req: IncomingMessage,
+    res: ServerResponse
+  ): Promise<void> {
+    const oauth = this.oauth;
+    if (oauth === null) {
+      writeJsonResponse(res, 503, { error: "authorization_unavailable" });
+      return;
+    }
+    if (!req.headers["content-type"]?.startsWith("application/x-www-form-urlencoded")) {
+      writeJsonResponse(res, 415, { error: "unsupported_media_type" });
+      return;
+    }
+    const form = new URLSearchParams((await readRequestBody(req)).toString("utf8"));
+    const transactionId = form.get("consent_transaction") ?? "";
+    if (
+      transactionId.length === 0 ||
+      readCookie(req, "pwrsnap_consent") !== transactionId
+    ) {
+      writeJsonResponse(res, 400, {
+        error: "invalid_request",
+        error_description: "Consent transaction is missing or does not match this browser"
+      });
+      return;
+    }
+    const result = oauth.handleConsentDecision({
+      transactionId,
+      decision: form.get("pwrsnap_decision") ?? "",
+      capabilities: form.getAll("capability")
+    });
+    clearConsentCookie(res);
+    if (result.kind === "redirect") {
+      res.writeHead(302, { location: result.url, "cache-control": "no-store" });
+      res.end();
+      return;
+    }
+    if (result.kind === "error") {
+      writeJsonResponse(res, result.status, {
+        error: result.error,
+        error_description: result.description
+      });
+      return;
+    }
+    writeJsonResponse(res, 500, { error: "server_error" });
   }
 
   private async handleMediaRequest(
@@ -759,13 +825,6 @@ class RequestBodyTooLargeError extends Error {}
 type ConsentResult = Extract<LocalAgentAuthorizationResult, { kind: "consent" }>;
 
 function renderConsentPage(result: ConsentResult): string {
-  const hidden = [...result.requestUrl.searchParams.entries()]
-    .filter(([name]) => name !== "pwrsnap_decision" && name !== "capability")
-    .map(
-      ([name, value]) =>
-        `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`
-    )
-    .join("\n");
   const requested = new Set(result.requestedCapabilities);
   const permissions = LOCAL_AGENT_CAPABILITIES.map((capability) => {
     return `<label class="permission">
@@ -819,8 +878,8 @@ function renderConsentPage(result: ConsentResult): string {
     <div class="brand">Pwr<span>Snap</span></div>
     <h1>${escapeHtml(clientName)} wants to access PwrSnap</h1>
     <p class="intro">Your PwrSnap library can contain private screen content. Choose exactly what this local agent may search, read, create, or change. You can revoke access later in PwrSnap Settings.</p>
-    <form method="get" action="/authorize">
-      ${hidden}
+    <form method="post" action="/authorize">
+      <input type="hidden" name="consent_transaction" value="${escapeHtml(result.transactionId)}">
       <fieldset>
         <legend>Permissions</legend>
         <div class="permissions">${permissions}</div>
@@ -878,7 +937,8 @@ function writeHtmlResponse(
   response: ServerResponse,
   statusCode: number,
   body: string,
-  redirectUri: string
+  redirectUri: string,
+  consentTransactionId: string
 ): void {
   const callbackUrl = new URL(redirectUri);
   const callbackAction =
@@ -890,10 +950,40 @@ function writeHtmlResponse(
       `default-src 'none'; style-src 'unsafe-inline'; img-src data:; ` +
       `form-action 'self' ${callbackAction}; base-uri 'none'; frame-ancestors 'none'`,
     "referrer-policy": "no-referrer",
+    "set-cookie": consentCookie(consentTransactionId),
     "x-content-type-options": "nosniff",
     "x-frame-options": "DENY"
   });
   response.end(body);
+}
+
+function consentCookie(transactionId: string): string {
+  return (
+    `pwrsnap_consent=${encodeURIComponent(transactionId)}; ` +
+    "HttpOnly; SameSite=Strict; Path=/authorize; Max-Age=300"
+  );
+}
+
+function clearConsentCookie(response: ServerResponse): void {
+  response.setHeader(
+    "set-cookie",
+    "pwrsnap_consent=; HttpOnly; SameSite=Strict; Path=/authorize; Max-Age=0"
+  );
+}
+
+function readCookie(request: IncomingMessage, name: string): string | null {
+  const header = request.headers.cookie;
+  if (typeof header !== "string") return null;
+  for (const item of header.split(";")) {
+    const separator = item.indexOf("=");
+    if (separator < 0 || item.slice(0, separator).trim() !== name) continue;
+    try {
+      return decodeURIComponent(item.slice(separator + 1).trim());
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 async function toWebRequest(request: IncomingMessage, url: URL): Promise<Request> {

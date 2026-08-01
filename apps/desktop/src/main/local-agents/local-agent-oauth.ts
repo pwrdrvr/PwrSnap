@@ -28,7 +28,9 @@ import {
 import type { LocalAgentGrantService } from "./local-agent-grants";
 
 const AUTHORIZATION_CODE_TTL_MS = 5 * 60 * 1_000;
+const CONSENT_TRANSACTION_TTL_MS = 5 * 60 * 1_000;
 const MAX_PENDING_CODES = 64;
+const MAX_PENDING_CONSENTS = 64;
 const MAX_PENDING_CLIENTS = 64;
 const DEFAULT_CAPABILITIES: readonly LocalAgentCapability[] = [
   "library.read",
@@ -47,6 +49,13 @@ type AuthorizationCodeRecord = {
   expiresAtMs: number;
 };
 
+type ConsentTransactionRecord = {
+  client: OAuthClientInformationFull;
+  params: AuthorizationParams;
+  requestedCapabilities: LocalAgentCapability[];
+  expiresAtMs: number;
+};
+
 export type LocalAgentAuthorizationGrant = {
   client: OAuthClientInformationFull;
   params: AuthorizationParams;
@@ -59,7 +68,7 @@ export type LocalAgentAuthorizationResult =
       client: OAuthClientInformationFull;
       params: AuthorizationParams;
       requestedCapabilities: readonly LocalAgentCapability[];
-      requestUrl: URL;
+      transactionId: string;
     }
   | { kind: "redirect"; url: string }
   | { kind: "error"; status: number; error: string; description: string };
@@ -152,7 +161,9 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
   private readonly resourceUrl: URL;
   private readonly now: () => Date;
   private readonly makeCode: () => string;
+  private readonly makeConsentId: () => string;
   private readonly codes = new Map<string, AuthorizationCodeRecord>();
+  private readonly consents = new Map<string, ConsentTransactionRecord>();
 
   constructor(options: {
     grantService: OAuthGrantService;
@@ -160,11 +171,14 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
     now?: () => Date;
     makeClientId?: () => string;
     makeCode?: () => string;
+    makeConsentId?: () => string;
   }) {
     this.grantService = options.grantService;
     this.resourceUrl = new URL(options.resourceUrl.href);
     this.now = options.now ?? (() => new Date());
     this.makeCode = options.makeCode ?? (() => randomBytes(32).toString("base64url"));
+    this.makeConsentId =
+      options.makeConsentId ?? (() => randomBytes(32).toString("base64url"));
     this.clientsStore = new LocalAgentOAuthClientsStore({
       grantService: this.grantService,
       now: this.now,
@@ -241,25 +255,60 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
     };
     const state = url.searchParams.get("state");
     if (state !== null) params.state = state;
-    const decision = url.searchParams.get("pwrsnap_decision");
-    if (decision === null) {
-      return {
-        kind: "consent",
-        client,
-        params,
-        requestedCapabilities: requested as LocalAgentCapability[],
-        requestUrl: new URL(url.href)
-      };
+    if (
+      url.searchParams.has("pwrsnap_decision") ||
+      url.searchParams.has("capability") ||
+      url.searchParams.has("consent_transaction")
+    ) {
+      return oauthError(
+        400,
+        "invalid_request",
+        "Consent decisions require a server-issued browser transaction"
+      );
     }
-    if (decision !== "allow") {
+    const requestedCapabilities = requested as LocalAgentCapability[];
+    const transactionId = this.createConsentTransaction({
+      client,
+      params,
+      requestedCapabilities
+    });
+    return {
+      kind: "consent",
+      client,
+      params,
+      requestedCapabilities,
+      transactionId
+    };
+  }
+
+  handleConsentDecision(input: {
+    transactionId: string;
+    decision: string;
+    capabilities: readonly string[];
+  }): LocalAgentAuthorizationResult {
+    this.pruneConsents();
+    const transaction = this.consents.get(input.transactionId);
+    if (transaction === undefined) {
+      return oauthError(
+        400,
+        "invalid_request",
+        "Consent transaction is invalid, expired, or already used"
+      );
+    }
+    this.consents.delete(input.transactionId);
+    const state = transaction.params.state ?? null;
+    if (input.decision === "deny") {
       return oauthRedirectError(
-        redirectUri,
+        transaction.params.redirectUri,
         state,
         "access_denied",
         "The user denied access to PwrSnap"
       );
     }
-    const selected = [...new Set(url.searchParams.getAll("capability"))];
+    if (input.decision !== "allow") {
+      return oauthError(400, "invalid_request", "Consent decision is invalid");
+    }
+    const selected = [...new Set(input.capabilities)];
     if (!selected.every(isLocalAgentCapability)) {
       return oauthError(400, "invalid_scope", "An unknown PwrSnap permission was selected");
     }
@@ -267,11 +316,35 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
     if (capabilities.length === 0) {
       return oauthError(400, "invalid_scope", "Select at least one PwrSnap permission");
     }
-    const code = this.createAuthorizationCode({ client, params, capabilities });
-    const callback = new URL(redirectUri);
+    const code = this.createAuthorizationCode({
+      client: transaction.client,
+      params: transaction.params,
+      capabilities
+    });
+    const callback = new URL(transaction.params.redirectUri);
     callback.searchParams.set("code", code);
     if (state !== null) callback.searchParams.set("state", state);
     return { kind: "redirect", url: callback.href };
+  }
+
+  private createConsentTransaction(input: {
+    client: OAuthClientInformationFull;
+    params: AuthorizationParams;
+    requestedCapabilities: LocalAgentCapability[];
+  }): string {
+    this.pruneConsents();
+    if (this.consents.size >= MAX_PENDING_CONSENTS) {
+      const oldest = this.consents.keys().next().value as string | undefined;
+      if (oldest !== undefined) this.consents.delete(oldest);
+    }
+    const transactionId = this.makeConsentId();
+    this.consents.set(transactionId, {
+      client: input.client,
+      params: input.params,
+      requestedCapabilities: [...input.requestedCapabilities],
+      expiresAtMs: this.now().getTime() + CONSENT_TRANSACTION_TTL_MS
+    });
+    return transactionId;
   }
 
   createAuthorizationCode(grant: LocalAgentAuthorizationGrant): string {
@@ -387,6 +460,13 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
     const now = this.now().getTime();
     for (const [code, record] of this.codes) {
       if (record.expiresAtMs <= now) this.codes.delete(code);
+    }
+  }
+
+  private pruneConsents(): void {
+    const now = this.now().getTime();
+    for (const [transactionId, record] of this.consents) {
+      if (record.expiresAtMs <= now) this.consents.delete(transactionId);
     }
   }
 }

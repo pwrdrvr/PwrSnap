@@ -353,7 +353,10 @@ export class LocalAgentMcpServer {
       { name: "PwrSnap", version: "1.0.0" },
       {
         instructions:
-          "Use PwrSnap tools only for captures and sizzle assets the user authorized for this local client."
+          "Use PwrSnap tools only for captures and sizzle assets the user authorized for this local client. " +
+          "Media tools return both a capability-protected MCP resource URI and a five-minute signed localhost URL. " +
+          "Prefer the signed URL when the client can consume binary URLs; otherwise use MCP resources/read. " +
+          "Never log, persist, or share a signed media URL."
       }
     );
     this.registerTools(mcp);
@@ -363,23 +366,33 @@ export class LocalAgentMcpServer {
 
   private registerResources(mcp: McpServer): void {
     const templates = [
-      ["capture-composite", "pwrsnap://capture/{captureId}/composite"],
-      ["capture-original", "pwrsnap://capture/{captureId}/original"],
-      ["capture-export", "pwrsnap://capture/{captureId}/export/{exportId}"],
+      ["capture-composite", "pwrsnap://capture/{captureId}/composite", "image/png"],
+      ["capture-original", "pwrsnap://capture/{captureId}/original", "image/png"],
+      [
+        "capture-export",
+        "pwrsnap://capture/{captureId}/export/{exportId}",
+        "application/octet-stream"
+      ],
       [
         "capture-edit-preview",
-        "pwrsnap://capture/{captureId}/edit/{threadId}/composite"
+        "pwrsnap://capture/{captureId}/edit/{threadId}/composite",
+        "image/png"
       ],
-      ["sizzle-render", "pwrsnap://sizzle/{projectId}/{mode}/{renderId}"]
+      [
+        "sizzle-render",
+        "pwrsnap://sizzle/{projectId}/{mode}/{renderId}",
+        "video/mp4"
+      ]
     ] as const;
-    for (const [name, template] of templates) {
+    for (const [name, template, mimeType] of templates) {
       mcp.registerResource(
         name,
         new ResourceTemplate(template, { list: undefined }),
         {
           title: `PwrSnap ${name}`,
-          description: "Capability-protected local PwrSnap media",
-          mimeType: "application/octet-stream"
+          description:
+            "Capability-protected local PwrSnap media. The concrete resource read revalidates the client grant before returning bytes.",
+          mimeType
         },
         async (uri, _variables, extra) => {
           const auth = this.authFromExtra(extra);

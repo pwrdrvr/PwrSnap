@@ -5,6 +5,11 @@ import { z } from "zod";
 import type { CommandContext } from "../command-bus";
 import type { LocalAgentSearchInput } from "./local-agent-search";
 
+const MEDIA_DELIVERY_GUIDANCE =
+  "Returns an MCP resource URI and a five-minute signed localhost URL. " +
+  "Prefer the signed URL for binary media consumers; use the resource URI with MCP resources/read. " +
+  "Treat the signed URL as a temporary bearer secret and do not log or share it.";
+
 export type LocalAgentToolContext = {
   clientId: string;
   capabilities: readonly LocalAgentCapability[];
@@ -185,6 +190,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false
     },
     dispatch: async (input, ctx) => deps.search(input, ctx)
@@ -200,6 +206,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
     annotations: {
       readOnlyHint: false,
       destructiveHint: true,
+      idempotentHint: true,
       openWorldHint: false
     },
     dispatch: async (input, ctx) => deps.deleteToTrash(input, ctx)
@@ -216,6 +223,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
+        idempotentHint: true,
         openWorldHint: false
       },
       dispatch: deps.metadata
@@ -225,7 +233,9 @@ export function createDefaultLocalAgentMcpTools(deps: {
     tools.push({
       name: "pwrsnap_capture_resource",
       title: "Get PwrSnap Capture Resource",
-      description: "Prepare the current edited composite by default, or the sensitive original when granted.",
+      description:
+        "Prepare the content-bearing current edited composite by default, or the original when separately granted. " +
+        MEDIA_DELIVERY_GUIDANCE,
       inputSchema: {
         captureId: z.string().min(1),
         variant: z.enum(["composite", "original"]).optional()
@@ -239,6 +249,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
+        idempotentHint: true,
         openWorldHint: false
       },
       dispatch: deps.captureResource
@@ -248,7 +259,9 @@ export function createDefaultLocalAgentMcpTools(deps: {
     tools.push({
       name: "pwrsnap_capture_export",
       title: "Export PwrSnap Capture",
-      description: "Resize or convert an edited composite or original image to PNG, JPEG, WebP, PDF, or HEIC.",
+      description:
+        "Resize or convert a permitted edited composite or original image to PNG, JPEG, WebP, PDF, or HEIC. " +
+        MEDIA_DELIVERY_GUIDANCE,
       inputSchema: {
         captureId: z.string().min(1),
         variant: z.enum(["composite", "original"]).optional(),
@@ -266,8 +279,9 @@ export function createDefaultLocalAgentMcpTools(deps: {
           : "capture.composite.read"
       ],
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
+        idempotentHint: true,
         openWorldHint: false
       },
       dispatch: deps.captureExport
@@ -290,7 +304,8 @@ export function createDefaultLocalAgentMcpTools(deps: {
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        openWorldHint: false
+        idempotentHint: false,
+        openWorldHint: true
       },
       dispatch: deps.imageEditSend
     });
@@ -299,7 +314,9 @@ export function createDefaultLocalAgentMcpTools(deps: {
     tools.push({
       name: "pwrsnap_image_edit_status",
       title: "Check PwrSnap Image Edit",
-      description: "Check a capture-scoped edit thread and retrieve its protected composite once the turn is complete.",
+      description:
+        "Check a capture-scoped edit thread and retrieve its protected composite once the turn is complete. " +
+        MEDIA_DELIVERY_GUIDANCE,
       inputSchema: {
         captureId: z.string().min(1),
         threadId: z.string().min(1)
@@ -308,6 +325,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
+        idempotentHint: true,
         openWorldHint: false
       },
       dispatch: deps.imageEditStatus
@@ -329,7 +347,8 @@ export function createDefaultLocalAgentMcpTools(deps: {
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        openWorldHint: false
+        idempotentHint: false,
+        openWorldHint: true
       },
       dispatch: deps.sizzleCreate
     });
@@ -348,7 +367,8 @@ export function createDefaultLocalAgentMcpTools(deps: {
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        openWorldHint: false
+        idempotentHint: false,
+        openWorldHint: true
       },
       dispatch: deps.sizzleSend
     });
@@ -366,6 +386,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
+        idempotentHint: true,
         openWorldHint: false
       },
       dispatch: deps.sizzleStatus
@@ -375,13 +396,16 @@ export function createDefaultLocalAgentMcpTools(deps: {
     tools.push({
       name: "pwrsnap_sizzle_render_preview",
       title: "Render PwrSnap Sizzle Preview",
-      description: "Render a low-resolution Sizzle preview and return a protected media resource.",
+      description:
+        "Render a low-resolution Sizzle preview and return protected media. " +
+        MEDIA_DELIVERY_GUIDANCE,
       inputSchema: { projectId: z.string().min(1) },
       requiredCapabilities: ["sizzle.preview.read"],
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
-        openWorldHint: false
+        idempotentHint: false,
+        openWorldHint: true
       },
       dispatch: deps.sizzleRenderPreview
     });
@@ -390,13 +414,16 @@ export function createDefaultLocalAgentMcpTools(deps: {
     tools.push({
       name: "pwrsnap_sizzle_render_full",
       title: "Render Full PwrSnap Sizzle Reel",
-      description: "Render a full-resolution Sizzle reel and return a protected media resource.",
+      description:
+        "Render a full-resolution Sizzle reel and return protected media. " +
+        MEDIA_DELIVERY_GUIDANCE,
       inputSchema: { projectId: z.string().min(1) },
       requiredCapabilities: ["sizzle.full.read"],
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
-        openWorldHint: false
+        idempotentHint: false,
+        openWorldHint: true
       },
       dispatch: deps.sizzleRenderFull
     });

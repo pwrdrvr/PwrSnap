@@ -132,4 +132,65 @@ describe("createDefaultLocalAgentMcpTools", () => {
     const captureExport = tools.find((tool) => tool.name === "pwrsnap_capture_export");
     expect(captureExport?.requiredCapabilities).toEqual(["capture.export"]);
   });
+
+  test("annotations distinguish reads, artifact creation, AI access, and Trash", () => {
+    const noop = async () => ok({});
+    const tools = createDefaultLocalAgentMcpTools({
+      search: noop,
+      deleteToTrash: noop,
+      metadata: noop,
+      captureResource: noop,
+      captureExport: noop,
+      imageEditSend: noop,
+      imageEditStatus: noop,
+      sizzleCreate: noop,
+      sizzleSend: noop,
+      sizzleStatus: noop,
+      sizzleRenderPreview: noop,
+      sizzleRenderFull: noop
+    });
+    const annotations = Object.fromEntries(
+      tools.map((tool) => [tool.name, tool.annotations])
+    );
+
+    for (const tool of tools) {
+      expect(tool.annotations).toEqual(expect.objectContaining({
+        readOnlyHint: expect.any(Boolean),
+        destructiveHint: expect.any(Boolean),
+        idempotentHint: expect.any(Boolean),
+        openWorldHint: expect.any(Boolean)
+      }));
+    }
+
+    expect(annotations.pwrsnap_library_search).toMatchObject({
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    });
+    expect(annotations.pwrsnap_capture_export).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    });
+    expect(annotations.pwrsnap_image_edit_send).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true
+    });
+    expect(annotations.pwrsnap_capture_delete_to_trash).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false
+    });
+    expect(annotations.pwrsnap_sizzle_render_full).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true
+    });
+  });
 });

@@ -236,8 +236,13 @@ toggles even when a broad preset is selected.
 - `pwrsnap_library_search`
   - Requires: `library.read`
   - Wraps: `library:search`
-  - Returns: compact rows with capture id, kind, title, description, snippet,
-    source app, dimensions, captured time.
+  - Returns structural summary rows by default. Callers opt into `detail:
+    "enriched"` to receive generated titles, descriptions, tags, and match
+    snippets. This keeps unqualified listing calls from disclosing indexed
+    content unnecessarily.
+  - Source-app filters expose string bundle IDs plus an explicit
+    `includeCapturesWithoutSourceApp` flag; the internal nullable-ID encoding
+    does not leak into the MCP schema.
 
 - `pwrsnap_capture_metadata`
   - Requires: `library.read`
@@ -247,7 +252,8 @@ toggles even when a broad preset is selected.
 
 - `pwrsnap_capture_resource`
   - Requires: `capture.composite.read` or `capture.original.read`
-  - Returns: MCP resource URI for `variant: "composite" | "original"`.
+  - Returns: MCP resource URI and a five-minute signed localhost URL for
+    `variant: "composite" | "original"`.
   - Default variant is `composite`.
 
 - `pwrsnap_capture_export`
@@ -308,11 +314,15 @@ toggles even when a broad preset is selected.
 - `pwrsnap://capture/{captureId}/composite`
 - `pwrsnap://capture/{captureId}/original`
 - `pwrsnap://capture/{captureId}/export/{exportId}`
-- `pwrsnap://sizzle/{projectId}/preview/{renderId}`
-- `pwrsnap://sizzle/{projectId}/render/{renderId}`
+- `pwrsnap://capture/{captureId}/edit/{threadId}/composite`
+- `pwrsnap://sizzle/{projectId}/{mode}/{renderId}`
 
 Resource handlers re-check capability on read. A tool returning a resource URI
 does not make the bytes readable after a grant is revoked.
+
+Tool descriptions direct binary-capable clients to prefer the short-lived
+signed URL and use MCP `resources/read` as the protocol fallback. Signed URLs
+are bearer secrets and must not be logged, persisted, or shared.
 
 ---
 

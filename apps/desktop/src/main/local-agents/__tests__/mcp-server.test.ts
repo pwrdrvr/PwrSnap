@@ -88,6 +88,7 @@ function toolSet(): LocalAgentMcpTool<z.ZodRawShape>[] {
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
+        idempotentHint: true,
         openWorldHint: false
       },
       dispatch: async (input, ctx) =>
@@ -109,6 +110,7 @@ function toolSet(): LocalAgentMcpTool<z.ZodRawShape>[] {
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
+        idempotentHint: true,
         openWorldHint: false
       },
       dispatch: async (input, ctx) =>
@@ -309,9 +311,34 @@ describe("LocalAgentMcpServer", () => {
 
     const search = tools.tools.find((tool) => tool.name === "pwrsnap_library_search");
     const trash = tools.tools.find((tool) => tool.name === "pwrsnap_capture_delete_to_trash");
-    expect(search?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(search?.annotations).toMatchObject({
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    });
     expect(search?.inputSchema.properties).toHaveProperty("query");
     expect(trash?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+  });
+
+  test("advertises concrete MIME types for protected media templates", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["capture.composite.read", "sizzle.preview.read"]
+    });
+    const connected = await connect(await startServer(), "pws_local_mcp-token");
+
+    const resources = await connected.listResourceTemplates();
+    expect(resources.resourceTemplates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        uriTemplate: "pwrsnap://capture/{captureId}/composite",
+        mimeType: "image/png"
+      }),
+      expect.objectContaining({
+        uriTemplate: "pwrsnap://sizzle/{projectId}/{mode}/{renderId}",
+        mimeType: "video/mp4"
+      })
+    ]));
   });
 
   test("authorized client with library.read can search but cannot delete without trash.write", async () => {

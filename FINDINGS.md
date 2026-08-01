@@ -6,11 +6,26 @@
 
 **Audited head:** `80ae3d76f8bbbd461460ac6c7292b66166014e5f`
 
+**Re-audited head:** `9b6e9ab79a9fc8dc5ac116aade555c0125acb60a`
+
 **Base:** `origin/main` at `70213172a1cf5dd9f28e080ded912665230bf8b2`
 
 **Pull request:** [#216 — `feat(desktop): expose PwrSnap to local agents`](https://github.com/pwrdrvr/PwrSnap/pull/216)
 
-## Verdict
+## Current Verdict
+
+**Merge from the audited MCP security and workflow perspective.**
+
+The independent recheck at signed head `9b6e9ab7` verified that both remaining
+blockers are resolved: OAuth approval now requires trusted user presence in a
+PwrSnap-owned native window, and image-edit tools require permission to read
+the protected composite they return. Live MCP authentication, the 12-tool
+surface, minimized default search, focused remediation tests, and all GitHub
+CI lanes were also verified.
+
+No blocking audit findings remain.
+
+## Original Verdict At Audited Head
 
 **Do not merge until the Critical and High findings are fixed.**
 

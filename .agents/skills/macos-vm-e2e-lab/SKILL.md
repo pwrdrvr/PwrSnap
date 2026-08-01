@@ -1,0 +1,212 @@
+---
+name: macos-vm-e2e-lab
+description: >-
+  Set up and operate the PwrSnap macOS VM lab: Tart-based macOS VMs on
+  Apple Silicon for running the desktop Playwright E2E suite off-desktop
+  (no window flashing / focus stealing on the host), plus ephemeral,
+  network-isolated self-hosted GitHub Actions runners that serve the
+  "macOS Desktop E2E (self-hosted VM)" CI lane. Use this skill whenever
+  the user wants to: set up this lab on a new Mac, run E2E tests in a VM,
+  fix a broken VM/runner, register or serve GHA runner jobs, understand
+  softnet network isolation, or debug VM display/SSH/provisioning issues.
+  Also trigger on mentions of Tart, softnet, self-hosted mac runners,
+  "tests in a VM", or E2E runs stealing focus — even if the user doesn't
+  name this skill.
+compatibility: >-
+  Apple Silicon Mac host with Homebrew and an authenticated `gh` CLI.
+  Needs ~80GB free disk. Two steps require the human (sudo password +
+  a GitHub repo setting) — everything else is agent-drivable over SSH.
+---
+
+# PwrSnap macOS VM E2E lab (Tart)
+
+## What this builds and why
+
+Two capabilities on one Mac host:
+
+1. **Off-desktop E2E runs** — the desktop Playwright suite runs inside a
+   macOS VM whose windows render on the VM's own virtual display. The
+   host desktop is never touched. Runs live in a tmux session inside the
+   VM, driven over SSH.
+2. **A self-hosted GitHub Actions lane** — ephemeral runner VMs serve the
+   `desktop-e2e-macos` job in `.github/workflows/ci.yml` (labels
+   `[self-hosted, macOS, ARM64, pwrsnap-mac-vm]`). This is the only CI
+   lane that exercises the macOS-only specs (clipboard, tray, menu-bar,
+   dock lifecycle, AppKit windowing); GH-hosted macOS runners are
+   cost-prohibitive.
+
+Why Tart and not VMware/Parallels/UTM: macOS guests on Apple Silicon are
+only possible through Apple's Virtualization.framework — VMware Fusion
+will never support them on arm64. Tart drives that framework from a CLI,
+has prebuilt CI-ready macOS images (SSH + GUI auto-login already
+enabled), and pairs with `softnet` for the network isolation the runner
+security model needs. License note: Tart is Fair Source (free on
+personal workstations) — accepted for use as an external tool only;
+never add it as a dependency and never read its source (see the
+repo-root agent instructions' licensing policy).
+
+## Security model (why each piece exists)
+
+The repo is **public**, so a self-hosted runner is only acceptable with
+all three layers:
+
+1. **Ephemeral VMs** — each runner registers with `--ephemeral`, serves
+   exactly one job, then the VM is deleted. Nothing persists between
+   jobs.
+2. **softnet isolation** — runner VMs boot with `--net-softnet`: internet
+   works, all RFC1918 private address space (the host LAN) is blocked.
+   `run-ephemeral-runner.sh` probes this from inside the VM before
+   registering and aborts if private space is reachable. Never register
+   a runner from a VM that failed this probe.
+3. **GitHub settings** — the CI job carries an `if:` guard that skips it
+   for PRs from fork head-repos, and the repo must have Settings →
+   Actions → General → "Require approval for all external contributors"
+   enabled (human does this in the GitHub UI).
+
+The dev VM (`pwrsnap-dev`) runs on ordinary NAT — it's trusted, it only
+runs code the user checked out. Only runner VMs need softnet.
+
+## Host setup (one time per Mac)
+
+Copy the bundled scripts to the conventional location first — they
+expect to live there (logs, artifacts, SSH key all land in that dir):
+
+```bash
+mkdir -p ~/pwrsnap-mac-vm
+cp -R <this-skill-dir>/scripts/ ~/pwrsnap-mac-vm/
+chmod +x ~/pwrsnap-mac-vm/*.sh ~/pwrsnap-mac-vm/runner/*.sh
+```
+
+Then:
+
+```bash
+brew install cirruslabs/cli/tart cirruslabs/cli/softnet
+tart clone ghcr.io/cirruslabs/macos-sequoia-base:latest pwrsnap-sequoia-base
+```
+
+The image pull is ~35GB — run it in the background and expect 15–60
+minutes. Sequoia (macOS 15) is deliberate: it matches CI's `macos-15`
+GH-hosted runners. Keep `pwrsnap-sequoia-base` pristine — never boot it;
+everything else clones from it.
+
+**Apple limit: max 2 macOS VMs running concurrently per host.** Dev VM +
+one runner VM is the ceiling. Plan sequencing around it (e.g. stop
+`pwrsnap-dev` before building the runner base image).
+
+## Dev VM: provision and run E2E
+
+```bash
+cd ~/pwrsnap-mac-vm
+./provision-dev.sh          # idempotent; safe to re-run after failures
+./run-e2e.sh main                        # full suite on a branch
+./run-e2e.sh my-branch --grep clipboard  # subset
+```
+
+`provision-dev.sh` clones the base → `pwrsnap-dev` (8 CPU / 16GB /
+1920x1080), installs a dedicated SSH key (cirrus images ship user
+`admin`, password `admin`; the script switches to key auth), then inside
+the VM: tmux, nvm + the `.nvmrc` node, corepack pnpm, a clone of the
+repo at `~/PwrSnap`, and the display-resolution agent (see gotchas).
+
+`run-e2e.sh <branch> [playwright args]`:
+- runs checkout → `pnpm install` → `pnpm rebuild:electron-native` →
+  build → `playwright test` inside tmux session `e2e` in the VM,
+- tails the log to your terminal; Ctrl-C detaches without killing the
+  run (`tmux attach -t e2e` in the VM to reattach),
+- on failure, scp's `test-results/` back to
+  `~/pwrsnap-mac-vm/artifacts/<timestamp>/`.
+
+To watch the VM's screen: `tart run pwrsnap-dev` opens its window, or
+use the `vnc://` URL that `tart run --vnc-experimental` prints into
+`~/pwrsnap-mac-vm/.pwrsnap-dev.run.log`.
+
+Expected healthy result: full suite ≈3 minutes, everything passing
+except the Linux-only skips (7) and any known-flaky specs tracked in
+the repo's issues/PRs.
+
+## Runner: golden image and serving jobs
+
+One-time human step (needs their password — agents must not do this):
+
+```bash
+echo "$USER ALL=(ALL) NOPASSWD: $(brew --prefix)/bin/softnet" | sudo tee /etc/sudoers.d/softnet
+```
+
+Verify with `sudo -n $(brew --prefix)/bin/softnet --help`. softnet runs
+on the HOST (tart invokes it to build the isolated network); the VM
+never sees it.
+
+Then:
+
+```bash
+cd ~/pwrsnap-mac-vm
+./runner/provision-runner-base.sh   # clone pwrsnap-dev -> pwrsnap-runner-base,
+                                    # stage (not register) actions-runner
+./runner/run-ephemeral-runner.sh --once   # serve exactly one job
+./runner/run-ephemeral-runner.sh          # serve jobs forever
+```
+
+The loop per cycle: clone base → boot with `--net-softnet` → **verify
+isolation from inside the VM** (abort if any RFC1918 address answers,
+abort if the internet is unreachable) → fetch a registration token via
+`gh api -X POST repos/pwrdrvr/PwrSnap/actions/runners/registration-token`
+→ `config.sh --ephemeral --unattended` with the labels above → `run.sh`
+serves one job → VM stopped and deleted.
+
+Registration tokens require repo admin on the authenticated `gh` — check
+`gh auth status` if token fetch 403s. A healthy cycle end-to-end
+(including the job) is ~5–6 minutes; the runner appears in the repo's
+Settings → Actions → Runners page only while serving.
+
+Operational note: ephemeral runners deregister after every job, so the
+CI lane only functions while the loop is running on some host. If no
+runner is listening, queued `desktop-e2e-macos` jobs sit up to 24h and
+fail — keep the lane's workflow job non-required (or the loop always-on
+via launchd) accordingly.
+
+## Gotchas (each of these cost real debugging time)
+
+Read [references/troubleshooting.md](references/troubleshooting.md) for
+the full write-ups. Headlines:
+
+- **Headless VF guests boot at 1024x768 no matter what `tart set
+  --display` says.** The configured resolution only applies when a
+  viewer attaches. Fix is in-guest: `provision-dev.sh` compiles
+  `~/bin/setres` (a CoreGraphics mode-setter) and installs a LaunchAgent
+  that runs it at every GUI login; `run-e2e.sh` also calls it
+  defensively. Symptom if missing: specs that drive 1440x900 windows
+  fail with `innerHeight: 684`.
+- **`system_profiler SPDisplaysDataType` is always empty in VF guests**
+  — probe the real resolution with a `swift -e` CoreGraphics one-liner,
+  not system_profiler.
+- **Feeding scripts to `ssh host 'bash -s'` via heredoc:** any command
+  inside that reads stdin (`brew install`, some curl-pipe patterns) eats
+  the rest of your script silently. Append `</dev/null` to every
+  stdin-hungry command. The bundled scripts already do this — keep the
+  pattern when extending them.
+- **tmux + `tee` swallows exit codes** — pipelines report the LAST
+  command's status. The bundled `run-e2e.sh` wraps the job in
+  `bash -c 'set -o pipefail; …'`; keep that if you touch it.
+- **Non-interactive SSH shells don't have brew on PATH** — scripts must
+  `eval "$(/opt/homebrew/bin/brew shellenv)"` first.
+- **GUI apps over SSH work** because cirrus images auto-login `admin`
+  into a console GUI session. If Electron can't connect to the window
+  server, check that auto-login is still intact rather than blaming
+  Playwright.
+- **Real-screen-capture specs** need `PWRSNAP_E2E_REAL_CAPTURE=1` plus a
+  one-time Screen Recording TCC grant via the VM's GUI; everything else
+  uses the E2E fakes and needs no TCC.
+- **known flake:** `dock-lifecycle.spec.ts` ("Library stays alive after
+  a deliberate dock.hide()") fails under full-suite load in VMs while
+  passing isolated — if it's the only red, it's this, not your setup.
+
+## Updating pieces later
+
+- New base image release: `tart clone ghcr.io/cirruslabs/macos-sequoia-base:latest pwrsnap-sequoia-base-new`,
+  re-run provisioning against a fresh dev clone, then delete the old
+  VMs. Clones are APFS copy-on-write — cheap until they diverge.
+- New actions-runner version: re-run `provision-runner-base.sh` (it
+  fetches the latest release when no version argument is given) after
+  deleting the old `pwrsnap-runner-base`.
+- Resource sizing: `tart set <vm> --cpu N --memory MB --display WxH`
+  while the VM is stopped.

@@ -17,7 +17,7 @@ import type {
   TypedEventChannel
 } from "@pwrsnap/shared";
 import { acpAgentIdFromThreadId, EVENT_CHANNELS, err, ok } from "@pwrsnap/shared";
-import { bus } from "../command-bus";
+import { bus, type CommandDispatchOptions } from "../command-bus";
 import { getMainLogger } from "../log";
 import { resolveCodexThreadConfigForCommand } from "../ai/codex-thread-config";
 import { ChatThreadStore } from "../ai/chat-thread-store";
@@ -37,6 +37,8 @@ import {
 import { makeSizzleChatTools, SIZZLE_TOOL_LABELS } from "../ai/sizzle-tool-catalog";
 
 const log = getMainLogger("pwrsnap:sizzle-chat-handlers");
+// Tool callbacks outlive sendMessage(), so retain the latest turn origin.
+const activeSizzleToolContexts = new Map<string, CommandDispatchOptions>();
 
 /** The Sizzle surface's broadcast channels (controller is parameterized). */
 const SIZZLE_CHAT_CHANNELS: ChatChannelSet = {
@@ -119,7 +121,7 @@ function getSizzleCache(): KeyedChatControllerCache<ChatThreadController<Setting
       const tools = makeSizzleChatTools({
         resolveProjectId: async (threadId) =>
           (await projectStore.get(threadId))?.anchorCaptureId ?? null
-      });
+      }, (threadId) => activeSizzleToolContexts.get(threadId) ?? { principal: "ipc" });
       const command = codexCommandForSettings(settings);
       const env = codexEnvForProfile(settings.codex.profile);
       const surface = await buildChatSurface({
@@ -210,7 +212,7 @@ export function registerSizzleChatHandlers(params?: {
   sizzleCache = null;
   sizzleStore = null;
 
-  bus.register("codex:sizzleChat:list", async (req) => {
+  bus.register("codex:sizzleChat:list", async (req, ctx) => {
     // Sizzle threads are ALWAYS project-scoped. The substrate's
     // chat_threads table is shared with the Library surface, so an
     // unscoped list would mix in Library (or null-anchor) threads. A
@@ -230,7 +232,12 @@ export function registerSizzleChatHandlers(params?: {
         .catch(() => []);
       const byId = new Map(sidecars.map((s) => [s.threadId, s]));
       return ok({
-        threads: threads.map((t) => {
+        threads: threads.filter((thread) => {
+          const ownerClientId = byId.get(thread.threadId)?.ownerClientId ?? null;
+          return ctx.principal === "mcp"
+            ? ownerClientId === ctx.localAgent?.clientId
+            : ownerClientId === null;
+        }).map((t) => {
           const s = byId.get(t.threadId);
           return toLibraryThreadView(
             t,
@@ -243,7 +250,7 @@ export function registerSizzleChatHandlers(params?: {
     }
   });
 
-  bus.register("codex:sizzleChat:create", async (req) => {
+  bus.register("codex:sizzleChat:create", async (req, ctx) => {
     try {
       const d = await defaultSizzleConfig();
       const config: ChatBackendConfig = {
@@ -257,15 +264,33 @@ export function registerSizzleChatHandlers(params?: {
         ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
       if (injectedSizzleController === null) getSizzleStore().setBackendConfig(view.threadId, config);
+      if (
+        injectedSizzleController === null &&
+        ctx.principal === "mcp" &&
+        ctx.localAgent !== undefined
+      ) {
+        getSizzleStore().setOwnerClientId(view.threadId, ctx.localAgent.clientId);
+      }
       return ok(toLibraryThreadView(view, config));
     } catch (cause) {
       return codexUnreachable(cause);
     }
   });
 
-  bus.register("codex:sizzleChat:send", async (req) => {
+  bus.register("codex:sizzleChat:send", async (req, ctx) => {
     try {
+      if (ctx.principal === "mcp") {
+        const sidecar = await getSizzleStore().get(req.threadId);
+        if (sidecar?.ownerClientId !== ctx.localAgent?.clientId) {
+          return aiError("thread_owner_mismatch", "This chat belongs to another user or local client.");
+        }
+      }
       const c = await sizzleControllerFor(await configForSizzleThread(req.threadId));
+      const commandContext: CommandDispatchOptions = {
+        principal: ctx.principal,
+        ...(ctx.localAgent !== undefined ? { localAgent: ctx.localAgent } : {})
+      };
+      activeSizzleToolContexts.set(req.threadId, commandContext);
       const result = await c.sendMessage({
         threadId: req.threadId,
         text: req.text,

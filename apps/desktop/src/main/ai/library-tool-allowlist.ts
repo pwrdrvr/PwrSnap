@@ -49,11 +49,12 @@ import {
   ShapeKind
 } from "@pwrsnap/shared/overlay";
 import { bus } from "../command-bus";
+import { currentChatToolCommandContext } from "./chat-tool-command-context";
 import { defineTool, type ToolDispatchResult, type ToolSpec } from "./define-tool";
 
 /** Run one bus verb and map the Result to a ToolDispatchResult. */
 async function runVerb<C extends CommandName>(name: C, req: Req<C>): Promise<ToolDispatchResult> {
-  const result = await bus.dispatch(name, req, { principal: "mcp" });
+  const result = await bus.dispatch(name, req, currentChatToolCommandContext());
   if (result.ok) return { ok: true, data: result.value };
   return {
     ok: false,
@@ -128,7 +129,7 @@ const libraryList = defineTool({
     const result = await bus.dispatch(
       "library:list",
       { ...(args.limit !== undefined ? { limit: args.limit } : {}) },
-      { principal: "mcp" }
+      currentChatToolCommandContext()
     );
     if (!result.ok) {
       return {
@@ -151,7 +152,7 @@ const librarySearch = defineTool({
     limit: z.number().int().min(1).max(50).optional()
   }),
   dispatch: async (args) => {
-    const result = await bus.dispatch("library:search", { query: args.query }, { principal: "mcp" });
+    const result = await bus.dispatch("library:search", { query: args.query }, currentChatToolCommandContext());
     if (!result.ok) {
       return {
         ok: false,
@@ -175,7 +176,7 @@ const captureMetadata = defineTool({
   annotations: { readOnlyHint: true },
   argsSchema: z.object({ capture_id: z.string() }),
   dispatch: async (args) => {
-    const result = await bus.dispatch("library:byId", { id: args.capture_id }, { principal: "mcp" });
+    const result = await bus.dispatch("library:byId", { id: args.capture_id }, currentChatToolCommandContext());
     if (!result.ok) {
       return {
         ok: false,
@@ -188,7 +189,7 @@ const captureMetadata = defineTool({
     const enr = await bus.dispatch(
       "codex:enrichment",
       { captureId: args.capture_id },
-      { principal: "mcp" }
+      currentChatToolCommandContext()
     );
     const e = enr.ok ? enr.value : null;
     const ocrLen = e?.ocrText?.length ?? 0;
@@ -217,7 +218,7 @@ const readOcrText = defineTool({
     const enr = await bus.dispatch(
       "codex:enrichment",
       { captureId: args.capture_id },
-      { principal: "mcp" }
+      currentChatToolCommandContext()
     );
     if (!enr.ok) {
       return { ok: false, error: `${enr.error.kind}/${enr.error.code}: ${enr.error.message}` };
@@ -275,7 +276,7 @@ const renderComposite = defineTool({
         captureId: args.capture_id,
         ...(args.max_edge_px !== undefined ? { maxEdgePx: args.max_edge_px } : {})
       },
-      { principal: "mcp" }
+      currentChatToolCommandContext()
     );
     if (!result.ok) {
       return {
@@ -317,7 +318,7 @@ const openEditor = defineTool({
   dispatch: async (args) => {
     // The still-image editor can't render a video (it shows a broken
     // image). Refuse video captures so the agent doesn't open one.
-    const meta = await bus.dispatch("library:byId", { id: args.capture_id }, { principal: "mcp" });
+    const meta = await bus.dispatch("library:byId", { id: args.capture_id }, currentChatToolCommandContext());
     if (!meta.ok) {
       return { ok: false, error: `${meta.error.kind}/${meta.error.code}: ${meta.error.message}` };
     }
@@ -440,7 +441,7 @@ async function getCaptureDims(
   | { ok: true; widthPx: number; heightPx: number }
   | { ok: false; error: string }
 > {
-  const meta = await bus.dispatch("library:byId", { id: captureId }, { principal: "mcp" });
+  const meta = await bus.dispatch("library:byId", { id: captureId }, currentChatToolCommandContext());
   if (!meta.ok) {
     return { ok: false, error: `${meta.error.kind}/${meta.error.code}: ${meta.error.message}` };
   }
@@ -768,7 +769,7 @@ const cropTool = defineTool({
     const cropped = await bus.dispatch(
       "bundle:cropCanvas",
       { captureId: args.capture_id, rect: args.rect, source: "codex" },
-      { principal: "mcp" }
+      currentChatToolCommandContext()
     );
     if (!cropped.ok) {
       return { ok: false, error: `${cropped.error.kind}/${cropped.error.code}: ${cropped.error.message}` };
@@ -849,7 +850,7 @@ async function loadCurrentLayer(
   | { ok: true; layer: BundleLayerNodeValue }
   | { ok: false; error: string }
 > {
-  const listed = await bus.dispatch("layers:list", { captureId }, { principal: "mcp" });
+  const listed = await bus.dispatch("layers:list", { captureId }, currentChatToolCommandContext());
   if (!listed.ok) {
     return { ok: false, error: `${listed.error.kind}/${listed.error.code}: ${listed.error.message}` };
   }

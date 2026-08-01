@@ -16,9 +16,19 @@
 // Electron's `invoke` strips `instanceof Error`, so we never throw across
 // process boundaries; we always return Result.
 
-import type { CommandName, Commands, Req, Res } from "@pwrsnap/shared";
+import type {
+  CommandName,
+  Commands,
+  LocalAgentCapability,
+  Req,
+  Res
+} from "@pwrsnap/shared";
 import { err, type PwrSnapError, type Result } from "@pwrsnap/shared";
 import { getMainLogger } from "./log";
+import {
+  localAgentCommandRequirement,
+  satisfiesLocalAgentCommandRequirement
+} from "./local-agents/local-agent-command-policy";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 
 const log = getMainLogger("pwrsnap:command-bus");
@@ -39,6 +49,20 @@ export type CommandContext = {
   sourceWindowId?: number;
   /** Screen-space bounds for non-window UI affordances, such as the tray icon. */
   sourceBounds?: CommandSourceBounds;
+  localAgent?: {
+    clientId: string;
+    capabilities: readonly LocalAgentCapability[];
+  };
+};
+
+/** Serializable command metadata that can cross a transport boundary.
+ *  The receiving bus creates its own AbortSignal from cancellationKey. */
+export type CommandDispatchOptions = {
+  principal: CommandPrincipal;
+  cancellationKey?: string | undefined;
+  sourceWindowId?: number | undefined;
+  sourceBounds?: CommandSourceBounds | undefined;
+  localAgent?: CommandContext["localAgent"];
 };
 
 export type CommandHandler<C extends CommandName> = (
@@ -57,8 +81,16 @@ export type CommandHandler<C extends CommandName> = (
 export type RemoteCommandForwarder = {
   /** True when `name` is owned by the peer process and reachable. */
   canForward(name: string): boolean;
-  forward(name: string, req: unknown): Promise<Result<unknown, PwrSnapError>>;
+  forward(
+    name: string,
+    req: unknown,
+    options: CommandDispatchOptions
+  ): Promise<Result<unknown, PwrSnapError>>;
 };
+
+export type LocalAgentCommandAuthorizer = (
+  clientId: string
+) => Promise<NonNullable<CommandContext["localAgent"]> | null>;
 
 // Storage type is intentionally a wide function — TS can't represent a
 // "for some C, CommandHandler<C>" existential, so we erase to any-shape
@@ -76,6 +108,7 @@ class CommandBus {
   private readonly cancellation = new Map<string, AbortController>();
 
   private remoteForwarder: RemoteCommandForwarder | null = null;
+  private localAgentAuthorizer: LocalAgentCommandAuthorizer | null = null;
 
   register<C extends CommandName>(name: C, handler: CommandHandler<C>): void {
     if (this.handlers.has(name)) {
@@ -101,6 +134,17 @@ class CommandBus {
     this.remoteForwarder = null;
   }
 
+  installLocalAgentAuthorizer(authorizer: LocalAgentCommandAuthorizer): void {
+    if (this.localAgentAuthorizer !== null) {
+      throw new Error("command-bus: local-agent authorizer already installed");
+    }
+    this.localAgentAuthorizer = authorizer;
+  }
+
+  uninstallLocalAgentAuthorizerForTests(): void {
+    this.localAgentAuthorizer = null;
+  }
+
   isRegistered(name: string): name is CommandName {
     if (this.handlers.has(name as CommandName)) return true;
     return this.remoteForwarder?.canForward(name) ?? false;
@@ -121,19 +165,17 @@ class CommandBus {
   async dispatch<C extends CommandName>(
     name: C,
     req: Req<C>,
-    options: {
-      principal: CommandPrincipal;
-      cancellationKey?: string | undefined;
-      sourceWindowId?: number | undefined;
-      sourceBounds?: CommandSourceBounds | undefined;
-    }
+    options: CommandDispatchOptions
   ): Promise<Result<Res<C>, PwrSnapError>> {
+    const authorizedOptions = await this.authorizeLocalAgent(name, req, options);
+    if (!authorizedOptions.ok) return authorizedOptions;
+    options = authorizedOptions.value;
     const handler = this.handlers.get(name);
     if (!handler) {
       const forwarder = this.remoteForwarder;
       if (forwarder !== null && forwarder.canForward(name)) {
         try {
-          return (await forwarder.forward(name, req)) as Result<Res<C>, PwrSnapError>;
+          return (await forwarder.forward(name, req, options)) as Result<Res<C>, PwrSnapError>;
         } catch (cause) {
           // Forwarders normally return Result (the bridge never
           // rejects); this catches supervisor spawn failures and the
@@ -178,6 +220,9 @@ class CommandBus {
       if (options.sourceBounds !== undefined) {
         ctx.sourceBounds = options.sourceBounds;
       }
+      if (options.localAgent !== undefined) {
+        ctx.localAgent = options.localAgent;
+      }
       const profiling = startupProfilingEnabled();
       const dispatchStartedAt = profiling ? Date.now() : 0;
       const result = (await handler(req, ctx)) as Result<Res<C>, PwrSnapError>;
@@ -210,6 +255,48 @@ class CommandBus {
         // ephemeral controller, can drop reference
       }
     }
+  }
+
+  private async authorizeLocalAgent<C extends CommandName>(
+    name: C,
+    req: Req<C>,
+    options: CommandDispatchOptions
+  ): Promise<Result<CommandDispatchOptions, PwrSnapError>> {
+    if (options.principal !== "mcp") return { ok: true, value: options };
+    const presented = options.localAgent;
+    if (presented === undefined || this.localAgentAuthorizer === null) {
+      return err({
+        kind: "permission",
+        code: "local_agent_context_required",
+        message: "authenticated local-agent context is required"
+      });
+    }
+    const authenticated = await this.localAgentAuthorizer(presented.clientId);
+    if (authenticated === null) {
+      return err({
+        kind: "permission",
+        code: "local_agent_grant_invalid",
+        message: "local-agent grant is missing or revoked"
+      });
+    }
+    const requirement = localAgentCommandRequirement(name, req);
+    if (
+      requirement === null ||
+      !satisfiesLocalAgentCommandRequirement(authenticated.capabilities, requirement)
+    ) {
+      return err({
+        kind: "permission",
+        code: "local_agent_capability_denied",
+        message: `local-agent grant does not authorize command: ${name}`
+      });
+    }
+    return {
+      ok: true,
+      value: {
+        ...options,
+        localAgent: authenticated
+      }
+    };
   }
 }
 

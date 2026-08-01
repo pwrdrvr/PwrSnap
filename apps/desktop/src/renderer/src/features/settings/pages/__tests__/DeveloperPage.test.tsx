@@ -80,7 +80,8 @@ const baseSettings: Settings = {
     detailRail: { pinned: true, lastSelectedTab: "info" },
     confirmBeforeTrash: true,
     gridZoom: 180
-  }
+  },
+  localAgents: { grants: [], audit: [] }
 };
 
 const patchMock = vi.fn(async (): Promise<void> => undefined);

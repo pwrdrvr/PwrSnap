@@ -84,6 +84,9 @@ import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
 import { isRecordingActive } from "./recording/recording-state";
 import {
+  getDesktopSettingsServices,
+  getLocalAgentAuditService,
+  getLocalAgentGrantService,
   onSettingsChanged,
   registerSettingsDataHandlers,
   registerSettingsWindowHandlers
@@ -101,6 +104,14 @@ import {
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import { loginShellPath } from "./login-shell-path";
+import {
+  LOCAL_AGENT_MCP_PORT,
+  LocalAgentMcpServer
+} from "./local-agents/mcp-server";
+import {
+  LocalAgentConsentBroker,
+  registerLocalAgentConsentHandlers
+} from "./local-agents/local-agent-consent-broker";
 import {
   getRuntimeProcessRole,
   resolveProcessRole,
@@ -263,6 +274,8 @@ const isMac = process.platform === "darwin";
  */
 const isE2E = process.env.PWRSNAP_E2E === "1";
 let pasteFromClipboardMenuItem: Electron.MenuItem | null = null;
+let localAgentMcpServer: LocalAgentMcpServer | null = null;
+let localAgentConsentBroker: LocalAgentConsentBroker | null = null;
 
 /** Reflects the most recently observed `general.developerMode` value
  *  so the menu can be re-installed on settings change without re-
@@ -1435,7 +1448,7 @@ export function bootstrapApp(): void {
       if (role === "agent") {
         // Split mode: the library window lives in the supervised child.
         // library:focus spawns it on demand and raises the singleton.
-        void dispatchToLibraryProcess("library:focus", {});
+        void dispatchToLibraryProcess("library:focus", {}, { principal: "bridge" });
         handleSecondInstanceArgv(argv, additionalData);
         return;
       }
@@ -1734,6 +1747,10 @@ export function bootstrapApp(): void {
       registerSizzleHandlers();
       registerCartHandlers();
     }
+    if (role !== "library") {
+      localAgentConsentBroker = new LocalAgentConsentBroker();
+      registerLocalAgentConsentHandlers(localAgentConsentBroker);
+    }
     // Wire the floating recording HUD so it appears whenever the
     // recording service is non-idle. Has to be installed AFTER the
     // BrowserWindow + handler plumbing because the controller creates
@@ -1754,6 +1771,9 @@ export function bootstrapApp(): void {
     if (role !== "agent") {
       registerExportHandler();
     }
+    bus.installLocalAgentAuthorizer((clientId) =>
+      getLocalAgentGrantService().authorizeClient(clientId)
+    );
     registerIpcDispatcher();
     markStartup("main: handlers registered");
     // ── Cross-process bridge wiring (split mode only, §D2/§D4) ─────
@@ -1763,7 +1783,7 @@ export function bootstrapApp(): void {
     if (role === "agent") {
       bus.installRemoteForwarder({
         canForward: (name) => peerOwnsCommand("agent", name),
-        forward: (name, req) => dispatchToLibraryProcess(name, req)
+        forward: (name, req, context) => dispatchToLibraryProcess(name, req, context)
       });
       installRendererEventForwarder(forwardRendererEventToLibrary);
       installCancellationForwarder(forwardCancellationToLibrary);
@@ -1771,7 +1791,7 @@ export function bootstrapApp(): void {
       connectAgentBridge();
       bus.installRemoteForwarder({
         canForward: (name) => isAgentBridgeConnected() && peerOwnsCommand("library", name),
-        forward: (name, req) => dispatchToAgentProcess(name, req)
+        forward: (name, req, context) => dispatchToAgentProcess(name, req, context)
       });
       installRendererEventForwarder(forwardRendererEventToAgent);
       installCancellationForwarder(forwardCancellationToAgent);
@@ -1853,7 +1873,7 @@ export function bootstrapApp(): void {
       // roles). User-initiated launch should land in the Library, like
       // double-clicking any app. The library:focus forward spawns the
       // library child; its handler shows + activates the window.
-      void dispatchToLibraryProcess("library:focus", {});
+      void dispatchToLibraryProcess("library:focus", {}, { principal: "bridge" });
     }
     markStartup("main: createMainWindow returned");
     // Library role: no boot-time window here — the verb that spawned
@@ -1883,6 +1903,43 @@ export function bootstrapApp(): void {
       initAppUpdater();
     }
     if (role !== "library") {
+      if (!isE2E && process.env.PWRSNAP_DISABLE_LOCAL_AGENT_MCP !== "1") {
+        const { service, secrets } = getDesktopSettingsServices();
+        localAgentMcpServer = new LocalAgentMcpServer({
+          settings: service,
+          secrets,
+          grantService: getLocalAgentGrantService(),
+          auditService: getLocalAgentAuditService(),
+          requestConsent: (request) => {
+            const broker = localAgentConsentBroker;
+            if (broker === null) {
+              return Promise.resolve({ decision: "deny", capabilities: [] });
+            }
+            return broker.request(request);
+          }
+        });
+        try {
+          await localAgentMcpServer.start();
+        } catch (cause) {
+          localAgentMcpServer = null;
+          const message = cause instanceof Error ? cause.message : String(cause);
+          log.error("local-agent MCP server failed to start", {
+            port: LOCAL_AGENT_MCP_PORT,
+            message
+          });
+          void dialog.showMessageBox({
+            type: "error",
+            title: "Local agent access unavailable",
+            message: `PwrSnap could not use local port ${LOCAL_AGENT_MCP_PORT}.`,
+            detail:
+              "Another process may already be using PwrSnap's MCP port. " +
+              "Local agent access is disabled until the conflict is resolved and PwrSnap restarts.",
+            buttons: ["OK"],
+            defaultId: 0,
+            noLink: true
+          });
+        }
+      }
       scheduleAssetFilenameMaintenance();
       scheduleAcpAgentWarmup();
     }
@@ -2259,6 +2316,12 @@ export function bootstrapApp(): void {
     // Close the shared Codex App Server process owner. No-op when Codex was
     // never used this run.
     void closeCodexAgentPool().catch(() => undefined);
+    if (localAgentMcpServer !== null) {
+      void localAgentMcpServer.stop();
+      localAgentMcpServer = null;
+    }
+    localAgentConsentBroker?.denyAll();
+    localAgentConsentBroker = null;
     // Tear down the shared composite-thumbnail worker eagerly so an
     // in-flight encode (e.g. a deferred v1→v2 sweep still running) is
     // rejected and the worker terminated on our terms, rather than the

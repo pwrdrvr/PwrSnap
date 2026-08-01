@@ -423,6 +423,33 @@ export type CaptureSearchResultRow = {
 
 export type RenderPreset = "low" | "med" | "high";
 
+export type CaptureExportVariant = "composite" | "original";
+export type CaptureExportFormat = "png" | "jpeg" | "webp" | "pdf" | "heic";
+
+export type CaptureExportRequest = {
+  captureId: string;
+  variant?: CaptureExportVariant;
+  format?: CaptureExportFormat;
+  maxWidth?: number;
+  maxHeight?: number;
+  scale?: number;
+  quality?: number;
+  background?: string;
+};
+
+export type CaptureExportResult = {
+  captureId: string;
+  variant: CaptureExportVariant;
+  format: CaptureExportFormat;
+  path: string;
+  mimeType: string;
+  widthPx: number;
+  heightPx: number;
+  byteSize: number;
+  fromCache: boolean;
+  exportId: string;
+};
+
 export type CapturePresetMetric = {
   preset: RenderPreset;
   widthPx: number;
@@ -520,6 +547,7 @@ export type SettingsPage =
   | "general"
   | "hotkeys"
   | "ai"
+  | "local-agents"
   | "storage"
   | "system-permissions"
   | "experimental"
@@ -536,6 +564,7 @@ export const SETTINGS_PAGES = [
   "general",
   "hotkeys",
   "ai",
+  "local-agents",
   "storage",
   "system-permissions",
   "experimental",
@@ -659,9 +688,112 @@ export function isSettingsPage(value: unknown): value is SettingsPage {
   );
 }
 
+/** Every external-agent capability PwrSnap can grant to an authorized local
+ *  client. Capabilities are deliberately finer-grained than "local
+ *  access" because original image bytes can bypass redactions visible
+ *  in the composite. */
+export type LocalAgentCapability =
+  | "library.read"
+  | "capture.composite.read"
+  | "capture.original.read"
+  | "capture.export"
+  | "capture.edit"
+  | "trash.write"
+  | "sizzle.compose"
+  | "sizzle.preview.read"
+  | "sizzle.full.read";
+
+export const LOCAL_AGENT_CAPABILITIES = [
+  "library.read",
+  "capture.composite.read",
+  "capture.original.read",
+  "capture.export",
+  "capture.edit",
+  "trash.write",
+  "sizzle.compose",
+  "sizzle.preview.read",
+  "sizzle.full.read"
+] as const satisfies readonly LocalAgentCapability[];
+
+export function isLocalAgentCapability(value: unknown): value is LocalAgentCapability {
+  return (
+    typeof value === "string" &&
+    (LOCAL_AGENT_CAPABILITIES as readonly string[]).includes(value)
+  );
+}
+
+export type LocalAgentConsentPermission = {
+  capability: LocalAgentCapability;
+  label: string;
+  detail: string;
+  requested: boolean;
+};
+
+/** Pending OAuth approval shown only inside PwrSnap's trusted consent window. */
+export type LocalAgentConsentPrompt = {
+  requestId: string;
+  clientName: string;
+  permissions: LocalAgentConsentPermission[];
+};
+
+/** Public OAuth client metadata retained with an approved local-agent grant.
+ *  PwrSnap forces loopback MCP clients to PKCE-only public clients, so no
+ *  client secret is stored here. */
+export type LocalAgentOAuthClient = {
+  clientId: string;
+  clientName: string;
+  redirectUris: string[];
+  clientUri: string | null;
+  scope: string | null;
+  grantTypes: string[];
+  responseTypes: string[];
+  softwareId: string | null;
+  softwareVersion: string | null;
+  registeredAt: string;
+};
+
+export type LocalAgentClientGrant = {
+  id: string;
+  name: string;
+  capabilities: LocalAgentCapability[];
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  oauthClient?: LocalAgentOAuthClient;
+};
+
+export type LocalAgentClientGrantPatch = {
+  name?: string;
+  capabilities?: LocalAgentCapability[];
+  revokedAt?: string | null;
+  lastUsedAt?: string | null;
+};
+
+export type LocalAgentAuditAction =
+  | "capture.original.read"
+  | "capture.export"
+  | "capture.edit"
+  | "trash.write"
+  | "sizzle.preview.read"
+  | "sizzle.full.read";
+
+export type LocalAgentAuditEntry = {
+  id: string;
+  clientId: string;
+  action: LocalAgentAuditAction;
+  capability: LocalAgentCapability;
+  subjectKind: "capture" | "sizzle";
+  subjectId: string;
+  outcome: "success" | "failure";
+  occurredAt: string;
+};
+
 /** Every secret the app persists. Plaintext values never cross the IPC
  *  boundary — the renderer only ever sees the status shape below. */
-export type DesktopSettingsSecretName = "openaiApiKey";
+export type DesktopSettingsSecretName =
+  | "openaiApiKey"
+  | `localAgentToken:${string}`;
 
 export type SizzleTtsProvider = "openai";
 export type SizzleTtsModel = "tts-1" | "tts-1-hd";
@@ -1877,6 +2009,13 @@ export type Settings = {
    *  independently so users can prefer "always-open" in Library while
    *  the Editor stays unpinned, or vice versa. */
   library: LibrarySettings;
+  /** Paired local-agent clients. Tokens are stored separately in the
+   *  secret store under `localAgentToken:<clientId>`; Settings carries
+   *  only renderer-safe metadata and capability grants. */
+  localAgents: {
+    grants: LocalAgentClientGrant[];
+    audit: LocalAgentAuditEntry[];
+  };
 };
 
 /** Out-of-the-box global capture hotkeys. Shared so the main-process
@@ -2340,6 +2479,10 @@ export type SettingsPatch = {
     /** Sticky grid thumbnail size (target min-width px). See
      *  {@link LibrarySettings.gridZoom}. */
     gridZoom?: number;
+  };
+  localAgents?: {
+    grants?: LocalAgentClientGrant[];
+    audit?: LocalAgentAuditEntry[];
   };
 };
 
@@ -2939,6 +3082,10 @@ export type Commands = {
     req: { captureId: string; maxEdgePx?: number };
     res: { base64: string; mimeType: "image/png"; widthPx: number; heightPx: number };
   };
+  "render:captureExport": {
+    req: CaptureExportRequest;
+    res: CaptureExportResult;
+  };
 
   // ---- canvas (v2 captures only) ----
   /** Update the canvas dimensions of a v2 capture. Writes the new
@@ -3064,6 +3211,34 @@ export type Commands = {
   "settings:clearSecret": {
     req: { name: DesktopSettingsSecretName };
     res: SecretStatus;
+  };
+  "localAgents:list": {
+    req: Record<string, never>;
+    res: { grants: LocalAgentClientGrant[] };
+  };
+  "localAgents:revoke": {
+    req: { id: string };
+    res: LocalAgentClientGrant;
+  };
+  "localAgents:update": {
+    req: { id: string; patch: LocalAgentClientGrantPatch };
+    res: LocalAgentClientGrant;
+  };
+  "localAgents:audit": {
+    req: { limit?: number };
+    res: { entries: LocalAgentAuditEntry[] };
+  };
+  "localAgents:consentRead": {
+    req: Record<string, never>;
+    res: LocalAgentConsentPrompt;
+  };
+  "localAgents:consentDecide": {
+    req: {
+      requestId: string;
+      decision: "allow" | "deny";
+      capabilities: LocalAgentCapability[];
+    };
+    res: void;
   };
 
   // ---- app ----
@@ -3587,8 +3762,14 @@ export type Commands = {
   };
   "sizzle:delete": { req: { id: string }; res: void };
   "sizzle:render": {
-    req: { id: string };
-    res: { outputPath: string; durationSec: number };
+    req: { id: string; mode?: "preview" | "full" };
+    res: {
+      outputPath: string;
+      durationSec: number;
+      renderId: string;
+      widthPx: number;
+      heightPx: number;
+    };
   };
   "sizzle:revealOutput": { req: { id: string }; res: void };
   /**

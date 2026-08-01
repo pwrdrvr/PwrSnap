@@ -24,6 +24,11 @@ import {
   positionSettingsWindowForSource
 } from "../window";
 import { getMainLogger } from "../log";
+import {
+  LocalAgentGrantError,
+  LocalAgentGrantService
+} from "../local-agents/local-agent-grants";
+import { LocalAgentAuditService } from "../local-agents/local-agent-audit";
 import { DesktopSettingsService } from "../settings/desktop-settings-service";
 import {
   DesktopSecretStore,
@@ -41,6 +46,8 @@ const log = getMainLogger("pwrsnap:settings-handlers");
 
 let settingsService: DesktopSettingsService | null = null;
 let secretStore: DesktopSecretStore | null = null;
+let localAgentGrantService: LocalAgentGrantService | null = null;
+let localAgentAuditService: LocalAgentAuditService | null = null;
 
 function ensureServices(): {
   service: DesktopSettingsService;
@@ -61,12 +68,21 @@ function ensureServices(): {
   return { service: settingsService, secrets: secretStore };
 }
 
+export function getDesktopSettingsServices(): {
+  service: DesktopSettingsService;
+  secrets: DesktopSecretStore;
+} {
+  return ensureServices();
+}
+
 export function __setSettingsServicesForTests(injected: {
   service?: DesktopSettingsService | null;
   secrets?: DesktopSecretStore | null;
 }): void {
   if (injected.service !== undefined) settingsService = injected.service;
   if (injected.secrets !== undefined) secretStore = injected.secrets;
+  localAgentGrantService = null;
+  localAgentAuditService = null;
 }
 
 /** Read the live settings snapshot for non-`settings:*` main handlers
@@ -153,6 +169,42 @@ function toSettingsError(
   cause?: unknown
 ): PwrSnapError {
   return { kind: "settings", code, message, cause };
+}
+
+export function getLocalAgentGrantService(): LocalAgentGrantService {
+  if (localAgentGrantService !== null) return localAgentGrantService;
+  const { service, secrets } = ensureServices();
+  localAgentGrantService = new LocalAgentGrantService({
+    settings: service,
+    secrets,
+    onSettingsChanged: async (settings) => {
+      await broadcastSettingsChanged(service, secrets, { settings });
+    }
+  });
+  return localAgentGrantService;
+}
+
+export function getLocalAgentAuditService(): LocalAgentAuditService {
+  if (localAgentAuditService !== null) return localAgentAuditService;
+  const { service, secrets } = ensureServices();
+  localAgentAuditService = new LocalAgentAuditService(
+    service,
+    async (settings) => {
+      await broadcastSettingsChanged(service, secrets, { settings });
+    }
+  );
+  return localAgentAuditService;
+}
+
+function toLocalAgentError(cause: unknown): PwrSnapError {
+  if (cause instanceof LocalAgentGrantError) {
+    return toSettingsError(cause.code, cause.message, cause);
+  }
+  return toSettingsError(
+    "local_agent_failed",
+    cause instanceof Error ? cause.message : String(cause),
+    cause
+  );
 }
 
 /** Combined-mode registration: both halves on one bus, exactly the
@@ -339,9 +391,75 @@ export function registerSettingsDataHandlers(): void {
     return ok(status);
   });
 
+  bus.register("localAgents:list", async () => {
+    const service = getLocalAgentGrantService();
+    try {
+      const grants = await service.list();
+      return ok({ grants });
+    } catch (cause) {
+      return err(toLocalAgentError(cause));
+    }
+  });
+
+  bus.register("localAgents:revoke", async (req) => {
+    if (typeof req.id !== "string" || req.id.trim().length === 0) {
+      return err({
+        kind: "validation",
+        code: "invalid_local_agent_id",
+        message: "localAgents:revoke: id must be a non-empty string"
+      });
+    }
+    const grantService = getLocalAgentGrantService();
+    try {
+      const grant = await grantService.revokeGrant(req.id);
+      return ok(grant);
+    } catch (cause) {
+      return err(toLocalAgentError(cause));
+    }
+  });
+
+  bus.register("localAgents:update", async (req) => {
+    if (typeof req.id !== "string" || req.id.trim().length === 0) {
+      return err({
+        kind: "validation",
+        code: "invalid_local_agent_id",
+        message: "localAgents:update: id must be a non-empty string"
+      });
+    }
+    const grantService = getLocalAgentGrantService();
+    try {
+      const grant = await grantService.updateGrant(req.id, req.patch);
+      return ok(grant);
+    } catch (cause) {
+      return err(toLocalAgentError(cause));
+    }
+  });
+
+  bus.register("localAgents:audit", async (req) => {
+    if (
+      req.limit !== undefined &&
+      (!Number.isInteger(req.limit) || req.limit < 1 || req.limit > 500)
+    ) {
+      return err({
+        kind: "validation",
+        code: "invalid_audit_limit",
+        message: "localAgents:audit limit must be an integer from 1 to 500"
+      });
+    }
+    try {
+      return ok({
+        entries: await getLocalAgentAuditService().list(req.limit ?? 100)
+      });
+    } catch (cause) {
+      return err(toLocalAgentError(cause));
+    }
+  });
+
 }
 
 export function __resetSettingsHandlersForTests(): void {
   settingsService = null;
   secretStore = null;
+  localAgentGrantService = null;
+  localAgentAuditService = null;
 }

@@ -85,6 +85,7 @@ type ChatThreadRow = {
   provider: string | null;
   model: string | null;
   reasoning: string | null;
+  owner_client_id: string | null;
 };
 
 /**
@@ -178,6 +179,13 @@ export class ChatThreadStore {
     this.db()
       .prepare(`UPDATE chat_threads SET provider = ?, model = ?, reasoning = ? WHERE thread_id = ?`)
       .run(config.provider ?? null, config.model ?? null, config.reasoning ?? null, threadId);
+  }
+
+  setOwnerClientId(threadId: string, ownerClientId: string): void {
+    this.ensureImported();
+    this.db()
+      .prepare(`UPDATE chat_threads SET owner_client_id = ? WHERE thread_id = ?`)
+      .run(ownerClientId, threadId);
   }
 
   /**
@@ -551,7 +559,8 @@ function rowToSidecar(row: ChatThreadRow): ChatThreadSidecar {
     pinned: row.pinned === 1,
     provider: row.provider ?? null,
     model: row.model ?? null,
-    reasoning: row.reasoning ?? null
+    reasoning: row.reasoning ?? null,
+    ownerClientId: row.owner_client_id ?? null
   };
 }
 

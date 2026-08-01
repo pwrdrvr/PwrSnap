@@ -10,6 +10,7 @@ import {
   dispatchLibraryToolCall
 } from "../library-tool-catalog";
 import type { DynamicToolCallParams } from "@pwrdrvr/codex-app-server-protocol/v2";
+import { currentChatToolCommandContext } from "../chat-tool-command-context";
 
 function makeCallParams(
   overrides: Partial<DynamicToolCallParams>
@@ -139,6 +140,33 @@ describe("buildLibraryToolCatalog", () => {
 });
 
 describe("dispatchLibraryToolCall", () => {
+  it("retains the originating authenticated local-agent context", async () => {
+    const dispatch = vi.fn(async () => ({
+      ok: true as const,
+      data: currentChatToolCommandContext()
+    }));
+    const tool = makeFixtureTool(dispatch);
+    const commandContext = {
+      principal: "mcp" as const,
+      localAgent: {
+        clientId: "lag_one",
+        capabilities: ["capture.edit"] as const
+      }
+    };
+
+    const response = await dispatchLibraryToolCall(
+      makeCallParams({ arguments: { id: "cap-42" } }),
+      [tool],
+      commandContext
+    );
+
+    expect(response.success).toBe(true);
+    expect(response.contentItems).toEqual([{
+      type: "inputText",
+      text: JSON.stringify(commandContext)
+    }]);
+  });
+
   it("validates args + runs dispatch + wraps data on success", async () => {
     const dispatch = vi.fn(async (args: { id: string }) => ({
       ok: true as const,

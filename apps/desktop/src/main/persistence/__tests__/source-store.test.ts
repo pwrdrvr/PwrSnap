@@ -124,11 +124,13 @@ describe("source-store extension generalization", () => {
     await writeFile(oldMp4, "x");
     await writeFile(youngPng, "x");
 
-    // Backdate the two "old" files past the 14-day retention cutoff.
-    const oldMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    // Backdate the two "old" files past the 30-day retention cutoff.
+    const oldMs = Date.now() - 31 * 24 * 60 * 60 * 1000;
+    const youngMs = Date.now() - 20 * 24 * 60 * 60 * 1000;
     const { utimes } = await import("node:fs/promises");
     await utimes(oldPng, new Date(oldMs), new Date(oldMs));
     await utimes(oldMp4, new Date(oldMs), new Date(oldMs));
+    await utimes(youngPng, new Date(youngMs), new Date(youngMs));
 
     const result = await sweepTrash(["old-img", "old-vid", "young-img"]);
     expect(result.removedFiles).toBe(2);

@@ -26,13 +26,14 @@ import {
   normalizeSizzleSequenceBeatContinuity
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
+import { currentChatToolCommandContext } from "./chat-tool-command-context";
 import { defineTool, type ToolDispatchResult, type ToolSpec } from "./define-tool";
 import { buildTranscriptPhraseSuggestions, resolveCachedSpeechTiming } from "../sizzle/speech-timing";
 import { ttsCacheDir, ttsCacheFilename } from "../sizzle/tts";
 
 /** Run one bus verb and map the Result to a ToolDispatchResult. */
 async function runVerb<C extends CommandName>(name: C, req: Req<C>): Promise<ToolDispatchResult> {
-  const result = await bus.dispatch(name, req, { principal: "mcp" });
+  const result = await bus.dispatch(name, req, currentChatToolCommandContext());
   if (result.ok) return { ok: true, data: result.value };
   return {
     ok: false,
@@ -320,7 +321,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
   const loadProject = async (threadId: string): Promise<SizzleProject | null> => {
     const projectId = await deps.resolveProjectId(threadId);
     if (projectId === null) return null;
-    const r = await bus.dispatch("sizzle:list", {}, { principal: "mcp" });
+    const r = await bus.dispatch("sizzle:list", {}, currentChatToolCommandContext());
     if (!r.ok) return null;
     return r.value.projects.find((p) => p.id === projectId) ?? null;
   };
@@ -347,7 +348,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
     const r = await bus.dispatch(
       "sizzle:update",
       { id: project.id, patch: { scenes: next } },
-      { principal: "mcp" }
+      currentChatToolCommandContext()
     );
     if (!r.ok) return { ok: false, error: `${r.error.kind}/${r.error.code}: ${r.error.message}` };
     return { ok: true, data: await projectView(r.value) };
@@ -372,7 +373,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
         const r = await bus.dispatch(
           "library:search",
           compact(args) as CaptureSearchRequest,
-          { principal: "mcp" }
+          currentChatToolCommandContext()
         );
         if (!r.ok) return { ok: false, error: r.error.message };
         return { ok: true, data: { rows: r.value.rows.map(searchRowView) } };
@@ -389,7 +390,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
         const r = await bus.dispatch(
           "library:listByIdsWithMetadata",
           { ids: args.captureIds },
-          { principal: "mcp" }
+          currentChatToolCommandContext()
         );
         if (!r.ok) return { ok: false, error: r.error.message };
         return { ok: true, data: { rows: r.value.rows.map(metadataRowView) } };
@@ -424,7 +425,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
         const r = await bus.dispatch(
           "sizzle:update",
           { id: project.id, patch: { name: args.name } },
-          { principal: "mcp" }
+          currentChatToolCommandContext()
         );
         if (!r.ok) return { ok: false, error: `${r.error.kind}/${r.error.code}: ${r.error.message}` };
         return { ok: true, data: await projectView(r.value) };
@@ -612,15 +613,15 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
       namespace: "pwrsnap_sizzle",
       name: "project_render",
       description:
-        "Render the current reel to an MP4. Long-running; returns the output path and total duration. Only call when the user explicitly asks to render.",
-      argsSchema: z.object({}),
+        "Render the current reel to an MP4 in the explicitly selected preview or full mode. Long-running; returns the output path and total duration. Only call when the user explicitly asks to render.",
+      argsSchema: z.object({ mode: z.enum(["preview", "full"]) }),
       annotations: { destructiveHint: true },
-      dispatch: async (_args, ctx) => {
+      dispatch: async (args, ctx) => {
         const projectId = await deps.resolveProjectId(ctx.threadId);
         if (projectId === null) {
           return { ok: false, error: "No Sizzle project is linked to this chat." };
         }
-        return runVerb("sizzle:render", { id: projectId });
+        return runVerb("sizzle:render", { id: projectId, mode: args.mode });
       }
     })
   ] as ToolSpec<unknown>[];

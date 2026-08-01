@@ -1392,7 +1392,7 @@
   font: 500 12px/1.4 var(--font-sans);
 }
 /* Trash-view banner. Pinned at the top of the grid pane when the
-   user is on the Trash sidebar entry; explains the 14d retention and
+   user is on the Trash sidebar entry; explains the 30d retention and
    surfaces the Empty Trash bulk action. */
 .psl__trash-banner {
   margin: 12px 18px;

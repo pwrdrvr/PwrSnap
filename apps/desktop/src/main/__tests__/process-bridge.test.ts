@@ -9,7 +9,12 @@ import { describe, expect, test, vi } from "vitest";
 import { err, ok, type PwrSnapError, type Result } from "@pwrsnap/shared";
 import { inMemoryChannelPair, type BridgeChannel } from "../process-bridge/channel";
 import { BridgeEndpoint, type BridgeLocalDispatch } from "../process-bridge/endpoint";
-import type { BridgeMessage } from "../process-bridge/protocol";
+import {
+  BRIDGE_PROTOCOL_VERSION,
+  type BridgeMessage
+} from "../process-bridge/protocol";
+
+const bridgeContext = { principal: "bridge" } as const;
 
 const flush = async (): Promise<void> => {
   // In-memory delivery is a microtask per hop; a macrotask drains all hops.
@@ -44,10 +49,29 @@ describe("BridgeEndpoint", () => {
     const agentDispatch = vi.fn<BridgeLocalDispatch>(async () => ok({ rows: [1, 2] }));
     const { library } = endpointPair({ agentDispatch });
 
-    const result = await library.dispatchRemote("library:list", { page: 1 });
+    const result = await library.dispatchRemote("library:list", { page: 1 }, bridgeContext);
 
-    expect(agentDispatch).toHaveBeenCalledWith("library:list", { page: 1 });
+    expect(agentDispatch).toHaveBeenCalledWith("library:list", { page: 1 }, bridgeContext);
     expect(result).toEqual(ok({ rows: [1, 2] }));
+  });
+
+  test("preserves MCP identity and capabilities across the bridge", async () => {
+    const agentDispatch = vi.fn<BridgeLocalDispatch>(async () => ok(null));
+    const { library } = endpointPair({ agentDispatch });
+    const context = {
+      principal: "mcp" as const,
+      cancellationKey: "capture-123",
+      sourceWindowId: 4,
+      sourceBounds: { x: 10, y: 20, width: 30, height: 40 },
+      localAgent: {
+        clientId: "agent-1",
+        capabilities: ["library.read", "capture.original.read"] as const
+      }
+    };
+
+    await library.dispatchRemote("library:list", {}, context);
+
+    expect(agentDispatch).toHaveBeenCalledWith("library:list", {}, context);
   });
 
   test("exchanges hello frames and exposes the peer role", async () => {
@@ -63,8 +87,8 @@ describe("BridgeEndpoint", () => {
     const { library } = endpointPair({ agentDispatch });
 
     const [first, second] = await Promise.all([
-      library.dispatchRemote("capture:whatever", { n: 1 }),
-      library.dispatchRemote("capture:whatever", { n: 2 })
+      library.dispatchRemote("capture:whatever", { n: 1 }, bridgeContext),
+      library.dispatchRemote("capture:whatever", { n: 2 }, bridgeContext)
     ]);
     expect(first).toEqual(ok({ echoed: 1 }));
     expect(second).toEqual(ok({ echoed: 2 }));
@@ -80,7 +104,7 @@ describe("BridgeEndpoint", () => {
       });
     const { library } = endpointPair({ agentDispatch });
 
-    const result = await library.dispatchRemote("library:get", { id: "x" });
+    const result = await library.dispatchRemote("library:get", { id: "x" }, bridgeContext);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -99,7 +123,7 @@ describe("BridgeEndpoint", () => {
     };
     const { library } = endpointPair({ agentDispatch });
 
-    const result = await library.dispatchRemote("capture:region", {});
+    const result = await library.dispatchRemote("capture:region", {}, bridgeContext);
 
     expect(result).toEqual(
       err({ kind: "unknown", code: "bridge_dispatch_threw", message: "wiring mistake" })
@@ -157,13 +181,39 @@ describe("BridgeEndpoint", () => {
     // Other process.send users, garbage, and future-version frames.
     librarySide.send("not even an object" as unknown as BridgeMessage);
     librarySide.send({ totally: "unrelated" } as unknown as BridgeMessage);
-    librarySide.send({ pwrsnapBridge: 99, kind: "request", id: 1, name: "x" } as unknown as BridgeMessage);
-    librarySide.send({ pwrsnapBridge: 1, kind: "request", id: "bad", name: 5 } as unknown as BridgeMessage);
+    librarySide.send({
+      pwrsnapBridge: BRIDGE_PROTOCOL_VERSION + 1,
+      kind: "request",
+      id: 1,
+      name: "x"
+    } as unknown as BridgeMessage);
+    librarySide.send({
+      pwrsnapBridge: BRIDGE_PROTOCOL_VERSION,
+      kind: "request",
+      id: "bad",
+      name: 5
+    } as unknown as BridgeMessage);
+    librarySide.send({
+      pwrsnapBridge: BRIDGE_PROTOCOL_VERSION,
+      kind: "request",
+      id: 1,
+      name: "x"
+    } as unknown as BridgeMessage);
+    librarySide.send({
+      pwrsnapBridge: BRIDGE_PROTOCOL_VERSION,
+      kind: "request",
+      id: 2,
+      name: "x",
+      context: {
+        principal: "mcp",
+        localAgent: { clientId: "agent-1", capabilities: ["not-a-capability"] }
+      }
+    } as unknown as BridgeMessage);
     await flush();
 
     expect(agentDispatch).not.toHaveBeenCalled();
     // The endpoint is still healthy after the garbage.
-    expect(await library.dispatchRemote("capture:region", {})).toEqual(ok(null));
+    expect(await library.dispatchRemote("capture:region", {}, bridgeContext)).toEqual(ok(null));
   });
 
   test("severed channel fails in-flight requests with bridge_closed", async () => {
@@ -174,7 +224,7 @@ describe("BridgeEndpoint", () => {
       });
     const { library, severChannel } = endpointPair({ agentDispatch });
 
-    const inFlight = library.dispatchRemote("library:export", {});
+    const inFlight = library.dispatchRemote("library:export", {}, bridgeContext);
     await flush();
     expect(resolveHandler).not.toBeNull();
     severChannel();
@@ -188,7 +238,7 @@ describe("BridgeEndpoint", () => {
     const { library, severChannel } = endpointPair();
     severChannel();
 
-    const result = await library.dispatchRemote("library:list", {});
+    const result = await library.dispatchRemote("library:list", {}, bridgeContext);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("bridge_closed");
   });
@@ -249,7 +299,7 @@ describe("BridgeEndpoint", () => {
       dispatchLocal: unhandled
     });
 
-    const result = await endpoint.dispatchRemote("library:list", {});
+    const result = await endpoint.dispatchRemote("library:list", {}, bridgeContext);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("bridge_send_failed");
   });

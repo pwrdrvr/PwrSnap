@@ -12,6 +12,7 @@ import type {
 } from "@pwrdrvr/codex-app-server-protocol/v2";
 import { dispatchLibraryToolCall } from "./library-tool-catalog";
 import { buildSizzleToolAllowlist, type SizzleToolDeps } from "./sizzle-tool-allowlist";
+import type { CommandDispatchOptions } from "../command-bus";
 
 /** Friendly present-tense labels for Sizzle tool activity chips. */
 export const SIZZLE_TOOL_LABELS: Record<string, string> = {
@@ -36,13 +37,19 @@ export const SIZZLE_TOOL_LABELS: Record<string, string> = {
 /** Build the Sizzle chat's tool catalog + dispatcher. The allowlist is
  *  bound to the supplied project resolver so every mutation targets the
  *  calling thread's project and no other (locked decision #4). */
-export function makeSizzleChatTools(deps: SizzleToolDeps): {
+export function makeSizzleChatTools(
+  deps: SizzleToolDeps,
+  commandContextForThread: (threadId: string) => CommandDispatchOptions = () => ({
+    principal: "ipc"
+  })
+): {
   catalog: DynamicToolSpec[];
   dispatch: (params: DynamicToolCallParams) => Promise<DynamicToolCallResponse>;
 } {
   const allowlist = buildSizzleToolAllowlist(deps);
   return {
     catalog: buildToolCatalog(allowlist),
-    dispatch: (params) => dispatchLibraryToolCall(params, allowlist)
+    dispatch: (params) =>
+      dispatchLibraryToolCall(params, allowlist, commandContextForThread(params.threadId))
   };
 }

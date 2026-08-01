@@ -81,7 +81,7 @@ per file is acceptable; see origin §Scope Boundaries).
 ├── pwrsnap.db                               # rebuildable index
 ├── cache/<capture_id>/<hash>.<format>       # variant-size renders, regenerable
 ├── cache/<capture_id>/source.png            # extracted from bundle on demand
-├── .trash/<id>/{name.png, name.pwrsnap}     # bundle pair trash, 14d retention
+├── .trash/<id>/{name.png, name.pwrsnap}     # bundle pair trash, 30d retention
 ├── .quarantine/<id>/                        # schema-fail bundles parked here, never auto-deleted
 └── settings.json, logs/, etc.
 ```
@@ -489,7 +489,7 @@ reconcile path, which is rare. Drop the SLA; revisit if a real bug shows up.
 
 ### Trash semantics
 
-Bundle pair trash extends the existing 14-day flow:
+Bundle pair trash extends the existing 30-day flow:
 
 - `library:delete` ([library-handlers.ts:36](apps/desktop/src/main/handlers/library-handlers.ts:36)) calls `bundleStore.moveBundlePairToTrash(captureId)`.
 - Implementation:
@@ -579,7 +579,7 @@ Success criteria:
 - Symlink test: bundle is a symlink → skipped on readdir; symlink inside `~/Documents/PwrSnap/` → skipped.
 - `NSDocumentsFolderUsageDescription` prompt appears at first capture, not at app launch.
 - `library:delete` moves both bundle and paired PNG to `<userData>/.trash/<id>/`.
-- 14-day retention sweep handles per-id directories.
+- 30-day retention sweep handles per-id directories.
 - Two captures of identical pixels → one bundle (sha256 dedup pre-check verified).
 
 #### Phase 2 — Doctor + reconcile flow (8-10h)

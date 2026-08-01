@@ -6,7 +6,7 @@
 //
 // Soft-delete moves files atomically to <userData>/.trash/<id>.png on
 // the same volume — single rename, no copy, no TOCTOU window.
-// Hard-delete (boot-time GC) removes from .trash/ after 14d.
+// Hard-delete (boot-time GC) removes from .trash/ after 30d.
 
 import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
@@ -24,10 +24,9 @@ import {
   getTrashRoot
 } from "./paths";
 import { getMainLogger } from "../log";
+import { TRASH_RETENTION_DAYS } from "./trash-retention";
 
 const log = getMainLogger("pwrsnap:source-store");
-
-const TRASH_RETENTION_DAYS = 14;
 
 export type StoredSource = {
   /** UUID-shaped capture identifier (nanoid). */

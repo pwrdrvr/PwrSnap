@@ -160,7 +160,7 @@ describe("buildSizzleToolAllowlist", () => {
   it("library_search dispatches library:search and returns compact rows", async () => {
     primeBus(project([]));
     const r = await tool(boundAllowlist(), "library_search").dispatch({ query: "x" }, CTX);
-    expect(dispatch).toHaveBeenCalledWith("library:search", { query: "x" }, { principal: "mcp" });
+    expect(dispatch).toHaveBeenCalledWith("library:search", { query: "x" }, { principal: "ipc" });
     expect(r.ok).toBe(true);
     if (r.ok && "data" in r) {
       expect((r.data as { rows: Array<{ captureId: string }> }).rows[0]?.captureId).toBe("cap_x");
@@ -177,7 +177,7 @@ describe("buildSizzleToolAllowlist", () => {
     expect(dispatch).toHaveBeenCalledWith(
       "sizzle:update",
       { id: PROJECT_ID, patch: { name: "PwrSnap: From Screens to Story" } },
-      { principal: "mcp" }
+      { principal: "ipc" }
     );
   });
 
@@ -447,8 +447,12 @@ describe("buildSizzleToolAllowlist", () => {
 
   it("project_render dispatches sizzle:render for the resolved project", async () => {
     primeBus(project([scene()]));
-    const r = await tool(boundAllowlist(), "project_render").dispatch({}, CTX);
-    expect(dispatch).toHaveBeenCalledWith("sizzle:render", { id: PROJECT_ID }, { principal: "mcp" });
+    const r = await tool(boundAllowlist(), "project_render").dispatch({ mode: "preview" }, CTX);
+    expect(dispatch).toHaveBeenCalledWith(
+      "sizzle:render",
+      { id: PROJECT_ID, mode: "preview" },
+      { principal: "ipc" }
+    );
     expect(r.ok).toBe(true);
   });
 });

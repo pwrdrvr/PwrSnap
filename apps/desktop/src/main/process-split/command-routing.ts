@@ -57,6 +57,7 @@ const PREFIX_OWNERS: ReadonlyArray<readonly [string, CommandOwner]> = [
   ["clipboard:", "agent"],
   ["float-over:", "agent"],
   ["settings:", "agent"],
+  ["localAgents:", "agent"],
   ["permissions:", "agent"],
   ["acp:", "agent"],
   ["codex:", "agent"],

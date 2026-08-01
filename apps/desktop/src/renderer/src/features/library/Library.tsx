@@ -3353,7 +3353,7 @@ export function Library() {
                   ? "Trash is empty."
                   : `${trashRecords.length} item${
                       trashRecords.length === 1 ? "" : "s"
-                    } in trash. Items are permanently removed after 14 days.`}
+                    } in trash. Items are permanently removed after 30 days.`}
               </span>
               {trashRecords.length > 0 && (
                 <button

@@ -31,7 +31,7 @@ const SIZZLE_CHAT_BASE_INSTRUCTIONS = [
   "- `scene_set_script` / `scene_set_transition` / `scene_set_audio_source`",
   "  / `scene_set_media_trim` / `scene_set_duration_override`: refine an",
   "  individual scene.",
-  "- `project_render`: render the reel to a video. ONLY call this when the",
+  "- `project_render`: render the reel to a video with an explicit `preview` or `full` mode. ONLY call this when the",
   "  user explicitly asks to render — it is slow and spends TTS budget.",
   "",
   "How to work:",

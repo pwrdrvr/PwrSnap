@@ -1,7 +1,7 @@
 import { BrowserWindow, app, shell } from "electron";
 import { join } from "node:path";
 import { mkdir, readFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   EVENT_CHANNELS,
   err,
@@ -16,7 +16,7 @@ import {
   type SizzleScene,
   type SizzleSequencePreviewPlan
 } from "@pwrsnap/shared";
-import { bus } from "../command-bus";
+import { bus, type CommandContext, type CommandDispatchOptions } from "../command-bus";
 import { getMainLogger } from "../log";
 import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-store";
 import { cleanupProjectChats, forkProjectChats } from "./sizzle-chat-handlers";
@@ -62,6 +62,7 @@ import {
   SecretUnavailableError
 } from "../settings/desktop-secret-store";
 import { resolveCacheFile } from "../render/coordinator";
+import { getCacheRoot } from "../persistence/paths";
 import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
 import {
   validateSizzleCreate,
@@ -151,14 +152,54 @@ function toError(cause: unknown, fallbackCode: string): PwrSnapError {
   return { kind: "unknown", code: fallbackCode, message: String(cause), cause };
 }
 
-async function loadCapture(captureId: string): Promise<CaptureRecord | null> {
+function dispatchOptionsForContext(ctx?: CommandContext): CommandDispatchOptions {
+  if (ctx?.principal === "mcp") {
+    return {
+      principal: "mcp",
+      ...(ctx.localAgent !== undefined ? { localAgent: ctx.localAgent } : {})
+    };
+  }
+  return { principal: "ipc" };
+}
+
+async function loadCapture(
+  captureId: string,
+  ctx?: CommandContext
+): Promise<CaptureRecord | null> {
   const result = await bus.dispatch(
     "library:byId",
     { id: captureId },
-    { principal: "ipc" }
+    dispatchOptionsForContext(ctx)
   );
   if (!result.ok) return null;
+  if (ctx?.principal === "mcp" && result.value?.deleted_at !== null) return null;
   return result.value;
+}
+
+function captureIdsForScenes(scenes: readonly SizzleScene[]): string[] {
+  return [...new Set(scenes.flatMap((scene) =>
+    scene.kind === "sequence" && scene.beats !== undefined
+      ? [scene.captureId, ...scene.beats.map((beat) => beat.captureId)]
+      : [scene.captureId]
+  ))];
+}
+
+async function validateExternalLiveCaptures(
+  scenes: readonly SizzleScene[],
+  ctx: CommandContext
+): Promise<Result<void, PwrSnapError>> {
+  if (ctx.principal !== "mcp") return ok(undefined);
+  for (const captureId of captureIdsForScenes(scenes)) {
+    const capture = await loadCapture(captureId, ctx);
+    if (capture === null) {
+      return err({
+        kind: "validation",
+        code: "capture_missing",
+        message: `Capture ${captureId} was not found or is in Trash`
+      });
+    }
+  }
+  return ok(undefined);
 }
 
 async function resolveImagePath(
@@ -414,9 +455,13 @@ export function registerSizzleHandlers(): void {
     }
   });
 
-  bus.register("sizzle:update", async (req) => {
+  bus.register("sizzle:update", async (req, ctx) => {
     const v = validateSizzleUpdate(req);
     if (!v.ok) return err(v.error);
+    if (v.value.patch.scenes !== undefined) {
+      const live = await validateExternalLiveCaptures(v.value.patch.scenes, ctx);
+      if (!live.ok) return live;
+    }
     try {
       const project = await store.update(v.value.id, v.value.patch);
       await pushProjectsChanged();
@@ -443,7 +488,7 @@ export function registerSizzleHandlers(): void {
     return ok(undefined);
   });
 
-  bus.register("sizzle:toggleScene", async (req) => {
+  bus.register("sizzle:toggleScene", async (req, ctx) => {
     const v = validateSizzleToggleScene(req);
     if (!v.ok) return err(v.error);
     const project = await store.get(v.projectId);
@@ -456,6 +501,16 @@ export function registerSizzleHandlers(): void {
       // Remove the existing scene
       nextScenes = project.scenes.filter((_, i) => i !== existingIdx);
     } else {
+      if (ctx?.principal === "mcp") {
+        const capture = await loadCapture(v.captureId, ctx);
+        if (capture === null) {
+          return err({
+            kind: "validation",
+            code: "capture_missing",
+            message: `Capture ${v.captureId} was not found or is in Trash`
+          });
+        }
+      }
       // Append a new scene with empty script — the user fills it in
       // from the sizzle editor. (The editor's "Add scene" flow does
       // a separate Codex enrichment prefill; for the in-library +/✓
@@ -776,7 +831,13 @@ export function registerSizzleHandlers(): void {
     return ok(undefined);
   });
 
-  bus.register("sizzle:render", async (req, ctx): Promise<Result<{ outputPath: string; durationSec: number }, PwrSnapError>> => {
+  bus.register("sizzle:render", async (req, ctx): Promise<Result<{
+    outputPath: string;
+    durationSec: number;
+    renderId: string;
+    widthPx: number;
+    heightPx: number;
+  }, PwrSnapError>> => {
     const v = validateSizzleIdRequest(req);
     if (!v.ok) return err(v.error);
     const project = await store.get(v.id);
@@ -791,7 +852,20 @@ export function registerSizzleHandlers(): void {
       });
     }
 
-    const dims = project.resolution === "720p" ? { w: 1280, h: 720 } : { w: 1920, h: 1080 };
+    if (req.mode !== undefined && req.mode !== "preview" && req.mode !== "full") {
+      return err({
+        kind: "validation",
+        code: "invalid_render_mode",
+        message: "render mode must be preview or full"
+      });
+    }
+    const renderMode = req.mode ?? "full";
+    const dims =
+      renderMode === "preview"
+        ? { w: 640, h: 360 }
+        : project.resolution === "720p"
+          ? { w: 1280, h: 720 }
+          : { w: 1920, h: 1080 };
 
     broadcastRenderProgress({ projectId: project.id, phase: "tts", message: "Resolving scenes", ratio: 0 });
 
@@ -816,7 +890,7 @@ export function registerSizzleHandlers(): void {
       )
     ];
     const loadedCaptures = await Promise.all(
-      captureIds.map(async (captureId) => [captureId, await loadCapture(captureId)] as const)
+      captureIds.map(async (captureId) => [captureId, await loadCapture(captureId, ctx)] as const)
     );
     const captureMap = new Map<string, CaptureRecord>();
     for (const [captureId, capture] of loadedCaptures) {
@@ -1025,9 +1099,25 @@ export function registerSizzleHandlers(): void {
 
     broadcastRenderProgress({ projectId: project.id, phase: "compose", message: "Composing video", ratio: 0.5 });
 
-    const outDir = join(app.getPath("videos"), "PwrSnap");
+    const renderId = createHash("sha256")
+      .update(JSON.stringify({
+        projectId: project.id,
+        modifiedAt: project.modifiedAt,
+        renderMode,
+        width: dims.w,
+        height: dims.h
+      }))
+      .digest("hex")
+      .slice(0, 24);
+    const outDir =
+      renderMode === "preview"
+        ? join(getCacheRoot(), "sizzle-previews", project.id)
+        : join(app.getPath("videos"), "PwrSnap");
     await mkdir(outDir, { recursive: true });
-    const outputPath = join(outDir, `${sanitizeProjectFilename(project.name)}-${project.id}.mp4`);
+    const outputPath =
+      renderMode === "preview"
+        ? join(outDir, `${renderId}.mp4`)
+        : join(outDir, `${sanitizeProjectFilename(project.name)}-${project.id}.mp4`);
 
     try {
       await compose({
@@ -1053,19 +1143,32 @@ export function registerSizzleHandlers(): void {
     }
 
     const totalSec = sceneInputs.reduce((acc, s) => acc + s.durationSec, 0);
-    const next = await store.update(project.id, {
-      outputPath,
-      lastRenderedAt: new Date().toISOString()
+    if (renderMode === "full") {
+      await store.update(project.id, {
+        outputPath,
+        lastRenderedAt: new Date().toISOString()
+      });
+      await pushProjectsChanged();
+    }
+    log.info("sizzle:render done", {
+      id: project.id,
+      renderMode,
+      totalSec,
+      outputPath
     });
-    await pushProjectsChanged();
-    log.info("sizzle:render done", { id: next.id, totalSec, outputPath });
     broadcastRenderProgress({ projectId: project.id, phase: "done", message: "Render complete", ratio: 1 });
     void store.list().then((projects) => pruneTtsCache(projects)).catch((cause) => {
       log.warn("tts cache sweep failed", {
         message: cause instanceof Error ? cause.message : String(cause)
       });
     });
-    return ok({ outputPath, durationSec: totalSec });
+    return ok({
+      outputPath,
+      durationSec: totalSec,
+      renderId,
+      widthPx: dims.w,
+      heightPx: dims.h
+    });
   });
 }
 

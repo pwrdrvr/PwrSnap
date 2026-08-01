@@ -38,6 +38,8 @@ import type {
   LibrarySidebarTab,
   HighlightBlendMode,
   HighlightToolStyle,
+  LocalAgentCapability,
+  LocalAgentClientGrant,
   ShapeKind,
   ShapeToolStyle,
   SensitiveDataPattern,
@@ -72,6 +74,7 @@ import {
   isHotCpuProfileStartDelayMs,
   isHotCpuProfileTriggerMode,
   isLibrarySidebarTab,
+  isLocalAgentCapability,
   isRedactionStyle
 } from "@pwrsnap/shared";
 import {
@@ -199,7 +202,11 @@ export function defaultSettings(): Settings {
       screenCapturePrompted: false
     },
     editor: defaultEditorSettings(),
-    library: defaultLibrarySettings()
+    library: defaultLibrarySettings(),
+    localAgents: {
+      grants: [],
+      audit: []
+    }
   };
 }
 
@@ -583,6 +590,8 @@ function parseV1(raw: unknown): Settings | null {
   const updates = isRecord(raw.updates) ? raw.updates : {};
   const storage = isRecord(raw.storage) ? raw.storage : {};
   const recording = isRecord(raw.recording) ? raw.recording : {};
+  const localAgents = parseLocalAgentsSettings(raw.localAgents, defaults.localAgents);
+  if (localAgents === null) return null;
   const storedDefaultsMigrationVersion =
     typeof raw.lastDefaultsMigrationVersion === "string" &&
     raw.lastDefaultsMigrationVersion.trim().length > 0
@@ -780,7 +789,11 @@ function parseV1(raw: unknown): Settings | null {
     editor: parseEditorSettings(raw.editor, defaults.editor),
     // `library.*` is additive too — older files won't have it. Falls
     // through to defaultLibrarySettings() (pinned + Info) when missing.
-    library: parseLibrarySettings(raw.library, defaults.library)
+    library: parseLibrarySettings(raw.library, defaults.library),
+    // `localAgents.*` is security and audit state. A malformed entry
+    // invalidates the settings shape so read() quarantines the complete
+    // source file instead of silently erasing grant or audit history.
+    localAgents
   };
 }
 
@@ -953,6 +966,204 @@ function parseLibrarySettings(
  *  non-finite inputs are handled upstream by pickNumber. */
 function clampGridZoom(value: number): number {
   return Math.min(GRID_ZOOM_MAX, Math.max(GRID_ZOOM_MIN, value));
+}
+
+function parseLocalAgentsSettings(
+  raw: unknown,
+  defaults: Settings["localAgents"]
+): Settings["localAgents"] | null {
+  if (raw === undefined) return defaults;
+  if (!isRecord(raw)) return null;
+  if (raw.grants !== undefined && !Array.isArray(raw.grants)) return null;
+  if (raw.audit !== undefined && !Array.isArray(raw.audit)) return null;
+  const grantsRaw = raw.grants ?? [];
+  const seen = new Set<string>();
+  const grants: LocalAgentClientGrant[] = [];
+  for (const grantRaw of grantsRaw) {
+    const grant = parseLocalAgentGrant(grantRaw);
+    if (grant === null || seen.has(grant.id)) return null;
+    seen.add(grant.id);
+    grants.push(grant);
+  }
+  const auditRaw = raw.audit ?? [];
+  if (auditRaw.length > 500) return null;
+  const audit: Settings["localAgents"]["audit"] = [];
+  const auditIds = new Set<string>();
+  for (const auditEntryRaw of auditRaw) {
+    const entry = parseLocalAgentAuditEntry(auditEntryRaw);
+    if (entry === null || auditIds.has(entry.id)) return null;
+    auditIds.add(entry.id);
+    audit.push(entry);
+  }
+  return { grants, audit };
+}
+
+function parseLocalAgentAuditEntry(
+  raw: unknown
+): Settings["localAgents"]["audit"][number] | null {
+  if (!isRecord(raw)) return null;
+  if (
+    typeof raw.id !== "string" ||
+    typeof raw.clientId !== "string" ||
+    typeof raw.action !== "string" ||
+    typeof raw.subjectId !== "string" ||
+    typeof raw.occurredAt !== "string" ||
+    !isLocalAgentCapability(raw.capability) ||
+    (raw.subjectKind !== "capture" && raw.subjectKind !== "sizzle") ||
+    (raw.outcome !== "success" && raw.outcome !== "failure")
+  ) {
+    return null;
+  }
+  const actions = new Set([
+    "capture.original.read",
+    "capture.export",
+    "capture.edit",
+    "trash.write",
+    "sizzle.preview.read",
+    "sizzle.full.read"
+  ]);
+  if (!actions.has(raw.action)) return null;
+  const expectedCapability = raw.action as LocalAgentCapability;
+  const expectedSubjectKind = raw.action.startsWith("sizzle.") ? "sizzle" : "capture";
+  if (
+    raw.capability !== expectedCapability ||
+    raw.subjectKind !== expectedSubjectKind
+  ) {
+    return null;
+  }
+  return {
+    id: raw.id.slice(0, 128),
+    clientId: raw.clientId.slice(0, 128),
+    action: raw.action as Settings["localAgents"]["audit"][number]["action"],
+    capability: raw.capability,
+    subjectKind: raw.subjectKind,
+    subjectId: raw.subjectId.slice(0, 256),
+    outcome: raw.outcome,
+    occurredAt: raw.occurredAt
+  };
+}
+
+function parseLocalAgentGrant(raw: unknown): LocalAgentClientGrant | null {
+  if (!isRecord(raw)) return null;
+  const id = typeof raw.id === "string" ? raw.id.trim() : "";
+  const name = typeof raw.name === "string" ? raw.name.trim() : "";
+  if (id.length === 0 || id.length > 128) return null;
+  if (name.length === 0 || name.length > 200) return null;
+  if (
+    !Array.isArray(raw.capabilities) ||
+    raw.capabilities.some((capability) => !isLocalAgentCapability(capability))
+  ) {
+    return null;
+  }
+  const capabilities = parseLocalAgentCapabilities(raw.capabilities);
+  if (capabilities.length === 0) return null;
+  const createdAt = pickIsoishString(raw.createdAt);
+  const updatedAt = pickIsoishString(raw.updatedAt);
+  if (createdAt === null || updatedAt === null) return null;
+  const lastUsedAt = pickIsoishStringOrNull(raw.lastUsedAt);
+  const revokedAt = pickIsoishStringOrNull(raw.revokedAt);
+  if (lastUsedAt === undefined || revokedAt === undefined) return null;
+  const oauthClient = parseLocalAgentOAuthClient(raw.oauthClient);
+  if (
+    raw.oauthClient !== undefined &&
+    (oauthClient === null || oauthClient.clientId !== id)
+  ) {
+    return null;
+  }
+  return {
+    id,
+    name,
+    capabilities,
+    createdAt,
+    updatedAt,
+    lastUsedAt,
+    revokedAt,
+    ...(oauthClient !== null && oauthClient.clientId === id ? { oauthClient } : {})
+  };
+}
+
+function parseLocalAgentOAuthClient(
+  raw: unknown
+): NonNullable<LocalAgentClientGrant["oauthClient"]> | null {
+  if (!isRecord(raw)) return null;
+  const clientId = typeof raw.clientId === "string" ? raw.clientId.trim() : "";
+  const clientName = typeof raw.clientName === "string" ? raw.clientName.trim() : "";
+  const registeredAt = typeof raw.registeredAt === "string" ? raw.registeredAt : "";
+  if (
+    clientId.length === 0 ||
+    clientId.length > 128 ||
+    clientName.length === 0 ||
+    clientName.length > 200 ||
+    registeredAt.length === 0 ||
+    !Number.isFinite(Date.parse(registeredAt))
+  ) {
+    return null;
+  }
+  const redirectUris = parseBoundedStringArray(raw.redirectUris, 8, 2_048);
+  const grantTypes = parseBoundedStringArray(raw.grantTypes, 8, 128);
+  const responseTypes = parseBoundedStringArray(raw.responseTypes, 8, 128);
+  if (
+    redirectUris.length === 0 ||
+    redirectUris.some((uri) => !URL.canParse(uri)) ||
+    !grantTypes.includes("authorization_code") ||
+    !responseTypes.includes("code")
+  ) {
+    return null;
+  }
+  return {
+    clientId,
+    clientName,
+    redirectUris,
+    clientUri: parseNullableBoundedString(raw.clientUri, 2_048),
+    scope: parseNullableBoundedString(raw.scope, 2_048),
+    grantTypes,
+    responseTypes,
+    softwareId: parseNullableBoundedString(raw.softwareId, 256),
+    softwareVersion: parseNullableBoundedString(raw.softwareVersion, 128),
+    registeredAt
+  };
+}
+
+function parseBoundedStringArray(
+  raw: unknown,
+  maxItems: number,
+  maxLength: number
+): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (value): value is string =>
+        typeof value === "string" && value.length > 0 && value.length <= maxLength
+    )
+    .slice(0, maxItems);
+}
+
+function parseNullableBoundedString(
+  raw: unknown,
+  maxLength: number
+): string | null {
+  return typeof raw === "string" && raw.length > 0 && raw.length <= maxLength
+    ? raw
+    : null;
+}
+
+function parseLocalAgentCapabilities(raw: unknown): LocalAgentCapability[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<LocalAgentCapability>();
+  for (const value of raw) {
+    if (!isLocalAgentCapability(value)) continue;
+    seen.add(value);
+  }
+  return [...seen];
+}
+
+function pickIsoishString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function pickIsoishStringOrNull(value: unknown): string | null | undefined {
+  if (value === null || value === undefined) return null;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 const SHAPE_CATALOG: readonly ShapeEntry[] = [
@@ -1295,7 +1506,8 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     storage: mergeSection(current.storage, patch.storage),
     recording: mergeSection(current.recording, patch.recording),
     editor: mergeEditor(current.editor, patch.editor),
-    library: mergeLibrary(current.library, patch.library)
+    library: mergeLibrary(current.library, patch.library),
+    localAgents: mergeLocalAgents(current.localAgents, patch.localAgents)
   };
 }
 
@@ -1467,6 +1679,17 @@ function mergeLibrary(
       patch.gridZoom !== undefined
         ? clampGridZoom(patch.gridZoom)
         : current.gridZoom
+  };
+}
+
+function mergeLocalAgents(
+  current: Settings["localAgents"],
+  patch: SettingsPatch["localAgents"]
+): Settings["localAgents"] {
+  if (patch === undefined) return current;
+  return {
+    grants: patch.grants !== undefined ? patch.grants : current.grants,
+    audit: patch.audit !== undefined ? patch.audit : current.audit
   };
 }
 

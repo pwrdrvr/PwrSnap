@@ -38,6 +38,27 @@ resolution, edit the wanted mode in the setres source inside
 **Do not** probe with `system_profiler SPDisplaysDataType` — it returns
 an empty array in VF guests in every mode, even with a window attached.
 
+## Host can't reach any VM: ping 100% loss, SSH "No route to host"
+
+**Symptom.** `tart ip` returns an address on 192.168.64.x and `arp -a`
+shows the VM's MAC resolved on `bridge100`, but ping gets 100% packet
+loss and `ssh`/`nc` report "No route to host" / connection refused.
+`provision-dev.sh` dies at the key-install step with exactly this.
+
+**Root cause.** macOS Local Network privacy (TCC) on Sequoia and later.
+The VM NAT subnet counts as "local network", and the *responsible app*
+for your shell (Terminal, iTerm, the Claude/Codex desktop app when an
+agent runs the scripts) must hold the Local Network permission. ARP
+works because the filter drops IP traffic only — which is what makes
+this look like a guest/sshd problem when it isn't.
+
+**Fix.** System Settings → Privacy & Security → Local Network → enable
+the app that owns the shell. The failed connection attempts add the app
+to that list; if it's already listed and ON, toggle it off/on, and if
+the block persists restart the app (permission is read at process
+start). Identify the responsible app by walking `ps -o ppid=,comm= -p`
+ancestry from your shell upward.
+
 ## Provisioning "succeeds" but nvm/repo/tmux missing in the VM
 
 **Symptom.** `provision-dev.sh` exits 0 but the VM has no `~/.nvm`, no

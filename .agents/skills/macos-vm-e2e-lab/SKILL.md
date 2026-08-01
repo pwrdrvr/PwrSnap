@@ -147,29 +147,44 @@ Then:
 
 ```bash
 cd ~/pwrsnap-mac-vm
-./runner/provision-runner-base.sh   # clone pwrsnap-dev -> pwrsnap-runner-base,
-                                    # stage (not register) actions-runner
-./runner/run-ephemeral-runner.sh --once   # serve exactly one job
-./runner/run-ephemeral-runner.sh          # serve jobs forever
+./runner/provision-runner-base.sh    # clone pwrsnap-dev -> pwrsnap-runner-base,
+                                     # stage (not register) actions-runner
+./runner/run-persistent-runner.sh    # DEFAULT: one long-lived runner VM
 ```
 
-The loop per cycle: clone base → boot with `--net-softnet` → **verify
-isolation from inside the VM** (abort if any RFC1918 address answers,
-abort if the internet is unreachable) → fetch a registration token via
+**Persistent mode (default).** One `pwrsnap-runner` VM, cloned from the
+base once, registered non-ephemeral under a stable name, serving jobs
+until stopped. Why it's the default: the actions-runner `_work` dir,
+pnpm store, and node toolchain stay warm between jobs (no re-clone /
+re-install tax), and it occupies exactly ONE of the host's two
+macOS-VM slots — the other stays free for `pwrsnap-dev` local runs. A
+single runner process serves one job at a time by construction. It
+still boots with softnet and still verifies isolation before serving.
+Re-baseline to a clean slate whenever wanted:
+
+```bash
+tart stop pwrsnap-runner && tart delete pwrsnap-runner
+./runner/run-persistent-runner.sh   # re-clones + re-registers (--replace)
+```
+
+**Ephemeral mode (paranoid option).** `./runner/run-ephemeral-runner.sh
+[--once]` — fresh VM per job, destroyed after: clone base → boot with
+softnet → verify isolation → register `--ephemeral` → serve ONE job →
+delete VM. Costs a full checkout + pnpm install every job and cycles
+VM slots; use when you want zero state carryover (e.g. after loosening
+the fork-PR policy, or for one-off suspicious jobs).
+
+Both modes: registration tokens come from
 `gh api -X POST repos/pwrdrvr/PwrSnap/actions/runners/registration-token`
-→ `config.sh --ephemeral --unattended` with the labels above → `run.sh`
-serves one job → VM stopped and deleted.
+and require repo admin on the authenticated `gh` — check
+`gh auth status` if the token fetch 403s.
 
-Registration tokens require repo admin on the authenticated `gh` — check
-`gh auth status` if token fetch 403s. A healthy cycle end-to-end
-(including the job) is ~5–6 minutes; the runner appears in the repo's
-Settings → Actions → Runners page only while serving.
-
-Operational note: ephemeral runners deregister after every job, so the
-CI lane only functions while the loop is running on some host. If no
-runner is listening, queued `desktop-e2e-macos` jobs sit up to 24h and
-fail — keep the lane's workflow job non-required (or the loop always-on
-via launchd) accordingly.
+Operational note: the CI lane only functions while a runner is
+listening. If none is, queued `desktop-e2e-macos` jobs sit up to 24h
+and fail — keep the lane's workflow job non-required (or the runner
+always-on via launchd) accordingly. A persistent runner that's offline
+stays registered (shows offline in repo Settings → Actions → Runners);
+jobs queue until it returns.
 
 ## Gotchas (each of these cost real debugging time)
 

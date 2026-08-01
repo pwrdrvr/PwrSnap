@@ -40,7 +40,7 @@ serve_one_job() {
   trap cleanup RETURN
 
   echo ">> [$vm] booting with softnet isolation"
-  nohup "$TART" run "$vm" --vnc-experimental --net-softnet \
+  nohup "$TART" run "$vm" --vnc-experimental --no-graphics --net-softnet \
     >"$HOME/pwrsnap-mac-vm/.$vm.run.log" 2>&1 &
   disown || true
 

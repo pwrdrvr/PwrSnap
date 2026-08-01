@@ -18,13 +18,15 @@ vm_running() { "$TART" list --format json | /usr/bin/python3 -c "import json,sys
 vm_start_headless() {
   local vm=$1
   if vm_running "$vm"; then return 0; fi
-  # --vnc-experimental, NOT --no-graphics: with --no-graphics the guest
-  # has no display device at all, so WindowServer falls back to a
-  # 1024x768 framebuffer and window-size-sensitive specs fail. The VNC
-  # display honors the configured resolution and opens no host window;
-  # the vnc:// URL for peeking lands in the .run.log.
+  # --vnc-experimental + --no-graphics: the VNC server gives the guest a
+  # display device, and --no-graphics stops tart from auto-opening the
+  # vnc:// URL in Screen Sharing (without it, every VM boot leaks a
+  # host Screen Sharing window that sticks at "Reconnecting..." after
+  # the VM stops). Guest resolution is handled in-guest by ~/bin/setres
+  # (see provision-dev.sh), not by the viewer. The vnc:// URL for
+  # peeking lands in the .run.log.
   echo ">> starting $vm (headless, vnc display)"
-  nohup "$TART" run "$vm" --vnc-experimental >"$HOME/pwrsnap-mac-vm/.$vm.run.log" 2>&1 &
+  nohup "$TART" run "$vm" --vnc-experimental --no-graphics >"$HOME/pwrsnap-mac-vm/.$vm.run.log" 2>&1 &
   disown || true
 }
 

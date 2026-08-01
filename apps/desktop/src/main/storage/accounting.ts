@@ -68,6 +68,7 @@ let cachedStorageSnapshotAudit = false;
 let cachedCompletedAtMs = 0;
 let inFlightStorageScan: InFlightStorageScan | null = null;
 let queuedAuditStorageScan: Promise<StorageSnapshot> | null = null;
+let queuedForceStorageScan: Promise<StorageSnapshot> | null = null;
 
 export function getStorageSummary(): StorageSummary {
   const sourceCaptures = getLiveSourceCaptureStats();
@@ -94,14 +95,35 @@ export async function getStorageSnapshot(
   const force = options.force ?? false;
   const audit = options.audit ?? false;
   if (inFlightStorageScan !== null) {
-    if (!audit || inFlightStorageScan.audit) return inFlightStorageScan.promise;
-    queuedAuditStorageScan ??= inFlightStorageScan.promise.then(
-      () => getStorageSnapshot({ force: true, audit: true }),
-      () => getStorageSnapshot({ force: true, audit: true })
-    ).finally(() => {
-      queuedAuditStorageScan = null;
-    });
-    return queuedAuditStorageScan;
+    if (audit && !inFlightStorageScan.audit) {
+      queuedAuditStorageScan ??= inFlightStorageScan.promise.then(
+        () => getStorageSnapshot({ force: true, audit: true }),
+        () => getStorageSnapshot({ force: true, audit: true })
+      ).finally(() => {
+        queuedAuditStorageScan = null;
+      });
+      return queuedAuditStorageScan;
+    }
+    if (force) {
+      // The in-flight scan enumerated the filesystem BEFORE this
+      // request, so joining it would silently return pre-request
+      // state — the Library storage popover reopening right after a
+      // capture/seed landed would show stale sizes forever (nothing
+      // retriggers a scan inside the 5-minute TTL). A force caller is
+      // owed a scan that STARTS at-or-after its request: chain one
+      // trailing rescan behind the in-flight scan. The queue slot is
+      // shared (??=) and cleared the moment the rescan begins, so any
+      // number of force callers arriving during one scan collapse
+      // into exactly one follow-up — no scan storms.
+      queuedForceStorageScan ??= inFlightStorageScan.promise
+        .catch(() => undefined)
+        .then(() => {
+          queuedForceStorageScan = null;
+          return getStorageSnapshot({ force: true, audit });
+        });
+      return queuedForceStorageScan;
+    }
+    return inFlightStorageScan.promise;
   }
 
   const cachedAgeMs = Date.now() - cachedCompletedAtMs;

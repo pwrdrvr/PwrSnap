@@ -103,7 +103,7 @@ describe("getStorageSnapshot", () => {
     expect(snapshot.otherAppSupport.bytes).toBeLessThan(128 * 1024);
   });
 
-  test("coalesces concurrent full storage scans and publishes progress", async () => {
+  test("force requests during an in-flight scan share one trailing rescan", async () => {
     mocks.captureCount = 1;
     mocks.sourceBytes = 512 * 1024;
     await mkdir(mocks.dataRoot, { recursive: true });
@@ -117,16 +117,60 @@ describe("getStorageSnapshot", () => {
     });
 
     try {
+      // A force request whose scan is already running gets a trailing
+      // rescan (its scan must START at-or-after the request), but every
+      // force caller arriving during the same scan shares ONE queued
+      // rescan — N callers collapse to exactly 2 scans, no storms.
       const first = getStorageSnapshot({ force: true });
       const second = getStorageSnapshot({ force: true });
-      const [firstSnapshot, secondSnapshot] = await Promise.all([first, second]);
+      const third = getStorageSnapshot({ force: true });
+      const [firstSnapshot, secondSnapshot, thirdSnapshot] = await Promise.all([
+        first,
+        second,
+        third
+      ]);
 
-      expect(firstSnapshot).toBe(secondSnapshot);
+      expect(secondSnapshot).toBe(thirdSnapshot);
+      expect(firstSnapshot).not.toBe(secondSnapshot);
+      expect(updates.filter((update) => !update.scanning)).toHaveLength(2);
       expect(updates.some((update) => update.scanning)).toBe(true);
       expect(updates.at(-1)).toEqual({ scanning: false });
     } finally {
       unsubscribe();
     }
+  });
+
+  test("a force request issued mid-scan sees files written after the first scan started", async () => {
+    await mkdir(mocks.dataRoot, { recursive: true });
+
+    // Wedge the first scan open on its Chromium getCacheSize task so
+    // the spec can deterministically land a filesystem write while the
+    // scan is in flight — the exact shape of the storage-popover bug
+    // (reopen forces a refresh, but a scan begun pre-seed is still
+    // running and used to satisfy the force caller with stale sizes).
+    const { session } = await import("electron");
+    let releaseCacheSize: () => void = () => undefined;
+    const cacheSizeGate = new Promise<void>((resolve) => {
+      releaseCacheSize = resolve;
+    });
+    vi.mocked(session.defaultSession.getCacheSize).mockImplementationOnce(async () => {
+      await cacheSizeGate;
+      return 0;
+    });
+
+    const { getStorageSnapshot } = await import("../accounting");
+    const first = getStorageSnapshot({ force: true });
+
+    const renderDir = join(mocks.dataRoot, "render-cache", "capture-a");
+    await mkdir(renderDir, { recursive: true });
+    await writeFile(join(renderDir, "rebuilt.webp"), Buffer.alloc(1024 * 1024));
+
+    const second = getStorageSnapshot({ force: true });
+    releaseCacheSize();
+    const [, secondSnapshot] = await Promise.all([first, second]);
+
+    expect(secondSnapshot.renderCache.bytes).toBeGreaterThanOrEqual(1024 * 1024);
+    expect(secondSnapshot.renderCache.fileCount).toBe(1);
   });
 
   test("normal snapshots use Chromium cache API instead of crawling Chromium cache dirs", async () => {

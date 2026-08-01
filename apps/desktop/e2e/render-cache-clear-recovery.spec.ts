@@ -14,10 +14,8 @@
 //      source.png lives under render-cache.
 //   2. Delete the cache source.png from disk — same observable
 //      end state as `storage:maintainRenderCache mode='clear'`,
-//      but without depending on its storage-snapshot scan that
-//      walks `getCapturesRoot()` (which resolves to the host's
-//      real ~/Documents/PwrSnap on macOS — slow + unrelated to
-//      what we're testing).
+//      but without depending on its storage-snapshot scan, which
+//      is unrelated to what we're testing.
 //   3. Dispatch clipboard:copy mode='med' — same command the
 //      Library + Float-Over Copy buttons fire.
 //   4. Assert the dispatch returns ok AND the clipboard holds a
@@ -76,11 +74,11 @@ type BundleSeed = {
  * the captureId + the expected cache source.png path so the spec
  * can assert against it directly.
  *
- * `outputDir` is pinned under the test's tmpdir HOME so the bundle
- * never lands in the host machine's real `~/Documents/PwrSnap` —
- * the launchPwrSnap fixture rebases userData via PWRSNAP_USER_DATA
- * but `getCapturesRoot()` defaults to `app.getPath("documents")`
- * which Electron resolves against the OS, not HOME.
+ * `outputDir` is pinned under the test's tmpdir HOME so the spec
+ * knows the bundle's exact location. (E2E launches also rebase
+ * `app.getPath("documents")` under the tmpdir HOME, so even the
+ * `getCapturesRoot()` default stays out of the host machine's real
+ * `~/Documents/PwrSnap`.)
  */
 async function seedBundleCapture(
   app: Awaited<ReturnType<typeof launchPwrSnap>>,
@@ -154,9 +152,10 @@ test.describe("render-cache clear → bundle source recovery", () => {
     try {
       // 1. Seed a real bundle capture — persistCaptureFromTempV2 packs
       //    the .pwrsnap and materializes <userData>/render-cache/<id>/source.png.
-      //    outputDir under homeRoot keeps the bundle out of the host's
-      //    real ~/Documents/PwrSnap (PWRSNAP_USER_DATA only rebases userData,
-      //    not Documents).
+      //    outputDir is pinned under homeRoot so the spec controls the
+      //    bundle's location explicitly (E2E launches also rebase
+      //    app.getPath("documents") under homeRoot, so even the default
+      //    would stay off the host's real ~/Documents/PwrSnap).
       const tempPath = await makeTempPng(2400, 1500);
       const bundleDir = path.join(app.homeRoot, "captures");
       const { captureId, cacheSourcePath } = await seedBundleCapture(app, tempPath, bundleDir);

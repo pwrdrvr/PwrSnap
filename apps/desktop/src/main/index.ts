@@ -1454,6 +1454,18 @@ export function bootstrapApp(): void {
   const customUserData = process.env.PWRSNAP_USER_DATA;
   if (customUserData !== undefined && customUserData.length > 0) {
     app.setPath("userData", customUserData);
+    if (isE2E) {
+      // `getCapturesRoot()` composes from app.getPath("documents"),
+      // which macOS/Windows resolve via the OS user profile — NOT the
+      // fixture's HOME override. Without this rebase every E2E launch
+      // reads (and storage scans walk) the developer's real
+      // ~/Documents/PwrSnap: a hermeticity hole, and slow enough on a
+      // library of real captures to destabilize timing-sensitive
+      // specs. E2E-gated so profiling runs on a cloned userData
+      // (PWRSNAP_USER_DATA without PWRSNAP_E2E) keep observing the
+      // real captures library, which is their whole point.
+      app.setPath("documents", join(customUserData, "Documents"));
+    }
   }
 
   // Two-process split: the agent and library are separate Chromium

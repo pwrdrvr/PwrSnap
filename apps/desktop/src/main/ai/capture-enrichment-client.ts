@@ -1,13 +1,14 @@
-// Capture-enrichment client — a thin PwrSnap wrapper over the shared Codex
-// App Server owner.
+// Capture-enrichment client — a thin PwrSnap wrapper over the bounded Codex
+// enrichment owner.
 //
 // Capture enrichment (annotate / describe / tag / filename / sensitive-scan)
 // is a one-shot structured-output turn: one prompt + one or more local images
 // in, one JSON object out (validated against `CAPTURE_ENRICHMENT_SCHEMA`). The
-// pooled owner keeps one App Server process/connection while every enrichment
-// gets a fresh ephemeral thread. It also owns `outputSchema` plumbing,
-// localImage inputs, and token-usage normalization. This avoids a second Codex
-// process without leaking context between captures.
+// bounded owner keeps one App Server process/connection for a batch of up to 20
+// enrichments while every capture gets a fresh ephemeral thread. It then
+// recycles the helper process to bound Codex's retained in-memory contexts. It
+// also owns `outputSchema` plumbing, localImage inputs, and token-usage
+// normalization.
 //
 // This wrapper preserves the `enrichCapture(...)` / `close()` surface that
 // `codex-handlers.ts` consumes, mapping PwrSnap's caller-supplied args (prompt
@@ -153,6 +154,6 @@ export class CaptureEnrichmentClient {
   }
 
   async close(): Promise<void> {
-    // The app-wide Codex owner owns the process lifecycle.
+    // The bounded enrichment owner owns the process lifecycle.
   }
 }

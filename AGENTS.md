@@ -138,9 +138,11 @@ Both shapes go through Codex App Server:
 
 - **Phase 4 background pipelines** (annotate / describe / tag / filename) use
   a fresh ephemeral thread per capture with structured output. Image input
-  rides as a `ContentItem` in `TurnStartParams`. The shared App Server process
-  is retained, and each helper thread is unsubscribed immediately after its
-  turn; Codex unloads it after the protocol's inactivity grace period.
+  rides as a `ContentItem` in `TurnStartParams`. Each helper thread is
+  unsubscribed immediately after its turn. A dedicated enrichment App Server
+  is reused for at most 20 helper threads and then recycled, bounding contexts
+  retained during Codex's inactivity grace period without cold-starting a
+  process for every capture. Interactive threads use a separate owner.
 - **Phase 4+ user-facing AI surface** ("ask Codex about this snap") uses
   long-lived threads with normal `turn/start` cadence.
 - **Phase 6 sizzle composer** uses multi-turn agentic flow.

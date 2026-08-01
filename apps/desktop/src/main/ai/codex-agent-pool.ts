@@ -1,11 +1,12 @@
-// App-wide Codex App Server owner.
+// Codex App Server lifecycle owners.
 //
 // agent-kit exposes a pooled ACP client, but the published Codex client owns a
 // stdio App Server process per `CodexThreadClient`/`CodexOneShotClient`
-// instance. PwrSnap needs one Codex process per (command, CODEX_HOME), with
-// per-surface backend views so each chat controller can keep its own tool and
-// approval handlers without clobbering siblings. Enrichment shares that owner
-// but uses a fresh ephemeral thread for every capture.
+// instance. Interactive surfaces share one long-lived process per (command,
+// CODEX_HOME), with per-surface backend views so handlers do not clobber
+// siblings. Enrichment uses one separate bounded owner: it reuses a process for
+// a small batch of fresh ephemeral threads, then recycles the process so Codex's
+// 30-minute unload grace cannot accumulate image contexts without bound.
 
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -42,6 +43,7 @@ const log = getMainLogger("pwrsnap:codex-pool");
 const MODEL_LIST_TIMEOUT_MS = 20_000;
 const ONE_SHOT_REQUEST_TIMEOUT_MS = 20_000;
 const ONE_SHOT_TURN_TIMEOUT_MS = 120_000;
+const ONE_SHOT_OWNER_MAX_RUNS = 20;
 
 type JsonRpcLikeConnection = {
   request(method: string, params: unknown, timeoutMs?: number): Promise<unknown>;
@@ -189,8 +191,6 @@ class CodexAgentOwner {
   private readonly rawNotificationListeners = new Set<
     (method: string, params: unknown) => void
   >();
-  private closing = false;
-  private oneShotQueue: Promise<void> = Promise.resolve();
   private rawNotificationTapInstalled = false;
 
   constructor(readonly key: string, private readonly options: CodexBackendViewOptions) {
@@ -299,26 +299,10 @@ class CodexAgentOwner {
   }
 
   async runOneShot(options: CodexOneShotPoolRunOptions): Promise<CodexOneShotPoolRunResult> {
-    if (this.closing) {
-      throw new Error("Codex agent owner is closing");
-    }
-    const run = this.oneShotQueue
-      .catch(() => undefined)
-      .then(() => {
-        if (this.closing) {
-          throw new Error("Codex one-shot cancelled because its shared owner closed");
-        }
-        return this.runOneShotInner(options);
-      });
-    this.oneShotQueue = run.then(
-      () => undefined,
-      () => undefined
-    );
-    return await run;
+    return await this.runOneShotInner(options);
   }
 
   async close(): Promise<void> {
-    this.closing = true;
     this.threadHandlers.clear();
     this.activeTurns.clear();
     await this.client.close();
@@ -648,11 +632,81 @@ class CodexAgentOwner {
 }
 
 const owners = new Map<string, CodexAgentOwner>();
+const oneShotOwners = new Map<string, BoundedCodexOneShotOwner>();
 const ONE_SHOT_HANDLERS: CodexViewHandlers = {
   events: new Set(),
   toolCall: null,
   approval: null
 };
+
+class BoundedCodexOneShotOwner {
+  private owner: CodexAgentOwner | null = null;
+  private completedRuns = 0;
+  private queue: Promise<void> = Promise.resolve();
+  private closing = false;
+
+  constructor(
+    private readonly key: string,
+    private readonly options: CodexBackendViewOptions
+  ) {}
+
+  async run(options: CodexOneShotPoolRunOptions): Promise<CodexOneShotPoolRunResult> {
+    if (this.closing) {
+      throw new Error("Codex enrichment owner is closing");
+    }
+    const run = this.queue
+      .catch(() => undefined)
+      .then(() => this.runNext(options));
+    this.queue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return await run;
+  }
+
+  async close(): Promise<void> {
+    this.closing = true;
+    const owner = this.owner;
+    this.owner = null;
+    if (owner !== null) await owner.close();
+  }
+
+  private async runNext(
+    options: CodexOneShotPoolRunOptions
+  ): Promise<CodexOneShotPoolRunResult> {
+    if (this.closing) {
+      throw new Error("Codex one-shot cancelled because its enrichment owner closed");
+    }
+    const owner = this.owner ?? this.createOwner();
+    try {
+      return await owner.runOneShot(options);
+    } finally {
+      if (this.owner === owner) {
+        this.completedRuns += 1;
+        if (this.completedRuns >= ONE_SHOT_OWNER_MAX_RUNS) {
+          this.owner = null;
+          this.completedRuns = 0;
+          log.info("Codex enrichment owner reached its thread bound; recycling", {
+            owner: this.key,
+            maxRuns: ONE_SHOT_OWNER_MAX_RUNS
+          });
+          await owner.close();
+        }
+      }
+    }
+  }
+
+  private createOwner(): CodexAgentOwner {
+    const owner = new CodexAgentOwner(`enrichment:${this.key}`, this.options);
+    this.owner = owner;
+    log.info("Codex bounded enrichment owner created", {
+      command: this.options.command,
+      codexHome: this.options.env?.["CODEX_HOME"] ?? null,
+      maxRuns: ONE_SHOT_OWNER_MAX_RUNS
+    });
+    return owner;
+  }
+}
 
 function codexOwnerKey(command: string, env: NodeJS.ProcessEnv | undefined): string {
   return JSON.stringify([command, env?.["CODEX_HOME"] ?? ""]);
@@ -671,6 +725,17 @@ function getCodexOwner(options: CodexBackendViewOptions): CodexAgentOwner {
   return owner;
 }
 
+function getCodexOneShotOwner(
+  options: CodexBackendViewOptions
+): BoundedCodexOneShotOwner {
+  const key = codexOwnerKey(options.command, options.env);
+  const existing = oneShotOwners.get(key);
+  if (existing !== undefined) return existing;
+  const owner = new BoundedCodexOneShotOwner(key, options);
+  oneShotOwners.set(key, owner);
+  return owner;
+}
+
 export function acquireCodexAgentBackendView(options: CodexBackendViewOptions): AgentBackend {
   return getCodexOwner(options).view();
 }
@@ -686,16 +751,17 @@ export async function listCodexModelsFromPool(options: CodexModelListOptions): P
 export async function runCodexOneShotFromPool(
   options: CodexOneShotPoolRunOptions
 ): Promise<CodexOneShotPoolRunResult> {
-  return await getCodexOwner({
+  return await getCodexOneShotOwner({
     command: options.command,
     ...(options.env !== undefined ? { env: options.env } : {}),
     loggerScope: "pwrsnap:codex-pool"
-  }).runOneShot(options);
+  }).run(options);
 }
 
 export async function closeCodexAgentPool(): Promise<void> {
-  const closing = [...owners.values()];
+  const closing = [...owners.values(), ...oneShotOwners.values()];
   owners.clear();
+  oneShotOwners.clear();
   await Promise.all(closing.map((owner) => owner.close().catch(() => undefined)));
 }
 

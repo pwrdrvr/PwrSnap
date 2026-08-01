@@ -9,6 +9,7 @@ import {
 type MockCodexThreadClient = {
   startThread: ReturnType<typeof vi.fn>;
   interruptTurn: ReturnType<typeof vi.fn>;
+  close: ReturnType<typeof vi.fn>;
   emitEvent(event: unknown): void;
 };
 
@@ -320,6 +321,65 @@ describe("Codex agent pool", () => {
     expect(calls.some(([method]) => method === "thread/rollback")).toBe(false);
   });
 
+  test("recycles the enrichment App Server after twenty one-shot threads", async () => {
+    let nextThread = 0;
+    mockConnectionRequest.mockImplementation(async (method: string, params: unknown) => {
+      if (method === "config/read") return { config: {} };
+      if (method === "thread/start") {
+        nextThread += 1;
+        return {
+          thread: { id: `bounded-thread-${nextThread}` },
+          model: "gpt-5.6-luna",
+          modelProvider: "openai",
+          serviceTier: null
+        };
+      }
+      if (method === "turn/start") {
+        const { threadId } = params as { threadId: string };
+        const turnId = `turn-for-${threadId}`;
+        const activeClient = mockCodexThreadClients.at(-1);
+        setTimeout(() => {
+          activeClient?.emitEvent({
+            kind: "agent_message",
+            threadId,
+            turnId,
+            message: { text: '{"ok":true}' }
+          });
+          activeClient?.emitEvent({
+            kind: "turn_completed",
+            threadId,
+            turnId,
+            status: "completed"
+          });
+        }, 0);
+        return { turn: { id: turnId } };
+      }
+      return {};
+    });
+
+    const options = {
+      command: "codex-test",
+      env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-bounded-test" },
+      workspaceDir: "/tmp/pwrsnap-bounded-workspace",
+      prompt: "describe this image",
+      threadConfig: { project_doc_max_bytes: 0 }
+    } as const;
+
+    for (let run = 0; run < 21; run += 1) {
+      await runCodexOneShotFromPool(options);
+    }
+
+    expect(mockCodexThreadClients).toHaveLength(2);
+    expect(mockCodexThreadClients[0]?.close).toHaveBeenCalledTimes(1);
+    expect(mockCodexThreadClients[1]?.close).not.toHaveBeenCalled();
+    expect(
+      mockConnectionRequest.mock.calls.filter(([method]) => method === "thread/start")
+    ).toHaveLength(21);
+    expect(
+      mockConnectionRequest.mock.calls.filter(([method]) => method === "thread/unsubscribe")
+    ).toHaveLength(21);
+  });
+
   test("fails closed before starting a one-shot thread when MCP config cannot be read", async () => {
     mockConnectionRequest.mockImplementation(async (method: string) => {
       if (method === "config/read") throw new Error("config unavailable");
@@ -341,7 +401,7 @@ describe("Codex agent pool", () => {
     ).toBe(false);
   });
 
-  test("does not start a queued one-shot after the shared owner closes", async () => {
+  test("does not start a queued one-shot after the enrichment owner closes", async () => {
     const unsubscribeGate = deferred();
     mockConnectionRequest.mockImplementation(async (method: string, params: unknown) => {
       if (method === "config/read") return { config: {} };
@@ -401,7 +461,7 @@ describe("Codex agent pool", () => {
     );
     await expect(secondOutcome).resolves.toEqual(
       expect.objectContaining({
-        message: "Codex one-shot cancelled because its shared owner closed"
+        message: "Codex one-shot cancelled because its enrichment owner closed"
       })
     );
     expect(mockCodexThreadClients).toHaveLength(1);

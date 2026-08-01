@@ -31,14 +31,14 @@ still enabled and repeated on every turn:
 PwrSnap's own MCP/dynamic tools were never attached to enrichment. The fix is
 therefore two-layered:
 
-1. Pool the App Server **process/connection only**. Start a fresh
-   `ephemeral: true` thread for every enrichment and unsubscribe immediately
-   after the turn. Codex keeps a last-unsubscribed thread loaded for a 30-minute
-   inactivity grace period and rejects `thread/delete` for non-persisted root
-   threads. That temporary in-process retention does not share model context
-   between fresh threads, so it is preferable to paying App Server cold-start
-   cost for every capture. Never use `thread/rollback` to simulate a one-shot
-   thread.
+1. Start a fresh `ephemeral: true` thread for every enrichment and unsubscribe
+   immediately after the turn. Codex keeps unsubscribed threads loaded for a
+   30-minute inactivity grace period and rejects `thread/delete` for
+   non-persisted root threads. A dedicated enrichment App Server is therefore
+   reused for at most 20 helper turns and then recycled. This bounds retained
+   image-bearing contexts at 20 while amortizing process startup across a
+   batch; interactive threads remain on their separate long-lived owner. Never
+   use `thread/rollback` to simulate a one-shot thread.
 2. Add a Codex 0.144+ config marker that restores explicit feature suppression
    (`features.plugins = false`, etc.) and sets `project_doc_max_bytes = 0` so
    project AGENTS instructions cannot enter a metadata job. Before each
@@ -48,14 +48,14 @@ therefore two-layered:
 
 Codex 0.146 has no thread-level switch for the selected profile's global
 `$CODEX_HOME/AGENTS.md`; it is loaded by the process-owned instruction provider.
-The shared App Server process therefore contributes that same bounded global
-instruction block to each fresh enrichment thread. The zero-cost
+The bounded enrichment App Server process therefore contributes that same
+global instruction block to each fresh enrichment thread. The zero-cost
 `codex debug prompt-input` renderer confirmed that the modern overlay removes
 plugin and skill instruction blocks while retaining that one global block. The
 fresh-thread lifecycle prevents it from accumulating across captures.
 
-Regression tests require distinct thread ids on one shared App Server client
-across consecutive one-shot runs, `ephemeral: true`, cleanup via
+Regression tests require distinct thread ids on a reused enrichment App Server
+client, rotation after 20 runs, `ephemeral: true`, cleanup via
 `thread/unsubscribe`, no `thread/rollback`, no dynamic tools, and the modern
 config's plugin/AGENTS suppression fields.
 
@@ -168,6 +168,6 @@ The original June incident was not an agent-kit forwarding bug:
 `AgentStartThreadOptions.config` did the same for chat. The July incident
 exposed a separate lifecycle problem: using a persistent worker plus rollback
 for logically one-shot work allowed Codex's ambient injected items to survive.
-PwrSnap now owns the safer lifecycle explicitly: the App Server process is
-shared, while every enrichment gets a fresh ephemeral thread that is
-unsubscribed after completion.
+PwrSnap now owns the safer lifecycle explicitly: every enrichment gets a fresh
+ephemeral thread that is unsubscribed after completion, and its dedicated App
+Server is recycled after 20 runs so retained image contexts remain bounded.

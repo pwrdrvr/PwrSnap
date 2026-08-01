@@ -6,8 +6,6 @@ enum PasteboardWriterError: Error, CustomStringConvertible {
   case unreadablePng(String)
   case missingFileUrlPath(String)
   case invalidFileUrl(String)
-  case cannotCreateImage
-  case cannotCreateTiff
   case pasteboardWriteFailed
 
   var description: String {
@@ -20,10 +18,6 @@ enum PasteboardWriterError: Error, CustomStringConvertible {
       return "file URL target does not exist at \(path)"
     case .invalidFileUrl(let path):
       return "could not create file URL for \(path)"
-    case .cannotCreateImage:
-      return "could not decode PNG data as an image"
-    case .cannotCreateTiff:
-      return "could not create TIFF representation"
     case .pasteboardWriteFailed:
       return "NSPasteboard rejected the item"
     }
@@ -62,12 +56,6 @@ func run() throws {
   guard let pngData = try? Data(contentsOf: pngUrl) else {
     throw PasteboardWriterError.unreadablePng(parsed.pngPath)
   }
-  guard let image = NSImage(data: pngData) else {
-    throw PasteboardWriterError.cannotCreateImage
-  }
-  guard let tiffData = image.tiffRepresentation else {
-    throw PasteboardWriterError.cannotCreateTiff
-  }
 
   guard FileManager.default.fileExists(atPath: parsed.fileUrlPath) else {
     throw PasteboardWriterError.missingFileUrlPath(parsed.fileUrlPath)
@@ -79,7 +67,6 @@ func run() throws {
 
   let imageItem = NSPasteboardItem()
   imageItem.setData(pngData, forType: NSPasteboard.PasteboardType.png)
-  imageItem.setData(tiffData, forType: NSPasteboard.PasteboardType.tiff)
   imageItem.setData(
     fileUrlString.data(using: .utf8)!,
     forType: NSPasteboard.PasteboardType.fileURL

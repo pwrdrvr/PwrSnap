@@ -1,7 +1,6 @@
 // Native multi-format clipboard write — the one place PwrSnap performs
 // a SINGLE NSPasteboard write that declares BOTH the private layer-
-// fragment UTI and a flattened image (`public.png`; macOS lazily offers
-// `public.tiff` from it for consumers that ask for TIFF).
+// fragment UTI and a flattened PNG image (`public.png`).
 //
 // Why this exists: Electron cannot co-write a custom UTI and a standard
 // image atomically. Every `clipboard.write*` call wraps a
@@ -100,12 +99,6 @@ export type MultiFormatClipboardPayload = {
   /** Flattened composite PNG. Optional, but in practice always present;
    *  without it the helper writes a UTI-only payload. */
   pngBytes?: Buffer;
-  /** Flattened composite TIFF. Normally omitted: macOS lazily
-   *  synthesizes `public.tiff` from the co-written `public.png` for apps
-   *  that request TIFF, so the helper doesn't eagerly write a large
-   *  uncompressed one. Supply only to force specific (e.g. compressed)
-   *  TIFF bytes. */
-  tiffBytes?: Buffer;
 };
 
 /**
@@ -125,8 +118,7 @@ export async function writeMultiFormatClipboard(
   const request = JSON.stringify({
     utiName: payload.utiName,
     utiBase64: payload.utiBytes.toString("base64"),
-    pngBase64: payload.pngBytes?.toString("base64"),
-    tiffBase64: payload.tiffBytes?.toString("base64")
+    pngBase64: payload.pngBytes?.toString("base64")
   });
 
   return await new Promise<boolean>((resolve) => {

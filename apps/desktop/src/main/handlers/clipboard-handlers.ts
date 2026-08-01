@@ -20,7 +20,7 @@
 //   • clipboard:copyLayerFragment — v2 only: serializes selected
 //     layers + referenced sources into the private UTI
 //     (`com.pwrdrvr.pwrsnap.layer-fragment`) AND co-writes a flattened
-//     composite (`public.png` + `public.tiff`) so non-PwrSnap apps
+//     composite (`public.png`) so non-PwrSnap apps
 //     (Slack, Mail, Claude, Messages) receive an image. Electron can't
 //     atomically write a private UTI and image bytes in one update —
 //     each clipboard.write* clears the pasteboard first — so the
@@ -719,8 +719,8 @@ export function registerClipboardHandlers(): void {
         });
       }
 
-      // Single native NSPasteboard write: private UTI + public.png +
-      // public.tiff in ONE declareTypes pass. Electron can't co-write a
+      // Single native NSPasteboard write: private UTI + public.png in ONE
+      // declareTypes pass. Electron can't co-write a
       // custom UTI and an image (each clipboard.write* clears the
       // pasteboard first — see native-clipboard.ts), so this routes
       // through the bundled native helper. If the helper is unavailable

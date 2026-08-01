@@ -75,7 +75,7 @@ const targets = [
   },
   {
     // Writes a named image pasteboard item in one native operation:
-    // PNG/TIFF bytes plus public.file-url for the friendly alias. Electron's
+    // PNG bytes plus public.file-url for the friendly alias. Electron's
     // clipboard.write* calls clear the pasteboard per call, so this cannot
     // be composed safely from main-process JavaScript.
     name: "pasteboard-writer",

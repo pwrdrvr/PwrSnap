@@ -4,7 +4,8 @@
 // stdio App Server process per `CodexThreadClient`/`CodexOneShotClient`
 // instance. PwrSnap needs one Codex process per (command, CODEX_HOME), with
 // per-surface backend views so each chat controller can keep its own tool and
-// approval handlers without clobbering siblings.
+// approval handlers without clobbering siblings. Enrichment shares that owner
+// but uses a fresh ephemeral thread for every capture.
 
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -75,7 +76,6 @@ export type CodexOneShotPoolRunOptions = {
   command: string;
   env?: NodeJS.ProcessEnv;
   workspaceDir?: string;
-  workerThreadName?: string;
   threadConfig?: Record<string, unknown>;
   requestTimeoutMs?: number;
   turnTimeoutMs?: number;
@@ -100,9 +100,8 @@ export type CodexOneShotPoolRunResult = {
   tokenUsage: NormalizedTokenUsage | null;
 };
 
-type CodexWorkerThread = {
+type CodexOneShotThread = {
   threadId: string;
-  modelKey: string;
   model: string;
   modelProvider: string;
   serviceTier: string | null;
@@ -187,10 +186,10 @@ class CodexAgentOwner {
   private compatibilityCheck: Promise<void> | null = null;
   private readonly threadHandlers = new Map<string, CodexViewHandlers>();
   private readonly activeTurns = new Map<string, CodexViewHandlers>();
-  private readonly workerThreads = new Map<string, CodexWorkerThread>();
   private readonly rawNotificationListeners = new Set<
     (method: string, params: unknown) => void
   >();
+  private closing = false;
   private oneShotQueue: Promise<void> = Promise.resolve();
   private rawNotificationTapInstalled = false;
 
@@ -300,9 +299,17 @@ class CodexAgentOwner {
   }
 
   async runOneShot(options: CodexOneShotPoolRunOptions): Promise<CodexOneShotPoolRunResult> {
+    if (this.closing) {
+      throw new Error("Codex agent owner is closing");
+    }
     const run = this.oneShotQueue
       .catch(() => undefined)
-      .then(() => this.runOneShotInner(options));
+      .then(() => {
+        if (this.closing) {
+          throw new Error("Codex one-shot cancelled because its shared owner closed");
+        }
+        return this.runOneShotInner(options);
+      });
     this.oneShotQueue = run.then(
       () => undefined,
       () => undefined
@@ -311,9 +318,9 @@ class CodexAgentOwner {
   }
 
   async close(): Promise<void> {
+    this.closing = true;
     this.threadHandlers.clear();
     this.activeTurns.clear();
-    this.workerThreads.clear();
     await this.client.close();
   }
 
@@ -369,9 +376,9 @@ class CodexAgentOwner {
     options: CodexOneShotPoolRunOptions
   ): Promise<CodexOneShotPoolRunResult> {
     const { connection, initialized } = await this.getInitializedConnection();
-    let thread: CodexWorkerThread | null = null;
+    let thread: CodexOneShotThread | null = null;
     let turnId: string | null = null;
-    let rolledBack = false;
+    let turnFinished = false;
     let aborted = false;
     const requestTimeoutMs = options.requestTimeoutMs ?? ONE_SHOT_REQUEST_TIMEOUT_MS;
 
@@ -399,7 +406,7 @@ class CodexAgentOwner {
       if (isAbortSignalAborted(options.abortSignal)) {
         throw new DOMException("one-shot turn aborted", "AbortError");
       }
-      thread = await this.getWorkerThread(options, connection, requestTimeoutMs);
+      thread = await this.startOneShotThread(options, connection, requestTimeoutMs);
       const input = [
         { type: "text", text: options.prompt, text_elements: [] },
         ...imagePathsToLocalImageInputs(options.imagePaths ?? [])
@@ -427,12 +434,7 @@ class CodexAgentOwner {
         turnId,
         timeoutMs: options.turnTimeoutMs ?? ONE_SHOT_TURN_TIMEOUT_MS
       });
-      await connection.request(
-        "thread/rollback",
-        { threadId: thread.threadId, numTurns: 1 },
-        requestTimeoutMs
-      );
-      rolledBack = true;
+      turnFinished = true;
       return {
         rawText,
         threadId: thread.threadId,
@@ -449,17 +451,27 @@ class CodexAgentOwner {
       if (thread !== null) {
         this.releaseThread(thread.threadId, ONE_SHOT_HANDLERS);
       }
-      if (thread !== null && turnId !== null && !rolledBack) {
+      if (thread !== null && turnId !== null && !turnFinished) {
         await connection
           .request(
-            "thread/rollback",
-            { threadId: thread.threadId, numTurns: 1 },
+            "turn/interrupt",
+            { threadId: thread.threadId, turnId },
             requestTimeoutMs
           )
           .catch((error: unknown) => {
-            log.warn("pooled Codex one-shot rollback failed", {
+            log.warn("pooled Codex one-shot cleanup interrupt failed", {
               threadId: thread?.threadId,
               turnId,
+              message: error instanceof Error ? error.message : String(error)
+            });
+          });
+      }
+      if (thread !== null) {
+        await connection
+          .request("thread/unsubscribe", { threadId: thread.threadId }, requestTimeoutMs)
+          .catch((error: unknown) => {
+            log.warn("pooled Codex one-shot unsubscribe failed", {
+              threadId: thread?.threadId,
               message: error instanceof Error ? error.message : String(error)
             });
           });
@@ -502,35 +514,21 @@ class CodexAgentOwner {
     };
   }
 
-  private async getWorkerThread(
+  private async startOneShotThread(
     options: CodexOneShotPoolRunOptions,
     connection: JsonRpcLikeConnection,
     requestTimeoutMs: number
-  ): Promise<CodexWorkerThread> {
+  ): Promise<CodexOneShotThread> {
     const workspaceDir =
       options.workspaceDir ?? join(tmpdir(), "pwrsnap", "Chats", ".capture-metadata");
     const baseInstructions = options.baseInstructions ?? "";
-    const modelKey = JSON.stringify([
-      workspaceDir,
-      options.model ?? "__default__",
-      options.modelProvider ?? "__default__",
-      baseInstructions,
-      options.threadConfig ?? null
-    ]);
-    const existing = this.workerThreads.get(modelKey);
-    if (existing !== undefined) {
-      log.info("pooled Codex one-shot worker reused", {
-        owner: this.key,
-        threadId: existing.threadId,
-        model: existing.model,
-        modelProvider: existing.modelProvider,
-        workspaceDir
-      });
-      this.claimThread(existing.threadId, ONE_SHOT_HANDLERS);
-      return existing;
-    }
-
     await mkdir(workspaceDir, { recursive: true });
+    const effectiveConfig = await connection.request(
+      "config/read",
+      { includeLayers: false, cwd: workspaceDir },
+      requestTimeoutMs
+    );
+    const threadConfig = disableConfiguredMcpServers(options.threadConfig, effectiveConfig);
     const threadResponse = (await connection.request(
       "thread/start",
       {
@@ -538,14 +536,19 @@ class CodexAgentOwner {
         ...(options.modelProvider !== null && options.modelProvider !== undefined
           ? { modelProvider: options.modelProvider }
           : {}),
-        ephemeral: false,
+        // Pool the App Server process, not the conversation. A fresh in-memory
+        // thread prevents ambient developer / AGENTS / plugin messages from
+        // accumulating across captures. Do not replace this with
+        // thread/rollback: that method is deprecated and does not remove every
+        // per-turn injected context item.
+        ephemeral: true,
         cwd: workspaceDir,
         runtimeWorkspaceRoots: [workspaceDir],
         serviceName: PWRSNAP_SERVICE_NAME,
         approvalPolicy: "never",
         sandbox: "read-only",
         ...(baseInstructions.length > 0 ? { baseInstructions } : {}),
-        ...(options.threadConfig !== undefined ? { config: options.threadConfig } : {}),
+        ...(threadConfig !== undefined ? { config: threadConfig } : {}),
         environments: [],
         experimentalRawEvents: false,
         persistExtendedHistory: false
@@ -561,41 +564,15 @@ class CodexAgentOwner {
     if (typeof threadId !== "string") {
       throw new Error("Codex one-shot thread/start returned no thread id");
     }
-    await connection
-      .request(
-        "thread/metadata/update",
-        { threadId, gitInfo: { sha: null, branch: null, originUrl: null } },
-        requestTimeoutMs
-      )
-      .catch((error: unknown) => {
-        log.warn("pooled Codex one-shot thread git metadata clear failed", {
-          threadId,
-          message: error instanceof Error ? error.message : String(error)
-        });
-      });
-    await connection
-      .request(
-        "thread/name/set",
-        { threadId, name: options.workerThreadName ?? "PwrSnap Capture Metadata Worker" },
-        requestTimeoutMs
-      )
-      .catch((error: unknown) => {
-        log.warn("pooled Codex one-shot thread name set failed", {
-          threadId,
-          message: error instanceof Error ? error.message : String(error)
-        });
-      });
     const worker = {
       threadId,
-      modelKey,
       model: typeof threadResponse.model === "string" ? threadResponse.model : "",
       modelProvider:
         typeof threadResponse.modelProvider === "string" ? threadResponse.modelProvider : "",
       serviceTier:
         typeof threadResponse.serviceTier === "string" ? threadResponse.serviceTier : null
     };
-    this.workerThreads.set(modelKey, worker);
-    log.info("pooled Codex one-shot worker created", {
+    log.info("pooled Codex one-shot ephemeral thread created", {
       owner: this.key,
       threadId,
       model: worker.model,
@@ -746,6 +723,38 @@ function imagePathsToLocalImageInputs(
 
 function isAbortSignalAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
+}
+
+/**
+ * An empty `mcp_servers` overlay does not erase lower config layers: Codex
+ * recursively merges TOML tables. Read only the effective server names and pin
+ * each one off in the one-shot layer. Do not copy commands, env, or credentials
+ * from `config/read` into the request.
+ */
+function disableConfiguredMcpServers(
+  baseConfig: Record<string, unknown> | undefined,
+  configReadResponse: unknown
+): Record<string, unknown> | undefined {
+  const effectiveConfig = asRecord(asRecord(configReadResponse)?.["config"]);
+  const configuredServers = asRecord(effectiveConfig?.["mcp_servers"]);
+  const baseServers = asRecord(baseConfig?.["mcp_servers"]);
+  const serverNames = new Set([
+    ...Object.keys(configuredServers ?? {}),
+    ...Object.keys(baseServers ?? {})
+  ]);
+  if (serverNames.size === 0) return baseConfig;
+  return {
+    ...(baseConfig ?? {}),
+    mcp_servers: Object.fromEntries(
+      [...serverNames].map((name) => [name, { enabled: false }])
+    )
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function oneShotRawAssistantText(

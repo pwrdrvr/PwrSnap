@@ -137,9 +137,11 @@ implementation; see plan §"Phase 0.5".
 Both shapes go through Codex App Server:
 
 - **Phase 4 background pipelines** (annotate / describe / tag / filename) use
-  ephemeral threads + `DynamicToolCall` for structured output. Image input
-  rides as a `ContentItem` in `TurnStartParams`. Thread is closed immediately
-  after the turn completes.
+  a fresh ephemeral thread per capture with structured output. Image input
+  rides as a `ContentItem` in `TurnStartParams`. The shared App Server process
+  is retained, and each helper thread is unsubscribed immediately after its
+  turn. Any subsequent inactivity grace period and unloading are owned by
+  Codex App Server; PwrSnap does not recycle the process to override them.
 - **Phase 4+ user-facing AI surface** ("ask Codex about this snap") uses
   long-lived threads with normal `turn/start` cadence.
 - **Phase 6 sizzle composer** uses multi-turn agentic flow.

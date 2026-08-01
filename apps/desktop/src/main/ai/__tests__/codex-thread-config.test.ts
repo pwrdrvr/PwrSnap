@@ -4,6 +4,7 @@ import {
   resolveCodexThreadConfigForCommand,
   MINIMAL_THREAD_CONFIG,
   LEGACY_FEATURES_THREAD_CONFIG,
+  MODERN_THREAD_CONFIG,
   __clearCodexVersionCacheForTests
 } from "../codex-thread-config";
 
@@ -15,7 +16,8 @@ import {
 // Markers today (empirically verified against real Codex builds):
 //   ≤ 0.134   → minimal  (0.133 measured ~3k; `features` INFLATES ~6x there)
 //   0.135–136 → legacy   (0.135.0-alpha.1 measured ~4k; `features` suppresses)
-//   ≥ 0.137   → minimal  (0.137.0-alpha.4 measured ~2.9k)
+//   0.137–143 → minimal  (0.137.0-alpha.4 measured ~2.9k)
+//   ≥ 0.144   → modern   (plugins default-on; AGENTS.md must be suppressed)
 describe("resolveCodexThreadConfig — floor / last-marker-wins", () => {
   test("below the 0.135 marker (0.133 / 0.134) → minimal baseline", () => {
     expect(resolveCodexThreadConfig("0.133.0")).toBe(MINIMAL_THREAD_CONFIG);
@@ -41,17 +43,23 @@ describe("resolveCodexThreadConfig — floor / last-marker-wins", () => {
     expect(resolveCodexThreadConfig("0.137.0-alpha.4")).toBe(MINIMAL_THREAD_CONFIG);
   });
 
-  test("every version newer than 0.137 inherits the 0.137 marker (minimal) forever", () => {
-    for (const v of ["0.138.0", "0.139.5", "0.150.0", "0.999.99", "1.0.0", "2.4.0"]) {
+  test("0.138 through 0.143 inherit the 0.137 marker (minimal)", () => {
+    for (const v of ["0.138.0", "0.139.5", "0.141.2", "0.143.99"]) {
       expect(resolveCodexThreadConfig(v)).toBe(MINIMAL_THREAD_CONFIG);
     }
   });
 
+  test("0.144 and newer use the modern suppression profile", () => {
+    for (const v of ["0.144.0", "0.144.0-alpha.1", "0.150.0", "1.0.0", "2.4.0"]) {
+      expect(resolveCodexThreadConfig(v)).toBe(MODERN_THREAD_CONFIG);
+    }
+  });
+
   test("null / unparseable → newest marker (Codex only moves forward)", () => {
-    // Newest marker today is 0.137 → minimal.
-    expect(resolveCodexThreadConfig(null)).toBe(MINIMAL_THREAD_CONFIG);
-    expect(resolveCodexThreadConfig("not-a-version")).toBe(MINIMAL_THREAD_CONFIG);
-    expect(resolveCodexThreadConfig("")).toBe(MINIMAL_THREAD_CONFIG);
+    // Newest marker today is 0.144 → modern.
+    expect(resolveCodexThreadConfig(null)).toBe(MODERN_THREAD_CONFIG);
+    expect(resolveCodexThreadConfig("not-a-version")).toBe(MODERN_THREAD_CONFIG);
+    expect(resolveCodexThreadConfig("")).toBe(MODERN_THREAD_CONFIG);
   });
 
   test("a marker boundary is exact: 0.134.x is below 0.135, 0.135.0 is on it", () => {
@@ -64,9 +72,13 @@ describe("resolveCodexThreadConfig — floor / last-marker-wins", () => {
     for (const v of ["0.135.0", "0.135.3", "0.136.0", "0.136.4"]) {
       expect(resolveCodexThreadConfig(v)).toBe(LEGACY_FEATURES_THREAD_CONFIG);
     }
-    // 0.137 block: 0.137.x .. onward all minimal.
-    for (const v of ["0.137.0", "0.138.0", "0.141.2"]) {
+    // 0.137 block: 0.137.x through 0.143.x are minimal.
+    for (const v of ["0.137.0", "0.138.0", "0.141.2", "0.143.9"]) {
       expect(resolveCodexThreadConfig(v)).toBe(MINIMAL_THREAD_CONFIG);
+    }
+    // 0.144 block: modern from its boundary onward.
+    for (const v of ["0.144.0", "0.146.0", "1.0.0"]) {
+      expect(resolveCodexThreadConfig(v)).toBe(MODERN_THREAD_CONFIG);
     }
   });
 });
@@ -85,6 +97,24 @@ describe("config shape invariants (per Codex schema notes)", () => {
     expect(LEGACY_FEATURES_THREAD_CONFIG).toHaveProperty("features");
     expect(LEGACY_FEATURES_THREAD_CONFIG.skills).toEqual({ include_instructions: false });
   });
+
+  test("modern: disables plugins and project AGENTS.md discovery", () => {
+    expect(MODERN_THREAD_CONFIG).toMatchObject({
+      project_doc_max_bytes: 0,
+      skills: {
+        include_instructions: false,
+        bundled: { enabled: false }
+      },
+      features: {
+        apps: false,
+        plugins: false,
+        tool_suggest: false,
+        image_generation: false,
+        multi_agent: false,
+        goals: false
+      }
+    });
+  });
 });
 
 describe("resolveCodexThreadConfigForCommand (cached version probe)", () => {
@@ -100,12 +130,12 @@ describe("resolveCodexThreadConfigForCommand (cached version probe)", () => {
   });
 
   test("distinct commands probe independently", () => {
-    const probe = vi.fn((cmd: string) => (cmd === "/old/codex" ? "0.135.0" : "0.138.0"));
+    const probe = vi.fn((cmd: string) => (cmd === "/old/codex" ? "0.135.0" : "0.146.0"));
     expect(resolveCodexThreadConfigForCommand("/old/codex", undefined, probe)).toBe(
       LEGACY_FEATURES_THREAD_CONFIG
     );
     expect(resolveCodexThreadConfigForCommand("/new/codex", undefined, probe)).toBe(
-      MINIMAL_THREAD_CONFIG
+      MODERN_THREAD_CONFIG
     );
     expect(probe).toHaveBeenCalledTimes(2);
   });
@@ -113,7 +143,7 @@ describe("resolveCodexThreadConfigForCommand (cached version probe)", () => {
   test("a failed probe (null) → newest-marker default", () => {
     const probe = vi.fn(() => null);
     expect(resolveCodexThreadConfigForCommand("/x/codex", undefined, probe)).toBe(
-      MINIMAL_THREAD_CONFIG
+      MODERN_THREAD_CONFIG
     );
   });
 });

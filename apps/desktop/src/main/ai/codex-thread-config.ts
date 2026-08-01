@@ -12,6 +12,7 @@
 //   | 0.133.0          | 23k  (features INFLATES) | 3.1k                     |
 //   | 0.135.0-alpha.1  | 4k   (features suppresses) | (unmeasured)           |
 //   | 0.137.0-alpha.4  | 4.6k                     | 2.9k                     |
+//   | 0.146.0-alpha.9  | required for plugin suppression | leaks plugins     |
 //
 // So there is no single correct config — we pick the shape by the version of
 // the Codex App Server we're actually talking to. Add a range entry when a new
@@ -63,6 +64,32 @@ export const LEGACY_FEATURES_THREAD_CONFIG: Record<string, unknown> = {
   }
 };
 
+/**
+ * Current config for Codex 0.144+ (PwrSnap's supported protocol floor).
+ *
+ * Modern Codex enables plugins by default. Keep this feature block version-
+ * scoped: older 0.133 builds interpret it differently and inflate the prompt.
+ * `project_doc_max_bytes` suppresses cwd/project AGENTS discovery; Codex still
+ * injects the selected profile's global AGENTS.md once per fresh thread because
+ * the App Server has no thread-level switch for that process-owned source.
+ */
+export const MODERN_THREAD_CONFIG: Record<string, unknown> = {
+  ...SHARED_INCLUDES,
+  project_doc_max_bytes: 0,
+  skills: {
+    include_instructions: false,
+    bundled: { enabled: false }
+  },
+  features: {
+    apps: false,
+    plugins: false,
+    tool_suggest: false,
+    image_generation: false,
+    multi_agent: false,
+    goals: false
+  }
+};
+
 type MajorMinor = readonly [number, number];
 
 type ThreadConfigMarker = {
@@ -81,8 +108,8 @@ type ThreadConfigMarker = {
  * "Last compatible marker wins." To resolve, pick the marker with the GREATEST
  * `since` that is still <= the running Codex MAJOR.MINOR (a floor lookup). Each
  * marker therefore owns a half-open range up to the next marker: with markers
- * at 0.0 / 0.135 / 0.137, version 0.136 resolves to the 0.135 marker and
- * 0.140 (or 1.0) resolves to the 0.137 marker.
+ * at 0.0 / 0.135 / 0.137 / 0.144, version 0.136 resolves to the 0.135 marker,
+ * 0.140 resolves to the 0.137 marker, and 0.144+ resolves to the modern marker.
  *
  * To support a new Codex build that changes the schema, ADD a marker at its
  * MAJOR.MINOR — it then governs that version and all newer ones automatically.
@@ -93,8 +120,11 @@ const THREAD_CONFIG_MARKERS: readonly ThreadConfigMarker[] = [
   { since: [0, 0], config: MINIMAL_THREAD_CONFIG, label: "≤ 0.134" },
   // 0.135 → 0.136: `features` SUPPRESSES (~4k); bundled-skills toggle absent.
   { since: [0, 135], config: LEGACY_FEATURES_THREAD_CONFIG, label: "0.135 → 0.136" },
-  // 0.137 and onward: minimal is best (~2.9k); `features` no longer needed.
-  { since: [0, 137], config: MINIMAL_THREAD_CONFIG, label: "≥ 0.137" }
+  // 0.137 → 0.143: minimal is best (~2.9k); `features` is not needed.
+  { since: [0, 137], config: MINIMAL_THREAD_CONFIG, label: "0.137 → 0.143" },
+  // 0.144 and onward: plugins are default-on again; explicitly suppress the
+  // current feature set and prevent project AGENTS.md discovery.
+  { since: [0, 144], config: MODERN_THREAD_CONFIG, label: "≥ 0.144" }
 ];
 
 function parseMajorMinor(version: string): MajorMinor | null {

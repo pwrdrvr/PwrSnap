@@ -306,7 +306,10 @@ async function launchPwrSnapCore(
     // app.getPath('userData') under Playwright (the bundle name is
     // "Electron" not "PwrSnap" so the cached path lands at the host
     // user's real ~/Library/.../Electron). Forcing userData puts
-    // every SQLite write under our tmpdir.
+    // every SQLite write under our tmpdir. With PWRSNAP_E2E=1, main
+    // also rebases app.getPath('documents') to <homeRoot>/Documents,
+    // so the captures dir (`getCapturesRoot()`) stays off the host's
+    // real ~/Documents/PwrSnap too.
     PWRSNAP_USER_DATA: homeRoot
   });
   // electron-vite injects ELECTRON_RENDERER_URL during dev; the

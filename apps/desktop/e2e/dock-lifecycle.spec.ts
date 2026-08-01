@@ -40,6 +40,67 @@ import { launchPwrSnap } from "./fixtures/electron-app";
 
 const isMac = process.platform === "darwin";
 
+// ── PROBE instrumentation (temporary; not for merge) ─────────────────
+type ProbeApp = Awaited<ReturnType<typeof launchPwrSnap>>;
+
+async function installRecorder(app: ProbeApp): Promise<void> {
+  await app.electronApp.evaluate(({ app: eapp, BrowserWindow }) => {
+    const t0 = Date.now();
+    const ev: Array<[number, string, unknown]> = [];
+    (globalThis as any).__REC__ = { t0, ev };
+    const push = (name: string, extra: unknown = null): void => {
+      ev.push([Date.now() - t0, name, extra]);
+    };
+    const wire = (win: Electron.BrowserWindow): void => {
+      const id = win.id;
+      for (const name of ["hide", "show", "blur", "focus", "minimize", "restore", "close"]) {
+        win.on(name as any, () =>
+          push(`win${id}:${name}`, win.isDestroyed() ? null : win.isVisible())
+        );
+      }
+    };
+    for (const w of BrowserWindow.getAllWindows()) wire(w);
+    eapp.on("browser-window-created", (_e, w) => {
+      push(`win${w.id}:created`);
+      wire(w);
+    });
+    for (const name of [
+      "did-resign-active",
+      "did-become-active",
+      "browser-window-blur",
+      "browser-window-focus"
+    ]) {
+      eapp.on(name as any, () => push(`app:${name}`));
+    }
+    let prevKey = "";
+    const sample = (): void => {
+      const wins = BrowserWindow.getAllWindows()
+        .filter((w) => !w.isDestroyed())
+        .map((w) => `${w.id}:${w.isVisible() ? "V" : "h"}${w.isFocused() ? "F" : ""}`)
+        .join(" ");
+      const key = `${wins} dock=${eapp.dock?.isVisible() ? 1 : 0}`;
+      if (key !== prevKey) {
+        prevKey = key;
+        push("state", key);
+      }
+    };
+    sample();
+    setInterval(sample, 25);
+  });
+}
+
+async function dumpRecorder(app: ProbeApp, label: string): Promise<void> {
+  try {
+    const ev = await app.electronApp.evaluate(() => (globalThis as any).__REC__?.ev ?? null);
+    // eslint-disable-next-line no-console
+    console.log(`RECORDER ${label} ` + JSON.stringify(ev));
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.log(`RECORDER ${label} unavailable: ${String(error)}`);
+  }
+}
+// ── end probe instrumentation ────────────────────────────────────────
+
 type BridgeShape = {
   dockIsVisible: () => boolean;
   dockShow: () => void;
@@ -116,6 +177,7 @@ test.describe("Dock icon lifecycle (macOS)", () => {
   test("Library stays alive after a deliberate dock.hide() — the bug shape", async () => {
     const app = await launchPwrSnap();
     try {
+      await installRecorder(app);
       // Library is the singleton main window — the fixture's launch
       // path opens it. Confirm before we strip the dock.
       await ensureLibrary(app);
@@ -132,6 +194,7 @@ test.describe("Dock icon lifecycle (macOS)", () => {
       await expectDockVisible(app, false);
 
       const afterStrip = await getLibraryState(app);
+      await dumpRecorder(app, `test1 afterStrip=${JSON.stringify(afterStrip)}`);
       expect(
         afterStrip.exists,
         "Library window is alive even with Dock icon stripped — the orphan state"
@@ -145,6 +208,7 @@ test.describe("Dock icon lifecycle (macOS)", () => {
   test("forceReclaimDockIcon restores the Dock icon when Library is alive", async () => {
     const app = await launchPwrSnap();
     try {
+      await installRecorder(app);
       await ensureLibrary(app);
 
       // Strip — simulates activateApp's side-effect on production.
@@ -159,6 +223,7 @@ test.describe("Dock icon lifecycle (macOS)", () => {
       await expectDockVisible(app, true);
 
       const after = await getLibraryState(app);
+      await dumpRecorder(app, `test2 after=${JSON.stringify(after)}`);
       expect(after.exists, "Library survives reclaim").toBe(true);
       expect(after.visible, "Library stays visible — no flicker").toBe(true);
     } finally {

@@ -1379,6 +1379,20 @@ export function bootstrapApp(): void {
     app.disableHardwareAcceleration();
     app.commandLine.appendSwitch("disable-gpu");
   }
+  // Opt-in software rendering for E2E runs inside macOS VMs (the Tart
+  // lab — see ~/pwrsnap-mac-vm and docs/solutions/2026-08-01-vm-e2e-
+  // window-visibility-flakes.md). Virtualization.framework's
+  // AppleParavirtGPU repeatedly GPU-resets under the suite's Electron
+  // GPU-process submissions (kernel `gpuRestart` reports naming
+  // Electron Helper), which stalls WindowServer — delaying first
+  // paints by seconds (the visibility-flake trigger) and, in the
+  // worst observed case, panicking the guest into a mid-suite reboot.
+  // SwiftShader sidesteps the paravirt GPU entirely. Env-gated so
+  // host-machine E2E keeps real-GPU coverage.
+  if (isE2E && process.env.PWRSNAP_E2E_DISABLE_GPU === "1") {
+    app.disableHardwareAcceleration();
+    app.commandLine.appendSwitch("disable-gpu");
+  }
   app.commandLine.appendSwitch("disk-cache-size", String(CHROMIUM_DISK_CACHE_LIMIT_BYTES));
 
   // open-file MUST be registered before the single-instance lock and

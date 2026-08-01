@@ -300,13 +300,20 @@ export function useZoomPan(opts: {
     [computeFit, imageWidthPx, devicePixelRatio]
   );
 
-  const zoomBy = useCallback((factor: number) => {
-    setMode("custom");
-    setState((prev) => ({
-      ...prev,
-      scale: clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE)
-    }));
-  }, []);
+  const zoomBy = useCallback(
+    (factor: number) => {
+      setMode("custom");
+      setState((prev) => {
+        const scale = clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE);
+        // Re-clamp the carried-over pan against the NEW canvas size —
+        // zooming out shrinks the canvas around its center, so a pan
+        // that was in-bounds at the old scale can strand the canvas
+        // outside the visibility bounds at the new one.
+        return { scale, ...clampPanToWrap(prev.panX, prev.panY, scale) };
+      });
+    },
+    [clampPanToWrap]
+  );
 
   // Shared cursor-anchored zoom — driven by onWheel (mouse +
   // ctrl+wheel) and onGestureChange (macOS trackpad pinch). The

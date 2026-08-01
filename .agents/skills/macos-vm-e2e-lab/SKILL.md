@@ -183,6 +183,27 @@ Both modes: registration tokens come from
 and require repo admin on the authenticated `gh` — check
 `gh auth status` if the token fetch 403s.
 
+**Always-on via launchd (recommended once the lane matters):**
+
+```bash
+./runner/install-launch-agent.sh
+```
+
+Installs + loads `com.pwrsnap.gha-runner` (user LaunchAgent):
+RunAtLoad + KeepAlive, so the runner starts at login, boots the VM if
+it's stopped, and the listener restarts after runner self-updates or
+crashes. Logs to `~/pwrsnap-mac-vm/.runner-agent.log`. Stop with
+`launchctl bootout gui/$UID/com.pwrsnap.gha-runner` (plus
+`tart stop pwrsnap-runner` to drop the VM). Do NOT also run
+`run-persistent-runner.sh` by hand while the agent is loaded — GitHub
+allows one live session per registered runner, so the second listener
+just errors.
+
+Why not just background the script from a terminal: the VM's `tart
+run` process lives in that shell's process group, so closing the
+session (or a supervisor killing the task tree) takes the whole VM
+down with it — launchd owning the tree is the fix, not `nohup`.
+
 Operational note: the CI lane only functions while a runner is
 listening. If none is, queued `desktop-e2e-macos` jobs sit up to 24h
 and fail — keep the lane's workflow job non-required (or the runner

@@ -153,6 +153,12 @@ jobs:
       - name: Run desktop Electron E2E specs
         # The VM auto-logs-in its user to a console GUI session, so
         # headed Electron windows render on the VM's own display.
+        # Software rendering: the VM's AppleParavirtGPU resets under
+        # Electron GPU load (WindowServer stalls -> visibility flakes,
+        # worst case guest panic). SwiftShader sidesteps it — see
+        # docs/solutions/2026-08-01-vm-e2e-window-visibility-flakes.md.
+        env:
+          PWRSNAP_E2E_DISABLE_GPU: "1"
         run: pnpm run test:desktop-e2e
 
       - name: Upload desktop Playwright artifacts

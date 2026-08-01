@@ -88,6 +88,12 @@ pnpm install
 pnpm rebuild:electron-native
 pnpm --filter @pwrsnap/desktop build
 cd apps/desktop
+# Software rendering inside the VM: AppleParavirtGPU GPU-resets under
+# the suite's Electron GPU submissions (kernel gpuRestart reports →
+# WindowServer stalls → paint-latency flakes; worst case panics the
+# guest into a mid-suite reboot). SwiftShader avoids the paravirt GPU.
+# See PwrSnap docs/solutions/2026-08-01-vm-e2e-window-visibility-flakes.md.
+export PWRSNAP_E2E_DISABLE_GPU=1
 pnpm exec playwright test -c playwright.config.ts $EXTRA_ARGS
 JOB
 chmod +x ~/e2e-job.sh

@@ -109,10 +109,28 @@ Apple's Virtualization.framework allows at most 2 concurrent macOS
 guests per host. `tart list` to see what's running; stop something.
 Remember the ephemeral runner loop holds one slot while serving.
 
-## dock-lifecycle flake (known, not an environment bug)
+## Visibility flakes / vanished tmux session / mid-suite guest reboot
 
-`dock-lifecycle.spec.ts:116` ("Library stays alive after a deliberate
-dock.hide()") fails intermittently in FULL-suite runs inside VMs
-(passes isolated, passes paired). Hypothesis: app activation racing
-`dock.hide()` under sustained WindowServer load. Tracked as a follow-up
-task; if it's the only red in a run, the lab is healthy.
+**Symptom.** `dock-lifecycle.spec.ts:116` or `tray-sizing.spec.ts`
+visibility assertions fail intermittently in FULL-suite runs (pass
+isolated). Worst case: a run dies partway, the `e2e` tmux session is
+gone, and nothing wrote `~/e2e-*.log.exit`.
+
+**Root cause (found 2026-08-01, separate investigation session).** The
+VM's AppleParavirtGPU resets under the suite's Electron GPU-process
+load — kernel `gpuRestart` reports appear in the guest's
+`/Library/Logs/DiagnosticReports/` naming Electron Helper. Each reset
+stalls WindowServer, so first paints land seconds late and
+visibility-state assertions read stale answers. A storm of resets can
+panic the guest kernel → mid-suite reboot (that's the vanished tmux
+session).
+
+**Fix.** Run the suite on software rendering: `run-e2e.sh` exports
+`PWRSNAP_E2E_DISABLE_GPU=1` (app-side env gate; SwiftShader). Suite
+runs clean (~2.5 min) with zero gpuRestarts. The specs were also
+hardened to establish visibility preconditions.
+
+**Diagnosis recipe for a dead run:** `sysctl kern.boottime` newer than
+the run log's mtime = the guest rebooted under you; then check the
+DiagnosticReports for gpuRestart/panic. Full write-up:
+`docs/solutions/2026-08-01-vm-e2e-window-visibility-flakes.md`.

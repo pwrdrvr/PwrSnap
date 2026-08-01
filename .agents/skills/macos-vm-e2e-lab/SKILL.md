@@ -222,9 +222,19 @@ the full write-ups. Headlines:
 - **Real-screen-capture specs** need `PWRSNAP_E2E_REAL_CAPTURE=1` plus a
   one-time Screen Recording TCC grant via the VM's GUI; everything else
   uses the E2E fakes and needs no TCC.
-- **known flake:** `dock-lifecycle.spec.ts` ("Library stays alive after
-  a deliberate dock.hide()") fails under full-suite load in VMs while
-  passing isolated — if it's the only red, it's this, not your setup.
+- **The paravirt GPU is unstable under Electron E2E load.** The
+  suite's GPU-process submissions trip kernel `gpuRestart` resets
+  (AppleParavirtGPU; reports in the guest's
+  `/Library/Logs/DiagnosticReports/` naming Electron Helper), each of
+  which stalls WindowServer — this was the root cause of the
+  dock-lifecycle / tray-sizing visibility flakes, and a reset storm
+  once panicked the guest into a mid-suite reboot. `run-e2e.sh`
+  exports `PWRSNAP_E2E_DISABLE_GPU=1` (SwiftShader software
+  rendering) to avoid the paravirt GPU entirely. If a VM run dies
+  with a vanished tmux session, compare `sysctl kern.boottime` to the
+  log's mtime and check for gpuRestart reports before blaming the
+  tests. Full write-up:
+  `docs/solutions/2026-08-01-vm-e2e-window-visibility-flakes.md`.
 
 ## Updating pieces later
 

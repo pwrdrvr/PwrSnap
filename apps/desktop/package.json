@@ -60,7 +60,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@electron/asar": "^4.2.0",
+    "@electron/asar": "^4.2.1",
     "@playwright/test": "^1.61.1",
     "@types/archiver": "^7.0.0",
     "@types/better-sqlite3": "^7.6.13",

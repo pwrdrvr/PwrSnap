@@ -70,7 +70,8 @@ type ClipboardCapture =
   | { kind: "writeBuffer"; uti: string; bytes: Buffer };
 
 const clipboardCaptured: ClipboardCapture[] = [];
-const namedPasteboardCalls: Array<{ pngPath: string; fileUrlPath: string }> = [];
+const namedPasteboardCalls: Array<{ pngPath: string; fileUrlPath: string; metaJson?: string }> =
+  [];
 
 // We'll set this from the test setup once the temp dir exists.
 let testDataRoot: string;
@@ -138,7 +139,7 @@ vi.mock("../log", () => ({
 
 vi.mock("../clipboard/named-image-pasteboard", () => ({
   writeNamedPngToPasteboard: vi.fn(
-    async (args: { pngPath: string; fileUrlPath: string }) => {
+    async (args: { pngPath: string; fileUrlPath: string; metaJson?: string }) => {
       namedPasteboardCalls.push(args);
       return false;
     }
@@ -641,6 +642,24 @@ describe("clipboard:copy pasted image filename", () => {
       "PwrSnap-incident-latency-chart-med.png"
     );
     expect(clipboardCaptured.at(-1)?.kind).toBe("writeImage");
+
+    // The clip-meta diagnostics marker (com.pwrdrvr.pwrsnap.clip-meta)
+    // rides along on every clipboard:copy so PbScope can attribute the
+    // pasteboard write to PwrSnap and correlate copies across machines.
+    const metaJson = namedPasteboardCalls[0]!.metaJson;
+    expect(metaJson).toBeDefined();
+    const meta = JSON.parse(metaJson!) as {
+      captureId: string;
+      preset: string;
+      seq: number;
+      ts: number;
+      pid: number;
+    };
+    expect(meta.captureId).toBe(captureId);
+    expect(meta.preset).toBe("med");
+    expect(meta.seq).toBeGreaterThanOrEqual(1);
+    expect(meta.ts).toBeGreaterThan(0);
+    expect(meta.pid).toBe(process.pid);
   });
 });
 

@@ -197,15 +197,35 @@ async function bakeRasterVisibleRegion(args: {
     .toBuffer();
 }
 
+// Monotonic per-process copy counter for the clip-meta diagnostics
+// marker — lets PbScope tell two rapid copies of the same capture apart.
+let clipMetaSeq = 0;
+
 async function writeNamedImageToPasteboard(args: {
   pngPath: string;
   displayName: string;
+  captureId: string;
+  preset: string;
 }): Promise<boolean> {
   try {
     const aliasPath = await prepareRenderedFileAlias(args.pngPath, args.displayName);
+    clipMetaSeq += 1;
+    // Private `com.pwrdrvr.pwrsnap.clip-meta` flavor: NSPasteboard doesn't
+    // record the writing app, so PbScope badges any `com.pwrdrvr.*` flavor
+    // as PwrSnap-originated and uses captureId + seq to correlate a
+    // specific copy with what a remote Mac (Universal Clipboard /
+    // Splashtop) receives.
+    const metaJson = JSON.stringify({
+      captureId: args.captureId,
+      preset: args.preset,
+      seq: clipMetaSeq,
+      ts: Date.now(),
+      pid: process.pid
+    });
     return await writeNamedPngToPasteboard({
       pngPath: args.pngPath,
-      fileUrlPath: aliasPath
+      fileUrlPath: aliasPath,
+      metaJson
     });
   } catch (cause) {
     log.warn("named image pasteboard setup failed; falling back to image bytes", {
@@ -249,7 +269,9 @@ export function registerClipboardHandlers(): void {
       });
       const namedPasteboardWritten = await writeNamedImageToPasteboard({
         pngPath: result.path,
-        displayName
+        displayName,
+        captureId: record.id,
+        preset: req.preset
       });
       if (!namedPasteboardWritten) {
         clipboard.write({ image });

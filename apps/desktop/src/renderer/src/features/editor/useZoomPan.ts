@@ -29,6 +29,39 @@ const MAX_SCALE = 8;
 const KEYBOARD_STEP = 1.25;
 const WHEEL_STEP_BASE = 1.0025;
 
+/** Minimum extent of the canvas (CSS px, per axis) that must remain
+ *  inside the wrap's content area no matter how far the user pans.
+ *  Prevents wheel-scrolling / dragging the image entirely off-screen
+ *  with no visible handle to drag it back. */
+export const MIN_VISIBLE_PX = 64;
+
+/** Clamp a pan offset so at least MIN_VISIBLE_PX of the canvas stays
+ *  inside the wrap's content area on each axis (or the full canvas /
+ *  wrap extent when either is smaller than that). Canvas top-left in
+ *  wrap-content coords is `(wrap - canvas) / 2 + pan` — see
+ *  zoomAtCursor for the layout model. Exported for tests. */
+export function clampPan(args: {
+  panX: number;
+  panY: number;
+  wrapW: number;
+  wrapH: number;
+  canvasW: number;
+  canvasH: number;
+}): { panX: number; panY: number } {
+  const { panX, panY, wrapW, wrapH, canvasW, canvasH } = args;
+  if (wrapW <= 0 || wrapH <= 0 || canvasW <= 0 || canvasH <= 0) {
+    return { panX, panY };
+  }
+  const minVisX = Math.min(MIN_VISIBLE_PX, canvasW, wrapW);
+  const minVisY = Math.min(MIN_VISIBLE_PX, canvasH, wrapH);
+  const centerX = (wrapW - canvasW) / 2;
+  const centerY = (wrapH - canvasH) / 2;
+  return {
+    panX: clamp(panX, minVisX - canvasW - centerX, wrapW - minVisX - centerX),
+    panY: clamp(panY, minVisY - canvasH - centerY, wrapH - minVisY - centerY)
+  };
+}
+
 export type ZoomPanState = {
   /** Multiplier on the canvas's fit-to-wrap CSS size. 1 = fit, 2 =
    *  twice as big as fit, etc. NOT a multiplier on the source image
@@ -163,6 +196,28 @@ export function useZoomPan(opts: {
     return { width: w, height: w / imageAspect };
   }, [wrapRef, imageAspect]);
 
+  // Measure the wrap and clamp a candidate pan for the given scale.
+  // Falls back to the unclamped pan when the wrap hasn't laid out yet.
+  const clampPanToWrap = useCallback(
+    (panX: number, panY: number, scale: number): { panX: number; panY: number } => {
+      const wrap = wrapRef.current;
+      const fit = computeFit();
+      if (wrap === null || fit === null) return { panX, panY };
+      const cs = getComputedStyle(wrap);
+      const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+      const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+      return clampPan({
+        panX,
+        panY,
+        wrapW: Math.max(0, wrap.clientWidth - padX),
+        wrapH: Math.max(0, wrap.clientHeight - padY),
+        canvasW: fit.width * scale,
+        canvasH: fit.height * scale
+      });
+    },
+    [wrapRef, computeFit]
+  );
+
   // Track wrap size; refresh fit whenever it changes. Also recompute
   // the actual-size scale when mode==="actual", so the canvas stays
   // at one image-pixel-per-screen-pixel as the wrap grows/shrinks.
@@ -204,12 +259,20 @@ export function useZoomPan(opts: {
           return Math.abs(prev.scale - next) < 0.001 ? prev : { ...prev, scale: next };
         });
       }
+      // A shrinking wrap can strand a previously-valid pan outside the
+      // visibility bounds — pull it back in.
+      setState((prev) => {
+        const next = clampPanToWrap(prev.panX, prev.panY, prev.scale);
+        return next.panX === prev.panX && next.panY === prev.panY
+          ? prev
+          : { ...prev, ...next };
+      });
     };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(wrap);
     return () => ro.disconnect();
-  }, [wrapRef, computeFit, mode, imageWidthPx, devicePixelRatio]);
+  }, [wrapRef, computeFit, clampPanToWrap, mode, imageWidthPx, devicePixelRatio]);
 
   const resetToFit = useCallback(() => {
     setMode("fit");
@@ -237,13 +300,20 @@ export function useZoomPan(opts: {
     [computeFit, imageWidthPx, devicePixelRatio]
   );
 
-  const zoomBy = useCallback((factor: number) => {
-    setMode("custom");
-    setState((prev) => ({
-      ...prev,
-      scale: clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE)
-    }));
-  }, []);
+  const zoomBy = useCallback(
+    (factor: number) => {
+      setMode("custom");
+      setState((prev) => {
+        const scale = clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE);
+        // Re-clamp the carried-over pan against the NEW canvas size —
+        // zooming out shrinks the canvas around its center, so a pan
+        // that was in-bounds at the old scale can strand the canvas
+        // outside the visibility bounds at the new one.
+        return { scale, ...clampPanToWrap(prev.panX, prev.panY, scale) };
+      });
+    },
+    [clampPanToWrap]
+  );
 
   // Shared cursor-anchored zoom — driven by onWheel (mouse +
   // ctrl+wheel) and onGestureChange (macOS trackpad pinch). The
@@ -298,7 +368,15 @@ export function useZoomPan(opts: {
         const nextTopLeftY = cursorInWrapY - fy * nextCanvasH;
         const nextPanX = nextTopLeftX - (wrapW - nextCanvasW) / 2;
         const nextPanY = nextTopLeftY - (wrapH - nextCanvasH) / 2;
-        return { scale: targetScale, panX: nextPanX, panY: nextPanY };
+        const clamped = clampPan({
+          panX: nextPanX,
+          panY: nextPanY,
+          wrapW,
+          wrapH,
+          canvasW: nextCanvasW,
+          canvasH: nextCanvasH
+        });
+        return { scale: targetScale, ...clamped };
       });
     },
     [wrapRef, computeFit]
@@ -340,18 +418,23 @@ export function useZoomPan(opts: {
         const factor = WHEEL_STEP_BASE ** -event.deltaY;
         zoomAtCursor(factor, event.clientX, event.clientY);
       } else {
-        // Two-finger scroll: pan the canvas. At scale ≤ 1 the canvas
-        // is centered with no room to pan, so this is a visual no-op;
-        // at scale > 1 the user can two-finger-scroll to navigate
-        // the zoomed canvas. Matches Figma's interaction model.
-        setState((prev) => ({
-          ...prev,
-          panX: prev.panX - event.deltaX,
-          panY: prev.panY - event.deltaY
-        }));
+        // Two-finger scroll: pan the canvas. Matches Figma's
+        // interaction model, except pan is clamped so at least
+        // MIN_VISIBLE_PX of the canvas stays inside the wrap — the
+        // image can't be scrolled fully off-screen.
+        setState((prev) => {
+          const next = clampPanToWrap(
+            prev.panX - event.deltaX,
+            prev.panY - event.deltaY,
+            prev.scale
+          );
+          return next.panX === prev.panX && next.panY === prev.panY
+            ? prev
+            : { ...prev, ...next };
+        });
       }
     },
-    [zoomAtCursor]
+    [zoomAtCursor, clampPanToWrap]
   );
 
   // macOS trackpad pinch dispatches gesturestart/change/end events
@@ -437,16 +520,24 @@ export function useZoomPan(opts: {
     [state.scale, state.panX, state.panY, spaceHeld]
   );
 
-  const onPanPointerMove = useCallback((event: React.PointerEvent<HTMLElement>): void => {
-    if (panStart.current === null) return;
-    const dx = event.clientX - panStart.current.x;
-    const dy = event.clientY - panStart.current.y;
-    setState((prev) => ({
-      ...prev,
-      panX: (panStart.current?.basePanX ?? 0) + dx,
-      panY: (panStart.current?.basePanY ?? 0) + dy
-    }));
-  }, []);
+  const onPanPointerMove = useCallback(
+    (event: React.PointerEvent<HTMLElement>): void => {
+      if (panStart.current === null) return;
+      const dx = event.clientX - panStart.current.x;
+      const dy = event.clientY - panStart.current.y;
+      setState((prev) => {
+        const next = clampPanToWrap(
+          (panStart.current?.basePanX ?? 0) + dx,
+          (panStart.current?.basePanY ?? 0) + dy,
+          prev.scale
+        );
+        return next.panX === prev.panX && next.panY === prev.panY
+          ? prev
+          : { ...prev, ...next };
+      });
+    },
+    [clampPanToWrap]
+  );
 
   const onPanPointerUp = useCallback((event: React.PointerEvent<HTMLElement>): void => {
     if (panStart.current === null) return;

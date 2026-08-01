@@ -40,67 +40,6 @@ import { launchPwrSnap } from "./fixtures/electron-app";
 
 const isMac = process.platform === "darwin";
 
-// ── PROBE instrumentation (temporary; not for merge) ─────────────────
-type ProbeApp = Awaited<ReturnType<typeof launchPwrSnap>>;
-
-async function installRecorder(app: ProbeApp): Promise<void> {
-  await app.electronApp.evaluate(({ app: eapp, BrowserWindow }) => {
-    const t0 = Date.now();
-    const ev: Array<[number, string, unknown]> = [];
-    (globalThis as any).__REC__ = { t0, ev };
-    const push = (name: string, extra: unknown = null): void => {
-      ev.push([Date.now() - t0, name, extra]);
-    };
-    const wire = (win: Electron.BrowserWindow): void => {
-      const id = win.id;
-      for (const name of ["hide", "show", "blur", "focus", "minimize", "restore", "close"]) {
-        win.on(name as any, () =>
-          push(`win${id}:${name}`, win.isDestroyed() ? null : win.isVisible())
-        );
-      }
-    };
-    for (const w of BrowserWindow.getAllWindows()) wire(w);
-    eapp.on("browser-window-created", (_e, w) => {
-      push(`win${w.id}:created`);
-      wire(w);
-    });
-    for (const name of [
-      "did-resign-active",
-      "did-become-active",
-      "browser-window-blur",
-      "browser-window-focus"
-    ]) {
-      eapp.on(name as any, () => push(`app:${name}`));
-    }
-    let prevKey = "";
-    const sample = (): void => {
-      const wins = BrowserWindow.getAllWindows()
-        .filter((w) => !w.isDestroyed())
-        .map((w) => `${w.id}:${w.isVisible() ? "V" : "h"}${w.isFocused() ? "F" : ""}`)
-        .join(" ");
-      const key = `${wins} dock=${eapp.dock?.isVisible() ? 1 : 0}`;
-      if (key !== prevKey) {
-        prevKey = key;
-        push("state", key);
-      }
-    };
-    sample();
-    setInterval(sample, 25);
-  });
-}
-
-async function dumpRecorder(app: ProbeApp, label: string): Promise<void> {
-  try {
-    const ev = await app.electronApp.evaluate(() => (globalThis as any).__REC__?.ev ?? null);
-    // eslint-disable-next-line no-console
-    console.log(`RECORDER ${label} ` + JSON.stringify(ev));
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.log(`RECORDER ${label} unavailable: ${String(error)}`);
-  }
-}
-// ── end probe instrumentation ────────────────────────────────────────
-
 type BridgeShape = {
   dockIsVisible: () => boolean;
   dockShow: () => void;
@@ -168,6 +107,34 @@ async function expectDockVisible(
     .toBe(expected);
 }
 
+/** Poll until the Library window is visible to the OS.
+ *
+ *  The Library's initial `show()` rides `ready-to-show` (with a 1s
+ *  hard fallback in `showWindowWhenReady`) — and NONE of that is
+ *  covered by the fixture's launch wait, which only awaits the
+ *  renderer's `domcontentloaded`. On a loaded machine (the Tart-VM
+ *  cold-boot E2E runs) the first show routinely lands 30–100ms after
+ *  the fixture returns, and can lag past every round-trip this spec
+ *  makes before its `visible` assertions. Instrumented VM runs
+ *  confirmed the failure shape was ALWAYS "first show hasn't landed
+ *  yet", never "shown then hidden" — `dock.hide()` does not undo a
+ *  landed show, nor eat a pending one.
+ *
+ *  So: establish visibility as an explicit precondition BEFORE
+ *  stripping the dock. The assertions under test then stay
+ *  single-read, which is the strong form — once visible, the Library
+ *  must REMAIN visible through the strip/reclaim cycle. */
+async function expectLibraryVisible(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>
+): Promise<void> {
+  await expect
+    .poll(async () => (await getLibraryState(app)).visible, {
+      timeout: 10_000,
+      intervals: [25, 50, 100]
+    })
+    .toBe(true);
+}
+
 test.describe("Dock icon lifecycle (macOS)", () => {
   test.skip(
     !isMac,
@@ -177,12 +144,15 @@ test.describe("Dock icon lifecycle (macOS)", () => {
   test("Library stays alive after a deliberate dock.hide() — the bug shape", async () => {
     const app = await launchPwrSnap();
     try {
-      await installRecorder(app);
       // Library is the singleton main window — the fixture's launch
-      // path opens it. Confirm before we strip the dock.
+      // path opens it. Confirm before we strip the dock — and wait
+      // for it to be VISIBLE, not just alive: the bug shape under
+      // test is "a visible Library survives the strip", so visibility
+      // is a precondition, not a given (see expectLibraryVisible).
       await ensureLibrary(app);
       const beforeStrip = await getLibraryState(app);
       expect(beforeStrip.exists, "Library window exists at startup").toBe(true);
+      await expectLibraryVisible(app);
 
       // Stand-in for the activateApp side-effect: a direct dock.hide()
       // sets NSApplicationActivationPolicyProhibited (or Accessory,
@@ -194,7 +164,6 @@ test.describe("Dock icon lifecycle (macOS)", () => {
       await expectDockVisible(app, false);
 
       const afterStrip = await getLibraryState(app);
-      await dumpRecorder(app, `test1 afterStrip=${JSON.stringify(afterStrip)}`);
       expect(
         afterStrip.exists,
         "Library window is alive even with Dock icon stripped — the orphan state"
@@ -205,11 +174,38 @@ test.describe("Dock icon lifecycle (macOS)", () => {
     }
   });
 
+  test("dock.hide racing the Library's initial show does not eat the show", async () => {
+    // The Tart-VM flake shape, encoded deterministically: on a loaded
+    // machine the Library's first `show()` (ready-to-show driven) can
+    // land AFTER a dock.hide(). Electron's DockHide sets canHide:NO
+    // on every window before TransformProcessType, and a pending
+    // orderFront is not cancelled by the policy change — so the show
+    // must still land. Instrumented VM probes confirmed this holds
+    // even with the hide issued before the first show; this test
+    // pins that behavior. When the launch is fast the hide simply
+    // lands after the show and the test degenerates to the bug-shape
+    // test above — never a false failure, occasionally a real
+    // exercise of the race.
+    const app = await launchPwrSnap();
+    try {
+      // No visibility wait here — hide as early as possible to sit
+      // on the racy side of the initial show.
+      await dockHide(app);
+      await expectDockVisible(app, false);
+      await expectLibraryVisible(app);
+    } finally {
+      await app.close();
+    }
+  });
+
   test("forceReclaimDockIcon restores the Dock icon when Library is alive", async () => {
     const app = await launchPwrSnap();
     try {
-      await installRecorder(app);
       await ensureLibrary(app);
+      // Visibility precondition — same reasoning as the bug-shape
+      // test: `after.visible` below is only meaningful once the
+      // Library's initial show has actually landed.
+      await expectLibraryVisible(app);
 
       // Strip — simulates activateApp's side-effect on production.
       await dockHide(app);
@@ -223,7 +219,6 @@ test.describe("Dock icon lifecycle (macOS)", () => {
       await expectDockVisible(app, true);
 
       const after = await getLibraryState(app);
-      await dumpRecorder(app, `test2 after=${JSON.stringify(after)}`);
       expect(after.exists, "Library survives reclaim").toBe(true);
       expect(after.visible, "Library stays visible — no flicker").toBe(true);
     } finally {

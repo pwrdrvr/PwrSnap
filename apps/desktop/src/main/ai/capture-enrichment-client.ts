@@ -1,19 +1,17 @@
-// Capture-enrichment client — a thin PwrSnap wrapper over the isolated Codex
-// one-shot lifecycle.
+// Capture-enrichment client — a thin PwrSnap wrapper over the shared Codex
+// App Server owner.
 //
 // Capture enrichment (annotate / describe / tag / filename / sensitive-scan)
 // is a one-shot structured-output turn: one prompt + one or more local images
 // in, one JSON object out (validated against `CAPTURE_ENRICHMENT_SCHEMA`). The
-// runner serializes enrichment by Codex profile, gives every run a fresh
-// ephemeral thread, and closes that run's App Server process immediately after
-// completion. Process recycling is required because `thread/unsubscribe` leaves
-// ephemeral threads resident for Codex's 30-minute inactivity grace period.
-// The runner also owns `outputSchema` plumbing, localImage inputs, and token-
-// usage normalization.
+// pooled owner keeps one App Server process/connection while every enrichment
+// gets a fresh ephemeral thread. It also owns `outputSchema` plumbing,
+// localImage inputs, and token-usage normalization. This avoids a second Codex
+// process without leaking context between captures.
 //
 // This wrapper preserves the `enrichCapture(...)` / `close()` surface that
 // `codex-handlers.ts` consumes, mapping PwrSnap's caller-supplied args (prompt
-// + schema + image paths) onto an isolated one-shot request and the kit's
+// + schema + image paths) onto a pooled one-shot request and the kit's
 // `NormalizedTokenUsage` back onto PwrSnap's `AiUsageTokenBreakdown` (carrying
 // `contextWindow → modelContextWindow`).
 
@@ -155,6 +153,6 @@ export class CaptureEnrichmentClient {
   }
 
   async close(): Promise<void> {
-    // Each enrichment run owns and closes its short-lived App Server process.
+    // The app-wide Codex owner owns the process lifecycle.
   }
 }

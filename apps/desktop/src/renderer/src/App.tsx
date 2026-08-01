@@ -1,5 +1,6 @@
 import { AppDocumentWindow } from "./features/documents/AppDocumentWindow";
 import { Library } from "./features/library/Library";
+import { LocalAgentConsent } from "./features/local-agents/LocalAgentConsent";
 import { CapturesAccessBanner } from "./features/library/CapturesAccessBanner";
 import { CartProvider } from "./features/library/CartContext";
 import { HotCpuProfileBanner } from "./features/library/HotCpuProfileBanner";
@@ -23,6 +24,7 @@ type Stage =
   | "settings"
   | "sizzle"
   | "document"
+  | "local-agent-consent"
   | "recording-controller";
 type AppDocumentKind = "changelog" | "third-party-licenses";
 
@@ -37,6 +39,7 @@ function readStage(): Stage {
     v === "settings" ||
     v === "sizzle" ||
     v === "document" ||
+    v === "local-agent-consent" ||
     v === "recording-controller"
   ) {
     return v;
@@ -74,6 +77,7 @@ const TITLE_BY_STAGE: Record<Stage, string> = {
   region: "PwrSnap Capture",
   settings: "PwrSnap Settings",
   sizzle: "PwrSnap Sizzle Reels",
+  "local-agent-consent": "Authorize Local Agent - PwrSnap",
   "recording-controller": "PwrSnap Recording",
   document:
     DOCUMENT_KIND === "third-party-licenses"
@@ -128,6 +132,9 @@ export function App() {
     }
     if (STAGE === "recording-controller") {
       return <RecordingController />;
+    }
+    if (STAGE === "local-agent-consent") {
+      return <LocalAgentConsent />;
     }
     if (STAGE === "document") {
       return <AppDocumentWindow kind={DOCUMENT_KIND} />;

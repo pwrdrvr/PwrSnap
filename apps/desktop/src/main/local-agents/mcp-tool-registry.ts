@@ -300,7 +300,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
         threadId: z.string().min(1).optional(),
         reuse: z.enum(["latest-compatible", "new"]).optional()
       },
-      requiredCapabilities: ["capture.edit"],
+      requiredCapabilities: ["capture.edit", "capture.composite.read"],
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -321,7 +321,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
         captureId: z.string().min(1),
         threadId: z.string().min(1)
       },
-      requiredCapabilities: ["capture.edit"],
+      requiredCapabilities: ["capture.edit", "capture.composite.read"],
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,

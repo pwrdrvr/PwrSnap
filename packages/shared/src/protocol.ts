@@ -722,6 +722,20 @@ export function isLocalAgentCapability(value: unknown): value is LocalAgentCapab
   );
 }
 
+export type LocalAgentConsentPermission = {
+  capability: LocalAgentCapability;
+  label: string;
+  detail: string;
+  requested: boolean;
+};
+
+/** Pending OAuth approval shown only inside PwrSnap's trusted consent window. */
+export type LocalAgentConsentPrompt = {
+  requestId: string;
+  clientName: string;
+  permissions: LocalAgentConsentPermission[];
+};
+
 /** Public OAuth client metadata retained with an approved local-agent grant.
  *  PwrSnap forces loopback MCP clients to PKCE-only public clients, so no
  *  client secret is stored here. */
@@ -3213,6 +3227,18 @@ export type Commands = {
   "localAgents:audit": {
     req: { limit?: number };
     res: { entries: LocalAgentAuditEntry[] };
+  };
+  "localAgents:consentRead": {
+    req: Record<string, never>;
+    res: LocalAgentConsentPrompt;
+  };
+  "localAgents:consentDecide": {
+    req: {
+      requestId: string;
+      decision: "allow" | "deny";
+      capabilities: LocalAgentCapability[];
+    };
+    res: void;
   };
 
   // ---- app ----

@@ -25,6 +25,24 @@ chat tool catalogs.
 
 Implemented on `codex/local-agent-mcp-access-plan` after this audit:
 
+### Re-audit remediation
+
+- The cookie-bound HTTP consent form described below was removed after the
+  re-audit correctly showed that browser continuity is not user presence.
+  `GET /authorize` now creates the server-owned transaction and waits for a
+  decision from a dedicated sandboxed PwrSnap `BrowserWindow`. The command bus
+  binds read/decision access to that exact window ID; other PwrSnap windows and
+  every loopback HTTP caller are denied. `POST /authorize` is now an inert
+  `405` endpoint, the transaction ID is never exposed over HTTP, closing the
+  native window denies the request, and aborted requests consume the pending
+  transaction. Adversarial integration coverage reproduces the former
+  headless cookie/form flow and verifies that it cannot create a grant.
+- Image-edit send and status now both require `capture.edit` and
+  `capture.composite.read`, matching their completed-composite result contract.
+  An authenticated edit-only MCP client is denied before tool dispatch.
+
+### Initial remediation (consent item superseded above)
+
 - OAuth approval now uses a short-lived, server-issued, browser-cookie-bound,
   single-use consent transaction. The decision POST contains only that opaque
   transaction and the selected subset; the server retains the validated client,

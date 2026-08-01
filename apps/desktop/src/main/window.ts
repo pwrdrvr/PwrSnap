@@ -117,6 +117,8 @@ export function refreshWindowsTitleBarOverlay(): void {
 }
 const SETTINGS_WINDOW_WIDTH = 1040;
 const SETTINGS_WINDOW_HEIGHT = 720;
+const LOCAL_AGENT_CONSENT_WINDOW_WIDTH = 680;
+const LOCAL_AGENT_CONSENT_WINDOW_HEIGHT = 760;
 const SIZZLE_WINDOW_WIDTH = 1280;
 const SIZZLE_WINDOW_HEIGHT = 820;
 const APP_DOCUMENT_WINDOW_WIDTH = 920;
@@ -160,7 +162,8 @@ type RendererStage =
   | "settings"
   | "document"
   | "sizzle"
-  | "recording-controller";
+  | "recording-controller"
+  | "local-agent-consent";
 type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: string; hash?: string };
 
 export function getPreloadPath(): string {
@@ -765,6 +768,48 @@ export function findSettingsWindow(): BrowserWindow | null {
     return settingsWindow;
   }
   return null;
+}
+
+/**
+ * Create a dedicated PwrSnap-owned approval surface for one local-agent
+ * authorization request. The consent broker binds privileged commands to this
+ * exact BrowserWindow id; arbitrary app windows cannot read or decide it.
+ */
+export function createLocalAgentConsentWindow(): BrowserWindow {
+  const position = centeredWindowBoundsOnDisplay(
+    LOCAL_AGENT_CONSENT_WINDOW_WIDTH,
+    LOCAL_AGENT_CONSENT_WINDOW_HEIGHT,
+    sourceDisplayForWindow({})
+  );
+  const window = new BrowserWindow({
+    x: position.x,
+    y: position.y,
+    width: LOCAL_AGENT_CONSENT_WINDOW_WIDTH,
+    height: LOCAL_AGENT_CONSENT_WINDOW_HEIGHT,
+    minWidth: 520,
+    minHeight: 560,
+    show: false,
+    title: "Authorize Local Agent - PwrSnap",
+    ...platformWindowChrome("hidden"),
+    backgroundColor: getStartupBackgroundColor(),
+    webPreferences: themedWebPreferences()
+  });
+
+  loadRenderer(window, rendererTarget("local-agent-consent"));
+  showWindowWhenReady(window, {
+    label: `local-agent-consent/${window.id}`,
+    onShow: () => {
+      if (process.platform === "darwin") app.focus({ steal: true });
+      window.focus();
+    }
+  });
+  window.webContents.on("render-process-gone", (_event, details) => {
+    log.warn("local agent consent renderer crashed", {
+      id: window.id,
+      reason: details.reason
+    });
+  });
+  return window;
 }
 
 /**

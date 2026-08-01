@@ -42,11 +42,12 @@ import {
   LocalAgentGrantService
 } from "./local-agent-grants";
 import {
-  LOCAL_AGENT_CAPABILITY_DETAILS,
-  LOCAL_AGENT_CAPABILITY_LABELS,
-  LocalAgentOAuthProvider,
-  type LocalAgentAuthorizationResult
+  LocalAgentOAuthProvider
 } from "./local-agent-oauth";
+import type {
+  LocalAgentConsentDecision,
+  LocalAgentConsentRequest
+} from "./local-agent-consent-broker";
 import {
   projectLocalAgentSearchRows,
   toCaptureSearchRequest
@@ -92,6 +93,9 @@ export type LocalAgentMcpServerOptions = {
   resourceRegistry?: LocalAgentMcpResourceRegistry;
   signedUrls?: LocalAgentSignedUrlService;
   auditService?: LocalAgentAuditService;
+  requestConsent?: (
+    request: LocalAgentConsentRequest
+  ) => Promise<LocalAgentConsentDecision>;
 };
 
 export type LocalAgentMcpServerAddress = {
@@ -109,6 +113,7 @@ export class LocalAgentMcpServer {
   private readonly resourceRegistry: LocalAgentMcpResourceRegistry;
   private readonly signedUrls: LocalAgentSignedUrlService;
   private readonly auditService: LocalAgentAuditService;
+  private readonly requestConsent: LocalAgentMcpServerOptions["requestConsent"];
   private server: HttpServer | null = null;
   private address: LocalAgentMcpServerAddress | null = null;
   private oauth: LocalAgentOAuthProvider | null = null;
@@ -122,6 +127,7 @@ export class LocalAgentMcpServer {
     this.signedUrls = options.signedUrls ?? new LocalAgentSignedUrlService();
     this.auditService =
       options.auditService ?? new LocalAgentAuditService(options.settings);
+    this.requestConsent = options.requestConsent;
     this.grantService =
       options.grantService ??
       new LocalAgentGrantService({ settings: options.settings, secrets: options.secrets });
@@ -266,26 +272,11 @@ export class LocalAgentMcpServer {
           }
         });
       });
-      app.post("/authorize", (req: ExpressRequest, res: ExpressResponse) => {
-        void this.handleConsentDecisionRequest(req, res).catch((cause) => {
-          log.warn("OAuth consent decision failed", {
-            message: cause instanceof Error ? cause.message : String(cause)
-          });
-          if (!res.headersSent) {
-            clearConsentCookie(res);
-            writeJsonResponse(
-              res,
-              cause instanceof RequestBodyTooLargeError ? 413 : 500,
-              {
-                error:
-                  cause instanceof RequestBodyTooLargeError
-                    ? "request_too_large"
-                    : "server_error"
-              }
-            );
-          } else if (!res.writableEnded) {
-            res.end();
-          }
+      app.post("/authorize", (_req: ExpressRequest, res: ExpressResponse) => {
+        res.setHeader("allow", "GET");
+        writeJsonResponse(res, 405, {
+          error: "method_not_allowed",
+          error_description: "Authorization decisions are accepted only in PwrSnap"
         });
       });
       app.use("/token", tokenHandler({ provider: this.oauth }));
@@ -531,55 +522,58 @@ export class LocalAgentMcpServer {
       });
       return;
     }
-    writeHtmlResponse(
-      res,
-      200,
-      renderConsentPage(result),
-      result.params.redirectUri,
-      result.transactionId
-    );
-  }
-
-  private async handleConsentDecisionRequest(
-    req: IncomingMessage,
-    res: ServerResponse
-  ): Promise<void> {
-    const oauth = this.oauth;
-    if (oauth === null) {
-      writeJsonResponse(res, 503, { error: "authorization_unavailable" });
-      return;
-    }
-    if (!req.headers["content-type"]?.startsWith("application/x-www-form-urlencoded")) {
-      writeJsonResponse(res, 415, { error: "unsupported_media_type" });
-      return;
-    }
-    const form = new URLSearchParams((await readRequestBody(req)).toString("utf8"));
-    const transactionId = form.get("consent_transaction") ?? "";
-    if (
-      transactionId.length === 0 ||
-      readCookie(req, "pwrsnap_consent") !== transactionId
-    ) {
-      writeJsonResponse(res, 400, {
-        error: "invalid_request",
-        error_description: "Consent transaction is missing or does not match this browser"
+    const requestConsent = this.requestConsent;
+    if (requestConsent === undefined) {
+      oauth.handleConsentDecision({
+        transactionId: result.transactionId,
+        decision: "deny",
+        capabilities: []
+      });
+      writeJsonResponse(res, 503, {
+        error: "authorization_unavailable",
+        error_description: "PwrSnap cannot display its native approval window"
       });
       return;
     }
-    const result = oauth.handleConsentDecision({
-      transactionId,
-      decision: form.get("pwrsnap_decision") ?? "",
-      capabilities: form.getAll("capability")
+
+    const controller = new AbortController();
+    const onClose = (): void => {
+      if (!res.writableEnded) controller.abort();
+    };
+    res.once("close", onClose);
+    let decision: LocalAgentConsentDecision;
+    try {
+      decision = await requestConsent({
+        clientId: result.client.client_id,
+        clientName: result.client.client_name?.trim() || "Local MCP client",
+        requestedCapabilities: result.requestedCapabilities,
+        signal: controller.signal
+      });
+    } catch (cause) {
+      oauth.handleConsentDecision({
+        transactionId: result.transactionId,
+        decision: "deny",
+        capabilities: []
+      });
+      throw cause;
+    } finally {
+      res.off("close", onClose);
+    }
+    const completed = oauth.handleConsentDecision({
+      transactionId: result.transactionId,
+      decision: decision.decision,
+      capabilities: decision.capabilities
     });
-    clearConsentCookie(res);
-    if (result.kind === "redirect") {
-      res.writeHead(302, { location: result.url, "cache-control": "no-store" });
+    if (res.destroyed) return;
+    if (completed.kind === "redirect") {
+      res.writeHead(302, { location: completed.url, "cache-control": "no-store" });
       res.end();
       return;
     }
-    if (result.kind === "error") {
-      writeJsonResponse(res, result.status, {
-        error: result.error,
-        error_description: result.description
+    if (completed.kind === "error") {
+      writeJsonResponse(res, completed.status, {
+        error: completed.error,
+        error_description: completed.description
       });
       return;
     }
@@ -850,88 +844,6 @@ export class LocalAgentMcpServer {
 
 class RequestBodyTooLargeError extends Error {}
 
-type ConsentResult = Extract<LocalAgentAuthorizationResult, { kind: "consent" }>;
-
-function renderConsentPage(result: ConsentResult): string {
-  const requested = new Set(result.requestedCapabilities);
-  const permissions = LOCAL_AGENT_CAPABILITIES.map((capability) => {
-    return `<label class="permission">
-      <input type="checkbox" name="capability" value="${capability}"${
-        requested.has(capability) ? " checked" : ""
-      }>
-      <span class="permission-copy">
-        <strong>${escapeHtml(LOCAL_AGENT_CAPABILITY_LABELS[capability])}</strong>
-        <span class="permission-detail">${escapeHtml(LOCAL_AGENT_CAPABILITY_DETAILS[capability])}</span>
-        <small>${escapeHtml(capability)}</small>
-      </span>
-    </label>`;
-  }).join("\n");
-  const clientName = result.client.client_name?.trim() || "Local MCP client";
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="icon" href="data:,">
-  <title>Authorize ${escapeHtml(clientName)} · PwrSnap</title>
-  <style>
-    :root { color-scheme: dark; font-family: Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; background: #000; color: #f5f5f5; }
-    main { width: min(680px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0; }
-    .brand { margin: 0 0 36px; font-size: 20px; font-weight: 750; }
-    .brand span { color: #ff8a1f; }
-    h1 { margin: 0 0 12px; font-size: 32px; line-height: 1.15; letter-spacing: 0; }
-    .intro { margin: 0 0 32px; color: #a8a8a8; font-size: 16px; line-height: 1.55; }
-    fieldset { margin: 0; padding: 0; border: 0; }
-    legend { margin-bottom: 12px; font-size: 13px; font-weight: 700; color: #c8c8c8; text-transform: uppercase; }
-    .permissions { border-top: 1px solid #282828; }
-    .permission { display: flex; gap: 14px; align-items: center; min-height: 88px; padding: 12px 0; border-bottom: 1px solid #282828; cursor: pointer; }
-    .permission input { width: 18px; height: 18px; margin: 0; accent-color: #ff8a1f; }
-    .permission-copy { display: grid; gap: 4px; min-width: 0; }
-    .permission strong { font-size: 15px; font-weight: 650; }
-    .permission-detail { color: #b0b0b0; font-size: 13px; line-height: 1.4; }
-    .permission small { color: #858585; font: 12px/1.3 "Geist Mono", ui-monospace, monospace; }
-    .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 28px; }
-    button { min-height: 40px; padding: 0 18px; border: 1px solid #3a3a3a; border-radius: 6px; background: #111; color: #f5f5f5; font: inherit; font-weight: 650; cursor: pointer; }
-    button[value="allow"] { border-color: #ff8a1f; background: #ff8a1f; color: #111; }
-    button:hover { border-color: #777; }
-    button[value="allow"]:hover { background: #ffa24d; border-color: #ffa24d; }
-    .note { margin: 20px 0 0; color: #777; font-size: 12px; line-height: 1.5; }
-    @media (max-width: 520px) { main { padding: 28px 0; } h1 { font-size: 26px; } .actions { flex-direction: column-reverse; } button { width: 100%; } }
-  </style>
-</head>
-<body>
-  <main>
-    <div class="brand">Pwr<span>Snap</span></div>
-    <h1>${escapeHtml(clientName)} wants to access PwrSnap</h1>
-    <p class="intro">Your PwrSnap library can contain private screen content. Choose exactly what this local agent may search, read, create, or change. You can revoke access later in PwrSnap Settings.</p>
-    <form method="post" action="/authorize">
-      <input type="hidden" name="consent_transaction" value="${escapeHtml(result.transactionId)}">
-      <fieldset>
-        <legend>Permissions</legend>
-        <div class="permissions">${permissions}</div>
-      </fieldset>
-      <div class="actions">
-        <button type="submit" name="pwrsnap_decision" value="deny">Deny</button>
-        <button type="submit" name="pwrsnap_decision" value="allow">Allow selected</button>
-      </div>
-    </form>
-    <p class="note">Only approve this request if you initiated it on this computer.</p>
-  </main>
-</body>
-</html>`;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
 function parseSingleByteRange(
   header: string | undefined,
   size: number
@@ -988,59 +900,6 @@ function writeJsonResponse(
     "content-type": "application/json"
   });
   response.end(JSON.stringify(body));
-}
-
-function writeHtmlResponse(
-  response: ServerResponse,
-  statusCode: number,
-  body: string,
-  redirectUri: string,
-  consentTransactionId: string
-): void {
-  const callbackUrl = new URL(redirectUri);
-  const callbackAction =
-    callbackUrl.origin === "null" ? callbackUrl.protocol : callbackUrl.origin;
-  response.writeHead(statusCode, {
-    "cache-control": "no-store",
-    "content-type": "text/html; charset=utf-8",
-    "content-security-policy":
-      `default-src 'none'; style-src 'unsafe-inline'; img-src data:; ` +
-      `form-action 'self' ${callbackAction}; base-uri 'none'; frame-ancestors 'none'`,
-    "referrer-policy": "no-referrer",
-    "set-cookie": consentCookie(consentTransactionId),
-    "x-content-type-options": "nosniff",
-    "x-frame-options": "DENY"
-  });
-  response.end(body);
-}
-
-function consentCookie(transactionId: string): string {
-  return (
-    `pwrsnap_consent=${encodeURIComponent(transactionId)}; ` +
-    "HttpOnly; SameSite=Strict; Path=/authorize; Max-Age=300"
-  );
-}
-
-function clearConsentCookie(response: ServerResponse): void {
-  response.setHeader(
-    "set-cookie",
-    "pwrsnap_consent=; HttpOnly; SameSite=Strict; Path=/authorize; Max-Age=0"
-  );
-}
-
-function readCookie(request: IncomingMessage, name: string): string | null {
-  const header = request.headers.cookie;
-  if (typeof header !== "string") return null;
-  for (const item of header.split(";")) {
-    const separator = item.indexOf("=");
-    if (separator < 0 || item.slice(0, separator).trim() !== name) continue;
-    try {
-      return decodeURIComponent(item.slice(separator + 1).trim());
-    } catch {
-      return null;
-    }
-  }
-  return null;
 }
 
 async function toWebRequest(request: IncomingMessage, url: URL): Promise<Request> {

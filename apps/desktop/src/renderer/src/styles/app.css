@@ -6,6 +6,7 @@
 @import "./region.css";
 @import "./settings.css";
 @import "./documents.css";
+@import "./local-agent-consent.css";
 
 * {
   box-sizing: border-box;

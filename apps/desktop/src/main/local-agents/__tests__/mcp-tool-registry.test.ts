@@ -131,6 +131,12 @@ describe("createDefaultLocalAgentMcpTools", () => {
     })).toEqual(["capture.original.read"]);
     const captureExport = tools.find((tool) => tool.name === "pwrsnap_capture_export");
     expect(captureExport?.requiredCapabilities).toEqual(["capture.export"]);
+    for (const name of ["pwrsnap_image_edit_send", "pwrsnap_image_edit_status"]) {
+      expect(tools.find((tool) => tool.name === name)?.requiredCapabilities).toEqual([
+        "capture.edit",
+        "capture.composite.read"
+      ]);
+    }
   });
 
   test("annotations distinguish reads, artifact creation, AI access, and Trash", () => {

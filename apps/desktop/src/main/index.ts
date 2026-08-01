@@ -109,6 +109,10 @@ import {
   LocalAgentMcpServer
 } from "./local-agents/mcp-server";
 import {
+  LocalAgentConsentBroker,
+  registerLocalAgentConsentHandlers
+} from "./local-agents/local-agent-consent-broker";
+import {
   getRuntimeProcessRole,
   resolveProcessRole,
   setRuntimeProcessRole
@@ -271,6 +275,7 @@ const isMac = process.platform === "darwin";
 const isE2E = process.env.PWRSNAP_E2E === "1";
 let pasteFromClipboardMenuItem: Electron.MenuItem | null = null;
 let localAgentMcpServer: LocalAgentMcpServer | null = null;
+let localAgentConsentBroker: LocalAgentConsentBroker | null = null;
 
 /** Reflects the most recently observed `general.developerMode` value
  *  so the menu can be re-installed on settings change without re-
@@ -1742,6 +1747,10 @@ export function bootstrapApp(): void {
       registerSizzleHandlers();
       registerCartHandlers();
     }
+    if (role !== "library") {
+      localAgentConsentBroker = new LocalAgentConsentBroker();
+      registerLocalAgentConsentHandlers(localAgentConsentBroker);
+    }
     // Wire the floating recording HUD so it appears whenever the
     // recording service is non-idle. Has to be installed AFTER the
     // BrowserWindow + handler plumbing because the controller creates
@@ -1900,7 +1909,14 @@ export function bootstrapApp(): void {
           settings: service,
           secrets,
           grantService: getLocalAgentGrantService(),
-          auditService: getLocalAgentAuditService()
+          auditService: getLocalAgentAuditService(),
+          requestConsent: (request) => {
+            const broker = localAgentConsentBroker;
+            if (broker === null) {
+              return Promise.resolve({ decision: "deny", capabilities: [] });
+            }
+            return broker.request(request);
+          }
         });
         try {
           await localAgentMcpServer.start();
@@ -2304,6 +2320,8 @@ export function bootstrapApp(): void {
       void localAgentMcpServer.stop();
       localAgentMcpServer = null;
     }
+    localAgentConsentBroker?.denyAll();
+    localAgentConsentBroker = null;
     // Tear down the shared composite-thumbnail worker eagerly so an
     // in-flight encode (e.g. a deferred v1→v2 sweep still running) is
     // rejected and the worker terminated on our terms, rather than the

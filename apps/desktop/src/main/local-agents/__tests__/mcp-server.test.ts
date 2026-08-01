@@ -7,7 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { err, ok } from "@pwrsnap/shared";
+import { err, ok, type LocalAgentCapability } from "@pwrsnap/shared";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 
@@ -38,6 +38,10 @@ import {
 } from "../mcp-server";
 import { LocalAgentSignedUrlService } from "../signed-url";
 import { LocalAgentOAuthProvider } from "../local-agent-oauth";
+import type {
+  LocalAgentConsentDecision,
+  LocalAgentConsentRequest
+} from "../local-agent-consent-broker";
 import type { LocalAgentMcpTool } from "../mcp-tool-registry";
 
 let workDir = "";
@@ -47,6 +51,19 @@ let grantService: LocalAgentGrantService;
 let server: LocalAgentMcpServer | null = null;
 let client: Client | null = null;
 let extraClient: Client | null = null;
+let consentRequests: LocalAgentConsentRequest[] = [];
+let consentDecisions: Array<
+  LocalAgentConsentDecision | Promise<LocalAgentConsentDecision>
+> = [];
+
+async function requestNativeConsent(
+  request: LocalAgentConsentRequest
+): Promise<LocalAgentConsentDecision> {
+  consentRequests.push(request);
+  const decision = consentDecisions.shift();
+  if (decision === undefined) throw new Error("test did not provide a native consent decision");
+  return decision;
+}
 
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), "pwrsnap-mcp-server-"));
@@ -59,6 +76,8 @@ beforeEach(() => {
     makeId: () => "lag_mcp",
     makeToken: () => "pws_local_mcp-token"
   });
+  consentRequests = [];
+  consentDecisions = [];
 });
 
 afterEach(async () => {
@@ -119,6 +138,23 @@ function toolSet(): LocalAgentMcpTool<z.ZodRawShape>[] {
           deleted: input.captureId,
           clientId: ctx.clientId
         })
+    },
+    {
+      name: "pwrsnap_image_edit_send",
+      title: "Edit PwrSnap Image",
+      description: "Start an image edit and return its composite preview.",
+      inputSchema: {
+        captureId: z.string(),
+        instruction: z.string()
+      },
+      requiredCapabilities: ["capture.edit", "capture.composite.read"],
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true
+      },
+      dispatch: async (input) => ok({ edited: input.captureId })
     }
   ];
 }
@@ -232,35 +268,16 @@ function makeAuthorizationUrl(
 async function approveAndExchange(
   address: LocalAgentMcpServerAddress,
   oauthClient: RegisteredOAuthClient,
-  capabilities: readonly string[],
-  requestedScopes?: readonly string[]
+  capabilities: readonly LocalAgentCapability[],
+  requestedScopes?: readonly LocalAgentCapability[]
 ): Promise<string> {
+  consentDecisions.push({ decision: "allow", capabilities });
   const authorizationUrl = makeAuthorizationUrl(
     address,
     oauthClient,
     requestedScopes
   );
-  const consent = await fetch(authorizationUrl);
-  expect(consent.status).toBe(200);
-  const page = await consent.text();
-  const transactionId = /name="consent_transaction" value="([^"]+)"/u.exec(page)?.[1];
-  expect(transactionId).toBeDefined();
-  const cookie = consent.headers.get("set-cookie")?.split(";", 1)[0];
-  expect(cookie).toMatch(/^pwrsnap_consent=/u);
-  const decision = new URLSearchParams({
-    consent_transaction: transactionId ?? "",
-    pwrsnap_decision: "allow"
-  });
-  for (const capability of capabilities) {
-    decision.append("capability", capability);
-  }
-  const authorized = await fetch(address.authorizationUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
-      cookie: cookie ?? ""
-    },
-    body: decision,
+  const authorized = await fetch(authorizationUrl, {
     redirect: "manual"
   });
   expect(authorized.status).toBe(302);
@@ -390,6 +407,24 @@ describe("LocalAgentMcpServer", () => {
     });
   });
 
+  test("edit-only OAuth client cannot start an edit whose composite it cannot retrieve", async () => {
+    await grantService.createGrant({
+      name: "Edit-only agent",
+      capabilities: ["capture.edit"]
+    });
+    const connected = await connect(await startServer(), "pws_local_mcp-token");
+
+    const denied = await connected.callTool({
+      name: "pwrsnap_image_edit_send",
+      arguments: { captureId: "cap_1", instruction: "Add an arrow" }
+    }) as CallToolResult;
+    expect(denied.isError).toBe(true);
+    expect(denied.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("capture.composite.read")
+    });
+  });
+
   test("audits original-derived exports as both export and original access", async () => {
     await grantService.createGrant({
       name: "PwrAgent",
@@ -490,47 +525,31 @@ describe("LocalAgentMcpServer", () => {
     expect(b.structuredContent).toMatchObject({ clientId: "lag_b", query: "from-b" });
   });
 
-  test("authorizes a dynamically registered client through editable browser consent", async () => {
+  test("authorizes a dynamically registered client through native PwrSnap consent", async () => {
     server = new LocalAgentMcpServer({
       settings,
       secrets,
       grantService,
       tools: toolSet(),
       host: "127.0.0.1",
-      port: 0
+      port: 0,
+      requestConsent: requestNativeConsent
     });
     const address = await server.start();
     const oauthClient = await registerOAuthClient(address, "Codex Desktop");
     expect(oauthClient.token_endpoint_auth_method).toBe("none");
     expect(oauthClient).not.toHaveProperty("client_secret");
 
-    const defaultConsent = await fetch(makeAuthorizationUrl(address, oauthClient));
-    const defaultPage = await defaultConsent.text();
-    expect(defaultPage).toMatch(/value="library\.read" checked/u);
-    expect(defaultPage).toMatch(/value="capture\.composite\.read" checked/u);
-    expect(defaultPage).not.toMatch(/value="capture\.original\.read" checked/u);
-    expect(defaultPage).toContain("billable TTS/network access");
-    expect(defaultPage).toContain("write to Videos");
-
-    const consent = await fetch(
-      makeAuthorizationUrl(address, oauthClient, ["library.read"])
-    );
-    expect(consent.status).toBe(200);
-    const contentSecurityPolicy = consent.headers.get("content-security-policy");
-    expect(contentSecurityPolicy).toContain("frame-ancestors 'none'");
-    expect(contentSecurityPolicy).toContain(
-      "form-action 'self' http://127.0.0.1:43123"
-    );
-    const page = await consent.text();
-    expect(page).toContain("Codex Desktop wants to access PwrSnap");
-    expect(page).toContain("Search library metadata");
-    expect(page).toContain("Move captures to Trash");
-    expect(page).toContain("may reveal content hidden by crops or redactions");
-    expect(page).toContain("Changes captures by sending edit instructions");
-    expect(page).not.toContain("· sensitive");
-    expect(page).toContain('<form method="post" action="/authorize">');
-    expect(page).toContain('name="consent_transaction"');
-    expect(page).not.toContain('name="client_id"');
+    consentDecisions.push({ decision: "deny", capabilities: [] });
+    const defaultConsent = await fetch(makeAuthorizationUrl(address, oauthClient), {
+      redirect: "manual"
+    });
+    expect(defaultConsent.status).toBe(302);
+    expect(consentRequests[0]).toMatchObject({
+      clientId: oauthClient.client_id,
+      clientName: "Codex Desktop",
+      requestedCapabilities: ["library.read", "capture.composite.read"]
+    });
 
     const accessToken = await approveAndExchange(
       address,
@@ -550,6 +569,7 @@ describe("LocalAgentMcpServer", () => {
         redirectUris: [OAUTH_CALLBACK]
       }
     });
+    expect(consentRequests.at(-1)?.requestedCapabilities).toEqual(["library.read"]);
 
     client = await connectWithAccessToken(
       address.url,
@@ -614,7 +634,8 @@ describe("LocalAgentMcpServer", () => {
       grantService,
       tools: toolSet(),
       host: "127.0.0.1",
-      port: 0
+      port: 0,
+      requestConsent: requestNativeConsent
     });
     const firstAddress = await server.start();
     const oauthClient = await registerOAuthClient(firstAddress);
@@ -631,13 +652,10 @@ describe("LocalAgentMcpServer", () => {
       grantService,
       tools: toolSet(),
       host: "127.0.0.1",
-      port: 0
+      port: 0,
+      requestConsent: requestNativeConsent
     });
     const secondAddress = await server.start();
-    const consent = await fetch(
-      makeAuthorizationUrl(secondAddress, oauthClient, ["library.read"])
-    );
-    expect(consent.status).toBe(200);
 
     client = await connectWithAccessToken(
       secondAddress.url,
@@ -658,7 +676,8 @@ describe("LocalAgentMcpServer", () => {
       grantService,
       tools: toolSet(),
       host: "127.0.0.1",
-      port: 0
+      port: 0,
+      requestConsent: requestNativeConsent
     });
     const address = await server.start();
 
@@ -676,20 +695,8 @@ describe("LocalAgentMcpServer", () => {
     const authorizationUrl = makeAuthorizationUrl(address, oauthClient, [
       "capture.original.read"
     ]);
-    const consent = await fetch(authorizationUrl);
-    const page = await consent.text();
-    const transactionId = /name="consent_transaction" value="([^"]+)"/u.exec(page)?.[1];
-    const cookie = consent.headers.get("set-cookie")?.split(";", 1)[0];
-    const denied = await fetch(address.authorizationUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        cookie: cookie ?? ""
-      },
-      body: new URLSearchParams({
-        consent_transaction: transactionId ?? "",
-        pwrsnap_decision: "deny"
-      }),
+    consentDecisions.push({ decision: "deny", capabilities: [] });
+    const denied = await fetch(authorizationUrl, {
       redirect: "manual"
     });
     expect(denied.status).toBe(302);
@@ -698,14 +705,15 @@ describe("LocalAgentMcpServer", () => {
     expect(await grantService.list()).toEqual([]);
   });
 
-  test("rejects forged, browser-mismatched, and replayed consent decisions", async () => {
+  test("loopback HTTP cannot manufacture approval while native consent is pending", async () => {
     server = new LocalAgentMcpServer({
       settings,
       secrets,
       grantService,
       tools: toolSet(),
       host: "127.0.0.1",
-      port: 0
+      port: 0,
+      requestConsent: requestNativeConsent
     });
     const address = await server.start();
     const oauthClient = await registerOAuthClient(address, "Forging Agent");
@@ -718,46 +726,38 @@ describe("LocalAgentMcpServer", () => {
     expect(await forged.json()).toMatchObject({ error: "invalid_request" });
     expect(await grantService.list()).toEqual([]);
 
-    const consent = await fetch(makeAuthorizationUrl(address, oauthClient));
-    const page = await consent.text();
-    const transactionId = /name="consent_transaction" value="([^"]+)"/u.exec(page)?.[1] ?? "";
-    const cookie = consent.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
-    const decision = new URLSearchParams({
-      consent_transaction: transactionId,
-      pwrsnap_decision: "allow",
-      capability: "library.read"
-    });
-
-    const mismatchedBrowser = await fetch(address.authorizationUrl, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: decision,
+    let resolveNative!: (decision: LocalAgentConsentDecision) => void;
+    consentDecisions.push(new Promise((resolve) => {
+      resolveNative = resolve;
+    }));
+    const authorization = fetch(makeAuthorizationUrl(address, oauthClient), {
       redirect: "manual"
     });
-    expect(mismatchedBrowser.status).toBe(400);
+    await vi.waitFor(() => expect(consentRequests).toHaveLength(1));
 
-    const approved = await fetch(address.authorizationUrl, {
+    const headlessApproval = await fetch(address.authorizationUrl, {
       method: "POST",
       headers: {
         "content-type": "application/x-www-form-urlencoded",
-        cookie
+        cookie: "pwrsnap_consent=forged"
       },
-      body: decision,
+      body: new URLSearchParams({
+        consent_transaction: "forged",
+        pwrsnap_decision: "allow",
+        capability: "library.read"
+      }),
       redirect: "manual"
     });
+    expect(headlessApproval.status).toBe(405);
+    expect(await headlessApproval.json()).toMatchObject({ error: "method_not_allowed" });
+    expect(await grantService.list()).toEqual([]);
+
+    resolveNative({ decision: "allow", capabilities: ["library.read"] });
+    const approved = await authorization;
     expect(approved.status).toBe(302);
-
-    const replayed = await fetch(address.authorizationUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        cookie
-      },
-      body: decision,
-      redirect: "manual"
-    });
-    expect(replayed.status).toBe(400);
-    expect(await replayed.json()).toMatchObject({ error: "invalid_request" });
+    const callback = new URL(approved.headers.get("location") ?? "");
+    expect(callback.searchParams.get("code")).not.toBeNull();
+    expect(approved.headers.get("set-cookie")).toBeNull();
   });
 
   test("expires server-issued consent transactions before a decision", async () => {

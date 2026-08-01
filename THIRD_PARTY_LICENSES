@@ -41,7 +41,7 @@ Apache-2.0
 
 BlueOak-1.0.0
 ~~~~~~~~~~~~~
-- sax@1.6.0 | https://github.com/isaacs/sax-js
+- sax@1.6.1 | https://github.com/isaacs/sax-js
 
 BSD-2-Clause
 ~~~~~~~~~~~~
@@ -128,7 +128,7 @@ MIT
 - end-of-stream@1.4.5 | https://github.com/mafintosh/end-of-stream
 - es-define-property@1.0.1 | https://github.com/ljharb/es-define-property
 - es-errors@1.3.0 | https://github.com/ljharb/es-errors
-- es-object-atoms@1.1.1 | https://github.com/ljharb/es-object-atoms
+- es-object-atoms@1.1.2 | https://github.com/ljharb/es-object-atoms
 - escape-html@1.0.3 | component/escape-html
 - etag@1.8.1 | jshttp/etag
 - eventsource@3.0.7 | https://git@github.com/EventSource/eventsource
@@ -148,7 +148,7 @@ MIT
 - github-from-package@0.0.0 | https://github.com/substack/github-from-package
 - gopd@1.2.0 | https://github.com/ljharb/gopd
 - has-symbols@1.1.0 | https://github.com/inspect-js/has-symbols
-- hasown@2.0.3 | https://github.com/inspect-js/hasOwn
+- hasown@2.0.4 | https://github.com/inspect-js/hasOwn
 - hono@4.12.23 | https://github.com/honojs/hono
 - http-errors@2.0.1 | jshttp/http-errors
 - iconv-lite@0.7.2 | https://github.com/pillarjs/iconv-lite
@@ -1599,7 +1599,7 @@ Applies to:
 - call-bound@1.0.4 (MIT)
 - es-define-property@1.0.1 (MIT)
 - es-errors@1.3.0 (MIT)
-- es-object-atoms@1.1.1 (MIT)
+- es-object-atoms@1.1.2 (MIT)
 - side-channel-list@1.0.1 (MIT)
 - side-channel-map@1.0.1 (MIT)
 
@@ -3001,13 +3001,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-hasown@2.0.3 (MIT)
+hasown@2.0.4 (MIT)
 ------------------
 
 Applies to:
-- hasown@2.0.3 (MIT)
+- hasown@2.0.4 (MIT)
 
-Representative file: hasown@2.0.3/LICENSE
+Representative file: hasown@2.0.4/LICENSE
 
 MIT License
 
@@ -4390,13 +4390,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-sax@1.6.0 (BlueOak-1.0.0)
+sax@1.6.1 (BlueOak-1.0.0)
 -------------------------
 
 Applies to:
-- sax@1.6.0 (BlueOak-1.0.0)
+- sax@1.6.1 (BlueOak-1.0.0)
 
-Representative file: sax@1.6.0/LICENSE.md
+Representative file: sax@1.6.1/LICENSE.md
 
 # Blue Oak Model License
 

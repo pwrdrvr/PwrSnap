@@ -31,7 +31,12 @@ import {
   type SettingsChangedEvent,
   type SizzleProject
 } from "@pwrsnap/shared";
-import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
+import {
+  defaultRangeExtractor,
+  measureElement as defaultMeasureElement,
+  useVirtualizer,
+  type Range
+} from "@tanstack/react-virtual";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
@@ -4201,7 +4206,31 @@ function VirtualizedGrid({
     estimateSize: (i) =>
       flatRows[i]?.kind === "header" ? HEADER_ESTIMATE_PX : cellRowEstimate,
     overscan: 5,
-    rangeExtractor
+    rangeExtractor,
+    // Zero-guard around TanStack's default measurement. The grid stays
+    // MOUNTED under `display: none` while the user is in Focus or Reel
+    // mode (`.psl[data-mode="focus"] .psl__grid-wrap { display: none }`)
+    // — and when that flips, the per-item ResizeObserver fires one entry
+    // per observed row with `borderBoxSize` = 0. virtual-core has no
+    // guard: it writes the 0 straight into itemSizeCache, collapsing
+    // every measured row (and getTotalSize) to ~0. Downstream: the
+    // wrap's scrollHeight caves in, Chromium clamps scrollTop to 0
+    // (Reel/Focus exits lose the user's position), and whichever rows
+    // don't win the re-measure races on return render at translateY(0)
+    // stacked UNDER the pinned day banner — the "first row chopped off
+    // by the date header" degenerate state. No real row is ever
+    // 0-height (headers ≈32px, cell rows ≥130px), so a measured 0
+    // always means "hidden, not resized": keep the previously-measured
+    // size (or the estimate) instead.
+    measureElement: (element, entry, instance) => {
+      const size = defaultMeasureElement(element, entry, instance);
+      if (size > 0) return size;
+      const index = instance.indexFromElement(element);
+      return (
+        instance.itemSizeCache.get(instance.options.getItemKey(index)) ??
+        instance.options.estimateSize(index)
+      );
+    }
     // NOTE: do NOT set `useScrollendEvent: true`. That opts into the
     // browser's `scrollend` event, which fires only when scroll stops
     // — so `rangeExtractor` doesn't update the active sticky header
@@ -4224,6 +4253,31 @@ function VirtualizedGrid({
   // instance (not a constructor option in the TS surface).
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => false;
 
+  // E2E diagnostics hook — consumed by
+  // e2e/library-day-header-overlap.spec.ts to assert the virtualizer's
+  // size-cache integrity (no zero-poisoned entries) through Reel/Focus
+  // display:none round-trips. Read-only, negligible cost (closure
+  // assignment per render); intentionally always installed so the
+  // packaged-build E2E can reach it.
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).__PWRSNAP_GRID_DEBUG__ = {
+      dump: (): unknown => {
+        const v = virtualizer as unknown as {
+          itemSizeCache: Map<number, number>;
+          elementsCache: Map<number, Element>;
+          getScrollOffset: () => number | null;
+          getTotalSize: () => number;
+        };
+        return {
+          cache: [...v.itemSizeCache.entries()].sort((a, b) => a[0] - b[0]),
+          observed: [...v.elementsCache.keys()].sort((a, b) => a - b),
+          offset: v.getScrollOffset(),
+          total: v.getTotalSize(),
+          activeSticky: activeStickyIndexRef.current
+        };
+      }
+    };
+  });
 
   // Infinite-scroll boundary: when the last visible virtual row is
   // within K rows of the loaded tail, dispatch loadMore(). K=10 is
@@ -4302,14 +4356,22 @@ function VirtualizedGrid({
           <div
             key={vi.key}
             data-index={vi.index}
-            // measureElement only on non-sticky rows: TanStack's
-            // measureElement reads getBoundingClientRect, but a
-            // sticky-pinned element's rect reports the pinned
-            // position, not its natural offset. Letting it measure
-            // would corrupt the offset cache and the row would jump.
-            // Sticky rows keep their estimateSize until the user
-            // scrolls past them and they unstick.
-            ref={activeSticky ? undefined : virtualizer.measureElement}
+            // measureElement on EVERY row, including the active sticky
+            // header. TanStack v3 measures SIZE only (ResizeObserver
+            // border-box height / offsetHeight — see virtual-core's
+            // measureElement), never rect position, and sticky pinning
+            // doesn't change an element's height — so measuring the
+            // pinned header is safe. It used to be excluded on the
+            // belief that measurement read the pinned rect position;
+            // the real effect of the exclusion was that a header
+            // approached from below (scrolling up, where it enters the
+            // rendered range already-active) could NEVER be measured,
+            // so a stale cached size for it had no healing path — one
+            // of the two legs of the "first row renders under the day
+            // banner" bug (the other: zero-size poisoning while the
+            // grid is display:none, guarded in the measureElement
+            // option above).
+            ref={virtualizer.measureElement}
             style={{
               ...positionStyle,
               left: 0,

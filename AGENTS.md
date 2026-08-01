@@ -32,6 +32,30 @@
   tray, menu-bar, screen-capture, and AppKit windowing specs are expected to be
   skipped. Add `--platform linux/amd64` only when investigating
   architecture-specific GHA parity.
+- **Run disruptive macOS desktop E2E in the VM lab, not on the user's
+  desktop.** Headed Playwright Electron runs pop windows over whatever
+  the user is doing and flash constantly — a full-suite run on the host
+  makes the machine unusable. If `~/pwrsnap-mac-vm/run-e2e.sh` exists on
+  this machine, the Tart macOS VM lab is set up: run suites there
+  instead. Windows render on the VM's own display; the host desktop is
+  never touched.
+
+  ```bash
+  ~/pwrsnap-mac-vm/run-e2e.sh <origin-branch> [playwright args]  # pushed branch
+  ~/pwrsnap-mac-vm/run-e2e.sh --local <repo-path> [playwright args]
+  ```
+
+  `--local` pushes the repo's committed HEAD over SSH into the VM
+  (branch `e2e-local`) — use it for unpushed work; the repo is public,
+  so never push WIP branches to origin just to test them. Uncommitted
+  changes don't travel: commit first. The run lives in tmux session
+  `e2e` inside the VM (Ctrl-C on the tail detaches without killing it);
+  failed runs copy `test-results/` back to `~/pwrsnap-mac-vm/artifacts/`.
+  A quick single spec on the host is tolerable when the user is
+  actively watching/asking for it; anything longer belongs in the VM.
+  Full lab docs (setup on a new machine, GHA runner loop, network
+  isolation, troubleshooting): the `macos-vm-e2e-lab` skill in
+  [.agents/skills/macos-vm-e2e-lab/SKILL.md](.agents/skills/macos-vm-e2e-lab/SKILL.md).
 
 ## Agent Instruction Files
 

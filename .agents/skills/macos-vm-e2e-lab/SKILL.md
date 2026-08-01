@@ -98,9 +98,16 @@ one runner VM is the ceiling. Plan sequencing around it (e.g. stop
 ```bash
 cd ~/pwrsnap-mac-vm
 ./provision-dev.sh          # idempotent; safe to re-run after failures
-./run-e2e.sh main                        # full suite on a branch
+./run-e2e.sh main                        # full suite on an origin branch
 ./run-e2e.sh my-branch --grep clipboard  # subset
+./run-e2e.sh --local <repo-path> [args]  # test UNPUSHED local commits
 ```
+
+`--local` pushes the repo's current HEAD straight into the VM over SSH
+(branch `e2e-local`, detached checkout) — use it for work-in-progress
+that isn't on origin yet. The repo is public; never push WIP branches
+to origin just to get them into the VM. Only committed state travels —
+commit (or `git commit -m wip`) before running.
 
 `provision-dev.sh` clones the base → `pwrsnap-dev` (8 CPU / 16GB /
 1920x1080), installs a dedicated SSH key (cirrus images ship user

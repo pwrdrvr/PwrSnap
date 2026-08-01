@@ -5,14 +5,16 @@ import type {
 
 export type LocalAgentSearchInput = {
   query?: string | undefined;
-  appBundleIds?: Array<string | null> | undefined;
+  appBundleIds?: string[] | undefined;
+  includeCapturesWithoutSourceApp?: boolean | undefined;
   kinds?: Array<"image" | "video"> | undefined;
   dateRange?: { start: string; end: string } | undefined;
   hasOcr?: boolean | undefined;
   limit?: number | undefined;
+  detail?: "summary" | "enriched" | undefined;
 };
 
-export type LocalAgentSearchRow = {
+export type LocalAgentSearchSummaryRow = {
   id: string;
   kind: "image" | "video";
   capturedAt: string;
@@ -24,17 +26,32 @@ export type LocalAgentSearchRow = {
     name: string | null;
   };
   hasAlpha: boolean;
+  hasOcr: boolean;
+};
+
+export type LocalAgentSearchEnrichedRow = LocalAgentSearchSummaryRow & {
   title: string | null;
   description: string | null;
   tags: string[];
-  hasOcr: boolean;
   matchSnippet: string | null;
 };
 
+export type LocalAgentSearchRow =
+  | LocalAgentSearchSummaryRow
+  | LocalAgentSearchEnrichedRow;
+
 export function toCaptureSearchRequest(input: LocalAgentSearchInput): CaptureSearchRequest {
+  const appBundleIds = input.appBundleIds === undefined
+    ? input.includeCapturesWithoutSourceApp === true
+      ? [null]
+      : undefined
+    : [
+        ...input.appBundleIds,
+        ...(input.includeCapturesWithoutSourceApp === true ? [null] : [])
+      ];
   return {
     ...(input.query !== undefined ? { query: input.query } : {}),
-    ...(input.appBundleIds !== undefined ? { appBundleIds: input.appBundleIds } : {}),
+    ...(appBundleIds !== undefined ? { appBundleIds } : {}),
     ...(input.kinds !== undefined ? { kinds: input.kinds } : {}),
     ...(input.dateRange !== undefined ? { dateRange: input.dateRange } : {}),
     ...(input.hasOcr !== undefined ? { hasOcr: input.hasOcr } : {}),
@@ -43,11 +60,24 @@ export function toCaptureSearchRequest(input: LocalAgentSearchInput): CaptureSea
 }
 
 export function projectLocalAgentSearchRows(
-  rows: readonly CaptureSearchResultRow[]
+  rows: readonly CaptureSearchResultRow[],
+  detail: "summary" | "enriched" = "summary"
 ): LocalAgentSearchRow[] {
-  return rows.map(({ record, enrichment, matchSnippet }) =>
-    projectLocalAgentCapture({ record, enrichment, matchSnippet })
-  );
+  return rows.map((row) => {
+    const projected = projectLocalAgentCapture(row);
+    if (detail === "enriched") return projected;
+    return {
+      id: projected.id,
+      kind: projected.kind,
+      capturedAt: projected.capturedAt,
+      widthPx: projected.widthPx,
+      heightPx: projected.heightPx,
+      byteSize: projected.byteSize,
+      sourceApp: projected.sourceApp,
+      hasAlpha: projected.hasAlpha,
+      hasOcr: projected.hasOcr
+    };
+  });
 }
 
 export function projectLocalAgentCapture(

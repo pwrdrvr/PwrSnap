@@ -46,7 +46,8 @@ describe("createDefaultLocalAgentMcpTools", () => {
       query: "pairing",
       kinds: ["image"],
       hasOcr: true,
-      limit: 25
+      limit: 25,
+      detail: "enriched"
     }, ctx(["library.read"]));
     await del.dispatch({ captureId: "cap_123" }, ctx(["trash.write"]));
 
@@ -57,7 +58,8 @@ describe("createDefaultLocalAgentMcpTools", () => {
           query: "pairing",
           kinds: ["image"],
           hasOcr: true,
-          limit: 25
+          limit: 25,
+          detail: "enriched"
         }
       },
       { name: "delete", input: { captureId: "cap_123" } }
@@ -82,10 +84,12 @@ describe("createDefaultLocalAgentMcpTools", () => {
     expect(search?.inputSchema).toEqual(expect.objectContaining({
       query: expect.anything(),
       appBundleIds: expect.anything(),
+      includeCapturesWithoutSourceApp: expect.anything(),
       kinds: expect.anything(),
       dateRange: expect.anything(),
       hasOcr: expect.anything(),
-      limit: expect.anything()
+      limit: expect.anything(),
+      detail: expect.anything()
     }));
   });
 

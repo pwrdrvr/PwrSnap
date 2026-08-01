@@ -50,7 +50,7 @@ describe("local-agent search boundary", () => {
       matchSnippet: "A [pairing] request"
     };
 
-    const projected = projectLocalAgentSearchRows([row]);
+    const projected = projectLocalAgentSearchRows([row], "enriched");
     expect(projected).toEqual([
       {
         id: "cap_123",
@@ -78,17 +78,86 @@ describe("local-agent search boundary", () => {
     expect(json).not.toContain("private-filename");
   });
 
+  test("defaults to summary rows without generated text or match snippets", () => {
+    const row: CaptureSearchResultRow = {
+      record: {
+        id: "cap_123",
+        kind: "image",
+        captured_at: "2026-06-07T12:00:00.000Z",
+        legacy_src_path: null,
+        bundle_path: "/private/capture.pwrsnap",
+        flat_png_path: null,
+        bundle_modified_at: "2026-06-07T12:00:00.000Z",
+        bundle_format_version: 2,
+        bundle_edits_version: 4,
+        width_px: 1440,
+        height_px: 900,
+        device_pixel_ratio: 2,
+        byte_size: 123_456,
+        sha256: "private-content-hash",
+        source_app_bundle_id: null,
+        source_app_name: null,
+        edits_version: 4,
+        deleted_at: null,
+        has_alpha: false
+      },
+      enrichment: {
+        captureId: "cap_123",
+        latestRunId: "run_123",
+        status: "completed",
+        error: null,
+        ocrText: "private full OCR text",
+        suggestedTitle: "Private title",
+        acceptedTitle: null,
+        titleAcceptedAt: null,
+        suggestedDescription: "Private description",
+        acceptedDescription: null,
+        descriptionAcceptedAt: null,
+        suggestedFilenameStem: null,
+        acceptedFilenameStem: null,
+        filenameAcceptedAt: null,
+        suggestedTags: [],
+        acceptedTags: [],
+      },
+      matchSnippet: "Private OCR [match]"
+    };
+
+    const projected = projectLocalAgentSearchRows([row]);
+    expect(projected).toEqual([{
+      id: "cap_123",
+      kind: "image",
+      capturedAt: "2026-06-07T12:00:00.000Z",
+      widthPx: 1440,
+      heightPx: 900,
+      byteSize: 123_456,
+      sourceApp: { bundleId: null, name: null },
+      hasAlpha: false,
+      hasOcr: true
+    }]);
+    expect(JSON.stringify(projected)).not.toContain("Private");
+  });
+
   test("preserves structured search filters while omitting undefined fields", () => {
     expect(toCaptureSearchRequest({
       query: "pairing",
+      appBundleIds: ["com.example.app"],
+      includeCapturesWithoutSourceApp: true,
       kinds: ["image"],
       hasOcr: false,
-      limit: 25
+      limit: 25,
+      detail: "enriched"
     })).toEqual({
       query: "pairing",
+      appBundleIds: ["com.example.app", null],
       kinds: ["image"],
       hasOcr: false,
       limit: 25
+    });
+  });
+
+  test("can filter exclusively to captures with no source application", () => {
+    expect(toCaptureSearchRequest({ includeCapturesWithoutSourceApp: true })).toEqual({
+      appBundleIds: [null]
     });
   });
 });

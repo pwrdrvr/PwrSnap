@@ -156,20 +156,30 @@ export function createDefaultLocalAgentMcpTools(deps: {
   ) => Promise<Result<unknown, PwrSnapError>>;
 }): AnyLocalAgentMcpTool[] {
   const searchInputSchema = {
-    query: z.string().max(1_000).optional(),
-    appBundleIds: z.array(z.string().max(1_000).nullable()).max(100).optional(),
-    kinds: z.array(z.enum(["image", "video"])).max(2).optional(),
+    query: z.string().max(1_000).describe("Text to match against indexed capture metadata and OCR.").optional(),
+    appBundleIds: z.array(z.string().min(1).max(1_000)).max(100)
+      .describe("Exact source application bundle IDs. An empty array matches no captures.")
+      .optional(),
+    includeCapturesWithoutSourceApp: z.boolean()
+      .describe("Include captures whose source application bundle ID is unknown.")
+      .optional(),
+    kinds: z.array(z.enum(["image", "video"])).max(2)
+      .describe("Capture kinds to include. An empty array matches no captures.")
+      .optional(),
     dateRange: z.object({
-      start: z.string().min(1).max(100),
-      end: z.string().min(1).max(100)
-    }).optional(),
-    hasOcr: z.boolean().optional(),
-    limit: z.number().int().min(1).max(500).optional()
+      start: z.iso.datetime().describe("Inclusive UTC start timestamp in ISO 8601 format."),
+      end: z.iso.datetime().describe("Inclusive UTC end timestamp in ISO 8601 format.")
+    }).describe("Inclusive capture timestamp range.").optional(),
+    hasOcr: z.boolean().describe("When true, only return captures with OCR text.").optional(),
+    limit: z.number().int().min(1).max(500).describe("Maximum rows to return.").optional(),
+    detail: z.enum(["summary", "enriched"])
+      .describe("summary (default) omits generated text and match snippets; enriched includes title, description, tags, and matchSnippet.")
+      .optional()
   } satisfies z.ZodRawShape;
   const searchTool: LocalAgentMcpTool<typeof searchInputSchema> = {
     name: "pwrsnap_library_search",
     title: "Search PwrSnap Library",
-    description: "Search live, non-trashed PwrSnap captures and return compact metadata rows.",
+    description: "Search live, non-trashed PwrSnap captures. Results default to structural summary metadata; request enriched detail only when generated text and search snippets are needed.",
     inputSchema: searchInputSchema,
     requiredCapabilities: ["library.read"],
     annotations: {

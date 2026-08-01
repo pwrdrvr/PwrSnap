@@ -146,7 +146,13 @@ export class LocalAgentMcpServer {
             }
           );
           if (!result.ok) return result;
-          return ok({ rows: projectLocalAgentSearchRows(result.value.rows) });
+          return ok({
+            detail: input.detail ?? "summary",
+            rows: projectLocalAgentSearchRows(
+              result.value.rows,
+              input.detail ?? "summary"
+            )
+          });
         },
         deleteToTrash: async (input, ctx) => {
           const commandContext = {

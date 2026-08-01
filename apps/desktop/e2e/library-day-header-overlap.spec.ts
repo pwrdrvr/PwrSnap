@@ -222,11 +222,20 @@ async function expectNoOverlapAtTop(window: Page): Promise<void> {
   });
   expect(rects.firstCellTop).not.toBeNull();
   if (rects.firstCellTop !== null) {
+    // The cell must not merely avoid the banner — it must CLEAR it by
+    // at least the selection ring's extent. `.psl__cell.is-selected`
+    // draws a 1px box-shadow OUTSIDE the cell's border-box; if the
+    // cell top sits flush against the banner's painted bottom edge,
+    // the ring's top line renders underneath the banner and is
+    // clipped. The design reserves `.psl__grid { padding-top: 14px }`
+    // of unpainted space on the first row of each day for exactly
+    // this; require a couple px of it to actually exist.
     expect(
       rects.firstCellTop,
-      `first visible cell top (${rects.firstCellTop}px) is under the day ` +
-        `banner (bottom edge ${rects.headerBottom}px)`
-    ).toBeGreaterThanOrEqual(rects.headerBottom - 2);
+      `first visible cell top (${rects.firstCellTop}px) must clear the day ` +
+        `banner (bottom edge ${rects.headerBottom}px) by the selection-ring ` +
+        `extent — a flush fit clips the ring's top line`
+    ).toBeGreaterThanOrEqual(rects.headerBottom + 2);
   }
 }
 
@@ -524,12 +533,12 @@ test.describe("Library grid — day banner overlap", () => {
       for (const width of [1040, 1440, 900, 1440]) {
         await app.electronApp.evaluate(({ BrowserWindow }, w) => {
           // Positive library-URL match — see the identical filter in
-          // fixtures/electron-app.ts for why a bare "no stage=region"
-          // check can steal the resize onto a still-loading selector.
+          // fixtures/electron-app.ts for why a bare negative check can
+          // steal the resize onto a still-loading auxiliary window.
           const win = BrowserWindow.getAllWindows().find((x) => {
             if (x.isDestroyed()) return false;
             const url = x.webContents.getURL();
-            return url.includes("/renderer/index.html") && !url.includes("stage=region");
+            return url.includes("/renderer/index.html") && !url.includes("stage=");
           });
           if (!win) throw new Error("no live library BrowserWindow to resize");
           win.setContentSize(w, 900);

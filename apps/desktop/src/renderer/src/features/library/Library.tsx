@@ -3886,6 +3886,15 @@ type LibraryRow =
   | {
       kind: "cells";
       cells: DayGroup["items"];
+      /** True when this is the FIRST cell-row of its day-group. Those
+       *  rows keep `.psl__grid`'s CSS `padding-top: 14px` — the
+       *  UNPAINTED breathing room below the day banner where a
+       *  selected cell's 1px box-shadow ring renders (see the
+       *  `.psl__grid` comment in library.css). Every other row inlines
+       *  `paddingTop: 0`; applying it to first-in-day rows too was a
+       *  virtualization-refactor regression that clipped the top of
+       *  the selection ring under the banner's painted background. */
+      isFirstInDay: boolean;
       /** True when this is the last cell-row of its day-group. The
        *  renderer adds extra padding-bottom on these so the visual gap
        *  to the next day-header matches the original single-grid
@@ -4158,6 +4167,7 @@ function VirtualizedGrid({
         rows.push({
           kind: "cells",
           cells: g.items.slice(i, i + cellsPerRow),
+          isFirstInDay: k === 0,
           isLastInDay: k === cellRowCount - 1
         });
       }
@@ -4391,6 +4401,7 @@ function VirtualizedGrid({
               <CellRow
                 cells={row.cells}
                 gridTemplate={gridTemplate}
+                isFirstInDay={row.isFirstInDay}
                 isLastInDay={row.isLastInDay}
                 selectedRecordId={selectedRecordId}
                 fixtureBacking={fixtureBacking}
@@ -4433,6 +4444,7 @@ function VirtualizedGrid({
 function CellRow({
   cells,
   gridTemplate,
+  isFirstInDay,
   isLastInDay,
   selectedRecordId,
   fixtureBacking,
@@ -4451,6 +4463,7 @@ function CellRow({
 }: {
   cells: DayGroup["items"];
   gridTemplate: string;
+  isFirstInDay: boolean;
   isLastInDay: boolean;
   selectedRecordId: string | null;
   fixtureBacking: FixtureBackedRecords;
@@ -4483,13 +4496,26 @@ function CellRow({
   //     `.psl__grid` produced via its 18px `padding-bottom`.
   // Without the special-case, days were ~6px tighter than the
   // original layout.
+  //
+  // Padding-top: only the FIRST row of a day keeps `.psl__grid`'s CSS
+  // `padding-top: 14px` — the unpainted strip below the sticky day
+  // banner where a selected cell's box-shadow ring renders (the
+  // banner's own painted padding-bottom is deliberately slim; see the
+  // `.psl__day-hdr` / `.psl__grid` comments in library.css). Inlining
+  // `paddingTop: 0` on every row — as the virtualization refactor
+  // originally did — clipped the top edge of the selection ring under
+  // the banner whenever a top-row cell was selected at scroll top.
+  // Interior rows zero it out so the row-to-row rhythm stays owned by
+  // paddingBottom alone. The virtualizer measures border-box heights,
+  // so the per-row padding differences are reflected in row offsets
+  // automatically.
   return (
     <div
       className="psl__grid"
       style={{
         gridTemplateColumns: gridTemplate,
         paddingBottom: isLastInDay ? CELL_GAP_DAY_END : CELL_GAP,
-        paddingTop: 0
+        ...(isFirstInDay ? {} : { paddingTop: 0 })
       }}
     >
       {cells.map((c) => {

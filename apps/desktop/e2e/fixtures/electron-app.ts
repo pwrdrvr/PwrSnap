@@ -221,11 +221,14 @@ async function closeElectronApp(app: ElectronApplication): Promise<void> {
 
 /**
  * Poll Electron's BrowserWindow list until the library window appears
- * AND has finished loading the renderer bundle. Both the library and
- * the pre-warmed region selectors render through the same
- * `out/renderer/index.html`, so the document `<title>` is "PwrSnap"
- * on both. The selectors are distinguishable by their URL hash —
- * `#stage=region&displayId=N`. The library window has no hash.
+ * AND has finished loading the renderer bundle. Every auxiliary
+ * renderer window (region selectors, tray popover, float-over toast,
+ * settings, …) renders through the same `out/renderer/index.html` and
+ * is distinguished by a `#stage=<name>` URL fragment (see
+ * `rendererTarget` in src/main/window.ts). The library is the ONLY
+ * renderer window with no `stage=` in its hash — exclude them ALL,
+ * not just `stage=region`, or a pre-warmed tray/float-over window can
+ * be mistaken for the library depending on creation order.
  */
 async function waitForLibraryWindow(app: ElectronApplication): Promise<Page> {
   const deadline = Date.now() + 30_000;
@@ -233,8 +236,7 @@ async function waitForLibraryWindow(app: ElectronApplication): Promise<Page> {
     for (const candidate of app.windows()) {
       const url = candidate.url();
       // Library = same renderer index.html, no `stage=` in the hash.
-      // The pre-warmed region selectors carry `#stage=region&...`.
-      if (url.includes("/renderer/index.html") && !url.includes("stage=region")) {
+      if (url.includes("/renderer/index.html") && !url.includes("stage=")) {
         await candidate.waitForLoadState("domcontentloaded").catch(() => undefined);
         return candidate;
       }
@@ -405,34 +407,59 @@ export async function launchPwrSnap(
 
     if (options.windowSize !== undefined) {
       const size = options.windowSize;
-      await core.electronApp.evaluate(({ BrowserWindow }, target) => {
-        // Pick the LIBRARY window, not just the first live window: on
-        // macOS the pre-warmed region-selector overlays are created
-        // before the library window, so `getAllWindows()[0]` resizes a
-        // selector and the poll below times out at the library's
-        // original size. Same URL discrimination as
-        // `waitForLibraryWindow` — selectors carry `stage=region` in
-        // their hash, the library does not. The renderer-URL check must
-        // be POSITIVE (not just "no stage=region"): a still-loading
-        // selector reports an empty URL, which would pass a negative
-        // filter and steal the resize. The library URL is guaranteed
-        // loaded here — `waitForLibraryWindow` awaited it above.
-        const win = BrowserWindow.getAllWindows().find((w) => {
-          if (w.isDestroyed()) return false;
-          const url = w.webContents.getURL();
-          return url.includes("/renderer/index.html") && !url.includes("stage=region");
-        });
-        if (!win) throw new Error("no live library BrowserWindow to resize");
-        win.setMinimumSize(0, 0);
-        win.setContentSize(target.width, target.height);
-      }, size);
+      // RE-ASSERT the size on every poll tick until the RENDERER
+      // confirms it, and never trust main-side readbacks. A one-shot
+      // setContentSize right after boot intermittently leaves the web
+      // contents laid out at the boot height while the native frame
+      // resizes (~5-10% of launches on macOS; visible as the title bar
+      // clipped off the top plus a black band at the bottom). In that
+      // stuck state `getContentSize()` REPORTS THE REQUESTED SIZE, so
+      // main cannot even detect it (same "readback lies" trap as the
+      // implicit-minimum clamp documented in AGENTS.md → "BrowserWindow
+      // sizing"). The renderer's innerWidth/innerHeight is the only
+      // truthful signal. To unstick, each retry must be a REAL frame
+      // change — alternate the height by 1px so macOS performs a fresh
+      // contentView layout, and only the exact-target application can
+      // satisfy the poll.
+      let attempt = 0;
       await expect
-        .poll(async () =>
-          window.evaluate(() => ({
+        .poll(async () => {
+          const current = await window.evaluate(() => ({
             innerWidth: globalThis.innerWidth,
             innerHeight: globalThis.innerHeight
-          }))
-        )
+          }));
+          if (current.innerWidth === size.width && current.innerHeight === size.height) {
+            return current;
+          }
+          const bump = attempt % 2;
+          attempt += 1;
+          await core.electronApp.evaluate(({ BrowserWindow }, target) => {
+            // Pick the LIBRARY window, not just the first live window:
+            // the pre-warmed auxiliary windows (region selectors, tray
+            // popover, float-over toast) render through the same
+            // renderer index.html and can precede the library in
+            // getAllWindows(). Same URL discrimination as
+            // `waitForLibraryWindow` — every auxiliary renderer window
+            // carries a `stage=<name>` hash, the library carries none.
+            // The renderer-URL check must be POSITIVE (not merely "no
+            // stage="): a still-loading auxiliary window reports an
+            // empty URL, which would pass a negative filter and steal
+            // the resize. The library URL is guaranteed loaded here —
+            // `waitForLibraryWindow` awaited it above.
+            const win = BrowserWindow.getAllWindows().find((w) => {
+              if (w.isDestroyed()) return false;
+              const url = w.webContents.getURL();
+              return url.includes("/renderer/index.html") && !url.includes("stage=");
+            });
+            if (!win) throw new Error("no live library BrowserWindow to resize");
+            win.setMinimumSize(0, 0);
+            win.setContentSize(target.width, target.height + target.bump);
+          }, { width: size.width, height: size.height, bump });
+          return window.evaluate(() => ({
+            innerWidth: globalThis.innerWidth,
+            innerHeight: globalThis.innerHeight
+          }));
+        }, { timeout: 15_000 })
         .toMatchObject({ innerWidth: size.width, innerHeight: size.height });
     }
 

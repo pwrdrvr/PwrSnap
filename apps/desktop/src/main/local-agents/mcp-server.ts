@@ -493,7 +493,12 @@ export class LocalAgentMcpServer {
       });
       return;
     }
-    writeHtmlResponse(res, 200, renderConsentPage(result));
+    writeHtmlResponse(
+      res,
+      200,
+      renderConsentPage(result),
+      result.params.redirectUri
+    );
   }
 
   private async handleMediaRequest(
@@ -761,6 +766,7 @@ function renderConsentPage(result: ConsentResult): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
   <title>Authorize ${escapeHtml(clientName)} · PwrSnap</title>
   <style>
     :root { color-scheme: dark; font-family: Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -852,13 +858,18 @@ function writeJsonResponse(
 function writeHtmlResponse(
   response: ServerResponse,
   statusCode: number,
-  body: string
+  body: string,
+  redirectUri: string
 ): void {
+  const callbackUrl = new URL(redirectUri);
+  const callbackAction =
+    callbackUrl.origin === "null" ? callbackUrl.protocol : callbackUrl.origin;
   response.writeHead(statusCode, {
     "cache-control": "no-store",
     "content-type": "text/html; charset=utf-8",
     "content-security-policy":
-      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      `default-src 'none'; style-src 'unsafe-inline'; img-src data:; ` +
+      `form-action 'self' ${callbackAction}; base-uri 'none'; frame-ancestors 'none'`,
     "referrer-policy": "no-referrer",
     "x-content-type-options": "nosniff",
     "x-frame-options": "DENY"

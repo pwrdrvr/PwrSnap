@@ -406,8 +406,10 @@ describe("LocalAgentMcpServer", () => {
       makeAuthorizationUrl(address, oauthClient, ["library.read"])
     );
     expect(consent.status).toBe(200);
-    expect(consent.headers.get("content-security-policy")).toContain(
-      "frame-ancestors 'none'"
+    const contentSecurityPolicy = consent.headers.get("content-security-policy");
+    expect(contentSecurityPolicy).toContain("frame-ancestors 'none'");
+    expect(contentSecurityPolicy).toContain(
+      "form-action 'self' http://127.0.0.1:43123"
     );
     const page = await consent.text();
     expect(page).toContain("Codex Desktop wants to access PwrSnap");

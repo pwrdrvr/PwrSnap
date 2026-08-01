@@ -123,9 +123,13 @@ repo at `~/PwrSnap`, and the display-resolution agent (see gotchas).
 - on failure, scp's `test-results/` back to
   `~/pwrsnap-mac-vm/artifacts/<timestamp>/`.
 
-To watch the VM's screen: `tart run pwrsnap-dev` opens its window, or
-use the `vnc://` URL that `tart run --vnc-experimental` prints into
-`~/pwrsnap-mac-vm/.pwrsnap-dev.run.log`.
+To watch the VM's screen: `./vnc.sh [vm-name]`. It opens Screen
+Sharing against the guest's built-in service (port 5900, admin/admin)
+at the VM's DHCP address, which is stable across restarts because tart
+pins the VM's MAC — so Screen Sharing's reconnect finds a recycled VM
+again. The `vnc://…@127.0.0.1:<port>` URL in the run log is tart's own
+per-boot server (random port + password every boot) — only useful for
+recovery-mode / pre-login screens, never for everyday viewing.
 
 Expected healthy result: full suite ≈3 minutes, everything passing
 except the Linux-only skips (7) and any known-flaky specs tracked in

@@ -13,6 +13,14 @@ type MockCodexThreadClient = {
   emitEvent(event: unknown): void;
 };
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 const mockCodexThreadClients = vi.hoisted(() => [] as MockCodexThreadClient[]);
 const mockConnectionRequest = vi.hoisted(() =>
   vi.fn(async (_method: string, _params: unknown): Promise<unknown> => ({}))
@@ -338,5 +346,77 @@ describe("Codex agent pool", () => {
     ).toBe(false);
     expect(mockCodexThreadClients).toHaveLength(1);
     expect(mockCodexThreadClients[0]?.close).toHaveBeenCalledTimes(1);
+  });
+
+  test("invalidates a queued one-shot when the pool closes", async () => {
+    mockConnectionRequest.mockImplementation(async (method: string, params: unknown) => {
+      if (method === "config/read") return { config: {} };
+      if (method === "thread/start") {
+        return {
+          thread: { id: "active-one-shot-thread" },
+          model: "gpt-5.6-luna",
+          modelProvider: "openai",
+          serviceTier: null
+        };
+      }
+      if (method === "turn/start") {
+        const { threadId } = params as { threadId: string };
+        return { turn: { id: `turn-for-${threadId}` } };
+      }
+      return {};
+    });
+
+    const options = {
+      command: "codex-test",
+      env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-shutdown-test" },
+      workspaceDir: "/tmp/pwrsnap-shutdown-workspace",
+      prompt: "describe this image",
+      threadConfig: { project_doc_max_bytes: 0 }
+    } as const;
+    const firstRun = runCodexOneShotFromPool(options);
+    const secondRun = runCodexOneShotFromPool(options);
+    const secondOutcome = secondRun.catch((error: unknown) => error);
+
+    await vi.waitFor(() => {
+      expect(mockCodexThreadClients).toHaveLength(1);
+      expect(
+        mockConnectionRequest.mock.calls.filter(([method]) => method === "turn/start")
+      ).toHaveLength(1);
+    });
+
+    const activeClient = mockCodexThreadClients[0]!;
+    const closeGate = deferred();
+    activeClient.close.mockImplementation(async () => await closeGate.promise);
+    activeClient.emitEvent({
+      kind: "agent_message",
+      threadId: "active-one-shot-thread",
+      turnId: "turn-for-active-one-shot-thread",
+      message: { text: '{"ok":true}' }
+    });
+    activeClient.emitEvent({
+      kind: "turn_completed",
+      threadId: "active-one-shot-thread",
+      turnId: "turn-for-active-one-shot-thread",
+      status: "completed"
+    });
+    await vi.waitFor(() => expect(activeClient.close).toHaveBeenCalledTimes(1));
+
+    const closing = closeCodexAgentPool();
+    closeGate.resolve();
+    await closing;
+
+    await expect(firstRun).resolves.toEqual(
+      expect.objectContaining({ threadId: "active-one-shot-thread" })
+    );
+    await expect(secondOutcome).resolves.toEqual(
+      expect.objectContaining({
+        message: "Codex one-shot cancelled because the agent pool closed"
+      })
+    );
+    expect(mockCodexThreadClients).toHaveLength(1);
+    expect(activeClient.close).toHaveBeenCalledTimes(1);
+    expect(
+      mockConnectionRequest.mock.calls.filter(([method]) => method === "thread/start")
+    ).toHaveLength(1);
   });
 });

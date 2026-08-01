@@ -186,6 +186,7 @@ class CodexBackendView implements AgentBackend {
 class CodexAgentOwner {
   readonly client: CodexThreadClient;
   private compatibilityCheck: Promise<void> | null = null;
+  private closePromise: Promise<void> | null = null;
   private readonly threadHandlers = new Map<string, CodexViewHandlers>();
   private readonly activeTurns = new Map<string, CodexViewHandlers>();
   private readonly rawNotificationListeners = new Set<
@@ -303,9 +304,15 @@ class CodexAgentOwner {
   }
 
   async close(): Promise<void> {
-    this.threadHandlers.clear();
-    this.activeTurns.clear();
-    await this.client.close();
+    const close =
+      this.closePromise ??
+      (async () => {
+        this.threadHandlers.clear();
+        this.activeTurns.clear();
+        await this.client.close();
+      })();
+    this.closePromise = close;
+    await close;
   }
 
   private routeEvent(event: NormalizedThreadEvent): void {
@@ -635,6 +642,9 @@ class CodexAgentOwner {
 const owners = new Map<string, CodexAgentOwner>();
 const oneShotQueues = new Map<string, Promise<void>>();
 const activeOneShotOwners = new Set<CodexAgentOwner>();
+let poolGeneration = 0;
+let poolClosing = false;
+let poolClosePromise: Promise<void> | null = null;
 const ONE_SHOT_HANDLERS: CodexViewHandlers = {
   events: new Set(),
   toolCall: null,
@@ -646,6 +656,9 @@ function codexOwnerKey(command: string, env: NodeJS.ProcessEnv | undefined): str
 }
 
 function getCodexOwner(options: CodexBackendViewOptions): CodexAgentOwner {
+  if (poolClosing) {
+    throw new Error("Codex agent pool is closing");
+  }
   const key = codexOwnerKey(options.command, options.env);
   const existing = owners.get(key);
   if (existing !== undefined) return existing;
@@ -673,9 +686,16 @@ export async function listCodexModelsFromPool(options: CodexModelListOptions): P
 export async function runCodexOneShotFromPool(
   options: CodexOneShotPoolRunOptions
 ): Promise<CodexOneShotPoolRunResult> {
+  if (poolClosing) {
+    throw new Error("Codex agent pool is closing");
+  }
+  const generation = poolGeneration;
   const key = codexOwnerKey(options.command, options.env);
   const prior = oneShotQueues.get(key) ?? Promise.resolve();
   const run = prior.catch(() => undefined).then(async () => {
+    if (generation !== poolGeneration) {
+      throw new Error("Codex one-shot cancelled because the agent pool closed");
+    }
     const owner = new CodexAgentOwner(`one-shot:${key}`, {
       command: options.command,
       ...(options.env !== undefined ? { env: options.env } : {}),
@@ -701,10 +721,31 @@ export async function runCodexOneShotFromPool(
 }
 
 export async function closeCodexAgentPool(): Promise<void> {
+  if (poolClosePromise !== null) {
+    await poolClosePromise;
+    return;
+  }
+
+  poolClosing = true;
+  // Invalidate callbacks already chained behind an active one-shot before
+  // closing its owner. Their returned promises still settle, but the
+  // generation check prevents them from constructing a new App Server after
+  // teardown has begun.
+  poolGeneration += 1;
+  oneShotQueues.clear();
   const closing = [...owners.values(), ...activeOneShotOwners];
   owners.clear();
   activeOneShotOwners.clear();
-  await Promise.all(closing.map((owner) => owner.close().catch(() => undefined)));
+  const close = Promise.resolve().then(async () => {
+    await Promise.all(closing.map((owner) => owner.close().catch(() => undefined)));
+  });
+  poolClosePromise = close;
+  try {
+    await close;
+  } finally {
+    if (poolClosePromise === close) poolClosePromise = null;
+    poolClosing = false;
+  }
 }
 
 function threadIdFromEvent(event: NormalizedThreadEvent): string | null {

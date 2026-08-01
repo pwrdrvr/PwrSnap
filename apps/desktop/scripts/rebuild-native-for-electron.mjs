@@ -176,7 +176,7 @@ function ensureDefaultNodeBinding() {
     npm_config_target: process.versions.node,
     npm_config_target_arch: process.arch
   };
-  execFileSync("npm", ["run", "install"], { cwd: betterSqlite3Dir, env, stdio: "inherit" });
+  execSync("npm run install", { cwd: betterSqlite3Dir, env, stdio: "inherit" });
 
   if (!isDefaultNodeBindingUsable()) {
     throw new Error("better-sqlite3 default Node binding is still unusable after rebuild");
@@ -185,9 +185,15 @@ function ensureDefaultNodeBinding() {
 
 function isDefaultNodeBindingUsable() {
   try {
-    execFileSync(process.execPath, ["-e", "require(process.argv[1])", betterSqlite3Dir], {
-      stdio: "ignore"
-    });
+    execFileSync(
+      process.execPath,
+      [
+        "-e",
+        'const Database = require(process.argv[1]); const database = new Database(":memory:"); database.close();',
+        betterSqlite3Dir
+      ],
+      { stdio: "ignore" }
+    );
     return true;
   } catch {
     return false;

@@ -103,13 +103,14 @@ runs through PwrSnap's configured Codex App Server connection.
 **Local Trust Boundary**
 
 - R19. Authorizing a local agent requires a PwrSnap-hosted browser consent page,
-  not just access to localhost. The page shows every permission, marks sensitive
-  permissions, and lets the user add or remove permissions before granting.
+  not just access to localhost. The page treats the library as private screen
+  content, describes the concrete effect of every permission, and lets the user
+  add or remove permissions before granting.
 - R20. OAuth authorization creates a named, revocable client grant with a scoped
   capability set stored through the settings/secret substrate.
 - R21. Every external request carries a client identity and capability context
   into command dispatch, media resource resolution, and audit logging.
-- R22. Sensitive capability use is auditable, especially original image reads,
+- R22. Protected agent actions are auditable, especially original image reads,
   export reads from original input, delete-to-trash, edit turns, and Sizzle
   full-resolution renders.
 
@@ -364,7 +365,8 @@ does not make the bytes readable after a grant is revoked.
   `SettingsContext` for grant review/revocation.
 - **Test Scenarios:**
   - `codex mcp login pwrsnap` opens a PwrSnap browser consent page with client
-    name, requested capabilities, editable checkboxes, and risk labels.
+    name, requested capabilities, editable checkboxes, and concrete effect
+    descriptions.
   - User approval returns a short-lived authorization code to the registered
     loopback callback; token exchange requires the original PKCE verifier.
   - User denial returns an OAuth `access_denied` response without creating a
@@ -562,7 +564,7 @@ does not make the bytes readable after a grant is revoked.
 
 ### U10. Audit Log and Activity Surfaces
 
-- **Goal:** Record externally-triggered sensitive actions and expose them in
+- **Goal:** Record externally-triggered protected actions and expose them in
   Settings so the user can understand what authorized agents accessed.
 - **Files:**
   - `packages/shared/src/protocol.ts`
@@ -654,10 +656,11 @@ need capability-aware wrappers at the transport boundary. Media cache outputs
 become externally addressable, so cache keys, signed URL expiry, and grant
 revocation must line up.
 
-The largest data-safety impact is original image access. Composite retrieval
-matches what the user sees after edits; original retrieval can reveal hidden
-content. The implementation should treat original access like a sensitive
-operation even though the bytes are local.
+All library access can expose private screen content. The distinct data-safety
+impact of original image access is that composite retrieval matches what the
+user sees after edits, while original retrieval can bypass visible crops and
+redactions. Consent copy should state that concrete boundary instead of marking
+an arbitrary subset of permissions as generically sensitive.
 
 ---
 

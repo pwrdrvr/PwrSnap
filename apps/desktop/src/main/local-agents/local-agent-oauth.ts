@@ -76,6 +76,25 @@ export const LOCAL_AGENT_CAPABILITY_LABELS: Record<LocalAgentCapability, string>
   "sizzle.full.read": "Read full-resolution reels"
 };
 
+export const LOCAL_AGENT_CAPABILITY_DETAILS: Record<LocalAgentCapability, string> = {
+  "library.read":
+    "Reads capture titles, OCR snippets, tags, and other searchable metadata.",
+  "capture.composite.read":
+    "Reads images as currently shown, including visible edits and redactions.",
+  "capture.original.read":
+    "Reads source pixels and may reveal content hidden by crops or redactions.",
+  "capture.export":
+    "Creates downloadable image or PDF derivatives from permitted source images.",
+  "capture.edit":
+    "Changes captures by sending edit instructions through PwrSnap-owned AI threads.",
+  "trash.write":
+    "Moves captures out of the library and into recoverable PwrSnap Trash.",
+  "sizzle.compose":
+    "Creates and changes reel projects through PwrSnap-owned AI threads.",
+  "sizzle.preview.read": "Reads low-resolution rendered reel media.",
+  "sizzle.full.read": "Reads full-resolution rendered reel media."
+};
+
 class LocalAgentOAuthClientsStore implements OAuthRegisteredClientsStore {
   private readonly grantService: OAuthGrantService;
   private readonly now: () => Date;

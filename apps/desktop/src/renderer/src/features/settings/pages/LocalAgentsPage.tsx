@@ -20,12 +20,6 @@ const CAPABILITY_LABELS: Record<LocalAgentCapability, string> = {
   "sizzle.full.read": "Full Sizzle renders"
 };
 
-const SENSITIVE_CAPABILITIES = new Set<LocalAgentCapability>([
-  "capture.original.read",
-  "sizzle.full.read",
-  "trash.write"
-]);
-
 const LOCAL_AGENT_MCP_URL = "http://127.0.0.1:51729/mcp";
 
 export function LocalAgentsPage(): ReactElement {
@@ -141,26 +135,26 @@ export function LocalAgentsPage(): ReactElement {
           label="Edited previews"
           sub="Composite reads match what PwrSnap shows after arrows, crops, and redactions."
         >
-          <span className="pss__badge">default</span>
+          <span className="pss__badge">visible result</span>
         </Row>
         <Row
           label="Original images"
           sub="Original reads can reveal content hidden by edits, so they require a separate grant."
         >
-          <span className="pss__badge is-warn">sensitive</span>
+          <span className="pss__badge is-warn">bypasses edits</span>
         </Row>
         <Row
           label="Trash"
           sub="External agents may only move captures to PwrSnap Trash. Permanent purge is not exposed."
         >
-          <span className="pss__badge">soft delete</span>
+          <span className="pss__badge">recoverable change</span>
         </Row>
       </Card>
 
-      <Card eyebrow="ACTIVITY" title="Recent sensitive access">
+      <Card eyebrow="ACTIVITY" title="Recent agent actions">
         {audit.length === 0 ? (
           <Row
-            label="No sensitive activity"
+            label="No agent activity"
             sub="Original reads, exports, edits, Trash moves, and Sizzle renders appear here."
           >
             <span className="pss__badge">none</span>
@@ -217,9 +211,6 @@ function LocalAgentGrantRow({
   onRevoke: () => void;
 }): ReactElement {
   const revoked = grant.revokedAt !== null;
-  const hasSensitive = grant.capabilities.some((capability) =>
-    SENSITIVE_CAPABILITIES.has(capability)
-  );
   const sub = [
     `Created ${formatDate(grant.createdAt)}`,
     grant.lastUsedAt !== null ? `last used ${formatDate(grant.lastUsedAt)}` : "never used",
@@ -231,16 +222,10 @@ function LocalAgentGrantRow({
       <div className="pss__agent-row">
         <div className="pss__agent-caps">
           {grant.capabilities.map((capability) => (
-            <span
-              key={capability}
-              className={
-                "pss__badge" + (SENSITIVE_CAPABILITIES.has(capability) ? " is-warn" : "")
-              }
-            >
+            <span key={capability} className="pss__badge">
               {CAPABILITY_LABELS[capability]}
             </span>
           ))}
-          {hasSensitive ? <span className="pss__badge is-bad">sensitive</span> : null}
         </div>
         <button
           type="button"

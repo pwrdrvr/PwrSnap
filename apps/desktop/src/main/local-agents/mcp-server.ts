@@ -42,6 +42,7 @@ import {
   LocalAgentGrantService
 } from "./local-agent-grants";
 import {
+  LOCAL_AGENT_CAPABILITY_DETAILS,
   LOCAL_AGENT_CAPABILITY_LABELS,
   LocalAgentOAuthProvider,
   type LocalAgentAuthorizationResult
@@ -743,17 +744,14 @@ function renderConsentPage(result: ConsentResult): string {
     .join("\n");
   const requested = new Set(result.requestedCapabilities);
   const permissions = LOCAL_AGENT_CAPABILITIES.map((capability) => {
-    const sensitive =
-      capability === "capture.original.read" ||
-      capability === "trash.write" ||
-      capability === "sizzle.full.read";
     return `<label class="permission">
       <input type="checkbox" name="capability" value="${capability}"${
         requested.has(capability) ? " checked" : ""
       }>
       <span class="permission-copy">
         <strong>${escapeHtml(LOCAL_AGENT_CAPABILITY_LABELS[capability])}</strong>
-        <small>${escapeHtml(capability)}${sensitive ? " · sensitive" : ""}</small>
+        <span class="permission-detail">${escapeHtml(LOCAL_AGENT_CAPABILITY_DETAILS[capability])}</span>
+        <small>${escapeHtml(capability)}</small>
       </span>
     </label>`;
   }).join("\n");
@@ -776,10 +774,11 @@ function renderConsentPage(result: ConsentResult): string {
     fieldset { margin: 0; padding: 0; border: 0; }
     legend { margin-bottom: 12px; font-size: 13px; font-weight: 700; color: #c8c8c8; text-transform: uppercase; }
     .permissions { border-top: 1px solid #282828; }
-    .permission { display: flex; gap: 14px; align-items: center; min-height: 68px; border-bottom: 1px solid #282828; cursor: pointer; }
+    .permission { display: flex; gap: 14px; align-items: center; min-height: 88px; padding: 12px 0; border-bottom: 1px solid #282828; cursor: pointer; }
     .permission input { width: 18px; height: 18px; margin: 0; accent-color: #ff8a1f; }
     .permission-copy { display: grid; gap: 4px; min-width: 0; }
     .permission strong { font-size: 15px; font-weight: 650; }
+    .permission-detail { color: #b0b0b0; font-size: 13px; line-height: 1.4; }
     .permission small { color: #858585; font: 12px/1.3 "Geist Mono", ui-monospace, monospace; }
     .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 28px; }
     button { min-height: 40px; padding: 0 18px; border: 1px solid #3a3a3a; border-radius: 6px; background: #111; color: #f5f5f5; font: inherit; font-weight: 650; cursor: pointer; }
@@ -794,7 +793,7 @@ function renderConsentPage(result: ConsentResult): string {
   <main>
     <div class="brand">Pwr<span>Snap</span></div>
     <h1>${escapeHtml(clientName)} wants to access PwrSnap</h1>
-    <p class="intro">Choose exactly what this local agent may search, read, create, or change. You can revoke this access later in PwrSnap Settings.</p>
+    <p class="intro">Your PwrSnap library can contain private screen content. Choose exactly what this local agent may search, read, create, or change. You can revoke access later in PwrSnap Settings.</p>
     <form method="get" action="/authorize">
       ${hidden}
       <fieldset>

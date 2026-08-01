@@ -109,12 +109,13 @@ describe("LocalAgentsPage", () => {
     installFakeApi();
   });
 
-  test("renders the stable endpoint, authorized clients, and sensitive labels", async () => {
+  test("renders the stable endpoint, authorized clients, and concrete boundaries", async () => {
     const el = await renderPage();
     expect(el.textContent).toContain("http://127.0.0.1:51729/mcp");
     expect(el.textContent).toContain("PwrAgent");
     expect(el.textContent).toContain("Original images");
-    expect(el.textContent).toContain("sensitive");
+    expect(el.textContent).toContain("bypasses edits");
+    expect(el.textContent).not.toContain("sensitive");
     expect(el.textContent).toContain("1 active");
   });
 
@@ -132,7 +133,7 @@ describe("LocalAgentsPage", () => {
     expect(el.textContent).toContain("Revoked");
   });
 
-  test("renders metadata-only sensitive activity", async () => {
+  test("renders metadata-only agent activity", async () => {
     installFakeApi(grant, [{
       id: "lae_1",
       clientId: grant.id,

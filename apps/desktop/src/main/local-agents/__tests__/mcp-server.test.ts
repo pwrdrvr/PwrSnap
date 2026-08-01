@@ -413,6 +413,9 @@ describe("LocalAgentMcpServer", () => {
     expect(page).toContain("Codex Desktop wants to access PwrSnap");
     expect(page).toContain("Search library metadata");
     expect(page).toContain("Move captures to Trash");
+    expect(page).toContain("may reveal content hidden by crops or redactions");
+    expect(page).toContain("Changes captures by sending edit instructions");
+    expect(page).not.toContain("· sensitive");
 
     const accessToken = await approveAndExchange(
       address,

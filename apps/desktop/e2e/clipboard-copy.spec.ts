@@ -297,6 +297,24 @@ test.describe("clipboard copy preset widths", () => {
         (await readClipboardBufferText(app, "text/uri-list"));
       expect(fileUrl).toContain("PwrSnap-clipboard-spec-med.png");
 
+      // The private clip-meta diagnostics flavor rides along on every
+      // clipboard:copy so PbScope can attribute the write to PwrSnap and
+      // correlate a specific copy (captureId + seq) across machines.
+      const clipMetaRaw = await readClipboardBufferText(app, "com.pwrdrvr.pwrsnap.clip-meta");
+      expect(clipMetaRaw.length, "clip-meta flavor should be present").toBeGreaterThan(0);
+      const clipMeta = JSON.parse(clipMetaRaw) as {
+        captureId: string;
+        preset: string;
+        seq: number;
+        ts: number;
+        pid: number;
+      };
+      expect(clipMeta.captureId).toBe(captureId);
+      expect(clipMeta.preset).toBe("med");
+      expect(clipMeta.seq).toBeGreaterThanOrEqual(1);
+      expect(clipMeta.ts).toBeGreaterThan(0);
+      expect(clipMeta.pid).toBeGreaterThan(0);
+
       const img = await readClipboardImage(app);
       expect(img).not.toBeNull();
       expect(img!.width).toBeGreaterThanOrEqual(1438);

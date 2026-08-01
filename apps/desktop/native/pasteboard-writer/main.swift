@@ -11,7 +11,7 @@ enum PasteboardWriterError: Error, CustomStringConvertible {
   var description: String {
     switch self {
     case .usage:
-      return "usage: pasteboard-writer --png <path> --file-url <path>"
+      return "usage: pasteboard-writer --png <path> --file-url <path> [--meta <json>]"
     case .unreadablePng(let path):
       return "could not read PNG data at \(path)"
     case .missingFileUrlPath(let path):
@@ -24,9 +24,11 @@ enum PasteboardWriterError: Error, CustomStringConvertible {
   }
 }
 
-func parseArgs(_ args: [String]) throws -> (pngPath: String, fileUrlPath: String) {
+func parseArgs(_ args: [String]) throws -> (pngPath: String, fileUrlPath: String, metaJson: String?)
+{
   var pngPath: String?
   var fileUrlPath: String?
+  var metaJson: String?
   var index = 1
 
   while index < args.count {
@@ -40,6 +42,10 @@ func parseArgs(_ args: [String]) throws -> (pngPath: String, fileUrlPath: String
       index += 1
       guard index < args.count else { throw PasteboardWriterError.usage }
       fileUrlPath = args[index]
+    case "--meta":
+      index += 1
+      guard index < args.count else { throw PasteboardWriterError.usage }
+      metaJson = args[index]
     default:
       throw PasteboardWriterError.usage
     }
@@ -47,7 +53,7 @@ func parseArgs(_ args: [String]) throws -> (pngPath: String, fileUrlPath: String
   }
 
   guard let pngPath, let fileUrlPath else { throw PasteboardWriterError.usage }
-  return (pngPath, fileUrlPath)
+  return (pngPath, fileUrlPath, metaJson)
 }
 
 func run() throws {
@@ -88,6 +94,18 @@ func run() throws {
     fileUrlString.data(using: .utf8)!,
     forType: NSPasteboard.PasteboardType.fileURL
   )
+  // Optional diagnostics marker: a tiny JSON payload under a private
+  // PwrSnap UTI. NSPasteboard doesn't record which app wrote it, so
+  // tools like PbScope badge events carrying a `com.pwrdrvr.*` flavor
+  // as PwrSnap-originated and correlate a specific copy (captureId +
+  // seq) with what a remote Mac receives. A few hundred bytes, eager
+  // by design — unlike TIFF (see above) it costs nothing.
+  if let metaJson = parsed.metaJson, let metaData = metaJson.data(using: .utf8), !metaData.isEmpty {
+    imageItem.setData(
+      metaData,
+      forType: NSPasteboard.PasteboardType("com.pwrdrvr.pwrsnap.clip-meta")
+    )
+  }
 
   let pasteboard = NSPasteboard.general
   pasteboard.clearContents()

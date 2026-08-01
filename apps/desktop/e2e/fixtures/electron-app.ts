@@ -406,8 +406,23 @@ export async function launchPwrSnap(
     if (options.windowSize !== undefined) {
       const size = options.windowSize;
       await core.electronApp.evaluate(({ BrowserWindow }, target) => {
-        const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-        if (!win) throw new Error("no live BrowserWindow to resize");
+        // Pick the LIBRARY window, not just the first live window: on
+        // macOS the pre-warmed region-selector overlays are created
+        // before the library window, so `getAllWindows()[0]` resizes a
+        // selector and the poll below times out at the library's
+        // original size. Same URL discrimination as
+        // `waitForLibraryWindow` — selectors carry `stage=region` in
+        // their hash, the library does not. The renderer-URL check must
+        // be POSITIVE (not just "no stage=region"): a still-loading
+        // selector reports an empty URL, which would pass a negative
+        // filter and steal the resize. The library URL is guaranteed
+        // loaded here — `waitForLibraryWindow` awaited it above.
+        const win = BrowserWindow.getAllWindows().find((w) => {
+          if (w.isDestroyed()) return false;
+          const url = w.webContents.getURL();
+          return url.includes("/renderer/index.html") && !url.includes("stage=region");
+        });
+        if (!win) throw new Error("no live library BrowserWindow to resize");
         win.setMinimumSize(0, 0);
         win.setContentSize(target.width, target.height);
       }, size);

@@ -84,6 +84,8 @@ async function seedVisualCaptures(app: LaunchedApp): Promise<VisualCapture[]> {
         sourceAppName: string;
         srcPath: string;
         byteSize: number;
+        width: number;
+        height: number;
       }>
     ) => {
       const bridge = (
@@ -114,15 +116,19 @@ async function seedVisualCaptures(app: LaunchedApp): Promise<VisualCapture[]> {
           source_app_bundle_id: `com.pwrsnap.visual.${capture.id}`,
           source_app_name: capture.sourceAppName,
           legacy_src_path: capture.srcPath,
-          width_px: FIXTURE_WIDTH,
-          height_px: FIXTURE_HEIGHT,
+          width_px: capture.width,
+          height_px: capture.height,
           device_pixel_ratio: 1,
           byte_size: capture.byteSize,
           sha256: `visual-${capture.id}`
         });
       }
     },
-    captures
+    captures.map((capture) => ({
+      ...capture,
+      width: FIXTURE_WIDTH,
+      height: FIXTURE_HEIGHT
+    }))
   );
 
   return captures;

@@ -1,15 +1,16 @@
-// Linux/x64 visual-regression coverage for the two primary PwrSnap renderer
-// states. These are intentionally locator-scoped: native BrowserWindow
-// frames and OS chrome are outside the renderer contract and vary by host.
+// Linux/x64 and macOS/arm64 visual-regression coverage for the two primary
+// PwrSnap renderer states. These are intentionally locator-scoped: native
+// BrowserWindow frames and OS chrome are outside the renderer contract and
+// vary by host.
 //
-// The reference images are lossless WebP and are generated in the same
-// Linux/x64 Docker environment that CI uses. Update them with:
+// The reference images are lossless WebP and are generated in their matching
+// CI environment. Update the Linux references with:
 //
 //   pnpm test:desktop-e2e:docker -- --platform linux/amd64 \
 //     --test 'visual regression' --update-snapshots
 //
-// See CONTRIBUTING.md for why this suite is Linux-only and how the generated
-// baseline files are stored in Git LFS.
+// See CONTRIBUTING.md for the platform-specific baseline workflow and how the
+// generated files are stored in Git LFS.
 
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -167,12 +168,12 @@ async function launchVisualPwrSnap(): Promise<LaunchedApp> {
 
 test.describe("visual regression", () => {
   // Screenshot baselines depend on the rendering platform. The project has
-  // Linux + Windows E2E jobs, but this focused suite uses the Linux/x64 job
-  // as its one source of truth; Windows still exercises the behavioral E2E
-  // coverage without requiring a second baseline set.
+  // Linux/x64 and macOS/arm64 goldens. Linux CI temporarily excludes this
+  // suite until its worker teardown is stable; the macOS VM is the active
+  // visual CI lane. Windows continues to exercise behavioral E2E coverage.
   test.skip(
-    process.platform !== "linux",
-    "visual goldens are generated and compared in Linux/x64 only"
+    process.platform !== "linux" && process.platform !== "darwin",
+    "visual goldens are generated and compared in Linux/x64 and macOS/arm64 only"
   );
 
   test.setTimeout(120_000);

@@ -128,10 +128,12 @@ only when investigating architecture-specific GHA parity.
 ### Visual-regression goldens
 
 The focused Playwright visual-regression suite uses lossless WebP references
-stored in Git LFS under `apps/desktop/e2e/*.spec.ts-snapshots/`. It runs only
-on Linux/x64: screenshot rendering varies across operating systems, so Linux
-is the single reviewed baseline environment while Windows continues to run the
-behavioral E2E coverage.
+stored in Git LFS under `apps/desktop/e2e/*.spec.ts-snapshots/`. Screenshot
+rendering varies across operating systems, so Linux/x64 and macOS/arm64 use
+separate reviewed baseline environments. The self-hosted macOS VM is the
+active visual CI lane while Linux visual coverage is temporarily excluded until
+its worker teardown is stabilized; Windows continues to run behavioral E2E
+coverage.
 
 To update a focused baseline, use the Docker runner with the same architecture
 as GitHub Actions. `--update-snapshots` requires `--test` and safely copies

@@ -97,6 +97,16 @@ function blur(id = "ly_blur"): BundleLayerNode {
   };
 }
 
+function autoBlur(id = "ly_blur_auto"): BundleLayerNode {
+  return {
+    ...common(id, 800, ROOT),
+    kind: "effect",
+    // `loadedModel` is 100 × 100, whose canonical Auto radius is 8px.
+    effect: { type: "blur", style: "pixelate", radius_px: 8 },
+    clip_rect: { x: 10, y: 10, w: 40, h: 40 }
+  };
+}
+
 function highlight(id = "ly_highlight"): BundleLayerNode {
   return {
     ...common(id, 700, ROOT),
@@ -235,6 +245,25 @@ describe("LayerPropertiesPanel", () => {
       byId(panel, "blur-mode-redact").click();
     });
     expect(api.updateLayerStyle).toHaveBeenCalledWith("ly_blur", "mode", "redact");
+  });
+
+  test("restores Auto when an effect blur stores the canonical canvas radius", async () => {
+    const api = makeApi();
+    const { el } = await renderPanel([autoBlur()], ["ly_blur_auto"], api);
+    const panel = byId(el, "layer-properties-panel");
+    const radius = byId(panel, "blur-radius");
+    const auto = Array.from(radius.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find(
+      (button) => button.textContent === "Auto"
+    );
+
+    expect(auto?.getAttribute("aria-checked")).toBe("true");
+    expect(radius.querySelector('[data-testid="blur-radius-custom-input"]')).toBeNull();
+    await act(async () => {
+      auto?.click();
+    });
+    expect(api.updateLayerStyle).toHaveBeenCalledWith("ly_blur_auto", "radius", {
+      mode: "auto"
+    });
   });
 
   test("shows the selected highlight's stored style and routes direct edits", async () => {

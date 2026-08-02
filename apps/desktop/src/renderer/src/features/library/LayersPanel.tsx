@@ -620,7 +620,10 @@ export function LayersPanel({
           const crop = isCropLayer(node);
           const base = isBaseLayer(node, sourceRasterId);
           const selectable = isSelectable(node);
-          const layerStyle = styledLayerStyle(node);
+          const layerStyle = styledLayerStyle(node, {
+            width: model.record.width_px,
+            height: model.record.height_px
+          });
           const inspectorExpanded = layerStyle !== null && expandedLayerIds.has(id);
           const inspectorDomId = `layer-inspector-${previewId(id)}`;
           // Non-base rasters (pasted image / captured cursor) with a stored

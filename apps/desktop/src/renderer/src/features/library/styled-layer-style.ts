@@ -16,6 +16,7 @@ import {
   DEFAULT_HIGHLIGHT_BLEND_MODE,
   DEFAULT_HIGHLIGHT_OPACITY,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
+  deriveBlurRadiusPx,
   readArrowDoubleEnded,
   readArrowEndStyle,
   readArrowStemStyle,
@@ -101,18 +102,27 @@ export type StyledLayerStyle =
  * highlight layers remain supported for older bundles; current layers store
  * those two as effects, so both forms deliberately project here.
  */
-export function styledLayerStyle(node: BundleLayerNode): StyledLayerStyle | null {
+export function styledLayerStyle(
+  node: BundleLayerNode,
+  canvas: { width: number; height: number }
+): StyledLayerStyle | null {
   if (node.kind === "effect") {
     if (node.effect.type === "blur") {
+      const autoRadiusPx = deriveBlurRadiusPx(canvas);
       return {
         tool: "blur",
         label: "Blur",
         style: {
           ...DEFAULT_LAYER_BLUR_STYLE,
           mode: node.effect.style ?? DEFAULT_LAYER_BLUR_STYLE.mode,
-          // Effect layers persist a concrete radius, even when it originated
-          // from the tool's Auto preset, so show the actual placed value.
-          radius: { mode: "px", value: node.effect.radius_px }
+          // Effect layers must persist a concrete radius for the compositor,
+          // including Auto. Reconstitute the user-facing Auto selection when
+          // that stored radius is the canonical one for this canvas; otherwise
+          // expose the explicit custom value.
+          radius:
+            node.effect.radius_px === autoRadiusPx
+              ? { mode: "auto" }
+              : { mode: "px", value: node.effect.radius_px }
         }
       };
     }

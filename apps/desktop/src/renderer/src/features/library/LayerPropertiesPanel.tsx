@@ -68,7 +68,13 @@ export function LayerPropertiesPanel({
     );
   } else {
     const selected = model.layers.find((layer) => layer.id === selectedLayerIds[0]);
-    const layerStyle = selected === undefined ? null : styledLayerStyle(selected);
+    const layerStyle =
+      selected === undefined
+        ? null
+        : styledLayerStyle(selected, {
+            width: model.record.width_px,
+            height: model.record.height_px
+          });
     if (selected === undefined) {
       body = (
         <p className="psl-layer-properties__empty" role="status">

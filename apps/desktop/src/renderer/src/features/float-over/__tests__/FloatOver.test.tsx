@@ -898,6 +898,11 @@ describe("FloatOver Codex suggestions", () => {
     );
     expect(checkbox).not.toBeNull();
     expect(checkbox?.checked).toBe(false);
+    const autoAccept = el.querySelector<HTMLLabelElement>(".fo__auto-accept");
+    expect(autoAccept?.textContent).toContain("Auto-apply AI enrichment");
+    expect(autoAccept?.getAttribute("title")).toBe(
+      "Apply AI enrichment automatically when ready"
+    );
 
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(

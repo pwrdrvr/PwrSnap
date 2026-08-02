@@ -135,18 +135,20 @@ active visual CI lane while Linux visual coverage is temporarily excluded until
 its worker teardown is stabilized; Windows continues to run behavioral E2E
 coverage.
 
-To update a focused baseline, use the Docker runner with the same architecture
-as GitHub Actions. `--update-snapshots` requires `--test` and safely copies
-only generated baseline directories back to the source worktree:
+To update a Linux-focused baseline, use the Docker runner with the same
+architecture as GitHub Actions. `--update-snapshots` requires `--test` and
+safely copies only generated baseline directories back to the source worktree:
 
 ```bash
 pnpm test:desktop-e2e:docker -- --platform linux/amd64 \
   --test 'visual regression' --update-snapshots
 ```
 
-Review every resulting WebP change before committing it. The Linux Desktop E2E
-job is the only CI checkout that fetches these LFS objects; regular build,
-lint, unit-test, and Windows E2E jobs do not download them.
+For macOS, review the `*-actual.webp` files emitted by the self-hosted VM's
+`desktop-e2e-macos-artifacts` artifact, then deliberately promote approved
+files to their `*-darwin.webp` baselines. Both Linux and macOS Desktop E2E
+checkouts fetch these LFS objects; regular build, lint, unit-test, and Windows
+E2E jobs do not download them.
 
 ## better-sqlite3 Native Binding Repair
 

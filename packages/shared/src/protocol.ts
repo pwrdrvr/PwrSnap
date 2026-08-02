@@ -807,9 +807,30 @@ export type LocalAgentOAuthClient = {
   registeredAt: string;
 };
 
+export type LocalAgentRoleProfile = {
+  /** Stable identifier referenced by Sessions and audit policy snapshots. */
+  id: string;
+  name: string;
+  description: string;
+  /** Built-ins are code-owned and immutable; users may duplicate them. */
+  builtIn: boolean;
+  permissions: LocalAgentCapability[];
+};
+
+export type LocalAgentRoleProfilePatch = {
+  name?: string;
+  description?: string;
+  permissions?: LocalAgentCapability[];
+};
+
 export type LocalAgentClientGrant = {
   id: string;
   name: string;
+  /** Missing only while reading a pre-RBAC settings file. Resolution fails
+   *  closed until the settings parser assigns a migrated profile. */
+  roleId?: string;
+  /** Effective-permission snapshot retained for renderer/API compatibility.
+   *  Authorization resolves the referenced role, never this snapshot. */
   capabilities: LocalAgentCapability[];
   createdAt: string;
   updatedAt: string;
@@ -2069,6 +2090,7 @@ export type Settings = {
    *  only renderer-safe metadata and capability grants. */
   localAgents: {
     grants: LocalAgentClientGrant[];
+    roles: LocalAgentRoleProfile[];
     audit: LocalAgentAuditEntry[];
   };
 };
@@ -2539,6 +2561,7 @@ export type SettingsPatch = {
   };
   localAgents?: {
     grants?: LocalAgentClientGrant[];
+    roles?: LocalAgentRoleProfile[];
     audit?: LocalAgentAuditEntry[];
   };
 };
@@ -3281,7 +3304,23 @@ export type Commands = {
   };
   "localAgents:list": {
     req: Record<string, never>;
-    res: { grants: LocalAgentClientGrant[] };
+    res: { grants: LocalAgentClientGrant[]; roles: LocalAgentRoleProfile[] };
+  };
+  "localAgents:roleCreate": {
+    req: Omit<LocalAgentRoleProfile, "id" | "builtIn">;
+    res: LocalAgentRoleProfile;
+  };
+  "localAgents:roleUpdate": {
+    req: { id: string; patch: LocalAgentRoleProfilePatch };
+    res: LocalAgentRoleProfile;
+  };
+  "localAgents:roleDelete": {
+    req: { id: string };
+    res: void;
+  };
+  "localAgents:assignRole": {
+    req: { sessionId: string; roleId: string };
+    res: LocalAgentClientGrant;
   };
   "localAgents:revoke": {
     req: { id: string };

@@ -40,6 +40,13 @@ cat > "$PLIST" <<PLIST
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <!-- The script nohup's the "tart run" process (the VM itself).
+       Without this, launchd tears down the whole process group on
+       restart/kickstart and takes the VM down with the listener.
+       NOTE for editors: this heredoc is unquoted (it expands $HOME);
+       backticks here EXECUTE — never use them in these comments. -->
+  <key>AbandonProcessGroup</key>
+  <true/>
   <key>ThrottleInterval</key>
   <integer>30</integer>
   <key>StandardOutPath</key>

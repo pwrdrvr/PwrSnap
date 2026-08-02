@@ -109,6 +109,35 @@ Non-interactive SSH shells don't source the profile that adds
 - No internet inside the VM under softnet → check host firewall/VPN.
   Corporate VPNs that hijack DNS can break the guest's resolver.
 
+## CI checkout dies: `git-lfs filter-process: git-lfs: command not found`
+
+**Symptom.** The job's "Checkout repository" step fails with
+`git-lfs: command not found` → `fatal: the remote end hung up
+unexpectedly` → git exit 128. Starts happening the moment any branch
+tracks files with `filter=lfs` in `.gitattributes` (checkout of the PR
+merge ref applies the PR's attributes, so the trigger can arrive "from
+outside" via any PR that adopts LFS).
+
+**Root cause.** actions-runner snapshots PATH into
+`~/actions-runner/.path` at `config.sh` time and hands that PATH to
+every job. Registered over a bare non-interactive SSH shell, that
+snapshot is `/usr/bin:/bin:/usr/sbin:/sbin` — no `/opt/homebrew/bin`,
+so no brew tool (git-lfs is merely the first casualty) exists for any
+job step. The binary IS in the VM; jobs just can't see it.
+
+**Fix.** Both runner scripts now `eval "$(/opt/homebrew/bin/brew
+shellenv)"` before `config.sh`, and the persistent script rewrites
+`.path` on every boot (self-heals runners registered before the fix).
+To heal a live runner without waiting for a re-boot:
+
+```bash
+ssh <runner-vm> 'eval "$(/opt/homebrew/bin/brew shellenv)"; echo "$PATH" > ~/actions-runner/.path'
+```
+
+then restart the listener (`launchctl kickstart -k
+gui/$UID/com.pwrsnap.gha-runner`) — `.path` is read per job, but a
+restart makes the state unambiguous.
+
 ## Runner registration 403 / token fetch fails
 
 `gh api -X POST repos/<owner>/<repo>/actions/runners/registration-token`

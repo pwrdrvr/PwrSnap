@@ -68,6 +68,10 @@ serve_one_job() {
   ssh "${SSH_OPTS[@]}" "$SSH_USER@$ip" \
     "TOKEN=$(printf %q "$token") VMNAME=$(printf %q "$vm") LABELS=$(printf %q "$LABELS") bash -s" <<'REMOTE' || rc=$?
 set -euo pipefail
+# Homebrew on PATH before config.sh — the runner snapshots PATH into
+# .path at configure time for every job (git-lfs et al live in
+# /opt/homebrew/bin). See run-persistent-runner.sh for the war story.
+eval "$(/opt/homebrew/bin/brew shellenv)"
 cd ~/actions-runner
 ./config.sh --unattended --ephemeral \
   --url https://github.com/pwrdrvr/PwrSnap \

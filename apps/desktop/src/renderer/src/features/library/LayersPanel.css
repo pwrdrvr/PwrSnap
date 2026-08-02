@@ -39,6 +39,9 @@
 }
 
 .psl-layers__inspector-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   margin-top: 10px;
 }
 

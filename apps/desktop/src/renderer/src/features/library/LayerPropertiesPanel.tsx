@@ -7,7 +7,7 @@ import type { BundleLayerNode } from "@pwrsnap/shared";
 import { ToolStyleBody } from "../editor/ToolStylePopover";
 import { useCaptureModel } from "../editor/useCaptureModel";
 import type { LayersPanelApi } from "../editor/Editor";
-import { arrowLayerStyle } from "./arrow-layer-style";
+import { styledLayerStyle } from "./styled-layer-style";
 import "./LayerPropertiesPanel.css";
 
 export type LayerPropertiesPanelProps = {
@@ -68,14 +68,14 @@ export function LayerPropertiesPanel({
     );
   } else {
     const selected = model.layers.find((layer) => layer.id === selectedLayerIds[0]);
-    const arrowStyle = selected === undefined ? null : arrowLayerStyle(selected);
+    const layerStyle = selected === undefined ? null : styledLayerStyle(selected);
     if (selected === undefined) {
       body = (
         <p className="psl-layer-properties__empty" role="status">
           The selected layer is no longer available.
         </p>
       );
-    } else if (arrowStyle === null) {
+    } else if (layerStyle === null) {
       body = (
         <>
           <p className="psl-layer-properties__selected">{labelForNode(selected)}</p>
@@ -87,11 +87,11 @@ export function LayerPropertiesPanel({
     } else {
       body = (
         <>
-          <p className="psl-layer-properties__selected">{arrowStyle.label}</p>
+          <p className="psl-layer-properties__selected">{layerStyle.label}</p>
           <div className="psl-layer-properties__body">
             <ToolStyleBody
-              tool={arrowStyle.tool}
-              style={arrowStyle.style}
+              tool={layerStyle.tool}
+              style={layerStyle.style}
               onStyleFieldChange={(field, value): void => {
                 api?.updateLayerStyle(selected.id, field, value);
               }}

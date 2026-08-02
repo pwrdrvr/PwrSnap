@@ -55,6 +55,7 @@ import {
   CURRENT_ARROW_STYLE_VERSION,
   DEFAULT_BLUR_STYLE,
   computeTextGlyphSize,
+  deriveBlurRadiusPx,
   matchBucket,
   readShapeFilled,
   readShapeKind,
@@ -512,7 +513,11 @@ function selectedOverlayToToolStyle(
       tool: "text",
       style: {
         ...defaults.text,
-        color: storedColorToToolColor(data.color, defaults.text.color)
+        color: storedColorToToolColor(data.color, defaults.text.color),
+        fontSize: data.size,
+        // Legacy rows render at the historic semi-bold fallback when the
+        // optional field is absent. Bold is the closest editable control.
+        weight: data.weight ?? "bold"
       }
     };
   }
@@ -546,6 +551,126 @@ function resolveTextSize(
   if (fontSize === "small") return "small";
   // "auto" and "medium" both resolve to medium.
   return "medium";
+}
+
+type LayerStyleUpdate = {
+  readonly patch: Partial<Overlay>;
+  readonly fallbackPreviousPatch: Partial<Overlay>;
+  /** The persisted field to recover from the queued predecessor for undo. */
+  readonly undoField: string;
+};
+
+function placedBlurRadius(
+  value: unknown,
+  canvas: { width: number; height: number }
+): number | null {
+  if (value === null || typeof value !== "object") return null;
+  const radius = value as { mode?: unknown; value?: unknown };
+  if (radius.mode === "auto") return deriveBlurRadiusPx(canvas);
+  if (radius.mode !== "px" || typeof radius.value !== "number") return null;
+  if (!Number.isFinite(radius.value)) return null;
+  return Math.min(200, Math.max(1, radius.value));
+}
+
+/**
+ * Translate a ToolStyleBody field into the persisted Overlay field(s) for a
+ * selected layer. Most controls use the same names, but text font size and
+ * blur mode/radius deliberately do not. Keeping that translation here makes
+ * the standalone popover, Properties tab, and manual Layers accordions share
+ * one correct persistence and undo path.
+ */
+export function layerStyleUpdate(
+  current: OverlayRow,
+  field: string,
+  value: unknown,
+  dims: {
+    sourceWidthPx: number;
+    sourceHeightPx: number;
+    canvasWidthPx: number;
+    canvasHeightPx: number;
+  }
+): LayerStyleUpdate | null {
+  // The text popover's "fontSize" field maps to TextOverlay's `size` +
+  // `sizePx` fields. Recompute sizePx for the current canvas so an explicit
+  // bucket choice exits "Custom".
+  if (
+    current.data.kind === "text" &&
+    field === "fontSize" &&
+    (value === "auto" || value === "small" || value === "medium" || value === "large")
+  ) {
+    const newSize: "small" | "medium" | "large" = resolveTextSize(value);
+    const newSizePx = computeTextGlyphSize({
+      size: newSize,
+      sourceWidthPx: dims.sourceWidthPx,
+      sourceHeightPx: dims.sourceHeightPx,
+      canvasWidthPx: dims.canvasWidthPx,
+      canvasHeightPx: dims.canvasHeightPx
+    }).sizePx;
+    return {
+      patch: {
+        kind: "text",
+        size: newSize,
+        sizePx: newSizePx
+      },
+      fallbackPreviousPatch: {
+        kind: "text",
+        size: current.data.size,
+        ...(current.data.sizePx !== undefined ? { sizePx: current.data.sizePx } : {})
+      },
+      undoField: "fontSize"
+    };
+  }
+
+  // Blur ToolStyleBody intentionally speaks in terms of a user-facing mode
+  // and radius setting. Persisted overlays use `style` and `radiusPx`; v2
+  // effect layers use the same overlay-shaped patch and project it to their
+  // effect spec inside useCaptureModel.applyPatchToLayer.
+  if (current.data.kind === "blur" && field === "mode") {
+    if (value !== "gaussian" && value !== "pixelate" && value !== "redact") return null;
+    return {
+      patch: { kind: "blur", style: value },
+      fallbackPreviousPatch: {
+        kind: "blur",
+        ...(current.data.style !== undefined ? { style: current.data.style } : {})
+      },
+      undoField: "style"
+    };
+  }
+  if (current.data.kind === "blur" && field === "radius") {
+    const radiusPx = placedBlurRadius(value, {
+      width: dims.canvasWidthPx,
+      height: dims.canvasHeightPx
+    });
+    if (radiusPx === null) return null;
+    return {
+      patch: { kind: "blur", radiusPx },
+      fallbackPreviousPatch: {
+        kind: "blur",
+        ...(current.data.radiusPx !== undefined ? { radiusPx: current.data.radiusPx } : {})
+      },
+      undoField: "radiusPx"
+    };
+  }
+
+  // Popover swatches emit a named ToolColor, whereas persisted overlays
+  // deliberately store strict hex. Resolve at this one write boundary so a
+  // selected green control is a real persisted edit rather than a rejected
+  // schema value.
+  const persistedValue =
+    field === "color" && typeof value === "string"
+      ? resolveToolColor(value as ToolColor)
+      : value;
+  return {
+    patch: {
+      kind: current.data.kind,
+      [field]: persistedValue
+    } as Partial<Overlay>,
+    fallbackPreviousPatch: {
+      kind: current.data.kind,
+      [field]: (current.data as Record<string, unknown>)[field]
+    } as Partial<Overlay>,
+    undoField: field
+  };
 }
 
 /** v2 → v1 read-only projection. The existing `OverlaySvg` and
@@ -5348,59 +5473,18 @@ function EditorLoaded({
   // a new-tool default.
   const updateOverlayStyleField = useCallback(
     (current: OverlayRow, field: string, value: unknown): void => {
-      let patch: Partial<Overlay>;
-      let fallbackPreviousPatch: Partial<Overlay>;
-      // Special case: the text popover's "fontSize" field maps to
-      // TextOverlay's `size` + `sizePx` fields. Recompute sizePx for the
-      // current canvas so an explicit bucket choice exits "Custom".
-      if (
-        current.data.kind === "text" &&
-        field === "fontSize" &&
-        (value === "auto" || value === "small" || value === "medium" || value === "large")
-      ) {
-        const newSize: "small" | "medium" | "large" = resolveTextSize(
-          value as "auto" | "small" | "medium" | "large"
-        );
-        const newSizePx = computeTextGlyphSize({
-          size: newSize,
-          sourceWidthPx,
-          sourceHeightPx,
-          canvasWidthPx: record.width_px,
-          canvasHeightPx: record.height_px
-        }).sizePx;
-        patch = {
-          kind: "text",
-          size: newSize,
-          sizePx: newSizePx
-        };
-        fallbackPreviousPatch = {
-          kind: "text",
-          size: current.data.size,
-          ...(current.data.sizePx !== undefined ? { sizePx: current.data.sizePx } : {})
-        };
-      } else {
-        // Popover swatches emit a named ToolColor, whereas persisted
-        // overlays deliberately store strict hex. Resolve at this one
-        // write boundary so the selected green-arrow control is a real
-        // persisted edit rather than a rejected schema value.
-        const persistedValue =
-          field === "color" && typeof value === "string"
-            ? resolveToolColor(value as ToolColor)
-            : value;
-        patch = {
-          kind: current.data.kind,
-          [field]: persistedValue
-        } as Partial<Overlay>;
-        fallbackPreviousPatch = {
-          kind: current.data.kind,
-          [field]: (current.data as Record<string, unknown>)[field]
-        } as Partial<Overlay>;
-      }
+      const update = layerStyleUpdate(current, field, value, {
+        sourceWidthPx,
+        sourceHeightPx,
+        canvasWidthPx: record.width_px,
+        canvasHeightPx: record.height_px
+      });
+      if (update === null) return;
       void (async (): Promise<void> => {
         const result = await dispatchEdit({
           kind: "updateOverlay",
           layerId: current.id,
-          patch
+          patch: update.patch
         });
         if (!result.ok) {
           // eslint-disable-next-line no-console
@@ -5415,15 +5499,15 @@ function EditorLoaded({
         if (!undoApplyingRef.current) {
           const previousPatch = previousStylePatchFromQueuedUpdate(
             result.value.artifact.previousNode,
-            field,
-            patch,
-            fallbackPreviousPatch,
+            update.undoField,
+            update.patch,
+            update.fallbackPreviousPatch,
             { widthPx: record.width_px, heightPx: record.height_px }
           );
           undo.recordStyle({
             currentIdRef: { current: newId },
             previousPatch,
-            nextPatch: patch
+            nextPatch: update.patch
           });
         }
       })();

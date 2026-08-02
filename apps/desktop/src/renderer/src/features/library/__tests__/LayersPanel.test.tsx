@@ -341,7 +341,7 @@ describe("LayersPanel", () => {
     expect(byId(el, "layer-row-ly_raster").getAttribute("aria-selected")).toBe("false");
   });
 
-  test("selected arrow expands its own inline inspector and edits its own style", async () => {
+  test("selected arrow stays collapsed until its chevron expands its inline inspector", async () => {
     const api = makeApi();
     const greenArrow = arrow();
     if (greenArrow.kind !== "vector" || greenArrow.shape.kind !== "arrow") {
@@ -363,6 +363,10 @@ describe("LayersPanel", () => {
     expect(preview.getAttribute("aria-label")).toBe("Arrow layer preview");
     expect(preview.querySelector("svg")).not.toBeNull();
     expect(el.querySelector('[data-testid="layer-properties"]')).toBeNull();
+    expect(el.querySelector('[data-testid="layer-inspector-ly_arrow"]')).toBeNull();
+    await act(async () => {
+      byId(el, "layer-inspector-toggle-ly_arrow").click();
+    });
     const inspector = byId(el, "layer-inspector-ly_arrow");
     expect(byId(el, "layer-row-ly_arrow").nextElementSibling).toBe(inspector);
     expect(byId(inspector, "swatch-green").getAttribute("aria-checked")).toBe("true");
@@ -404,14 +408,15 @@ describe("LayersPanel", () => {
       ["ly_green"]
     );
 
-    // Canvas selection opens its matching inspector, and it is visibly
-    // adjacent to that row instead of becoming a detached panel above all
-    // three identically named arrows.
-    expect(el.querySelector('[data-testid="layer-inspector-ly_green"]')).not.toBeNull();
+    // Canvas selection is independent from the manual compare accordions:
+    // it highlights the green arrow but does not expand anything in a long
+    // stack of otherwise-identical rows.
+    expect(el.querySelector('[data-testid="layer-inspector-ly_green"]')).toBeNull();
     expect(el.querySelector('[data-testid="layer-inspector-ly_blue"]')).toBeNull();
     expect(el.querySelector('[data-testid="layer-inspector-ly_red"]')).toBeNull();
 
     await act(async () => {
+      byId(el, "layer-inspector-toggle-ly_green").click();
       byId(el, "layer-inspector-toggle-ly_blue").click();
       byId(el, "layer-inspector-toggle-ly_red").click();
     });

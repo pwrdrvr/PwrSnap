@@ -1111,16 +1111,16 @@ describe("DesktopSettingsService.library.detailRail", () => {
     expect(settings.library.detailRail.lastSelectedTab).toBe("info");
   });
 
-  test("write({ library: { detailRail: { lastSelectedTab: \"ocr\" } } }) round-trips", async () => {
+  test("write({ library: { detailRail: { lastSelectedTab: \"properties\" } } }) round-trips", async () => {
     const svc = makeService();
     const written = await svc.write({
-      library: { detailRail: { lastSelectedTab: "ocr" } }
+      library: { detailRail: { lastSelectedTab: "properties" } }
     });
-    expect(written.library.detailRail.lastSelectedTab).toBe("ocr");
+    expect(written.library.detailRail.lastSelectedTab).toBe("properties");
     // Pinned untouched — keep the prior value.
     expect(written.library.detailRail.pinned).toBe(true);
     const reread = await svc.read();
-    expect(reread.library.detailRail.lastSelectedTab).toBe("ocr");
+    expect(reread.library.detailRail.lastSelectedTab).toBe("properties");
   });
 
   test("write({ library: { detailRail: { pinned: false } } }) does not stomp the tab", async () => {

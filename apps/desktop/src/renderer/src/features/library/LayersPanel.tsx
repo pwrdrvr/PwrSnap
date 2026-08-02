@@ -38,7 +38,7 @@ import { selectBaseRaster } from "../editor/base-raster";
 import { affineTransformsEqual } from "../editor/raster-resize";
 import { TOOLS } from "../editor/editor-tools";
 import { ToolStyleBody } from "../editor/ToolStylePopover";
-import { storedColorToToolColor } from "../editor/resolveToolColor";
+import { arrowLayerStyle } from "./arrow-layer-style";
 import "./LayersPanel.css";
 
 export type LayersPanelProps = {
@@ -168,41 +168,6 @@ function iconForNode(node: BundleLayerNode): ReactElement {
     case "group":
       return STEP_ICON;
   }
-}
-
-// These are only fallbacks for optional fields on older arrow layers.
-// They intentionally describe an existing layer, rather than reading
-// the active tool's settings: changing an arrow must never silently
-// retune the next arrow the user draws.
-const DEFAULT_LAYER_ARROW_STYLE: ArrowToolStyle = {
-  color: "accent",
-  thickness: "auto",
-  endStyle: "filled-triangle",
-  stemStyle: "solid",
-  doubleEnded: false
-};
-
-type ArrowLayerStyle = {
-  readonly tool: "arrow";
-  readonly label: "Arrow";
-  readonly style: ArrowToolStyle;
-};
-
-function arrowLayerStyle(node: BundleLayerNode): ArrowLayerStyle | null {
-  if (node.kind !== "vector" || node.shape.kind !== "arrow") return null;
-  const arrow = node.shape;
-  return {
-    tool: "arrow",
-    label: "Arrow",
-    style: {
-      ...DEFAULT_LAYER_ARROW_STYLE,
-      color: storedColorToToolColor(arrow.color, DEFAULT_LAYER_ARROW_STYLE.color),
-      thickness: arrow.thickness ?? DEFAULT_LAYER_ARROW_STYLE.thickness,
-      endStyle: readArrowEndStyle(arrow),
-      stemStyle: readArrowStemStyle(arrow),
-      doubleEnded: readArrowDoubleEnded(arrow)
-    }
-  };
 }
 
 function previewColor(color: string | undefined): string {
@@ -502,15 +467,18 @@ export function LayersPanel({
     pointerId: number;
     overGap: number;
   } | null>(null);
-  // A layer can be selected on the canvas without its inspector being
-  // visible, and several arrow inspectors can be open together for
-  // comparison. Selecting a new arrow opens its inspector once, but
-  // never collapses other rows or immediately reopens one after its
-  // chevron was closed.
+  // Expansion is strictly manual: selection belongs to the canvas and
+  // the Properties tab, while these chevrons are only for comparing two
+  // nearby arrow styles inside the layer list.
   const [expandedLayerIds, setExpandedLayerIds] = useState<ReadonlySet<string>>(
     () => new Set()
   );
-  const expandedCaptureIdRef = useRef(captureId);
+
+  // Layer ids are capture-local; never carry a manual comparison accordion
+  // into the next capture when Focus/Reel navigation swaps `captureId`.
+  useEffect(() => {
+    setExpandedLayerIds(new Set());
+  }, [captureId]);
 
   // Top-to-bottom = front-to-back: the topmost row paints last (highest
   // z_index). Groups are hidden — v2.0 only ever has the synthesized
@@ -548,30 +516,6 @@ export function LayersPanel({
   }, [model]);
   // PageUp/PageDown jump — bigger over deep stacks.
   const pageStep = annotationCount > 100 ? 10 : 5;
-  // The row list mirrors editor-owned canvas selection, while expansion
-  // belongs only to this panel. A newly selected arrow opens inline at
-  // its own row; manual chevron state stays independent so two nearby
-  // arrows can remain open for comparison.
-  const selectedArrowId = useMemo(() => {
-    if (selectedLayerIds.length !== 1) return null;
-    const selected = rows.find((node) => node.id === selectedLayerIds[0]);
-    return selected !== undefined && arrowLayerStyle(selected) !== null
-      ? selected.id
-      : null;
-  }, [rows, selectedLayerIds]);
-
-  useEffect(() => {
-    setExpandedLayerIds((expanded) => {
-      const current =
-        expandedCaptureIdRef.current === captureId ? expanded : new Set<string>();
-      expandedCaptureIdRef.current = captureId;
-      if (selectedArrowId === null || current.has(selectedArrowId)) return current;
-      const next = new Set(current);
-      next.add(selectedArrowId);
-      return next;
-    });
-  }, [captureId, selectedArrowId]);
-
   const toggleLayerInspector = useCallback((id: string): void => {
     setExpandedLayerIds((expanded) => {
       const next = new Set(expanded);

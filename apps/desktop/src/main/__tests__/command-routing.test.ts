@@ -56,6 +56,7 @@ describe("commandOwner", () => {
     expect(commandOwner("library:list")).toBeNull();
     expect(commandOwner("library:byId")).toBeNull();
     expect(commandOwner("library:search")).toBeNull();
+    expect(commandOwner("library:discover")).toBeNull();
     expect(commandOwner("library:delete")).toBeNull();
     expect(commandOwner("library:addTag")).toBeNull();
     expect(peerOwnsCommand("agent", "library:byId")).toBe(false);

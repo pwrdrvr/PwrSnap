@@ -63,12 +63,16 @@ describe("createDefaultLocalAgentMcpTools", () => {
     ]);
   });
 
-  test("search and delete tools dispatch through distinct command paths", async () => {
+  test("search, discovery, and delete tools dispatch through distinct command paths", async () => {
     const calls: Array<{ name: string; input: unknown }> = [];
     const tools = createDefaultLocalAgentMcpTools({
       search: async (input) => {
         calls.push({ name: "search", input });
         return ok({ searched: input.query ?? "" });
+      },
+      discovery: async (input) => {
+        calls.push({ name: "discovery", input });
+        return ok({ applications: [], tags: [] });
       },
       deleteToTrash: async (input) => {
         calls.push({ name: "delete", input });
@@ -76,16 +80,23 @@ describe("createDefaultLocalAgentMcpTools", () => {
       }
     });
     const search = tools.find((tool) => tool.name === "pwrsnap_library_search");
+    const discovery = tools.find((tool) => tool.name === "pwrsnap_library_discover");
     const del = tools.find((tool) => tool.name === "pwrsnap_capture_delete_to_trash");
-    if (search === undefined || del === undefined) throw new Error("expected default tools");
+    if (search === undefined || discovery === undefined || del === undefined) {
+      throw new Error("expected default tools");
+    }
 
     await search.dispatch({
       query: "pairing",
+      sourceAppNames: ["Claude"],
+      tagFilter: { labels: ["Important"], match: "all" },
       kinds: ["image"],
       hasOcr: true,
+      order: "newest",
       limit: 25,
       detail: "enriched"
     }, ctx(["library.read"]));
+    await discovery.dispatch({ limit: 10 }, ctx(["library.read"]));
     await del.dispatch({ captureId: "cap_123" }, ctx(["trash.write"]));
 
     expect(calls).toEqual([
@@ -93,12 +104,16 @@ describe("createDefaultLocalAgentMcpTools", () => {
         name: "search",
         input: {
           query: "pairing",
+          sourceAppNames: ["Claude"],
+          tagFilter: { labels: ["Important"], match: "all" },
           kinds: ["image"],
           hasOcr: true,
+          order: "newest",
           limit: 25,
           detail: "enriched"
         }
       },
+      { name: "discovery", input: { limit: 10 } },
       { name: "delete", input: { captureId: "cap_123" } }
     ]);
   });
@@ -121,19 +136,46 @@ describe("createDefaultLocalAgentMcpTools", () => {
     expect(search?.inputSchema).toEqual(expect.objectContaining({
       query: expect.anything(),
       appBundleIds: expect.anything(),
+      sourceAppNames: expect.anything(),
       includeCapturesWithoutSourceApp: expect.anything(),
+      tagFilter: expect.anything(),
       kinds: expect.anything(),
       dateRange: expect.anything(),
       hasOcr: expect.anything(),
+      order: expect.anything(),
       limit: expect.anything(),
       detail: expect.anything()
     }));
+    expect(search?.description).toContain("newest");
+
+    if (search === undefined) throw new Error("expected search tool");
+    const parsed = z.object(search.inputSchema).safeParse({
+      sourceAppNames: ["Claude"],
+      tagFilter: { labels: ["Important"], match: "all" },
+      order: "oldest"
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  test("discovery is a read-only library.read tool with an intentionally small schema", () => {
+    const tools = createDefaultLocalAgentMcpTools({
+      search: async () => ok({}),
+      discovery: async () => ok({ applications: [], tags: [] }),
+      deleteToTrash: async () => ok({})
+    });
+    const discovery = tools.find((tool) => tool.name === "pwrsnap_library_discover");
+
+    expect(discovery?.requiredCapabilities).toEqual(["library.read"]);
+    expect(discovery?.annotations).toMatchObject({ readOnlyHint: true });
+    expect(Object.keys(discovery?.inputSchema ?? {})).toEqual(["limit"]);
+    expect(discovery?.description).toContain("bundleId");
   });
 
   test("full tool set exposes media, edit, and Sizzle workflows", () => {
     const noop = async () => ok({});
     const tools = createDefaultLocalAgentMcpTools({
       search: noop,
+      discovery: noop,
       deleteToTrash: noop,
       metadata: noop,
       captureResource: noop,
@@ -148,6 +190,7 @@ describe("createDefaultLocalAgentMcpTools", () => {
     });
     expect(tools.map((tool) => tool.name)).toEqual([
       "pwrsnap_library_search",
+      "pwrsnap_library_discover",
       "pwrsnap_capture_delete_to_trash",
       "pwrsnap_capture_metadata",
       "pwrsnap_capture_resource",
@@ -195,6 +238,7 @@ describe("createDefaultLocalAgentMcpTools", () => {
     const noop = async () => ok({});
     const tools = createDefaultLocalAgentMcpTools({
       search: noop,
+      discovery: noop,
       deleteToTrash: noop,
       metadata: noop,
       captureResource: noop,
@@ -221,6 +265,12 @@ describe("createDefaultLocalAgentMcpTools", () => {
     }
 
     expect(annotations.pwrsnap_library_search).toMatchObject({
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    });
+    expect(annotations.pwrsnap_library_discover).toMatchObject({
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,

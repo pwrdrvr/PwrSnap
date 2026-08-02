@@ -53,13 +53,14 @@ vi.mock("../../log", () => ({
 
 const MIGRATIONS_DIR = join(__dirname, "..", "migrations");
 
-function applyMigrations(db: Database.Database): void {
+function applyMigrations(db: Database.Database, throughVersion?: number): void {
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
   const files = readdirSync(MIGRATIONS_DIR)
     .filter((name) => /^\d{4}_.+\.sql$/.test(name))
+    .filter((name) => throughVersion === undefined || Number(name.slice(0, 4)) <= throughVersion)
     .sort();
   for (const file of files) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf8");
@@ -135,6 +136,25 @@ function insertEnrichment(
   });
 }
 
+/** Insert an accepted content tag exactly as the enrichment/user-tag paths do.
+ *  The real 0027 triggers then keep the FTS row in sync for these tests. */
+function attachAcceptedTag(
+  db: Database.Database,
+  captureId: string,
+  label: string
+): void {
+  const normalized = label.trim().replace(/\s+/g, " ").toLowerCase();
+  const tagId = `tag-${normalized.replace(/[^a-z0-9]+/g, "-")}`;
+  db.prepare(
+    `INSERT OR IGNORE INTO tags (id, label, normalized_label, kind)
+     VALUES (@id, @label, @normalized, 'content')`
+  ).run({ id: tagId, label: label.trim(), normalized });
+  db.prepare(
+    `INSERT OR IGNORE INTO capture_tags (capture_id, tag_id, source, ai_run_id)
+     VALUES (@captureId, @tagId, 'user', NULL)`
+  ).run({ captureId, tagId });
+}
+
 beforeEach(() => {
   mocks.db = new Database(":memory:");
   mocks.db.pragma("foreign_keys = ON");
@@ -169,6 +189,9 @@ describe("0017_capture_search_fts — migration shape", () => {
     expect(names).toContain("capture_enrichments_ai_fts");
     expect(names).toContain("capture_enrichments_au_fts");
     expect(names).toContain("capture_enrichments_ad_fts");
+    expect(names).toContain("capture_tags_ai_fts");
+    expect(names).toContain("capture_tags_ad_fts");
+    expect(names).toContain("tags_au_fts");
   });
 
   test("re-running the migration is idempotent (IF NOT EXISTS guards)", () => {
@@ -178,6 +201,29 @@ describe("0017_capture_search_fts — migration shape", () => {
       "utf8"
     );
     expect(() => mocks.db!.exec(sql)).not.toThrow();
+  });
+
+  test("0027 backfills accepted tags when upgrading an existing 0017 index", () => {
+    const legacyDb = new Database(":memory:");
+    legacyDb.pragma("foreign_keys = ON");
+    try {
+      applyMigrations(legacyDb, 26);
+      insertCapture(legacyDb, { id: "upgrade-tag", sourceAppName: "Claude" });
+      attachAcceptedTag(legacyDb, "upgrade-tag", "Release blocker");
+
+      legacyDb.exec(readFileSync(
+        join(MIGRATIONS_DIR, "0027_capture_search_fts_accepted_tags.sql"),
+        "utf8"
+      ));
+
+      expect(
+        legacyDb.prepare(
+          "SELECT accepted_tags FROM capture_search_fts WHERE capture_id = ?"
+        ).get("upgrade-tag")
+      ).toEqual({ accepted_tags: "Release blocker" });
+    } finally {
+      legacyDb.close();
+    }
   });
 });
 
@@ -508,6 +554,55 @@ describe("searchCaptures — FTS5 query path", () => {
     const rows = searchCaptures({ query: "telegram" });
     expect(rows.length).toBe(2);
   });
+
+  test("accepted tags are full-text searchable and stay in sync after removal", async () => {
+    const { searchCaptures } = await import("../captures-repo");
+    insertCapture(mocks.db!, { id: "tag-fts", sourceAppName: "Claude" });
+    attachAcceptedTag(mocks.db!, "tag-fts", "Release blocker");
+
+    expect(searchCaptures({ query: "blocker" }).map((row) => row.record.id)).toEqual([
+      "tag-fts"
+    ]);
+
+    mocks.db!
+      .prepare("UPDATE tags SET label = ? WHERE normalized_label = ?")
+      .run("Critical release", "release blocker");
+    expect(searchCaptures({ query: "critical" }).map((row) => row.record.id)).toEqual([
+      "tag-fts"
+    ]);
+
+    mocks.db!
+      .prepare("DELETE FROM capture_tags WHERE capture_id = ?")
+      .run("tag-fts");
+    expect(searchCaptures({ query: "blocker" })).toEqual([]);
+  });
+
+  test("explicit newest and oldest ordering override relevance for full-text hits", async () => {
+    const { searchCaptures } = await import("../captures-repo");
+    insertCapture(mocks.db!, {
+      id: "query-old",
+      capturedAt: "2026-05-25T10:00:00.000Z"
+    });
+    insertEnrichment(mocks.db!, {
+      captureId: "query-old",
+      title: "Pairing code"
+    });
+    insertCapture(mocks.db!, {
+      id: "query-new",
+      capturedAt: "2026-05-27T10:00:00.000Z"
+    });
+    insertEnrichment(mocks.db!, {
+      captureId: "query-new",
+      title: "Pairing code"
+    });
+
+    expect(
+      searchCaptures({ query: "pairing", order: "newest" }).map((row) => row.record.id)
+    ).toEqual(["query-new", "query-old"]);
+    expect(
+      searchCaptures({ query: "pairing", order: "oldest" }).map((row) => row.record.id)
+    ).toEqual(["query-old", "query-new"]);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────
@@ -550,6 +645,57 @@ describe("searchCaptures — filter-only path", () => {
     });
     const rows = searchCaptures({ appBundleIds: [null] });
     expect(rows.map((r) => r.record.id)).toEqual(["bundle-null"]);
+  });
+
+  test("sourceAppNames exactly filters human application names without a bundle ID", async () => {
+    const { searchCaptures } = await import("../captures-repo");
+    insertCapture(mocks.db!, {
+      id: "claude-main",
+      sourceAppBundleId: "com.anthropic.claudefordesktop",
+      sourceAppName: "Claude"
+    });
+    insertCapture(mocks.db!, {
+      id: "claude-beta",
+      sourceAppBundleId: "com.anthropic.claudebeta",
+      sourceAppName: "Claude"
+    });
+    insertCapture(mocks.db!, {
+      id: "claude-code",
+      sourceAppBundleId: "com.anthropic.claudecode",
+      sourceAppName: "Claude Code"
+    });
+
+    expect(
+      searchCaptures({ sourceAppNames: ["Claude"] })
+        .map((row) => row.record.id)
+        .sort()
+    ).toEqual(["claude-beta", "claude-main"]);
+  });
+
+  test("exact accepted-tag filters implement both any and all semantics", async () => {
+    const { searchCaptures } = await import("../captures-repo");
+    insertCapture(mocks.db!, { id: "tag-red" });
+    attachAcceptedTag(mocks.db!, "tag-red", "Red");
+    insertCapture(mocks.db!, { id: "tag-blue" });
+    attachAcceptedTag(mocks.db!, "tag-blue", "Blue");
+    insertCapture(mocks.db!, { id: "tag-both" });
+    attachAcceptedTag(mocks.db!, "tag-both", "Red");
+    attachAcceptedTag(mocks.db!, "tag-both", "Blue");
+    insertCapture(mocks.db!, { id: "tag-prefix-only" });
+    attachAcceptedTag(mocks.db!, "tag-prefix-only", "Reddish");
+
+    expect(
+      searchCaptures({
+        tagFilter: { labels: [" red ", "Blue"], match: "any" }
+      })
+        .map((row) => row.record.id)
+        .sort()
+    ).toEqual(["tag-blue", "tag-both", "tag-red"]);
+    expect(
+      searchCaptures({
+        tagFilter: { labels: ["Red", "Blue"], match: "all" }
+      }).map((row) => row.record.id)
+    ).toEqual(["tag-both"]);
   });
 
   test("kinds filter restricts to image / video", async () => {
@@ -632,6 +778,27 @@ describe("searchCaptures — filter-only path", () => {
     }
     const rows = searchCaptures({ limit: 5 });
     expect(rows.length).toBe(5);
+  });
+
+  test("an empty no-query search defaults to newest first and supports oldest", async () => {
+    const { searchCaptures } = await import("../captures-repo");
+    insertCapture(mocks.db!, {
+      id: "timeline-old",
+      capturedAt: "2026-05-25T10:00:00.000Z"
+    });
+    insertCapture(mocks.db!, {
+      id: "timeline-new",
+      capturedAt: "2026-05-27T10:00:00.000Z"
+    });
+
+    expect(searchCaptures({}).map((row) => row.record.id)).toEqual([
+      "timeline-new",
+      "timeline-old"
+    ]);
+    expect(searchCaptures({ order: "oldest" }).map((row) => row.record.id)).toEqual([
+      "timeline-old",
+      "timeline-new"
+    ]);
   });
 
   test("appBundleIds=[] returns [] (explicit empty = match-nothing, NOT match-all)", async () => {
@@ -797,6 +964,99 @@ describe("searchCaptures — soft-delete handling", () => {
 
     // Filter-only path.
     expect(searchCaptures({}).map((r) => r.record.id).sort()).toEqual(["live"]);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// `library:discover` repository surface. These facets are intentionally
+// live-only so an external agent can safely reuse every returned value in a
+// follow-up search without accidentally browsing Trash.
+describe("discoverCaptureSearchFacets", () => {
+  test("returns human apps and accepted tags by live volume with recency and optional bundle metadata", async () => {
+    const { discoverCaptureSearchFacets } = await import("../captures-repo");
+    insertCapture(mocks.db!, {
+      id: "claude-old",
+      capturedAt: "2026-05-25T10:00:00.000Z",
+      sourceAppBundleId: "com.anthropic.claudefordesktop",
+      sourceAppName: "Claude"
+    });
+    insertCapture(mocks.db!, {
+      id: "claude-new",
+      capturedAt: "2026-05-28T10:00:00.000Z",
+      sourceAppBundleId: "com.anthropic.claudefordesktop",
+      sourceAppName: "Claude"
+    });
+    insertCapture(mocks.db!, {
+      id: "claude-third",
+      capturedAt: "2026-05-27T10:00:00.000Z",
+      sourceAppBundleId: "com.anthropic.claudefordesktop",
+      sourceAppName: "Claude"
+    });
+    insertCapture(mocks.db!, {
+      id: "preview-main",
+      capturedAt: "2026-05-26T10:00:00.000Z",
+      sourceAppBundleId: "com.anthropic.claude-preview",
+      sourceAppName: "Claude Preview"
+    });
+    insertCapture(mocks.db!, {
+      id: "preview-canary",
+      capturedAt: "2026-05-29T10:00:00.000Z",
+      sourceAppBundleId: "com.anthropic.claude-canary",
+      sourceAppName: "Claude Preview"
+    });
+    insertCapture(mocks.db!, {
+      id: "figma",
+      capturedAt: "2026-05-30T10:00:00.000Z",
+      sourceAppBundleId: "com.figma.Desktop",
+      sourceAppName: "Figma"
+    });
+    insertCapture(mocks.db!, {
+      id: "trashed",
+      capturedAt: "2026-05-31T10:00:00.000Z",
+      sourceAppBundleId: "com.secret.trash",
+      sourceAppName: "Trash App",
+      deletedAt: "2026-06-01T10:00:00.000Z"
+    });
+
+    attachAcceptedTag(mocks.db!, "claude-old", "Project");
+    attachAcceptedTag(mocks.db!, "claude-new", "Project");
+    attachAcceptedTag(mocks.db!, "claude-new", "Important");
+    attachAcceptedTag(mocks.db!, "figma", "Important");
+    attachAcceptedTag(mocks.db!, "trashed", "Hidden");
+
+    expect(discoverCaptureSearchFacets()).toEqual({
+      applications: [
+        {
+          name: "Claude",
+          bundleId: "com.anthropic.claudefordesktop",
+          count: 3,
+          mostRecentCapturedAt: "2026-05-28T10:00:00.000Z"
+        },
+        {
+          name: "Claude Preview",
+          count: 2,
+          mostRecentCapturedAt: "2026-05-29T10:00:00.000Z"
+        },
+        {
+          name: "Figma",
+          bundleId: "com.figma.Desktop",
+          count: 1,
+          mostRecentCapturedAt: "2026-05-30T10:00:00.000Z"
+        }
+      ],
+      tags: [
+        {
+          label: "Important",
+          count: 2,
+          mostRecentCapturedAt: "2026-05-30T10:00:00.000Z"
+        },
+        {
+          label: "Project",
+          count: 2,
+          mostRecentCapturedAt: "2026-05-28T10:00:00.000Z"
+        }
+      ]
+    });
   });
 });
 

@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   getCaptureById: vi.fn(),
   getAppStats: vi.fn(),
   getTotalLive: vi.fn(),
+  discoverCaptureSearchFacets: vi.fn(),
   hardDeleteCapture: vi.fn(),
   listCaptures: vi.fn(),
   listSoftDeletedIds: vi.fn(),
@@ -65,6 +66,7 @@ vi.mock("../../command-bus", () => ({
 
 vi.mock("../../persistence/captures-repo", () => ({
   getAppStats: mocks.getAppStats,
+  discoverCaptureSearchFacets: mocks.discoverCaptureSearchFacets,
   getCaptureById: mocks.getCaptureById,
   getCapturesByIds: mocks.getCapturesByIds,
   getTotalLive: mocks.getTotalLive,
@@ -149,6 +151,7 @@ beforeEach(() => {
   vi.resetModules();
   mocks.handlers.clear();
   mocks.getCapturesByIds.mockReset();
+  mocks.discoverCaptureSearchFacets.mockReset();
   mocks.searchCaptures.mockReset();
   mocks.listEnrichmentsByCaptureIds.mockReset();
   mocks.send.mockReset();
@@ -466,5 +469,34 @@ describe("library:search — handler contract", () => {
     const result = await handler!({});
     expect(result).toMatchObject({ ok: true, value: { rows: [] } });
     expect(mocks.searchCaptures).toHaveBeenCalledWith({});
+  });
+});
+
+describe("library:discover — handler contract", () => {
+  test("forwards a bounded discovery request to the live-only repository surface", async () => {
+    const facets = { applications: [], tags: [] };
+    mocks.discoverCaptureSearchFacets.mockReturnValue(facets);
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+    const handler = mocks.handlers.get("library:discover");
+
+    const result = await handler!({ limit: 25 });
+
+    expect(mocks.discoverCaptureSearchFacets).toHaveBeenCalledWith({ limit: 25 });
+    expect(result).toEqual({ ok: true, value: facets });
+  });
+
+  test("rejects invalid discovery limits without touching persistence", async () => {
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+    const handler = mocks.handlers.get("library:discover");
+
+    const result = await handler!({ limit: 1.5 });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: "validation", code: "limit_invalid" }
+    });
+    expect(mocks.discoverCaptureSearchFacets).not.toHaveBeenCalled();
   });
 });

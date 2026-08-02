@@ -1,6 +1,8 @@
-import type { CaptureSearchResultRow } from "@pwrsnap/shared";
+import type { CaptureSearchDiscovery, CaptureSearchResultRow } from "@pwrsnap/shared";
 import { describe, expect, test } from "vitest";
 import {
+  localAgentSearchOrder,
+  projectLocalAgentSearchDiscovery,
   projectLocalAgentSearchRows,
   toCaptureSearchRequest
 } from "../local-agent-search";
@@ -141,16 +143,22 @@ describe("local-agent search boundary", () => {
     expect(toCaptureSearchRequest({
       query: "pairing",
       appBundleIds: ["com.example.app"],
+      sourceAppNames: ["Claude"],
       includeCapturesWithoutSourceApp: true,
+      tagFilter: { labels: ["Important", "Release blocker"], match: "all" },
       kinds: ["image"],
       hasOcr: false,
+      order: "oldest",
       limit: 25,
       detail: "enriched"
     })).toEqual({
       query: "pairing",
       appBundleIds: ["com.example.app", null],
+      sourceAppNames: ["Claude"],
+      tagFilter: { labels: ["Important", "Release blocker"], match: "all" },
       kinds: ["image"],
       hasOcr: false,
+      order: "oldest",
       limit: 25
     });
   });
@@ -159,5 +167,41 @@ describe("local-agent search boundary", () => {
     expect(toCaptureSearchRequest({ includeCapturesWithoutSourceApp: true })).toEqual({
       appBundleIds: [null]
     });
+  });
+
+  test("makes the effective search order explicit", () => {
+    expect(localAgentSearchOrder({})).toBe("newest");
+    expect(localAgentSearchOrder({ query: "pairing" })).toBe("relevance");
+    expect(localAgentSearchOrder({ query: "pairing", order: "oldest" })).toBe("oldest");
+  });
+
+  test("projects reusable discovery filters with optional bundle metadata", () => {
+    const discovery: CaptureSearchDiscovery = {
+      applications: [
+        {
+          name: "Claude",
+          bundleId: "com.anthropic.claudefordesktop",
+          count: 4,
+          mostRecentCapturedAt: "2026-06-07T12:00:00.000Z"
+        },
+        {
+          name: "Claude Preview",
+          count: 2,
+          mostRecentCapturedAt: "2026-06-06T12:00:00.000Z"
+        }
+      ],
+      tags: [
+        {
+          label: "Important",
+          count: 3,
+          mostRecentCapturedAt: "2026-06-07T12:00:00.000Z"
+        }
+      ]
+    };
+
+    expect(projectLocalAgentSearchDiscovery(discovery)).toEqual(discovery);
+    expect(JSON.stringify(projectLocalAgentSearchDiscovery(discovery))).not.toContain(
+      '"bundleId":null'
+    );
   });
 });

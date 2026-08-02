@@ -88,6 +88,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        # Visual-regression references are Git LFS objects. Only this Linux
+        # job compares them, so ordinary unit/build jobs do not download them.
+        with:
+          lfs: true
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1

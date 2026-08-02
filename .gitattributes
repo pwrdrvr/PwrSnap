@@ -30,3 +30,8 @@
 *.mov   binary
 *.node  binary
 *.pwrsnap binary
+
+# Playwright visual-regression baselines are large, infrequently fetched
+# binary assets. Keep the policy scoped to generated E2E goldens instead of
+# routing every WebP asset in the product through LFS.
+apps/desktop/e2e/*.spec.ts-snapshots/*.webp filter=lfs diff=lfs merge=lfs -text

@@ -1703,7 +1703,7 @@
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   color: var(--text-primary);
-  box-shadow: 0 5px 18px rgb(0 0 0 / 12%);
+  box-shadow: var(--shadow-sm);
   transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
 }
 .pss__auth-node.is-session,
@@ -1713,7 +1713,7 @@
 .pss__auth-node.is-selected {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent-soft) 52%, var(--bg-panel-elevated));
-  box-shadow: 0 0 0 2px var(--accent-shadow), 0 6px 22px rgb(0 0 0 / 18%);
+  box-shadow: 0 0 0 2px var(--accent-shadow), var(--shadow-md);
 }
 .pss__auth-node.is-rejected { border-color: var(--danger-border); }
 .pss__auth-node-top { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 9px; align-items: start; }

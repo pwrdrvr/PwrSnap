@@ -31,14 +31,16 @@ import {
   ok,
   type LocalAgentAuditAction,
   type LocalAgentCapability,
+  type LocalAgentUsageAction,
   type Result,
   type PwrSnapError
 } from "@pwrsnap/shared";
-import { bus } from "../command-bus";
+import { bus, type CommandContext } from "../command-bus";
 import { getMainLogger } from "../log";
 import { DesktopSecretStore } from "../settings/desktop-secret-store";
 import { DesktopSettingsService } from "../settings/desktop-settings-service";
 import { TRASH_RETENTION_DAYS } from "../persistence/trash-retention";
+import { getCaptureById } from "../persistence/captures-repo";
 import {
   LocalAgentGrantService
 } from "./local-agent-grants";
@@ -55,8 +57,10 @@ import {
   localAgentSearchOrder,
   projectLocalAgentSearchDiscovery,
   projectLocalAgentSearchRows,
+  searchRangeEndsBefore,
   toCaptureSearchRequest
 } from "./local-agent-search";
+import { LocalAgentUsageService } from "./local-agent-usage";
 import {
   LocalAgentMcpResourceRegistry,
   type LocalAgentMcpResource
@@ -101,6 +105,8 @@ type GrantService = Pick<
   | "revokeGrant"
 >;
 
+type UsageService = Pick<LocalAgentUsageService, "reserve" | "release">;
+
 export type LocalAgentMcpServerOptions = {
   settings: DesktopSettingsService;
   secrets: DesktopSecretStore;
@@ -111,6 +117,8 @@ export type LocalAgentMcpServerOptions = {
   resourceRegistry?: LocalAgentMcpResourceRegistry;
   signedUrls?: LocalAgentSignedUrlService;
   auditService?: LocalAgentAuditService;
+  usageService?: UsageService;
+  captureCapturedAt?: (captureId: string) => string | null;
   requestConsent?: (
     request: LocalAgentConsentRequest
   ) => Promise<LocalAgentConsentDecision>;
@@ -131,6 +139,8 @@ export class LocalAgentMcpServer {
   private readonly resourceRegistry: LocalAgentMcpResourceRegistry;
   private readonly signedUrls: LocalAgentSignedUrlService;
   private readonly auditService: LocalAgentAuditService;
+  private readonly usageService: UsageService;
+  private readonly captureCapturedAt: (captureId: string) => string | null;
   private readonly requestConsent: LocalAgentMcpServerOptions["requestConsent"];
   private server: HttpServer | null = null;
   private address: LocalAgentMcpServerAddress | null = null;
@@ -149,6 +159,10 @@ export class LocalAgentMcpServer {
     this.signedUrls = options.signedUrls ?? new LocalAgentSignedUrlService();
     this.auditService =
       options.auditService ?? new LocalAgentAuditService(options.settings);
+    this.usageService = options.usageService ?? new LocalAgentUsageService();
+    this.captureCapturedAt =
+      options.captureCapturedAt ??
+      ((captureId) => getCaptureById(captureId)?.captured_at ?? null);
     this.requestConsent = options.requestConsent;
     this.grantService =
       options.grantService ??
@@ -166,8 +180,22 @@ export class LocalAgentMcpServer {
       createDefaultLocalAgentMcpTools({
         search: async (input, ctx) => {
           const limit = localAgentMcpResultLimit(input);
+          const notBefore = captureNotBefore(
+            ctx.commandContext.localAgent?.maxCaptureAgeDays
+          );
+          if (notBefore !== undefined && searchRangeEndsBefore(input, notBefore)) {
+            return ok({
+              detail: input.detail ?? "summary",
+              order: localAgentSearchOrder(input),
+              limit,
+              hasMore: false,
+              rows: []
+            });
+          }
           const request = {
-            ...toCaptureSearchRequest(input),
+            ...toCaptureSearchRequest(input, {
+              ...(notBefore !== undefined ? { notBefore } : {})
+            }),
             limit: limit + 1
           };
           const result = await bus.dispatch(
@@ -469,9 +497,24 @@ export class LocalAgentMcpServer {
         async (uri, _variables, extra) => {
           const auth = this.authFromExtra(extra);
           if (auth === null) throw new Error("unauthorized");
+          const policy = await this.grantService.authorizeClient(auth.clientId);
+          if (policy === null) throw new Error("unauthorized");
           const resource = this.resourceRegistry.get(uri.toString());
+          if (resource !== undefined) {
+            const age = this.captureAgeError(resource.captureId, policy);
+            if (age !== null) throw new Error(age.message);
+          }
+          const usage =
+            resource === undefined
+              ? null
+              : this.reserveUsage(
+                  policy,
+                  usageActionForResource(resource),
+                  resource.captureId
+                );
+          if (usage !== null && !usage.ok) throw new Error(usage.error.message);
           try {
-            const resolved = await this.resourceRegistry.read(uri.toString(), auth);
+            const resolved = await this.resourceRegistry.read(uri.toString(), policy);
             await this.recordUsage(auth.clientId);
             await this.auditResourceRead(resolved.resource, auth.clientId, "success");
             return {
@@ -484,6 +527,9 @@ export class LocalAgentMcpServer {
               ]
             };
           } catch (cause) {
+            if (usage?.ok === true) {
+              this.usageService.release(usage.reservationId);
+            }
             if (resource !== undefined) {
               await this.auditResourceRead(resource, auth.clientId, "failure");
             }
@@ -518,23 +564,48 @@ export class LocalAgentMcpServer {
               })
             );
           }
+          const policy = await this.grantService.authorizeClient(auth.clientId);
+          if (policy === null) {
+            return toMcpToolResult(
+              err({
+                kind: "permission",
+                code: "invalid_role",
+                message: "the local-agent Session no longer has a valid role"
+              })
+            );
+          }
           const ctx: LocalAgentToolContext = {
-            clientId: auth.clientId,
-            capabilities: auth.capabilities,
+            clientId: policy.clientId,
+            capabilities: policy.capabilities,
             signal: extra.signal,
             commandContext: {
               principal: "mcp",
               signal: extra.signal,
-              localAgent: {
-                clientId: auth.clientId,
-                capabilities: auth.capabilities
-              }
+              localAgent: policy
             }
           };
           const allowed = validateToolCapability(tool, ctx, input);
           if (!allowed.ok) return toMcpToolResult(allowed);
-          await this.recordUsage(auth.clientId);
+          const captureId =
+            typeof input.captureId === "string" ? input.captureId : undefined;
+          const age = this.captureAgeErrorForInput(input, policy);
+          if (age !== null) return toMcpToolResult(err(age));
+          const usage = this.reserveUsage(
+            policy,
+            usageActionForTool(tool.name),
+            captureId
+          );
+          if (usage !== null && !usage.ok) {
+            return toMcpToolResult(err(usage.error));
+          }
           const result = await tool.dispatch(input, ctx);
+          if (
+            usage?.ok === true &&
+            !shouldKeepUsageReservation(tool.name, result)
+          ) {
+            this.usageService.release(usage.reservationId);
+          }
+          if (result.ok) await this.recordUsage(auth.clientId);
           await this.auditToolCall(tool.name, input, ctx, result);
           return toMcpToolResult(result);
         }
@@ -772,7 +843,13 @@ export class LocalAgentMcpServer {
       writeJsonResponse(res, 403, { error: "revoked_or_unknown_client" });
       return;
     }
+    let usageReservationId: string | null = null;
     try {
+      const resource = this.resourceRegistry.get(payload.resourceUri);
+      if (resource !== undefined) {
+        const age = this.captureAgeError(resource.captureId, context);
+        if (age !== null) throw new Error(age.message);
+      }
       const resolved = await this.resourceRegistry.resolve(
         payload.resourceUri,
         context
@@ -789,6 +866,13 @@ export class LocalAgentMcpServer {
         res.end();
         return;
       }
+      const usage = this.reserveUsage(
+        context,
+        usageActionForResource(resolved.resource),
+        resolved.resource.captureId
+      );
+      if (usage !== null && !usage.ok) throw new Error(usage.error.message);
+      if (usage?.ok === true) usageReservationId = usage.reservationId;
       const start = range?.start ?? 0;
       const end = range?.end ?? Math.max(0, metadata.size - 1);
       const contentLength = metadata.size === 0 ? 0 : end - start + 1;
@@ -814,6 +898,9 @@ export class LocalAgentMcpServer {
         stream.pipe(res);
       });
     } catch (cause) {
+      if (usageReservationId !== null) {
+        this.usageService.release(usageReservationId);
+      }
       if (!res.headersSent) {
         const resource = this.resourceRegistry.get(payload.resourceUri);
         if (resource !== undefined) {
@@ -889,6 +976,110 @@ export class LocalAgentMcpServer {
         (LOCAL_AGENT_CAPABILITIES as readonly string[]).includes(cap)
     );
     return { clientId: auth.clientId, capabilities };
+  }
+
+  private captureAgeError(
+    captureId: string | undefined,
+    context: NonNullable<CommandContext["localAgent"]>
+  ): PwrSnapError | null {
+    if (captureId === undefined) return null;
+    if (context.maxCaptureAgeDays === undefined) {
+      return {
+        kind: "permission",
+        code: "invalid_role",
+        message: "the local-agent role has no capture-age policy"
+      };
+    }
+    if (context.maxCaptureAgeDays === null) return null;
+    const capturedAt = this.captureCapturedAt(captureId);
+    if (capturedAt === null) return null;
+    const capturedAtMs = Date.parse(capturedAt);
+    const notBeforeMs =
+      Date.now() - context.maxCaptureAgeDays * 24 * 60 * 60 * 1_000;
+    if (!Number.isFinite(capturedAtMs) || capturedAtMs < notBeforeMs) {
+      return {
+        kind: "permission",
+        code: "capture_outside_role_scope",
+        message:
+          `the ${context.roleName ?? "assigned"} role permits captures from ` +
+          `the last ${context.maxCaptureAgeDays} days`
+      };
+    }
+    return null;
+  }
+
+  private captureAgeErrorForInput(
+    input: Record<string, unknown>,
+    context: NonNullable<CommandContext["localAgent"]>
+  ): PwrSnapError | null {
+    const captureIds = [
+      ...(typeof input.captureId === "string" ? [input.captureId] : []),
+      ...(Array.isArray(input.captureIds)
+        ? input.captureIds.filter((id): id is string => typeof id === "string")
+        : [])
+    ];
+    for (const captureId of captureIds) {
+      const error = this.captureAgeError(captureId, context);
+      if (error !== null) return error;
+    }
+    return null;
+  }
+
+  private reserveUsage(
+    context: NonNullable<CommandContext["localAgent"]>,
+    action: LocalAgentUsageAction | null,
+    resourceId?: string
+  ):
+    | { ok: true; reservationId: string }
+    | { ok: false; error: PwrSnapError }
+    | null {
+    if (action === null) return null;
+    if (context.budgets === undefined) {
+      return {
+        ok: false,
+        error: {
+          kind: "permission",
+          code: "invalid_role",
+          message: "the local-agent role has no usage-budget policy"
+        }
+      };
+    }
+    try {
+      const decision = this.usageService.reserve({
+        sessionId: context.clientId,
+        action,
+        budget: context.budgets[action],
+        ...(resourceId !== undefined ? { resourceId } : {})
+      });
+      if (!decision.ok) {
+        return {
+          ok: false,
+          error: {
+            kind: "permission",
+            code: "local_agent_budget_exceeded",
+            message:
+              `${action} budget exhausted (${decision.used}/${decision.limit} ` +
+              `in ${decision.windowSeconds}s)`
+          }
+        };
+      }
+      return { ok: true, reservationId: decision.reservation.id };
+    } catch (cause) {
+      log.warn("local-agent usage reservation failed closed", {
+        clientId: context.clientId,
+        action,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return {
+        ok: false,
+        error: {
+          kind: "permission",
+          code: "local_agent_usage_unavailable",
+          message: "PwrSnap could not verify this Session's usage budget",
+          cause
+        }
+      };
+    }
   }
 
   private async recordUsage(clientId: string): Promise<void> {
@@ -1061,6 +1252,53 @@ function isLoopbackRemoteAddress(address: string | undefined): boolean {
     address === "::1" ||
     address === "::ffff:127.0.0.1"
   );
+}
+
+function captureNotBefore(maxCaptureAgeDays: number | null | undefined): string | undefined {
+  if (maxCaptureAgeDays === undefined || maxCaptureAgeDays === null) {
+    return undefined;
+  }
+  return new Date(
+    Date.now() - maxCaptureAgeDays * 24 * 60 * 60 * 1_000
+  ).toISOString();
+}
+
+function usageActionForTool(toolName: string): LocalAgentUsageAction | null {
+  switch (toolName) {
+    case "pwrsnap_library_search":
+      return "search";
+    case "pwrsnap_image_edit_send":
+      return "edit";
+    case "pwrsnap_capture_delete_to_trash":
+      return "delete";
+    default:
+      return null;
+  }
+}
+
+function usageActionForResource(
+  resource: LocalAgentMcpResource
+): LocalAgentUsageAction | null {
+  if (resource.captureId === undefined) return null;
+  return resource.requiredCapabilities.includes("capture.original.read")
+    ? "original.read"
+    : "preview.read";
+}
+
+function shouldKeepUsageReservation(
+  toolName: string,
+  result: Result<unknown, PwrSnapError>
+): boolean {
+  if (!result.ok) return false;
+  if (
+    toolName === "pwrsnap_capture_delete_to_trash" &&
+    typeof result.value === "object" &&
+    result.value !== null &&
+    (result.value as { alreadyInTrash?: unknown }).alreadyInTrash === true
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function writeJsonResponse(

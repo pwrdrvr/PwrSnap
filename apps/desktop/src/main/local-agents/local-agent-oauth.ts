@@ -430,10 +430,10 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
     return {
       token,
       clientId: auth.grant.id,
-      scopes: [...auth.grant.capabilities],
+      scopes: [...auth.context.capabilities],
       resource: new URL(this.resourceUrl.href),
       extra: {
-        capabilities: [...auth.grant.capabilities]
+        capabilities: [...auth.context.capabilities]
       }
     };
   }

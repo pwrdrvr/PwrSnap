@@ -69,13 +69,17 @@ export function limitLocalAgentMcpList<T>(
   };
 }
 
-export function toCaptureSearchRequest(input: LocalAgentSearchInput): CaptureSearchRequest {
+export function toCaptureSearchRequest(
+  input: LocalAgentSearchInput,
+  options: { notBefore?: string } = {}
+): CaptureSearchRequest {
+  const dateRange = constrainedDateRange(input.dateRange, options.notBefore);
   return {
     ...(input.query !== undefined ? { query: input.query } : {}),
     ...(input.sourceAppNames !== undefined ? { sourceAppNames: input.sourceAppNames } : {}),
     ...(input.tagFilter !== undefined ? { tagFilter: input.tagFilter } : {}),
     ...(input.kinds !== undefined ? { kinds: input.kinds } : {}),
-    ...(input.dateRange !== undefined ? { dateRange: input.dateRange } : {}),
+    ...(dateRange !== undefined ? { dateRange } : {}),
     ...(input.hasOcr !== undefined ? { hasOcr: input.hasOcr } : {}),
     ...(input.order !== undefined ? { order: input.order } : {}),
     ...(input.limit !== undefined ? { limit: input.limit } : {})
@@ -106,6 +110,33 @@ export function projectLocalAgentSearchDiscovery(
       count: tag.count,
       mostRecentCapturedAt: tag.mostRecentCapturedAt
     }))
+  };
+}
+
+export function searchRangeEndsBefore(
+  input: LocalAgentSearchInput,
+  notBefore: string
+): boolean {
+  return (
+    input.dateRange !== undefined &&
+    Date.parse(input.dateRange.end) < Date.parse(notBefore)
+  );
+}
+
+function constrainedDateRange(
+  requested: LocalAgentSearchInput["dateRange"],
+  notBefore: string | undefined
+): CaptureSearchRequest["dateRange"] {
+  if (notBefore === undefined) return requested;
+  if (requested === undefined) {
+    return { start: notBefore, end: new Date().toISOString() };
+  }
+  return {
+    start:
+      Date.parse(requested.start) < Date.parse(notBefore)
+        ? notBefore
+        : requested.start,
+    end: requested.end
   };
 }
 

@@ -5,7 +5,13 @@
 
 import { BrowserWindow, app } from "electron";
 import { join } from "node:path";
-import { ok, err, EVENT_CHANNELS, exportStrategyFromSettings } from "@pwrsnap/shared";
+import {
+  ok,
+  err,
+  EVENT_CHANNELS,
+  exportStrategyFromSettings,
+  resolveLocalAgentPolicy
+} from "@pwrsnap/shared";
 import type {
   ExportStrategy,
   PwrSnapError,
@@ -29,6 +35,7 @@ import {
   LocalAgentGrantService
 } from "../local-agents/local-agent-grants";
 import { LocalAgentAuditService } from "../local-agents/local-agent-audit";
+import { LocalAgentUsageService } from "../local-agents/local-agent-usage";
 import { DesktopSettingsService } from "../settings/desktop-settings-service";
 import {
   DesktopSecretStore,
@@ -48,6 +55,7 @@ let settingsService: DesktopSettingsService | null = null;
 let secretStore: DesktopSecretStore | null = null;
 let localAgentGrantService: LocalAgentGrantService | null = null;
 let localAgentAuditService: LocalAgentAuditService | null = null;
+let localAgentUsageService: LocalAgentUsageService | null = null;
 
 function ensureServices(): {
   service: DesktopSettingsService;
@@ -78,11 +86,18 @@ export function getDesktopSettingsServices(): {
 export function __setSettingsServicesForTests(injected: {
   service?: DesktopSettingsService | null;
   secrets?: DesktopSecretStore | null;
+  usage?: LocalAgentUsageService | null;
 }): void {
   if (injected.service !== undefined) settingsService = injected.service;
   if (injected.secrets !== undefined) secretStore = injected.secrets;
+  if (injected.usage !== undefined) localAgentUsageService = injected.usage;
   localAgentGrantService = null;
   localAgentAuditService = null;
+}
+
+function getLocalAgentUsageService(): LocalAgentUsageService {
+  localAgentUsageService ??= new LocalAgentUsageService();
+  return localAgentUsageService;
 }
 
 /** Read the live settings snapshot for non-`settings:*` main handlers
@@ -519,6 +534,38 @@ export function registerSettingsDataHandlers(): void {
     }
   });
 
+  bus.register("localAgents:usage", async (req) => {
+    if (typeof req.sessionId !== "string" || req.sessionId.trim().length === 0) {
+      return err({
+        kind: "validation",
+        code: "invalid_local_agent_id",
+        message: "localAgents:usage requires a Session id"
+      });
+    }
+    try {
+      const settings = await ensureServices().service.read();
+      const resolution = resolveLocalAgentPolicy(
+        settings.localAgents,
+        req.sessionId
+      );
+      if (!resolution.ok) {
+        return err({
+          kind: "permission",
+          code: resolution.code,
+          message: "the Session does not have a valid role"
+        });
+      }
+      return ok({
+        entries: getLocalAgentUsageService().snapshots(
+          resolution.policy.sessionId,
+          resolution.policy.budgets
+        )
+      });
+    } catch (cause) {
+      return err(toLocalAgentError(cause));
+    }
+  });
+
 }
 
 export function __resetSettingsHandlersForTests(): void {
@@ -526,4 +573,5 @@ export function __resetSettingsHandlersForTests(): void {
   secretStore = null;
   localAgentGrantService = null;
   localAgentAuditService = null;
+  localAgentUsageService = null;
 }

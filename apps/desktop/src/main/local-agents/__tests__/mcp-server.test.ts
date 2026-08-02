@@ -38,6 +38,7 @@ import {
 } from "../mcp-server";
 import { LocalAgentSignedUrlService } from "../signed-url";
 import { LocalAgentOAuthProvider } from "../local-agent-oauth";
+import type { LocalAgentUsageService } from "../local-agent-usage";
 import type {
   LocalAgentConsentDecision,
   LocalAgentConsentRequest
@@ -58,6 +59,21 @@ let consentRequests: LocalAgentConsentRequest[] = [];
 let consentDecisions: Array<
   LocalAgentConsentDecision | Promise<LocalAgentConsentDecision>
 > = [];
+
+const allowUsageService: Pick<LocalAgentUsageService, "reserve" | "release"> = {
+  reserve: ({ sessionId, action, budget }) => ({
+    ok: true,
+    reservation: {
+      id: `usage_${sessionId}_${action}`,
+      sessionId,
+      action,
+      used: 1,
+      limit: budget.limit,
+      windowSeconds: budget.windowSeconds
+    }
+  }),
+  release: () => undefined
+};
 
 async function requestNativeConsent(
   request: LocalAgentConsentRequest
@@ -205,7 +221,9 @@ async function startServer(): Promise<string> {
     grantService,
     tools: toolSet(),
     host: "127.0.0.1",
-    port: 0
+    port: 0,
+    usageService: allowUsageService,
+    captureCapturedAt: () => new Date().toISOString()
   });
   const address = await server.start();
   return address.url;
@@ -495,7 +513,9 @@ describe("LocalAgentMcpServer", () => {
       grantService,
       tools: [mediaTool],
       host: "127.0.0.1",
-      port: 0
+      port: 0,
+      usageService: allowUsageService,
+      captureCapturedAt: () => new Date().toISOString()
     });
     const address = await server.start();
     const connected = await connect(address.url, "pws_local_mcp-token");
@@ -589,6 +609,94 @@ describe("LocalAgentMcpServer", () => {
     });
   });
 
+  test("returns a typed MCP error when a sliding-window budget is exhausted", async () => {
+    await grantService.createGrant({
+      name: "Budgeted Agent",
+      capabilities: ["library.read"]
+    });
+    const deniedUsage: Pick<LocalAgentUsageService, "reserve" | "release"> = {
+      reserve: ({ budget }) => ({
+        ok: false,
+        used: budget.limit,
+        limit: budget.limit,
+        windowSeconds: budget.windowSeconds,
+        retryAt: "2026-08-02T12:00:00.000Z"
+      }),
+      release: () => undefined
+    };
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0,
+      usageService: deniedUsage,
+      captureCapturedAt: () => new Date().toISOString()
+    });
+    const connected = await connect(
+      (await server.start()).url,
+      "pws_local_mcp-token"
+    );
+
+    const result = await connected.callTool({
+      name: "pwrsnap_library_search",
+      arguments: { query: "too many" }
+    }) as CallToolResult;
+    expect(result.isError).toBe(true);
+    expect(result.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("local_agent_budget_exceeded")
+    });
+  });
+
+  test("rejects capture ids outside the role's age horizon before dispatch", async () => {
+    await grantService.createGrant({
+      name: "Recent Only",
+      capabilities: ["library.read"]
+    });
+    const dispatch = vi.fn(async () => ok({ leaked: true }));
+    const scopedTool: LocalAgentMcpTool<{ captureId: z.ZodString }> = {
+      name: "pwrsnap_test_scoped_capture",
+      title: "Scoped capture",
+      description: "Age-scope test tool",
+      inputSchema: { captureId: z.string() },
+      requiredCapabilities: ["library.read"],
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
+      dispatch
+    };
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: [scopedTool],
+      host: "127.0.0.1",
+      port: 0,
+      usageService: allowUsageService,
+      captureCapturedAt: () => "2000-01-01T00:00:00.000Z"
+    });
+    const connected = await connect(
+      (await server.start()).url,
+      "pws_local_mcp-token"
+    );
+
+    const result = await connected.callTool({
+      name: scopedTool.name,
+      arguments: { captureId: "cap_old" }
+    }) as CallToolResult;
+    expect(result.isError).toBe(true);
+    expect(result.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("capture_outside_role_scope")
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   test("edit-only OAuth client can start an edit without a separate media grant", async () => {
     await grantService.createGrant({
       name: "Edit-only agent",
@@ -642,7 +750,9 @@ describe("LocalAgentMcpServer", () => {
       grantService,
       tools: [exportTool],
       host: "127.0.0.1",
-      port: 0
+      port: 0,
+      usageService: allowUsageService,
+      captureCapturedAt: () => new Date().toISOString()
     });
     const address = await server.start();
     const connected = await connect(address.url, "pws_local_mcp-token");
@@ -714,6 +824,8 @@ describe("LocalAgentMcpServer", () => {
       tools: toolSet(),
       host: "127.0.0.1",
       port: 0,
+      usageService: allowUsageService,
+      captureCapturedAt: () => new Date().toISOString(),
       requestConsent: requestNativeConsent
     });
     const address = await server.start();

@@ -73,6 +73,7 @@ export class LocalAgentToolService {
         uri: `pwrsnap://capture/${encodeURIComponent(input.captureId)}/${variant}`,
         name: `${variant} capture`,
         mimeType: exported.mimeType,
+        captureId: input.captureId,
         requiredCapabilities: [readCapabilityForVariant(variant)],
         ...(variant === "original"
           ? {
@@ -139,6 +140,7 @@ export class LocalAgentToolService {
           `/export/${clientExportId}`,
         name: `${exported.format} capture export`,
         mimeType: exported.mimeType,
+        captureId: input.captureId,
         requiredCapabilities: [
           "capture.export",
           readCapabilityForVariant(exported.variant)
@@ -562,6 +564,7 @@ export class LocalAgentToolService {
     name: string;
     mimeType: string;
     requiredCapabilities: readonly LocalAgentCapability[];
+    captureId: string;
     ownerClientId?: string;
     audit?: LocalAgentMcpResource["audit"];
     refresh: (context: LocalAgentResourceReadContext) => Promise<string>;
@@ -571,6 +574,7 @@ export class LocalAgentToolService {
       name: args.name,
       mimeType: args.mimeType,
       requiredCapabilities: args.requiredCapabilities,
+      captureId: args.captureId,
       ...(args.ownerClientId !== undefined
         ? { ownerClientId: args.ownerClientId }
         : {}),

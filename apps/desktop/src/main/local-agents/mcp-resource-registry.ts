@@ -10,6 +10,7 @@ export type LocalAgentMcpResource = {
   mimeType: string;
   resolvePath: (context: LocalAgentResourceReadContext) => Promise<string>;
   requiredCapabilities: readonly LocalAgentCapability[];
+  captureId?: string;
   ownerClientId?: string;
   audit?: {
     action: LocalAgentAuditAction;

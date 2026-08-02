@@ -46,6 +46,7 @@ import type {
   OverlayRow,
   PwrSnapError,
   Result,
+  ShapeKind,
   ShapeToolStyle,
   TextToolStyle,
   ToolColor,
@@ -560,6 +561,65 @@ type LayerStyleUpdate = {
   readonly undoField: string;
 };
 
+type ShapeOverlayData = Extract<Overlay, { kind: "shape" }>;
+type ShapeRect = ShapeOverlayData["rect"];
+
+function isShapeKind(value: unknown): value is ShapeKind {
+  return (
+    value === "rect" ||
+    value === "square" ||
+    value === "circle" ||
+    value === "oval" ||
+    value === "parallelogram"
+  );
+}
+
+function sameRect(a: ShapeRect, b: ShapeRect): boolean {
+  const epsilon = 1e-12;
+  return (
+    Math.abs(a.x - b.x) < epsilon &&
+    Math.abs(a.y - b.y) < epsilon &&
+    Math.abs(a.w - b.w) < epsilon &&
+    Math.abs(a.h - b.h) < epsilon
+  );
+}
+
+/**
+ * Fit a pixel-square box inside `rect`, keeping its center fixed.
+ *
+ * Overlay rectangles are normalized independently in each axis, so `w === h`
+ * is only a real square on a square canvas. Shape drawing already applies this
+ * same pixel-space constraint for new circles and squares; selected-layer
+ * style edits need to do it too. Fitting rather than expanding ensures a
+ * switch from a rectangle never pushes a shape beyond the bounds the user
+ * originally drew.
+ */
+function centeredPixelSquareRect(
+  rect: ShapeRect,
+  canvas: { widthPx: number; heightPx: number }
+): ShapeRect {
+  if (
+    canvas.widthPx <= 0 ||
+    canvas.heightPx <= 0 ||
+    rect.w <= 0 ||
+    rect.h <= 0
+  ) {
+    return rect;
+  }
+
+  const sidePx = Math.min(rect.w * canvas.widthPx, rect.h * canvas.heightPx);
+  if (!Number.isFinite(sidePx) || sidePx <= 0) return rect;
+
+  const w = sidePx / canvas.widthPx;
+  const h = sidePx / canvas.heightPx;
+  return {
+    x: rect.x + (rect.w - w) / 2,
+    y: rect.y + (rect.h - h) / 2,
+    w,
+    h
+  };
+}
+
 function placedBlurRadius(
   value: unknown,
   canvas: { width: number; height: number }
@@ -618,6 +678,38 @@ export function layerStyleUpdate(
         ...(current.data.sizePx !== undefined ? { sizePx: current.data.sizePx } : {})
       },
       undoField: "fontSize"
+    };
+  }
+
+  // Circle and square are constrained shapes. A selected rectangle can be
+  // any aspect ratio, so switching its primitive alone would turn a Circle
+  // into an ellipse (or a Square into a rectangle). Persist the primitive and
+  // its centered, pixel-square bounds together; one updateOverlay operation
+  // then makes this a single undoable change.
+  if (current.data.kind === "shape" && field === "shape" && isShapeKind(value)) {
+    const previousShape = readShapeKind(current.data);
+    const nextRect =
+      value === "circle" || value === "square"
+        ? centeredPixelSquareRect(current.data.rect, {
+            widthPx: dims.canvasWidthPx,
+            heightPx: dims.canvasHeightPx
+          })
+        : current.data.rect;
+    const rectChanged = !sameRect(current.data.rect, nextRect);
+    if (previousShape === value && !rectChanged) return null;
+
+    return {
+      patch: {
+        kind: "shape",
+        shape: value,
+        ...(rectChanged ? { rect: nextRect } : {})
+      },
+      fallbackPreviousPatch: {
+        kind: "shape",
+        shape: previousShape,
+        ...(rectChanged ? { rect: current.data.rect } : {})
+      },
+      undoField: "shape"
     };
   }
 
@@ -828,6 +920,18 @@ export function previousStylePatchFromQueuedUpdate(
       kind: "text",
       size: previous.size,
       ...(previous.sizePx !== undefined ? { sizePx: previous.sizePx } : {})
+    };
+  }
+
+  // A constrained shape-kind edit can atomically change the primitive and
+  // its bounds. Recover both from the queued predecessor so a rapid
+  // Circle → Square click sequence first undoes back to Circle at its square
+  // bounds, then the prior undo restores the original rectangle and bounds.
+  if (previous.kind === "shape" && nextPatch.kind === "shape" && field === "shape") {
+    return {
+      kind: "shape",
+      shape: readShapeKind(previous),
+      ...(nextPatch.rect !== undefined ? { rect: previous.rect } : {})
     };
   }
 

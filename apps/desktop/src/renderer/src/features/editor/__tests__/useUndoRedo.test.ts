@@ -837,6 +837,53 @@ describe("useUndoRedo", () => {
     expect(call.patch.color).toBe("auto");
   });
 
+  test("constrained shape kind and bounds undo together in one history step", async () => {
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_1",
+        onSnapshot: (snapshot) => {
+          api = snapshot;
+        }
+      })
+    );
+
+    const rectangle = { x: 0.1, y: 0.2, w: 0.6, h: 0.3 };
+    const circle = { x: 0.325, y: 0.2, w: 0.15, h: 0.3 };
+    act(() => {
+      api!.recordStyle({
+        currentIdRef: { current: "ly_shape" },
+        previousPatch: { kind: "shape", shape: "rect", rect: rectangle },
+        nextPatch: { kind: "shape", shape: "circle", rect: circle }
+      });
+    });
+
+    await act(async () => {
+      await api!.undo();
+    });
+
+    // One Cmd+Z makes one complete update — never an intermediate
+    // rectangle-in-a-circle-bounds (or circle-in-a-rectangle-bounds) state.
+    expect(dispatchEditMock).toHaveBeenCalledTimes(1);
+    expect(dispatchEditMock).toHaveBeenCalledWith({
+      kind: "updateOverlay",
+      layerId: "ly_shape",
+      patch: { kind: "shape", shape: "rect", rect: rectangle }
+    });
+    expect(api!.canUndo).toBe(false);
+    expect(api!.canRedo).toBe(true);
+
+    await act(async () => {
+      await api!.redo();
+    });
+    expect(dispatchEditMock).toHaveBeenCalledTimes(2);
+    expect(dispatchEditMock.mock.calls[1]?.[0]).toEqual({
+      kind: "updateOverlay",
+      layerId: "fresh-1",
+      patch: { kind: "shape", shape: "circle", rect: circle }
+    });
+  });
+
   test("successive style entries undo one queued value at a time", async () => {
     let api: UseUndoRedoResult | null = null;
     render(

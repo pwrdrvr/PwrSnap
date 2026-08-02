@@ -88,7 +88,7 @@ const ACTIVITY_TOP: ReadonlyArray<ActivityButtonDef> = [
   {
     id: "chat",
     label: "Chat",
-    title: "Chat with Codex",
+    title: "Chat with AI",
     disabled: false,
     icon: (
       <svg

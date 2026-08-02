@@ -72,10 +72,10 @@ type LoadState =
   | { kind: "error"; message: string };
 
 const COMPOSER_PLACEHOLDER =
-  'reply to codex — e.g. "make all arrows orange", "delete the last one"';
+  'ask AI — e.g. "make all arrows orange", "delete the last one"';
 
 const WELCOME_BODY =
-  "Chat lives next to the canvas so Codex can act on layers. Once dynamic tools are wired, ask things like \"add an arrow pointing at Send\" or \"make all arrows orange and Large\" and your edits stick.";
+  "Chat lives next to the canvas so AI can act on layers. Once dynamic tools are wired, ask things like \"add an arrow pointing at Send\" or \"make all arrows orange and Large\" and your edits stick.";
 
 /** Sentinel rendered in the Codex message header until the real
  *  dynamic-tools IPC lands. The IPC PR replaces every `MODEL_PLACEHOLDER`
@@ -171,14 +171,14 @@ export function ChatPanel({ captureId }: ChatPanelProps): ReactElement {
       body,
       ts
     };
-    // Local placeholder response — replaced by a real Codex turn
+    // Local placeholder response — replaced by a real AI turn
     // when the dynamic-tools IPC lands. Wired today so the Send
     // button has a visible effect and the layout proves out.
     const codexMsg: ChatMessage = {
       id: `c-${now.getTime() + 1}`,
       author: "codex",
       body:
-        "Dynamic tools aren't wired to Codex yet — your prompt is queued for when this connects. Use the toolbar to keep editing in the meantime.",
+        "Dynamic tools aren't wired to AI yet — your prompt is queued for when this connects. Use the toolbar to keep editing in the meantime.",
       ts,
       model: MODEL_PLACEHOLDER
     };
@@ -196,7 +196,7 @@ export function ChatPanel({ captureId }: ChatPanelProps): ReactElement {
   if (state.kind === "loading") {
     return (
       <div className="pse-chat" data-testid="chat-panel">
-        <h3 className="pse-chat-title">Chat with Codex</h3>
+        <h3 className="pse-chat-title">Chat with AI</h3>
         <div className="pse-info-loading" role="status">
           Loading…
         </div>
@@ -207,7 +207,7 @@ export function ChatPanel({ captureId }: ChatPanelProps): ReactElement {
   if (state.kind === "error") {
     return (
       <div className="pse-chat" data-testid="chat-panel">
-        <h3 className="pse-chat-title">Chat with Codex</h3>
+        <h3 className="pse-chat-title">Chat with AI</h3>
         <div className="pse-info-error" role="status">
           Couldn&apos;t load capture context.
         </div>
@@ -218,7 +218,7 @@ export function ChatPanel({ captureId }: ChatPanelProps): ReactElement {
   const { context } = state;
   return (
     <div className="pse-chat" data-testid="chat-panel">
-      <h3 className="pse-chat-title">Chat with Codex</h3>
+      <h3 className="pse-chat-title">Chat with AI</h3>
 
       <div className="pse-chat-context" data-testid="chat-context">
         <span className="pse-chat-context-chip">
@@ -230,7 +230,7 @@ export function ChatPanel({ captureId }: ChatPanelProps): ReactElement {
           <span
             className="pse-chat-context-chip is-ocr"
             data-testid="chat-context-ocr-chip"
-            title="Codex sees the OCR-extracted text from this capture"
+            title="AI can use the OCR-extracted text from this capture"
           >
             OCR
           </span>
@@ -288,7 +288,7 @@ function ChatMessageRow({ message }: { message: ChatMessage }): ReactElement {
     >
       <div className="pse-chat-msg-hdr">
         <span className="pse-chat-msg-author">
-          {isYou ? "you" : "codex"}
+          {isYou ? "you" : "AI"}
         </span>
         {!isYou && message.model !== undefined ? (
           <span className="pse-chat-msg-model">{message.model}</span>

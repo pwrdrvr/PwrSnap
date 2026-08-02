@@ -82,3 +82,27 @@ export function resolveToolColor(color: ToolColor): "auto" | string {
   // a future control widens the union without updating this helper.
   return "auto";
 }
+
+/**
+ * Project a persisted overlay color back into the popover's color
+ * vocabulary. Layers store concrete hex values so their appearance is
+ * stable, while the controls speak named swatches (or a custom hex).
+ * Returning the matching token makes a selected green arrow visibly
+ * select the green swatch instead of looking like it has no color.
+ *
+ * `"auto"` has no button in the human-facing palette. Treat it as the
+ * caller's normal default for display; changing another property still
+ * leaves the persisted auto color untouched, and choosing a color makes
+ * that explicit on the layer.
+ */
+export function storedColorToToolColor(
+  color: "auto" | string | undefined,
+  fallback: ToolColor
+): ToolColor {
+  if (color === undefined || color === "auto") return fallback;
+  const normalized = color.toLowerCase();
+  for (const token of Object.keys(SWATCH_HEX) as ColorToken[]) {
+    if (SWATCH_HEX[token] === normalized) return token;
+  }
+  return color;
+}

@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from "vitest";
 import type { ColorToken } from "@pwrsnap/shared";
-import { resolveToolColor } from "../resolveToolColor";
+import { resolveToolColor, storedColorToToolColor } from "../resolveToolColor";
 
 describe("resolveToolColor", () => {
   test("maps every named ColorToken to a strict #rrggbb hex", () => {
@@ -43,5 +43,18 @@ describe("resolveToolColor", () => {
     expect(resolveToolColor("rgb(255,0,0)")).toBe("auto");
     expect(resolveToolColor("transparent")).toBe("auto");
     expect(resolveToolColor("")).toBe("auto");
+  });
+});
+
+describe("storedColorToToolColor", () => {
+  test("restores a persisted swatch hex to its named control token", () => {
+    expect(storedColorToToolColor("#28C840", "accent")).toBe("green");
+    expect(storedColorToToolColor("#ff8a1f", "green")).toBe("accent");
+  });
+
+  test("preserves custom hex and uses the provided display fallback for auto", () => {
+    expect(storedColorToToolColor("#123456", "accent")).toBe("#123456");
+    expect(storedColorToToolColor("auto", "green")).toBe("green");
+    expect(storedColorToToolColor(undefined, "accent")).toBe("accent");
   });
 });

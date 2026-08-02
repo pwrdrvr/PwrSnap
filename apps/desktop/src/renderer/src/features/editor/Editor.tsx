@@ -48,6 +48,7 @@ import type {
   Result,
   ShapeToolStyle,
   TextToolStyle,
+  ToolColor,
   ToolSizePreset
 } from "@pwrsnap/shared";
 import {
@@ -70,7 +71,7 @@ import { RasterLayers } from "./RasterLayers";
 import { RasterResizeHandles } from "./RasterResizeHandles";
 import { affineTransformsEqual, HOME_SNAP_SCREEN_PX, snapToHome } from "./raster-resize";
 import { computeEditorImageStyle } from "./editor-image-style";
-import { resolveToolColor } from "./resolveToolColor";
+import { resolveToolColor, storedColorToToolColor } from "./resolveToolColor";
 import { shapeStrokeGeometry } from "./shape-stroke-geometry";
 import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
@@ -220,6 +221,10 @@ export type LayersPanelApi = {
    *  moved state). No-op when the raster has no stored home (created
    *  before this shipped) or already sits at it. */
   resetRasterTransform: (id: string) => Promise<void>;
+  /** Update one layer's human-facing style through the editor's normal
+   *  updateOverlay + undo path. This edits the placed layer instead of
+   *  changing the active drawing tool's defaults. */
+  updateLayerStyle: (id: string, field: string, value: unknown) => void;
 };
 
 const STYLED_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
@@ -455,7 +460,7 @@ function selectedOverlayToToolStyle(
       tool: "arrow",
       style: {
         ...defaults.arrow,
-        color: data.color ?? defaults.arrow.color,
+        color: storedColorToToolColor(data.color, defaults.arrow.color),
         endStyle: data.endStyle ?? defaults.arrow.endStyle,
         stemStyle: data.stemStyle ?? defaults.arrow.stemStyle,
         doubleEnded: data.doubleEnded ?? defaults.arrow.doubleEnded,
@@ -468,7 +473,7 @@ function selectedOverlayToToolStyle(
       tool: "shape",
       style: {
         ...defaults.shape,
-        color: data.color ?? defaults.shape.color,
+        color: storedColorToToolColor(data.color, defaults.shape.color),
         thickness: data.thickness ?? defaults.shape.thickness,
         filled: data.filled ?? defaults.shape.filled,
         shape: readShapeKind(data),
@@ -484,7 +489,7 @@ function selectedOverlayToToolStyle(
       tool: "highlight",
       style: {
         ...defaults.highlight,
-        ...(data.color !== undefined ? { color: data.color } : {}),
+        color: storedColorToToolColor(data.color, defaults.highlight.color),
         opacity: readHighlightOpacity(data),
         ...(data.blend !== undefined ? { blend: data.blend } : {})
       }
@@ -507,7 +512,7 @@ function selectedOverlayToToolStyle(
       tool: "text",
       style: {
         ...defaults.text,
-        color: data.color ?? defaults.text.color
+        color: storedColorToToolColor(data.color, defaults.text.color)
       }
     };
   }
@@ -4172,6 +4177,14 @@ function EditorLoaded({
     dispatchEdit: rawDispatchEdit
   });
 
+  // The DetailRail lives outside this component, so its small
+  // imperative API is published before the selected-style callback is
+  // declared below. Keep the callback in a ref rather than duplicating
+  // the update/undo logic in the panel bridge.
+  const updateLayerStyleRef = useRef<
+    ((id: string, field: string, value: unknown) => void) | null
+  >(null);
+
   // Single choke point for recording a geometry edit on the undo stack.
   // Maps BOTH recorded geometries from DISPLAYED (source) space into
   // STORED (cropped) space via toStoredGeometry before handing them to the
@@ -4326,6 +4339,9 @@ function EditorLoaded({
               : [...prev, id]
             : [id]
         );
+      },
+      updateLayerStyle: (id, field, value) => {
+        updateLayerStyleRef.current?.(id, field, value);
       },
       setLayerVisibility: async (id, visible) => {
         // RAW node: this is a FULL-NODE replace, so it must carry stored
@@ -4527,7 +4543,8 @@ function EditorLoaded({
     undo,
     undoApplyingRef,
     recordCropRef,
-    commitRasterDragRef
+    commitRasterDragRef,
+    updateLayerStyleRef
   ]);
   useEffect(() => {
     if (onLayersApi === undefined) return;
@@ -5283,24 +5300,18 @@ function EditorLoaded({
     if (next !== draftGeometry) setDraftGeometry(next);
   }, [overlays, draftGeometry, record.width_px, record.height_px]);
 
-  // Selected-overlay style edit handler — dispatched when the popover
-  // is in selected-overlay mode (selectedOverlay is set). Mirrors the
-  // geometry handler: dispatchEdit + re-anchor selection + record on
-  // the undo stack.
-  const onSelectedStyleFieldChange = useCallback(
-    (field: string, value: unknown): void => {
-      const current = selectedOverlayForHandles;
-      if (current === null) return;
-      // Special case: the text popover's "fontSize" field has to map
-      // to TextOverlay's `size` field (different name — popover is
-      // ToolStylePopover state, overlay is the persisted schema). Pre-
-      // pwrdrvr/PwrSnap#110 this mapping was missing, so size changes
-      // on selected text rows silently did nothing (the patch carried
-      // an unknown `fontSize` field that the bus's zod parse stripped).
-      // Now we also recompute `sizePx` to re-snap the persisted
-      // absolute size to the current canvas's bucket value — what
-      // surfaces "Custom" → S/M/L resize for the user.
+  // One selected-layer style mutation, shared by the standalone editor
+  // popover and the Library DetailRail. Keeping the update here means
+  // both surfaces preserve the same selection, dispatch, and undo
+  // behavior instead of accidentally turning a selected-layer edit into
+  // a new-tool default.
+  const updateOverlayStyleField = useCallback(
+    (current: OverlayRow, field: string, value: unknown): void => {
       let patch: Partial<Overlay>;
+      let previousPatch: Partial<Overlay>;
+      // Special case: the text popover's "fontSize" field maps to
+      // TextOverlay's `size` + `sizePx` fields. Recompute sizePx for the
+      // current canvas so an explicit bucket choice exits "Custom".
       if (
         current.data.kind === "text" &&
         field === "fontSize" &&
@@ -5309,9 +5320,6 @@ function EditorLoaded({
         const newSize: "small" | "medium" | "large" = resolveTextSize(
           value as "auto" | "small" | "medium" | "large"
         );
-        // Recompute sizePx for the current canvas — the user has
-        // explicitly picked a bucket, so re-snap to that bucket's
-        // value (no more "Custom" state after this lands).
         const newSizePx = computeTextGlyphSize({
           size: newSize,
           sourceWidthPx,
@@ -5324,13 +5332,27 @@ function EditorLoaded({
           size: newSize,
           sizePx: newSizePx
         };
+        previousPatch = {
+          kind: "text",
+          size: current.data.size,
+          ...(current.data.sizePx !== undefined ? { sizePx: current.data.sizePx } : {})
+        };
       } else {
-        // Project the (field, value) pair into a single-field overlay
-        // patch. The patch's kind matches the current overlay's kind so
-        // the dispatcher's kind-match guard accepts it.
+        // Popover swatches emit a named ToolColor, whereas persisted
+        // overlays deliberately store strict hex. Resolve at this one
+        // write boundary so the selected green-arrow control is a real
+        // persisted edit rather than a rejected schema value.
+        const persistedValue =
+          field === "color" && typeof value === "string"
+            ? resolveToolColor(value as ToolColor)
+            : value;
         patch = {
           kind: current.data.kind,
-          [field]: value
+          [field]: persistedValue
+        } as Partial<Overlay>;
+        previousPatch = {
+          kind: current.data.kind,
+          [field]: (current.data as Record<string, unknown>)[field]
         } as Partial<Overlay>;
       }
       void (async (): Promise<void> => {
@@ -5345,25 +5367,11 @@ function EditorLoaded({
           return;
         }
         if (result.value.kind !== "update") return;
-        const artifact = result.value.artifact;
-        const newId = artifact.node.id;
-        // Style edits go through onSelectedStyleFieldChange which is
-        // single-selection-only (gated by selectedOverlayForHandles).
-        // Replace, not merge — the new id supersedes the old.
-        //
-        // In-flight-aware setter so the outer stale-id cleanup doesn't
-        // wipe the selection between dispatch resolving and the
-        // broadcast landing — same race as the nudge / drag paths.
+        const newId = result.value.artifact.node.id;
+        // In-flight-aware setter avoids stale-id cleanup winning the
+        // race against the layers broadcast.
         setSelectionTrustingDispatch([newId]);
         if (!undoApplyingRef.current) {
-          // Capture the pre-edit value of the SAME field so undo
-          // restores it. For nested objects the caller is expected to
-          // pass a whole-object replacement — same shallow-merge
-          // semantics as the dispatcher.
-          const previousPatch: Partial<Overlay> = {
-            kind: current.data.kind,
-            [field]: (current.data as Record<string, unknown>)[field]
-          } as Partial<Overlay>;
           undo.recordStyle({
             currentIdRef: { current: newId },
             previousPatch,
@@ -5372,7 +5380,39 @@ function EditorLoaded({
         }
       })();
     },
-    [dispatchEdit, selectedOverlayForHandles, setSelectionTrustingDispatch, undo, undoApplyingRef]
+    [
+      dispatchEdit,
+      record.height_px,
+      record.width_px,
+      setSelectionTrustingDispatch,
+      sourceHeightPx,
+      sourceWidthPx,
+      undo,
+      undoApplyingRef
+    ]
+  );
+
+  // Feed the sibling DetailRail through the exact same mutation path.
+  // It resolves by id rather than by the currently selected row so the
+  // inspector never edits a different layer during a selection change.
+  useEffect(() => {
+    updateLayerStyleRef.current = (id, field, value): void => {
+      const current = overlays.find((row) => row.id === id);
+      if (current !== undefined) updateOverlayStyleField(current, field, value);
+    };
+    return () => {
+      updateLayerStyleRef.current = null;
+    };
+  }, [overlays, updateLayerStyleRef, updateOverlayStyleField]);
+
+  // Selected-overlay style edit handler for the standalone popover.
+  const onSelectedStyleFieldChange = useCallback(
+    (field: string, value: unknown): void => {
+      if (selectedOverlayForHandles !== null) {
+        updateOverlayStyleField(selectedOverlayForHandles, field, value);
+      }
+    },
+    [selectedOverlayForHandles, updateOverlayStyleField]
   );
 
   // ⌘0 / ⌘1 / ⌘+ / ⌘- keyboard shortcuts for zoom.

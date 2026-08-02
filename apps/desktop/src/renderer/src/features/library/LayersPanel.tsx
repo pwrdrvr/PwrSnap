@@ -24,13 +24,20 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactElement
 } from "react";
-import type { BundleLayerNode } from "@pwrsnap/shared";
+import type { ArrowToolStyle, BundleLayerNode } from "@pwrsnap/shared";
+import {
+  readArrowDoubleEnded,
+  readArrowEndStyle,
+  readArrowStemStyle
+} from "@pwrsnap/shared";
 import { useCaptureModel } from "../editor/useCaptureModel";
 import type { LayersPanelApi } from "../editor/Editor";
 import { isBaseLayer, isCropLayer, isSourceRaster } from "../editor/layer-roles";
 import { selectBaseRaster } from "../editor/base-raster";
 import { affineTransformsEqual } from "../editor/raster-resize";
 import { TOOLS } from "../editor/editor-tools";
+import { ToolStyleBody } from "../editor/ToolStylePopover";
+import { storedColorToToolColor } from "../editor/resolveToolColor";
 import "./LayersPanel.css";
 
 export type LayersPanelProps = {
@@ -156,6 +163,287 @@ function iconForNode(node: BundleLayerNode): ReactElement {
   }
 }
 
+// These are only fallbacks for optional fields on older arrow layers.
+// They intentionally describe the selected layer, rather than reading
+// the active tool's settings: changing a selected arrow must never
+// silently retune the next arrow the user draws.
+const DEFAULT_LAYER_ARROW_STYLE: ArrowToolStyle = {
+  color: "accent",
+  thickness: "auto",
+  endStyle: "filled-triangle",
+  stemStyle: "solid",
+  doubleEnded: false
+};
+
+type SelectedArrowStyle = {
+  readonly tool: "arrow";
+  readonly label: "Arrow";
+  readonly style: ArrowToolStyle;
+};
+
+function selectedArrowStyle(node: BundleLayerNode): SelectedArrowStyle | null {
+  if (node.kind !== "vector" || node.shape.kind !== "arrow") return null;
+  const arrow = node.shape;
+  return {
+    tool: "arrow",
+    label: "Arrow",
+    style: {
+      ...DEFAULT_LAYER_ARROW_STYLE,
+      color: storedColorToToolColor(arrow.color, DEFAULT_LAYER_ARROW_STYLE.color),
+      thickness: arrow.thickness ?? DEFAULT_LAYER_ARROW_STYLE.thickness,
+      endStyle: readArrowEndStyle(arrow),
+      stemStyle: readArrowStemStyle(arrow),
+      doubleEnded: readArrowDoubleEnded(arrow)
+    }
+  };
+}
+
+function previewColor(color: string | undefined): string {
+  return color === undefined || color === "auto" ? "var(--accent)" : color;
+}
+
+function previewStrokeWidth(thickness: ArrowToolStyle["thickness"] | undefined): number {
+  switch (thickness) {
+    case "small":
+      return 1.25;
+    case "medium":
+      return 2;
+    case "large":
+      return 2.8;
+    case "x-large":
+      return 3.6;
+    default:
+      return 1.7;
+  }
+}
+
+function previewId(id: string): string {
+  return id.replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
+function ArrowPreview({
+  node
+}: {
+  readonly node: Extract<BundleLayerNode, { kind: "vector" }>;
+}): ReactElement {
+  const arrow = node.shape;
+  if (arrow.kind !== "arrow") return IMAGE_ICON;
+  const dx = arrow.to.x - arrow.from.x;
+  const dy = arrow.to.y - arrow.from.y;
+  // Scale the real direction vector into the 48×28 preview while
+  // preserving horizontal / vertical arrows (a fixed diagonal glyph
+  // would make two opposite callouts indistinguishable in a dense list).
+  const scale = Math.max(Math.abs(dx) / 17, Math.abs(dy) / 9, 0.0001);
+  const x1 = 24 - dx / scale;
+  const y1 = 14 - dy / scale;
+  const x2 = 24 + dx / scale;
+  const y2 = 14 + dy / scale;
+  const color = previewColor(arrow.color);
+  const endStyle = readArrowEndStyle(arrow);
+  const markerId = `layer-arrow-end-${previewId(node.id)}`;
+  const dash =
+    readArrowStemStyle(arrow) === "dashed"
+      ? "4 2.5"
+      : readArrowStemStyle(arrow) === "dotted"
+        ? "1 2.5"
+        : undefined;
+
+  return (
+    <svg viewBox="0 0 48 28" aria-hidden="true">
+      <defs>
+        <marker
+          id={markerId}
+          viewBox="0 0 10 10"
+          refX="8"
+          refY="5"
+          markerWidth="7"
+          markerHeight="7"
+          orient="auto-start-reverse"
+          markerUnits="userSpaceOnUse"
+        >
+          {endStyle === "filled-triangle" ? (
+            <path d="M1 1 9 5 1 9Z" fill={color} />
+          ) : endStyle === "open-triangle" ? (
+            <path d="M1 1 9 5 1 9" fill="none" stroke={color} strokeWidth="1.5" />
+          ) : endStyle === "dot" ? (
+            <circle cx="5" cy="5" r="3" fill={color} />
+          ) : (
+            <path d="M6 1v8" fill="none" stroke={color} strokeWidth="1.5" />
+          )}
+        </marker>
+      </defs>
+      <line
+        x1={x1}
+        y1={y1}
+        x2={x2}
+        y2={y2}
+        stroke={color}
+        strokeWidth={previewStrokeWidth(arrow.thickness)}
+        strokeLinecap="round"
+        {...(dash !== undefined ? { strokeDasharray: dash } : {})}
+        markerEnd={`url(#${markerId})`}
+        {...(readArrowDoubleEnded(arrow)
+          ? { markerStart: `url(#${markerId})` }
+          : {})}
+      />
+    </svg>
+  );
+}
+
+function ShapePreview({
+  node
+}: {
+  readonly node: Extract<BundleLayerNode, { kind: "vector" }>;
+}): ReactElement {
+  const shape = node.shape;
+  if (shape.kind !== "shape") return IMAGE_ICON;
+  const color = previewColor(shape.color);
+  const paint = {
+    fill: shape.filled ? color : "none",
+    fillOpacity: shape.filled ? 0.22 : undefined,
+    stroke: color,
+    strokeWidth: previewStrokeWidth(shape.thickness)
+  };
+  switch (shape.shape ?? "rect") {
+    case "circle":
+      return (
+        <svg viewBox="0 0 48 28" aria-hidden="true">
+          <circle cx="24" cy="14" r="8" {...paint} />
+        </svg>
+      );
+    case "oval":
+      return (
+        <svg viewBox="0 0 48 28" aria-hidden="true">
+          <ellipse cx="24" cy="14" rx="15" ry="8" {...paint} />
+        </svg>
+      );
+    case "parallelogram":
+      return (
+        <svg viewBox="0 0 48 28" aria-hidden="true">
+          <polygon points="13,5 39,5 34,23 8,23" {...paint} />
+        </svg>
+      );
+    case "square":
+      return (
+        <svg viewBox="0 0 48 28" aria-hidden="true">
+          <rect x="16" y="5" width="16" height="18" rx="1" {...paint} />
+        </svg>
+      );
+    default:
+      return (
+        <svg viewBox="0 0 48 28" aria-hidden="true">
+          <rect x="8" y="6" width="32" height="16" rx="1" {...paint} />
+        </svg>
+      );
+  }
+}
+
+function previewForNode(node: BundleLayerNode): ReactElement {
+  if (node.kind === "vector") {
+    switch (node.shape.kind) {
+      case "arrow":
+        return <ArrowPreview node={node} />;
+      case "shape":
+        return <ShapePreview node={node} />;
+      case "text":
+        return (
+          <svg viewBox="0 0 48 28" aria-hidden="true">
+            <text
+              x="24"
+              y="20"
+              textAnchor="middle"
+              fill={previewColor(node.shape.color)}
+              fontSize="17"
+              fontWeight="700"
+              fontFamily="var(--font-sans)"
+            >
+              T
+            </text>
+          </svg>
+        );
+      case "highlight":
+        return (
+          <svg viewBox="0 0 48 28" aria-hidden="true">
+            <rect
+              x="7"
+              y="7"
+              width="34"
+              height="14"
+              rx="2"
+              fill={previewColor(node.shape.color)}
+              fillOpacity={node.shape.opacity ?? 0.3}
+            />
+            <path d="M8 19 39 9" stroke="currentColor" strokeOpacity="0.35" />
+          </svg>
+        );
+      case "blur":
+        return (
+          <svg viewBox="0 0 48 28" aria-hidden="true">
+            <rect x="7" y="6" width="34" height="16" rx="3" fill="currentColor" opacity="0.18" />
+            <circle cx="17" cy="13" r="5" fill="currentColor" opacity="0.35" />
+            <circle cx="29" cy="16" r="6" fill="currentColor" opacity="0.2" />
+          </svg>
+        );
+      case "crop":
+        return (
+          <svg viewBox="0 0 48 28" aria-hidden="true">
+            <rect
+              x="8"
+              y="5"
+              width="32"
+              height="18"
+              rx="1"
+              fill="none"
+              stroke="currentColor"
+              strokeDasharray="3 2"
+            />
+          </svg>
+        );
+      case "step":
+        return STEP_ICON;
+    }
+  }
+  if (node.kind === "effect") {
+    if (node.effect.type === "highlight") {
+      return (
+        <svg viewBox="0 0 48 28" aria-hidden="true">
+          <rect
+            x="7"
+            y="7"
+            width="34"
+            height="14"
+            rx="2"
+            fill={node.effect.tint_hex}
+            fillOpacity={node.effect.opacity}
+          />
+          <path d="M8 19 39 9" stroke="currentColor" strokeOpacity="0.35" />
+        </svg>
+      );
+    }
+    return (
+      <svg viewBox="0 0 48 28" aria-hidden="true">
+        <rect x="7" y="6" width="34" height="16" rx="3" fill="currentColor" opacity="0.18" />
+        <circle cx="17" cy="13" r="5" fill="currentColor" opacity="0.35" />
+        <circle cx="29" cy="16" r="6" fill="currentColor" opacity="0.2" />
+      </svg>
+    );
+  }
+  return iconForNode(node);
+}
+
+function LayerPreview({ node }: { readonly node: BundleLayerNode }): ReactElement {
+  return (
+    <span
+      className="psl-layers__preview"
+      data-testid={`layer-preview-${node.id}`}
+      role="img"
+      aria-label={`${labelForNode(node)} layer preview`}
+    >
+      {previewForNode(node)}
+    </span>
+  );
+}
+
 /** A layer is selectable on the canvas only if it actually renders
  *  there (vector annotations except crop, and blur effects). Crop is a
  *  no-op composite, raster/group have no overlay glyph, and highlight
@@ -244,6 +532,16 @@ export function LayersPanel({
   }, [model]);
   // PageUp/PageDown jump — bigger over deep stacks.
   const pageStep = annotationCount > 100 ? 10 : 5;
+  // The row list and canvas selection are deliberately separate: this
+  // panel mirrors the editor-owned selection, then projects exactly one
+  // selected arrow into its own persisted properties. The toolbar below
+  // the image remains a "next arrow" tool configuration surface.
+  const selectedNode =
+    selectedLayerIds.length === 1
+      ? rows.find((node) => node.id === selectedLayerIds[0]) ?? null
+      : null;
+  const selectedArrow =
+    selectedNode === null ? null : selectedArrowStyle(selectedNode);
 
   // Measure the annotation rows' vertical midpoints — called once per
   // drag (at grip-down) and cached in `dragMidsRef`.
@@ -324,13 +622,40 @@ export function LayersPanel({
 
   return (
     <div
-      ref={listRef}
       className="psl-layers"
-      role="list"
-      aria-label="Layers"
       data-testid="psl-layers"
     >
-      {rows.map((node, i) => {
+      <section
+        className="psl-layers__properties"
+        data-testid="layer-properties"
+        aria-label="Selected layer properties"
+      >
+        <div className="psl-layers__properties-heading">
+          <span>Layer properties</span>
+          {selectedArrow !== null && <strong>Editing this {selectedArrow.label}</strong>}
+        </div>
+        {selectedArrow !== null && selectedNode !== null ? (
+          <div className="psl-layers__properties-body">
+            <ToolStyleBody
+              tool={selectedArrow.tool}
+              style={selectedArrow.style}
+              onStyleFieldChange={(field, value): void => {
+                api?.updateLayerStyle(selectedNode.id, field, value);
+              }}
+            />
+          </div>
+        ) : (
+          <p className="psl-layers__properties-empty" role="status">
+            {selectedLayerIds.length === 0
+              ? "Select an arrow layer to edit its color, thickness, and ends."
+              : selectedLayerIds.length > 1
+                ? "Select one arrow layer to edit its properties."
+                : `${selectedNode === null ? "This layer" : labelForNode(selectedNode)} does not have editable arrow properties.`}
+          </p>
+        )}
+      </section>
+      <div ref={listRef} className="psl-layers__list" role="list" aria-label="Layers">
+        {rows.map((node, i) => {
         const id = node.id;
         const selected = selectedLayerIds.includes(id);
         const visible = node.visible !== false;
@@ -408,9 +733,7 @@ export function LayersPanel({
                 {GRIP_ICON}
               </span>
             )}
-            <span className="psl-layers__icon" aria-hidden="true">
-              {iconForNode(node)}
-            </span>
+            <LayerPreview node={node} />
             <span className="psl-layers__label" title={labelForNode(node)}>
               {labelForNode(node)}
             </span>
@@ -466,7 +789,8 @@ export function LayersPanel({
             </span>
           </div>
         );
-      })}
+        })}
+      </div>
     </div>
   );
 }

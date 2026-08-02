@@ -119,7 +119,8 @@ function makeApi() {
     deleteLayer: vi.fn(async () => undefined),
     moveLayerToIndex: vi.fn(async () => undefined),
     uncrop: vi.fn(async () => undefined),
-    resetRasterTransform: vi.fn(async () => undefined)
+    resetRasterTransform: vi.fn(async () => undefined),
+    updateLayerStyle: vi.fn()
   };
 }
 
@@ -338,6 +339,46 @@ describe("LayersPanel", () => {
     );
     expect(byId(el, "layer-row-ly_arrow").getAttribute("aria-selected")).toBe("true");
     expect(byId(el, "layer-row-ly_raster").getAttribute("aria-selected")).toBe("false");
+  });
+
+  test("selected arrow has a recognizable preview and edits its own style", async () => {
+    const api = makeApi();
+    const greenArrow = arrow();
+    if (greenArrow.kind !== "vector" || greenArrow.shape.kind !== "arrow") {
+      throw new Error("arrow fixture must be a vector arrow");
+    }
+    greenArrow.shape = {
+      ...greenArrow.shape,
+      color: "#28c840",
+      thickness: "medium",
+      endStyle: "dot"
+    };
+    const el = await renderPanel(
+      [rootGroup(), raster(), greenArrow],
+      api,
+      ["ly_arrow"]
+    );
+
+    const preview = byId(el, "layer-preview-ly_arrow");
+    expect(preview.getAttribute("aria-label")).toBe("Arrow layer preview");
+    expect(preview.querySelector("svg")).not.toBeNull();
+    expect(byId(el, "layer-properties").textContent).toContain("Editing this Arrow");
+    expect(byId(el, "swatch-green").getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      byId(el, "swatch-blue").click();
+      const thickness = byId(el, "arrow-thickness");
+      (thickness.querySelector('button[aria-label="L"]') as HTMLButtonElement).click();
+      (el.querySelector('button[aria-label="Open triangle"]') as HTMLButtonElement).click();
+    });
+    expect(api.updateLayerStyle).toHaveBeenNthCalledWith(1, "ly_arrow", "color", "blue");
+    expect(api.updateLayerStyle).toHaveBeenNthCalledWith(2, "ly_arrow", "thickness", "large");
+    expect(api.updateLayerStyle).toHaveBeenNthCalledWith(
+      3,
+      "ly_arrow",
+      "endStyle",
+      "open-triangle"
+    );
   });
 });
 

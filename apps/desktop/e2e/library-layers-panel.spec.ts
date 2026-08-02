@@ -103,6 +103,40 @@ test("library-layers-panel: the eye toggle flips a layer's visible flag", async 
   }
 });
 
+test("library-layers-panel: arrow properties expand inline and stay open for comparison", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedCapture(app);
+    const win = await openLayersTab(app, captureId, 2);
+    const [firstId, secondId] = await layerRowIds(win);
+    expect(firstId).toBeDefined();
+    expect(secondId).toBeDefined();
+    if (firstId === undefined || secondId === undefined) return;
+
+    // Selecting an arrow opens its inspector directly below that row; it
+    // never reintroduces the detached panel that was above every layer.
+    await win.locator(`[data-testid="layer-row-${firstId}"]`).click();
+    await expect(win.locator(`[data-testid="layer-inspector-${firstId}"]`)).toBeVisible();
+    await expect(win.locator('[data-testid="layer-properties"]')).toHaveCount(0);
+
+    // The chevron on a nearby arrow opens its own inspector without
+    // changing the canvas selection or collapsing the first one.
+    await win.locator(`[data-testid="layer-inspector-toggle-${secondId}"]`).click();
+    await expect(win.locator(`[data-testid="layer-inspector-${secondId}"]`)).toBeVisible();
+    await expect(win.locator(`[data-testid="layer-inspector-${firstId}"]`)).toBeVisible();
+    await expect(win.locator(`[data-testid="layer-row-${firstId}"]`)).toHaveAttribute(
+      "data-selected",
+      "true"
+    );
+    await expect(win.locator(`[data-testid="layer-row-${secondId}"]`)).toHaveAttribute(
+      "data-selected",
+      "false"
+    );
+  } finally {
+    await app.close();
+  }
+});
+
 test("library-layers-panel: a resting committed annotation clips to the canvas (overflow hidden)", async () => {
   // Regression guard for the crop-clip fix: committed glyphs render with
   // overflow:hidden so an annotation outside a cropped viewport doesn't

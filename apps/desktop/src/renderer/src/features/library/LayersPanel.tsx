@@ -17,6 +17,7 @@
 
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -112,6 +113,12 @@ const RESET_ICON: ReactElement = (
   </svg>
 );
 
+const CHEVRON_ICON: ReactElement = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+    <path d="m9 5 7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
 function shapeLabel(node: Extract<BundleLayerNode, { kind: "vector" }>): string {
   switch (node.shape.kind) {
     case "arrow":
@@ -164,9 +171,9 @@ function iconForNode(node: BundleLayerNode): ReactElement {
 }
 
 // These are only fallbacks for optional fields on older arrow layers.
-// They intentionally describe the selected layer, rather than reading
-// the active tool's settings: changing a selected arrow must never
-// silently retune the next arrow the user draws.
+// They intentionally describe an existing layer, rather than reading
+// the active tool's settings: changing an arrow must never silently
+// retune the next arrow the user draws.
 const DEFAULT_LAYER_ARROW_STYLE: ArrowToolStyle = {
   color: "accent",
   thickness: "auto",
@@ -175,13 +182,13 @@ const DEFAULT_LAYER_ARROW_STYLE: ArrowToolStyle = {
   doubleEnded: false
 };
 
-type SelectedArrowStyle = {
+type ArrowLayerStyle = {
   readonly tool: "arrow";
   readonly label: "Arrow";
   readonly style: ArrowToolStyle;
 };
 
-function selectedArrowStyle(node: BundleLayerNode): SelectedArrowStyle | null {
+function arrowLayerStyle(node: BundleLayerNode): ArrowLayerStyle | null {
   if (node.kind !== "vector" || node.shape.kind !== "arrow") return null;
   const arrow = node.shape;
   return {
@@ -495,6 +502,15 @@ export function LayersPanel({
     pointerId: number;
     overGap: number;
   } | null>(null);
+  // A layer can be selected on the canvas without its inspector being
+  // visible, and several arrow inspectors can be open together for
+  // comparison. Selecting a new arrow opens its inspector once, but
+  // never collapses other rows or immediately reopens one after its
+  // chevron was closed.
+  const [expandedLayerIds, setExpandedLayerIds] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
+  const expandedCaptureIdRef = useRef(captureId);
 
   // Top-to-bottom = front-to-back: the topmost row paints last (highest
   // z_index). Groups are hidden — v2.0 only ever has the synthesized
@@ -532,16 +548,41 @@ export function LayersPanel({
   }, [model]);
   // PageUp/PageDown jump — bigger over deep stacks.
   const pageStep = annotationCount > 100 ? 10 : 5;
-  // The row list and canvas selection are deliberately separate: this
-  // panel mirrors the editor-owned selection, then projects exactly one
-  // selected arrow into its own persisted properties. The toolbar below
-  // the image remains a "next arrow" tool configuration surface.
-  const selectedNode =
-    selectedLayerIds.length === 1
-      ? rows.find((node) => node.id === selectedLayerIds[0]) ?? null
+  // The row list mirrors editor-owned canvas selection, while expansion
+  // belongs only to this panel. A newly selected arrow opens inline at
+  // its own row; manual chevron state stays independent so two nearby
+  // arrows can remain open for comparison.
+  const selectedArrowId = useMemo(() => {
+    if (selectedLayerIds.length !== 1) return null;
+    const selected = rows.find((node) => node.id === selectedLayerIds[0]);
+    return selected !== undefined && arrowLayerStyle(selected) !== null
+      ? selected.id
       : null;
-  const selectedArrow =
-    selectedNode === null ? null : selectedArrowStyle(selectedNode);
+  }, [rows, selectedLayerIds]);
+
+  useEffect(() => {
+    setExpandedLayerIds((expanded) => {
+      const current =
+        expandedCaptureIdRef.current === captureId ? expanded : new Set<string>();
+      expandedCaptureIdRef.current = captureId;
+      if (selectedArrowId === null || current.has(selectedArrowId)) return current;
+      const next = new Set(current);
+      next.add(selectedArrowId);
+      return next;
+    });
+  }, [captureId, selectedArrowId]);
+
+  const toggleLayerInspector = useCallback((id: string): void => {
+    setExpandedLayerIds((expanded) => {
+      const next = new Set(expanded);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
 
   // Measure the annotation rows' vertical midpoints — called once per
   // drag (at grip-down) and cached in `dragMidsRef`.
@@ -625,170 +666,187 @@ export function LayersPanel({
       className="psl-layers"
       data-testid="psl-layers"
     >
-      <section
-        className="psl-layers__properties"
-        data-testid="layer-properties"
-        aria-label="Selected layer properties"
-      >
-        <div className="psl-layers__properties-heading">
-          <span>Layer properties</span>
-          {selectedArrow !== null && <strong>Editing this {selectedArrow.label}</strong>}
-        </div>
-        {selectedArrow !== null && selectedNode !== null ? (
-          <div className="psl-layers__properties-body">
-            <ToolStyleBody
-              tool={selectedArrow.tool}
-              style={selectedArrow.style}
-              onStyleFieldChange={(field, value): void => {
-                api?.updateLayerStyle(selectedNode.id, field, value);
-              }}
-            />
-          </div>
-        ) : (
-          <p className="psl-layers__properties-empty" role="status">
-            {selectedLayerIds.length === 0
-              ? "Select an arrow layer to edit its color, thickness, and ends."
-              : selectedLayerIds.length > 1
-                ? "Select one arrow layer to edit its properties."
-                : `${selectedNode === null ? "This layer" : labelForNode(selectedNode)} does not have editable arrow properties.`}
-          </p>
-        )}
-      </section>
       <div ref={listRef} className="psl-layers__list" role="list" aria-label="Layers">
         {rows.map((node, i) => {
-        const id = node.id;
-        const selected = selectedLayerIds.includes(id);
-        const visible = node.visible !== false;
-        const sourceRaster = isSourceRaster(node, sourceRasterId);
-        const crop = isCropLayer(node);
-        const base = isBaseLayer(node, sourceRasterId);
-        const selectable = isSelectable(node);
-        // Non-base rasters (pasted image / captured cursor) with a stored
-        // home transform get a Reset control — enabled once they've been
-        // moved / resized away from it.
-        const rasterHome =
-          node.kind === "raster" && !base ? node.original_transform : undefined;
-        const dragging = drag?.id === id;
-        const dropBefore = drag !== null && !base && drag.overGap === i;
-        const dropAfter =
-          drag !== null &&
-          !base &&
-          i === annotationCount - 1 &&
-          drag.overGap === annotationCount;
-        return (
-          <div
-            key={id}
-            role="listitem"
-            tabIndex={base ? -1 : 0}
-            data-testid={`layer-row-${id}`}
-            data-kind={node.kind}
-            data-selected={selected}
-            data-base={base ? "true" : undefined}
-            data-annotation={base ? undefined : "true"}
-            aria-selected={selected}
-            aria-roledescription={base ? undefined : "Reorderable layer"}
-            className={[
-              "psl-layers__row",
-              selectable ? "is-selectable" : "",
-              selected ? "is-selected" : "",
-              base ? "is-base" : "",
-              base && i === annotationCount ? "is-base-first" : "",
-              dragging ? "is-dragging" : "",
-              dropBefore ? "is-drop-before" : "",
-              dropAfter ? "is-drop-after" : "",
-              visible ? "" : "is-hidden"
-            ]
-              .filter(Boolean)
-              .join(" ")}
-            onClick={
-              selectable
-                ? (e): void => api?.selectLayers(id, e.metaKey || e.ctrlKey)
-                : undefined
-            }
-            onKeyDown={
-              base ? undefined : (e): void => onRowKeyDown(e, id, i)
-            }
-          >
-            {base ? (
-              <span className="psl-layers__grip psl-layers__grip--spacer" aria-hidden="true" />
-            ) : (
-              <span
-                className="psl-layers__grip"
-                data-testid={`layer-grip-${id}`}
-                aria-hidden="true"
-                title="Drag to reorder"
-                onClick={(e): void => e.stopPropagation()}
-                onPointerDown={(e): void => {
-                  if (e.button !== 0) return;
-                  e.preventDefault();
-                  e.stopPropagation();
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                  dragMidsRef.current = snapshotRowMids();
-                  setDrag({ id, pointerId: e.pointerId, overGap: i });
-                }}
-                onPointerMove={onGripMove}
-                onPointerUp={onGripUp}
-                onPointerCancel={endDrag}
+          const id = node.id;
+          const selected = selectedLayerIds.includes(id);
+          const visible = node.visible !== false;
+          const sourceRaster = isSourceRaster(node, sourceRasterId);
+          const crop = isCropLayer(node);
+          const base = isBaseLayer(node, sourceRasterId);
+          const selectable = isSelectable(node);
+          const arrowStyle = arrowLayerStyle(node);
+          const inspectorExpanded = arrowStyle !== null && expandedLayerIds.has(id);
+          const inspectorDomId = `layer-inspector-${previewId(id)}`;
+          // Non-base rasters (pasted image / captured cursor) with a stored
+          // home transform get a Reset control — enabled once they've been
+          // moved / resized away from it.
+          const rasterHome =
+            node.kind === "raster" && !base ? node.original_transform : undefined;
+          const dragging = drag?.id === id;
+          const dropBefore = drag !== null && !base && drag.overGap === i;
+          const dropAfter =
+            drag !== null &&
+            !base &&
+            i === annotationCount - 1 &&
+            drag.overGap === annotationCount;
+          return (
+            <div key={id} className="psl-layers__item" role="presentation">
+              <div
+                role="listitem"
+                tabIndex={base ? -1 : 0}
+                data-testid={`layer-row-${id}`}
+                data-kind={node.kind}
+                data-selected={selected}
+                data-base={base ? "true" : undefined}
+                data-annotation={base ? undefined : "true"}
+                aria-selected={selected}
+                aria-roledescription={base ? undefined : "Reorderable layer"}
+                className={[
+                  "psl-layers__row",
+                  selectable ? "is-selectable" : "",
+                  selected ? "is-selected" : "",
+                  base ? "is-base" : "",
+                  base && i === annotationCount ? "is-base-first" : "",
+                  dragging ? "is-dragging" : "",
+                  dropBefore ? "is-drop-before" : "",
+                  dropAfter ? "is-drop-after" : "",
+                  visible ? "" : "is-hidden"
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                onClick={
+                  selectable
+                    ? (e): void => api?.selectLayers(id, e.metaKey || e.ctrlKey)
+                    : undefined
+                }
+                onKeyDown={
+                  base ? undefined : (e): void => onRowKeyDown(e, id, i)
+                }
               >
-                {GRIP_ICON}
-              </span>
-            )}
-            <LayerPreview node={node} />
-            <span className="psl-layers__label" title={labelForNode(node)}>
-              {labelForNode(node)}
-            </span>
-            <span className="psl-layers__actions">
-              <button
-                type="button"
-                className="psl-layers__btn"
-                data-testid={`layer-visibility-${id}`}
-                aria-label={visible ? "Hide layer" : "Show layer"}
-                aria-pressed={!visible}
-                title={visible ? "Hide" : "Show"}
-                onClick={(e): void => {
-                  e.stopPropagation();
-                  void api?.setLayerVisibility(id, !visible);
-                }}
-              >
-                {visible ? EYE_ICON : EYE_OFF_ICON}
-              </button>
-              {rasterHome !== undefined && (
-                <button
-                  type="button"
-                  className="psl-layers__btn"
-                  data-testid={`layer-reset-${id}`}
-                  aria-label="Reset position and size"
-                  title="Reset to original position & size"
-                  disabled={affineTransformsEqual(node.transform, rasterHome)}
-                  onClick={(e): void => {
-                    e.stopPropagation();
-                    void api?.resetRasterTransform(id);
-                  }}
+                {base ? (
+                  <span className="psl-layers__grip psl-layers__grip--spacer" aria-hidden="true" />
+                ) : (
+                  <span
+                    className="psl-layers__grip"
+                    data-testid={`layer-grip-${id}`}
+                    aria-hidden="true"
+                    title="Drag to reorder"
+                    onClick={(e): void => e.stopPropagation()}
+                    onPointerDown={(e): void => {
+                      if (e.button !== 0) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                      dragMidsRef.current = snapshotRowMids();
+                      setDrag({ id, pointerId: e.pointerId, overGap: i });
+                    }}
+                    onPointerMove={onGripMove}
+                    onPointerUp={onGripUp}
+                    onPointerCancel={endDrag}
+                  >
+                    {GRIP_ICON}
+                  </span>
+                )}
+                <LayerPreview node={node} />
+                <span className="psl-layers__label" title={labelForNode(node)}>
+                  {labelForNode(node)}
+                </span>
+                {arrowStyle !== null && (
+                  <button
+                    type="button"
+                    className={
+                      "psl-layers__expand" + (inspectorExpanded ? " is-expanded" : "")
+                    }
+                    data-testid={`layer-inspector-toggle-${id}`}
+                    aria-label={
+                      inspectorExpanded
+                        ? "Collapse Arrow properties"
+                        : "Expand Arrow properties"
+                    }
+                    aria-controls={inspectorDomId}
+                    aria-expanded={inspectorExpanded}
+                    title={inspectorExpanded ? "Collapse properties" : "Expand properties"}
+                    onClick={(e): void => {
+                      e.stopPropagation();
+                      toggleLayerInspector(id);
+                    }}
+                  >
+                    {CHEVRON_ICON}
+                  </button>
+                )}
+                <span className="psl-layers__actions">
+                  <button
+                    type="button"
+                    className="psl-layers__btn"
+                    data-testid={`layer-visibility-${id}`}
+                    aria-label={visible ? "Hide layer" : "Show layer"}
+                    aria-pressed={!visible}
+                    title={visible ? "Hide" : "Show"}
+                    onClick={(e): void => {
+                      e.stopPropagation();
+                      void api?.setLayerVisibility(id, !visible);
+                    }}
+                  >
+                    {visible ? EYE_ICON : EYE_OFF_ICON}
+                  </button>
+                  {rasterHome !== undefined && (
+                    <button
+                      type="button"
+                      className="psl-layers__btn"
+                      data-testid={`layer-reset-${id}`}
+                      aria-label="Reset position and size"
+                      title="Reset to original position & size"
+                      disabled={affineTransformsEqual(node.transform, rasterHome)}
+                      onClick={(e): void => {
+                        e.stopPropagation();
+                        void api?.resetRasterTransform(id);
+                      }}
+                    >
+                      {RESET_ICON}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="psl-layers__btn psl-layers__btn--danger"
+                    data-testid={`layer-delete-${id}`}
+                    aria-label={crop ? "Remove crop (restore full image)" : "Delete layer"}
+                    title={crop ? "Remove crop" : "Delete"}
+                    disabled={sourceRaster}
+                    onClick={(e): void => {
+                      e.stopPropagation();
+                      if (crop) {
+                        void api?.uncrop(id);
+                      } else {
+                        void api?.deleteLayer(id);
+                      }
+                    }}
+                  >
+                    {TRASH_ICON}
+                  </button>
+                </span>
+              </div>
+              {arrowStyle !== null && inspectorExpanded && (
+                <section
+                  id={inspectorDomId}
+                  className="psl-layers__inspector"
+                  data-testid={`layer-inspector-${id}`}
+                  aria-label={`${arrowStyle.label} properties`}
                 >
-                  {RESET_ICON}
-                </button>
+                  <div className="psl-layers__inspector-heading">Arrow properties</div>
+                  <div className="psl-layers__inspector-body">
+                    <ToolStyleBody
+                      tool={arrowStyle.tool}
+                      style={arrowStyle.style}
+                      onStyleFieldChange={(field, value): void => {
+                        api?.updateLayerStyle(id, field, value);
+                      }}
+                    />
+                  </div>
+                </section>
               )}
-              <button
-                type="button"
-                className="psl-layers__btn psl-layers__btn--danger"
-                data-testid={`layer-delete-${id}`}
-                aria-label={crop ? "Remove crop (restore full image)" : "Delete layer"}
-                title={crop ? "Remove crop" : "Delete"}
-                disabled={sourceRaster}
-                onClick={(e): void => {
-                  e.stopPropagation();
-                  if (crop) {
-                    void api?.uncrop(id);
-                  } else {
-                    void api?.deleteLayer(id);
-                  }
-                }}
-              >
-                {TRASH_ICON}
-              </button>
-            </span>
-          </div>
-        );
+            </div>
+          );
         })}
       </div>
     </div>

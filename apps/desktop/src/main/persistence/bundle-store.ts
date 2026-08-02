@@ -640,6 +640,10 @@ export async function readSourceForCapture(
 export type PersistCaptureFromTempArgs = {
   tempPath: string;
   sourceApp: { bundleId: string | null; appName: string | null } | null;
+  /** Optional stable id for controlled imports and deterministic E2E fixtures. */
+  captureId?: string | undefined;
+  /** Optional capture timestamp for controlled imports and deterministic E2E fixtures. */
+  capturedAt?: string | undefined;
   /** Defaults to `getCapturesRoot()` (`~/Documents/PwrSnap/`). */
   outputDir?: string;
   /**
@@ -867,7 +871,7 @@ export async function persistCaptureFromTempV2(
   const buf = await readFile(args.tempPath);
   const sha256 = createHash("sha256").update(buf).digest("hex");
 
-  const id = nanoid(16);
+  const id = args.captureId ?? nanoid(16);
   const meta = await sharp(buf).metadata();
   const widthPx = meta.width ?? 0;
   const heightPx = meta.height ?? 0;
@@ -880,7 +884,7 @@ export async function persistCaptureFromTempV2(
   // metadata decode above; a probe failure defaults to opaque.
   const hasAlpha = await sourceBufferHasAlpha(buf, meta);
 
-  const now = new Date().toISOString();
+  const now = args.capturedAt ?? new Date().toISOString();
   const outputDir = args.outputDir ?? getCapturesRoot();
   const timestampZone = await readBundleFilenameTimestampZone();
   const filenameStem = uniqueBundleFilenameStem(outputDir, buildCaptureBundleFilenameStem({

@@ -40,6 +40,9 @@
 #                       Default: 1. Useful for surfacing flakes —
 #                       --iterations 20 quickly reveals a 25%
 #                       failure rate.
+#   --update-snapshots  Run Playwright with --update-snapshots, then copy
+#                       generated baselines back to the source worktree.
+#                       Requires --test and cannot be combined with --ref.
 #   --image <name>      Image tag. Default: pwrsnap-e2e:local.
 #   --build             Force rebuild the image even if it exists.
 #                       Otherwise the image is built on first run
@@ -90,6 +93,7 @@ REF=""
 STAGE="${PWRSNAP_E2E_STAGE:-/tmp/pwrsnap-e2e-stage}"
 TEST_PATTERN=""
 ITERATIONS=1
+UPDATE_SNAPSHOTS=0
 IMAGE="pwrsnap-e2e:local"
 FORCE_BUILD=0
 PLATFORM=""
@@ -103,6 +107,7 @@ while [[ $# -gt 0 ]]; do
     --stage) STAGE="$2"; shift 2;;
     --test) TEST_PATTERN="$2"; shift 2;;
     --iterations) ITERATIONS="$2"; shift 2;;
+    --update-snapshots) UPDATE_SNAPSHOTS=1; shift;;
     --image) IMAGE="$2"; shift 2;;
     --build) FORCE_BUILD=1; shift;;
     --platform) PLATFORM="$2"; shift 2;;
@@ -125,6 +130,16 @@ done
 
 if [[ -n "$SOURCE" && -n "$REF" ]]; then
   echo "--source and --ref are mutually exclusive" >&2
+  exit 2
+fi
+
+if [[ "$UPDATE_SNAPSHOTS" -eq 1 && -z "$TEST_PATTERN" ]]; then
+  echo "--update-snapshots requires --test so it cannot rewrite the whole suite" >&2
+  exit 2
+fi
+
+if [[ "$UPDATE_SNAPSHOTS" -eq 1 && -n "$REF" ]]; then
+  echo "--update-snapshots cannot be combined with --ref" >&2
   exit 2
 fi
 
@@ -230,13 +245,17 @@ cd apps/desktop'
 if [[ -n "$TEST_PATTERN" || "$ITERATIONS" -ne 1 ]]; then
   # Run the (optionally filtered) test N times; report pass/fail
   # counts at the end so callers can spot flake rates immediately.
+  UPDATE_SNAPSHOTS_FLAG=""
+  if [[ "$UPDATE_SNAPSHOTS" -eq 1 ]]; then
+    UPDATE_SNAPSHOTS_FLAG="--update-snapshots"
+  fi
   INNER+="
 echo \"==test (iterations=$ITERATIONS, pattern='$TEST_PATTERN')==\" >&2
 PASS=0
 FAIL=0
 for i in \$(seq 1 $ITERATIONS); do
   set +e
-  OUTPUT=\$(CI= xvfb-run --auto-servernum pnpm exec playwright test -c playwright.config.ts ${TEST_PATTERN:+-g \"$TEST_PATTERN\"} --workers 1 --retries 0 --reporter line 2>&1)
+  OUTPUT=\$(CI= xvfb-run --auto-servernum pnpm exec playwright test -c playwright.config.ts ${TEST_PATTERN:+-g \"$TEST_PATTERN\"} $UPDATE_SNAPSHOTS_FLAG --workers 1 --retries 0 --reporter line 2>&1)
   STATUS=\$?
   set -e
   RESULT=\$(printf '%s\\n' \"\$OUTPUT\" | tail -3 | tr -d '\\r')
@@ -263,3 +282,14 @@ exit \$STATUS"
 fi
 
 docker run "${RUN_ARGS[@]}" "$IMAGE" bash -lc "$INNER"
+
+if [[ "$UPDATE_SNAPSHOTS" -eq 1 ]]; then
+  # Snapshot writes happen in the staged Linux tree. Copy only the generated
+  # baseline directories back; never mirror build output or test artifacts
+  # into the caller's worktree.
+  while IFS= read -r -d '' SNAPSHOT_DIR; do
+    RELATIVE_DIR="${SNAPSHOT_DIR#${STAGE}/}"
+    mkdir -p "$SOURCE/$RELATIVE_DIR"
+    rsync -a "$SNAPSHOT_DIR/" "$SOURCE/$RELATIVE_DIR/"
+  done < <(find "$STAGE/apps/desktop/e2e" -maxdepth 1 -type d -name '*.spec.ts-snapshots' -print0)
+fi

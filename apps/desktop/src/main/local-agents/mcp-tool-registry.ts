@@ -150,6 +150,10 @@ export function createDefaultLocalAgentMcpTools(deps: {
     input: LocalAgentSearchInput,
     ctx: LocalAgentToolContext
   ) => Promise<Result<unknown, PwrSnapError>>;
+  discovery?: (
+    input: { limit?: number | undefined },
+    ctx: LocalAgentToolContext
+  ) => Promise<Result<unknown, PwrSnapError>>;
   deleteToTrash: (
     input: { captureId: string },
     ctx: LocalAgentToolContext
@@ -209,13 +213,22 @@ export function createDefaultLocalAgentMcpTools(deps: {
   ) => Promise<Result<unknown, PwrSnapError>>;
 }): AnyLocalAgentMcpTool[] {
   const searchInputSchema = {
-    query: z.string().max(1_000).describe("Text to match against indexed capture metadata and OCR.").optional(),
+    query: z.string().max(1_000).describe("Text to match against indexed capture metadata, accepted tags, and OCR. Query searches default to relevance order.").optional(),
     appBundleIds: z.array(z.string().min(1).max(1_000)).max(100)
-      .describe("Exact source application bundle IDs. An empty array matches no captures.")
+      .describe("Exact source application bundle IDs for precise or legacy use. An empty array matches no captures.")
+      .optional(),
+    sourceAppNames: z.array(z.string().trim().min(1).max(1_000)).max(100)
+      .describe("Exact human source application names, for example ['Claude']. Reuse applications[].name from pwrsnap_library_discover. An empty array matches no captures.")
       .optional(),
     includeCapturesWithoutSourceApp: z.boolean()
       .describe("Include captures whose source application bundle ID is unknown.")
       .optional(),
+    tagFilter: z.object({
+      labels: z.array(z.string().trim().min(1).max(1_000)).min(1).max(100)
+        .describe("Exact accepted-tag labels. Reuse tags[].label from pwrsnap_library_discover."),
+      match: z.enum(["any", "all"])
+        .describe("any returns captures with at least one label; all requires every label.")
+    }).describe("Exact accepted-tag filter. match is required so multiple-tag semantics are explicit.").optional(),
     kinds: z.array(z.enum(["image", "video"])).max(2)
       .describe("Capture kinds to include. An empty array matches no captures.")
       .optional(),
@@ -224,6 +237,9 @@ export function createDefaultLocalAgentMcpTools(deps: {
       end: z.iso.datetime().describe("Inclusive UTC end timestamp in ISO 8601 format.")
     }).describe("Inclusive capture timestamp range.").optional(),
     hasOcr: z.boolean().describe("When true, only return captures with OCR text.").optional(),
+    order: z.enum(["relevance", "newest", "oldest"])
+      .describe("Result order. Defaults to relevance with query, newest without query. relevance requires query.")
+      .optional(),
     limit: z.number().int().min(1).max(500).describe("Maximum rows to return.").optional(),
     detail: z.enum(["summary", "enriched"])
       .describe("summary (default) omits generated text and match snippets; enriched includes title, description, tags, and matchSnippet.")
@@ -232,7 +248,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
   const searchTool: LocalAgentMcpTool<typeof searchInputSchema> = {
     name: "pwrsnap_library_search",
     title: "Search PwrSnap Library",
-    description: "Search live, non-trashed PwrSnap captures. Results default to structural summary metadata; request enriched detail only when generated text and search snippets are needed.",
+    description: "Search live, non-trashed PwrSnap captures by text, human source application name, precise bundle ID, exact accepted tags, kind, date, and OCR presence. No-query searches default to newest first; query searches default to relevance. Results default to structural summary metadata; request enriched detail only when generated text and search snippets are needed.",
     inputSchema: searchInputSchema,
     requiredCapabilities: ["library.read"],
     annotations: {
@@ -242,6 +258,33 @@ export function createDefaultLocalAgentMcpTools(deps: {
       openWorldHint: false
     },
     dispatch: async (input, ctx) => deps.search(input, ctx)
+  };
+  const discoveryTool: LocalAgentMcpTool<{ limit: z.ZodOptional<z.ZodNumber> }> = {
+    name: "pwrsnap_library_discover",
+    title: "Discover PwrSnap Library Filters",
+    description: "List live human source applications and accepted tags that can be reused in pwrsnap_library_search. Both lists exclude Trash and are ordered by capture count descending, then most recent capture. Application names are the reusable sourceAppNames values; bundleId is included only when known unambiguously.",
+    inputSchema: {
+      limit: z.number().int().min(1).max(500)
+        .describe("Maximum applications and tags to return per list. Defaults to 100.")
+        .optional()
+    },
+    requiredCapabilities: ["library.read"],
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    dispatch: async (input, ctx) => {
+      if (deps.discovery === undefined) {
+        return err({
+          kind: "validation",
+          code: "tool_unavailable",
+          message: "library discovery is unavailable"
+        });
+      }
+      return deps.discovery(input, ctx);
+    }
   };
   const deleteTool: LocalAgentMcpTool<{ captureId: z.ZodString }> = {
     name: "pwrsnap_capture_delete_to_trash",
@@ -259,7 +302,9 @@ export function createDefaultLocalAgentMcpTools(deps: {
     },
     dispatch: async (input, ctx) => deps.deleteToTrash(input, ctx)
   };
-  const tools: AnyLocalAgentMcpTool[] = [searchTool, deleteTool];
+  const tools: AnyLocalAgentMcpTool[] = [searchTool];
+  if (deps.discovery !== undefined) tools.push(discoveryTool);
+  tools.push(deleteTool);
 
   if (deps.metadata !== undefined) {
     tools.push({

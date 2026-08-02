@@ -240,9 +240,23 @@ toggles even when a broad preset is selected.
     "enriched"` to receive generated titles, descriptions, tags, and match
     snippets. This keeps unqualified listing calls from disclosing indexed
     content unnecessarily.
-  - Source-app filters expose string bundle IDs plus an explicit
-    `includeCapturesWithoutSourceApp` flag; the internal nullable-ID encoding
-    does not leak into the MCP schema.
+  - Human application names (`sourceAppNames`, such as `"Claude"`) are the
+    normal reusable source-app filter. Exact bundle IDs remain available as
+    `appBundleIds` for precise / legacy filters; an explicit
+    `includeCapturesWithoutSourceApp` flag keeps the internal nullable-ID
+    encoding out of the MCP schema.
+  - Exact accepted-tag filtering uses `tagFilter: { labels, match }`, where
+    `match` explicitly selects `"any"` or `"all"`. Accepted tags also enter
+    full-text search. Ordering can be `relevance`, `newest`, or `oldest`;
+    query searches default to relevance and no-query searches to newest.
+
+- `pwrsnap_library_discover`
+  - Requires: `library.read`
+  - Wraps: `library:discover`
+  - Returns live-only human application and accepted-tag facets ordered by
+    volume, with `mostRecentCapturedAt`. Application `name` is reusable as a
+    `sourceAppNames` value; `bundleId` is included only when known
+    unambiguously.
 
 - `pwrsnap_capture_metadata`
   - Requires: `library.read`

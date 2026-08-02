@@ -1,15 +1,21 @@
 import type {
+  CaptureSearchDiscovery,
+  CaptureSearchOrder,
   CaptureSearchRequest,
-  CaptureSearchResultRow
+  CaptureSearchResultRow,
+  CaptureSearchTagFilter
 } from "@pwrsnap/shared";
 
 export type LocalAgentSearchInput = {
   query?: string | undefined;
   appBundleIds?: string[] | undefined;
+  sourceAppNames?: string[] | undefined;
   includeCapturesWithoutSourceApp?: boolean | undefined;
+  tagFilter?: CaptureSearchTagFilter | undefined;
   kinds?: Array<"image" | "video"> | undefined;
   dateRange?: { start: string; end: string } | undefined;
   hasOcr?: boolean | undefined;
+  order?: CaptureSearchOrder | undefined;
   limit?: number | undefined;
   detail?: "summary" | "enriched" | undefined;
 };
@@ -52,10 +58,40 @@ export function toCaptureSearchRequest(input: LocalAgentSearchInput): CaptureSea
   return {
     ...(input.query !== undefined ? { query: input.query } : {}),
     ...(appBundleIds !== undefined ? { appBundleIds } : {}),
+    ...(input.sourceAppNames !== undefined ? { sourceAppNames: input.sourceAppNames } : {}),
+    ...(input.tagFilter !== undefined ? { tagFilter: input.tagFilter } : {}),
     ...(input.kinds !== undefined ? { kinds: input.kinds } : {}),
     ...(input.dateRange !== undefined ? { dateRange: input.dateRange } : {}),
     ...(input.hasOcr !== undefined ? { hasOcr: input.hasOcr } : {}),
+    ...(input.order !== undefined ? { order: input.order } : {}),
     ...(input.limit !== undefined ? { limit: input.limit } : {})
+  };
+}
+
+/** Mirrors the repository's documented default so MCP responses make their
+ * effective order visible even when the caller omitted `order`. */
+export function localAgentSearchOrder(input: LocalAgentSearchInput): CaptureSearchOrder {
+  return input.order ?? (input.query === undefined ? "newest" : "relevance");
+}
+
+/** Explicitly project the discovery surface rather than exposing an internal
+ * persistence row. `name` is reusable as sourceAppNames; bundleId stays
+ * optional when a human app name cannot be mapped unambiguously. */
+export function projectLocalAgentSearchDiscovery(
+  discovery: CaptureSearchDiscovery
+): CaptureSearchDiscovery {
+  return {
+    applications: discovery.applications.map((application) => ({
+      name: application.name,
+      ...(application.bundleId === undefined ? {} : { bundleId: application.bundleId }),
+      count: application.count,
+      mostRecentCapturedAt: application.mostRecentCapturedAt
+    })),
+    tags: discovery.tags.map((tag) => ({
+      label: tag.label,
+      count: tag.count,
+      mostRecentCapturedAt: tag.mostRecentCapturedAt
+    }))
   };
 }
 

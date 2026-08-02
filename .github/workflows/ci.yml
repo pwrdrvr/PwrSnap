@@ -88,8 +88,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
-        # Visual-regression references are Git LFS objects. Only this Linux
-        # job compares them, so ordinary unit/build jobs do not download them.
+        # Linux visual regression is temporarily excluded below, but retain
+        # its LFS checkout so re-enabling it does not need a workflow change.
         with:
           lfs: true
 
@@ -147,15 +147,13 @@ jobs:
     needs: install-deps
     timeout-minutes: 30
     steps:
-      # The runner base provisions Git LFS and its runner setup puts
-      # Homebrew on the job PATH. Keep these Linux-only references unsmudged:
-      # macOS does not compare them and should not consume LFS bandwidth.
+      # Visual-regression goldens are Git LFS objects. The runner setup puts
+      # Homebrew (and git-lfs) on the job PATH; fetch the macOS references so
+      # this VM is the active visual CI lane.
       - name: Checkout repository
         uses: actions/checkout@v5
-        env:
-          GIT_LFS_SKIP_SMUDGE: "1"
         with:
-          lfs: false
+          lfs: true
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1

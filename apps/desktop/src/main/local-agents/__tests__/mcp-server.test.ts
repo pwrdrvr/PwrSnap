@@ -42,7 +42,10 @@ import type {
   LocalAgentConsentDecision,
   LocalAgentConsentRequest
 } from "../local-agent-consent-broker";
-import type { LocalAgentMcpTool } from "../mcp-tool-registry";
+import {
+  type LocalAgentMcpTool,
+  withMcpResourceLink
+} from "../mcp-tool-registry";
 
 let workDir = "";
 let settings: DesktopSettingsService;
@@ -375,6 +378,66 @@ describe("LocalAgentMcpServer", () => {
         mimeType: "video/mp4"
       })
     ]));
+  });
+
+  test("returns media as first-class MCP resource links without inline bytes", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["capture.composite.read"]
+    });
+    const mediaTool: LocalAgentMcpTool<{ captureId: z.ZodString }> = {
+      name: "pwrsnap_capture_resource",
+      title: "Get PwrSnap Capture Resource",
+      description: "Return a capture resource link.",
+      inputSchema: { captureId: z.string() },
+      requiredCapabilities: ["capture.composite.read"],
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
+      dispatch: async (input) => ok(withMcpResourceLink({
+        resourceUri: `pwrsnap://capture/${input.captureId}/composite`,
+        signedUrl: "http://127.0.0.1:51729/media?grant=temporary"
+      }, {
+        uri: "http://127.0.0.1:51729/media?grant=temporary",
+        name: "composite capture",
+        mimeType: "image/png",
+        size: 3
+      }))
+    };
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: [mediaTool],
+      host: "127.0.0.1",
+      port: 0
+    });
+    const address = await server.start();
+    const connected = await connect(address.url, "pws_local_mcp-token");
+
+    const result = await connected.callTool({
+      name: mediaTool.name,
+      arguments: { captureId: "cap_1" }
+    }) as CallToolResult;
+
+    expect(result.structuredContent).toMatchObject({
+      resourceUri: "pwrsnap://capture/cap_1/composite"
+    });
+    expect(result.content[1]).toEqual({
+      type: "resource_link",
+      uri: "http://127.0.0.1:51729/media?grant=temporary",
+      name: "composite capture",
+      mimeType: "image/png",
+      size: 3,
+      annotations: {
+        audience: ["user", "assistant"],
+        priority: 1
+      }
+    });
+    expect(result.content.some((content) => content.type === "image")).toBe(false);
   });
 
   test("authorized client with library.read can search but cannot delete without trash.write", async () => {

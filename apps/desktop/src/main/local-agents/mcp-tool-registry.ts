@@ -6,15 +6,28 @@ import type { CommandContext } from "../command-bus";
 import type { LocalAgentSearchInput } from "./local-agent-search";
 
 const MEDIA_DELIVERY_GUIDANCE =
-  "Returns an MCP resource URI and a five-minute signed localhost URL. " +
-  "Prefer the signed URL for binary media consumers; use the resource URI with MCP resources/read. " +
+  "Returns a typed MCP resource link to a five-minute signed localhost URL for direct binary fetch, plus a capability-protected MCP resource URI as a fallback. " +
+  "Fetch the resource link promptly. Use MCP resources/read only when the client cannot fetch the direct URL. " +
   "Treat the signed URL as a temporary bearer secret and do not log or share it.";
+
+const supplementalContent = Symbol("local-agent-mcp-supplemental-content");
+
+type ToolValueWithSupplementalContent = {
+  [supplementalContent]?: CallToolResult["content"];
+};
 
 export type LocalAgentToolContext = {
   clientId: string;
   capabilities: readonly LocalAgentCapability[];
   signal: AbortSignal;
   commandContext: CommandContext;
+};
+
+export type LocalAgentCaptureExportInput = {
+  captureId: string;
+  variant?: "composite" | "original" | undefined;
+  preset?: "low" | "med" | "high" | undefined;
+  format?: "png" | "jpeg" | "pdf" | "heic" | undefined;
 };
 
 export type LocalAgentMcpTool<Input extends z.ZodRawShape> = {
@@ -63,18 +76,62 @@ export function toMcpToolResult(result: Result<unknown, PwrSnapError>): CallTool
       ]
     };
   }
+  const supplemental = supplementalContentFor(result.value);
   return {
     content: [
       {
         type: "text",
         text: JSON.stringify(result.value)
-      }
+      },
+      ...supplemental
     ],
     structuredContent:
       result.value !== null && typeof result.value === "object"
         ? (result.value as Record<string, unknown>)
         : { value: result.value }
   };
+}
+
+function withMcpSupplementalContent<T extends Record<string, unknown>>(
+  value: T,
+  content: CallToolResult["content"]
+): T {
+  Object.defineProperty(value, supplementalContent, {
+    configurable: false,
+    enumerable: false,
+    value: content,
+    writable: false
+  });
+  return value;
+}
+
+export function withMcpResourceLink<T extends Record<string, unknown>>(
+  value: T,
+  link: {
+    uri: string;
+    name: string;
+    mimeType: string;
+    size?: number;
+  }
+): T {
+  return withMcpSupplementalContent(value, [
+    {
+      type: "resource_link",
+      uri: link.uri,
+      name: link.name,
+      mimeType: link.mimeType,
+      ...(link.size !== undefined ? { size: link.size } : {}),
+      annotations: {
+        audience: ["user", "assistant"],
+        priority: 1
+      }
+    }
+  ]);
+}
+
+function supplementalContentFor(value: unknown): CallToolResult["content"] {
+  if (value === null || typeof value !== "object") return [];
+  return (value as ToolValueWithSupplementalContent)[supplementalContent] ?? [];
 }
 
 export function capabilityDenied(
@@ -106,16 +163,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
     ctx: LocalAgentToolContext
   ) => Promise<Result<unknown, PwrSnapError>>;
   captureExport?: (
-    input: {
-      captureId: string;
-      variant?: "composite" | "original" | undefined;
-      format?: "png" | "jpeg" | "webp" | "pdf" | "heic" | undefined;
-      maxWidth?: number | undefined;
-      maxHeight?: number | undefined;
-      scale?: number | undefined;
-      quality?: number | undefined;
-      background?: string | undefined;
-    },
+    input: LocalAgentCaptureExportInput,
     ctx: LocalAgentToolContext
   ) => Promise<Result<unknown, PwrSnapError>>;
   imageEditSend?: (
@@ -260,17 +308,20 @@ export function createDefaultLocalAgentMcpTools(deps: {
       name: "pwrsnap_capture_export",
       title: "Export PwrSnap Capture",
       description:
-        "Resize or convert a permitted edited composite or original image to PNG, JPEG, WebP, PDF, or HEIC. " +
+        "Export a permitted edited composite or original using PwrSnap's Low, Med, or High baked size. " +
+        "Defaults to Med PNG. PNG is preferred for screenshots; JPEG is a compact lossy image, PDF is a single-page document, and HEIC is available on supported macOS installations. " +
         MEDIA_DELIVERY_GUIDANCE,
       inputSchema: {
         captureId: z.string().min(1),
-        variant: z.enum(["composite", "original"]).optional(),
-        format: z.enum(["png", "jpeg", "webp", "pdf", "heic"]).optional(),
-        maxWidth: z.number().int().min(1).max(16_384).optional(),
-        maxHeight: z.number().int().min(1).max(16_384).optional(),
-        scale: z.number().min(0.05).max(4).optional(),
-        quality: z.number().int().min(1).max(100).optional(),
-        background: z.string().max(100).optional()
+        variant: z.enum(["composite", "original"])
+          .describe("Export the edited composite by default, or the original when separately granted.")
+          .optional(),
+        preset: z.enum(["low", "med", "high"])
+          .describe("PwrSnap's baked output-size ladder. Defaults to med and never upscales.")
+          .optional(),
+        format: z.enum(["png", "jpeg", "pdf", "heic"])
+          .describe("Output format. Defaults to png; PwrSnap owns lossy quality settings.")
+          .optional()
       },
       requiredCapabilities: ["capture.export"],
       requiredCapabilitiesForInput: (input) => [

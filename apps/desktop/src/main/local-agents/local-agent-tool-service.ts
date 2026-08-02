@@ -1,7 +1,6 @@
 import {
   err,
   ok,
-  type CaptureExportFormat,
   type CaptureExportRequest,
   type CaptureExportVariant,
   type LocalAgentCapability,
@@ -17,7 +16,11 @@ import {
 } from "./mcp-resource-registry";
 import { projectLocalAgentCapture } from "./local-agent-search";
 import { LocalAgentSignedUrlService } from "./signed-url";
-import type { LocalAgentToolContext } from "./mcp-tool-registry";
+import {
+  type LocalAgentCaptureExportInput,
+  type LocalAgentToolContext,
+  withMcpResourceLink
+} from "./mcp-tool-registry";
 
 export class LocalAgentToolService {
   constructor(
@@ -102,42 +105,41 @@ export class LocalAgentToolService {
           toolContextForRead(readContext)
         )
       });
-      return ok({
-        variant,
-        resourceUri: resource.uri,
-        ...this.signedDescriptor(resource, ctx.clientId),
-        mimeType: exported.mimeType,
-        widthPx: exported.widthPx,
-        heightPx: exported.heightPx,
-        byteSize: exported.byteSize
-      });
+      const signed = this.signedDescriptor(resource, ctx.clientId);
+      return ok(
+        withMcpResourceLink(
+          {
+            variant,
+            resourceUri: resource.uri,
+            ...signed,
+            mimeType: exported.mimeType,
+            widthPx: exported.widthPx,
+            heightPx: exported.heightPx,
+            byteSize: exported.byteSize
+          },
+          {
+            uri: signed.signedUrl ?? resource.uri,
+            name: resource.name,
+            mimeType: resource.mimeType,
+            size: exported.byteSize
+          }
+        )
+      );
     } catch (cause) {
       return unexpectedError("capture_resource_failed", cause);
     }
   }
 
   async captureExport(
-    input: {
-      captureId: string;
-      variant?: CaptureExportVariant | undefined;
-      format?: CaptureExportFormat | undefined;
-      maxWidth?: number | undefined;
-      maxHeight?: number | undefined;
-      scale?: number | undefined;
-      quality?: number | undefined;
-      background?: string | undefined;
-    },
+    input: LocalAgentCaptureExportInput,
     ctx: LocalAgentToolContext
   ): Promise<Result<unknown, PwrSnapError>> {
+    const preset = input.preset ?? "med";
     const request: CaptureExportRequest = {
       captureId: input.captureId,
-      ...(input.variant !== undefined ? { variant: input.variant } : {}),
-      ...(input.format !== undefined ? { format: input.format } : {}),
-      ...(input.maxWidth !== undefined ? { maxWidth: input.maxWidth } : {}),
-      ...(input.maxHeight !== undefined ? { maxHeight: input.maxHeight } : {}),
-      ...(input.scale !== undefined ? { scale: input.scale } : {}),
-      ...(input.quality !== undefined ? { quality: input.quality } : {}),
-      ...(input.background !== undefined ? { background: input.background } : {})
+      variant: input.variant ?? "composite",
+      format: input.format ?? "png",
+      preset
     };
     const exportedResult = await bus.dispatch(
       "render:captureExport",
@@ -172,17 +174,29 @@ export class LocalAgentToolService {
         refresh: (readContext) =>
           this.refreshExport(request, toolContextForRead(readContext))
       });
-      return ok({
-        resourceUri: resource.uri,
-        ...this.signedDescriptor(resource, ctx.clientId),
-        variant: exported.variant,
-        format: exported.format,
-        mimeType: exported.mimeType,
-        widthPx: exported.widthPx,
-        heightPx: exported.heightPx,
-        byteSize: exported.byteSize,
-        fromCache: exported.fromCache
-      });
+      const signed = this.signedDescriptor(resource, ctx.clientId);
+      return ok(
+        withMcpResourceLink(
+          {
+            resourceUri: resource.uri,
+            ...signed,
+            variant: exported.variant,
+            format: exported.format,
+            preset: exported.preset ?? preset,
+            mimeType: exported.mimeType,
+            widthPx: exported.widthPx,
+            heightPx: exported.heightPx,
+            byteSize: exported.byteSize,
+            fromCache: exported.fromCache
+          },
+          {
+            uri: signed.signedUrl ?? resource.uri,
+            name: resource.name,
+            mimeType: resource.mimeType,
+            size: exported.byteSize
+          }
+        )
+      );
     } catch (cause) {
       return unexpectedError("capture_export_failed", cause);
     }
@@ -326,14 +340,22 @@ export class LocalAgentToolService {
       thread.threadId,
       ctx
     );
-    return ok({
+    const value = {
       threadId: thread.threadId,
       status: thread.status,
       compositePreviewResourceUri: preview.uri,
       ...(thread.status.kind === "idle"
         ? this.signedDescriptor(preview, ctx.clientId)
         : {})
-    });
+    };
+    if (thread.status.kind !== "idle") return ok(value);
+    return ok(
+      withMcpResourceLink(value, {
+        uri: value.signedUrl ?? preview.uri,
+        name: preview.name,
+        mimeType: preview.mimeType
+      })
+    );
   }
 
   async sizzleCreate(
@@ -528,14 +550,24 @@ export class LocalAgentToolService {
       ownerClientId: ctx.clientId,
       resolvePath: async () => rendered.value.outputPath
     });
-    return ok({
-      resourceUri: resource.uri,
-      ...this.signedDescriptor(resource, ctx.clientId),
-      durationSec: rendered.value.durationSec,
-      widthPx: rendered.value.widthPx,
-      heightPx: rendered.value.heightPx,
-      mimeType: "video/mp4"
-    });
+    const signed = this.signedDescriptor(resource, ctx.clientId);
+    return ok(
+      withMcpResourceLink(
+        {
+          resourceUri: resource.uri,
+          ...signed,
+          durationSec: rendered.value.durationSec,
+          widthPx: rendered.value.widthPx,
+          heightPx: rendered.value.heightPx,
+          mimeType: "video/mp4"
+        },
+        {
+          uri: signed.signedUrl ?? resource.uri,
+          name: resource.name,
+          mimeType: resource.mimeType
+        }
+      )
+    );
   }
 
   private registerCaptureResource(

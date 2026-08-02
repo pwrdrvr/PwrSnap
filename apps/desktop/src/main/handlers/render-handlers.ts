@@ -22,6 +22,7 @@ import {
   CaptureExportError,
   exportCapture
 } from "../render/export-coordinator";
+import { getActiveExportStrategy } from "./settings-handlers";
 
 const log = getMainLogger("pwrsnap:render-handlers");
 
@@ -36,7 +37,9 @@ const HARD_MAX_EDGE_PX = 2000;
 export function registerRenderHandlers(): void {
   bus.register("render:captureExport", async (req) => {
     try {
-      return ok(await exportCapture(req));
+      const strategy =
+        req.preset === undefined ? "legacy" : await getActiveExportStrategy();
+      return ok(await exportCapture(req, strategy));
     } catch (cause) {
       if (cause instanceof CaptureExportError) {
         return err({

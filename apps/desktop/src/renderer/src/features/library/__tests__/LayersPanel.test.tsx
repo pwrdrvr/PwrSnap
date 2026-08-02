@@ -83,6 +83,49 @@ function arrow(id = "ly_arrow", z = 2000, visible = true): BundleLayerNode {
     }
   };
 }
+function text(id = "ly_text", z = 1900): BundleLayerNode {
+  return {
+    ...common(id, z, ROOT),
+    kind: "vector",
+    shape: {
+      kind: "text",
+      point: { x: 0.2, y: 0.2 },
+      body: "Note",
+      size: "medium",
+      weight: "regular",
+      color: "#28c840"
+    }
+  };
+}
+function shape(id = "ly_shape", z = 1800): BundleLayerNode {
+  return {
+    ...common(id, z, ROOT),
+    kind: "vector",
+    shape: {
+      kind: "shape",
+      shape: "circle",
+      rect: { x: 0.2, y: 0.2, w: 0.3, h: 0.3 },
+      color: "#1f7cff",
+      filled: true
+    }
+  };
+}
+function blur(id = "ly_blur", z = 1700): BundleLayerNode {
+  return {
+    ...common(id, z, ROOT),
+    kind: "effect",
+    effect: { type: "blur", style: "pixelate", radius_px: 16 },
+    clip_rect: { x: 20, y: 20, w: 30, h: 30 }
+  };
+}
+function highlight(id = "ly_highlight", z = 1600): BundleLayerNode {
+  return {
+    ...common(id, z, ROOT),
+    kind: "effect",
+    effect: { type: "highlight", tint_hex: "#facc15", opacity: 0.3, blend: "multiply" },
+    clip_rect: { x: 20, y: 20, w: 30, h: 30 }
+  };
+}
 function crop(id = "ly_crop", z = 1000): BundleLayerNode {
   return {
     ...common(id, z, ROOT),
@@ -437,6 +480,51 @@ describe("LayersPanel", () => {
     expect(el.querySelector('[data-testid="layer-inspector-ly_green"]')).toBeNull();
     expect(el.querySelector('[data-testid="layer-inspector-ly_blue"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="layer-inspector-ly_red"]')).not.toBeNull();
+  });
+
+  test("text, shapes, blur, and highlights have manual independent inspectors", async () => {
+    const api = makeApi();
+    const el = await renderPanel(
+      [rootGroup(), raster(), text(), shape(), blur(), highlight()],
+      api,
+      ["ly_shape"]
+    );
+
+    // Selection remains purely a canvas/list highlight. It must not fill the
+    // rail with comparison panels as a person cycles through annotations.
+    for (const id of ["ly_text", "ly_shape", "ly_blur", "ly_highlight"]) {
+      expect(byId(el, `layer-inspector-toggle-${id}`)).not.toBeNull();
+      expect(el.querySelector(`[data-testid="layer-inspector-${id}"]`)).toBeNull();
+    }
+    expect(byId(el, "layer-row-ly_shape").getAttribute("aria-selected")).toBe("true");
+
+    await act(async () => {
+      byId(el, "layer-inspector-toggle-ly_text").click();
+      byId(el, "layer-inspector-toggle-ly_shape").click();
+      byId(el, "layer-inspector-toggle-ly_blur").click();
+      byId(el, "layer-inspector-toggle-ly_highlight").click();
+    });
+
+    const textInspector = byId(el, "layer-inspector-ly_text");
+    const shapeInspector = byId(el, "layer-inspector-ly_shape");
+    const blurInspector = byId(el, "layer-inspector-ly_blur");
+    const highlightInspector = byId(el, "layer-inspector-ly_highlight");
+    expect(byId(textInspector, "text-font-size")).not.toBeNull();
+    expect(byId(shapeInspector, "shape-kind-circle").getAttribute("aria-checked")).toBe("true");
+    expect(byId(blurInspector, "blur-mode-pixelate").getAttribute("aria-checked")).toBe("true");
+    expect(byId(highlightInspector, "highlight-opacity")).not.toBeNull();
+    expect(api.selectLayers).not.toHaveBeenCalled();
+
+    await act(async () => {
+      byId(textInspector, "swatch-red").click();
+      byId(shapeInspector, "shape-kind-rect").click();
+      byId(blurInspector, "blur-mode-redact").click();
+      byId(highlightInspector, "swatch-blue").click();
+    });
+    expect(api.updateLayerStyle).toHaveBeenNthCalledWith(1, "ly_text", "color", "red");
+    expect(api.updateLayerStyle).toHaveBeenNthCalledWith(2, "ly_shape", "shape", "rect");
+    expect(api.updateLayerStyle).toHaveBeenNthCalledWith(3, "ly_blur", "mode", "redact");
+    expect(api.updateLayerStyle).toHaveBeenNthCalledWith(4, "ly_highlight", "color", "blue");
   });
 });
 

@@ -126,8 +126,23 @@ async function seedVisualCaptures(app: LaunchedApp): Promise<VisualCapture[]> {
   );
 
   expect(persistedIds).toEqual(captures.map((capture) => capture.id));
+  await broadcastCapturesChanged(app, persistedIds);
 
   return captures;
+}
+
+// `persistBundleCapture` deliberately calls the persistence seam directly,
+// unlike production's capture handler, so it does not broadcast to the
+// already-loaded Library. Mirror the production event here before asserting
+// the grid contents.
+async function broadcastCapturesChanged(app: LaunchedApp, changedIds: string[]): Promise<void> {
+  await app.electronApp.evaluate((electronModule, ids) => {
+    const { BrowserWindow } = electronModule;
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      win.webContents.send("events:captures:changed", { changedIds: ids });
+    }
+  }, changedIds);
 }
 
 async function waitForFonts(page: Page): Promise<void> {

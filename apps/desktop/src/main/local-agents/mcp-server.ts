@@ -381,8 +381,8 @@ export class LocalAgentMcpServer {
         instructions:
           "Use PwrSnap tools only for captures and sizzle assets the user authorized for this local client. " +
           "Completed media tools return a typed MCP resource link to a five-minute signed localhost URL, plus a capability-protected MCP resource URI fallback. " +
-          "Fetch the resource link promptly. Use MCP resources/read only when the client cannot fetch the direct URL. " +
-          "Never log, persist, or share a signed media URL."
+          "Pass resource link content directly to the client's media fetch/render path; do not copy, reconstruct, print, or persist its URI. " +
+          "Use the fallback MCP resource URI only in clients that explicitly support MCP resource reads."
       }
     );
     this.registerTools(mcp);

@@ -434,8 +434,7 @@ describe("LocalAgentMcpServer", () => {
         openWorldHint: false
       },
       dispatch: async (input) => ok(withMcpResourceLink({
-        resourceUri: `pwrsnap://capture/${input.captureId}/composite`,
-        signedUrl: "http://127.0.0.1:51729/media?grant=temporary"
+        resourceUri: `pwrsnap://capture/${input.captureId}/composite`
       }, {
         uri: "http://127.0.0.1:51729/media?grant=temporary",
         name: "composite capture",
@@ -466,6 +465,8 @@ describe("LocalAgentMcpServer", () => {
       type: "resource_link",
       uri: "http://127.0.0.1:51729/media?grant=temporary",
       name: "composite capture",
+      description:
+        "Pass this link directly to the client media fetch/render path. Do not copy or reconstruct its URI.",
       mimeType: "image/png",
       size: 3,
       annotations: {

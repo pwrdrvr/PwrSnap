@@ -7,8 +7,8 @@ import type { LocalAgentSearchInput } from "./local-agent-search";
 
 const MEDIA_DELIVERY_GUIDANCE =
   "Returns a typed MCP resource link to a five-minute signed localhost URL for direct binary fetch, plus a capability-protected MCP resource URI as a fallback. " +
-  "Fetch the resource link promptly. Use MCP resources/read only when the client cannot fetch the direct URL. " +
-  "Treat the signed URL as a temporary bearer secret and do not log or share it.";
+  "Pass the resource link content directly to the client's media fetch/render path; do not copy, reconstruct, print, or persist its URI. " +
+  "Use the fallback MCP resource URI only in clients that explicitly support MCP resource reads.";
 
 const supplementalContent = Symbol("local-agent-mcp-supplemental-content");
 
@@ -81,7 +81,7 @@ export function toMcpToolResult(result: Result<unknown, PwrSnapError>): CallTool
     content: [
       {
         type: "text",
-        text: JSON.stringify(result.value)
+        text: successSummary(result.value, supplemental)
       },
       ...supplemental
     ],
@@ -119,6 +119,8 @@ export function withMcpResourceLink<T extends Record<string, unknown>>(
       type: "resource_link",
       uri: link.uri,
       name: link.name,
+      description:
+        "Pass this link directly to the client media fetch/render path. Do not copy or reconstruct its URI.",
       mimeType: link.mimeType,
       ...(link.size !== undefined ? { size: link.size } : {}),
       annotations: {
@@ -132,6 +134,22 @@ export function withMcpResourceLink<T extends Record<string, unknown>>(
 function supplementalContentFor(value: unknown): CallToolResult["content"] {
   if (value === null || typeof value !== "object") return [];
   return (value as ToolValueWithSupplementalContent)[supplementalContent] ?? [];
+}
+
+function successSummary(
+  value: unknown,
+  supplemental: CallToolResult["content"]
+): string {
+  if (supplemental.some((content) => content.type === "resource_link")) {
+    return "PwrSnap media is ready in the attached resource link. Pass that link directly to the client media handler.";
+  }
+  if (value !== null && typeof value === "object" && "rows" in value) {
+    const rows = (value as { rows?: unknown }).rows;
+    if (Array.isArray(rows)) {
+      return `PwrSnap returned ${rows.length} capture${rows.length === 1 ? "" : "s"}. See structuredContent for result fields.`;
+    }
+  }
+  return "PwrSnap operation completed. See structuredContent for result fields.";
 }
 
 export function capabilityDenied(

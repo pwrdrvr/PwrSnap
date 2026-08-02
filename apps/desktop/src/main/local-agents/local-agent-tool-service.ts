@@ -105,20 +105,22 @@ export class LocalAgentToolService {
           toolContextForRead(readContext)
         )
       });
-      const signed = this.signedDescriptor(resource, ctx.clientId);
+      const delivery = this.deliveryDescriptor(resource, ctx.clientId);
       return ok(
         withMcpResourceLink(
           {
             variant,
             resourceUri: resource.uri,
-            ...signed,
+            ...(delivery.expiresAt !== undefined
+              ? { resourceLinkExpiresAt: delivery.expiresAt }
+              : {}),
             mimeType: exported.mimeType,
             widthPx: exported.widthPx,
             heightPx: exported.heightPx,
             byteSize: exported.byteSize
           },
           {
-            uri: signed.signedUrl ?? resource.uri,
+            uri: delivery.uri,
             name: resource.name,
             mimeType: resource.mimeType,
             size: exported.byteSize
@@ -174,12 +176,14 @@ export class LocalAgentToolService {
         refresh: (readContext) =>
           this.refreshExport(request, toolContextForRead(readContext))
       });
-      const signed = this.signedDescriptor(resource, ctx.clientId);
+      const delivery = this.deliveryDescriptor(resource, ctx.clientId);
       return ok(
         withMcpResourceLink(
           {
             resourceUri: resource.uri,
-            ...signed,
+            ...(delivery.expiresAt !== undefined
+              ? { resourceLinkExpiresAt: delivery.expiresAt }
+              : {}),
             variant: exported.variant,
             format: exported.format,
             preset: exported.preset ?? preset,
@@ -190,7 +194,7 @@ export class LocalAgentToolService {
             fromCache: exported.fromCache
           },
           {
-            uri: signed.signedUrl ?? resource.uri,
+            uri: delivery.uri,
             name: resource.name,
             mimeType: resource.mimeType,
             size: exported.byteSize
@@ -310,8 +314,7 @@ export class LocalAgentToolService {
       status: { kind: "streaming", turnId: sent.value.turnId },
       provider: thread.provider,
       model: thread.model,
-      compositePreviewResourceUri: preview.uri,
-      ...this.signedDescriptor(preview, ctx.clientId)
+      compositePreviewResourceUri: preview.uri
     });
   }
 
@@ -340,18 +343,21 @@ export class LocalAgentToolService {
       thread.threadId,
       ctx
     );
+    const delivery = thread.status.kind === "idle"
+      ? this.deliveryDescriptor(preview, ctx.clientId)
+      : null;
     const value = {
       threadId: thread.threadId,
       status: thread.status,
       compositePreviewResourceUri: preview.uri,
-      ...(thread.status.kind === "idle"
-        ? this.signedDescriptor(preview, ctx.clientId)
+      ...(delivery?.expiresAt !== undefined
+        ? { resourceLinkExpiresAt: delivery.expiresAt }
         : {})
     };
     if (thread.status.kind !== "idle") return ok(value);
     return ok(
       withMcpResourceLink(value, {
-        uri: value.signedUrl ?? preview.uri,
+        uri: delivery?.uri ?? preview.uri,
         name: preview.name,
         mimeType: preview.mimeType
       })
@@ -550,19 +556,21 @@ export class LocalAgentToolService {
       ownerClientId: ctx.clientId,
       resolvePath: async () => rendered.value.outputPath
     });
-    const signed = this.signedDescriptor(resource, ctx.clientId);
+    const delivery = this.deliveryDescriptor(resource, ctx.clientId);
     return ok(
       withMcpResourceLink(
         {
           resourceUri: resource.uri,
-          ...signed,
+          ...(delivery.expiresAt !== undefined
+            ? { resourceLinkExpiresAt: delivery.expiresAt }
+            : {}),
           durationSec: rendered.value.durationSec,
           widthPx: rendered.value.widthPx,
           heightPx: rendered.value.heightPx,
           mimeType: "video/mp4"
         },
         {
-          uri: signed.signedUrl ?? resource.uri,
+          uri: delivery.uri,
           name: resource.name,
           mimeType: resource.mimeType
         }
@@ -672,20 +680,20 @@ export class LocalAgentToolService {
     });
   }
 
-  private signedDescriptor(
+  private deliveryDescriptor(
     resource: LocalAgentMcpResource,
     clientId: string
-  ): { signedUrl?: string; signedUrlExpiresAt?: string } {
+  ): { uri: string; expiresAt?: string } {
     const baseUrl = this.getBaseUrl();
-    if (baseUrl === null) return {};
+    if (baseUrl === null) return { uri: resource.uri };
     const signed = this.signedUrls.mint({
       baseUrl,
       resourceUri: resource.uri,
       clientId
     });
     return {
-      signedUrl: signed.url,
-      signedUrlExpiresAt: signed.expiresAt
+      uri: signed.url,
+      expiresAt: signed.expiresAt
     };
   }
 }

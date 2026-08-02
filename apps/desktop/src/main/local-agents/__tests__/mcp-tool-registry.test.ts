@@ -29,10 +29,10 @@ function ctx(capabilities: readonly LocalAgentCapability[] = []): LocalAgentTool
 }
 
 describe("createDefaultLocalAgentMcpTools", () => {
-  test("preserves structured metadata while returning a typed resource link", () => {
+  test("keeps bearer URLs out of model-facing metadata while returning a typed resource link", () => {
     const result = toMcpToolResult(ok(withMcpResourceLink({
       resourceUri: "pwrsnap://capture/cap_1/composite",
-      signedUrl: "http://127.0.0.1:51729/media?grant=temporary"
+      resourceLinkExpiresAt: "2026-08-02T15:05:17.697Z"
     }, {
       uri: "http://127.0.0.1:51729/media?grant=temporary",
       name: "composite capture",
@@ -42,17 +42,19 @@ describe("createDefaultLocalAgentMcpTools", () => {
 
     expect(result.structuredContent).toEqual({
       resourceUri: "pwrsnap://capture/cap_1/composite",
-      signedUrl: "http://127.0.0.1:51729/media?grant=temporary"
+      resourceLinkExpiresAt: "2026-08-02T15:05:17.697Z"
     });
     expect(result.content).toEqual([
       {
         type: "text",
-        text: JSON.stringify(result.structuredContent)
+        text: "PwrSnap media is ready in the attached resource link. Pass that link directly to the client media handler."
       },
       {
         type: "resource_link",
         uri: "http://127.0.0.1:51729/media?grant=temporary",
         name: "composite capture",
+        description:
+          "Pass this link directly to the client media fetch/render path. Do not copy or reconstruct its URI.",
         mimeType: "image/png",
         size: 123,
         annotations: {
@@ -61,6 +63,31 @@ describe("createDefaultLocalAgentMcpTools", () => {
         }
       }
     ]);
+    expect(JSON.stringify(result.structuredContent)).not.toContain("/media?");
+    expect(result.content[0]).not.toEqual(expect.objectContaining({
+      text: expect.stringContaining("/media?")
+    }));
+  });
+
+  test("summarizes search results without serializing structured content twice", () => {
+    const result = toMcpToolResult(ok({
+      detail: "enriched",
+      rows: [{ id: "cap_1" }]
+    }));
+
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: "PwrSnap returned 1 capture. See structuredContent for result fields."
+      }
+    ]);
+    expect(result.structuredContent).toEqual({
+      detail: "enriched",
+      rows: [{ id: "cap_1" }]
+    });
+    expect(result.content[0]).not.toEqual(expect.objectContaining({
+      text: JSON.stringify(result.structuredContent)
+    }));
   });
 
   test("search, discovery, and delete tools dispatch through distinct command paths", async () => {

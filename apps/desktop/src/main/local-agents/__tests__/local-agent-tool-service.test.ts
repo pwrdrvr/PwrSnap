@@ -136,21 +136,27 @@ describe("LocalAgentToolService media delivery", () => {
         format: "png"
       }
     ]);
-    expect(mcpResult.structuredContent).toMatchObject({
+    expect(mcpResult.structuredContent).toEqual(expect.objectContaining({
       resourceUri: "pwrsnap://capture/cap_1/composite",
       mimeType: "image/png",
       widthPx: 2_880,
       heightPx: 1_920,
       byteSize: 10,
-      signedUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:51729\/media\?/u)
-    });
+      resourceLinkExpiresAt: expect.any(String)
+    }));
+    expect(mcpResult.structuredContent).not.toHaveProperty("signedUrl");
     expect(mcpResult.content[1]).toMatchObject({
       type: "resource_link",
-      uri: mcpResult.structuredContent?.signedUrl,
+      uri: expect.stringMatching(/^http:\/\/127\.0\.0\.1:51729\/media\?/u),
       name: "composite capture",
       mimeType: "image/png",
       size: 10
     });
+    expect(mcpResult.content[0]).toEqual({
+      type: "text",
+      text: "PwrSnap media is ready in the attached resource link. Pass that link directly to the client media handler."
+    });
+    expect(JSON.stringify(mcpResult.structuredContent)).not.toContain("/media?");
     expect(mcpResult.content.some((content) => content.type === "image")).toBe(false);
   });
 

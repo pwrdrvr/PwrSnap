@@ -671,6 +671,47 @@ function projectV2LayersToOverlayRows(
   return rows;
 }
 
+/**
+ * Build the inverse style patch for a queued selected-layer update.
+ *
+ * A renderer can receive several style clicks before its layer model has
+ * refetched. The `updateOverlay` write lane serializes those clicks and
+ * returns the actual predecessor for each one. Derive undo from that node,
+ * not from the stale `OverlayRow` that happened to service the click.
+ */
+export function previousStylePatchFromQueuedUpdate(
+  previousNode: BundleLayerNode,
+  field: string,
+  nextPatch: Partial<Overlay>,
+  fallback: Partial<Overlay>,
+  dims: { widthPx: number; heightPx: number }
+): Partial<Overlay> {
+  // The normal render projection omits hidden layers. A hidden layer can
+  // still be edited from the Layers list, though, so force this local
+  // projection visible solely to recover its stored style data for undo.
+  const previous = projectV2LayersToOverlayRows(
+    [{ ...previousNode, visible: true }],
+    "__queued_style_undo__",
+    dims
+  )[0]?.data;
+  if (previous === undefined || previous.kind !== nextPatch.kind) return fallback;
+
+  // Text's size control writes both fields at once; restoring only the
+  // symbolic size would leave a stale absolute glyph size after undo.
+  if (previous.kind === "text" && nextPatch.kind === "text" && field === "fontSize") {
+    return {
+      kind: "text",
+      size: previous.size,
+      ...(previous.sizePx !== undefined ? { sizePx: previous.sizePx } : {})
+    };
+  }
+
+  return {
+    kind: previous.kind,
+    [field]: (previous as Record<string, unknown>)[field]
+  } as Partial<Overlay>;
+}
+
 /** Hit-test a normalized [0,1] point against a list of overlay rows.
  *  Walks rows in reverse z-order (last-painted = topmost = first
  *  candidate) so the visually-topmost overlay under the cursor wins
@@ -5308,7 +5349,7 @@ function EditorLoaded({
   const updateOverlayStyleField = useCallback(
     (current: OverlayRow, field: string, value: unknown): void => {
       let patch: Partial<Overlay>;
-      let previousPatch: Partial<Overlay>;
+      let fallbackPreviousPatch: Partial<Overlay>;
       // Special case: the text popover's "fontSize" field maps to
       // TextOverlay's `size` + `sizePx` fields. Recompute sizePx for the
       // current canvas so an explicit bucket choice exits "Custom".
@@ -5332,7 +5373,7 @@ function EditorLoaded({
           size: newSize,
           sizePx: newSizePx
         };
-        previousPatch = {
+        fallbackPreviousPatch = {
           kind: "text",
           size: current.data.size,
           ...(current.data.sizePx !== undefined ? { sizePx: current.data.sizePx } : {})
@@ -5350,7 +5391,7 @@ function EditorLoaded({
           kind: current.data.kind,
           [field]: persistedValue
         } as Partial<Overlay>;
-        previousPatch = {
+        fallbackPreviousPatch = {
           kind: current.data.kind,
           [field]: (current.data as Record<string, unknown>)[field]
         } as Partial<Overlay>;
@@ -5372,6 +5413,13 @@ function EditorLoaded({
         // race against the layers broadcast.
         setSelectionTrustingDispatch([newId]);
         if (!undoApplyingRef.current) {
+          const previousPatch = previousStylePatchFromQueuedUpdate(
+            result.value.artifact.previousNode,
+            field,
+            patch,
+            fallbackPreviousPatch,
+            { widthPx: record.width_px, heightPx: record.height_px }
+          );
           undo.recordStyle({
             currentIdRef: { current: newId },
             previousPatch,

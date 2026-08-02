@@ -52,7 +52,14 @@ beforeEach(() => {
     if (op.kind === "updateGeometry" || op.kind === "updateOverlay") {
       return {
         ok: true,
-        value: { kind: "update", artifact: { format: 2, node: makeNode(`fresh-${n}`) } }
+        value: {
+          kind: "update",
+          artifact: {
+            format: 2,
+            node: makeNode(`fresh-${n}`),
+            previousNode: makeNode(`previous-${n}`)
+          }
+        }
       };
     }
     return { ok: false, error: { kind: "validation", code: "unknown", message: op.kind } };
@@ -656,7 +663,11 @@ describe("useUndoRedo", () => {
           ok: true,
           value: {
             kind: "update",
-            artifact: { format: 2, node: makeNode(`fresh-${Math.random()}`) }
+            artifact: {
+              format: 2,
+              node: makeNode(`fresh-${Math.random()}`),
+              previousNode: makeNode("previous")
+            }
           }
         };
       }
@@ -725,7 +736,11 @@ describe("useUndoRedo", () => {
           ok: true,
           value: {
             kind: "update",
-            artifact: { format: 2, node: makeNode(`replay-${idCounter}`) }
+            artifact: {
+              format: 2,
+              node: makeNode(`replay-${idCounter}`),
+              previousNode: makeNode("previous")
+            }
           }
         };
       }
@@ -775,7 +790,11 @@ describe("useUndoRedo", () => {
           ok: true,
           value: {
             kind: "update",
-            artifact: { format: 2, node: makeNode("fresh") }
+            artifact: {
+              format: 2,
+              node: makeNode("fresh"),
+              previousNode: makeNode("previous")
+            }
           }
         };
       }
@@ -816,6 +835,53 @@ describe("useUndoRedo", () => {
     expect(call.kind).toBe("updateOverlay");
     expect(call.layerId).toBe("ov_post");
     expect(call.patch.color).toBe("auto");
+  });
+
+  test("successive style entries undo one queued value at a time", async () => {
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_1",
+        onSnapshot: (snapshot) => {
+          api = snapshot;
+        }
+      })
+    );
+
+    // Mirrors red → blue before the layer model can refetch. The
+    // second entry's inverse must be red, not the original green.
+    act(() => {
+      api!.recordStyle({
+        currentIdRef: { current: "ly_arrow" },
+        previousPatch: { kind: "arrow", color: "#28c840" },
+        nextPatch: { kind: "arrow", color: "#ff5a5a" }
+      });
+      api!.recordStyle({
+        currentIdRef: { current: "ly_arrow" },
+        previousPatch: { kind: "arrow", color: "#ff5a5a" },
+        nextPatch: { kind: "arrow", color: "#2489ff" }
+      });
+    });
+
+    await act(async () => {
+      await api!.undo();
+    });
+    await act(async () => {
+      await api!.undo();
+    });
+
+    expect(dispatchEditMock.mock.calls.map(([op]) => op)).toEqual([
+      {
+        kind: "updateOverlay",
+        layerId: "ly_arrow",
+        patch: { kind: "arrow", color: "#ff5a5a" }
+      },
+      {
+        kind: "updateOverlay",
+        layerId: "ly_arrow",
+        patch: { kind: "arrow", color: "#28c840" }
+      }
+    ]);
   });
 
   test("text re-edit then full undo rolls back in the user's expected order", async () => {

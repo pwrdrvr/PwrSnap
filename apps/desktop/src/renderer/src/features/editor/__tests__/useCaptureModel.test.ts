@@ -1518,6 +1518,32 @@ describe("useCaptureModel", () => {
 
     const results = await Promise.all([colorResult, thicknessResult]);
     expect(results.every((result) => result.ok)).toBe(true);
+    const [colorUpdate, thicknessUpdate] = results;
+    if (
+      colorUpdate === undefined ||
+      thicknessUpdate === undefined ||
+      !colorUpdate.ok ||
+      !thicknessUpdate.ok ||
+      colorUpdate.value.kind !== "update" ||
+      thicknessUpdate.value.kind !== "update"
+    ) {
+      throw new Error("expected queued update results");
+    }
+    const firstPrevious = colorUpdate.value.artifact.previousNode;
+    const secondPrevious = thicknessUpdate.value.artifact.previousNode;
+    if (
+      firstPrevious.kind !== "vector" ||
+      firstPrevious.shape.kind !== "arrow" ||
+      secondPrevious.kind !== "vector" ||
+      secondPrevious.shape.kind !== "arrow"
+    ) {
+      throw new Error("expected queued arrow predecessors");
+    }
+    // Each result carries the actual node its queued write replaced.
+    // The second caller was submitted from a stale model snapshot, but
+    // its predecessor already contains the first caller's color update.
+    expect(firstPrevious.shape.color).toBe("auto");
+    expect(secondPrevious.shape.color).toBe("#2489ff");
   });
 
   test("13d-highlight. v2 dispatchEdit: updateGeometry persists highlight effect rotation and stable id", async () => {

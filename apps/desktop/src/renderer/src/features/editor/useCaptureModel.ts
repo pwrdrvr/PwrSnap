@@ -196,6 +196,15 @@ export type CropRect = { x: number; y: number; w: number; h: number };
  *  inverse-delete on undo. */
 export type EditUpsertArtifact = { format: 2; node: BundleLayerNode };
 
+/** Result payload for an in-place update. `node` is the persisted
+ * post-update layer; `previousNode` is the exact layer state that the
+ * update replaced. For queued `updateOverlay` writes, that predecessor
+ * comes from the write lane rather than a possibly stale render snapshot.
+ */
+export type EditUpdateArtifact = EditUpsertArtifact & {
+  previousNode: BundleLayerNode;
+};
+
 /** Result of a `crop` op — the PREVIOUS canvas dims so the caller can
  *  stash them for undo. Surfaces the previous width_px / height_px
  *  from the captures row. */
@@ -279,13 +288,14 @@ export type CaptureModelError = {
  *  artifact (nothing to surface). `upsert` resolves with the fresh
  *  row/layer; `crop` resolves with the previous canvas dims (so the
  *  undo stack can stash them and reverse on ⌘Z). `update` (geometry
- *  + style) resolves with the PRE-PATCH row/layer so the undo stack
- *  can stash it for inverse replay on ⌘Z. */
+ *  + style) resolves with both the persisted node and the exact
+ *  PRE-PATCH node so undo can derive its inverse from the state the
+ *  write actually replaced. */
 export type EditOpResult =
   | { kind: "upsert"; artifact: EditUpsertArtifact }
   | { kind: "delete" }
   | { kind: "crop"; artifact: EditCropArtifact }
-  | { kind: "update"; artifact: EditUpsertArtifact }
+  | { kind: "update"; artifact: EditUpdateArtifact }
   /** Z-order change. Ids don't change (layers:reorder is a true
    *  in-place UPDATE on `z_index`), so the artifact is empty — callers
    *  keep their existing selection ids. */
@@ -1339,7 +1349,11 @@ export function useCaptureModel(captureId: string): CaptureModel {
               ok: true,
               value: {
                 kind: "update",
-                artifact: { format: 2, node: updResult.value }
+                artifact: {
+                  format: 2,
+                  node: updResult.value,
+                  previousNode: current
+                }
               }
             };
           }
@@ -1354,7 +1368,11 @@ export function useCaptureModel(captureId: string): CaptureModel {
             ok: true,
             value: {
               kind: "update",
-              artifact: { format: 2, node: insResult.value }
+              artifact: {
+                format: 2,
+                node: insResult.value,
+                previousNode: current
+              }
             }
           };
         }
@@ -1398,7 +1416,8 @@ export function useCaptureModel(captureId: string): CaptureModel {
             // A preceding update may already have restored a new shape,
             // even though the events:overlays:changed refetch has not
             // updated `layersRef` yet.
-            const merged = applyPatchToLayer(queue.current, op.patch, {
+            const previousNode = queue.current;
+            const merged = applyPatchToLayer(previousNode, op.patch, {
               width: record.width_px,
               height: record.height_px
             });
@@ -1406,10 +1425,10 @@ export function useCaptureModel(captureId: string): CaptureModel {
               return err({
                 kind: "validation",
                 code: "patch_kind_mismatch",
-                message: `updateOverlay: patch does not apply to layer kind ${queue.current.kind}`
+                message: `updateOverlay: patch does not apply to layer kind ${previousNode.kind}`
               });
             }
-            const delResult = await dispatch("layers:delete", { id: queue.current.id });
+            const delResult = await dispatch("layers:delete", { id: previousNode.id });
             if (!delResult.ok) return err(delResult.error);
             const insResult = await dispatch("layers:upsert", {
               captureId,
@@ -1425,7 +1444,11 @@ export function useCaptureModel(captureId: string): CaptureModel {
               ok: true,
               value: {
                 kind: "update",
-                artifact: { format: 2, node: insResult.value }
+                artifact: {
+                  format: 2,
+                  node: insResult.value,
+                  previousNode
+                }
               }
             };
           });

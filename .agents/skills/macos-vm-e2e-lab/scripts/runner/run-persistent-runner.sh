@@ -75,6 +75,13 @@ if ! ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "test -f ~/actions-runner/.runner"; th
   ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" \
     "TOKEN=$(printf %q "$TOKEN") NAME=$(printf %q "$RUNNER_NAME") LABELS=$(printf %q "$LABELS") bash -s" <<'REMOTE'
 set -euo pipefail
+# Homebrew on PATH BEFORE config.sh: the runner snapshots PATH into
+# .path at configure time and hands that PATH to every job. A bare
+# ssh shell's PATH has no /opt/homebrew/bin, which breaks any job
+# step that shells out to a brew tool — git-lfs during checkout was
+# the first real casualty (LFS smudge -> "git-lfs: command not
+# found" -> checkout exit 128).
+eval "$(/opt/homebrew/bin/brew shellenv)"
 cd ~/actions-runner
 ./config.sh --unattended \
   --url https://github.com/pwrdrvr/PwrSnap \
@@ -89,4 +96,7 @@ fi
 
 echo ">> [$VM] serving jobs (one at a time) — Ctrl-C stops the listener; VM stays up"
 echo ">>       stop the VM too with: tart stop $VM"
-ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cd ~/actions-runner && ./run.sh"
+# Refresh .path on EVERY boot, not just at registration: it self-heals
+# runners registered before the brew-shellenv fix above, and keeps job
+# PATH correct if the image's brew layout ever moves.
+ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" 'eval "$(/opt/homebrew/bin/brew shellenv)"; echo "$PATH" > ~/actions-runner/.path; cd ~/actions-runner && ./run.sh'

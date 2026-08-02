@@ -43,8 +43,7 @@ const FIXTURE_CAPTURES = [
 ] as const;
 
 type VisualCapture = (typeof FIXTURE_CAPTURES)[number] & {
-  srcPath: string;
-  byteSize: number;
+  tempPath: string;
 };
 
 /**
@@ -55,11 +54,13 @@ type VisualCapture = (typeof FIXTURE_CAPTURES)[number] & {
  */
 async function seedVisualCaptures(app: LaunchedApp): Promise<VisualCapture[]> {
   const fixtureDir = path.join(app.homeRoot, "visual-regression-fixtures");
+  const bundleDir = path.join(app.homeRoot, "visual-regression-bundles");
   await mkdir(fixtureDir, { recursive: true });
+  await mkdir(bundleDir, { recursive: true });
 
   const captures = await Promise.all(
     FIXTURE_CAPTURES.map(async (capture) => {
-      const srcPath = path.join(fixtureDir, `${capture.id}.png`);
+      const tempPath = path.join(fixtureDir, `${capture.id}.png`);
       const png = await sharp({
         create: {
           width: FIXTURE_WIDTH,
@@ -70,66 +71,61 @@ async function seedVisualCaptures(app: LaunchedApp): Promise<VisualCapture[]> {
       })
         .png()
         .toBuffer();
-      await writeFile(srcPath, png);
-      return { ...capture, srcPath, byteSize: png.byteLength };
+      await writeFile(tempPath, png);
+      return { ...capture, tempPath };
     })
   );
 
-  await app.electronApp.evaluate(
+  const persistedIds = await app.electronApp.evaluate(
     (
       _electron,
       payload: Array<{
         id: string;
         capturedAt: string;
         sourceAppName: string;
-        srcPath: string;
-        byteSize: number;
-        width: number;
-        height: number;
+        tempPath: string;
+        outputDir: string;
       }>
     ) => {
       const bridge = (
         globalThis as unknown as {
           __PWRSNAP_TEST__: {
-            seedCapture: (input: {
-              id: string;
-              kind: "image";
-              captured_at: string;
-              source_app_bundle_id: string;
-              source_app_name: string;
-              legacy_src_path: string;
-              width_px: number;
-              height_px: number;
-              device_pixel_ratio: number;
-              byte_size: number;
-              sha256: string;
-            }) => void;
+            persistBundleCapture: (input: {
+              tempPath: string;
+              sourceApp: { bundleId: string; appName: string };
+              captureId: string;
+              capturedAt: string;
+              devicePixelRatio: number;
+              outputDir: string;
+            }) => Promise<{ record: { id: string } }>;
           };
         }
       ).__PWRSNAP_TEST__;
 
-      for (const capture of payload) {
-        bridge.seedCapture({
-          id: capture.id,
-          kind: "image",
-          captured_at: capture.capturedAt,
-          source_app_bundle_id: `com.pwrsnap.visual.${capture.id}`,
-          source_app_name: capture.sourceAppName,
-          legacy_src_path: capture.srcPath,
-          width_px: capture.width,
-          height_px: capture.height,
-          device_pixel_ratio: 1,
-          byte_size: capture.byteSize,
-          sha256: `visual-${capture.id}`
-        });
-      }
+      return Promise.all(
+        payload.map(async (capture) => {
+          const { record } = await bridge.persistBundleCapture({
+            tempPath: capture.tempPath,
+            sourceApp: {
+              bundleId: `com.pwrsnap.visual.${capture.id}`,
+              appName: capture.sourceAppName
+            },
+            captureId: capture.id,
+            capturedAt: capture.capturedAt,
+            devicePixelRatio: 1,
+            outputDir: capture.outputDir
+          });
+          return record.id;
+        })
+      );
     },
     captures.map((capture) => ({
       ...capture,
-      width: FIXTURE_WIDTH,
-      height: FIXTURE_HEIGHT
+      outputDir: bundleDir
     }))
   );
+
+  expect(persistedIds).toEqual(captures.map((capture) => capture.id));
 
   return captures;
 }

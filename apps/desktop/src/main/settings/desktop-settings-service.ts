@@ -1064,10 +1064,7 @@ function parseLocalAgentGrant(raw: unknown): LocalAgentClientGrant | null {
   const revokedAt = pickIsoishStringOrNull(raw.revokedAt);
   if (lastUsedAt === undefined || revokedAt === undefined) return null;
   const oauthClient = parseLocalAgentOAuthClient(raw.oauthClient);
-  if (
-    raw.oauthClient !== undefined &&
-    (oauthClient === null || oauthClient.clientId !== id)
-  ) {
+  if (raw.oauthClient !== undefined && oauthClient === null) {
     return null;
   }
   return {
@@ -1078,7 +1075,7 @@ function parseLocalAgentGrant(raw: unknown): LocalAgentClientGrant | null {
     updatedAt,
     lastUsedAt,
     revokedAt,
-    ...(oauthClient !== null && oauthClient.clientId === id ? { oauthClient } : {})
+    ...(oauthClient !== null ? { oauthClient } : {})
   };
 }
 

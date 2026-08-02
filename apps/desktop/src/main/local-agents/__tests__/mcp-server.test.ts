@@ -310,7 +310,11 @@ async function approveAndExchange(
   capabilities: readonly LocalAgentCapability[],
   requestedScopes?: readonly LocalAgentCapability[]
 ): Promise<string> {
-  consentDecisions.push({ decision: "allow", capabilities });
+  consentDecisions.push({
+    decision: "allow",
+    sessionName: oauthClient.client_name,
+    capabilities
+  });
   const authorizationUrl = makeAuthorizationUrl(
     address,
     oauthClient,
@@ -683,7 +687,7 @@ describe("LocalAgentMcpServer", () => {
     expect(oauthClient.token_endpoint_auth_method).toBe("none");
     expect(oauthClient).not.toHaveProperty("client_secret");
 
-    consentDecisions.push({ decision: "deny", capabilities: [] });
+    consentDecisions.push({ decision: "deny", sessionName: "", capabilities: [] });
     const defaultConsent = await fetch(makeAuthorizationUrl(address, oauthClient), {
       redirect: "manual"
     });
@@ -703,7 +707,6 @@ describe("LocalAgentMcpServer", () => {
     const grants = await grantService.list();
     expect(grants).toHaveLength(1);
     expect(grants[0]).toMatchObject({
-      id: oauthClient.client_id,
       name: "Codex Desktop",
       capabilities: ["library.read", "trash.write"],
       revokedAt: null,
@@ -838,7 +841,7 @@ describe("LocalAgentMcpServer", () => {
     const authorizationUrl = makeAuthorizationUrl(address, oauthClient, [
       "capture.original.read"
     ]);
-    consentDecisions.push({ decision: "deny", capabilities: [] });
+    consentDecisions.push({ decision: "deny", sessionName: "", capabilities: [] });
     const denied = await fetch(authorizationUrl, {
       redirect: "manual"
     });
@@ -895,7 +898,11 @@ describe("LocalAgentMcpServer", () => {
     expect(await headlessApproval.json()).toMatchObject({ error: "method_not_allowed" });
     expect(await grantService.list()).toEqual([]);
 
-    resolveNative({ decision: "allow", capabilities: ["library.read"] });
+    resolveNative({
+      decision: "allow",
+      sessionName: "Forging Agent",
+      capabilities: ["library.read"]
+    });
     const approved = await authorization;
     expect(approved.status).toBe(302);
     const callback = new URL(approved.headers.get("location") ?? "");
@@ -941,6 +948,7 @@ describe("LocalAgentMcpServer", () => {
     expect(provider.handleConsentDecision({
       transactionId: "consent_expiring",
       decision: "allow",
+      sessionName: "Expiring Agent",
       capabilities: ["library.read"]
     })).toMatchObject({
       kind: "error",

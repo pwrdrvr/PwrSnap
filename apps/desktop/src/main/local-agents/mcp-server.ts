@@ -558,6 +558,7 @@ export class LocalAgentMcpServer {
       oauth.handleConsentDecision({
         transactionId: result.transactionId,
         decision: "deny",
+        sessionName: "",
         capabilities: []
       });
       writeJsonResponse(res, 503, {
@@ -584,6 +585,7 @@ export class LocalAgentMcpServer {
       oauth.handleConsentDecision({
         transactionId: result.transactionId,
         decision: "deny",
+        sessionName: "",
         capabilities: []
       });
       throw cause;
@@ -593,6 +595,7 @@ export class LocalAgentMcpServer {
     const completed = oauth.handleConsentDecision({
       transactionId: result.transactionId,
       decision: decision.decision,
+      sessionName: decision.sessionName,
       capabilities: decision.capabilities
     });
     if (res.destroyed) return;

@@ -45,6 +45,7 @@ type OAuthGrantService = Pick<
 type AuthorizationCodeRecord = {
   client: OAuthClientInformationFull;
   params: AuthorizationParams;
+  sessionName: string;
   capabilities: LocalAgentCapability[];
   expiresAtMs: number;
 };
@@ -59,6 +60,7 @@ type ConsentTransactionRecord = {
 export type LocalAgentAuthorizationGrant = {
   client: OAuthClientInformationFull;
   params: AuthorizationParams;
+  sessionName: string;
   capabilities: readonly LocalAgentCapability[];
 };
 
@@ -286,6 +288,7 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
   handleConsentDecision(input: {
     transactionId: string;
     decision: string;
+    sessionName: string;
     capabilities: readonly string[];
   }): LocalAgentAuthorizationResult {
     this.pruneConsents();
@@ -310,6 +313,10 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
     if (input.decision !== "allow") {
       return oauthError(400, "invalid_request", "Consent decision is invalid");
     }
+    const sessionName = input.sessionName.trim();
+    if (sessionName.length === 0 || sessionName.length > 200) {
+      return oauthError(400, "invalid_request", "Session Name must be between 1 and 200 characters");
+    }
     const selected = [...new Set(input.capabilities)];
     if (!selected.every(isLocalAgentCapability)) {
       return oauthError(400, "invalid_scope", "An unknown PwrSnap permission was selected");
@@ -321,6 +328,7 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
     const code = this.createAuthorizationCode({
       client: transaction.client,
       params: transaction.params,
+      sessionName,
       capabilities
     });
     const callback = new URL(transaction.params.redirectUri);
@@ -360,6 +368,7 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
     this.codes.set(code, {
       client: grant.client,
       params: grant.params,
+      sessionName: grant.sessionName,
       capabilities: [...grant.capabilities],
       expiresAtMs: this.now().getTime() + AUTHORIZATION_CODE_TTL_MS
     });
@@ -391,7 +400,7 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
     }
     this.codes.delete(authorizationCode);
     const issued = await this.grantService.issueOAuthGrant({
-      name: client.client_name?.trim() || "Local MCP client",
+      name: record.sessionName,
       capabilities: record.capabilities,
       oauthClient: oauthClientToStored(client, this.now())
     });
@@ -434,9 +443,13 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
     request: OAuthTokenRevocationRequest
   ): Promise<void> {
     const [clientId] = splitAccessToken(request.token);
-    if (clientId === null || clientId !== client.client_id) return;
+    if (clientId === null) return;
     const grant = (await this.grantService.list()).find((item) => item.id === clientId);
-    if (grant === undefined || grant.revokedAt !== null) return;
+    if (
+      grant === undefined ||
+      grant.revokedAt !== null ||
+      grant.oauthClient?.clientId !== client.client_id
+    ) return;
     await this.grantService.revokeGrant(clientId);
   }
 

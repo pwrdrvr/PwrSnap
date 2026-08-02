@@ -111,12 +111,13 @@ describe("LocalAgentGrantService", () => {
     expect(reread[0]?.lastUsedAt).toBe("2026-06-07T12:00:00.000Z");
   });
 
-  test("OAuth authorization persists public client metadata and reauthorization rotates access", async () => {
+  test("OAuth authorization creates independently named sessions for one public client", async () => {
     let tokenNumber = 0;
     const service = new LocalAgentGrantService({
       settings,
       secrets,
       now: () => new Date("2026-06-07T12:00:00.000Z"),
+      makeId: () => `lag_session_${tokenNumber + 1}`,
       makeToken: () => `pws_local_oauth-token-${++tokenNumber}`
     });
     const oauthClient = {
@@ -138,29 +139,29 @@ describe("LocalAgentGrantService", () => {
       oauthClient
     });
     expect(first.grant).toMatchObject({
-      id: "lag_oauth",
+      id: "lag_session_2",
       capabilities: ["library.read"],
       oauthClient
     });
 
-    await service.revokeGrant("lag_oauth");
+    await service.revokeGrant(first.grant.id);
     const second = await service.issueOAuthGrant({
-      name: "Codex Desktop",
+      name: "Codex Personal",
       capabilities: ["library.read", "capture.composite.read"],
       oauthClient
     });
     expect(second.grant).toMatchObject({
-      id: "lag_oauth",
+      id: "lag_session_3",
       capabilities: ["library.read", "capture.composite.read"],
       revokedAt: null
     });
-    expect(await service.list()).toHaveLength(1);
+    expect(await service.list()).toHaveLength(2);
     await expect(service.authenticate({
-      clientId: "lag_oauth",
+      clientId: first.grant.id,
       token: first.token
-    })).resolves.toEqual({ ok: false, code: "invalid_token" });
+    })).resolves.toEqual({ ok: false, code: "revoked" });
     await expect(service.authenticate({
-      clientId: "lag_oauth",
+      clientId: second.grant.id,
       token: second.token
     })).resolves.toMatchObject({ ok: true });
   });
@@ -319,7 +320,7 @@ describe("LocalAgentGrantService", () => {
     expect(readFileSync(join(workDir, quarantine!), "utf8")).toContain("cap_preserved");
   });
 
-  test("settings parser quarantines mismatched OAuth metadata without dropping it silently", async () => {
+  test("settings parser preserves distinct sessions for one OAuth client", async () => {
     const baseGrant = {
       id: "lag_oauth",
       name: "Codex",
@@ -354,8 +355,10 @@ describe("LocalAgentGrantService", () => {
       }
     });
 
-    expect((await settings.read()).localAgents.grants).toEqual([]);
-    expect(readdirSync(workDir).some((name) => name.includes("corrupt-"))).toBe(true);
+    const grants = (await settings.read()).localAgents.grants;
+    expect(grants.map((grant) => grant.id)).toEqual(["lag_oauth", "lag_other"]);
+    expect(grants.every((grant) => grant.oauthClient?.clientId === "lag_oauth")).toBe(true);
+    expect(readdirSync(workDir).some((name) => name.includes("corrupt-"))).toBe(false);
   });
 
   test("command bus carries local-agent identity without affecting IPC callers", async () => {

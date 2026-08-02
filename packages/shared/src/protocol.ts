@@ -784,7 +784,10 @@ export type LocalAgentConsentPermission = {
 /** Pending OAuth approval shown only inside PwrSnap's trusted consent window. */
 export type LocalAgentConsentPrompt = {
   requestId: string;
+  /** Self-reported OAuth client label. It is display metadata, not identity. */
   clientName: string;
+  /** Editable user-owned label for the durable authorization session. */
+  suggestedSessionName: string;
   permissions: LocalAgentConsentPermission[];
 };
 
@@ -3300,6 +3303,7 @@ export type Commands = {
     req: {
       requestId: string;
       decision: "allow" | "deny";
+      sessionName: string;
       capabilities: LocalAgentCapability[];
     };
     res: void;

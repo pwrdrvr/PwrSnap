@@ -1900,7 +1900,11 @@ export function bootstrapApp(): void {
           requestConsent: (request) => {
             const broker = localAgentConsentBroker;
             if (broker === null) {
-              return Promise.resolve({ decision: "deny", capabilities: [] });
+              return Promise.resolve({
+                decision: "deny",
+                sessionName: "",
+                capabilities: []
+              });
             }
             return broker.request(request);
           }

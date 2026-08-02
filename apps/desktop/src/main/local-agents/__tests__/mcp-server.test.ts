@@ -143,6 +143,42 @@ function toolSet(): LocalAgentMcpTool<z.ZodRawShape>[] {
         })
     },
     {
+      name: "pwrsnap_library_discover",
+      title: "Discover PwrSnap Library Filters",
+      description: "List reusable human app and accepted-tag filters.",
+      inputSchema: {
+        limit: z.number().int().min(1).optional()
+      },
+      requiredCapabilities: ["library.read"],
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
+      dispatch: async (input, ctx) =>
+        ok({
+          applications: [
+            {
+              name: "Claude",
+              bundleId: "com.anthropic.claudefordesktop",
+              count: 4,
+              mostRecentCapturedAt: "2026-06-07T12:00:00.000Z"
+            }
+          ],
+          tags: [
+            {
+              label: "Important",
+              count: 3,
+              mostRecentCapturedAt: "2026-06-06T12:00:00.000Z"
+            }
+          ],
+          limit: input.limit ?? null,
+          clientId: ctx.clientId,
+          principal: ctx.commandContext.principal
+        })
+    },
+    {
       name: "pwrsnap_image_edit_send",
       title: "Edit PwrSnap Image",
       description: "Start an image edit and return its composite preview.",
@@ -467,6 +503,41 @@ describe("LocalAgentMcpServer", () => {
     expect(denied.content[0]).toMatchObject({
       type: "text",
       text: expect.stringContaining("missing_capability")
+    });
+  });
+
+  test("authorized client discovers reusable human app and tag facets with MCP context", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const connected = await connect(await startServer(), "pws_local_mcp-token");
+
+    const discovery = (await connected.callTool({
+      name: "pwrsnap_library_discover",
+      arguments: { limit: 25 }
+    })) as CallToolResult;
+
+    expect(discovery.isError).not.toBe(true);
+    expect(discovery.structuredContent).toEqual({
+      applications: [
+        {
+          name: "Claude",
+          bundleId: "com.anthropic.claudefordesktop",
+          count: 4,
+          mostRecentCapturedAt: "2026-06-07T12:00:00.000Z"
+        }
+      ],
+      tags: [
+        {
+          label: "Important",
+          count: 3,
+          mostRecentCapturedAt: "2026-06-06T12:00:00.000Z"
+        }
+      ],
+      limit: 25,
+      clientId: "lag_mcp",
+      principal: "mcp"
     });
   });
 

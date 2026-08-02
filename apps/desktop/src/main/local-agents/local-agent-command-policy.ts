@@ -16,6 +16,7 @@ export function localAgentCommandRequirement(
   switch (name) {
     case "library:list":
     case "library:search":
+    case "library:discover":
     case "library:listByIdsWithMetadata":
     case "codex:enrichment":
       return { all: ["library.read"] };

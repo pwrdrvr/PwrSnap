@@ -49,6 +49,8 @@ import type {
   LocalAgentConsentRequest
 } from "./local-agent-consent-broker";
 import {
+  localAgentSearchOrder,
+  projectLocalAgentSearchDiscovery,
   projectLocalAgentSearchRows,
   toCaptureSearchRequest
 } from "./local-agent-search";
@@ -143,9 +145,10 @@ export class LocalAgentMcpServer {
       options.tools ??
       createDefaultLocalAgentMcpTools({
         search: async (input, ctx) => {
+          const request = toCaptureSearchRequest(input);
           const result = await bus.dispatch(
             "library:search",
-            toCaptureSearchRequest(input),
+            request,
             {
               principal: "mcp",
               localAgent: ctx.commandContext.localAgent
@@ -154,11 +157,24 @@ export class LocalAgentMcpServer {
           if (!result.ok) return result;
           return ok({
             detail: input.detail ?? "summary",
+            order: localAgentSearchOrder(input),
             rows: projectLocalAgentSearchRows(
               result.value.rows,
               input.detail ?? "summary"
             )
           });
+        },
+        discovery: async (input, ctx) => {
+          const result = await bus.dispatch(
+            "library:discover",
+            input,
+            {
+              principal: "mcp",
+              localAgent: ctx.commandContext.localAgent
+            }
+          );
+          if (!result.ok) return result;
+          return ok(projectLocalAgentSearchDiscovery(result.value));
         },
         deleteToTrash: async (input, ctx) => {
           const commandContext = {

@@ -21,11 +21,13 @@
 
 import type {
   CaptureRecord,
+  CaptureSearchDiscovery,
   CaptureSearchRequest,
   CaptureSearchResultRow,
   LibraryAppStat,
   LibraryCursor
 } from "@pwrsnap/shared";
+import { normalizeTagLabel } from "@pwrsnap/shared";
 import { getDb } from "./db";
 import { listEnrichmentsByCaptureIds } from "./enrichment-repo";
 import { getVideoMetadata, listVideoMetadata } from "./video-repo";
@@ -471,10 +473,11 @@ export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
  *
  *   - `query` set → JOIN `capture_search_fts` (FTS5 virtual table
  *     populated by migration 0017), MATCH the sanitized query,
- *     extract `snippet(...)` for the matched fragment. Results ordered
- *     by FTS5 rank (relevance).
+ *     extract `snippet(...)` for the matched fragment. Results default
+ *     to FTS5 rank (relevance), with explicit chronological overrides.
  *   - `query` absent → no JOIN. Filter-only scan ordered by
- *     `captured_at DESC, id DESC` matching `listCaptures` semantics.
+ *     `captured_at DESC, id DESC` (newest first) unless explicitly
+ *     ordered oldest-first.
  *
  * Soft-deleted rows are always excluded. Result hydrates video
  * metadata + per-row enrichment in two batched queries (same shape
@@ -494,6 +497,7 @@ export const SEARCH_MAX_LIMIT = 500;
 export function searchCaptures(filter: CaptureSearchRequest): CaptureSearchResultRow[] {
   const db = getDb();
   const limit = Math.min(SEARCH_MAX_LIMIT, filter.limit ?? SEARCH_DEFAULT_LIMIT);
+  const order = filter.order ?? (filter.query === undefined ? "newest" : "relevance");
 
   // Filter clauses applied to the captures table directly. Same shape
   // as listCaptures (deleted_at + appBundleIds) plus the new kinds /
@@ -530,6 +534,60 @@ export function searchCaptures(filter: CaptureSearchRequest): CaptureSearchResul
       where.push(`(${bundleWhere.join(" OR ")})`);
     }
   }
+  if (filter.sourceAppNames !== undefined) {
+    // Human-facing application filters intentionally use exact equality,
+    // not FTS/prefix matching. Discovery returns these same source_app_name
+    // values so an agent can reuse one without knowing a macOS bundle ID.
+    if (filter.sourceAppNames.length === 0) {
+      where.push("0 = 1");
+    } else {
+      const names = filter.sourceAppNames
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0);
+      if (names.length === 0) {
+        where.push("0 = 1");
+      } else {
+        const placeholders = names.map((_, i) => `@sourceAppName${i}`).join(", ");
+        for (const [index, name] of names.entries()) {
+          params[`sourceAppName${index}`] = name;
+        }
+        where.push(`captures.source_app_name IN (${placeholders})`);
+      }
+    }
+  }
+  if (filter.tagFilter !== undefined) {
+    // Match accepted content tags by their normalized label. This is an
+    // exact equality filter (not an FTS/prefix match); `any` and `all`
+    // intentionally have distinct SQL semantics.
+    const labels = [...new Set(
+      filter.tagFilter.labels
+        .map(normalizeTagLabel)
+        .filter((label) => label.length > 0)
+    )];
+    if (labels.length === 0) {
+      where.push("0 = 1");
+    } else {
+      const placeholders = labels.map((_, i) => `@tagLabel${i}`).join(", ");
+      for (const [index, label] of labels.entries()) {
+        params[`tagLabel${index}`] = label;
+      }
+      const tagMatches = `
+        FROM capture_tags
+        JOIN tags ON tags.id = capture_tags.tag_id
+        WHERE capture_tags.capture_id = captures.id
+          AND tags.kind = 'content'
+          AND tags.normalized_label IN (${placeholders})`;
+      if (filter.tagFilter.match === "all") {
+        params.tagFilterCount = labels.length;
+        where.push(`(
+          SELECT COUNT(DISTINCT tags.normalized_label)
+          ${tagMatches}
+        ) = @tagFilterCount`);
+      } else {
+        where.push(`EXISTS (SELECT 1 ${tagMatches})`);
+      }
+    }
+  }
   if (filter.kinds !== undefined) {
     // Same match-nothing semantics as appBundleIds — explicit
     // empty array means the caller wants zero rows back.
@@ -562,8 +620,8 @@ export function searchCaptures(filter: CaptureSearchRequest): CaptureSearchResul
 
   // Build the SQL — two distinct shapes depending on whether `query`
   // is set. We keep them as parallel branches rather than parameterizing
-  // because the query plans are genuinely different: FTS5-JOIN orders
-  // by rank, filter-only orders by captured_at.
+  // because the query plans are genuinely different: FTS5-JOIN can order
+  // by rank, while filter-only queries use chronological ordering.
   let captureRows: CaptureRow[];
   const snippetByCaptureId = new Map<string, string>();
 
@@ -590,7 +648,7 @@ export function searchCaptures(filter: CaptureSearchRequest): CaptureSearchResul
         JOIN captures ON captures.id = capture_search_fts.capture_id
        WHERE capture_search_fts MATCH @fts5_query
          AND ${where.join(" AND ")}
-       ORDER BY rank
+       ORDER BY ${order === "relevance" ? "rank" : chronologicalOrderSql(order)}
        LIMIT @limit
     `;
     const rawRows = db.prepare(sql).all(params) as Array<
@@ -607,7 +665,7 @@ export function searchCaptures(filter: CaptureSearchRequest): CaptureSearchResul
       SELECT captures.*
         FROM captures
        WHERE ${where.join(" AND ")}
-       ORDER BY captures.captured_at DESC, captures.id DESC
+       ORDER BY ${chronologicalOrderSql(order === "oldest" ? "oldest" : "newest")}
        LIMIT @limit
     `;
     captureRows = db.prepare(sql).all(params) as CaptureRow[];
@@ -629,6 +687,74 @@ export function searchCaptures(filter: CaptureSearchRequest): CaptureSearchResul
     enrichment: enrichmentByCaptureId.get(record.id) ?? null,
     matchSnippet: snippetByCaptureId.get(record.id) ?? null
   }));
+}
+
+/**
+ * Read the live-library facets an external agent needs to build precise,
+ * reusable structured searches. Application names deliberately group by their
+ * human display string; a bundle ID is returned only when that name maps to
+ * exactly one known bundle among live captures.
+ */
+export function discoverCaptureSearchFacets(
+  input: { limit?: number | undefined } = {}
+): CaptureSearchDiscovery {
+  const db = getDb();
+  const limit = Math.min(SEARCH_MAX_LIMIT, input.limit ?? SEARCH_DEFAULT_LIMIT);
+  const applications = db.prepare(
+    `SELECT
+       source_app_name AS name,
+       CASE WHEN COUNT(DISTINCT source_app_bundle_id) = 1
+         THEN MIN(source_app_bundle_id)
+         ELSE NULL
+       END AS bundleId,
+       COUNT(*) AS count,
+       MAX(captured_at) AS mostRecentCapturedAt
+     FROM captures
+     WHERE deleted_at IS NULL
+       AND source_app_name IS NOT NULL
+       AND TRIM(source_app_name) != ''
+     GROUP BY source_app_name
+     ORDER BY count DESC, mostRecentCapturedAt DESC, name ASC
+     LIMIT @limit`
+  ).all({ limit }) as Array<{
+    name: string;
+    bundleId: string | null;
+    count: number;
+    mostRecentCapturedAt: string;
+  }>;
+  const tags = db.prepare(
+    `SELECT
+       tags.label AS label,
+       COUNT(*) AS count,
+       MAX(captures.captured_at) AS mostRecentCapturedAt
+     FROM capture_tags
+     JOIN tags ON tags.id = capture_tags.tag_id
+     JOIN captures ON captures.id = capture_tags.capture_id
+     WHERE captures.deleted_at IS NULL
+       AND tags.kind = 'content'
+     GROUP BY tags.id
+     ORDER BY count DESC, mostRecentCapturedAt DESC, label ASC
+     LIMIT @limit`
+  ).all({ limit }) as Array<{
+    label: string;
+    count: number;
+    mostRecentCapturedAt: string;
+  }>;
+  return {
+    applications: applications.map((application) => ({
+      name: application.name,
+      ...(application.bundleId === null ? {} : { bundleId: application.bundleId }),
+      count: application.count,
+      mostRecentCapturedAt: application.mostRecentCapturedAt
+    })),
+    tags
+  };
+}
+
+function chronologicalOrderSql(order: "newest" | "oldest"): string {
+  return order === "oldest"
+    ? "captures.captured_at ASC, captures.id ASC"
+    : "captures.captured_at DESC, captures.id DESC";
 }
 
 /**

@@ -10,6 +10,7 @@ import {
   RemoveUserTagRequestSchema
 } from "@pwrsnap/shared";
 import {
+  validateLibraryDiscovery,
   validateLibraryListByIds,
   validateLibrarySearch
 } from "./sizzle-validators";
@@ -20,6 +21,7 @@ import {
   getCaptureById,
   getCapturesByIds,
   getTotalLive,
+  discoverCaptureSearchFacets,
   hardDeleteCapture,
   listCaptures,
   listSoftDeletedIds,
@@ -235,6 +237,14 @@ export function registerLibraryDataHandlers(): void {
     // distinction (FTS5 path vs filter-only path).
     const rows = searchCaptures(v.value);
     return ok({ rows });
+  });
+
+  bus.register("library:discover", async (req) => {
+    const v = validateLibraryDiscovery(req);
+    if (!v.ok) return err(v.error);
+    // Facets deliberately come from the same live-only persistence layer as
+    // library:search. This keeps Trash out of reusable agent filter values.
+    return ok(discoverCaptureSearchFacets(v.value));
   });
 
   bus.register("library:delete", async (req) => {

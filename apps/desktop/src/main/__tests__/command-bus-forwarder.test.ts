@@ -105,6 +105,26 @@ describe("command-bus remote forwarder", () => {
     expect(forward).not.toHaveBeenCalled();
   });
 
+  test("preserves authenticated library.read context for discovery", async () => {
+    const forward = vi.fn(async () => ok({ applications: [], tags: [] }));
+    bus.installRemoteForwarder({ canForward: () => true, forward });
+    bus.installLocalAgentAuthorizer(async (clientId) => ({
+      clientId,
+      capabilities: ["library.read"]
+    }));
+
+    const result = await bus.dispatch("library:discover", { limit: 25 }, {
+      principal: "mcp",
+      localAgent: { clientId: "agent-1", capabilities: [] }
+    });
+
+    expect(result).toEqual(ok({ applications: [], tags: [] }));
+    expect(forward).toHaveBeenCalledWith("library:discover", { limit: 25 }, {
+      principal: "mcp",
+      localAgent: { clientId: "agent-1", capabilities: ["library.read"] }
+    });
+  });
+
   test("capture.edit cannot read OCR or composite media", async () => {
     const forward = vi.fn(async () => ok(null));
     bus.installRemoteForwarder({ canForward: () => true, forward });

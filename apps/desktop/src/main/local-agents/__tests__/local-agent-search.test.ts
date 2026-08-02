@@ -1,6 +1,8 @@
-import type { CaptureSearchResultRow } from "@pwrsnap/shared";
+import type { CaptureSearchDiscovery, CaptureSearchResultRow } from "@pwrsnap/shared";
 import { describe, expect, test } from "vitest";
 import {
+  localAgentSearchOrder,
+  projectLocalAgentSearchDiscovery,
   projectLocalAgentSearchRows,
   toCaptureSearchRequest
 } from "../local-agent-search";
@@ -130,34 +132,98 @@ describe("local-agent search boundary", () => {
       widthPx: 1440,
       heightPx: 900,
       byteSize: 123_456,
-      sourceApp: { bundleId: null, name: null },
       hasAlpha: false,
       hasOcr: true
     }]);
     expect(JSON.stringify(projected)).not.toContain("Private");
   });
 
-  test("preserves structured search filters while omitting undefined fields", () => {
+  test("maps public structured search filters while omitting undefined fields", () => {
     expect(toCaptureSearchRequest({
       query: "pairing",
-      appBundleIds: ["com.example.app"],
-      includeCapturesWithoutSourceApp: true,
+      sourceAppNames: ["Claude"],
+      tagFilter: { labels: ["Important", "Release blocker"], match: "all" },
       kinds: ["image"],
       hasOcr: false,
+      order: "oldest",
       limit: 25,
       detail: "enriched"
     })).toEqual({
       query: "pairing",
-      appBundleIds: ["com.example.app", null],
+      sourceAppNames: ["Claude"],
+      tagFilter: { labels: ["Important", "Release blocker"], match: "all" },
       kinds: ["image"],
       hasOcr: false,
+      order: "oldest",
       limit: 25
     });
   });
 
-  test("can filter exclusively to captures with no source application", () => {
-    expect(toCaptureSearchRequest({ includeCapturesWithoutSourceApp: true })).toEqual({
-      appBundleIds: [null]
-    });
+  test("omits source-app context rather than serializing null metadata", () => {
+    const row: CaptureSearchResultRow = {
+      record: {
+        id: "unknown-source",
+        kind: "image",
+        captured_at: "2026-06-07T12:00:00.000Z",
+        legacy_src_path: null,
+        bundle_path: null,
+        flat_png_path: null,
+        bundle_modified_at: null,
+        bundle_format_version: 2,
+        bundle_edits_version: 0,
+        width_px: 100,
+        height_px: 100,
+        device_pixel_ratio: 1,
+        byte_size: 1,
+        sha256: "private-content-hash",
+        source_app_bundle_id: null,
+        source_app_name: null,
+        edits_version: 0,
+        deleted_at: null,
+        has_alpha: false
+      },
+      enrichment: null,
+      matchSnippet: null
+    };
+
+    expect(projectLocalAgentSearchRows([row])).toEqual([
+      expect.not.objectContaining({ sourceApp: expect.anything() })
+    ]);
+  });
+
+  test("makes the effective search order explicit", () => {
+    expect(localAgentSearchOrder({})).toBe("newest");
+    expect(localAgentSearchOrder({ query: "pairing" })).toBe("relevance");
+    expect(localAgentSearchOrder({ query: "pairing", order: "oldest" })).toBe("oldest");
+  });
+
+  test("projects reusable discovery filters with optional bundle metadata", () => {
+    const discovery: CaptureSearchDiscovery = {
+      applications: [
+        {
+          name: "Claude",
+          bundleId: "com.anthropic.claudefordesktop",
+          count: 4,
+          mostRecentCapturedAt: "2026-06-07T12:00:00.000Z"
+        },
+        {
+          name: "Claude Preview",
+          count: 2,
+          mostRecentCapturedAt: "2026-06-06T12:00:00.000Z"
+        }
+      ],
+      tags: [
+        {
+          label: "Important",
+          count: 3,
+          mostRecentCapturedAt: "2026-06-07T12:00:00.000Z"
+        }
+      ]
+    };
+
+    expect(projectLocalAgentSearchDiscovery(discovery)).toEqual(discovery);
+    expect(JSON.stringify(projectLocalAgentSearchDiscovery(discovery))).not.toContain(
+      '"bundleId":null'
+    );
   });
 });

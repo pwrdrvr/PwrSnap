@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  validateLibraryDiscovery,
   validateLibraryListByIds,
   validateLibrarySearch,
   validateSizzleCreate,
@@ -816,6 +817,57 @@ describe("validateLibrarySearch", () => {
     });
   });
 
+  describe("sourceAppNames field", () => {
+    it("accepts human application names without requiring a bundle ID", () => {
+      const r = validateLibrarySearch({ sourceAppNames: [" Claude ", "Figma"] });
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value.sourceAppNames).toEqual(["Claude", "Figma"]);
+    });
+
+    it("rejects non-string and blank application names", () => {
+      const nonString = validateLibrarySearch({ sourceAppNames: [42] });
+      expect(nonString.ok).toBe(false);
+      if (!nonString.ok) expect(nonString.error.code).toBe("sourceAppName_invalid");
+
+      const blank = validateLibrarySearch({ sourceAppNames: ["   "] });
+      expect(blank.ok).toBe(false);
+      if (!blank.ok) expect(blank.error.code).toBe("sourceAppName_invalid");
+    });
+
+    it("bounds the number of names for direct command-bus callers", () => {
+      const r = validateLibrarySearch({
+        sourceAppNames: Array.from({ length: 101 }, (_, index) => `App ${index}`)
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("sourceAppNames_too_many");
+    });
+  });
+
+  describe("tagFilter field", () => {
+    it("normalizes exact labels and requires explicit any/all semantics", () => {
+      const r = validateLibrarySearch({
+        tagFilter: { labels: ["  Release   Blocker ", "release blocker"], match: "all" }
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.tagFilter).toEqual({
+          labels: ["release blocker"],
+          match: "all"
+        });
+      }
+    });
+
+    it("rejects empty labels and omitted/invalid match semantics", () => {
+      const empty = validateLibrarySearch({ tagFilter: { labels: [], match: "any" } });
+      expect(empty.ok).toBe(false);
+      if (!empty.ok) expect(empty.error.code).toBe("tagFilter_labels_invalid");
+
+      const missingMatch = validateLibrarySearch({ tagFilter: { labels: ["Important"] } });
+      expect(missingMatch.ok).toBe(false);
+      if (!missingMatch.ok) expect(missingMatch.error.code).toBe("tagFilter_match_invalid");
+    });
+  });
+
   describe("kinds field", () => {
     it("accepts an array of 'image' / 'video'", () => {
       const r = validateLibrarySearch({ kinds: ["image", "video"] });
@@ -885,6 +937,24 @@ describe("validateLibrarySearch", () => {
     });
   });
 
+  describe("order field", () => {
+    it("accepts explicit relevance/newest/oldest ordering", () => {
+      for (const order of ["relevance", "newest", "oldest"] as const) {
+        const r = validateLibrarySearch({
+          ...(order === "relevance" ? { query: "pairing" } : {}),
+          order
+        });
+        expect(r.ok).toBe(true);
+      }
+    });
+
+    it("rejects relevance without a query", () => {
+      const r = validateLibrarySearch({ order: "relevance" });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("relevance_requires_query");
+    });
+  });
+
   describe("limit field", () => {
     it("accepts a positive integer", () => {
       const r = validateLibrarySearch({ limit: 50 });
@@ -924,9 +994,12 @@ describe("validateLibrarySearch", () => {
       const r = validateLibrarySearch({
         query: "pairing",
         appBundleIds: ["com.tinyspeck.slackmacgap"],
+        sourceAppNames: ["Slack"],
+        tagFilter: { labels: ["important"], match: "any" },
         kinds: ["image"],
         dateRange: { start: "2026-05-01", end: "2026-05-31" },
         hasOcr: true,
+        order: "newest",
         limit: 25
       });
       expect(r.ok).toBe(true);
@@ -934,9 +1007,12 @@ describe("validateLibrarySearch", () => {
         expect(r.value).toEqual({
           query: "pairing",
           appBundleIds: ["com.tinyspeck.slackmacgap"],
+          sourceAppNames: ["Slack"],
+          tagFilter: { labels: ["important"], match: "any" },
           kinds: ["image"],
           dateRange: { start: "2026-05-01", end: "2026-05-31" },
           hasOcr: true,
+          order: "newest",
           limit: 25
         });
       }
@@ -946,13 +1022,40 @@ describe("validateLibrarySearch", () => {
       const r = validateLibrarySearch({
         query: null,
         appBundleIds: null,
+        sourceAppNames: null,
+        tagFilter: null,
         kinds: null,
         dateRange: null,
         hasOcr: null,
+        order: null,
         limit: null
       });
       expect(r.ok).toBe(true);
       if (r.ok) expect(r.value).toEqual({});
     });
+  });
+});
+
+describe("validateLibraryDiscovery", () => {
+  it("accepts an absent request and a bounded integer limit", () => {
+    expect(validateLibraryDiscovery(undefined)).toEqual({ ok: true, value: {} });
+    expect(validateLibraryDiscovery({ limit: 25 })).toEqual({
+      ok: true,
+      value: { limit: 25 }
+    });
+  });
+
+  it("rejects invalid discovery payloads", () => {
+    const nonObject = validateLibraryDiscovery("nope");
+    expect(nonObject.ok).toBe(false);
+    if (!nonObject.ok) expect(nonObject.error.code).toBe("not_object");
+
+    const fraction = validateLibraryDiscovery({ limit: 1.5 });
+    expect(fraction.ok).toBe(false);
+    if (!fraction.ok) expect(fraction.error.code).toBe("limit_invalid");
+
+    const tooLarge = validateLibraryDiscovery({ limit: 501 });
+    expect(tooLarge.ok).toBe(false);
+    if (!tooLarge.ok) expect(tooLarge.error.code).toBe("limit_too_large");
   });
 });

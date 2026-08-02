@@ -28,6 +28,7 @@ import {
   SIZZLE_TRANSITIONS,
   SIZZLE_VIDEO_FIT_POLICIES,
   SIZZLE_VOICES,
+  normalizeTagLabel,
   normalizeSizzleSequenceBeatContinuity,
   normalizeSizzleTransition,
   type SizzleAudioSource,
@@ -824,9 +825,12 @@ export function validateLibrarySearch(
       value: {
         query?: string;
         appBundleIds?: Array<string | null>;
+        sourceAppNames?: string[];
+        tagFilter?: { labels: string[]; match: "any" | "all" };
         kinds?: Array<"image" | "video">;
         dateRange?: { start: string; end: string };
         hasOcr?: boolean;
+        order?: "relevance" | "newest" | "oldest";
         limit?: number;
       };
     }
@@ -840,9 +844,12 @@ export function validateLibrarySearch(
   const out: {
     query?: string;
     appBundleIds?: Array<string | null>;
+    sourceAppNames?: string[];
+    tagFilter?: { labels: string[]; match: "any" | "all" };
     kinds?: Array<"image" | "video">;
     dateRange?: { start: string; end: string };
     hasOcr?: boolean;
+    order?: "relevance" | "newest" | "oldest";
     limit?: number;
   } = {};
 
@@ -896,6 +903,128 @@ export function validateLibrarySearch(
       }
     }
     out.appBundleIds = ids;
+  }
+
+  if (req.sourceAppNames !== undefined && req.sourceAppNames !== null) {
+    if (!Array.isArray(req.sourceAppNames)) {
+      return {
+        ok: false,
+        error: validationError(
+          "sourceAppNames_invalid",
+          "sourceAppNames must be an array of human application names when provided"
+        )
+      };
+    }
+    if (req.sourceAppNames.length > 100) {
+      return {
+        ok: false,
+        error: validationError(
+          "sourceAppNames_too_many",
+          "sourceAppNames must contain at most 100 names"
+        )
+      };
+    }
+    const names: string[] = [];
+    for (let i = 0; i < req.sourceAppNames.length; i++) {
+      const value = req.sourceAppNames[i];
+      if (typeof value !== "string" || value.trim().length === 0) {
+        return {
+          ok: false,
+          error: validationError(
+            "sourceAppName_invalid",
+            `sourceAppNames[${i}] must be a non-empty string`
+          )
+        };
+      }
+      if (value.length > 1_000) {
+        return {
+          ok: false,
+          error: validationError(
+            "sourceAppName_too_long",
+            `sourceAppNames[${i}] must be ≤ 1000 characters`
+          )
+        };
+      }
+      names.push(value.trim());
+    }
+    out.sourceAppNames = names;
+  }
+
+  if (req.tagFilter !== undefined && req.tagFilter !== null) {
+    if (!isRecord(req.tagFilter)) {
+      return {
+        ok: false,
+        error: validationError(
+          "tagFilter_invalid",
+          "tagFilter must be { labels, match } when provided"
+        )
+      };
+    }
+    if (!Array.isArray(req.tagFilter.labels) || req.tagFilter.labels.length === 0) {
+      return {
+        ok: false,
+        error: validationError(
+          "tagFilter_labels_invalid",
+          "tagFilter.labels must be a non-empty array of exact tag labels"
+        )
+      };
+    }
+    if (req.tagFilter.labels.length > 100) {
+      return {
+        ok: false,
+        error: validationError(
+          "tagFilter_too_many_labels",
+          "tagFilter.labels must contain at most 100 labels"
+        )
+      };
+    }
+    if (req.tagFilter.match !== "any" && req.tagFilter.match !== "all") {
+      return {
+        ok: false,
+        error: validationError(
+          "tagFilter_match_invalid",
+          "tagFilter.match must be 'any' or 'all'"
+        )
+      };
+    }
+    const labels: string[] = [];
+    const seen = new Set<string>();
+    for (let i = 0; i < req.tagFilter.labels.length; i++) {
+      const value = req.tagFilter.labels[i];
+      if (typeof value !== "string") {
+        return {
+          ok: false,
+          error: validationError(
+            "tagFilter_label_invalid",
+            `tagFilter.labels[${i}] must be a string`
+          )
+        };
+      }
+      if (value.length > 1_000) {
+        return {
+          ok: false,
+          error: validationError(
+            "tagFilter_label_too_long",
+            `tagFilter.labels[${i}] must be ≤ 1000 characters`
+          )
+        };
+      }
+      const normalized = normalizeTagLabel(value);
+      if (normalized.length === 0) {
+        return {
+          ok: false,
+          error: validationError(
+            "tagFilter_label_invalid",
+            `tagFilter.labels[${i}] must contain non-whitespace text`
+          )
+        };
+      }
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        labels.push(normalized);
+      }
+    }
+    out.tagFilter = { labels, match: req.tagFilter.match };
   }
 
   if (req.kinds !== undefined && req.kinds !== null) {
@@ -972,6 +1101,28 @@ export function validateLibrarySearch(
     out.hasOcr = req.hasOcr;
   }
 
+  if (req.order !== undefined && req.order !== null) {
+    if (req.order !== "relevance" && req.order !== "newest" && req.order !== "oldest") {
+      return {
+        ok: false,
+        error: validationError(
+          "order_invalid",
+          "order must be 'relevance', 'newest', or 'oldest' when provided"
+        )
+      };
+    }
+    if (req.order === "relevance" && out.query === undefined) {
+      return {
+        ok: false,
+        error: validationError(
+          "relevance_requires_query",
+          "order 'relevance' requires a text query; use 'newest' or 'oldest' without one"
+        )
+      };
+    }
+    out.order = req.order;
+  }
+
   if (req.limit !== undefined && req.limit !== null) {
     if (typeof req.limit !== "number" || !Number.isFinite(req.limit) || req.limit < 1) {
       return {
@@ -995,6 +1146,30 @@ export function validateLibrarySearch(
   }
 
   return { ok: true, value: out };
+}
+
+/** Validate the bounded, read-only `library:discover` facet request. */
+export function validateLibraryDiscovery(
+  req: unknown
+): { ok: true; value: { limit?: number } } | { ok: false; error: PwrSnapError } {
+  if (req === null || req === undefined) return { ok: true, value: {} };
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  if (req.limit === undefined || req.limit === null) return { ok: true, value: {} };
+  if (typeof req.limit !== "number" || !Number.isInteger(req.limit) || req.limit < 1) {
+    return {
+      ok: false,
+      error: validationError("limit_invalid", "limit must be a positive integer when provided")
+    };
+  }
+  if (req.limit > SEARCH_MAX_LIMIT) {
+    return {
+      ok: false,
+      error: validationError("limit_too_large", `limit must be ≤ ${SEARCH_MAX_LIMIT}`)
+    };
+  }
+  return { ok: true, value: { limit: req.limit } };
 }
 
 export function validateSizzleOpenRequest(

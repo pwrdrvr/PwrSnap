@@ -380,12 +380,52 @@ export type LibraryAppStat = {
   sourceAppName: string | null;
 };
 
+/** How `library:search` orders matching captures. `relevance` requires a
+ *  full-text `query`; without a query, the default and useful ordering is
+ *  `newest`. */
+export type CaptureSearchOrder = "relevance" | "newest" | "oldest";
+
+/** Exact accepted-tag filter. Labels are normalized with PwrSnap's normal tag
+ *  normalization before equality matching; this is never an FTS / prefix
+ *  filter. `match` is required so callers explicitly choose OR vs AND
+ *  semantics for multiple labels. */
+export type CaptureSearchTagFilter = {
+  labels: string[];
+  match: "any" | "all";
+};
+
+/** A human-facing source-app facet for agent discovery. `name` is the reusable
+ *  value for `CaptureSearchRequest.sourceAppNames`. `bundleId` is optional
+ *  read-only metadata, omitted when the app name maps to more than one bundle
+ *  ID or none is known. */
+export type CaptureSearchApplicationFacet = {
+  name: string;
+  bundleId?: string;
+  count: number;
+  mostRecentCapturedAt: string;
+};
+
+/** An accepted-tag facet for agent discovery. `label` is the reusable exact
+ *  value for `CaptureSearchTagFilter.labels`. */
+export type CaptureSearchTagFacet = {
+  label: string;
+  count: number;
+  mostRecentCapturedAt: string;
+};
+
+/** Read-only discovery data for building structured `library:search` filters. */
+export type CaptureSearchDiscovery = {
+  applications: CaptureSearchApplicationFacet[];
+  tags: CaptureSearchTagFacet[];
+};
+
 /**
  * Request shape for `library:search`. Every field is optional; supplied
  * fields combine conjunctively (AND). An all-empty request returns the
  * most-recent N captures (effectively `library:list` with a different
  * envelope) — callers should still pass `limit` so they don't get the
- * full library.
+ * full library. Query searches default to relevance ordering; no-query
+ * searches default to newest-first.
  */
 export type CaptureSearchRequest = {
   /** Free-text query against title / description / OCR / source app
@@ -393,9 +433,16 @@ export type CaptureSearchRequest = {
    *  0017). When omitted, the search degenerates to a filter-only
    *  scan ordered by `captured_at DESC`. */
   query?: string;
-  /** Restrict to specific source apps. Pass `null` inside the array to
-   *  match captures with no `source_app_bundle_id`. */
+  /** Internal precise source-app filter. PwrSnap's Library/Sizzle code can
+   *  use bundle IDs (or `null` for missing bundle context); the public local
+   *  MCP tool intentionally exposes only human `sourceAppNames`. */
   appBundleIds?: Array<string | null>;
+  /** Restrict to exact human source application names (for example,
+   *  `["Claude"]`). This is the public local-agent application filter. */
+  sourceAppNames?: string[];
+  /** Restrict to exact accepted tags. `match` explicitly chooses whether any
+   *  one label or every label must be present on a capture. */
+  tagFilter?: CaptureSearchTagFilter;
   /** Restrict to image / video kinds (empty array or absent = both). */
   kinds?: Array<"image" | "video">;
   /** ISO-8601 range, inclusive. Matched against `captured_at`. */
@@ -403,6 +450,9 @@ export type CaptureSearchRequest = {
   /** If true, only return captures whose `capture_enrichments.ocr_text`
    *  is non-empty. If false / absent, no OCR filter. */
   hasOcr?: boolean;
+  /** Explicit result ordering. Defaults to `relevance` when `query` is set;
+   *  otherwise defaults to `newest`. `relevance` is invalid without a query. */
+  order?: CaptureSearchOrder;
   /** Hard cap on rows returned. Defaults to 100; max 500. */
   limit?: number;
 };
@@ -2933,6 +2983,16 @@ export type Commands = {
   "library:search": {
     req: CaptureSearchRequest;
     res: { rows: CaptureSearchResultRow[] };
+  };
+  /**
+   * List reusable human application names and accepted tags for structured
+   * capture search. Both facet lists exclude Trash and are sorted by capture
+   * count descending, then recency. `limit` applies independently to each
+   * list (default 100, max 500).
+   */
+  "library:discover": {
+    req: { limit?: number | undefined };
+    res: CaptureSearchDiscovery;
   };
   /** Soft-delete: moves source PNG atomically to <root>/.trash/, schedules GC. */
   "library:delete": { req: { id: string }; res: void };

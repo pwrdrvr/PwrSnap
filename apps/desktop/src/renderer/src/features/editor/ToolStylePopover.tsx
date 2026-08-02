@@ -1075,11 +1075,101 @@ interface HighlightBodyProps {
   onStyleFieldChange: ToolStylePopoverProps["onStyleFieldChange"];
 }
 
+// A layer-style update crosses IPC, rebuilds the bundle node, and can
+// re-render the entire editor. A native range input emits an input event for
+// every pixel crossed, so writing on every event makes the thumb lose its
+// pointer interaction while the renderer catches up. Keep the thumb local and
+// send a value only after the user pauses; pointerup always flushes the final
+// value immediately.
+const HIGHLIGHT_OPACITY_PAUSE_MS = 150;
+
+function clampHighlightOpacity(value: number): number {
+  return Math.min(MAX_HIGHLIGHT_OPACITY, Math.max(0, value));
+}
+
 function HighlightBody({
   style,
   onStyleFieldChange
 }: HighlightBodyProps): ReactElement {
-  const pct = Math.round(style.opacity * 100);
+  const persistedOpacity = clampHighlightOpacity(style.opacity);
+  const [draftOpacity, setDraftOpacity] = useState(persistedOpacity);
+  const persistedOpacityRef = useRef(persistedOpacity);
+  const queuedOpacityRef = useRef<{
+    opacity: number;
+    onStyleFieldChange: ToolStylePopoverProps["onStyleFieldChange"];
+  } | null>(null);
+  const awaitingPersistedOpacityRef = useRef<number | null>(null);
+  const draggingRef = useRef(false);
+  const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Ignore intermediate/stale model snapshots while a locally-owned slider
+  // value is still waiting to land. Once the model contains the committed
+  // value again, normal external updates resume syncing the control.
+  useEffect(() => {
+    persistedOpacityRef.current = persistedOpacity;
+    if (awaitingPersistedOpacityRef.current === persistedOpacity) {
+      awaitingPersistedOpacityRef.current = null;
+    }
+    if (
+      !draggingRef.current &&
+      queuedOpacityRef.current === null &&
+      awaitingPersistedOpacityRef.current === null
+    ) {
+      setDraftOpacity(persistedOpacity);
+    }
+  }, [persistedOpacity]);
+
+  const flushOpacity = useCallback((): void => {
+    if (commitTimerRef.current !== null) {
+      clearTimeout(commitTimerRef.current);
+      commitTimerRef.current = null;
+    }
+    const queued = queuedOpacityRef.current;
+    queuedOpacityRef.current = null;
+    if (queued === null) return;
+    const nextOpacity = queued.opacity;
+
+    // A value that was dragged away and then back to the current persisted
+    // value needs no write unless an earlier paused write is already queued.
+    // In that case this update intentionally follows it and restores the
+    // final slider value.
+    if (
+      nextOpacity === persistedOpacityRef.current &&
+      awaitingPersistedOpacityRef.current === null
+    ) {
+      return;
+    }
+
+    awaitingPersistedOpacityRef.current = nextOpacity;
+    queued.onStyleFieldChange("opacity", nextOpacity);
+  }, []);
+
+  const queueOpacity = useCallback(
+    (nextOpacity: number): void => {
+      const clampedOpacity = clampHighlightOpacity(nextOpacity);
+      setDraftOpacity(clampedOpacity);
+      // Keep the callback that belonged to this interaction. If the user
+      // selects another same-kind layer while a delayed write is pending,
+      // the old draft must never be applied to the newly selected layer.
+      queuedOpacityRef.current = { opacity: clampedOpacity, onStyleFieldChange };
+      if (commitTimerRef.current !== null) {
+        clearTimeout(commitTimerRef.current);
+      }
+      commitTimerRef.current = setTimeout(flushOpacity, HIGHLIGHT_OPACITY_PAUSE_MS);
+    },
+    [flushOpacity, onStyleFieldChange]
+  );
+
+  useEffect(
+    () => () => {
+      if (commitTimerRef.current !== null) {
+        clearTimeout(commitTimerRef.current);
+      }
+    },
+    []
+  );
+
+  const pct = Math.round(draftOpacity * 100);
   return (
     <>
       <ColorRow
@@ -1093,17 +1183,30 @@ function HighlightBody({
             min={0}
             max={MAX_HIGHLIGHT_OPACITY}
             step={0.05}
-            value={Math.min(MAX_HIGHLIGHT_OPACITY, style.opacity)}
+            value={draftOpacity}
             data-testid="highlight-opacity-input"
             onChange={(e) => {
               const v = Number.parseFloat(e.target.value);
               if (Number.isFinite(v)) {
-                onStyleFieldChange(
-                  "opacity",
-                  Math.min(MAX_HIGHLIGHT_OPACITY, Math.max(0, v))
-                );
+                queueOpacity(v);
               }
             }}
+            onPointerDown={() => {
+              draggingRef.current = true;
+            }}
+            onPointerUp={() => {
+              flushOpacity();
+              draggingRef.current = false;
+            }}
+            onPointerCancel={() => {
+              flushOpacity();
+              draggingRef.current = false;
+            }}
+            onBlur={() => {
+              flushOpacity();
+              draggingRef.current = false;
+            }}
+            onKeyUp={flushOpacity}
             aria-label="Highlight opacity"
           />
           <span className="pse-slider-val" data-testid="highlight-opacity-display">

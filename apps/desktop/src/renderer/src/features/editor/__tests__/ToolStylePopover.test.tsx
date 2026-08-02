@@ -280,9 +280,16 @@ function fireClick(el: Element): void {
 }
 
 function firePointerDown(target: EventTarget): void {
+  firePointer(target, "pointerdown");
+}
+
+function firePointer(
+  target: EventTarget,
+  type: "pointerdown" | "pointerup" | "pointercancel"
+): void {
   act(() => {
     target.dispatchEvent(
-      new MouseEvent("pointerdown", { bubbles: true, cancelable: true })
+      new MouseEvent(type, { bubbles: true, cancelable: true })
     );
   });
 }
@@ -608,7 +615,7 @@ describe("ToolStylePopover", () => {
     expect(onChange).toHaveBeenCalledWith("radius", { mode: "auto" });
   });
 
-  test("12. highlight opacity slider change → onStyleFieldChange('opacity', 0.6)", () => {
+  test("12. highlight opacity slider keeps its local thumb until pointerup commits", () => {
     const onChange = vi.fn();
     render(
       createElement(Harness, {
@@ -621,7 +628,14 @@ describe("ToolStylePopover", () => {
       '[data-testid="highlight-opacity-input"]'
     );
     expect(slider).not.toBeNull();
+    firePointerDown(slider!);
     fireChange(slider!, "0.6");
+    expect(slider!.value).toBe("0.6");
+    expect(
+      queryPopover().querySelector('[data-testid="highlight-opacity-display"]')?.textContent
+    ).toBe("60%");
+    expect(onChange).not.toHaveBeenCalled();
+    firePointer(slider!, "pointerup");
     expect(onChange).toHaveBeenCalledWith("opacity", 0.6);
   });
 
@@ -640,7 +654,8 @@ describe("ToolStylePopover", () => {
     expect(slider!.value).toBe(String(MAX_HIGHLIGHT_OPACITY));
   });
 
-  test("14. highlight opacity slider clamps attempted opaque writes", () => {
+  test("14. highlight opacity slider coalesces rapid changes and commits after a pause", () => {
+    vi.useFakeTimers();
     const onChange = vi.fn();
     render(
       createElement(Harness, {
@@ -653,8 +668,21 @@ describe("ToolStylePopover", () => {
       '[data-testid="highlight-opacity-input"]'
     );
     expect(slider).not.toBeNull();
+    firePointerDown(slider!);
+    fireChange(slider!, "0.2");
+    fireChange(slider!, "0.4");
     fireChange(slider!, "1");
+    expect(slider!.value).toBe(String(MAX_HIGHLIGHT_OPACITY));
+    expect(onChange).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(149);
+    });
+    expect(onChange).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
     expect(onChange).toHaveBeenCalledWith("opacity", MAX_HIGHLIGHT_OPACITY);
+    expect(onChange).toHaveBeenCalledTimes(1);
   });
 
   test("15. coachmark visible on first open (stoplightSeen=false)", () => {

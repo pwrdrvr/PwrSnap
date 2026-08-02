@@ -139,6 +139,88 @@ test("settings:open with a page deep-links and re-navigates the existing window"
   }
 });
 
+test("local-agent authorization graph renders named Sessions, roles, and limits", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const now = "2026-08-01T12:00:00.000Z";
+    const write = await app.dispatch("settings:write", {
+      localAgents: {
+        grants: [
+          {
+            id: "lag_codex",
+            name: "Codex",
+            roleId: "builtin.full-media",
+            capabilities: [
+              "library.read",
+              "capture.composite.read",
+              "capture.original.read",
+              "capture.export"
+            ],
+            createdAt: now,
+            updatedAt: now,
+            lastUsedAt: now,
+            revokedAt: null,
+            oauthClient: {
+              clientId: "client_codex",
+              clientName: "Codex MCP",
+              redirectUris: ["http://127.0.0.1/callback"],
+              clientUri: null,
+              scope: null,
+              grantTypes: ["authorization_code"],
+              responseTypes: ["code"],
+              softwareId: null,
+              softwareVersion: null,
+              registeredAt: now
+            }
+          },
+          {
+            id: "lag_claude",
+            name: "Claude",
+            roleId: "builtin.preview",
+            capabilities: ["library.read", "capture.composite.read"],
+            createdAt: now,
+            updatedAt: now,
+            lastUsedAt: null,
+            revokedAt: null,
+            oauthClient: {
+              clientId: "client_claude",
+              clientName: "Claude Desktop",
+              redirectUris: ["http://127.0.0.1/callback"],
+              clientUri: null,
+              scope: null,
+              grantTypes: ["authorization_code"],
+              responseTypes: ["code"],
+              softwareId: null,
+              softwareVersion: null,
+              registeredAt: now
+            }
+          }
+        ]
+      }
+    });
+    expect(write.ok).toBe(true);
+
+    const opened = await app.dispatch("settings:open", { page: "local-agents" });
+    expect(opened.ok).toBe(true);
+    const settingsWindow = await waitForSettingsWindow(app);
+    await settingsWindow.locator('h1:has-text("Authorization graph")').waitFor();
+
+    await expect(settingsWindow.locator(".pss__auth-node.is-session")).toHaveCount(2);
+    await expect(settingsWindow.locator(".pss__auth-node.is-role")).toHaveCount(6);
+    await expect(settingsWindow.locator(".pss__auth-node.is-permission")).toHaveCount(9);
+    await expect(settingsWindow.locator(".pss__usage-grid")).toContainText("Full-res images");
+
+    if (process.env.PWRSNAP_VISUAL_CAPTURE === "1") {
+      await settingsWindow.screenshot({
+        path: path.resolve(process.cwd(), "../..", ".local", "authorization-graph.png"),
+        fullPage: true
+      });
+    }
+  } finally {
+    await app.close();
+  }
+});
+
 test("settings:read returns defaults on a fresh launch", async () => {
   const app = await launchPwrSnap();
   try {

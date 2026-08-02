@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Serve GitHub Actions jobs from ephemeral, network-isolated macOS VMs.
+# Serve GitHub Actions jobs from ephemeral, network-isolated macOS VMs in the
+# restricted PwrDrvr organization runner group shared by PwrSnap and PwrAgent.
 #
 # Loop: clone pwrsnap-runner-base -> ephemeral VM -> boot with softnet
 # isolation (internet OK, RFC1918/local network BLOCKED) -> register as an
@@ -9,7 +10,7 @@
 #
 # Prereqs:
 #   - ./runner/provision-runner-base.sh has been run
-#   - gh CLI authenticated with admin on pwrdrvr/PwrSnap
+#   - gh CLI authenticated with organization runner-management permission
 #   - passwordless sudo for softnet (one-time, needs YOUR password):
 #       echo "$USER ALL=(ALL) NOPASSWD: $(brew --prefix)/bin/softnet" | \
 #         sudo tee /etc/sudoers.d/softnet
@@ -17,13 +18,17 @@
 # Usage: ./run-ephemeral-runner.sh [--once]
 
 set -euo pipefail
-cd "$(dirname "$0")/.."
+RUNNER_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$RUNNER_SCRIPT_DIR/.."
 source ./vm-lib.sh
 
-REPO=pwrdrvr/PwrSnap
+ORGANIZATION=pwrdrvr
+RUNNER_GROUP="PwrDrvr macOS"
 BASE=pwrsnap-runner-base
-LABELS="self-hosted,macOS,ARM64,pwrsnap-mac-vm"
+LABELS="pwrdrvr-macos"
 ONCE=${1:-}
+
+"$RUNNER_SCRIPT_DIR/configure-shared-runner-group.sh"
 
 serve_one_job() {
   local vm="pwrsnap-runner-$(date +%s)"
@@ -62,11 +67,11 @@ serve_one_job() {
 
   echo ">> [$vm] fetching registration token"
   local token
-  token=$(gh api -X POST "repos/$REPO/actions/runners/registration-token" -q .token)
+  token=$(gh api -X POST "orgs/$ORGANIZATION/actions/runners/registration-token" -q .token)
 
   echo ">> [$vm] registering ephemeral runner + serving one job"
   ssh "${SSH_OPTS[@]}" "$SSH_USER@$ip" \
-    "TOKEN=$(printf %q "$token") VMNAME=$(printf %q "$vm") LABELS=$(printf %q "$LABELS") bash -s" <<'REMOTE' || rc=$?
+    "TOKEN=$(printf %q "$token") VMNAME=$(printf %q "$vm") LABELS=$(printf %q "$LABELS") RUNNER_GROUP=$(printf %q "$RUNNER_GROUP") bash -s" <<'REMOTE' || rc=$?
 set -euo pipefail
 # Homebrew on PATH before config.sh — the runner snapshots PATH into
 # .path at configure time for every job (git-lfs et al live in
@@ -74,9 +79,10 @@ set -euo pipefail
 eval "$(/opt/homebrew/bin/brew shellenv)"
 cd ~/actions-runner
 ./config.sh --unattended --ephemeral \
-  --url https://github.com/pwrdrvr/PwrSnap \
+  --url https://github.com/pwrdrvr \
   --token "$TOKEN" \
   --name "$VMNAME" \
+  --runnergroup "$RUNNER_GROUP" \
   --labels "$LABELS" \
   --replace
 ./run.sh

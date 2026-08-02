@@ -53,6 +53,9 @@
   failed runs copy `test-results/` back to `~/pwrsnap-mac-vm/artifacts/`.
   A quick single spec on the host is tolerable when the user is
   actively watching/asking for it; anything longer belongs in the VM.
+  The persistent Tart runner on this host is an organization-scoped,
+  selected-repository runner group shared only by PwrSnap and PwrAgent;
+  never register it directly to one repo or widen its repository access.
   Full lab docs (setup on a new machine, GHA runner loop, network
   isolation, troubleshooting): the `macos-vm-e2e-lab` skill in
   [.agents/skills/macos-vm-e2e-lab/SKILL.md](.agents/skills/macos-vm-e2e-lab/SKILL.md).

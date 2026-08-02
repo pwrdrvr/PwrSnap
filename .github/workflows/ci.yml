@@ -130,10 +130,11 @@ jobs:
 
   desktop-e2e-macos:
     name: macOS Desktop E2E (self-hosted VM)
-    # Ephemeral Tart VM runners on PwrDrvr hardware (softnet-isolated,
-    # one job per VM, VM destroyed after). See ~/pwrsnap-mac-vm on the
-    # runner host. This is the only lane that exercises the macOS-only
-    # specs (clipboard, tray, menu-bar, AppKit windowing) — GH-hosted
+    # Shared PwrDrvr organization runner group backed by Tart VMs on PwrDrvr
+    # hardware (softnet-isolated; the paranoid mode uses one VM per job).
+    # The same restricted group also serves PwrAgent; do not turn it back into
+    # a repository-scoped runner. This is the only lane that exercises the
+    # macOS-only specs (clipboard, tray, menu-bar, AppKit windowing); GH-hosted
     # macOS runners are cost-prohibitive for per-PR E2E.
     #
     # Fork-PR guard: never schedule this job for PRs whose head repo
@@ -143,7 +144,7 @@ jobs:
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, macOS, ARM64, pwrsnap-mac-vm]
+    runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]
     needs: install-deps
     timeout-minutes: 30
     steps:

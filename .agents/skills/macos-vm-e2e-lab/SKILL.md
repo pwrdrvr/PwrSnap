@@ -3,8 +3,8 @@ name: macos-vm-e2e-lab
 description: >-
   Set up and operate the PwrSnap macOS VM lab: Tart-based macOS VMs on
   Apple Silicon for running the desktop Playwright E2E suite off-desktop
-  (no window flashing / focus stealing on the host), plus ephemeral,
-  network-isolated self-hosted GitHub Actions runners that serve the
+  (no window flashing / focus stealing on the host), plus persistent or
+  ephemeral, network-isolated self-hosted GitHub Actions runners that serve the
   "macOS Desktop E2E (self-hosted VM)" CI lane. Use this skill whenever
   the user wants to: set up this lab on a new Mac, run E2E tests in a VM,
   fix a broken VM/runner, register or serve GHA runner jobs, understand
@@ -28,11 +28,11 @@ Two capabilities on one Mac host:
    macOS VM whose windows render on the VM's own virtual display. The
    host desktop is never touched. Runs live in a tmux session inside the
    VM, driven over SSH.
-2. **A self-hosted GitHub Actions lane** — ephemeral runner VMs serve the
-   `desktop-e2e-macos` job in `.github/workflows/ci.yml` (labels
-   `[self-hosted, macOS, ARM64, pwrsnap-mac-vm]`). This is the only CI
-   lane that exercises the macOS-only specs (clipboard, tray, menu-bar,
-   dock lifecycle, AppKit windowing); GH-hosted macOS runners are
+2. **A shared self-hosted GitHub Actions lane** — organization runners in the
+   selected-repository `PwrDrvr macOS` group serve both PwrSnap and
+   PwrAgent (labels `[self-hosted, macOS, ARM64, pwrdrvr-macos]`). This is
+   the only CI lane that exercises the macOS-only specs (clipboard, tray,
+   menu-bar, dock lifecycle, AppKit windowing); GH-hosted macOS runners are
    cost-prohibitive.
 
 Why Tart and not VMware/Parallels/UTM: macOS guests on Apple Silicon are
@@ -47,18 +47,22 @@ repo-root agent instructions' licensing policy).
 
 ## Security model (why each piece exists)
 
-The repo is **public**, so a self-hosted runner is only acceptable with
-all three layers:
+The two allowed repositories are **public**, so a shared self-hosted runner is
+only acceptable with all four safeguards:
 
-1. **Ephemeral VMs** — each runner registers with `--ephemeral`, serves
-   exactly one job, then the VM is deleted. Nothing persists between
-   jobs.
+1. **Runner lifecycle** — the persistent VM is the default and serves one
+   trusted same-repository job at a time, so its work cache can persist. Use
+   the ephemeral mode when a clean VM per job is required, and re-baseline the
+   persistent VM whenever its retained state is no longer acceptable.
 2. **softnet isolation** — runner VMs boot with `--net-softnet`: internet
    works, all RFC1918 private address space (the host LAN) is blocked.
-   `run-ephemeral-runner.sh` probes this from inside the VM before
-   registering and aborts if private space is reachable. Never register
-   a runner from a VM that failed this probe.
-3. **GitHub settings** — the CI job carries an `if:` guard that skips it
+   Both runner scripts probe this from inside the VM before registering and
+   abort if private space is reachable. Never register a runner from a VM that
+   failed this probe.
+3. **Selected repository access** — the organization runner group is limited
+   to `pwrdrvr/PwrSnap` and `pwrdrvr/PwrAgent`. Do not use an all-repositories
+   group and do not register a second repo-scoped copy of this runner.
+4. **GitHub settings** — each CI job carries an `if:` guard that skips it
    for PRs from fork head-repos, and the repo must have Settings →
    Actions → General → "Require approval for all external contributors"
    enabled (human does this in the GitHub UI).
@@ -73,7 +77,7 @@ expect to live there (logs, artifacts, SSH key all land in that dir):
 
 ```bash
 mkdir -p ~/pwrsnap-mac-vm
-cp -R <this-skill-dir>/scripts/ ~/pwrsnap-mac-vm/
+cp -R <this-skill-dir>/scripts/. ~/pwrsnap-mac-vm/
 chmod +x ~/pwrsnap-mac-vm/*.sh ~/pwrsnap-mac-vm/runner/*.sh
 ```
 
@@ -153,6 +157,7 @@ Then:
 cd ~/pwrsnap-mac-vm
 ./runner/provision-runner-base.sh    # clone pwrsnap-dev -> pwrsnap-runner-base,
                                      # stage (not register) actions-runner
+./runner/configure-shared-runner-group.sh  # PwrSnap + PwrAgent only
 ./runner/run-persistent-runner.sh    # DEFAULT: one long-lived runner VM
 ```
 
@@ -178,10 +183,26 @@ delete VM. Costs a full checkout + pnpm install every job and cycles
 VM slots; use when you want zero state carryover (e.g. after loosening
 the fork-PR policy, or for one-off suspicious jobs).
 
-Both modes: registration tokens come from
-`gh api -X POST repos/pwrdrvr/PwrSnap/actions/runners/registration-token`
-and require repo admin on the authenticated `gh` — check
-`gh auth status` if the token fetch 403s.
+Both modes register to `https://github.com/pwrdrvr` in the selected-repository
+organization group. `configure-shared-runner-group.sh` permits only PwrSnap
+and PwrAgent, then the runner scripts obtain organization registration tokens
+from `orgs/pwrdrvr/actions/runners/registration-token`. A first registration
+or re-baseline requires an org-admin token (or fine-grained Actions Runners +
+Administration permission); refresh `gh` with `gh auth refresh -h github.com
+-s admin:org` if it returns 403. An already registered persistent runner does
+not call this API during ordinary launchd restarts.
+
+**Migrating the existing runner.** A runner previously registered directly to
+PwrSnap must be removed and reconfigured once, rather than cloned for
+PwrAgent:
+
+```bash
+./runner/migrate-persistent-runner-to-org.sh
+```
+
+The migration stops the listener, deletes its old repo registration, clears
+the local config, and starts the same Tart VM as the shared organization
+runner. It does not delete the VM or runner base image.
 
 **Always-on via launchd (recommended once the lane matters):**
 
@@ -208,7 +229,7 @@ Operational note: the CI lane only functions while a runner is
 listening. If none is, queued `desktop-e2e-macos` jobs sit up to 24h
 and fail — keep the lane's workflow job non-required (or the runner
 always-on via launchd) accordingly. A persistent runner that's offline
-stays registered (shows offline in repo Settings → Actions → Runners);
+stays registered (shows offline in organization Settings → Actions → Runners);
 jobs queue until it returns.
 
 ## Gotchas (each of these cost real debugging time)

@@ -34,6 +34,11 @@ vm_wait_ssh "$IP"
 echo ">> installing actions runner inside $RUNNER_VM"
 ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "RUNNER_VERSION=$(printf %q "$RUNNER_VERSION") bash -s" <<'REMOTE'
 set -euo pipefail
+eval "$(/opt/homebrew/bin/brew shellenv)"
+if ! command -v git-lfs >/dev/null 2>&1; then
+  brew install git-lfs </dev/null
+fi
+git lfs install >/dev/null
 if [ -z "${RUNNER_VERSION}" ]; then
   RUNNER_VERSION=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | /usr/bin/python3 -c "import json,sys;print(json.load(sys.stdin)['tag_name'].lstrip('v'))")
 fi

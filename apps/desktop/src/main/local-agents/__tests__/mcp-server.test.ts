@@ -181,12 +181,12 @@ function toolSet(): LocalAgentMcpTool<z.ZodRawShape>[] {
     {
       name: "pwrsnap_image_edit_send",
       title: "Edit PwrSnap Image",
-      description: "Start an image edit and return its composite preview.",
+      description: "Start an image edit and return its thread status.",
       inputSchema: {
         captureId: z.string(),
         instruction: z.string()
       },
-      requiredCapabilities: ["capture.edit", "capture.composite.read"],
+      requiredCapabilities: ["capture.edit"],
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -404,6 +404,12 @@ describe("LocalAgentMcpServer", () => {
     const connected = await connect(await startServer(), "pws_local_mcp-token");
 
     const resources = await connected.listResourceTemplates();
+    expect(resources.resourceTemplates.map((template) => template.uriTemplate)).toEqual([
+      "pwrsnap://capture/{captureId}/composite",
+      "pwrsnap://capture/{captureId}/original",
+      "pwrsnap://capture/{captureId}/export/{exportId}",
+      "pwrsnap://sizzle/{projectId}/{mode}/{renderId}"
+    ]);
     expect(resources.resourceTemplates).toEqual(expect.arrayContaining([
       expect.objectContaining({
         uriTemplate: "pwrsnap://capture/{captureId}/composite",
@@ -414,6 +420,9 @@ describe("LocalAgentMcpServer", () => {
         mimeType: "video/mp4"
       })
     ]));
+    expect(resources.resourceTemplates.every((template) =>
+      template.description?.includes("do not construct URIs from this template")
+    )).toBe(true);
   });
 
   test("returns media as first-class MCP resource links without inline bytes", async () => {
@@ -434,8 +443,7 @@ describe("LocalAgentMcpServer", () => {
         openWorldHint: false
       },
       dispatch: async (input) => ok(withMcpResourceLink({
-        resourceUri: `pwrsnap://capture/${input.captureId}/composite`,
-        signedUrl: "http://127.0.0.1:51729/media?grant=temporary"
+        resourceUri: `pwrsnap://capture/${input.captureId}/composite`
       }, {
         uri: "http://127.0.0.1:51729/media?grant=temporary",
         name: "composite capture",
@@ -466,6 +474,8 @@ describe("LocalAgentMcpServer", () => {
       type: "resource_link",
       uri: "http://127.0.0.1:51729/media?grant=temporary",
       name: "composite capture",
+      description:
+        "Pass this link directly to the client media fetch/render path. Do not copy or reconstruct its URI.",
       mimeType: "image/png",
       size: 3,
       annotations: {
@@ -541,21 +551,20 @@ describe("LocalAgentMcpServer", () => {
     });
   });
 
-  test("edit-only OAuth client cannot start an edit whose composite it cannot retrieve", async () => {
+  test("edit-only OAuth client can start an edit without a separate media grant", async () => {
     await grantService.createGrant({
       name: "Edit-only agent",
       capabilities: ["capture.edit"]
     });
     const connected = await connect(await startServer(), "pws_local_mcp-token");
 
-    const denied = await connected.callTool({
+    const sent = await connected.callTool({
       name: "pwrsnap_image_edit_send",
       arguments: { captureId: "cap_1", instruction: "Add an arrow" }
     }) as CallToolResult;
-    expect(denied.isError).toBe(true);
-    expect(denied.content[0]).toMatchObject({
-      type: "text",
-      text: expect.stringContaining("capture.composite.read")
+    expect(sent.isError).not.toBe(true);
+    expect(sent.structuredContent).toEqual({
+      edited: "cap_1"
     });
   });
 

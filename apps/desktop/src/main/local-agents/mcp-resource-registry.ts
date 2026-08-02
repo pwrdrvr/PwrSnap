@@ -11,7 +11,6 @@ export type LocalAgentMcpResource = {
   resolvePath: (context: LocalAgentResourceReadContext) => Promise<string>;
   requiredCapabilities: readonly LocalAgentCapability[];
   ownerClientId?: string;
-  expiresAt?: string;
   audit?: {
     action: LocalAgentAuditAction;
     capability: LocalAgentCapability;
@@ -27,7 +26,7 @@ export type LocalAgentResourceReadContext = {
 
 export class LocalAgentMcpResourceError extends Error {
   constructor(
-    public readonly code: "not_found" | "forbidden" | "expired",
+    public readonly code: "not_found" | "forbidden",
     message: string
   ) {
     super(message);
@@ -75,13 +74,6 @@ export class LocalAgentMcpResourceRegistry {
         "forbidden",
         "the current grant no longer permits this resource"
       );
-    }
-    if (
-      resource.expiresAt !== undefined &&
-      Date.parse(resource.expiresAt) <= Date.now()
-    ) {
-      this.resources.delete(uri);
-      throw new LocalAgentMcpResourceError("expired", "resource has expired");
     }
     return { resource, path: await resource.resolvePath(context) };
   }

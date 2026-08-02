@@ -42,29 +42,13 @@ export class LocalAgentToolService {
     if (capture.value === null || capture.value.deleted_at !== null) {
       return notFound(input.captureId);
     }
-    const availableResources: Array<{ variant: CaptureExportVariant; uri: string }> = [];
-    if (capture.value.kind === "image" && ctx.capabilities.includes("capture.composite.read")) {
-      const resource = this.registerCaptureResource(
-        input.captureId,
-        "composite"
-      );
-      availableResources.push({ variant: "composite", uri: resource.uri });
-    }
-    if (capture.value.kind === "image" && ctx.capabilities.includes("capture.original.read")) {
-      const resource = this.registerCaptureResource(
-        input.captureId,
-        "original"
-      );
-      availableResources.push({ variant: "original", uri: resource.uri });
-    }
     return ok({
       capture: projectLocalAgentCapture({
         record: capture.value,
         enrichment: enrichment.value,
         matchSnippet: null
       }),
-      ocrLength: enrichment.value?.ocrText?.length ?? 0,
-      availableResources
+      ocrLength: enrichment.value?.ocrText?.length ?? 0
     });
   }
 
@@ -105,20 +89,19 @@ export class LocalAgentToolService {
           toolContextForRead(readContext)
         )
       });
-      const signed = this.signedDescriptor(resource, ctx.clientId);
+      const deliveryUri = this.deliveryUri(resource, ctx.clientId);
       return ok(
         withMcpResourceLink(
           {
             variant,
             resourceUri: resource.uri,
-            ...signed,
             mimeType: exported.mimeType,
             widthPx: exported.widthPx,
             heightPx: exported.heightPx,
             byteSize: exported.byteSize
           },
           {
-            uri: signed.signedUrl ?? resource.uri,
+            uri: deliveryUri,
             name: resource.name,
             mimeType: resource.mimeType,
             size: exported.byteSize
@@ -174,12 +157,11 @@ export class LocalAgentToolService {
         refresh: (readContext) =>
           this.refreshExport(request, toolContextForRead(readContext))
       });
-      const signed = this.signedDescriptor(resource, ctx.clientId);
+      const deliveryUri = this.deliveryUri(resource, ctx.clientId);
       return ok(
         withMcpResourceLink(
           {
             resourceUri: resource.uri,
-            ...signed,
             variant: exported.variant,
             format: exported.format,
             preset: exported.preset ?? preset,
@@ -190,7 +172,7 @@ export class LocalAgentToolService {
             fromCache: exported.fromCache
           },
           {
-            uri: signed.signedUrl ?? resource.uri,
+            uri: deliveryUri,
             name: resource.name,
             mimeType: resource.mimeType,
             size: exported.byteSize
@@ -299,19 +281,12 @@ export class LocalAgentToolService {
       ctx.commandContext
     );
     if (!sent.ok) return sent;
-    const preview = this.registerEditPreviewResource(
-      input.captureId,
-      thread.threadId,
-      ctx
-    );
     return ok({
       threadId: thread.threadId,
       turnId: sent.value.turnId,
       status: { kind: "streaming", turnId: sent.value.turnId },
       provider: thread.provider,
-      model: thread.model,
-      compositePreviewResourceUri: preview.uri,
-      ...this.signedDescriptor(preview, ctx.clientId)
+      model: thread.model
     });
   }
 
@@ -319,6 +294,15 @@ export class LocalAgentToolService {
     input: { captureId: string; threadId: string },
     ctx: LocalAgentToolContext
   ): Promise<Result<unknown, PwrSnapError>> {
+    const capture = await bus.dispatch(
+      "library:byId",
+      { id: input.captureId },
+      ctx.commandContext
+    );
+    if (!capture.ok) return capture;
+    if (capture.value === null || capture.value.deleted_at !== null) {
+      return notFound(input.captureId);
+    }
     const listed = await bus.dispatch(
       "codex:libraryChat:list",
       { anchorCaptureId: input.captureId },
@@ -335,27 +319,10 @@ export class LocalAgentToolService {
         message: "the requested thread is not anchored to this capture"
       });
     }
-    const preview = this.registerEditPreviewResource(
-      input.captureId,
-      thread.threadId,
-      ctx
-    );
-    const value = {
+    return ok({
       threadId: thread.threadId,
-      status: thread.status,
-      compositePreviewResourceUri: preview.uri,
-      ...(thread.status.kind === "idle"
-        ? this.signedDescriptor(preview, ctx.clientId)
-        : {})
-    };
-    if (thread.status.kind !== "idle") return ok(value);
-    return ok(
-      withMcpResourceLink(value, {
-        uri: value.signedUrl ?? preview.uri,
-        name: preview.name,
-        mimeType: preview.mimeType
-      })
-    );
+      status: thread.status
+    });
   }
 
   async sizzleCreate(
@@ -415,7 +382,13 @@ export class LocalAgentToolService {
         return chat;
       }
       if (input.brief === undefined) {
-        return ok({ project, threadId: chat.value.threadId, turnId: null });
+        return ok({
+          projectId: project.id,
+          name: project.name,
+          sceneCount: project.scenes.length,
+          threadId: chat.value.threadId,
+          turnId: null
+        });
       }
       const sent = await bus.dispatch(
         "codex:sizzleChat:send",
@@ -431,7 +404,9 @@ export class LocalAgentToolService {
         return sent;
       }
       return ok({
-        project,
+        projectId: project.id,
+        name: project.name,
+        sceneCount: project.scenes.length,
         threadId: chat.value.threadId,
         turnId: sent.value.turnId
       });
@@ -550,91 +525,23 @@ export class LocalAgentToolService {
       ownerClientId: ctx.clientId,
       resolvePath: async () => rendered.value.outputPath
     });
-    const signed = this.signedDescriptor(resource, ctx.clientId);
+    const deliveryUri = this.deliveryUri(resource, ctx.clientId);
     return ok(
       withMcpResourceLink(
         {
           resourceUri: resource.uri,
-          ...signed,
           durationSec: rendered.value.durationSec,
           widthPx: rendered.value.widthPx,
           heightPx: rendered.value.heightPx,
           mimeType: "video/mp4"
         },
         {
-          uri: signed.signedUrl ?? resource.uri,
+          uri: deliveryUri,
           name: resource.name,
           mimeType: resource.mimeType
         }
       )
     );
-  }
-
-  private registerCaptureResource(
-    captureId: string,
-    variant: CaptureExportVariant
-  ): LocalAgentMcpResource {
-    return this.resources.register({
-      uri: `pwrsnap://capture/${encodeURIComponent(captureId)}/${variant}`,
-      name: `${variant} capture`,
-      mimeType: "image/png",
-      requiredCapabilities: [readCapabilityForVariant(variant)],
-      ...(variant === "original"
-        ? {
-            audit: {
-              action: "capture.original.read" as const,
-              capability: "capture.original.read" as const,
-              subjectKind: "capture" as const,
-              subjectId: captureId
-            }
-          }
-        : {}),
-      resolvePath: (readContext) =>
-        this.refreshExport(
-          { captureId, variant, format: "png" },
-          toolContextForRead(readContext)
-        )
-    });
-  }
-
-  private registerEditPreviewResource(
-    captureId: string,
-    threadId: string,
-    ctx: LocalAgentToolContext
-  ): LocalAgentMcpResource {
-    const uri =
-      `pwrsnap://capture/${encodeURIComponent(captureId)}/edit/` +
-      `${clientScopedId(threadId, ctx.clientId)}/composite`;
-    return this.resources.register({
-      uri,
-      name: "completed image edit composite",
-      mimeType: "image/png",
-      requiredCapabilities: ["capture.edit", "capture.composite.read"],
-      ownerClientId: ctx.clientId,
-      resolvePath: async (readContext) => {
-        const readCtx = toolContextForRead(readContext);
-        const listed = await bus.dispatch(
-          "codex:libraryChat:list",
-          { anchorCaptureId: captureId },
-          readCtx.commandContext
-        );
-        if (!listed.ok) throw new Error(listed.error.message);
-        const thread = listed.value.threads.find(
-          (candidate) => candidate.threadId === threadId
-        );
-        if (thread === undefined) {
-          throw new Error("edit thread is no longer anchored to this capture");
-        }
-        if (thread.status.kind !== "idle") {
-          throw new Error("edit is not complete");
-        }
-        return this.refreshExport({
-          captureId,
-          variant: "composite",
-          format: "png"
-        }, readCtx);
-      }
-    });
   }
 
   private async refreshExport(
@@ -672,21 +579,18 @@ export class LocalAgentToolService {
     });
   }
 
-  private signedDescriptor(
+  private deliveryUri(
     resource: LocalAgentMcpResource,
     clientId: string
-  ): { signedUrl?: string; signedUrlExpiresAt?: string } {
+  ): string {
     const baseUrl = this.getBaseUrl();
-    if (baseUrl === null) return {};
+    if (baseUrl === null) return resource.uri;
     const signed = this.signedUrls.mint({
       baseUrl,
       resourceUri: resource.uri,
       clientId
     });
-    return {
-      signedUrl: signed.url,
-      signedUrlExpiresAt: signed.expiresAt
-    };
+    return signed.url;
   }
 }
 

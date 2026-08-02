@@ -1,6 +1,10 @@
 import type { CaptureSearchDiscovery, CaptureSearchResultRow } from "@pwrsnap/shared";
 import { describe, expect, test } from "vitest";
 import {
+  LOCAL_AGENT_MCP_DEFAULT_LIMIT,
+  LOCAL_AGENT_MCP_MAX_LIMIT,
+  limitLocalAgentMcpList,
+  localAgentMcpResultLimit,
   localAgentSearchOrder,
   projectLocalAgentSearchDiscovery,
   projectLocalAgentSearchRows,
@@ -195,6 +199,24 @@ describe("local-agent search boundary", () => {
     expect(localAgentSearchOrder({})).toBe("newest");
     expect(localAgentSearchOrder({ query: "pairing" })).toBe("relevance");
     expect(localAgentSearchOrder({ query: "pairing", order: "oldest" })).toBe("oldest");
+  });
+
+  test("bounds MCP list responses and reports truncation", () => {
+    const rows = Array.from({ length: LOCAL_AGENT_MCP_DEFAULT_LIMIT + 1 }, (_, index) => index);
+    expect(localAgentMcpResultLimit({})).toBe(LOCAL_AGENT_MCP_DEFAULT_LIMIT);
+    expect(localAgentMcpResultLimit({ limit: LOCAL_AGENT_MCP_MAX_LIMIT })).toBe(
+      LOCAL_AGENT_MCP_MAX_LIMIT
+    );
+    expect(limitLocalAgentMcpList(rows, {})).toEqual({
+      items: rows.slice(0, LOCAL_AGENT_MCP_DEFAULT_LIMIT),
+      limit: LOCAL_AGENT_MCP_DEFAULT_LIMIT,
+      hasMore: true
+    });
+    expect(limitLocalAgentMcpList(rows, { limit: 2 })).toEqual({
+      items: [0, 1],
+      limit: 2,
+      hasMore: true
+    });
   });
 
   test("projects reusable discovery filters with optional bundle metadata", () => {

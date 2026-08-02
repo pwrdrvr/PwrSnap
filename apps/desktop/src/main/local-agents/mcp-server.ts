@@ -49,6 +49,8 @@ import type {
   LocalAgentConsentRequest
 } from "./local-agent-consent-broker";
 import {
+  limitLocalAgentMcpList,
+  localAgentMcpResultLimit,
   localAgentSearchOrder,
   projectLocalAgentSearchDiscovery,
   projectLocalAgentSearchRows,
@@ -145,7 +147,11 @@ export class LocalAgentMcpServer {
       options.tools ??
       createDefaultLocalAgentMcpTools({
         search: async (input, ctx) => {
-          const request = toCaptureSearchRequest(input);
+          const limit = localAgentMcpResultLimit(input);
+          const request = {
+            ...toCaptureSearchRequest(input),
+            limit: limit + 1
+          };
           const result = await bus.dispatch(
             "library:search",
             request,
@@ -155,26 +161,41 @@ export class LocalAgentMcpServer {
             }
           );
           if (!result.ok) return result;
+          const page = limitLocalAgentMcpList(result.value.rows, input);
           return ok({
             detail: input.detail ?? "summary",
             order: localAgentSearchOrder(input),
+            limit: page.limit,
+            hasMore: page.hasMore,
             rows: projectLocalAgentSearchRows(
-              result.value.rows,
+              page.items,
               input.detail ?? "summary"
             )
           });
         },
         discovery: async (input, ctx) => {
+          const limit = localAgentMcpResultLimit(input);
           const result = await bus.dispatch(
             "library:discover",
-            input,
+            { limit: limit + 1 },
             {
               principal: "mcp",
               localAgent: ctx.commandContext.localAgent
             }
           );
           if (!result.ok) return result;
-          return ok(projectLocalAgentSearchDiscovery(result.value));
+          const discovery = projectLocalAgentSearchDiscovery(result.value);
+          const applications = limitLocalAgentMcpList(discovery.applications, input);
+          const tags = limitLocalAgentMcpList(discovery.tags, input);
+          return ok({
+            applications: applications.items,
+            tags: tags.items,
+            limit: applications.limit,
+            hasMore: {
+              applications: applications.hasMore,
+              tags: tags.hasMore
+            }
+          });
         },
         deleteToTrash: async (input, ctx) => {
           const commandContext = {
@@ -380,9 +401,8 @@ export class LocalAgentMcpServer {
       {
         instructions:
           "Use PwrSnap tools only for captures and sizzle assets the user authorized for this local client. " +
-          "Completed media tools return a typed MCP resource link to a five-minute signed localhost URL, plus a capability-protected MCP resource URI fallback. " +
-          "Fetch the resource link promptly. Use MCP resources/read only when the client cannot fetch the direct URL. " +
-          "Never log, persist, or share a signed media URL."
+          "Completed media tools attach a typed MCP resource link. Pass it directly to the client's media handler; do not copy or reconstruct its URI. " +
+          "Use the returned resourceUri only in clients that explicitly support MCP resource reads."
       }
     );
     this.registerTools(mcp);
@@ -400,11 +420,6 @@ export class LocalAgentMcpServer {
         "application/octet-stream"
       ],
       [
-        "capture-edit-preview",
-        "pwrsnap://capture/{captureId}/edit/{threadId}/composite",
-        "image/png"
-      ],
-      [
         "sizzle-render",
         "pwrsnap://sizzle/{projectId}/{mode}/{renderId}",
         "video/mp4"
@@ -417,7 +432,7 @@ export class LocalAgentMcpServer {
         {
           title: `PwrSnap ${name}`,
           description:
-            "Capability-protected local PwrSnap media. The concrete resource read revalidates the client grant before returning bytes.",
+            "Capability-protected local PwrSnap media. Read only a canonical URI returned by a completed PwrSnap media tool; do not construct URIs from this template. The concrete resource read revalidates the client grant before returning bytes.",
           mimeType
         },
         async (uri, _variables, extra) => {

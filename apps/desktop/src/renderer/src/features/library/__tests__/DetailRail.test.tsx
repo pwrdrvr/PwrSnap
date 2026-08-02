@@ -853,6 +853,7 @@ describe("DetailRail", () => {
     expect(infoTab).not.toBeNull();
     expect(ocrTab).not.toBeNull();
     expect(chatTab).not.toBeNull();
+    expect(chatTab?.title).toBe("Chat with AI");
     expect(infoTab?.getAttribute("role")).toBe("tab");
     expect(ocrTab?.getAttribute("role")).toBe("tab");
     expect(chatTab?.getAttribute("role")).toBe("tab");

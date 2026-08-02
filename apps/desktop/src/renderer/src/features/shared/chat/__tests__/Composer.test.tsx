@@ -137,6 +137,11 @@ function deferred<T>(): {
 }
 
 describe("Composer", () => {
+  test("defaults to provider-neutral AI copy", async () => {
+    const el = await renderComposer({ onSubmit: vi.fn().mockResolvedValue(undefined) });
+    expect(getTextarea(el).placeholder).toBe("Message AI…");
+  });
+
   test("Enter submits the trimmed text", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const el = await renderComposer({ onSubmit });

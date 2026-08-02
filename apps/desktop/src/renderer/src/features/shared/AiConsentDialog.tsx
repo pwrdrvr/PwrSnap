@@ -18,13 +18,13 @@ export function AiConsentDialog({
         aria-modal="true"
         aria-labelledby="ps-ai-consent-title"
       >
-        <div className="ps-ai-consent__eyebrow">Codex enrichment</div>
+        <div className="ps-ai-consent__eyebrow">AI enrichment</div>
         <h2 id="ps-ai-consent-title" className="ps-ai-consent__title">
-          Let Codex read new snaps?
+          Enable AI enrichment for new snaps?
         </h2>
         <p className="ps-ai-consent__copy">
           PwrSnap will send a downsampled copy of each new screenshot or
-          sampled video frames to your configured Codex provider to generate
+          sampled video frames to your configured AI provider to generate
           titles, descriptions, tags, and OCR text.
         </p>
         <p className="ps-ai-consent__copy">
@@ -44,7 +44,7 @@ export function AiConsentDialog({
             className="ps-ai-consent__btn is-primary"
             onClick={onAccept}
           >
-            Enable Codex
+            Enable AI enrichment
           </button>
         </div>
       </section>

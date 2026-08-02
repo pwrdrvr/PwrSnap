@@ -571,7 +571,7 @@ describe("FloatOverHost", () => {
   });
 });
 
-describe("FloatOver Codex suggestions", () => {
+describe("FloatOver AI suggestions", () => {
   test("shows Configure AI instead of Enable when the enrichment provider is unavailable", async () => {
     const onConfigureAi = vi.fn();
     const onEnableAi = vi.fn();
@@ -589,7 +589,7 @@ describe("FloatOver Codex suggestions", () => {
       (button) => button.textContent === "Configure AI"
     );
     expect(configure).toBeDefined();
-    expect(el.textContent).not.toContain("Let Codex read new snaps?");
+    expect(el.textContent).not.toContain("Enable AI enrichment for new snaps?");
 
     await act(async () => {
       configure?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -599,7 +599,7 @@ describe("FloatOver Codex suggestions", () => {
     expect(onEnableAi).not.toHaveBeenCalled();
   });
 
-  test("first-time Enable shows consent copy before enabling Codex", async () => {
+  test("first-time Enable shows AI enrichment consent copy", async () => {
     const onEnableAi = vi.fn();
     const el = await renderFloatOver({
       src: "data:image/png;base64,",
@@ -619,11 +619,12 @@ describe("FloatOver Codex suggestions", () => {
     });
 
     expect(onEnableAi).not.toHaveBeenCalled();
-    expect(el.textContent).toContain("Let Codex read new snaps?");
+    expect(el.textContent).toContain("Enable AI enrichment for new snaps?");
     expect(el.textContent).toContain("downsampled copy");
+    expect(el.textContent).toContain("configured AI provider");
 
     const accept = Array.from(el.querySelectorAll("button")).find(
-      (button) => button.textContent === "Enable Codex"
+      (button) => button.textContent === "Enable AI enrichment"
     );
     expect(accept).toBeDefined();
 
@@ -898,6 +899,11 @@ describe("FloatOver Codex suggestions", () => {
     );
     expect(checkbox).not.toBeNull();
     expect(checkbox?.checked).toBe(false);
+    const autoAccept = el.querySelector<HTMLLabelElement>(".fo__auto-accept");
+    expect(autoAccept?.textContent).toContain("Auto-apply AI enrichment");
+    expect(autoAccept?.getAttribute("title")).toBe(
+      "Apply AI enrichment automatically when ready"
+    );
 
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(

@@ -138,7 +138,7 @@ export async function prepareEnrichmentVideoFrames(
   const ffmpeg = resolveFfmpegPath();
   if (ffmpeg === null) {
     throw new Error(
-      "ffmpeg binary not available; cannot prepare video frames for Codex enrichment"
+      "ffmpeg binary not available; cannot prepare video frames for AI enrichment"
     );
   }
 

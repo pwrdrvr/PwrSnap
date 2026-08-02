@@ -121,9 +121,15 @@ describe("ChatPanel", () => {
     expect(chip?.textContent).toContain("2246×1496");
   });
 
-  test("welcome card renders when there are no messages", async () => {
+  test("uses provider-neutral AI copy", async () => {
     const { el } = await renderPanel();
     expect(el.querySelector(".pse-chat-welcome")).not.toBeNull();
+    expect(el.querySelector(".pse-chat-title")?.textContent).toBe("Chat with AI");
+    expect(el.querySelector<HTMLTextAreaElement>("[data-testid='chat-input']")?.placeholder).toContain(
+      "ask AI"
+    );
+    expect(el.querySelector(".pse-chat-welcome")?.textContent).toContain("AI can act on layers");
+    expect(el.textContent).not.toContain("Codex");
   });
 
   test("Send button is disabled when the composer is empty", async () => {
@@ -135,7 +141,7 @@ describe("ChatPanel", () => {
     expect(send?.disabled).toBe(true);
   });
 
-  test("Submitting a non-empty draft appends a user message + placeholder Codex response", async () => {
+  test("Submitting a non-empty draft appends a user message + placeholder AI response", async () => {
     const { el } = await renderPanel();
     const textarea = el.querySelector<HTMLTextAreaElement>(
       '[data-testid="chat-input"]'
@@ -169,6 +175,8 @@ describe("ChatPanel", () => {
     expect(userMsg).not.toBeNull();
     expect(codexMsg).not.toBeNull();
     expect(userMsg?.textContent).toContain("make the arrows orange");
+    expect(codexMsg?.textContent).toContain("AI");
+    expect(codexMsg?.textContent).not.toContain("Codex");
     // Textarea is cleared after submit.
     expect(textarea?.value).toBe("");
   });
@@ -268,7 +276,7 @@ describe("ChatPanel", () => {
     expect(el.querySelector('[data-testid="chat-context-ocr-chip"]')).toBeNull();
   });
 
-  test("Codex messages carry a model badge ('pending' until IPC lands)", async () => {
+  test("Assistant messages carry a model badge ('pending' until IPC lands)", async () => {
     const { el } = await renderPanel();
     const textarea = el.querySelector<HTMLTextAreaElement>(
       '[data-testid="chat-input"]'

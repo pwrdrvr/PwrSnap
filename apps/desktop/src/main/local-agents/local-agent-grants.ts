@@ -4,9 +4,17 @@ import type {
   LocalAgentClientGrant,
   LocalAgentClientGrantPatch,
   LocalAgentOAuthClient,
+  LocalAgentRoleProfile,
+  LocalAgentRoleProfilePatch,
   Settings
 } from "@pwrsnap/shared";
-import { isLocalAgentCapability } from "@pwrsnap/shared";
+import {
+  findRoleForCapabilities,
+  isLocalAgentCapability,
+  isValidRole,
+  resolveLocalAgentPolicy,
+  type ResolvedLocalAgentPolicy
+} from "@pwrsnap/shared";
 import type { CommandContext } from "../command-bus";
 import { DesktopSecretStore } from "../settings/desktop-secret-store";
 import { DesktopSettingsService } from "../settings/desktop-settings-service";
@@ -23,13 +31,14 @@ export type LocalAgentCredentialIssueResult = {
 
 export type LocalAgentAuthResult =
   | { ok: true; grant: LocalAgentClientGrant; context: NonNullable<CommandContext["localAgent"]> }
-  | { ok: false; code: "missing_token" | "invalid_token" | "revoked" | "missing_capability" };
+  | { ok: false; code: "missing_token" | "invalid_token" | "revoked" | "invalid_role" | "missing_capability" };
 
 export type LocalAgentGrantServiceConfig = {
   settings: DesktopSettingsService;
   secrets: DesktopSecretStore;
   now?: () => Date;
   makeId?: () => string;
+  makeRoleId?: () => string;
   makeToken?: () => string;
   usageWriteIntervalMs?: number;
   onSettingsChanged?: (settings: Settings) => void | Promise<void>;
@@ -45,6 +54,7 @@ export class LocalAgentGrantService {
   private readonly now: () => Date;
   private readonly makeId: () => string;
   private readonly makeToken: () => string;
+  private readonly makeRoleId: () => string;
   private readonly usageWriteIntervalMs: number;
   private readonly onSettingsChanged: ((settings: Settings) => void | Promise<void>) | undefined;
   private mutationQueue: Promise<unknown> = Promise.resolve();
@@ -54,6 +64,8 @@ export class LocalAgentGrantService {
     this.secrets = config.secrets;
     this.now = config.now ?? (() => new Date());
     this.makeId = config.makeId ?? (() => `lag_${randomBytes(12).toString("hex")}`);
+    this.makeRoleId =
+      config.makeRoleId ?? (() => `lar_${randomBytes(12).toString("hex")}`);
     this.makeToken = config.makeToken ?? (() => `${TOKEN_PREFIX}${randomBytes(TOKEN_BYTES).toString("base64url")}`);
     this.usageWriteIntervalMs =
       config.usageWriteIntervalMs ?? DEFAULT_USAGE_WRITE_INTERVAL_MS;
@@ -63,6 +75,137 @@ export class LocalAgentGrantService {
   async list(): Promise<LocalAgentClientGrant[]> {
     const settings = await this.settings.read();
     return settings.localAgents.grants;
+  }
+
+  async listRoles(): Promise<LocalAgentRoleProfile[]> {
+    const settings = await this.settings.read();
+    return settings.localAgents.roles;
+  }
+
+  async createRole(input: {
+    name: string;
+    description: string;
+    permissions: readonly unknown[];
+  }): Promise<LocalAgentRoleProfile> {
+    return this.serializeMutation(async () => {
+      const settings = await this.settings.read();
+      const role: LocalAgentRoleProfile = {
+        id: this.makeRoleId(),
+        name: normalizeName(input.name),
+        description: normalizeDescription(input.description),
+        builtIn: false,
+        permissions: normalizeCapabilitiesStrict(input.permissions)
+      };
+      this.validateNewRole(settings, role);
+      const nextSettings = await this.settings.write({
+        localAgents: { roles: [...settings.localAgents.roles, role] }
+      });
+      await this.notifySettingsChanged(nextSettings);
+      return role;
+    });
+  }
+
+  async updateRole(
+    id: string,
+    patch: Omit<LocalAgentRoleProfilePatch, "permissions"> & {
+      permissions?: readonly unknown[];
+    }
+  ): Promise<LocalAgentRoleProfile> {
+    return this.serializeMutation(async () => {
+      const settings = await this.settings.read();
+      const existing = settings.localAgents.roles.find((role) => role.id === id);
+      if (existing === undefined) {
+        throw new LocalAgentGrantError("role_not_found", `local-agent role not found: ${id}`);
+      }
+      if (existing.builtIn) {
+        throw new LocalAgentGrantError("builtin_role_immutable", "built-in roles cannot be edited");
+      }
+      const role: LocalAgentRoleProfile = {
+        ...existing,
+        ...(patch.name !== undefined ? { name: normalizeName(patch.name) } : {}),
+        ...(patch.description !== undefined
+          ? { description: normalizeDescription(patch.description) }
+          : {}),
+        ...(patch.permissions !== undefined
+          ? { permissions: normalizeCapabilitiesStrict(patch.permissions) }
+          : {})
+      };
+      if (!isValidRole(role)) {
+        throw new LocalAgentGrantError("invalid_role", "local-agent role is invalid");
+      }
+      if (settings.localAgents.roles.some(
+        (item) =>
+          item.id !== id &&
+          item.name.localeCompare(role.name, undefined, { sensitivity: "accent" }) === 0
+      )) {
+        throw new LocalAgentGrantError(
+          "duplicate_role_name",
+          `local-agent role name already exists: ${role.name}`
+        );
+      }
+      const roles = settings.localAgents.roles.map((item) => item.id === id ? role : item);
+      const grants = settings.localAgents.grants.map((grant) =>
+        grant.roleId === id
+          ? { ...grant, capabilities: [...role.permissions], updatedAt: this.now().toISOString() }
+          : grant
+      );
+      const nextSettings = await this.settings.write({
+        localAgents: { roles, grants }
+      });
+      await this.notifySettingsChanged(nextSettings);
+      return role;
+    });
+  }
+
+  async deleteRole(id: string): Promise<void> {
+    await this.serializeMutation(async () => {
+      const settings = await this.settings.read();
+      const existing = settings.localAgents.roles.find((role) => role.id === id);
+      if (existing === undefined) {
+        throw new LocalAgentGrantError("role_not_found", `local-agent role not found: ${id}`);
+      }
+      if (existing.builtIn) {
+        throw new LocalAgentGrantError("builtin_role_immutable", "built-in roles cannot be deleted");
+      }
+      if (settings.localAgents.grants.some((grant) => grant.roleId === id)) {
+        throw new LocalAgentGrantError("role_assigned", "assigned roles cannot be deleted");
+      }
+      const nextSettings = await this.settings.write({
+        localAgents: {
+          roles: settings.localAgents.roles.filter((role) => role.id !== id)
+        }
+      });
+      await this.notifySettingsChanged(nextSettings);
+    });
+  }
+
+  async assignRole(sessionId: string, roleId: string): Promise<LocalAgentClientGrant> {
+    return this.serializeMutation(async () => {
+      const settings = await this.settings.read();
+      const role = settings.localAgents.roles.find((item) => item.id === roleId);
+      if (role === undefined || !isValidRole(role)) {
+        throw new LocalAgentGrantError("role_not_found", `local-agent role not found: ${roleId}`);
+      }
+      const existing = settings.localAgents.grants.find((grant) => grant.id === sessionId);
+      if (existing === undefined) {
+        throw new LocalAgentGrantError("not_found", `local agent grant not found: ${sessionId}`);
+      }
+      const grant: LocalAgentClientGrant = {
+        ...existing,
+        roleId: role.id,
+        capabilities: [...role.permissions],
+        updatedAt: this.now().toISOString()
+      };
+      const nextSettings = await this.settings.write({
+        localAgents: {
+          grants: settings.localAgents.grants.map((item) =>
+            item.id === sessionId ? grant : item
+          )
+        }
+      });
+      await this.notifySettingsChanged(nextSettings);
+      return grant;
+    });
   }
 
   async createGrant(args: {
@@ -78,29 +221,32 @@ export class LocalAgentGrantService {
       throw new LocalAgentGrantError("invalid_capabilities", "at least one capability is required");
     }
 
-    const now = this.now().toISOString();
     const id = this.makeId();
     const token = this.makeToken();
-    const grant: LocalAgentClientGrant = {
-      id,
-      name,
-      capabilities,
-      createdAt: now,
-      updatedAt: now,
-      lastUsedAt: null,
-      revokedAt: null
-    };
     return this.serializeMutation(async () => {
       const settings = await this.settings.read();
       if (settings.localAgents.grants.some((existing) => existing.id === id)) {
         throw new LocalAgentGrantError("duplicate_id", `local agent grant already exists: ${id}`);
       }
+      const roleState = this.roleForCapabilities(settings, name, capabilities);
+      const now = this.now().toISOString();
+      const grant: LocalAgentClientGrant = {
+        id,
+        name,
+        roleId: roleState.role.id,
+        capabilities: [...roleState.role.permissions],
+        createdAt: now,
+        updatedAt: now,
+        lastUsedAt: null,
+        revokedAt: null
+      };
       await this.secrets.replace(secretNameForClient(id), hashToken(token));
       let nextSettings: Settings;
       try {
         nextSettings = await this.settings.write({
           localAgents: {
-            grants: [...settings.localAgents.grants, grant]
+            grants: [...settings.localAgents.grants, grant],
+            roles: roleState.roles
           }
         });
       } catch (cause) {
@@ -143,10 +289,12 @@ export class LocalAgentGrantService {
         );
       }
       const now = this.now().toISOString();
+      const roleState = this.roleForCapabilities(settings, name, capabilities);
       const grant: LocalAgentClientGrant = {
         id: this.makeId(),
         name,
-        capabilities,
+        roleId: roleState.role.id,
+        capabilities: [...roleState.role.permissions],
         createdAt: now,
         updatedAt: now,
         lastUsedAt: null,
@@ -164,7 +312,10 @@ export class LocalAgentGrantService {
       let nextSettings: Settings;
       try {
         nextSettings = await this.settings.write({
-          localAgents: { grants: [...settings.localAgents.grants, grant] }
+          localAgents: {
+            grants: [...settings.localAgents.grants, grant],
+            roles: roleState.roles
+          }
         });
       } catch (cause) {
         await this.secrets.clear(secretName).catch(() => undefined);
@@ -226,11 +377,24 @@ export class LocalAgentGrantService {
       throw new LocalAgentGrantError("not_found", `local agent grant not found: ${id}`);
     }
     const now = this.now().toISOString();
+    const nextName =
+      patch.name !== undefined ? normalizeName(patch.name) : existing.name;
+    const roleState =
+      patch.capabilities === undefined
+        ? null
+        : this.roleForCapabilities(
+            settings,
+            nextName,
+            normalizeCapabilitiesStrict(patch.capabilities)
+          );
     const next: LocalAgentClientGrant = {
       ...existing,
-      ...(patch.name !== undefined ? { name: normalizeName(patch.name) } : {}),
-      ...(patch.capabilities !== undefined
-        ? { capabilities: normalizeCapabilitiesStrict(patch.capabilities) }
+      name: nextName,
+      ...(roleState !== null
+        ? {
+            roleId: roleState.role.id,
+            capabilities: [...roleState.role.permissions]
+          }
         : {}),
       ...(patch.lastUsedAt !== undefined ? { lastUsedAt: normalizeNullableTimestamp(patch.lastUsedAt) } : {}),
       ...(patch.revokedAt !== undefined ? { revokedAt: normalizeNullableTimestamp(patch.revokedAt) } : {}),
@@ -242,8 +406,27 @@ export class LocalAgentGrantService {
     if (next.capabilities.length === 0) {
       throw new LocalAgentGrantError("invalid_capabilities", "at least one capability is required");
     }
+    if (
+      next.revokedAt === null &&
+      settings.localAgents.grants.some(
+        (grant) =>
+          grant.id !== id &&
+          grant.revokedAt === null &&
+          grant.name.localeCompare(next.name, undefined, { sensitivity: "accent" }) === 0
+      )
+    ) {
+      throw new LocalAgentGrantError(
+        "duplicate_name",
+        `an active local-agent session already uses the name: ${next.name}`
+      );
+    }
     const grants = settings.localAgents.grants.map((grant) => grant.id === id ? next : grant);
-    const nextSettings = await this.settings.write({ localAgents: { grants } });
+    const nextSettings = await this.settings.write({
+      localAgents: {
+        grants,
+        ...(roleState !== null ? { roles: roleState.roles } : {})
+      }
+    });
     return { grant: next, settings: nextSettings };
   }
 
@@ -263,15 +446,16 @@ export class LocalAgentGrantService {
     if (storedHash === null || !tokenHashMatches(args.token, storedHash)) {
       return { ok: false, code: "invalid_token" };
     }
+    const resolution = resolveLocalAgentPolicy(settings.localAgents, grant.id);
+    if (!resolution.ok) return { ok: false, code: "invalid_role" };
     const required = args.requiredCapabilities ?? [];
-    if (!hasCapabilities(grant, required)) return { ok: false, code: "missing_capability" };
+    if (!hasCapabilities(resolution.policy, required)) {
+      return { ok: false, code: "missing_capability" };
+    }
     return {
       ok: true,
       grant,
-      context: {
-        clientId: grant.id,
-        capabilities: grant.capabilities
-      }
+      context: localAgentContextFromPolicy(resolution.policy)
     };
   }
 
@@ -281,14 +465,55 @@ export class LocalAgentGrantService {
   ): Promise<NonNullable<CommandContext["localAgent"]> | null> {
     const settings = await this.settings.read();
     const grant = settings.localAgents.grants.find((item) => item.id === clientId);
+    if (grant === undefined || grant.revokedAt !== null) return null;
+    const resolution = resolveLocalAgentPolicy(settings.localAgents, grant.id);
     if (
-      grant === undefined ||
-      grant.revokedAt !== null ||
-      !hasCapabilities(grant, requiredCapabilities)
-    ) {
-      return null;
+      !resolution.ok ||
+      !hasCapabilities(resolution.policy, requiredCapabilities)
+    ) return null;
+    return localAgentContextFromPolicy(resolution.policy);
+  }
+
+  private roleForCapabilities(
+    settings: Settings,
+    sessionName: string,
+    capabilities: readonly LocalAgentCapability[]
+  ): { role: LocalAgentRoleProfile; roles: LocalAgentRoleProfile[] } {
+    const existing = findRoleForCapabilities(
+      settings.localAgents.roles,
+      capabilities
+    );
+    if (existing !== undefined) {
+      return { role: existing, roles: settings.localAgents.roles };
     }
-    return localAgentContextFromGrant(grant);
+    const role: LocalAgentRoleProfile = {
+      id: this.makeRoleId(),
+      name: `${sessionName} Access`.slice(0, 200),
+      description: `Custom access profile created for ${sessionName}.`.slice(0, 500),
+      builtIn: false,
+      permissions: [...capabilities]
+    };
+    if (settings.localAgents.roles.some((item) => item.id === role.id)) {
+      throw new LocalAgentGrantError(
+        "duplicate_role_id",
+        `local-agent role already exists: ${role.id}`
+      );
+    }
+    return { role, roles: [...settings.localAgents.roles, role] };
+  }
+
+  private validateNewRole(settings: Settings, role: LocalAgentRoleProfile): void {
+    if (!isValidRole(role)) {
+      throw new LocalAgentGrantError("invalid_role", "local-agent role is invalid");
+    }
+    if (settings.localAgents.roles.some((item) => item.id === role.id)) {
+      throw new LocalAgentGrantError("duplicate_role_id", `local-agent role already exists: ${role.id}`);
+    }
+    if (settings.localAgents.roles.some(
+      (item) => item.name.localeCompare(role.name, undefined, { sensitivity: "accent" }) === 0
+    )) {
+      throw new LocalAgentGrantError("duplicate_role_name", `local-agent role name already exists: ${role.name}`);
+    }
   }
 
   private async notifySettingsChanged(settings: Settings): Promise<void> {
@@ -313,7 +538,7 @@ export class LocalAgentGrantError extends Error {
 }
 
 export function hasCapabilities(
-  grant: Pick<LocalAgentClientGrant, "capabilities">,
+  grant: { capabilities: readonly LocalAgentCapability[] },
   required: readonly LocalAgentCapability[]
 ): boolean {
   const held = new Set(grant.capabilities);
@@ -326,6 +551,10 @@ export function secretNameForClient(clientId: string): `localAgentToken:${string
 
 function normalizeName(value: string): string {
   return value.trim().slice(0, 200);
+}
+
+function normalizeDescription(value: string): string {
+  return value.trim().slice(0, 500);
 }
 
 function normalizeCapabilities(
@@ -372,12 +601,15 @@ function tokenHashMatches(token: string, expectedHash: string): boolean {
   return timingSafeEqual(actual, expected);
 }
 
-export function localAgentContextFromGrant(
-  grant: LocalAgentClientGrant
+export function localAgentContextFromPolicy(
+  policy: ResolvedLocalAgentPolicy
 ): NonNullable<CommandContext["localAgent"]> {
   return {
-    clientId: grant.id,
-    capabilities: grant.capabilities
+    clientId: policy.sessionId,
+    sessionName: policy.sessionName,
+    roleId: policy.roleId,
+    roleName: policy.roleName,
+    capabilities: policy.capabilities
   };
 }
 

@@ -394,8 +394,72 @@ export function registerSettingsDataHandlers(): void {
   bus.register("localAgents:list", async () => {
     const service = getLocalAgentGrantService();
     try {
-      const grants = await service.list();
-      return ok({ grants });
+      const [grants, roles] = await Promise.all([
+        service.list(),
+        service.listRoles()
+      ]);
+      return ok({ grants, roles });
+    } catch (cause) {
+      return err(toLocalAgentError(cause));
+    }
+  });
+
+  bus.register("localAgents:roleCreate", async (req) => {
+    try {
+      return ok(await getLocalAgentGrantService().createRole(req));
+    } catch (cause) {
+      return err(toLocalAgentError(cause));
+    }
+  });
+
+  bus.register("localAgents:roleUpdate", async (req) => {
+    if (typeof req.id !== "string" || req.id.trim().length === 0) {
+      return err({
+        kind: "validation",
+        code: "invalid_local_agent_role_id",
+        message: "localAgents:roleUpdate: id must be a non-empty string"
+      });
+    }
+    try {
+      return ok(await getLocalAgentGrantService().updateRole(req.id, req.patch));
+    } catch (cause) {
+      return err(toLocalAgentError(cause));
+    }
+  });
+
+  bus.register("localAgents:roleDelete", async (req) => {
+    if (typeof req.id !== "string" || req.id.trim().length === 0) {
+      return err({
+        kind: "validation",
+        code: "invalid_local_agent_role_id",
+        message: "localAgents:roleDelete: id must be a non-empty string"
+      });
+    }
+    try {
+      await getLocalAgentGrantService().deleteRole(req.id);
+      return ok(undefined);
+    } catch (cause) {
+      return err(toLocalAgentError(cause));
+    }
+  });
+
+  bus.register("localAgents:assignRole", async (req) => {
+    if (
+      typeof req.sessionId !== "string" ||
+      req.sessionId.trim().length === 0 ||
+      typeof req.roleId !== "string" ||
+      req.roleId.trim().length === 0
+    ) {
+      return err({
+        kind: "validation",
+        code: "invalid_local_agent_role_assignment",
+        message: "localAgents:assignRole requires Session and role ids"
+      });
+    }
+    try {
+      return ok(
+        await getLocalAgentGrantService().assignRole(req.sessionId, req.roleId)
+      );
     } catch (cause) {
       return err(toLocalAgentError(cause));
     }

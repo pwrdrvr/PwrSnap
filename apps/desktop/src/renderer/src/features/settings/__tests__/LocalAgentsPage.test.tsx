@@ -6,14 +6,21 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 import type {
   LocalAgentAuditEntry,
   LocalAgentClientGrant,
+  LocalAgentRoleProfile,
   Settings
 } from "@pwrsnap/shared";
+import { LOCAL_AGENT_BUILT_IN_ROLES } from "@pwrsnap/shared";
 import { SettingsContext } from "../SettingsContext";
 import type { UseSettingsValue } from "../useSettings";
 import { LocalAgentsPage } from "../pages/LocalAgentsPage";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  globalThis.ResizeObserver = class ResizeObserver {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  };
 });
 
 type AnyResult = { ok: true; value: unknown } | { ok: false; error: { message: string } };
@@ -21,6 +28,7 @@ type AnyResult = { ok: true; value: unknown } | { ok: false; error: { message: s
 const grant: LocalAgentClientGrant = {
   id: "lag_test",
   name: "PwrAgent",
+  roleId: "builtin.full-media",
   capabilities: ["library.read", "capture.composite.read", "capture.original.read"],
   createdAt: "2026-06-07T12:00:00.000Z",
   updatedAt: "2026-06-07T12:00:00.000Z",
@@ -28,8 +36,20 @@ const grant: LocalAgentClientGrant = {
   revokedAt: null
 };
 
+const roles: LocalAgentRoleProfile[] = LOCAL_AGENT_BUILT_IN_ROLES.map((role) => ({
+  ...role,
+  permissions: [...role.permissions],
+  budgets: {
+    search: { ...role.budgets.search },
+    "preview.read": { ...role.budgets["preview.read"] },
+    "original.read": { ...role.budgets["original.read"] },
+    edit: { ...role.budgets.edit },
+    delete: { ...role.budgets.delete }
+  }
+}));
+
 const baseSettings = {
-  localAgents: { grants: [grant], roles: [], audit: [] }
+  localAgents: { grants: [grant], roles, audit: [] }
 } as unknown as Settings;
 
 let container: HTMLDivElement | null = null;
@@ -42,8 +62,19 @@ function installFakeApi(
   dispatch: ReturnType<typeof vi.fn>;
 } {
   const dispatch = vi.fn(async (name: string, req: unknown): Promise<AnyResult> => {
-    if (name === "localAgents:list") return { ok: true, value: { grants: [currentGrant] } };
+    if (name === "localAgents:list") return { ok: true, value: { grants: [currentGrant], roles } };
     if (name === "localAgents:audit") return { ok: true, value: { entries: audit } };
+    if (name === "localAgents:usage") return { ok: true, value: { entries: [] } };
+    if (name === "localAgents:assignRole") {
+      const roleId = (req as { roleId: string }).roleId;
+      return { ok: true, value: { ...currentGrant, roleId } };
+    }
+    if (name === "localAgents:roleCreate") {
+      return {
+        ok: true,
+        value: { id: "role_custom", builtIn: false, ...(req as object) }
+      };
+    }
     if (name === "localAgents:revoke") {
       return {
         ok: true,
@@ -92,6 +123,8 @@ async function renderPage(settings: Settings = baseSettings): Promise<HTMLDivEle
         createElement(LocalAgentsPage)
       )
     );
+    await Promise.resolve();
+    await Promise.resolve();
   });
   return container;
 }
@@ -109,13 +142,15 @@ describe("LocalAgentsPage", () => {
     installFakeApi();
   });
 
-  test("renders the stable endpoint, authorized clients, and concrete boundaries", async () => {
+  test("renders the authorization graph, selected scope, and concrete boundaries", async () => {
     const el = await renderPage();
     expect(el.textContent).toContain("http://127.0.0.1:51729/mcp");
     expect(el.textContent).toContain("PwrAgent");
-    expect(el.textContent).toContain("Original images");
-    expect(el.textContent).toContain("bypasses edits");
-    expect(el.textContent).not.toContain("sensitive");
+    expect(el.textContent).toContain("Authorization graph");
+    expect(el.textContent).toContain("Full Media");
+    expect(el.textContent).toContain("Read original images");
+    expect(el.textContent).toContain("Last 30 days");
+    expect(el.textContent).toContain("Full-res images");
     expect(el.textContent).toContain("1 active");
   });
 
@@ -131,6 +166,51 @@ describe("LocalAgentsPage", () => {
     });
     expect(dispatch).toHaveBeenCalledWith("localAgents:revoke", { id: "lag_test" });
     expect(el.textContent).toContain("Revoked");
+  });
+
+  test("role assignment dispatches the selected Session and role", async () => {
+    const { dispatch } = installFakeApi();
+    const el = await renderPage();
+    const select = el.querySelector<HTMLSelectElement>("select[aria-label='Role for PwrAgent']");
+    expect(select).not.toBeNull();
+    await act(async () => {
+      if (select !== null) {
+        select.value = "builtin.search";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+    expect(dispatch).toHaveBeenCalledWith("localAgents:assignRole", {
+      sessionId: "lag_test",
+      roleId: "builtin.search"
+    });
+  });
+
+  test("creates a custom role from the graph", async () => {
+    const { dispatch } = installFakeApi();
+    const el = await renderPage();
+    const createButton = Array.from(el.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("New custom role")
+    );
+    await act(async () => {
+      createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(el.textContent).toContain("Create role");
+    const name = el.querySelector<HTMLInputElement>(".pss__role-editor-fields input");
+    await act(async () => {
+      if (name !== null) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+        setter?.call(name, "Codex guarded");
+        name.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    });
+    const save = Array.from(el.querySelectorAll("button")).find((button) => button.textContent === "Save role");
+    await act(async () => {
+      save?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(dispatch).toHaveBeenCalledWith("localAgents:roleCreate", expect.objectContaining({
+      name: "Codex guarded",
+      maxCaptureAgeDays: 30
+    }));
   });
 
   test("renders metadata-only agent activity", async () => {

@@ -770,7 +770,15 @@ describe("settings:read + settings:write round-trip (integration)", () => {
       {
         name: "Metadata + edit",
         description: "A custom role for handler coverage.",
-        permissions: ["library.read", "capture.edit"]
+        permissions: ["library.read", "capture.edit"],
+        maxCaptureAgeDays: 7,
+        budgets: {
+          search: { limit: 50, windowSeconds: 86_400 },
+          "preview.read": { limit: 200, windowSeconds: 86_400 },
+          "original.read": { limit: 25, windowSeconds: 86_400 },
+          edit: { limit: 25, windowSeconds: 86_400 },
+          delete: { limit: 10, windowSeconds: 86_400 }
+        }
       },
       { principal: "ipc" }
     );

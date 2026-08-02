@@ -815,12 +815,43 @@ export type LocalAgentRoleProfile = {
   /** Built-ins are code-owned and immutable; users may duplicate them. */
   builtIn: boolean;
   permissions: LocalAgentCapability[];
+  /** Null means all capture history; otherwise a positive whole-day horizon. */
+  maxCaptureAgeDays: number | null;
+  budgets: LocalAgentRoleBudgets;
+};
+
+export type LocalAgentUsageAction =
+  | "search"
+  | "preview.read"
+  | "original.read"
+  | "edit"
+  | "delete";
+
+export type LocalAgentSlidingWindowBudget = {
+  limit: number;
+  windowSeconds: number;
+};
+
+export type LocalAgentRoleBudgets = Record<
+  LocalAgentUsageAction,
+  LocalAgentSlidingWindowBudget
+>;
+
+export type LocalAgentUsageSnapshot = {
+  action: LocalAgentUsageAction;
+  used: number;
+  limit: number;
+  windowSeconds: number;
+  oldestCountedAt: string | null;
+  nextReleaseAt: string | null;
 };
 
 export type LocalAgentRoleProfilePatch = {
   name?: string;
   description?: string;
   permissions?: LocalAgentCapability[];
+  maxCaptureAgeDays?: number | null;
+  budgets?: LocalAgentRoleBudgets;
 };
 
 export type LocalAgentClientGrant = {
@@ -3333,6 +3364,10 @@ export type Commands = {
   "localAgents:audit": {
     req: { limit?: number };
     res: { entries: LocalAgentAuditEntry[] };
+  };
+  "localAgents:usage": {
+    req: { sessionId: string };
+    res: { entries: LocalAgentUsageSnapshot[] };
   };
   "localAgents:consentRead": {
     req: Record<string, never>;

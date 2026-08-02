@@ -12,7 +12,7 @@ beforeEach(() => {
   db = new Database(":memory:");
   db.exec(readFileSync(join(
     import.meta.dirname,
-    "../../persistence/migrations/0027_local_agent_usage_events.sql"
+    "../../persistence/migrations/0028_local_agent_usage_events.sql"
   ), "utf8"));
   nowMs = Date.parse("2026-08-01T12:00:00.000Z");
   nextId = 0;

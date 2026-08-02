@@ -8,9 +8,7 @@ import type {
 
 export type LocalAgentSearchInput = {
   query?: string | undefined;
-  appBundleIds?: string[] | undefined;
   sourceAppNames?: string[] | undefined;
-  includeCapturesWithoutSourceApp?: boolean | undefined;
   tagFilter?: CaptureSearchTagFilter | undefined;
   kinds?: Array<"image" | "video"> | undefined;
   dateRange?: { start: string; end: string } | undefined;
@@ -27,9 +25,11 @@ export type LocalAgentSearchSummaryRow = {
   widthPx: number;
   heightPx: number;
   byteSize: number;
-  sourceApp: {
-    bundleId: string | null;
-    name: string | null;
+  /** Omitted when PwrSnap did not capture source-app context. `bundleId` is
+   * read-only diagnostic metadata, not an MCP search parameter. */
+  sourceApp?: {
+    name?: string;
+    bundleId?: string;
   };
   hasAlpha: boolean;
   hasOcr: boolean;
@@ -47,17 +47,8 @@ export type LocalAgentSearchRow =
   | LocalAgentSearchEnrichedRow;
 
 export function toCaptureSearchRequest(input: LocalAgentSearchInput): CaptureSearchRequest {
-  const appBundleIds = input.appBundleIds === undefined
-    ? input.includeCapturesWithoutSourceApp === true
-      ? [null]
-      : undefined
-    : [
-        ...input.appBundleIds,
-        ...(input.includeCapturesWithoutSourceApp === true ? [null] : [])
-      ];
   return {
     ...(input.query !== undefined ? { query: input.query } : {}),
-    ...(appBundleIds !== undefined ? { appBundleIds } : {}),
     ...(input.sourceAppNames !== undefined ? { sourceAppNames: input.sourceAppNames } : {}),
     ...(input.tagFilter !== undefined ? { tagFilter: input.tagFilter } : {}),
     ...(input.kinds !== undefined ? { kinds: input.kinds } : {}),
@@ -109,7 +100,7 @@ export function projectLocalAgentSearchRows(
       widthPx: projected.widthPx,
       heightPx: projected.heightPx,
       byteSize: projected.byteSize,
-      sourceApp: projected.sourceApp,
+      ...(projected.sourceApp === undefined ? {} : { sourceApp: projected.sourceApp }),
       hasAlpha: projected.hasAlpha,
       hasOcr: projected.hasOcr
     };
@@ -120,6 +111,14 @@ export function projectLocalAgentCapture(
   row: CaptureSearchResultRow
 ): LocalAgentSearchRow {
   const { record, enrichment, matchSnippet } = row;
+  const sourceApp = record.source_app_name === null && record.source_app_bundle_id === null
+    ? undefined
+    : {
+        ...(record.source_app_name === null ? {} : { name: record.source_app_name }),
+        ...(record.source_app_bundle_id === null
+          ? {}
+          : { bundleId: record.source_app_bundle_id })
+      };
   return {
     id: record.id,
     kind: record.kind,
@@ -127,10 +126,7 @@ export function projectLocalAgentCapture(
     widthPx: record.width_px,
     heightPx: record.height_px,
     byteSize: record.byte_size,
-    sourceApp: {
-      bundleId: record.source_app_bundle_id,
-      name: record.source_app_name
-    },
+    ...(sourceApp === undefined ? {} : { sourceApp }),
     hasAlpha: record.has_alpha,
     title: enrichment?.acceptedTitle ?? enrichment?.suggestedTitle ?? null,
     description:

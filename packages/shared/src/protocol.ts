@@ -395,8 +395,9 @@ export type CaptureSearchTagFilter = {
 };
 
 /** A human-facing source-app facet for agent discovery. `name` is the reusable
- *  value for `CaptureSearchRequest.sourceAppNames`. `bundleId` is omitted
- *  when the app name maps to more than one bundle ID or none is known. */
+ *  value for `CaptureSearchRequest.sourceAppNames`. `bundleId` is optional
+ *  read-only metadata, omitted when the app name maps to more than one bundle
+ *  ID or none is known. */
 export type CaptureSearchApplicationFacet = {
   name: string;
   bundleId?: string;
@@ -432,12 +433,12 @@ export type CaptureSearchRequest = {
    *  0017). When omitted, the search degenerates to a filter-only
    *  scan ordered by `captured_at DESC`. */
   query?: string;
-  /** Restrict to specific source apps. Pass `null` inside the array to
-   *  match captures with no `source_app_bundle_id`. */
+  /** Internal precise source-app filter. PwrSnap's Library/Sizzle code can
+   *  use bundle IDs (or `null` for missing bundle context); the public local
+   *  MCP tool intentionally exposes only human `sourceAppNames`. */
   appBundleIds?: Array<string | null>;
   /** Restrict to exact human source application names (for example,
-   *  `["Claude"]`). This is the normal agent-facing application filter;
-   *  use `appBundleIds` when a precise bundle-ID filter is required. */
+   *  `["Claude"]`). This is the public local-agent application filter. */
   sourceAppNames?: string[];
   /** Restrict to exact accepted tags. `match` explicitly chooses whether any
    *  one label or every label must be present on a capture. */

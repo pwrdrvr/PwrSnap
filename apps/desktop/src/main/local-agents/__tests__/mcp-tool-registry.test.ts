@@ -135,9 +135,7 @@ describe("createDefaultLocalAgentMcpTools", () => {
     const search = tools.find((tool) => tool.name === "pwrsnap_library_search");
     expect(search?.inputSchema).toEqual(expect.objectContaining({
       query: expect.anything(),
-      appBundleIds: expect.anything(),
       sourceAppNames: expect.anything(),
-      includeCapturesWithoutSourceApp: expect.anything(),
       tagFilter: expect.anything(),
       kinds: expect.anything(),
       dateRange: expect.anything(),
@@ -146,6 +144,8 @@ describe("createDefaultLocalAgentMcpTools", () => {
       limit: expect.anything(),
       detail: expect.anything()
     }));
+    expect(search?.inputSchema).not.toHaveProperty("appBundleIds");
+    expect(search?.inputSchema).not.toHaveProperty("includeCapturesWithoutSourceApp");
     expect(search?.description).toContain("newest");
 
     if (search === undefined) throw new Error("expected search tool");

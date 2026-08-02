@@ -241,10 +241,8 @@ toggles even when a broad preset is selected.
     snippets. This keeps unqualified listing calls from disclosing indexed
     content unnecessarily.
   - Human application names (`sourceAppNames`, such as `"Claude"`) are the
-    normal reusable source-app filter. Exact bundle IDs remain available as
-    `appBundleIds` for precise / legacy filters; an explicit
-    `includeCapturesWithoutSourceApp` flag keeps the internal nullable-ID
-    encoding out of the MCP schema.
+    only source-app search filter. Bundle IDs remain optional read-only
+    metadata in discovery/search results, not MCP request parameters.
   - Exact accepted-tag filtering uses `tagFilter: { labels, match }`, where
     `match` explicitly selects `"any"` or `"all"`. Accepted tags also enter
     full-text search. Ordering can be `relevance`, `newest`, or `oldest`;

@@ -1,7 +1,4 @@
 import { err, ok, type CommandName, type LocalAgentCapability } from "@pwrsnap/shared";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { bus, type CommandContext } from "../../command-bus";
 import { LocalAgentToolService } from "../local-agent-tool-service";
@@ -14,7 +11,6 @@ import {
 
 const registered: CommandName[] = [];
 const grantCapabilities = new Map<string, readonly LocalAgentCapability[]>();
-const temporaryDirectories: string[] = [];
 
 beforeEach(() => {
   bus.installLocalAgentAuthorizer(async (clientId) => {
@@ -27,9 +23,6 @@ afterEach(() => {
   for (const command of registered.splice(0)) bus.unregister(command);
   grantCapabilities.clear();
   bus.uninstallLocalAgentAuthorizerForTests();
-  for (const directory of temporaryDirectories.splice(0)) {
-    rmSync(directory, { force: true, recursive: true });
-  }
 });
 
 function register(command: CommandName, handler: (req: any) => Promise<any>): void {
@@ -74,11 +67,14 @@ function thread(args: {
   };
 }
 
-function service(resources = new LocalAgentMcpResourceRegistry()): LocalAgentToolService {
+function service(
+  resources = new LocalAgentMcpResourceRegistry(),
+  baseUrl: string | null = null
+): LocalAgentToolService {
   return new LocalAgentToolService(
     resources,
     new LocalAgentSignedUrlService(Buffer.alloc(32, 7)),
-    () => null
+    () => baseUrl
   );
 }
 
@@ -106,32 +102,28 @@ describe("LocalAgentToolService metadata", () => {
 });
 
 describe("LocalAgentToolService media delivery", () => {
-  test("embeds a bounded JPEG preview with the exact composite resource", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "pwrsnap-inline-preview-"));
-    temporaryDirectories.push(directory);
-    const fullPath = join(directory, "capture.png");
-    const previewPath = join(directory, "preview.jpg");
-    writeFileSync(fullPath, Buffer.from("full image"));
-    writeFileSync(previewPath, Buffer.from([1, 2, 3]));
+  test("returns a direct resource link without embedding image bytes", async () => {
     const requests: unknown[] = [];
     register("render:captureExport", async (request) => {
       requests.push(request);
-      const isPreview = request.format === "jpeg";
       return ok({
         captureId: "cap_1",
         variant: "composite",
-        format: isPreview ? "jpeg" : "png",
-        path: isPreview ? previewPath : fullPath,
-        mimeType: isPreview ? "image/jpeg" : "image/png",
-        widthPx: isPreview ? 1_024 : 2_880,
-        heightPx: isPreview ? 683 : 1_920,
-        byteSize: isPreview ? 3 : 10,
+        format: "png",
+        path: "/tmp/capture.png",
+        mimeType: "image/png",
+        widthPx: 2_880,
+        heightPx: 1_920,
+        byteSize: 10,
         fromCache: false,
-        exportId: isPreview ? "preview" : "full"
+        exportId: "full"
       });
     });
 
-    const result = await service().captureResource(
+    const result = await service(
+      new LocalAgentMcpResourceRegistry(),
+      "http://127.0.0.1:51729"
+    ).captureResource(
       { captureId: "cap_1" },
       context("lag_preview", ["capture.composite.read"])
     );
@@ -142,14 +134,6 @@ describe("LocalAgentToolService media delivery", () => {
         captureId: "cap_1",
         variant: "composite",
         format: "png"
-      },
-      {
-        captureId: "cap_1",
-        variant: "composite",
-        format: "jpeg",
-        maxWidth: 1_024,
-        maxHeight: 1_024,
-        quality: 72
       }
     ]);
     expect(mcpResult.structuredContent).toMatchObject({
@@ -157,18 +141,17 @@ describe("LocalAgentToolService media delivery", () => {
       mimeType: "image/png",
       widthPx: 2_880,
       heightPx: 1_920,
-      inlinePreview: {
-        mimeType: "image/jpeg",
-        widthPx: 1_024,
-        heightPx: 683,
-        byteSize: 3
-      }
+      byteSize: 10,
+      signedUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:51729\/media\?/u)
     });
-    expect(mcpResult.content[1]).toEqual({
-      type: "image",
-      data: "AQID",
-      mimeType: "image/jpeg"
+    expect(mcpResult.content[1]).toMatchObject({
+      type: "resource_link",
+      uri: mcpResult.structuredContent?.signedUrl,
+      name: "composite capture",
+      mimeType: "image/png",
+      size: 10
     });
+    expect(mcpResult.content.some((content) => content.type === "image")).toBe(false);
   });
 });
 
@@ -213,7 +196,7 @@ describe("LocalAgentToolService image edits", () => {
     });
 
     const resources = new LocalAgentMcpResourceRegistry();
-    const toolService = service(resources);
+    const toolService = service(resources, "http://127.0.0.1:51729");
     const sent = await toolService.imageEditSend(
       {
         captureId: "cap_1",
@@ -256,6 +239,15 @@ describe("LocalAgentToolService image edits", () => {
         compositePreviewResourceUri: expect.stringContaining("/edit/")
       }))
     );
+    const completedMcp = toMcpToolResult(completed);
+    expect(completedMcp.content[1]).toMatchObject({
+      type: "resource_link",
+      uri: expect.stringMatching(/^http:\/\/127\.0\.0\.1:51729\/media\?/u),
+      mimeType: "image/png"
+    });
+    expect(
+      completedMcp.content.some((content) => content.type === "image")
+    ).toBe(false);
     register("render:captureExport", async () =>
       err({
         kind: "validation",
@@ -496,7 +488,10 @@ describe("LocalAgentToolService Sizzle workflows", () => {
         heightPx: 360
       })
     );
-    const toolService = service();
+    const toolService = service(
+      new LocalAgentMcpResourceRegistry(),
+      "http://127.0.0.1:51729"
+    );
     const first = await toolService.sizzleRender(
       { projectId: "sz_1" },
       context("lag_first", ["sizzle.preview.read"]),
@@ -512,6 +507,15 @@ describe("LocalAgentToolService Sizzle workflows", () => {
     if (!first.ok || !second.ok) return;
     expect((first.value as any).resourceUri).not.toBe(
       (second.value as any).resourceUri
+    );
+    const firstMcp = toMcpToolResult(first);
+    expect(firstMcp.content[1]).toMatchObject({
+      type: "resource_link",
+      uri: expect.stringMatching(/^http:\/\/127\.0\.0\.1:51729\/media\?/u),
+      mimeType: "video/mp4"
+    });
+    expect(firstMcp.content.some((content) => content.type === "image")).toBe(
+      false
     );
   });
 });

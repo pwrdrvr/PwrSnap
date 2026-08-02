@@ -364,8 +364,8 @@ export class LocalAgentMcpServer {
       {
         instructions:
           "Use PwrSnap tools only for captures and sizzle assets the user authorized for this local client. " +
-          "Capture retrieval and export tools include a bounded image preview directly in their tool content, plus a capability-protected MCP resource URI and a five-minute signed localhost URL for exact bytes. " +
-          "Display the included image content directly. Do not call MCP resources/read merely to display a preview. " +
+          "Completed media tools return a typed MCP resource link to a five-minute signed localhost URL, plus a capability-protected MCP resource URI fallback. " +
+          "Fetch the resource link promptly. Use MCP resources/read only when the client cannot fetch the direct URL. " +
           "Never log, persist, or share a signed media URL."
       }
     );
@@ -764,17 +764,6 @@ export class LocalAgentMcpServer {
           subjectId: captureId
         });
       }
-    } else if (
-      toolName === "pwrsnap_capture_resource" &&
-      captureId !== null &&
-      input.variant === "original"
-    ) {
-      audits.push({
-        action: "capture.original.read",
-        capability: "capture.original.read",
-        subjectKind: "capture",
-        subjectId: captureId
-      });
     } else if (
       toolName === "pwrsnap_capture_delete_to_trash" &&
       captureId !== null

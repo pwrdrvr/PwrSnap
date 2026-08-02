@@ -6,7 +6,7 @@ import {
   createDefaultLocalAgentMcpTools,
   type LocalAgentToolContext,
   toMcpToolResult,
-  withMcpSupplementalContent
+  withMcpResourceLink
 } from "../mcp-tool-registry";
 
 function ctx(capabilities: readonly LocalAgentCapability[] = []): LocalAgentToolContext {
@@ -28,29 +28,20 @@ function ctx(capabilities: readonly LocalAgentCapability[] = []): LocalAgentTool
 }
 
 describe("createDefaultLocalAgentMcpTools", () => {
-  test("preserves structured metadata while returning renderable image content", () => {
-    const result = toMcpToolResult(ok(withMcpSupplementalContent({
+  test("preserves structured metadata while returning a typed resource link", () => {
+    const result = toMcpToolResult(ok(withMcpResourceLink({
       resourceUri: "pwrsnap://capture/cap_1/composite",
-      inlinePreview: {
-        mimeType: "image/jpeg",
-        widthPx: 640,
-        heightPx: 427,
-        byteSize: 3
-      }
-    }, [{
-      type: "image",
-      data: "AQID",
-      mimeType: "image/jpeg"
-    }])));
+      signedUrl: "http://127.0.0.1:51729/media?grant=temporary"
+    }, {
+      uri: "http://127.0.0.1:51729/media?grant=temporary",
+      name: "composite capture",
+      mimeType: "image/png",
+      size: 123
+    })));
 
     expect(result.structuredContent).toEqual({
       resourceUri: "pwrsnap://capture/cap_1/composite",
-      inlinePreview: {
-        mimeType: "image/jpeg",
-        widthPx: 640,
-        heightPx: 427,
-        byteSize: 3
-      }
+      signedUrl: "http://127.0.0.1:51729/media?grant=temporary"
     });
     expect(result.content).toEqual([
       {
@@ -58,9 +49,15 @@ describe("createDefaultLocalAgentMcpTools", () => {
         text: JSON.stringify(result.structuredContent)
       },
       {
-        type: "image",
-        data: "AQID",
-        mimeType: "image/jpeg"
+        type: "resource_link",
+        uri: "http://127.0.0.1:51729/media?grant=temporary",
+        name: "composite capture",
+        mimeType: "image/png",
+        size: 123,
+        annotations: {
+          audience: ["user", "assistant"],
+          priority: 1
+        }
       }
     ]);
   });

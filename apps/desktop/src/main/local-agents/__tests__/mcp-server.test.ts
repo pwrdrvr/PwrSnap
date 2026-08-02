@@ -44,7 +44,7 @@ import type {
 } from "../local-agent-consent-broker";
 import {
   type LocalAgentMcpTool,
-  withMcpSupplementalContent
+  withMcpResourceLink
 } from "../mcp-tool-registry";
 
 let workDir = "";
@@ -380,7 +380,7 @@ describe("LocalAgentMcpServer", () => {
     ]));
   });
 
-  test("returns image previews as first-class MCP tool content", async () => {
+  test("returns media as first-class MCP resource links without inline bytes", async () => {
     await grantService.createGrant({
       name: "PwrAgent",
       capabilities: ["capture.composite.read"]
@@ -388,7 +388,7 @@ describe("LocalAgentMcpServer", () => {
     const mediaTool: LocalAgentMcpTool<{ captureId: z.ZodString }> = {
       name: "pwrsnap_capture_resource",
       title: "Get PwrSnap Capture Resource",
-      description: "Return a renderable capture preview.",
+      description: "Return a capture resource link.",
       inputSchema: { captureId: z.string() },
       requiredCapabilities: ["capture.composite.read"],
       annotations: {
@@ -397,19 +397,15 @@ describe("LocalAgentMcpServer", () => {
         idempotentHint: true,
         openWorldHint: false
       },
-      dispatch: async (input) => ok(withMcpSupplementalContent({
+      dispatch: async (input) => ok(withMcpResourceLink({
         resourceUri: `pwrsnap://capture/${input.captureId}/composite`,
-        inlinePreview: {
-          mimeType: "image/jpeg",
-          widthPx: 1,
-          heightPx: 1,
-          byteSize: 3
-        }
-      }, [{
-        type: "image",
-        data: "AQID",
-        mimeType: "image/jpeg"
-      }]))
+        signedUrl: "http://127.0.0.1:51729/media?grant=temporary"
+      }, {
+        uri: "http://127.0.0.1:51729/media?grant=temporary",
+        name: "composite capture",
+        mimeType: "image/png",
+        size: 3
+      }))
     };
     server = new LocalAgentMcpServer({
       settings,
@@ -431,10 +427,17 @@ describe("LocalAgentMcpServer", () => {
       resourceUri: "pwrsnap://capture/cap_1/composite"
     });
     expect(result.content[1]).toEqual({
-      type: "image",
-      data: "AQID",
-      mimeType: "image/jpeg"
+      type: "resource_link",
+      uri: "http://127.0.0.1:51729/media?grant=temporary",
+      name: "composite capture",
+      mimeType: "image/png",
+      size: 3,
+      annotations: {
+        audience: ["user", "assistant"],
+        priority: 1
+      }
     });
+    expect(result.content.some((content) => content.type === "image")).toBe(false);
   });
 
   test("authorized client with library.read can search but cannot delete without trash.write", async () => {
@@ -544,58 +547,6 @@ describe("LocalAgentMcpServer", () => {
       { action: "capture.original.read", outcome: "success", subjectId: "cap_1" },
       { action: "capture.export", outcome: "failure", subjectId: "missing" },
       { action: "capture.original.read", outcome: "failure", subjectId: "missing" }
-    ]);
-  });
-
-  test("audits original previews returned directly by the capture resource tool", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["capture.original.read"]
-    });
-    const originalTool: LocalAgentMcpTool<{
-      captureId: z.ZodString;
-      variant: z.ZodLiteral<"original">;
-    }> = {
-      name: "pwrsnap_capture_resource",
-      title: "Get original capture",
-      description: "Return an original preview.",
-      inputSchema: {
-        captureId: z.string(),
-        variant: z.literal("original")
-      },
-      requiredCapabilities: ["capture.original.read"],
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false
-      },
-      dispatch: async (input) => ok({ captureId: input.captureId })
-    };
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: [originalTool],
-      host: "127.0.0.1",
-      port: 0
-    });
-    const address = await server.start();
-    const connected = await connect(address.url, "pws_local_mcp-token");
-
-    await connected.callTool({
-      name: originalTool.name,
-      arguments: { captureId: "cap_original", variant: "original" }
-    });
-
-    expect((await settings.read()).localAgents.audit).toEqual([
-      expect.objectContaining({
-        action: "capture.original.read",
-        capability: "capture.original.read",
-        subjectKind: "capture",
-        subjectId: "cap_original",
-        outcome: "success"
-      })
     ]);
   });
 

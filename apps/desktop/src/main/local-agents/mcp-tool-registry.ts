@@ -5,14 +5,9 @@ import { z } from "zod";
 import type { CommandContext } from "../command-bus";
 import type { LocalAgentSearchInput } from "./local-agent-search";
 
-const IMAGE_PREVIEW_DELIVERY_GUIDANCE =
-  "Returns a directly renderable, bounded image preview in the tool content plus an MCP resource URI and a five-minute signed localhost URL for the exact bytes. " +
-  "Do not call MCP resources/read just to display the preview. Use the resource URI or signed URL only when the exact binary is required. " +
-  "Treat the signed URL as a temporary bearer secret and do not log or share it.";
-
-const RESOURCE_DELIVERY_GUIDANCE =
-  "Returns an MCP resource URI and a five-minute signed localhost URL. " +
-  "Prefer the signed URL for binary media consumers; use the resource URI with MCP resources/read. " +
+const MEDIA_DELIVERY_GUIDANCE =
+  "Returns a typed MCP resource link to a five-minute signed localhost URL for direct binary fetch, plus a capability-protected MCP resource URI as a fallback. " +
+  "Fetch the resource link promptly. Use MCP resources/read only when the client cannot fetch the direct URL. " +
   "Treat the signed URL as a temporary bearer secret and do not log or share it.";
 
 const supplementalContent = Symbol("local-agent-mcp-supplemental-content");
@@ -90,7 +85,7 @@ export function toMcpToolResult(result: Result<unknown, PwrSnapError>): CallTool
   };
 }
 
-export function withMcpSupplementalContent<T extends Record<string, unknown>>(
+function withMcpSupplementalContent<T extends Record<string, unknown>>(
   value: T,
   content: CallToolResult["content"]
 ): T {
@@ -101,6 +96,30 @@ export function withMcpSupplementalContent<T extends Record<string, unknown>>(
     writable: false
   });
   return value;
+}
+
+export function withMcpResourceLink<T extends Record<string, unknown>>(
+  value: T,
+  link: {
+    uri: string;
+    name: string;
+    mimeType: string;
+    size?: number;
+  }
+): T {
+  return withMcpSupplementalContent(value, [
+    {
+      type: "resource_link",
+      uri: link.uri,
+      name: link.name,
+      mimeType: link.mimeType,
+      ...(link.size !== undefined ? { size: link.size } : {}),
+      annotations: {
+        audience: ["user", "assistant"],
+        priority: 1
+      }
+    }
+  ]);
 }
 
 function supplementalContentFor(value: unknown): CallToolResult["content"] {
@@ -266,7 +285,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
       title: "Get PwrSnap Capture Resource",
       description:
         "Prepare the content-bearing current edited composite by default, or the original when separately granted. " +
-        IMAGE_PREVIEW_DELIVERY_GUIDANCE,
+        MEDIA_DELIVERY_GUIDANCE,
       inputSchema: {
         captureId: z.string().min(1),
         variant: z.enum(["composite", "original"]).optional()
@@ -292,7 +311,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
       title: "Export PwrSnap Capture",
       description:
         "Resize or convert a permitted edited composite or original image to PNG, JPEG, WebP, PDF, or HEIC. " +
-        IMAGE_PREVIEW_DELIVERY_GUIDANCE,
+        MEDIA_DELIVERY_GUIDANCE,
       inputSchema: {
         captureId: z.string().min(1),
         variant: z.enum(["composite", "original"]).optional(),
@@ -347,7 +366,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
       title: "Check PwrSnap Image Edit",
       description:
         "Check a capture-scoped edit thread and retrieve its protected composite once the turn is complete. " +
-        RESOURCE_DELIVERY_GUIDANCE,
+        MEDIA_DELIVERY_GUIDANCE,
       inputSchema: {
         captureId: z.string().min(1),
         threadId: z.string().min(1)
@@ -429,7 +448,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
       title: "Render PwrSnap Sizzle Preview",
       description:
         "Render a low-resolution Sizzle preview and return protected media. " +
-        RESOURCE_DELIVERY_GUIDANCE,
+        MEDIA_DELIVERY_GUIDANCE,
       inputSchema: { projectId: z.string().min(1) },
       requiredCapabilities: ["sizzle.preview.read"],
       annotations: {
@@ -447,7 +466,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
       title: "Render Full PwrSnap Sizzle Reel",
       description:
         "Render a full-resolution Sizzle reel and return protected media. " +
-        RESOURCE_DELIVERY_GUIDANCE,
+        MEDIA_DELIVERY_GUIDANCE,
       inputSchema: { projectId: z.string().min(1) },
       requiredCapabilities: ["sizzle.full.read"],
       annotations: {

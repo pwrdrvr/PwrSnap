@@ -697,6 +697,55 @@ describe("LocalAgentMcpServer", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
+  test("fails closed for registered capture resources with missing metadata", async () => {
+    const mediaPath = join(workDir, "orphaned-original.png");
+    writeFileSync(mediaPath, "orphaned-sensitive-media");
+    const resources = new LocalAgentMcpResourceRegistry();
+    resources.register({
+      uri: "pwrsnap://capture/cap_missing/original",
+      name: "orphaned original",
+      mimeType: "image/png",
+      requiredCapabilities: ["capture.original.read"],
+      captureId: "cap_missing",
+      ownerClientId: "lag_mcp",
+      resolvePath: async () => mediaPath
+    });
+    const signedUrls = new LocalAgentSignedUrlService(Buffer.alloc(32, 9));
+    await grantService.createGrant({
+      name: "Recent media only",
+      capabilities: ["capture.original.read"]
+    });
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0,
+      resourceRegistry: resources,
+      signedUrls,
+      usageService: allowUsageService,
+      captureCapturedAt: () => null
+    });
+    const address = await server.start();
+    const signed = signedUrls.mint({
+      baseUrl: `http://${address.host}:${address.port}`,
+      resourceUri: "pwrsnap://capture/cap_missing/original",
+      clientId: "lag_mcp"
+    });
+
+    const signedResponse = await fetch(signed.url);
+    expect(signedResponse.status).toBe(403);
+    expect(await signedResponse.json()).toMatchObject({
+      error: expect.stringContaining("last 7 days")
+    });
+
+    const connected = await connect(address.url, "pws_local_mcp-token");
+    await expect(connected.readResource({
+      uri: "pwrsnap://capture/cap_missing/original"
+    })).rejects.toThrow(/last 7 days/u);
+  });
+
   test("edit-only OAuth client can start an edit without a separate media grant", async () => {
     await grantService.createGrant({
       name: "Edit-only agent",

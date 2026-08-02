@@ -10,4 +10,3 @@ CREATE TABLE local_agent_usage_events (
 
 CREATE INDEX idx_local_agent_usage_window
   ON local_agent_usage_events(session_id, action, occurred_at_ms DESC);
-

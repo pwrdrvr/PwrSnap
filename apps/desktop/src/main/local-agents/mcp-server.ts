@@ -992,8 +992,7 @@ export class LocalAgentMcpServer {
     }
     if (context.maxCaptureAgeDays === null) return null;
     const capturedAt = this.captureCapturedAt(captureId);
-    if (capturedAt === null) return null;
-    const capturedAtMs = Date.parse(capturedAt);
+    const capturedAtMs = capturedAt === null ? Number.NaN : Date.parse(capturedAt);
     const notBeforeMs =
       Date.now() - context.maxCaptureAgeDays * 24 * 60 * 60 * 1_000;
     if (!Number.isFinite(capturedAtMs) || capturedAtMs < notBeforeMs) {

@@ -1409,29 +1409,33 @@ describe("DetailRail — Layers tab", () => {
     deleteLayer: async () => undefined,
     moveLayerToIndex: async () => undefined,
     uncrop: async () => undefined,
-    resetRasterTransform: async () => undefined
+    resetRasterTransform: async () => undefined,
+    updateLayerStyle: () => undefined
   };
 
-  test("shows the Layers tab for an image capture when layersApi is present", async () => {
+  test("shows Properties and Layers tabs for an image capture when layersApi is present", async () => {
     const { el } = await renderDetailRail(enrichment(), undefined, {
       layersApi: stubLayersApi
     });
+    expect(el.querySelector('[data-testid="psl-right-tab-properties"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="psl-right-tab-layers"]')).not.toBeNull();
   });
 
-  test("hides the Layers tab when layersApi is null", async () => {
+  test("hides Properties and Layers tabs when layersApi is null", async () => {
     const { el } = await renderDetailRail(enrichment(), undefined, {
       layersApi: null
     });
+    expect(el.querySelector('[data-testid="psl-right-tab-properties"]')).toBeNull();
     expect(el.querySelector('[data-testid="psl-right-tab-layers"]')).toBeNull();
   });
 
-  test("hides the Layers tab for a video capture even with layersApi", async () => {
+  test("hides Properties and Layers tabs for a video capture even with layersApi", async () => {
     const videoRecord: CaptureRecord = { ...record, kind: "video" };
     const { el } = await renderDetailRail(enrichment(), undefined, {
       record: videoRecord,
       layersApi: stubLayersApi
     });
+    expect(el.querySelector('[data-testid="psl-right-tab-properties"]')).toBeNull();
     expect(el.querySelector('[data-testid="psl-right-tab-layers"]')).toBeNull();
   });
 });

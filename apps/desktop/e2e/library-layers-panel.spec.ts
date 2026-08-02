@@ -103,6 +103,48 @@ test("library-layers-panel: the eye toggle flips a layer's visible flag", async 
   }
 });
 
+test("library-layers-panel: Properties follows selection while layer chevrons stay manual", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedCapture(app);
+    const win = await openLayersTab(app, captureId, 2);
+    const [firstId, secondId] = await layerRowIds(win);
+    expect(firstId).toBeDefined();
+    expect(secondId).toBeDefined();
+    if (firstId === undefined || secondId === undefined) return;
+
+    // Selecting an arrow updates the dedicated Properties tab; it does
+    // not expand an accordion in the layer list.
+    await win.locator(`[data-testid="layer-row-${firstId}"]`).click();
+    await expect(win.locator(`[data-testid="layer-inspector-${firstId}"]`)).toHaveCount(0);
+    await win.locator('[data-testid="psl-right-tab-properties"]').click();
+    await expect(win.locator('[data-testid="layer-properties-panel"]')).toBeVisible();
+    await expect(win.locator('[data-testid="layer-properties-panel"]')).toContainText("Arrow");
+
+    // Return to Layers: comparison accordions are explicit chevron
+    // actions, and opening one does not change the selected arrow.
+    await win.locator('[data-testid="psl-right-tab-layers"]').click();
+    await win.locator(`[data-testid="layer-inspector-toggle-${firstId}"]`).click();
+    await expect(win.locator(`[data-testid="layer-inspector-${firstId}"]`)).toBeVisible();
+
+    // The chevron on a nearby arrow opens its own inspector without
+    // changing the canvas selection or collapsing the first one.
+    await win.locator(`[data-testid="layer-inspector-toggle-${secondId}"]`).click();
+    await expect(win.locator(`[data-testid="layer-inspector-${secondId}"]`)).toBeVisible();
+    await expect(win.locator(`[data-testid="layer-inspector-${firstId}"]`)).toBeVisible();
+    await expect(win.locator(`[data-testid="layer-row-${firstId}"]`)).toHaveAttribute(
+      "data-selected",
+      "true"
+    );
+    await expect(win.locator(`[data-testid="layer-row-${secondId}"]`)).toHaveAttribute(
+      "data-selected",
+      "false"
+    );
+  } finally {
+    await app.close();
+  }
+});
+
 test("library-layers-panel: a resting committed annotation clips to the canvas (overflow hidden)", async () => {
   // Regression guard for the crop-clip fix: committed glyphs render with
   // overflow:hidden so an annotation outside a cropped viewport doesn't

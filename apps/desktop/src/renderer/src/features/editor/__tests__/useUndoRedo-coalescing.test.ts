@@ -69,7 +69,14 @@ beforeEach(() => {
     if (op.kind === "updateGeometry" || op.kind === "updateOverlay") {
       return {
         ok: true,
-        value: { kind: "update", artifact: { format: 2, node: makeNode(`fresh-${n}`) } }
+        value: {
+          kind: "update",
+          artifact: {
+            format: 2,
+            node: makeNode(`fresh-${n}`),
+            previousNode: makeNode(`previous-${n}`)
+          }
+        }
       };
     }
     return { ok: false, error: { kind: "validation", code: "unknown", message: op.kind } };
@@ -920,7 +927,8 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
               kind: "update",
               artifact: {
                 format: 2,
-                node: makeNode(`post-${dispatchEditCalls.length}`)
+                node: makeNode(`post-${dispatchEditCalls.length}`),
+                previousNode: makeNode(`previous-${dispatchEditCalls.length}`)
               }
             }
           };

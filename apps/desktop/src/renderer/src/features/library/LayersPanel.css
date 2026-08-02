@@ -4,8 +4,46 @@
 .psl-layers {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+}
+
+.psl-layers__list {
+  display: flex;
+  flex-direction: column;
   gap: 2px;
   padding: 6px 4px;
+}
+
+/* Arrow inspectors belong to their rows instead of floating above the
+   list. That keeps three same-named arrows unambiguous and lets a person
+   leave several expanded for side-by-side comparison. The bottom toolbar
+   still configures the next arrow, never these placed layers. */
+.psl-layers__item {
+  min-width: 0;
+}
+
+.psl-layers__inspector {
+  margin: 2px 0 4px 22px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel-elevated);
+}
+
+.psl-layers__inspector-heading {
+  color: var(--text-muted);
+  font: 600 10px/1.2 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.psl-layers__inspector-body {
+  margin-top: 10px;
+}
+
+.psl-layers__inspector-body .pse-field-group:last-child {
+  margin-bottom: 0;
 }
 
 .psl-layers__empty {
@@ -94,7 +132,7 @@
   color: var(--accent-bright);
 }
 
-.psl-layers__row.is-hidden .psl-layers__icon,
+.psl-layers__row.is-hidden .psl-layers__preview,
 .psl-layers__row.is-hidden .psl-layers__label {
   opacity: 0.45;
 }
@@ -111,19 +149,29 @@
   padding-top: 9px;
 }
 
-.psl-layers__icon {
+.psl-layers__preview {
   flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: currentColor;
+  width: 42px;
+  height: 28px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background:
+    linear-gradient(45deg, rgb(255 255 255 / 3%) 25%, transparent 25%) 0 0 / 8px 8px,
+    linear-gradient(-45deg, rgb(255 255 255 / 3%) 25%, transparent 25%) 0 0 / 8px 8px,
+    var(--bg-input);
+  color: var(--text-muted);
 }
 
-.psl-layers__icon svg {
-  width: 16px;
-  height: 16px;
+.psl-layers__preview svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.psl-layers__row.is-selected .psl-layers__preview {
+  border-color: var(--accent-border);
+  color: var(--accent-bright);
 }
 
 .psl-layers__label {
@@ -133,6 +181,50 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Always-visible arrow inspector toggle. It is separate from the row's
+   hover-only layer actions so people can discover that multiple property
+   blocks may remain open at once. */
+.psl-layers__expand {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.psl-layers__expand svg {
+  width: 15px;
+  height: 15px;
+  transition: transform 120ms ease;
+}
+
+.psl-layers__expand.is-expanded svg {
+  transform: rotate(90deg);
+}
+
+.psl-layers__expand:hover {
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+}
+
+.psl-layers__expand:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .psl-layers__expand svg {
+    transition: none;
+  }
 }
 
 .psl-layers__actions {

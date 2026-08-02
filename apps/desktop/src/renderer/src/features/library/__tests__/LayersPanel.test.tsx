@@ -119,7 +119,8 @@ function makeApi() {
     deleteLayer: vi.fn(async () => undefined),
     moveLayerToIndex: vi.fn(async () => undefined),
     uncrop: vi.fn(async () => undefined),
-    resetRasterTransform: vi.fn(async () => undefined)
+    resetRasterTransform: vi.fn(async () => undefined),
+    updateLayerStyle: vi.fn()
   };
 }
 
@@ -338,6 +339,104 @@ describe("LayersPanel", () => {
     );
     expect(byId(el, "layer-row-ly_arrow").getAttribute("aria-selected")).toBe("true");
     expect(byId(el, "layer-row-ly_raster").getAttribute("aria-selected")).toBe("false");
+  });
+
+  test("selected arrow stays collapsed until its chevron expands its inline inspector", async () => {
+    const api = makeApi();
+    const greenArrow = arrow();
+    if (greenArrow.kind !== "vector" || greenArrow.shape.kind !== "arrow") {
+      throw new Error("arrow fixture must be a vector arrow");
+    }
+    greenArrow.shape = {
+      ...greenArrow.shape,
+      color: "#28c840",
+      thickness: "medium",
+      endStyle: "dot"
+    };
+    const el = await renderPanel(
+      [rootGroup(), raster(), greenArrow],
+      api,
+      ["ly_arrow"]
+    );
+
+    const preview = byId(el, "layer-preview-ly_arrow");
+    expect(preview.getAttribute("aria-label")).toBe("Arrow layer preview");
+    expect(preview.querySelector("svg")).not.toBeNull();
+    expect(el.querySelector('[data-testid="layer-properties"]')).toBeNull();
+    expect(el.querySelector('[data-testid="layer-inspector-ly_arrow"]')).toBeNull();
+    await act(async () => {
+      byId(el, "layer-inspector-toggle-ly_arrow").click();
+    });
+    const inspector = byId(el, "layer-inspector-ly_arrow");
+    expect(byId(el, "layer-row-ly_arrow").nextElementSibling).toBe(inspector);
+    expect(byId(inspector, "swatch-green").getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      byId(inspector, "swatch-blue").click();
+      const thickness = byId(inspector, "arrow-thickness");
+      (thickness.querySelector('button[aria-label="L"]') as HTMLButtonElement).click();
+      (inspector.querySelector('button[aria-label="Open triangle"]') as HTMLButtonElement).click();
+    });
+    expect(api.updateLayerStyle).toHaveBeenNthCalledWith(1, "ly_arrow", "color", "blue");
+    expect(api.updateLayerStyle).toHaveBeenNthCalledWith(2, "ly_arrow", "thickness", "large");
+    expect(api.updateLayerStyle).toHaveBeenNthCalledWith(
+      3,
+      "ly_arrow",
+      "endStyle",
+      "open-triangle"
+    );
+  });
+
+  test("arrow inspectors expand independently and write to their own layers", async () => {
+    const api = makeApi();
+    const greenArrow = arrow("ly_green", 3000);
+    const blueArrow = arrow("ly_blue", 2000);
+    const redArrow = arrow("ly_red", 1000);
+    for (const [node, color] of [
+      [greenArrow, "#28c840"],
+      [blueArrow, "#1f7cff"],
+      [redArrow, "#ff5f57"]
+    ] as const) {
+      if (node.kind !== "vector" || node.shape.kind !== "arrow") {
+        throw new Error("arrow fixture must be a vector arrow");
+      }
+      node.shape = { ...node.shape, color };
+    }
+    const el = await renderPanel(
+      [rootGroup(), raster(), greenArrow, blueArrow, redArrow],
+      api,
+      ["ly_green"]
+    );
+
+    // Canvas selection is independent from the manual compare accordions:
+    // it highlights the green arrow but does not expand anything in a long
+    // stack of otherwise-identical rows.
+    expect(el.querySelector('[data-testid="layer-inspector-ly_green"]')).toBeNull();
+    expect(el.querySelector('[data-testid="layer-inspector-ly_blue"]')).toBeNull();
+    expect(el.querySelector('[data-testid="layer-inspector-ly_red"]')).toBeNull();
+
+    await act(async () => {
+      byId(el, "layer-inspector-toggle-ly_green").click();
+      byId(el, "layer-inspector-toggle-ly_blue").click();
+      byId(el, "layer-inspector-toggle-ly_red").click();
+    });
+
+    const greenInspector = byId(el, "layer-inspector-ly_green");
+    const blueInspector = byId(el, "layer-inspector-ly_blue");
+    const redInspector = byId(el, "layer-inspector-ly_red");
+    expect(byId(greenInspector, "swatch-green").getAttribute("aria-checked")).toBe("true");
+    expect(byId(blueInspector, "swatch-blue").getAttribute("aria-checked")).toBe("true");
+    expect(byId(redInspector, "swatch-red").getAttribute("aria-checked")).toBe("true");
+    expect(api.selectLayers).not.toHaveBeenCalled();
+
+    await act(async () => {
+      byId(blueInspector, "swatch-yellow").click();
+      byId(el, "layer-inspector-toggle-ly_green").click();
+    });
+    expect(api.updateLayerStyle).toHaveBeenCalledWith("ly_blue", "color", "yellow");
+    expect(el.querySelector('[data-testid="layer-inspector-ly_green"]')).toBeNull();
+    expect(el.querySelector('[data-testid="layer-inspector-ly_blue"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="layer-inspector-ly_red"]')).not.toBeNull();
   });
 });
 

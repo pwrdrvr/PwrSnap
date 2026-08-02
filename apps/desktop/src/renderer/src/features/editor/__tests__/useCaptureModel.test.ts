@@ -1405,6 +1405,147 @@ describe("useCaptureModel", () => {
     }
   });
 
+  test("13d-style-queue. rapid updateOverlay patches serialize and preserve both changes", async () => {
+    // `updateOverlay` is a delete-then-restore write. Keep the first
+    // restore deliberately in flight, then submit a second patch as the
+    // selected-arrow inspector would when a user clicks color + thickness
+    // without waiting for the model refetch. The second delete must not
+    // start until the first upsert has restored the stable layer id.
+    const record = makeRecord("cap_2", 2);
+    const arrowLayer: BundleLayerNode = {
+      id: "ly_rapid_arrow",
+      parent_id: null,
+      name: "Arrow",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 0,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-24T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-24T00:00:00Z",
+      kind: "vector",
+      shape: {
+        kind: "arrow",
+        from: { x: 0.1, y: 0.1 },
+        to: { x: 0.5, y: 0.5 },
+        color: "auto"
+      }
+    };
+    const firstDelete = deferred<{ ok: true; value: undefined }>();
+    const firstUpsert = deferred<{ ok: true; value: BundleLayerNode }>();
+    let deleteCount = 0;
+    let upsertCount = 0;
+    let firstUpsertLayer: BundleLayerNode | null = null;
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list") return Promise.resolve({ ok: true, value: [arrowLayer] });
+      if (name === "layers:delete") {
+        deleteCount += 1;
+        return deleteCount === 1
+          ? firstDelete.promise
+          : Promise.resolve({ ok: true, value: undefined });
+      }
+      if (name === "layers:upsert") {
+        upsertCount += 1;
+        const { layer } = req as { layer: BundleLayerNode };
+        if (upsertCount === 1) {
+          firstUpsertLayer = layer;
+          return firstUpsert.promise;
+        }
+        return Promise.resolve({ ok: true, value: layer });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+    const colorResult = m.dispatchEdit({
+      kind: "updateOverlay",
+      layerId: "ly_rapid_arrow",
+      patch: { kind: "arrow", color: "#2489ff" }
+    });
+    const thicknessResult = m.dispatchEdit({
+      kind: "updateOverlay",
+      layerId: "ly_rapid_arrow",
+      patch: { kind: "arrow", thickness: "large" }
+    });
+
+    await flush();
+    expect(deleteCount).toBe(1);
+    expect(upsertCount).toBe(0);
+
+    firstDelete.resolve({ ok: true, value: undefined });
+    await flush();
+    expect(upsertCount).toBe(1);
+    if (firstUpsertLayer === null) throw new Error("first update did not reach upsert");
+    // TypeScript doesn't track the assignment inside the dispatch mock
+    // callback, but the count assertion + guard above prove this exists.
+    const firstLayer = firstUpsertLayer as BundleLayerNode;
+    if (firstLayer.kind !== "vector" || firstLayer.shape.kind !== "arrow") {
+      throw new Error("expected arrow upsert");
+    }
+    expect(firstLayer.shape.color).toBe("#2489ff");
+
+    firstUpsert.resolve({ ok: true, value: firstLayer });
+    await flush();
+
+    expect(deleteCount).toBe(2);
+    expect(upsertCount).toBe(2);
+    const upserts = dispatchMock.mock.calls.filter((call) => call[0] === "layers:upsert");
+    const secondLayer = (upserts[1]?.[1] as { layer: BundleLayerNode }).layer;
+    expect(secondLayer.id).toBe("ly_rapid_arrow");
+    if (secondLayer.kind !== "vector" || secondLayer.shape.kind !== "arrow") {
+      throw new Error("expected queued arrow upsert");
+    }
+    expect(secondLayer.shape.color).toBe("#2489ff");
+    expect(secondLayer.shape.thickness).toBe("large");
+
+    const results = await Promise.all([colorResult, thicknessResult]);
+    expect(results.every((result) => result.ok)).toBe(true);
+    const [colorUpdate, thicknessUpdate] = results;
+    if (
+      colorUpdate === undefined ||
+      thicknessUpdate === undefined ||
+      !colorUpdate.ok ||
+      !thicknessUpdate.ok ||
+      colorUpdate.value.kind !== "update" ||
+      thicknessUpdate.value.kind !== "update"
+    ) {
+      throw new Error("expected queued update results");
+    }
+    const firstPrevious = colorUpdate.value.artifact.previousNode;
+    const secondPrevious = thicknessUpdate.value.artifact.previousNode;
+    if (
+      firstPrevious.kind !== "vector" ||
+      firstPrevious.shape.kind !== "arrow" ||
+      secondPrevious.kind !== "vector" ||
+      secondPrevious.shape.kind !== "arrow"
+    ) {
+      throw new Error("expected queued arrow predecessors");
+    }
+    // Each result carries the actual node its queued write replaced.
+    // The second caller was submitted from a stale model snapshot, but
+    // its predecessor already contains the first caller's color update.
+    expect(firstPrevious.shape.color).toBe("auto");
+    expect(secondPrevious.shape.color).toBe("#2489ff");
+  });
+
   test("13d-highlight. v2 dispatchEdit: updateGeometry persists highlight effect rotation and stable id", async () => {
     const record = makeRecord("cap_2", 2);
     const highlightLayer: BundleLayerNode = {

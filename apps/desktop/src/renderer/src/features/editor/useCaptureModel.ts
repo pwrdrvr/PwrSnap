@@ -196,12 +196,36 @@ export type CropRect = { x: number; y: number; w: number; h: number };
  *  inverse-delete on undo. */
 export type EditUpsertArtifact = { format: 2; node: BundleLayerNode };
 
+/** Result payload for an in-place update. `node` is the persisted
+ * post-update layer; `previousNode` is the exact layer state that the
+ * update replaced. For queued `updateOverlay` writes, that predecessor
+ * comes from the write lane rather than a possibly stale render snapshot.
+ */
+export type EditUpdateArtifact = EditUpsertArtifact & {
+  previousNode: BundleLayerNode;
+};
+
 /** Result of a `crop` op — the PREVIOUS canvas dims so the caller can
  *  stash them for undo. Surfaces the previous width_px / height_px
  *  from the captures row. */
 export type EditCropArtifact = {
   previousWidthPx: number;
   previousHeightPx: number;
+};
+
+/**
+ * A per-layer write lane for selected-layer style edits. `updateOverlay`
+ * is materialized as `layers:delete` then `layers:upsert`, so concurrent
+ * patches against one stable layer id can both delete it and make the
+ * later restore collide. Keep the last successfully-restored node here so
+ * the next queued patch merges with it rather than a stale model snapshot.
+ */
+type OverlayUpdateQueue = {
+  current: BundleLayerNode;
+  pending: number;
+  /** Always fulfills, including after a failed write, so a later user
+   *  change is not stranded behind it. */
+  tail: Promise<void>;
 };
 
 export type LayerEditOp =
@@ -264,13 +288,14 @@ export type CaptureModelError = {
  *  artifact (nothing to surface). `upsert` resolves with the fresh
  *  row/layer; `crop` resolves with the previous canvas dims (so the
  *  undo stack can stash them and reverse on ⌘Z). `update` (geometry
- *  + style) resolves with the PRE-PATCH row/layer so the undo stack
- *  can stash it for inverse replay on ⌘Z. */
+ *  + style) resolves with both the persisted node and the exact
+ *  PRE-PATCH node so undo can derive its inverse from the state the
+ *  write actually replaced. */
 export type EditOpResult =
   | { kind: "upsert"; artifact: EditUpsertArtifact }
   | { kind: "delete" }
   | { kind: "crop"; artifact: EditCropArtifact }
-  | { kind: "update"; artifact: EditUpsertArtifact }
+  | { kind: "update"; artifact: EditUpdateArtifact }
   /** Z-order change. Ids don't change (layers:reorder is a true
    *  in-place UPDATE on `z_index`), so the artifact is empty — callers
    *  keep their existing selection ids. */
@@ -904,8 +929,27 @@ export function useCaptureModel(captureId: string): CaptureModel {
   // cached). Same rationale as `recordRef` above — we want the
   // dispatchEdit reference identity to stay stable across refetches.
   const layersRef = useRef<BundleLayerNode[]>([]);
+  const overlayUpdateQueuesRef = useRef<Map<string, OverlayUpdateQueue>>(new Map());
+  const overlayUpdateQueuesCaptureIdRef = useRef(captureId);
+  // A hook instance can survive a capture switch. A style lane belongs to
+  // one capture only; never let a late old-capture row seed the next one.
+  if (overlayUpdateQueuesCaptureIdRef.current !== captureId) {
+    overlayUpdateQueuesRef.current.clear();
+    overlayUpdateQueuesCaptureIdRef.current = captureId;
+  }
   if (state.kind === "v2") {
     layersRef.current = state.layers;
+    // Keep a settled lane only until the model has incorporated its exact
+    // restored node. This closes the race between the IPC resolving and
+    // the broadcast/refetch landing, while still allowing a later external
+    // update to become the source for the next local style change.
+    for (const [layerId, queue] of overlayUpdateQueuesRef.current) {
+      if (queue.pending !== 0) continue;
+      const landed = state.layers.find((layer) => layer.id === layerId);
+      if (landed !== undefined && JSON.stringify(landed) === JSON.stringify(queue.current)) {
+        overlayUpdateQueuesRef.current.delete(layerId);
+      }
+    }
   }
 
   // v2 edit dispatcher. `layers:upsertBatch` isn't in the bus yet
@@ -1305,7 +1349,11 @@ export function useCaptureModel(captureId: string): CaptureModel {
               ok: true,
               value: {
                 kind: "update",
-                artifact: { format: 2, node: updResult.value }
+                artifact: {
+                  format: 2,
+                  node: updResult.value,
+                  previousNode: current
+                }
               }
             };
           }
@@ -1320,7 +1368,11 @@ export function useCaptureModel(captureId: string): CaptureModel {
             ok: true,
             value: {
               kind: "update",
-              artifact: { format: 2, node: insResult.value }
+              artifact: {
+                format: 2,
+                node: insResult.value,
+                previousNode: current
+              }
             }
           };
         }
@@ -1329,16 +1381,11 @@ export function useCaptureModel(captureId: string): CaptureModel {
           // layers we merge into `shape`; for effect layers the
           // semantic patch maps onto `effect.*` (blur style /
           // highlight opacity etc.). Same delete-plus-insert pattern
-          // as updateGeometry.
-          const record = recordRef.current;
-          if (record === null) {
-            return err({
-              kind: "validation",
-              code: "record_not_loaded",
-              message: "updateOverlay: record not loaded"
-            });
-          }
-          const current = layersRef.current.find((l) => l.id === op.layerId);
+          // as updateGeometry, but serialized per layer: two rapid
+          // inspector changes must not both delete the same row before
+          // either has restored it.
+          const existingQueue = overlayUpdateQueuesRef.current.get(op.layerId);
+          const current = existingQueue?.current ?? layersRef.current.find((l) => l.id === op.layerId);
           if (current === undefined) {
             return err({
               kind: "validation",
@@ -1346,31 +1393,77 @@ export function useCaptureModel(captureId: string): CaptureModel {
               message: `updateOverlay: no layer with id ${op.layerId}`
             });
           }
-          const merged = applyPatchToLayer(current, op.patch, {
-            width: record.width_px,
-            height: record.height_px
-          });
-          if (merged === null) {
-            return err({
-              kind: "validation",
-              code: "patch_kind_mismatch",
-              message: `updateOverlay: patch does not apply to layer kind ${current.kind}`
-            });
-          }
-          const delResult = await dispatch("layers:delete", { id: op.layerId });
-          if (!delResult.ok) return err(delResult.error);
-          const insResult = await dispatch("layers:upsert", {
-            captureId,
-            layer: merged
-          });
-          if (!insResult.ok) return err(insResult.error);
-          return {
-            ok: true,
-            value: {
-              kind: "update",
-              artifact: { format: 2, node: insResult.value }
-            }
+          const queue = existingQueue ?? {
+            current,
+            pending: 0,
+            tail: Promise.resolve()
           };
+          if (existingQueue === undefined) {
+            overlayUpdateQueuesRef.current.set(op.layerId, queue);
+          }
+          queue.pending += 1;
+
+          const work = queue.tail.then(async (): Promise<Result<EditOpResult, PwrSnapError>> => {
+            const record = recordRef.current;
+            if (record === null) {
+              return err({
+                kind: "validation",
+                code: "record_not_loaded",
+                message: "updateOverlay: record not loaded"
+              });
+            }
+            // Read `queue.current` only once this lane reaches the front.
+            // A preceding update may already have restored a new shape,
+            // even though the events:overlays:changed refetch has not
+            // updated `layersRef` yet.
+            const previousNode = queue.current;
+            const merged = applyPatchToLayer(previousNode, op.patch, {
+              width: record.width_px,
+              height: record.height_px
+            });
+            if (merged === null) {
+              return err({
+                kind: "validation",
+                code: "patch_kind_mismatch",
+                message: `updateOverlay: patch does not apply to layer kind ${previousNode.kind}`
+              });
+            }
+            const delResult = await dispatch("layers:delete", { id: previousNode.id });
+            if (!delResult.ok) return err(delResult.error);
+            const insResult = await dispatch("layers:upsert", {
+              captureId,
+              layer: merged
+            });
+            if (!insResult.ok) return err(insResult.error);
+            // `applyPatchToLayer` preserves ids today, but store the
+            // returned node rather than assuming that implementation
+            // detail. The following queued style patch needs this exact
+            // post-update state either way.
+            queue.current = insResult.value;
+            return {
+              ok: true,
+              value: {
+                kind: "update",
+                artifact: {
+                  format: 2,
+                  node: insResult.value,
+                  previousNode
+                }
+              }
+            };
+          });
+          // Keep the lane live after an unexpected rejected IPC promise;
+          // callers receive that rejection, but a later UI action can still
+          // attempt a fresh update instead of waiting forever.
+          queue.tail = work.then(
+            () => {
+              queue.pending -= 1;
+            },
+            () => {
+              queue.pending -= 1;
+            }
+          );
+          return work;
         }
         case "reorder": {
           // Single-row z_index UPDATE via the dedicated layers:reorder

@@ -66,6 +66,7 @@ import {
 } from "../shared/RightActivityBar";
 import "../shared/RightActivityBar.css";
 import { LibraryChatPanel } from "./chat/LibraryChatPanel";
+import { LayerPropertiesPanel } from "./LayerPropertiesPanel";
 import { LayersPanel } from "./LayersPanel";
 import type { LayersPanelApi } from "../editor/Editor";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag, subscribe } from "../../lib/pwrsnap";
@@ -466,7 +467,7 @@ export function DetailRail({
   // L373 on CI). Compute tabs up front; the early returns below
   // just gate rendering, not hook-count.
   const hasOcrText = (enrichment?.ocrText ?? "").length > 0;
-  // Layers-tab gating, as stable primitives so the tabs memo doesn't
+  // Layer-tab gating, as stable primitives so the tabs memo doesn't
   // churn on every selection change (the layersApi object's identity
   // changes whenever the editor's selection does).
   const isImageCapture = record?.kind === "image";
@@ -526,13 +527,19 @@ export function DetailRail({
             }
           ]
         : []),
-      // Layers tab — only for image captures with an editor mounted
-      // (the editor publishes `layersApi`; videos mount no editor, so
-      // it stays null and the tab is absent). Gated on `hasLayersApi`
+      // Properties + Layers tabs — only for image captures with an
+      // editor mounted (the editor publishes `layersApi`; videos mount
+      // no editor, so both tabs are absent). Gated on `hasLayersApi`
       // (a stable boolean) rather than the api object so the memo
       // doesn't recompute on every selection change.
       ...(isImageCapture && hasLayersApi
         ? [
+            {
+              id: "properties" as const,
+              label: "Properties",
+              title: "Selected layer properties",
+              icon: PROPERTIES_ICON
+            },
             {
               id: "layers" as const,
               label: "Layers",
@@ -715,6 +722,17 @@ export function DetailRail({
       return (
         <div className="psl__right-body psl__right-body--cart">
           <CartPanel onJumpTo={onCartJumpTo} onTrashAll={onCartTrashAll} />
+        </div>
+      );
+    }
+    if (id === "properties") {
+      return (
+        <div className="psl__right-body">
+          <LayerPropertiesPanel
+            captureId={record.id}
+            selectedLayerIds={selectedLayerIds}
+            api={layersApi}
+          />
         </div>
       );
     }
@@ -1058,6 +1076,22 @@ const CART_ICON: ReactElement = (
     <path d="M3 5h2l1.6 9.5a1 1 0 0 0 1 .8h8.8a1 1 0 0 0 1-.8L20 8H6" />
     <circle cx="9" cy="19" r="1.2" fill="currentColor" />
     <circle cx="17" cy="19" r="1.2" fill="currentColor" />
+  </svg>
+);
+
+const PROPERTIES_ICON: ReactElement = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M4 7h16M4 17h16" />
+    <circle cx="9" cy="7" r="2" />
+    <circle cx="15" cy="17" r="2" />
   </svg>
 );
 

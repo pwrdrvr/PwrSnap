@@ -11,6 +11,44 @@ origins:
 
 # Local Agent MCP Access for PwrSnap Library, Edits, and Sizzle Reels
 
+## Amendment — 2026-08-01: Named Sessions and Role-Based Access Control
+
+MCP authorization is a native PwrSnap user-presence ceremony, not a browser
+consent form. The browser is an honest handoff surface: it says to continue in
+PwrSnap, waits on an opaque one-time status handle, and eventually redirects
+back to the registered OAuth callback. It has no approve operation and never
+receives the native consent transaction id.
+
+An OAuth software registration and a PwrSnap authorization session are
+different identities. Every successful authorization creates a separately
+named, revocable Session even when the same OAuth `client_id` logs in more than
+once. Active Session Names are unique so audit and usage records remain
+human-identifiable.
+
+The next access-control increment borrows PwrAgent's stable-permission,
+reusable-role, fail-closed resolver, danger-tier, audit, and authorization-graph
+ideas. PwrSnap deliberately starts with exactly one role profile per Session.
+PwrAgent's additive multi-role model works for boolean permissions, but becomes
+hard to explain once roles also contain capture-age limits and sliding-window
+budgets. A user can duplicate a built-in role into a custom role when a Session
+needs a tailored policy.
+
+This amendment is delivered as four native GitHub stacked PRs:
+
+1. **Session identity and native handoff.** Unique Session Names, distinct
+   authorization grants per OAuth login, and a browser page that sends the user
+   into PwrSnap without accepting approval itself.
+2. **RBAC policy substrate.** Stable permission definitions, built-in and
+   custom role profiles, one-role-per-Session assignment, fail-closed policy
+   resolution, danger tiers, and drift tests.
+3. **Context and budgets.** Maximum capture age plus SQLite-backed
+   sliding-window counters for search, preview reads, original/full-resolution
+   reads, edits, and deletes. Authorization and accounting happen atomically at
+   the execution boundary.
+4. **Authorization graph UI.** A PwrAgent-style Session → Role → Permission
+   graph, custom role editor, usage meters, budget windows, age-scope controls,
+   and explicit rejected/unassigned end states.
+
 ## Summary
 
 Expose PwrSnap as a local, capability-scoped MCP server so PwrAgent and
@@ -104,17 +142,31 @@ runs through PwrSnap's configured Codex App Server connection.
 
 **Local Trust Boundary**
 
-- R19. Authorizing a local agent requires a PwrSnap-hosted browser consent page,
-  not just access to localhost. The page treats the library as private screen
-  content, describes the concrete effect of every permission, and lets the user
-  add or remove permissions before granting.
-- R20. OAuth authorization creates a named, revocable client grant with a scoped
-  capability set stored through the settings/secret substrate.
+- R19. Authorizing a local agent requires a native PwrSnap approval window, not
+  just access to localhost. The loopback browser page can initiate and observe
+  a pending request, but it cannot inspect or submit the approval decision.
+- R20. OAuth authorization creates a uniquely named, revocable Session grant
+  stored through the settings/secret substrate. OAuth software registration is
+  retained separately so repeated logins never overwrite an earlier Session.
 - R21. Every external request carries a client identity and capability context
   into command dispatch, media resource resolution, and audit logging.
 - R22. Protected agent actions are auditable, especially original image reads,
   export reads from original input, delete-to-trash, edit turns, and Sizzle
   full-resolution renders.
+- R23. Every active Session resolves through exactly one reusable role profile;
+  missing roles, unknown permissions, malformed limits, and unassigned Sessions
+  fail closed.
+- R24. A role can restrict captures to a maximum age. The default read/search
+  lookback is 7 days; explicit profiles can widen it to 14 days, 30 days, or all
+  time.
+- R25. A role can define sliding-window budgets independently for searches,
+  composite/preview reads, original/full-resolution reads, edits, and deletes.
+  Denied attempts do not consume budget; successful protected actions do.
+- R26. Budget checks and usage recording are atomic at the action boundary so
+  concurrent agents cannot exceed a limit through a check-then-write race.
+- R27. Settings shows Session → Role → Permission relationships, current usage,
+  remaining allowance, reset horizon, and a visible rejected state for any
+  Session without a valid role.
 
 ---
 
@@ -135,11 +187,12 @@ runs through PwrSnap's configured Codex App Server connection.
   the default because it reflects user-visible edits; original requires a
   distinct `capture.original.read` capability because it can bypass redaction.
 
-- KTD4. Authorization is browser consent plus a per-client token, not localhost trust.
-  A local browser, script, or compromised process can reach loopback. PwrSnap
-  must require a user-visible grant and must support revocation. OAuth clients
-  are public clients and use authorization code + PKCE; no client secret is
-  generated or stored.
+- KTD4. Authorization is native PwrSnap consent plus a per-Session token, not
+  localhost trust. A local browser, script, or compromised process can reach
+  loopback. The browser only carries an opaque status handle; the decision is
+  accepted through IPC from the exact native approval window created for it.
+  OAuth clients are public clients and use authorization code + PKCE; no client
+  secret is generated or stored.
 
 - KTD5. Edits route through PwrSnap-owned Codex threads. The external agent is
   a requester, not the editor brain. This preserves PwrSnap model/provider
@@ -167,6 +220,19 @@ runs through PwrSnap's configured Codex App Server connection.
   architecture. MCP authorization uses RFC 9728 protected-resource metadata,
   OAuth authorization-server metadata, dynamic client registration, PKCE, and
   resource indicators. There is no discovery file or custom pairing endpoint.
+
+- KTD10. PwrSnap roles are reusable policy profiles with stable ids and stable
+  permission names. Built-ins are immutable; custom roles are editable. The
+  resolver is a pure, deny-by-default function whose output is the only policy
+  context carried into tools and resource reads.
+
+- KTD11. One role per Session is intentional for the first budgeted model.
+  Boolean permissions, age horizons, and numeric budgets remain legible without
+  inventing surprising multi-role merge arithmetic.
+
+- KTD12. Configuration belongs in `DesktopSettingsService`; tokens remain in
+  `DesktopSecretStore`; high-volume usage events belong in SQLite. Settings JSON
+  is not a counter store, and a second plaintext policy file is not introduced.
 
 ---
 
@@ -382,10 +448,12 @@ logged, persisted, or shared.
 - **Verification:** Unit tests for grant parsing/storage and command-bus
   context compatibility.
 
-### U2. Browser OAuth Consent and Settings UI
+### U2. Native OAuth Consent and Settings UI
 
-- **Goal:** Add a local browser OAuth consent ceremony and revocation UI so the
-  user can grant named external agents scoped access.
+- **Goal:** Add a native OAuth approval ceremony and revocation UI so the user
+  can create uniquely named Sessions with scoped access. The browser only
+  explains that approval continues in PwrSnap and observes completion through
+  an opaque, expiring status handle.
 - **Files:**
   - `packages/shared/src/protocol.ts`
   - `packages/shared/src/ipc.ts`
@@ -395,14 +463,20 @@ logged, persisted, or shared.
   - `apps/desktop/src/renderer/src/features/settings/SettingsApp.tsx`
   - `apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx` new
   - `apps/desktop/src/renderer/src/features/settings/__tests__/LocalAgentsPage.test.tsx` new
-- **Patterns:** Serve a deny-by-default consent page from the fixed loopback
-  origin. Use OAuth authorization code + PKCE, public dynamic clients, exact
-  resource indicators, and no client secrets. Use Settings pages through
-  `SettingsContext` for grant review/revocation.
+- **Patterns:** Treat the native consent broker as the user-presence boundary.
+  Bind each request to the exact BrowserWindow that displays it; do not add an
+  HTTP approval verb. Use OAuth authorization code + PKCE, public dynamic
+  clients, exact resource indicators, and no client secrets. Keep OAuth
+  software registration separate from Session grants. Use Settings pages
+  through `SettingsContext` for grant review/revocation.
 - **Test Scenarios:**
-  - `codex mcp login pwrsnap` opens a PwrSnap browser consent page with client
-    name, requested capabilities, editable checkboxes, and concrete effect
-    descriptions.
+  - `codex mcp login pwrsnap` opens a browser handoff page and a native PwrSnap
+    approval window with an editable Session Name, client-reported label,
+    requested capabilities, and concrete effect descriptions.
+  - Loopback HTTP can neither manufacture nor submit an approval, and the
+    browser status handle does not reveal the native consent transaction id.
+  - Reauthorizing the same OAuth client creates a distinct Session and does not
+    overwrite or reactivate an earlier grant.
   - User approval returns a short-lived authorization code to the registered
     loopback callback; token exchange requires the original PKCE verifier.
   - User denial returns an OAuth `access_denied` response without creating a
@@ -412,6 +486,47 @@ logged, persisted, or shared.
     lower-risk read/search capabilities.
 - **Verification:** Renderer unit tests for capability display and main tests
   for approval/denial state transitions.
+
+### U2.1. Role Profiles, Context Scope, and Usage Budgets
+
+- **Goal:** Replace per-Session checkbox snapshots with reusable role profiles
+  and enforce contextual constraints at every MCP execution boundary.
+- **Configuration:** Built-in/custom roles and Session assignments extend the
+  shared `Settings` schema. Tokens continue through `DesktopSecretStore`.
+- **Usage ledger:** A new SQLite migration stores normalized successful action
+  events keyed by Session id, action class, timestamp, and optional resource id.
+  Indexed range counts support true sliding windows and future audit drill-down.
+- **Resolver output:** Session id/name, role id/name, allowed capability set,
+  maximum capture age, and typed budgets. Unknown or malformed inputs resolve to
+  an explicit rejection rather than a partially authorized context.
+- **Enforcement:**
+  - Search clamps its date range to the resolved age horizon.
+  - Metadata and media reads reject captures outside that horizon even when the
+    caller learned an id or retained a signed URL earlier.
+  - Search, preview/composite, original/full-resolution, edit, and delete action
+    classes consume independent sliding-window budgets.
+  - The authorize-and-record operation is transactional for concurrency safety.
+- **Verification:** Pure resolver matrix and built-in drift tests; SQLite
+  boundary/expiry/concurrency tests; MCP tool/resource tests proving age and
+  budget checks cannot be bypassed through alternate read paths.
+
+### U2.2. Authorization Graph
+
+- **Goal:** Make effective access understandable at a glance using the visual
+  language of PwrAgent's authorization graph.
+- **Columns:** Sessions, role profiles, and permissions/constraints. Curved
+  connections show the effective path; invalid or unassigned Sessions terminate
+  in a visible rejected state.
+- **Role editor:** Duplicate built-ins, rename custom roles, toggle permissions,
+  set capture age, and configure action count/window pairs. Dangerous access
+  (originals, deletes, full-resolution renders, unbounded history) receives a
+  stronger visual tier and confirmation.
+- **Usage:** Each budget shows used/limit, window duration, remaining allowance,
+  and when the oldest counted event leaves the window. Revocation remains
+  immediate and invalidates media reads as well as tool calls.
+- **Verification:** Renderer tests for graph paths and rejected states, role
+  editing/validation tests, and desktop E2E for Session assignment, live usage,
+  and immediate revocation.
 
 ### U3. MCP Server Transport
 

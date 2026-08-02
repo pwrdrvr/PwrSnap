@@ -143,8 +143,26 @@ jobs:
     needs: install-deps
     timeout-minutes: 30
     steps:
+      # The Linux visual suite owns the LFS baselines, but this macOS
+      # checkout still needs the LFS filter executable to materialize their
+      # pointers. Keep the files unsmudged here: these Linux-only assertions
+      # are skipped on macOS and should not consume LFS bandwidth in this lane.
+      - name: Ensure Git LFS is available
+        run: |
+          if command -v git-lfs >/dev/null 2>&1; then
+            git-lfs version
+            exit 0
+          fi
+          eval "$(/opt/homebrew/bin/brew shellenv)"
+          brew install git-lfs </dev/null
+          git-lfs version
+
       - name: Checkout repository
         uses: actions/checkout@v5
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
+        with:
+          lfs: false
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1

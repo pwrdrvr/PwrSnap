@@ -40,6 +40,10 @@ xcode-select -p >/dev/null 2>&1 || { echo "Xcode CLT missing - install manually"
 # tmux
 if ! command -v tmux >/dev/null 2>&1; then brew install tmux </dev/null; fi
 
+# The macOS CI lane does not compare Linux visual goldens, but Git still
+# needs this filter available to check out their LFS pointers.
+if ! command -v git-lfs >/dev/null 2>&1; then brew install git-lfs </dev/null; fi
+
 # Display resolution: Virtualization.framework guests boot at a
 # 1024x768 fallback framebuffer when headless (tart's --display is
 # only honored by an attached viewer), and several specs drive

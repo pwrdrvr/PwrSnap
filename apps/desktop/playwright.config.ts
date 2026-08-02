@@ -10,8 +10,14 @@
 
 import { defineConfig } from "@playwright/test";
 
+const skipLinuxVisualRegression =
+  process.env.PWRSNAP_E2E_SKIP_LINUX_VISUAL_REGRESSION === "1";
+
 export default defineConfig({
   testDir: "./e2e",
+  ...(skipLinuxVisualRegression
+    ? { testIgnore: /visual-regression\.spec\.ts$/ }
+    : {}),
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,

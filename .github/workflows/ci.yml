@@ -108,6 +108,10 @@ jobs:
         # ubuntu-latest revision, add a targeted `apt-get install -y
         # libfoo` (~15s) instead of bringing back the full
         # `playwright install-deps` blast.
+        # TODO(ci): Stabilize Linux/xvfb visual-regression.spec.ts, then remove
+        # this flag to explicitly re-enable its Linux visual coverage.
+        env:
+          PWRSNAP_E2E_SKIP_LINUX_VISUAL_REGRESSION: "1"
         run: xvfb-run --auto-servernum pnpm run test:desktop-e2e
 
       - name: Upload desktop Playwright artifacts

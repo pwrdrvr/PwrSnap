@@ -59,12 +59,13 @@ runs through PwrSnap's configured Codex App Server connection.
   visible edits applied.
 - R5. Original image retrieval is a separate capability because it can reveal
   content hidden by redactions or crops.
-- R6. Agents can request ad hoc exports from original or composite input with
-  width/height constraints, quality settings, and output formats including PNG,
-  JPEG, WebP, PDF, and macOS HEIC when the local platform supports it.
-- R7. Media bytes are delivered through MCP resources or short-lived signed
-  local HTTP URLs, never embedded into general JSON-RPC responses for large
-  artifacts.
+- R6. Agents can request a PwrSnap-owned `low` / `med` / `high` export from
+  original or composite input as PNG, JPEG, PDF, or macOS HEIC when the local
+  platform supports it. PwrSnap owns dimensions and lossy-encoding settings.
+- R7. Completed media tools attach short-lived signed localhost media through
+  typed MCP `resource_link` content; canonical MCP resources are a fallback
+  only for clients that genuinely support resource reads. Large artifacts are
+  never embedded into general JSON-RPC responses.
 
 **Image Edits**
 
@@ -97,8 +98,9 @@ runs through PwrSnap's configured Codex App Server connection.
   unrelated project through a thread anchored to another project.
 - R17. Agents can request a low-resolution preview render first, then a full
   resolution render only when explicitly requested.
-- R18. Rendered reel outputs are shared through MCP resources or signed local
-  HTTP URLs with capability checks.
+- R18. Rendered reel outputs are delivered through typed MCP `resource_link`
+  content with capability checks; canonical MCP resources remain a fallback
+  for real MCP resource readers.
 
 **Local Trust Boundary**
 
@@ -118,9 +120,11 @@ runs through PwrSnap's configured Codex App Server connection.
 
 ## Key Technical Decisions
 
-- KTD1. MCP is the primary external agent contract; HTTP is the media fallback.
-  MCP tools and resources fit PwrAgent/Codex/Claude-style agents, while signed
-  HTTP URLs remain necessary for clients that need fetchable media links.
+- KTD1. MCP is the external agent contract. Completed media tools use typed
+  `resource_link` content as the primary binary handoff; the signed localhost
+  URI remains inside that link for direct client pass-through. A canonical MCP
+  resource URI is only the fallback for clients that genuinely support
+  `resources/read`.
 
 - KTD2. The command bus remains the execution floor. External MCP tools call
   command-bus verbs or existing tool-catalog dispatchers with an external
@@ -171,7 +175,7 @@ runs through PwrSnap's configured Codex App Server connection.
 ```mermaid
 flowchart TB
   Agent[PwrAgent / Local Agent] --> MCP[PwrSnap MCP Server]
-  Agent --> HTTP[Signed Local HTTP Media URL]
+  MCP --> HTTP[Typed resource link / signed local media]
 
   MCP --> Pairing[OAuth + Capability Gate]
   HTTP --> Pairing
@@ -194,9 +198,9 @@ flowchart TB
 ```
 
 External callers interact with PwrSnap through tool calls and resource reads.
-Tool calls return small JSON projections, thread ids, resource URIs, or signed
-URL descriptors. Actual media is streamed from a resolver that enforces the
-same client grant and resource-specific capability at read time.
+Tool calls return small JSON projections, thread ids, canonical resource URIs,
+or typed MCP resource links. Actual media is streamed from a resolver that
+enforces the same client grant and resource-specific capability at read time.
 
 ---
 
@@ -219,7 +223,7 @@ Initial capabilities:
 The first pairing UI should ship with presets:
 
 - **Search only:** `library.read`
-- **Search and edited previews:** `library.read`, `capture.composite.read`
+- **Search and edited-media retrieval:** `library.read`, `capture.composite.read`
 - **Full media access:** adds `capture.original.read` and `capture.export`
 - **Editor agent:** adds `capture.edit`
 - **Sizzle agent:** adds `sizzle.compose`, `sizzle.preview.read`
@@ -247,6 +251,8 @@ toggles even when a broad preset is selected.
     `match` explicitly selects `"any"` or `"all"`. Accepted tags also enter
     full-text search. Ordering can be `relevance`, `newest`, or `oldest`;
     query searches default to relevance and no-query searches to newest.
+  - MCP responses default to 25 rows and cap at 50. They report `hasMore` so
+    callers can narrow filters instead of bloating their transcript.
 
 - `pwrsnap_library_discover`
   - Requires: `library.read`
@@ -255,24 +261,29 @@ toggles even when a broad preset is selected.
     volume, with `mostRecentCapturedAt`. Application `name` is reusable as a
     `sourceAppNames` value; `bundleId` is included only when known
     unambiguously.
+  - MCP responses default to 25 applications and 25 tags, cap each list at
+    50, and report per-list `hasMore` flags.
 
 - `pwrsnap_capture_metadata`
   - Requires: `library.read`
   - Wraps: `library:byId` + `codex:enrichment`
-  - Returns: metadata, accepted/suggested enrichment, tags, OCR length, and
-    resource links allowed by the client grant.
+  - Returns: compact capture metadata, its resolved title/description, accepted
+    tags, and OCR length. It never returns media handles; callers use
+    `pwrsnap_capture_resource`.
 
 - `pwrsnap_capture_resource`
   - Requires: `capture.composite.read` or `capture.original.read`
-  - Returns: MCP resource URI and a five-minute signed localhost URL for
-    `variant: "composite" | "original"`.
+  - Returns: a typed MCP `resource_link` for direct binary delivery and a
+    canonical MCP resource URI fallback for `variant: "composite" |
+    "original"`. The signed localhost URI exists only inside the typed link.
   - Default variant is `composite`.
 
 - `pwrsnap_capture_export`
   - Requires: `capture.export` plus the input variant's read capability.
-  - Args: capture id, input variant, format, max width/height, scale, quality,
-    background behavior for transparency, PDF page sizing.
-  - Returns: MCP resource URI and optional signed URL.
+  - Args: capture id, input variant, PwrSnap `low` / `med` / `high` preset,
+    and output format.
+  - Returns: a typed MCP `resource_link` for direct binary delivery plus a
+    canonical MCP resource URI fallback.
 
 - `pwrsnap_capture_delete_to_trash`
   - Requires: `trash.write`
@@ -284,25 +295,25 @@ toggles even when a broad preset is selected.
   - Args: capture id, instruction, requested PwrSnap provider/model, optional
     thread id, reuse policy.
   - Wraps: Library Chat thread create/list/send substrate.
-  - Returns: PwrSnap thread id, turn id, and a composite preview resource when
-    the turn completes.
+  - Returns: PwrSnap thread id, turn id, and status only.
 
 - `pwrsnap_image_edit_status`
   - Requires: `capture.edit`
   - Args: capture id and PwrSnap thread id.
-  - Returns: the persistent thread status and a signed composite preview when
-    the turn is idle.
+  - Returns: the persistent thread status only. Once idle, callers retrieve
+    the current edited composite through `pwrsnap_capture_resource`.
 
 - `pwrsnap_sizzle_create`
   - Requires: `sizzle.compose`
   - Args: name, capture ids, optional brief/instructions and PwrSnap
     provider/model.
   - Wraps: `sizzle:create`, project scene mutation, Sizzle Chat create/send.
-  - Returns: project id, thread id, project view.
+  - Returns: a compact receipt: project id, name, scene count, thread id, and
+    turn id.
 
 - `pwrsnap_sizzle_send`
   - Requires: `sizzle.compose`
-  - Args: project id or thread id, instruction.
+  - Args: project id, instruction, and an optional thread id.
   - Wraps: Sizzle Chat send.
   - Returns: thread id and turn id.
 
@@ -313,28 +324,31 @@ toggles even when a broad preset is selected.
 
 - `pwrsnap_sizzle_render_preview`
   - Requires: `sizzle.preview.read`
-  - Args: project id, low-resolution preset.
-  - Returns: preview resource URI.
+  - Args: project id.
+  - Returns: a typed MCP `resource_link` plus canonical resource URI fallback.
 
 - `pwrsnap_sizzle_render_full`
   - Requires: `sizzle.full.read`
-  - Args: project id, full-resolution preset.
-  - Returns: full render resource URI.
+  - Args: project id.
+  - Returns: a typed MCP `resource_link` plus canonical resource URI fallback.
 
 ### Resources
 
 - `pwrsnap://capture/{captureId}/composite`
 - `pwrsnap://capture/{captureId}/original`
 - `pwrsnap://capture/{captureId}/export/{exportId}`
-- `pwrsnap://capture/{captureId}/edit/{threadId}/composite`
 - `pwrsnap://sizzle/{projectId}/{mode}/{renderId}`
 
 Resource handlers re-check capability on read. A tool returning a resource URI
 does not make the bytes readable after a grant is revoked.
 
-Tool descriptions direct binary-capable clients to prefer the short-lived
-signed URL and use MCP `resources/read` as the protocol fallback. Signed URLs
-are bearer secrets and must not be logged, persisted, or shared.
+Completed media tools return a typed `resource_link` with a short-lived signed
+localhost URI; clients pass that link directly to their media handler and never
+copy, reconstruct, print, or persist its URI. A canonical `pwrsnap://` URI is
+the fallback only for clients that explicitly support MCP `resources/read`.
+Clients must read only a URI returned by a completed media tool, never construct
+one from a resource template. Signed URLs are bearer secrets and must not be
+logged, persisted, or shared.
 
 ---
 
@@ -460,10 +474,11 @@ are bearer secrets and must not be logged, persisted, or shared.
 - **Verification:** Unit tests on export options and golden-ish metadata checks
   for output format/dimensions.
 
-### U5. Signed Local HTTP Media Fallback
+### U5. Typed Resource-Link Media Delivery
 
-- **Goal:** Serve exported media over short-lived local URLs for clients that
-  cannot consume MCP resources directly.
+- **Goal:** Serve exported media over short-lived local URLs referenced only by
+  typed MCP `resource_link` content. Canonical MCP resource reads are retained
+  only as a fallback for clients that genuinely support them.
 - **Files:**
   - `apps/desktop/src/main/http-server.ts`
   - `apps/desktop/src/main/local-agents/signed-url.ts` new
@@ -497,7 +512,8 @@ are bearer secrets and must not be logged, persisted, or shared.
 - **Test Scenarios:**
   - Search returns the same semantic rows as `library:search` and excludes
     trash.
-  - Metadata includes only resource links allowed by the grant.
+  - Metadata returns no media handles; the capture-resource tool is the sole
+    normal media issuer.
   - Composite is the default resource variant.
   - Original resource requires original-read.
   - Delete-to-trash calls `library:delete` and never `library:purge`.
@@ -530,7 +546,8 @@ are bearer secrets and must not be logged, persisted, or shared.
   - Explicit thread id for a different capture is rejected.
   - Requested model is passed as a PwrSnap model routing hint and does not
     require the caller to have that model.
-  - Completed turn returns a fresh composite preview resource.
+  - Completed turn returns idle status; `pwrsnap_capture_resource` then returns
+    the fresh current composite through the canonical media-delivery path.
   - In-flight edit fails cleanly if the capture is moved to trash.
 - **Verification:** Controller/store tests with fake Codex thread client and
   MCP tool tests around thread selection.
@@ -613,9 +630,10 @@ are bearer secrets and must not be logged, persisted, or shared.
   receives matching capture ids and snippets, but attempts to read
   `pwrsnap://capture/{id}/composite` fail with a capability error.
 
-- AE2. An authorized PwrAgent with `capture.composite.read` asks for "that capture
-  as a JPG at good quality." PwrSnap returns a JPEG export resource generated
-  from the composite, including arrows and redactions visible in the editor.
+- AE2. An authorized PwrAgent with `capture.composite.read` and
+  `capture.export` asks for "that capture as a medium JPEG." PwrSnap returns a
+  JPEG export generated from the composite, including arrows and redactions
+  visible in the editor.
 
 - AE3. The same agent asks for the original. PwrSnap refuses until the user
   grants `capture.original.read`, and the eventual read is logged as an
@@ -624,7 +642,8 @@ are bearer secrets and must not be logged, persisted, or shared.
 - AE4. An agent asks, "use GPT-5.5 to add an arrow pointing at the Save
   button." PwrSnap creates or reuses a Library Chat thread anchored to that
   capture, routes the turn through PwrSnap's Codex configuration, writes normal
-  v2 layers, and returns a composite preview resource.
+  v2 layers. Once its thread is idle, the agent retrieves the current composite
+  through `pwrsnap_capture_resource`.
 
 - AE5. A follow-up says, "make that arrow thicker." PwrSnap routes to the same
   compatible capture thread unless the caller supplies a valid thread id.
@@ -645,7 +664,7 @@ are bearer secrets and must not be logged, persisted, or shared.
 ### In Scope
 
 - Local MCP tools and resources for authorized clients.
-- Signed local HTTP media URLs as a compatibility layer.
+- Signed local HTTP media links carried by typed MCP `resource_link` content.
 - Capability-scoped OAuth authorization, revocation, and audit.
 - Image exports for original/composite variants.
 - PwrSnap-owned image edit and Sizzle chat requests.

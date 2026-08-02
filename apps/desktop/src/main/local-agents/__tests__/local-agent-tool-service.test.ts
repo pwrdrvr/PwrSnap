@@ -1,4 +1,4 @@
-import { err, ok, type CommandName, type LocalAgentCapability } from "@pwrsnap/shared";
+import { ok, type CommandName, type LocalAgentCapability } from "@pwrsnap/shared";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { bus, type CommandContext } from "../../command-bus";
 import { LocalAgentToolService } from "../local-agent-tool-service";
@@ -79,15 +79,16 @@ function service(
 }
 
 describe("LocalAgentToolService metadata", () => {
-  test("does not advertise image-only resources for video captures", async () => {
+  test("does not register a competing media route from metadata", async () => {
     register("library:byId", async () =>
-      ok({ id: "vid_1", kind: "video", deleted_at: null })
+      ok({ id: "cap_1", kind: "image", deleted_at: null })
     );
     register("codex:enrichment", async () => ok(null));
+    const resources = new LocalAgentMcpResourceRegistry();
 
-    const result = await service().metadata(
-      { captureId: "vid_1" },
-      context("lag_video", [
+    const result = await service(resources).metadata(
+      { captureId: "cap_1" },
+      context("lag_metadata", [
         "library.read",
         "capture.composite.read",
         "capture.original.read"
@@ -95,9 +96,12 @@ describe("LocalAgentToolService metadata", () => {
     );
 
     expect(result).toMatchObject({
-      ok: true,
-      value: { availableResources: [] }
+      ok: true
     });
+    if (!result.ok) return;
+    expect(result.value).not.toHaveProperty("availableResources");
+    expect(resources.get("pwrsnap://capture/cap_1/composite")).toBeUndefined();
+    expect(resources.get("pwrsnap://capture/cap_1/original")).toBeUndefined();
   });
 });
 
@@ -141,10 +145,10 @@ describe("LocalAgentToolService media delivery", () => {
       mimeType: "image/png",
       widthPx: 2_880,
       heightPx: 1_920,
-      byteSize: 10,
-      resourceLinkExpiresAt: expect.any(String)
+      byteSize: 10
     }));
     expect(mcpResult.structuredContent).not.toHaveProperty("signedUrl");
+    expect(mcpResult.structuredContent).not.toHaveProperty("resourceLinkExpiresAt");
     expect(mcpResult.content[1]).toMatchObject({
       type: "resource_link",
       uri: expect.stringMatching(/^http:\/\/127\.0\.0\.1:51729\/media\?/u),
@@ -206,7 +210,7 @@ describe("LocalAgentToolService media delivery", () => {
 });
 
 describe("LocalAgentToolService image edits", () => {
-  test("reuses the latest model-compatible capture thread and exposes completion status", async () => {
+  test("reuses the latest model-compatible capture thread and reports status without a media route", async () => {
     let status: { kind: "idle" } | { kind: "streaming"; turnId: string } = {
       kind: "streaming",
       turnId: "turn_existing"
@@ -245,8 +249,7 @@ describe("LocalAgentToolService image edits", () => {
       return ok({ turnId: "turn_new" });
     });
 
-    const resources = new LocalAgentMcpResourceRegistry();
-    const toolService = service(resources, "http://127.0.0.1:51729");
+    const toolService = service();
     const sent = await toolService.imageEditSend(
       {
         captureId: "cap_1",
@@ -263,6 +266,7 @@ describe("LocalAgentToolService image edits", () => {
       turnId: "turn_new",
       status: { kind: "streaming", turnId: "turn_new" }
     });
+    expect(sent.value).not.toHaveProperty("compositePreviewResourceUri");
     expect(sends).toEqual([
       {
         threadId: "th_latest",
@@ -270,46 +274,36 @@ describe("LocalAgentToolService image edits", () => {
         anchorCaptureId: "cap_1"
       }
     ]);
-    const previewUri = (sent.value as any).compositePreviewResourceUri as string;
-    context("lag_test", ["capture.edit", "capture.composite.read"]);
-    await expect(resources.resolve(previewUri, {
-      clientId: "lag_test",
-      capabilities: ["capture.edit", "capture.composite.read"]
-    })).rejects.toThrow("edit is not complete");
-
     status = { kind: "idle" };
     const completed = await toolService.imageEditStatus(
       { captureId: "cap_1", threadId: "th_latest" },
       context()
     );
-    expect(completed).toEqual(
-      ok(expect.objectContaining({
-        threadId: "th_latest",
-        status: { kind: "idle" },
-        compositePreviewResourceUri: expect.stringContaining("/edit/")
-      }))
-    );
+    expect(completed).toEqual(ok({
+      threadId: "th_latest",
+      status: { kind: "idle" }
+    }));
     const completedMcp = toMcpToolResult(completed);
-    expect(completedMcp.content[1]).toMatchObject({
-      type: "resource_link",
-      uri: expect.stringMatching(/^http:\/\/127\.0\.0\.1:51729\/media\?/u),
-      mimeType: "image/png"
-    });
-    expect(
-      completedMcp.content.some((content) => content.type === "image")
-    ).toBe(false);
-    register("render:captureExport", async () =>
-      err({
-        kind: "validation",
-        code: "not_found",
-        message: "capture moved to Trash"
-      })
+    expect(completedMcp.content).toEqual([
+      {
+        type: "text",
+        text: "PwrSnap operation completed. See structuredContent for result fields."
+      }
+    ]);
+    expect(completedMcp.structuredContent).not.toHaveProperty("resourceUri");
+  });
+
+  test("reports a trashed capture before polling its edit thread", async () => {
+    register("library:byId", async () =>
+      ok({ id: "cap_trashed", kind: "image", deleted_at: "2026-08-02T12:00:00.000Z" })
     );
-    context("lag_test", ["capture.edit", "capture.composite.read"]);
-    await expect(resources.resolve(previewUri, {
-      clientId: "lag_test",
-      capabilities: ["capture.edit", "capture.composite.read"]
-    })).rejects.toThrow("capture moved to Trash");
+
+    const result = await service().imageEditStatus(
+      { captureId: "cap_trashed", threadId: "th_edit" },
+      context()
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "not_found" } });
   });
 
   test("rejects an explicit thread from another capture", async () => {
@@ -383,12 +377,22 @@ describe("LocalAgentToolService Sizzle workflows", () => {
     );
     register("sizzle:create", async (req) => {
       calls.push({ command: "create", req });
-      return ok({ id: "sz_1", name: req.name, scenes });
+      return ok({
+        id: "sz_1",
+        name: req.name,
+        scenes,
+        outputPath: "/Users/person/private/reel.mp4"
+      });
     });
     register("sizzle:toggleScene", async (req) => {
       calls.push({ command: "toggle", req });
       scenes = [...scenes, { captureId: req.captureId }];
-      return ok({ id: "sz_1", name: "Launch", scenes });
+      return ok({
+        id: "sz_1",
+        name: "Launch",
+        scenes,
+        outputPath: "/Users/person/private/reel.mp4"
+      });
     });
     register("codex:sizzleChat:create", async (req) => {
       calls.push({ command: "chat-create", req });
@@ -418,13 +422,17 @@ describe("LocalAgentToolService Sizzle workflows", () => {
     expect(result).toMatchObject({
       ok: true,
       value: {
-        project: {
-          scenes: [{ captureId: "cap_2" }, { captureId: "cap_1" }]
-        },
+        projectId: "sz_1",
+        name: "Launch",
+        sceneCount: 2,
         threadId: "th_sizzle",
         turnId: "turn_1"
       }
     });
+    if (result.ok) {
+      expect(result.value).not.toHaveProperty("project");
+      expect(JSON.stringify(result.value)).not.toContain("/Users/person");
+    }
     expect(calls.map((call) => call.command)).toEqual([
       "create",
       "toggle",

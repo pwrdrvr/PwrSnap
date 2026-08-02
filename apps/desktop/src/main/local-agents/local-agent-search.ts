@@ -6,6 +6,11 @@ import type {
   CaptureSearchTagFilter
 } from "@pwrsnap/shared";
 
+/** Keep external-agent list responses small enough to be useful in a tool
+ * transcript. The Library command itself keeps its broader internal limit. */
+export const LOCAL_AGENT_MCP_DEFAULT_LIMIT = 25;
+export const LOCAL_AGENT_MCP_MAX_LIMIT = 50;
+
 export type LocalAgentSearchInput = {
   query?: string | undefined;
   sourceAppNames?: string[] | undefined;
@@ -45,6 +50,24 @@ export type LocalAgentSearchEnrichedRow = LocalAgentSearchSummaryRow & {
 export type LocalAgentSearchRow =
   | LocalAgentSearchSummaryRow
   | LocalAgentSearchEnrichedRow;
+
+export function localAgentMcpResultLimit(
+  input: { limit?: number | undefined }
+): number {
+  return input.limit ?? LOCAL_AGENT_MCP_DEFAULT_LIMIT;
+}
+
+export function limitLocalAgentMcpList<T>(
+  items: readonly T[],
+  input: { limit?: number | undefined }
+): { items: T[]; limit: number; hasMore: boolean } {
+  const limit = localAgentMcpResultLimit(input);
+  return {
+    items: items.slice(0, limit),
+    limit,
+    hasMore: items.length > limit
+  };
+}
 
 export function toCaptureSearchRequest(input: LocalAgentSearchInput): CaptureSearchRequest {
   return {

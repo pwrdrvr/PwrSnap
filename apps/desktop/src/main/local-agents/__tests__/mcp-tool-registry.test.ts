@@ -31,8 +31,7 @@ function ctx(capabilities: readonly LocalAgentCapability[] = []): LocalAgentTool
 describe("createDefaultLocalAgentMcpTools", () => {
   test("keeps bearer URLs out of model-facing metadata while returning a typed resource link", () => {
     const result = toMcpToolResult(ok(withMcpResourceLink({
-      resourceUri: "pwrsnap://capture/cap_1/composite",
-      resourceLinkExpiresAt: "2026-08-02T15:05:17.697Z"
+      resourceUri: "pwrsnap://capture/cap_1/composite"
     }, {
       uri: "http://127.0.0.1:51729/media?grant=temporary",
       name: "composite capture",
@@ -41,8 +40,7 @@ describe("createDefaultLocalAgentMcpTools", () => {
     })));
 
     expect(result.structuredContent).toEqual({
-      resourceUri: "pwrsnap://capture/cap_1/composite",
-      resourceLinkExpiresAt: "2026-08-02T15:05:17.697Z"
+      resourceUri: "pwrsnap://capture/cap_1/composite"
     });
     expect(result.content).toEqual([
       {
@@ -182,6 +180,7 @@ describe("createDefaultLocalAgentMcpTools", () => {
       order: "oldest"
     });
     expect(parsed.success).toBe(true);
+    expect(z.object(search.inputSchema).safeParse({ limit: 51 }).success).toBe(false);
   });
 
   test("discovery is a read-only library.read tool with an intentionally small schema", () => {
@@ -196,6 +195,8 @@ describe("createDefaultLocalAgentMcpTools", () => {
     expect(discovery?.annotations).toMatchObject({ readOnlyHint: true });
     expect(Object.keys(discovery?.inputSchema ?? {})).toEqual(["limit"]);
     expect(discovery?.description).toContain("bundleId");
+    if (discovery === undefined) throw new Error("expected discovery tool");
+    expect(z.object(discovery.inputSchema).safeParse({ limit: 51 }).success).toBe(false);
   });
 
   test("full tool set exposes media, edit, and Sizzle workflows", () => {
@@ -255,8 +256,7 @@ describe("createDefaultLocalAgentMcpTools", () => {
     ).toBe(false);
     for (const name of ["pwrsnap_image_edit_send", "pwrsnap_image_edit_status"]) {
       expect(tools.find((tool) => tool.name === name)?.requiredCapabilities).toEqual([
-        "capture.edit",
-        "capture.composite.read"
+        "capture.edit"
       ]);
     }
   });

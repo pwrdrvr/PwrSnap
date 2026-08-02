@@ -3,12 +3,14 @@ import type { LocalAgentCapability, PwrSnapError } from "@pwrsnap/shared";
 import { err, ok, type Result } from "@pwrsnap/shared";
 import { z } from "zod";
 import type { CommandContext } from "../command-bus";
-import type { LocalAgentSearchInput } from "./local-agent-search";
+import {
+  LOCAL_AGENT_MCP_DEFAULT_LIMIT,
+  LOCAL_AGENT_MCP_MAX_LIMIT,
+  type LocalAgentSearchInput
+} from "./local-agent-search";
 
 const MEDIA_DELIVERY_GUIDANCE =
-  "Returns a typed MCP resource link to a five-minute signed localhost URL for direct binary fetch, plus a capability-protected MCP resource URI as a fallback. " +
-  "Pass the resource link content directly to the client's media fetch/render path; do not copy, reconstruct, print, or persist its URI. " +
-  "Use the fallback MCP resource URI only in clients that explicitly support MCP resource reads.";
+  "Returns an attached typed MCP resource link for media delivery. Pass it directly to the client's media handler; use resourceUri only in clients that explicitly support MCP resource reads.";
 
 const supplementalContent = Symbol("local-agent-mcp-supplemental-content");
 
@@ -252,7 +254,9 @@ export function createDefaultLocalAgentMcpTools(deps: {
     order: z.enum(["relevance", "newest", "oldest"])
       .describe("Result order. Defaults to relevance with query, newest without query. relevance requires query.")
       .optional(),
-    limit: z.number().int().min(1).max(500).describe("Maximum rows to return.").optional(),
+    limit: z.number().int().min(1).max(LOCAL_AGENT_MCP_MAX_LIMIT)
+      .describe(`Maximum rows to return. Defaults to ${LOCAL_AGENT_MCP_DEFAULT_LIMIT}.`)
+      .optional(),
     detail: z.enum(["summary", "enriched"])
       .describe("summary (default) omits generated text and match snippets; enriched includes title, description, tags, and matchSnippet.")
       .optional()
@@ -260,7 +264,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
   const searchTool: LocalAgentMcpTool<typeof searchInputSchema> = {
     name: "pwrsnap_library_search",
     title: "Search PwrSnap Library",
-    description: "Search live, non-trashed PwrSnap captures by text, human source application name, exact accepted tags, kind, date, and OCR presence. No-query searches default to newest first; query searches default to relevance. Results default to structural summary metadata; request enriched detail only when generated text and search snippets are needed.",
+    description: "Search live, non-trashed PwrSnap captures by text, human source application name, exact accepted tags, kind, date, and OCR presence. No-query searches default to newest first; query searches default to relevance. Results default to structural summary metadata; request enriched detail only when generated text and search snippets are needed. Results report whether narrower filters could return more matches.",
     inputSchema: searchInputSchema,
     requiredCapabilities: ["library.read"],
     annotations: {
@@ -274,10 +278,10 @@ export function createDefaultLocalAgentMcpTools(deps: {
   const discoveryTool: LocalAgentMcpTool<{ limit: z.ZodOptional<z.ZodNumber> }> = {
     name: "pwrsnap_library_discover",
     title: "Discover PwrSnap Library Filters",
-    description: "List live human source applications and accepted tags that can be reused in pwrsnap_library_search. Both lists exclude Trash and are ordered by capture count descending, then most recent capture. Application names are the reusable sourceAppNames values; bundleId is optional read-only metadata when known unambiguously.",
+    description: "List live human source applications and accepted tags that can be reused in pwrsnap_library_search. Both lists exclude Trash and are ordered by capture count descending, then most recent capture. Application names are the reusable sourceAppNames values; bundleId is optional read-only metadata when known unambiguously. Results report whether either list has more entries.",
     inputSchema: {
-      limit: z.number().int().min(1).max(500)
-        .describe("Maximum applications and tags to return per list. Defaults to 100.")
+      limit: z.number().int().min(1).max(LOCAL_AGENT_MCP_MAX_LIMIT)
+        .describe(`Maximum applications and tags to return per list. Defaults to ${LOCAL_AGENT_MCP_DEFAULT_LIMIT}.`)
         .optional()
     },
     requiredCapabilities: ["library.read"],
@@ -322,7 +326,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
     tools.push({
       name: "pwrsnap_capture_metadata",
       title: "Read PwrSnap Capture Metadata",
-      description: "Read compact metadata and available media resource classes for one live capture.",
+      description: "Read compact metadata for one live capture. Use pwrsnap_capture_resource when media bytes are needed.",
       inputSchema: { captureId: z.string().min(1) },
       requiredCapabilities: ["library.read"],
       annotations: {
@@ -399,7 +403,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
     tools.push({
       name: "pwrsnap_image_edit_send",
       title: "Edit PwrSnap Image",
-      description: "Send an edit instruction through a PwrSnap-owned capture chat thread and its configured model access.",
+      description: "Send an edit instruction through a PwrSnap-owned capture chat thread and its configured model access. Poll pwrsnap_image_edit_status; once idle, use pwrsnap_capture_resource to retrieve the current edited composite.",
       inputSchema: {
         captureId: z.string().min(1),
         instruction: z.string().trim().min(1).max(20_000),
@@ -408,7 +412,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
         threadId: z.string().min(1).optional(),
         reuse: z.enum(["latest-compatible", "new"]).optional()
       },
-      requiredCapabilities: ["capture.edit", "capture.composite.read"],
+      requiredCapabilities: ["capture.edit"],
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -423,13 +427,12 @@ export function createDefaultLocalAgentMcpTools(deps: {
       name: "pwrsnap_image_edit_status",
       title: "Check PwrSnap Image Edit",
       description:
-        "Check a capture-scoped edit thread and retrieve its protected composite once the turn is complete. " +
-        MEDIA_DELIVERY_GUIDANCE,
+        "Check a capture-scoped edit thread. Once it is idle, use pwrsnap_capture_resource to retrieve the current edited composite.",
       inputSchema: {
         captureId: z.string().min(1),
         threadId: z.string().min(1)
       },
-      requiredCapabilities: ["capture.edit", "capture.composite.read"],
+      requiredCapabilities: ["capture.edit"],
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -443,7 +446,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
     tools.push({
       name: "pwrsnap_sizzle_create",
       title: "Create PwrSnap Sizzle Reel",
-      description: "Create a Sizzle project from captures and optionally start its PwrSnap-owned composition chat.",
+      description: "Create a Sizzle project from captures and optionally start its PwrSnap-owned composition chat. Returns a compact project receipt for follow-up tools.",
       inputSchema: {
         name: z.string().trim().min(1).max(200),
         captureIds: z.array(z.string().min(1)).min(1).max(200),

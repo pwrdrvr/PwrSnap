@@ -20,6 +20,7 @@ import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
 const LIBRARY_WINDOW_SIZE = { width: 1280, height: 800 };
 const FIXTURE_WIDTH = 1600;
 const FIXTURE_HEIGHT = 1000;
+const VISUAL_CLOCK_TIME = "2026-08-01T12:00:00.000Z";
 
 const FIXTURE_CAPTURES = [
   {
@@ -49,8 +50,8 @@ type VisualCapture = (typeof FIXTURE_CAPTURES)[number] & {
 /**
  * Make stable, real image sources inside the fixture HOME (so `close()`
  * cleans them up), then use the normal E2E bridge to seed Library records.
- * Fixed ids, timestamps, app names, dimensions, and pixels keep both the
- * rendered card data and its thumbnail deterministic.
+ * Fixed ids, timestamps, app names, dimensions, pixels, and renderer clock
+ * keep both the rendered card data and its thumbnail deterministic.
  */
 async function seedVisualCaptures(app: LaunchedApp): Promise<VisualCapture[]> {
   const fixtureDir = path.join(app.homeRoot, "visual-regression-fixtures");
@@ -151,6 +152,19 @@ async function waitForFonts(page: Page): Promise<void> {
   });
 }
 
+async function launchVisualPwrSnap(): Promise<LaunchedApp> {
+  const app = await launchPwrSnap({
+    env: { TZ: "UTC" },
+    windowSize: LIBRARY_WINDOW_SIZE
+  });
+  // Library date buckets omit the year for captures in `new Date()`'s
+  // calendar year. Freeze that value after the renderer has loaded but
+  // before seeded records are converted into Library fixtures. Playwright's
+  // setFixedTime intentionally leaves rendering timers running.
+  await app.window.clock.setFixedTime(VISUAL_CLOCK_TIME);
+  return app;
+}
+
 test.describe("visual regression", () => {
   // Screenshot baselines depend on the rendering platform. The project has
   // Linux + Windows E2E jobs, but this focused suite uses the Linux/x64 job
@@ -164,10 +178,7 @@ test.describe("visual regression", () => {
   test.setTimeout(120_000);
 
   test("library grid renders seeded captures", async () => {
-    const app = await launchPwrSnap({
-      env: { TZ: "UTC" },
-      windowSize: LIBRARY_WINDOW_SIZE
-    });
+    const app = await launchVisualPwrSnap();
     try {
       await seedVisualCaptures(app);
       const library = app.window.locator(".psl");
@@ -187,10 +198,7 @@ test.describe("visual regression", () => {
   });
 
   test("editor focus renders the source canvas and chrome", async () => {
-    const app = await launchPwrSnap({
-      env: { TZ: "UTC" },
-      windowSize: LIBRARY_WINDOW_SIZE
-    });
+    const app = await launchVisualPwrSnap();
     try {
       const [firstCapture] = await seedVisualCaptures(app);
       const result = await app.dispatch("editor:open", { captureId: firstCapture.id });

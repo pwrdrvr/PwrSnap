@@ -167,6 +167,15 @@ describe("createDefaultLocalAgentMcpTools", () => {
     })).toEqual(["capture.original.read"]);
     const captureExport = tools.find((tool) => tool.name === "pwrsnap_capture_export");
     expect(captureExport?.requiredCapabilities).toEqual(["capture.export"]);
+    expect(Object.keys(captureExport?.inputSchema ?? {})).toEqual([
+      "captureId",
+      "variant",
+      "preset",
+      "format"
+    ]);
+    const exportFormatSchema = captureExport?.inputSchema.format;
+    expect(exportFormatSchema?.safeParse("png").success).toBe(true);
+    expect(exportFormatSchema?.safeParse("webp").success).toBe(false);
     for (const name of ["pwrsnap_image_edit_send", "pwrsnap_image_edit_status"]) {
       expect(tools.find((tool) => tool.name === name)?.requiredCapabilities).toEqual([
         "capture.edit",

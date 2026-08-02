@@ -17,8 +17,10 @@ import type {
   CaptureExportFormat,
   CaptureExportRequest,
   CaptureExportResult,
-  CaptureExportVariant
+  CaptureExportVariant,
+  ExportStrategy
 } from "@pwrsnap/shared";
+import { resolveExportRung } from "@pwrsnap/shared";
 import sharp from "sharp";
 import { getCaptureById } from "../persistence/captures-repo";
 import { getCacheRoot } from "../persistence/paths";
@@ -47,7 +49,8 @@ export class CaptureExportError extends Error {
 }
 
 export async function exportCapture(
-  request: CaptureExportRequest
+  request: CaptureExportRequest,
+  exportStrategy: ExportStrategy = "legacy"
 ): Promise<CaptureExportResult> {
   const record = getCaptureById(request.captureId);
   if (record === null || record.deleted_at !== null) {
@@ -59,7 +62,8 @@ export async function exportCapture(
   const variant = request.variant ?? "composite";
   const format = request.format ?? "png";
   const quality = normalizeQuality(request.quality);
-  const scale = normalizeScale(request.scale);
+  const presetWidth = resolvePresetWidth(request, record, exportStrategy);
+  const scale = normalizeScale(request.preset === undefined ? request.scale : undefined);
   if (format === "heic" && process.platform !== "darwin") {
     throw new CaptureExportError(
       "unsupported_format",
@@ -70,7 +74,11 @@ export async function exportCapture(
     width: record.width_px,
     height: record.height_px,
     scale,
-    ...(request.maxWidth !== undefined ? { maxWidth: request.maxWidth } : {}),
+    ...(presetWidth !== undefined
+      ? { maxWidth: presetWidth }
+      : request.maxWidth !== undefined
+        ? { maxWidth: request.maxWidth }
+        : {}),
     ...(request.maxHeight !== undefined ? { maxHeight: request.maxHeight } : {})
   });
   const normalized = {
@@ -98,6 +106,7 @@ export async function exportCapture(
         captureId: record.id,
         variant,
         format,
+        ...(request.preset !== undefined ? { preset: request.preset } : {}),
         path: outputPath,
         mimeType: mimeTypeFor(format),
         widthPx: dimensions.width,
@@ -142,6 +151,7 @@ export async function exportCapture(
       captureId: record.id,
       variant,
       format,
+      ...(request.preset !== undefined ? { preset: request.preset } : {}),
       path: outputPath,
       mimeType: mimeTypeFor(format),
       widthPx: dimensions.width,
@@ -157,6 +167,37 @@ export async function exportCapture(
       cause instanceof Error ? cause.message : String(cause)
     );
   }
+}
+
+function resolvePresetWidth(
+  request: CaptureExportRequest,
+  record: {
+    width_px: number;
+    height_px: number;
+    device_pixel_ratio: number;
+  },
+  strategy: ExportStrategy
+): number | undefined {
+  if (request.preset === undefined) return undefined;
+  if (
+    request.maxWidth !== undefined ||
+    request.maxHeight !== undefined ||
+    request.scale !== undefined
+  ) {
+    throw new CaptureExportError(
+      "invalid_dimensions",
+      "preset cannot be combined with maxWidth, maxHeight, or scale"
+    );
+  }
+  return resolveExportRung(
+    {
+      widthPx: record.width_px,
+      heightPx: record.height_px,
+      devicePixelRatio: record.device_pixel_ratio
+    },
+    strategy,
+    request.preset
+  )?.widthPx;
 }
 
 async function encodeImage(args: {

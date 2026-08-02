@@ -430,6 +430,7 @@ export type CaptureExportRequest = {
   captureId: string;
   variant?: CaptureExportVariant;
   format?: CaptureExportFormat;
+  preset?: RenderPreset;
   maxWidth?: number;
   maxHeight?: number;
   scale?: number;
@@ -441,6 +442,7 @@ export type CaptureExportResult = {
   captureId: string;
   variant: CaptureExportVariant;
   format: CaptureExportFormat;
+  preset?: RenderPreset;
   path: string;
   mimeType: string;
   widthPx: number;

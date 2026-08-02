@@ -153,6 +153,50 @@ describe("LocalAgentToolService media delivery", () => {
     });
     expect(mcpResult.content.some((content) => content.type === "image")).toBe(false);
   });
+
+  test("exports only through named PwrSnap sizes with owned defaults", async () => {
+    const requests: unknown[] = [];
+    register("render:captureExport", async (request) => {
+      requests.push(request);
+      return ok({
+        captureId: "cap_1",
+        variant: "composite",
+        format: "png",
+        preset: "med",
+        path: "/tmp/capture-med.png",
+        mimeType: "image/png",
+        widthPx: 1_440,
+        heightPx: 960,
+        byteSize: 10,
+        fromCache: false,
+        exportId: "med"
+      });
+    });
+
+    const result = await service().captureExport(
+      { captureId: "cap_1" },
+      context("lag_export", ["capture.export", "capture.composite.read"])
+    );
+
+    expect(requests).toEqual([
+      {
+        captureId: "cap_1",
+        variant: "composite",
+        format: "png",
+        preset: "med"
+      }
+    ]);
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        variant: "composite",
+        format: "png",
+        preset: "med",
+        widthPx: 1_440,
+        heightPx: 960
+      }
+    });
+  });
 });
 
 describe("LocalAgentToolService image edits", () => {

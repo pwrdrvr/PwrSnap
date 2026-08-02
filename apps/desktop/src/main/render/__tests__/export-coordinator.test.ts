@@ -56,6 +56,7 @@ beforeEach(async () => {
     deleted_at: null,
     width_px: 100,
     height_px: 50,
+    device_pixel_ratio: 2,
     sha256: "source-hash",
     edits_version: 3
   });
@@ -154,6 +155,30 @@ describe("exportCapture", () => {
       exportCapture({ captureId: "cap_1", scale: 5 })
     ).rejects.toMatchObject({ code: "invalid_scale" });
     expect(mocks.ensureEffectiveSrcPath).not.toHaveBeenCalled();
+  });
+
+  test("resolves named presets through the selected DPI-aware ladder", async () => {
+    const exported = await exportCapture(
+      {
+        captureId: "cap_1",
+        variant: "original",
+        format: "png",
+        preset: "med"
+      },
+      "scaleLogical"
+    );
+
+    expect(exported).toMatchObject({
+      preset: "med",
+      widthPx: 25,
+      heightPx: 13
+    });
+  });
+
+  test("does not allow named presets to be overridden by raw sizing", async () => {
+    await expect(
+      exportCapture({ captureId: "cap_1", preset: "high", maxWidth: 10 })
+    ).rejects.toMatchObject({ code: "invalid_dimensions" });
   });
 
   test.runIf(process.platform === "darwin")(

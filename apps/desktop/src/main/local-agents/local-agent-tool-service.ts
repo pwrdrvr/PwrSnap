@@ -1,7 +1,6 @@
 import {
   err,
   ok,
-  type CaptureExportFormat,
   type CaptureExportRequest,
   type CaptureExportVariant,
   type LocalAgentCapability,
@@ -18,6 +17,7 @@ import {
 import { projectLocalAgentCapture } from "./local-agent-search";
 import { LocalAgentSignedUrlService } from "./signed-url";
 import {
+  type LocalAgentCaptureExportInput,
   type LocalAgentToolContext,
   withMcpResourceLink
 } from "./mcp-tool-registry";
@@ -131,27 +131,15 @@ export class LocalAgentToolService {
   }
 
   async captureExport(
-    input: {
-      captureId: string;
-      variant?: CaptureExportVariant | undefined;
-      format?: CaptureExportFormat | undefined;
-      maxWidth?: number | undefined;
-      maxHeight?: number | undefined;
-      scale?: number | undefined;
-      quality?: number | undefined;
-      background?: string | undefined;
-    },
+    input: LocalAgentCaptureExportInput,
     ctx: LocalAgentToolContext
   ): Promise<Result<unknown, PwrSnapError>> {
+    const preset = input.preset ?? "med";
     const request: CaptureExportRequest = {
       captureId: input.captureId,
-      ...(input.variant !== undefined ? { variant: input.variant } : {}),
-      ...(input.format !== undefined ? { format: input.format } : {}),
-      ...(input.maxWidth !== undefined ? { maxWidth: input.maxWidth } : {}),
-      ...(input.maxHeight !== undefined ? { maxHeight: input.maxHeight } : {}),
-      ...(input.scale !== undefined ? { scale: input.scale } : {}),
-      ...(input.quality !== undefined ? { quality: input.quality } : {}),
-      ...(input.background !== undefined ? { background: input.background } : {})
+      variant: input.variant ?? "composite",
+      format: input.format ?? "png",
+      preset
     };
     const exportedResult = await bus.dispatch(
       "render:captureExport",
@@ -194,6 +182,7 @@ export class LocalAgentToolService {
             ...signed,
             variant: exported.variant,
             format: exported.format,
+            preset: exported.preset ?? preset,
             mimeType: exported.mimeType,
             widthPx: exported.widthPx,
             heightPx: exported.heightPx,

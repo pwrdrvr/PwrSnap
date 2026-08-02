@@ -4,7 +4,9 @@ import { describe, expect, test } from "vitest";
 import type { CommandContext } from "../../command-bus";
 import {
   createDefaultLocalAgentMcpTools,
-  type LocalAgentToolContext
+  type LocalAgentToolContext,
+  toMcpToolResult,
+  withMcpSupplementalContent
 } from "../mcp-tool-registry";
 
 function ctx(capabilities: readonly LocalAgentCapability[] = []): LocalAgentToolContext {
@@ -26,6 +28,43 @@ function ctx(capabilities: readonly LocalAgentCapability[] = []): LocalAgentTool
 }
 
 describe("createDefaultLocalAgentMcpTools", () => {
+  test("preserves structured metadata while returning renderable image content", () => {
+    const result = toMcpToolResult(ok(withMcpSupplementalContent({
+      resourceUri: "pwrsnap://capture/cap_1/composite",
+      inlinePreview: {
+        mimeType: "image/jpeg",
+        widthPx: 640,
+        heightPx: 427,
+        byteSize: 3
+      }
+    }, [{
+      type: "image",
+      data: "AQID",
+      mimeType: "image/jpeg"
+    }])));
+
+    expect(result.structuredContent).toEqual({
+      resourceUri: "pwrsnap://capture/cap_1/composite",
+      inlinePreview: {
+        mimeType: "image/jpeg",
+        widthPx: 640,
+        heightPx: 427,
+        byteSize: 3
+      }
+    });
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: JSON.stringify(result.structuredContent)
+      },
+      {
+        type: "image",
+        data: "AQID",
+        mimeType: "image/jpeg"
+      }
+    ]);
+  });
+
   test("search and delete tools dispatch through distinct command paths", async () => {
     const calls: Array<{ name: string; input: unknown }> = [];
     const tools = createDefaultLocalAgentMcpTools({

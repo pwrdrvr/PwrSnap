@@ -9,6 +9,7 @@ import {
   type Result
 } from "@pwrsnap/shared";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { bus } from "../command-bus";
 import {
   LocalAgentMcpResourceRegistry,
@@ -17,7 +18,13 @@ import {
 } from "./mcp-resource-registry";
 import { projectLocalAgentCapture } from "./local-agent-search";
 import { LocalAgentSignedUrlService } from "./signed-url";
-import type { LocalAgentToolContext } from "./mcp-tool-registry";
+import {
+  type LocalAgentToolContext,
+  withMcpSupplementalContent
+} from "./mcp-tool-registry";
+
+const INLINE_PREVIEW_MAX_EDGE_PX = 1_024;
+const INLINE_PREVIEW_QUALITY = 72;
 
 export class LocalAgentToolService {
   constructor(
@@ -82,6 +89,14 @@ export class LocalAgentToolService {
     if (!exportedResult.ok) return exportedResult;
     const exported = exportedResult.value;
     try {
+      const preview = await this.renderInlinePreview(
+        input.captureId,
+        variant,
+        exported.widthPx,
+        exported.heightPx,
+        ctx
+      );
+      if (!preview.ok) return preview;
       const resource = this.registerExportedResource({
         uri: `pwrsnap://capture/${encodeURIComponent(input.captureId)}/${variant}`,
         name: `${variant} capture`,
@@ -102,15 +117,16 @@ export class LocalAgentToolService {
           toolContextForRead(readContext)
         )
       });
-      return ok({
+      return ok(withMcpSupplementalContent({
         variant,
         resourceUri: resource.uri,
         ...this.signedDescriptor(resource, ctx.clientId),
         mimeType: exported.mimeType,
         widthPx: exported.widthPx,
         heightPx: exported.heightPx,
-        byteSize: exported.byteSize
-      });
+        byteSize: exported.byteSize,
+        inlinePreview: preview.value.descriptor
+      }, [preview.value.content]));
     } catch (cause) {
       return unexpectedError("capture_resource_failed", cause);
     }
@@ -147,6 +163,15 @@ export class LocalAgentToolService {
     if (!exportedResult.ok) return exportedResult;
     const exported = exportedResult.value;
     try {
+      const preview = await this.renderInlinePreview(
+        input.captureId,
+        exported.variant,
+        exported.widthPx,
+        exported.heightPx,
+        ctx,
+        input.background
+      );
+      if (!preview.ok) return preview;
       const clientExportId = clientScopedId(exported.exportId, ctx.clientId);
       const resource = this.registerExportedResource({
         uri:
@@ -172,7 +197,7 @@ export class LocalAgentToolService {
         refresh: (readContext) =>
           this.refreshExport(request, toolContextForRead(readContext))
       });
-      return ok({
+      return ok(withMcpSupplementalContent({
         resourceUri: resource.uri,
         ...this.signedDescriptor(resource, ctx.clientId),
         variant: exported.variant,
@@ -181,10 +206,65 @@ export class LocalAgentToolService {
         widthPx: exported.widthPx,
         heightPx: exported.heightPx,
         byteSize: exported.byteSize,
-        fromCache: exported.fromCache
-      });
+        fromCache: exported.fromCache,
+        inlinePreview: preview.value.descriptor
+      }, [preview.value.content]));
     } catch (cause) {
       return unexpectedError("capture_export_failed", cause);
+    }
+  }
+
+  private async renderInlinePreview(
+    captureId: string,
+    variant: CaptureExportVariant,
+    widthPx: number,
+    heightPx: number,
+    ctx: LocalAgentToolContext,
+    background?: string
+  ): Promise<Result<{
+    descriptor: {
+      mimeType: "image/jpeg";
+      widthPx: number;
+      heightPx: number;
+      byteSize: number;
+    };
+    content: {
+      type: "image";
+      data: string;
+      mimeType: "image/jpeg";
+    };
+  }, PwrSnapError>> {
+    const previewResult = await bus.dispatch(
+      "render:captureExport",
+      {
+        captureId,
+        variant,
+        format: "jpeg",
+        maxWidth: Math.min(widthPx, INLINE_PREVIEW_MAX_EDGE_PX),
+        maxHeight: Math.min(heightPx, INLINE_PREVIEW_MAX_EDGE_PX),
+        quality: INLINE_PREVIEW_QUALITY,
+        ...(background !== undefined ? { background } : {})
+      },
+      ctx.commandContext
+    );
+    if (!previewResult.ok) return previewResult;
+    try {
+      const bytes = await readFile(previewResult.value.path);
+      return ok({
+        descriptor: {
+          mimeType: "image/jpeg",
+          widthPx: previewResult.value.widthPx,
+          heightPx: previewResult.value.heightPx,
+          byteSize: bytes.byteLength
+        },
+        content: {
+          type: "image",
+          data: bytes.toString("base64"),
+          mimeType: "image/jpeg"
+        }
+      });
+    } catch (cause) {
+      return unexpectedError("inline_preview_failed", cause);
     }
   }
 

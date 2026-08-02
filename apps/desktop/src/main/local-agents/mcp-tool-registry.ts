@@ -5,10 +5,21 @@ import { z } from "zod";
 import type { CommandContext } from "../command-bus";
 import type { LocalAgentSearchInput } from "./local-agent-search";
 
-const MEDIA_DELIVERY_GUIDANCE =
+const IMAGE_PREVIEW_DELIVERY_GUIDANCE =
+  "Returns a directly renderable, bounded image preview in the tool content plus an MCP resource URI and a five-minute signed localhost URL for the exact bytes. " +
+  "Do not call MCP resources/read just to display the preview. Use the resource URI or signed URL only when the exact binary is required. " +
+  "Treat the signed URL as a temporary bearer secret and do not log or share it.";
+
+const RESOURCE_DELIVERY_GUIDANCE =
   "Returns an MCP resource URI and a five-minute signed localhost URL. " +
   "Prefer the signed URL for binary media consumers; use the resource URI with MCP resources/read. " +
   "Treat the signed URL as a temporary bearer secret and do not log or share it.";
+
+const supplementalContent = Symbol("local-agent-mcp-supplemental-content");
+
+type ToolValueWithSupplementalContent = {
+  [supplementalContent]?: CallToolResult["content"];
+};
 
 export type LocalAgentToolContext = {
   clientId: string;
@@ -63,18 +74,38 @@ export function toMcpToolResult(result: Result<unknown, PwrSnapError>): CallTool
       ]
     };
   }
+  const supplemental = supplementalContentFor(result.value);
   return {
     content: [
       {
         type: "text",
         text: JSON.stringify(result.value)
-      }
+      },
+      ...supplemental
     ],
     structuredContent:
       result.value !== null && typeof result.value === "object"
         ? (result.value as Record<string, unknown>)
         : { value: result.value }
   };
+}
+
+export function withMcpSupplementalContent<T extends Record<string, unknown>>(
+  value: T,
+  content: CallToolResult["content"]
+): T {
+  Object.defineProperty(value, supplementalContent, {
+    configurable: false,
+    enumerable: false,
+    value: content,
+    writable: false
+  });
+  return value;
+}
+
+function supplementalContentFor(value: unknown): CallToolResult["content"] {
+  if (value === null || typeof value !== "object") return [];
+  return (value as ToolValueWithSupplementalContent)[supplementalContent] ?? [];
 }
 
 export function capabilityDenied(
@@ -235,7 +266,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
       title: "Get PwrSnap Capture Resource",
       description:
         "Prepare the content-bearing current edited composite by default, or the original when separately granted. " +
-        MEDIA_DELIVERY_GUIDANCE,
+        IMAGE_PREVIEW_DELIVERY_GUIDANCE,
       inputSchema: {
         captureId: z.string().min(1),
         variant: z.enum(["composite", "original"]).optional()
@@ -261,7 +292,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
       title: "Export PwrSnap Capture",
       description:
         "Resize or convert a permitted edited composite or original image to PNG, JPEG, WebP, PDF, or HEIC. " +
-        MEDIA_DELIVERY_GUIDANCE,
+        IMAGE_PREVIEW_DELIVERY_GUIDANCE,
       inputSchema: {
         captureId: z.string().min(1),
         variant: z.enum(["composite", "original"]).optional(),
@@ -316,7 +347,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
       title: "Check PwrSnap Image Edit",
       description:
         "Check a capture-scoped edit thread and retrieve its protected composite once the turn is complete. " +
-        MEDIA_DELIVERY_GUIDANCE,
+        RESOURCE_DELIVERY_GUIDANCE,
       inputSchema: {
         captureId: z.string().min(1),
         threadId: z.string().min(1)
@@ -398,7 +429,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
       title: "Render PwrSnap Sizzle Preview",
       description:
         "Render a low-resolution Sizzle preview and return protected media. " +
-        MEDIA_DELIVERY_GUIDANCE,
+        RESOURCE_DELIVERY_GUIDANCE,
       inputSchema: { projectId: z.string().min(1) },
       requiredCapabilities: ["sizzle.preview.read"],
       annotations: {
@@ -416,7 +447,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
       title: "Render Full PwrSnap Sizzle Reel",
       description:
         "Render a full-resolution Sizzle reel and return protected media. " +
-        MEDIA_DELIVERY_GUIDANCE,
+        RESOURCE_DELIVERY_GUIDANCE,
       inputSchema: { projectId: z.string().min(1) },
       requiredCapabilities: ["sizzle.full.read"],
       annotations: {

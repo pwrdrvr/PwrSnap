@@ -1,13 +1,20 @@
 import { err, ok, type CommandName, type LocalAgentCapability } from "@pwrsnap/shared";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { bus, type CommandContext } from "../../command-bus";
 import { LocalAgentToolService } from "../local-agent-tool-service";
 import { LocalAgentMcpResourceRegistry } from "../mcp-resource-registry";
 import { LocalAgentSignedUrlService } from "../signed-url";
-import type { LocalAgentToolContext } from "../mcp-tool-registry";
+import {
+  type LocalAgentToolContext,
+  toMcpToolResult
+} from "../mcp-tool-registry";
 
 const registered: CommandName[] = [];
 const grantCapabilities = new Map<string, readonly LocalAgentCapability[]>();
+const temporaryDirectories: string[] = [];
 
 beforeEach(() => {
   bus.installLocalAgentAuthorizer(async (clientId) => {
@@ -20,6 +27,9 @@ afterEach(() => {
   for (const command of registered.splice(0)) bus.unregister(command);
   grantCapabilities.clear();
   bus.uninstallLocalAgentAuthorizerForTests();
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { force: true, recursive: true });
+  }
 });
 
 function register(command: CommandName, handler: (req: any) => Promise<any>): void {
@@ -91,6 +101,73 @@ describe("LocalAgentToolService metadata", () => {
     expect(result).toMatchObject({
       ok: true,
       value: { availableResources: [] }
+    });
+  });
+});
+
+describe("LocalAgentToolService media delivery", () => {
+  test("embeds a bounded JPEG preview with the exact composite resource", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pwrsnap-inline-preview-"));
+    temporaryDirectories.push(directory);
+    const fullPath = join(directory, "capture.png");
+    const previewPath = join(directory, "preview.jpg");
+    writeFileSync(fullPath, Buffer.from("full image"));
+    writeFileSync(previewPath, Buffer.from([1, 2, 3]));
+    const requests: unknown[] = [];
+    register("render:captureExport", async (request) => {
+      requests.push(request);
+      const isPreview = request.format === "jpeg";
+      return ok({
+        captureId: "cap_1",
+        variant: "composite",
+        format: isPreview ? "jpeg" : "png",
+        path: isPreview ? previewPath : fullPath,
+        mimeType: isPreview ? "image/jpeg" : "image/png",
+        widthPx: isPreview ? 1_024 : 2_880,
+        heightPx: isPreview ? 683 : 1_920,
+        byteSize: isPreview ? 3 : 10,
+        fromCache: false,
+        exportId: isPreview ? "preview" : "full"
+      });
+    });
+
+    const result = await service().captureResource(
+      { captureId: "cap_1" },
+      context("lag_preview", ["capture.composite.read"])
+    );
+    const mcpResult = toMcpToolResult(result);
+
+    expect(requests).toEqual([
+      {
+        captureId: "cap_1",
+        variant: "composite",
+        format: "png"
+      },
+      {
+        captureId: "cap_1",
+        variant: "composite",
+        format: "jpeg",
+        maxWidth: 1_024,
+        maxHeight: 1_024,
+        quality: 72
+      }
+    ]);
+    expect(mcpResult.structuredContent).toMatchObject({
+      resourceUri: "pwrsnap://capture/cap_1/composite",
+      mimeType: "image/png",
+      widthPx: 2_880,
+      heightPx: 1_920,
+      inlinePreview: {
+        mimeType: "image/jpeg",
+        widthPx: 1_024,
+        heightPx: 683,
+        byteSize: 3
+      }
+    });
+    expect(mcpResult.content[1]).toEqual({
+      type: "image",
+      data: "AQID",
+      mimeType: "image/jpeg"
     });
   });
 });

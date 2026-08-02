@@ -42,7 +42,10 @@ import type {
   LocalAgentConsentDecision,
   LocalAgentConsentRequest
 } from "../local-agent-consent-broker";
-import type { LocalAgentMcpTool } from "../mcp-tool-registry";
+import {
+  type LocalAgentMcpTool,
+  withMcpSupplementalContent
+} from "../mcp-tool-registry";
 
 let workDir = "";
 let settings: DesktopSettingsService;
@@ -377,6 +380,63 @@ describe("LocalAgentMcpServer", () => {
     ]));
   });
 
+  test("returns image previews as first-class MCP tool content", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["capture.composite.read"]
+    });
+    const mediaTool: LocalAgentMcpTool<{ captureId: z.ZodString }> = {
+      name: "pwrsnap_capture_resource",
+      title: "Get PwrSnap Capture Resource",
+      description: "Return a renderable capture preview.",
+      inputSchema: { captureId: z.string() },
+      requiredCapabilities: ["capture.composite.read"],
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
+      dispatch: async (input) => ok(withMcpSupplementalContent({
+        resourceUri: `pwrsnap://capture/${input.captureId}/composite`,
+        inlinePreview: {
+          mimeType: "image/jpeg",
+          widthPx: 1,
+          heightPx: 1,
+          byteSize: 3
+        }
+      }, [{
+        type: "image",
+        data: "AQID",
+        mimeType: "image/jpeg"
+      }]))
+    };
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: [mediaTool],
+      host: "127.0.0.1",
+      port: 0
+    });
+    const address = await server.start();
+    const connected = await connect(address.url, "pws_local_mcp-token");
+
+    const result = await connected.callTool({
+      name: mediaTool.name,
+      arguments: { captureId: "cap_1" }
+    }) as CallToolResult;
+
+    expect(result.structuredContent).toMatchObject({
+      resourceUri: "pwrsnap://capture/cap_1/composite"
+    });
+    expect(result.content[1]).toEqual({
+      type: "image",
+      data: "AQID",
+      mimeType: "image/jpeg"
+    });
+  });
+
   test("authorized client with library.read can search but cannot delete without trash.write", async () => {
     await grantService.createGrant({
       name: "PwrAgent",
@@ -484,6 +544,58 @@ describe("LocalAgentMcpServer", () => {
       { action: "capture.original.read", outcome: "success", subjectId: "cap_1" },
       { action: "capture.export", outcome: "failure", subjectId: "missing" },
       { action: "capture.original.read", outcome: "failure", subjectId: "missing" }
+    ]);
+  });
+
+  test("audits original previews returned directly by the capture resource tool", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["capture.original.read"]
+    });
+    const originalTool: LocalAgentMcpTool<{
+      captureId: z.ZodString;
+      variant: z.ZodLiteral<"original">;
+    }> = {
+      name: "pwrsnap_capture_resource",
+      title: "Get original capture",
+      description: "Return an original preview.",
+      inputSchema: {
+        captureId: z.string(),
+        variant: z.literal("original")
+      },
+      requiredCapabilities: ["capture.original.read"],
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
+      dispatch: async (input) => ok({ captureId: input.captureId })
+    };
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: [originalTool],
+      host: "127.0.0.1",
+      port: 0
+    });
+    const address = await server.start();
+    const connected = await connect(address.url, "pws_local_mcp-token");
+
+    await connected.callTool({
+      name: originalTool.name,
+      arguments: { captureId: "cap_original", variant: "original" }
+    });
+
+    expect((await settings.read()).localAgents.audit).toEqual([
+      expect.objectContaining({
+        action: "capture.original.read",
+        capability: "capture.original.read",
+        subjectKind: "capture",
+        subjectId: "cap_original",
+        outcome: "success"
+      })
     ]);
   });
 

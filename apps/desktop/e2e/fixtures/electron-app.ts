@@ -120,30 +120,76 @@ async function withTimeout<T>(
 }
 
 /**
- * Forcefully terminate the Electron process — and on Windows its whole
- * child-process tree. `child.kill("SIGKILL")` maps to `TerminateProcess`
- * on the top PID only, so Electron's renderer / GPU / utility / crashpad
- * children survive as orphans. Across a single Playwright worker's 50+
- * sequential launch→close cycles those zombies pile up and starve the
- * runner — which is the most plausible reason the ~52nd window creation
- * wedges in the first place (a fresh worker, post-restart, opens the same
- * window in ~1.5s). `taskkill /T` tears down the entire tree. Best-effort
- * and idempotent: if the process is already gone taskkill exits non-zero,
- * which we ignore (falling back to a harmless no-op `kill`).
+ * Forcefully terminate the Electron process AND its whole child-process
+ * tree, on every platform. Killing only the top PID orphans Electron's
+ * renderer / GPU / utility / crashpad children: on Windows
+ * `child.kill("SIGKILL")` maps to `TerminateProcess` on the top PID, and
+ * on macOS/Linux SIGKILL is likewise delivered to one process, so the
+ * helpers reparent to launchd/init and linger in the GUI session. Across
+ * hundreds of sequential launch→close cycles (a persistent VM runner
+ * serves many full-suite jobs) those orphans pile up and degrade the
+ * session until every subsequent teardown times out — see the +6s/spec
+ * pathology in docs/solutions/. `taskkill /T` (Windows) and an explicit
+ * descendant walk + SIGKILL (POSIX) tear down the entire tree.
+ * Best-effort and idempotent: already-gone processes are ignored.
  */
 async function killProcessTree(child: ElectronChildProcess): Promise<void> {
   const pid = child.pid;
-  if (pid === undefined || process.platform !== "win32") {
+  if (pid === undefined) {
     if (!child.killed) child.kill("SIGKILL");
     return;
   }
-  await new Promise<void>((resolve) => {
-    execFile("taskkill", ["/pid", String(pid), "/T", "/F"], { timeout: 5_000 }, (error) => {
-      // Non-zero exit usually just means "already exited" — nothing to do.
-      if (error && !child.killed) child.kill("SIGKILL");
-      resolve();
+  if (process.platform === "win32") {
+    await new Promise<void>((resolve) => {
+      execFile("taskkill", ["/pid", String(pid), "/T", "/F"], { timeout: 5_000 }, (error) => {
+        // Non-zero exit usually just means "already exited" — nothing to do.
+        if (error && !child.killed) child.kill("SIGKILL");
+        resolve();
+      });
+    });
+    return;
+  }
+  // POSIX: snapshot the descendant tree BEFORE killing the root — once the
+  // root dies its children reparent and the ancestry link is gone.
+  const descendants = await listDescendantPids(pid);
+  if (!child.killed) child.kill("SIGKILL");
+  for (const descendant of descendants) {
+    try {
+      process.kill(descendant, "SIGKILL");
+    } catch {
+      // ESRCH — already exited between the snapshot and now.
+    }
+  }
+}
+
+/** All transitive child PIDs of `rootPid`, via one `ps` snapshot. */
+async function listDescendantPids(rootPid: number): Promise<number[]> {
+  const stdout = await new Promise<string>((resolve) => {
+    execFile("ps", ["-axo", "pid=,ppid="], { timeout: 5_000 }, (_error, out) => {
+      resolve(out ?? "");
     });
   });
+  const childrenOf = new Map<number, number[]>();
+  for (const line of stdout.split("\n")) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)$/);
+    if (match === null) continue;
+    const childPid = Number(match[1]);
+    const parentPid = Number(match[2]);
+    const bucket = childrenOf.get(parentPid);
+    if (bucket === undefined) childrenOf.set(parentPid, [childPid]);
+    else bucket.push(childPid);
+  }
+  const result: number[] = [];
+  const queue = [rootPid];
+  while (queue.length > 0) {
+    const next = queue.shift();
+    if (next === undefined) break;
+    for (const childPid of childrenOf.get(next) ?? []) {
+      result.push(childPid);
+      queue.push(childPid);
+    }
+  }
+  return result;
 }
 
 async function waitForClose(promise: Promise<void>, timeoutMs: number): Promise<CloseResult> {
@@ -212,6 +258,14 @@ async function closeElectronApp(app: ElectronApplication): Promise<void> {
   const result = await waitForClose(closePromise, ELECTRON_CLOSE_TIMEOUT_MS);
   if (result === "closed" && (await waitForProcessExit(child, 1_000))) return;
 
+  // Every trip through here costs this spec ~6s and, before the tree-kill
+  // below existed, leaked the app's helper processes into the session. If
+  // these lines show up on most specs of a run, the guest is degraded —
+  // reboot it (see the VM-lab troubleshooting doc).
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[e2e-teardown] graceful close failed (close=${result}, exited=${hasExited(child)}) — force-killing pid=${child.pid ?? "?"}`
+  );
   if (!hasExited(child)) {
     await killProcessTree(child);
   }

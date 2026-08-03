@@ -95,6 +95,16 @@ describe("loginShellPath", () => {
     expect(resolved).toBe("C:\\Windows;C:\\Windows\\System32");
   });
 
+  it("is a no-op under PWRSNAP_E2E=1 — never spawns the shell", async () => {
+    process.env.PWRSNAP_E2E = "1";
+    process.env.PATH = ["/usr/bin", "/bin"].join(delimiter);
+
+    const resolved = await loginShellPath.value();
+
+    expect(resolveLoginShellPath).not.toHaveBeenCalled();
+    expect(resolved).toBe(["/usr/bin", "/bin"].join(delimiter));
+  });
+
   it("prewarm() kicks off resolution without the caller awaiting", async () => {
     let release: (path: string) => void = () => undefined;
     resolveLoginShellPath.mockReturnValue(

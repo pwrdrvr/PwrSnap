@@ -763,6 +763,7 @@ describe("settings:read + settings:write round-trip (integration)", () => {
     if (!list.ok) throw new Error("unreachable");
     expect(list.value.grants).toHaveLength(1);
     expect(list.value.roles.some((role) => role.id === "builtin.preview")).toBe(true);
+    expect(list.value.listenerStatus).toEqual({ state: "off" });
     expect(JSON.stringify(list.value)).not.toContain("pws_local_handler-token");
 
     const createdRole = await bus.dispatch(

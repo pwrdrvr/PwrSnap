@@ -211,6 +211,9 @@ export function defaultSettings(): Settings {
     editor: defaultEditorSettings(),
     library: defaultLibrarySettings(),
     localAgents: {
+      // Local-agent access is an explicit opt-in. When enabled, every MCP
+      // request is still subject to its Session's RBAC role and limits.
+      enabled: false,
       grants: [],
       roles: LOCAL_AGENT_BUILT_IN_ROLES.map((role) => ({
         ...role,
@@ -986,6 +989,7 @@ function parseLocalAgentsSettings(
 ): Settings["localAgents"] | null {
   if (raw === undefined) return defaults;
   if (!isRecord(raw)) return null;
+  if (raw.enabled !== undefined && typeof raw.enabled !== "boolean") return null;
   if (raw.grants !== undefined && !Array.isArray(raw.grants)) return null;
   if (raw.roles !== undefined && !Array.isArray(raw.roles)) return null;
   if (raw.audit !== undefined && !Array.isArray(raw.audit)) return null;
@@ -1038,7 +1042,12 @@ function parseLocalAgentsSettings(
     auditIds.add(entry.id);
     audit.push(entry);
   }
-  return { grants, roles, audit };
+  return {
+    enabled: raw.enabled ?? defaults.enabled,
+    grants,
+    roles,
+    audit
+  };
 }
 
 function parseLocalAgentRole(raw: unknown): LocalAgentRoleProfile | null {
@@ -1849,6 +1858,7 @@ function mergeLocalAgents(
 ): Settings["localAgents"] {
   if (patch === undefined) return current;
   return {
+    enabled: patch.enabled !== undefined ? patch.enabled : current.enabled,
     grants: patch.grants !== undefined ? patch.grants : current.grants,
     roles: patch.roles !== undefined ? patch.roles : current.roles,
     audit: patch.audit !== undefined ? patch.audit : current.audit

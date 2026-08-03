@@ -14,13 +14,14 @@ import {
   type LocalAgentAuditEntry,
   type LocalAgentCapability,
   type LocalAgentClientGrant,
+  type LocalAgentMcpListenerStatus,
   type LocalAgentRoleBudgets,
   type LocalAgentRoleProfile,
   type LocalAgentUsageAction,
   type LocalAgentUsageSnapshot
 } from "@pwrsnap/shared";
 import { dispatch } from "../../../lib/pwrsnap";
-import { Card, Row } from "../components";
+import { Card, Row, Switch } from "../components";
 import { useSettingsContext } from "../SettingsContext";
 
 const CAPABILITY_LABELS: Record<LocalAgentCapability, string> = {
@@ -82,7 +83,7 @@ type RoleDraft = {
 };
 
 export function LocalAgentsPage(): ReactElement {
-  const { settings } = useSettingsContext();
+  const { settings, patch } = useSettingsContext();
   const [grants, setGrants] = useState<LocalAgentClientGrant[]>([]);
   const [roles, setRoles] = useState<LocalAgentRoleProfile[]>([]);
   const [audit, setAudit] = useState<LocalAgentAuditEntry[]>([]);
@@ -92,12 +93,17 @@ export function LocalAgentsPage(): ReactElement {
   const [roleDraft, setRoleDraft] = useState<RoleDraft | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
+  const [togglingAccess, setTogglingAccess] = useState<boolean>(false);
+  const [listenerStatus, setListenerStatus] = useState<LocalAgentMcpListenerStatus>({
+    state: "off"
+  });
   const [error, setError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [confirmDeleteRoleId, setConfirmDeleteRoleId] = useState<string | null>(null);
   const graphRef = useRef<HTMLDivElement | null>(null);
   const nodeRefs = useRef(new Map<string, HTMLElement>());
   const [paths, setPaths] = useState<GraphPath[]>([]);
+  const mcpEnabled = settings?.localAgents.enabled ?? false;
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -108,6 +114,7 @@ export function LocalAgentsPage(): ReactElement {
     if (result.ok) {
       setGrants(result.value.grants);
       setRoles(result.value.roles);
+      setListenerStatus(result.value.listenerStatus);
       setSelectedSessionId((current) =>
         current !== null && result.value.grants.some((grant) => grant.id === current)
           ? current
@@ -126,6 +133,19 @@ export function LocalAgentsPage(): ReactElement {
     }
     setLoading(false);
   }, []);
+
+  const setMcpEnabled = async (enabled: boolean): Promise<void> => {
+    setTogglingAccess(true);
+    try {
+      await patch({ localAgents: { enabled } });
+      await load();
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setTogglingAccess(false);
+    }
+  };
 
   useEffect(() => {
     void load();
@@ -249,6 +269,18 @@ export function LocalAgentsPage(): ReactElement {
     [grants]
   );
 
+  const listenerCopy = !mcpEnabled
+    ? { badge: "MCP off", tag: "off" }
+    : listenerStatus.state === "listening"
+      ? { badge: LOCAL_AGENT_MCP_URL, tag: "listening on loopback" }
+      : listenerStatus.state === "starting"
+        ? { badge: "MCP starting", tag: "starting" }
+        : listenerStatus.state === "stopping"
+          ? { badge: "MCP stopping", tag: "stopping" }
+          : listenerStatus.state === "failed"
+            ? { badge: "MCP unavailable", tag: "failed to start" }
+            : { badge: "MCP unavailable", tag: "not listening" };
+
   const assignRole = async (sessionId: string, roleId: string): Promise<void> => {
     setSaving(true);
     const result = await dispatch("localAgents:assignRole", { sessionId, roleId });
@@ -334,10 +366,29 @@ export function LocalAgentsPage(): ReactElement {
           </p>
         </div>
         <div className="pss__main-actions">
-          <span className="pss__main-count" aria-live="polite">{activeCount} active</span>
-          <span className="pss__badge">{LOCAL_AGENT_MCP_URL}</span>
+          <span className="pss__main-count" aria-live="polite">{activeCount} approved</span>
+          <span className={`pss__badge${listenerStatus.state === "listening" ? " is-accent" : ""}`}>
+            {listenerCopy.badge}
+          </span>
         </div>
       </div>
+
+      <Card eyebrow="LOCAL AGENT ACCESS" title="MCP server">
+        <Row
+          label="Enable local-agent access"
+          sub="When off, PwrSnap does not listen for MCP connections. Saved Sessions and roles remain available. When on, every connection still requires native approval and an assigned RBAC role."
+          tag={listenerCopy.tag}
+        >
+          <Switch
+            on={mcpEnabled}
+            onChange={
+              settings === null || togglingAccess
+                ? undefined
+                : (enabled) => void setMcpEnabled(enabled)
+            }
+          />
+        </Row>
+      </Card>
 
       <div className="pss__auth-legend" aria-label="Authorization graph legend">
         <span><i className="is-allow" /> allowed path</span>
@@ -524,7 +575,7 @@ export function LocalAgentsPage(): ReactElement {
       ) : null}
 
       {error !== null ? (
-        <div className="pss__auth-error" role="alert"><b>Policy update failed</b><span>{error}</span></div>
+        <div className="pss__auth-error" role="alert"><b>Local agent update failed</b><span>{error}</span></div>
       ) : null}
 
       <Card eyebrow="ACTIVITY" title="Recent agent actions" defaultCollapsed>

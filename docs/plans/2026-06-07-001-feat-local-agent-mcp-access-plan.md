@@ -49,6 +49,19 @@ This amendment is delivered as four native GitHub stacked PRs:
    graph, custom role editor, usage meters, budget windows, age-scope controls,
    and explicit rejected/unassigned end states.
 
+## Amendment — 2026-08-03: Explicit MCP Access Gate
+
+Local-agent access is opt-in. `Settings.localAgents.enabled` defaults to false,
+including when an older settings file has no gate field. While off, PwrSnap does
+not bind the loopback MCP listener; approved Sessions, role assignments, audit
+history, and usage state remain saved. Turning access on or off applies live
+through the settings substrate without requiring a relaunch.
+
+This is a server gate, not an RBAC bypass. Whenever MCP access is on, native
+approval, Session authentication, role resolution, history scope, and usage
+budgets remain mandatory and fail closed. The diagnostic
+`PWRSNAP_DISABLE_LOCAL_AGENT_MCP=1` override remains a hard-off switch.
+
 ## Summary
 
 Expose PwrSnap as a local, capability-scoped MCP server so PwrAgent and
@@ -167,6 +180,9 @@ runs through PwrSnap's configured Codex App Server connection.
 - R27. Settings shows Session → Role → Permission relationships, current usage,
   remaining allowance, reset horizon, and a visible rejected state for any
   Session without a valid role.
+- R28. Settings provides an opt-in local-agent access switch. Off means no MCP
+  listener; on means the listener runs with the complete RBAC boundary. Toggling
+  off preserves policy state and closes pending authorization requests.
 
 ---
 
@@ -233,6 +249,10 @@ runs through PwrSnap's configured Codex App Server connection.
 - KTD12. Configuration belongs in `DesktopSettingsService`; tokens remain in
   `DesktopSecretStore`; high-volume usage events belong in SQLite. Settings JSON
   is not a counter store, and a second plaintext policy file is not introduced.
+
+- KTD13. MCP availability and MCP authorization are separate layers. A persisted,
+  default-off master gate controls whether the fixed loopback server exists;
+  there is no mode in which the server runs with RBAC disabled.
 
 ---
 
@@ -532,7 +552,7 @@ logged, persisted, or shared.
 
 - **Goal:** Run a fixed-port local MCP server that exposes PwrSnap
   tools/resources to authorized clients and dispatches through the capability
-  gate.
+  gate, but only while the user-facing local-agent access setting is enabled.
 - **Files:**
   - `apps/desktop/package.json`
   - `apps/desktop/src/main/index.ts`
@@ -546,6 +566,9 @@ logged, persisted, or shared.
   Origin, use OAuth bearer authentication, and bound request bodies. Do not
   bypass existing handlers for convenience.
 - **Test Scenarios:**
+  - A fresh or legacy install defaults to access off and does not bind the port.
+  - Enabling starts the listener live; disabling stops it, rejects pending
+    consent, and preserves Sessions and roles for a later re-enable.
   - Server binds only to the fixed loopback endpoint and refuses unauthorized
     calls.
   - Protected-resource and authorization-server metadata support normal MCP

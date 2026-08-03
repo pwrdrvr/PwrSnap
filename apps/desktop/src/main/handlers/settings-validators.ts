@@ -553,12 +553,44 @@ export function validateSettingsWrite(
     if (libraryErr !== null) return { ok: false, error: libraryErr };
   }
 
+  if (p.localAgents !== undefined) {
+    const localAgentsErr = validateLocalAgentsPatch(p.localAgents);
+    if (localAgentsErr !== null) return { ok: false, error: localAgentsErr };
+  }
+
   if (p.experimental !== undefined) {
     const experimentalErr = validateExperimentalPatch(p.experimental);
     if (experimentalErr !== null) return { ok: false, error: experimentalErr };
   }
 
   return { ok: true, value: patch as SettingsPatch };
+}
+
+/** The renderer may only flip the MCP listener gate through settings:write.
+ * Session, role, and audit mutations have dedicated validated command-bus
+ * verbs and must not be replaceable with a forged settings patch. */
+function validateLocalAgentsPatch(raw: unknown): PwrSnapError | null {
+  if (!isObject(raw)) {
+    return validationError(
+      "invalid_localAgents",
+      "settings:write: localAgents must be an object"
+    );
+  }
+  if (!isUndefined(raw.enabled) && !isBoolean(raw.enabled)) {
+    return validationError(
+      "invalid_localAgents_enabled",
+      "settings:write: localAgents.enabled must be a boolean"
+    );
+  }
+  for (const managedKey of ["grants", "roles", "audit"] as const) {
+    if (!isUndefined(raw[managedKey])) {
+      return validationError(
+        `invalid_localAgents_${managedKey}`,
+        `settings:write: localAgents.${managedKey} is managed by dedicated local-agent commands`
+      );
+    }
+  }
+  return null;
 }
 
 /** Validate the `experimental` section of a settings patch — the opt-in

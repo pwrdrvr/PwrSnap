@@ -2120,11 +2120,24 @@ export type Settings = {
    *  secret store under `localAgentToken:<clientId>`; Settings carries
    *  only renderer-safe metadata and capability grants. */
   localAgents: {
+    /** Master gate for the localhost MCP listener. RBAC remains mandatory
+     * whenever this is enabled; disabling preserves Sessions and roles. */
+    enabled: boolean;
     grants: LocalAgentClientGrant[];
     roles: LocalAgentRoleProfile[];
     audit: LocalAgentAuditEntry[];
   };
 };
+
+/** Live state of the loopback MCP listener. This is runtime-only state, not
+ * persisted intent: `Settings.localAgents.enabled` can remain true after a
+ * bind failure so the UI must not infer that the endpoint is available. */
+export type LocalAgentMcpListenerStatus =
+  | { state: "off" }
+  | { state: "starting" }
+  | { state: "listening" }
+  | { state: "stopping" }
+  | { state: "failed" };
 
 /** Out-of-the-box global capture hotkeys. Shared so the main-process
  *  `defaultSettings()` and the renderer's Settings → Hotkeys "Reset to
@@ -2591,6 +2604,7 @@ export type SettingsPatch = {
     gridZoom?: number;
   };
   localAgents?: {
+    enabled?: boolean;
     grants?: LocalAgentClientGrant[];
     roles?: LocalAgentRoleProfile[];
     audit?: LocalAgentAuditEntry[];
@@ -3335,7 +3349,11 @@ export type Commands = {
   };
   "localAgents:list": {
     req: Record<string, never>;
-    res: { grants: LocalAgentClientGrant[]; roles: LocalAgentRoleProfile[] };
+    res: {
+      grants: LocalAgentClientGrant[];
+      roles: LocalAgentRoleProfile[];
+      listenerStatus: LocalAgentMcpListenerStatus;
+    };
   };
   "localAgents:roleCreate": {
     req: Omit<LocalAgentRoleProfile, "id" | "builtIn">;

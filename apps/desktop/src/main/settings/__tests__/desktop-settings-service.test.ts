@@ -118,6 +118,42 @@ describe("DesktopSettingsService.write", () => {
     expect(read.codex.pinnedPath).toBe("");
   });
 
+  test("local-agent access is opt-in and round-trips independently", async () => {
+    const svc = makeService();
+    expect((await svc.read()).localAgents.enabled).toBe(false);
+
+    await svc.write({ localAgents: { enabled: true } });
+    const read = await svc.read();
+
+    expect(read.localAgents.enabled).toBe(true);
+    expect(read.localAgents.grants).toEqual([]);
+    expect(read.localAgents.roles).toEqual(defaultSettings().localAgents.roles);
+  });
+
+  test("older local-agent settings without the gate migrate to disabled", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings();
+    delete (raw.localAgents as Partial<typeof raw.localAgents>).enabled;
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+
+    const read = await new DesktopSettingsService({ filePath }).read();
+
+    expect(read.localAgents.enabled).toBe(false);
+    expect(readdirSync(workDir).some((name) => name.includes("corrupt-"))).toBe(false);
+  });
+
+  test("malformed local-agent enable state quarantines and fails closed", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings();
+    (raw.localAgents as unknown as { enabled: unknown }).enabled = "yes";
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+
+    const read = await new DesktopSettingsService({ filePath }).read();
+
+    expect(read.localAgents.enabled).toBe(false);
+    expect(readdirSync(workDir).some((name) => name.includes("corrupt-"))).toBe(true);
+  });
+
   test("atomic write: no `.tmp` sidecar persists after a successful write", async () => {
     const svc = makeService();
     await svc.write({ codex: { pinnedPath: "/opt/codex" } });

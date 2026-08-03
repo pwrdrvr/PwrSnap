@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 import type {
   LocalAgentAuditEntry,
   LocalAgentClientGrant,
+  LocalAgentMcpListenerStatus,
   LocalAgentRoleProfile,
   Settings
 } from "@pwrsnap/shared";
@@ -49,7 +50,7 @@ const roles: LocalAgentRoleProfile[] = LOCAL_AGENT_BUILT_IN_ROLES.map((role) => 
 }));
 
 const baseSettings = {
-  localAgents: { grants: [grant], roles, audit: [] }
+  localAgents: { enabled: false, grants: [grant], roles, audit: [] }
 } as unknown as Settings;
 
 let container: HTMLDivElement | null = null;
@@ -57,12 +58,15 @@ let root: Root | null = null;
 
 function installFakeApi(
   currentGrant: LocalAgentClientGrant = grant,
-  audit: LocalAgentAuditEntry[] = []
+  audit: LocalAgentAuditEntry[] = [],
+  listenerStatus: LocalAgentMcpListenerStatus = { state: "off" }
 ): {
   dispatch: ReturnType<typeof vi.fn>;
 } {
   const dispatch = vi.fn(async (name: string, req: unknown): Promise<AnyResult> => {
-    if (name === "localAgents:list") return { ok: true, value: { grants: [currentGrant], roles } };
+    if (name === "localAgents:list") {
+      return { ok: true, value: { grants: [currentGrant], roles, listenerStatus } };
+    }
     if (name === "localAgents:audit") return { ok: true, value: { entries: audit } };
     if (name === "localAgents:usage") return { ok: true, value: { entries: [] } };
     if (name === "localAgents:assignRole") {
@@ -98,7 +102,10 @@ function installFakeApi(
   return { dispatch };
 }
 
-async function renderPage(settings: Settings = baseSettings): Promise<HTMLDivElement> {
+async function renderPage(
+  settings: Settings = baseSettings,
+  patch: UseSettingsValue["patch"] = vi.fn(async () => undefined)
+): Promise<HTMLDivElement> {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -109,7 +116,7 @@ async function renderPage(settings: Settings = baseSettings): Promise<HTMLDivEle
     },
     loading: false,
     error: null,
-    patch: vi.fn(),
+    patch,
     refreshCodex: vi.fn(),
     testCodex: vi.fn(),
     replaceSecret: vi.fn(),
@@ -144,14 +151,56 @@ describe("LocalAgentsPage", () => {
 
   test("renders the authorization graph, selected scope, and concrete boundaries", async () => {
     const el = await renderPage();
-    expect(el.textContent).toContain("http://127.0.0.1:51729/mcp");
+    expect(el.textContent).toContain("MCP off");
     expect(el.textContent).toContain("PwrAgent");
     expect(el.textContent).toContain("Authorization graph");
     expect(el.textContent).toContain("Full Media");
     expect(el.textContent).toContain("Read original images");
     expect(el.textContent).toContain("Last 30 days");
     expect(el.textContent).toContain("Full-res images");
-    expect(el.textContent).toContain("1 active");
+    expect(el.textContent).toContain("1 approved");
+  });
+
+  test("enables MCP access through the settings substrate", async () => {
+    const patch = vi.fn(async () => undefined);
+    const el = await renderPage(baseSettings, patch);
+    const row = Array.from(el.querySelectorAll(".pss__row")).find((candidate) =>
+      candidate.textContent?.includes("Enable local-agent access")
+    );
+    const toggle = row?.querySelector<HTMLButtonElement>("button[role='switch']");
+
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    await act(async () => {
+      toggle?.click();
+    });
+
+    expect(patch).toHaveBeenCalledWith({ localAgents: { enabled: true } });
+  });
+
+  test("shows the loopback endpoint only while MCP access is enabled", async () => {
+    const enabledSettings = {
+      ...baseSettings,
+      localAgents: { ...baseSettings.localAgents, enabled: true }
+    };
+    installFakeApi(grant, [], { state: "listening" });
+    const el = await renderPage(enabledSettings);
+
+    expect(el.textContent).toContain("http://127.0.0.1:51729/mcp");
+    expect(el.textContent).not.toContain("MCP off");
+  });
+
+  test("shows enabled intent as unavailable after listener startup fails", async () => {
+    const enabledSettings = {
+      ...baseSettings,
+      localAgents: { ...baseSettings.localAgents, enabled: true }
+    };
+    installFakeApi(grant, [], { state: "failed" });
+    const el = await renderPage(enabledSettings);
+
+    expect(el.textContent).toContain("MCP unavailable");
+    expect(el.textContent).toContain("failed to start");
+    expect(el.textContent).not.toContain("http://127.0.0.1:51729/mcp");
+    expect(el.querySelector("button[role='switch']")?.getAttribute("aria-checked")).toBe("true");
   });
 
   test("revoke button dispatches localAgents:revoke", async () => {

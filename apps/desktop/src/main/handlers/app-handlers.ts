@@ -26,6 +26,25 @@ import {
   readAppUpdateStatus
 } from "../auto-updater";
 
+/**
+ * Playwright launches the compiled main entry directly, so Electron cannot
+ * discover apps/desktop/package.json and app.getVersion() falls back to the
+ * Electron executable version. Visual tests need a stable product version,
+ * independent of both Electron upgrades and PwrSnap releases. Keep the seam
+ * E2E-only so production always reports the packaged application version.
+ */
+function resolveAppVersion(): string {
+  const e2eVersion = process.env["PWRSNAP_E2E_APP_VERSION"];
+  if (
+    process.env["PWRSNAP_E2E"] === "1" &&
+    e2eVersion !== undefined &&
+    e2eVersion !== ""
+  ) {
+    return e2eVersion;
+  }
+  return app.getVersion();
+}
+
 /** URLs the renderer is allowed to open via `app:openExternal`. Keeps
  *  `shell.openExternal` from becoming an arbitrary-navigation gadget: a
  *  compromised/buggy renderer can only reach the product site, the docs
@@ -63,7 +82,7 @@ export function registerAppHandlers(): void {
 export function registerAppCommonHandlers(): void {
   bus.register("app:version", async () => {
     return ok({
-      version: app.getVersion(),
+      version: resolveAppVersion(),
       electronVersion: process.versions.electron ?? "",
       nodeVersion: process.versions.node ?? "",
       chromeVersion: process.versions.chrome ?? ""

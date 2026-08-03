@@ -6,9 +6,9 @@
 //     (the renderer subscribes to `events:settings:changed` and
 //     re-renders).
 //
-//   • Footer `<b>v…</b>` version — must come from `app.getVersion()`
-//     (surfaced over the `app:version` bus verb), not the hardcoded
-//     "v0.0.1" placeholder we shipped pre-fix.
+//   • Footer `<b>v…</b>` version — must come from the `app:version` bus
+//     verb. The unpackaged E2E process cannot discover PwrSnap's package
+//     metadata, so the harness supplies a stable product-version fixture.
 //
 // Both labels regressed silently before because nothing on the way to
 // production exercised them — the unit tests for AboutPage covered the
@@ -28,26 +28,20 @@ test.setTimeout(60_000);
 
 const TOPBAR_QUICK_CAPTURE = ".psl__topbar-r .psl__chip-btn--accent";
 const FOOTER_VERSION = ".psl__status-r b";
+const E2E_APP_VERSION = "1.2.3-beta.1";
 
-test("library footer renders the version from app.getVersion()", async () => {
-  const app = await launchPwrSnap();
+test("library footer renders the fixed E2E application version", async () => {
+  const app = await launchPwrSnap({
+    env: { PWRSNAP_E2E_APP_VERSION: E2E_APP_VERSION }
+  });
   try {
-    // Pull the canonical version straight from Electron's main process
-    // so the assertion is self-validating: whatever electron-builder
-    // baked into the packaged app's package.json is what the footer
-    // must display. Pinning a literal here would couple the test to
-    // every release bump.
-    const expectedVersion = await app.electronApp.evaluate(
-      ({ app: electronApp }) => electronApp.getVersion()
-    );
-    expect(expectedVersion.length).toBeGreaterThan(0);
-    // Belt-and-braces: the bug we just fixed was the footer reading
-    // a literal "0.0.1" no matter what. If the real version ever ends
-    // up matching that placeholder, the spec stops protecting against
-    // the regression — so refuse to run with that combination.
-    expect(expectedVersion).not.toBe("0.0.1");
+    const runtime = await app.dispatch("app:version", {});
+    expect(runtime.ok).toBe(true);
+    if (!runtime.ok) throw new Error("expected app:version to succeed");
+    expect(runtime.value.version).toBe(E2E_APP_VERSION);
+    expect(runtime.value.electronVersion).not.toBe(E2E_APP_VERSION);
 
-    await expect(app.window.locator(FOOTER_VERSION)).toHaveText(`v${expectedVersion}`);
+    await expect(app.window.locator(FOOTER_VERSION)).toHaveText(`v${E2E_APP_VERSION}`);
   } finally {
     await app.close();
   }

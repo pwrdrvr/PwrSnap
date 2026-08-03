@@ -8,7 +8,9 @@
 //     quirk folds reasoning prose into the final message, which would bury a
 //     JSON reply (the enrichment parser's whole failure mode).
 //   • Events from OTHER sessions on the shared process are ignored.
-//   • Abort interrupts the in-flight turn; a non-completed turn throws.
+//   • Abort interrupts the in-flight turn AND rejects immediately with an
+//     AbortError DOMException (the signal the enrichment handler classifies a
+//     user cancel on); a non-completed turn throws.
 //   • listModels reads capabilities from a throwaway session and archives it.
 //
 // `acquireAcpAgentClient` is mocked — these tests never touch a real pool,
@@ -89,7 +91,7 @@ describe("runPooledAcpOneShot", () => {
       client.emit({
         kind: "agent_message",
         threadId: "th-1",
-        message: { text: 'Let me think about this…\n\n{"title":"hi"}' }
+        message: { role: "assistant", text: 'Let me think about this…\n\n{"title":"hi"}' }
       });
       client.emit({ kind: "token_usage", threadId: "th-1", usage: { totalTokens: 42 } });
       client.emit({ kind: "turn_completed", threadId: "th-1", status: "completed" });
@@ -137,7 +139,11 @@ describe("runPooledAcpOneShot", () => {
     const client = makeFakeClient();
     client.startTurn.mockImplementation(async () => {
       client.emit({ kind: "agent_message_delta", threadId: "chat-thread", delta: "chat noise" });
-      client.emit({ kind: "agent_message", threadId: "th-1", message: { text: "mine" } });
+      client.emit({
+        kind: "agent_message",
+        threadId: "th-1",
+        message: { role: "assistant", text: "mine" }
+      });
       client.emit({ kind: "turn_completed", threadId: "chat-thread", status: "failed" });
       client.emit({ kind: "turn_completed", threadId: "th-1", status: "completed" });
       return { turnId: "turn-1" };
@@ -150,6 +156,32 @@ describe("runPooledAcpOneShot", () => {
       request: { prompt: "p" }
     });
     expect(response.rawText).toBe("mine");
+  });
+
+  test("a user_message_chunk echo (role user) never becomes the reply", async () => {
+    // Some agents echo the prompt back as a user message; the normalizer
+    // surfaces that as `agent_message` with role "user". With no assistant
+    // deltas and no assistant final, the run must return "" (which the
+    // enrichment parser treats as a failed reply → corrective retry), not
+    // the echoed prompt.
+    const client = makeFakeClient();
+    client.startTurn.mockImplementation(async () => {
+      client.emit({
+        kind: "agent_message",
+        threadId: "th-1",
+        message: { role: "user", text: "describe this image…" }
+      });
+      client.emit({ kind: "turn_completed", threadId: "th-1", status: "completed" });
+      return { turnId: "turn-1" };
+    });
+    acquireAcpAgentClient.mockResolvedValue(client);
+
+    const response = await runPooledAcpOneShot({
+      agent: AGENT,
+      cwd: "/cwd",
+      request: { prompt: "describe this image…" }
+    });
+    expect(response.rawText).toBe("");
   });
 
   test("a non-completed turn throws and still archives the session", async () => {
@@ -168,7 +200,7 @@ describe("runPooledAcpOneShot", () => {
     expect(client.close).not.toHaveBeenCalled();
   });
 
-  test("abort interrupts the in-flight turn", async () => {
+  test("abort interrupts the in-flight turn and rejects with AbortError", async () => {
     const client = makeFakeClient();
     const abort = new AbortController();
     client.interruptTurn.mockImplementation(async () => {
@@ -187,8 +219,29 @@ describe("runPooledAcpOneShot", () => {
         cwd: "/cwd",
         request: { prompt: "p", abortSignal: abort.signal }
       })
-    ).rejects.toThrow("cancelled");
+    ).rejects.toMatchObject({ name: "AbortError" });
     expect(client.interruptTurn).toHaveBeenCalledWith("th-1");
+    expect(client.archiveThread).toHaveBeenCalledWith("th-1");
+  });
+
+  test("abort rejects promptly even when the agent never honors session/cancel", async () => {
+    // A stalled agent may swallow the cancel and never emit turn_completed;
+    // the caller (and its 240s turn timeout) must not have to wait it out.
+    const client = makeFakeClient();
+    const abort = new AbortController();
+    client.startTurn.mockImplementation(async () => {
+      queueMicrotask(() => abort.abort());
+      return { turnId: "turn-1" };
+    });
+    acquireAcpAgentClient.mockResolvedValue(client);
+
+    await expect(
+      runPooledAcpOneShot({
+        agent: AGENT,
+        cwd: "/cwd",
+        request: { prompt: "p", abortSignal: abort.signal }
+      })
+    ).rejects.toMatchObject({ name: "AbortError" });
     expect(client.archiveThread).toHaveBeenCalledWith("th-1");
   });
 
@@ -203,8 +256,53 @@ describe("runPooledAcpOneShot", () => {
         cwd: "/cwd",
         request: { prompt: "p", abortSignal: abort.signal }
       })
-    ).rejects.toThrow("aborted before start");
+    ).rejects.toMatchObject({ name: "AbortError" });
     expect(client.startThread).not.toHaveBeenCalled();
+  });
+
+  test("a cancel during the pool acquire (cold spawn) never opens a session", async () => {
+    // The abort listener can only be registered once a session exists; a
+    // cancel landing during the multi-second cold spawn must be caught by
+    // the re-check, not silently ignored (an already-aborted signal never
+    // fires a listener added later).
+    const client = makeFakeClient();
+    const abort = new AbortController();
+    acquireAcpAgentClient.mockImplementation(async () => {
+      abort.abort();
+      return client;
+    });
+
+    await expect(
+      runPooledAcpOneShot({
+        agent: AGENT,
+        cwd: "/cwd",
+        request: { prompt: "p", abortSignal: abort.signal }
+      })
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(client.startThread).not.toHaveBeenCalled();
+  });
+
+  test("a cancel during session/new is honored before the turn starts", async () => {
+    // Same missed-listener window, one await later: the session opened, so
+    // it must still be archived — but no turn may start.
+    const client = makeFakeClient();
+    const abort = new AbortController();
+    acquireAcpAgentClient.mockResolvedValue(client);
+    const openSession = client.startThread.getMockImplementation()!;
+    client.startThread.mockImplementation(async (opts?: { model?: string }) => {
+      abort.abort();
+      return openSession(opts);
+    });
+
+    await expect(
+      runPooledAcpOneShot({
+        agent: AGENT,
+        cwd: "/cwd",
+        request: { prompt: "p", abortSignal: abort.signal }
+      })
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(client.startTurn).not.toHaveBeenCalled();
+    expect(client.archiveThread).toHaveBeenCalledWith("th-1");
   });
 });
 

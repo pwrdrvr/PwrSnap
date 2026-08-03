@@ -10,8 +10,8 @@
 // group + raster at the PNG's natural dims), which the layers-panel
 // fixture lacks.
 
-import { expect, test, type Page } from "@playwright/test";
-import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { type Page } from "@playwright/test";
+import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
 import { seedRasterCapture, setLayerVisibleByKind } from "./fixtures/editor-helpers";
 
 test.setTimeout(90_000);

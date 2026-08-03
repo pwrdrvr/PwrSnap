@@ -27,8 +27,8 @@
 // Cross-platform: pure Chromium layout — runs on the Linux/xvfb CI
 // subset, not macOS-only.
 
-import { expect, test, type Locator, type Page } from "@playwright/test";
-import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { type Locator, type Page } from "@playwright/test";
+import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
 import { openEditorImage, seedRasterCapture } from "./fixtures/editor-helpers";
 
 // First spec cold-starts Electron; 90s mirrors the other editor specs.

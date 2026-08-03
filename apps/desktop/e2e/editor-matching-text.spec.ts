@@ -15,8 +15,8 @@
 // this spec exercises the real arrow-placement → renderer affordance
 // element → click → tool flip pipeline.
 
-import { expect, test, type Page } from "@playwright/test";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { type Page } from "@playwright/test";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 import { openEditor, seedImageCapture, selectTool } from "./fixtures/editor";
 
 test.setTimeout(120_000);

@@ -14,9 +14,9 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { expect, test, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
 import sharp from "sharp";
-import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
 
 const LIBRARY_WINDOW_SIZE = { width: 1280, height: 800 };
 const FIXTURE_WIDTH = 1600;

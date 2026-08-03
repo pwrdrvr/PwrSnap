@@ -18,8 +18,7 @@
 
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { expect, test } from "@playwright/test";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 // Cold start budget — matches settings.spec.ts (each test launches a
 // fresh Electron process, and the first launch on a slow Linux CI

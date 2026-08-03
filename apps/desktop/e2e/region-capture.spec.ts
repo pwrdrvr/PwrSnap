@@ -16,9 +16,8 @@
 // pixel-verification coverage.
 
 import path from "node:path";
-import { expect, test } from "@playwright/test";
 import type { CaptureRecord } from "@pwrsnap/shared";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 import { spawnTargetWindows, type TargetWindowSpec } from "./fixtures/target-windows";
 import { colorsClose, formatRgb, hexToRgb, samplePixel } from "./fixtures/pixel-sample";
 

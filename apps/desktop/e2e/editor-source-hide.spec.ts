@@ -5,9 +5,8 @@
 // <img> behind a transparency checker while annotations keep painting —
 // matching the bake (WYSIWYG).
 
-import { expect, test } from "@playwright/test";
 import sharp from "sharp";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 import {
   drawOnCanvas,
   openEditorFocus,

@@ -16,6 +16,13 @@
 // side. That last part is the key — it lets specs drive
 // `capture:interactive`, `library:list`, etc. without simulating a
 // global shortcut keystroke.
+//
+// IMPORTANT: specs must import `test` and `expect` from THIS file, not
+// from `@playwright/test`. The exported `test` carries the leaked-app
+// guard fixture (see `liveApps` below) that reaps Electron processes a
+// timed-out test left behind — without it, one hung test wedges
+// Playwright's worker teardown for 30s and fails the whole job even
+// when the retry passes.
 
 import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -25,6 +32,7 @@ import { fileURLToPath } from "node:url";
 import {
   _electron as electron,
   expect,
+  test as base,
   type ElectronApplication,
   type Page
 } from "@playwright/test";
@@ -53,6 +61,63 @@ const ELECTRON_EVAL_TIMEOUT_MS = 3_000;
 // ample room to clean up before the 60s test deadline. A spurious trip is
 // self-correcting (retry), so erring tight is the right trade.
 const DISPATCH_TIMEOUT_MS = 10_000;
+
+/**
+ * Every Electron app launched by this fixture, until its `close()` runs.
+ * Exists for the leaked-app guard below: when a test times out mid-await,
+ * Playwright abandons the test body — the `finally { app.close() }`
+ * inside the test NEVER runs (the abandoned promise is still parked on
+ * the hung await), so the Electron process leaks. PwrSnap deliberately
+ * stays resident after its windows close (tray/menubar-app lifecycle),
+ * so Playwright's own end-of-worker graceful close then waits forever
+ * for an exit that will never come — that's the "Worker teardown
+ * timeout of 30000ms exceeded" that fails the whole job even when the
+ * test passed on retry (seen live on the macOS VM lane, PR #353).
+ */
+type TrackedApp = {
+  app: ElectronApplication;
+  child: ElectronChildProcess;
+  homeRoot: string;
+};
+const liveApps = new Set<TrackedApp>();
+
+/**
+ * The suite's `test` object. Identical to `@playwright/test`'s except
+ * for one auto fixture: after every test, force-close any Electron app
+ * the test leaked. Unlike a try/finally inside the test body, fixture
+ * teardown ALWAYS runs — including after a test timeout — so a hung
+ * app is reaped here (bounded: graceful-exit evaluate, then close,
+ * then SIGKILL — ~11s worst case) instead of wedging Playwright's
+ * worker teardown for 30s and turning a retryable flake into a
+ * run-level "1 error was not a part of any test" failure.
+ *
+ * Specs must import `test` (and `expect`, for symmetry) from this file,
+ * not from `@playwright/test`, or the guard silently doesn't apply.
+ */
+export const test = base.extend<{ leakedElectronAppGuard: void }>({
+  leakedElectronAppGuard: [
+    async ({}, use, testInfo) => {
+      await use();
+      for (const tracked of Array.from(liveApps)) {
+        liveApps.delete(tracked);
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[e2e] "${testInfo.title}" leaked an Electron app (pid ${String(
+            tracked.child.pid ?? "?"
+          )}) — force-closing it so worker teardown can't hang`
+        );
+        try {
+          await closeElectronApp(tracked.app);
+        } finally {
+          await removeHomeRoot(tracked.homeRoot);
+        }
+      }
+    },
+    { auto: true, box: true }
+  ]
+});
+
+export { expect };
 
 async function removeHomeRoot(homeRoot: string): Promise<void> {
   try {
@@ -97,7 +162,7 @@ type ElectronChildProcess = ReturnType<ElectronApplication["process"]>;
  * window creation) produces a prompt, catchable error instead of an
  * open-ended hang.
  */
-async function withTimeout<T>(
+export async function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
   message: string
@@ -133,8 +198,26 @@ async function withTimeout<T>(
  */
 async function killProcessTree(child: ElectronChildProcess): Promise<void> {
   const pid = child.pid;
-  if (pid === undefined || process.platform !== "win32") {
+  if (pid === undefined) {
     if (!child.killed) child.kill("SIGKILL");
+    return;
+  }
+  if (process.platform !== "win32") {
+    if (hasExited(child)) return;
+    // Playwright spawns Electron with `detached: true` on POSIX, so the
+    // main process leads its own process group — `kill(-pid)` reaps the
+    // renderer / GPU / utility helpers along with it. Matters on the
+    // macOS VM lane: a wedged main killed alone can strand helpers that
+    // keep the WindowServer session churning for later tests.
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
     return;
   }
   await new Promise<void>((resolve) => {
@@ -237,7 +320,14 @@ async function waitForLibraryWindow(app: ElectronApplication): Promise<Page> {
       const url = candidate.url();
       // Library = same renderer index.html, no `stage=` in the hash.
       if (url.includes("/renderer/index.html") && !url.includes("stage=")) {
-        await candidate.waitForLoadState("domcontentloaded").catch(() => undefined);
+        // Bounded: an unbounded load-state wait inside this loop would
+        // defeat the deadline above — a renderer that never finishes
+        // loading would park the test on this await until the test
+        // timeout, leaking the app (see the leaked-app guard).
+        const remaining = Math.max(1, deadline - Date.now());
+        await candidate
+          .waitForLoadState("domcontentloaded", { timeout: Math.min(remaining, 10_000) })
+          .catch(() => undefined);
         return candidate;
       }
     }
@@ -342,6 +432,15 @@ async function launchPwrSnapCore(
       env
     });
     electronApp = launchedApp;
+    // Registered until close() runs; the leaked-app guard reaps
+    // whatever is still here when the test ends (e.g. after a test
+    // timeout abandoned the body before its finally could close us).
+    const tracked: TrackedApp = {
+      app: launchedApp,
+      child: launchedApp.process(),
+      homeRoot
+    };
+    liveApps.add(tracked);
 
     return {
       electronApp: launchedApp,
@@ -377,6 +476,7 @@ async function launchPwrSnapCore(
         return result as Result<Res<C>, PwrSnapError>;
       },
       close: async () => {
+        liveApps.delete(tracked);
         try {
           await closeElectronApp(launchedApp);
         } finally {
@@ -386,6 +486,9 @@ async function launchPwrSnapCore(
     };
   } catch (cause) {
     if (electronApp !== null) {
+      for (const tracked of Array.from(liveApps)) {
+        if (tracked.app === electronApp) liveApps.delete(tracked);
+      }
       try {
         await closeElectronApp(electronApp);
       } catch {

@@ -14,8 +14,7 @@
 // the v1 write path was deleted. The v2 layer-tree equivalent is
 // covered by the layers-handlers unit tests.
 
-import { expect, test } from "@playwright/test";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 import { seedImageCapture } from "./fixtures/editor";
 
 test("editor:open opens the capture in Library Focus", async () => {

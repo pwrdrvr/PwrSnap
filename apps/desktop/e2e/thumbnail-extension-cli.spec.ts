@@ -24,12 +24,12 @@
 //     works here but fails in the real extension is a sandbox
 //     denial, easy to spot from logs.
 
+import { expect, test } from "./fixtures/electron-app";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
 import yazl from "yazl";
 
 const __filename = fileURLToPath(import.meta.url);

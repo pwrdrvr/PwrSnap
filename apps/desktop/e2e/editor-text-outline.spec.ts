@@ -16,8 +16,7 @@
 // glyph (usually too wide on the right). See
 // docs/solutions/2026-06-25-text-selection-outline-measure-real-glyph.md.
 
-import { expect, test } from "@playwright/test";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 import { openEditor, seedImageCapture, selectTool } from "./fixtures/editor";
 
 // First spec cold-starts Electron; mirror the 90s bump used by the other

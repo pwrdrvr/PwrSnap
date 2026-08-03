@@ -16,8 +16,7 @@
 
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { expect, test } from "@playwright/test";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 // Each test launches its own Electron process. The cold-start of
 // the very first launch on a slow Linux CI runner can chew through

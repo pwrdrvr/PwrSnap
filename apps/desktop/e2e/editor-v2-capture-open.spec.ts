@@ -24,8 +24,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { expect, test } from "@playwright/test";
-import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
 import { openEditor } from "./fixtures/editor";
 
 // First spec in this file cold-starts Electron; subsequent specs reuse

@@ -25,7 +25,7 @@
 // when the retry passes.
 
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,7 +33,6 @@ import {
   _electron as electron,
   expect,
   test as base,
-  type ConsoleMessage,
   type ElectronApplication,
   type Page
 } from "@playwright/test";
@@ -111,7 +110,7 @@ export const test = base.extend<{ leakedElectronAppGuard: void }>({
             )}) — force-closing it so worker teardown can't hang`
           );
           try {
-            await closeElectronApp(tracked.app);
+            await closeElectronApp(tracked.app, tracked.homeRoot);
           } finally {
             await removeHomeRoot(tracked.homeRoot);
           }
@@ -308,31 +307,34 @@ async function waitForProcessExit(
   }
 }
 
-async function closeElectronApp(app: ElectronApplication): Promise<void> {
+async function closeElectronApp(app: ElectronApplication, homeRoot: string): Promise<void> {
   const child = app.process();
-  const quitDiagnostics: string[] = [];
-  const onConsole = (message: ConsoleMessage): void => {
-    const text = message.text();
-    if (text.startsWith("[e2e-quit-diagnostic]")) quitDiagnostics.push(text);
-  };
+  const quitDiagnosticPath = path.join(homeRoot, "pwrsnap-e2e-quit-diagnostic.log");
   if (process.platform === "win32") {
-    app.on("console", onConsole);
     await withTimeout(
-      app.evaluate(({ app: electronApp, BrowserWindow }) => {
+      app.evaluate(({ app: electronApp, BrowserWindow }, diagnosticPath: string) => {
+        const fs = process.getBuiltinModule("node:fs");
         const report = (event: string): void => {
           const windows = BrowserWindow.getAllWindows().map((window) => ({
             destroyed: window.isDestroyed(),
             title: window.getTitle(),
             url: window.webContents.isDestroyed() ? "<destroyed>" : window.webContents.getURL()
           }));
-          console.log(
-            `[e2e-quit-diagnostic] event=${event} at=${String(Date.now())} windows=${JSON.stringify(windows)}`
+          fs.appendFileSync(
+            diagnosticPath,
+            `[e2e-quit-diagnostic] event=${event} at=${String(Date.now())} windows=${JSON.stringify(windows)}\n`
           );
         };
+        for (const window of BrowserWindow.getAllWindows()) {
+          const title = window.getTitle();
+          const url = window.webContents.isDestroyed() ? "<destroyed>" : window.webContents.getURL();
+          window.once("close", () => report(`window-close:${title}:${url}`));
+          window.once("closed", () => report(`window-closed:${title}:${url}`));
+        }
         electronApp.once("before-quit", () => report("before-quit-after-app-handler"));
         electronApp.once("will-quit", () => report("will-quit-after-app-handler"));
         electronApp.once("quit", () => report("quit"));
-      }),
+      }, quitDiagnosticPath),
       1_000,
       "installing E2E quit diagnostics timed out"
     ).catch(() => undefined);
@@ -350,9 +352,10 @@ async function closeElectronApp(app: ElectronApplication): Promise<void> {
   const closePromise = app.close();
   const result = await waitForClose(closePromise, ELECTRON_CLOSE_TIMEOUT_MS);
   if (result === "closed" && (await waitForProcessExit(child, 1_000))) {
-    app.off("console", onConsole);
     return;
   }
+
+  const quitDiagnostics = await readFile(quitDiagnosticPath, "utf8").catch(() => "");
 
   // Every trip through here costs this spec ~6s and, before the tree-kill
   // below existed, leaked the app's helper processes into the session. If
@@ -360,9 +363,8 @@ async function closeElectronApp(app: ElectronApplication): Promise<void> {
   // reboot it (see the VM-lab troubleshooting doc).
   // eslint-disable-next-line no-console
   console.warn(
-    `[e2e-teardown] graceful close failed (close=${result}, exited=${hasExited(child)}) — force-killing pid=${child.pid ?? "?"}\n${quitDiagnostics.join("\n")}`
+    `[e2e-teardown] graceful close failed (close=${result}, exited=${hasExited(child)}) — force-killing pid=${child.pid ?? "?"}\n${quitDiagnostics}`
   );
-  app.off("console", onConsole);
   if (!hasExited(child)) {
     await killProcessTree(child);
   }
@@ -647,7 +649,7 @@ async function launchPwrSnapCore(
       close: async () => {
         liveApps.delete(tracked);
         try {
-          await closeElectronApp(launchedApp);
+          await closeElectronApp(launchedApp, homeRoot);
         } finally {
           await removeHomeRoot(homeRoot);
         }
@@ -659,7 +661,7 @@ async function launchPwrSnapCore(
         if (tracked.app === electronApp) liveApps.delete(tracked);
       }
       try {
-        await closeElectronApp(electronApp);
+        await closeElectronApp(electronApp, homeRoot);
       } catch {
         // Ignore cleanup failures; preserve the original launch error.
       }

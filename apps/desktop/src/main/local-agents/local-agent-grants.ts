@@ -112,9 +112,9 @@ export class LocalAgentGrantService {
     });
   }
 
-  /** Issue or rotate the bearer credential for one registered OAuth client.
-   *  Reauthorization edits the existing grant instead of accumulating duplicate
-   *  Codex entries in Settings. */
+  /** Issue one independently named and revocable session for a registered
+   *  OAuth client. The OAuth registration describes software; the grant is
+   *  the user's durable authorization session. */
   async issueOAuthGrant(args: {
     name: string;
     capabilities: readonly LocalAgentCapability[];
@@ -134,55 +134,40 @@ export class LocalAgentGrantService {
     const token = this.makeToken();
     return this.serializeMutation(async () => {
       const settings = await this.settings.read();
-      const existing = settings.localAgents.grants.find(
-        (grant) => grant.oauthClient?.clientId === args.oauthClient.clientId
-      );
+      if (settings.localAgents.grants.some(
+        (grant) => grant.revokedAt === null && grant.name.localeCompare(name, undefined, { sensitivity: "accent" }) === 0
+      )) {
+        throw new LocalAgentGrantError(
+          "duplicate_name",
+          `an active local-agent session already uses the name: ${name}`
+        );
+      }
       const now = this.now().toISOString();
-      const grant: LocalAgentClientGrant = existing === undefined
-        ? {
-            id: args.oauthClient.clientId,
-            name,
-            capabilities,
-            createdAt: now,
-            updatedAt: now,
-            lastUsedAt: null,
-            revokedAt: null,
-            oauthClient: args.oauthClient
-          }
-        : {
-            ...existing,
-            name,
-            capabilities,
-            updatedAt: now,
-            revokedAt: null,
-            oauthClient: args.oauthClient
-          };
-      if (
-        existing === undefined &&
-        settings.localAgents.grants.some((item) => item.id === grant.id)
-      ) {
+      const grant: LocalAgentClientGrant = {
+        id: this.makeId(),
+        name,
+        capabilities,
+        createdAt: now,
+        updatedAt: now,
+        lastUsedAt: null,
+        revokedAt: null,
+        oauthClient: args.oauthClient
+      };
+      if (settings.localAgents.grants.some((item) => item.id === grant.id)) {
         throw new LocalAgentGrantError(
           "duplicate_id",
           `local agent grant already exists: ${grant.id}`
         );
       }
       const secretName = secretNameForClient(grant.id);
-      const previousHash = await this.secrets.getValue(secretName);
       await this.secrets.replace(secretName, hashToken(token));
       let nextSettings: Settings;
       try {
-        const grants = existing === undefined
-          ? [...settings.localAgents.grants, grant]
-          : settings.localAgents.grants.map((item) =>
-              item.id === existing.id ? grant : item
-            );
-        nextSettings = await this.settings.write({ localAgents: { grants } });
+        nextSettings = await this.settings.write({
+          localAgents: { grants: [...settings.localAgents.grants, grant] }
+        });
       } catch (cause) {
-        if (previousHash === null) {
-          await this.secrets.clear(secretName).catch(() => undefined);
-        } else {
-          await this.secrets.replace(secretName, previousHash).catch(() => undefined);
-        }
+        await this.secrets.clear(secretName).catch(() => undefined);
         throw cause;
       }
       await this.notifySettingsChanged(nextSettings);

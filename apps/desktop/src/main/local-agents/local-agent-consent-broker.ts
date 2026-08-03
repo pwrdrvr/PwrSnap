@@ -26,6 +26,7 @@ export type LocalAgentConsentRequest = {
 
 export type LocalAgentConsentDecision = {
   decision: "allow" | "deny";
+  sessionName: string;
   capabilities: readonly LocalAgentCapability[];
 };
 
@@ -61,7 +62,7 @@ export class LocalAgentConsentBroker {
 
   request(input: LocalAgentConsentRequest): Promise<LocalAgentConsentDecision> {
     if (input.signal.aborted) {
-      return Promise.resolve({ decision: "deny", capabilities: [] });
+      return Promise.resolve({ decision: "deny", sessionName: "", capabilities: [] });
     }
     const window = this.createWindow();
     const requestId = this.makeRequestId();
@@ -69,6 +70,7 @@ export class LocalAgentConsentBroker {
     const prompt: LocalAgentConsentPrompt = {
       requestId,
       clientName: input.clientName,
+      suggestedSessionName: input.clientName,
       permissions: LOCAL_AGENT_CAPABILITIES.map((capability) => ({
         capability,
         label: LOCAL_AGENT_CAPABILITY_LABELS[capability],
@@ -79,7 +81,7 @@ export class LocalAgentConsentBroker {
 
     return new Promise((resolve) => {
       const onAbort = (): void => {
-        this.finish(window.id, { decision: "deny", capabilities: [] }, true);
+        this.finish(window.id, { decision: "deny", sessionName: "", capabilities: [] }, true);
       };
       const pending: PendingConsent = {
         prompt,
@@ -91,7 +93,7 @@ export class LocalAgentConsentBroker {
       this.pendingByWindowId.set(window.id, pending);
       input.signal.addEventListener("abort", onAbort, { once: true });
       window.once("closed", () => {
-        this.finish(window.id, { decision: "deny", capabilities: [] }, false);
+        this.finish(window.id, { decision: "deny", sessionName: "", capabilities: [] }, false);
       });
     });
   }
@@ -106,6 +108,7 @@ export class LocalAgentConsentBroker {
     input: {
       requestId: string;
       decision: "allow" | "deny";
+      sessionName: string;
       capabilities: readonly LocalAgentCapability[];
     }
   ): Result<void, PwrSnapError> {
@@ -121,6 +124,13 @@ export class LocalAgentConsentBroker {
       return consentError("invalid_consent_capability", "Consent contains an unknown permission");
     }
     const capabilities = [...new Set(input.capabilities)];
+    const sessionName = input.sessionName.trim();
+    if (input.decision === "allow" && (sessionName.length === 0 || sessionName.length > 200)) {
+      return consentError(
+        "invalid_session_name",
+        "Session Name must be between 1 and 200 characters"
+      );
+    }
     if (input.decision === "allow" && capabilities.length === 0) {
       return consentError("empty_consent", "Select at least one PwrSnap permission");
     }
@@ -128,6 +138,7 @@ export class LocalAgentConsentBroker {
       pending.value.window.id,
       {
         decision: input.decision,
+        sessionName: input.decision === "allow" ? sessionName : "",
         capabilities: input.decision === "allow" ? capabilities : []
       },
       true
@@ -137,7 +148,7 @@ export class LocalAgentConsentBroker {
 
   denyAll(): void {
     for (const windowId of [...this.pendingByWindowId.keys()]) {
-      this.finish(windowId, { decision: "deny", capabilities: [] }, true);
+      this.finish(windowId, { decision: "deny", sessionName: "", capabilities: [] }, true);
     }
   }
 
@@ -177,6 +188,7 @@ export function registerLocalAgentConsentHandlers(
       typeof req !== "object" ||
       req === null ||
       typeof req.requestId !== "string" ||
+      typeof req.sessionName !== "string" ||
       !Array.isArray(req.capabilities)
     ) {
       return consentError("invalid_consent_request", "Consent decision payload is invalid");

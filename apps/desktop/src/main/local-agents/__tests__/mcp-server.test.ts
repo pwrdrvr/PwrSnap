@@ -304,22 +304,60 @@ function makeAuthorizationUrl(
   return url;
 }
 
+async function beginBrowserAuthorization(
+  address: LocalAgentMcpServerAddress,
+  authorizationUrl: URL
+): Promise<string> {
+  const response = await fetch(authorizationUrl, { redirect: "manual" });
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(response.headers.get("content-security-policy")).toContain(
+    "default-src 'none'"
+  );
+  const html = await response.text();
+  expect(html).toContain("Continue in PwrSnap");
+  expect(html).toContain("This browser page cannot approve access");
+  expect(html).not.toContain("<form");
+  expect(html).not.toContain("<script");
+  const refresh = html.match(
+    /<meta http-equiv="refresh" content="1;url=([^"]+)">/
+  );
+  expect(refresh).not.toBeNull();
+  return new URL(
+    (refresh?.[1] ?? "").replaceAll("&amp;", "&"),
+    endpoint(address, "/")
+  ).href;
+}
+
+async function waitForAuthorizationRedirect(statusUrl: string): Promise<Response> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const response = await fetch(statusUrl, { redirect: "manual" });
+    if (response.status === 302) return response;
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Waiting for PwrSnap");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("native PwrSnap authorization did not complete");
+}
+
 async function approveAndExchange(
   address: LocalAgentMcpServerAddress,
   oauthClient: RegisteredOAuthClient,
   capabilities: readonly LocalAgentCapability[],
   requestedScopes?: readonly LocalAgentCapability[]
 ): Promise<string> {
-  consentDecisions.push({ decision: "allow", capabilities });
+  consentDecisions.push({
+    decision: "allow",
+    sessionName: oauthClient.client_name,
+    capabilities
+  });
   const authorizationUrl = makeAuthorizationUrl(
     address,
     oauthClient,
     requestedScopes
   );
-  const authorized = await fetch(authorizationUrl, {
-    redirect: "manual"
-  });
-  expect(authorized.status).toBe(302);
+  const statusUrl = await beginBrowserAuthorization(address, authorizationUrl);
+  const authorized = await waitForAuthorizationRedirect(statusUrl);
   const callback = new URL(authorized.headers.get("location") ?? "");
   expect(callback.origin + callback.pathname).toBe(OAUTH_CALLBACK);
   expect(callback.searchParams.get("state")).toBe("test-state");
@@ -683,10 +721,12 @@ describe("LocalAgentMcpServer", () => {
     expect(oauthClient.token_endpoint_auth_method).toBe("none");
     expect(oauthClient).not.toHaveProperty("client_secret");
 
-    consentDecisions.push({ decision: "deny", capabilities: [] });
-    const defaultConsent = await fetch(makeAuthorizationUrl(address, oauthClient), {
-      redirect: "manual"
-    });
+    consentDecisions.push({ decision: "deny", sessionName: "", capabilities: [] });
+    const defaultStatusUrl = await beginBrowserAuthorization(
+      address,
+      makeAuthorizationUrl(address, oauthClient)
+    );
+    const defaultConsent = await waitForAuthorizationRedirect(defaultStatusUrl);
     expect(defaultConsent.status).toBe(302);
     expect(consentRequests[0]).toMatchObject({
       clientId: oauthClient.client_id,
@@ -703,7 +743,6 @@ describe("LocalAgentMcpServer", () => {
     const grants = await grantService.list();
     expect(grants).toHaveLength(1);
     expect(grants[0]).toMatchObject({
-      id: oauthClient.client_id,
       name: "Codex Desktop",
       capabilities: ["library.read", "trash.write"],
       revokedAt: null,
@@ -838,10 +877,9 @@ describe("LocalAgentMcpServer", () => {
     const authorizationUrl = makeAuthorizationUrl(address, oauthClient, [
       "capture.original.read"
     ]);
-    consentDecisions.push({ decision: "deny", capabilities: [] });
-    const denied = await fetch(authorizationUrl, {
-      redirect: "manual"
-    });
+    consentDecisions.push({ decision: "deny", sessionName: "", capabilities: [] });
+    const statusUrl = await beginBrowserAuthorization(address, authorizationUrl);
+    const denied = await waitForAuthorizationRedirect(statusUrl);
     expect(denied.status).toBe(302);
     const callback = new URL(denied.headers.get("location") ?? "");
     expect(callback.searchParams.get("error")).toBe("access_denied");
@@ -873,10 +911,15 @@ describe("LocalAgentMcpServer", () => {
     consentDecisions.push(new Promise((resolve) => {
       resolveNative = resolve;
     }));
-    const authorization = fetch(makeAuthorizationUrl(address, oauthClient), {
-      redirect: "manual"
-    });
+    const statusUrl = await beginBrowserAuthorization(
+      address,
+      makeAuthorizationUrl(address, oauthClient)
+    );
     await vi.waitFor(() => expect(consentRequests).toHaveLength(1));
+
+    const pending = await fetch(statusUrl, { redirect: "manual" });
+    expect(pending.status).toBe(200);
+    expect(await pending.text()).toContain("waiting for your decision");
 
     const headlessApproval = await fetch(address.authorizationUrl, {
       method: "POST",
@@ -895,8 +938,12 @@ describe("LocalAgentMcpServer", () => {
     expect(await headlessApproval.json()).toMatchObject({ error: "method_not_allowed" });
     expect(await grantService.list()).toEqual([]);
 
-    resolveNative({ decision: "allow", capabilities: ["library.read"] });
-    const approved = await authorization;
+    resolveNative({
+      decision: "allow",
+      sessionName: "Forging Agent",
+      capabilities: ["library.read"]
+    });
+    const approved = await waitForAuthorizationRedirect(statusUrl);
     expect(approved.status).toBe(302);
     const callback = new URL(approved.headers.get("location") ?? "");
     expect(callback.searchParams.get("code")).not.toBeNull();
@@ -941,6 +988,7 @@ describe("LocalAgentMcpServer", () => {
     expect(provider.handleConsentDecision({
       transactionId: "consent_expiring",
       decision: "allow",
+      sessionName: "Expiring Agent",
       capabilities: ["library.read"]
     })).toMatchObject({
       kind: "error",

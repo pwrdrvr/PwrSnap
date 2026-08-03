@@ -8,6 +8,7 @@ import { dispatch } from "../../lib/pwrsnap";
 export function LocalAgentConsent(): React.JSX.Element {
   const [prompt, setPrompt] = useState<LocalAgentConsentPrompt | null>(null);
   const [selected, setSelected] = useState<Set<LocalAgentCapability>>(new Set());
+  const [sessionName, setSessionName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -20,6 +21,7 @@ export function LocalAgentConsent(): React.JSX.Element {
         return;
       }
       setPrompt(result.value);
+      setSessionName(result.value.suggestedSessionName);
       setSelected(new Set(
         result.value.permissions
           .filter((permission) => permission.requested)
@@ -38,6 +40,7 @@ export function LocalAgentConsent(): React.JSX.Element {
     const result = await dispatch("localAgents:consentDecide", {
       requestId: prompt.requestId,
       decision,
+      sessionName: decision === "allow" ? sessionName : "",
       capabilities: decision === "allow" ? [...selected] : []
     });
     if (!result.ok) {
@@ -60,12 +63,27 @@ export function LocalAgentConsent(): React.JSX.Element {
         <div className="local-agent-consent__brand pwrsnap-wordmark">
           Pwr<span className="pwrsnap-wordmark__a">Snap</span>
         </div>
-        <h1>{prompt.clientName} wants to access PwrSnap</h1>
+        <h1>A local MCP client wants to access PwrSnap</h1>
         <p>
           Your library can contain private screen content. Choose exactly what
           this local agent may search, read, create, or change.
         </p>
+        <p className="local-agent-consent__client-label">
+          Client-reported label: <strong>{prompt.clientName}</strong>
+        </p>
       </header>
+
+      <label className="local-agent-consent__session-name">
+        <span>Session Name</span>
+        <input
+          type="text"
+          maxLength={200}
+          value={sessionName}
+          disabled={submitting}
+          onChange={(event) => setSessionName(event.target.value)}
+        />
+        <small>Use a unique name you will recognize later in Access Control.</small>
+      </label>
 
       <fieldset className="local-agent-consent__fieldset" disabled={submitting}>
         <legend>Permissions</legend>
@@ -104,7 +122,7 @@ export function LocalAgentConsent(): React.JSX.Element {
           <button
             type="button"
             className="local-agent-consent__allow"
-            disabled={submitting || selected.size === 0}
+            disabled={submitting || selected.size === 0 || sessionName.trim().length === 0}
             onClick={() => void decide("allow")}
           >
             Allow selected

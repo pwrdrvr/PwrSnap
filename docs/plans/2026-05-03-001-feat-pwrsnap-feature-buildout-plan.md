@@ -1036,7 +1036,15 @@ Tasks:
   - `GET /captures/<id>/<width>w.png|webp` — proxies to `pwrsnap-cache://` internally.
   - `GET /captures/<id>/raw.png` — source.
   - `POST /rpc/<command-name>` — dispatches to `command-bus`, JSON body. Examples: `capture.region`, `capture.window`, `library.list`, `overlays.upsert`, `clipboard.copy`. Same handler as ipcMain — single source of truth.
-- [ ] **Agent authentication.** MCP OAuth authorization-code flow with PKCE, public dynamic clients, protected-resource metadata, resource indicators, browser consent, and per-client revocable bearer credentials stored through the settings/secret substrate. The consent page exposes the capability set:
+- [ ] **Agent authentication.** MCP OAuth authorization-code flow with PKCE,
+  public dynamic clients, protected-resource metadata, resource indicators, and
+  per-Session revocable bearer credentials stored through the settings/secret
+  substrate. The browser is a read-only handoff page; approval occurs only in a
+  native PwrSnap window where the user sets a unique Session Name. Effective
+  access resolves through one reusable role profile per Session, including
+  capability grants, capture-age scope, and SQLite-backed sliding-window
+  budgets. See the focused local-agent plan's 2026-08-01 amendment. Initial
+  permission classes include:
   - `read` — list/preview captures.
   - `capture` — region/window/full-screen capture.
   - `annotate` — upsert overlays.

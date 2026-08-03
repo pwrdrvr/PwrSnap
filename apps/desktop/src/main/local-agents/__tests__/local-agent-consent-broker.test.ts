@@ -53,6 +53,7 @@ describe("LocalAgentConsentBroker", () => {
     expect(broker.decide(context(), {
       requestId: "native-request-1",
       decision: "allow",
+      sessionName: "Codex",
       capabilities: ["library.read"]
     })).toMatchObject({ ok: false, error: { code: "untrusted_consent_source" } });
 
@@ -71,10 +72,12 @@ describe("LocalAgentConsentBroker", () => {
     expect(broker.decide(context(41), {
       requestId: "native-request-1",
       decision: "allow",
+      sessionName: "Codex Work",
       capabilities: ["library.read", "trash.write"]
     })).toEqual({ ok: true, value: undefined });
     await expect(decision).resolves.toEqual({
       decision: "allow",
+      sessionName: "Codex Work",
       capabilities: ["library.read", "trash.write"]
     });
     expect(window.close).toHaveBeenCalledOnce();
@@ -96,7 +99,11 @@ describe("LocalAgentConsentBroker", () => {
     });
 
     controller.abort();
-    await expect(decision).resolves.toEqual({ decision: "deny", capabilities: [] });
+    await expect(decision).resolves.toEqual({
+      decision: "deny",
+      sessionName: "",
+      capabilities: []
+    });
     expect(window.close).toHaveBeenCalledOnce();
   });
 });

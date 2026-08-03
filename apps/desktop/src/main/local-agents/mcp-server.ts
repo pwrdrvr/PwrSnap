@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type {
   IncomingMessage,
   Server as HttpServer,
@@ -74,8 +75,21 @@ import {
 const log = getMainLogger("pwrsnap:local-agent-mcp");
 const MCP_PATH = "/mcp";
 const MEDIA_PATH = "/media";
+const AUTHORIZATION_STATUS_PATH = "/authorize/status";
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+const BROWSER_AUTHORIZATION_TTL_MS = 5 * 60 * 1_000;
+const MAX_BROWSER_AUTHORIZATIONS = 64;
 export const LOCAL_AGENT_MCP_PORT = 51_729;
+
+type BrowserAuthorizationResult =
+  | { kind: "redirect"; url: string }
+  | { kind: "error"; status: number; error: string; description: string };
+
+type BrowserAuthorizationRecord = {
+  controller: AbortController;
+  expiresAtMs: number;
+  result: BrowserAuthorizationResult | null;
+};
 
 type GrantService = Pick<
   LocalAgentGrantService,
@@ -121,6 +135,10 @@ export class LocalAgentMcpServer {
   private server: HttpServer | null = null;
   private address: LocalAgentMcpServerAddress | null = null;
   private oauth: LocalAgentOAuthProvider | null = null;
+  private readonly browserAuthorizations = new Map<
+    string,
+    BrowserAuthorizationRecord
+  >();
   private closed = false;
 
   constructor(options: LocalAgentMcpServerOptions) {
@@ -309,6 +327,15 @@ export class LocalAgentMcpServer {
           }
         });
       });
+      app.get(
+        AUTHORIZATION_STATUS_PATH,
+        (req: ExpressRequest, res: ExpressResponse) => {
+          this.handleAuthorizationStatusRequest(
+            new URL(req.originalUrl, issuerUrl),
+            res
+          );
+        }
+      );
       app.post("/authorize", (_req: ExpressRequest, res: ExpressResponse) => {
         res.setHeader("allow", "GET");
         writeJsonResponse(res, 405, {
@@ -388,6 +415,10 @@ export class LocalAgentMcpServer {
   async stop(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    for (const record of this.browserAuthorizations.values()) {
+      record.controller.abort();
+    }
+    this.browserAuthorizations.clear();
     const server = this.server;
     this.server = null;
     this.address = null;
@@ -558,6 +589,7 @@ export class LocalAgentMcpServer {
       oauth.handleConsentDecision({
         transactionId: result.transactionId,
         decision: "deny",
+        sessionName: "",
         capabilities: []
       });
       writeJsonResponse(res, 503, {
@@ -567,48 +599,157 @@ export class LocalAgentMcpServer {
       return;
     }
 
-    const controller = new AbortController();
-    const onClose = (): void => {
-      if (!res.writableEnded) controller.abort();
-    };
-    res.once("close", onClose);
-    let decision: LocalAgentConsentDecision;
-    try {
-      decision = await requestConsent({
-        clientId: result.client.client_id,
-        clientName: result.client.client_name?.trim() || "Local MCP client",
-        requestedCapabilities: result.requestedCapabilities,
-        signal: controller.signal
-      });
-    } catch (cause) {
-      oauth.handleConsentDecision({
-        transactionId: result.transactionId,
-        decision: "deny",
-        capabilities: []
-      });
-      throw cause;
-    } finally {
-      res.off("close", onClose);
+    const browserRequestId = this.createBrowserAuthorization();
+    const record = this.browserAuthorizations.get(browserRequestId);
+    if (record === undefined) {
+      throw new Error("Browser authorization request was not created");
     }
-    const completed = oauth.handleConsentDecision({
+    void this.resolveNativeAuthorization({
+      browserRequestId,
+      oauth,
       transactionId: result.transactionId,
-      decision: decision.decision,
-      capabilities: decision.capabilities
+      clientId: result.client.client_id,
+      clientName: result.client.client_name?.trim() || "Local MCP client",
+      requestedCapabilities: result.requestedCapabilities,
+      signal: record.controller.signal,
+      requestConsent
     });
-    if (res.destroyed) return;
-    if (completed.kind === "redirect") {
-      res.writeHead(302, { location: completed.url, "cache-control": "no-store" });
+    writeAuthorizationPage(res, {
+      statusCode: 200,
+      title: "Continue in PwrSnap",
+      message:
+        "PwrSnap opened a native approval window. Review the Session Name and permissions there to continue.",
+      statusUrl: `${AUTHORIZATION_STATUS_PATH}?id=${encodeURIComponent(browserRequestId)}`
+    });
+  }
+
+  private handleAuthorizationStatusRequest(
+    requestUrl: URL,
+    res: ServerResponse
+  ): void {
+    this.pruneBrowserAuthorizations();
+    const browserRequestId = requestUrl.searchParams.get("id");
+    if (browserRequestId === null) {
+      writeAuthorizationPage(res, {
+        statusCode: 404,
+        title: "Approval request expired",
+        message: "Return to your MCP client and start a new PwrSnap login request."
+      });
+      return;
+    }
+    const record = this.browserAuthorizations.get(browserRequestId);
+    if (record === undefined) {
+      writeAuthorizationPage(res, {
+        statusCode: 404,
+        title: "Approval request expired",
+        message: "Return to your MCP client and start a new PwrSnap login request."
+      });
+      return;
+    }
+    if (record.result === null) {
+      writeAuthorizationPage(res, {
+        statusCode: 200,
+        title: "Continue in PwrSnap",
+        message:
+          "PwrSnap is waiting for your decision in its native approval window.",
+        statusUrl: `${AUTHORIZATION_STATUS_PATH}?id=${encodeURIComponent(browserRequestId)}`
+      });
+      return;
+    }
+    this.browserAuthorizations.delete(browserRequestId);
+    if (record.result.kind === "redirect") {
+      res.writeHead(302, {
+        location: record.result.url,
+        "cache-control": "no-store"
+      });
       res.end();
       return;
     }
-    if (completed.kind === "error") {
-      writeJsonResponse(res, completed.status, {
-        error: completed.error,
-        error_description: completed.description
+    writeAuthorizationPage(res, {
+      statusCode: record.result.status,
+      title: "PwrSnap could not complete approval",
+      message: record.result.description
+    });
+  }
+
+  private createBrowserAuthorization(): string {
+    this.pruneBrowserAuthorizations();
+    if (this.browserAuthorizations.size >= MAX_BROWSER_AUTHORIZATIONS) {
+      const oldest = this.browserAuthorizations.keys().next().value as
+        | string
+        | undefined;
+      if (oldest !== undefined) {
+        this.browserAuthorizations.get(oldest)?.controller.abort();
+        this.browserAuthorizations.delete(oldest);
+      }
+    }
+    const browserRequestId = randomBytes(32).toString("base64url");
+    this.browserAuthorizations.set(browserRequestId, {
+      controller: new AbortController(),
+      expiresAtMs: Date.now() + BROWSER_AUTHORIZATION_TTL_MS,
+      result: null
+    });
+    return browserRequestId;
+  }
+
+  private pruneBrowserAuthorizations(): void {
+    const nowMs = Date.now();
+    for (const [browserRequestId, record] of this.browserAuthorizations) {
+      if (record.expiresAtMs > nowMs) continue;
+      record.controller.abort();
+      this.browserAuthorizations.delete(browserRequestId);
+    }
+  }
+
+  private async resolveNativeAuthorization(input: {
+    browserRequestId: string;
+    oauth: LocalAgentOAuthProvider;
+    transactionId: string;
+    clientId: string;
+    clientName: string;
+    requestedCapabilities: readonly LocalAgentCapability[];
+    signal: AbortSignal;
+    requestConsent: NonNullable<LocalAgentMcpServerOptions["requestConsent"]>;
+  }): Promise<void> {
+    let decision: LocalAgentConsentDecision;
+    try {
+      decision = await input.requestConsent({
+        clientId: input.clientId,
+        clientName: input.clientName,
+        requestedCapabilities: input.requestedCapabilities,
+        signal: input.signal
       });
+    } catch (cause) {
+      input.oauth.handleConsentDecision({
+        transactionId: input.transactionId,
+        decision: "deny",
+        sessionName: "",
+        capabilities: []
+      });
+      log.warn("Native MCP authorization failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      const record = this.browserAuthorizations.get(input.browserRequestId);
+      if (record !== undefined) {
+        record.result = {
+          kind: "error",
+          status: 500,
+          error: "server_error",
+          description: "PwrSnap could not complete the native approval request."
+        };
+      }
       return;
     }
-    writeJsonResponse(res, 500, { error: "server_error" });
+    const completed = input.oauth.handleConsentDecision({
+      transactionId: input.transactionId,
+      decision: decision.decision,
+      sessionName: decision.sessionName,
+      capabilities: decision.capabilities
+    });
+    const record = this.browserAuthorizations.get(input.browserRequestId);
+    if (record !== undefined && completed.kind !== "consent") {
+      record.result = completed;
+    }
   }
 
   private async handleMediaRequest(
@@ -931,6 +1072,77 @@ function writeJsonResponse(
     "content-type": "application/json"
   });
   response.end(JSON.stringify(body));
+}
+
+function writeAuthorizationPage(
+  response: ServerResponse,
+  input: {
+    statusCode: number;
+    title: string;
+    message: string;
+    statusUrl?: string;
+  }
+): void {
+  const refresh =
+    input.statusUrl === undefined
+      ? ""
+      : `<meta http-equiv="refresh" content="1;url=${escapeHtml(input.statusUrl)}">`;
+  const waiting =
+    input.statusUrl === undefined
+      ? ""
+      : '<p class="waiting" aria-live="polite">Waiting for PwrSnap…</p>';
+  const body = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  ${refresh}
+  <title>${escapeHtml(input.title)} · PwrSnap</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #000; color: #f7f4f0; }
+    main { width: min(32rem, calc(100vw - 3rem)); }
+    .brand { margin: 0 0 2rem; font-size: 1.1rem; font-weight: 750; letter-spacing: -.02em; }
+    .brand span { color: #ff8a1f; }
+    h1 { margin: 0 0 1rem; font-size: clamp(2rem, 7vw, 3.5rem); line-height: 1; letter-spacing: -.055em; }
+    p { color: #c9c4bd; font-size: 1.05rem; line-height: 1.55; }
+    .waiting { color: #ff9c43; font-weight: 650; }
+    .boundary { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #2e2b28; color: #8f8a84; font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="brand">Pwr<span>Snap</span></p>
+    <h1>${escapeHtml(input.title)}</h1>
+    <p>${escapeHtml(input.message)}</p>
+    ${waiting}
+    <p class="boundary">This browser page cannot approve access. Approval is accepted only in PwrSnap.</p>
+  </main>
+</body>
+</html>`;
+  response.writeHead(input.statusCode, {
+    "cache-control": "no-store",
+    "content-security-policy":
+      "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+    "content-type": "text/html; charset=utf-8",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY"
+  });
+  response.end(body);
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => {
+    switch (character) {
+      case "&": return "&amp;";
+      case "<": return "&lt;";
+      case ">": return "&gt;";
+      case '"': return "&quot;";
+      case "'": return "&#39;";
+      default: return character;
+    }
+  });
 }
 
 async function toWebRequest(request: IncomingMessage, url: URL): Promise<Request> {

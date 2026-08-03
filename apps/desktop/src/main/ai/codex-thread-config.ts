@@ -82,6 +82,12 @@ export const MODERN_THREAD_CONFIG: Record<string, unknown> = {
   },
   features: {
     apps: false,
+    // PwrSnap's rich tool responses can contain adjacent image + text items.
+    // Keep them as direct model tools so Code Mode does not flatten those
+    // structured items into a newline-joined string and corrupt data URLs.
+    code_mode: {
+      direct_only_tool_namespaces: ["pwrsnap_library", "pwrsnap_sizzle"]
+    },
     plugins: false,
     tool_suggest: false,
     image_generation: false,
@@ -89,6 +95,74 @@ export const MODERN_THREAD_CONFIG: Record<string, unknown> = {
     goals: false
   }
 };
+
+/**
+ * Preserve the selected profile's effective Code Mode settings when a thread
+ * overlay adds table-valued policy. Codex also accepts the standard scalar
+ * feature form (`features.code_mode = true`); replacing that scalar with a
+ * table that omits `enabled` silently falls back to false. Arrays replace
+ * lower-layer arrays, so direct-only namespaces must be explicitly unioned.
+ */
+export function withEffectiveCodeModeSettings(
+  baseConfig: Record<string, unknown> | undefined,
+  configReadResponse: unknown
+): Record<string, unknown> | undefined {
+  const baseFeatures = asRecord(baseConfig?.["features"]);
+  const baseCodeMode = asRecord(baseFeatures?.["code_mode"]);
+  if (baseConfig === undefined || baseFeatures === null || baseCodeMode === null) {
+    return baseConfig;
+  }
+
+  const effectiveConfig = asRecord(asRecord(configReadResponse)?.["config"]);
+  const effectiveFeatures = asRecord(effectiveConfig?.["features"]);
+  const effectiveCodeMode = effectiveFeatures?.["code_mode"];
+  const effectiveCodeModeTable = asRecord(effectiveCodeMode);
+  const enabled =
+    typeof effectiveCodeMode === "boolean"
+      ? effectiveCodeMode
+      : effectiveCodeModeTable?.["enabled"];
+  const effectiveDirectOnlyNamespaces = stringArray(
+    effectiveCodeModeTable?.["direct_only_tool_namespaces"]
+  );
+  if (typeof enabled !== "boolean" && effectiveDirectOnlyNamespaces === null) {
+    return baseConfig;
+  }
+
+  const baseDirectOnlyNamespaces =
+    stringArray(baseCodeMode["direct_only_tool_namespaces"]) ?? [];
+  const directOnlyToolNamespaces = [
+    ...new Set([
+      ...(effectiveDirectOnlyNamespaces ?? []),
+      ...baseDirectOnlyNamespaces
+    ])
+  ];
+
+  return {
+    ...baseConfig,
+    features: {
+      ...baseFeatures,
+      code_mode: {
+        ...baseCodeMode,
+        ...(effectiveDirectOnlyNamespaces !== null
+          ? { direct_only_tool_namespaces: directOnlyToolNamespaces }
+          : {}),
+        ...(typeof enabled === "boolean" ? { enabled } : {})
+      }
+    }
+  };
+}
+
+function stringArray(value: unknown): string[] | null {
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? value
+    : null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
 
 type MajorMinor = readonly [number, number];
 

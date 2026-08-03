@@ -163,6 +163,33 @@ materialize in the VM — push the object to origin (any branch) first.
 needs repo admin. Check `gh auth status`, and that the token has the
 `repo` scope (classic) or actions:write (fine-grained).
 
+## Runners online+idle but jobs queue forever
+
+**Symptom.** The self-hosted lane's jobs sit "Queued" indefinitely.
+The runner shows Online and Idle in the org's runner list, labels
+match, the workflow's `runs-on` is correct — nothing errors anywhere.
+Hit live on 2026-08-03.
+
+**Root cause.** The "PwrDrvr macOS" organization runner group had
+`allows_public_repositories=false` (GitHub's default for a new group).
+PwrSnap and PwrAgent are public repositories, so the group silently
+refuses their jobs: GitHub never assigns work to the group's runners
+and surfaces no error on the job, the runner, or the group.
+
+**Fix.** Re-run `./runner/configure-shared-runner-group.sh` — it now
+sets `allows_public_repositories=true` at group creation and re-asserts
+it on an existing group. Manual equivalent (group id from
+`gh api orgs/pwrdrvr/actions/runner-groups`):
+
+```bash
+gh api --method PATCH orgs/pwrdrvr/actions/runner-groups/<id> -F allows_public_repositories=true
+```
+
+Verify with `gh api orgs/pwrdrvr/actions/runner-groups --jq
+'.runner_groups[] | {name, allows_public_repositories}'`. Queued jobs
+pick up within seconds once the flag is set. This flag is part of the
+security model on purpose — see SKILL.md §"Security model", item 3.
+
 ## SSH key auth stops working after re-cloning a VM
 
 Clones inherit `authorized_keys` from their source, so clones of

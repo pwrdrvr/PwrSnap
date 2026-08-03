@@ -31,13 +31,21 @@ done
 
 if [[ -z "$GROUP_ID" ]]; then
   echo ">> creating organization runner group: $RUNNER_GROUP"
-  CREATE_ARGS=(--method POST "orgs/$ORGANIZATION/actions/runner-groups" -f "name=$RUNNER_GROUP" -f "visibility=selected")
+  # allows_public_repositories defaults to false; PwrSnap and PwrAgent are
+  # public, so without it the group silently refuses every job (runners sit
+  # online+idle while jobs queue forever).
+  CREATE_ARGS=(--method POST "orgs/$ORGANIZATION/actions/runner-groups" -f "name=$RUNNER_GROUP" -f "visibility=selected" -F "allows_public_repositories=true")
   for repository_id in "${REPOSITORY_IDS[@]}"; do
     CREATE_ARGS+=(-F "selected_repository_ids[]=$repository_id")
   done
   GROUP_ID=$(gh api "${CREATE_ARGS[@]}" --jq .id)
 else
   echo ">> organization runner group already exists: $RUNNER_GROUP ($GROUP_ID)"
+  echo ">> ensuring the group accepts jobs from public repositories"
+  gh api --method PATCH \
+    "orgs/$ORGANIZATION/actions/runner-groups/$GROUP_ID" \
+    -F "allows_public_repositories=true" \
+    >/dev/null
 fi
 
 for index in "${!REPOSITORIES[@]}"; do

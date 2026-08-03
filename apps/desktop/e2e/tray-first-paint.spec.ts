@@ -18,9 +18,8 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "@playwright/test";
 import sharp from "sharp";
-import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
 
 const isMac = process.platform === "darwin";
 const ITERATIONS = Number.parseInt(process.env.PWRSNAP_TRAY_PAINT_RUNS ?? "5", 10);

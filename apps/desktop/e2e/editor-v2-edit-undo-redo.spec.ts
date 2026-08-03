@@ -30,8 +30,8 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { expect, test, type Page } from "@playwright/test";
-import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { type Page } from "@playwright/test";
+import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
 import { openEditor, selectTool } from "./fixtures/editor";
 
 test.setTimeout(90_000);

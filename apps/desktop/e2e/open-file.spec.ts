@@ -23,7 +23,6 @@
 //      window did NOT spawn for an unknown captureId, and the library
 //      is the front-most user-facing surface.
 
-import { expect, test } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -32,7 +31,7 @@ import { writeFileSync } from "node:fs";
 import sharp from "sharp";
 import yazl from "yazl";
 
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 const isMac = process.platform === "darwin";
 

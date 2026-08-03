@@ -21,8 +21,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { expect, test } from "@playwright/test";
-import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
 import { seedImageCapture } from "./fixtures/editor";
 
 test.setTimeout(120_000);

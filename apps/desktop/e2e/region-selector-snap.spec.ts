@@ -21,8 +21,8 @@
 // Renderer logic is platform-agnostic; the Swift helper is
 // macOS-only but we mock the snapshot here so this runs everywhere.
 
-import { expect, test, type Page } from "@playwright/test";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { type Page } from "@playwright/test";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 const SYNTHETIC_WINDOW = {
   windowId: 4242,

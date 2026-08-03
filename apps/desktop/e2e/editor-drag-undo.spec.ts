@@ -11,8 +11,8 @@
 // draft-geometry.test.ts (pruneLandedDraftGeometry); this is the
 // end-to-end "the glyph actually moves back" check.
 
-import { expect, test, type Locator } from "@playwright/test";
-import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { type Locator } from "@playwright/test";
+import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
 import {
   accel,
   drawAnnotation,

@@ -33,8 +33,7 @@
 // which wires the same resize channel + creates the same BrowserWindow
 // the production click handler does — only the icon is bypassed.
 
-import { expect, test } from "@playwright/test";
-import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
 
 const isMac = process.platform === "darwin";
 

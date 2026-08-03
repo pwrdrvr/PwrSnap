@@ -28,8 +28,8 @@
 
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { expect, test, type Page } from "@playwright/test";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { type Page } from "@playwright/test";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 import { seedImageCapture } from "./fixtures/editor";
 
 test.setTimeout(120_000);

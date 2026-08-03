@@ -8,10 +8,9 @@
 // run this first; the rest are gated implicitly on the fixture's
 // launch succeeding.
 
-import { expect, test } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 test("library window boots and renders the brand mark", async () => {
   const app = await launchPwrSnap();

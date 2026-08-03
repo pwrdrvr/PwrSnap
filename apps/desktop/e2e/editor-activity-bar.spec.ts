@@ -20,8 +20,8 @@
 // dispatch; this spec exercises the real file-on-disk round-trip
 // through `settings:write`.
 
-import { expect, test, type Page } from "@playwright/test";
-import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { type Page } from "@playwright/test";
+import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
 import { openEditor, seedImageCapture } from "./fixtures/editor";
 
 test.setTimeout(120_000);

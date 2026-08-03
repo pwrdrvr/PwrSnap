@@ -21,8 +21,7 @@
 //
 // macOS-only — `setSimpleFullScreen` is a no-op on Linux / Windows.
 
-import { expect, test } from "@playwright/test";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 const isMac = process.platform === "darwin";
 

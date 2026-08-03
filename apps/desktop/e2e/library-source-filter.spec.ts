@@ -1,8 +1,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { expect, test } from "@playwright/test";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 const HEAD_PAGE_SIZE = 100;
 const PRIMARY_BUNDLE_ID = "com.pwrsnap.synth.recent-feed";

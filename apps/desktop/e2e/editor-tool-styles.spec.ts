@@ -15,8 +15,8 @@
 // all run together. This file is the contract for "the user picks red
 // in arrow, closes the editor, reopens it, and red is still selected."
 
-import { expect, test, type Page } from "@playwright/test";
-import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
+import { type Page } from "@playwright/test";
+import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
 import { openEditor, seedImageCapture, selectTool } from "./fixtures/editor";
 
 // First spec in the file cold-starts Electron; later specs benefit from

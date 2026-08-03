@@ -9,8 +9,7 @@
 // don't have them). For Linux CI we just verify the windows opened
 // with the right titles/positions — enough to keep the harness honest.
 
-import { expect, test } from "@playwright/test";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 import { FOUR_TILE_GRID, spawnTargetWindows } from "./fixtures/target-windows";
 
 test("FOUR_TILE_GRID spawns four titled windows at the expected positions", async () => {

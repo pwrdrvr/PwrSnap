@@ -35,10 +35,27 @@
 // (decide-previous-app-pid.test.ts) covers the pure-logic half of
 // the fix; this spec covers the platform-side half.
 
-import { expect, test } from "@playwright/test";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { expect, launchPwrSnap, test, withTimeout } from "./fixtures/electron-app";
 
 const isMac = process.platform === "darwin";
+
+/** Bound on every main-process evaluate this spec makes. A healthy
+ *  round-trip is milliseconds; a wedged main never answers. Unbounded,
+ *  a wedge parks the test on the await until the 30s test timeout —
+ *  which abandons the test body (its finally never runs), leaks the
+ *  app, and converts a retryable flake into a worker-teardown failure.
+ *  Bounded, the test fails fast, its finally closes the app, and the
+ *  retry gets a clean worker. Same reasoning as DISPATCH_TIMEOUT_MS in
+ *  the fixture. */
+const EVAL_TIMEOUT_MS = 10_000;
+
+function boundedEval<T>(promise: Promise<T>, what: string): Promise<T> {
+  return withTimeout(
+    promise,
+    EVAL_TIMEOUT_MS,
+    `${what} evaluate timed out after ${EVAL_TIMEOUT_MS}ms (main process unresponsive?)`
+  );
+}
 
 type BridgeShape = {
   dockIsVisible: () => boolean;
@@ -52,46 +69,65 @@ type BridgeShape = {
 async function dockIsVisible(
   app: Awaited<ReturnType<typeof launchPwrSnap>>
 ): Promise<boolean> {
-  return app.electronApp.evaluate(() => {
-    const bridge = (
-      globalThis as unknown as { __PWRSNAP_TEST__: BridgeShape }
-    ).__PWRSNAP_TEST__;
-    return bridge.dockIsVisible();
-  });
+  return boundedEval(
+    app.electronApp.evaluate(() => {
+      const bridge = (
+        globalThis as unknown as { __PWRSNAP_TEST__: BridgeShape }
+      ).__PWRSNAP_TEST__;
+      return bridge.dockIsVisible();
+    }),
+    "dockIsVisible"
+  );
 }
 
 async function dockShow(app: Awaited<ReturnType<typeof launchPwrSnap>>): Promise<void> {
-  await app.electronApp.evaluate(() => {
-    (globalThis as unknown as { __PWRSNAP_TEST__: BridgeShape }).__PWRSNAP_TEST__.dockShow();
-  });
+  await boundedEval(
+    app.electronApp.evaluate(() => {
+      (globalThis as unknown as { __PWRSNAP_TEST__: BridgeShape }).__PWRSNAP_TEST__.dockShow();
+    }),
+    "dockShow"
+  );
 }
 
 async function dockHide(app: Awaited<ReturnType<typeof launchPwrSnap>>): Promise<void> {
-  await app.electronApp.evaluate(() => {
-    (globalThis as unknown as { __PWRSNAP_TEST__: BridgeShape }).__PWRSNAP_TEST__.dockHide();
-  });
+  await boundedEval(
+    app.electronApp.evaluate(() => {
+      (globalThis as unknown as { __PWRSNAP_TEST__: BridgeShape }).__PWRSNAP_TEST__.dockHide();
+    }),
+    "dockHide"
+  );
 }
 
 async function forceReclaim(app: Awaited<ReturnType<typeof launchPwrSnap>>): Promise<void> {
-  await app.electronApp.evaluate(() => {
-    (globalThis as unknown as { __PWRSNAP_TEST__: BridgeShape }).__PWRSNAP_TEST__
-      .forceReclaimDockIcon();
-  });
+  await boundedEval(
+    app.electronApp.evaluate(() => {
+      (globalThis as unknown as { __PWRSNAP_TEST__: BridgeShape }).__PWRSNAP_TEST__
+        .forceReclaimDockIcon();
+    }),
+    "forceReclaimDockIcon"
+  );
 }
 
 async function getLibraryState(
   app: Awaited<ReturnType<typeof launchPwrSnap>>
 ): Promise<{ exists: boolean; visible: boolean; focused: boolean }> {
-  return app.electronApp.evaluate(() => {
-    return (globalThis as unknown as { __PWRSNAP_TEST__: BridgeShape }).__PWRSNAP_TEST__
-      .getLibraryState();
-  });
+  return boundedEval(
+    app.electronApp.evaluate(() => {
+      return (globalThis as unknown as { __PWRSNAP_TEST__: BridgeShape }).__PWRSNAP_TEST__
+        .getLibraryState();
+    }),
+    "getLibraryState"
+  );
 }
 
 async function ensureLibrary(app: Awaited<ReturnType<typeof launchPwrSnap>>): Promise<void> {
-  await app.electronApp.evaluate(() => {
-    (globalThis as unknown as { __PWRSNAP_TEST__: BridgeShape }).__PWRSNAP_TEST__.ensureLibrary();
-  });
+  await boundedEval(
+    app.electronApp.evaluate(() => {
+      (globalThis as unknown as { __PWRSNAP_TEST__: BridgeShape }).__PWRSNAP_TEST__
+        .ensureLibrary();
+    }),
+    "ensureLibrary"
+  );
 }
 
 /** Poll `dockIsVisible` until it matches `expected`, or fail. The
@@ -233,8 +269,8 @@ test.describe("Dock icon lifecycle (macOS)", () => {
     // helper should not second-guess that.
     const app = await launchPwrSnap();
     try {
-      // Close the only window — `findMainLibraryWindow` should
-      // return null after this.
+      // Close the Library — `findMainLibraryWindow` should return
+      // null after this.
       //
       // We wait for the close + state-clear inside the same
       // electronApp.evaluate so the singleton ref is null by the
@@ -242,20 +278,42 @@ test.describe("Dock icon lifecycle (macOS)", () => {
       // (Playwright's handle on the renderer Page) after we've
       // explicitly destroyed it — Playwright marks the page as
       // closed at that point and any `app.window.*` call rejects.
-      await app.electronApp.evaluate(async ({ BrowserWindow }) => {
-        for (const win of BrowserWindow.getAllWindows()) {
-          if (win.isDestroyed()) continue;
-          const url = win.webContents.getURL();
-          // Library has no stage= fragment; close only it.
-          if (!url.includes("stage=")) {
-            const closed = new Promise<void>((resolve) => {
-              win.once("closed", () => resolve());
+      //
+      // Target the Library POSITIVELY (renderer index.html, no
+      // stage= fragment — same discrimination as the fixture's
+      // waitForLibraryWindow). An earlier version used the negative
+      // filter `!url.includes("stage=")`, which also matched the
+      // focus-sink (`data:text/html,`) and any pre-warm window still
+      // mid-load (empty URL until the navigation commits) — closing
+      // windows this test doesn't own, and parking the awaited
+      // "closed" on close behavior we don't control. And bound the
+      // wait itself: `close()` is the production path (fires the
+      // close→closed chain the dock-hide contract rides), but it
+      // round-trips through the renderer's unload handling, which a
+      // loaded VM can stall — after 3s fall back to `destroy()`,
+      // which skips unload and always emits "closed". The outer
+      // withTimeout is the last-resort bound (see boundedEval).
+      await withTimeout(
+        app.electronApp.evaluate(async ({ BrowserWindow }) => {
+          for (const win of BrowserWindow.getAllWindows()) {
+            if (win.isDestroyed()) continue;
+            const url = win.webContents.getURL();
+            if (!url.includes("/renderer/index.html") || url.includes("stage=")) continue;
+            await new Promise<void>((resolve) => {
+              const fallback = setTimeout(() => {
+                if (!win.isDestroyed()) win.destroy();
+              }, 3_000);
+              win.once("closed", () => {
+                clearTimeout(fallback);
+                resolve();
+              });
+              win.close();
             });
-            win.close();
-            await closed;
           }
-        }
-      });
+        }),
+        15_000,
+        "library close evaluate timed out (main process unresponsive?)"
+      );
 
       const state = await getLibraryState(app);
       expect(state.exists, "Library is gone after close").toBe(false);
@@ -268,8 +326,11 @@ test.describe("Dock icon lifecycle (macOS)", () => {
       // 200ms grace — if the reclaim WERE going to show the dock,
       // the policy write would have landed by now. Use a main-side
       // wait since app.window (the Library Page) is destroyed.
-      await app.electronApp.evaluate(
-        () => new Promise<void>((resolve) => setTimeout(resolve, 200))
+      await boundedEval(
+        app.electronApp.evaluate(
+          () => new Promise<void>((resolve) => setTimeout(resolve, 200))
+        ),
+        "post-reclaim grace"
       );
       expect(
         await dockIsVisible(app),

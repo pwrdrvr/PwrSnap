@@ -11,8 +11,7 @@
 // instead, which can't be simulated from a spec — the flag path keeps
 // the boot branch itself covered everywhere.
 
-import { expect, test } from "@playwright/test";
-import { launchPwrSnapWindowless } from "./fixtures/electron-app";
+import { expect, launchPwrSnapWindowless, test } from "./fixtures/electron-app";
 
 /** Count live library windows in main — same predicate as the launch
  *  fixture's `waitForLibraryWindow` (renderer index.html, no

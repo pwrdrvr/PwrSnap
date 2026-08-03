@@ -7,8 +7,8 @@
 // screencapture round-trips live in region-capture.spec.ts under the
 // macOS-only opt-in gate.
 
-import { expect, test, type Page } from "@playwright/test";
-import { launchPwrSnap } from "./fixtures/electron-app";
+import { type Page } from "@playwright/test";
+import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 /** Find the pre-warmed region-selector BrowserWindow by URL hash. */
 async function showAndGetRegionSelector(

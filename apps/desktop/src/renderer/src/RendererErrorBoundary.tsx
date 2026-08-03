@@ -67,9 +67,9 @@ export class RendererErrorBoundary extends Component<Props, State> {
           <button
             className="renderer-failure__button"
             type="button"
-            onClick={() => void dispatch("logs:openWindow", {})}
+            onClick={() => void dispatch("renderer:revealLogFile", {})}
           >
-            Open Logs
+            Reveal Log File
           </button>
         </div>
       </div>

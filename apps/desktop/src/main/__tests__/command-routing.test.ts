@@ -70,6 +70,7 @@ describe("commandOwner", () => {
     expect(commandOwner("system:listDisplays")).toBeNull();
     expect(commandOwner("app:readDocument")).toBeNull();
     expect(commandOwner("renderer:reportError")).toBeNull();
+    expect(commandOwner("renderer:revealLogFile")).toBeNull();
     expect(commandOwner("app:openExternal")).toBeNull();
     expect(commandOwner("not:aCommand")).toBeNull();
   });

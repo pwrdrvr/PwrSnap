@@ -3008,6 +3008,8 @@ export type Commands = {
   "logs:revealFile": { req: Record<string, never>; res: void };
   /** Persist a renderer error in the process that owns the reporting window. */
   "renderer:reportError": { req: RendererErrorReport; res: void };
+  /** Reveal the durable log owned by the process hosting this renderer. */
+  "renderer:revealLogFile": { req: Record<string, never>; res: void };
   // ---- library ----
   /**
    * Keyset-paginated timeline read. When `cursor` is omitted, returns

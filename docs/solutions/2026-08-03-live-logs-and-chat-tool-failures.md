@@ -35,4 +35,7 @@ The Logs window is library-owned because editor and sizzle chat run in the
 library process. It therefore displays the live `library.log` tail when the
 two-process split is active. The always-resident capture/agent process keeps its
 separate `main.log`, preventing two Electron processes from racing one file's
-rotation. Combined mode uses `main.log` as before.
+rotation. Combined mode uses `main.log` as before. A renderer error boundary
+does not assume which process owns it: its recovery action invokes the common,
+process-local `renderer:revealLogFile` command, revealing `main.log` for agent
+renderers and `library.log` for library renderers.

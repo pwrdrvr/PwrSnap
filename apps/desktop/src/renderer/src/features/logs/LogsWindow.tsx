@@ -112,7 +112,7 @@ export function LogsWindow(): ReactElement {
   }, [activeMatchIndex, rendered.matchCount]);
   useEffect(() => {
     activeMatchRef.current?.scrollIntoView({ block: "center", inline: "nearest" });
-  }, [activeMatchIndex]);
+  }, [activeMatchIndex, query, rendered.lines]);
 
   const toggleLevel = useCallback(async (level: LogLevelFilter) => {
     const next = selectedLevels.includes(level)

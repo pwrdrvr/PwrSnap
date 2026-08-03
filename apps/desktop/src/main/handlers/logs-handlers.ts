@@ -27,6 +27,19 @@ function snapshot() {
   });
 }
 
+function revealCurrentProcessLogFile() {
+  const logFilePath = getMainLogFilePath();
+  if (logFilePath === undefined) {
+    return err({
+      kind: "unknown" as const,
+      code: "log_file_unavailable",
+      message: "The PwrSnap log file path is unavailable"
+    });
+  }
+  shell.showItemInFolder(logFilePath);
+  return ok(undefined);
+}
+
 /** Library-owned handlers for the live log viewer and its durable file. */
 export function registerLogsHandlers(): void {
   if (unsubscribeLogEntries === null) {
@@ -57,18 +70,7 @@ export function registerLogsHandlers(): void {
     return ok(undefined);
   });
 
-  bus.register("logs:revealFile", async () => {
-    const logFilePath = getMainLogFilePath();
-    if (logFilePath === undefined) {
-      return err({
-        kind: "unknown",
-        code: "log_file_unavailable",
-        message: "The PwrSnap log file path is unavailable"
-      });
-    }
-    shell.showItemInFolder(logFilePath);
-    return ok(undefined);
-  });
+  bus.register("logs:revealFile", async () => revealCurrentProcessLogFile());
 }
 
 /**
@@ -87,6 +89,11 @@ export function registerRendererErrorHandler(): void {
     rendererErrorLog.error("report", req);
     return ok(undefined);
   });
+
+  // This command deliberately has no split-process owner. Each process
+  // registers it locally, so an error boundary in an agent renderer reveals
+  // main.log while a library renderer reveals library.log.
+  bus.register("renderer:revealLogFile", async () => revealCurrentProcessLogFile());
 }
 
 export function _disposeLogEntrySubscriptionForTests(): void {

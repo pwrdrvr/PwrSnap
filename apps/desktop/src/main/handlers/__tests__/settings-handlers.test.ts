@@ -535,6 +535,52 @@ describe("settings:* validation", () => {
     expect(result.error.code).toBe("invalid_force");
   });
 
+  test("E2E suppresses automatic Codex discovery but permits an explicit forced probe", async () => {
+    const originalE2E = process.env.PWRSNAP_E2E;
+    const { DesktopSettingsService } = await import(
+      "../../settings/desktop-settings-service"
+    );
+    const explicitSnapshot = {
+      candidates: [],
+      resolvedPath: null,
+      auth: null,
+      refreshedAt: "2026-08-03T00:00:00.000Z"
+    };
+    const discovery = vi
+      .spyOn(DesktopSettingsService.prototype, "getCodexDiscoverySnapshot")
+      .mockResolvedValue(explicitSnapshot);
+
+    process.env.PWRSNAP_E2E = "1";
+    try {
+      const automatic = await bus.dispatch(
+        "settings:refreshCodexDiscovery",
+        { force: false },
+        { principal: "ipc" }
+      );
+      expect(automatic.ok).toBe(true);
+      if (!automatic.ok) throw new Error("unreachable");
+      expect(automatic.value).toMatchObject({
+        candidates: [],
+        resolvedPath: null,
+        auth: null
+      });
+      expect(discovery).not.toHaveBeenCalled();
+
+      const explicit = await bus.dispatch(
+        "settings:refreshCodexDiscovery",
+        { force: true },
+        { principal: "ipc" }
+      );
+      expect(explicit).toEqual({ ok: true, value: explicitSnapshot });
+      expect(discovery).toHaveBeenCalledOnce();
+      expect(discovery).toHaveBeenCalledWith({ force: true });
+    } finally {
+      discovery.mockRestore();
+      if (originalE2E === undefined) delete process.env.PWRSNAP_E2E;
+      else process.env.PWRSNAP_E2E = originalE2E;
+    }
+  });
+
   test("settings:replaceSecret rejects unknown secret name", async () => {
     const result = await bus.dispatch(
       "settings:replaceSecret",

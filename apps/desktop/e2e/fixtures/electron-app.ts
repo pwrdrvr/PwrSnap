@@ -42,14 +42,6 @@ const fixtureDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(fixtureDir, "..", "..");
 const mainEntry = path.resolve(desktopRoot, "out", "main", "index.js");
 const ELECTRON_CLOSE_TIMEOUT_MS = 5_000;
-// Bound on the graceful `app.evaluate(exit)` round-trip during teardown.
-// On the VS2026 Windows runner the main-process event loop can wedge
-// mid window-creation; an UNBOUNDED `evaluate` then hangs the entire
-// teardown, which is what trips Playwright's 30s worker-teardown timeout
-// (reported as "an error not part of any test" — that fails the whole
-// job even when the test itself passes on retry). Keep this short: it's
-// a best-effort nicety before the forceful close/SIGKILL fallback.
-const ELECTRON_EVAL_TIMEOUT_MS = 3_000;
 // Bound on a single command-bus `dispatch` round-trip. A healthy command
 // resolves in milliseconds (the heaviest spec dispatch — region capture,
 // clipboard image encode, codex discovery — is a couple seconds at worst
@@ -312,25 +304,16 @@ async function waitForProcessExit(
 
 async function closeElectronApp(app: ElectronApplication): Promise<void> {
   const child = app.process();
-  try {
-    // Bounded: a wedged main never round-trips this `evaluate`, and an
-    // unbounded await here is exactly what hangs teardown long enough to
-    // trip Playwright's worker-teardown timeout. If it doesn't land
-    // quickly, fall through to the forceful close + SIGKILL below.
-    await withTimeout(
-      app.evaluate(({ app: electronApp }) => {
-        electronApp.dock?.hide();
-        electronApp.exit(0);
-      }),
-      ELECTRON_EVAL_TIMEOUT_MS,
-      "graceful electron exit evaluate timed out"
-    );
-  } catch {
-    // The process may exit before the evaluate call can round-trip, or
-    // the main event loop may be wedged — either way the forceful path
-    // below takes over.
-  }
-
+  // Playwright's ElectronApplication.close() asks Electron to `app.quit()`.
+  // That distinction matters for test fidelity: `app.quit()` emits
+  // `will-quit`, where PwrSnap disposes its windows, workers, timers, process
+  // pools, and DB.
+  // The old preflight called `app.exit(0)`, which Electron documents as an
+  // immediate exit that SKIPS `before-quit` and `will-quit`, bypassing the
+  // production cleanup path E2E should exercise. Bound the close promise from
+  // the outside instead. If the main event loop is wedged, the existing
+  // process-tree kill below still caps the teardown without needing a second
+  // main-process evaluate round-trip.
   const closePromise = app.close();
   const result = await waitForClose(closePromise, ELECTRON_CLOSE_TIMEOUT_MS);
   if (result === "closed" && (await waitForProcessExit(child, 1_000))) return;

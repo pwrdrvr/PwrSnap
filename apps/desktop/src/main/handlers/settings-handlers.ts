@@ -13,6 +13,7 @@ import {
   resolveLocalAgentPolicy
 } from "@pwrsnap/shared";
 import type {
+  DesktopCodexDiscoverySnapshot,
   ExportStrategy,
   LocalAgentMcpListenerStatus,
   PwrSnapError,
@@ -314,9 +315,24 @@ export function registerSettingsDataHandlers(options: {
   bus.register("settings:refreshCodexDiscovery", async (req) => {
     const validated = validateRefreshCodexDiscovery(req);
     if (!validated.ok) return err(validated.error);
+    const force = validated.value.force === true;
+    // Renderer surfaces refresh availability on mount with `force: false`.
+    // Every E2E spec launches a fresh app, so allowing those automatic reads
+    // to miss an empty cache would spawn the host's real Codex `--version` and
+    // auth probes once per app — exactly the child-process churn E2E startup
+    // must avoid. Keep `force: true` live so the dedicated discovery spec (and
+    // any intentional E2E probe) still exercises the complete host path.
+    if (process.env.PWRSNAP_E2E === "1" && !force) {
+      const skipped: DesktopCodexDiscoverySnapshot = {
+        candidates: [],
+        resolvedPath: null,
+        auth: null,
+        refreshedAt: new Date().toISOString()
+      };
+      return ok(skipped);
+    }
     const { service } = ensureServices();
     try {
-      const force = validated.value.force === true;
       const snapshot = await service.getCodexDiscoverySnapshot({ force });
       return ok(snapshot);
     } catch (cause) {

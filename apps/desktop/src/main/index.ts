@@ -1777,9 +1777,15 @@ export function bootstrapApp(): void {
       // (~0.9s) otherwise land in the window-shown→first-paint gap,
       // stalling the main thread in ~100ms chunks. Nothing on the boot
       // path consumes the result; on-demand dispatches (Settings → AI)
-      // trigger their own. E2E dispatches INLINE (pre-deferral baseline).
+      // trigger their own. E2E skips the boot probe entirely: each spec
+      // launches a fresh app, so probing the host's real Codex install on
+      // every launch adds unrelated child-process work and makes ordinary
+      // specs depend on the runner's installed Codex state. The discovery E2E
+      // dispatches the command explicitly with
+      // `force: true`; settings-handlers suppresses non-forced renderer mount
+      // probes under E2E so they cannot refill the intentionally empty cache.
       // Agent/combined only — codex is agent-owned.
-        const dispatchStartupCodexProbe = (): void => {
+      const dispatchStartupCodexProbe = (): void => {
         void bus
           .dispatch("settings:refreshCodexDiscovery", { force: true }, { principal: "ipc" })
           .then((result) => {
@@ -1791,9 +1797,7 @@ export function bootstrapApp(): void {
             }
           });
       };
-      if (isE2E) {
-        dispatchStartupCodexProbe();
-      } else {
+      if (!isE2E) {
         setTimeout(dispatchStartupCodexProbe, STARTUP_CODEX_PROBE_DELAY_MS).unref();
       }
     }

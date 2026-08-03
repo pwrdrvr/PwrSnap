@@ -143,10 +143,10 @@ describe("settings window placement", () => {
       height: 700
     });
     expect(electronMock.constructedOptions[0]).toMatchObject({
-      x: 2360,
-      y: 180,
-      width: 1040,
-      height: 720,
+      x: 2160,
+      y: 110,
+      width: 1440,
+      height: 860,
       show: false,
       title: "PwrSnap Settings"
     });
@@ -164,10 +164,28 @@ describe("settings window placement", () => {
     expect(electronMock.fromId).not.toHaveBeenCalled();
     expect(electronMock.getDisplayMatching).toHaveBeenCalledWith(sourceBounds);
     expect(electronMock.constructedOptions[0]).toMatchObject({
-      x: 4280,
-      y: 180,
-      width: 1040,
-      height: 720,
+      x: 4080,
+      y: 110,
+      width: 1440,
+      height: 860,
+      show: false,
+      title: "PwrSnap Settings"
+    });
+  });
+
+  test("clamps the expanded Settings window to a smaller display", async () => {
+    electronMock.getPrimaryDisplay.mockReturnValue({
+      workArea: { x: 0, y: 24, width: 1024, height: 700 }
+    });
+
+    const { createSettingsWindow } = await import("../window");
+    createSettingsWindow();
+
+    expect(electronMock.constructedOptions[0]).toMatchObject({
+      x: 0,
+      y: 24,
+      width: 1024,
+      height: 700,
       show: false,
       title: "PwrSnap Settings"
     });

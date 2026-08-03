@@ -115,8 +115,8 @@ export function refreshWindowsTitleBarOverlay(): void {
     }
   }
 }
-const SETTINGS_WINDOW_WIDTH = 1040;
-const SETTINGS_WINDOW_HEIGHT = 720;
+const SETTINGS_WINDOW_WIDTH = 1440;
+const SETTINGS_WINDOW_HEIGHT = 860;
 const LOCAL_AGENT_CONSENT_WINDOW_WIDTH = 680;
 const LOCAL_AGENT_CONSENT_WINDOW_HEIGHT = 760;
 const SIZZLE_WINDOW_WIDTH = 1280;
@@ -833,16 +833,15 @@ export function createSettingsWindow(
   if (settingsWindow !== null && !settingsWindow.isDestroyed()) {
     return settingsWindow;
   }
-  const position = centeredWindowBoundsOnDisplay(
-    SETTINGS_WINDOW_WIDTH,
-    SETTINGS_WINDOW_HEIGHT,
-    sourceDisplayForWindow(options)
-  );
+  const display = sourceDisplayForWindow(options);
+  const width = Math.min(SETTINGS_WINDOW_WIDTH, display.workArea.width);
+  const height = Math.min(SETTINGS_WINDOW_HEIGHT, display.workArea.height);
+  const position = centeredWindowBoundsOnDisplay(width, height, display);
   const window = new BrowserWindow({
     x: position.x,
     y: position.y,
-    width: SETTINGS_WINDOW_WIDTH,
-    height: SETTINGS_WINDOW_HEIGHT,
+    width,
+    height,
     minWidth: 720,
     minHeight: 480,
     show: false,

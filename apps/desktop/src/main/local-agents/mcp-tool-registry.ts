@@ -412,7 +412,11 @@ export function createDefaultLocalAgentMcpTools(deps: {
         threadId: z.string().min(1).optional(),
         reuse: z.enum(["latest-compatible", "new"]).optional()
       },
-      requiredCapabilities: ["capture.edit"],
+      // The PwrSnap-owned Editor Chat agent must render the current composite
+      // to ground its edits. Requiring the read capability at this outer
+      // boundary prevents an edit-only Session from starting a turn whose
+      // nested render_composite calls will inevitably be denied.
+      requiredCapabilities: ["capture.edit", "capture.composite.read"],
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,

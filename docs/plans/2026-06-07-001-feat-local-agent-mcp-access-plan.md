@@ -377,7 +377,9 @@ toggles even when a broad preset is selected.
   - Returns: deleted timestamp and restore hint.
 
 - `pwrsnap_image_edit_send`
-  - Requires: `capture.edit`
+  - Requires: `capture.edit` and `capture.composite.read`. The PwrSnap-owned
+    Editor Chat agent renders the current composite to ground its edits, so the
+    outer request must authorize the nested vision read before starting a turn.
   - Args: capture id, instruction, requested PwrSnap provider/model, optional
     thread id, reuse policy.
   - Wraps: Library Chat thread create/list/send substrate.

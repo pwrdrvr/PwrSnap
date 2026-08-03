@@ -202,7 +202,7 @@ function toolSet(): LocalAgentMcpTool<z.ZodRawShape>[] {
         captureId: z.string(),
         instruction: z.string()
       },
-      requiredCapabilities: ["capture.edit"],
+      requiredCapabilities: ["capture.edit", "capture.composite.read"],
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -746,10 +746,28 @@ describe("LocalAgentMcpServer", () => {
     })).rejects.toThrow(/last 7 days/u);
   });
 
-  test("edit-only OAuth client can start an edit without a separate media grant", async () => {
+  test("edit-only OAuth client cannot start a vision-dependent edit", async () => {
     await grantService.createGrant({
       name: "Edit-only agent",
       capabilities: ["capture.edit"]
+    });
+    const connected = await connect(await startServer(), "pws_local_mcp-token");
+
+    const denied = await connected.callTool({
+      name: "pwrsnap_image_edit_send",
+      arguments: { captureId: "cap_1", instruction: "Add an arrow" }
+    }) as CallToolResult;
+    expect(denied.isError).toBe(true);
+    expect(denied.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("capture.composite.read")
+    });
+  });
+
+  test("editor OAuth client can start an edit when it can read the composite", async () => {
+    await grantService.createGrant({
+      name: "Editor agent",
+      capabilities: ["capture.edit", "capture.composite.read"]
     });
     const connected = await connect(await startServer(), "pws_local_mcp-token");
 

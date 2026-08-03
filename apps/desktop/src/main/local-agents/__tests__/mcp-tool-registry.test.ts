@@ -254,11 +254,14 @@ describe("createDefaultLocalAgentMcpTools", () => {
     expect(
       captureExportInput.safeParse({ captureId: "cap_1", format: "webp" }).success
     ).toBe(false);
-    for (const name of ["pwrsnap_image_edit_send", "pwrsnap_image_edit_status"]) {
-      expect(tools.find((tool) => tool.name === name)?.requiredCapabilities).toEqual([
-        "capture.edit"
-      ]);
-    }
+    expect(
+      tools.find((tool) => tool.name === "pwrsnap_image_edit_send")
+        ?.requiredCapabilities
+    ).toEqual(["capture.edit", "capture.composite.read"]);
+    expect(
+      tools.find((tool) => tool.name === "pwrsnap_image_edit_status")
+        ?.requiredCapabilities
+    ).toEqual(["capture.edit"]);
   });
 
   test("annotations distinguish reads, artifact creation, AI access, and Trash", () => {

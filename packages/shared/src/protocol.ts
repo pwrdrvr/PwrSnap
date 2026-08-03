@@ -1443,6 +1443,21 @@ export type DesktopCodexDiscoverySnapshot = {
   refreshedAt: string;
 };
 
+/**
+ * Active compatibility failure from the exact Codex CLI guard that runs
+ * before PwrSnap starts App Server. The stable `key` deduplicates repeated
+ * failures while the same command/version pair remains incompatible; a
+ * successful guard clears the alert so a later regression can surface again.
+ */
+export type CodexCliCompatibilityAlert = {
+  kind: "too-old";
+  key: string;
+  command: string;
+  detectedVersion: string;
+  requiredVersion: string;
+  detectedAt: string;
+};
+
 // ---- Codex auth-profile management (Settings → AI) ---------------------
 //
 // A Codex "auth profile" maps 1:1 to a CODEX_HOME directory: the System
@@ -3739,6 +3754,12 @@ export type Commands = {
   };
   "codex:runStatus": { req: { runId: string }; res: AiRunSnapshot | null };
   "codex:budgetStatus": { req: Record<string, never>; res: AiEnrichmentBudgetStatus };
+  /** Latest active too-old CLI condition. Snapshot-read so a Library window
+   *  mounted after the guard fired still receives the durable warning. */
+  "codex:compatibilityAlert": {
+    req: Record<string, never>;
+    res: CodexCliCompatibilityAlert | null;
+  };
 
   // ---- Codex auth-profile management (Settings → AI) ----
   /** Enumerate Codex auth profiles (System default + `~/.codex/profiles/*`),

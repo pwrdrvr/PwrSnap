@@ -3,6 +3,7 @@ import { Library } from "./features/library/Library";
 import { LocalAgentConsent } from "./features/local-agents/LocalAgentConsent";
 import { LogsWindow } from "./features/logs/LogsWindow";
 import { CapturesAccessBanner } from "./features/library/CapturesAccessBanner";
+import { CodexCompatibilityBanner } from "./features/library/CodexCompatibilityBanner";
 import { CartProvider } from "./features/library/CartContext";
 import { HotCpuProfileBanner } from "./features/library/HotCpuProfileBanner";
 import { FloatOverHost } from "./features/float-over/FloatOverHost";
@@ -151,13 +152,14 @@ export function App() {
         <CartProvider>
           <Library />
         </CartProvider>
-        {/* Floating toast stack, lower-left. Both notices float OVER the
+        {/* Floating toast stack, lower-left. These notices float OVER the
             Library rather than pushing its content down, and stay clear of
             the post-capture float-over (its own bottom-right window). Each
             banner carries its own role/aria-live, so the wrapper stays a
             neutral container. */}
         <div className="app-toast-stack">
           <CapturesAccessBanner />
+          <CodexCompatibilityBanner />
           <HotCpuProfileBanner />
           <AppUpdateBanner />
         </div>

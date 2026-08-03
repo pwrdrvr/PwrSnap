@@ -355,10 +355,11 @@ body[data-stage="float-over"] .fo {
   cursor: not-allowed;
 }
 
-/* Captures-access toast (macOS TCC denial) — reuses the update toast's
-   card layout/typography, tinted danger instead of accent: a permission
-   failure is a problem notice, not a release notice. */
-.captures-access-banner {
+/* Captures-access and Codex-compatibility toasts reuse the update toast's
+   card layout/typography, tinted danger instead of accent: a permission or
+   compatibility failure is a problem notice, not a release notice. */
+.captures-access-banner,
+.codex-compatibility-banner {
   border-color: var(--danger-border);
   background: linear-gradient(
     180deg,
@@ -367,15 +368,18 @@ body[data-stage="float-over"] .fo {
   );
 }
 
-.captures-access-banner .app-update-banner__eyebrow {
+.captures-access-banner .app-update-banner__eyebrow,
+.codex-compatibility-banner .app-update-banner__eyebrow {
   color: var(--danger-text);
 }
 
-.captures-access-banner .app-update-banner__restart {
+.captures-access-banner .app-update-banner__restart,
+.codex-compatibility-banner .app-update-banner__restart {
   background: var(--danger);
   border-color: var(--danger);
 }
 
-.captures-access-banner .app-update-banner__restart:hover:not(:disabled) {
+.captures-access-banner .app-update-banner__restart:hover:not(:disabled),
+.codex-compatibility-banner .app-update-banner__restart:hover:not(:disabled) {
   background: color-mix(in oklab, var(--danger) 88%, white);
 }

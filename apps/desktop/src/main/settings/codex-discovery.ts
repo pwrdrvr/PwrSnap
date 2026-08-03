@@ -50,6 +50,11 @@ import {
 } from "@pwrdrvr/codex-discovery";
 
 import { PWRSNAP_CODEX_COMMAND_ENV } from "./env";
+import {
+  clearCodexCliCompatibilityAlert,
+  CodexCliTooOldError,
+  reportCodexCliTooOld
+} from "./codex-compatibility-alert";
 
 const execFile = promisify(execFileCallback);
 
@@ -209,10 +214,11 @@ export async function assertCodexCliVersion(
     throw new Error(`Codex CLI version banner was not recognized: ${command}`);
   }
   if (validateCodexCliVersion(version) !== undefined) {
-    throw new Error(
-      `Codex CLI ${version} is older than the minimum supported version ${MINIMUM_CODEX_CLI_VERSION}: ${command}`
+    throw new CodexCliTooOldError(
+      reportCodexCliTooOld(command, version, MINIMUM_CODEX_CLI_VERSION)
     );
   }
+  clearCodexCliCompatibilityAlert();
   return version;
 }
 

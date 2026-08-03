@@ -5,6 +5,7 @@
 // never even discovered (probing can wake CLIs like Gemini), so an agent the
 // user set up but never invokes is never touched, let alone spawned.
 
+import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import type { Settings } from "@pwrsnap/shared";
 import type { DiscoveredAcpAgentGroup } from "@pwrdrvr/agent-acp";
@@ -134,6 +135,7 @@ describe("pool key + scratch cwd", () => {
   });
 
   test("every surface derives the same scratch cwd from the chats dir", () => {
-    expect(acpPoolScratchCwd("/tmp/Chats")).toBe("/tmp/Chats/.acp-chat");
+    // join() so the expectation holds on Windows separators too.
+    expect(acpPoolScratchCwd("/tmp/Chats")).toBe(join("/tmp/Chats", ".acp-chat"));
   });
 });

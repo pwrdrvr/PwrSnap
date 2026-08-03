@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 import type {
   LocalAgentAuditEntry,
   LocalAgentClientGrant,
+  LocalAgentMcpListenerStatus,
   LocalAgentRoleProfile,
   Settings
 } from "@pwrsnap/shared";
@@ -57,12 +58,15 @@ let root: Root | null = null;
 
 function installFakeApi(
   currentGrant: LocalAgentClientGrant = grant,
-  audit: LocalAgentAuditEntry[] = []
+  audit: LocalAgentAuditEntry[] = [],
+  listenerStatus: LocalAgentMcpListenerStatus = { state: "off" }
 ): {
   dispatch: ReturnType<typeof vi.fn>;
 } {
   const dispatch = vi.fn(async (name: string, req: unknown): Promise<AnyResult> => {
-    if (name === "localAgents:list") return { ok: true, value: { grants: [currentGrant], roles } };
+    if (name === "localAgents:list") {
+      return { ok: true, value: { grants: [currentGrant], roles, listenerStatus } };
+    }
     if (name === "localAgents:audit") return { ok: true, value: { entries: audit } };
     if (name === "localAgents:usage") return { ok: true, value: { entries: [] } };
     if (name === "localAgents:assignRole") {
@@ -178,10 +182,25 @@ describe("LocalAgentsPage", () => {
       ...baseSettings,
       localAgents: { ...baseSettings.localAgents, enabled: true }
     };
+    installFakeApi(grant, [], { state: "listening" });
     const el = await renderPage(enabledSettings);
 
     expect(el.textContent).toContain("http://127.0.0.1:51729/mcp");
     expect(el.textContent).not.toContain("MCP off");
+  });
+
+  test("shows enabled intent as unavailable after listener startup fails", async () => {
+    const enabledSettings = {
+      ...baseSettings,
+      localAgents: { ...baseSettings.localAgents, enabled: true }
+    };
+    installFakeApi(grant, [], { state: "failed" });
+    const el = await renderPage(enabledSettings);
+
+    expect(el.textContent).toContain("MCP unavailable");
+    expect(el.textContent).toContain("failed to start");
+    expect(el.textContent).not.toContain("http://127.0.0.1:51729/mcp");
+    expect(el.querySelector("button[role='switch']")?.getAttribute("aria-checked")).toBe("true");
   });
 
   test("revoke button dispatches localAgents:revoke", async () => {

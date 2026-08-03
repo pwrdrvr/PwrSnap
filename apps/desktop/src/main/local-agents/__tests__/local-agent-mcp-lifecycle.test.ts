@@ -23,11 +23,14 @@ describe("LocalAgentMcpLifecycle", () => {
     };
     const lifecycle = new LocalAgentMcpLifecycle({ createServer: () => server });
 
+    expect(lifecycle.getStatus()).toEqual({ state: "off" });
     await lifecycle.setEnabled(false);
     await lifecycle.setEnabled(true);
+    expect(lifecycle.getStatus()).toEqual({ state: "listening" });
     await lifecycle.setEnabled(true);
     await lifecycle.setEnabled(false);
 
+    expect(lifecycle.getStatus()).toEqual({ state: "off" });
     expect(server.start).toHaveBeenCalledTimes(1);
     expect(server.stop).toHaveBeenCalledTimes(1);
   });
@@ -70,6 +73,8 @@ describe("LocalAgentMcpLifecycle", () => {
     const lifecycle = new LocalAgentMcpLifecycle({ createServer, onStartError });
 
     await lifecycle.setEnabled(true);
+
+    expect(lifecycle.getStatus()).toEqual({ state: "failed" });
     await lifecycle.setEnabled(true);
 
     expect(failed.stop).toHaveBeenCalledTimes(1);
@@ -77,5 +82,6 @@ describe("LocalAgentMcpLifecycle", () => {
       message: "port occupied"
     }));
     expect(healthy.start).toHaveBeenCalledTimes(1);
+    expect(lifecycle.getStatus()).toEqual({ state: "listening" });
   });
 });

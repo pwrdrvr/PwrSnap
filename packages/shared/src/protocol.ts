@@ -2129,6 +2129,16 @@ export type Settings = {
   };
 };
 
+/** Live state of the loopback MCP listener. This is runtime-only state, not
+ * persisted intent: `Settings.localAgents.enabled` can remain true after a
+ * bind failure so the UI must not infer that the endpoint is available. */
+export type LocalAgentMcpListenerStatus =
+  | { state: "off" }
+  | { state: "starting" }
+  | { state: "listening" }
+  | { state: "stopping" }
+  | { state: "failed" };
+
 /** Out-of-the-box global capture hotkeys. Shared so the main-process
  *  `defaultSettings()` and the renderer's Settings → Hotkeys "Reset to
  *  defaults" both read ONE source — they previously duplicated these
@@ -3339,7 +3349,11 @@ export type Commands = {
   };
   "localAgents:list": {
     req: Record<string, never>;
-    res: { grants: LocalAgentClientGrant[]; roles: LocalAgentRoleProfile[] };
+    res: {
+      grants: LocalAgentClientGrant[];
+      roles: LocalAgentRoleProfile[];
+      listenerStatus: LocalAgentMcpListenerStatus;
+    };
   };
   "localAgents:roleCreate": {
     req: Omit<LocalAgentRoleProfile, "id" | "builtIn">;

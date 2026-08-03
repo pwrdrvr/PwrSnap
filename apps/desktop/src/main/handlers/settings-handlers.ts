@@ -14,6 +14,7 @@ import {
 } from "@pwrsnap/shared";
 import type {
   ExportStrategy,
+  LocalAgentMcpListenerStatus,
   PwrSnapError,
   Result,
   SecretStatus,
@@ -275,7 +276,9 @@ export function registerSettingsWindowHandlers(): void {
 
 /** The settings + secrets substrate verbs — agent-owned in split mode
  *  (single writer, always-resident process). */
-export function registerSettingsDataHandlers(): void {
+export function registerSettingsDataHandlers(options: {
+  readLocalAgentMcpListenerStatus?: () => LocalAgentMcpListenerStatus;
+} = {}): void {
   bus.register("settings:read", async () => {
     const { service } = ensureServices();
     try {
@@ -413,7 +416,11 @@ export function registerSettingsDataHandlers(): void {
         service.list(),
         service.listRoles()
       ]);
-      return ok({ grants, roles });
+      return ok({
+        grants,
+        roles,
+        listenerStatus: options.readLocalAgentMcpListenerStatus?.() ?? { state: "off" }
+      });
     } catch (cause) {
       return err(toLocalAgentError(cause));
     }

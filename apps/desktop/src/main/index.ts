@@ -1719,7 +1719,10 @@ export function bootstrapApp(): void {
     if (role !== "library") {
       // Agent half: capture surface, recording, clipboard, float-over,
       // settings + secrets substrate, AI enrichment + discovery, updater.
-      registerSettingsDataHandlers();
+      registerSettingsDataHandlers({
+        readLocalAgentMcpListenerStatus: () =>
+          localAgentMcpLifecycle?.getStatus() ?? { state: "off" }
+      });
       registerCodexHandlers();
       registerCodexProfileHandlers();
       registerAcpHandlers();

@@ -14,6 +14,7 @@ import {
   type LocalAgentAuditEntry,
   type LocalAgentCapability,
   type LocalAgentClientGrant,
+  type LocalAgentMcpListenerStatus,
   type LocalAgentRoleBudgets,
   type LocalAgentRoleProfile,
   type LocalAgentUsageAction,
@@ -93,6 +94,9 @@ export function LocalAgentsPage(): ReactElement {
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [togglingAccess, setTogglingAccess] = useState<boolean>(false);
+  const [listenerStatus, setListenerStatus] = useState<LocalAgentMcpListenerStatus>({
+    state: "off"
+  });
   const [error, setError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [confirmDeleteRoleId, setConfirmDeleteRoleId] = useState<string | null>(null);
@@ -100,18 +104,6 @@ export function LocalAgentsPage(): ReactElement {
   const nodeRefs = useRef(new Map<string, HTMLElement>());
   const [paths, setPaths] = useState<GraphPath[]>([]);
   const mcpEnabled = settings?.localAgents.enabled ?? false;
-
-  const setMcpEnabled = async (enabled: boolean): Promise<void> => {
-    setTogglingAccess(true);
-    try {
-      await patch({ localAgents: { enabled } });
-      setError(null);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setTogglingAccess(false);
-    }
-  };
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -122,6 +114,7 @@ export function LocalAgentsPage(): ReactElement {
     if (result.ok) {
       setGrants(result.value.grants);
       setRoles(result.value.roles);
+      setListenerStatus(result.value.listenerStatus);
       setSelectedSessionId((current) =>
         current !== null && result.value.grants.some((grant) => grant.id === current)
           ? current
@@ -140,6 +133,19 @@ export function LocalAgentsPage(): ReactElement {
     }
     setLoading(false);
   }, []);
+
+  const setMcpEnabled = async (enabled: boolean): Promise<void> => {
+    setTogglingAccess(true);
+    try {
+      await patch({ localAgents: { enabled } });
+      await load();
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setTogglingAccess(false);
+    }
+  };
 
   useEffect(() => {
     void load();
@@ -263,6 +269,18 @@ export function LocalAgentsPage(): ReactElement {
     [grants]
   );
 
+  const listenerCopy = !mcpEnabled
+    ? { badge: "MCP off", tag: "off" }
+    : listenerStatus.state === "listening"
+      ? { badge: LOCAL_AGENT_MCP_URL, tag: "listening on loopback" }
+      : listenerStatus.state === "starting"
+        ? { badge: "MCP starting", tag: "starting" }
+        : listenerStatus.state === "stopping"
+          ? { badge: "MCP stopping", tag: "stopping" }
+          : listenerStatus.state === "failed"
+            ? { badge: "MCP unavailable", tag: "failed to start" }
+            : { badge: "MCP unavailable", tag: "not listening" };
+
   const assignRole = async (sessionId: string, roleId: string): Promise<void> => {
     setSaving(true);
     const result = await dispatch("localAgents:assignRole", { sessionId, roleId });
@@ -349,8 +367,8 @@ export function LocalAgentsPage(): ReactElement {
         </div>
         <div className="pss__main-actions">
           <span className="pss__main-count" aria-live="polite">{activeCount} approved</span>
-          <span className={`pss__badge${mcpEnabled ? " is-accent" : ""}`}>
-            {mcpEnabled ? LOCAL_AGENT_MCP_URL : "MCP off"}
+          <span className={`pss__badge${listenerStatus.state === "listening" ? " is-accent" : ""}`}>
+            {listenerCopy.badge}
           </span>
         </div>
       </div>
@@ -359,7 +377,7 @@ export function LocalAgentsPage(): ReactElement {
         <Row
           label="Enable local-agent access"
           sub="When off, PwrSnap does not listen for MCP connections. Saved Sessions and roles remain available. When on, every connection still requires native approval and an assigned RBAC role."
-          tag={mcpEnabled ? "listening on loopback" : "off"}
+          tag={listenerCopy.tag}
         >
           <Switch
             on={mcpEnabled}

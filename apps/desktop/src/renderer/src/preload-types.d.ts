@@ -103,6 +103,8 @@ declare global {
      *  (e.g. an old window opened before the additionalArguments
      *  pipeline existed) — the bootstrap falls back to localStorage. */
     __pwrsnapAppearance?: { theme: "system" | "dark" | "light" };
+    /** Durable log path injected when the Logs BrowserWindow is created. */
+    __pwrsnapLogFilePath?: string;
   }
 }
 

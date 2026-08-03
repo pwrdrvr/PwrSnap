@@ -15,15 +15,18 @@ const mocks = vi.hoisted(() => {
     format: "",
     level: "silly" as string | false,
     maxSize: 0,
-    transforms: []
+    transforms: [],
+    getFile: vi.fn(() => ({ path: "/tmp/pwrsnap/main.log" }))
   });
+  const scope = Object.assign(vi.fn(), { labelPadding: true });
 
   return {
     consoleTransport,
     consoleWriteFn,
     electronLog: {
       initialize: vi.fn(),
-      scope: vi.fn(),
+      hooks: [] as Array<(...args: any[]) => unknown>,
+      scope,
       transports: {
         console: consoleTransport,
         file: fileTransport
@@ -69,6 +72,8 @@ describe("initializeMainLogger", () => {
     mocks.fileTransport.level = "silly";
     mocks.fileTransport.maxSize = 0;
     mocks.fileTransport.transforms = [];
+    mocks.electronLog.hooks.length = 0;
+    mocks.electronLog.scope.labelPadding = true;
   });
 
   afterEach(() => {
@@ -119,6 +124,32 @@ describe("initializeMainLogger", () => {
     expect(mocks.consoleTransport.level).toBe(false);
     expect(mocks.fileTransport.level).toBe(MAIN_LOG_FILE_LEVEL);
     expect(mocks.fileTransport.maxSize).toBe(MAIN_LOG_FILE_MAX_SIZE_BYTES);
-    expect(typeof mocks.fileTransport.format).toBe("function");
+    expect(mocks.electronLog.hooks).toHaveLength(1);
+    expect(mocks.electronLog.scope.labelPadding).toBe(false);
+  });
+
+  test("compacts structured file messages into the live log tail", async () => {
+    const { initializeMainLogger } = await import("../log");
+    initializeMainLogger();
+
+    const hook = mocks.electronLog.hooks[0];
+    expect(hook).toBeTypeOf("function");
+    hook?.(
+      {
+        data: ["chat tool call failed", { tool: "capture_metadata", error: "not found" }],
+        date: new Date("2026-06-10T12:34:56.789Z"),
+        level: "warn",
+        scope: "pwrsnap:chat-tools"
+      },
+      mocks.fileTransport,
+      "file"
+    );
+
+    const { readAppLogSnapshot } = await import("../app-logs");
+    const snapshot = readAppLogSnapshot({ debugCollectionEnabled: false });
+    expect(snapshot.entries).toHaveLength(1);
+    expect(snapshot.entries[0]?.line).toContain("[warn ] (pwrsnap:chat-tools)");
+    expect(snapshot.entries[0]?.line).toContain("tool=capture_metadata");
+    expect(snapshot.entries[0]?.line).toContain('error="not found"');
   });
 });

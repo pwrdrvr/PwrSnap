@@ -1,4 +1,9 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import {
+  createRendererErrorReport,
+  reportRendererError
+} from "./lib/renderer-error-reporting";
+import { dispatch } from "./lib/pwrsnap";
 
 type Props = {
   children: ReactNode;
@@ -22,6 +27,14 @@ export class RendererErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    reportRendererError(
+      createRendererErrorReport("error-boundary", error, {
+        ...(errorInfo.componentStack !== undefined
+          ? { componentStack: errorInfo.componentStack }
+          : {}),
+        stage: this.props.stage
+      })
+    );
     console.error("PwrSnap renderer error", {
       stage: this.props.stage,
       error,
@@ -50,6 +63,13 @@ export class RendererErrorBoundary extends Component<Props, State> {
             onClick={() => window.location.reload()}
           >
             Reload window
+          </button>
+          <button
+            className="renderer-failure__button"
+            type="button"
+            onClick={() => void dispatch("logs:openWindow", {})}
+          >
+            Open Logs
           </button>
         </div>
       </div>

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { toDynamicToolFunctionSpec } from "@pwrdrvr/agent-client";
 import { defineTool, type ToolSpec } from "../define-tool";
@@ -11,6 +11,20 @@ import {
 } from "../library-tool-catalog";
 import type { DynamicToolCallParams } from "@pwrdrvr/codex-app-server-protocol/v2";
 import { currentChatToolCommandContext } from "../chat-tool-command-context";
+
+const logMocks = vi.hoisted(() => ({
+  debug: vi.fn(),
+  warn: vi.fn()
+}));
+
+vi.mock("../../log", () => ({
+  getMainLogger: () => logMocks
+}));
+
+beforeEach(() => {
+  logMocks.debug.mockClear();
+  logMocks.warn.mockClear();
+});
 
 function makeCallParams(
   overrides: Partial<DynamicToolCallParams>
@@ -184,6 +198,10 @@ describe("dispatchLibraryToolCall", () => {
     expect(response.contentItems).toEqual([
       { type: "inputText", text: JSON.stringify({ echoed: "cap-42" }) }
     ]);
+    expect(logMocks.debug).toHaveBeenCalledWith(
+      "chat tool call completed",
+      expect.objectContaining({ tool: "fixture_echo", callId: "call-1" })
+    );
   });
 
   it("returns success:false (no throw) when arguments fail validation", async () => {
@@ -260,6 +278,14 @@ describe("dispatchLibraryToolCall", () => {
     if (response.contentItems[0]?.type === "inputText") {
       expect(response.contentItems[0].text).toBe("capture not found");
     }
+    expect(logMocks.warn).toHaveBeenCalledWith(
+      "chat tool call failed",
+      expect.objectContaining({
+        tool: "fixture_echo",
+        callId: "call-1",
+        error: "capture not found"
+      })
+    );
   });
 
   it("catches a thrown dispatch and reports success:false", async () => {

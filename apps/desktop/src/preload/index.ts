@@ -404,3 +404,16 @@ const appearanceArg = parseAppearanceArg(process.argv);
 if (appearanceArg !== null) {
   contextBridge.exposeInMainWorld("__pwrsnapAppearance", appearanceArg);
 }
+
+const logFilePathToken = process.argv.find((arg) => arg.startsWith("--pwrsnap-log-file-path="));
+if (logFilePathToken !== undefined) {
+  const encodedPath = logFilePathToken.slice("--pwrsnap-log-file-path=".length);
+  try {
+    const value: unknown = JSON.parse(encodedPath);
+    if (typeof value === "string" && value.length > 0) {
+      contextBridge.exposeInMainWorld("__pwrsnapLogFilePath", value);
+    }
+  } catch {
+    // Malformed bootstrap argument: logs:read remains the normal source.
+  }
+}

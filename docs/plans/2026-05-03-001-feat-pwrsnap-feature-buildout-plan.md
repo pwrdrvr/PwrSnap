@@ -848,7 +848,7 @@ Tasks:
   - Exponential backoff; reset `in_flight` to `pending` if `last_attempt_at` > 10min on boot.
   - Tray `setTitle(" 3")` (Unicode count) when queue depth > 0.
 - [ ] **Auto-update.** `electron-updater` lifted from PwrAgnt's `main/auto-updater.ts` pattern. Signed DMG/ZIP from controlled CDN, signature-verified `latest.yml`, staged rollout. Without this every user is permanently exposed when Electron / sharp / better-sqlite3 next ship a CVE.
-- [ ] **Renderer error reporting.** Lifted from `packages/shared/renderer-error.ts` — boundary in every renderer, uncaught errors surface in main and are persisted for diagnostics.
+- [x] **Renderer error reporting + local Logs window.** Every renderer installs boundary, global-error, and unhandled-rejection reporting; failures persist through the owning main-process logger. Help → Logs opens a searchable, level-filtered live tail with follow/pause, optional debug collection, and Copy/Reveal controls for the durable log file. Codex chat-tool failures log their call/thread/turn context and returned error text without logging tool arguments or image payloads.
 
 Acceptance:
 - [ ] Capturing while VS Code is frontmost auto-tags the snap with `app:vscode` and routes it to whichever destinations are bound to that tag.

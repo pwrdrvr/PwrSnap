@@ -1852,6 +1852,45 @@ export type AppDocument = {
   content: string;
 };
 
+/** One formatted main-process log line streamed to the in-app Logs window. */
+export type AppLogEntry = {
+  sequence: number;
+  timestamp: number;
+  level: string;
+  scope?: string;
+  line: string;
+};
+
+/** Bounded current-session tail used to bootstrap the in-app Logs window. */
+export type AppLogSnapshot = {
+  entries: AppLogEntry[];
+  readAt: number;
+  truncated: boolean;
+  debugCollectionEnabled: boolean;
+  logFilePath?: string;
+};
+
+export type RendererErrorSource =
+  | "error-boundary"
+  | "window-error"
+  | "unhandled-rejection";
+
+/** Sanitized renderer failure persisted through the main-process logger. */
+export type RendererErrorReport = {
+  source: RendererErrorSource;
+  timestamp: string;
+  href: string;
+  userAgent: string;
+  message: string;
+  name?: string;
+  stack?: string;
+  filename?: string;
+  lineno?: number;
+  colno?: number;
+  componentStack?: string;
+  stage?: string;
+};
+
 /** What the OS reports about PwrSnap's login-item registration right
  *  now — as opposed to `Settings.general.launchAtLogin`, which is the
  *  user's saved preference. The two diverge when the OS gates the
@@ -2955,6 +2994,20 @@ export type Commands = {
     req: { sessionDirectoryName: string };
     res: void;
   };
+  // ---- logs ----
+  /** Read the bounded current-session main-process log tail. */
+  "logs:read": { req: Record<string, never>; res: AppLogSnapshot };
+  /** Include or exclude debug-level messages from the durable file + live tail. */
+  "logs:setDebugCollection": {
+    req: { enabled: boolean };
+    res: AppLogSnapshot;
+  };
+  /** Open or focus the singleton Logs window. */
+  "logs:openWindow": { req: Record<string, never>; res: void };
+  /** Reveal the current process's durable log file in the OS file browser. */
+  "logs:revealFile": { req: Record<string, never>; res: void };
+  /** Persist a renderer error in the process that owns the reporting window. */
+  "renderer:reportError": { req: RendererErrorReport; res: void };
   // ---- library ----
   /**
    * Keyset-paginated timeline read. When `cursor` is omitted, returns

@@ -1,6 +1,9 @@
 // ACP-backed capture enrichment — the same one-shot structured-output job as
 // `CaptureEnrichmentClient`, but driven through a local ACP agent (Gemini /
-// Qwen) via the kit's `AcpOneShotClient` instead of Codex.
+// Qwen) instead of Codex. Each run is a throwaway session on the SHARED
+// pooled agent process (`runPooledAcpOneShot`) — enrichment never spawns its
+// own agent instance, short-lived or otherwise; there is one process per
+// agent app-wide, started on first actual use and retained until quit.
 //
 // ACP has no `outputSchema` and no base-instructions on `session/new`, so this
 // client folds the enrichment base instructions + the JSON-Schema contract +
@@ -9,12 +12,7 @@
 // `enrichCapture(...)` / `close()` surface as the Codex client so the handler
 // routes to either by `ai.defaults.enrichment.provider`.
 
-import {
-  AcpOneShotClient,
-  AcpConnection,
-  type AcpAgentStrategy,
-  type AcpOneShotResponse
-} from "@pwrdrvr/agent-acp";
+import type { DiscoveredAcpAgent } from "@pwrdrvr/agent-acp";
 import type { AiUsageTokenBreakdown } from "@pwrsnap/shared";
 import type { EnrichmentResult } from "@pwrsnap/shared";
 import {
@@ -28,23 +26,18 @@ import type {
   CaptureEnrichmentRequest,
   CaptureEnrichmentResponse
 } from "./capture-enrichment-client";
-import {
-  PWRSNAP_CLIENT_NAME,
-  PWRSNAP_CLIENT_TITLE,
-  toAgentKitLogger
-} from "./agent-kit-bindings";
+import { toAgentKitLogger } from "./agent-kit-bindings";
 import { acpReasoningEffort } from "./acp-effort";
+import {
+  runPooledAcpOneShot,
+  type PooledAcpOneShotResponse
+} from "./acp-pooled-one-shot";
 
 export type AcpCaptureEnrichmentClientOptions = {
-  /** Resolved agent executable (an absolute path or a bare command). */
-  command: string;
-  /** Spawn args that put the agent into ACP stdio mode. */
-  args: readonly string[];
-  /** Extra env for the spawn (merged over process.env). */
-  env?: Record<string, string>;
-  /** Kit strategy carrying the agent's normalization quirks + backend id. */
-  strategy: AcpAgentStrategy;
-  /** Scratch cwd for the agent session (keep enrichment out of any repo). */
+  /** The resolved active install of the agent (see `resolveEnabledAcpAgent`).
+   *  Keys the shared pooled process every surface rides. */
+  agent: DiscoveredAcpAgent;
+  /** Scratch cwd for the pooled client (see `acpPoolScratchCwd`). */
   cwd: string;
 };
 
@@ -298,43 +291,33 @@ export function parseEnrichmentReply(rawText: string): EnrichmentResult {
 }
 
 export class AcpCaptureEnrichmentClient {
-  private readonly client: AcpOneShotClient;
+  private readonly agent: DiscoveredAcpAgent;
+  private readonly cwd: string;
   private readonly logger: ReturnType<typeof toAgentKitLogger>;
 
   constructor(options: AcpCaptureEnrichmentClientOptions) {
-    const logger = toAgentKitLogger("pwrsnap:acp-enrichment");
-    this.logger = logger;
-    const transport = new AcpConnection({
-      command: options.command,
-      args: [...options.args],
-      ...(options.env !== undefined && Object.keys(options.env).length > 0
-        ? { env: options.env }
-        : {}),
-      logger
-    });
-    this.client = new AcpOneShotClient({
-      transport,
-      strategy: options.strategy,
-      clientName: PWRSNAP_CLIENT_NAME,
-      clientTitle: PWRSNAP_CLIENT_TITLE,
-      cwd: options.cwd,
-      logger
-    });
+    this.agent = options.agent;
+    this.cwd = options.cwd;
+    this.logger = toAgentKitLogger("pwrsnap:acp-enrichment");
   }
 
   async enrichCapture(request: CaptureEnrichmentRequest): Promise<CaptureEnrichmentResponse> {
     if (request.imagePaths.length === 0) {
       throw new Error("capture enrichment requires at least one image input");
     }
-    const runOnce = (prompt: string): Promise<AcpOneShotResponse> =>
-      this.client.run({
-        prompt,
-        imagePaths: request.imagePaths,
-        model: request.model ?? null,
-        // Collapse to the two thinking states the kit honors (Fast/Thinking);
-        // never send a bare "medium" the agent would drop. Default Fast.
-        effort: acpReasoningEffort(request.effort ?? "low"),
-        ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {})
+    const runOnce = (prompt: string): Promise<PooledAcpOneShotResponse> =>
+      runPooledAcpOneShot({
+        agent: this.agent,
+        cwd: this.cwd,
+        request: {
+          prompt,
+          imagePaths: request.imagePaths,
+          model: request.model ?? null,
+          // Collapse to the two thinking states the kit honors (Fast/Thinking);
+          // never send a bare "medium" the agent would drop. Default Fast.
+          effort: acpReasoningEffort(request.effort ?? "low"),
+          ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {})
+        }
       });
 
     // First attempt with the normal prompt.
@@ -394,7 +377,8 @@ export class AcpCaptureEnrichmentClient {
     });
   }
 
-  async close(): Promise<void> {
-    await this.client.close();
-  }
+  /** No-op: runs ride the SHARED pooled agent process, which is app-lifetime
+   *  (closed at quit by `closeAcpAgentPool`). Kept for the `EnrichmentBackend`
+   *  interface the handler closes unconditionally. */
+  async close(): Promise<void> {}
 }

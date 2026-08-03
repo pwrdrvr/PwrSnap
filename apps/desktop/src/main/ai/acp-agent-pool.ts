@@ -1,7 +1,15 @@
 // App-wide ACP agent process pool. An ACP agent is a long-lived OS process; one
-// AcpAgentClient hosts many concurrent sessions (threads). Without pooling every
-// surface (library chat, sizzle chat, enrichment, model-list) would spawn its
-// own — so PwrSnap holds ONE warmed client per agent here and shares it.
+// AcpAgentClient hosts many concurrent sessions (threads). There is exactly ONE
+// process per (agent, resolved binary) app-wide — library chat, sizzle chat,
+// capture enrichment, and Settings model listing ALL ride the same pooled
+// client; none of them spawns its own (and never a short-lived per-run one).
+//
+// Start policy: an agent process starts ONLY when something actually routes to
+// that agent (a chat surface built for it, an enrichment run on it, a model
+// listing for it). There is no boot-time warm and no cross-surface fan-out —
+// an agent that is installed and even enabled but never invoked is NEVER
+// spawned. Once started, the process is retained for the app lifetime and
+// closed at quit via `closeAcpAgentPool`.
 //
 // Per-surface tool sets ride per-thread (the controller's `threadMcpServers`),
 // so library and sizzle threads on the SAME process each spawn their own MCP
@@ -21,15 +29,9 @@ import {
 } from "@pwrdrvr/agent-acp";
 import type { Settings } from "@pwrsnap/shared";
 import { resolveActiveAcpInstance } from "./acp-instance-resolver";
-import {
-  acpDiscoveryOptionsForEnabledAgent,
-  enabledChatAcpAgentIdsInUse
-} from "./acp-enabled-discovery";
+import { acpDiscoveryOptionsForEnabledAgent } from "./acp-enabled-discovery";
 import { PWRSNAP_CLIENT_NAME, PWRSNAP_CLIENT_TITLE, toAgentKitLogger } from "./agent-kit-bindings";
 import { makePooledAcpApprovalHandler } from "./acp-approval-policy";
-import { getMainLogger } from "../log";
-
-const log = getMainLogger("pwrsnap:acp-pool");
 
 let pool: AcpAgentClientPool | undefined;
 
@@ -45,6 +47,14 @@ export function getAcpAgentPool(): AcpAgentClientPool {
  *  override) keys a different process. */
 export function acpAgentPoolKey(agent: DiscoveredAcpAgent): string {
   return `${agent.strategyId}@${agent.command}`;
+}
+
+/** The shared scratch cwd every pooled ACP session uses (keeps the agent from
+ *  scanning any real workspace on `session/new`). Every acquirer must pass the
+ *  SAME dir — the pool key ignores cwd, so whichever surface constructs the
+ *  client first fixes it for everyone. */
+export function acpPoolScratchCwd(chatsDir: string): string {
+  return join(chatsDir, ".acp-chat");
 }
 
 /** Construct (but don't warm) the shared client for an agent. NO client-level
@@ -80,19 +90,14 @@ function makeAcpAgentClient(agent: DiscoveredAcpAgent, cwd: string): AcpAgentCli
   return client;
 }
 
-/** Acquire the shared, warmed client for an agent (creating + warming on first
- *  use; dedups concurrent acquires onto one spawn). */
+/** Acquire the shared client for an agent — creating + spawning on first
+ *  use; dedups concurrent acquires onto one spawn. This is the ONLY way an
+ *  ACP agent process starts. */
 export async function acquireAcpAgentClient(
   agent: DiscoveredAcpAgent,
   cwd: string
 ): Promise<AcpAgentClient> {
   return getAcpAgentPool().acquire(acpAgentPoolKey(agent), () => makeAcpAgentClient(agent, cwd));
-}
-
-/** Fire-and-forget warm-up (startup) — spawns + initializes the agent so the
- *  first chat/turn is instant. No-op if already warm/warming. */
-export function warmAcpAgent(agent: DiscoveredAcpAgent, cwd: string): void {
-  getAcpAgentPool().warm(acpAgentPoolKey(agent), () => makeAcpAgentClient(agent, cwd));
 }
 
 /** Close every pooled agent process (app quit). */
@@ -101,48 +106,35 @@ export async function closeAcpAgentPool(): Promise<void> {
 }
 
 /**
- * Non-blocking startup warm-up: spawn + initialize every enabled ACP agent
- * configured for a chat surface and hold it in the pool, so the first chat
- * doesn't pay the multi-second spawn. Fire-and-forget per agent; failures are
- * logged.
+ * Resolve the user's ACTIVE install of one enabled ACP agent (override →
+ * picked path → first found), or null when the agent is disabled, unknown, or
+ * not installed. Shared by every surface that routes to an agent (chat backend
+ * resolution, enrichment, model listing) so they all resolve the same binary
+ * and therefore key the SAME pooled process.
  */
-export async function warmConfiguredAcpAgents(input: {
+export async function resolveEnabledAcpAgent(input: {
   settings: Settings;
-  chatsDir: string;
+  agentId: string;
   discover?: (options?: {
     overrides?: Record<string, string>;
   }) => Promise<DiscoveredAcpAgentGroup[]>;
-}): Promise<void> {
-  const agentIds = enabledChatAcpAgentIdsInUse(input.settings);
-  if (agentIds.length === 0) return;
-  const cwd = join(input.chatsDir, ".acp-chat");
+}): Promise<DiscoveredAcpAgent | null> {
+  const { settings, agentId } = input;
+  const discoveryOptions = acpDiscoveryOptionsForEnabledAgent(settings, agentId);
+  if (discoveryOptions === null) return null;
   const discover = input.discover ?? discoverLocalAcpAgentInstances;
-  for (const agentId of agentIds) {
-    try {
-      const pref = input.settings.ai.acp.agents?.[agentId];
-      const discoveryOptions = acpDiscoveryOptionsForEnabledAgent(input.settings, agentId);
-      if (discoveryOptions === null) continue;
-      const groups = await discover(discoveryOptions);
-      const group = groups.find((g) => g.strategyId === agentId);
-      if (group === undefined || group.instances.length === 0) continue;
-      const active = resolveActiveAcpInstance(group.instances, pref);
-      const agent: DiscoveredAcpAgent = {
-        strategyId: group.strategyId,
-        backendId: group.backendId,
-        name: group.name,
-        command: active.command,
-        args: group.args,
-        env: group.env,
-        discoveredAt: group.discoveredAt,
-        ...(active.version !== undefined ? { version: active.version } : {})
-      };
-      log.info("warming configured ACP agent", { agentId, command: agent.command });
-      warmAcpAgent(agent, cwd);
-    } catch (cause) {
-      log.warn("warm configured ACP agent failed", {
-        agentId,
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
-    }
-  }
+  const groups = await discover(discoveryOptions);
+  const group = groups.find((g) => g.strategyId === agentId);
+  if (group === undefined || group.instances.length === 0) return null;
+  const active = resolveActiveAcpInstance(group.instances, settings.ai.acp.agents?.[agentId]);
+  return {
+    strategyId: group.strategyId,
+    backendId: group.backendId,
+    name: group.name,
+    command: active.command,
+    args: group.args,
+    env: group.env,
+    discoveredAt: group.discoveredAt,
+    ...(active.version !== undefined ? { version: active.version } : {})
+  };
 }

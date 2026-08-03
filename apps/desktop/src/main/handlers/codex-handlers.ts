@@ -33,16 +33,10 @@ import {
 import { broadcastRendererEventToLocalWindows } from "../events";
 import { relayRendererEventToPeer } from "../process-split/event-relay";
 import { AcpCaptureEnrichmentClient } from "../ai/acp-enrichment-client";
-import { acpDiscoveryOptionsForEnabledAgent } from "../ai/acp-enabled-discovery";
-import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
+import { acpPoolScratchCwd, resolveEnabledAcpAgent } from "../ai/acp-agent-pool";
 import { findAcpModelLabel } from "../ai/acp-model-cache";
 import { findCodexModelLabel, saveCodexModelLabels } from "../ai/codex-model-cache";
 import { listCodexModels, type CodexModelLister } from "../ai/codex-model-client";
-import {
-  discoverLocalAcpAgentInstances,
-  strategyById,
-  type AcpAgentStrategy
-} from "@pwrdrvr/agent-acp";
 import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import { agentErrorMessage } from "../ai/agent-error-message";
 import { estimateAiUsageCost } from "../ai/ai-usage-cost";
@@ -391,43 +385,26 @@ function enrichmentAcpAgentId(settings: Settings): string | undefined {
   return settings.ai.acp.enabledAgentIds.includes(agentId) ? agentId : undefined;
 }
 
-/** Discover the selected ACP agent + build an enrichment client bound to its
- *  active install (honoring the user's per-agent override / pick from
- *  `ai.acp.agents`). Returns null when the agent isn't installed. */
+/** Resolve the selected ACP agent's active install (honoring the user's
+ *  per-agent override / pick from `ai.acp.agents`) and build an enrichment
+ *  client that rides the SHARED pooled agent process — enrichment never spawns
+ *  its own instance. Returns null when the agent isn't installed.
+ *
+ *  Note on thoughts: enrichment wants the agent's ANSWER, not its
+ *  chain-of-thought. The pooled one-shot keeps reasoning prose out of rawText
+ *  by collecting the agent_message_delta stream (see acp-pooled-one-shot.ts)
+ *  rather than by cloning a thought-suppressed strategy — the shared client's
+ *  strategy serves chat too, so it can't be mutated per surface. */
 async function buildAcpEnrichmentClient(
   agentId: string,
-  settings: Settings,
-  cwd: string
+  settings: Settings
 ): Promise<AcpCaptureEnrichmentClient | null> {
-  const pref = settings.ai.acp.agents?.[agentId];
-  const discoveryOptions = acpDiscoveryOptionsForEnabledAgent(settings, agentId);
-  if (discoveryOptions === null) return null;
-  const groups = await discoverLocalAcpAgentInstances(discoveryOptions);
-  const group = groups.find((g) => g.strategyId === agentId);
-  if (group === undefined || group.instances.length === 0) return null;
-  const strategy = strategyById(agentId);
-  if (strategy === undefined) return null;
-  const active = resolveActiveAcpInstance(group.instances, pref);
+  const agent = await resolveEnabledAcpAgent({ settings, agentId });
+  if (agent === null) return null;
   return new AcpCaptureEnrichmentClient({
-    command: active.command,
-    args: group.args,
-    env: group.env,
-    // Enrichment is a one-shot structured-JSON job — we want the agent's ANSWER,
-    // not its chain-of-thought. With surfaceThoughts:true (Grok/Kimi/Gemini) the
-    // normalizer folds thought chunks into the final agent_message, so the
-    // model's reasoning ("The task is to analyze…") lands in rawText and buries
-    // or corrupts the JSON (Grok especially rambles + echoes the schema). Force
-    // thoughts off for enrichment so rawText is just the reply.
-    strategy: withThoughtsSuppressed(strategy),
-    cwd
+    agent,
+    cwd: acpPoolScratchCwd(join(app.getPath("documents"), "PwrSnap", "Chats"))
   });
-}
-
-/** Clone a strategy with `surfaceThoughts` forced off — used for one-shot
- *  enrichment so the agent's reasoning isn't folded into the parsed reply.
- *  Exported for testing. */
-export function withThoughtsSuppressed(strategy: AcpAgentStrategy): AcpAgentStrategy {
-  return { ...strategy, quirks: { ...strategy.quirks, surfaceThoughts: false } };
 }
 
 function triggerSourceOrDefault(
@@ -1091,8 +1068,7 @@ async function runCaptureEnrichment(params: {
     if (acpAgentId !== undefined) {
       const acpClient = await buildAcpEnrichmentClient(
         acpAgentId,
-        params.acpSettings ?? (await params.settingsReader()),
-        captureMetadataWorkspaceDir()
+        params.acpSettings ?? (await params.settingsReader())
       );
       if (acpClient === null) {
         throw new Error(`ACP agent "${acpAgentId}" is not installed for enrichment`);
@@ -1276,7 +1252,8 @@ async function runCaptureEnrichment(params: {
     });
     // The default Codex enrichment wrapper is processless; the app-wide Codex
     // owner closes at app shutdown. Test-provided clients may still need close.
-    // The ACP client is built fresh per run, so always close it.
+    // The ACP wrapper's close() is a no-op — its runs ride the shared pooled
+    // agent process, which only closes at app quit.
     if (params.closeClientAfterRun || params.acpAgentId !== undefined) {
       await client?.close().catch((error: unknown) => {
         log.warn("enrichment client close failed", {

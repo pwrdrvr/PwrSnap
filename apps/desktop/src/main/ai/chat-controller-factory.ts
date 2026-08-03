@@ -10,7 +10,6 @@
 // in exactly one place. The controller's neutral decision type differs from
 // PwrSnap's; `toKitApprovalDecision` maps between them at the verb boundary.
 
-import { join } from "node:path";
 import { ChatThreadController } from "@pwrdrvr/agent-client";
 import type { ChatBackend, ChatThreadControllerDeps } from "@pwrdrvr/agent-client";
 import type { AgentBackend, NormalizedApprovalDecision } from "@pwrdrvr/agent-core";
@@ -28,7 +27,7 @@ import { resolveActiveAcpInstance } from "./acp-instance-resolver";
 import { acpDiscoveryOptionsForEnabledAgent } from "./acp-enabled-discovery";
 import { acpReasoningEffort } from "./acp-effort";
 import { buildPwrSnapMcpServer } from "./mcp/pwrsnap-mcp-server-config";
-import { acquireAcpAgentClient } from "./acp-agent-pool";
+import { acpPoolScratchCwd, acquireAcpAgentClient } from "./acp-agent-pool";
 import { acquireCodexAgentBackendView } from "./codex-agent-pool";
 import type {
   DynamicToolCallParams,
@@ -238,7 +237,8 @@ async function defaultMakeAcpClient(input: {
     });
   }
   // Acquire the SHARED, warmed client for this agent (one process per agent,
-  // reused across surfaces + warmed at startup) instead of spawning a new one.
+  // reused across surfaces + warmed on first chat use) instead of spawning a
+  // new one.
   const client = await acquireAcpAgentClient(input.agent, input.cwd);
   return { client, mcpServers };
 }
@@ -339,7 +339,7 @@ async function resolveChatBackend(
   // Chats so the agent doesn't scan the app/repo tree for "workspace context"
   // (the cause of the multi-second chat stall). One shared dir is fine — chat
   // tools reach PwrSnap over the bridge, not the agent's filesystem cwd.
-  const acpCwd = join(config.chatsDir, ".acp-chat");
+  const acpCwd = acpPoolScratchCwd(config.chatsDir);
   const result = await makeAcp({
     agent,
     loggerScope: config.loggerScope,

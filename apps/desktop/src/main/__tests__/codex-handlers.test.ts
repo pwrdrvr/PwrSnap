@@ -36,10 +36,8 @@ const { bus } = await import("../command-bus");
 const {
   registerCodexHandlers,
   enrichmentSelectedModel,
-  withThoughtsSuppressed,
   withUsageModelLabels
 } = await import("../handlers/codex-handlers");
-const { strategyById } = await import("@pwrdrvr/agent-acp");
 const { getAiRun } = await import("../persistence/ai-runs-repo");
 const { getCaptureEnrichment } = await import("../persistence/enrichment-repo");
 const { defaultSettings } = await import("../settings/desktop-settings-service");
@@ -1005,17 +1003,3 @@ describe("withUsageModelLabels", () => {
   });
 });
 
-describe("withThoughtsSuppressed", () => {
-  test("forces surfaceThoughts off for an agent that surfaces them (Grok)", () => {
-    const grok = strategyById("grok");
-    expect(grok?.quirks.surfaceThoughts).toBe(true); // sanity: Grok surfaces thoughts
-    const suppressed = withThoughtsSuppressed(grok!);
-    expect(suppressed.quirks.surfaceThoughts).toBe(false);
-    // Everything else is preserved (id, spawn, other quirks).
-    expect(suppressed.id).toBe("grok");
-    expect(suppressed.spawn).toEqual(grok!.spawn);
-    expect(suppressed.quirks.titleFrom).toBe(grok!.quirks.titleFrom);
-    // Does not mutate the shared strategy.
-    expect(grok!.quirks.surfaceThoughts).toBe(true);
-  });
-});

@@ -57,7 +57,7 @@ import {
 import { registerCaptureVideoHandler } from "./handlers/capture-video-handler";
 import { registerAcpHandlers } from "./handlers/acp-handlers";
 import { getToolRpcServer } from "./ai/mcp/pwrsnap-tool-rpc-server";
-import { closeAcpAgentPool, warmConfiguredAcpAgents } from "./ai/acp-agent-pool";
+import { closeAcpAgentPool } from "./ai/acp-agent-pool";
 import { closeCodexAgentPool } from "./ai/codex-agent-pool";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
@@ -1229,21 +1229,25 @@ const protocolResolver: ProtocolResolver = {
 
 const log = getMainLogger("pwrsnap:bootstrap");
 const ASSET_FILENAME_MAINTENANCE_BOOT_DELAY_MS = 2_000;
-// Boot-deferred spawn-heavy probes. Both used to fire during the
+// Boot-deferred spawn-heavy probe. It used to fire during the
 // window-shown→first-paint gap and competed with renderer startup
-// (startup profiling, 2026-06). 4s/8s land them after the library has
+// (startup profiling, 2026-06). 4s lands it after the library has
 // painted content on every machine we measured, while still finishing
-// long before a user typically reaches the surfaces they warm up.
+// long before a user typically reaches the surfaces it warms up.
 //
 // E2E keeps the pre-deferral timing (probe dispatched inline at the
-// baseline call site — see the dispatch below; warm-up at the original
-// 2s): the Windows tray popover specs measure popover size/visibility
-// in the first seconds after launch, and moving the probe's
-// main-thread-blocking spawn churn from boot into that window made
-// them flake (PR #238 CI). E2E never asserts on probe timing itself,
-// so baseline parity is the stable choice there.
+// baseline call site — see the dispatch below): the Windows tray
+// popover specs measure popover size/visibility in the first seconds
+// after launch, and moving the probe's main-thread-blocking spawn
+// churn from boot into that window made them flake (PR #238 CI). E2E
+// never asserts on probe timing itself, so baseline parity is the
+// stable choice there.
+//
+// ACP agents are NOT warmed at boot: an agent process starts only when
+// something actually routes to it (pooled acquire in acp-agent-pool.ts)
+// and is then retained until quit. A session that never invokes an
+// agent spawns zero agent processes.
 const STARTUP_CODEX_PROBE_DELAY_MS = 4_000;
-const ACP_AGENT_WARMUP_BOOT_DELAY_MS = isE2E ? 2_000 : 8_000;
 
 async function runBootGc(): Promise<void> {
   // Tmp file orphans first — cheap, no DB.
@@ -1290,27 +1294,6 @@ function scheduleDarwinRegionSelectorPreWarm(): void {
   setTimeout(() => {
     preWarmRegionSelector();
   }, 0);
-}
-
-/** Background warm-up of the ACP agents configured for any AI surface, so the
- *  first chat / enrichment doesn't pay the multi-second agent spawn. Deferred +
- *  non-blocking; an unconfigured-but-installed agent (e.g. Kimi) is not spawned. */
-function scheduleAcpAgentWarmup(): void {
-  setTimeout(() => {
-    void (async () => {
-      try {
-        const settings = await new DesktopSettingsService({
-          filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
-        }).read();
-        const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
-        await warmConfiguredAcpAgents({ settings, chatsDir });
-      } catch (err) {
-        getMainLogger("pwrsnap:bootstrap").warn("ACP agent warm-up failed", {
-          message: err instanceof Error ? err.message : String(err)
-        });
-      }
-    })();
-  }, ACP_AGENT_WARMUP_BOOT_DELAY_MS);
 }
 
 export function bootstrapApp(): void {
@@ -1932,7 +1915,6 @@ export function bootstrapApp(): void {
         }
       }
       scheduleAssetFilenameMaintenance();
-      scheduleAcpAgentWarmup();
     }
     markStartup("main: whenReady bootstrap complete");
 

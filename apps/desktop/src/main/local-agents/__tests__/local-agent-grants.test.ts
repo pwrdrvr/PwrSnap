@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { LOCAL_AGENT_CAPABILITIES } from "@pwrsnap/shared";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const safeStorageMock = vi.hoisted(() => {
@@ -54,6 +55,7 @@ function makeService(): LocalAgentGrantService {
     secrets,
     now: () => new Date("2026-06-07T12:00:00.000Z"),
     makeId: () => "lag_test",
+    makeRoleId: () => "lar_test",
     makeToken: () => "pws_local_test-token"
   });
 }
@@ -70,6 +72,7 @@ describe("LocalAgentGrantService", () => {
     expect(result.grant).toMatchObject({
       id: "lag_test",
       name: "PwrAgent",
+      roleId: "builtin.preview",
       capabilities: ["library.read", "capture.composite.read"],
       revokedAt: null
     });
@@ -102,6 +105,9 @@ describe("LocalAgentGrantService", () => {
     if (!auth.ok) throw new Error("unreachable");
     expect(auth.context).toEqual({
       clientId: "lag_test",
+      sessionName: "PwrAgent",
+      roleId: "builtin.preview",
+      roleName: "Search + Previews",
       capabilities: ["library.read", "capture.composite.read"]
     });
     expect(auth.grant.lastUsedAt).toBeNull();
@@ -246,8 +252,84 @@ describe("LocalAgentGrantService", () => {
     await expect(secrets.getValue(secretNameForClient("lag_test"))).resolves.toBeNull();
   });
 
+  test("custom roles are reusable, immediately effective, and built-ins are immutable", async () => {
+    const service = makeService();
+    await service.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const custom = await service.createRole({
+      name: "Careful editor",
+      description: "Can search and edit without reading originals.",
+      permissions: ["library.read", "capture.edit"]
+    });
+    expect(custom).toMatchObject({
+      id: "lar_test",
+      builtIn: false,
+      permissions: ["library.read", "capture.edit"]
+    });
+
+    const assigned = await service.assignRole("lag_test", custom.id);
+    expect(assigned).toMatchObject({
+      roleId: "lar_test",
+      capabilities: ["library.read", "capture.edit"]
+    });
+    await expect(service.authenticate({
+      clientId: "lag_test",
+      token: "pws_local_test-token",
+      requiredCapabilities: ["capture.edit"]
+    })).resolves.toMatchObject({
+      ok: true,
+      context: { roleId: "lar_test", roleName: "Careful editor" }
+    });
+
+    await service.updateRole(custom.id, {
+      permissions: ["library.read"]
+    });
+    await expect(service.authenticate({
+      clientId: "lag_test",
+      token: "pws_local_test-token",
+      requiredCapabilities: ["capture.edit"]
+    })).resolves.toEqual({ ok: false, code: "missing_capability" });
+    await expect(service.updateRole("builtin.search", { name: "Changed" }))
+      .rejects.toMatchObject({ code: "builtin_role_immutable" });
+    await expect(service.deleteRole(custom.id))
+      .rejects.toMatchObject({ code: "role_assigned" });
+  });
+
+  test("an unassigned or missing role fails authentication closed", async () => {
+    const service = makeService();
+    const issued = await service.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const raw = await settings.read();
+    await settings.write({
+      localAgents: {
+        grants: raw.localAgents.grants.map((item) =>
+          item.id === issued.grant.id
+            ? { ...item, roleId: "custom.missing", capabilities: [...LOCAL_AGENT_CAPABILITIES] }
+            : item
+        )
+      }
+    });
+
+    await expect(service.authenticate({
+      clientId: "lag_test",
+      token: "pws_local_test-token"
+    })).resolves.toEqual({ ok: false, code: "invalid_role" });
+  });
+
   test("default settings include empty local-agent grants", () => {
     expect(defaultSettings().localAgents.grants).toEqual([]);
+    expect(defaultSettings().localAgents.roles.map((role) => role.id)).toEqual([
+      "builtin.search",
+      "builtin.preview",
+      "builtin.full-media",
+      "builtin.editor",
+      "builtin.sizzle",
+      "builtin.full-access"
+    ]);
   });
 
   test("settings parser quarantines malformed or duplicate grants", async () => {
@@ -357,6 +439,10 @@ describe("LocalAgentGrantService", () => {
 
     const grants = (await settings.read()).localAgents.grants;
     expect(grants.map((grant) => grant.id)).toEqual(["lag_oauth", "lag_other"]);
+    expect(grants.map((grant) => grant.roleId)).toEqual([
+      "builtin.search",
+      "builtin.search"
+    ]);
     expect(grants.every((grant) => grant.oauthClient?.clientId === "lag_oauth")).toBe(true);
     expect(readdirSync(workDir).some((name) => name.includes("corrupt-"))).toBe(false);
   });

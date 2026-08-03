@@ -762,7 +762,31 @@ describe("settings:read + settings:write round-trip (integration)", () => {
     expect(list.ok).toBe(true);
     if (!list.ok) throw new Error("unreachable");
     expect(list.value.grants).toHaveLength(1);
+    expect(list.value.roles.some((role) => role.id === "builtin.preview")).toBe(true);
     expect(JSON.stringify(list.value)).not.toContain("pws_local_handler-token");
+
+    const createdRole = await bus.dispatch(
+      "localAgents:roleCreate",
+      {
+        name: "Metadata + edit",
+        description: "A custom role for handler coverage.",
+        permissions: ["library.read", "capture.edit"]
+      },
+      { principal: "ipc" }
+    );
+    expect(createdRole.ok).toBe(true);
+    if (!createdRole.ok) throw new Error("unreachable");
+    const assigned = await bus.dispatch(
+      "localAgents:assignRole",
+      { sessionId: "lag_handler", roleId: createdRole.value.id },
+      { principal: "ipc" }
+    );
+    expect(assigned.ok).toBe(true);
+    if (!assigned.ok) throw new Error("unreachable");
+    expect(assigned.value).toMatchObject({
+      roleId: createdRole.value.id,
+      capabilities: ["library.read", "capture.edit"]
+    });
 
     const revoked = await bus.dispatch(
       "localAgents:revoke",

@@ -40,6 +40,7 @@ import type {
   HighlightToolStyle,
   LocalAgentCapability,
   LocalAgentClientGrant,
+  LocalAgentRoleProfile,
   ShapeKind,
   ShapeToolStyle,
   SensitiveDataPattern,
@@ -75,6 +76,9 @@ import {
   isHotCpuProfileTriggerMode,
   isLibrarySidebarTab,
   isLocalAgentCapability,
+  findRoleForCapabilities,
+  isValidRole,
+  LOCAL_AGENT_BUILT_IN_ROLES,
   isRedactionStyle
 } from "@pwrsnap/shared";
 import {
@@ -205,6 +209,10 @@ export function defaultSettings(): Settings {
     library: defaultLibrarySettings(),
     localAgents: {
       grants: [],
+      roles: LOCAL_AGENT_BUILT_IN_ROLES.map((role) => ({
+        ...role,
+        permissions: [...role.permissions]
+      })),
       audit: []
     }
   };
@@ -975,7 +983,18 @@ function parseLocalAgentsSettings(
   if (raw === undefined) return defaults;
   if (!isRecord(raw)) return null;
   if (raw.grants !== undefined && !Array.isArray(raw.grants)) return null;
+  if (raw.roles !== undefined && !Array.isArray(raw.roles)) return null;
   if (raw.audit !== undefined && !Array.isArray(raw.audit)) return null;
+  const rolesRaw = raw.roles ?? defaults.roles;
+  if (rolesRaw.length > 100) return null;
+  const roleIds = new Set<string>();
+  const roles: LocalAgentRoleProfile[] = [];
+  for (const roleRaw of rolesRaw) {
+    const role = parseLocalAgentRole(roleRaw);
+    if (role === null || roleIds.has(role.id)) return null;
+    roleIds.add(role.id);
+    roles.push(role);
+  }
   const grantsRaw = raw.grants ?? [];
   const seen = new Set<string>();
   const grants: LocalAgentClientGrant[] = [];
@@ -983,7 +1002,26 @@ function parseLocalAgentsSettings(
     const grant = parseLocalAgentGrant(grantRaw);
     if (grant === null || seen.has(grant.id)) return null;
     seen.add(grant.id);
-    grants.push(grant);
+    let roleId = grant.roleId;
+    if (roleId === undefined) {
+      let role = findRoleForCapabilities(roles, grant.capabilities);
+      if (role === undefined) {
+        role = {
+          id: `migrated.${grants.length + 1}`,
+          name: `${grant.name} Access`.slice(0, 200),
+          description: "Migrated from a pre-RBAC local-agent capability grant.",
+          builtIn: false,
+          permissions: [...grant.capabilities]
+        };
+        while (roleIds.has(role.id)) {
+          role.id = `${role.id}.next`;
+        }
+        roleIds.add(role.id);
+        roles.push(role);
+      }
+      roleId = role.id;
+    }
+    grants.push({ ...grant, roleId });
   }
   const auditRaw = raw.audit ?? [];
   if (auditRaw.length > 500) return null;
@@ -995,7 +1033,29 @@ function parseLocalAgentsSettings(
     auditIds.add(entry.id);
     audit.push(entry);
   }
-  return { grants, audit };
+  return { grants, roles, audit };
+}
+
+function parseLocalAgentRole(raw: unknown): LocalAgentRoleProfile | null {
+  if (!isRecord(raw)) return null;
+  if (
+    typeof raw.id !== "string" ||
+    typeof raw.name !== "string" ||
+    typeof raw.description !== "string" ||
+    typeof raw.builtIn !== "boolean" ||
+    !Array.isArray(raw.permissions) ||
+    raw.permissions.some((permission) => !isLocalAgentCapability(permission))
+  ) {
+    return null;
+  }
+  const role: LocalAgentRoleProfile = {
+    id: raw.id.trim(),
+    name: raw.name.trim(),
+    description: raw.description,
+    builtIn: raw.builtIn,
+    permissions: parseLocalAgentCapabilities(raw.permissions)
+  };
+  return isValidRole(role) ? role : null;
 }
 
 function parseLocalAgentAuditEntry(
@@ -1047,6 +1107,7 @@ function parseLocalAgentGrant(raw: unknown): LocalAgentClientGrant | null {
   if (!isRecord(raw)) return null;
   const id = typeof raw.id === "string" ? raw.id.trim() : "";
   const name = typeof raw.name === "string" ? raw.name.trim() : "";
+  const roleId = typeof raw.roleId === "string" ? raw.roleId.trim() : undefined;
   if (id.length === 0 || id.length > 128) return null;
   if (name.length === 0 || name.length > 200) return null;
   if (
@@ -1070,6 +1131,7 @@ function parseLocalAgentGrant(raw: unknown): LocalAgentClientGrant | null {
   return {
     id,
     name,
+    ...(roleId !== undefined && roleId.length > 0 ? { roleId } : {}),
     capabilities,
     createdAt,
     updatedAt,
@@ -1686,6 +1748,7 @@ function mergeLocalAgents(
   if (patch === undefined) return current;
   return {
     grants: patch.grants !== undefined ? patch.grants : current.grants,
+    roles: patch.roles !== undefined ? patch.roles : current.roles,
     audit: patch.audit !== undefined ? patch.audit : current.audit
   };
 }

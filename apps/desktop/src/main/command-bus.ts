@@ -51,6 +51,10 @@ export type CommandContext = {
   sourceBounds?: CommandSourceBounds;
   localAgent?: {
     clientId: string;
+    /** Present after the grant service's fail-closed RBAC resolution. */
+    sessionName?: string;
+    roleId?: string;
+    roleName?: string;
     capabilities: readonly LocalAgentCapability[];
   };
 };

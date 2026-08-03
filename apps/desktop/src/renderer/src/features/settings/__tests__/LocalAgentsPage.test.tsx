@@ -29,7 +29,7 @@ const grant: LocalAgentClientGrant = {
 };
 
 const baseSettings = {
-  localAgents: { grants: [grant], audit: [] }
+  localAgents: { grants: [grant], roles: [], audit: [] }
 } as unknown as Settings;
 
 let container: HTMLDivElement | null = null;

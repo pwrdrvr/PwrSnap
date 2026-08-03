@@ -27,13 +27,19 @@ describe("e2e spec imports", () => {
     expect(specFiles.length).toBeGreaterThan(0);
   });
 
+  // Precisely: no spec may take a RUNTIME `test` or `expect` from
+  // "@playwright/test" — named, aliased, defaulted, or via a namespace
+  // import (`import * as pw` would smuggle `pw.test` past a
+  // named-import check). Type-only imports (`type Page`, `import type
+  // {...}`) stay allowed; the guard only rides the `test` object.
   it.each(specFiles)(
-    "%s imports test/expect from ./fixtures/electron-app, not @playwright/test",
+    "%s takes no runtime test/expect from @playwright/test (leaked-app guard)",
     (name) => {
       const source = readFileSync(join(e2eDir, name), "utf8");
       const offenders: string[] = [];
-      const importRe = /import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*"@playwright\/test"/g;
-      for (const match of source.matchAll(importRe)) {
+
+      const namedRe = /import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*"@playwright\/test"/g;
+      for (const match of source.matchAll(namedRe)) {
         const wholeImportIsTypeOnly = match[0].startsWith("import type");
         const names = match[1]!
           .split(",")
@@ -47,10 +53,19 @@ describe("e2e spec imports", () => {
           }
         }
       }
+
+      // Namespace + default runtime imports expose `.test` wholesale.
+      const wholeModuleRe =
+        /import\s+(?:\*\s*as\s+\w+|\w+\s*(?:,\s*\{[^}]*\})?)\s*from\s*"@playwright\/test"/g;
+      for (const match of source.matchAll(wholeModuleRe)) {
+        if (match[0].startsWith("import type")) continue;
+        offenders.push(match[0]);
+      }
+
       expect(
         offenders,
         `${name} imports [${offenders.join(", ")}] from "@playwright/test" — ` +
-          `import them from "./fixtures/electron-app" instead so the ` +
+          `take test/expect from "./fixtures/electron-app" instead so the ` +
           `leaked-app guard applies (see fixtures/electron-app.ts header)`
       ).toEqual([]);
     }

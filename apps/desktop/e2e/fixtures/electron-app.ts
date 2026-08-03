@@ -98,20 +98,27 @@ export const test = base.extend<{ leakedElectronAppGuard: void }>({
   leakedElectronAppGuard: [
     async ({}, use, testInfo) => {
       await use();
-      for (const tracked of Array.from(liveApps)) {
-        liveApps.delete(tracked);
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[e2e] "${testInfo.title}" leaked an Electron app (pid ${String(
-            tracked.child.pid ?? "?"
-          )}) — force-closing it so worker teardown can't hang`
-        );
-        try {
-          await closeElectronApp(tracked.app);
-        } finally {
-          await removeHomeRoot(tracked.homeRoot);
-        }
-      }
+      if (liveApps.size === 0) return;
+      const leaked = Array.from(liveApps);
+      liveApps.clear();
+      // Close concurrently: the apps are independent processes, and a
+      // sequential sweep of N wedged apps would cost ~11s each — enough
+      // to blow the teardown budget if a spec ever leaks more than one.
+      await Promise.all(
+        leaked.map(async (tracked) => {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[e2e] "${testInfo.title}" leaked an Electron app (pid ${String(
+              tracked.child.pid ?? "?"
+            )}) — force-closing it so worker teardown can't hang`
+          );
+          try {
+            await closeElectronApp(tracked.app);
+          } finally {
+            await removeHomeRoot(tracked.homeRoot);
+          }
+        })
+      );
     },
     { auto: true, box: true }
   ]

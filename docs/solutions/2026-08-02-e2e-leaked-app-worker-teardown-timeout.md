@@ -77,7 +77,14 @@ though zero tests failed.
   `./fixtures/electron-app`, never from `@playwright/test`.** A spec
   on the base `test` silently opts out of the guard. Enforced by
   `src/main/__tests__/e2e-spec-test-imports.test.ts` (type-only
-  imports of `Page`/`Locator`/etc. remain fine).
+  imports of `Page`/`Locator`/etc. remain fine; namespace and default
+  runtime imports of the module are rejected too, since `pw.test`
+  would smuggle the base object past a named-import check).
+
+Known trade-off: the guard tears down before Playwright's built-in
+artifact fixtures, so a reaped app's screenshot/video for that failing
+test may be lost. For a wedged app those captures would have hung
+anyway — losing them is the cheap half of the trade.
 
 ## Reusable diagnosis notes
 

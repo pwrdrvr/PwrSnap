@@ -238,7 +238,8 @@ async function defaultMakeAcpClient(input: {
     });
   }
   // Acquire the SHARED, warmed client for this agent (one process per agent,
-  // reused across surfaces + warmed at startup) instead of spawning a new one.
+  // reused across surfaces + warmed on first chat use) instead of spawning a
+  // new one.
   const client = await acquireAcpAgentClient(input.agent, input.cwd);
   return { client, mcpServers };
 }

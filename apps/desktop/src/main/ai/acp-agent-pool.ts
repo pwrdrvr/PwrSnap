@@ -27,6 +27,7 @@ import {
 } from "./acp-enabled-discovery";
 import { PWRSNAP_CLIENT_NAME, PWRSNAP_CLIENT_TITLE, toAgentKitLogger } from "./agent-kit-bindings";
 import { makePooledAcpApprovalHandler } from "./acp-approval-policy";
+import { loginShellPath } from "../login-shell-path";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:acp-pool");
@@ -89,8 +90,8 @@ export async function acquireAcpAgentClient(
   return getAcpAgentPool().acquire(acpAgentPoolKey(agent), () => makeAcpAgentClient(agent, cwd));
 }
 
-/** Fire-and-forget warm-up (startup) — spawns + initializes the agent so the
- *  first chat/turn is instant. No-op if already warm/warming. */
+/** Fire-and-forget warm-up — spawns + initializes the agent so the first
+ *  chat turn is instant. No-op if already warm/warming. */
 export function warmAcpAgent(agent: DiscoveredAcpAgent, cwd: string): void {
   getAcpAgentPool().warm(acpAgentPoolKey(agent), () => makeAcpAgentClient(agent, cwd));
 }
@@ -100,11 +101,59 @@ export async function closeAcpAgentPool(): Promise<void> {
   if (pool !== undefined) await pool.closeAll();
 }
 
+// Warm-on-first-use latch. ACP agents are NOT spawned at boot — a session
+// where the user never opens a chat surface starts zero agent processes.
+// The first chat-surface use (panel open dispatches list; an MCP client may
+// go straight to create/send) triggers ONE fire-and-forget warm of every
+// configured chat agent; the pool then retains them for the app lifetime.
+let firstChatUseWarmupStarted = false;
+
+/** Test-only: reset the warm-on-first-chat-use latch. */
+export function __resetFirstChatUseWarmupForTests(): void {
+  firstChatUseWarmupStarted = false;
+}
+
 /**
- * Non-blocking startup warm-up: spawn + initialize every enabled ACP agent
+ * Trigger the first-use warm-up from a chat surface. First call wins; every
+ * later call is a no-op. Non-blocking — the caller's verb proceeds while the
+ * warm runs; failures only log (the surface's own `acquire` on first turn is
+ * the correctness path, this is purely latency).
+ */
+export function warmConfiguredAcpAgentsOnFirstChatUse(input: {
+  readSettings: () => Promise<Settings>;
+  chatsDir: string;
+  /** Resolve the login-shell PATH before discovery (agent CLIs are probed by
+   *  bare name on PATH). Defaults to the app-wide resolver; injectable so unit
+   *  tests never spawn a login shell. */
+  resolvePath?: () => Promise<unknown>;
+  discover?: (options?: {
+    overrides?: Record<string, string>;
+  }) => Promise<DiscoveredAcpAgentGroup[]>;
+}): void {
+  if (firstChatUseWarmupStarted) return;
+  firstChatUseWarmupStarted = true;
+  void (async () => {
+    try {
+      await (input.resolvePath ?? (() => loginShellPath.value()))();
+      const settings = await input.readSettings();
+      await warmConfiguredAcpAgents({
+        settings,
+        chatsDir: input.chatsDir,
+        ...(input.discover !== undefined ? { discover: input.discover } : {})
+      });
+    } catch (cause) {
+      log.warn("first-use ACP agent warm-up failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  })();
+}
+
+/**
+ * Non-blocking warm-up: spawn + initialize every enabled ACP agent
  * configured for a chat surface and hold it in the pool, so the first chat
- * doesn't pay the multi-second spawn. Fire-and-forget per agent; failures are
- * logged.
+ * turn doesn't pay the multi-second spawn. Fire-and-forget per agent;
+ * failures are logged.
  */
 export async function warmConfiguredAcpAgents(input: {
   settings: Settings;

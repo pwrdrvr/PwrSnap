@@ -739,6 +739,39 @@ describe("ToolStylePopover", () => {
     expect(secondLayerChange).not.toHaveBeenCalled();
   });
 
+  test("16. highlight opacity slider flushes its visible draft when unmounted", () => {
+    vi.useFakeTimers();
+    const onChange = vi.fn();
+    render(
+      createElement(Harness, {
+        tool: "highlight",
+        style: DEFAULT_HIGHLIGHT_STYLE,
+        styleTargetKey: "highlight-closing",
+        onStyleFieldChange: onChange
+      })
+    );
+    const slider = queryPopover().querySelector<HTMLInputElement>(
+      '[data-testid="highlight-opacity-input"]'
+    );
+    expect(slider).not.toBeNull();
+    firePointerDown(slider!);
+    fireChange(slider!, "0.55");
+    expect(slider!.value).toBe("0.55");
+    expect(onChange).not.toHaveBeenCalled();
+
+    // Closing inside the 150 ms debounce window must persist the value that
+    // was already visible, and clearing the timer must prevent a second call.
+    act(() => {
+      root!.render(createElement("div"));
+    });
+    expect(onChange).toHaveBeenCalledWith("opacity", 0.55);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    act(() => {
+      vi.advanceTimersByTime(150);
+    });
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
   test("15. coachmark visible on first open (stoplightSeen=false)", () => {
     installSettingsMock(makeSettings({ stoplightSeen: false }));
     render(

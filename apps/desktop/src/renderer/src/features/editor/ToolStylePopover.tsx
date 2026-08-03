@@ -1196,11 +1196,13 @@ function HighlightBody({
 
   useEffect(
     () => () => {
-      if (commitTimerRef.current !== null) {
-        clearTimeout(commitTimerRef.current);
-      }
+      // Closing the popover, switching tabs, or losing the selected layer is
+      // an interaction boundary just like pointerup. The thumb has already
+      // shown this draft to the user, so persist it through the callback that
+      // was captured for its original layer instead of silently dropping it.
+      flushOpacity();
     },
-    []
+    [flushOpacity]
   );
 
   const pct = Math.round(draftOpacity * 100);

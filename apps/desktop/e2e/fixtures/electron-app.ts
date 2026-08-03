@@ -42,6 +42,11 @@ const fixtureDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(fixtureDir, "..", "..");
 const mainEntry = path.resolve(desktopRoot, "out", "main", "index.js");
 const ELECTRON_CLOSE_TIMEOUT_MS = 5_000;
+// Outer test-process bound for paint-barrier evaluate round trips. The
+// presentation callback has its own 5s timer in main, but that timer cannot
+// start when Electron's main event loop is wedged before the evaluation enters.
+// Keep enough headroom for the in-main diagnostic timeout to fire first.
+const PAINT_BARRIER_MAIN_TIMEOUT_MS = 10_000;
 // Bound on a single command-bus `dispatch` round-trip. A healthy command
 // resolves in milliseconds (the heaviest spec dispatch — region capture,
 // clipboard image encode, codex discovery — is a couple seconds at worst
@@ -385,14 +390,19 @@ export async function waitForLibraryWindowPaint(
   await expect
     .poll(
       async () =>
-        app.evaluate(({ BrowserWindow }) => {
-          const win = BrowserWindow.getAllWindows().find((candidate) => {
-            if (candidate.isDestroyed()) return false;
-            const url = candidate.webContents.getURL();
-            return url.includes("/renderer/index.html") && !url.includes("stage=");
-          });
-          return win?.isVisible() ?? false;
-        }),
+        withTimeout(
+          app.evaluate(({ BrowserWindow }) => {
+            const win = BrowserWindow.getAllWindows().find((candidate) => {
+              if (candidate.isDestroyed()) return false;
+              const url = candidate.webContents.getURL();
+              return url.includes("/renderer/index.html") && !url.includes("stage=");
+            });
+            return win?.isVisible() ?? false;
+          }),
+          PAINT_BARRIER_MAIN_TIMEOUT_MS,
+          `library visibility evaluate timed out after ${PAINT_BARRIER_MAIN_TIMEOUT_MS}ms ` +
+            "(main process unresponsive?)"
+        ),
       { timeout: 15_000 }
     )
     .toBe(true);
@@ -407,7 +417,7 @@ export async function waitForLibraryWindowPaint(
       })
   );
 
-  await app.evaluate(async ({ BrowserWindow }) => {
+  const paintBarrier = app.evaluate(async ({ BrowserWindow }) => {
     const win = BrowserWindow.getAllWindows().find((candidate) => {
       if (candidate.isDestroyed()) return false;
       const url = candidate.webContents.getURL();
@@ -455,6 +465,12 @@ export async function waitForLibraryWindowPaint(
       webContents.invalidate();
     });
   });
+  await withTimeout(
+    paintBarrier,
+    PAINT_BARRIER_MAIN_TIMEOUT_MS,
+    `library paint-barrier evaluate timed out after ${PAINT_BARRIER_MAIN_TIMEOUT_MS}ms ` +
+      "(main process unresponsive?)"
+  );
 }
 
 export type LaunchedApp = {

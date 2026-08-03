@@ -717,22 +717,48 @@ function CodexCandidates({
   loading,
   onPin
 }: CodexCandidatesProps): ReactElement {
+  const [manualPath, setManualPath] = useState("");
   if (snapshot === null || snapshot.candidates.length === 0) {
     const stillSearching = snapshot === null && loading;
+    const trimmed = manualPath.trim();
     return (
-      <div className="pss__opt">
-        <span className="pss__opt-icon">{stillSearching ? "…" : "!"}</span>
-        <div className="pss__opt-text">
-          <span className="pss__opt-primary">
-            {stillSearching
-              ? "Discovering Codex binaries…"
-              : "No Codex binary detected"}
-          </span>
-          <span className="pss__opt-sub">
-            Install Codex Desktop or run <code>brew install codex</code>.
-          </span>
+      <>
+        <div className="pss__opt">
+          <span className="pss__opt-icon">{stillSearching ? "…" : "!"}</span>
+          <div className="pss__opt-text">
+            <span className="pss__opt-primary">
+              {stillSearching
+                ? "Discovering Codex binaries…"
+                : "Codex not found on this machine"}
+            </span>
+            <span className="pss__opt-sub">
+              Install Codex Desktop or run <code>brew install codex</code>, then
+              Refresh — or pin the binary&apos;s full path below.
+            </span>
+          </div>
         </div>
-      </div>
+        {stillSearching ? null : (
+          <div className="pss__acp-override">
+            <input
+              className="pss__acp-override-input"
+              type="text"
+              value={manualPath}
+              spellCheck={false}
+              placeholder="Manual path — e.g. /opt/homebrew/bin/codex"
+              aria-label="Manual Codex path"
+              onChange={(e) => setManualPath(e.currentTarget.value)}
+            />
+            <button
+              className="pss__top-btn"
+              type="button"
+              disabled={trimmed.length === 0}
+              onClick={() => onPin(trimmed)}
+            >
+              Use path
+            </button>
+          </div>
+        )}
+      </>
     );
   }
   return (

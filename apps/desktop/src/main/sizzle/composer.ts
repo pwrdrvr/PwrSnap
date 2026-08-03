@@ -101,7 +101,7 @@ export class ComposeError extends Error {
 export async function probeDurationSec(audioPath: string): Promise<number> {
   const ffmpeg = resolveFfmpegPath();
   if (ffmpeg === null) {
-    throw new ComposeError("ffmpeg_missing", "ffmpeg binary not found");
+    throw new ComposeError("ffmpeg_missing", "ffmpeg not found: bundled PwrSnapFFmpeg is missing and no ffmpeg was found on PATH");
   }
   return new Promise<number>((resolve, reject) => {
     let buf = "";
@@ -480,7 +480,7 @@ function buildAudioConcat(scenes: SceneInput[], filters: string[]): string {
 export async function compose(req: ComposeRequest): Promise<void> {
   const ffmpeg = resolveFfmpegPath();
   if (ffmpeg === null) {
-    throw new ComposeError("ffmpeg_missing", "ffmpeg binary not found");
+    throw new ComposeError("ffmpeg_missing", "ffmpeg not found: bundled PwrSnapFFmpeg is missing and no ffmpeg was found on PATH");
   }
   if (req.scenes.length === 0) {
     throw new ComposeError("no_scenes", "Sizzle reel must have at least one scene");

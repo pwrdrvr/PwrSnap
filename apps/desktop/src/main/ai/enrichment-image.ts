@@ -138,7 +138,7 @@ export async function prepareEnrichmentVideoFrames(
   const ffmpeg = resolveFfmpegPath();
   if (ffmpeg === null) {
     throw new Error(
-      "ffmpeg binary not available; cannot prepare video frames for AI enrichment"
+      "ffmpeg not found (bundled PwrSnapFFmpeg missing, no ffmpeg on PATH); cannot prepare video frames for AI enrichment"
     );
   }
 

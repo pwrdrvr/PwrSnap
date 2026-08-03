@@ -98,7 +98,11 @@ worthwhile findings:
 ## Fixes shipped
 
 - **Login-shell PATH off the critical path entirely**
-  ([login-shell-path.ts](../../apps/desktop/src/main/login-shell-path.ts)).
+  (`login-shell-path.ts`). *[Update 2026-08: this resolver was later
+  removed outright — PwrSnap no longer spawns the login shell at all;
+  discovery uses explicit install locations + the inherited PATH. See
+  [2026-08-03-e2e-teardown-login-shell-hang.md](2026-08-03-e2e-teardown-login-shell-hang.md),
+  "Postscript". The historical design below is kept as written.]*
   The 2026-06 review (see below) rejected the first attempt — an
   encrypted `safeStorage` cache of the *whole* shell env — as treating
   the symptom. Final design: a singleton that resolves **only `PATH`**
@@ -154,8 +158,9 @@ not this.
    (PWRSNAP_*, ELECTRON_*) into the NEXT launch — observed as a
    profiling run writing artifacts into the previous run's directory
    because the cached `PWRSNAP_STARTUP_PROFILE_DIR` overrode the live
-   one. The final design ([login-shell-path.ts](../../apps/desktop/src/main/login-shell-path.ts))
-   sidesteps the entire class: it keeps **only `PATH`** and persists
+   one. The final design (`login-shell-path.ts`, since removed — see
+   the update note above) sidestepped the entire class: it kept
+   **only `PATH`** and persisted
    **nothing**. If you ever reintroduce env caching, the rule stands —
    carry only the specific keys you need, never the whole shell env.
 3. **`cp -Rpc` of a live userData clones the `Singleton*` symlinks.**

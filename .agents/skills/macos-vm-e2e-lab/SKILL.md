@@ -61,7 +61,14 @@ only acceptable with all four safeguards:
    failed this probe.
 3. **Selected repository access** — the organization runner group is limited
    to `pwrdrvr/PwrSnap` and `pwrdrvr/PwrAgent`. Do not use an all-repositories
-   group and do not register a second repo-scoped copy of this runner.
+   group and do not register a second repo-scoped copy of this runner. The
+   group must also have `allows_public_repositories=true` — both repos are
+   public, and GitHub's default (`false`) makes the group silently refuse
+   their jobs: runners sit online+idle while jobs queue forever.
+   `configure-shared-runner-group.sh` sets the flag at creation and re-asserts
+   it on repair; this is an intentional part of the model, not a loosening —
+   the fork-PR `if:` guards and the "require approval for all external
+   contributors" setting (item 4) are what keep untrusted code off the runner.
 4. **GitHub settings** — each CI job carries an `if:` guard that skips it
    for PRs from fork head-repos, and the repo must have Settings →
    Actions → General → "Require approval for all external contributors"

@@ -35,7 +35,8 @@
 // explicit filesystem candidate above, or pinned in Settings → AI.
 
 import { execFile as execFileCallback } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { constants as fsConstants, readdirSync } from "node:fs";
+import { access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -269,6 +270,128 @@ function getCodexPathCandidates(): Array<{
   return [{ command: "codex", source: "path" }];
 }
 
+// ---- PATH pre-resolution + dedupe (spawn hygiene) --------------------
+//
+// The kit's `discoverCommands` probes every candidate with `--version`
+// BEFORE deduping, so bare `codex` on $PATH and its resolved absolute
+// twin (e.g. /opt/homebrew/bin/codex, also listed as an application
+// candidate) each cost a child spawn per discovery pass. The right
+// long-term home for probe-after-dedupe is @pwrdrvr/codex-discovery
+// itself; until the kit grows that, we pre-resolve PATH candidates here
+// with pure fs checks — no spawns — and drop duplicate auto-candidates
+// before the kit ever sees them. The resolution below mirrors the kit's
+// internal `resolvePathCommand` (which it doesn't export).
+
+async function pathEntryExists(candidate: string): Promise<boolean> {
+  try {
+    await access(candidate, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function commandHasPathSeparator(command: string): boolean {
+  return command.includes("/") || command.includes("\\");
+}
+
+function readPathEnv(env: NodeJS.ProcessEnv): string | undefined {
+  if (process.platform !== "win32") {
+    return env.PATH;
+  }
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path");
+  return pathKey !== undefined ? env[pathKey] : undefined;
+}
+
+function normalizePathEntry(entry: string): string {
+  const trimmed = entry.trim();
+  const quoted = trimmed.match(/^"(.+)"$/);
+  return quoted?.[1] ?? trimmed;
+}
+
+/** Windows resolves bare commands through PATHEXT; everywhere else the
+ *  bare name is the only spelling. Mirrors the kit's probe order. */
+function buildPathCommandNames(command: string, env: NodeJS.ProcessEnv): string[] {
+  if (process.platform !== "win32") {
+    return [command];
+  }
+  const rawExtensions = env.PATHEXT?.trim() || ".COM;.EXE;.BAT;.CMD";
+  const extensions = rawExtensions
+    .split(";")
+    .map((extension) => extension.trim())
+    .filter(Boolean)
+    .map((extension) => (extension.startsWith(".") ? extension : `.${extension}`));
+  const commandExtension = path.win32.extname(command).toLowerCase();
+  if (
+    commandExtension !== "" &&
+    extensions.some((extension) => extension.toLowerCase() === commandExtension)
+  ) {
+    return [command];
+  }
+  return [command, ...extensions.map((extension) => `${command}${extension}`)];
+}
+
+async function resolveCommandFromPath(
+  command: string,
+  env: NodeJS.ProcessEnv
+): Promise<string | undefined> {
+  if (commandHasPathSeparator(command)) {
+    return command;
+  }
+  const pathValue = readPathEnv(env);
+  if (pathValue === undefined || pathValue.trim() === "") {
+    return undefined;
+  }
+  const delimiter = process.platform === "win32" ? ";" : path.delimiter;
+  const joinPath = process.platform === "win32" ? path.win32.join : path.join;
+  const commandNames = buildPathCommandNames(command, env);
+  for (const directory of pathValue.split(delimiter).map(normalizePathEntry).filter(Boolean)) {
+    for (const commandName of commandNames) {
+      const candidate = joinPath(directory, commandName);
+      if (await pathEntryExists(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Auto-candidates with PATH hits pre-resolved to absolute paths and
+ *  deduped, so the kit probes each distinct binary once. Exported for
+ *  unit tests. */
+export async function buildCodexAutoCandidates(env: NodeJS.ProcessEnv): Promise<
+  Array<{ command: string; source: DesktopCodexCandidateSource }>
+> {
+  const appPaths = getCodexAppCandidatePaths();
+  const appPathSet = new Set(appPaths);
+  const seen = new Set<string>();
+  const out: Array<{ command: string; source: DesktopCodexCandidateSource }> = [];
+  for (const { command } of getCodexPathCandidates()) {
+    const resolved = await resolveCommandFromPath(command, env);
+    if (resolved === undefined) {
+      // Not resolvable via pure fs checks — keep the bare command so the
+      // kit's own probe stays the arbiter (execFile consults PATH too).
+      if (!seen.has(command)) {
+        seen.add(command);
+        out.push({ command, source: "path" });
+      }
+      continue;
+    }
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    // A PATH hit that IS a known install location keeps the
+    // "application" label the kit's post-probe merge used to pick when
+    // the two candidates collapsed into one.
+    out.push({ command: resolved, source: appPathSet.has(resolved) ? "application" : "path" });
+  }
+  for (const appPath of appPaths) {
+    if (seen.has(appPath)) continue;
+    seen.add(appPath);
+    out.push({ command: appPath, source: "application" });
+  }
+  return out;
+}
+
 function toDesktopCandidate(
   candidate: CommandDiscoveryCandidate<DesktopCodexCandidateSource>
 ): DesktopCodexDiscoveryCandidate {
@@ -297,13 +420,7 @@ export async function discoverCodexCommands(params?: {
       { command: envOverride, source: "env" },
       { command: configuredCommand, source: "config" }
     ],
-    autoCandidates: [
-      ...getCodexPathCandidates(),
-      ...getCodexAppCandidatePaths().map((candidatePath) => ({
-        command: candidatePath,
-        source: "application" as const
-      }))
-    ],
+    autoCandidates: await buildCodexAutoCandidates(env),
     parseVersion: parseCodexVersion,
     compareVersions: kitCompareCodexCliVersions,
     validateVersion: validateCodexCliVersion
@@ -318,6 +435,28 @@ export async function discoverCodexCommands(params?: {
   };
 }
 
+/** Pure selection over an already-computed discovery snapshot. Callers
+ *  that just ran `discoverCodexCommands` (the settings-service snapshot
+ *  path) resolve from that result instead of paying a full second
+ *  discovery pass — and its child spawns — via `resolveCodexCommand`. */
+export function selectResolvedCodexCommand(
+  discovery: DesktopCodexDiscoverySnapshot,
+  fallbackCommand: string
+): ResolvedCodexCommandCandidate {
+  const selected = discovery.candidates.find((candidate) => candidate.selected);
+  if (selected !== undefined) {
+    return {
+      command: selected.command,
+      source: selected.source,
+      version: selected.version
+    };
+  }
+  return {
+    command: fallbackCommand.trim() || "codex",
+    source: "path"
+  };
+}
+
 export async function resolveCodexCommand(params: {
   command: string;
   env: NodeJS.ProcessEnv;
@@ -328,17 +467,5 @@ export async function resolveCodexCommand(params: {
     configuredCommand,
     env: params.env
   });
-  const selected = discovery.candidates.find((candidate) => candidate.selected);
-
-  if (selected !== undefined) {
-    return {
-      command: selected.command,
-      source: selected.source,
-      version: selected.version
-    };
-  }
-  return {
-    command: params.command.trim() || "codex",
-    source: "path"
-  };
+  return selectResolvedCodexCommand(discovery, params.command);
 }

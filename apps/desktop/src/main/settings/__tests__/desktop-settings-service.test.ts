@@ -828,50 +828,57 @@ describe("DesktopSettingsService write-queue serialization on rejection", () => 
   });
 });
 
+function stubCodexDiscovery(codexDiscovery: typeof import("../codex-discovery")) {
+  // Stub the discovery module so the snapshot is deterministic across
+  // machines. We're testing the caching contract here, not Codex
+  // discovery itself.
+  const discoverSpy = vi
+    .spyOn(codexDiscovery, "discoverCodexCommands")
+    .mockImplementation(async ({ configuredCommand } = {}) => ({
+      selectedCommand: configuredCommand ?? "codex",
+      selectedSource: configuredCommand === undefined ? "path" : "config",
+      candidates: [
+        {
+          command: configuredCommand ?? "codex",
+          source: configuredCommand === undefined ? "path" : "config",
+          executable: true,
+          selected: true,
+          version: "stub"
+        }
+      ]
+    }));
+  const authSpy = vi.spyOn(codexDiscovery, "probeCodexAuth").mockImplementation(async () => ({
+    status: "authenticated",
+    testedAt: "2026-05-19T12:00:00.000Z",
+    durationMs: 1,
+    detail: "Logged in using ChatGPT"
+  }));
+  return {
+    discoverSpy,
+    authSpy,
+    restore: () => {
+      discoverSpy.mockRestore();
+      authSpy.mockRestore();
+    }
+  };
+}
+
 describe("DesktopSettingsService.getCodexDiscoverySnapshot cache invalidation", () => {
   test("a codex.* write invalidates the snapshot cache so the next read reflects the new mode", async () => {
-    // Stub the discovery + resolve modules so the snapshot is
-    // deterministic across machines. We're testing the cache
-    // invalidation contract here, not Codex discovery itself.
     const codexDiscovery = await import("../codex-discovery");
-    const discoverSpy = vi
-      .spyOn(codexDiscovery, "discoverCodexCommands")
-      .mockImplementation(async ({ configuredCommand } = {}) => ({
-        selectedCommand: configuredCommand ?? "codex",
-        selectedSource: configuredCommand === undefined ? "path" : "config",
-        candidates: [
-          {
-            command: configuredCommand ?? "codex",
-            source: configuredCommand === undefined ? "path" : "config",
-            executable: true,
-            selected: true,
-            version: "stub"
-          }
-        ]
-      }));
-    const resolveSpy = vi
-      .spyOn(codexDiscovery, "resolveCodexCommand")
-      .mockImplementation(async ({ command }) => ({
-        command,
-        source: "config" as const,
-        version: "stub"
-      }));
-    const authSpy = vi
-      .spyOn(codexDiscovery, "probeCodexAuth")
-      .mockImplementation(async () => ({
-        status: "authenticated",
-        testedAt: "2026-05-19T12:00:00.000Z",
-        durationMs: 1,
-        detail: "Logged in using ChatGPT"
-      }));
+    const { discoverSpy, restore } = stubCodexDiscovery(codexDiscovery);
 
     try {
       const svc = makeService();
       // Prime the cache against the default settings (mode=auto, no pin).
       const first = await svc.getCodexDiscoverySnapshot();
-      // `resolveCodexCommand` is called with "codex" when no pin is set.
+      // Resolution reuses the discovery snapshot — the resolved command
+      // is the selected candidate ("codex" when no pin is set), and the
+      // whole snapshot must cost exactly ONE discovery pass (it used to
+      // call `resolveCodexCommand`, which re-ran a full second pass).
       expect(first.resolvedPath).toBe("codex");
       expect(first.auth?.status).toBe("authenticated");
+      expect(discoverSpy).toHaveBeenCalledTimes(1);
 
       // Pin a path through the real write path.
       await svc.write({ codex: { mode: "pinned", pinnedPath: "/opt/codex-pinned" } });
@@ -880,10 +887,77 @@ describe("DesktopSettingsService.getCodexDiscoverySnapshot cache invalidation", 
       // reflect the new pin, not the prior `codex` resolved path.
       const second = await svc.getCodexDiscoverySnapshot();
       expect(second.resolvedPath).toBe("/opt/codex-pinned");
+      expect(discoverSpy).toHaveBeenCalledTimes(2);
     } finally {
-      discoverSpy.mockRestore();
-      resolveSpy.mockRestore();
-      authSpy.mockRestore();
+      restore();
+    }
+  });
+
+  test("concurrent non-forced snapshot reads coalesce onto one discovery pass", async () => {
+    const codexDiscovery = await import("../codex-discovery");
+    const { discoverSpy, restore } = stubCodexDiscovery(codexDiscovery);
+
+    try {
+      const svc = makeService();
+      // Fire three reads before any resolves — the Library, float-over,
+      // and Settings windows all refresh on the same broadcast.
+      const [a, b, c] = await Promise.all([
+        svc.getCodexDiscoverySnapshot(),
+        svc.getCodexDiscoverySnapshot(),
+        svc.getCodexDiscoverySnapshot()
+      ]);
+      expect(discoverSpy).toHaveBeenCalledTimes(1);
+      expect(a).toBe(b);
+      expect(b).toBe(c);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a codex.* write during an in-flight snapshot keeps the stale result out of the cache", async () => {
+    const codexDiscovery = await import("../codex-discovery");
+    const { discoverSpy, restore } = stubCodexDiscovery(codexDiscovery);
+
+    // Gate the first discovery so we can land a write mid-computation.
+    let releaseFirst: () => void = () => undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let call = 0;
+    discoverSpy.mockImplementation(async ({ configuredCommand } = {}) => {
+      call += 1;
+      if (call === 1) await firstGate;
+      const command = configuredCommand ?? "codex";
+      return {
+        selectedCommand: command,
+        selectedSource: configuredCommand === undefined ? ("path" as const) : ("config" as const),
+        candidates: [
+          {
+            command,
+            source: configuredCommand === undefined ? ("path" as const) : ("config" as const),
+            executable: true,
+            selected: true,
+            version: "stub"
+          }
+        ]
+      };
+    });
+
+    try {
+      const svc = makeService();
+      const inflight = svc.getCodexDiscoverySnapshot();
+      // The write invalidates while the first computation is parked.
+      await svc.write({ codex: { mode: "pinned", pinnedPath: "/opt/codex-pinned" } });
+      releaseFirst();
+      // The in-flight caller still gets its (pre-write) snapshot…
+      const stale = await inflight;
+      expect(stale.resolvedPath).toBe("codex");
+      // …but the cache must NOT have kept it: the next read re-discovers
+      // and reflects the pin instead of serving the stale snapshot.
+      const fresh = await svc.getCodexDiscoverySnapshot();
+      expect(fresh.resolvedPath).toBe("/opt/codex-pinned");
+    } finally {
+      restore();
     }
   });
 });

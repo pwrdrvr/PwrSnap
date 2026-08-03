@@ -90,6 +90,10 @@ export function FloatOverHost(): React.ReactElement {
   // the full rectangular window bounds, so extra invisible content
   // below the toast blocks clicks on whatever sits under it.
   const contentRef = useRef<HTMLDivElement | null>(null);
+  // Last-seen `settings.codex` slice (JSON), used to skip Codex
+  // discovery refreshes on broadcasts that didn't touch it. Mirrors
+  // Library's gate.
+  const lastCodexSettingsRef = useRef<string | null>(null);
   useLayoutEffect(() => {
     const el = contentRef.current;
     if (el === null) return;
@@ -208,6 +212,10 @@ export function FloatOverHost(): React.ReactElement {
         dispatch("settings:read", {})
       ]).then(([enrichmentResult, settingsResult]) => {
         if (cancelled) return;
+        if (settingsResult.ok) {
+          // `??=` so a codex-change broadcast that raced this read wins.
+          lastCodexSettingsRef.current ??= JSON.stringify(settingsResult.value.codex);
+        }
         setState({
           kind: "loaded",
           record,
@@ -235,6 +243,8 @@ export function FloatOverHost(): React.ReactElement {
       // `null` with `undefined` (which would flip `settings !== null` checks).
       if (cancelled || !result.ok || result.value == null) return;
       const value = result.value;
+      // `??=` so a codex-change broadcast that raced this read wins.
+      lastCodexSettingsRef.current ??= JSON.stringify(value.codex);
       setState((current) =>
         current.kind === "loaded" ? { ...current, settings: value } : current
       );
@@ -267,9 +277,17 @@ export function FloatOverHost(): React.ReactElement {
         if (current.kind !== "loaded") return current;
         return { ...current, settings };
       });
-      void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
-        if (result.ok) setCodexAvailable(codexAvailableInSnapshot(result.value));
-      });
+      // Codex availability depends only on `settings.codex`, so gate the
+      // refresh on that slice changing — unrelated settings broadcasts
+      // shouldn't re-trigger a discovery pass (child spawns) every time
+      // the main-side 30s cache lapses. Mirrors Library's gate.
+      const codexSlice = JSON.stringify(settings.codex);
+      if (lastCodexSettingsRef.current !== codexSlice) {
+        lastCodexSettingsRef.current = codexSlice;
+        void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
+          if (result.ok) setCodexAvailable(codexAvailableInSnapshot(result.value));
+        });
+      }
     });
     return () => {
       unsubscribe?.();

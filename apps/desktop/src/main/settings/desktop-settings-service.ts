@@ -82,7 +82,8 @@ import {
   discoverCodexCommands,
   MINIMUM_CODEX_CLI_VERSION,
   probeCodexAuth,
-  resolveCodexCommand
+  resolveCodexCommand,
+  selectResolvedCodexCommand
 } from "./codex-discovery";
 import { getMainLogger } from "../log";
 
@@ -1204,6 +1205,19 @@ export class DesktopSettingsService {
     | { snapshot: SharedCodexSnapshot; computedAt: number }
     | null = null;
 
+  /** In-flight snapshot computation. Concurrent non-forced readers (the
+   *  Library, float-over, and Settings windows all refresh on the same
+   *  settings broadcast) piggyback on it instead of each spawning their
+   *  own discovery pass. */
+  private codexSnapshotInflight: Promise<SharedCodexSnapshot> | null = null;
+
+  /** Bumped whenever a `codex.*` write invalidates the cache. A
+   *  computation started under an older epoch still returns its snapshot
+   *  to its caller but must not populate the cache — otherwise a write
+   *  landing mid-computation would be shadowed by stale results for up
+   *  to the cache TTL. */
+  private codexSnapshotEpoch = 0;
+
   constructor(config: DesktopSettingsServiceConfig) {
     this.filePath = config.filePath;
     this.log = config.logger ?? getMainLogger("pwrsnap:settings-service");
@@ -1282,7 +1296,7 @@ export class DesktopSettingsService {
       // Providers "Using" badge sticks to the prior choice after a
       // pin. Only invalidate on success so a rejected write doesn't
       // force an extra (uncached) discovery on the next read.
-      if (patch.codex !== undefined) this.codexSnapshotCache = null;
+      if (patch.codex !== undefined) this.invalidateCodexSnapshotCache();
       return merged;
     };
 
@@ -1316,14 +1330,34 @@ export class DesktopSettingsService {
         return this.codexSnapshotCache.snapshot;
       }
     }
+    // Coalesce concurrent readers onto the in-flight computation —
+    // every open window refreshes on the same settings broadcast, and
+    // without this each one would spawn its own discovery pass the
+    // moment the cache lapses. A forced refresh always starts fresh
+    // (and becomes the in-flight pass others piggyback on).
+    if (!force && this.codexSnapshotInflight !== null) {
+      return this.codexSnapshotInflight;
+    }
 
+    const compute = this.computeCodexDiscoverySnapshot(this.codexSnapshotEpoch);
+    this.codexSnapshotInflight = compute;
+    try {
+      return await compute;
+    } finally {
+      if (this.codexSnapshotInflight === compute) {
+        this.codexSnapshotInflight = null;
+      }
+    }
+  }
+
+  private async computeCodexDiscoverySnapshot(epoch: number): Promise<SharedCodexSnapshot> {
     const settings = await this.read();
-    const configuredCommand =
+    const pinnedCommand =
       settings.codex.mode === "pinned" && settings.codex.pinnedPath !== ""
         ? settings.codex.pinnedPath
         : undefined;
     const discovery = await discoverCodexCommands({
-      configuredCommand,
+      configuredCommand: pinnedCommand,
       env: process.env
     });
     // The shared shape exposes only path/source/version/available — no
@@ -1333,28 +1367,19 @@ export class DesktopSettingsService {
       toSharedCandidate(c)
     );
 
+    // Resolution selects from the discovery pass we just ran. This used
+    // to call `resolveCodexCommand`, which internally re-runs a FULL
+    // second discovery — doubling the candidate `--version` spawns on
+    // every uncached snapshot.
+    const resolved = selectResolvedCodexCommand(discovery, pinnedCommand ?? "codex");
     let resolvedPath: string | null = null;
     let auth: SharedCodexAuthProbe | null = null;
-    try {
-      const resolved = await resolveCodexCommand({
-        command:
-          settings.codex.mode === "pinned" && settings.codex.pinnedPath !== ""
-            ? settings.codex.pinnedPath
-            : "codex",
-        env: process.env
-      });
-      const resolvedCandidate = candidates.find(
-        (candidate) => candidate.available && candidate.path === resolved.command
-      );
-      if (resolvedCandidate !== undefined) {
-        resolvedPath = resolved.command;
-        auth = await probeCodexAuth(resolved.command, process.env);
-      }
-    } catch (cause) {
-      this.log.warn("settings-service: resolveCodexCommand failed", {
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
-      resolvedPath = null;
+    const resolvedCandidate = candidates.find(
+      (candidate) => candidate.available && candidate.path === resolved.command
+    );
+    if (resolvedCandidate !== undefined) {
+      resolvedPath = resolved.command;
+      auth = await probeCodexAuth(resolved.command, process.env);
     }
 
     const snapshot: SharedCodexSnapshot = {
@@ -1363,8 +1388,16 @@ export class DesktopSettingsService {
       auth,
       refreshedAt: new Date().toISOString()
     };
-    this.codexSnapshotCache = { snapshot, computedAt: Date.now() };
+    if (epoch === this.codexSnapshotEpoch) {
+      this.codexSnapshotCache = { snapshot, computedAt: Date.now() };
+    }
     return snapshot;
+  }
+
+  private invalidateCodexSnapshotCache(): void {
+    this.codexSnapshotEpoch += 1;
+    this.codexSnapshotCache = null;
+    this.codexSnapshotInflight = null;
   }
 
   /**

@@ -137,6 +137,7 @@ import {
   forwardRendererEventToAgent,
   isAgentBridgeConnected
 } from "./process-split/agent-bridge";
+import { installCodexCompatibilityEventBridge } from "./settings/codex-compatibility-event-bridge";
 import {
   closeDatabase,
   getDb,
@@ -1778,6 +1779,7 @@ export function bootstrapApp(): void {
         syncHotCpuProfilersFromSettings("settings-changed");
       });
     }
+    installCodexCompatibilityEventBridge();
     if (!isE2E && role !== "library") {
       installTray();
       markStartup("main: tray installed");

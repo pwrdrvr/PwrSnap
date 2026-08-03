@@ -42,6 +42,10 @@ const { getAiRun } = await import("../persistence/ai-runs-repo");
 const { getCaptureEnrichment } = await import("../persistence/enrichment-repo");
 const { defaultSettings } = await import("../settings/desktop-settings-service");
 const { AiEnrichmentBudget } = await import("../ai/enrichment-budget");
+const {
+  reportCodexCliTooOld,
+  resetCodexCompatibilityAlertForTests
+} = await import("../settings/codex-compatibility-alert");
 
 function testSettings(patch?: Partial<Settings>): Settings {
   return {
@@ -97,6 +101,7 @@ function unregisterCodexHandlers(): void {
     "codex:rejectTag",
     "codex:runStatus",
     "codex:budgetStatus",
+    "codex:compatibilityAlert",
     "codex:models",
     "codex:usageSummary",
     "codex:usageRuns",
@@ -229,6 +234,7 @@ class HangingCodexClient {
 
 describe("Codex handlers", () => {
   beforeEach(async () => {
+    resetCodexCompatibilityAlertForTests();
     electronMock.sentEvents = [];
     electronMock.windows = [];
     tempRoot = join(tmpdir(), `pwrsnap-codex-handlers-test-${process.pid}-${Date.now()}`);
@@ -264,8 +270,22 @@ describe("Codex handlers", () => {
 
   afterEach(async () => {
     unregisterCodexHandlers();
+    resetCodexCompatibilityAlertForTests();
     testDb.close();
     await rm(tempRoot, { force: true, recursive: true });
+  });
+
+  test("codex:compatibilityAlert returns the durable guard snapshot", async () => {
+    registerCodexHandlers();
+    const alert = reportCodexCliTooOld("codex", "0.143.0", "0.144.0");
+
+    const result = await bus.dispatch(
+      "codex:compatibilityAlert",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(result).toEqual({ ok: true, value: alert });
   });
 
   test("codex:enrich queues and completes a capture enrichment run", async () => {
@@ -1002,4 +1022,3 @@ describe("withUsageModelLabels", () => {
     expect(withUsageModelLabels(base, lookup).selectedModelLabel).toBeNull();
   });
 });
-

@@ -88,6 +88,7 @@ import {
 } from "../persistence/enrichment-repo";
 import { renameBundleToEffectiveFilename } from "../persistence/bundle-filename-maintenance";
 import { renameVideoSourceToEffectiveFilename } from "../persistence/video-filename-maintenance";
+import { getCodexCliCompatibilityAlert } from "../settings/codex-compatibility-alert";
 
 const log = getMainLogger("pwrsnap:codex-handlers");
 
@@ -498,6 +499,10 @@ export function registerCodexHandlers(params?: {
   const settingsWriter = params?.settingsWriter ?? defaultSettingsWriter;
   const budget = params?.budget ?? aiEnrichmentBudget;
   const turnTimeoutMs = params?.turnTimeoutMs ?? ENRICHMENT_TURN_TIMEOUT_MS;
+
+  bus.register("codex:compatibilityAlert", async () => {
+    return ok(getCodexCliCompatibilityAlert());
+  });
 
   bus.register("codex:enrich", async (req, ctx) => {
     const triggerSource = triggerSourceOrDefault(req.triggerSource, "unknown");

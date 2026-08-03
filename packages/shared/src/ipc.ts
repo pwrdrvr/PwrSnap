@@ -63,6 +63,15 @@ export const EVENT_CHANNELS = {
    */
   appUpdateStatus: "events:app-update:status",
   /**
+   * Main → every BrowserWindow: the exact App Server compatibility guard
+   * observed an incompatible Codex CLI, or later observed a compatible CLI
+   * and cleared the condition. The Library's App-level toast subscribes so
+   * the warning survives navigation and transient AI surfaces closing.
+   *
+   * Payload: `CodexCliCompatibilityAlert | null`.
+   */
+  codexCompatibilityAlertChanged: "events:codex:compatibility-alert-changed",
+  /**
    * Main → renderer navigation signal for the Settings window. Sent by
    * `settings:open` when the window is already focused and the caller
    * supplied a `page`. The renderer's `useActivePage` hook subscribes
@@ -466,6 +475,9 @@ export type AiUsageUpdatedEvent = {
 
 export type EventPayloads = {
   [EVENT_CHANNELS.appUpdateStatus]: AppUpdateStatus;
+  [EVENT_CHANNELS.codexCompatibilityAlertChanged]:
+    | import("./protocol").CodexCliCompatibilityAlert
+    | null;
   [EVENT_CHANNELS.aiUsageUpdated]: AiUsageUpdatedEvent;
   [EVENT_CHANNELS.capturesAccessChanged]: import("./protocol").CapturesAccessHealth;
   [EVENT_CHANNELS.sizzleProjectsChanged]: { projects: SizzleProject[] };

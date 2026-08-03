@@ -16,6 +16,7 @@
 
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import type { LocalAgentCapability, LocalAgentOAuthClient } from "@pwrsnap/shared";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 // Each test launches its own Electron process. The cold-start of
@@ -143,62 +144,65 @@ test("local-agent authorization graph renders named Sessions, roles, and limits"
   const app = await launchPwrSnap();
   try {
     const now = "2026-08-01T12:00:00.000Z";
-    const write = await app.dispatch("settings:write", {
-      localAgents: {
-        grants: [
-          {
-            id: "lag_codex",
-            name: "Codex",
-            roleId: "builtin.full-media",
-            capabilities: [
-              "library.read",
-              "capture.composite.read",
-              "capture.original.read",
-              "capture.export"
-            ],
-            createdAt: now,
-            updatedAt: now,
-            lastUsedAt: now,
-            revokedAt: null,
-            oauthClient: {
-              clientId: "client_codex",
-              clientName: "Codex MCP",
-              redirectUris: ["http://127.0.0.1/callback"],
-              clientUri: null,
-              scope: null,
-              grantTypes: ["authorization_code"],
-              responseTypes: ["code"],
-              softwareId: null,
-              softwareVersion: null,
-              registeredAt: now
-            }
-          },
-          {
-            id: "lag_claude",
-            name: "Claude",
-            roleId: "builtin.preview",
-            capabilities: ["library.read", "capture.composite.read"],
-            createdAt: now,
-            updatedAt: now,
-            lastUsedAt: null,
-            revokedAt: null,
-            oauthClient: {
-              clientId: "client_claude",
-              clientName: "Claude Desktop",
-              redirectUris: ["http://127.0.0.1/callback"],
-              clientUri: null,
-              scope: null,
-              grantTypes: ["authorization_code"],
-              responseTypes: ["code"],
-              softwareId: null,
-              softwareVersion: null,
-              registeredAt: now
-            }
+    type SessionSeed = {
+      name: string;
+      capabilities: LocalAgentCapability[];
+      oauthClient: LocalAgentOAuthClient;
+    };
+    const seeded = await app.electronApp.evaluate(
+      async (_electron, seeds: SessionSeed[]) => {
+        const bridge = (
+          globalThis as unknown as {
+            __PWRSNAP_TEST__?: {
+              seedLocalAgentSession: (seed: SessionSeed) => Promise<unknown>;
+            };
           }
-        ]
-      }
-    });
-    expect(write.ok).toBe(true);
+        ).__PWRSNAP_TEST__;
+        if (bridge === undefined) throw new Error("PWRSNAP_E2E bridge not installed");
+        for (const seed of seeds) await bridge.seedLocalAgentSession(seed);
+        return true;
+      },
+      [
+        {
+          name: "Codex",
+          capabilities: [
+            "library.read",
+            "capture.composite.read",
+            "capture.original.read",
+            "capture.export"
+          ],
+          oauthClient: {
+            clientId: "client_codex",
+            clientName: "Codex MCP",
+            redirectUris: ["http://127.0.0.1/callback"],
+            clientUri: null,
+            scope: null,
+            grantTypes: ["authorization_code"],
+            responseTypes: ["code"],
+            softwareId: null,
+            softwareVersion: null,
+            registeredAt: now
+          }
+        },
+        {
+          name: "Claude",
+          capabilities: ["library.read", "capture.composite.read"],
+          oauthClient: {
+            clientId: "client_claude",
+            clientName: "Claude Desktop",
+            redirectUris: ["http://127.0.0.1/callback"],
+            clientUri: null,
+            scope: null,
+            grantTypes: ["authorization_code"],
+            responseTypes: ["code"],
+            softwareId: null,
+            softwareVersion: null,
+            registeredAt: now
+          }
+        }
+      ]
+    );
+    expect(seeded).toBe(true);
 
     const opened = await app.dispatch("settings:open", { page: "local-agents" });
     expect(opened.ok).toBe(true);

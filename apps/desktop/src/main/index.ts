@@ -1994,6 +1994,14 @@ export function bootstrapApp(): void {
       const testBridge = {
         dispatch: <Name extends string>(name: Name, req: unknown) =>
           bus.dispatch(name as never, req as never, { principal: "ipc" }),
+        // Seed through the same grant service used by OAuth approval instead
+        // of punching a test-only hole through settings:write. The settings
+        // boundary intentionally rejects direct role/grant replacement.
+        seedLocalAgentSession: (
+          input: Parameters<
+            ReturnType<typeof getLocalAgentGrantService>["issueOAuthGrant"]
+          >[0]
+        ) => getLocalAgentGrantService().issueOAuthGrant(input),
         // Test-only helpers for seeding rows + reading internal state
         // that isn't bus-exposed. Every helper goes through the same
         // bridge surface so specs don't reach into module internals

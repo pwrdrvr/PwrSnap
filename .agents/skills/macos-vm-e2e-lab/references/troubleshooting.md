@@ -157,6 +157,24 @@ smudges LFS content from its own `origin` (GitHub) instead. Caveat:
 an LFS object committed locally but never pushed to origin cannot
 materialize in the VM — push the object to origin (any branch) first.
 
+## Runner "running" per launchd but VM stopped, nothing serves
+
+**Symptom.** `tart list` shows `pwrsnap-runner` stopped, yet
+`launchctl print gui/$UID/com.pwrsnap.gha-runner` says `state =
+running` and jobs queue unserved. Typically after stopping the guest
+out from under a live listener (`tart stop` mid-job, guest panic).
+
+**Root cause.** A halted VM sends no TCP RST, and (pre-fix) the lab's
+`SSH_OPTS` had no keepalive — the launchd script's `ssh … run.sh`
+dangled on the dead peer indefinitely, so launchd saw a healthy
+process and KeepAlive never fired.
+
+**Fix.** `vm-lib.sh` now sets `ServerAliveInterval=15` /
+`ServerAliveCountMax=4`: a dead peer is detected in ≤60s, the script
+exits, and launchd's KeepAlive relaunches it (which boots the guest
+fresh). To recover immediately instead of waiting:
+`launchctl kickstart -k gui/$UID/com.pwrsnap.gha-runner`.
+
 ## Runner registration 403 / token fetch fails
 
 `gh api -X POST repos/<owner>/<repo>/actions/runners/registration-token`

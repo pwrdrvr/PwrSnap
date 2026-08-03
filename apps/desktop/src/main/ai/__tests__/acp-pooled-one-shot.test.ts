@@ -259,6 +259,51 @@ describe("runPooledAcpOneShot", () => {
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(client.startThread).not.toHaveBeenCalled();
   });
+
+  test("a cancel during the pool acquire (cold spawn) never opens a session", async () => {
+    // The abort listener can only be registered once a session exists; a
+    // cancel landing during the multi-second cold spawn must be caught by
+    // the re-check, not silently ignored (an already-aborted signal never
+    // fires a listener added later).
+    const client = makeFakeClient();
+    const abort = new AbortController();
+    acquireAcpAgentClient.mockImplementation(async () => {
+      abort.abort();
+      return client;
+    });
+
+    await expect(
+      runPooledAcpOneShot({
+        agent: AGENT,
+        cwd: "/cwd",
+        request: { prompt: "p", abortSignal: abort.signal }
+      })
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(client.startThread).not.toHaveBeenCalled();
+  });
+
+  test("a cancel during session/new is honored before the turn starts", async () => {
+    // Same missed-listener window, one await later: the session opened, so
+    // it must still be archived — but no turn may start.
+    const client = makeFakeClient();
+    const abort = new AbortController();
+    acquireAcpAgentClient.mockResolvedValue(client);
+    const openSession = client.startThread.getMockImplementation()!;
+    client.startThread.mockImplementation(async (opts?: { model?: string }) => {
+      abort.abort();
+      return openSession(opts);
+    });
+
+    await expect(
+      runPooledAcpOneShot({
+        agent: AGENT,
+        cwd: "/cwd",
+        request: { prompt: "p", abortSignal: abort.signal }
+      })
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(client.startTurn).not.toHaveBeenCalled();
+    expect(client.archiveThread).toHaveBeenCalledWith("th-1");
+  });
 });
 
 describe("listPooledAcpModels", () => {

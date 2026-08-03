@@ -77,8 +77,16 @@ export async function runPooledAcpOneShot(input: {
   request: PooledAcpOneShotRequest;
 }): Promise<PooledAcpOneShotResponse> {
   const { agent, request } = input;
-  if (request.abortSignal?.aborted === true) throw abortError();
+  // Inside a function so each call re-reads the signal — `aborted` flips
+  // across the awaits below, which inline narrowing would reason away.
+  const throwIfAborted = (): void => {
+    if (request.abortSignal?.aborted === true) throw abortError();
+  };
+  throwIfAborted();
   const client = await acquireAcpAgentClient(agent, input.cwd);
+  // A cancel during the acquire (a cold pool pays the multi-second agent
+  // spawn here) arrives before any session exists — bail before opening one.
+  throwIfAborted();
   const thread = await client.startThread(
     request.model !== undefined && request.model !== null ? { model: request.model } : {}
   );
@@ -117,6 +125,11 @@ export async function runPooledAcpOneShot(input: {
   };
   request.abortSignal?.addEventListener("abort", onAbort, { once: true });
   try {
+    // A cancel during session/new landed before the listener above existed,
+    // and adding an "abort" listener to an already-aborted signal never fires
+    // it retroactively — re-check now that the listener covers what follows
+    // (inside the try, so the just-opened session is still archived).
+    throwIfAborted();
     const { turnId } = await client.startTurn({
       threadId: thread.threadId,
       input: {

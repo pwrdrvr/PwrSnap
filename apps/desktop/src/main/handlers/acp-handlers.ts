@@ -1,14 +1,16 @@
 // ACP agent discovery for Settings → AI.
 //
-// One command-bus verb — `acp:discover` — wraps `@pwrdrvr/agent-acp`'s local
-// discovery so the renderer can list which built-in ACP agents (Gemini /
-// Grok / Kimi / Qwen) are installed on this machine, see EVERY instance of
-// each (every `PATH` match + fallback + a passing override), pick one, or set
-// a manual override. Enabling / picking / overriding is a plain `settings:write`
-// patch to `ai.acp.*` (existing verb) — there is no separate mutation command;
-// the persisted state IS the selection. This module is read-only and never
-// spawns an agent in ACP server mode: the kit probes each strategy's CLI with
-// `--version` / `--help` only.
+// `acp:discover` wraps `@pwrdrvr/agent-acp`'s local discovery so the renderer
+// can list which built-in ACP agents (Gemini / Grok / Kimi / Qwen) are
+// installed on this machine, see EVERY instance of each (every `PATH` match +
+// fallback + a passing override), pick one, or set a manual override.
+// Enabling / picking / overriding is a plain `settings:write` patch to
+// `ai.acp.*` (existing verb) — there is no separate mutation command; the
+// persisted state IS the selection. Discovery is read-only and never spawns
+// an agent in ACP server mode: the kit probes each strategy's CLI with
+// `--version` / `--help` only. `acp:models` is the one verb here that can
+// start an agent — a cache-miss listing rides the SHARED pooled process
+// (acp-agent-pool.ts), never a private short-lived spawn.
 //
 // `discoverLocalAcpAgentInstances` returns one group per installed agent, each
 // with all passing instances. We diff that against `BUILT_IN_ACP_STRATEGIES`
@@ -19,11 +21,10 @@
 // first found.
 
 import {
-  AcpOneShotClient,
-  AcpConnection,
   BUILT_IN_ACP_STRATEGIES,
   discoverLocalAcpAgentInstances,
   strategyById,
+  type DiscoveredAcpAgent,
   type DiscoveredAcpAgentGroup,
   type LocalAcpDiscoveryOptions
 } from "@pwrdrvr/agent-acp";
@@ -50,11 +51,8 @@ import {
 import { agentErrorMessage } from "../ai/agent-error-message";
 import { getMainLogger } from "../log";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
-import {
-  PWRSNAP_CLIENT_NAME,
-  PWRSNAP_CLIENT_TITLE,
-  toAgentKitLogger
-} from "../ai/agent-kit-bindings";
+import { acpPoolScratchCwd } from "../ai/acp-agent-pool";
+import { listPooledAcpModels } from "../ai/acp-pooled-one-shot";
 
 const log = getMainLogger("pwrsnap:acp-handlers");
 
@@ -174,9 +172,10 @@ export function registerAcpHandlers(params?: {
     return ok(toDiscovery(groups, agents));
   });
 
-  // Session cache: listing models spawns the agent + opens a session (seconds),
-  // so memoize per agent. Cleared on app restart; the renderer re-fetches when
-  // the user switches providers, hitting the cache after the first spawn.
+  // Session cache: a cold listing starts the pooled agent process + opens a
+  // session (seconds), so memoize per agent. Cleared on app restart; the
+  // renderer re-fetches when the user switches providers, hitting the cache
+  // after the first probe.
   const modelCache = new Map<string, AcpAgentModelOption[]>();
   // Collapse concurrent requests for the SAME agent onto one spawn (the
   // renderer can fire twice — e.g. React StrictMode — before either resolves).
@@ -262,23 +261,23 @@ export function registerAcpHandlers(params?: {
       })),
       pref
     );
-    const cwd = join(app.getPath("documents"), "PwrSnap", "Chats", ".acp-models");
-    const logger = toAgentKitLogger("pwrsnap:acp-models");
-    const client = new AcpOneShotClient({
-      transport: new AcpConnection({
-        command: active.command,
-        args: [...group.args],
-        ...(Object.keys(group.env).length > 0 ? { env: group.env } : {}),
-        logger
-      }),
-      strategy,
-      clientName: PWRSNAP_CLIENT_NAME,
-      clientTitle: PWRSNAP_CLIENT_TITLE,
-      cwd,
-      logger
-    });
+    // Ride the SHARED pooled agent process (one per agent app-wide) — model
+    // listing must not spawn its own short-lived instance. First listing for a
+    // not-yet-running agent starts the pooled process, which is then retained
+    // (an explicit model refresh IS an invocation of that agent).
+    const agent: DiscoveredAcpAgent = {
+      strategyId: group.strategyId,
+      backendId: group.backendId,
+      name: group.name,
+      command: active.command,
+      args: group.args,
+      env: group.env,
+      discoveredAt: group.discoveredAt,
+      ...(active.version !== undefined ? { version: active.version } : {})
+    };
+    const cwd = acpPoolScratchCwd(join(app.getPath("documents"), "PwrSnap", "Chats"));
     try {
-      const models = await client.listModels();
+      const models = await listPooledAcpModels({ agent, cwd });
       const options: AcpAgentModelOption[] = models.map((m) => ({
         id: m.id,
         label: m.label ?? m.id,
@@ -305,8 +304,6 @@ export function registerAcpHandlers(params?: {
         message,
         cause
       });
-    } finally {
-      await client.close().catch(() => undefined);
     }
   }
 }

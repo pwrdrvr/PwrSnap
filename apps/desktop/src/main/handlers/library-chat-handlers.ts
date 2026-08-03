@@ -31,7 +31,6 @@ import {
   createKeyedChatControllerCache,
   type ChatBackendConfig
 } from "../ai/chat-controller-cache";
-import { warmConfiguredAcpAgentsOnFirstChatUse } from "../ai/acp-agent-pool";
 import { ChatThreadStore } from "../ai/chat-thread-store";
 import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import type { ChatBroadcast, ChatChannelSet } from "../ai/chat-event-adapter";
@@ -155,10 +154,6 @@ function codexCommandForSettings(settings: Settings): string {
 export function registerLibraryChatHandlers(params?: {
   controller?: ChatThreadController<Settings>;
   settingsReader?: LibraryChatSettingsReader;
-  /** First-chat-use ACP warm-up trigger (injectable for tests). Defaults to
-   *  the app-wide pool warm; no-op when a controller is injected (tests run
-   *  without a real backend). */
-  warmAcpAgentsOnFirstUse?: () => void;
 }): void {
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
   const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
@@ -221,21 +216,10 @@ export function registerLibraryChatHandlers(params?: {
   // A test-injected controller pins every config to that instance (no rebuild,
   // no real backend) — existing handler tests rely on this.
   const injected = params?.controller ?? null;
-  // ACP agents are warmed on FIRST chat use, not at boot — any verb on this
-  // surface counts as use (the panel dispatches `list` on open). The pool's
-  // latch makes repeat calls free.
-  const warmOnFirstUse =
-    params?.warmAcpAgentsOnFirstUse ??
-    (injected !== null
-      ? (): void => undefined
-      : (): void =>
-          warmConfiguredAcpAgentsOnFirstChatUse({ readSettings: settingsReader, chatsDir }));
   const controllerFor = async (
     config: ChatBackendConfig
-  ): Promise<ChatThreadController<Settings>> => {
-    warmOnFirstUse();
-    return injected !== null ? injected : cache.get(config);
-  };
+  ): Promise<ChatThreadController<Settings>> =>
+    injected !== null ? injected : cache.get(config);
 
   /** The surface's Settings-default config (seeds a new chat + the list view). */
   const defaultConfig = async (): Promise<ChatBackendConfig> => {

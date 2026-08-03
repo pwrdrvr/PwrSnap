@@ -28,7 +28,6 @@ import {
   type KeyedChatControllerCache
 } from "../ai/chat-controller-cache";
 import { codexEnvForProfile } from "../ai/agent-kit-bindings";
-import { warmConfiguredAcpAgentsOnFirstChatUse } from "../ai/acp-agent-pool";
 import type { ChatBroadcast, ChatChannelSet } from "../ai/chat-event-adapter";
 import { toChatMessage, toLibraryThreadView } from "../ai/chat-event-adapter";
 import {
@@ -93,9 +92,6 @@ let sizzleSettingsReader: SizzleChatSettingsReader = defaultSettingsReader;
 let injectedSizzleController: ChatThreadController<Settings> | null = null;
 let sizzleCache: KeyedChatControllerCache<ChatThreadController<Settings>> | null = null;
 let sizzleStore: ChatThreadStore | null = null;
-// First-chat-use ACP warm-up trigger (set at registration; injectable for
-// tests). ACP agents are warmed on first chat use, not at boot.
-let sizzleWarmOnFirstUse: () => void = () => undefined;
 
 function getSizzleStore(): ChatThreadStore {
   if (sizzleStore === null) {
@@ -160,7 +156,6 @@ function getSizzleCache(): KeyedChatControllerCache<ChatThreadController<Setting
 async function sizzleControllerFor(
   config: ChatBackendConfig
 ): Promise<ChatThreadController<Settings>> {
-  sizzleWarmOnFirstUse();
   if (injectedSizzleController !== null) return injectedSizzleController;
   return getSizzleCache().get(config);
 }
@@ -209,22 +204,9 @@ export async function forkProjectChats(
 export function registerSizzleChatHandlers(params?: {
   controller?: ChatThreadController<Settings>;
   settingsReader?: SizzleChatSettingsReader;
-  /** First-chat-use ACP warm-up trigger (injectable for tests). Defaults to
-   *  the app-wide pool warm; no-op when a controller is injected (tests run
-   *  without a real backend). */
-  warmAcpAgentsOnFirstUse?: () => void;
 }): void {
   sizzleSettingsReader = params?.settingsReader ?? defaultSettingsReader;
   injectedSizzleController = params?.controller ?? null;
-  sizzleWarmOnFirstUse =
-    params?.warmAcpAgentsOnFirstUse ??
-    (injectedSizzleController !== null
-      ? (): void => undefined
-      : (): void =>
-          warmConfiguredAcpAgentsOnFirstChatUse({
-            readSettings: sizzleSettingsReader,
-            chatsDir: join(app.getPath("documents"), "PwrSnap", "Chats")
-          }));
   // Re-registration (tests) starts from a fresh cache + store so it doesn't
   // reuse state built against a previous settings reader.
   sizzleCache = null;

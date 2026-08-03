@@ -1243,9 +1243,10 @@ const ASSET_FILENAME_MAINTENANCE_BOOT_DELAY_MS = 2_000;
 // never asserts on probe timing itself, so baseline parity is the
 // stable choice there.
 //
-// ACP agents are NOT warmed at boot — a session where the user never
-// opens a chat surface spawns zero agent processes. The chat handlers
-// trigger `warmConfiguredAcpAgentsOnFirstChatUse` on first use.
+// ACP agents are NOT warmed at boot: an agent process starts only when
+// something actually routes to it (pooled acquire in acp-agent-pool.ts)
+// and is then retained until quit. A session that never invokes an
+// agent spawns zero agent processes.
 const STARTUP_CODEX_PROBE_DELAY_MS = 4_000;
 
 async function runBootGc(): Promise<void> {

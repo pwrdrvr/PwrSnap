@@ -14,10 +14,10 @@
   padding: 6px 4px;
 }
 
-/* Arrow inspectors belong to their rows instead of floating above the
-   list. That keeps three same-named arrows unambiguous and lets a person
-   leave several expanded for side-by-side comparison. The bottom toolbar
-   still configures the next arrow, never these placed layers. */
+/* Styled-layer inspectors belong to their rows instead of floating above the
+   list. That keeps similar annotations unambiguous and lets a person leave
+   several expanded for side-by-side comparison. The bottom toolbar still
+   configures the next drawing, never these placed layers. */
 .psl-layers__item {
   min-width: 0;
 }
@@ -39,6 +39,9 @@
 }
 
 .psl-layers__inspector-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   margin-top: 10px;
 }
 
@@ -183,7 +186,7 @@
   text-overflow: ellipsis;
 }
 
-/* Always-visible arrow inspector toggle. It is separate from the row's
+/* Always-visible styled-layer inspector toggle. It is separate from the row's
    hover-only layer actions so people can discover that multiple property
    blocks may remain open at once. */
 .psl-layers__expand {

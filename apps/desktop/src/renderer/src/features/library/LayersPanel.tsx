@@ -1,7 +1,8 @@
 // LayersPanel — the Library DetailRail "Layers" tab. Lists every layer
 // in the selected image capture (top-to-bottom = front-to-back) and
-// exposes per-row show/hide, reorder, delete, and — for the crop row —
-// a proper "uncrop" that keeps all other annotations correctly placed.
+// exposes per-row show/hide, reorder, delete, direct style comparison for
+// placed annotation tools, and — for the crop row — a proper "uncrop" that
+// keeps all other annotations correctly placed.
 //
 // Data source: this panel reads its own `useCaptureModel(captureId)`
 // instance. That hook auto-refetches on `events:overlays:changed` /
@@ -38,7 +39,7 @@ import { selectBaseRaster } from "../editor/base-raster";
 import { affineTransformsEqual } from "../editor/raster-resize";
 import { TOOLS } from "../editor/editor-tools";
 import { ToolStyleBody } from "../editor/ToolStylePopover";
-import { arrowLayerStyle } from "./arrow-layer-style";
+import { styledLayerStyle } from "./styled-layer-style";
 import "./LayersPanel.css";
 
 export type LayersPanelProps = {
@@ -619,8 +620,11 @@ export function LayersPanel({
           const crop = isCropLayer(node);
           const base = isBaseLayer(node, sourceRasterId);
           const selectable = isSelectable(node);
-          const arrowStyle = arrowLayerStyle(node);
-          const inspectorExpanded = arrowStyle !== null && expandedLayerIds.has(id);
+          const layerStyle = styledLayerStyle(node, {
+            width: model.record.width_px,
+            height: model.record.height_px
+          });
+          const inspectorExpanded = layerStyle !== null && expandedLayerIds.has(id);
           const inspectorDomId = `layer-inspector-${previewId(id)}`;
           // Non-base rasters (pasted image / captured cursor) with a stored
           // home transform get a Reset control — enabled once they've been
@@ -696,7 +700,7 @@ export function LayersPanel({
                 <span className="psl-layers__label" title={labelForNode(node)}>
                   {labelForNode(node)}
                 </span>
-                {arrowStyle !== null && (
+                {layerStyle !== null && (
                   <button
                     type="button"
                     className={
@@ -705,8 +709,8 @@ export function LayersPanel({
                     data-testid={`layer-inspector-toggle-${id}`}
                     aria-label={
                       inspectorExpanded
-                        ? "Collapse Arrow properties"
-                        : "Expand Arrow properties"
+                        ? `Collapse ${layerStyle.label} properties`
+                        : `Expand ${layerStyle.label} properties`
                     }
                     aria-controls={inspectorDomId}
                     aria-expanded={inspectorExpanded}
@@ -770,21 +774,24 @@ export function LayersPanel({
                   </button>
                 </span>
               </div>
-              {arrowStyle !== null && inspectorExpanded && (
+              {layerStyle !== null && inspectorExpanded && (
                 <section
                   id={inspectorDomId}
                   className="psl-layers__inspector"
                   data-testid={`layer-inspector-${id}`}
-                  aria-label={`${arrowStyle.label} properties`}
+                  aria-label={`${layerStyle.label} properties`}
                 >
-                  <div className="psl-layers__inspector-heading">Arrow properties</div>
+                  <div className="psl-layers__inspector-heading">
+                    {layerStyle.label} properties
+                  </div>
                   <div className="psl-layers__inspector-body">
                     <ToolStyleBody
-                      tool={arrowStyle.tool}
-                      style={arrowStyle.style}
+                      tool={layerStyle.tool}
+                      style={layerStyle.style}
                       onStyleFieldChange={(field, value): void => {
                         api?.updateLayerStyle(id, field, value);
                       }}
+                      styleTargetKey={id}
                     />
                   </div>
                 </section>

@@ -11,7 +11,7 @@ origin: docs/brainstorms/2026-05-19-v2-layer-editor-requirements.md
 ## Enhancement Summary
 
 **Deepened on:** 2026-05-23
-**Amended on:** 2026-08-02 — explicit user feedback restored a compact Library Layers tab plus a selected-layer Properties tab: people need visual layer identification and a direct human edit path, not an AI-only one.
+**Amended on:** 2026-08-02 — explicit user feedback restored a compact Library Layers tab plus a selected-layer Properties tab: people need visual layer identification and a direct human edit path, not an AI-only one. Follow-up feedback applied that completed interaction model to every styled annotation tool, not arrows alone.
 **Sections enhanced:** all (overview, phase ordering, all 8 phases, data model, system-wide impact, acceptance criteria, risks, success metrics)
 **Reviewers applied:** kieran-typescript, julik-frontend-races, agent-native-reviewer, architecture-strategist, code-simplicity-reviewer, data-integrity-guardian, data-migration-expert, deployment-verification-agent, pattern-recognition-specialist, performance-oracle, security-sentinel, schema-drift-detector, frontend-design (skill), agent-native-architecture (skill), best-practices-researcher
 
@@ -64,7 +64,7 @@ Carries forward the brainstorm's two marquee positions:
 - **For AI**: the layer-tree IPC is the documented annotation contract — Codex uses the same `layers:*` verbs the renderer uses; AI-produced annotations show up as layers indistinguishable in behavior from user-drawn ones.
 
 User feedback layered on top of the brainstorm:
-- **Library Layers + Properties tabs — restored.** In Library Focus, the v2 layer tree is a human-facing list: compact per-layer previews make a colored/directional arrow easy to find. The dedicated Properties tab follows one selected layer and exposes its editable color, thickness, end, stem, and double-ended controls. Arrow-row chevrons are manual, independently expandable comparison views; selection never opens them. The bottom toolbar remains the default for the *next* arrow, not a hidden way to edit a placed one.
+- **Library Layers + Properties tabs — restored.** In Library Focus, the v2 layer tree is a human-facing list: compact per-layer previews make a colored/directional arrow easy to find. The dedicated Properties tab follows one selected styled layer (arrow, text, shape, blur, or highlight) and exposes that placed layer's editable controls. Styled-row chevrons are manual, independently expandable comparison views; selection never opens them. The bottom toolbar remains the default for the *next* drawing, not a hidden way to edit a placed one. Source/raster, crop, and step stay truthful non-style states until they gain their own property surfaces.
 - **Tool dropdowns + Tool Config panel** become first-class — color picker per tool, preset sizes, arrow end styles, stem styles.
 - **Sticky tool mode + style memory** — after placing an arrow, stay in arrow mode with the same color/style; matching-text flow lets the user place a label that visually matches the arrow with one click.
 - **Crop tool** — currently missing from the toolbar; add it.
@@ -812,7 +812,7 @@ Chat panel is disabled with banner "Open this capture in the editor first to ena
 
 **Alt 2: v2-only editor, no dual-mode.** Rejected: makes doctor blocking for any v1 capture open; first-open feels broken; ⌘Z on a fresh-migrated capture could be confusing. Dual-mode is safer for the transition window.
 
-**Alt 3: Layers panel as long-tail follow-up.** Revisited after direct user feedback. The Library DetailRail now carries compact Layers and Properties tabs (separate from the standalone editor activity bar): previews make individual annotations discoverable, the Properties tab follows one selected layer, and manual inline arrow inspectors support side-by-side comparison. Reorder/hide remain there; broader per-kind inspectors can follow real demand.
+**Alt 3: Layers panel as long-tail follow-up.** Revisited after direct user feedback. The Library DetailRail now carries compact Layers and Properties tabs (separate from the standalone editor activity bar): previews make individual annotations discoverable, the Properties tab follows one selected styled layer, and manual inline styled-layer inspectors support side-by-side comparison. Reorder/hide remain there; non-style layer inspectors can follow real demand.
 
 **Alt 4: AI as separate plan, not a phase here.** Phase 7 could absolutely be its own follow-up plan. Including it here keeps the editor + AI thinking unified. Marked as scope-cut candidate if timeline pressure surfaces.
 
@@ -959,7 +959,7 @@ Surface parity check (per agent-native-reviewer):
 - [ ] **NEW — Sticky tool mode + style memory:** Per-tool style memory; COLOR slot shared across tools; styles persist as defaults via Settings; active state window-scoped.
 - [ ] **NEW — Matching-text affordance:** "+ Add label" appears after placing an arrow; click → text mode with arrow color; place text → return to arrow mode.
 - [ ] **NEW — Crop tool:** Toolbar tool; commits a new canvas dimension; existing annotations stay at absolute positions.
-- [ ] **NEW — Library Layers + Properties tabs:** visual previews identify layers at a glance; the Properties tab follows one selected layer, while each Arrow row can manually expand direct-edit controls with multiple rows open for comparison, without changing next-tool defaults.
+- [ ] **NEW — Library Layers + Properties tabs:** visual previews identify layers at a glance; the Properties tab follows one selected styled layer (arrow, text, shape, blur, or highlight), while each styled row can manually expand direct-edit controls with multiple rows open for comparison, without changing next-tool defaults.
 - [ ] **NEW — Color tokens:** `--swatch-*` added to `tokens.css`; stoplight semantics consistent across all tool style popovers.
 - [ ] **NEW — Stoplight coachmark:** First-popover-open shows 3s coachmark explaining stoplight palette; tracked via `settings.editor.coachmarks.stoplightSeen`.
 - [ ] **NEW — Migration:status verb:** Toolbar disabled during doctor run; re-enables on cached "complete" snapshot.
@@ -1076,7 +1076,7 @@ After Phase 8, deferred v2 features in the bundle format's scope become unblocke
 - **Smart objects / linked external sources** — schema slot reserved
 - **Group / ungroup as user-facing operation** — AI uses groups internally; surface to users if requested
 - **Telemetry substrate** — pre-Phase-6 nice-to-have; deferred since manual user-report watch suffices for first rollout
-- **Broader layer inspectors** — extend the selected-arrow inspector to additional layer kinds when user demand justifies their property surfaces
+- **Non-style layer inspectors** — add property surfaces for raster/source, crop, step, and future layer kinds when user demand justifies them
 - **MCP transport for `layers:*`** — bus is already transport-agnostic; expose layer surface to external MCP clients
 
 ## Documentation Plan

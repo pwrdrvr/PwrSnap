@@ -93,6 +93,10 @@ export interface ToolStylePopoverProps {
   /** Style change callback. The parent wires this through to
    *  `setStyleField(tool, field, value)` on `useEditorToolState`. */
   onStyleFieldChange<F extends string, V>(field: F, value: V): void;
+  /** Stable id for the selected layer being styled. This lets controls with
+   *  local draft state reset when the inspector moves to another layer whose
+   *  persisted value happens to be the same. Omitted for new-tool defaults. */
+  styleTargetKey?: string;
   /** Phase 3.5 — when set, the popover edits the SELECTED OVERLAY's
    *  style instead of the active tool's defaults. A header strip
    *  appears at the top reading "Editing this <tool>" with an × to
@@ -371,6 +375,7 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
     style,
     onClose,
     onStyleFieldChange,
+    styleTargetKey,
     selectedOverlayLabel,
     onClearSelection,
     customTextSizeLabel
@@ -577,6 +582,7 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
       tool={tool}
       style={style}
       onStyleFieldChange={onStyleFieldChange}
+      {...(styleTargetKey !== undefined ? { styleTargetKey } : {})}
       {...(customTextSizeLabel !== undefined ? { customTextSizeLabel } : {})}
     />
   );
@@ -660,6 +666,8 @@ export interface ToolStyleBodyProps {
   /** Fired when the user mutates any control. Mirrors the popover's
    *  signature so the same handler wires both surfaces. */
   onStyleFieldChange: ToolStylePopoverProps["onStyleFieldChange"];
+  /** See ToolStylePopoverProps.styleTargetKey. */
+  styleTargetKey?: string;
   /** pwrdrvr/PwrSnap#110 — pass-through to TextBody's Custom indicator
    *  (see `ToolStylePopoverProps.customTextSizeLabel`). */
   customTextSizeLabel?: string;
@@ -681,6 +689,7 @@ export function ToolStyleBody({
   tool,
   style,
   onStyleFieldChange,
+  styleTargetKey,
   customTextSizeLabel
 }: ToolStyleBodyProps): ReactElement {
   switch (tool) {
@@ -718,6 +727,7 @@ export function ToolStyleBody({
         <HighlightBody
           style={style as HighlightToolStyle}
           onStyleFieldChange={onStyleFieldChange}
+          {...(styleTargetKey !== undefined ? { styleTargetKey } : {})}
         />
       );
   }
@@ -1073,13 +1083,129 @@ function BlurBody({ style, onStyleFieldChange }: BlurBodyProps): ReactElement {
 interface HighlightBodyProps {
   style: HighlightToolStyle;
   onStyleFieldChange: ToolStylePopoverProps["onStyleFieldChange"];
+  styleTargetKey?: string;
+}
+
+// A layer-style update crosses IPC, rebuilds the bundle node, and can
+// re-render the entire editor. A native range input emits an input event for
+// every pixel crossed, so writing on every event makes the thumb lose its
+// pointer interaction while the renderer catches up. Keep the thumb local and
+// send a value only after the user pauses; pointerup always flushes the final
+// value immediately.
+const HIGHLIGHT_OPACITY_PAUSE_MS = 150;
+
+function clampHighlightOpacity(value: number): number {
+  return Math.min(MAX_HIGHLIGHT_OPACITY, Math.max(0, value));
 }
 
 function HighlightBody({
   style,
-  onStyleFieldChange
+  onStyleFieldChange,
+  styleTargetKey
 }: HighlightBodyProps): ReactElement {
-  const pct = Math.round(style.opacity * 100);
+  const persistedOpacity = clampHighlightOpacity(style.opacity);
+  const [draftOpacity, setDraftOpacity] = useState(persistedOpacity);
+  const persistedOpacityRef = useRef(persistedOpacity);
+  const queuedOpacityRef = useRef<{
+    opacity: number;
+    onStyleFieldChange: ToolStylePopoverProps["onStyleFieldChange"];
+    styleTargetKey: string | undefined;
+  } | null>(null);
+  const awaitingPersistedOpacityRef = useRef<number | null>(null);
+  const draggingRef = useRef(false);
+  const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const styleTargetKeyRef = useRef(styleTargetKey);
+
+  // Ignore intermediate/stale model snapshots while a locally-owned slider
+  // value is still waiting to land. Once the model contains the committed
+  // value again, normal external updates resume syncing the control.
+  useEffect(() => {
+    const targetChanged = styleTargetKeyRef.current !== styleTargetKey;
+    styleTargetKeyRef.current = styleTargetKey;
+    persistedOpacityRef.current = persistedOpacity;
+    if (targetChanged) {
+      // A delayed write keeps the callback captured from its original layer,
+      // but it must no longer own the visible slider once the inspector has
+      // moved to another layer with the same persisted opacity.
+      draggingRef.current = false;
+      awaitingPersistedOpacityRef.current = null;
+      setDraftOpacity(persistedOpacity);
+      return;
+    }
+    if (awaitingPersistedOpacityRef.current === persistedOpacity) {
+      awaitingPersistedOpacityRef.current = null;
+    }
+    if (
+      !draggingRef.current &&
+      queuedOpacityRef.current === null &&
+      awaitingPersistedOpacityRef.current === null
+    ) {
+      setDraftOpacity(persistedOpacity);
+    }
+  }, [persistedOpacity, styleTargetKey]);
+
+  const flushOpacity = useCallback((): void => {
+    if (commitTimerRef.current !== null) {
+      clearTimeout(commitTimerRef.current);
+      commitTimerRef.current = null;
+    }
+    const queued = queuedOpacityRef.current;
+    queuedOpacityRef.current = null;
+    if (queued === null) return;
+    const nextOpacity = queued.opacity;
+    const stillEditingQueuedTarget = queued.styleTargetKey === styleTargetKeyRef.current;
+
+    // A value that was dragged away and then back to the current persisted
+    // value needs no write unless an earlier paused write is already queued.
+    // That optimization only applies while this control still represents the
+    // layer that queued the value; a layer switch must dispatch the captured
+    // write to its original target even when the new layer has that value.
+    if (
+      stillEditingQueuedTarget &&
+      nextOpacity === persistedOpacityRef.current &&
+      awaitingPersistedOpacityRef.current === null
+    ) {
+      return;
+    }
+
+    if (stillEditingQueuedTarget) {
+      awaitingPersistedOpacityRef.current = nextOpacity;
+    }
+    queued.onStyleFieldChange("opacity", nextOpacity);
+  }, []);
+
+  const queueOpacity = useCallback(
+    (nextOpacity: number): void => {
+      const clampedOpacity = clampHighlightOpacity(nextOpacity);
+      setDraftOpacity(clampedOpacity);
+      // Keep the callback that belonged to this interaction. If the user
+      // selects another same-kind layer while a delayed write is pending,
+      // the old draft must never be applied to the newly selected layer.
+      queuedOpacityRef.current = {
+        opacity: clampedOpacity,
+        onStyleFieldChange,
+        styleTargetKey
+      };
+      if (commitTimerRef.current !== null) {
+        clearTimeout(commitTimerRef.current);
+      }
+      commitTimerRef.current = setTimeout(flushOpacity, HIGHLIGHT_OPACITY_PAUSE_MS);
+    },
+    [flushOpacity, onStyleFieldChange, styleTargetKey]
+  );
+
+  useEffect(
+    () => () => {
+      // Closing the popover, switching tabs, or losing the selected layer is
+      // an interaction boundary just like pointerup. The thumb has already
+      // shown this draft to the user, so persist it through the callback that
+      // was captured for its original layer instead of silently dropping it.
+      flushOpacity();
+    },
+    [flushOpacity]
+  );
+
+  const pct = Math.round(draftOpacity * 100);
   return (
     <>
       <ColorRow
@@ -1093,17 +1219,30 @@ function HighlightBody({
             min={0}
             max={MAX_HIGHLIGHT_OPACITY}
             step={0.05}
-            value={Math.min(MAX_HIGHLIGHT_OPACITY, style.opacity)}
+            value={draftOpacity}
             data-testid="highlight-opacity-input"
             onChange={(e) => {
               const v = Number.parseFloat(e.target.value);
               if (Number.isFinite(v)) {
-                onStyleFieldChange(
-                  "opacity",
-                  Math.min(MAX_HIGHLIGHT_OPACITY, Math.max(0, v))
-                );
+                queueOpacity(v);
               }
             }}
+            onPointerDown={() => {
+              draggingRef.current = true;
+            }}
+            onPointerUp={() => {
+              flushOpacity();
+              draggingRef.current = false;
+            }}
+            onPointerCancel={() => {
+              flushOpacity();
+              draggingRef.current = false;
+            }}
+            onBlur={() => {
+              flushOpacity();
+              draggingRef.current = false;
+            }}
+            onKeyUp={flushOpacity}
             aria-label="Highlight opacity"
           />
           <span className="pse-slider-val" data-testid="highlight-opacity-display">

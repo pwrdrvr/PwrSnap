@@ -199,6 +199,7 @@ interface HarnessProps {
   style: ToolStylePopoverStyle;
   onClose?: () => void;
   onStyleFieldChange?: (field: string, value: unknown) => void;
+  styleTargetKey?: string;
   /** When provided, the popover surfaces a "Custom · {label}" badge
    *  above the Font size row (pwrdrvr/PwrSnap#110). Threaded from
    *  Editor.tsx when a selected text overlay's stored `sizePx`
@@ -227,6 +228,9 @@ function Harness(props: HarnessProps): ReactElement {
       onClose: props.onClose ?? (() => undefined),
       onStyleFieldChange:
         props.onStyleFieldChange ?? ((_f, _v) => undefined),
+      ...(props.styleTargetKey !== undefined
+        ? { styleTargetKey: props.styleTargetKey }
+        : {}),
       ...(props.customTextSizeLabel !== undefined
         ? { customTextSizeLabel: props.customTextSizeLabel }
         : {})
@@ -280,9 +284,16 @@ function fireClick(el: Element): void {
 }
 
 function firePointerDown(target: EventTarget): void {
+  firePointer(target, "pointerdown");
+}
+
+function firePointer(
+  target: EventTarget,
+  type: "pointerdown" | "pointerup" | "pointercancel"
+): void {
   act(() => {
     target.dispatchEvent(
-      new MouseEvent("pointerdown", { bubbles: true, cancelable: true })
+      new MouseEvent(type, { bubbles: true, cancelable: true })
     );
   });
 }
@@ -608,7 +619,7 @@ describe("ToolStylePopover", () => {
     expect(onChange).toHaveBeenCalledWith("radius", { mode: "auto" });
   });
 
-  test("12. highlight opacity slider change → onStyleFieldChange('opacity', 0.6)", () => {
+  test("12. highlight opacity slider keeps its local thumb until pointerup commits", () => {
     const onChange = vi.fn();
     render(
       createElement(Harness, {
@@ -621,7 +632,14 @@ describe("ToolStylePopover", () => {
       '[data-testid="highlight-opacity-input"]'
     );
     expect(slider).not.toBeNull();
+    firePointerDown(slider!);
     fireChange(slider!, "0.6");
+    expect(slider!.value).toBe("0.6");
+    expect(
+      queryPopover().querySelector('[data-testid="highlight-opacity-display"]')?.textContent
+    ).toBe("60%");
+    expect(onChange).not.toHaveBeenCalled();
+    firePointer(slider!, "pointerup");
     expect(onChange).toHaveBeenCalledWith("opacity", 0.6);
   });
 
@@ -640,7 +658,8 @@ describe("ToolStylePopover", () => {
     expect(slider!.value).toBe(String(MAX_HIGHLIGHT_OPACITY));
   });
 
-  test("14. highlight opacity slider clamps attempted opaque writes", () => {
+  test("14. highlight opacity slider coalesces rapid changes and commits after a pause", () => {
+    vi.useFakeTimers();
     const onChange = vi.fn();
     render(
       createElement(Harness, {
@@ -653,8 +672,104 @@ describe("ToolStylePopover", () => {
       '[data-testid="highlight-opacity-input"]'
     );
     expect(slider).not.toBeNull();
+    firePointerDown(slider!);
+    fireChange(slider!, "0.2");
+    fireChange(slider!, "0.4");
     fireChange(slider!, "1");
+    expect(slider!.value).toBe(String(MAX_HIGHLIGHT_OPACITY));
+    expect(onChange).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(149);
+    });
+    expect(onChange).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
     expect(onChange).toHaveBeenCalledWith("opacity", MAX_HIGHLIGHT_OPACITY);
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  test("15. highlight opacity draft resets for a new selected layer with the same opacity", () => {
+    vi.useFakeTimers();
+    const firstLayerChange = vi.fn();
+    const secondLayerChange = vi.fn();
+    render(
+      createElement(Harness, {
+        tool: "highlight",
+        style: DEFAULT_HIGHLIGHT_STYLE,
+        styleTargetKey: "highlight-first",
+        onStyleFieldChange: firstLayerChange
+      })
+    );
+    const firstSlider = queryPopover().querySelector<HTMLInputElement>(
+      '[data-testid="highlight-opacity-input"]'
+    );
+    expect(firstSlider).not.toBeNull();
+    firePointerDown(firstSlider!);
+    fireChange(firstSlider!, "0.6");
+    expect(firstSlider!.value).toBe("0.6");
+
+    // Both layers persist at 30%. The selected-layer key, rather than the
+    // numeric prop alone, must clear the first layer's local draft.
+    act(() => {
+      root!.render(
+        createElement(Harness, {
+          tool: "highlight",
+          style: DEFAULT_HIGHLIGHT_STYLE,
+          styleTargetKey: "highlight-second",
+          onStyleFieldChange: secondLayerChange
+        })
+      );
+    });
+    const secondSlider = queryPopover().querySelector<HTMLInputElement>(
+      '[data-testid="highlight-opacity-input"]'
+    );
+    expect(secondSlider).not.toBeNull();
+    expect(secondSlider!.value).toBe("0.3");
+    expect(
+      queryPopover().querySelector('[data-testid="highlight-opacity-display"]')?.textContent
+    ).toBe("30%");
+
+    // The delayed write remains owned by the first selected layer; it never
+    // leaks into the second layer merely because its inspector mounted.
+    act(() => {
+      vi.advanceTimersByTime(150);
+    });
+    expect(firstLayerChange).toHaveBeenCalledWith("opacity", 0.6);
+    expect(secondLayerChange).not.toHaveBeenCalled();
+  });
+
+  test("16. highlight opacity slider flushes its visible draft when unmounted", () => {
+    vi.useFakeTimers();
+    const onChange = vi.fn();
+    render(
+      createElement(Harness, {
+        tool: "highlight",
+        style: DEFAULT_HIGHLIGHT_STYLE,
+        styleTargetKey: "highlight-closing",
+        onStyleFieldChange: onChange
+      })
+    );
+    const slider = queryPopover().querySelector<HTMLInputElement>(
+      '[data-testid="highlight-opacity-input"]'
+    );
+    expect(slider).not.toBeNull();
+    firePointerDown(slider!);
+    fireChange(slider!, "0.55");
+    expect(slider!.value).toBe("0.55");
+    expect(onChange).not.toHaveBeenCalled();
+
+    // Closing inside the 150 ms debounce window must persist the value that
+    // was already visible, and clearing the timer must prevent a second call.
+    act(() => {
+      root!.render(createElement("div"));
+    });
+    expect(onChange).toHaveBeenCalledWith("opacity", 0.55);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    act(() => {
+      vi.advanceTimersByTime(150);
+    });
+    expect(onChange).toHaveBeenCalledTimes(1);
   });
 
   test("15. coachmark visible on first open (stoplightSeen=false)", () => {

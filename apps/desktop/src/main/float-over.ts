@@ -73,16 +73,46 @@ let lastEvent: FloatOverEvent | null = null;
 /** True once the renderer has finished loading at least once. Until
  *  then, IPC events are buffered in `lastEvent` and re-sent on dom-ready. */
 let rendererReady = false;
+/** Delayed ready notification used when the page is already loaded before
+ *  listeners are attached. Cleared on disposal so a late callback cannot
+ *  revive state after the singleton has been destroyed. */
+let rendererReadyTimer: ReturnType<typeof setTimeout> | null = null;
 /** True after the first `showInactive()` call on the singleton. Subsequent
  *  show transitions skip `showInactive()` because we never `hide()` the
  *  window — see parkOffScreen() / restoreOnScreen() for the off-screen
  *  pseudo-hide model. Reset when the singleton is recreated. */
 let everShown = false;
+/** One bounded Windows topmost retry chain. Disposal cancels it so no
+ *  float-over-owned timer survives app teardown. */
+let topmostRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Where we park the float-over between uses. Far enough off-screen that
  *  no real display layout includes it, even on a 16K virtual workspace. */
 const PARK_X = -20_000;
 const PARK_Y = -20_000;
+
+function clearRendererReadyTimer(): void {
+  if (rendererReadyTimer === null) return;
+  clearTimeout(rendererReadyTimer);
+  rendererReadyTimer = null;
+}
+
+function clearTopmostRetryTimer(): void {
+  if (topmostRetryTimer === null) return;
+  clearTimeout(topmostRetryTimer);
+  topmostRetryTimer = null;
+}
+
+function resetFloatOverRuntimeState(): void {
+  clearRendererReadyTimer();
+  clearTopmostRetryTimer();
+  singleton = null;
+  state = { kind: "hidden" };
+  anchoredDisplayId = null;
+  lastEvent = null;
+  rendererReady = false;
+  everShown = false;
+}
 
 /**
  * Park the float-over off-screen with opacity 0 and mouse events
@@ -230,13 +260,18 @@ function getOrCreate(): BrowserWindow {
   singleton = window;
   rendererReady = false;
   const markRendererReady = (): void => {
+    if (singleton !== window || window.isDestroyed()) return;
     rendererReady = true;
     if (lastEvent !== null && !window.isDestroyed()) {
       window.webContents.send(EVENT_CHANNELS.floatOverState, lastEvent);
     }
   };
   const markRendererReadyAfterReactMount = (): void => {
-    setTimeout(markRendererReady, 100);
+    clearRendererReadyTimer();
+    rendererReadyTimer = setTimeout(() => {
+      rendererReadyTimer = null;
+      markRendererReady();
+    }, 100);
   };
   if (window.webContents.getURL() !== "" && !window.webContents.isLoadingMainFrame()) {
     markRendererReadyAfterReactMount();
@@ -252,16 +287,8 @@ function getOrCreate(): BrowserWindow {
   // docs/solutions/2026-07-15-popover-zoom-remeasure-dpr.md.
   window.on("closed", () => {
     if (singleton === window) {
-      singleton = null;
-      state = { kind: "hidden" };
-      lastEvent = null;
-      rendererReady = false;
-      // Reset the everShown flag so the next getOrCreate() goes
-      // through the first-show path again (calls showInactive()
-      // to add the new window to AppKit's window list).
-      everShown = false;
-      // Clear the recorded anchor display — next show recomputes.
-      anchoredDisplayId = null;
+      disarmCopyShortcuts();
+      resetFloatOverRuntimeState();
     }
   });
   // Park the freshly-created window off-screen immediately. Construction
@@ -381,6 +408,9 @@ function disarmCopyShortcuts(): void {
  * event and the BrowserWindow state stay in lockstep.
  */
 export function setFloatOverState(event: FloatOverEvent): void {
+  // A new explicit state transition supersedes any retry chain from the
+  // previous loaded toast.
+  clearTopmostRetryTimer();
   switch (event.kind) {
     case "show-idle": {
       const window = getOrCreate();
@@ -496,6 +526,7 @@ function reassertFloatOverTopmost(): boolean {
  */
 export function ensureFloatOverTopmost(): void {
   if (process.platform !== "win32") return;
+  clearTopmostRetryTimer();
   // Usually the selector is already down by the time we're called — try once
   // synchronously and skip the timer churn when it takes immediately.
   if (reassertFloatOverTopmost()) return;
@@ -503,14 +534,15 @@ export function ensureFloatOverTopmost(): void {
   const MAX_ATTEMPTS = 40; // up to ~2s of retrying past the first attempt
   let attempts = 0;
   const tick = (): void => {
+    topmostRetryTimer = null;
     attempts += 1;
     // reassertFloatOverTopmost() returns true both when topmost sticks AND
     // when there's nothing left to raise (state moved off "loaded", singleton
     // destroyed) — either way we're done.
     if (reassertFloatOverTopmost() || attempts >= MAX_ATTEMPTS) return;
-    setTimeout(tick, INTERVAL_MS);
+    topmostRetryTimer = setTimeout(tick, INTERVAL_MS);
   };
-  setTimeout(tick, INTERVAL_MS);
+  topmostRetryTimer = setTimeout(tick, INTERVAL_MS);
 }
 
 /**
@@ -523,6 +555,24 @@ export function ensureFloatOverTopmost(): void {
  */
 export function dismissFloatOver(): void {
   setFloatOverState({ kind: "dismiss" });
+}
+
+/**
+ * Destroy and fully reset the persistent float-over singleton. Safe to call
+ * repeatedly from before-quit and will-quit.
+ */
+export function disposeFloatOver(): void {
+  disarmCopyShortcuts();
+  clearRendererReadyTimer();
+  clearTopmostRetryTimer();
+  if (resizeChannelWired) {
+    ipcMain.removeAllListeners(FLOAT_OVER_RESIZE_CHANNEL);
+    resizeChannelWired = false;
+  }
+  if (singleton !== null && !singleton.isDestroyed()) {
+    singleton.destroy();
+  }
+  resetFloatOverRuntimeState();
 }
 
 /**

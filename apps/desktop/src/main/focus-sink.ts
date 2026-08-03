@@ -120,9 +120,10 @@ export function installFocusSink(): void {
 }
 
 /**
- * Tear down the focus-sink. Called from app `will-quit` so we don't
- * leak the window across teardown. Safe to call when the sink isn't
- * installed.
+ * Tear down the focus-sink. Called from app `before-quit` so the
+ * infrastructure window is gone before Electron begins normal window
+ * closing, then again defensively from `will-quit`. Safe to call when the
+ * sink isn't installed.
  */
 export function disposeFocusSink(): void {
   if (sink !== null && !sink.isDestroyed()) {

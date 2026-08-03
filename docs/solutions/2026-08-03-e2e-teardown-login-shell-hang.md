@@ -135,3 +135,21 @@ PATH, validates pinned paths before spawning, and surfaces
 first follow-up above (slow quit for real users) is resolved by the
 same removal. The fixture tree-kill and teardown telemetry remain —
 they are still the right defense for any future teardown blocker.
+
+## Second postscript: exercise the real quit lifecycle and skip boot discovery in E2E
+
+A later persistent-runner job showed the same +6s/spec signature after
+the login-shell resolver had already been removed. Two independent E2E
+lifecycle mistakes remained:
+
+- `closeElectronApp` called `app.exit(0)` before Playwright's
+  `ElectronApplication.close()`. Electron's `app.exit()` explicitly skips
+  `before-quit` and `will-quit`, so PwrSnap's worker/window/timer/process-pool
+  cleanup never ran. The fixture now starts with Playwright's bounded `close()`
+  path, which uses `app.quit()`, and retains the descendant-tree SIGKILL only
+  as the deadline fallback.
+- E2E boot dispatched the startup Codex discovery probe inline for every fresh
+  app. That launched the host's real Codex `--version` and auth probes hundreds
+  of times per suite, even though only the settings discovery spec needs them.
+  E2E now skips the boot probe; the dedicated spec dispatches discovery
+  explicitly and retains end-to-end coverage.

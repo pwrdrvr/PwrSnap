@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const e2eDir = join(__dirname, "..", "..", "..", "e2e");
+const electronFixturePath = join(e2eDir, "fixtures", "electron-app.ts");
 
 describe("e2e spec imports", () => {
   const specFiles = readdirSync(e2eDir).filter((name) => name.endsWith(".spec.ts"));
@@ -70,4 +71,19 @@ describe("e2e spec imports", () => {
       ).toEqual([]);
     }
   );
+});
+
+describe("e2e Electron teardown", () => {
+  it("does not bypass PwrSnap's will-quit cleanup with app.exit", () => {
+    const source = readFileSync(electronFixturePath, "utf8");
+    const closeStart = source.indexOf("async function closeElectronApp(");
+    const nextSection = source.indexOf("\n/**", closeStart);
+
+    expect(closeStart).toBeGreaterThanOrEqual(0);
+    expect(nextSection).toBeGreaterThan(closeStart);
+
+    const closeSource = source.slice(closeStart, nextSection);
+    expect(closeSource).toContain("const closePromise = app.close()");
+    expect(closeSource).not.toMatch(/electronApp\.exit\s*\(/);
+  });
 });

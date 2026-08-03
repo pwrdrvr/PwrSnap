@@ -115,6 +115,13 @@ describe("config shape invariants (per Codex schema notes)", () => {
       }
     });
   });
+
+  test("modern: keeps rich PwrSnap responses out of Code Mode flattening", () => {
+    expect(MODERN_THREAD_CONFIG).toHaveProperty(
+      "features.code_mode.direct_only_tool_namespaces",
+      ["pwrsnap_library", "pwrsnap_sizzle"]
+    );
+  });
 });
 
 describe("resolveCodexThreadConfigForCommand (cached version probe)", () => {

@@ -82,6 +82,12 @@ export const MODERN_THREAD_CONFIG: Record<string, unknown> = {
   },
   features: {
     apps: false,
+    // PwrSnap's rich tool responses can contain adjacent image + text items.
+    // Keep them as direct model tools so Code Mode does not flatten those
+    // structured items into a newline-joined string and corrupt data URLs.
+    code_mode: {
+      direct_only_tool_namespaces: ["pwrsnap_library", "pwrsnap_sizzle"]
+    },
     plugins: false,
     tool_suggest: false,
     image_generation: false,

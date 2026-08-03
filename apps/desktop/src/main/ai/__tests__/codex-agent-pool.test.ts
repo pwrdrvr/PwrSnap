@@ -8,6 +8,7 @@ import {
 
 type MockCodexThreadClient = {
   startThread: ReturnType<typeof vi.fn>;
+  forkThread: ReturnType<typeof vi.fn>;
   interruptTurn: ReturnType<typeof vi.fn>;
   emitEvent(event: unknown): void;
 };
@@ -181,6 +182,64 @@ describe("Codex agent pool", () => {
       );
     }
   );
+
+  test("preserves Code Mode settings when forking a chat", async () => {
+    mockConnectionRequest.mockImplementation(async (method: string) =>
+      method === "config/read"
+        ? {
+            config: {
+              features: {
+                code_mode: {
+                  enabled: true,
+                  direct_only_tool_namespaces: ["mcp__history"]
+                }
+              }
+            }
+          }
+        : {}
+    );
+    const view = acquireCodexAgentBackendView({
+      command: "codex-test",
+      env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-code-mode-fork" },
+      loggerScope: "pwrsnap:test-codex-pool"
+    });
+
+    await view.forkThread?.({
+      sourceThreadId: "source-thread",
+      cwd: "/tmp/pwrsnap-code-mode-fork",
+      config: {
+        features: {
+          code_mode: {
+            direct_only_tool_namespaces: ["pwrsnap_library", "pwrsnap_sizzle"]
+          }
+        }
+      }
+    });
+
+    expect(mockConnectionRequest).toHaveBeenCalledWith(
+      "config/read",
+      { includeLayers: false, cwd: "/tmp/pwrsnap-code-mode-fork" },
+      20_000
+    );
+    expect(mockCodexThreadClients[0]?.forkThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceThreadId: "source-thread",
+        cwd: "/tmp/pwrsnap-code-mode-fork",
+        config: {
+          features: {
+            code_mode: {
+              direct_only_tool_namespaces: [
+                "mcp__history",
+                "pwrsnap_library",
+                "pwrsnap_sizzle"
+              ],
+              enabled: true
+            }
+          }
+        }
+      })
+    );
+  });
 
   test("preserves each model's advertised reasoning efforts and default", async () => {
     mockConnectionRequest.mockResolvedValueOnce({

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   resolveCodexThreadConfig,
   resolveCodexThreadConfigForCommand,
-  withEffectiveCodeModeEnablement,
+  withEffectiveCodeModeSettings,
   MINIMAL_THREAD_CONFIG,
   LEGACY_FEATURES_THREAD_CONFIG,
   MODERN_THREAD_CONFIG,
@@ -127,7 +127,7 @@ describe("config shape invariants (per Codex schema notes)", () => {
   test.each([true, false])(
     "preserves scalar Code Mode enablement (%s) when adding namespace policy",
     (enabled) => {
-      const resolved = withEffectiveCodeModeEnablement(MODERN_THREAD_CONFIG, {
+      const resolved = withEffectiveCodeModeSettings(MODERN_THREAD_CONFIG, {
         config: { features: { code_mode: enabled } }
       });
 
@@ -141,10 +141,29 @@ describe("config shape invariants (per Codex schema notes)", () => {
 
   test("preserves table-valued Code Mode enablement", () => {
     expect(
-      withEffectiveCodeModeEnablement(MODERN_THREAD_CONFIG, {
+      withEffectiveCodeModeSettings(MODERN_THREAD_CONFIG, {
         config: { features: { code_mode: { enabled: true } } }
       })
     ).toHaveProperty("features.code_mode.enabled", true);
+  });
+
+  test("unions effective and PwrSnap direct-only namespaces without duplicates", () => {
+    const resolved = withEffectiveCodeModeSettings(MODERN_THREAD_CONFIG, {
+      config: {
+        features: {
+          code_mode: {
+            direct_only_tool_namespaces: ["mcp__history", "pwrsnap_library"]
+          }
+        }
+      }
+    });
+
+    expect(resolved).toHaveProperty("features.code_mode.direct_only_tool_namespaces", [
+      "mcp__history",
+      "pwrsnap_library",
+      "pwrsnap_sizzle"
+    ]);
+    expect(resolved).not.toHaveProperty("features.code_mode.enabled");
   });
 });
 

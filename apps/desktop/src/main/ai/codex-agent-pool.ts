@@ -37,7 +37,7 @@ import {
   assertCodexCliVersion,
   resolveCodexCommand
 } from "../settings/codex-discovery";
-import { withEffectiveCodeModeEnablement } from "./codex-thread-config";
+import { withEffectiveCodeModeSettings } from "./codex-thread-config";
 
 const log = getMainLogger("pwrsnap:codex-pool");
 const MODEL_LIST_TIMEOUT_MS = 20_000;
@@ -117,17 +117,21 @@ class CodexBackendView implements AgentBackend {
 
   constructor(private readonly owner: CodexAgentOwner) {}
 
+  private async prepareThreadOptions<T extends AgentStartThreadOptions>(
+    options: T
+  ): Promise<T> {
+    if (options.config === undefined) return options;
+    return {
+      ...options,
+      config: await this.owner.prepareThreadConfig(options.config, options.cwd)
+    };
+  }
+
   async startThread(options?: AgentStartThreadOptions): Promise<AgentBackendStartThreadResult> {
     const client = await this.owner.compatibleClient();
-    const threadConfig =
-      options?.config !== undefined
-        ? await this.owner.prepareThreadConfig(options.config, options.cwd)
-        : undefined;
-    const started = await client.startThread(
-      options !== undefined && threadConfig !== undefined
-        ? { ...options, config: threadConfig }
-        : options
-    );
+    const prepared =
+      options !== undefined ? await this.prepareThreadOptions(options) : undefined;
+    const started = await client.startThread(prepared);
     this.owner.claimThread(started.threadId, this.handlers);
     return started;
   }
@@ -146,7 +150,7 @@ class CodexBackendView implements AgentBackend {
 
   async forkThread(options: AgentForkThreadOptions): Promise<AgentBackendStartThreadResult> {
     const client = await this.owner.compatibleClient();
-    const forked = await client.forkThread(options);
+    const forked = await client.forkThread(await this.prepareThreadOptions(options));
     this.owner.claimThread(forked.threadId, this.handlers);
     return forked;
   }
@@ -317,7 +321,7 @@ class CodexAgentOwner {
       { includeLayers: false, ...(cwd !== undefined ? { cwd } : {}) },
       ONE_SHOT_REQUEST_TIMEOUT_MS
     );
-    return withEffectiveCodeModeEnablement(baseConfig, effectiveConfig) ?? baseConfig;
+    return withEffectiveCodeModeSettings(baseConfig, effectiveConfig) ?? baseConfig;
   }
 
   async runOneShot(options: CodexOneShotPoolRunOptions): Promise<CodexOneShotPoolRunResult> {
@@ -757,7 +761,7 @@ function disableConfiguredMcpServers(
   baseConfig: Record<string, unknown> | undefined,
   configReadResponse: unknown
 ): Record<string, unknown> | undefined {
-  const preservedBaseConfig = withEffectiveCodeModeEnablement(
+  const preservedBaseConfig = withEffectiveCodeModeSettings(
     baseConfig,
     configReadResponse
   );

@@ -81,7 +81,7 @@ const baseSettings: Settings = {
     confirmBeforeTrash: true,
     gridZoom: 180
   },
-  localAgents: { grants: [], roles: [], audit: [] }
+  localAgents: { enabled: false, grants: [], roles: [], audit: [] }
 };
 
 const patchMock = vi.fn(async (): Promise<void> => undefined);

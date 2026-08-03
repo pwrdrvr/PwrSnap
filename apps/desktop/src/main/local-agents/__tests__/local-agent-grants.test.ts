@@ -325,6 +325,7 @@ describe("LocalAgentGrantService", () => {
   });
 
   test("default settings include empty local-agent grants", () => {
+    expect(defaultSettings().localAgents.enabled).toBe(false);
     expect(defaultSettings().localAgents.grants).toEqual([]);
     expect(defaultSettings().localAgents.roles.map((role) => role.id)).toEqual([
       "builtin.search",

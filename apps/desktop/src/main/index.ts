@@ -107,6 +107,7 @@ import {
   LOCAL_AGENT_MCP_PORT,
   LocalAgentMcpServer
 } from "./local-agents/mcp-server";
+import { LocalAgentMcpLifecycle } from "./local-agents/local-agent-mcp-lifecycle";
 import {
   LocalAgentConsentBroker,
   registerLocalAgentConsentHandlers
@@ -277,8 +278,71 @@ const isMac = process.platform === "darwin";
  */
 const isE2E = process.env.PWRSNAP_E2E === "1";
 let pasteFromClipboardMenuItem: Electron.MenuItem | null = null;
-let localAgentMcpServer: LocalAgentMcpServer | null = null;
+let localAgentMcpLifecycle: LocalAgentMcpLifecycle | null = null;
+let disposeLocalAgentMcpSettingsListener: (() => void) | null = null;
 let localAgentConsentBroker: LocalAgentConsentBroker | null = null;
+
+/** Apply the persisted local-agent master gate without weakening RBAC. The
+ * diagnostic env override remains a hard-off switch and E2E never binds the
+ * host's real MCP port. */
+async function wireLocalAgentMcpLifecycle(): Promise<void> {
+  if (
+    isE2E ||
+    process.env.PWRSNAP_DISABLE_LOCAL_AGENT_MCP === "1" ||
+    localAgentMcpLifecycle !== null
+  ) {
+    return;
+  }
+  const { service, secrets } = getDesktopSettingsServices();
+  const lifecycle = new LocalAgentMcpLifecycle({
+    createServer: () => new LocalAgentMcpServer({
+      settings: service,
+      secrets,
+      grantService: getLocalAgentGrantService(),
+      auditService: getLocalAgentAuditService(),
+      requestConsent: (request) => {
+        const broker = localAgentConsentBroker;
+        if (broker === null) {
+          return Promise.resolve({
+            decision: "deny",
+            sessionName: "",
+            capabilities: []
+          });
+        }
+        return broker.request(request);
+      }
+    }),
+    onStartError: (cause) => {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      getMainLogger("pwrsnap:local-agent-mcp").error(
+        "local-agent MCP server failed to start",
+        { port: LOCAL_AGENT_MCP_PORT, message }
+      );
+      void dialog.showMessageBox({
+        type: "error",
+        title: "Local agent access unavailable",
+        message: `PwrSnap could not use local port ${LOCAL_AGENT_MCP_PORT}.`,
+        detail:
+          "Another process may already be using PwrSnap's MCP port. " +
+          "Resolve the conflict, then turn local-agent access off and back on.",
+        buttons: ["OK"],
+        defaultId: 0,
+        noLink: true
+      });
+    }
+  });
+  localAgentMcpLifecycle = lifecycle;
+
+  const apply = (enabled: boolean): Promise<void> => {
+    if (!enabled) localAgentConsentBroker?.denyAll();
+    return lifecycle.setEnabled(enabled);
+  };
+  disposeLocalAgentMcpSettingsListener = onSettingsChanged((settings) => {
+    if (localAgentMcpLifecycle !== lifecycle) return;
+    return apply(settings.localAgents.enabled);
+  });
+  await apply((await service.read()).localAgents.enabled);
+}
 
 /** Reflects the most recently observed `general.developerMode` value
  *  so the menu can be re-installed on settings change without re-
@@ -1873,47 +1937,7 @@ export function bootstrapApp(): void {
       initAppUpdater();
     }
     if (role !== "library") {
-      if (!isE2E && process.env.PWRSNAP_DISABLE_LOCAL_AGENT_MCP !== "1") {
-        const { service, secrets } = getDesktopSettingsServices();
-        localAgentMcpServer = new LocalAgentMcpServer({
-          settings: service,
-          secrets,
-          grantService: getLocalAgentGrantService(),
-          auditService: getLocalAgentAuditService(),
-          requestConsent: (request) => {
-            const broker = localAgentConsentBroker;
-            if (broker === null) {
-              return Promise.resolve({
-                decision: "deny",
-                sessionName: "",
-                capabilities: []
-              });
-            }
-            return broker.request(request);
-          }
-        });
-        try {
-          await localAgentMcpServer.start();
-        } catch (cause) {
-          localAgentMcpServer = null;
-          const message = cause instanceof Error ? cause.message : String(cause);
-          log.error("local-agent MCP server failed to start", {
-            port: LOCAL_AGENT_MCP_PORT,
-            message
-          });
-          void dialog.showMessageBox({
-            type: "error",
-            title: "Local agent access unavailable",
-            message: `PwrSnap could not use local port ${LOCAL_AGENT_MCP_PORT}.`,
-            detail:
-              "Another process may already be using PwrSnap's MCP port. " +
-              "Local agent access is disabled until the conflict is resolved and PwrSnap restarts.",
-            buttons: ["OK"],
-            defaultId: 0,
-            noLink: true
-          });
-        }
-      }
+      await wireLocalAgentMcpLifecycle();
       scheduleAssetFilenameMaintenance();
     }
     markStartup("main: whenReady bootstrap complete");
@@ -2289,9 +2313,11 @@ export function bootstrapApp(): void {
     // Close the shared Codex App Server process owner. No-op when Codex was
     // never used this run.
     void closeCodexAgentPool().catch(() => undefined);
-    if (localAgentMcpServer !== null) {
-      void localAgentMcpServer.stop();
-      localAgentMcpServer = null;
+    disposeLocalAgentMcpSettingsListener?.();
+    disposeLocalAgentMcpSettingsListener = null;
+    if (localAgentMcpLifecycle !== null) {
+      void localAgentMcpLifecycle.setEnabled(false);
+      localAgentMcpLifecycle = null;
     }
     localAgentConsentBroker?.denyAll();
     localAgentConsentBroker = null;

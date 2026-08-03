@@ -87,7 +87,7 @@ const baseSettings: Settings = {
     sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
   },
   library: { detailRail: { pinned: true, lastSelectedTab: "info" }, confirmBeforeTrash: true, gridZoom: 180 },
-  localAgents: { grants: [], roles: [], audit: [] }
+  localAgents: { enabled: false, grants: [], roles: [], audit: [] }
 };
 
 function withExperimental(experimental: Settings["experimental"]): Settings {

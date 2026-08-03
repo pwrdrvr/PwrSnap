@@ -2120,6 +2120,9 @@ export type Settings = {
    *  secret store under `localAgentToken:<clientId>`; Settings carries
    *  only renderer-safe metadata and capability grants. */
   localAgents: {
+    /** Master gate for the localhost MCP listener. RBAC remains mandatory
+     * whenever this is enabled; disabling preserves Sessions and roles. */
+    enabled: boolean;
     grants: LocalAgentClientGrant[];
     roles: LocalAgentRoleProfile[];
     audit: LocalAgentAuditEntry[];
@@ -2591,6 +2594,7 @@ export type SettingsPatch = {
     gridZoom?: number;
   };
   localAgents?: {
+    enabled?: boolean;
     grants?: LocalAgentClientGrant[];
     roles?: LocalAgentRoleProfile[];
     audit?: LocalAgentAuditEntry[];

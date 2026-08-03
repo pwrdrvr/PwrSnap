@@ -20,7 +20,7 @@ import {
   type LocalAgentUsageSnapshot
 } from "@pwrsnap/shared";
 import { dispatch } from "../../../lib/pwrsnap";
-import { Card, Row } from "../components";
+import { Card, Row, Switch } from "../components";
 import { useSettingsContext } from "../SettingsContext";
 
 const CAPABILITY_LABELS: Record<LocalAgentCapability, string> = {
@@ -82,7 +82,7 @@ type RoleDraft = {
 };
 
 export function LocalAgentsPage(): ReactElement {
-  const { settings } = useSettingsContext();
+  const { settings, patch } = useSettingsContext();
   const [grants, setGrants] = useState<LocalAgentClientGrant[]>([]);
   const [roles, setRoles] = useState<LocalAgentRoleProfile[]>([]);
   const [audit, setAudit] = useState<LocalAgentAuditEntry[]>([]);
@@ -92,12 +92,26 @@ export function LocalAgentsPage(): ReactElement {
   const [roleDraft, setRoleDraft] = useState<RoleDraft | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
+  const [togglingAccess, setTogglingAccess] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [confirmDeleteRoleId, setConfirmDeleteRoleId] = useState<string | null>(null);
   const graphRef = useRef<HTMLDivElement | null>(null);
   const nodeRefs = useRef(new Map<string, HTMLElement>());
   const [paths, setPaths] = useState<GraphPath[]>([]);
+  const mcpEnabled = settings?.localAgents.enabled ?? false;
+
+  const setMcpEnabled = async (enabled: boolean): Promise<void> => {
+    setTogglingAccess(true);
+    try {
+      await patch({ localAgents: { enabled } });
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setTogglingAccess(false);
+    }
+  };
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -334,10 +348,29 @@ export function LocalAgentsPage(): ReactElement {
           </p>
         </div>
         <div className="pss__main-actions">
-          <span className="pss__main-count" aria-live="polite">{activeCount} active</span>
-          <span className="pss__badge">{LOCAL_AGENT_MCP_URL}</span>
+          <span className="pss__main-count" aria-live="polite">{activeCount} approved</span>
+          <span className={`pss__badge${mcpEnabled ? " is-accent" : ""}`}>
+            {mcpEnabled ? LOCAL_AGENT_MCP_URL : "MCP off"}
+          </span>
         </div>
       </div>
+
+      <Card eyebrow="LOCAL AGENT ACCESS" title="MCP server">
+        <Row
+          label="Enable local-agent access"
+          sub="When off, PwrSnap does not listen for MCP connections. Saved Sessions and roles remain available. When on, every connection still requires native approval and an assigned RBAC role."
+          tag={mcpEnabled ? "listening on loopback" : "off"}
+        >
+          <Switch
+            on={mcpEnabled}
+            onChange={
+              settings === null || togglingAccess
+                ? undefined
+                : (enabled) => void setMcpEnabled(enabled)
+            }
+          />
+        </Row>
+      </Card>
 
       <div className="pss__auth-legend" aria-label="Authorization graph legend">
         <span><i className="is-allow" /> allowed path</span>
@@ -524,7 +557,7 @@ export function LocalAgentsPage(): ReactElement {
       ) : null}
 
       {error !== null ? (
-        <div className="pss__auth-error" role="alert"><b>Policy update failed</b><span>{error}</span></div>
+        <div className="pss__auth-error" role="alert"><b>Local agent update failed</b><span>{error}</span></div>
       ) : null}
 
       <Card eyebrow="ACTIVITY" title="Recent agent actions" defaultCollapsed>

@@ -49,7 +49,7 @@ const roles: LocalAgentRoleProfile[] = LOCAL_AGENT_BUILT_IN_ROLES.map((role) => 
 }));
 
 const baseSettings = {
-  localAgents: { grants: [grant], roles, audit: [] }
+  localAgents: { enabled: false, grants: [grant], roles, audit: [] }
 } as unknown as Settings;
 
 let container: HTMLDivElement | null = null;
@@ -98,7 +98,10 @@ function installFakeApi(
   return { dispatch };
 }
 
-async function renderPage(settings: Settings = baseSettings): Promise<HTMLDivElement> {
+async function renderPage(
+  settings: Settings = baseSettings,
+  patch: UseSettingsValue["patch"] = vi.fn(async () => undefined)
+): Promise<HTMLDivElement> {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -109,7 +112,7 @@ async function renderPage(settings: Settings = baseSettings): Promise<HTMLDivEle
     },
     loading: false,
     error: null,
-    patch: vi.fn(),
+    patch,
     refreshCodex: vi.fn(),
     testCodex: vi.fn(),
     replaceSecret: vi.fn(),
@@ -144,14 +147,41 @@ describe("LocalAgentsPage", () => {
 
   test("renders the authorization graph, selected scope, and concrete boundaries", async () => {
     const el = await renderPage();
-    expect(el.textContent).toContain("http://127.0.0.1:51729/mcp");
+    expect(el.textContent).toContain("MCP off");
     expect(el.textContent).toContain("PwrAgent");
     expect(el.textContent).toContain("Authorization graph");
     expect(el.textContent).toContain("Full Media");
     expect(el.textContent).toContain("Read original images");
     expect(el.textContent).toContain("Last 30 days");
     expect(el.textContent).toContain("Full-res images");
-    expect(el.textContent).toContain("1 active");
+    expect(el.textContent).toContain("1 approved");
+  });
+
+  test("enables MCP access through the settings substrate", async () => {
+    const patch = vi.fn(async () => undefined);
+    const el = await renderPage(baseSettings, patch);
+    const row = Array.from(el.querySelectorAll(".pss__row")).find((candidate) =>
+      candidate.textContent?.includes("Enable local-agent access")
+    );
+    const toggle = row?.querySelector<HTMLButtonElement>("button[role='switch']");
+
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    await act(async () => {
+      toggle?.click();
+    });
+
+    expect(patch).toHaveBeenCalledWith({ localAgents: { enabled: true } });
+  });
+
+  test("shows the loopback endpoint only while MCP access is enabled", async () => {
+    const enabledSettings = {
+      ...baseSettings,
+      localAgents: { ...baseSettings.localAgents, enabled: true }
+    };
+    const el = await renderPage(enabledSettings);
+
+    expect(el.textContent).toContain("http://127.0.0.1:51729/mcp");
+    expect(el.textContent).not.toContain("MCP off");
   });
 
   test("revoke button dispatches localAgents:revoke", async () => {

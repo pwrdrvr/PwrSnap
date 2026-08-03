@@ -96,6 +96,49 @@ export const MODERN_THREAD_CONFIG: Record<string, unknown> = {
   }
 };
 
+/**
+ * Preserve the selected profile's effective Code Mode enablement when a
+ * thread overlay adds table-valued Code Mode policy. Codex also accepts the
+ * standard scalar feature form (`features.code_mode = true`); replacing that
+ * scalar with a table that omits `enabled` silently falls back to false.
+ */
+export function withEffectiveCodeModeEnablement(
+  baseConfig: Record<string, unknown> | undefined,
+  configReadResponse: unknown
+): Record<string, unknown> | undefined {
+  const baseFeatures = asRecord(baseConfig?.["features"]);
+  const baseCodeMode = asRecord(baseFeatures?.["code_mode"]);
+  if (baseConfig === undefined || baseFeatures === null || baseCodeMode === null) {
+    return baseConfig;
+  }
+
+  const effectiveConfig = asRecord(asRecord(configReadResponse)?.["config"]);
+  const effectiveFeatures = asRecord(effectiveConfig?.["features"]);
+  const effectiveCodeMode = effectiveFeatures?.["code_mode"];
+  const enabled =
+    typeof effectiveCodeMode === "boolean"
+      ? effectiveCodeMode
+      : asRecord(effectiveCodeMode)?.["enabled"];
+  if (typeof enabled !== "boolean") return baseConfig;
+
+  return {
+    ...baseConfig,
+    features: {
+      ...baseFeatures,
+      code_mode: {
+        ...baseCodeMode,
+        enabled
+      }
+    }
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 type MajorMinor = readonly [number, number];
 
 type ThreadConfigMarker = {

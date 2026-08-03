@@ -142,6 +142,46 @@ describe("Codex agent pool", () => {
     );
   });
 
+  test.each([true, false])(
+    "preserves Code Mode enablement (%s) for chat thread overlays",
+    async (enabled) => {
+      mockConnectionRequest.mockImplementation(async (method: string) =>
+        method === "config/read"
+          ? { config: { features: { code_mode: enabled } } }
+          : {}
+      );
+      const view = acquireCodexAgentBackendView({
+        command: "codex-test",
+        env: { CODEX_HOME: `/tmp/pwrsnap-codex-pool-code-mode-${enabled}` },
+        loggerScope: "pwrsnap:test-codex-pool"
+      });
+
+      await view.startThread({
+        cwd: "/tmp/pwrsnap-code-mode-chat",
+        config: {
+          features: {
+            code_mode: {
+              direct_only_tool_namespaces: ["pwrsnap_library", "pwrsnap_sizzle"]
+            }
+          }
+        }
+      });
+
+      expect(mockCodexThreadClients[0]?.startThread).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: {
+            features: {
+              code_mode: {
+                direct_only_tool_namespaces: ["pwrsnap_library", "pwrsnap_sizzle"],
+                enabled
+              }
+            }
+          }
+        })
+      );
+    }
+  );
+
   test("preserves each model's advertised reasoning efforts and default", async () => {
     mockConnectionRequest.mockResolvedValueOnce({
       data: [
@@ -229,6 +269,7 @@ describe("Codex agent pool", () => {
       if (method === "config/read") {
         return {
           config: {
+            features: { code_mode: true },
             mcp_servers: {
               context7: { command: "npx", env: { SECRET: "never-forward-me" } },
               pwrsnap: { command: "pwrsnap-mcp-server" }
@@ -286,7 +327,14 @@ describe("Codex agent pool", () => {
       prompt: "describe this image",
       imagePaths: ["/tmp/capture.jpg"],
       baseInstructions: "Return JSON only.",
-      threadConfig: { project_doc_max_bytes: 0 }
+      threadConfig: {
+        project_doc_max_bytes: 0,
+        features: {
+          code_mode: {
+            direct_only_tool_namespaces: ["pwrsnap_library", "pwrsnap_sizzle"]
+          }
+        }
+      }
     } as const;
 
     const first = await runCodexOneShotFromPool(options);
@@ -305,6 +353,12 @@ describe("Codex agent pool", () => {
         environments: [],
         config: {
           project_doc_max_bytes: 0,
+          features: {
+            code_mode: {
+              direct_only_tool_namespaces: ["pwrsnap_library", "pwrsnap_sizzle"],
+              enabled: true
+            }
+          },
           mcp_servers: {
             context7: { enabled: false },
             pwrsnap: { enabled: false }

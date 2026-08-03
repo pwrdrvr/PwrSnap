@@ -782,6 +782,9 @@ export function Library() {
   // (Kimi/Gemini/Grok/Qwen) counts as "available" even when Codex is absent.
   const [acpDiscovery, setAcpDiscovery] = useState<AcpAgentDiscovery | undefined>(undefined);
   const userTouchedAiRef = useRef<boolean>(false);
+  // Last-seen `settings.codex` slice (JSON), used to skip Codex
+  // discovery refreshes on broadcasts that didn't touch it.
+  const lastCodexSettingsRef = useRef<string | null>(null);
 
   const applyAiSettings = useCallback((settings: Settings): void => {
     setAiEnabledState(settings.ai.enabled);
@@ -821,6 +824,8 @@ export function Library() {
       }
       if (result.ok) {
         setConfirmBeforeTrash(result.value.library.confirmBeforeTrash);
+        // `??=` so a codex-change broadcast that raced this read wins.
+        lastCodexSettingsRef.current ??= JSON.stringify(result.value.codex);
       }
       if (result.ok && !userTouchedGridZoomRef.current) {
         setGridZoomState(snapGridZoom(result.value.library.gridZoom));
@@ -854,9 +859,19 @@ export function Library() {
       if (!userTouchedGridZoomRef.current) {
         setGridZoomState(snapGridZoom(evt.settings.library.gridZoom));
       }
-      void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
-        if (result.ok) setCodexAvailable(codexAvailableInSnapshot(result.value));
-      });
+      // Codex availability depends only on `settings.codex` (the
+      // discovery inputs), so gate the refresh on that slice changing.
+      // Re-dispatching on EVERY broadcast used to re-trigger a full
+      // discovery pass (child spawns) whenever the main-side 30s cache
+      // had lapsed — grid-zoom writes, rail pins, and secret updates
+      // all paid it.
+      const codexSlice = JSON.stringify(evt.settings.codex);
+      if (lastCodexSettingsRef.current !== codexSlice) {
+        lastCodexSettingsRef.current = codexSlice;
+        void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
+          if (result.ok) setCodexAvailable(codexAvailableInSnapshot(result.value));
+        });
+      }
     });
     return unsubscribe;
   }, [applyAiSettings]);

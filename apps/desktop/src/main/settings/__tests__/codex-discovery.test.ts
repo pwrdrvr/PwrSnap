@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import os, { tmpdir } from "node:os";
+import path, { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -30,9 +31,11 @@ vi.mock("@pwrdrvr/codex-discovery", () => ({
 
 const {
   assertCodexCliVersion,
+  buildCodexAutoCandidates,
   discoverCodexCommands,
   nvmNodeBinDirs,
-  MINIMUM_CODEX_CLI_VERSION
+  MINIMUM_CODEX_CLI_VERSION,
+  selectResolvedCodexCommand
 } = await import("../codex-discovery");
 
 describe("discoverCodexCommands", () => {
@@ -81,6 +84,120 @@ describe("discoverCodexCommands", () => {
     expect(commands).toContain("/opt/homebrew/bin/codex");
     expect(commands).toContain("/usr/local/bin/codex");
     expect(commands).toContain("codex");
+  });
+});
+
+describe("buildCodexAutoCandidates", () => {
+  const platform = process.platform;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-codex-dedupe-"));
+  });
+
+  afterEach(async () => {
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      value: platform
+    });
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test.runIf(process.platform !== "win32")(
+    "pre-resolves bare `codex` to its absolute PATH hit — one candidate, no bare twin",
+    async () => {
+      const binDir = path.join(tempDir, "bin");
+      await mkdir(binDir, { recursive: true });
+      const codexPath = path.join(binDir, "codex");
+      await writeFile(codexPath, "#!/bin/sh\n", { mode: 0o755 });
+
+      // Duplicate PATH entries must not produce duplicate candidates.
+      const candidates = await buildCodexAutoCandidates({
+        PATH: `${binDir}${path.delimiter}${binDir}`
+      });
+
+      const matching = candidates.filter((candidate) => candidate.command === codexPath);
+      expect(matching).toEqual([{ command: codexPath, source: "path" }]);
+      expect(candidates.map((candidate) => candidate.command)).not.toContain("codex");
+    }
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "collapses a PATH hit that is also a known install location into one application candidate",
+    async () => {
+      Object.defineProperty(process, "platform", {
+        configurable: true,
+        value: "darwin"
+      });
+      const fakeHome = path.join(tempDir, "home");
+      const appBinDir = path.join(fakeHome, "Applications/ChatGPT.app/Contents/Resources");
+      await mkdir(appBinDir, { recursive: true });
+      const appCodexPath = path.join(appBinDir, "codex");
+      await writeFile(appCodexPath, "#!/bin/sh\n", { mode: 0o755 });
+      const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(fakeHome);
+
+      try {
+        const candidates = await buildCodexAutoCandidates({ PATH: appBinDir });
+
+        const matching = candidates.filter((candidate) => candidate.command === appCodexPath);
+        expect(matching).toEqual([{ command: appCodexPath, source: "application" }]);
+        expect(candidates.map((candidate) => candidate.command)).not.toContain("codex");
+      } finally {
+        homedirSpy.mockRestore();
+      }
+    }
+  );
+
+  test("keeps the bare PATH candidate when nothing resolves, so the kit's probe stays the arbiter", async () => {
+    const candidates = await buildCodexAutoCandidates({ PATH: path.join(tempDir, "empty") });
+    const pathCandidates = candidates.filter((candidate) => candidate.source === "path");
+    expect(pathCandidates.map((candidate) => candidate.command)).toContain(
+      process.platform === "win32" ? "codex.exe" : "codex"
+    );
+  });
+});
+
+describe("selectResolvedCodexCommand", () => {
+  test("returns the selected candidate from an existing snapshot", () => {
+    const resolved = selectResolvedCodexCommand(
+      {
+        selectedCommand: "/opt/homebrew/bin/codex",
+        selectedSource: "application",
+        candidates: [
+          {
+            command: "/usr/local/bin/codex",
+            source: "application",
+            executable: true,
+            selected: false,
+            version: "0.144.0"
+          },
+          {
+            command: "/opt/homebrew/bin/codex",
+            source: "application",
+            executable: true,
+            selected: true,
+            version: "0.145.0"
+          }
+        ]
+      },
+      "codex"
+    );
+    expect(resolved).toEqual({
+      command: "/opt/homebrew/bin/codex",
+      source: "application",
+      version: "0.145.0"
+    });
+  });
+
+  test("falls back to the requested command when nothing is selected", () => {
+    expect(selectResolvedCodexCommand({ candidates: [] }, "/pinned/codex")).toEqual({
+      command: "/pinned/codex",
+      source: "path"
+    });
+    expect(selectResolvedCodexCommand({ candidates: [] }, "  ")).toEqual({
+      command: "codex",
+      source: "path"
+    });
   });
 });
 

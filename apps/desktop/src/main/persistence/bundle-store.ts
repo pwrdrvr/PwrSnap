@@ -736,7 +736,19 @@ export function scheduleRepack(captureId: string): void {
 
   const timer = setTimeout(() => {
     repackTimers.delete(captureId);
-    const record = getCaptureById(captureId);
+    let record: ReturnType<typeof getCaptureById>;
+    try {
+      record = getCaptureById(captureId);
+    } catch {
+      // DB already closed — the debounce window outlived the process's
+      // teardown (quit-time in production, suite teardown under
+      // vitest, where the uncaught throw fails the whole run as an
+      // unhandled error even with every test green). Dropping the
+      // re-pack is safe: `edits_version > bundle_edits_version` reruns
+      // it on next boot, the same crash-recovery path the debounce
+      // window already relies on.
+      return;
+    }
     if (record === null) return;
     // v2 is the only bundle format — every live capture re-packs via
     // the tree-walking compositor.
@@ -748,6 +760,20 @@ export function scheduleRepack(captureId: string): void {
     });
   }, delay);
   repackTimers.set(captureId, timer);
+}
+
+/**
+ * Cancel every pending debounced re-pack. Call at app teardown BEFORE
+ * `closeDatabase()` — a repack timer that fires after the DB closes
+ * throws from `getCaptureById` as an uncaught exception. The pending
+ * work is not lost; the next boot's `edits_version >
+ * bundle_edits_version` check re-packs anything the cancel dropped.
+ */
+export function cancelScheduledRepacks(): void {
+  for (const timer of repackTimers.values()) {
+    clearTimeout(timer);
+  }
+  repackTimers.clear();
 }
 
 const REPACK_DEBOUNCE_MS_V2 = 5_000;

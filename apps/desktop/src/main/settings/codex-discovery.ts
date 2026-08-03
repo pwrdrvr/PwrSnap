@@ -23,11 +23,19 @@
 //   3. `codex` on $PATH (plus `codex.exe` first on Windows).
 //   4. Platform install locations:
 //      - macOS: /Applications + ~/Applications ChatGPT.app/Codex.app bundled
-//        binaries plus explicit Homebrew prefixes for GUI-launched sparse PATHs.
+//        binaries, explicit Homebrew prefixes, and every installed nvm node
+//        version's bin dir — all for GUI-launched sparse PATHs.
 //      - Windows: %LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe
 //        (and the Program Files equivalent).
+//
+// "$PATH" here is the app's INHERITED PATH only. PwrSnap never spawns the
+// user's login shell to hydrate PATH (that resolver was removed 2026-08 —
+// see docs/solutions/2026-08-03-e2e-teardown-login-shell-hang.md). A binary
+// that lives somewhere launchd's sparse PATH misses must be covered by an
+// explicit filesystem candidate above, or pinned in Settings → AI.
 
 import { execFile as execFileCallback } from "node:child_process";
+import { readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -160,17 +168,40 @@ export function validateCodexCliVersion(version: string): string | undefined {
     : undefined;
 }
 
+function isSpawnNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "ENOENT"
+  );
+}
+
 /** Guard the exact command the App Server client is about to spawn. Discovery
  *  filters old candidates for Settings, while this check prevents a direct
- *  configured/PATH command from bypassing that UI-level selection. */
+ *  configured/PATH command from bypassing that UI-level selection. An explicit
+ *  path is existence-checked before the spawn so a stale pinned path fails
+ *  with a clear "not found" instead of a raw ENOENT. */
 export async function assertCodexCliVersion(
   command: string,
   env: NodeJS.ProcessEnv
 ): Promise<string> {
-  const result = await execFile(command, ["--version"], {
-    env,
-    timeout: VERSION_PROBE_TIMEOUT_MS
-  });
+  const notFoundMessage =
+    `Codex CLI not found: ${command}. Install the Codex CLI ` +
+    `(Codex Desktop / ChatGPT Desktop or \`brew install codex\`), or pin its ` +
+    `full path in Settings → AI.`;
+  if (path.isAbsolute(command) && !(await kitPathIsExecutable(command))) {
+    throw new Error(notFoundMessage);
+  }
+  let result: { stdout: string; stderr: string };
+  try {
+    result = await execFile(command, ["--version"], {
+      env,
+      timeout: VERSION_PROBE_TIMEOUT_MS
+    });
+  } catch (cause) {
+    if (isSpawnNotFoundError(cause)) throw new Error(notFoundMessage);
+    throw cause;
+  }
   const output = `${result.stdout}\n${result.stderr ?? ""}`;
   const version = parseCodexVersion(output);
   if (version === undefined) {
@@ -182,6 +213,21 @@ export async function assertCodexCliVersion(
     );
   }
   return version;
+}
+
+/** Every installed nvm node version's bin dir, newest first — an
+ *  `npm i -g codex` under nvm lands there, which a GUI-launched app's
+ *  sparse PATH misses. Pure readdir; no shell is ever spawned. */
+export function nvmNodeBinDirs(home: string = os.homedir()): string[] {
+  const base = path.join(home, ".nvm", "versions", "node");
+  try {
+    return readdirSync(base)
+      .sort()
+      .reverse()
+      .map((version) => path.join(base, version, "bin"));
+  } catch {
+    return [];
+  }
 }
 
 function getCodexAppCandidatePaths(): string[] {
@@ -203,7 +249,8 @@ function getCodexAppCandidatePaths(): string[] {
     path.join(os.homedir(), "Applications/ChatGPT.app/Contents/Resources/codex"),
     path.join(os.homedir(), "Applications/Codex.app/Contents/Resources/codex"),
     "/opt/homebrew/bin/codex",
-    "/usr/local/bin/codex"
+    "/usr/local/bin/codex",
+    ...nvmNodeBinDirs().map((dir) => path.join(dir, "codex"))
   ];
 }
 

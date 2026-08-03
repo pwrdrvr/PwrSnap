@@ -84,7 +84,7 @@ async function extractPoster(
   const ffmpeg = resolveFfmpegPath();
   if (ffmpeg === null) {
     throw new Error(
-      "ffmpeg binary not available — run build:ffmpeg or set PWRSNAP_FFMPEG_PATH"
+      "ffmpeg not found: bundled PwrSnapFFmpeg is missing and no ffmpeg was found on PATH — run build:ffmpeg or set PWRSNAP_FFMPEG_PATH"
     );
   }
 

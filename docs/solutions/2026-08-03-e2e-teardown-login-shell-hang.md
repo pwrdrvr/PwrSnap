@@ -83,3 +83,18 @@ terminable.
 - The persistent runner VMs should still be rebooted on a cadence
   (or per-job) as defense in depth — with these fixes the degradation
   driver is gone in E2E, but the lab doc keeps the reboot recipe.
+
+## Postscript (2026-08): the resolver was removed entirely
+
+Shortly after this fix landed, the login-shell PATH machinery was
+deleted outright (`login-shell-path.ts`,
+`shell-env-refresh-worker.ts` + client, and the `PWRSNAP_E2E=1` gate
+above, which the removal made moot). Decision: PwrSnap never spawns
+the user's login shell to guess at PATH. Binary discovery instead
+checks explicit install locations (app bundles, Homebrew prefixes,
+nvm node bin dirs — plain filesystem scans) plus the app's inherited
+PATH, validates pinned paths before spawning, and surfaces
+"not found" in Settings → AI where the user can pin a path. The
+first follow-up above (slow quit for real users) is resolved by the
+same removal. The fixture tree-kill and teardown telemetry remain —
+they are still the right defense for any future teardown blocker.

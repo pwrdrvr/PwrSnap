@@ -5,6 +5,11 @@
 // stage apps/desktop/build/ffmpeg/ffmpeg.exe. We additionally honor
 // `PWRSNAP_FFMPEG_PATH` for CI / debug overrides.
 //
+// The last-resort ffmpeg-on-PATH fallback scans the app's INHERITED
+// PATH only — PwrSnap never spawns the user's login shell to hydrate
+// PATH. A GUI-launched app therefore sees launchd's sparse PATH; if
+// ffmpeg lives elsewhere, set PWRSNAP_FFMPEG_PATH.
+//
 // Kept in its own module so test code can mock the resolution
 // without pulling the rest of the exporter stack into the Vitest
 // graph.

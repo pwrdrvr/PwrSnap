@@ -40,7 +40,7 @@ function runFfmpeg(args: string[]): Promise<void> {
   const bin = resolveFfmpegPath();
   if (bin === null) {
     return Promise.reject(
-      new AudioExtractError("ffmpeg_missing", "ffmpeg binary not found")
+      new AudioExtractError("ffmpeg_missing", "ffmpeg not found: bundled PwrSnapFFmpeg is missing and no ffmpeg was found on PATH")
     );
   }
   return new Promise((resolve, reject) => {

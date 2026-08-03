@@ -1,3 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 type DiscoverCommandsOptions = {
@@ -12,7 +16,8 @@ const mocks = vi.hoisted(() => ({
       executable: false,
       selected: false
     }))
-  }))
+  })),
+  pathIsExecutable: vi.fn(async () => false)
 }));
 
 vi.mock("@pwrdrvr/codex-discovery", () => ({
@@ -20,11 +25,13 @@ vi.mock("@pwrdrvr/codex-discovery", () => ({
     left === right ? 0 : left < right ? -1 : 1
   ),
   discoverCommands: mocks.discoverCommands,
-  pathIsExecutable: vi.fn()
+  pathIsExecutable: mocks.pathIsExecutable
 }));
 
 const {
+  assertCodexCliVersion,
   discoverCodexCommands,
+  nvmNodeBinDirs,
   MINIMUM_CODEX_CLI_VERSION
 } = await import("../codex-discovery");
 
@@ -74,5 +81,52 @@ describe("discoverCodexCommands", () => {
     expect(commands).toContain("/opt/homebrew/bin/codex");
     expect(commands).toContain("/usr/local/bin/codex");
     expect(commands).toContain("codex");
+  });
+});
+
+describe("nvmNodeBinDirs", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "pwrsnap-nvm-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("lists every installed node version's bin dir, newest first", () => {
+    const base = join(home, ".nvm", "versions", "node");
+    mkdirSync(join(base, "v22.1.0"), { recursive: true });
+    mkdirSync(join(base, "v24.14.1"), { recursive: true });
+
+    expect(nvmNodeBinDirs(home)).toEqual([
+      join(base, "v24.14.1", "bin"),
+      join(base, "v22.1.0", "bin")
+    ]);
+  });
+
+  test("returns empty when nvm is not installed (no shell is spawned)", () => {
+    expect(nvmNodeBinDirs(home)).toEqual([]);
+  });
+});
+
+describe("assertCodexCliVersion not-found reporting", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  test("a missing pinned path fails with a clear message before any spawn", async () => {
+    mocks.pathIsExecutable.mockResolvedValue(false);
+
+    await expect(
+      assertCodexCliVersion("/stale/pinned/codex", {})
+    ).rejects.toThrow(/Codex CLI not found: \/stale\/pinned\/codex.*Settings → AI/);
+  });
+
+  test("a bare command missing from PATH maps spawn ENOENT to the same message", async () => {
+    await expect(
+      assertCodexCliVersion("pwrsnap-definitely-not-a-real-codex", {})
+    ).rejects.toThrow(/Codex CLI not found: pwrsnap-definitely-not-a-real-codex/);
   });
 });

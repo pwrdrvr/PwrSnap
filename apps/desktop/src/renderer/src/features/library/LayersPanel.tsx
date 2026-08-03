@@ -791,6 +791,7 @@ export function LayersPanel({
                       onStyleFieldChange={(field, value): void => {
                         api?.updateLayerStyle(id, field, value);
                       }}
+                      styleTargetKey={id}
                     />
                   </div>
                 </section>

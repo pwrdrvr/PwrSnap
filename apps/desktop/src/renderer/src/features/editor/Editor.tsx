@@ -6538,6 +6538,7 @@ function EditorLoaded({
               onStyleFieldChange={(field, value) => {
                 onSelectedStyleFieldChange(field, value);
               }}
+              styleTargetKey={selectedOverlayForHandles.id}
               selectedOverlayLabel={labelInfo?.label ?? projection.tool}
               {...(customTextSizeLabel !== undefined
                 ? { customTextSizeLabel }

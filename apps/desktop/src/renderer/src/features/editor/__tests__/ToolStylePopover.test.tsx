@@ -199,6 +199,7 @@ interface HarnessProps {
   style: ToolStylePopoverStyle;
   onClose?: () => void;
   onStyleFieldChange?: (field: string, value: unknown) => void;
+  styleTargetKey?: string;
   /** When provided, the popover surfaces a "Custom · {label}" badge
    *  above the Font size row (pwrdrvr/PwrSnap#110). Threaded from
    *  Editor.tsx when a selected text overlay's stored `sizePx`
@@ -227,6 +228,9 @@ function Harness(props: HarnessProps): ReactElement {
       onClose: props.onClose ?? (() => undefined),
       onStyleFieldChange:
         props.onStyleFieldChange ?? ((_f, _v) => undefined),
+      ...(props.styleTargetKey !== undefined
+        ? { styleTargetKey: props.styleTargetKey }
+        : {}),
       ...(props.customTextSizeLabel !== undefined
         ? { customTextSizeLabel: props.customTextSizeLabel }
         : {})
@@ -683,6 +687,56 @@ describe("ToolStylePopover", () => {
     });
     expect(onChange).toHaveBeenCalledWith("opacity", MAX_HIGHLIGHT_OPACITY);
     expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  test("15. highlight opacity draft resets for a new selected layer with the same opacity", () => {
+    vi.useFakeTimers();
+    const firstLayerChange = vi.fn();
+    const secondLayerChange = vi.fn();
+    render(
+      createElement(Harness, {
+        tool: "highlight",
+        style: DEFAULT_HIGHLIGHT_STYLE,
+        styleTargetKey: "highlight-first",
+        onStyleFieldChange: firstLayerChange
+      })
+    );
+    const firstSlider = queryPopover().querySelector<HTMLInputElement>(
+      '[data-testid="highlight-opacity-input"]'
+    );
+    expect(firstSlider).not.toBeNull();
+    firePointerDown(firstSlider!);
+    fireChange(firstSlider!, "0.6");
+    expect(firstSlider!.value).toBe("0.6");
+
+    // Both layers persist at 30%. The selected-layer key, rather than the
+    // numeric prop alone, must clear the first layer's local draft.
+    act(() => {
+      root!.render(
+        createElement(Harness, {
+          tool: "highlight",
+          style: DEFAULT_HIGHLIGHT_STYLE,
+          styleTargetKey: "highlight-second",
+          onStyleFieldChange: secondLayerChange
+        })
+      );
+    });
+    const secondSlider = queryPopover().querySelector<HTMLInputElement>(
+      '[data-testid="highlight-opacity-input"]'
+    );
+    expect(secondSlider).not.toBeNull();
+    expect(secondSlider!.value).toBe("0.3");
+    expect(
+      queryPopover().querySelector('[data-testid="highlight-opacity-display"]')?.textContent
+    ).toBe("30%");
+
+    // The delayed write remains owned by the first selected layer; it never
+    // leaks into the second layer merely because its inspector mounted.
+    act(() => {
+      vi.advanceTimersByTime(150);
+    });
+    expect(firstLayerChange).toHaveBeenCalledWith("opacity", 0.6);
+    expect(secondLayerChange).not.toHaveBeenCalled();
   });
 
   test("15. coachmark visible on first open (stoplightSeen=false)", () => {

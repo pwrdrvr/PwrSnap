@@ -101,6 +101,7 @@ export function LayerPropertiesPanel({
               onStyleFieldChange={(field, value): void => {
                 api?.updateLayerStyle(selected.id, field, value);
               }}
+              styleTargetKey={selected.id}
             />
           </div>
         </>

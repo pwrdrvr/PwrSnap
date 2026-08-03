@@ -33,6 +33,7 @@ import {
   _electron as electron,
   expect,
   test as base,
+  type ConsoleMessage,
   type ElectronApplication,
   type Page
 } from "@playwright/test";
@@ -309,6 +310,33 @@ async function waitForProcessExit(
 
 async function closeElectronApp(app: ElectronApplication): Promise<void> {
   const child = app.process();
+  const quitDiagnostics: string[] = [];
+  const onConsole = (message: ConsoleMessage): void => {
+    const text = message.text();
+    if (text.startsWith("[e2e-quit-diagnostic]")) quitDiagnostics.push(text);
+  };
+  if (process.platform === "win32") {
+    app.on("console", onConsole);
+    await withTimeout(
+      app.evaluate(({ app: electronApp, BrowserWindow }) => {
+        const report = (event: string): void => {
+          const windows = BrowserWindow.getAllWindows().map((window) => ({
+            destroyed: window.isDestroyed(),
+            title: window.getTitle(),
+            url: window.webContents.isDestroyed() ? "<destroyed>" : window.webContents.getURL()
+          }));
+          console.log(
+            `[e2e-quit-diagnostic] event=${event} at=${String(Date.now())} windows=${JSON.stringify(windows)}`
+          );
+        };
+        electronApp.once("before-quit", () => report("before-quit-after-app-handler"));
+        electronApp.once("will-quit", () => report("will-quit-after-app-handler"));
+        electronApp.once("quit", () => report("quit"));
+      }),
+      1_000,
+      "installing E2E quit diagnostics timed out"
+    ).catch(() => undefined);
+  }
   // Playwright's ElectronApplication.close() asks Electron to `app.quit()`.
   // That distinction matters for test fidelity: `app.quit()` emits
   // `will-quit`, where PwrSnap disposes its windows, workers, timers, process
@@ -321,7 +349,10 @@ async function closeElectronApp(app: ElectronApplication): Promise<void> {
   // main-process evaluate round-trip.
   const closePromise = app.close();
   const result = await waitForClose(closePromise, ELECTRON_CLOSE_TIMEOUT_MS);
-  if (result === "closed" && (await waitForProcessExit(child, 1_000))) return;
+  if (result === "closed" && (await waitForProcessExit(child, 1_000))) {
+    app.off("console", onConsole);
+    return;
+  }
 
   // Every trip through here costs this spec ~6s and, before the tree-kill
   // below existed, leaked the app's helper processes into the session. If
@@ -329,8 +360,9 @@ async function closeElectronApp(app: ElectronApplication): Promise<void> {
   // reboot it (see the VM-lab troubleshooting doc).
   // eslint-disable-next-line no-console
   console.warn(
-    `[e2e-teardown] graceful close failed (close=${result}, exited=${hasExited(child)}) — force-killing pid=${child.pid ?? "?"}`
+    `[e2e-teardown] graceful close failed (close=${result}, exited=${hasExited(child)}) — force-killing pid=${child.pid ?? "?"}\n${quitDiagnostics.join("\n")}`
   );
+  app.off("console", onConsole);
   if (!hasExited(child)) {
     await killProcessTree(child);
   }

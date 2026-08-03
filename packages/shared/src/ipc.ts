@@ -32,6 +32,8 @@ export const IPC_VIDEO_DRAG_START = "video:drag-start" as const;
 export const IPC_CART_ZIP_DRAG_START = "cart:zip-drag-start" as const;
 
 export const EVENT_CHANNELS = {
+  /** Main → local renderers: one formatted current-session log line. */
+  logEntry: "events:logs:entry",
   capturesChanged: "events:captures:changed",
   overlaysChanged: "events:overlays:changed",
   uploadProgress: "events:upload:progress",
@@ -465,6 +467,7 @@ export type AiUsageUpdatedEvent = {
 };
 
 export type EventPayloads = {
+  [EVENT_CHANNELS.logEntry]: import("./protocol").AppLogEntry;
   [EVENT_CHANNELS.appUpdateStatus]: AppUpdateStatus;
   [EVENT_CHANNELS.aiUsageUpdated]: AiUsageUpdatedEvent;
   [EVENT_CHANNELS.capturesAccessChanged]: import("./protocol").CapturesAccessHealth;

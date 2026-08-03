@@ -25,6 +25,9 @@ import type { ToolSpec } from "./define-tool";
 import { LIBRARY_TOOL_ALLOWLIST } from "./library-tool-allowlist";
 import type { CommandDispatchOptions } from "../command-bus";
 import { runWithChatToolCommandContext } from "./chat-tool-command-context";
+import { getMainLogger } from "../log";
+
+const log = getMainLogger("pwrsnap:chat-tools");
 
 /**
  * Build the `DynamicToolSpec[]` registered with Codex on `thread/start`.
@@ -51,7 +54,34 @@ export async function dispatchLibraryToolCall(
   allowlist: ReadonlyArray<ToolSpec<unknown>> = LIBRARY_TOOL_ALLOWLIST,
   commandContext: CommandDispatchOptions = { principal: "ipc" }
 ): Promise<DynamicToolCallResponse> {
-  return runWithChatToolCommandContext(commandContext, () =>
+  const startedAt = Date.now();
+  const response = await runWithChatToolCommandContext(commandContext, () =>
     dispatchToolCall(params, allowlist)
   );
+  const context = {
+    namespace: params.namespace,
+    tool: params.tool,
+    callId: params.callId,
+    threadId: params.threadId,
+    turnId: params.turnId,
+    principal: commandContext.principal,
+    durationMs: Date.now() - startedAt
+  };
+  if (response.success) {
+    // Success traffic is useful during an active troubleshooting session but
+    // intentionally stays out of the default info-level durable log.
+    log.debug("chat tool call completed", context);
+  } else {
+    // The shared dispatcher converts unknown tools, invalid arguments, thrown
+    // handlers, and command failures into success:false. Without this explicit
+    // edge log the model sees the error but the user has no post-mortem trail.
+    log.warn("chat tool call failed", {
+      ...context,
+      error: response.contentItems
+        .filter((item) => item.type === "inputText")
+        .map((item) => item.text)
+        .join(" | ") || "tool returned no text error"
+    });
+  }
+  return response;
 }

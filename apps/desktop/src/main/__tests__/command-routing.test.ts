@@ -43,6 +43,8 @@ describe("commandOwner", () => {
     expect(commandOwner("layers:upsert")).toBe("library");
     expect(commandOwner("render:composite")).toBe("library");
     expect(commandOwner("diagnostics:revealHotCpuRoot")).toBe("library");
+    expect(commandOwner("logs:read")).toBe("library");
+    expect(commandOwner("logs:openWindow")).toBe("library");
     expect(commandOwner("render:captureExport")).toBe("library");
     expect(commandOwner("app:openDocumentWindow")).toBe("library");
     // Exact override beats the clipboard: → agent prefix: copyText is
@@ -67,6 +69,8 @@ describe("commandOwner", () => {
     expect(commandOwner("app:version")).toBeNull();
     expect(commandOwner("system:listDisplays")).toBeNull();
     expect(commandOwner("app:readDocument")).toBeNull();
+    expect(commandOwner("renderer:reportError")).toBeNull();
+    expect(commandOwner("renderer:revealLogFile")).toBeNull();
     expect(commandOwner("app:openExternal")).toBeNull();
     expect(commandOwner("not:aCommand")).toBeNull();
   });

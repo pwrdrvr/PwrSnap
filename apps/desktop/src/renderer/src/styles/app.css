@@ -6,6 +6,7 @@
 @import "./region.css";
 @import "./settings.css";
 @import "./documents.css";
+@import "./logs.css";
 @import "./local-agent-consent.css";
 
 * {

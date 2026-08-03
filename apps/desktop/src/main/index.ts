@@ -63,6 +63,10 @@ import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
 import { registerDiagnosticsHandlers } from "./handlers/diagnostics-handlers";
 import {
+  registerLogsHandlers,
+  registerRendererErrorHandler
+} from "./handlers/logs-handlers";
+import {
   disposeCodexProfileHandlers,
   registerCodexProfileHandlers
 } from "./handlers/codex-profile-handlers";
@@ -581,6 +585,17 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
               { kind: "third-party-licenses" },
               options
             );
+          }
+        },
+        { type: "separator" },
+        {
+          label: "Logs",
+          click: (_item, sourceWindow) => {
+            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
+            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
+              options.sourceWindowId = sourceWindow.id;
+            }
+            void bus.dispatch("logs:openWindow", {}, options);
           }
         }
       ]
@@ -1712,6 +1727,7 @@ export function bootstrapApp(): void {
     // across the bridge. The grouping must agree with command-routing.ts;
     // the routing tests pin the contentious assignments.
     registerAppCommonHandlers();
+    registerRendererErrorHandler();
     // Library DATA verbs register in every role: the agent's tray and
     // float-over read + mutate captures locally against the shared WAL
     // DB — a tray preview must never resurrect the library process.
@@ -1774,6 +1790,7 @@ export function bootstrapApp(): void {
       registerSettingsWindowHandlers();
       registerAppWindowHandlers();
       registerDiagnosticsHandlers();
+      registerLogsHandlers();
       registerLibraryChatHandlers();
       registerSizzleChatHandlers();
       registerLibraryWindowHandlers();

@@ -1,6 +1,7 @@
 import { AppDocumentWindow } from "./features/documents/AppDocumentWindow";
 import { Library } from "./features/library/Library";
 import { LocalAgentConsent } from "./features/local-agents/LocalAgentConsent";
+import { LogsWindow } from "./features/logs/LogsWindow";
 import { CapturesAccessBanner } from "./features/library/CapturesAccessBanner";
 import { CartProvider } from "./features/library/CartContext";
 import { HotCpuProfileBanner } from "./features/library/HotCpuProfileBanner";
@@ -22,6 +23,7 @@ type Stage =
   | "tray"
   | "region"
   | "settings"
+  | "logs"
   | "sizzle"
   | "document"
   | "local-agent-consent"
@@ -37,6 +39,7 @@ function readStage(): Stage {
     v === "float-over" ||
     v === "region" ||
     v === "settings" ||
+    v === "logs" ||
     v === "sizzle" ||
     v === "document" ||
     v === "local-agent-consent" ||
@@ -76,6 +79,7 @@ const TITLE_BY_STAGE: Record<Stage, string> = {
   "float-over": "PwrSnap Toast",
   region: "PwrSnap Capture",
   settings: "PwrSnap Settings",
+  logs: "PwrSnap Logs",
   sizzle: "PwrSnap Sizzle Reels",
   "local-agent-consent": "Authorize Local Agent - PwrSnap",
   "recording-controller": "PwrSnap Recording",
@@ -126,6 +130,9 @@ export function App() {
     }
     if (STAGE === "settings") {
       return <SettingsApp />;
+    }
+    if (STAGE === "logs") {
+      return <LogsWindow />;
     }
     if (STAGE === "sizzle") {
       return <SizzleApp />;

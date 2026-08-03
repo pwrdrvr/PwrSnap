@@ -1,28 +1,23 @@
-// Tiny logger shim. Phase 1 keeps it intentionally small — just enough to
-// satisfy the lifted PwrAgnt JSON-RPC + transport modules. Phase 3 will
-// expand to match PwrAgnt's structured-payload compaction (its
-// apps/desktop/src/main/log.ts) when renderer-error
-// reporting + telemetry need it.
-
 import electronLog from "electron-log/main.js";
-import { inspect } from "node:util";
+import { appendAppLogEntry } from "./app-logs";
 import { parseProcessRoleFlag } from "./process-role";
 
 let initialized = false;
 let stdioErrorHandlersInstalled = false;
+let debugCollectionEnabled = false;
 
 export const MAIN_LOG_FILE_LEVEL = "info";
 export const MAIN_LOG_FILE_MAX_SIZE_BYTES = 1024 * 1024;
+const MAX_COMPACT_STRING_LENGTH = 320;
+const MAX_COMPACT_FIELDS = 24;
+const MAX_COMPACT_DEPTH = 2;
 
-type StdioError = Error & {
-  code?: unknown;
-};
+type ElectronLogHook = (typeof electronLog.hooks)[number];
+type ElectronLogMessage = Parameters<ElectronLogHook>[0];
+type StdioError = Error & { code?: unknown };
 
 function isClosedStdioError(error: unknown): error is StdioError {
-  if (typeof error !== "object" || error === null) {
-    return false;
-  }
-
+  if (typeof error !== "object" || error === null) return false;
   const code = (error as StdioError).code;
   return code === "EPIPE" || code === "ERR_STREAM_DESTROYED";
 }
@@ -42,15 +37,11 @@ function handleStdioError(error: unknown): void {
     disableConsoleTransport();
     return;
   }
-
   rethrowUnexpectedStdioError(error);
 }
 
 function installStdioErrorHandlers(): void {
-  if (stdioErrorHandlersInstalled) {
-    return;
-  }
-
+  if (stdioErrorHandlersInstalled) return;
   stdioErrorHandlersInstalled = true;
   process.stdout.on("error", handleStdioError);
   process.stderr.on("error", handleStdioError);
@@ -59,12 +50,8 @@ function installStdioErrorHandlers(): void {
 function guardConsoleTransport(): void {
   const transport = electronLog.transports.console;
   const writeFn = transport.writeFn;
-
   transport.writeFn = (options) => {
-    if (transport.level === false) {
-      return;
-    }
-
+    if (transport.level === false) return;
     try {
       writeFn(options);
     } catch (error) {
@@ -72,63 +59,163 @@ function guardConsoleTransport(): void {
         disableConsoleTransport();
         return;
       }
-
       throw error;
     }
   };
 }
 
 export function initializeMainLogger(): void {
-  if (initialized) {
-    return;
-  }
+  if (initialized) return;
   initialized = true;
 
-  // Two-process split: the agent and library are separate Electron
-  // processes that share one app name → one logs dir. Left at the
-  // electron-log default both would append to (and rotate) the SAME
-  // `main.log` — interleaved lines, racing rotations. The library child
-  // is the only process spawned with an explicit role flag (the full
-  // role isn't resolved until later in bootstrap), so key off that: it
-  // writes to its own `library.log`. Combined/agent keep `main.log`.
+  // Agent and library are separate Electron processes sharing one logs
+  // directory. Keep their durable files separate so rotation cannot race.
   const roleFlag = parseProcessRoleFlag(process.argv);
-  if (roleFlag === "library") {
-    electronLog.transports.file.fileName = "library.log";
-  }
-  // Short tag on the LIBRARY child's lines only, so interleaved
-  // dev-terminal output (both processes inherit one stdio) — and any
-  // concatenation of the two log files — is attributable at a glance.
-  // Combined/agent get NO tag: single-process mode keeps the exact
-  // pre-split line format, so turning the experiment off changes
-  // nothing about the logs.
-  const tagPrefix = roleFlag === "library" ? "lib " : "";
+  if (roleFlag === "library") electronLog.transports.file.fileName = "library.log";
+  const consoleTag = roleFlag === "library" ? "lib " : "";
 
   installStdioErrorHandlers();
   guardConsoleTransport();
-  electronLog.initialize();
-  // Keep persistent logs useful without accidentally recreating Codex-style
-  // TRACE/DEBUG write churn. electron-log rotates by default, but we make the
-  // SSD-facing bounds explicit here instead of relying on package defaults.
-  electronLog.transports.file.level = MAIN_LOG_FILE_LEVEL;
+  electronLog.transports.file.level = debugCollectionEnabled ? "debug" : MAIN_LOG_FILE_LEVEL;
   electronLog.transports.file.maxSize = MAIN_LOG_FILE_MAX_SIZE_BYTES;
-  // electron-log's default formatter calls util.inspect with depth=2,
-  // which collapses any nested object two levels deep into "[Object]"
-  // — useless for diagnostic logs that ship structured rects /
-  // candidates / etc. Bump depth so we actually see what we logged.
-  // Format hook applies to both console + file transports.
-  for (const transport of [electronLog.transports.console, electronLog.transports.file]) {
-    transport.format = ({ message }) => {
-      const parts = message.data.map((d) =>
-        typeof d === "string" ? d : inspect(d, { depth: 6, breakLength: 120, colors: false })
-      );
-      return [
-        `${message.date.toISOString().slice(11, 23)} ${tagPrefix}(${message.scope ?? "?"})`,
-        ...parts
-      ];
+  electronLog.initialize();
+  electronLog.scope.labelPadding = false;
+
+  electronLog.hooks.push((message, _transport, transportName) => {
+    const compacted: ElectronLogMessage = {
+      ...message,
+      data: compactStructuredLogData(message.data)
     };
-  }
+    if (transportName === "file") {
+      appendAppLogEntry({
+        timestamp: message.date.getTime(),
+        level: String(message.level),
+        ...(message.scope !== undefined ? { scope: message.scope } : {}),
+        line: formatAppLogLine(compacted)
+      });
+    }
+    return compacted;
+  });
+
+  electronLog.transports.console.format = ({ message }) => {
+    const scope = message.scope ?? "?";
+    return [`${message.date.toISOString().slice(11, 23)} ${consoleTag}(${scope})`, ...message.data];
+  };
 }
 
 export function getMainLogger(scope: string) {
   return electronLog.scope(scope);
+}
+
+export function getMainLogFilePath(): string | undefined {
+  try {
+    return electronLog.transports.file.getFile().path;
+  } catch {
+    return undefined;
+  }
+}
+
+export function isMainLogDebugCollectionEnabled(): boolean {
+  return debugCollectionEnabled;
+}
+
+export function setMainLogDebugCollectionEnabled(enabled: boolean): void {
+  debugCollectionEnabled = enabled;
+  electronLog.transports.file.level = enabled ? "debug" : MAIN_LOG_FILE_LEVEL;
+}
+
+export function formatAppLogLine(message: ElectronLogMessage): string {
+  const timestamp = formatLogTimestamp(message.date);
+  const level = String(message.level).padEnd(5, " ");
+  const scope = message.scope ? ` (${message.scope})` : "";
+  const content = message.data.map(formatLogTextPart).join(" ");
+  return `[${timestamp}] [${level}]${scope} ${content}`.trimEnd();
+}
+
+function formatLogTimestamp(date: Date): string {
+  const pad = (value: number, width = 2): string => String(value).padStart(width, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+}
+
+function formatLogTextPart(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.stack ?? value.message;
+  if (typeof value === "number" || typeof value === "boolean" || value === null) {
+    return String(value);
+  }
+  if (value === undefined) return "undefined";
+  return JSON.stringify(value) ?? String(value);
+}
+
+export function compactStructuredLogData(data: unknown[]): unknown[] {
+  if (data.length < 2 || typeof data[0] !== "string") return data;
+
+  const compacted: string[] = [];
+  const passthrough: unknown[] = [];
+  let hadStructuredPayload = false;
+  for (const item of data.slice(1)) {
+    if (isPlainObject(item)) {
+      hadStructuredPayload = true;
+      const fields = compactObjectFields(item);
+      if (fields) compacted.push(fields);
+    } else {
+      passthrough.push(item);
+    }
+  }
+  if (compacted.length > 0) return [`${data[0]} ${compacted.join(" ")}`, ...passthrough];
+  return hadStructuredPayload ? [data[0], ...passthrough] : data;
+}
+
+type CompactField = { key: string; value: string };
+
+function compactObjectFields(value: Record<string, unknown>): string {
+  const fields: CompactField[] = [];
+  collectCompactFields(value, "", fields, 0);
+  const suffix = fields.length >= MAX_COMPACT_FIELDS ? " ..." : "";
+  return `${fields.slice(0, MAX_COMPACT_FIELDS).map((field) => `${field.key}=${field.value}`).join(" ")}${suffix}`;
+}
+
+function collectCompactFields(
+  value: Record<string, unknown>,
+  prefix: string,
+  fields: CompactField[],
+  depth: number
+): void {
+  if (fields.length >= MAX_COMPACT_FIELDS) return;
+  for (const [key, child] of Object.entries(value)) {
+    if (fields.length >= MAX_COMPACT_FIELDS) return;
+    if (child === undefined) continue;
+    const fieldKey = prefix ? `${prefix}.${key}` : key;
+    if (isPlainObject(child) && depth < MAX_COMPACT_DEPTH && Object.keys(child).length <= 8) {
+      collectCompactFields(child, fieldKey, fields, depth + 1);
+      continue;
+    }
+    fields.push({ key: fieldKey, value: compactLogValue(child) });
+  }
+}
+
+function compactLogValue(value: unknown): string {
+  if (typeof value === "string") return quoteIfNeeded(value);
+  if (typeof value === "number" || typeof value === "boolean" || value === null) {
+    return String(value);
+  }
+  if (value === undefined) return "undefined";
+  if (Array.isArray(value)) return `[${value.map(compactLogValue).join(",")}]`;
+  if (value instanceof Error) return quoteIfNeeded(value.stack ?? value.message);
+  if (value instanceof Date) return value.toISOString();
+  return quoteIfNeeded(JSON.stringify(value) ?? String(value));
+}
+
+function quoteIfNeeded(value: string): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  const truncated = compact.length > MAX_COMPACT_STRING_LENGTH
+    ? `${compact.slice(0, MAX_COMPACT_STRING_LENGTH - 3)}...`
+    : compact;
+  return /^[A-Za-z0-9_./:@+-]+$/.test(truncated) ? truncated : JSON.stringify(truncated);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }

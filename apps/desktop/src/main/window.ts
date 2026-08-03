@@ -24,7 +24,7 @@ import {
   getStartupBackgroundColor,
   STARTUP_BG_DARK
 } from "./settings/startup-appearance";
-import { getMainLogger } from "./log";
+import { getMainLogFilePath, getMainLogger } from "./log";
 import { attachRendererStartupProfiling } from "./startup-profiler";
 import { getRuntimeProcessRole } from "./process-role";
 import { activateForUserSurface } from "./process-split/activate-user-surface";
@@ -123,6 +123,8 @@ const SIZZLE_WINDOW_WIDTH = 1280;
 const SIZZLE_WINDOW_HEIGHT = 820;
 const APP_DOCUMENT_WINDOW_WIDTH = 920;
 const APP_DOCUMENT_WINDOW_HEIGHT = 760;
+const LOGS_WINDOW_WIDTH = 1040;
+const LOGS_WINDOW_HEIGHT = 760;
 
 type PlacementSource = {
   sourceWindowId?: number | undefined;
@@ -154,12 +156,14 @@ let libraryWindow: BrowserWindow | null = null;
  */
 let settingsWindow: BrowserWindow | null = null;
 let sizzleWindow: BrowserWindow | null = null;
+let logsWindow: BrowserWindow | null = null;
 const appDocumentWindows = new Map<AppDocumentKind, BrowserWindow>();
 
 type RendererStage =
   | "tray"
   | "float-over"
   | "settings"
+  | "logs"
   | "document"
   | "sizzle"
   | "recording-controller"
@@ -966,6 +970,62 @@ export function showAppDocumentWindow(
     log.warn("document window renderer unresponsive", { id: window.id, kind });
   });
 
+  return window;
+}
+
+/** Open or focus the library process's singleton live Logs window. */
+export function showLogsWindow(options: PlacementSource = {}): BrowserWindow {
+  if (logsWindow !== null && !logsWindow.isDestroyed()) {
+    if (logsWindow.isMinimized()) logsWindow.restore();
+    positionAppDocumentWindowForSource(logsWindow, options);
+    if (!logsWindow.isVisible()) logsWindow.show();
+    logsWindow.focus();
+    return logsWindow;
+  }
+
+  const position = centeredWindowBoundsOnDisplay(
+    LOGS_WINDOW_WIDTH,
+    LOGS_WINDOW_HEIGHT,
+    sourceDisplayForWindow(options)
+  );
+  const preferences = themedWebPreferences();
+  const window = new BrowserWindow({
+    x: position.x,
+    y: position.y,
+    width: LOGS_WINDOW_WIDTH,
+    height: LOGS_WINDOW_HEIGHT,
+    minWidth: 700,
+    minHeight: 500,
+    show: false,
+    title: "PwrSnap Logs",
+    ...platformWindowChrome("hidden"),
+    backgroundColor: getStartupBackgroundColor(),
+    webPreferences: {
+      ...preferences,
+      // Keep the file discoverable even if the initial logs:read IPC call
+      // itself fails — exactly the moment the user most needs the path.
+      additionalArguments: [
+        ...(preferences.additionalArguments ?? []),
+        `--pwrsnap-log-file-path=${JSON.stringify(getMainLogFilePath() ?? "")}`
+      ]
+    }
+  });
+  logsWindow = window;
+
+  loadRenderer(window, rendererTarget("logs"));
+  showWindowWhenReady(window, { label: "logs" });
+
+  window.on("closed", () => {
+    if (logsWindow === window) logsWindow = null;
+    log.debug("logs window closed", { id: window.id });
+  });
+  window.webContents.on("render-process-gone", (_event, details) => {
+    log.warn("logs window renderer crashed", { id: window.id, reason: details.reason });
+  });
+  window.webContents.on("unresponsive", () => {
+    log.warn("logs window renderer unresponsive", { id: window.id });
+  });
+  log.debug("logs window created", { id: window.id });
   return window;
 }
 

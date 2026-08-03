@@ -32,6 +32,7 @@ const EXACT_OWNERS: Readonly<Record<string, CommandOwner>> = {
   // on demand.
   "settings:open": "library",
   "app:openDocumentWindow": "library",
+  "logs:openWindow": "library",
   "library:focus": "library",
   "library:openInLibrary": "library",
   "library:export": "library",
@@ -68,6 +69,7 @@ const PREFIX_OWNERS: ReadonlyArray<readonly [string, CommandOwner]> = [
   ["codex:libraryChat:", "library"],
   ["codex:sizzleChat:", "library"],
   ["diagnostics:", "library"],
+  ["logs:", "library"],
   ["editor:", "library"],
   ["layers:", "library"],
   ["render:", "library"],

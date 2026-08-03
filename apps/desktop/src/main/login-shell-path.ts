@@ -80,7 +80,17 @@ class LoginShellPath {
    */
   async value(): Promise<string> {
     if (this.resolved !== null) return this.resolved;
-    if (process.platform === "win32") {
+    // E2E never spawns the login shell. Two reasons:
+    //   • Determinism — specs must not depend on the host's dotfiles.
+    //   • Teardown — the worker resolves via execFileSync, and a worker
+    //     pinned in a sync spawn cannot be terminated, so Node's exit
+    //     path (incl. `app.exit(0)`) turnstile-blocks on it until the
+    //     shell finishes. `prewarm()` runs at boot, so every E2E app
+    //     instance had a shell in flight exactly when short specs close;
+    //     on a loaded VM that blocked every teardown past the fixture's
+    //     close budget (+6s/spec, SIGKILL, orphaned shell trees). See
+    //     docs/solutions/2026-08-03-e2e-teardown-login-shell-hang.md.
+    if (process.platform === "win32" || process.env.PWRSNAP_E2E === "1") {
       this.resolved = process.env.PATH ?? "";
       return this.resolved;
     }

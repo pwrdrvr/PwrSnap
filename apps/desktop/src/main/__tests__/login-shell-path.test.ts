@@ -28,6 +28,10 @@ describe("loginShellPath", () => {
     setPlatform("darwin");
     resolveLoginShellPath.mockReset();
     process.env = { ...SAVED_ENV };
+    // Hermetic against the invoking shell: if the developer's shell has
+    // PWRSNAP_E2E exported, value()'s E2E arm would short-circuit and
+    // every resolve-path test here would fail confusingly.
+    delete process.env.PWRSNAP_E2E;
     loginShellPath.__resetForTests();
   });
 
@@ -93,6 +97,16 @@ describe("loginShellPath", () => {
 
     expect(resolveLoginShellPath).not.toHaveBeenCalled();
     expect(resolved).toBe("C:\\Windows;C:\\Windows\\System32");
+  });
+
+  it("is a no-op under PWRSNAP_E2E=1 — never spawns the shell", async () => {
+    process.env.PWRSNAP_E2E = "1";
+    process.env.PATH = ["/usr/bin", "/bin"].join(delimiter);
+
+    const resolved = await loginShellPath.value();
+
+    expect(resolveLoginShellPath).not.toHaveBeenCalled();
+    expect(resolved).toBe(["/usr/bin", "/bin"].join(delimiter));
   });
 
   it("prewarm() kicks off resolution without the caller awaiting", async () => {

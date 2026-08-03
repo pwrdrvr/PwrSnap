@@ -136,11 +136,13 @@ first follow-up above (slow quit for real users) is resolved by the
 same removal. The fixture tree-kill and teardown telemetry remain —
 they are still the right defense for any future teardown blocker.
 
-## Second postscript: exercise the real quit lifecycle and skip boot discovery in E2E
+## Independent follow-up: exercise the real quit lifecycle and isolate host discovery
 
-A later persistent-runner job showed the same +6s/spec signature after
-the login-shell resolver had already been removed. Two independent E2E
-lifecycle mistakes remained:
+PR #366 identified and fixed the persistent-runner degradation: the
+Virtualization.framework VideoToolbox kernel-object leak described in the
+correction above. A subsequent harness audit found two independent test-fidelity
+and isolation problems. They were not the cause of the degradation cliff, and
+the changes below are not an additional fix for that kernel leak:
 
 - `closeElectronApp` called `app.exit(0)` before Playwright's
   `ElectronApplication.close()`. Electron's `app.exit()` explicitly skips

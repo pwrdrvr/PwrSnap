@@ -305,14 +305,15 @@ async function waitForProcessExit(
 async function closeElectronApp(app: ElectronApplication): Promise<void> {
   const child = app.process();
   // Playwright's ElectronApplication.close() asks Electron to `app.quit()`.
-  // That distinction is load-bearing: `app.quit()` emits `will-quit`, where
-  // PwrSnap disposes its windows, workers, timers, process pools, and DB.
+  // That distinction matters for test fidelity: `app.quit()` emits
+  // `will-quit`, where PwrSnap disposes its windows, workers, timers, process
+  // pools, and DB.
   // The old preflight called `app.exit(0)`, which Electron documents as an
-  // immediate exit that SKIPS `before-quit` and `will-quit`; it raced the
-  // subsequent Playwright close and bypassed the cleanup we were trying to
-  // exercise. Bound the close promise from the outside instead. If the main
-  // event loop is wedged, the existing process-tree kill below still caps the
-  // teardown without needing a second main-process evaluate round-trip.
+  // immediate exit that SKIPS `before-quit` and `will-quit`, bypassing the
+  // production cleanup path E2E should exercise. Bound the close promise from
+  // the outside instead. If the main event loop is wedged, the existing
+  // process-tree kill below still caps the teardown without needing a second
+  // main-process evaluate round-trip.
   const closePromise = app.close();
   const result = await waitForClose(closePromise, ELECTRON_CLOSE_TIMEOUT_MS);
   if (result === "closed" && (await waitForProcessExit(child, 1_000))) return;

@@ -20,6 +20,7 @@ import type {
   CommandName,
   Commands,
   LocalAgentCapability,
+  LocalAgentRoleBudgets,
   Req,
   Res
 } from "@pwrsnap/shared";
@@ -56,6 +57,8 @@ export type CommandContext = {
     roleId?: string;
     roleName?: string;
     capabilities: readonly LocalAgentCapability[];
+    maxCaptureAgeDays?: number | null;
+    budgets?: LocalAgentRoleBudgets;
   };
 };
 

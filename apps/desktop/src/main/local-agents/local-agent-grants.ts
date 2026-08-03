@@ -10,6 +10,7 @@ import type {
 } from "@pwrsnap/shared";
 import {
   findRoleForCapabilities,
+  defaultLocalAgentRoleConstraints,
   isLocalAgentCapability,
   isValidRole,
   resolveLocalAgentPolicy,
@@ -86,6 +87,8 @@ export class LocalAgentGrantService {
     name: string;
     description: string;
     permissions: readonly unknown[];
+    maxCaptureAgeDays: number | null;
+    budgets: LocalAgentRoleProfile["budgets"];
   }): Promise<LocalAgentRoleProfile> {
     return this.serializeMutation(async () => {
       const settings = await this.settings.read();
@@ -94,7 +97,9 @@ export class LocalAgentGrantService {
         name: normalizeName(input.name),
         description: normalizeDescription(input.description),
         builtIn: false,
-        permissions: normalizeCapabilitiesStrict(input.permissions)
+        permissions: normalizeCapabilitiesStrict(input.permissions),
+        maxCaptureAgeDays: input.maxCaptureAgeDays,
+        budgets: input.budgets
       };
       this.validateNewRole(settings, role);
       const nextSettings = await this.settings.write({
@@ -128,7 +133,11 @@ export class LocalAgentGrantService {
           : {}),
         ...(patch.permissions !== undefined
           ? { permissions: normalizeCapabilitiesStrict(patch.permissions) }
-          : {})
+          : {}),
+        ...(patch.maxCaptureAgeDays !== undefined
+          ? { maxCaptureAgeDays: patch.maxCaptureAgeDays }
+          : {}),
+        ...(patch.budgets !== undefined ? { budgets: patch.budgets } : {})
       };
       if (!isValidRole(role)) {
         throw new LocalAgentGrantError("invalid_role", "local-agent role is invalid");
@@ -491,7 +500,8 @@ export class LocalAgentGrantService {
       name: `${sessionName} Access`.slice(0, 200),
       description: `Custom access profile created for ${sessionName}.`.slice(0, 500),
       builtIn: false,
-      permissions: [...capabilities]
+      permissions: [...capabilities],
+      ...defaultLocalAgentRoleConstraints(capabilities)
     };
     if (settings.localAgents.roles.some((item) => item.id === role.id)) {
       throw new LocalAgentGrantError(
@@ -609,7 +619,9 @@ export function localAgentContextFromPolicy(
     sessionName: policy.sessionName,
     roleId: policy.roleId,
     roleName: policy.roleName,
-    capabilities: policy.capabilities
+    capabilities: policy.capabilities,
+    maxCaptureAgeDays: policy.maxCaptureAgeDays,
+    budgets: policy.budgets
   };
 }
 

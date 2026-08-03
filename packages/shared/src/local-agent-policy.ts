@@ -3,7 +3,9 @@ import {
   isLocalAgentCapability,
   type LocalAgentCapability,
   type LocalAgentClientGrant,
+  type LocalAgentRoleBudgets,
   type LocalAgentRoleProfile,
+  type LocalAgentUsageAction,
   type Settings
 } from "./protocol";
 
@@ -13,14 +15,18 @@ export const LOCAL_AGENT_BUILT_IN_ROLES = [
     name: "Search Only",
     description: "Search capture metadata without reading image pixels.",
     builtIn: true,
-    permissions: ["library.read"]
+    permissions: ["library.read"],
+    maxCaptureAgeDays: 7,
+    budgets: budgets(50, 1, 1, 1, 1)
   },
   {
     id: "builtin.preview",
     name: "Search + Previews",
     description: "Search and read edited composites with visible redactions applied.",
     builtIn: true,
-    permissions: ["library.read", "capture.composite.read"]
+    permissions: ["library.read", "capture.composite.read"],
+    maxCaptureAgeDays: 7,
+    budgets: budgets(50, 200, 1, 1, 1)
   },
   {
     id: "builtin.full-media",
@@ -32,7 +38,9 @@ export const LOCAL_AGENT_BUILT_IN_ROLES = [
       "capture.composite.read",
       "capture.original.read",
       "capture.export"
-    ]
+    ],
+    maxCaptureAgeDays: 30,
+    budgets: budgets(500, 2_000, 250, 1, 1)
   },
   {
     id: "builtin.editor",
@@ -45,7 +53,9 @@ export const LOCAL_AGENT_BUILT_IN_ROLES = [
       "capture.original.read",
       "capture.export",
       "capture.edit"
-    ]
+    ],
+    maxCaptureAgeDays: 30,
+    budgets: budgets(500, 2_000, 250, 100, 1)
   },
   {
     id: "builtin.sizzle",
@@ -57,14 +67,18 @@ export const LOCAL_AGENT_BUILT_IN_ROLES = [
       "capture.composite.read",
       "sizzle.compose",
       "sizzle.preview.read"
-    ]
+    ],
+    maxCaptureAgeDays: 30,
+    budgets: budgets(500, 2_000, 1, 100, 1)
   },
   {
     id: "builtin.full-access",
     name: "Full Access",
     description: "Every local-agent permission, including originals, Trash, and full renders.",
     builtIn: true,
-    permissions: [...LOCAL_AGENT_CAPABILITIES]
+    permissions: [...LOCAL_AGENT_CAPABILITIES],
+    maxCaptureAgeDays: null,
+    budgets: budgets(1_000, 2_000, 250, 200, 100)
   }
 ] as const satisfies readonly LocalAgentRoleProfile[];
 
@@ -91,6 +105,8 @@ export type ResolvedLocalAgentPolicy = {
   roleId: string;
   roleName: string;
   capabilities: readonly LocalAgentCapability[];
+  maxCaptureAgeDays: number | null;
+  budgets: LocalAgentRoleBudgets;
 };
 
 export type LocalAgentPolicyRejectionCode =
@@ -131,7 +147,9 @@ export function resolveLocalAgentPolicy(
       sessionName: session.name,
       roleId: role.id,
       roleName: role.name,
-      capabilities: [...role.permissions]
+      capabilities: [...role.permissions],
+      maxCaptureAgeDays: role.maxCaptureAgeDays,
+      budgets: cloneBudgets(role.budgets)
     }
   };
 }
@@ -142,6 +160,29 @@ export function findRoleForCapabilities(
 ): LocalAgentRoleProfile | undefined {
   const expected = capabilityFingerprint(capabilities);
   return roles.find((role) => capabilityFingerprint(role.permissions) === expected);
+}
+
+export function defaultLocalAgentRoleConstraints(
+  capabilities: readonly LocalAgentCapability[]
+): Pick<LocalAgentRoleProfile, "maxCaptureAgeDays" | "budgets"> {
+  const builtIn = findRoleForCapabilities(
+    LOCAL_AGENT_BUILT_IN_ROLES.map((role) => ({
+      ...role,
+      permissions: [...role.permissions],
+      budgets: cloneBudgets(role.budgets)
+    })),
+    capabilities
+  );
+  if (builtIn !== undefined) {
+    return {
+      maxCaptureAgeDays: builtIn.maxCaptureAgeDays,
+      budgets: cloneBudgets(builtIn.budgets)
+    };
+  }
+  return {
+    maxCaptureAgeDays: 7,
+    budgets: budgets(50, 200, 25, 25, 10)
+  };
 }
 
 export function capabilityFingerprint(
@@ -160,7 +201,12 @@ export function isValidRole(role: LocalAgentRoleProfile): boolean {
     role.permissions.length > 0 &&
     role.permissions.every(isLocalAgentCapability) &&
     new Set(role.permissions).size === role.permissions.length &&
-    (!role.id.startsWith("builtin.") || role.builtIn)
+    (!role.id.startsWith("builtin.") || role.builtIn) &&
+    (role.maxCaptureAgeDays === null ||
+      (Number.isInteger(role.maxCaptureAgeDays) &&
+        role.maxCaptureAgeDays >= 1 &&
+        role.maxCaptureAgeDays <= 36_500)) &&
+    isValidBudgets(role.budgets)
   );
 }
 
@@ -171,8 +217,62 @@ function matchesCanonicalBuiltIn(role: LocalAgentRoleProfile): boolean {
     role.name === canonical.name &&
     role.description === canonical.description &&
     capabilityFingerprint(role.permissions) ===
-      capabilityFingerprint(canonical.permissions)
+      capabilityFingerprint(canonical.permissions) &&
+    role.maxCaptureAgeDays === canonical.maxCaptureAgeDays &&
+    JSON.stringify(role.budgets) === JSON.stringify(canonical.budgets)
   );
+}
+
+const USAGE_ACTIONS = [
+  "search",
+  "preview.read",
+  "original.read",
+  "edit",
+  "delete"
+] as const satisfies readonly LocalAgentUsageAction[];
+
+function budgets(
+  search: number,
+  preview: number,
+  original: number,
+  edit: number,
+  deletion: number
+): LocalAgentRoleBudgets {
+  const windowSeconds = 24 * 60 * 60;
+  return {
+    search: { limit: search, windowSeconds },
+    "preview.read": { limit: preview, windowSeconds },
+    "original.read": { limit: original, windowSeconds },
+    edit: { limit: edit, windowSeconds },
+    delete: { limit: deletion, windowSeconds }
+  };
+}
+
+function isValidBudgets(value: LocalAgentRoleBudgets): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  return USAGE_ACTIONS.every((action) => {
+    const budget = value[action];
+    return (
+      typeof budget === "object" &&
+      budget !== null &&
+      Number.isInteger(budget.limit) &&
+      budget.limit >= 1 &&
+      budget.limit <= 1_000_000 &&
+      Number.isInteger(budget.windowSeconds) &&
+      budget.windowSeconds >= 60 &&
+      budget.windowSeconds <= 365 * 24 * 60 * 60
+    );
+  });
+}
+
+function cloneBudgets(value: LocalAgentRoleBudgets): LocalAgentRoleBudgets {
+  return {
+    search: { ...value.search },
+    "preview.read": { ...value["preview.read"] },
+    "original.read": { ...value["original.read"] },
+    edit: { ...value.edit },
+    delete: { ...value.delete }
+  };
 }
 
 export function effectiveCapabilitiesForGrant(

@@ -41,6 +41,7 @@ import type {
   LocalAgentCapability,
   LocalAgentClientGrant,
   LocalAgentRoleProfile,
+  LocalAgentRoleBudgets,
   ShapeKind,
   ShapeToolStyle,
   SensitiveDataPattern,
@@ -77,6 +78,7 @@ import {
   isLibrarySidebarTab,
   isLocalAgentCapability,
   findRoleForCapabilities,
+  defaultLocalAgentRoleConstraints,
   isValidRole,
   LOCAL_AGENT_BUILT_IN_ROLES,
   isRedactionStyle
@@ -211,7 +213,8 @@ export function defaultSettings(): Settings {
       grants: [],
       roles: LOCAL_AGENT_BUILT_IN_ROLES.map((role) => ({
         ...role,
-        permissions: [...role.permissions]
+        permissions: [...role.permissions],
+        budgets: cloneLocalAgentBudgets(role.budgets)
       })),
       audit: []
     }
@@ -1011,7 +1014,8 @@ function parseLocalAgentsSettings(
           name: `${grant.name} Access`.slice(0, 200),
           description: "Migrated from a pre-RBAC local-agent capability grant.",
           builtIn: false,
-          permissions: [...grant.capabilities]
+          permissions: [...grant.capabilities],
+          ...defaultLocalAgentRoleConstraints(grant.capabilities)
         };
         while (roleIds.has(role.id)) {
           role.id = `${role.id}.next`;
@@ -1053,9 +1057,74 @@ function parseLocalAgentRole(raw: unknown): LocalAgentRoleProfile | null {
     name: raw.name.trim(),
     description: raw.description,
     builtIn: raw.builtIn,
-    permissions: parseLocalAgentCapabilities(raw.permissions)
+    permissions: parseLocalAgentCapabilities(raw.permissions),
+    maxCaptureAgeDays: null,
+    budgets: cloneLocalAgentBudgets(
+      defaultLocalAgentRoleConstraints(
+        parseLocalAgentCapabilities(raw.permissions)
+      ).budgets
+    )
   };
+  const defaults = defaultLocalAgentRoleConstraints(role.permissions);
+  if (raw.maxCaptureAgeDays === null) {
+    role.maxCaptureAgeDays = null;
+  } else if (raw.maxCaptureAgeDays === undefined) {
+    role.maxCaptureAgeDays = defaults.maxCaptureAgeDays;
+  } else if (
+    typeof raw.maxCaptureAgeDays === "number" &&
+    Number.isInteger(raw.maxCaptureAgeDays)
+  ) {
+    role.maxCaptureAgeDays = raw.maxCaptureAgeDays;
+  } else {
+    return null;
+  }
+  if (raw.budgets !== undefined) {
+    const budgets = parseLocalAgentBudgets(raw.budgets);
+    if (budgets === null) return null;
+    role.budgets = budgets;
+  }
   return isValidRole(role) ? role : null;
+}
+
+function parseLocalAgentBudgets(raw: unknown): LocalAgentRoleBudgets | null {
+  if (!isRecord(raw)) return null;
+  const parseBudget = (value: unknown): { limit: number; windowSeconds: number } | null => {
+    if (
+      !isRecord(value) ||
+      typeof value.limit !== "number" ||
+      typeof value.windowSeconds !== "number"
+    ) return null;
+    return { limit: value.limit, windowSeconds: value.windowSeconds };
+  };
+  const search = parseBudget(raw.search);
+  const preview = parseBudget(raw["preview.read"]);
+  const original = parseBudget(raw["original.read"]);
+  const edit = parseBudget(raw.edit);
+  const deletion = parseBudget(raw.delete);
+  if (
+    search === null ||
+    preview === null ||
+    original === null ||
+    edit === null ||
+    deletion === null
+  ) return null;
+  return {
+    search,
+    "preview.read": preview,
+    "original.read": original,
+    edit,
+    delete: deletion
+  };
+}
+
+function cloneLocalAgentBudgets(value: LocalAgentRoleBudgets): LocalAgentRoleBudgets {
+  return {
+    search: { ...value.search },
+    "preview.read": { ...value["preview.read"] },
+    "original.read": { ...value["original.read"] },
+    edit: { ...value.edit },
+    delete: { ...value.delete }
+  };
 }
 
 function parseLocalAgentAuditEntry(

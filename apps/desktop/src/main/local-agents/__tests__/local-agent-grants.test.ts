@@ -1,7 +1,10 @@
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LOCAL_AGENT_CAPABILITIES } from "@pwrsnap/shared";
+import {
+  LOCAL_AGENT_CAPABILITIES,
+  defaultLocalAgentRoleConstraints
+} from "@pwrsnap/shared";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const safeStorageMock = vi.hoisted(() => {
@@ -103,7 +106,7 @@ describe("LocalAgentGrantService", () => {
 
     expect(auth.ok).toBe(true);
     if (!auth.ok) throw new Error("unreachable");
-    expect(auth.context).toEqual({
+    expect(auth.context).toMatchObject({
       clientId: "lag_test",
       sessionName: "PwrAgent",
       roleId: "builtin.preview",
@@ -261,7 +264,8 @@ describe("LocalAgentGrantService", () => {
     const custom = await service.createRole({
       name: "Careful editor",
       description: "Can search and edit without reading originals.",
-      permissions: ["library.read", "capture.edit"]
+      permissions: ["library.read", "capture.edit"],
+      ...defaultLocalAgentRoleConstraints(["library.read", "capture.edit"])
     });
     expect(custom).toMatchObject({
       id: "lar_test",

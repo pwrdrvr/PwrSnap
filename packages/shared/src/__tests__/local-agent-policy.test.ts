@@ -28,7 +28,14 @@ function grant(overrides: Partial<LocalAgentClientGrant> = {}): LocalAgentClient
 function roles(): LocalAgentRoleProfile[] {
   return LOCAL_AGENT_BUILT_IN_ROLES.map((role) => ({
     ...role,
-    permissions: [...role.permissions]
+    permissions: [...role.permissions],
+    budgets: {
+      search: { ...role.budgets.search },
+      "preview.read": { ...role.budgets["preview.read"] },
+      "original.read": { ...role.budgets["original.read"] },
+      edit: { ...role.budgets.edit },
+      delete: { ...role.budgets.delete }
+    }
   }));
 }
 
@@ -59,7 +66,15 @@ describe("local-agent RBAC policy", () => {
         sessionName: "Codex",
         roleId: "builtin.search",
         roleName: "Search Only",
-        capabilities: ["library.read"]
+        capabilities: ["library.read"],
+        maxCaptureAgeDays: 7,
+        budgets: {
+          search: { limit: 50, windowSeconds: 86_400 },
+          "preview.read": { limit: 1, windowSeconds: 86_400 },
+          "original.read": { limit: 1, windowSeconds: 86_400 },
+          edit: { limit: 1, windowSeconds: 86_400 },
+          delete: { limit: 1, windowSeconds: 86_400 }
+        }
       }
     });
   });

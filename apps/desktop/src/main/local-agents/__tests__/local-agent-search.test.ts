@@ -8,6 +8,7 @@ import {
   localAgentSearchOrder,
   projectLocalAgentSearchDiscovery,
   projectLocalAgentSearchRows,
+  searchRangeEndsBefore,
   toCaptureSearchRequest
 } from "../local-agent-search";
 
@@ -247,5 +248,26 @@ describe("local-agent search boundary", () => {
     expect(JSON.stringify(projectLocalAgentSearchDiscovery(discovery))).not.toContain(
       '"bundleId":null'
     );
+  });
+
+  test("clamps requested history to the role horizon", () => {
+    const notBefore = "2026-07-25T12:00:00.000Z";
+    expect(toCaptureSearchRequest({
+      dateRange: {
+        start: "2020-01-01T00:00:00.000Z",
+        end: "2026-08-01T12:00:00.000Z"
+      }
+    }, { notBefore })).toEqual({
+      dateRange: {
+        start: notBefore,
+        end: "2026-08-01T12:00:00.000Z"
+      }
+    });
+    expect(searchRangeEndsBefore({
+      dateRange: {
+        start: "2020-01-01T00:00:00.000Z",
+        end: "2020-02-01T00:00:00.000Z"
+      }
+    }, notBefore)).toBe(true);
   });
 });

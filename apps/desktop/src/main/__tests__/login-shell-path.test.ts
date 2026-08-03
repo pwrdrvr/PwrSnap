@@ -28,6 +28,10 @@ describe("loginShellPath", () => {
     setPlatform("darwin");
     resolveLoginShellPath.mockReset();
     process.env = { ...SAVED_ENV };
+    // Hermetic against the invoking shell: if the developer's shell has
+    // PWRSNAP_E2E exported, value()'s E2E arm would short-circuit and
+    // every resolve-path test here would fail confusingly.
+    delete process.env.PWRSNAP_E2E;
     loginShellPath.__resetForTests();
   });
 

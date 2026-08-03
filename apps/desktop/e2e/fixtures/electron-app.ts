@@ -157,7 +157,12 @@ async function killProcessTree(child: ElectronChildProcess): Promise<void> {
     try {
       process.kill(descendant, "SIGKILL");
     } catch {
-      // ESRCH — already exited between the snapshot and now.
+      // ESRCH — already exited between the snapshot and now. Note the
+      // snapshot also carries a tiny inherent race we accept (as every
+      // pkill-style sweep does): a snapshotted PID could exit and be
+      // recycled by an unrelated process before this kill lands. PIDs
+      // don't recycle within milliseconds on macOS/Linux, and this only
+      // runs on already-forced teardowns inside throwaway E2E guests.
     }
   }
 }

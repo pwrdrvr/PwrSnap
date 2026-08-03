@@ -1781,7 +1781,9 @@ export function bootstrapApp(): void {
       // launches a fresh app, so probing the host's real Codex install on
       // every launch adds hundreds of unrelated child processes and lets a
       // short spec race teardown against an in-flight `--version` / auth
-      // probe. The discovery E2E dispatches the command explicitly.
+      // probe. The discovery E2E dispatches the command explicitly with
+      // `force: true`; settings-handlers suppresses non-forced renderer mount
+      // probes under E2E so they cannot refill the intentionally empty cache.
       // Agent/combined only — codex is agent-owned.
       const dispatchStartupCodexProbe = (): void => {
         void bus

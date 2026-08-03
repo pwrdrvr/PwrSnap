@@ -151,5 +151,6 @@ lifecycle mistakes remained:
 - E2E boot dispatched the startup Codex discovery probe inline for every fresh
   app. That launched the host's real Codex `--version` and auth probes hundreds
   of times per suite, even though only the settings discovery spec needs them.
-  E2E now skips the boot probe; the dedicated spec dispatches discovery
-  explicitly and retains end-to-end coverage.
+  E2E now skips the boot probe and the main settings handler returns an empty
+  snapshot for non-forced renderer mount probes. The dedicated spec dispatches
+  discovery with `force: true` and retains end-to-end coverage.

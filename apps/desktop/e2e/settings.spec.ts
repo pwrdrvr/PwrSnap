@@ -345,7 +345,10 @@ test("events:settings:changed broadcasts on write", async () => {
 test("settings:refreshCodexDiscovery returns a snapshot", async () => {
   const app = await launchPwrSnap();
   try {
-    const result = await app.dispatch("settings:refreshCodexDiscovery", { force: false });
+    // E2E suppresses non-forced renderer mount probes so ordinary specs never
+    // execute the host's real Codex binary. This dedicated coverage opts into
+    // the complete discovery path explicitly.
+    const result = await app.dispatch("settings:refreshCodexDiscovery", { force: true });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
 

@@ -137,6 +137,22 @@ describe("CodexCompatibilityBanner", () => {
     });
     expect(container?.querySelector(".codex-compatibility-banner")).toBeNull();
 
+    // A successful guard emits null and must re-arm the same stable key for a
+    // later regression, without requiring the Library component to remount.
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.codexCompatibilityAlertChanged, null);
+    });
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.codexCompatibilityAlertChanged, FIRST_ALERT);
+    });
+    expect(container?.textContent).toContain("0.143.0");
+
+    const rearmedDismissButton = Array.from(container!.querySelectorAll("button")).find(
+      (button) => button.textContent === "Dismiss"
+    );
+    await act(async () => rearmedDismissButton?.click());
+    expect(container?.querySelector(".codex-compatibility-banner")).toBeNull();
+
     await act(async () => {
       api.pushEvent(EVENT_CHANNELS.codexCompatibilityAlertChanged, {
         ...FIRST_ALERT,

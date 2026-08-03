@@ -39,7 +39,15 @@ export function CodexCompatibilityBanner(): ReactElement | null {
   }, []);
 
   useEffect(() => {
-    if (alert === null || alert.key === dismissedKey) return;
+    if (alert === null) {
+      // Compatibility was restored. Re-arm renderer dismissal so a later
+      // regression of the same command/version tuple (and therefore the same
+      // stable key) is visible again without requiring a Library remount.
+      setDismissedKey(null);
+      setOpenError(null);
+      return;
+    }
+    if (alert.key === dismissedKey) return;
     setOpenError(null);
   }, [alert, dismissedKey]);
 

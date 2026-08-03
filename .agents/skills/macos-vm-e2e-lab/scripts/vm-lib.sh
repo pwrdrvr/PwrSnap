@@ -9,7 +9,12 @@ VM_DEV=${VM_DEV:-pwrsnap-dev}
 VM_BASE=${VM_BASE:-pwrsnap-sequoia-base}
 SSH_KEY="$HOME/pwrsnap-mac-vm/id_ed25519"
 SSH_USER=admin
-SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5)
+# ServerAlive*: without keepalives, an ssh session whose VM halts under it
+# (tart stop mid-job, guest panic) gets no RST and dangles for hours — the
+# persistent-runner launchd service then looks "running" while nothing
+# serves. 4 missed probes × 15s = dead peer detected in ≤60s, so KeepAlive
+# restarts the service and boots the guest fresh.
+SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 
 vm_exists() { "$TART" list --format json | /usr/bin/python3 -c "import json,sys;print(any(v['Name']==sys.argv[1] for v in json.load(sys.stdin)))" "$1" | grep -q True; }
 

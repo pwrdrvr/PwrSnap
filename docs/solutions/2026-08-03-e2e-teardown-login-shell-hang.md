@@ -156,3 +156,14 @@ the changes below are not an additional fix for that kernel leak:
   E2E now skips the boot probe and the main settings handler returns an empty
   snapshot for non-forced renderer mount probes. The dedicated spec dispatches
   discovery with `force: true` and retains end-to-end coverage.
+
+An A/B full-suite run after rebasing onto #366 measured the tradeoff on the
+same guest and kernel state. `main` passed 129 tests in 3.0 minutes with two
+bounded fallback closes; the lifecycle-isolation branch passed the same 129 in
+3.4 minutes with one fallback. The VideoToolbox client count stayed 487 before
+and after both runs, and neither left Electron or Codex processes alive. The
+roughly 24-second suite cost is the price of exercising production cleanup on
+every launch, not evidence of another degradation fix; one run is also too
+small to claim that the fallback rate improved. Unit coverage separately
+asserts the deterministic isolation property: an E2E non-forced discovery
+request never invokes the discovery service, while a forced request does.

@@ -138,6 +138,25 @@ then restart the listener (`launchctl kickstart -k
 gui/$UID/com.pwrsnap.gha-runner`) — `.path` is read per job, but a
 restart makes the state unambiguous.
 
+## `run-e2e.sh --local` push dies: `git-lfs-authenticate: exit status 127`
+
+**Symptom.** The `--local` push into the VM fails with
+`batch request: zsh:1: command not found: git-lfs-authenticate` →
+`error: failed to push some refs`.
+
+**Root cause.** The repo tracks files with LFS (visual-regression
+`.webp` snapshots). The VM is a plain SSH remote — there is no LFS
+server behind it, and `git-lfs-authenticate` is a *server-side*
+command that only LFS-hosting servers (GitLab shell, Gitea, …)
+provide. No PATH fix can make the upload work; the endpoint doesn't
+exist.
+
+**Fix.** `run-e2e.sh` sets `GIT_LFS_SKIP_PUSH=1` on the `--local`
+push, so refs go over SSH while LFS objects don't. The VM's checkout
+smudges LFS content from its own `origin` (GitHub) instead. Caveat:
+an LFS object committed locally but never pushed to origin cannot
+materialize in the VM — push the object to origin (any branch) first.
+
 ## Runner registration 403 / token fetch fails
 
 `gh api -X POST repos/<owner>/<repo>/actions/runners/registration-token`

@@ -52,6 +52,13 @@ LOG="e2e-$STAMP.log"
 
 if [[ $LOCAL_FLAG == 1 ]]; then
   echo ">> pushing local HEAD of $LOCAL_REPO into VM branch 'e2e-local'"
+  # GIT_LFS_SKIP_PUSH: the VM is a plain SSH remote with no LFS server
+  # (git-lfs-authenticate doesn't exist there), so LFS uploads can only
+  # fail. Skip them — the VM smudges LFS objects (visual-regression
+  # snapshots) from its own `origin` (GitHub) instead. Caveat: an LFS
+  # object added locally but never pushed to origin won't materialize
+  # in the VM checkout.
+  GIT_LFS_SKIP_PUSH=1 \
   GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR" \
     git -C "$LOCAL_REPO" push -q -f "$SSH_USER@$IP:PwrSnap" HEAD:refs/heads/e2e-local
 fi

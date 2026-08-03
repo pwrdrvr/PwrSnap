@@ -84,6 +84,43 @@ terminable.
   (or per-job) as defense in depth — with these fixes the degradation
   driver is gone in E2E, but the lab doc keeps the reboot recipe.
 
+## Correction (2026-08-03, later the same day): the login-shell chain was NOT the driver
+
+After #354/#355/#356 all merged, jobs on the persistent runners still
+degraded to ~17 min with the fixture telemetry showing every close
+forced (140 warnings/run) — on code where the login-shell resolver no
+longer exists. A controlled loop on a fresh guest reproduced the cliff
+at run 8 again, deterministically, with zero contamination. The
+login-shell worker captured in the original spindump was a bystander
+(it genuinely blocked THAT process's exit at THAT moment, but removing
+it changed nothing systemic).
+
+**Actual root cause: a vmapple kernel leak.** Every VideoToolbox
+initialization in a Virtualization.framework guest creates an
+`AppleVideoToolboxParavirtualizationUserClient` kernel object that the
+paravirt driver never frees at process death — `ioclasscount` showed
+**1126** live clients on a degraded guest, and a control run measured
+**+143 per full suite** (8 runs × ~143 ≈ the cliff). Once the driver's
+table jams, `IOService::newUserClient` blocks, every new Electron
+helper hangs AT BIRTH inside the kernel (spindump: suspended+zombie,
+unkillable until the syscall unwinds), and app exit blocks in `wait4`
+on that helper — the uniform +6s/spec. Reboot resets the kernel table,
+which is why a fresh guest was always fast.
+
+`app.disableHardwareAcceleration()` / `--disable-gpu` (the earlier
+paravirt-GPU mitigation) switch rendering to SwiftShader but do NOT
+stop the GPU process from initializing hardware media codecs. The fix
+(fix/e2e-videotoolbox-kernel-leak) adds
+`--disable-accelerated-video-decode` / `--disable-accelerated-video-encode`
+under the same `PWRSNAP_E2E_DISABLE_GPU=1` gate. Measured: control
+suite +143 clients, fixed suite **+0**; endurance loop past the run-8
+cliff clean.
+
+**Lesson recorded for the next investigation:** the original fix was
+only ever verified on a fresh guest — which was always fast. A fix for
+a degradation must be verified against the degraded state (or through
+the full onset window), not the healthy one.
+
 ## Postscript (2026-08): the resolver was removed entirely
 
 Shortly after this fix landed, the login-shell PATH machinery was

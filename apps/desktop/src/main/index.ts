@@ -1467,6 +1467,18 @@ export function bootstrapApp(): void {
   if (isE2E && process.env.PWRSNAP_E2E_DISABLE_GPU === "1") {
     app.disableHardwareAcceleration();
     app.commandLine.appendSwitch("disable-gpu");
+    // Hardware VIDEO codec init leaks kernel objects on VF guests:
+    // every VideoToolbox touch creates an AppleVideoToolboxParavirtual-
+    // izationUserClient that the vmapple driver never frees at process
+    // death. At ~1.1k live clients (≈8 full-suite runs per boot) the
+    // driver's newUserClient wedges, every subsequent helper hangs at
+    // birth inside IOService::newUserClient, and app exit blocks on
+    // wait4 for that unkillable helper — the +6s/spec teardown cliff.
+    // disableHardwareAcceleration()/disable-gpu do NOT cover media
+    // codecs, so disable them explicitly. See
+    // docs/solutions/2026-08-03-e2e-teardown-login-shell-hang.md.
+    app.commandLine.appendSwitch("disable-accelerated-video-decode");
+    app.commandLine.appendSwitch("disable-accelerated-video-encode");
   }
   app.commandLine.appendSwitch("disk-cache-size", String(CHROMIUM_DISK_CACHE_LIMIT_BYTES));
 

@@ -48,6 +48,29 @@ importers:
   );
 }
 
+function writeElectronReleaseInputs(root, { resolved, packaged }) {
+  writePackage(root, "apps/desktop/package.json", {
+    devDependencies: { electron: `^${resolved}` },
+  });
+  writeFileSync(
+    join(root, "pnpm-lock.yaml"),
+    `lockfileVersion: '9.0'
+
+importers:
+
+  apps/desktop:
+    devDependencies:
+      electron:
+        specifier: ^${resolved}
+        version: ${resolved}
+`,
+  );
+  writeFileSync(
+    join(root, "apps", "desktop", "electron-builder.yml"),
+    `electronVersion: ${packaged}\n`,
+  );
+}
+
 describe("checkDependencyVersionPolicy", () => {
   test("allows matching React runtime manifest specifiers and lockfile versions", () => {
     const root = tempRoot();
@@ -90,6 +113,28 @@ describe("checkDependencyVersionPolicy", () => {
 
     expect(checkDependencyVersionPolicy(root)).toEqual([
       "pnpm-lock.yaml importer apps/desktop: React runtime versions must match exactly; found react@19.2.6, react-dom@19.2.5",
+    ]);
+  });
+
+  test("allows the packaged Electron runtime to match the resolved dependency", () => {
+    const root = tempRoot();
+    writeElectronReleaseInputs(root, {
+      resolved: "41.10.3",
+      packaged: "41.10.3",
+    });
+
+    expect(checkDependencyVersionPolicy(root)).toEqual([]);
+  });
+
+  test("fails when electron-builder packages a different Electron runtime", () => {
+    const root = tempRoot();
+    writeElectronReleaseInputs(root, {
+      resolved: "41.10.3",
+      packaged: "41.2.1",
+    });
+
+    expect(checkDependencyVersionPolicy(root)).toEqual([
+      "Electron runtime versions must match exactly; pnpm-lock.yaml resolves electron@41.10.3, apps/desktop/electron-builder.yml packages electron@41.2.1",
     ]);
   });
 

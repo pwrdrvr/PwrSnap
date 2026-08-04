@@ -41,11 +41,14 @@ const isMac = process.platform === "darwin";
  * Find the float-over BrowserWindow by its E2E bridge identity. The URL hash
  * is not usable as identity during cold navigation: it stays empty until the
  * renderer commits, even though setFloatOverState already synchronously
- * created and showed the native window. Returns visibility, bounds, and the
- * current renderer-side state (data-state attribute on the root host div).
+ * created and showed the native window. Native lifecycle inspection is the
+ * default: a cold renderer must not block visibility/opacity observations.
+ * Layout-sensitive callers can opt into renderer telemetry once the page is
+ * expected to be ready.
  */
 async function inspectFloatOver(
-  app: Awaited<ReturnType<typeof launchPwrSnap>>
+  app: Awaited<ReturnType<typeof launchPwrSnap>>,
+  { includeRendererInfo = false }: { includeRendererInfo?: boolean } = {}
 ): Promise<{
   exists: boolean;
   visible: boolean;
@@ -66,7 +69,7 @@ async function inspectFloatOver(
   toastCssHeight: number | null;
   dataState: string | null;
 }> {
-  return await app.electronApp.evaluate(async ({ BrowserWindow }) => {
+  return await app.electronApp.evaluate(async ({ BrowserWindow }, shouldInspectRenderer) => {
     const bridge = (
       globalThis as unknown as {
         __PWRSNAP_TEST__: { getFloatOverWindowId: () => number | null };
@@ -93,26 +96,30 @@ async function inspectFloatOver(
     try {
       // Read the renderer's [data-state] attribute on the host div.
       // Wrapped in try/catch because executeJavaScript can fail if the
-      // page hasn't loaded yet.
-      const rendererInfo = (await win.webContents.executeJavaScript(
-        `(() => {
-          const wrapper = document.querySelector('#root > div');
-          const toast = document.querySelector('.fo');
-          return {
-            dataState: document.querySelector('[data-state]')?.getAttribute('data-state') ?? null,
-            wrapperCssHeight: wrapper?.getBoundingClientRect().height ?? null,
-            toastCssHeight: toast?.getBoundingClientRect().height ?? null
-          };
-        })()`,
-        true
-      )) as {
-        dataState: string | null;
-        wrapperCssHeight: number | null;
-        toastCssHeight: number | null;
-      };
-      dataState = rendererInfo.dataState;
-      wrapperCssHeight = rendererInfo.wrapperCssHeight;
-      toastCssHeight = rendererInfo.toastCssHeight;
+      // page hasn't loaded yet. Do not even enqueue this call for native-only
+      // inspection: executeJavaScript can wait through cold navigation and
+      // starve a sub-second opacity poll of every sample on Windows.
+      if (shouldInspectRenderer) {
+        const rendererInfo = (await win.webContents.executeJavaScript(
+          `(() => {
+            const wrapper = document.querySelector('#root > div');
+            const toast = document.querySelector('.fo');
+            return {
+              dataState: document.querySelector('[data-state]')?.getAttribute('data-state') ?? null,
+              wrapperCssHeight: wrapper?.getBoundingClientRect().height ?? null,
+              toastCssHeight: toast?.getBoundingClientRect().height ?? null
+            };
+          })()`,
+          true
+        )) as {
+          dataState: string | null;
+          wrapperCssHeight: number | null;
+          toastCssHeight: number | null;
+        };
+        dataState = rendererInfo.dataState;
+        wrapperCssHeight = rendererInfo.wrapperCssHeight;
+        toastCssHeight = rendererInfo.toastCssHeight;
+      }
     } catch {
       dataState = null;
     }
@@ -128,7 +135,7 @@ async function inspectFloatOver(
       toastCssHeight,
       dataState
     };
-  });
+  }, includeRendererInfo);
 }
 
 /**
@@ -143,7 +150,7 @@ async function waitForStableFloatOverSize(
   let last: { width: number; height: number } | null = null;
   let stableSince = 0;
   while (Date.now() < deadline) {
-    const info = await inspectFloatOver(app);
+    const info = await inspectFloatOver(app, { includeRendererInfo: true });
     if (info.contentSize !== null && info.toastCssHeight !== null) {
       if (last !== null && info.contentSize.height === last.height && info.contentSize.width === last.width) {
         if (Date.now() - stableSince >= stableMs) {
@@ -273,7 +280,7 @@ test.describe("float-over visibility", () => {
       await setFloatOverState(app, { kind: "show-loaded", captureId });
       await waitForStableFloatOverSize(app);
 
-      const info = await inspectFloatOver(app);
+      const info = await inspectFloatOver(app, { includeRendererInfo: true });
       expect(info.contentSize).not.toBeNull();
       expect(info.zoomFactor).not.toBeNull();
       expect(info.wrapperCssHeight).not.toBeNull();

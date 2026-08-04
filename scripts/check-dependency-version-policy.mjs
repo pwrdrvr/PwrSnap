@@ -138,6 +138,44 @@ function checkVersionMap({ source, groupName, versions }) {
   return [`${source}: ${describeMismatch(groupName, versions)}`];
 }
 
+function checkPackagedElectronVersion(root, lockfileText) {
+  const resolvedElectron = readImporterDependencyVersions(
+    lockfileText,
+    "apps/desktop",
+    ["electron"],
+  ).get("electron");
+  if (resolvedElectron === undefined) return [];
+
+  const builderConfigPath = join(root, "apps", "desktop", "electron-builder.yml");
+  let builderConfig;
+  try {
+    builderConfig = readFileSync(builderConfigPath, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return [
+        "apps/desktop/electron-builder.yml: missing packaged Electron runtime pin",
+      ];
+    }
+    throw error;
+  }
+
+  const match = /^electronVersion:\s*([^\s#]+)/m.exec(builderConfig);
+  if (match === null) {
+    return [
+      "apps/desktop/electron-builder.yml: missing electronVersion for packaged runtime",
+    ];
+  }
+
+  const packagedElectron = normalizeLockVersion(match[1]);
+  if (packagedElectron === resolvedElectron) return [];
+
+  return [
+    "Electron runtime versions must match exactly; " +
+      `pnpm-lock.yaml resolves electron@${resolvedElectron}, ` +
+      `apps/desktop/electron-builder.yml packages electron@${packagedElectron}`,
+  ];
+}
+
 export function checkDependencyVersionPolicy(root = repoRoot) {
   const failures = [];
 
@@ -179,6 +217,8 @@ export function checkDependencyVersionPolicy(root = repoRoot) {
       }),
     );
   }
+
+  failures.push(...checkPackagedElectronVersion(root, lockfileText));
 
   return failures.sort((a, b) => a.localeCompare(b));
 }

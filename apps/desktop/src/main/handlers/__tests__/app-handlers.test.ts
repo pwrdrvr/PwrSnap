@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   showAppDocumentWindow: vi.fn(),
@@ -24,6 +24,10 @@ import { registerAppHandlers } from "../app-handlers";
 
 registerAppHandlers();
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("app:* handlers", () => {
   test("app:version returns runtime metadata", async () => {
     const result = await bus.dispatch("app:version", {}, { principal: "ipc" });
@@ -32,6 +36,28 @@ describe("app:* handlers", () => {
     if (!result.ok) throw new Error("expected ok");
     expect(result.value.version).toBe("1.0.0-test");
     expect(result.value.nodeVersion).toBe(process.versions.node);
+  });
+
+  test("app:version uses a fixed version when the E2E harness requests one", async () => {
+    vi.stubEnv("PWRSNAP_E2E", "1");
+    vi.stubEnv("PWRSNAP_E2E_APP_VERSION", "1.2.3-beta.1");
+
+    const result = await bus.dispatch("app:version", {}, { principal: "ipc" });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.version).toBe("1.2.3-beta.1");
+  });
+
+  test("app:version ignores the harness override outside E2E", async () => {
+    vi.stubEnv("PWRSNAP_E2E", "0");
+    vi.stubEnv("PWRSNAP_E2E_APP_VERSION", "1.2.3-beta.1");
+
+    const result = await bus.dispatch("app:version", {}, { principal: "ipc" });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.version).toBe("1.0.0-test");
   });
 
   test("app:readDocument reads the bundled changelog", async () => {

@@ -13,7 +13,7 @@ copyright: "Copyright © 2026 PwrDrvr LLC. All rights reserved."
 # exemptions, this is a sandboxed Quick Look provider).
 afterPack: "scripts/afterpack-sign-appex.mjs"
 
-electronVersion: 41.2.1
+electronVersion: 41.10.3
 
 asar: true
 asarUnpack:

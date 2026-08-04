@@ -22,6 +22,7 @@ const LIBRARY_WINDOW_SIZE = { width: 1280, height: 800 };
 const FIXTURE_WIDTH = 1600;
 const FIXTURE_HEIGHT = 1000;
 const VISUAL_CLOCK_TIME = "2026-08-01T12:00:00.000Z";
+const VISUAL_APP_VERSION = "1.2.3-beta.1";
 
 const FIXTURE_CAPTURES = [
   {
@@ -155,7 +156,10 @@ async function waitForFonts(page: Page): Promise<void> {
 
 async function launchVisualPwrSnap(): Promise<LaunchedApp> {
   const app = await launchPwrSnap({
-    env: { TZ: "UTC" },
+    env: {
+      TZ: "UTC",
+      PWRSNAP_E2E_APP_VERSION: VISUAL_APP_VERSION
+    },
     windowSize: LIBRARY_WINDOW_SIZE
   });
   // Library date buckets omit the year for captures in `new Date()`'s
@@ -187,6 +191,9 @@ test.describe("visual regression", () => {
       await expect(library).toHaveAttribute("data-mode", "grid");
       await expect(app.window.locator(".psl__cell")).toHaveCount(FIXTURE_CAPTURES.length);
       await waitForFonts(app.window);
+      await expect(app.window.locator(".psl__status-r b")).toHaveText(
+        `v${VISUAL_APP_VERSION}`
+      );
 
       await expect(library).toHaveScreenshot("library-grid.webp", {
         animations: "disabled",

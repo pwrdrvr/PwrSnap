@@ -34,7 +34,7 @@ test("editor-text-outline: selection outline hugs the rendered glyph", async () 
 
     // 1) Create a text annotation. The text tool turns a canvas
     //    pointerdown into a draft at that point; the draft textarea
-    //    auto-focuses, so we can type immediately. Use mixed-width
+    //    auto-focuses, so we can populate it immediately. Use mixed-width
     //    content (wide caps + lowercase) — the exact case the old
     //    char-count / fallback-font estimate mis-sized.
     await selectTool(win, "text");
@@ -47,7 +47,7 @@ test("editor-text-outline: selection outline hugs the rendered glyph", async () 
     const draft = win.locator('textarea[aria-label="Edit text annotation"]');
     await draft.waitFor({ state: "visible", timeout: 5_000 });
     const body = "Inject WWWW message yqg";
-    await win.keyboard.type(body);
+    await draft.fill(body);
     await win.keyboard.press("Enter");
 
     // 2) The committed glyph renders via TextHtml (data-testid added for

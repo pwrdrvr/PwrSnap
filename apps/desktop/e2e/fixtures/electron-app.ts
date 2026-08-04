@@ -25,7 +25,7 @@
 // when the retry passes.
 
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,6 +42,7 @@ const fixtureDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(fixtureDir, "..", "..");
 const mainEntry = path.resolve(desktopRoot, "out", "main", "index.js");
 const ELECTRON_CLOSE_TIMEOUT_MS = 5_000;
+const ELECTRON_QUIT_SCHEDULE_TIMEOUT_MS = 1_000;
 // Outer test-process bound for paint-barrier evaluate round trips. The
 // presentation callback has its own 5s timer in main, but that timer cannot
 // start when Electron's main event loop is wedged before the evaluation enters.
@@ -110,7 +111,7 @@ export const test = base.extend<{ leakedElectronAppGuard: void }>({
             )}) — force-closing it so worker teardown can't hang`
           );
           try {
-            await closeElectronApp(tracked.app, tracked.homeRoot);
+            await closeElectronApp(tracked.app);
           } finally {
             await removeHomeRoot(tracked.homeRoot);
           }
@@ -307,29 +308,32 @@ async function waitForProcessExit(
   }
 }
 
-async function closeElectronApp(app: ElectronApplication, homeRoot: string): Promise<void> {
+async function closeElectronApp(app: ElectronApplication): Promise<void> {
   const child = app.process();
-  const quitDiagnosticPath = path.join(homeRoot, "pwrsnap-e2e-quit-diagnostic.log");
-  // Playwright's ElectronApplication.close() asks Electron to `app.quit()`.
-  // That distinction matters for test fidelity: `app.quit()` emits
-  // `will-quit`, where PwrSnap disposes its windows, workers, timers, process
-  // pools, and DB.
-  // The old preflight called `app.exit(0)`, which Electron documents as an
-  // immediate exit that SKIPS `before-quit` and `will-quit`, bypassing the
-  // production cleanup path E2E should exercise. Bound the close promise from
-  // the outside instead. If the main event loop is wedged, the existing
-  // process-tree kill below still caps the teardown without needing a second
-  // main-process evaluate round-trip.
+  // Playwright 1.62 closes its BrowserContext before its Electron-specific
+  // close handler evaluates `app.quit()`. That preamble flushes tracing and
+  // page screencasts; on Windows it can stall while transient renderer pages
+  // are still alive, so Electron never receives the quit request at all.
+  //
+  // Schedule the same graceful app.quit() first, then still call and await
+  // ElectronApplication.close() so Playwright finishes its own context and
+  // transport cleanup. setImmediate lets the evaluate round-trip complete
+  // before Electron starts closing the inspector connection. This deliberately
+  // does NOT use app.exit(): PwrSnap's before-quit, normal Library close, and
+  // full will-quit cleanup all remain on the exercised path.
+  await withTimeout(
+    app.evaluate(({ app: electronApp }) => {
+      setImmediate(() => electronApp.quit());
+    }),
+    ELECTRON_QUIT_SCHEDULE_TIMEOUT_MS,
+    "scheduling graceful electron quit timed out"
+  ).catch(() => undefined);
+
   const closePromise = app.close();
   const result = await waitForClose(closePromise, ELECTRON_CLOSE_TIMEOUT_MS);
   if (result === "closed" && (await waitForProcessExit(child, 1_000))) {
     return;
   }
-
-  const quitDiagnostics = await readFile(quitDiagnosticPath, "utf8").catch(() => "");
-  const mainLog = await readFile(path.join(homeRoot, "logs", "main.log"), "utf8").catch(
-    () => ""
-  );
 
   // Every trip through here costs this spec ~6s and, before the tree-kill
   // below existed, leaked the app's helper processes into the session. If
@@ -337,8 +341,7 @@ async function closeElectronApp(app: ElectronApplication, homeRoot: string): Pro
   // reboot it (see the VM-lab troubleshooting doc).
   // eslint-disable-next-line no-console
   console.warn(
-    `[e2e-teardown] graceful close failed (close=${result}, exited=${hasExited(child)}) — force-killing pid=${child.pid ?? "?"}\n` +
-      `${quitDiagnostics}\n[e2e-main-log]\n${mainLog.slice(-12_000)}`
+    `[e2e-teardown] graceful close failed (close=${result}, exited=${hasExited(child)}) — force-killing pid=${child.pid ?? "?"}`
   );
   if (!hasExited(child)) {
     await killProcessTree(child);
@@ -540,10 +543,6 @@ async function launchPwrSnapCore(
     HOME: homeRoot,
     NODE_ENV: "production",
     PWRSNAP_E2E: "1",
-    PWRSNAP_E2E_QUIT_DIAGNOSTIC_PATH: path.join(
-      homeRoot,
-      "pwrsnap-e2e-quit-diagnostic.log"
-    ),
     // Belt-and-braces isolation: HOME alone doesn't reliably rebase
     // app.getPath('userData') under Playwright (the bundle name is
     // "Electron" not "PwrSnap" so the cached path lands at the host
@@ -628,7 +627,7 @@ async function launchPwrSnapCore(
       close: async () => {
         liveApps.delete(tracked);
         try {
-          await closeElectronApp(launchedApp, homeRoot);
+          await closeElectronApp(launchedApp);
         } finally {
           await removeHomeRoot(homeRoot);
         }
@@ -640,7 +639,7 @@ async function launchPwrSnapCore(
         if (tracked.app === electronApp) liveApps.delete(tracked);
       }
       try {
-        await closeElectronApp(electronApp, homeRoot);
+        await closeElectronApp(electronApp);
       } catch {
         // Ignore cleanup failures; preserve the original launch error.
       }

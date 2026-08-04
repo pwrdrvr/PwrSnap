@@ -2,7 +2,6 @@
 // starts the main-process CPU profiler before the rest of the bundle
 // evaluates. No-op otherwise. See startup-profiler.ts.
 import "./startup-profile-boot";
-import { appendFileSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -288,76 +287,6 @@ let pasteFromClipboardMenuItem: Electron.MenuItem | null = null;
 let localAgentMcpLifecycle: LocalAgentMcpLifecycle | null = null;
 let disposeLocalAgentMcpSettingsListener: (() => void) | null = null;
 let localAgentConsentBroker: LocalAgentConsentBroker | null = null;
-
-type ActiveNodeHandle = {
-  constructor?: { name?: string };
-  destroyed?: unknown;
-  exitCode?: unknown;
-  fd?: unknown;
-  killed?: unknown;
-  listening?: unknown;
-  pid?: unknown;
-};
-
-function installE2EQuitDiagnostics(): (event: string) => void {
-  const diagnosticPath = process.env.PWRSNAP_E2E_QUIT_DIAGNOSTIC_PATH;
-  if (!isE2E || process.platform !== "win32" || diagnosticPath === undefined) {
-    return () => undefined;
-  }
-
-  const report = (event: string): void => {
-    try {
-      const processWithDiagnostics = process as typeof process & {
-        _getActiveHandles?: () => ActiveNodeHandle[];
-        _getActiveRequests?: () => ActiveNodeHandle[];
-      };
-      const describe = (handle: ActiveNodeHandle): Record<string, unknown> => ({
-        type: handle.constructor?.name ?? "unknown",
-        ...(handle.pid !== undefined ? { pid: handle.pid } : {}),
-        ...(handle.exitCode !== undefined ? { exitCode: handle.exitCode } : {}),
-        ...(handle.killed !== undefined ? { killed: handle.killed } : {}),
-        ...(handle.listening !== undefined ? { listening: handle.listening } : {}),
-        ...(handle.destroyed !== undefined ? { destroyed: handle.destroyed } : {}),
-        ...(handle.fd !== undefined ? { fd: handle.fd } : {})
-      });
-      const windows = BrowserWindow.getAllWindows().map((window) => ({
-        id: window.id,
-        destroyed: window.isDestroyed(),
-        title: window.getTitle(),
-        visible: window.isVisible(),
-        url: window.webContents.isDestroyed() ? "<destroyed>" : window.webContents.getURL()
-      }));
-      appendFileSync(
-        diagnosticPath,
-        `${JSON.stringify({
-          event,
-          at: Date.now(),
-          windows,
-          handles: (processWithDiagnostics._getActiveHandles?.() ?? []).map(describe),
-          requests: (processWithDiagnostics._getActiveRequests?.() ?? []).map(describe)
-        })}\n`
-      );
-    } catch {
-      // Diagnostics must never alter quit behavior.
-    }
-  };
-
-  app.on("before-quit", () => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      const title = window.getTitle();
-      const url = window.webContents.isDestroyed() ? "<destroyed>" : window.webContents.getURL();
-      window.once("close", () => report(`window-close:${title}:${url}`));
-      window.once("closed", () => report(`window-closed:${title}:${url}`));
-      window.webContents.once("will-prevent-unload", () => {
-        report(`will-prevent-unload:${title}:${url}`);
-      });
-    }
-    report("before-quit:entry");
-  });
-  app.on("will-quit", () => report("will-quit:entry"));
-  app.on("quit", () => report("quit"));
-  return report;
-}
 
 /** Apply the persisted local-agent master gate without weakening RBAC. The
  * diagnostic env override remains a hard-off switch and E2E never binds the
@@ -1452,7 +1381,6 @@ export function bootstrapApp(): void {
   markStartup("main: bootstrapApp begin");
   initializeMainLogger();
   installTerminalSignalShutdown();
-  const reportE2EQuitDiagnostic = installE2EQuitDiagnostics();
   // Electron emits before-quit before it begins closing BrowserWindows. Tear
   // down persistent transient/infrastructure windows there so they cannot
   // hold the graceful quit handshake open. The returned idempotent helper is
@@ -1465,7 +1393,6 @@ export function bootstrapApp(): void {
     disposeFocusSink,
     destroyTextBakePool
   });
-  app.on("before-quit", () => reportE2EQuitDiagnostic("before-quit:after-transient"));
 
   // setName BEFORE the first app.getPath("userData") access — Electron
   // derives userData from the app name, and the role peek below reads
@@ -2468,7 +2395,6 @@ export function bootstrapApp(): void {
     // whatever this drops.
     cancelScheduledRepacks();
     closeDatabase();
-    reportE2EQuitDiagnostic("will-quit:after-cleanup");
   });
 }
 

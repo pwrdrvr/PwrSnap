@@ -245,8 +245,10 @@ jobs:
         # windows-latest provides an interactive desktop session, so (unlike the
         # Linux job) no xvfb is needed. macOS-only specs self-skip via
         # `test.skip(!isMac)`; this verifies the cross-platform specs and, as the
-        # GUI surfaces get ported, the newly un-skipped Windows specs.
-        run: pnpm run test:desktop-e2e
+        # GUI surfaces get ported, the newly un-skipped Windows specs. The
+        # Windows launcher keeps Playwright's UTF-8 output out of PowerShell's
+        # legacy native-output decoding pipeline.
+        run: pnpm run test:desktop-e2e:windows
 
       - name: Upload desktop Playwright artifacts
         uses: actions/upload-artifact@v7

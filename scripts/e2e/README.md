@@ -53,6 +53,36 @@ Use this harness for GHA/Linux/xvfb parity and flake reproduction. Use native
 macOS E2Es when validating pasteboard, tray, menu-bar, screen-capture, or other
 AppKit-facing behavior.
 
+## Windows launcher and UTF-8 logs
+
+Run the suite on Windows through the repository-owned launcher:
+
+```powershell
+pnpm run test:desktop-e2e:windows
+
+# Optional durable log (relative paths resolve from the repository root).
+.\scripts\e2e\run-windows.ps1 -LogPath C:\PwrLab\logs\pwrsnap-e2e.log
+```
+
+Do not pipe `pnpm.cmd` through `ForEach-Object`, `Tee-Object`, or another
+Windows PowerShell 5.1 pipeline to capture the log. Node and Playwright emit
+UTF-8, while Windows PowerShell 5.1 can decode native stdout with the active
+legacy console code page. UTF-8 bytes for `✓` and `›` then become mojibake such
+as `Γ£ô` and `ΓÇ║` before `Tee-Object` ever writes the file.
+
+`run-windows.ps1` sets the console and native-pipeline encodings to UTF-8, then
+keeps Playwright output out of the PowerShell object pipeline. Its Node helper
+decodes stdout/stderr explicitly as UTF-8, mirrors it live, and writes
+`-LogPath` as BOM-free UTF-8. It also sets `CI=1` and disables ANSI color for
+this redirected Windows path only; the Playwright `list` reporter and its
+Unicode status/separator glyphs remain unchanged.
+
+PowerShell 7 defaults text output to BOM-free UTF-8 and is less likely to show
+the original corruption, but use the same launcher under both PowerShell 5.1
+and 7 so console output, logs, reporter selection, and exit-code propagation
+stay identical. External VM/lab wrappers should invoke this script directly
+and let `-LogPath` perform the tee instead of adding an outer pipeline.
+
 ## Layout
 
 - `Dockerfile.e2e` — Linux image. Bookworm base, Node 24.14.1

@@ -98,6 +98,7 @@ type Checkpoints = {
   isVisible: number | null;
   firstResize: number | null;
   stableResize: number | null;
+  resizeApplied: number | null;
   finalContentHeight: number | null;
   requestedContentHeight: number | null;
   mainReportedContentHeight: number | null;
@@ -286,6 +287,7 @@ test.describe("tray popover first-paint baseline", () => {
               `isVisible=${fmt(result.isVisible)} ` +
               `firstResize=${fmt(result.firstResize)} ` +
               `stableResize=${fmt(result.stableResize)} ` +
+              `resizeApplied=${fmt(result.resizeApplied)} ` +
               `resizeCount=${result.resizeCount} ` +
               `rendererHeight=${result.finalContentHeight ?? "—"} ` +
               `requestedHeight=${result.requestedContentHeight ?? "—"} ` +
@@ -311,7 +313,8 @@ test.describe("tray popover first-paint baseline", () => {
         "readyToShow",
         "isVisible",
         "firstResize",
-        "stableResize"
+        "stableResize",
+        "resizeApplied"
       ] as const) {
         // eslint-disable-next-line no-console
         console.log(summarize(key, pick(key)));

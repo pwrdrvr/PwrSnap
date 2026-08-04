@@ -38,10 +38,11 @@ import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 const isMac = process.platform === "darwin";
 
 /**
- * Find the float-over BrowserWindow by URL hash. Returns its visibility,
- * bounds, and current renderer-side state (data-state attribute on the
- * root host div). Returns null when the float-over hasn't been created
- * yet (before the first show-idle/show-loaded).
+ * Find the float-over BrowserWindow by its E2E bridge identity. The URL hash
+ * is not usable as identity during cold navigation: it stays empty until the
+ * renderer commits, even though setFloatOverState already synchronously
+ * created and showed the native window. Returns visibility, bounds, and the
+ * current renderer-side state (data-state attribute on the root host div).
  */
 async function inspectFloatOver(
   app: Awaited<ReturnType<typeof launchPwrSnap>>
@@ -66,10 +67,14 @@ async function inspectFloatOver(
   dataState: string | null;
 }> {
   return await app.electronApp.evaluate(async ({ BrowserWindow }) => {
-    const win = BrowserWindow.getAllWindows().find((w) =>
-      !w.isDestroyed() && w.webContents.getURL().includes("stage=float-over")
-    );
-    if (win === undefined) {
+    const bridge = (
+      globalThis as unknown as {
+        __PWRSNAP_TEST__: { getFloatOverWindowId: () => number | null };
+      }
+    ).__PWRSNAP_TEST__;
+    const windowId = bridge.getFloatOverWindowId();
+    const win = windowId === null ? null : BrowserWindow.fromId(windowId);
+    if (win === null || win.isDestroyed()) {
       return {
         exists: false,
         visible: false,

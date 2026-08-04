@@ -558,6 +558,18 @@ export function dismissFloatOver(): void {
 }
 
 /**
+ * E2E-only identity hook for the persistent float-over singleton. The window's
+ * URL is empty while its first navigation is still committing, so locating it
+ * by `stage=float-over` makes a synchronous show look nonexistent on a cold
+ * Windows renderer. Returning the BrowserWindow id lets the spec inspect the
+ * window that setFloatOverState created immediately, without changing the
+ * production visibility choreography.
+ */
+export function getFloatOverWindowIdForE2E(): number | null {
+  return singleton !== null && !singleton.isDestroyed() ? singleton.id : null;
+}
+
+/**
  * Destroy and fully reset the persistent float-over singleton. Safe to call
  * repeatedly from before-quit and will-quit.
  */

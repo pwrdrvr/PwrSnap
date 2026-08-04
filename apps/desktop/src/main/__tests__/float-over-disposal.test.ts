@@ -5,10 +5,11 @@ type ClosedListener = () => void;
 const mocks = vi.hoisted(() => {
   const windows: Array<ReturnType<typeof createWindow>> = [];
 
-  function createWindow() {
+  function createWindow(id: number) {
     let destroyed = false;
     let closedListener: ClosedListener | null = null;
     return {
+      id,
       destroy: vi.fn(() => {
         if (destroyed) return;
         destroyed = true;
@@ -43,7 +44,7 @@ const mocks = vi.hoisted(() => {
 
   return {
     createFloatOverWindow: vi.fn(() => {
-      const window = createWindow();
+      const window = createWindow(windows.length + 1);
       windows.push(window);
       return window;
     }),
@@ -87,6 +88,7 @@ vi.mock("../log", () => ({
 
 import {
   disposeFloatOver,
+  getFloatOverWindowIdForE2E,
   getFloatOverState,
   setFloatOverState
 } from "../float-over";
@@ -137,12 +139,15 @@ describe("disposeFloatOver", () => {
   it("can create and wire a fresh singleton after disposal", () => {
     setFloatOverState({ kind: "show-idle" });
     const first = mocks.windows[0]!;
+    expect(getFloatOverWindowIdForE2E()).toBe(1);
     disposeFloatOver();
+    expect(getFloatOverWindowIdForE2E()).toBeNull();
     setFloatOverState({ kind: "show-idle" });
 
     expect(first.destroy).toHaveBeenCalledTimes(1);
     expect(mocks.createFloatOverWindow).toHaveBeenCalledTimes(2);
     expect(mocks.ipcMain.on).toHaveBeenCalledTimes(2);
     expect(getFloatOverState()).toEqual({ kind: "idle" });
+    expect(getFloatOverWindowIdForE2E()).toBe(2);
   });
 });

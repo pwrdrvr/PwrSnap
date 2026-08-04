@@ -42,6 +42,11 @@ const fixtureDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(fixtureDir, "..", "..");
 const mainEntry = path.resolve(desktopRoot, "out", "main", "index.js");
 const ELECTRON_CLOSE_TIMEOUT_MS = 5_000;
+// Outer test-process bound for paint-barrier evaluate round trips. The
+// presentation callback has its own 5s timer in main, but that timer cannot
+// start when Electron's main event loop is wedged before the evaluation enters.
+// Keep enough headroom for the in-main diagnostic timeout to fire first.
+const PAINT_BARRIER_MAIN_TIMEOUT_MS = 10_000;
 // Bound on a single command-bus `dispatch` round-trip. A healthy command
 // resolves in milliseconds (the heaviest spec dispatch — region capture,
 // clipboard image encode, codex discovery — is a couple seconds at worst
@@ -367,6 +372,107 @@ async function waitForLibraryWindow(app: ElectronApplication): Promise<Page> {
   throw new Error("library window never appeared (only region selectors found)");
 }
 
+/**
+ * Wait until a renderer frame produced after the current layout has actually
+ * been presented by Chromium.
+ *
+ * Renderer dimensions and even two requestAnimationFrame callbacks are not a
+ * presentation barrier. On macOS, capturePage can still return the pre-resize
+ * surface after all of those signals agree with the target geometry. Electron's
+ * frame subscription is driven by presentation events, so subscribe, invalidate
+ * once, then invalidate again from the first callback and require the second
+ * presentation before allowing screenshot-sensitive assertions to continue.
+ */
+export async function waitForLibraryWindowPaint(
+  app: ElectronApplication,
+  window: Page
+): Promise<void> {
+  await expect
+    .poll(
+      async () =>
+        withTimeout(
+          app.evaluate(({ BrowserWindow }) => {
+            const win = BrowserWindow.getAllWindows().find((candidate) => {
+              if (candidate.isDestroyed()) return false;
+              const url = candidate.webContents.getURL();
+              return url.includes("/renderer/index.html") && !url.includes("stage=");
+            });
+            return win?.isVisible() ?? false;
+          }),
+          PAINT_BARRIER_MAIN_TIMEOUT_MS,
+          `library visibility evaluate timed out after ${PAINT_BARRIER_MAIN_TIMEOUT_MS}ms ` +
+            "(main process unresponsive?)"
+        ),
+      { timeout: 15_000 }
+    )
+    .toBe(true);
+
+  // Establish that layout work scheduled by the resize has run before asking
+  // Chromium to present a fresh frame. This alone is insufficient (see above),
+  // but it prevents the forced repaint from racing a queued renderer layout.
+  await window.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      })
+  );
+
+  const paintBarrier = app.evaluate(async ({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find((candidate) => {
+      if (candidate.isDestroyed()) return false;
+      const url = candidate.webContents.getURL();
+      return url.includes("/renderer/index.html") && !url.includes("stage=");
+    });
+    if (win === undefined) throw new Error("library BrowserWindow missing before paint barrier");
+
+    const { webContents } = win;
+    await new Promise<void>((resolve, reject) => {
+      let presentationCount = 0;
+      const frameSizes: Array<{ width: number; height: number }> = [];
+      let settled = false;
+
+      const finish = (error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (!webContents.isDestroyed()) webContents.endFrameSubscription();
+        if (error === undefined) resolve();
+        else reject(error);
+      };
+
+      const timeout = setTimeout(() => {
+        finish(
+          new Error(
+            `library compositor did not present two frames after invalidate; ` +
+              `presentations=${presentationCount} frameSizes=${JSON.stringify(frameSizes)}`
+          )
+        );
+      }, 5_000);
+
+      webContents.beginFrameSubscription(false, (image) => {
+        if (settled) return;
+        presentationCount += 1;
+        frameSizes.push(image.getSize());
+        if (presentationCount === 1) {
+          // The first callback may be a presentation already queued before
+          // subscription. Invalidate from inside it so the second callback is
+          // causally downstream of a repaint requested by this barrier.
+          webContents.invalidate();
+          return;
+        }
+        finish();
+      });
+      webContents.invalidate();
+    });
+  });
+  await withTimeout(
+    paintBarrier,
+    PAINT_BARRIER_MAIN_TIMEOUT_MS,
+    `library paint-barrier evaluate timed out after ${PAINT_BARRIER_MAIN_TIMEOUT_MS}ms ` +
+      "(main process unresponsive?)"
+  );
+}
+
 export type LaunchedApp = {
   electronApp: ElectronApplication;
   /** The library/main window — first window opened on boot. */
@@ -598,6 +704,8 @@ export async function launchPwrSnap(
           }));
         }, { timeout: 15_000 })
         .toMatchObject({ innerWidth: size.width, innerHeight: size.height });
+
+      await waitForLibraryWindowPaint(core.electronApp, window);
     }
 
     return { ...core, window };

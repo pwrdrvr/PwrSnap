@@ -34,11 +34,12 @@ import {
   shouldConsiderRaisingOurWindows
 } from "./capture/source-app";
 import { getAppIconPath } from "./app-icons/app-icon-cache";
-import { setFloatOverState } from "./float-over";
+import { disposeFloatOver, setFloatOverState } from "./float-over";
 import { bus } from "./command-bus";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 import { installDevelopmentDockIcon } from "./development-dock-icon";
 import { installTerminalSignalShutdown } from "./terminal-signal-shutdown";
+import { installTransientWindowTeardown } from "./transient-window-teardown";
 // (showFloatOverForCapture is no longer called from the bootstrap;
 // the capture-handlers `capture:interactive` now drives the entire
 // float-over lifecycle. Kept as an export from float-over.ts for the
@@ -1380,6 +1381,18 @@ export function bootstrapApp(): void {
   markStartup("main: bootstrapApp begin");
   initializeMainLogger();
   installTerminalSignalShutdown();
+  // Electron emits before-quit before it begins closing BrowserWindows. Tear
+  // down persistent transient/infrastructure windows there so they cannot
+  // hold the graceful quit handshake open. The returned idempotent helper is
+  // called again from will-quit as defense in depth. The Library is
+  // intentionally not part of this list and follows Electron's normal close.
+  const disposeTransientWindows = installTransientWindowTeardown(app, {
+    disposeTray,
+    disposeFloatOver,
+    disposeRegionSelector,
+    disposeFocusSink,
+    destroyTextBakePool
+  });
 
   // setName BEFORE the first app.getPath("userData") access — Electron
   // derives userData from the app name, and the role peek below reads
@@ -2350,9 +2363,7 @@ export function bootstrapApp(): void {
     // combined/library roles (nothing was ever spawned).
     stopLibraryProcess();
     disposeCodexProfileHandlers();
-    disposeRegionSelector();
-    disposeTray();
-    disposeFocusSink();
+    disposeTransientWindows();
     disposeIpcDispatcher();
     // Close the ACP chat MCP tool-RPC server + remove its socket file. No-op
     // when the bridge never started (no ACP chat used this run).
@@ -2378,13 +2389,6 @@ export function bootstrapApp(): void {
     // rejected and the worker terminated on our terms, rather than the
     // thread being reaped mid-event when the process exits.
     shutdownCompositeThumbnailWorker();
-    // Destroy the hidden text-bake BrowserWindow pool. Without this,
-    // an undead hidden window can keep the app process alive past
-    // `will-quit`, which surfaces in Playwright E2E as "Worker
-    // teardown timeout of 30000ms exceeded" after the spawned
-    // Electron handle's `app.close()` returns but the OS process
-    // hasn't actually exited.
-    destroyTextBakePool();
     // Cancel pending debounced re-packs BEFORE the DB closes — a
     // repack timer firing post-close throws uncaught from
     // getCaptureById. Next boot's edits_version check re-packs

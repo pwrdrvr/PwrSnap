@@ -288,8 +288,8 @@ export async function rasterizeTextHtmlForV2(
 }
 
 /** Shutdown + test hook — destroys the pool window. Wired into
- *  `app.on("will-quit")` so the hidden pool BrowserWindow doesn't
- *  keep the process alive past Electron's quit handshake. Without
+ *  `app.on("before-quit")` so the hidden pool BrowserWindow is gone
+ *  before Electron begins its normal window-close pass. Without
  *  this, Playwright's `electronApp.close()` returns but the OS
  *  process lingers, surfacing as "Worker teardown timeout" on CI.
  *
@@ -300,9 +300,9 @@ export async function rasterizeTextHtmlForV2(
  *      async chain can race with app exit.
  *    • `destroy()` is synchronous and unconditional — the window
  *      is gone the moment this returns.
- *  Also pulls the in-flight queue tail to a fresh Promise so a
- *  re-bake in the same process (test teardown → re-init) starts
- *  with a clean slate. */
+ *  Also called defensively from `will-quit`, and resets the in-flight
+ *  queue tail so a re-bake in the same process (test teardown → re-init)
+ *  starts with a clean slate. */
 export function destroyTextBakePool(): void {
   if (poolWindow !== null && !poolWindow.isDestroyed()) {
     poolWindow.destroy();

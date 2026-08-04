@@ -42,6 +42,7 @@ const fixtureDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(fixtureDir, "..", "..");
 const mainEntry = path.resolve(desktopRoot, "out", "main", "index.js");
 const ELECTRON_CLOSE_TIMEOUT_MS = 5_000;
+const ELECTRON_QUIT_SCHEDULE_TIMEOUT_MS = 1_000;
 // Outer test-process bound for paint-barrier evaluate round trips. The
 // presentation callback has its own 5s timer in main, but that timer cannot
 // start when Electron's main event loop is wedged before the evaluation enters.
@@ -309,19 +310,30 @@ async function waitForProcessExit(
 
 async function closeElectronApp(app: ElectronApplication): Promise<void> {
   const child = app.process();
-  // Playwright's ElectronApplication.close() asks Electron to `app.quit()`.
-  // That distinction matters for test fidelity: `app.quit()` emits
-  // `will-quit`, where PwrSnap disposes its windows, workers, timers, process
-  // pools, and DB.
-  // The old preflight called `app.exit(0)`, which Electron documents as an
-  // immediate exit that SKIPS `before-quit` and `will-quit`, bypassing the
-  // production cleanup path E2E should exercise. Bound the close promise from
-  // the outside instead. If the main event loop is wedged, the existing
-  // process-tree kill below still caps the teardown without needing a second
-  // main-process evaluate round-trip.
+  // Playwright 1.62 closes its BrowserContext before its Electron-specific
+  // close handler evaluates `app.quit()`. That preamble flushes tracing and
+  // page screencasts; on Windows it can stall while transient renderer pages
+  // are still alive, so Electron never receives the quit request at all.
+  //
+  // Schedule the same graceful app.quit() first, then still call and await
+  // ElectronApplication.close() so Playwright finishes its own context and
+  // transport cleanup. setImmediate lets the evaluate round-trip complete
+  // before Electron starts closing the inspector connection. This deliberately
+  // does NOT use app.exit(): PwrSnap's before-quit, normal Library close, and
+  // full will-quit cleanup all remain on the exercised path.
+  await withTimeout(
+    app.evaluate(({ app: electronApp }) => {
+      setImmediate(() => electronApp.quit());
+    }),
+    ELECTRON_QUIT_SCHEDULE_TIMEOUT_MS,
+    "scheduling graceful electron quit timed out"
+  ).catch(() => undefined);
+
   const closePromise = app.close();
   const result = await waitForClose(closePromise, ELECTRON_CLOSE_TIMEOUT_MS);
-  if (result === "closed" && (await waitForProcessExit(child, 1_000))) return;
+  if (result === "closed" && (await waitForProcessExit(child, 1_000))) {
+    return;
+  }
 
   // Every trip through here costs this spec ~6s and, before the tree-kill
   // below existed, leaked the app's helper processes into the session. If

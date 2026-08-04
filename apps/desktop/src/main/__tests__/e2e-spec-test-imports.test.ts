@@ -74,7 +74,7 @@ describe("e2e spec imports", () => {
 });
 
 describe("e2e Electron teardown", () => {
-  it("does not bypass PwrSnap's will-quit cleanup with app.exit", () => {
+  it("starts graceful app.quit before Playwright close and never uses app.exit", () => {
     const source = readFileSync(electronFixturePath, "utf8");
     const closeStart = source.indexOf("async function closeElectronApp(");
     const nextSection = source.indexOf("\n/**", closeStart);
@@ -83,6 +83,11 @@ describe("e2e Electron teardown", () => {
     expect(nextSection).toBeGreaterThan(closeStart);
 
     const closeSource = source.slice(closeStart, nextSection);
+    const quitIndex = closeSource.indexOf("setImmediate(() => electronApp.quit())");
+    const closeIndex = closeSource.indexOf("const closePromise = app.close()");
+
+    expect(quitIndex).toBeGreaterThanOrEqual(0);
+    expect(closeIndex).toBeGreaterThan(quitIndex);
     expect(closeSource).toContain("const closePromise = app.close()");
     expect(closeSource).not.toMatch(/electronApp\.exit\s*\(/);
   });

@@ -310,35 +310,6 @@ async function waitForProcessExit(
 async function closeElectronApp(app: ElectronApplication, homeRoot: string): Promise<void> {
   const child = app.process();
   const quitDiagnosticPath = path.join(homeRoot, "pwrsnap-e2e-quit-diagnostic.log");
-  if (process.platform === "win32") {
-    await withTimeout(
-      app.evaluate(({ app: electronApp, BrowserWindow }, diagnosticPath: string) => {
-        const fs = process.getBuiltinModule("node:fs");
-        const report = (event: string): void => {
-          const windows = BrowserWindow.getAllWindows().map((window) => ({
-            destroyed: window.isDestroyed(),
-            title: window.getTitle(),
-            url: window.webContents.isDestroyed() ? "<destroyed>" : window.webContents.getURL()
-          }));
-          fs.appendFileSync(
-            diagnosticPath,
-            `[e2e-quit-diagnostic] event=${event} at=${String(Date.now())} windows=${JSON.stringify(windows)}\n`
-          );
-        };
-        for (const window of BrowserWindow.getAllWindows()) {
-          const title = window.getTitle();
-          const url = window.webContents.isDestroyed() ? "<destroyed>" : window.webContents.getURL();
-          window.once("close", () => report(`window-close:${title}:${url}`));
-          window.once("closed", () => report(`window-closed:${title}:${url}`));
-        }
-        electronApp.once("before-quit", () => report("before-quit-after-app-handler"));
-        electronApp.once("will-quit", () => report("will-quit-after-app-handler"));
-        electronApp.once("quit", () => report("quit"));
-      }, quitDiagnosticPath),
-      1_000,
-      "installing E2E quit diagnostics timed out"
-    ).catch(() => undefined);
-  }
   // Playwright's ElectronApplication.close() asks Electron to `app.quit()`.
   // That distinction matters for test fidelity: `app.quit()` emits
   // `will-quit`, where PwrSnap disposes its windows, workers, timers, process
@@ -356,6 +327,9 @@ async function closeElectronApp(app: ElectronApplication, homeRoot: string): Pro
   }
 
   const quitDiagnostics = await readFile(quitDiagnosticPath, "utf8").catch(() => "");
+  const mainLog = await readFile(path.join(homeRoot, "logs", "main.log"), "utf8").catch(
+    () => ""
+  );
 
   // Every trip through here costs this spec ~6s and, before the tree-kill
   // below existed, leaked the app's helper processes into the session. If
@@ -363,7 +337,8 @@ async function closeElectronApp(app: ElectronApplication, homeRoot: string): Pro
   // reboot it (see the VM-lab troubleshooting doc).
   // eslint-disable-next-line no-console
   console.warn(
-    `[e2e-teardown] graceful close failed (close=${result}, exited=${hasExited(child)}) — force-killing pid=${child.pid ?? "?"}\n${quitDiagnostics}`
+    `[e2e-teardown] graceful close failed (close=${result}, exited=${hasExited(child)}) — force-killing pid=${child.pid ?? "?"}\n` +
+      `${quitDiagnostics}\n[e2e-main-log]\n${mainLog.slice(-12_000)}`
   );
   if (!hasExited(child)) {
     await killProcessTree(child);
@@ -565,6 +540,10 @@ async function launchPwrSnapCore(
     HOME: homeRoot,
     NODE_ENV: "production",
     PWRSNAP_E2E: "1",
+    PWRSNAP_E2E_QUIT_DIAGNOSTIC_PATH: path.join(
+      homeRoot,
+      "pwrsnap-e2e-quit-diagnostic.log"
+    ),
     // Belt-and-braces isolation: HOME alone doesn't reliably rebase
     // app.getPath('userData') under Playwright (the bundle name is
     // "Electron" not "PwrSnap" so the cached path lands at the host

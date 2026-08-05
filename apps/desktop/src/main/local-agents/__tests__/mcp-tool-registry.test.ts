@@ -209,7 +209,6 @@ describe("createDefaultLocalAgentMcpTools", () => {
       captureResource: noop,
       captureExport: noop,
       imageEditSend: noop,
-      imageEditStatus: noop,
       sizzleCreate: noop,
       sizzleSend: noop,
       sizzleStatus: noop,
@@ -224,7 +223,6 @@ describe("createDefaultLocalAgentMcpTools", () => {
       "pwrsnap_capture_resource",
       "pwrsnap_capture_export",
       "pwrsnap_image_edit_send",
-      "pwrsnap_image_edit_status",
       "pwrsnap_sizzle_create",
       "pwrsnap_sizzle_send",
       "pwrsnap_sizzle_status",
@@ -258,10 +256,17 @@ describe("createDefaultLocalAgentMcpTools", () => {
       tools.find((tool) => tool.name === "pwrsnap_image_edit_send")
         ?.requiredCapabilities
     ).toEqual(["capture.edit", "capture.composite.read"]);
-    expect(
-      tools.find((tool) => tool.name === "pwrsnap_image_edit_status")
-        ?.requiredCapabilities
-    ).toEqual(["capture.edit"]);
+    const imageEdit = tools.find((tool) => tool.name === "pwrsnap_image_edit_send");
+    expect(imageEdit?.requiredCapabilitiesForInput?.({
+      captureId: "cap_1",
+      instruction: "crop tighter",
+      returnImage: true
+    })).toEqual(["capture.edit", "capture.composite.read", "capture.export"]);
+    expect(imageEdit?.requiredCapabilitiesForInput?.({
+      captureId: "cap_1",
+      instructions: ["crop tighter", "add an arrow"],
+      returnImage: false
+    })).toEqual(["capture.edit", "capture.composite.read"]);
   });
 
   test("annotations distinguish reads, artifact creation, AI access, and Trash", () => {
@@ -274,7 +279,6 @@ describe("createDefaultLocalAgentMcpTools", () => {
       captureResource: noop,
       captureExport: noop,
       imageEditSend: noop,
-      imageEditStatus: noop,
       sizzleCreate: noop,
       sizzleSend: noop,
       sizzleStatus: noop,

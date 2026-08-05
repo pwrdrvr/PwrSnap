@@ -789,6 +789,8 @@ export type LocalAgentConsentPrompt = {
   /** Editable user-owned label for the durable authorization session. */
   suggestedSessionName: string;
   permissions: LocalAgentConsentPermission[];
+  /** Existing RBAC roles whose permissions fit inside the OAuth request. */
+  roles: LocalAgentRoleProfile[];
 };
 
 /** Public OAuth client metadata retained with an approved local-agent grant.
@@ -3466,7 +3468,9 @@ export type Commands = {
       requestId: string;
       decision: "allow" | "deny";
       sessionName: string;
+      roleId: string | null;
       capabilities: LocalAgentCapability[];
+      maxCaptureAgeDays?: number | null;
     };
     res: void;
   };
@@ -3894,6 +3898,12 @@ export type Commands = {
       anchorCaptureId?: string | null;
     };
     res: { turnId: string };
+  };
+  /** Wait inside PwrSnap for the active turn to finish. This keeps MCP callers
+   *  from paying for repeated model turns merely to poll edit status. */
+  "codex:libraryChat:wait": {
+    req: { threadId: string; timeoutMs?: number };
+    res: { thread: LibraryChatThreadView; messages: ChatMessage[] };
   };
   /** Full message history for a thread (read on open / re-subscribe). */
   "codex:libraryChat:history": {

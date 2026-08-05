@@ -52,6 +52,7 @@ export function localAgentCommandRequirement(
     case "codex:libraryChat:create":
     case "codex:libraryChat:list":
     case "codex:libraryChat:send":
+    case "codex:libraryChat:wait":
     case "codex:libraryChat:history":
     case "codex:libraryChat:rename":
     case "codex:libraryChat:archive":

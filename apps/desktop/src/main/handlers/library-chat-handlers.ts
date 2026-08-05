@@ -336,6 +336,41 @@ export function registerLibraryChatHandlers(params?: {
     }
   });
 
+  bus.register("codex:libraryChat:wait", async (req, ctx) => {
+    const timeoutMs = Math.min(Math.max(req.timeoutMs ?? 600_000, 1_000), 600_000);
+    const deadline = Date.now() + timeoutMs;
+    try {
+      const config = await configForThread(req.threadId);
+      const c = await controllerFor(config);
+      while (true) {
+        if (ctx.signal.aborted) {
+          return aiError("edit_cancelled", "The image-edit request was cancelled.");
+        }
+        const thread = (await c.listThreads({ includeArchived: true }))
+          .find((candidate) => candidate.threadId === req.threadId);
+        if (thread === undefined) {
+          return aiError("thread_not_found", "This chat thread could not be reopened.");
+        }
+        if (thread.status.kind === "idle") {
+          const messages = await c.getHistory(req.threadId);
+          return ok({
+            thread: toLibraryThreadView(thread, config),
+            messages: messages.map(toChatMessage)
+          });
+        }
+        if (Date.now() >= deadline) {
+          return aiError(
+            "edit_timeout",
+            "The PwrSnap image edit did not finish within 10 minutes."
+          );
+        }
+        await waitForTurnProgress(ctx.signal);
+      }
+    } catch (cause) {
+      return codexUnreachable(cause);
+    }
+  });
+
   bus.register("codex:libraryChat:history", async (req) => {
     try {
       const c = await controllerFor(await configForThread(req.threadId));
@@ -391,6 +426,19 @@ export function registerLibraryChatHandlers(params?: {
     } catch (cause) {
       return codexUnreachable(cause);
     }
+  });
+}
+
+async function waitForTurnProgress(signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(finish, 200);
+    const onAbort = (): void => finish();
+    function finish(): void {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 

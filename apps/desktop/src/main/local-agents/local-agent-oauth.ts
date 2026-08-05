@@ -25,7 +25,10 @@ import {
   LOCAL_AGENT_CAPABILITIES,
   isLocalAgentCapability
 } from "@pwrsnap/shared";
-import type { LocalAgentGrantService } from "./local-agent-grants";
+import {
+  LocalAgentGrantError,
+  type LocalAgentGrantService
+} from "./local-agent-grants";
 
 const AUTHORIZATION_CODE_TTL_MS = 5 * 60 * 1_000;
 const CONSENT_TRANSACTION_TTL_MS = 5 * 60 * 1_000;
@@ -46,7 +49,9 @@ type AuthorizationCodeRecord = {
   client: OAuthClientInformationFull;
   params: AuthorizationParams;
   sessionName: string;
+  roleId: string | null;
   capabilities: LocalAgentCapability[];
+  maxCaptureAgeDays?: number | null;
   expiresAtMs: number;
 };
 
@@ -61,7 +66,9 @@ export type LocalAgentAuthorizationGrant = {
   client: OAuthClientInformationFull;
   params: AuthorizationParams;
   sessionName: string;
+  roleId?: string | null;
   capabilities: readonly LocalAgentCapability[];
+  maxCaptureAgeDays?: number | null;
 };
 
 export type LocalAgentAuthorizationResult =
@@ -289,7 +296,9 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
     transactionId: string;
     decision: string;
     sessionName: string;
+    roleId: string | null;
     capabilities: readonly string[];
+    maxCaptureAgeDays?: number | null;
   }): LocalAgentAuthorizationResult {
     this.pruneConsents();
     const transaction = this.consents.get(input.transactionId);
@@ -325,11 +334,36 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
     if (capabilities.length === 0) {
       return oauthError(400, "invalid_scope", "Select at least one PwrSnap permission");
     }
+    if (
+      capabilities.some(
+        (capability) => !transaction.requestedCapabilities.includes(capability)
+      )
+    ) {
+      return oauthError(
+        400,
+        "invalid_scope",
+        "Approval cannot grant permissions the MCP client did not request"
+      );
+    }
+    if (
+      input.roleId === null &&
+      !isValidCaptureAge(input.maxCaptureAgeDays)
+    ) {
+      return oauthError(
+        400,
+        "invalid_request",
+        "Custom access requires a valid capture-history limit"
+      );
+    }
     const code = this.createAuthorizationCode({
       client: transaction.client,
       params: transaction.params,
       sessionName,
-      capabilities
+      roleId: input.roleId,
+      capabilities,
+      ...(input.roleId === null
+        ? { maxCaptureAgeDays: input.maxCaptureAgeDays }
+        : {})
     });
     const callback = new URL(transaction.params.redirectUri);
     callback.searchParams.set("code", code);
@@ -369,7 +403,11 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
       client: grant.client,
       params: grant.params,
       sessionName: grant.sessionName,
+      roleId: grant.roleId ?? null,
       capabilities: [...grant.capabilities],
+      ...(grant.maxCaptureAgeDays !== undefined
+        ? { maxCaptureAgeDays: grant.maxCaptureAgeDays }
+        : {}),
       expiresAtMs: this.now().getTime() + AUTHORIZATION_CODE_TTL_MS
     });
     return code;
@@ -399,11 +437,24 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
       throw new InvalidTargetError("resource does not match the authorization request");
     }
     this.codes.delete(authorizationCode);
-    const issued = await this.grantService.issueOAuthGrant({
-      name: record.sessionName,
-      capabilities: record.capabilities,
-      oauthClient: oauthClientToStored(client, this.now())
-    });
+    const issued = await this.grantService
+      .issueOAuthGrant({
+        name: record.sessionName,
+        capabilities: record.capabilities,
+        roleId: record.roleId,
+        ...(record.maxCaptureAgeDays !== undefined
+          ? { maxCaptureAgeDays: record.maxCaptureAgeDays }
+          : {}),
+        oauthClient: oauthClientToStored(client, this.now())
+      })
+      .catch((cause: unknown) => {
+        if (cause instanceof LocalAgentGrantError && cause.code === "duplicate_name") {
+          throw new InvalidGrantError(
+            `${cause.message}. Return to PwrSnap and use a unique Session Name.`
+          );
+        }
+        throw cause;
+      });
     return {
       access_token: `${issued.grant.id}:${issued.token}`,
       token_type: "bearer",
@@ -484,6 +535,15 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
       if (record.expiresAtMs <= now) this.consents.delete(transactionId);
     }
   }
+}
+
+function isValidCaptureAge(value: unknown): value is number | null {
+  return value === null || (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= 36_500
+  );
 }
 
 function oauthClientToStored(

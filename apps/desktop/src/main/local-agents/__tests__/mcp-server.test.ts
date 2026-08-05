@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { err, ok, type LocalAgentCapability } from "@pwrsnap/shared";
@@ -367,7 +368,9 @@ async function approveAndExchange(
   consentDecisions.push({
     decision: "allow",
     sessionName: oauthClient.client_name,
-    capabilities
+    roleId: null,
+    capabilities,
+    maxCaptureAgeDays: 7
   });
   const authorizationUrl = makeAuthorizationUrl(
     address,
@@ -900,7 +903,7 @@ describe("LocalAgentMcpServer", () => {
     expect(oauthClient.token_endpoint_auth_method).toBe("none");
     expect(oauthClient).not.toHaveProperty("client_secret");
 
-    consentDecisions.push({ decision: "deny", sessionName: "", capabilities: [] });
+    consentDecisions.push({ decision: "deny", sessionName: "", roleId: null, capabilities: [] });
     const defaultStatusUrl = await beginBrowserAuthorization(
       address,
       makeAuthorizationUrl(address, oauthClient)
@@ -917,7 +920,7 @@ describe("LocalAgentMcpServer", () => {
       address,
       oauthClient,
       ["library.read", "trash.write"],
-      ["library.read"]
+      ["library.read", "trash.write"]
     );
     const grants = await grantService.list();
     expect(grants).toHaveLength(1);
@@ -930,7 +933,10 @@ describe("LocalAgentMcpServer", () => {
         redirectUris: [OAUTH_CALLBACK]
       }
     });
-    expect(consentRequests.at(-1)?.requestedCapabilities).toEqual(["library.read"]);
+    expect(consentRequests.at(-1)?.requestedCapabilities).toEqual([
+      "library.read",
+      "trash.write"
+    ]);
 
     client = await connectWithAccessToken(
       address.url,
@@ -1056,7 +1062,7 @@ describe("LocalAgentMcpServer", () => {
     const authorizationUrl = makeAuthorizationUrl(address, oauthClient, [
       "capture.original.read"
     ]);
-    consentDecisions.push({ decision: "deny", sessionName: "", capabilities: [] });
+    consentDecisions.push({ decision: "deny", sessionName: "", roleId: null, capabilities: [] });
     const statusUrl = await beginBrowserAuthorization(address, authorizationUrl);
     const denied = await waitForAuthorizationRedirect(statusUrl);
     expect(denied.status).toBe(302);
@@ -1120,7 +1126,9 @@ describe("LocalAgentMcpServer", () => {
     resolveNative({
       decision: "allow",
       sessionName: "Forging Agent",
-      capabilities: ["library.read"]
+      roleId: null,
+      capabilities: ["library.read"],
+      maxCaptureAgeDays: 7
     });
     const approved = await waitForAuthorizationRedirect(statusUrl);
     expect(approved.status).toBe(302);
@@ -1168,12 +1176,58 @@ describe("LocalAgentMcpServer", () => {
       transactionId: "consent_expiring",
       decision: "allow",
       sessionName: "Expiring Agent",
-      capabilities: ["library.read"]
+      roleId: null,
+      capabilities: ["library.read"],
+      maxCaptureAgeDays: 7
     })).toMatchObject({
       kind: "error",
       status: 400,
       error: "invalid_request"
     });
+  });
+
+  test("returns an actionable OAuth error when a session name races with an active grant", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const resourceUrl = new URL("http://127.0.0.1:51729/mcp");
+    const provider = new LocalAgentOAuthProvider({
+      grantService,
+      resourceUrl,
+      makeClientId: () => "lag_duplicate_name"
+    });
+    const oauthClient = await provider.clientsStore.registerClient?.({
+      client_name: "PwrAgent",
+      redirect_uris: [OAUTH_CALLBACK],
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code"],
+      response_types: ["code"]
+    });
+    if (oauthClient === undefined) throw new Error("expected registered OAuth client");
+    const code = provider.createAuthorizationCode({
+      client: oauthClient,
+      params: {
+        codeChallenge: "test-challenge",
+        redirectUri: OAUTH_CALLBACK,
+        resource: resourceUrl,
+        scopes: ["library.read"]
+      },
+      sessionName: "PwrAgent",
+      roleId: null,
+      capabilities: ["library.read"],
+      maxCaptureAgeDays: 7
+    });
+
+    const exchange = provider.exchangeAuthorizationCode(
+      oauthClient,
+      code,
+      undefined,
+      OAUTH_CALLBACK,
+      resourceUrl
+    );
+    await expect(exchange).rejects.toBeInstanceOf(InvalidGrantError);
+    await expect(exchange).rejects.toThrow("use a unique Session Name");
   });
 
   test("rejects requests outside known routes and with an alternate Host", async () => {

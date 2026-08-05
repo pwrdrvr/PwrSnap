@@ -6,7 +6,9 @@ import {
   isLocalAgentCapability,
   ok,
   type LocalAgentCapability,
+  type LocalAgentClientGrant,
   type LocalAgentConsentPrompt,
+  type LocalAgentRoleProfile,
   type PwrSnapError,
   type Result
 } from "@pwrsnap/shared";
@@ -27,7 +29,9 @@ export type LocalAgentConsentRequest = {
 export type LocalAgentConsentDecision = {
   decision: "allow" | "deny";
   sessionName: string;
+  roleId: string | null;
   capabilities: readonly LocalAgentCapability[];
+  maxCaptureAgeDays?: number | null;
 };
 
 type ConsentWindow = Pick<BrowserWindow, "id" | "close" | "isDestroyed" | "once">;
@@ -41,6 +45,10 @@ type PendingConsent = {
 };
 
 type ConsentWindowFactory = () => ConsentWindow;
+type RoleReader = () => Promise<LocalAgentRoleProfile[]>;
+type GrantReader = () => Promise<
+  Array<Pick<LocalAgentClientGrant, "name" | "revokedAt">>
+>;
 
 /**
  * Native user-presence boundary for loopback OAuth. HTTP can create a pending
@@ -50,19 +58,32 @@ type ConsentWindowFactory = () => ConsentWindow;
 export class LocalAgentConsentBroker {
   private readonly createWindow: ConsentWindowFactory;
   private readonly makeRequestId: () => string;
+  private readonly readGrants: GrantReader;
+  private readonly readRoles: RoleReader;
   private readonly pendingByWindowId = new Map<number, PendingConsent>();
 
   constructor(options: {
     createWindow?: ConsentWindowFactory;
     makeRequestId?: () => string;
+    readGrants?: GrantReader;
+    readRoles?: RoleReader;
   } = {}) {
     this.createWindow = options.createWindow ?? createLocalAgentConsentWindow;
     this.makeRequestId = options.makeRequestId ?? randomUUID;
+    this.readGrants = options.readGrants ?? (async () => []);
+    this.readRoles = options.readRoles ?? (async () => []);
   }
 
-  request(input: LocalAgentConsentRequest): Promise<LocalAgentConsentDecision> {
+  async request(input: LocalAgentConsentRequest): Promise<LocalAgentConsentDecision> {
     if (input.signal.aborted) {
-      return Promise.resolve({ decision: "deny", sessionName: "", capabilities: [] });
+      return { decision: "deny", sessionName: "", roleId: null, capabilities: [] };
+    }
+    const [roles, grants] = await Promise.all([
+      this.readRoles(),
+      this.readGrants()
+    ]);
+    if (input.signal.aborted) {
+      return { decision: "deny", sessionName: "", roleId: null, capabilities: [] };
     }
     const window = this.createWindow();
     const requestId = this.makeRequestId();
@@ -70,18 +91,25 @@ export class LocalAgentConsentBroker {
     const prompt: LocalAgentConsentPrompt = {
       requestId,
       clientName: input.clientName,
-      suggestedSessionName: input.clientName,
+      suggestedSessionName: uniqueSessionName(input.clientName, grants),
       permissions: LOCAL_AGENT_CAPABILITIES.map((capability) => ({
         capability,
         label: LOCAL_AGENT_CAPABILITY_LABELS[capability],
         detail: LOCAL_AGENT_CAPABILITY_DETAILS[capability],
         requested: requested.has(capability)
-      }))
+      })),
+      roles: roles
+        .filter((role) => role.permissions.every((capability) => requested.has(capability)))
+        .map(cloneRole)
     };
 
     return new Promise((resolve) => {
       const onAbort = (): void => {
-        this.finish(window.id, { decision: "deny", sessionName: "", capabilities: [] }, true);
+        this.finish(
+          window.id,
+          { decision: "deny", sessionName: "", roleId: null, capabilities: [] },
+          true
+        );
       };
       const pending: PendingConsent = {
         prompt,
@@ -93,7 +121,11 @@ export class LocalAgentConsentBroker {
       this.pendingByWindowId.set(window.id, pending);
       input.signal.addEventListener("abort", onAbort, { once: true });
       window.once("closed", () => {
-        this.finish(window.id, { decision: "deny", sessionName: "", capabilities: [] }, false);
+        this.finish(
+          window.id,
+          { decision: "deny", sessionName: "", roleId: null, capabilities: [] },
+          false
+        );
       });
     });
   }
@@ -109,7 +141,9 @@ export class LocalAgentConsentBroker {
       requestId: string;
       decision: "allow" | "deny";
       sessionName: string;
+      roleId: string | null;
       capabilities: readonly LocalAgentCapability[];
+      maxCaptureAgeDays?: number | null;
     }
   ): Result<void, PwrSnapError> {
     const pending = this.pendingForTrustedWindow(context);
@@ -131,15 +165,54 @@ export class LocalAgentConsentBroker {
         "Session Name must be between 1 and 200 characters"
       );
     }
-    if (input.decision === "allow" && capabilities.length === 0) {
-      return consentError("empty_consent", "Select at least one PwrSnap permission");
+    let selectedRole: LocalAgentRoleProfile | undefined;
+    if (input.decision === "allow" && input.roleId !== null) {
+      selectedRole = pending.value.prompt.roles.find((role) => role.id === input.roleId);
+      if (selectedRole === undefined) {
+        return consentError(
+          "invalid_consent_role",
+          "Select a PwrSnap role available to this authorization request"
+        );
+      }
+    }
+    const requested = new Set(
+      pending.value.prompt.permissions
+        .filter((permission) => permission.requested)
+        .map((permission) => permission.capability)
+    );
+    const effectiveCapabilities = selectedRole?.permissions ?? capabilities;
+    if (
+      input.decision === "allow" &&
+      effectiveCapabilities.some((capability) => !requested.has(capability))
+    ) {
+      return consentError(
+        "consent_scope_escalation",
+        "Approval cannot grant permissions the MCP client did not request"
+      );
+    }
+    if (input.decision === "allow" && effectiveCapabilities.length === 0) {
+      return consentError("empty_consent", "Select a PwrSnap role or custom permissions");
+    }
+    if (
+      input.decision === "allow" &&
+      selectedRole === undefined &&
+      !isValidCaptureAge(input.maxCaptureAgeDays)
+    ) {
+      return consentError(
+        "invalid_capture_age",
+        "Custom access requires a valid capture-history limit"
+      );
     }
     this.finish(
       pending.value.window.id,
       {
         decision: input.decision,
         sessionName: input.decision === "allow" ? sessionName : "",
-        capabilities: input.decision === "allow" ? capabilities : []
+        roleId: input.decision === "allow" ? (selectedRole?.id ?? null) : null,
+        capabilities: input.decision === "allow" ? [...effectiveCapabilities] : [],
+        ...(input.decision === "allow" && selectedRole === undefined
+          ? { maxCaptureAgeDays: input.maxCaptureAgeDays }
+          : {})
       },
       true
     );
@@ -148,7 +221,11 @@ export class LocalAgentConsentBroker {
 
   denyAll(): void {
     for (const windowId of [...this.pendingByWindowId.keys()]) {
-      this.finish(windowId, { decision: "deny", sessionName: "", capabilities: [] }, true);
+      this.finish(
+        windowId,
+        { decision: "deny", sessionName: "", roleId: null, capabilities: [] },
+        true
+      );
     }
   }
 
@@ -179,6 +256,27 @@ export class LocalAgentConsentBroker {
   }
 }
 
+function uniqueSessionName(
+  requestedName: string,
+  grants: readonly Pick<LocalAgentClientGrant, "name" | "revokedAt">[]
+): string {
+  const activeNames = grants
+    .filter((grant) => grant.revokedAt === null)
+    .map((grant) => grant.name);
+  const base = requestedName.trim().slice(0, 200) || "Local Agent";
+  if (!activeNames.some((name) => namesMatch(name, base))) return base;
+  for (let suffix = 2; suffix < 10_000; suffix += 1) {
+    const label = ` ${suffix}`;
+    const candidate = `${base.slice(0, 200 - label.length)}${label}`;
+    if (!activeNames.some((name) => namesMatch(name, candidate))) return candidate;
+  }
+  return `Local Agent ${randomUUID()}`.slice(0, 200);
+}
+
+function namesMatch(left: string, right: string): boolean {
+  return left.localeCompare(right, undefined, { sensitivity: "accent" }) === 0;
+}
+
 export function registerLocalAgentConsentHandlers(
   broker: LocalAgentConsentBroker
 ): void {
@@ -189,12 +287,36 @@ export function registerLocalAgentConsentHandlers(
       req === null ||
       typeof req.requestId !== "string" ||
       typeof req.sessionName !== "string" ||
+      (typeof req.roleId !== "string" && req.roleId !== null) ||
       !Array.isArray(req.capabilities)
     ) {
       return consentError("invalid_consent_request", "Consent decision payload is invalid");
     }
     return broker.decide(context, req);
   });
+}
+
+function isValidCaptureAge(value: unknown): value is number | null {
+  return value === null || (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= 36_500
+  );
+}
+
+function cloneRole(role: LocalAgentRoleProfile): LocalAgentRoleProfile {
+  return {
+    ...role,
+    permissions: [...role.permissions],
+    budgets: {
+      search: { ...role.budgets.search },
+      "preview.read": { ...role.budgets["preview.read"] },
+      "original.read": { ...role.budgets["original.read"] },
+      edit: { ...role.budgets.edit },
+      delete: { ...role.budgets.delete }
+    }
+  };
 }
 
 function consentError(code: string, message: string): Result<never, PwrSnapError> {

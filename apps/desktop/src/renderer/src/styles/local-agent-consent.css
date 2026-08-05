@@ -86,6 +86,104 @@ body[data-stage="local-agent-consent"] {
   text-transform: uppercase;
 }
 
+.local-agent-consent__roles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.local-agent-consent__role {
+  display: flex;
+  min-height: 132px;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-panel-elevated);
+  cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.local-agent-consent__role:hover,
+.local-agent-consent__role--selected {
+  border-color: var(--accent);
+}
+
+.local-agent-consent__role--selected {
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.local-agent-consent__role input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.local-agent-consent__role-copy {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.local-agent-consent__role-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.local-agent-consent__role-heading strong {
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.local-agent-consent__role-heading > span,
+.local-agent-consent__role-copy small {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.local-agent-consent__custom {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-panel);
+}
+
+.local-agent-consent__history {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 16px;
+}
+
+.local-agent-consent__history > span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.local-agent-consent__history select {
+  min-height: 36px;
+  padding: 0 30px 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+  font: 600 13px/1 var(--font-sans);
+}
+
 .local-agent-consent__permissions {
   border-top: 1px solid var(--border-default);
 }
@@ -184,6 +282,10 @@ body[data-stage="local-agent-consent"] {
   .local-agent-consent__footer {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .local-agent-consent__roles {
+    grid-template-columns: 1fr;
   }
 
   .local-agent-consent__actions button {

@@ -288,7 +288,6 @@ export class LocalAgentMcpServer {
         captureResource: (input, ctx) => toolService.captureResource(input, ctx),
         captureExport: (input, ctx) => toolService.captureExport(input, ctx),
         imageEditSend: (input, ctx) => toolService.imageEditSend(input, ctx),
-        imageEditStatus: (input, ctx) => toolService.imageEditStatus(input, ctx),
         sizzleCreate: (input, ctx) => toolService.sizzleCreate(input, ctx),
         sizzleSend: (input, ctx) => toolService.sizzleSend(input, ctx),
         sizzleStatus: (input, ctx) => toolService.sizzleStatus(input, ctx),
@@ -661,6 +660,7 @@ export class LocalAgentMcpServer {
         transactionId: result.transactionId,
         decision: "deny",
         sessionName: "",
+        roleId: null,
         capabilities: []
       });
       writeJsonResponse(res, 503, {
@@ -795,6 +795,7 @@ export class LocalAgentMcpServer {
         transactionId: input.transactionId,
         decision: "deny",
         sessionName: "",
+        roleId: null,
         capabilities: []
       });
       log.warn("Native MCP authorization failed", {
@@ -815,7 +816,11 @@ export class LocalAgentMcpServer {
       transactionId: input.transactionId,
       decision: decision.decision,
       sessionName: decision.sessionName,
-      capabilities: decision.capabilities
+      roleId: decision.roleId,
+      capabilities: decision.capabilities,
+      ...(decision.maxCaptureAgeDays !== undefined
+        ? { maxCaptureAgeDays: decision.maxCaptureAgeDays }
+        : {})
     });
     const record = this.browserAuthorizations.get(input.browserRequestId);
     if (record !== undefined && completed.kind !== "consent") {

@@ -210,11 +210,7 @@ describe("LocalAgentToolService media delivery", () => {
 });
 
 describe("LocalAgentToolService image edits", () => {
-  test("reuses the latest model-compatible capture thread and reports status without a media route", async () => {
-    let status: { kind: "idle" } | { kind: "streaming"; turnId: string } = {
-      kind: "streaming",
-      turnId: "turn_existing"
-    };
+  test("blocks until a batched edit finishes and can omit media for a follow-up edit", async () => {
     const sends: any[] = [];
     register("library:byId", async () =>
       ok({ id: "cap_1", kind: "image", deleted_at: null })
@@ -232,8 +228,7 @@ describe("LocalAgentToolService image edits", () => {
             id: "th_latest",
             anchor: "cap_1",
             model: "gpt-5.5",
-            modifiedAt: "2026-02-01T00:00:00.000Z",
-            status
+            modifiedAt: "2026-02-01T00:00:00.000Z"
           }),
           thread({
             id: "th_other_model",
@@ -248,13 +243,30 @@ describe("LocalAgentToolService image edits", () => {
       sends.push(req);
       return ok({ turnId: "turn_new" });
     });
+    register("codex:libraryChat:history", async () => ok({ messages: [] }));
+    register("codex:libraryChat:wait", async () => ok({
+      thread: thread({
+        id: "th_latest",
+        anchor: "cap_1",
+        model: "gpt-5.5",
+        modifiedAt: "2026-02-01T00:00:00.000Z"
+      }),
+      messages: [{
+        id: "assistant_1",
+        role: "assistant",
+        content: [{ kind: "text", text: "Added both annotations." }],
+        status: "complete",
+        createdAt: "2026-02-01T00:00:00.000Z"
+      }]
+    }));
 
     const toolService = service();
     const sent = await toolService.imageEditSend(
       {
         captureId: "cap_1",
-        instruction: "add an arrow",
-        model: "gpt-5.5"
+        instructions: ["add an arrow", "circle the button"],
+        model: "gpt-5.5",
+        returnImage: false
       },
       context()
     );
@@ -264,46 +276,19 @@ describe("LocalAgentToolService image edits", () => {
     expect(sent.value).toMatchObject({
       threadId: "th_latest",
       turnId: "turn_new",
-      status: { kind: "streaming", turnId: "turn_new" }
+      status: { kind: "idle" },
+      editsApplied: 2,
+      assistantSummary: "Added both annotations.",
+      imageReturned: false
     });
     expect(sent.value).not.toHaveProperty("compositePreviewResourceUri");
     expect(sends).toEqual([
       {
         threadId: "th_latest",
-        text: "add an arrow",
+        text: "Apply all of these edits to the current capture in one turn:\n1. add an arrow\n2. circle the button",
         anchorCaptureId: "cap_1"
       }
     ]);
-    status = { kind: "idle" };
-    const completed = await toolService.imageEditStatus(
-      { captureId: "cap_1", threadId: "th_latest" },
-      context()
-    );
-    expect(completed).toEqual(ok({
-      threadId: "th_latest",
-      status: { kind: "idle" }
-    }));
-    const completedMcp = toMcpToolResult(completed);
-    expect(completedMcp.content).toEqual([
-      {
-        type: "text",
-        text: "PwrSnap operation completed. See structuredContent for result fields."
-      }
-    ]);
-    expect(completedMcp.structuredContent).not.toHaveProperty("resourceUri");
-  });
-
-  test("reports a trashed capture before polling its edit thread", async () => {
-    register("library:byId", async () =>
-      ok({ id: "cap_trashed", kind: "image", deleted_at: "2026-08-02T12:00:00.000Z" })
-    );
-
-    const result = await service().imageEditStatus(
-      { captureId: "cap_trashed", threadId: "th_edit" },
-      context()
-    );
-
-    expect(result).toMatchObject({ ok: false, error: { code: "not_found" } });
   });
 
   test("rejects an explicit thread from another capture", async () => {
@@ -343,20 +328,53 @@ describe("LocalAgentToolService image edits", () => {
       }));
     });
     register("codex:libraryChat:send", async () => ok({ turnId: "turn_kimi" }));
+    register("codex:libraryChat:history", async () => ok({ messages: [] }));
+    register("codex:libraryChat:wait", async () => ok({
+      thread: thread({
+        id: "th_kimi",
+        anchor: "cap_1",
+        model: "kimi-k2",
+        modifiedAt: "2026-03-01T00:00:00.000Z"
+      }),
+      messages: []
+    }));
+    const exports: unknown[] = [];
+    register("render:captureExport", async (request) => {
+      exports.push(request);
+      return ok({
+        captureId: "cap_1",
+        variant: "composite",
+        format: "png",
+        preset: "high",
+        path: "/tmp/capture-high.png",
+        mimeType: "image/png",
+        widthPx: 2_880,
+        heightPx: 1_920,
+        byteSize: 10,
+        fromCache: false,
+        exportId: "high"
+      });
+    });
 
     const result = await service().imageEditSend(
       {
         captureId: "cap_1",
         instruction: "add an arrow",
         provider: "acp:kimi",
-        model: "kimi-k2"
+        model: "kimi-k2",
+        preset: "high"
       },
-      context()
+      context("lag_edit", ["capture.edit", "capture.composite.read", "capture.export"])
     );
 
     expect(result).toMatchObject({
       ok: true,
-      value: { threadId: "th_kimi", turnId: "turn_kimi" }
+      value: {
+        threadId: "th_kimi",
+        turnId: "turn_kimi",
+        imageReturned: true,
+        preset: "high"
+      }
     });
     expect(creates).toEqual([
       expect.objectContaining({
@@ -365,6 +383,16 @@ describe("LocalAgentToolService image edits", () => {
         model: "kimi-k2"
       })
     ]);
+    expect(exports).toEqual([{
+      captureId: "cap_1",
+      variant: "composite",
+      preset: "high",
+      format: "png"
+    }]);
+    expect(toMcpToolResult(result).content[1]).toMatchObject({
+      type: "resource_link",
+      mimeType: "image/png"
+    });
   });
 });
 

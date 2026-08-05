@@ -9,6 +9,7 @@ import type {
   Settings
 } from "@pwrsnap/shared";
 import {
+  capabilityFingerprint,
   findRoleForCapabilities,
   defaultLocalAgentRoleConstraints,
   isLocalAgentCapability,
@@ -273,6 +274,8 @@ export class LocalAgentGrantService {
   async issueOAuthGrant(args: {
     name: string;
     capabilities: readonly LocalAgentCapability[];
+    roleId?: string | null;
+    maxCaptureAgeDays?: number | null;
     oauthClient: LocalAgentOAuthClient;
   }): Promise<LocalAgentCredentialIssueResult> {
     const name = normalizeName(args.name);
@@ -298,7 +301,13 @@ export class LocalAgentGrantService {
         );
       }
       const now = this.now().toISOString();
-      const roleState = this.roleForCapabilities(settings, name, capabilities);
+      const roleState = this.roleForOAuthGrant(
+        settings,
+        name,
+        capabilities,
+        args.roleId,
+        args.maxCaptureAgeDays
+      );
       const grant: LocalAgentClientGrant = {
         id: this.makeId(),
         name,
@@ -512,6 +521,48 @@ export class LocalAgentGrantService {
     return { role, roles: [...settings.localAgents.roles, role] };
   }
 
+  private roleForOAuthGrant(
+    settings: Settings,
+    sessionName: string,
+    capabilities: readonly LocalAgentCapability[],
+    roleId: string | null | undefined,
+    maxCaptureAgeDays: number | null | undefined
+  ): { role: LocalAgentRoleProfile; roles: LocalAgentRoleProfile[] } {
+    if (roleId === undefined) {
+      return this.roleForCapabilities(settings, sessionName, capabilities);
+    }
+    if (roleId !== null) {
+      const role = settings.localAgents.roles.find((candidate) => candidate.id === roleId);
+      if (
+        role === undefined ||
+        !isValidRole(role) ||
+        capabilityFingerprint(role.permissions) !== capabilityFingerprint(capabilities)
+      ) {
+        throw new LocalAgentGrantError(
+          "invalid_role",
+          "the approved local-agent role is missing, invalid, or changed"
+        );
+      }
+      return { role, roles: settings.localAgents.roles };
+    }
+    const constraints = defaultLocalAgentRoleConstraints(capabilities);
+    const roleName = uniqueRoleName(settings.localAgents.roles, `${sessionName} Access`);
+    const role: LocalAgentRoleProfile = {
+      id: this.makeRoleId(),
+      name: roleName,
+      description: `Custom access profile created for ${sessionName}.`.slice(0, 500),
+      builtIn: false,
+      permissions: [...capabilities],
+      maxCaptureAgeDays:
+        maxCaptureAgeDays === undefined
+          ? constraints.maxCaptureAgeDays
+          : maxCaptureAgeDays,
+      budgets: constraints.budgets
+    };
+    this.validateNewRole(settings, role);
+    return { role, roles: [...settings.localAgents.roles, role] };
+  }
+
   private validateNewRole(settings: Settings, role: LocalAgentRoleProfile): void {
     if (!isValidRole(role)) {
       throw new LocalAgentGrantError("invalid_role", "local-agent role is invalid");
@@ -535,6 +586,21 @@ export class LocalAgentGrantService {
     this.mutationQueue = run;
     return run;
   }
+}
+
+function uniqueRoleName(
+  roles: readonly LocalAgentRoleProfile[],
+  requestedName: string
+): string {
+  const existing = new Set(roles.map((role) => role.name.toLocaleLowerCase()));
+  const base = requestedName.trim().slice(0, 200);
+  if (!existing.has(base.toLocaleLowerCase())) return base;
+  for (let suffix = 2; suffix < 10_000; suffix += 1) {
+    const label = ` ${suffix}`;
+    const candidate = `${base.slice(0, 200 - label.length)}${label}`;
+    if (!existing.has(candidate.toLocaleLowerCase())) return candidate;
+  }
+  throw new LocalAgentGrantError("duplicate_role_name", "Could not create a unique custom role name");
 }
 
 export class LocalAgentGrantError extends Error {

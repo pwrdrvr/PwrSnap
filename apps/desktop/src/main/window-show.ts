@@ -3,7 +3,7 @@
 // Problem: PwrSnap's window-create pattern is `new BrowserWindow({show: false})`
 // → `window.once("ready-to-show", () => window.show())`. That's the
 // Electron documentation's recommended shape and it works reliably on
-// macOS and Windows. On Linux (Wayland, X11 under GNOME, VMware
+// macOS and Windows. On Linux (Wayland, X11 under GNOME, virtualized
 // guests, several other WMs) the `ready-to-show` event can fire late
 // — or never — for reasons that aren't deterministic from the app
 // side: GTK theming async ready, compositor handshake races, the

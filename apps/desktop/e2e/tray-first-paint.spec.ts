@@ -374,8 +374,8 @@ test.describe("tray popover first-paint baseline", () => {
         }
         // Both modes: the RENDERER viewport must land inside the
         // scenario's expected height window. Do not use BrowserWindow's
-        // getContentSize() readback for this assertion: Windows under a
-        // scaled VMware display can report the 440px constructor frame
+        // getContentSize() readback for this assertion: some scaled Windows
+        // displays can report the 440px constructor frame
         // after the renderer viewport/capture surface correctly shrank to
         // 302px. `innerHeight` is the same layout truth the product paints.
         // It still specifically rules out the real 440×440 clamp regression.

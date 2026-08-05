@@ -1471,26 +1471,19 @@ export function bootstrapApp(): void {
     app.disableHardwareAcceleration();
     app.commandLine.appendSwitch("disable-gpu");
   }
-  // Opt-in software rendering for E2E runs inside macOS VMs (the Tart
-  // lab — see ~/pwrsnap-mac-vm and docs/solutions/2026-08-01-vm-e2e-
-  // window-visibility-flakes.md). Virtualization.framework's
-  // AppleParavirtGPU repeatedly GPU-resets under the suite's Electron
-  // GPU-process submissions (kernel `gpuRestart` reports naming
-  // Electron Helper), which stalls WindowServer — delaying first
-  // paints by seconds (the visibility-flake trigger) and, in the
-  // worst observed case, panicking the guest into a mid-suite reboot.
-  // SwiftShader sidesteps the paravirt GPU entirely. Env-gated so
-  // host-machine E2E keeps real-GPU coverage.
+  // Opt-in software rendering for virtualized macOS E2E (see
+  // docs/solutions/2026-08-01-vm-e2e-window-visibility-flakes.md). Some
+  // virtual GPU drivers reset under sustained Electron GPU submissions,
+  // delaying first paint or destabilizing the guest. Software rendering
+  // avoids that class of failure. Env-gated so other E2E keeps real-GPU
+  // coverage.
   if (isE2E && process.env.PWRSNAP_E2E_DISABLE_GPU === "1") {
     app.disableHardwareAcceleration();
     app.commandLine.appendSwitch("disable-gpu");
-    // Hardware VIDEO codec init leaks kernel objects on VF guests:
-    // every VideoToolbox touch creates an AppleVideoToolboxParavirtual-
-    // izationUserClient that the vmapple driver never frees at process
-    // death. At ~1.1k live clients (≈8 full-suite runs per boot) the
-    // driver's newUserClient wedges, every subsequent helper hangs at
-    // birth inside IOService::newUserClient, and app exit blocks on
-    // wait4 for that unkillable helper — the +6s/spec teardown cliff.
+    // Hardware video codec init can leak guest kernel objects on some
+    // virtualized macOS environments. Once resource creation wedges,
+    // subsequent helpers hang at birth and app exit blocks waiting for
+    // them — the +6s/spec teardown cliff.
     // disableHardwareAcceleration()/disable-gpu do NOT cover media
     // codecs, so disable them explicitly. See
     // docs/solutions/2026-08-03-e2e-teardown-login-shell-hang.md.

@@ -58,8 +58,8 @@ terminable.
   teardown, on any platform.
 - `electron-app.ts` `closeElectronApp`: logs
   `[e2e-teardown] graceful close failed …` whenever the forced path
-  fires — if most specs of a run print it, the guest is degraded
-  (reboot it; see the macos-vm-e2e-lab troubleshooting doc).
+  fires — if most specs of a run print it, the guest is degraded; ask the
+  operator for the applicable lab troubleshooting guidance before intervening.
 
 ## Diagnosis recipe (for the next hang of this shape)
 

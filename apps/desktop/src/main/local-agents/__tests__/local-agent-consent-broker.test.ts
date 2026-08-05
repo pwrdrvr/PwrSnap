@@ -45,7 +45,7 @@ describe("LocalAgentConsentBroker", () => {
       requestedCapabilities: ["library.read", "capture.composite.read"],
       signal: new AbortController().signal
     });
-    await Promise.resolve();
+    await vi.waitFor(() => expect(broker.read(context(41)).ok).toBe(true));
 
     expect(broker.read(context(99))).toMatchObject({
       ok: false,
@@ -113,7 +113,7 @@ describe("LocalAgentConsentBroker", () => {
       signal: controller.signal
     });
 
-    await Promise.resolve();
+    await vi.waitFor(() => expect(broker.read(context(7)).ok).toBe(true));
     controller.abort();
     await expect(decision).resolves.toEqual({
       decision: "deny",
@@ -122,5 +122,31 @@ describe("LocalAgentConsentBroker", () => {
       capabilities: []
     });
     expect(window.close).toHaveBeenCalledOnce();
+  });
+
+  test("suggests a unique session name when an active grant already uses the client label", async () => {
+    const window = fakeWindow(12);
+    const broker = new LocalAgentConsentBroker({
+      createWindow: () => window,
+      makeRequestId: () => "native-request-unique-name",
+      readGrants: async () => [
+        { name: "PwrAgent", revokedAt: null },
+        { name: "PwrAgent 2", revokedAt: null },
+        { name: "PwrAgent 3", revokedAt: "2026-08-05T12:00:00.000Z" }
+      ]
+    });
+
+    void broker.request({
+      clientId: "lag_pwragent",
+      clientName: "PwrAgent",
+      requestedCapabilities: ["library.read"],
+      signal: new AbortController().signal
+    });
+    await vi.waitFor(() => expect(broker.read(context(12)).ok).toBe(true));
+
+    expect(broker.read(context(12))).toMatchObject({
+      ok: true,
+      value: { suggestedSessionName: "PwrAgent 3" }
+    });
   });
 });

@@ -25,7 +25,10 @@ import {
   LOCAL_AGENT_CAPABILITIES,
   isLocalAgentCapability
 } from "@pwrsnap/shared";
-import type { LocalAgentGrantService } from "./local-agent-grants";
+import {
+  LocalAgentGrantError,
+  type LocalAgentGrantService
+} from "./local-agent-grants";
 
 const AUTHORIZATION_CODE_TTL_MS = 5 * 60 * 1_000;
 const CONSENT_TRANSACTION_TTL_MS = 5 * 60 * 1_000;
@@ -434,15 +437,24 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
       throw new InvalidTargetError("resource does not match the authorization request");
     }
     this.codes.delete(authorizationCode);
-    const issued = await this.grantService.issueOAuthGrant({
-      name: record.sessionName,
-      capabilities: record.capabilities,
-      roleId: record.roleId,
-      ...(record.maxCaptureAgeDays !== undefined
-        ? { maxCaptureAgeDays: record.maxCaptureAgeDays }
-        : {}),
-      oauthClient: oauthClientToStored(client, this.now())
-    });
+    const issued = await this.grantService
+      .issueOAuthGrant({
+        name: record.sessionName,
+        capabilities: record.capabilities,
+        roleId: record.roleId,
+        ...(record.maxCaptureAgeDays !== undefined
+          ? { maxCaptureAgeDays: record.maxCaptureAgeDays }
+          : {}),
+        oauthClient: oauthClientToStored(client, this.now())
+      })
+      .catch((cause: unknown) => {
+        if (cause instanceof LocalAgentGrantError && cause.code === "duplicate_name") {
+          throw new InvalidGrantError(
+            `${cause.message}. Return to PwrSnap and use a unique Session Name.`
+          );
+        }
+        throw cause;
+      });
     return {
       access_token: `${issued.grant.id}:${issued.token}`,
       token_type: "bearer",

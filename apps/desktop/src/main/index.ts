@@ -1838,6 +1838,7 @@ export function bootstrapApp(): void {
     }
     if (role !== "library") {
       localAgentConsentBroker = new LocalAgentConsentBroker({
+        readGrants: () => getLocalAgentGrantService().list(),
         readRoles: () => getLocalAgentGrantService().listRoles()
       });
       registerLocalAgentConsentHandlers(localAgentConsentBroker);

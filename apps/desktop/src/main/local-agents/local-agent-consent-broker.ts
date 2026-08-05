@@ -6,6 +6,7 @@ import {
   isLocalAgentCapability,
   ok,
   type LocalAgentCapability,
+  type LocalAgentClientGrant,
   type LocalAgentConsentPrompt,
   type LocalAgentRoleProfile,
   type PwrSnapError,
@@ -45,6 +46,9 @@ type PendingConsent = {
 
 type ConsentWindowFactory = () => ConsentWindow;
 type RoleReader = () => Promise<LocalAgentRoleProfile[]>;
+type GrantReader = () => Promise<
+  Array<Pick<LocalAgentClientGrant, "name" | "revokedAt">>
+>;
 
 /**
  * Native user-presence boundary for loopback OAuth. HTTP can create a pending
@@ -54,16 +58,19 @@ type RoleReader = () => Promise<LocalAgentRoleProfile[]>;
 export class LocalAgentConsentBroker {
   private readonly createWindow: ConsentWindowFactory;
   private readonly makeRequestId: () => string;
+  private readonly readGrants: GrantReader;
   private readonly readRoles: RoleReader;
   private readonly pendingByWindowId = new Map<number, PendingConsent>();
 
   constructor(options: {
     createWindow?: ConsentWindowFactory;
     makeRequestId?: () => string;
+    readGrants?: GrantReader;
     readRoles?: RoleReader;
   } = {}) {
     this.createWindow = options.createWindow ?? createLocalAgentConsentWindow;
     this.makeRequestId = options.makeRequestId ?? randomUUID;
+    this.readGrants = options.readGrants ?? (async () => []);
     this.readRoles = options.readRoles ?? (async () => []);
   }
 
@@ -71,7 +78,10 @@ export class LocalAgentConsentBroker {
     if (input.signal.aborted) {
       return { decision: "deny", sessionName: "", roleId: null, capabilities: [] };
     }
-    const roles = await this.readRoles();
+    const [roles, grants] = await Promise.all([
+      this.readRoles(),
+      this.readGrants()
+    ]);
     if (input.signal.aborted) {
       return { decision: "deny", sessionName: "", roleId: null, capabilities: [] };
     }
@@ -81,7 +91,7 @@ export class LocalAgentConsentBroker {
     const prompt: LocalAgentConsentPrompt = {
       requestId,
       clientName: input.clientName,
-      suggestedSessionName: input.clientName,
+      suggestedSessionName: uniqueSessionName(input.clientName, grants),
       permissions: LOCAL_AGENT_CAPABILITIES.map((capability) => ({
         capability,
         label: LOCAL_AGENT_CAPABILITY_LABELS[capability],
@@ -244,6 +254,27 @@ export class LocalAgentConsentBroker {
     pending.resolve(decision);
     if (closeWindow && !pending.window.isDestroyed()) pending.window.close();
   }
+}
+
+function uniqueSessionName(
+  requestedName: string,
+  grants: readonly Pick<LocalAgentClientGrant, "name" | "revokedAt">[]
+): string {
+  const activeNames = grants
+    .filter((grant) => grant.revokedAt === null)
+    .map((grant) => grant.name);
+  const base = requestedName.trim().slice(0, 200) || "Local Agent";
+  if (!activeNames.some((name) => namesMatch(name, base))) return base;
+  for (let suffix = 2; suffix < 10_000; suffix += 1) {
+    const label = ` ${suffix}`;
+    const candidate = `${base.slice(0, 200 - label.length)}${label}`;
+    if (!activeNames.some((name) => namesMatch(name, candidate))) return candidate;
+  }
+  return `Local Agent ${randomUUID()}`.slice(0, 200);
+}
+
+function namesMatch(left: string, right: string): boolean {
+  return left.localeCompare(right, undefined, { sensitivity: "accent" }) === 0;
 }
 
 export function registerLocalAgentConsentHandlers(

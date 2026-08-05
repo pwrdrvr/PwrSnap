@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { err, ok, type LocalAgentCapability } from "@pwrsnap/shared";
@@ -1183,6 +1184,50 @@ describe("LocalAgentMcpServer", () => {
       status: 400,
       error: "invalid_request"
     });
+  });
+
+  test("returns an actionable OAuth error when a session name races with an active grant", async () => {
+    await grantService.createGrant({
+      name: "PwrAgent",
+      capabilities: ["library.read"]
+    });
+    const resourceUrl = new URL("http://127.0.0.1:51729/mcp");
+    const provider = new LocalAgentOAuthProvider({
+      grantService,
+      resourceUrl,
+      makeClientId: () => "lag_duplicate_name"
+    });
+    const oauthClient = await provider.clientsStore.registerClient?.({
+      client_name: "PwrAgent",
+      redirect_uris: [OAUTH_CALLBACK],
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code"],
+      response_types: ["code"]
+    });
+    if (oauthClient === undefined) throw new Error("expected registered OAuth client");
+    const code = provider.createAuthorizationCode({
+      client: oauthClient,
+      params: {
+        codeChallenge: "test-challenge",
+        redirectUri: OAUTH_CALLBACK,
+        resource: resourceUrl,
+        scopes: ["library.read"]
+      },
+      sessionName: "PwrAgent",
+      roleId: null,
+      capabilities: ["library.read"],
+      maxCaptureAgeDays: 7
+    });
+
+    const exchange = provider.exchangeAuthorizationCode(
+      oauthClient,
+      code,
+      undefined,
+      OAUTH_CALLBACK,
+      resourceUrl
+    );
+    await expect(exchange).rejects.toBeInstanceOf(InvalidGrantError);
+    await expect(exchange).rejects.toThrow("use a unique Session Name");
   });
 
   test("rejects requests outside known routes and with an alternate Host", async () => {

@@ -54,6 +54,7 @@ let fallbackSwitchPromise: Promise<
   | { ok: true }
   | { ok: false; error: PwrSnapError }
 > | null = null;
+let capturesRootOperationQueue: Promise<void> = Promise.resolve();
 
 /** Whether a write probe / real capture has confirmed captures-folder
  *  access this session. Drives the Settings "Captures folder" row's
@@ -70,6 +71,25 @@ export function getCapturesRootAccessState(location: CapturesLocation): RootAcce
 export function resetCaptureStorageGateForTests(): void {
   rootAccessStates.clear();
   fallbackSwitchPromise = null;
+  capturesRootOperationQueue = Promise.resolve();
+}
+
+/**
+ * Serialize operations that can create a durable capture with changes to the
+ * selected captures root. Both callers must live in the agent process in
+ * split mode; command routing pins the guarded switch-back handler there.
+ */
+export function runExclusiveCapturesRootOperation<T>(
+  operation: () => Promise<T>
+): Promise<T> {
+  const task = capturesRootOperationQueue
+    .catch(() => undefined)
+    .then(operation);
+  capturesRootOperationQueue = task.then(
+    () => undefined,
+    () => undefined
+  );
+  return task;
 }
 
 export class CapturesLocationFallbackError extends Error {
@@ -187,17 +207,19 @@ async function fallbackAfterDocumentsDenial(
 export async function runWithCapturesDirFallback<T>(
   operation: (root: string) => Promise<T>
 ): Promise<T> {
-  const firstRoot = getCapturesRoot();
-  try {
-    return await operation(firstRoot);
-  } catch (cause) {
-    const fallback = await fallbackAfterDocumentsDenial(firstRoot, cause);
-    if (fallback.kind === "not-applicable") throw cause;
-    if (fallback.kind === "failed") {
-      throw new CapturesLocationFallbackError(fallback.error);
+  return runExclusiveCapturesRootOperation(async () => {
+    const firstRoot = getCapturesRoot();
+    try {
+      return await operation(firstRoot);
+    } catch (cause) {
+      const fallback = await fallbackAfterDocumentsDenial(firstRoot, cause);
+      if (fallback.kind === "not-applicable") throw cause;
+      if (fallback.kind === "failed") {
+        throw new CapturesLocationFallbackError(fallback.error);
+      }
+      return operation(getCapturesRoot());
     }
-    return operation(getCapturesRoot());
-  }
+  });
 }
 
 /**

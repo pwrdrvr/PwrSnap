@@ -209,4 +209,41 @@ describe("ensureCapturesDirReady", () => {
     expect(seen).toEqual([ROOT, HOME_ROOT]);
     expect(pathMock.location).toBe("home");
   });
+
+  test("capture persistence cannot enter while a root switch holds the queue", async () => {
+    pathMock.location = "home";
+    const {
+      runExclusiveCapturesRootOperation,
+      runWithCapturesDirFallback
+    } = await import("../capture-storage-gate");
+    let releaseSwitch: () => void = () => undefined;
+    let markSwitchStarted: () => void = () => undefined;
+    const switchStarted = new Promise<void>((resolve) => {
+      markSwitchStarted = resolve;
+    });
+    const switchGate = new Promise<void>((resolve) => {
+      releaseSwitch = resolve;
+    });
+    const order: string[] = [];
+
+    const switching = runExclusiveCapturesRootOperation(async () => {
+      order.push("switch-start");
+      markSwitchStarted();
+      await switchGate;
+      pathMock.location = "documents";
+      order.push("switch-end");
+    });
+    await switchStarted;
+    const persistence = runWithCapturesDirFallback(async (root) => {
+      order.push(`persist:${root}`);
+      return root;
+    });
+
+    await Promise.resolve();
+    expect(order).toEqual(["switch-start"]);
+    releaseSwitch();
+    const [, persistedRoot] = await Promise.all([switching, persistence]);
+    expect(persistedRoot).toBe(ROOT);
+    expect(order).toEqual(["switch-start", "switch-end", `persist:${ROOT}`]);
+  });
 });

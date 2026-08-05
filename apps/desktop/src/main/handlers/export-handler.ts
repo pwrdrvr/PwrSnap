@@ -6,7 +6,9 @@
 //   1. VACUUM INTO <dest>/pwrsnap.db — consistent snapshot, doesn't
 //      block readers.
 //   2. Hardlink (same volume, fast, no copy) or copy (cross-volume)
-//      everything under captures/ into <dest>/captures/.
+//      every durable capture root. Documents stays at <dest>/captures/
+//      for backup compatibility; the sticky home root lands at
+//      <dest>/captures-home/.
 //   3. Hardlink/copy render-cache/ similarly so the user's renders survive.
 //   4. Write a manifest with sha256 of the snapshot DB + capture
 //      count for verification.
@@ -16,13 +18,13 @@
 // portable. Document in the manifest.
 
 import { createHash } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { copyFile, link, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { ok, err } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getDb } from "../persistence/db";
-import { getCacheRoot, getCapturesRoot, getDbPath } from "../persistence/paths";
+import { getCacheRoot, getDbPath, getDurableCapturesRoots } from "../persistence/paths";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:export");
@@ -54,7 +56,9 @@ export function registerExportHandler(): void {
   });
 }
 
-async function exportLibrary(destDir: string): Promise<{ destDir: string; manifestPath: string }> {
+export async function exportLibrary(
+  destDir: string
+): Promise<{ destDir: string; manifestPath: string }> {
   await mkdir(destDir, { recursive: true });
 
   // 1. VACUUM INTO — consistent snapshot of the DB.
@@ -68,12 +72,28 @@ async function exportLibrary(destDir: string): Promise<{ destDir: string; manife
   db.exec(`VACUUM INTO '${dbDest.replace(/'/g, "''")}'`);
 
   // 2 + 3. Hardlink captures/ and render-cache/ recursively.
-  const capturesRoot = getCapturesRoot();
+  const capturesRoots = getDurableCapturesRoots();
   const cacheRoot = getCacheRoot();
   let captureFileCount = 0;
   let cacheFileCount = 0;
-  if (existsSync(capturesRoot)) {
-    captureFileCount = await mirrorTree(capturesRoot, join(destDir, "captures"));
+  const exportedCaptureRoots: Array<{
+    kind: (typeof capturesRoots)[number]["kind"];
+    source_path: string;
+    backup_directory: string;
+    files: number;
+  }> = [];
+  for (const capturesRoot of capturesRoots) {
+    const backupDirectory = capturesRoot.kind === "home" ? "captures-home" : "captures";
+    const files = existsSync(capturesRoot.path)
+      ? await mirrorTree(capturesRoot.path, join(destDir, backupDirectory))
+      : 0;
+    captureFileCount += files;
+    exportedCaptureRoots.push({
+      kind: capturesRoot.kind,
+      source_path: capturesRoot.path,
+      backup_directory: backupDirectory,
+      files
+    });
   }
   if (existsSync(cacheRoot)) {
     cacheFileCount = await mirrorTree(cacheRoot, join(destDir, "render-cache"));
@@ -83,12 +103,13 @@ async function exportLibrary(destDir: string): Promise<{ destDir: string; manife
   const dbBuf = await readFile(dbDest);
   const dbSha256 = createHash("sha256").update(dbBuf).digest("hex");
   const manifest = {
-    schema_version: 1,
+    schema_version: 2,
     exported_at: new Date().toISOString(),
     source_db_path: getDbPath(),
     db_sha256: dbSha256,
     db_byte_size: dbBuf.length,
     capture_files: captureFileCount,
+    capture_roots: exportedCaptureRoots,
     cache_files: cacheFileCount,
     notes: [
       "safeStorage-encrypted secrets (OAuth tokens etc.) are not exported — they're bound to the user's login keychain and won't decrypt on another machine. Reconnect destinations after restoring."
@@ -137,5 +158,3 @@ async function mirrorTree(src: string, dest: string): Promise<number> {
   }
   return count;
 }
-
-void statSync; // keep import for future Phase enhancements

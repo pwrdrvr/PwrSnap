@@ -34,6 +34,10 @@ async function writeClipboardImage(
   );
 }
 
+function findFloatOverPage(app: Awaited<ReturnType<typeof launchPwrSnap>>) {
+  return app.electronApp.windows().find((page) => page.url().includes("stage=float-over")) ?? null;
+}
+
 test.describe("captures location fallback", () => {
   test.skip(!isMac, "Documents-folder permission behavior is macOS-only");
 
@@ -62,6 +66,38 @@ test.describe("captures location fallback", () => {
       expect(afterFallback.ok, JSON.stringify(afterFallback)).toBe(true);
       if (!afterFallback.ok) return;
       expect(afterFallback.value.storage.capturesLocation).toBe("home");
+
+      // Direct command-bus dispatch intentionally skips the interactive
+      // capture controller, so explicitly present the persisted record in the
+      // toast before asserting its destination label.
+      await app.electronApp.evaluate(
+        (_electron, payload: { captureId: string }) => {
+          const bridge = (
+            globalThis as unknown as {
+              __PWRSNAP_TEST__: {
+                setFloatOverState: (event: unknown) => void;
+              };
+            }
+          ).__PWRSNAP_TEST__;
+          bridge.setFloatOverState({
+            kind: "show-loaded",
+            captureId: payload.captureId
+          });
+        },
+        { captureId: pasted.value.id }
+      );
+      await expect.poll(() => findFloatOverPage(app) !== null, { timeout: 5000 }).toBe(true);
+      const floatOver = findFloatOverPage(app);
+      if (floatOver === null) throw new Error("float-over window never appeared");
+      await expect(floatOver.locator(".fo__dest-saved")).toContainText("saved · ~/PwrSnap");
+
+      await app.window.locator(".psl__storage-trigger").click();
+      const storagePopover = app.window.getByRole("dialog", { name: "Storage usage" });
+      const capturesRow = storagePopover.locator(".psl__storage-row").filter({
+        hasText: "Capture folders"
+      });
+      await expect(capturesRow).toContainText("new → ~/PwrSnap");
+      await app.window.keyboard.press("Escape");
 
       const guarded = await app.dispatch("storage:capturesLocationStatus", {});
       expect(guarded.ok, JSON.stringify(guarded)).toBe(true);

@@ -11,6 +11,7 @@ import {
 import { createPortal } from "react-dom";
 import type {
   CaptureRecord,
+  CapturesLocation,
   CaptureSearchResultRow,
   LibraryCursor,
   LibrarySidebarTab,
@@ -737,6 +738,8 @@ export function Library() {
   // (not persisted) — the grid tab is a transient browse concern.
   const [gridActiveTab, setGridActiveTab] = useState<LibrarySidebarTab>("info");
   const [settingsHydrated, setSettingsHydrated] = useState<boolean>(false);
+  const [capturesLocation, setCapturesLocationState] =
+    useState<CapturesLocation>("documents");
   const userTouchedRailRef = useRef<boolean>(false);
   // Mirror of `rightPinned` kept in a ref so `toggleRightPinned` can
   // compute `!current` without subscribing to the state and triggering
@@ -824,6 +827,7 @@ export function Library() {
       }
       if (result.ok) {
         setConfirmBeforeTrash(result.value.library.confirmBeforeTrash);
+        setCapturesLocationState(result.value.storage?.capturesLocation ?? "documents");
         // `??=` so a codex-change broadcast that raced this read wins.
         lastCodexSettingsRef.current ??= JSON.stringify(result.value.codex);
       }
@@ -848,6 +852,7 @@ export function Library() {
       const evt = payload as SettingsChangedEvent;
       applyAiSettings(evt.settings);
       setConfirmBeforeTrash(evt.settings.library.confirmBeforeTrash);
+      setCapturesLocationState(evt.settings.storage?.capturesLocation ?? "documents");
       // Don't re-apply gridZoom from the broadcast once the user has
       // pinched in THIS window. Every pinch step writes, and each write
       // echoes a broadcast back; a stale echo (e.g. 220) arriving after a
@@ -3730,12 +3735,16 @@ export function Library() {
                 </div>
                 <div className="psl__storage-row">
                   <div>
-                    <span>Documents/PwrSnap</span>
-                    <small>{sourceSnapCount} snaps</small>
+                    <span>Capture folders</span>
+                    <small>
+                      {sourceSnapCount} snaps · new → {capturesLocation === "home"
+                        ? "~/PwrSnap"
+                        : "~/Documents/PwrSnap"}
+                    </small>
                   </div>
                   <b>
                     {formatBytes(
-                      storage.snapshot?.sourceCaptures.documentsBytes ??
+                      storage.snapshot?.sourceCaptures.bytes ??
                         storage.summary?.sourceCaptures.bytes ??
                         0
                     )}

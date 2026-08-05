@@ -34,6 +34,8 @@ export function StoragePage(): ReactElement {
     settings?.storage.filenameTimestampZone ?? "local";
   const ready = settings !== null;
   const confirmBeforeTrash = settings?.library.confirmBeforeTrash ?? true;
+  const activeCapturesPath =
+    settings?.storage.capturesLocation === "home" ? "~/PwrSnap" : "~/Documents/PwrSnap";
 
   const onTimestampZoneChange = ready
     ? (next: FilenameTimestampZone): void => {
@@ -76,15 +78,15 @@ export function StoragePage(): ReactElement {
         ) : null}
         <StorageRow
           label="Source captures"
-          sub={`${sourceCaptureCount} snaps`}
+          sub={`${sourceCaptureCount} snaps · new → ${activeCapturesPath}`}
           bytes={sourceCaptureBytes}
           total={total}
           detail={
             snapshot === null
               ? "—"
-              : `${formatBytes(snapshot.sourceCaptures.documentsBytes)} in Documents · ${formatBytes(
-                  snapshot.sourceCaptures.appSupportBytes
-                )} legacy`
+              : `${formatBytes(snapshot.sourceCaptures.documentsBytes)} in ~/Documents/PwrSnap · ${formatBytes(
+                  snapshot.sourceCaptures.homeBytes
+                )} in ~/PwrSnap · ${formatBytes(snapshot.sourceCaptures.appSupportBytes)} legacy`
           }
         />
         <StorageRow

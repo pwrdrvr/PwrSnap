@@ -295,6 +295,17 @@ describe("FloatOver asset mode", () => {
     expect(el.querySelectorAll(".fo__copy > *").length).toBe(3);
     expect(el.querySelector(".fo__hdr-title")?.textContent).toBe("Snap captured");
   });
+
+  test("labels the sticky home fallback as the saved destination", async () => {
+    const el = await renderFloatOver({
+      src: "pwrsnap-capture://r/img",
+      capturesLocation: "home",
+      startCountdown: false
+    });
+
+    expect(el.querySelector(".fo__dest-saved")?.textContent).toContain("saved · ~/PwrSnap");
+    expect(el.querySelector(".fo__dest-saved")?.textContent).not.toContain("Documents");
+  });
 });
 
 describe("FloatOverHost", () => {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { CaptureEnrichment, ExportStrategy } from "@pwrsnap/shared";
+import type { CaptureEnrichment, CapturesLocation, ExportStrategy } from "@pwrsnap/shared";
 import { resolveExportLadder, rungForPreset } from "@pwrsnap/shared";
 import { PwrSnapMark } from "../shared/BrandMark";
 import {
@@ -179,6 +179,7 @@ export function FloatOver({
   srcBytes = 2.4 * 1024 * 1024,
   srcDpr = 2,
   exportStrategy = "legacy",
+  capturesLocation = "documents",
   copyMetrics,
   copyPulses,
   onDismiss,
@@ -227,6 +228,8 @@ export function FloatOver({
    *  visually identical for normal users; the DPI-aware strategies add
    *  the Retina/scale tags + rescale the dim estimates. */
   exportStrategy?: ExportStrategy;
+  /** Active durable captures root. */
+  capturesLocation?: CapturesLocation;
   copyMetrics?: PresetMetricMap | undefined;
   copyPulses?: Readonly<Record<CopyPreset, number>> | undefined;
   onDismiss?: () => void;
@@ -940,12 +943,9 @@ export function FloatOver({
             </div>
           ) : (
             <div className="fo__dest-saved">
-              {/* Path mirrors db.getCapturesRoot() — see that comment
-                  for why captures live in Documents instead of
-                  Application Support. Hardcoded for now; if a future
-                  setting makes this configurable, surface that value
-                  through props. */}
-              <FoIcon name="check" size={11} /> saved · ~/Documents/PwrSnap
+              <FoIcon name="check" size={11} /> saved · {capturesLocation === "home"
+                ? "~/PwrSnap"
+                : "~/Documents/PwrSnap"}
             </div>
           )}
           <div className="fo__foot-actions">

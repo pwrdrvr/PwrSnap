@@ -706,6 +706,35 @@ describe("settings:* validation", () => {
     expect(result.value.storage.filenameTimestampZone).toBe("utc");
   });
 
+  test("settings:write validates captures location and keeps it main-owned", async () => {
+    const bad = await bus.dispatch(
+      "settings:write",
+      { storage: { capturesLocation: "desktop" } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(bad.ok).toBe(false);
+    if (bad.ok) throw new Error("unreachable");
+    expect(bad.error.code).toBe("invalid_storage_capturesLocation");
+
+    const blocked = await bus.dispatch(
+      "settings:write",
+      { storage: { capturesLocation: "home" } },
+      { principal: "ipc" }
+    );
+    expect(blocked.ok).toBe(false);
+    if (blocked.ok) throw new Error("unreachable");
+    expect(blocked.error.code).toBe("captures_location_main_owned");
+
+    const good = await bus.dispatch(
+      "settings:write",
+      { storage: { capturesLocation: "home" } },
+      { principal: "bridge" }
+    );
+    expect(good.ok).toBe(true);
+    if (!good.ok) throw new Error("unreachable");
+    expect(good.value.storage.capturesLocation).toBe("home");
+  });
+
   test("settings:clearSecret rejects unknown secret name", async () => {
     const result = await bus.dispatch(
       "settings:clearSecret",

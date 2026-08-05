@@ -7,6 +7,7 @@ import type { StorageSnapshot } from "@pwrsnap/shared";
 const mocks = vi.hoisted(() => ({
   dataRoot: "",
   capturesRoot: "",
+  homeCapturesRoot: "",
   legacyCapturesRoot: "",
   dbPath: "",
   captureCount: 0,
@@ -41,9 +42,15 @@ vi.mock("../../persistence/db", () => ({
 
 vi.mock("../../persistence/paths", () => ({
   getCacheRoot: () => join(mocks.dataRoot, "render-cache"),
-  getCapturesRoot: () => mocks.capturesRoot,
   getDataRoot: () => mocks.dataRoot,
   getDbPath: () => mocks.dbPath,
+  getDurableCapturesRoots: () =>
+    mocks.capturesRoot === mocks.legacyCapturesRoot
+      ? [{ kind: "override", path: mocks.capturesRoot }]
+      : [
+          { kind: "documents", path: mocks.capturesRoot },
+          { kind: "home", path: mocks.homeCapturesRoot }
+        ],
   getLegacyCapturesRoot: () => mocks.legacyCapturesRoot
 }));
 
@@ -56,6 +63,7 @@ beforeEach(async () => {
   mocks.sourceBytes = 0;
   mocks.dataRoot = join(tempRoot, "data");
   mocks.capturesRoot = join(tempRoot, "Documents", "PwrSnap");
+  mocks.homeCapturesRoot = join(tempRoot, "PwrSnap");
   mocks.legacyCapturesRoot = join(mocks.dataRoot, "captures");
   mocks.dbPath = join(mocks.dataRoot, "pwrsnap.db");
 });
@@ -101,6 +109,29 @@ describe("getStorageSnapshot", () => {
     expect(snapshot.sourceCaptures.bytes).toBeGreaterThanOrEqual(1024 * 1024);
     expect(snapshot.totalBytes).toBeLessThan(snapshot.sourceCaptures.bytes + 128 * 1024);
     expect(snapshot.otherAppSupport.bytes).toBeLessThan(128 * 1024);
+  });
+
+  test("accounts for durable captures in both Documents and the home fallback", async () => {
+    mocks.captureCount = 2;
+    mocks.sourceBytes = 3 * 1024 * 1024;
+    await mkdir(mocks.capturesRoot, { recursive: true });
+    await mkdir(mocks.homeCapturesRoot, { recursive: true });
+    await writeFile(
+      join(mocks.capturesRoot, "capture-a.pwrsnap"),
+      Buffer.alloc(1024 * 1024)
+    );
+    await writeFile(
+      join(mocks.homeCapturesRoot, "capture-b.pwrsnap"),
+      Buffer.alloc(2 * 1024 * 1024)
+    );
+
+    const { getStorageSnapshot } = await import("../accounting");
+    const snapshot = await getStorageSnapshot({ force: true });
+
+    expect(snapshot.sourceCaptures.documentsBytes).toBeGreaterThanOrEqual(1024 * 1024);
+    expect(snapshot.sourceCaptures.homeBytes).toBeGreaterThanOrEqual(2 * 1024 * 1024);
+    expect(snapshot.sourceCaptures.bytes).toBeGreaterThanOrEqual(3 * 1024 * 1024);
+    expect(snapshot.sourceCaptures.fileCount).toBe(2);
   });
 
   test("force requests during an in-flight scan share one trailing rescan", async () => {

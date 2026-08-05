@@ -29,6 +29,14 @@ describe("commandOwner", () => {
     expect(commandOwner("settings:open")).toBe("library");
   });
 
+  test("capture-root storage commands stay with capture persistence", () => {
+    expect(commandOwner("storage:capturesAccessHealth")).toBe("agent");
+    expect(commandOwner("storage:capturesLocationStatus")).toBe("agent");
+    expect(commandOwner("storage:checkCapturesAccess")).toBe("agent");
+    expect(commandOwner("storage:moveCapturesToDocuments")).toBe("agent");
+    expect(commandOwner("storage:snapshot")).toBe("library");
+  });
+
   test("chat surfaces route to the library despite the codex: prefix", () => {
     expect(commandOwner("codex:enrich")).toBe("agent");
     expect(commandOwner("codex:libraryChat:send")).toBe("library");

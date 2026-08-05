@@ -10,7 +10,11 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
-import type { PermissionReadinessReport, RecordingPermissionStatus } from "@pwrsnap/shared";
+import type {
+  CapturesLocation,
+  PermissionReadinessReport,
+  RecordingPermissionStatus
+} from "@pwrsnap/shared";
 import { SystemPermissionsPage } from "../SystemPermissionsPage";
 
 beforeAll(() => {
@@ -26,6 +30,10 @@ type FakeApiOpts = {
   requestStatus?: RecordingPermissionStatus;
   // Whether captures-folder access is denied (drives the Documents row).
   capturesDenied?: boolean;
+  capturesLocation?: CapturesLocation;
+  documentsAccess?: "unknown" | "confirmed" | "denied";
+  homeCaptureReferences?: number;
+  homeDirectoryEntryCount?: number;
 };
 
 function installFakeApi(
@@ -42,6 +50,18 @@ function installFakeApi(
     firstDeniedAt: null,
     lastDeniedAt: null
   };
+  const locationStatus = {
+    location: opts.capturesLocation ?? "documents",
+    documentsAccess: opts.documentsAccess ?? "unknown",
+    homeCaptureReferences: opts.homeCaptureReferences ?? 0,
+    homeDirectoryEntryCount: opts.homeDirectoryEntryCount ?? 0,
+    canMoveToDocuments:
+      opts.capturesLocation === "home" &&
+      opts.documentsAccess === "confirmed" &&
+      (opts.homeCaptureReferences ?? 0) === 0 &&
+      (opts.homeDirectoryEntryCount ?? 0) === 0,
+    overridden: false
+  } as const;
   Object.defineProperty(window, "pwrsnapApi", {
     configurable: true,
     value: {
@@ -54,8 +74,17 @@ function installFakeApi(
           return { ok: true, value: { status: opts.requestStatus ?? report.screenRecording } };
         }
         if (name === "storage:capturesAccessHealth") return { ok: true, value: health };
+        if (name === "storage:capturesLocationStatus") {
+          return { ok: true, value: locationStatus };
+        }
         if (name === "storage:checkCapturesAccess") {
           return { ok: true, value: { granted: !health.denied } };
+        }
+        if (name === "storage:moveCapturesToDocuments") {
+          return {
+            ok: true,
+            value: { ...locationStatus, location: "documents", canMoveToDocuments: false }
+          };
         }
         return { ok: true, value: undefined };
       }
@@ -220,5 +249,35 @@ describe("SystemPermissionsPage — screen permission disambiguation", () => {
       checkBtn?.click();
     });
     expect(calls.map((c) => c.name)).toContain("storage:checkCapturesAccess");
+  });
+
+  test("home fallback is sticky while captures remain", async () => {
+    await render(baseReport, {
+      capturesLocation: "home",
+      documentsAccess: "confirmed",
+      homeCaptureReferences: 3
+    });
+    const row = rowByTag("home");
+    expect(row.textContent).toContain("Saving to ~/PwrSnap");
+    expect(row.textContent).toContain("3 capture item(s)");
+    expect(row.textContent).not.toContain("Use Documents for new captures");
+  });
+
+  test("empty home + confirmed Documents shows guarded move-back action", async () => {
+    const { calls } = await render(baseReport, {
+      capturesLocation: "home",
+      documentsAccess: "confirmed"
+    });
+    const row = rowByTag("home");
+    const move = Array.from(row.querySelectorAll("button")).find(
+      (button) => button.textContent === "Use Documents for new captures"
+    );
+    expect(move).toBeDefined();
+    await act(async () => {
+      move?.click();
+    });
+    expect(calls.map((call) => call.name)).toContain(
+      "storage:moveCapturesToDocuments"
+    );
   });
 });

@@ -36,6 +36,14 @@ const EXACT_OWNERS: Readonly<Record<string, CommandOwner>> = {
   "library:focus": "library",
   "library:openInLibrary": "library",
   "library:export": "library",
+  // Capture-folder health and location mutations share process-local state
+  // and an exclusive queue with capture persistence. They must remain with
+  // the capture owner even though their public names use storage:*.
+  "storage:capturesAccessHealth": "agent",
+  "storage:capturesLocationStatus": "agent",
+  "storage:openCapturesAccessSettings": "agent",
+  "storage:checkCapturesAccess": "agent",
+  "storage:moveCapturesToDocuments": "agent",
   // Library-surface-only utility registered alongside its callers.
   "clipboard:copyText": "library"
 };

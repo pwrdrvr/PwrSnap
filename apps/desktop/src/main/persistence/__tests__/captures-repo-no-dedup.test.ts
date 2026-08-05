@@ -187,7 +187,7 @@ describe("captures-repo no-dedup", () => {
       insertCapture,
       softDeleteCapture
     } = await import("../captures-repo");
-    const root = "/Users/test/PwrSnap";
+    const root = join("Users", "test", "PwrSnap");
 
     insertCapture({
       id: "home-path-capture",
@@ -196,7 +196,7 @@ describe("captures-repo no-dedup", () => {
       source_app_bundle_id: null,
       source_app_name: null,
       legacy_src_path: null,
-      bundle_path: `${root}/capture.pwrsnap`,
+      bundle_path: join(root, "capture.pwrsnap"),
       bundle_modified_at: "2026-08-04T10:00:00.000Z",
       bundle_format_version: 2,
       bundle_edits_version: 0,
@@ -215,7 +215,7 @@ describe("captures-repo no-dedup", () => {
     // guarded switch-back disabled.
     mocks.db!
       .prepare("UPDATE captures SET bundle_path = ? WHERE id = ?")
-      .run(`${root}-old/capture.pwrsnap`, "home-path-capture");
+      .run(join(`${root}-old`, "capture.pwrsnap"), "home-path-capture");
     expect(countCapturePathReferencesUnder(root)).toBe(0);
   });
 });

@@ -521,6 +521,7 @@ export type StorageSnapshot = {
   sourceCaptures: StorageBucket & {
     captureCount: number;
     documentsBytes: number;
+    homeBytes: number;
     appSupportBytes: number;
   };
   renderCache: StorageBucket;

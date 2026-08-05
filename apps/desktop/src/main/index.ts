@@ -29,6 +29,7 @@ import { activateApp, selfPidSet } from "./capture/window-list";
 import { appWindowsOverlappingRect } from "./capture/rect-overlap";
 import { guardScreenCapture } from "./capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "./capture/capture-storage-gate";
+import { reconcileCapturesLocationOnBoot } from "./capture/capture-location-reconciliation";
 import {
   resolveSelectionSourceApp,
   shouldConsiderRaisingOurWindows
@@ -101,6 +102,7 @@ import {
   registerSettingsWindowHandlers
 } from "./handlers/settings-handlers";
 import { registerStorageHandlers } from "./handlers/storage-handlers";
+import { registerCaptureStorageHandlers } from "./handlers/capture-storage-handlers";
 import { registerSizzleHandlers } from "./handlers/sizzle-handlers";
 import { registerCartHandlers } from "./handlers/cart-handlers";
 import { getSizzleStore } from "./sizzle/sizzle-store";
@@ -1670,10 +1672,11 @@ export function bootstrapApp(): void {
     // migrations, accounting, or filename maintenance can ask for it. This is
     // a settings read only: it never probes Documents and therefore never
     // triggers a TCC prompt at startup.
+    const storageSettingsService = new DesktopSettingsService({
+      filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
+    });
     try {
-      const storageSettings = await new DesktopSettingsService({
-        filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
-      }).read();
+      const storageSettings = await storageSettingsService.read();
       setCapturesLocation(storageSettings.storage.capturesLocation);
     } catch (cause) {
       log.warn("captures location: initial settings read failed; using Documents", {
@@ -1714,6 +1717,24 @@ export function bootstrapApp(): void {
     } else {
       await openDatabase();
       markStartup("main: database open");
+      const capturesLocationReconciliation = await reconcileCapturesLocationOnBoot(
+        storageSettingsService
+      );
+      if (capturesLocationReconciliation.changed) {
+        if (capturesLocationReconciliation.persisted) {
+          log.warn("captures location: recovered home fallback from stored paths", {
+            references: capturesLocationReconciliation.homeCaptureReferences
+          });
+        } else {
+          log.error("captures location: using recovered home fallback for this boot only", {
+            references: capturesLocationReconciliation.homeCaptureReferences,
+            message:
+              capturesLocationReconciliation.error instanceof Error
+                ? capturesLocationReconciliation.error.message
+                : String(capturesLocationReconciliation.error)
+          });
+        }
+      }
       // Reset enrichment runs that were `queued`/`running` when the
       // owning process last died — their live abort handle didn't
       // survive the exit, so they're orphaned and would otherwise wedge
@@ -1789,6 +1810,7 @@ export function bootstrapApp(): void {
         readLocalAgentMcpListenerStatus: () =>
           localAgentMcpLifecycle?.getStatus() ?? { state: "off" }
       });
+      registerCaptureStorageHandlers();
       registerCodexHandlers();
       registerCodexProfileHandlers();
       registerAcpHandlers();

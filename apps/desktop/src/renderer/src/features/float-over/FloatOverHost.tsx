@@ -480,6 +480,7 @@ export function FloatOverHost(): React.ReactElement {
         srcBytes={record.byte_size}
         srcDpr={record.device_pixel_ratio}
         exportStrategy={exportStrategyFromSettings(settings)}
+        capturesLocation={settings?.storage?.capturesLocation ?? "documents"}
         copyMetrics={copyMetrics}
         copyPulses={copyPulses}
         onDragFile={() => startCaptureDrag(record.id, "high")}

@@ -40,6 +40,7 @@ vi.mock("../../storage/accounting", () => ({
       fileCount: 0,
       captureCount: 0,
       documentsBytes: 0,
+      homeBytes: 0,
       appSupportBytes: 0
     },
     renderCache: { bytes: 0, fileCount: 0 },

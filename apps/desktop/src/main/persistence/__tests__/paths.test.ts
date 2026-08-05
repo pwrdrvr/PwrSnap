@@ -64,6 +64,7 @@ describe("paths accessors compose from getDataRoot", () => {
       getCapturesRoot,
       getCapturesLocation,
       getCapturesRootForLocation,
+      getDurableCapturesRoots,
       setCapturesLocation,
       getLegacyCapturesRoot,
       getCacheRoot,
@@ -80,6 +81,10 @@ describe("paths accessors compose from getDataRoot", () => {
     setCapturesLocation("home");
     expect(getCapturesRoot()).toBe(join("/tmp/pwrsnap-test-home", "PwrSnap"));
     expect(getCapturesRootForLocation("documents")).toBe(join(documents, "PwrSnap"));
+    expect(getDurableCapturesRoots()).toEqual([
+      { kind: "documents", path: join(documents, "PwrSnap") },
+      { kind: "home", path: join("/tmp/pwrsnap-test-home", "PwrSnap") }
+    ]);
     expect(getLegacyCapturesRoot()).toBe(join(userData, "captures"));
     expect(getCacheRoot()).toBe(join(userData, "render-cache"));
     expect(getLegacyCacheRoot()).toBe(join(userData, "cache"));
@@ -92,6 +97,7 @@ describe("paths accessors compose from getDataRoot", () => {
     const {
       getDbPath,
       getCapturesRoot,
+      getDurableCapturesRoots,
       setCapturesLocation,
       getLegacyCapturesRoot,
       getCacheRoot,
@@ -103,6 +109,9 @@ describe("paths accessors compose from getDataRoot", () => {
     const root = "/Volumes/Dev/pwrsnap-perf/100";
     expect(getDbPath()).toBe(join(root, "pwrsnap.db"));
     expect(getCapturesRoot()).toBe(join(root, "captures"));
+    expect(getDurableCapturesRoots()).toEqual([
+      { kind: "override", path: join(root, "captures") }
+    ]);
     setCapturesLocation("home");
     // The dev/test override always wins over a persisted user location.
     expect(getCapturesRoot()).toBe(join(root, "captures"));

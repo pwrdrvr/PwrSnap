@@ -96,6 +96,28 @@ export function getCapturesRootForLocation(location: CapturesLocation): string {
   return location === "home" ? getHomeCapturesRoot() : getDocumentsCapturesRoot();
 }
 
+export type DurableCapturesRoot = {
+  kind: CapturesLocation | "override";
+  path: string;
+};
+
+/**
+ * Every durable root that may contain capture sources for the current data
+ * store. Switching the active root is intentionally non-migrating, so
+ * whole-library operations (backup/accounting) must enumerate both default
+ * roots instead of treating {@link getCapturesRoot} as the entire library.
+ * Override mode remains a single hermetic tree.
+ */
+export function getDurableCapturesRoots(): readonly DurableCapturesRoot[] {
+  if (isOverriddenDataRoot()) {
+    return [{ kind: "override", path: join(getDataRoot(), "captures") }];
+  }
+  return [
+    { kind: "documents", path: getDocumentsCapturesRoot() },
+    { kind: "home", path: getHomeCapturesRoot() }
+  ];
+}
+
 export function getDocumentsCapturesRoot(): string {
   return join(app.getPath("documents"), "PwrSnap");
 }

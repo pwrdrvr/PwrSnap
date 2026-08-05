@@ -41,7 +41,11 @@ import {
 } from "../capture/region-selector";
 import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
 import { guardScreenCapture } from "../capture/screen-permission-gate";
-import { ensureCapturesDirReady } from "../capture/capture-storage-gate";
+import {
+  CapturesLocationFallbackError,
+  ensureCapturesDirReady,
+  runWithCapturesDirFallback
+} from "../capture/capture-storage-gate";
 import { releaseSnapshot } from "../capture/screen-snapshot";
 import { type WindowInfo } from "../capture/window-list";
 import {
@@ -1185,15 +1189,35 @@ async function persistAndBroadcast(
   // the scale it inferred from the pasted image's DPI metadata (pHYs /
   // TIFF resolution; 144 DPI → 2× Retina), falling back to 1 when the
   // source carried no density rather than defaulting to 2.
-  const { record } = await persistCaptureFromTempV2({
-    tempPath,
-    sourceApp:
-      sourceApp === null
-        ? null
-        : { bundleId: sourceApp.bundleId, appName: sourceApp.appName },
-    devicePixelRatio: options.devicePixelRatio,
-    cursorLayer: options.cursorLayer
-  });
+  let record: CaptureRecord;
+  try {
+    ({ record } = await runWithCapturesDirFallback((outputDir) =>
+      persistCaptureFromTempV2({
+        tempPath,
+        sourceApp:
+          sourceApp === null
+            ? null
+            : { bundleId: sourceApp.bundleId, appName: sourceApp.appName },
+        outputDir,
+        devicePixelRatio: options.devicePixelRatio,
+        cursorLayer: options.cursorLayer
+      })
+    ));
+  } catch (cause) {
+    const fallbackError =
+      cause instanceof CapturesLocationFallbackError ? cause.pwrSnapError : null;
+    log.error("capture persist failed", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    return err(
+      fallbackError ?? {
+        kind: "capture",
+        code: "persist_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      }
+    );
+  }
 
   log.info("capture persisted", {
     captureId: record.id,

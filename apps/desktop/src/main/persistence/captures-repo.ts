@@ -28,6 +28,7 @@ import type {
   LibraryCursor
 } from "@pwrsnap/shared";
 import { normalizeTagLabel } from "@pwrsnap/shared";
+import { sep } from "node:path";
 import { getDb } from "./db";
 import { listEnrichmentsByCaptureIds } from "./enrichment-repo";
 import { getVideoMetadata, listVideoMetadata } from "./video-repo";
@@ -240,6 +241,29 @@ export function updateCaptureBundlePath(captureId: string, bundlePath: string): 
      SET bundle_path = @bundle_path
      WHERE id = @id`
   ).run({ id: captureId, bundle_path: bundlePath });
+}
+
+/**
+ * Count rows whose durable absolute path still points inside `root`, including
+ * soft-deleted rows. Deleted rows matter: Restore moves their files back to
+ * the original stored path, so switching roots while one exists would create
+ * the same split library the sticky fallback is designed to avoid.
+ *
+ * Boundary-safe `substr` matching avoids LIKE wildcard escaping and prevents
+ * `/Users/me/PwrSnap-old` from matching `/Users/me/PwrSnap`.
+ */
+export function countCapturePathReferencesUnder(root: string): number {
+  const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM captures
+       WHERE (bundle_path IS NOT NULL AND substr(bundle_path, 1, length(@prefix)) = @prefix)
+          OR (flat_png_path IS NOT NULL AND substr(flat_png_path, 1, length(@prefix)) = @prefix)
+          OR (legacy_src_path IS NOT NULL AND substr(legacy_src_path, 1, length(@prefix)) = @prefix)`
+    )
+    .get({ prefix }) as { count: number };
+  return row.count;
 }
 
 export function updateCaptureLegacySourcePath(captureId: string, legacySrcPath: string): void {

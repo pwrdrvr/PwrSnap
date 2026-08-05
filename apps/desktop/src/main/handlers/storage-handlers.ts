@@ -1,9 +1,13 @@
 import { BrowserWindow, session, shell } from "electron";
+import { readdir } from "node:fs/promises";
 import { ok, err } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
-import type { RenderCacheMaintenanceMode } from "@pwrsnap/shared";
+import type {
+  CapturesLocationStatus,
+  RenderCacheMaintenanceMode
+} from "@pwrsnap/shared";
 import {
   getStorageSnapshot,
   getStorageSummary,
@@ -16,11 +20,22 @@ import {
   reportCapturesAccessFailure,
   reportCapturesAccessSuccess
 } from "../storage/captures-access-health";
-import { ensureCapturesDirReady } from "../capture/capture-storage-gate";
-import { getCapturesRoot } from "../persistence/paths";
+import {
+  ensureCapturesDirReady,
+  getCapturesRootAccessState
+} from "../capture/capture-storage-gate";
+import {
+  getCapturesLocation,
+  getCapturesRootForLocation,
+  getHomeCapturesRoot,
+  isOverriddenDataRoot,
+  setCapturesLocation
+} from "../persistence/paths";
+import { countCapturePathReferencesUnder } from "../persistence/captures-repo";
 
 const log = getMainLogger("pwrsnap:storage-handlers");
 let storageEventsRegistered = false;
+const ACCESS_PROBE_NAME = ".pwrsnap-access-probe";
 
 export function registerStorageHandlers(): void {
   registerStorageEventBroadcast();
@@ -93,6 +108,19 @@ export function registerStorageHandlers(): void {
     return ok(getCapturesAccessHealth());
   });
 
+  bus.register("storage:capturesLocationStatus", async () => {
+    try {
+      return ok(await getCapturesLocationStatus());
+    } catch (cause) {
+      return err({
+        kind: "persistence",
+        code: "captures_location_status_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
+  });
+
   bus.register("storage:openCapturesAccessSettings", async () => {
     // Same deep-link scheme as capture/permissions.ts — stable since
     // Sonoma, still works on macOS 26. Files & Folders is where the
@@ -121,8 +149,12 @@ export function registerStorageHandlers(): void {
     // button). Force a real write probe — it re-triggers the macOS
     // Documents prompt + re-registers PwrSnap when macOS has no decision
     // on file, and tells us definitively whether writes work right now.
-    const blocked = await ensureCapturesDirReady({ force: true });
-    const root = getCapturesRoot();
+    const blocked = await ensureCapturesDirReady({
+      force: true,
+      location: "documents",
+      fallbackOnDenial: false
+    });
+    const root = getCapturesRootForLocation("documents");
     if (blocked === null) {
       // Writable — clear any standing denial so the banner + Settings row
       // both recover.
@@ -137,6 +169,41 @@ export function registerStorageHandlers(): void {
     // returns null | err, so the `.ok` guard is just to satisfy the type.)
     reportCapturesAccessFailure(root, blocked.ok ? undefined : blocked.error.cause);
     return ok({ granted: false });
+  });
+
+  bus.register("storage:moveCapturesToDocuments", async () => {
+    try {
+      const status = await getCapturesLocationStatus();
+      if (!status.canMoveToDocuments) {
+        return err({
+          kind: "persistence",
+          code: "captures_move_not_allowed",
+          message: moveBackBlockedMessage(status)
+        });
+      }
+
+      // Settings is agent-owned in split mode. A nested dispatch stays local
+      // in combined mode and crosses the existing command-bus bridge from the
+      // library in split mode, preserving the single settings writer.
+      const written = await bus.dispatch(
+        "settings:write",
+        { storage: { capturesLocation: "documents" } },
+        { principal: "bridge" }
+      );
+      if (!written.ok) return err(written.error);
+
+      // The broadcast updates both main processes, but set synchronously in
+      // this process so the returned status already reflects the new root.
+      setCapturesLocation("documents");
+      return ok(await getCapturesLocationStatus());
+    } catch (cause) {
+      return err({
+        kind: "persistence",
+        code: "captures_move_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
   });
 
   bus.register("storage:maintainRenderCache", async (req) => {
@@ -163,6 +230,59 @@ export function registerStorageHandlers(): void {
       });
     }
   });
+}
+
+async function getCapturesLocationStatus(): Promise<CapturesLocationStatus> {
+  const overridden = isOverriddenDataRoot();
+  const homeRoot = getHomeCapturesRoot();
+  const [homeCaptureReferences, homeDirectoryEntryCount] = await Promise.all([
+    Promise.resolve(countCapturePathReferencesUnder(homeRoot)),
+    countHomeDirectoryEntries(homeRoot)
+  ]);
+  const location = getCapturesLocation();
+  const documentsAccess = getCapturesRootAccessState("documents");
+  return {
+    location,
+    documentsAccess,
+    homeCaptureReferences,
+    homeDirectoryEntryCount,
+    canMoveToDocuments:
+      !overridden &&
+      location === "home" &&
+      documentsAccess === "confirmed" &&
+      homeCaptureReferences === 0 &&
+      homeDirectoryEntryCount === 0,
+    overridden
+  };
+}
+
+async function countHomeDirectoryEntries(root: string): Promise<number> {
+  try {
+    const entries = await readdir(root);
+    return entries.filter((name) => name !== ACCESS_PROBE_NAME).length;
+  } catch (cause) {
+    if (
+      typeof cause === "object" &&
+      cause !== null &&
+      (cause as NodeJS.ErrnoException).code === "ENOENT"
+    ) {
+      return 0;
+    }
+    throw cause;
+  }
+}
+
+function moveBackBlockedMessage(status: CapturesLocationStatus): string {
+  if (status.overridden) {
+    return "The captures root is controlled by PWRSNAP_DATA_ROOT and can't be changed here.";
+  }
+  if (status.location !== "home") {
+    return "PwrSnap is already saving new captures to Documents.";
+  }
+  if (status.documentsAccess !== "confirmed") {
+    return "Check Documents access successfully before moving new captures back.";
+  }
+  return "~/PwrSnap still contains captures or database references. Remove or relocate them before switching roots.";
 }
 
 function isRenderCacheMaintenanceMode(value: unknown): value is RenderCacheMaintenanceMode {

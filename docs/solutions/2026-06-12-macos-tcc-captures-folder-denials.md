@@ -200,3 +200,47 @@ there. When denied it offers `storage:openCapturesAccessSettings` (Files &
 Folders pane). The check routes its result back through
 `reportCapturesAccessFailure/Success`, so the row, the banner, and the
 event stay in lockstep.
+
+## Addendum (2026-08-04): sticky `~/PwrSnap` fallback and test layers
+
+Issue #263 supersedes the June decision to stop after surfacing a denial.
+When a real Documents-scoped write returns `EPERM`/`EACCES`, PwrSnap now
+persists `storage.capturesLocation = "home"`, switches new captures to
+`~/PwrSnap`, and retries the failed persist once. The choice is sticky: a
+later Documents grant never silently moves new writes back and splits a
+large library across two roots. Existing rows remain readable because their
+bundle/source paths are absolute.
+
+Settings may switch new writes back to Documents only after an explicit
+successful Documents write probe and only while `~/PwrSnap` is empty **and**
+SQLite has no durable path reference below it (including soft-deleted rows,
+because Restore targets their original absolute paths). This is a root
+selection, not a migration; moving a populated library is separate work.
+
+### Two test layers, with different jobs
+
+1. The ordinary macOS Playwright suite exercises the application contract
+   deterministically by making its isolated `<fixture-home>/Documents`
+   directory non-writable. That produces a real filesystem `EACCES`, proves
+   fallback persistence + retry + stickiness + guarded switch-back, and never
+   touches the runner's TCC database or the host user's folders.
+
+2. A future native-consent lab test should validate the OS integration itself.
+   Playwright's Electron driver controls Chromium web contents; the consent
+   dialog is owned by macOS and sits outside that tree. Use a separately built,
+   consistently signed E2E app identity (for example
+   `com.pwrdrvr.pwrsnap.e2e`) and reset only its Documents decision with
+   `tccutil reset SystemPolicyDocumentsFolder <bundle-id>`. Never reset all
+   TCC state, never test through the unbranded `node_modules/Electron.app`, and
+   never reset the production PwrSnap bundle ID.
+
+The native click needs an XCTest UI-interruption handler or a small
+Accessibility (`AXUIElement`) controller. A separate controller needs its own
+Accessibility grant; on the persistent Tart runner that can be provisioned
+once, while the targeted Documents reset affects only the E2E app. That gives
+us a clean first-run Documents decision without paying for an ephemeral VM on
+every job. Apple references:
+[reset protected-resource access](https://developer.apple.com/documentation/xcode/resetting-access-to-protected-resources-in-macos),
+[`NSDocumentsFolderUsageDescription`](https://developer.apple.com/documentation/bundleresources/information-property-list/nsdocumentsfolderusagedescription),
+[XCTest UI interruptions](https://developer.apple.com/documentation/xctest/handling-ui-interruptions), and
+[`AXUIElement`](https://developer.apple.com/documentation/applicationservices/axuielement_h).

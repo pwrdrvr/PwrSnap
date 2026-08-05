@@ -33,6 +33,7 @@ import type {
   EditorSidebarSettings,
   EditorToolStyles,
   FilenameTimestampZone,
+  CapturesLocation,
   HotCpuProfileStartDelayMs,
   HotCpuProfileTriggerMode,
   LibrarySidebarTab,
@@ -186,7 +187,11 @@ export function defaultSettings(): Settings {
     storage: {
       // Local timestamps match what single users remember seeing on
       // screen/Finder. UTC is still available for shared-drive teams.
-      filenameTimestampZone: "local"
+      filenameTimestampZone: "local",
+      // Documents remains the discoverable first-run default. A real
+      // capture-time TCC denial flips this to home and persists it so later
+      // grants never silently split the library across two roots.
+      capturesLocation: "documents"
     },
     recording: {
       // Audio defaults OFF — recording either source is privacy-
@@ -355,6 +360,13 @@ function pickFilenameTimestampZone(
   fallback: FilenameTimestampZone
 ): FilenameTimestampZone {
   return value === "utc" || value === "local" ? value : fallback;
+}
+
+function pickCapturesLocation(
+  value: unknown,
+  fallback: CapturesLocation
+): CapturesLocation {
+  return value === "documents" || value === "home" ? value : fallback;
 }
 
 function pickNumber(value: unknown, fallback: number): number {
@@ -768,6 +780,12 @@ function parseV1(raw: unknown): Settings | null {
       filenameTimestampZone: pickFilenameTimestampZone(
         storage.filenameTimestampZone,
         defaults.storage.filenameTimestampZone
+      ),
+      // Additive v1 field: older settings files keep the historical
+      // Documents default; only an explicit successful fallback writes home.
+      capturesLocation: pickCapturesLocation(
+        storage.capturesLocation,
+        defaults.storage.capturesLocation
       )
     },
     recording: {

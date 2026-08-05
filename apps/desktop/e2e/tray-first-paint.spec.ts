@@ -98,7 +98,10 @@ type Checkpoints = {
   isVisible: number | null;
   firstResize: number | null;
   stableResize: number | null;
+  resizeApplied: number | null;
   finalContentHeight: number | null;
+  requestedContentHeight: number | null;
+  mainReportedContentHeight: number | null;
   resizeCount: number;
   timedOut: boolean;
 };
@@ -284,8 +287,11 @@ test.describe("tray popover first-paint baseline", () => {
               `isVisible=${fmt(result.isVisible)} ` +
               `firstResize=${fmt(result.firstResize)} ` +
               `stableResize=${fmt(result.stableResize)} ` +
+              `resizeApplied=${fmt(result.resizeApplied)} ` +
               `resizeCount=${result.resizeCount} ` +
-              `height=${result.finalContentHeight ?? "—"} ` +
+              `rendererHeight=${result.finalContentHeight ?? "—"} ` +
+              `requestedHeight=${result.requestedContentHeight ?? "—"} ` +
+              `mainReadbackHeight=${result.mainReportedContentHeight ?? "—"} ` +
               `timedOut=${result.timedOut}`
           );
         } finally {
@@ -307,7 +313,8 @@ test.describe("tray popover first-paint baseline", () => {
         "readyToShow",
         "isVisible",
         "firstResize",
-        "stableResize"
+        "stableResize",
+        "resizeApplied"
       ] as const) {
         // eslint-disable-next-line no-console
         console.log(summarize(key, pick(key)));
@@ -365,11 +372,13 @@ test.describe("tray popover first-paint baseline", () => {
         if (r.mode === "cold" && r.firstResize === null) {
           throw new Error(`run ${i + 1}: cold renderer never posted a resize event`);
         }
-        // Both modes: the popover must land inside the scenario's
-        // expected height window. Specifically rules out the 440×440
-        // constructor-frame regression (would land at height=440 if
-        // the renderer's resize never took effect) — a plain `> 100`
-        // floor would PASS for that bug, defeating the spec.
+        // Both modes: the RENDERER viewport must land inside the
+        // scenario's expected height window. Do not use BrowserWindow's
+        // getContentSize() readback for this assertion: Windows under a
+        // scaled VMware display can report the 440px constructor frame
+        // after the renderer viewport/capture surface correctly shrank to
+        // 302px. `innerHeight` is the same layout truth the product paints.
+        // It still specifically rules out the real 440×440 clamp regression.
         if (r.finalContentHeight === null) {
           throw new Error(`run ${i + 1}: tray popover content height is null`);
         }
@@ -387,7 +396,14 @@ test.describe("tray popover first-paint baseline", () => {
           throw new Error(
             `run ${i + 1}: tray popover height ${r.finalContentHeight} ` +
               `outside expected range [${scenario.minHeight}, ${scenario.maxHeight}] ` +
-              `for scenario "${scenario.label}"`
+            `for scenario "${scenario.label}"`
+          );
+        }
+        if (r.requestedContentHeight !== r.finalContentHeight) {
+          throw new Error(
+            `run ${i + 1}: renderer height ${r.finalContentHeight} did not apply the ` +
+              `resize-channel request ${String(r.requestedContentHeight)}; ` +
+              `main readback=${String(r.mainReportedContentHeight)}`
           );
         }
       }

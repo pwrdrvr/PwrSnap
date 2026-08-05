@@ -34,7 +34,11 @@ import {
   shouldConsiderRaisingOurWindows
 } from "./capture/source-app";
 import { getAppIconPath } from "./app-icons/app-icon-cache";
-import { disposeFloatOver, setFloatOverState } from "./float-over";
+import {
+  disposeFloatOver,
+  getFloatOverWindowIdForE2E,
+  setFloatOverState
+} from "./float-over";
 import { bus } from "./command-bus";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 import { installDevelopmentDockIcon } from "./development-dock-icon";
@@ -2121,6 +2125,7 @@ export function bootstrapApp(): void {
         // window — the main bug class the prior e2e suite missed.
         setFloatOverState: (event: Parameters<typeof setFloatOverState>[0]) =>
           setFloatOverState(event),
+        getFloatOverWindowId: () => getFloatOverWindowIdForE2E(),
         getEditsVersion: (captureId: string) => {
           const row = getDb()
             .prepare("SELECT edits_version FROM captures WHERE id = ?")

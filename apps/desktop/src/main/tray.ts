@@ -83,6 +83,16 @@ const TRAY_WIDTH = 440;
 
 let tray: Tray | null = null;
 let trayWindow: BrowserWindow | null = null;
+/**
+ * Last valid renderer measurement accepted by the production resize channel.
+ * BrowserWindow.getContentSize() is not a trustworthy applied-size signal on
+ * every platform: under a 2x-scaled VMware Windows display it can keep
+ * reporting the 440px constructor frame after the renderer viewport and
+ * capturePage surface have correctly shrunk to 302px. Keep the renderer's
+ * requested DIP height as the resize/readiness contract; E2E additionally
+ * reads `innerHeight` to prove the compositor actually received it.
+ */
+let lastTrayResizeRequest: { cssHeight: number; dipHeight: number } | null = null;
 let pendingDismiss: ReturnType<typeof setTimeout> | null = null;
 let currentTrayHotkeys: Settings["hotkeys"] = { ...DEFAULT_HOTKEYS };
 
@@ -139,6 +149,7 @@ function resolveTrayIconPath(): string {
 
 function ensureTrayWindow(): BrowserWindow {
   if (trayWindow !== null && !trayWindow.isDestroyed()) return trayWindow;
+  lastTrayResizeRequest = null;
   const window = createTrayWindow();
   trayWindow = window;
   wireBlurDismiss(window);
@@ -153,7 +164,10 @@ function ensureTrayWindow(): BrowserWindow {
   // re-converts CSS px → DIP with the current zoomFactor. See
   // docs/solutions/2026-07-15-popover-zoom-remeasure-dpr.md.
   window.on("closed", () => {
-    if (trayWindow === window) trayWindow = null;
+    if (trayWindow === window) {
+      trayWindow = null;
+      lastTrayResizeRequest = null;
+    }
   });
   return window;
 }
@@ -172,7 +186,7 @@ let trayResizeChannelWired = false;
 function wireTrayResizeChannel(): void {
   if (trayResizeChannelWired) return;
   trayResizeChannelWired = true;
-  ipcMain.on(TRAY_RESIZE_CHANNEL, (_event, payload: unknown) => {
+  ipcMain.on(TRAY_RESIZE_CHANNEL, (event, payload: unknown) => {
     if (
       payload === null ||
       typeof payload !== "object" ||
@@ -183,6 +197,9 @@ function wireTrayResizeChannel(): void {
     const requestedCss = (payload as { height: number }).height;
     if (!Number.isFinite(requestedCss)) return;
     if (trayWindow === null || trayWindow.isDestroyed()) return;
+    // Ignore a late post from a window that was destroyed/replaced between
+    // renderer measurement and IPC delivery.
+    if (event.sender !== trayWindow.webContents) return;
     // Renderer measures in CSS pixels (post-zoom). `setContentSize`
     // takes DIP (zoom-independent). When the session's zoomFactor is
     // not 1.0 (e.g. user Cmd-+'d in the library — zoom is shared
@@ -194,7 +211,7 @@ function wireTrayResizeChannel(): void {
     const zoom = trayWindow.webContents.zoomFactor;
     const requestedDip = Math.ceil(requestedCss * zoom);
     const clamped = Math.max(TRAY_HEIGHT_MIN, Math.min(TRAY_HEIGHT_MAX, requestedDip));
-    if (trayWindow.getContentSize()[1] === clamped) return;
+    if (lastTrayResizeRequest?.dipHeight === clamped) return;
     // Belt-and-braces: every resize call lifts the implicit minimum
     // size first. The createTrayWindow call already does this once on
     // first construction, but if anything later re-asserts a min size
@@ -203,6 +220,7 @@ function wireTrayResizeChannel(): void {
     // re-call — Electron coalesces same-value setMinimumSize calls.
     trayWindow.setMinimumSize(0, 0);
     trayWindow.setContentSize(TRAY_WIDTH, clamped, false);
+    lastTrayResizeRequest = { cssHeight: requestedCss, dipHeight: clamped };
     if (tray !== null && trayWindow.isVisible()) {
       positionTrayWindow(trayWindow, tray.getBounds());
     }
@@ -405,6 +423,7 @@ export function disposeTray(): void {
     trayWindow.destroy();
     trayWindow = null;
   }
+  lastTrayResizeRequest = null;
   if (tray !== null) {
     tray.destroy();
     tray = null;
@@ -499,7 +518,10 @@ export async function measureTrayFirstPaintForE2E(options: {
   isVisible: number | null;
   firstResize: number | null;
   stableResize: number | null;
+  resizeApplied: number | null;
   finalContentHeight: number | null;
+  requestedContentHeight: number | null;
+  mainReportedContentHeight: number | null;
   resizeCount: number;
   timedOut: boolean;
 }> {
@@ -594,22 +616,65 @@ export async function measureTrayFirstPaintForE2E(options: {
   // screen window in and the spec can read back isVisible.
   const minimumPrewarmedHoldMs = 60;
   // The seeded content (if any) must have actually landed before we
-  // accept the size as final — see `minStableHeight`. Cheap: a
-  // synchronous getContentSize read, no IPC. Trivially true for the
-  // empty-tray scenarios (their floor is below the empty height) and
-  // for callers that pass no floor.
-  const heightSettled = (): boolean =>
-    !window.isDestroyed() && window.getContentSize()[1] >= minStableHeight;
+  // accept the size as final — see `minStableHeight`. A resize request
+  // alone is not readiness: Windows/VMware can update getContentSize()
+  // synchronously while Chromium's renderer viewport still has the old
+  // height for another native event-loop turn. Read renderer innerHeight
+  // and require it to acknowledge the CSS-height request. This keeps both
+  // possible main-process readback lies (stale 440 and optimistic 688) out
+  // of the first-paint contract.
+  const resizeRequested = (): boolean =>
+    !window.isDestroyed() &&
+    lastTrayResizeRequest !== null &&
+    lastTrayResizeRequest.dipHeight >= minStableHeight;
+  let resizeApplied: number | null = null;
+  let finalContentHeight: number | null = null;
+  const rendererAppliedResize = async (): Promise<boolean> => {
+    if (
+      !resizeRequested() ||
+      window.isDestroyed() ||
+      window.webContents.isDestroyed() ||
+      lastTrayResizeRequest === null
+    ) {
+      return false;
+    }
+    const request = lastTrayResizeRequest;
+    try {
+      const rendererHeight = (await window.webContents.executeJavaScript(
+        "globalThis.innerHeight",
+        true
+      )) as unknown;
+      if (typeof rendererHeight !== "number" || !Number.isFinite(rendererHeight)) {
+        return false;
+      }
+      finalContentHeight = rendererHeight;
+      // innerHeight is expressed in renderer CSS pixels, while Electron's
+      // setContentSize and our dipHeight telemetry are in DIP. Compare with
+      // the original CSS measurement so this remains correct under zoom.
+      if (
+        lastTrayResizeRequest === request &&
+        Math.abs(rendererHeight - request.cssHeight) <= 1
+      ) {
+        if (resizeApplied === null) resizeApplied = mark();
+        return true;
+      }
+    } catch {
+      // The page may still be navigating. Keep polling until the existing
+      // deadline; a permanently unavailable renderer reports timedOut=true.
+    }
+    return false;
+  };
   let timedOut = true;
   while (performance.now() < deadline) {
     if (isVisible === null && !window.isDestroyed() && window.isVisible()) {
       isVisible = mark();
     }
+    const applied = await rendererAppliedResize();
     if (mode === "prewarmed") {
       if (
         isVisible !== null &&
         performance.now() - startedAt >= minimumPrewarmedHoldMs &&
-        heightSettled()
+        applied
       ) {
         timedOut = false;
         break;
@@ -617,7 +682,7 @@ export async function measureTrayFirstPaintForE2E(options: {
     } else if (
       lastResizeAt > 0 &&
       performance.now() - lastResizeAt >= stableMs &&
-      heightSettled()
+      applied
     ) {
       timedOut = false;
       break;
@@ -628,7 +693,25 @@ export async function measureTrayFirstPaintForE2E(options: {
   ipcMain.off(TRAY_RESIZE_CHANNEL, probe);
 
   const stableResize = lastResizeAt > 0 ? Math.round((lastResizeAt - t0) * 100) / 100 : null;
-  const finalContentHeight = !window.isDestroyed() ? window.getContentSize()[1] : null;
+  const mainReportedContentHeight = !window.isDestroyed() ? window.getContentSize()[1] : null;
+  const requestedContentHeight = lastTrayResizeRequest?.dipHeight ?? null;
+  // Preserve the final renderer truth in timeout diagnostics too. The loop
+  // normally populated this while checking the acknowledgement; this last
+  // read covers destruction/navigation races where no request was accepted.
+  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+    try {
+      const rendererHeight = (await window.webContents.executeJavaScript(
+        "globalThis.innerHeight",
+        true
+      )) as unknown;
+      if (typeof rendererHeight === "number" && Number.isFinite(rendererHeight)) {
+        finalContentHeight = rendererHeight;
+      }
+    } catch {
+      // A crashed/navigating renderer is reported as null and fails the spec's
+      // strict final-height assertion with useful checkpoint context.
+    }
+  }
 
   return {
     mode,
@@ -639,7 +722,10 @@ export async function measureTrayFirstPaintForE2E(options: {
     isVisible,
     firstResize,
     stableResize,
+    resizeApplied,
     finalContentHeight,
+    requestedContentHeight,
+    mainReportedContentHeight,
     resizeCount,
     timedOut
   };

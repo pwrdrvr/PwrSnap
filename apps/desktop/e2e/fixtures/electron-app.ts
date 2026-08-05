@@ -673,10 +673,16 @@ export async function launchPwrSnap(
       // implicit-minimum clamp documented in AGENTS.md → "BrowserWindow
       // sizing"). The renderer's innerWidth/innerHeight is the only
       // truthful signal. To unstick, each retry must be a REAL frame
-      // change — alternate the height by 1px so macOS performs a fresh
-      // contentView layout, and only the exact-target application can
-      // satisfy the poll.
+      // change. macOS needs a 1px nudge to force a fresh contentView
+      // layout. Windows under a scaled VMware display can instead apply
+      // setContentSize(1440, 900) as a 1439x901 renderer viewport because
+      // the native frame/content conversion rounds each axis in opposite
+      // directions. Once the renderer is within 2px of the target, feed
+      // that measured error back into the next native request (1441x899 in
+      // that example). The assertion remains exact: this compensates the
+      // native request, it does not relax the layout viewport the spec uses.
       let attempt = 0;
+      let lastRequest: { width: number; height: number } | null = null;
       await expect
         .poll(async () => {
           const current = await window.evaluate(() => ({
@@ -686,7 +692,26 @@ export async function launchPwrSnap(
           if (current.innerWidth === size.width && current.innerHeight === size.height) {
             return current;
           }
-          const bump = attempt % 2;
+          const widthError = size.width - current.innerWidth;
+          const heightError = size.height - current.innerHeight;
+          const nearTarget = (error: number): boolean => Math.abs(error) <= 2;
+          const request = {
+            width: size.width + (nearTarget(widthError) ? widthError : 0),
+            height:
+              size.height +
+              (nearTarget(heightError) ? heightError : attempt % 2)
+          };
+          // A repeated native request can be coalesced even while Chromium's
+          // renderer surface is stale. Force a real frame change and let the
+          // following poll return to the measured compensation.
+          if (
+            lastRequest !== null &&
+            request.width === lastRequest.width &&
+            request.height === lastRequest.height
+          ) {
+            request.height += attempt % 2 === 0 ? 1 : -1;
+          }
+          lastRequest = request;
           attempt += 1;
           await core.electronApp.evaluate(({ BrowserWindow }, target) => {
             // Pick the LIBRARY window, not just the first live window:
@@ -708,8 +733,8 @@ export async function launchPwrSnap(
             });
             if (!win) throw new Error("no live library BrowserWindow to resize");
             win.setMinimumSize(0, 0);
-            win.setContentSize(target.width, target.height + target.bump);
-          }, { width: size.width, height: size.height, bump });
+            win.setContentSize(target.width, target.height);
+          }, request);
           return window.evaluate(() => ({
             innerWidth: globalThis.innerWidth,
             innerHeight: globalThis.innerHeight

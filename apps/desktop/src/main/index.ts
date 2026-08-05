@@ -1080,7 +1080,11 @@ async function runInteractiveRecord(
     // Library as a valid target.
     protectWindowIds,
     // Seed the selector's cursor toggle from the persisted default.
-    cursorDefault: settings.recording.videoCaptureCursor
+    cursorDefault: settings.recording.videoCaptureCursor,
+    recordingCapabilities: {
+      systemAudio: settings.recording.includeSystemAudio,
+      microphone: settings.recording.includeMicrophone
+    }
   });
   if (!selection.ok) {
     setFloatOverState({ kind: "cancel" });
@@ -1197,13 +1201,31 @@ async function runInteractiveRecord(
     scheduleDockReclaim();
     log.debug("video-record left previous app frontmost", { previousAppPid });
   }
-  // Honor the user's persisted audio defaults; the in-context
-  // recording dialog (a later enhancement) can override these.
-  // `settings` is read once above (before the picker) and reused here.
-  const capabilities = {
+  const capabilities = selection.recordingCapabilities ?? {
     systemAudio: settings.recording.includeSystemAudio,
     microphone: settings.recording.includeMicrophone
   };
+  if (
+    capabilities.systemAudio !== settings.recording.includeSystemAudio ||
+    capabilities.microphone !== settings.recording.includeMicrophone
+  ) {
+    const persisted = await bus.dispatch(
+      "settings:write",
+      {
+        recording: {
+          includeSystemAudio: capabilities.systemAudio,
+          includeMicrophone: capabilities.microphone
+        }
+      },
+      { principal: "ipc" }
+    );
+    if (!persisted.ok) {
+      log.warn("video-record: failed to persist audio choices", {
+        code: persisted.error.code,
+        message: persisted.error.message
+      });
+    }
+  }
   // Source-app attribution mirrors the image-capture path
   // (capture-handlers.ts) via the shared `resolveSelectionSourceApp`
   // helper: snap-target id first, rect-center hit test as fallback,

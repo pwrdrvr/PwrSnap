@@ -17,6 +17,7 @@
 
 import { app, BrowserWindow, globalShortcut, ipcMain, screen, type Display } from "electron";
 import { join } from "node:path";
+import type { RecordingCapabilities } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
 import {
@@ -176,6 +177,9 @@ export type SelectorResult =
        *  `settings.recording.videoCaptureCursor`). Undefined for image
        *  captures, which don't consume it yet (Phase 3). */
       captureCursor?: boolean;
+      /** Video-only audio choices shown in the selector. Undefined for
+       *  image captures. */
+      recordingCapabilities?: RecordingCapabilities;
     }
   | {
       ok: false;
@@ -348,6 +352,12 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           if (typeof payload.captureCursor === "boolean") {
             result.captureCursor = payload.captureCursor;
           }
+          if (payload.recordingCapabilities !== undefined) {
+            result.recordingCapabilities = {
+              systemAudio: payload.recordingCapabilities.systemAudio,
+              microphone: payload.recordingCapabilities.microphone
+            };
+          }
           resolver(result);
         }
       } else {
@@ -419,6 +429,8 @@ export async function pickRegion(
      *  the renderer in the mode signal; the committed value rides back
      *  on the result as `captureCursor`. */
     cursorDefault?: boolean;
+    /** Video-only seed for the selector's audio toggles. */
+    recordingCapabilities?: RecordingCapabilities;
   } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
@@ -654,7 +666,10 @@ export async function pickRegion(
             mode,
             screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}`,
             intent,
-            cursor: cursorDefault
+            cursor: cursorDefault,
+            ...(intent === "video" && opts.recordingCapabilities !== undefined
+              ? { recordingCapabilities: opts.recordingCapabilities }
+              : {})
           }
         : null;
     if (!win.isDestroyed() && modePayload !== null) {
@@ -1550,6 +1565,7 @@ function isSelectorPayload(value: unknown): value is {
   snappedWindowId?: number;
   fullWindow?: boolean;
   captureCursor?: boolean;
+  recordingCapabilities?: RecordingCapabilities;
 } {
   if (value === null || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -1574,6 +1590,18 @@ function isSelectorPayload(value: unknown): value is {
   }
   if (v.captureCursor !== undefined && typeof v.captureCursor !== "boolean") {
     return false;
+  }
+  if (v.recordingCapabilities !== undefined) {
+    if (v.recordingCapabilities === null || typeof v.recordingCapabilities !== "object") {
+      return false;
+    }
+    const capabilities = v.recordingCapabilities as Record<string, unknown>;
+    if (
+      typeof capabilities.systemAudio !== "boolean" ||
+      typeof capabilities.microphone !== "boolean"
+    ) {
+      return false;
+    }
   }
   return true;
 }

@@ -62,6 +62,25 @@ approval, Session authentication, role resolution, history scope, and usage
 budgets remain mandatory and fail closed. The diagnostic
 `PWRSNAP_DISABLE_LOCAL_AGENT_MCP=1` override remains a hard-off switch.
 
+## Amendment — 2026-08-05: Role-Native Consent and Blocking Image Edits
+
+Native OAuth approval selects from PwrSnap's existing RBAC roles rather than
+maintaining a second consent-preset vocabulary. PwrSnap offers only roles whose
+permissions are wholly contained in the OAuth client's requested scopes. The
+Custom option likewise exposes only requested permissions and lets the user
+limit capture history to 7, 30, or 90 days, one year, or all time. Both the
+native consent broker and OAuth provider enforce approved capabilities as a
+subset of the requested capabilities.
+
+Image edits use one blocking `pwrsnap_image_edit_send` call. A caller can send
+one instruction or a batch of up to 20 instructions in the same model turn.
+PwrSnap waits internally for the Library Chat editor turn to become idle and,
+by default, returns the finished composite as a typed MCP `resource_link`.
+Callers planning another edit can set `returnImage: false`; callers requesting
+media also need `capture.export`. The public `pwrsnap_image_edit_status` polling
+tool is removed so cheap progress checks never replay the calling agent's full
+model context.
+
 ## Summary
 
 Expose PwrSnap as a local, capability-scoped MCP server so PwrAgent and
@@ -380,16 +399,16 @@ toggles even when a broad preset is selected.
   - Requires: `capture.edit` and `capture.composite.read`. The PwrSnap-owned
     Editor Chat agent renders the current composite to ground its edits, so the
     outer request must authorize the nested vision read before starting a turn.
-  - Args: capture id, instruction, requested PwrSnap provider/model, optional
-    thread id, reuse policy.
-  - Wraps: Library Chat thread create/list/send substrate.
-  - Returns: PwrSnap thread id, turn id, and status only.
-
-- `pwrsnap_image_edit_status`
-  - Requires: `capture.edit`
-  - Args: capture id and PwrSnap thread id.
-  - Returns: the persistent thread status only. Once idle, callers retrieve
-    the current edited composite through `pwrsnap_capture_resource`.
+    Returning media additionally requires `capture.export`.
+  - Args: capture id; `instruction` or `instructions[]` (up to 20); requested
+    PwrSnap provider/model; optional thread id and reuse policy;
+    `returnImage` (default true); and `low` / `med` / `high` output preset.
+  - Wraps: Library Chat thread create/list/send/wait plus capture export when
+    the caller requests media.
+  - Returns after the editor turn is idle with the PwrSnap thread/turn receipt,
+    status, edit count, and assistant summary. By default the response also
+    attaches the finished composite as a typed MCP `resource_link`; callers
+    can set `returnImage: false` when another edit will follow.
 
 - `pwrsnap_sizzle_create`
   - Requires: `sizzle.compose`
@@ -686,8 +705,14 @@ logged, persisted, or shared.
   - Explicit thread id for a different capture is rejected.
   - Requested model is passed as a PwrSnap model routing hint and does not
     require the caller to have that model.
-  - Completed turn returns idle status; `pwrsnap_capture_resource` then returns
-    the fresh current composite through the canonical media-delivery path.
+  - One request can batch up to 20 instructions into the same editor turn.
+  - The MCP request blocks inside PwrSnap until the editor turn becomes idle;
+    no public status-polling tool is exposed.
+  - Completed turns return the fresh current composite through the canonical
+    media-delivery path by default, or only a receipt when `returnImage` is
+    false.
+  - Returning the composite dynamically requires `capture.export`; a
+    receipt-only edit does not.
   - In-flight edit fails cleanly if the capture is moved to trash.
 - **Verification:** Controller/store tests with fake Codex thread client and
   MCP tool tests around thread selection.
@@ -782,8 +807,8 @@ logged, persisted, or shared.
 - AE4. An agent asks, "use GPT-5.5 to add an arrow pointing at the Save
   button." PwrSnap creates or reuses a Library Chat thread anchored to that
   capture, routes the turn through PwrSnap's Codex configuration, writes normal
-  v2 layers. Once its thread is idle, the agent retrieves the current composite
-  through `pwrsnap_capture_resource`.
+  v2 layers, waits for the thread to become idle, and returns the current
+  composite in the blocking edit response.
 
 - AE5. A follow-up says, "make that arrow thicker." PwrSnap routes to the same
   compatible capture thread unless the caller supplies a valid thread id.

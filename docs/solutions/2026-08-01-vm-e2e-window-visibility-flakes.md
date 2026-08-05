@@ -1,4 +1,4 @@
-# Tart-VM E2E flakes: `visible === false` on freshly-shown windows
+# macOS VM E2E flakes: `visible === false` on freshly-shown windows
 
 **Date:** 2026-08-01
 **Specs:** `dock-lifecycle.spec.ts` (tests 1–2), `tray-sizing.spec.ts:196`
@@ -7,8 +7,8 @@ product change was needed).
 
 ## Symptom
 
-Running the full desktop E2E suite inside the Tart macOS Sequoia VM
-(`~/pwrsnap-mac-vm/run-e2e.sh`), `dock-lifecycle.spec.ts` failed with
+Running the full desktop E2E suite inside an operator-provided macOS VM,
+`dock-lifecycle.spec.ts` failed with
 `afterStrip.visible === false` — i.e. after `app.dock.hide()` the
 Library window reported not-visible to the OS. The same suite passed
 when the spec ran alone or in small pairings. `tray-sizing.spec.ts`

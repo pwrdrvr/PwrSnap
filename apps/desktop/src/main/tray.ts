@@ -86,7 +86,7 @@ let trayWindow: BrowserWindow | null = null;
 /**
  * Last valid renderer measurement accepted by the production resize channel.
  * BrowserWindow.getContentSize() is not a trustworthy applied-size signal on
- * every platform: under a 2x-scaled VMware Windows display it can keep
+ * every platform: under some scaled Windows displays it can keep
  * reporting the 440px constructor frame after the renderer viewport and
  * capturePage surface have correctly shrunk to 302px. Keep the renderer's
  * requested DIP height as the resize/readiness contract; E2E additionally
@@ -617,7 +617,7 @@ export async function measureTrayFirstPaintForE2E(options: {
   const minimumPrewarmedHoldMs = 60;
   // The seeded content (if any) must have actually landed before we
   // accept the size as final — see `minStableHeight`. A resize request
-  // alone is not readiness: Windows/VMware can update getContentSize()
+  // alone is not readiness: Windows can update getContentSize()
   // synchronously while Chromium's renderer viewport still has the old
   // height for another native event-loop turn. Read renderer innerHeight
   // and require it to acknowledge the CSS-height request. This keeps both

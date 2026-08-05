@@ -130,12 +130,10 @@ jobs:
 
   desktop-e2e-macos:
     name: macOS Desktop E2E (self-hosted VM)
-    # Shared PwrDrvr organization runner group backed by Tart VMs on PwrDrvr
-    # hardware (softnet-isolated; the paranoid mode uses one VM per job).
-    # The same restricted group also serves PwrAgent; do not turn it back into
-    # a repository-scoped runner. This is the only lane that exercises the
-    # macOS-only specs (clipboard, tray, menu-bar, AppKit windowing); GH-hosted
-    # macOS runners are cost-prohibitive for per-PR E2E.
+    # Restricted organization-scoped self-hosted runner group. This is the
+    # only lane that exercises macOS-only specs (clipboard, tray, menu-bar,
+    # AppKit windowing); GH-hosted macOS runners are cost-prohibitive for
+    # per-PR E2E.
     #
     # Fork-PR guard: never schedule this job for PRs whose head repo
     # isn't pwrdrvr/PwrSnap. Self-hosted runners must not execute
@@ -165,11 +163,8 @@ jobs:
         run: pnpm rebuild:electron-native
 
       - name: Run desktop Electron E2E specs
-        # The VM auto-logs-in its user to a console GUI session, so
-        # headed Electron windows render on the VM's own display.
-        # Software rendering: the VM's AppleParavirtGPU resets under
-        # Electron GPU load (WindowServer stalls -> visibility flakes,
-        # worst case guest panic). SwiftShader sidesteps it — see
+        # The runner provides a console GUI session for headed Electron.
+        # Software rendering avoids known virtual-GPU visibility flakes; see
         # docs/solutions/2026-08-01-vm-e2e-window-visibility-flakes.md.
         env:
           PWRSNAP_E2E_DISABLE_GPU: "1"

@@ -674,7 +674,7 @@ export async function launchPwrSnap(
       // sizing"). The renderer's innerWidth/innerHeight is the only
       // truthful signal. To unstick, each retry must be a REAL frame
       // change. macOS needs a 1px nudge to force a fresh contentView
-      // layout. Windows under a scaled VMware display can instead apply
+      // layout. Windows under some scaled display configurations can apply
       // setContentSize(1440, 900) as a 1439x901 renderer viewport because
       // the native frame/content conversion rounds each axis in opposite
       // directions. Once the renderer is within 2px of the target, feed

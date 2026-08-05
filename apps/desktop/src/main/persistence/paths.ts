@@ -5,7 +5,8 @@
 //
 // Default layout (env unset):
 //   pwrsnap.db                          → <userData>/pwrsnap.db
-//   captures/<id>.png                   → <documents>/PwrSnap/<id>.png
+//   captures/<id>.png                   → <documents>/PwrSnap/<id>.png (default)
+//                                       → <home>/PwrSnap/<id>.png (sticky fallback)
 //   render-cache/<capture_id>/<hash>.<format>  → <userData>/render-cache/...
 //   pending-sources/<capture_id>/<sha>.png      → <userData>/pending-sources/...
 //   .trash/<id>.png                     → <userData>/.trash/...
@@ -37,8 +38,24 @@
 import { app } from "electron";
 import { statSync } from "node:fs";
 import { join } from "node:path";
+import type { CapturesLocation } from "@pwrsnap/shared";
 
 const ENV_KEY = "PWRSNAP_DATA_ROOT";
+
+// `getCapturesRoot()` is synchronous and sits on hot persistence paths, while
+// settings reads are async. Bootstrap resolves the saved value before opening
+// the DB and updates this slot through the main-side settings listener. The
+// default is deliberately Documents so a missing/old settings file preserves
+// historical behavior.
+let capturesLocation: CapturesLocation = "documents";
+
+export function setCapturesLocation(location: CapturesLocation): void {
+  capturesLocation = location;
+}
+
+export function getCapturesLocation(): CapturesLocation {
+  return capturesLocation;
+}
 
 /**
  * Resolve the active data root. When `PWRSNAP_DATA_ROOT` is set to a
@@ -66,12 +83,25 @@ export function getDbPath(): string {
 
 /**
  * Captures source store. Default = `~/Documents/PwrSnap` (user-visible,
- * survives uninstall). Override = `<root>/captures` (flat under the
- * dev-seeder tree).
+ * survives uninstall). A remembered Documents denial selects `~/PwrSnap`.
+ * Override = `<root>/captures` (flat under the dev-seeder tree) and always
+ * wins over the user setting so tests/seeders remain hermetic.
  */
 export function getCapturesRoot(): string {
+  return getCapturesRootForLocation(capturesLocation);
+}
+
+export function getCapturesRootForLocation(location: CapturesLocation): string {
   if (isOverriddenDataRoot()) return join(getDataRoot(), "captures");
+  return location === "home" ? getHomeCapturesRoot() : getDocumentsCapturesRoot();
+}
+
+export function getDocumentsCapturesRoot(): string {
   return join(app.getPath("documents"), "PwrSnap");
+}
+
+export function getHomeCapturesRoot(): string {
+  return join(app.getPath("home"), "PwrSnap");
 }
 
 export function getLegacyCapturesRoot(): string {

@@ -2112,6 +2112,10 @@ export type Settings = {
      *  date/time the user remembers. UTC is opt-in for shared-drive /
      *  cross-timezone workflows where absolute ordering matters more. */
     filenameTimestampZone: FilenameTimestampZone;
+    /** Root used for NEW captures. `home` is selected automatically after a
+     *  real Documents permission denial and remains sticky until the user
+     *  explicitly switches back from Settings. */
+    capturesLocation: CapturesLocation;
   };
   /**
    * Per-user defaults the recording UI seeds from. Audio toggles
@@ -2585,6 +2589,22 @@ export type UpdateChannel = "latest" | "prerelease";
 
 /** Timestamp zone used in generated `.pwrsnap` filenames. */
 export type FilenameTimestampZone = "local" | "utc";
+
+/** User-visible root for newly-created captures. Existing capture rows keep
+ *  absolute paths, so changing this value never relocates prior files. */
+export type CapturesLocation = "documents" | "home";
+
+/** Non-prompting snapshot for Settings → System Permissions. A confirmed
+ *  Documents state lasts only for the current process session and is set by
+ *  an explicit Check access probe. */
+export type CapturesLocationStatus = {
+  location: CapturesLocation;
+  documentsAccess: "unknown" | "confirmed" | "denied";
+  homeCaptureReferences: number;
+  homeDirectoryEntryCount: number;
+  canMoveToDocuments: boolean;
+  overridden: boolean;
+};
 
 /** Deep-partial patch shape. `undefined` = leave untouched. Each nested
  *  object is independently optional so a renderer can write a single
@@ -3189,6 +3209,12 @@ export type Commands = {
    *  Renderers read this once on mount, then subscribe to
    *  `events:storage:captures-access` for changes. */
   "storage:capturesAccessHealth": { req: Record<string, never>; res: CapturesAccessHealth };
+  /** Read the active captures root + guarded switch-back eligibility without
+   *  touching Documents (and therefore without triggering a macOS prompt). */
+  "storage:capturesLocationStatus": {
+    req: Record<string, never>;
+    res: CapturesLocationStatus;
+  };
   /** Open System Settings → Privacy & Security → Files & Folders so
    *  the user can grant Documents access. No-op off macOS. */
   "storage:openCapturesAccessSettings": { req: Record<string, never>; res: void };
@@ -3201,6 +3227,13 @@ export type Commands = {
   "storage:checkCapturesAccess": {
     req: Record<string, never>;
     res: { granted: boolean };
+  };
+  /** Switch new captures back to Documents. Main re-checks that ~/PwrSnap is
+   *  empty on disk, no DB path points there, and Documents was explicitly
+   *  confirmed this session; the renderer cannot bypass those guards. */
+  "storage:moveCapturesToDocuments": {
+    req: Record<string, never>;
+    res: CapturesLocationStatus;
   };
 
   // ---- layers (v2 captures only) ----

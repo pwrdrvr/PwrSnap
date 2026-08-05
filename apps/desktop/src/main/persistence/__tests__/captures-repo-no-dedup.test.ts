@@ -180,4 +180,42 @@ describe("captures-repo no-dedup", () => {
       .get() as { n: number };
     expect(liveCount.n).toBe(2);
   });
+
+  test("home-root reference count includes trash rows and respects path boundaries", async () => {
+    const {
+      countCapturePathReferencesUnder,
+      insertCapture,
+      softDeleteCapture
+    } = await import("../captures-repo");
+    const root = "/Users/test/PwrSnap";
+
+    insertCapture({
+      id: "home-path-capture",
+      kind: "image",
+      captured_at: "2026-08-04T10:00:00.000Z",
+      source_app_bundle_id: null,
+      source_app_name: null,
+      legacy_src_path: null,
+      bundle_path: `${root}/capture.pwrsnap`,
+      bundle_modified_at: "2026-08-04T10:00:00.000Z",
+      bundle_format_version: 2,
+      bundle_edits_version: 0,
+      width_px: 100,
+      height_px: 100,
+      device_pixel_ratio: 2,
+      byte_size: 100,
+      sha256: "c".repeat(64)
+    });
+
+    expect(countCapturePathReferencesUnder(root)).toBe(1);
+    softDeleteCapture("home-path-capture");
+    expect(countCapturePathReferencesUnder(root)).toBe(1);
+
+    // Similar textual prefixes are different roots and must not keep the
+    // guarded switch-back disabled.
+    mocks.db!
+      .prepare("UPDATE captures SET bundle_path = ? WHERE id = ?")
+      .run(`${root}-old/capture.pwrsnap`, "home-path-capture");
+    expect(countCapturePathReferencesUnder(root)).toBe(0);
+  });
 });

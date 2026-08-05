@@ -493,6 +493,19 @@ export function validateSettingsWrite(
         )
       };
     }
+    if (
+      !isUndefined(storage.capturesLocation) &&
+      storage.capturesLocation !== "documents" &&
+      storage.capturesLocation !== "home"
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_storage_capturesLocation",
+          "settings:write: storage.capturesLocation must be \"documents\" or \"home\""
+        )
+      };
+    }
   }
 
   if (p.recording !== undefined) {

@@ -26,6 +26,7 @@
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import type {
   CapturesAccessHealth,
+  CapturesLocationStatus,
   PermissionReadinessReport,
   RecordingPermission,
   RecordingPermissionStatus
@@ -118,6 +119,7 @@ export function SystemPermissionsPage(): ReactElement {
   // signal (the same one the Library banner uses) and offer an active
   // "Check access" that probes (and can trigger the OS prompt).
   const [capturesHealth, setCapturesHealth] = useState<CapturesAccessHealth | null>(null);
+  const [capturesLocation, setCapturesLocation] = useState<CapturesLocationStatus | null>(null);
   const [capturesBusy, setCapturesBusy] = useState(false);
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -135,6 +137,11 @@ export function SystemPermissionsPage(): ReactElement {
     if (res.ok) setCapturesHealth(res.value);
   }, []);
 
+  const refreshCapturesLocation = useCallback(async (): Promise<void> => {
+    const res = await dispatch("storage:capturesLocationStatus", {});
+    if (res.ok) setCapturesLocation(res.value);
+  }, []);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -144,12 +151,20 @@ export function SystemPermissionsPage(): ReactElement {
   // flips this row to "Denied" without a re-open).
   useEffect(() => {
     void refreshCapturesHealth();
+    void refreshCapturesLocation();
     const unsubscribe = window.pwrsnapApi?.on(
       EVENT_CHANNELS.capturesAccessChanged,
       (payload) => setCapturesHealth(payload as CapturesAccessHealth)
     );
-    return () => unsubscribe?.();
-  }, [refreshCapturesHealth]);
+    const unsubscribeSettings = window.pwrsnapApi?.on(
+      EVENT_CHANNELS.settingsChanged,
+      () => void refreshCapturesLocation()
+    );
+    return () => {
+      unsubscribe?.();
+      unsubscribeSettings?.();
+    };
+  }, [refreshCapturesHealth, refreshCapturesLocation]);
 
   const checkCapturesAccess = useCallback(async (): Promise<void> => {
     setCapturesBusy(true);
@@ -161,11 +176,26 @@ export function SystemPermissionsPage(): ReactElement {
         setLastError(res.error.message);
         return;
       }
-      await refreshCapturesHealth();
+      await Promise.all([refreshCapturesHealth(), refreshCapturesLocation()]);
     } finally {
       setCapturesBusy(false);
     }
-  }, [refreshCapturesHealth]);
+  }, [refreshCapturesHealth, refreshCapturesLocation]);
+
+  const moveCapturesToDocuments = useCallback(async (): Promise<void> => {
+    setCapturesBusy(true);
+    try {
+      const res = await dispatch("storage:moveCapturesToDocuments", {});
+      if (!res.ok) {
+        setLastError(res.error.message);
+        return;
+      }
+      setCapturesLocation(res.value);
+      setLastError(null);
+    } finally {
+      setCapturesBusy(false);
+    }
+  }, []);
 
   const openCapturesSettings = useCallback(async (): Promise<void> => {
     const res = await dispatch("storage:openCapturesAccessSettings", {});
@@ -333,29 +363,52 @@ export function SystemPermissionsPage(): ReactElement {
 
       <Card eyebrow="STORAGE" title="Captures folder">
         {(() => {
-          // macOS has no non-prompting status read for the Documents
-          // folder, so this reflects observed access: "Denied" once a real
-          // read/write was blocked, "OK" otherwise, "Checking…" before the
-          // first snapshot. "Check access" actively probes (and can trigger
-          // the OS prompt). `denied` is the only authoritative state.
-          const denied = capturesHealth?.denied === true;
+          const activeLocation = capturesLocation?.location ?? "documents";
+          const isHome = activeLocation === "home";
+          const documentsDenied =
+            capturesHealth?.denied === true ||
+            capturesLocation?.documentsAccess === "denied";
           const isDarwin = window.pwrsnapApi?.platform === "darwin";
-          const label =
-            capturesHealth === null ? "Checking…" : denied ? "Denied" : "OK";
+          const loadingLocation = capturesLocation === null;
+          const label = loadingLocation
+            ? "Checking…"
+            : isHome
+            ? "Home fallback"
+            : documentsDenied
+            ? "Denied"
+            : "OK";
           const tone: "ok" | "warn" | "neutral" =
-            capturesHealth === null ? "neutral" : denied ? "warn" : "ok";
-          const hint = denied
-            ? `${capturesHealth?.deniedPathCount ?? 0} capture file(s) can't be read. Grant PwrSnap access to your Documents folder under Privacy & Security → Files & Folders, then relaunch.`
-            : "Captures are saved to ~/Documents/PwrSnap so you can find them in Finder. macOS gates the Documents folder — use Check access to verify (or grant) it.";
+            loadingLocation ? "neutral" : isHome || documentsDenied ? "warn" : "ok";
+          const homeItems = Math.max(
+            capturesLocation?.homeCaptureReferences ?? 0,
+            capturesLocation?.homeDirectoryEntryCount ?? 0
+          );
+          const hint = isHome
+            ? capturesLocation?.canMoveToDocuments === true
+              ? "Saving to ~/PwrSnap — Documents was blocked. This folder is empty and Documents access is confirmed, so new captures can use Documents again."
+              : homeItems > 0
+              ? `Saving to ~/PwrSnap — Documents was blocked. This choice stays sticky while ${homeItems} capture item(s) remain tied to the home folder.`
+              : "Saving to ~/PwrSnap — Documents was blocked. Check Documents access to enable a user-initiated move back; PwrSnap never probes or relocates at startup."
+            : documentsDenied
+            ? `${capturesHealth?.deniedPathCount ?? 0} capture path(s) can't be accessed. Grant PwrSnap access to Documents under Privacy & Security → Files & Folders, then relaunch.`
+            : "Captures are saved to ~/Documents/PwrSnap so you can find them in Finder. Check access performs the only active Documents probe.";
           return (
             <Row
-              label="Captures Folder (Documents)"
+              label={`Captures Folder (${isHome ? "Home" : "Documents"})`}
               sub={`${label} — ${hint}`}
-              tag="documents"
+              tag={isHome ? "home" : "documents"}
             >
               <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
                 <span
-                  data-captures-access={denied ? "denied" : capturesHealth === null ? "unknown" : "ok"}
+                  data-captures-access={
+                    loadingLocation
+                      ? "unknown"
+                      : isHome
+                      ? "home"
+                      : documentsDenied
+                      ? "denied"
+                      : "ok"
+                  }
                   data-tone={tone}
                   style={{
                     font: "500 11px/1 var(--font-sans)",
@@ -371,7 +424,7 @@ export function SystemPermissionsPage(): ReactElement {
                 >
                   {label}
                 </span>
-                {denied && isDarwin && (
+                {documentsDenied && isDarwin && (
                   <button
                     type="button"
                     onClick={() => void openCapturesSettings()}
@@ -402,8 +455,30 @@ export function SystemPermissionsPage(): ReactElement {
                     font: "500 12px/1 var(--font-sans)"
                   }}
                 >
-                  {capturesBusy ? "Checking…" : "Check access"}
+                  {capturesBusy
+                    ? "Checking…"
+                    : isHome
+                    ? "Check Documents access"
+                    : "Check access"}
                 </button>
+                {capturesLocation?.canMoveToDocuments === true && (
+                  <button
+                    type="button"
+                    onClick={() => void moveCapturesToDocuments()}
+                    disabled={capturesBusy}
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: 6,
+                      border: "1px solid var(--border)",
+                      background: "var(--surface)",
+                      color: "var(--text)",
+                      cursor: capturesBusy ? "wait" : "pointer",
+                      font: "500 12px/1 var(--font-sans)"
+                    }}
+                  >
+                    Use Documents for new captures
+                  </button>
+                )}
               </div>
             </Row>
           );

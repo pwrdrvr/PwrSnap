@@ -291,10 +291,26 @@ export function registerSettingsDataHandlers(options: {
   });
 
   bus.register("settings:write", async (
-    patch
+    patch,
+    ctx
   ): Promise<Result<Settings, PwrSnapError>> => {
     const validated = validateSettingsWrite(patch);
     if (!validated.ok) return err(validated.error);
+    // This field is persisted through the settings substrate, but it is not a
+    // free-form renderer preference. Only the capture fallback and the
+    // guarded storage:moveCapturesToDocuments handler may change it. IPC,
+    // RPC, and MCP callers must not bypass the home-empty/DB-reference check.
+    if (
+      validated.value.storage?.capturesLocation !== undefined &&
+      ctx.principal !== "bridge"
+    ) {
+      return err({
+        kind: "permission",
+        code: "captures_location_main_owned",
+        message:
+          "Captures location can only be changed by PwrSnap's permission fallback or guarded storage command."
+      });
+    }
     const { service, secrets } = ensureServices();
     let merged: Settings;
     try {

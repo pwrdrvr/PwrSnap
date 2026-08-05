@@ -170,7 +170,7 @@ import {
   persistCaptureFromTempV2,
   sweepBundleTrash
 } from "./persistence/bundle-store";
-import { getCacheSourcePath } from "./persistence/paths";
+import { getCacheSourcePath, setCapturesLocation } from "./persistence/paths";
 import { runBundleFilenameMaintenanceOnBoot } from "./persistence/bundle-filename-maintenance";
 import { runVideoFilenameMaintenanceOnBoot } from "./persistence/video-filename-maintenance";
 import {
@@ -1583,6 +1583,11 @@ export function bootstrapApp(): void {
       // (PWRSNAP_USER_DATA without PWRSNAP_E2E) keep observing the
       // real captures library, which is their whole point.
       app.setPath("documents", join(customUserData, "Documents"));
+      // The sticky permission-denial fallback writes to `~/PwrSnap`.
+      // HOME is already overridden by the fixture, but setting Electron's
+      // resolved path explicitly closes any platform caching gap that could
+      // otherwise send an E2E fallback to the host's real home directory.
+      app.setPath("home", customUserData);
     }
   }
 
@@ -1667,6 +1672,27 @@ export function bootstrapApp(): void {
 
     // ── Normal boot ───────────────────────────────────────────────
     markStartup("main: app ready");
+    // Resolve the synchronous captures-root selector BEFORE the DB,
+    // migrations, accounting, or filename maintenance can ask for it. This is
+    // a settings read only: it never probes Documents and therefore never
+    // triggers a TCC prompt at startup.
+    try {
+      const storageSettings = await new DesktopSettingsService({
+        filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
+      }).read();
+      setCapturesLocation(storageSettings.storage.capturesLocation);
+    } catch (cause) {
+      log.warn("captures location: initial settings read failed; using Documents", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      setCapturesLocation("documents");
+    }
+    // Combined + agent roles receive local settings broadcasts here. The
+    // split library receives the same update through the relayed renderer
+    // event below.
+    onSettingsChanged((settings) => {
+      setCapturesLocation(settings.storage.capturesLocation);
+    });
     // Open the DB before anything else — cold first-INSERT cost
     // (~40ms) lands here instead of inside ⌘⇧P's <120ms budget.
     //
@@ -1890,6 +1916,7 @@ export function bootstrapApp(): void {
       // only covers the persisted state).
       onRelayedRendererEvent(EVENT_CHANNELS.settingsChanged, (payload) => {
         const settings = (payload as SettingsChangedEvent).settings;
+        setCapturesLocation(settings.storage.capturesLocation);
         if (settings.general.developerMode !== lastKnownDeveloperMode) {
           installApplicationMenu(settings.general.developerMode);
         }

@@ -26,11 +26,19 @@
 // docs/solutions/2026-06-14-first-run-screen-recording-permission.md.
 
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { err, type PwrSnapError, type Result } from "@pwrsnap/shared";
-import { getCapturesRoot } from "../persistence/paths";
+import type { CapturesLocation } from "@pwrsnap/shared";
+import {
+  getCapturesLocation,
+  getCapturesRoot,
+  getCapturesRootForLocation,
+  isOverriddenDataRoot,
+  setCapturesLocation
+} from "../persistence/paths";
 import { isPermissionDenial } from "../storage/captures-access-health";
 import { getMainLogger } from "../log";
+import { bus } from "../command-bus";
 
 const log = getMainLogger("pwrsnap:capture-storage-gate");
 
@@ -40,18 +48,156 @@ const PROBE_NAME = ".pwrsnap-access-probe";
  *  session, skip re-probing — pulling the prompt forward only matters
  *  for the first capture; after that a probe per capture is pointless
  *  write+delete churn in the user's Documents folder. */
-let accessConfirmedThisSession = false;
+type RootAccessState = "unknown" | "confirmed" | "denied";
+const rootAccessStates = new Map<string, Exclude<RootAccessState, "unknown">>();
+let fallbackSwitchPromise: Promise<
+  | { ok: true }
+  | { ok: false; error: PwrSnapError }
+> | null = null;
 
 /** Whether a write probe / real capture has confirmed captures-folder
  *  access this session. Drives the Settings "Captures folder" row's
  *  positive state. */
 export function isCapturesAccessConfirmed(): boolean {
-  return accessConfirmedThisSession;
+  return rootAccessStates.get(getCapturesRoot()) === "confirmed";
+}
+
+export function getCapturesRootAccessState(location: CapturesLocation): RootAccessState {
+  return rootAccessStates.get(getCapturesRootForLocation(location)) ?? "unknown";
 }
 
 /** Test seam — reset the per-session cache between specs. */
 export function resetCaptureStorageGateForTests(): void {
-  accessConfirmedThisSession = false;
+  rootAccessStates.clear();
+  fallbackSwitchPromise = null;
+}
+
+export class CapturesLocationFallbackError extends Error {
+  readonly pwrSnapError: PwrSnapError;
+
+  constructor(error: PwrSnapError) {
+    super(error.message);
+    this.name = "CapturesLocationFallbackError";
+    this.pwrSnapError = error;
+  }
+}
+
+type FallbackOutcome =
+  | { kind: "not-applicable" }
+  | { kind: "switched" }
+  | { kind: "failed"; error: PwrSnapError };
+
+function pathIsInsideRoot(path: string, root: string): boolean {
+  const delta = relative(root, path);
+  return (
+    delta === "" ||
+    (delta !== ".." && !delta.startsWith(`..${sep}`) && !isAbsolute(delta))
+  );
+}
+
+/** Permission-denial errors from `open`/`rename` normally carry `path` and
+ *  sometimes `dest`. If a platform omits both, the caller's operation is
+ *  already scoped to `failedRoot`, so the errno classification is enough. */
+function denialTargetsRoot(cause: unknown, root: string): boolean {
+  if (!isPermissionDenial(cause)) return false;
+  if (typeof cause !== "object" || cause === null) return false;
+  const fsError = cause as NodeJS.ErrnoException & { dest?: unknown };
+  const candidates = [fsError.path, fsError.dest].filter(
+    (value): value is string => typeof value === "string"
+  );
+  return candidates.length === 0 || candidates.some((path) => pathIsInsideRoot(path, root));
+}
+
+async function persistHomeFallback(): Promise<
+  { ok: true } | { ok: false; error: PwrSnapError }
+> {
+  if (getCapturesLocation() === "home") return { ok: true };
+  if (fallbackSwitchPromise !== null) return fallbackSwitchPromise;
+
+  const task = (async (): Promise<
+    { ok: true } | { ok: false; error: PwrSnapError }
+  > => {
+    const written = await bus.dispatch(
+      "settings:write",
+      { storage: { capturesLocation: "home" } },
+      // `capturesLocation` is main-owned: settings:write rejects this field
+      // from renderer/RPC/MCP callers so the guarded switch-back command
+      // cannot be bypassed. `bridge` marks an internal dispatch and also
+      // survives forwarding in split mode.
+      { principal: "bridge" }
+    );
+    if (!written.ok) {
+      return {
+        ok: false,
+        error: {
+          kind: "capture",
+          code: "captures_fallback_failed",
+          message:
+            "PwrSnap couldn't remember its fallback captures folder, so it did not risk splitting your library across two locations.",
+          cause: written.error
+        }
+      };
+    }
+    // The settings broadcast updates this in ordinary boots, but capture
+    // fallback also runs in E2E/profiling modes where the broader settings
+    // listener may not be installed. Switch synchronously before retrying.
+    setCapturesLocation("home");
+    log.warn("Documents access denied — switched new captures to ~/PwrSnap");
+    return { ok: true };
+  })();
+
+  fallbackSwitchPromise = task;
+  try {
+    return await task;
+  } finally {
+    if (fallbackSwitchPromise === task) fallbackSwitchPromise = null;
+  }
+}
+
+async function fallbackAfterDocumentsDenial(
+  failedRoot: string,
+  cause: unknown
+): Promise<FallbackOutcome> {
+  const documentsRoot = getCapturesRootForLocation("documents");
+  if (
+    isOverriddenDataRoot() ||
+    failedRoot !== documentsRoot ||
+    !denialTargetsRoot(cause, documentsRoot)
+  ) {
+    return { kind: "not-applicable" };
+  }
+  rootAccessStates.set(documentsRoot, "denied");
+
+  // A concurrent capture may have completed the switch after this caller's
+  // Documents write failed. In that case it should simply retry at home.
+  if (getCapturesLocation() === "home") return { kind: "switched" };
+
+  const switched = await persistHomeFallback();
+  return switched.ok
+    ? { kind: "switched" }
+    : { kind: "failed", error: switched.error };
+}
+
+/**
+ * Run a REAL capture persistence operation at the active root. If and only if
+ * a Documents-scoped EPERM/EACCES escapes the operation, persist the sticky
+ * home choice and retry once at ~/PwrSnap. This closes the hole left by the
+ * preflight probe's per-session cache (Documents can be revoked later).
+ */
+export async function runWithCapturesDirFallback<T>(
+  operation: (root: string) => Promise<T>
+): Promise<T> {
+  const firstRoot = getCapturesRoot();
+  try {
+    return await operation(firstRoot);
+  } catch (cause) {
+    const fallback = await fallbackAfterDocumentsDenial(firstRoot, cause);
+    if (fallback.kind === "not-applicable") throw cause;
+    if (fallback.kind === "failed") {
+      throw new CapturesLocationFallbackError(fallback.error);
+    }
+    return operation(getCapturesRoot());
+  }
 }
 
 /**
@@ -70,11 +216,16 @@ export function resetCaptureStorageGateForTests(): void {
  * (which also re-triggers the OS prompt if macOS has no decision on file).
  */
 export async function ensureCapturesDirReady(
-  opts: { force?: boolean } = {}
+  opts: {
+    force?: boolean | undefined;
+    location?: CapturesLocation | undefined;
+    fallbackOnDenial?: boolean | undefined;
+  } = {}
 ): Promise<Result<never, PwrSnapError> | null> {
-  if (!opts.force && accessConfirmedThisSession) return null;
+  const location = opts.location ?? getCapturesLocation();
+  const root = getCapturesRootForLocation(location);
+  if (!opts.force && rootAccessStates.get(root) === "confirmed") return null;
 
-  const root = getCapturesRoot();
   const probe = join(root, PROBE_NAME);
   try {
     // mkdir first so the probe write has a parent (and so a never-created
@@ -84,10 +235,11 @@ export async function ensureCapturesDirReady(
     await mkdir(root, { recursive: true });
     await writeFile(probe, "");
     await rm(probe, { force: true }).catch(() => undefined);
-    accessConfirmedThisSession = true;
+    rootAccessStates.set(root, "confirmed");
     return null;
   } catch (cause) {
     const denied = isPermissionDenial(cause);
+    if (denied) rootAccessStates.set(root, "denied");
     log.warn("ensureCapturesDirReady: captures folder not writable", {
       root,
       denied,
@@ -95,11 +247,26 @@ export async function ensureCapturesDirReady(
     });
     // Best-effort cleanup in case the write landed but a later step threw.
     await rm(probe, { force: true }).catch(() => undefined);
+    if (denied && location === "documents" && opts.fallbackOnDenial !== false) {
+      const fallback = await fallbackAfterDocumentsDenial(root, cause);
+      if (fallback.kind === "switched") {
+        // Confirm the fallback root before showing any capture UI. Force the
+        // probe because Documents and home have independent session states.
+        return ensureCapturesDirReady({
+          force: true,
+          location: "home",
+          fallbackOnDenial: false
+        });
+      }
+      if (fallback.kind === "failed") return err(fallback.error);
+    }
     return err({
       kind: "capture",
       code: denied ? "captures_dir_denied" : "captures_dir_unwritable",
       message: denied
-        ? "PwrSnap needs access to your Documents folder to save captures. Allow it in System Settings → Privacy & Security → Files & Folders → Documents, then capture again."
+        ? location === "documents"
+          ? "PwrSnap needs access to your Documents folder to save captures. Allow it in System Settings → Privacy & Security → Files & Folders → Documents, then capture again."
+          : "PwrSnap couldn't write to its fallback folder (~/PwrSnap). Make sure your home folder is writable, then capture again."
         : `PwrSnap couldn't write to its captures folder (${root}). Make sure it's writable, then capture again.`,
       cause
     });

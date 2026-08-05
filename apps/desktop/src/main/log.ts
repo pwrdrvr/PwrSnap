@@ -99,7 +99,7 @@ export function initializeMainLogger(): void {
 
   electronLog.transports.console.format = ({ message }) => {
     const scope = message.scope ?? "?";
-    return [`${message.date.toISOString().slice(11, 23)} ${consoleTag}(${scope})`, ...message.data];
+    return [`${formatLocalLogTime(message.date)} ${consoleTag}(${scope})`, ...message.data];
   };
 }
 
@@ -133,8 +133,15 @@ export function formatAppLogLine(message: ElectronLogMessage): string {
 }
 
 function formatLogTimestamp(date: Date): string {
-  const pad = (value: number, width = 2): string => String(value).padStart(width, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+  return `${date.getFullYear()}-${padLogDatePart(date.getMonth() + 1)}-${padLogDatePart(date.getDate())} ${formatLocalLogTime(date)}`;
+}
+
+function formatLocalLogTime(date: Date): string {
+  return `${padLogDatePart(date.getHours())}:${padLogDatePart(date.getMinutes())}:${padLogDatePart(date.getSeconds())}.${padLogDatePart(date.getMilliseconds(), 3)}`;
+}
+
+function padLogDatePart(value: number, width = 2): string {
+  return String(value).padStart(width, "0");
 }
 
 function formatLogTextPart(value: unknown): string {

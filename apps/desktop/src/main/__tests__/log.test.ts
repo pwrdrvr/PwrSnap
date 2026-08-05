@@ -128,6 +128,30 @@ describe("initializeMainLogger", () => {
     expect(mocks.electronLog.scope.labelPadding).toBe(false);
   });
 
+  test("formats terminal timestamps in local time", async () => {
+    const { initializeMainLogger } = await import("../log");
+    initializeMainLogger();
+
+    const format = mocks.consoleTransport.format as unknown as (params: {
+      message: {
+        data: unknown[];
+        date: Date;
+        level: string;
+        scope?: string;
+      };
+    }) => unknown[];
+    const localDate = new Date(2026, 7, 4, 9, 8, 7, 6);
+
+    expect(format({
+      message: {
+        data: ["hello"],
+        date: localDate,
+        level: "info",
+        scope: "pwrsnap:test"
+      }
+    })).toEqual(["09:08:07.006 (pwrsnap:test)", "hello"]);
+  });
+
   test("compacts structured file messages into the live log tail", async () => {
     const { initializeMainLogger } = await import("../log");
     initializeMainLogger();

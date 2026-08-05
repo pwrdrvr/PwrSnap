@@ -175,6 +175,39 @@ describe("LocalAgentGrantService", () => {
     })).resolves.toMatchObject({ ok: true });
   });
 
+  test("OAuth custom access preserves an explicit all-time capture-history limit", async () => {
+    const service = makeService();
+    const issued = await service.issueOAuthGrant({
+      name: "All Time Agent",
+      capabilities: ["library.read"],
+      roleId: null,
+      maxCaptureAgeDays: null,
+      oauthClient: {
+        clientId: "lag_oauth_all_time",
+        clientName: "All Time Agent",
+        redirectUris: ["http://127.0.0.1:43123/callback"],
+        clientUri: null,
+        scope: "library.read",
+        grantTypes: ["authorization_code"],
+        responseTypes: ["code"],
+        softwareId: null,
+        softwareVersion: null,
+        registeredAt: "2026-06-07T12:00:00.000Z"
+      }
+    });
+
+    const reread = await settings.read();
+    expect(reread.localAgents.roles.find((role) => role.id === issued.grant.roleId))
+      .toMatchObject({ maxCaptureAgeDays: null });
+    await expect(service.authenticate({
+      clientId: issued.grant.id,
+      token: issued.token
+    })).resolves.toMatchObject({
+      ok: true,
+      context: { maxCaptureAgeDays: null }
+    });
+  });
+
   test("recordUsage throttles settings writes", async () => {
     let now = new Date("2026-06-07T12:00:00.000Z");
     const service = new LocalAgentGrantService({

@@ -553,7 +553,10 @@ export class LocalAgentGrantService {
       description: `Custom access profile created for ${sessionName}.`.slice(0, 500),
       builtIn: false,
       permissions: [...capabilities],
-      maxCaptureAgeDays: maxCaptureAgeDays ?? constraints.maxCaptureAgeDays,
+      maxCaptureAgeDays:
+        maxCaptureAgeDays === undefined
+          ? constraints.maxCaptureAgeDays
+          : maxCaptureAgeDays,
       budgets: constraints.budgets
     };
     this.validateNewRole(settings, role);

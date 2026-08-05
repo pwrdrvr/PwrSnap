@@ -367,7 +367,9 @@ async function approveAndExchange(
   consentDecisions.push({
     decision: "allow",
     sessionName: oauthClient.client_name,
-    capabilities
+    roleId: null,
+    capabilities,
+    maxCaptureAgeDays: 7
   });
   const authorizationUrl = makeAuthorizationUrl(
     address,
@@ -900,7 +902,7 @@ describe("LocalAgentMcpServer", () => {
     expect(oauthClient.token_endpoint_auth_method).toBe("none");
     expect(oauthClient).not.toHaveProperty("client_secret");
 
-    consentDecisions.push({ decision: "deny", sessionName: "", capabilities: [] });
+    consentDecisions.push({ decision: "deny", sessionName: "", roleId: null, capabilities: [] });
     const defaultStatusUrl = await beginBrowserAuthorization(
       address,
       makeAuthorizationUrl(address, oauthClient)
@@ -917,7 +919,7 @@ describe("LocalAgentMcpServer", () => {
       address,
       oauthClient,
       ["library.read", "trash.write"],
-      ["library.read"]
+      ["library.read", "trash.write"]
     );
     const grants = await grantService.list();
     expect(grants).toHaveLength(1);
@@ -930,7 +932,10 @@ describe("LocalAgentMcpServer", () => {
         redirectUris: [OAUTH_CALLBACK]
       }
     });
-    expect(consentRequests.at(-1)?.requestedCapabilities).toEqual(["library.read"]);
+    expect(consentRequests.at(-1)?.requestedCapabilities).toEqual([
+      "library.read",
+      "trash.write"
+    ]);
 
     client = await connectWithAccessToken(
       address.url,
@@ -1056,7 +1061,7 @@ describe("LocalAgentMcpServer", () => {
     const authorizationUrl = makeAuthorizationUrl(address, oauthClient, [
       "capture.original.read"
     ]);
-    consentDecisions.push({ decision: "deny", sessionName: "", capabilities: [] });
+    consentDecisions.push({ decision: "deny", sessionName: "", roleId: null, capabilities: [] });
     const statusUrl = await beginBrowserAuthorization(address, authorizationUrl);
     const denied = await waitForAuthorizationRedirect(statusUrl);
     expect(denied.status).toBe(302);
@@ -1120,7 +1125,9 @@ describe("LocalAgentMcpServer", () => {
     resolveNative({
       decision: "allow",
       sessionName: "Forging Agent",
-      capabilities: ["library.read"]
+      roleId: null,
+      capabilities: ["library.read"],
+      maxCaptureAgeDays: 7
     });
     const approved = await waitForAuthorizationRedirect(statusUrl);
     expect(approved.status).toBe(302);
@@ -1168,7 +1175,9 @@ describe("LocalAgentMcpServer", () => {
       transactionId: "consent_expiring",
       decision: "allow",
       sessionName: "Expiring Agent",
-      capabilities: ["library.read"]
+      roleId: null,
+      capabilities: ["library.read"],
+      maxCaptureAgeDays: 7
     })).toMatchObject({
       kind: "error",
       status: 400,

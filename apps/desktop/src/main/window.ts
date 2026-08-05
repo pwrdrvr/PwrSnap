@@ -793,6 +793,7 @@ export function createLocalAgentConsentWindow(): BrowserWindow {
     minWidth: 520,
     minHeight: 560,
     show: false,
+    alwaysOnTop: true,
     title: "Authorize Local Agent - PwrSnap",
     ...platformWindowChrome("hidden"),
     backgroundColor: getStartupBackgroundColor(),
@@ -803,7 +804,12 @@ export function createLocalAgentConsentWindow(): BrowserWindow {
   showWindowWhenReady(window, {
     label: `local-agent-consent/${window.id}`,
     onShow: () => {
-      if (process.platform === "darwin") app.focus({ steal: true });
+      if (process.platform === "darwin") {
+        void app.dock?.show();
+        app.focus({ steal: true });
+      }
+      window.moveTop();
+      window.show();
       window.focus();
     }
   });

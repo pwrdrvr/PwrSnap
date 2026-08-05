@@ -316,6 +316,7 @@ async function wireLocalAgentMcpLifecycle(): Promise<void> {
           return Promise.resolve({
             decision: "deny",
             sessionName: "",
+            roleId: null,
             capabilities: []
           });
         }
@@ -1836,7 +1837,9 @@ export function bootstrapApp(): void {
       registerCartHandlers();
     }
     if (role !== "library") {
-      localAgentConsentBroker = new LocalAgentConsentBroker();
+      localAgentConsentBroker = new LocalAgentConsentBroker({
+        readRoles: () => getLocalAgentGrantService().listRoles()
+      });
       registerLocalAgentConsentHandlers(localAgentConsentBroker);
     }
     // Wire the floating recording HUD so it appears whenever the

@@ -193,16 +193,15 @@ export function createDefaultLocalAgentMcpTools(deps: {
   imageEditSend?: (
     input: {
       captureId: string;
-      instruction: string;
+      instruction?: string | undefined;
+      instructions?: string[] | undefined;
       provider?: string | undefined;
       model?: string | undefined;
       threadId?: string | undefined;
       reuse?: "latest-compatible" | "new" | undefined;
+      returnImage?: boolean | undefined;
+      preset?: "low" | "med" | "high" | undefined;
     },
-    ctx: LocalAgentToolContext
-  ) => Promise<Result<unknown, PwrSnapError>>;
-  imageEditStatus?: (
-    input: { captureId: string; threadId: string },
     ctx: LocalAgentToolContext
   ) => Promise<Result<unknown, PwrSnapError>>;
   sizzleCreate?: (
@@ -403,20 +402,26 @@ export function createDefaultLocalAgentMcpTools(deps: {
     tools.push({
       name: "pwrsnap_image_edit_send",
       title: "Edit PwrSnap Image",
-      description: "Send an edit instruction through a PwrSnap-owned capture chat thread and its configured model access. Poll pwrsnap_image_edit_status; once idle, use pwrsnap_capture_resource to retrieve the current edited composite.",
+      description: "Apply one or more image-edit instructions in a single blocking PwrSnap turn. By default, the completed response includes the current edited composite as an MCP resource link; set returnImage=false when another edit will follow.",
       inputSchema: {
         captureId: z.string().min(1),
-        instruction: z.string().trim().min(1).max(20_000),
+        instruction: z.string().trim().min(1).max(20_000).optional(),
+        instructions: z.array(z.string().trim().min(1).max(20_000)).min(1).max(20).optional(),
         provider: z.string().trim().min(1).max(200).optional(),
         model: z.string().trim().min(1).max(200).optional(),
         threadId: z.string().min(1).optional(),
-        reuse: z.enum(["latest-compatible", "new"]).optional()
+        reuse: z.enum(["latest-compatible", "new"]).optional(),
+        returnImage: z.boolean().default(true).optional(),
+        preset: z.enum(["low", "med", "high"]).default("med").optional()
       },
       // The PwrSnap-owned Editor Chat agent must render the current composite
       // to ground its edits. Requiring the read capability at this outer
       // boundary prevents an edit-only Session from starting a turn whose
       // nested render_composite calls will inevitably be denied.
       requiredCapabilities: ["capture.edit", "capture.composite.read"],
+      requiredCapabilitiesForInput: (input) => input.returnImage === false
+        ? ["capture.edit", "capture.composite.read"]
+        : ["capture.edit", "capture.composite.read", "capture.export"],
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -424,26 +429,6 @@ export function createDefaultLocalAgentMcpTools(deps: {
         openWorldHint: true
       },
       dispatch: deps.imageEditSend
-    });
-  }
-  if (deps.imageEditStatus !== undefined) {
-    tools.push({
-      name: "pwrsnap_image_edit_status",
-      title: "Check PwrSnap Image Edit",
-      description:
-        "Check a capture-scoped edit thread. Once it is idle, use pwrsnap_capture_resource to retrieve the current edited composite.",
-      inputSchema: {
-        captureId: z.string().min(1),
-        threadId: z.string().min(1)
-      },
-      requiredCapabilities: ["capture.edit"],
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false
-      },
-      dispatch: deps.imageEditStatus
     });
   }
   if (deps.sizzleCreate !== undefined) {

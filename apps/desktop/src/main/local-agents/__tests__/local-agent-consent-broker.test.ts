@@ -45,6 +45,7 @@ describe("LocalAgentConsentBroker", () => {
       requestedCapabilities: ["library.read", "capture.composite.read"],
       signal: new AbortController().signal
     });
+    await Promise.resolve();
 
     expect(broker.read(context(99))).toMatchObject({
       ok: false,
@@ -54,6 +55,8 @@ describe("LocalAgentConsentBroker", () => {
       requestId: "native-request-1",
       decision: "allow",
       sessionName: "Codex",
+      roleId: null,
+      maxCaptureAgeDays: 7,
       capabilities: ["library.read"]
     })).toMatchObject({ ok: false, error: { code: "untrusted_consent_source" } });
 
@@ -73,12 +76,24 @@ describe("LocalAgentConsentBroker", () => {
       requestId: "native-request-1",
       decision: "allow",
       sessionName: "Codex Work",
+      roleId: null,
+      maxCaptureAgeDays: 30,
       capabilities: ["library.read", "trash.write"]
+    })).toMatchObject({ ok: false, error: { code: "consent_scope_escalation" } });
+    expect(broker.decide(context(41), {
+      requestId: "native-request-1",
+      decision: "allow",
+      sessionName: "Codex Work",
+      roleId: null,
+      maxCaptureAgeDays: 30,
+      capabilities: ["library.read"]
     })).toEqual({ ok: true, value: undefined });
     await expect(decision).resolves.toEqual({
       decision: "allow",
       sessionName: "Codex Work",
-      capabilities: ["library.read", "trash.write"]
+      roleId: null,
+      capabilities: ["library.read"],
+      maxCaptureAgeDays: 30
     });
     expect(window.close).toHaveBeenCalledOnce();
     expect(broker.read(context(41))).toMatchObject({
@@ -98,10 +113,12 @@ describe("LocalAgentConsentBroker", () => {
       signal: controller.signal
     });
 
+    await Promise.resolve();
     controller.abort();
     await expect(decision).resolves.toEqual({
       decision: "deny",
       sessionName: "",
+      roleId: null,
       capabilities: []
     });
     expect(window.close).toHaveBeenCalledOnce();

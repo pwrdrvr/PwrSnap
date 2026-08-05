@@ -3,6 +3,7 @@ import {
   ok,
   type CaptureExportRequest,
   type CaptureExportVariant,
+  type ChatMessage,
   type LocalAgentCapability,
   type PwrSnapError,
   type Result
@@ -189,14 +190,35 @@ export class LocalAgentToolService {
   async imageEditSend(
     input: {
       captureId: string;
-      instruction: string;
+      instruction?: string | undefined;
+      instructions?: string[] | undefined;
       provider?: string | undefined;
       model?: string | undefined;
       threadId?: string | undefined;
       reuse?: "latest-compatible" | "new" | undefined;
+      returnImage?: boolean | undefined;
+      preset?: "low" | "med" | "high" | undefined;
     },
     ctx: LocalAgentToolContext
   ): Promise<Result<unknown, PwrSnapError>> {
+    const instructions = [
+      ...(input.instruction === undefined ? [] : [input.instruction]),
+      ...(input.instructions ?? [])
+    ].map((instruction) => instruction.trim()).filter((instruction) => instruction.length > 0);
+    if (instructions.length === 0) {
+      return err({
+        kind: "validation",
+        code: "missing_edit_instruction",
+        message: "Provide instruction or instructions with at least one image edit."
+      });
+    }
+    if (instructions.length > 20 || instructions.join("\n").length > 100_000) {
+      return err({
+        kind: "validation",
+        code: "edit_instruction_limit",
+        message: "Provide at most 20 image edits totaling no more than 100,000 characters."
+      });
+    }
     const capture = await bus.dispatch(
       "library:byId",
       { id: input.captureId },
@@ -273,58 +295,55 @@ export class LocalAgentToolService {
       if (!created.ok) return created;
       thread = created.value;
     }
+    const historyBefore = await bus.dispatch(
+      "codex:libraryChat:history",
+      { threadId: thread.threadId },
+      ctx.commandContext
+    );
+    if (!historyBefore.ok) return historyBefore;
     const sent = await bus.dispatch(
       "codex:libraryChat:send",
       {
         threadId: thread.threadId,
-        text: input.instruction,
+        text: editInstructionPrompt(instructions),
         anchorCaptureId: input.captureId
       },
       ctx.commandContext
     );
     if (!sent.ok) return sent;
-    return ok({
+    const completed = await bus.dispatch(
+      "codex:libraryChat:wait",
+      { threadId: thread.threadId, timeoutMs: 600_000 },
+      ctx.commandContext
+    );
+    if (!completed.ok) return completed;
+    const receipt = {
       threadId: thread.threadId,
       turnId: sent.value.turnId,
-      status: { kind: "streaming", turnId: sent.value.turnId },
+      status: completed.value.thread.status,
       provider: thread.provider,
-      model: thread.model
-    });
-  }
-
-  async imageEditStatus(
-    input: { captureId: string; threadId: string },
-    ctx: LocalAgentToolContext
-  ): Promise<Result<unknown, PwrSnapError>> {
-    const capture = await bus.dispatch(
-      "library:byId",
-      { id: input.captureId },
-      ctx.commandContext
+      model: thread.model,
+      editsApplied: instructions.length,
+      assistantSummary: lastAssistantText(
+        completed.value.messages.slice(historyBefore.value.messages.length)
+      ),
+      imageReturned: input.returnImage !== false
+    };
+    if (input.returnImage === false) return ok(receipt);
+    const exported = await this.captureExport(
+      {
+        captureId: input.captureId,
+        variant: "composite",
+        preset: input.preset ?? "med",
+        format: "png"
+      },
+      ctx
     );
-    if (!capture.ok) return capture;
-    if (capture.value === null || capture.value.deleted_at !== null) {
-      return notFound(input.captureId);
+    if (!exported.ok) return exported;
+    if (exported.value === null || typeof exported.value !== "object") {
+      return unexpectedError("image_edit_export_failed", "capture export returned no media");
     }
-    const listed = await bus.dispatch(
-      "codex:libraryChat:list",
-      { anchorCaptureId: input.captureId },
-      ctx.commandContext
-    );
-    if (!listed.ok) return listed;
-    const thread = listed.value.threads.find(
-      (candidate) => candidate.threadId === input.threadId
-    );
-    if (thread === undefined) {
-      return err({
-        kind: "validation",
-        code: "thread_anchor_mismatch",
-        message: "the requested thread is not anchored to this capture"
-      });
-    }
-    return ok({
-      threadId: thread.threadId,
-      status: thread.status
-    });
+    return ok(Object.assign(exported.value, receipt));
   }
 
   async sizzleCreate(
@@ -603,6 +622,25 @@ function clientScopedId(resourceId: string, clientId: string): string {
     .update(`${resourceId}\0${clientId}`)
     .digest("hex")
     .slice(0, 32);
+}
+
+function editInstructionPrompt(instructions: readonly string[]): string {
+  if (instructions.length === 1) return instructions[0];
+  return [
+    "Apply all of these edits to the current capture in one turn:",
+    ...instructions.map((instruction, index) => `${index + 1}. ${instruction}`)
+  ].join("\n");
+}
+
+function lastAssistantText(messages: readonly ChatMessage[]): string | null {
+  const message = [...messages].reverse().find((candidate) => candidate.role === "assistant");
+  if (message === undefined) return null;
+  const text = message.content
+    .map((content) => content.kind === "text" ? content.text : "")
+    .filter((content) => content.length > 0)
+    .join("\n")
+    .trim();
+  return text.length === 0 ? null : text;
 }
 
 function toolContextForRead(

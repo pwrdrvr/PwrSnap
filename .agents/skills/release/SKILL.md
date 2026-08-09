@@ -313,6 +313,28 @@ is_prerelease="$(gh release view v<version> --repo pwrdrvr/PwrSnap --json isPrer
 test "$is_prerelease" = true
 ```
 
+## Explicit Latest Promotion
+
+Only when the user explicitly promotes a validated stable release, clear its
+Pre-release state and then mark it Latest. Do not combine those updates:
+GitHub can retain an older release as Latest when `make_latest` is sent before
+the Pre-release state has cleared.
+
+```bash
+release_id="$(gh api repos/pwrdrvr/PwrSnap/releases/tags/v<version> --jq '.id')"
+gh api --method PATCH "repos/pwrdrvr/PwrSnap/releases/$release_id" --input - <<'JSON'
+{"prerelease":false}
+JSON
+gh api --method PATCH "repos/pwrdrvr/PwrSnap/releases/$release_id" --input - <<'JSON'
+{"make_latest":"true"}
+JSON
+gh api repos/pwrdrvr/PwrSnap/releases/latest --jq '.tag_name'
+```
+
+The final command must print `v<version>`. Also read the promoted release back
+and confirm its body remains non-empty, it is not a draft or Pre-release, and
+the expected assets remain present.
+
 If the automated notes step did not run or must be repaired manually, extract
 the notes with the metadata checker, edit the release, and read the body /
 pre-release state back:

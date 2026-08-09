@@ -333,6 +333,29 @@ gh release view v<version> --repo pwrdrvr/PwrSnap --json body --jq '.body | leng
 gh release view v<version> --repo pwrdrvr/PwrSnap --json isPrerelease --jq '.isPrerelease'
 ```
 
+## Explicit Latest promotion
+
+Only promote a stable release after the workflow, release body, updater
+metadata, and assets are all validated. Each CI release is deliberately born
+as a Pre-release. Clear that state first, then mark the release Latest in a
+separate request; combining the two can leave GitHub's `latest` endpoint
+pointing at an older release.
+
+```bash
+release_id="$(gh api repos/pwrdrvr/PwrSnap/releases/tags/v<version> --jq '.id')"
+gh api --method PATCH "repos/pwrdrvr/PwrSnap/releases/$release_id" --input - <<'JSON'
+{"prerelease":false}
+JSON
+gh api --method PATCH "repos/pwrdrvr/PwrSnap/releases/$release_id" --input - <<'JSON'
+{"make_latest":"true"}
+JSON
+gh api repos/pwrdrvr/PwrSnap/releases/latest --jq '.tag_name'
+```
+
+The final command must print `v<version>`. Read the release back and confirm
+its body remains non-empty, `isDraft=false`, `isPrerelease=false`, and all
+validated assets remain available.
+
 ---
 
 ## Auto-update on Phase 1

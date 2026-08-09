@@ -4,11 +4,13 @@ on:
   push:
     branches:
       - main
+      - "releases/**"
   pull_request:
     # Include windows-gui-port so the stacked Windows-port PRs (installer,
     # window-picker, …) that target it get CI, not just PRs to main.
     branches:
       - main
+      - "releases/**"
       - windows-gui-port
     types:
       - opened

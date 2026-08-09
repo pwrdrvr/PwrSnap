@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopPackagePath = resolve(repoRoot, "apps/desktop/package.json");
 const electronBuilderPath = resolve(repoRoot, "apps/desktop/electron-builder.yml");
+const ciWorkflowPath = resolve(repoRoot, ".github/workflows/ci.yml");
 const changelogPath = resolve(repoRoot, "CHANGELOG.md");
 
 function usage() {
@@ -99,6 +100,11 @@ if (desktopPackage.version !== expectedVersion) {
 const electronBuilder = readFileSync(electronBuilderPath, "utf8");
 if (!/^\s*releaseType:\s*prerelease\s*$/m.test(electronBuilder)) {
   fail("apps/desktop/electron-builder.yml publish.releaseType must be prerelease");
+}
+
+const ciWorkflow = readFileSync(ciWorkflowPath, "utf8");
+if (!ciWorkflow.includes("releases/**")) {
+  fail('.github/workflows/ci.yml must trigger CI for "releases/**" branches');
 }
 
 let changelog = "";

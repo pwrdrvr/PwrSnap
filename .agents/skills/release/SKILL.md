@@ -55,9 +55,10 @@ Read these files before changing release metadata:
   and present on the intended release branch.
 - Before pushing a release tag, verify the `apple-signing` GitHub Environment
   exists on `pwrdrvr/PwrSnap`, requires reviewer approval, is scoped to `v*`
-  release tags, and has the Apple signing/notarization secrets required by
-  the workflow. Apple signing/notarization secrets must NOT exist as
-  repository-level secrets.
+  release tags and `releases/*` maintenance branches, and has the Apple
+  signing/notarization secrets required by the workflow. The maintenance-branch
+  policy is required for a guarded manual-dispatch retry of an existing tag.
+  Apple signing/notarization secrets must NOT exist as repository-level secrets.
 - Do not use GitHub generated release notes as the final notes.
 - Do not create the GitHub Release by hand before the build succeeds. Let
   electron-builder create or update the release from the signed/notarized CI
@@ -257,6 +258,11 @@ For a manual dispatch, verify the tag already exists on GitHub:
 git ls-remote --tags origin v<version>
 gh workflow run release.yml --ref <RELEASE_BRANCH> -f tag=v<version>
 ```
+
+The `apple-signing` Environment must permit both `v*` tags and
+`releases/*` branches. The dispatch runs from the branch so it can use the
+workflow fix, while `tag` remains the immutable version that is checked out,
+validated, signed, and published.
 
 ## Monitor And Verify
 

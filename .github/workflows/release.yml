@@ -224,7 +224,7 @@ jobs:
           # Code signing (Developer ID Application: PwrDrvr LLC, T44CNHC4UH).
           # These come from the apple-signing GitHub Environment, NOT from
           # repository secrets. The environment is protected by required
-          # reviewers and a v* tag deployment policy.
+          # reviewers and a v* tag / releases/* branch deployment policy.
           # CSC_LINK is the .p12 base64-encoded; CSC_KEY_PASSWORD is its password.
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}

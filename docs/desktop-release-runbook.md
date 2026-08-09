@@ -47,8 +47,10 @@ release infrastructure plan.
    - Create the `apple-signing` environment in `pwrdrvr/PwrSnap`.
    - Add required reviewers and limit approval to **`huntharo`**.
    - Limit the environment to protected release refs/tags (deployment
-     branches and tags policy → "Selected" → `v*`) so approval can only
-     release a real version tag.
+     branches and tags policy → "Selected" → `v*` and `releases/*`). `v*`
+     restricts normal tag-triggered releases; `releases/*` permits a reviewed
+     manual-dispatch retry to use a fixed workflow while building the existing
+     immutable tag. Required reviewer approval remains mandatory for both.
    - Store the Apple signing/notarization secrets on this environment, NOT
      as repository secrets:
      - `CSC_LINK` — `.p12` base64-encoded
@@ -133,6 +135,12 @@ tag if it does not.
 CI runs for pushes to `main` and `releases/**`, and pull requests targeting a
 maintenance branch use the same CI workflow. Backport release-workflow fixes to
 supported maintenance branches so older trains retain the ability to ship.
+
+The `apple-signing` Environment must permit both `v*` tags and `releases/*`
+branches. A tag-triggered release deploys from its tag. A manual retry must
+dispatch the fixed workflow from the maintenance branch while passing the
+existing tag as input, so GitHub evaluates the environment policy against the
+branch even though packaging and metadata validation use the tag.
 
 ---
 

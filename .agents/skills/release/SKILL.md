@@ -36,6 +36,10 @@ Read these files before changing release metadata:
 - Always use a leading-`v` tag such as `v0.0.1-alpha.5`.
 - The tag version, `apps/desktop/package.json` version, and
   `CHANGELOG.md` release heading must match.
+- The protected signing job expands a prepared artifact instead of checking out
+  the repository. When `check-desktop-release-metadata.mjs` gains a new
+  repository-file dependency, add that file to the signing-input archive in
+  `.github/workflows/release.yml` before cutting a release.
 - Before moving `main` to a new major/minor train, verify that the prior train's
   maintenance branch exists. For example, before preparing `1.1.0-beta.1` from
   a current `1.0.*` main, check for `origin/releases/1.0`. If it is missing,

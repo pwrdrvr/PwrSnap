@@ -200,8 +200,12 @@ The no-secret prepare job:
    `apps/desktop/node_modules` (electron-builder + electron-vite),
    `apps/desktop/electron-builder.yml`,
    `apps/desktop/scripts/{release,verify-asar-contents,rebuild-native-for-electron}.mjs`,
-   the root `node_modules`, and the workspace lockfile/config, then uploads
-   them with a SHA-256 digest.
+   `scripts/check-desktop-release-metadata.mjs`, every repository file that
+   checker reads (currently `.github/workflows/ci.yml`,
+   `CHANGELOG.md`, and `apps/desktop/package.json`), the root `node_modules`,
+   and the workspace lockfile/config, then uploads them with a SHA-256 digest.
+   The protected job intentionally does not check out the repository, so this
+   archive list must change alongside any new checker file dependency.
 
 The environment-gated signing job:
 

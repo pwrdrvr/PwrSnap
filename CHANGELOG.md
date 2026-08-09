@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.0.0 - 2026-08-09
+
+PwrSnap 1.0 is the first stable release of PwrDrvr's desktop capture
+workspace, bringing screenshot and video capture, a layered editor, a Library
+for organizing and exporting work, and local Codex-assisted workflows together
+in one app.
+
+- Screen Capture - Added region, window, full-screen, all-screen, and timed
+  captures with source-app awareness, focus-safe selection, and native Finder
+  `.pwrsnap` bundle support.
+- Video Capture and Export - Added fast screen recording, Library playback,
+  recording controls, and practical MP4/GIF export presets; VideoToolbox
+  re-encoding cuts typical MP4 export sizes by roughly 50-70%.
+- Layered Editor - Added editable image and cursor layers alongside text,
+  shapes, arrows, highlights, blur, crop, rotation, multi-selection, undo,
+  copy/paste, resize handles, and fidelity-preserving export baking.
+- Library and Sharing - Added a scalable capture Library with search, grid
+  density controls, detail rails, project carts, ZIP export, drag-out, and
+  readable capture filenames with Quick Look previews.
+- Local Codex Assistance - Added installed-Codex-powered capture enrichment,
+  Library chat, editor actions, model selection, and usage-cost visibility
+  without sending requests directly to a cloud provider from PwrSnap.
+- Sizzle Reels - Added narrated reel projects with capture and video scenes,
+  waveforms, beat timing, sequence editing, previews, and MP4 rendering.
+- macOS Integration - Added launch-at-login, configurable hotkeys, update
+  controls, release-channel visibility, permission diagnostics, and tray and
+  Float-Over workflows for capture without disrupting your desktop.
+- Windows Preview - Added an unsigned Windows installer with screen/video
+  capture and Library support for early testing; it is intentionally excluded
+  from the Windows automatic-update feed until code signing is available.
+
 ## v1.0.0-beta.25 - 2026-07-31
 
 This beta keeps PwrSnap's Codex integration current, makes large Libraries

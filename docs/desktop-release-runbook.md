@@ -108,6 +108,34 @@ since it is not a secret.
 
 ---
 
+## Release trains and maintenance branches
+
+`main` carries the active next-version train. Long-lived maintenance branches
+carry stable promotions from accepted prereleases and later patch releases for
+that major/minor train. Name them `releases/<major>.<minor>`, for example
+`releases/1.0` or `releases/1.1`; do not include the patch component.
+
+When an accepted beta must become the first stable release while `main` has
+continued onto newer work, create the maintenance branch from the exact signed
+beta tag, prepare the stable metadata there, and tag the resulting commit:
+
+```bash
+git fetch origin --tags
+git switch -c releases/1.0 v1.0.0-beta.<n>
+git push -u origin releases/1.0
+```
+
+After the stable `v1.0.0` tag is cut, `releases/1.0` remains the only branch
+for `v1.0.x` patches. Before `main` moves to the next major/minor train, verify
+that the prior train's branch exists; create it from the exact prior release
+tag if it does not.
+
+CI runs for pushes to `main` and `releases/**`, and pull requests targeting a
+maintenance branch use the same CI workflow. Backport release-workflow fixes to
+supported maintenance branches so older trains retain the ability to ship.
+
+---
+
 ## Cutting a release (CI path — preferred)
 
 ```bash

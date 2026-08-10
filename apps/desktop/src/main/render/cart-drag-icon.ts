@@ -10,7 +10,7 @@
 // plain rounded cover thumbnail, and only throws if sharp can't read the
 // source at all — the caller then drops back to the raw image path.
 
-import sharp from "sharp";
+import sharp, { type Sharp } from "sharp";
 import { writeFile } from "node:fs/promises";
 
 const CARD_W = 160;
@@ -66,7 +66,7 @@ export async function composeCartDragIcon(opts: {
   count: number;
   destPath: string;
 }): Promise<void> {
-  const cover = (): sharp.Sharp =>
+  const cover = (): Sharp =>
     sharp(opts.imagePath).resize(CARD_W, CARD_H, { fit: "cover", position: "centre" });
   try {
     const png = await cover()

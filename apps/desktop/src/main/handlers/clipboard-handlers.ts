@@ -55,7 +55,7 @@ import { clipboard, nativeImage } from "electron";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import sharp from "sharp";
+import sharp, { type Sharp } from "sharp";
 import { nanoid } from "nanoid";
 import {
   ok,
@@ -132,7 +132,7 @@ async function bakeRasterVisibleRegion(args: {
   // Transparent canvas-sized base. PNG with palette:false so the output
   // stays full RGBA (no alpha quantization) — same discipline as the
   // compositor's final encode.
-  const base = (): sharp.Sharp =>
+  const base = (): Sharp =>
     sharp({
       create: {
         width: canvasWidthPx,

@@ -156,6 +156,10 @@ jobs:
         with:
           lfs: true
 
+      # Reused persistent workspaces can retain LFS pointers after checkout.
+      - name: Materialize Git LFS objects
+        run: git lfs pull
+
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:

@@ -229,7 +229,7 @@ MIT
 OFL-1.1
 ~~~~~~~
 - @fontsource/geist-mono@5.3.0 | https://github.com/fontsource/font-files
-- @fontsource/geist-sans@5.2.5 | https://github.com/fontsource/font-files
+- @fontsource/geist-sans@5.3.0 | https://github.com/fontsource/font-files
 
 Python-2.0
 ~~~~~~~~~~
@@ -340,13 +340,13 @@ DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 
-@fontsource/geist-sans@5.2.5 (OFL-1.1)
+@fontsource/geist-sans@5.3.0 (OFL-1.1)
 --------------------------------------
 
 Applies to:
-- @fontsource/geist-sans@5.2.5 (OFL-1.1)
+- @fontsource/geist-sans@5.3.0 (OFL-1.1)
 
-Representative file: @fontsource/geist-sans@5.2.5/LICENSE
+Representative file: @fontsource/geist-sans@5.3.0/LICENSE
 
 Geist Sans and Geist Mono Font
 (C) 2023 Vercel, made in collaboration with basement.studio

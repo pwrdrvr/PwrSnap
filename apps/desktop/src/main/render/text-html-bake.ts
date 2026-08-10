@@ -53,7 +53,7 @@
 // SVG bake instead — production gets HTML-bake, tests get SVG-bake.
 
 import { BrowserWindow } from "electron";
-import sharp from "sharp";
+import sharp, { type OverlayOptions } from "sharp";
 
 import type { Overlay } from "@pwrsnap/shared";
 import {
@@ -231,7 +231,7 @@ export async function rasterizeTextHtmlForV2(
   /** Source raster dims for bucket → sizePx math. */
   sourceWidthPx: number,
   sourceHeightPx: number
-): Promise<sharp.OverlayOptions> {
+): Promise<OverlayOptions> {
   // Pool window operations (setContentSize → loadURL → fonts.ready →
   // capturePage) all touch a shared webContents. Run through the
   // serialization queue so concurrent callers don't ERR_ABORTED each

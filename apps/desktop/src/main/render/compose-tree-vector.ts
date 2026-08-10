@@ -27,7 +27,7 @@
 // SVG generation is reused via the *ForV2 exports from compose.ts so
 // pixel-accuracy stays identical to v1 for the SVG-fallback path.
 
-import type sharp from "sharp";
+import type { OverlayOptions } from "sharp";
 
 import type { OverlayRow } from "@pwrsnap/shared";
 
@@ -65,7 +65,7 @@ export interface BuildCompositeLayersV2Args {
 export async function buildCompositeLayersForV2(
   row: OverlayRow,
   args: BuildCompositeLayersV2Args
-): Promise<sharp.OverlayOptions[]> {
+): Promise<OverlayOptions[]> {
   const {
     renderWidthPx,
     renderHeightPx,

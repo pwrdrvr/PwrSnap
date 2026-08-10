@@ -36,7 +36,7 @@ Apache-2.0
 - @img/sharp-darwin-arm64@0.34.5 | https://github.com/lovell/sharp
 - @zed-industries/agent-client-protocol@0.4.5 | https://github.com/zed-industries/agent-client-protocol
 - detect-libc@2.1.2 | https://github.com/lovell/detect-libc
-- sharp@0.34.5 | https://github.com/lovell/sharp
+- sharp@0.35.3 | https://github.com/lovell/sharp
 - tunnel-agent@0.6.0 | https://github.com/mikeal/tunnel-agent
 
 BlueOak-1.0.0
@@ -4542,13 +4542,13 @@ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
 OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-sharp@0.34.5 (Apache-2.0)
+sharp@0.35.3 (Apache-2.0)
 -------------------------
 
 Applies to:
-- sharp@0.34.5 (Apache-2.0)
+- sharp@0.35.3 (Apache-2.0)
 
-Representative file: sharp@0.34.5/LICENSE
+Representative file: sharp@0.35.3/LICENSE
 
 Apache License
 Version 2.0, January 2004

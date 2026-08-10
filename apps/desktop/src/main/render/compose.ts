@@ -16,7 +16,7 @@
 // raw-RGBA sharp composite layer with explicit dimensions so sharp's
 // `composite` never rejects it for being larger than the base image.
 
-import sharp from "sharp";
+import sharp, { type OverlayOptions } from "sharp";
 import type { ArrowEndStyle, OverlayRow } from "@pwrsnap/shared";
 import {
   computeArrowGeometry,
@@ -88,7 +88,7 @@ export type RenderResult = {
  * tree-walking compositor in compose-tree-vector.ts can reuse the
  * same pixel-accurate raw-RGBA produce-composite-layer discipline.
  */
-async function rasterize(svg: string, width: number, height: number): Promise<sharp.OverlayOptions> {
+async function rasterize(svg: string, width: number, height: number): Promise<OverlayOptions> {
   const raw = await sharp(Buffer.from(svg), { density: 72 })
     .resize(width, height, { fit: "fill" })
     .ensureAlpha()

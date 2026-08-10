@@ -23,7 +23,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import sharp from "sharp";
+import sharp, { type OverlayOptions } from "sharp";
 import { createHash } from "node:crypto";
 
 import type { BundleLayerNode, Overlay, OverlayRow } from "@pwrsnap/shared";
@@ -148,7 +148,7 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
 
   // Start with a transparent canvas. sharp's `create` produces a raw
   // RGBA buffer when fed back through `.raw().toBuffer()`.
-  let accumulator = await sharp({
+  let accumulator: Buffer = await sharp({
     create: {
       width: renderWidthPx,
       height: renderHeightPx,
@@ -371,7 +371,7 @@ async function compositeRasterOntoAccumulator(
   // raster to render dims so it covers the same proportional region of
   // the accumulator that it covers in the canvas.
   let layerInput: Buffer = sourceBytes;
-  let layerInputInfo: sharp.OverlayOptions["raw"] | undefined = undefined;
+  let layerInputInfo: OverlayOptions["raw"] | undefined = undefined;
 
   // Effective target dims = natural × transform-scale × renderScale.
   // transform[0]/[3] are the affine scale (1 for identity); renderScale
@@ -422,7 +422,7 @@ async function compositeRasterOntoAccumulator(
     visibleH < sourceH;
 
   let extractedInput: Buffer = layerInput;
-  let extractedRaw: sharp.OverlayOptions["raw"] | undefined = layerInputInfo;
+  let extractedRaw: OverlayOptions["raw"] | undefined = layerInputInfo;
   if (needsExtract) {
     const extractPipeline =
       layerInputInfo !== undefined
@@ -442,7 +442,7 @@ async function compositeRasterOntoAccumulator(
     extractedRaw = { width: visibleW, height: visibleH, channels: 4 };
   }
 
-  const composite: sharp.OverlayOptions = {
+  const composite: OverlayOptions = {
     input: extractedInput,
     top: ty + visibleTop,
     left: tx + visibleLeft,

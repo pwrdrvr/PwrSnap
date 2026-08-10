@@ -63,7 +63,7 @@ const baseSettings: Settings = {
   experimental: { processSplit: true, dpiAwareExport: false, allowRetinaExport: true },
   appearance: { theme: "system" },
   updates: { channel: "latest" },
-  storage: { filenameTimestampZone: "local" },
+  storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
   recording: {
     includeSystemAudio: false,
     includeMicrophone: false,

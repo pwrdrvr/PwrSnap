@@ -109,7 +109,10 @@ export async function putCaptureSource(tempPath: string): Promise<StoredSource> 
  * `extname(src_path)` to find the right file later; we do NOT
  * hardcode `.png` anywhere downstream.
  */
-export async function adoptExistingFileAsSource(tempPath: string): Promise<StoredSource> {
+export async function adoptExistingFileAsSource(
+  tempPath: string,
+  outputDir: string = getCapturesRoot()
+): Promise<StoredSource> {
   const id = nanoid(16);
   const buf = await readFile(tempPath);
   const sha256 = createHash("sha256").update(buf).digest("hex");
@@ -122,7 +125,7 @@ export async function adoptExistingFileAsSource(tempPath: string): Promise<Store
   const byteSize = buf.length;
   const ext = extname(tempPath).toLowerCase() || ".bin";
 
-  const dir = getCapturesRoot();
+  const dir = outputDir;
   await mkdir(dir, { recursive: true });
   const srcPath = join(dir, `${id}${ext}`);
   await rename(tempPath, srcPath);

@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { readdir, stat } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { session } from "electron";
 import type {
   RenderCacheMaintenanceMode,
@@ -12,11 +12,12 @@ import type {
 import { getDb } from "../persistence/db";
 import {
   getCacheRoot,
-  getCapturesRoot,
   getDataRoot,
   getDbPath,
+  getDurableCapturesRoots,
   getLegacyCapturesRoot
 } from "../persistence/paths";
+import type { DurableCapturesRoot } from "../persistence/paths";
 import { clearRenderCache, trimRenderCache } from "../persistence/render-cache-maintenance";
 
 export const CHROMIUM_DISK_CACHE_LIMIT_BYTES = 128 * 1024 * 1024;
@@ -37,11 +38,11 @@ type InFlightStorageScan = {
 type SnapshotParts = {
   capturedAt: string;
   audit: boolean;
-  dataRoot: string;
-  capturesRoot: string;
-  capturesInsideDataRoot: boolean;
+  durableCapturesRoots: readonly DurableCapturesRoot[];
+  durableCapturesRootsScanned: number;
   sourceStats: StorageSummary["sourceCaptures"];
   documentsCaptures?: SizeResult;
+  homeCaptures?: SizeResult;
   appSupportCaptures?: SizeResult;
   appSupportTotal?: SizeResult;
   renderCache?: SizeResult;
@@ -146,14 +147,12 @@ export async function getStorageSnapshot(
 async function scanStorageSnapshot(options: { audit: boolean }): Promise<StorageSnapshot> {
   const dataRoot = getDataRoot();
   const dbPath = getDbPath();
-  const capturesRoot = getCapturesRoot();
-  const capturesInsideDataRoot = isPathWithinOrEqual(capturesRoot, dataRoot);
+  const durableCapturesRoots = getDurableCapturesRoots();
   const parts: SnapshotParts = {
     capturedAt: new Date().toISOString(),
     audit: options.audit,
-    dataRoot,
-    capturesRoot,
-    capturesInsideDataRoot,
+    durableCapturesRoots,
+    durableCapturesRootsScanned: 0,
     sourceStats: getLiveSourceCaptureStats(),
     databaseStats: getDatabaseStats()
   };
@@ -161,14 +160,19 @@ async function scanStorageSnapshot(options: { audit: boolean }): Promise<Storage
   publishStorageSnapshot(buildStorageSnapshot(parts), true);
 
   const scanTasks: Array<() => Promise<void>> = [
-    async () => {
-      parts.documentsCaptures = await sizePath(capturesRoot);
+    ...durableCapturesRoots.map((root) => async () => {
+      const size = await sizePath(root.path);
+      if (root.kind === "documents") parts.documentsCaptures = size;
+      else if (root.kind === "home") parts.homeCaptures = size;
+      else parts.appSupportCaptures = size;
+      parts.durableCapturesRootsScanned += 1;
       publishStorageSnapshot(buildStorageSnapshot(parts), true);
-    },
+    }),
     async () => {
-      parts.appSupportCaptures = capturesRoot === getLegacyCapturesRoot()
-        ? EMPTY_SIZE
-        : await sizePath(getLegacyCapturesRoot());
+      const legacyRoot = getLegacyCapturesRoot();
+      if (!durableCapturesRoots.some((root) => pathsEqual(root.path, legacyRoot))) {
+        parts.appSupportCaptures = await sizePath(legacyRoot);
+      }
       publishStorageSnapshot(buildStorageSnapshot(parts), true);
     },
     async () => {
@@ -231,11 +235,24 @@ async function scanStorageSnapshot(options: { audit: boolean }): Promise<Storage
 }
 
 function buildStorageSnapshot(parts: SnapshotParts): StorageSnapshot {
-  const documentsCaptures = parts.documentsCaptures ?? {
-    bytes: parts.sourceStats.bytes,
-    fileCount: parts.sourceStats.captureCount
-  };
-  const appSupportCaptures = parts.appSupportCaptures ?? EMPTY_SIZE;
+  let documentsCaptures = parts.documentsCaptures ?? EMPTY_SIZE;
+  let homeCaptures = parts.homeCaptures ?? EMPTY_SIZE;
+  let appSupportCaptures = parts.appSupportCaptures ?? EMPTY_SIZE;
+  // Publish a useful immediate snapshot before the async filesystem walk has
+  // completed. Once any durable root has been scanned we report only measured
+  // buckets, avoiding a DB-derived placeholder being double-counted beside a
+  // completed root.
+  if (parts.durableCapturesRootsScanned === 0) {
+    const placeholder = {
+      bytes: parts.sourceStats.bytes,
+      fileCount: parts.sourceStats.captureCount
+    };
+    const soleRoot = parts.durableCapturesRoots.length === 1
+      ? parts.durableCapturesRoots[0]
+      : undefined;
+    if (soleRoot?.kind === "override") appSupportCaptures = placeholder;
+    else documentsCaptures = placeholder;
+  }
   const appSupportTotal = parts.appSupportTotal ?? EMPTY_SIZE;
   const renderCache = parts.renderCache ?? EMPTY_SIZE;
   const chromiumCacheDir = parts.chromiumCacheDir ?? EMPTY_SIZE;
@@ -256,6 +273,7 @@ function buildStorageSnapshot(parts: SnapshotParts): StorageSnapshot {
   };
   const knownTotalBytes =
     documentsCaptures.bytes +
+    homeCaptures.bytes +
     appSupportCaptures.bytes +
     renderCache.bytes +
     chromiumHttpCache.bytes +
@@ -265,7 +283,6 @@ function buildStorageSnapshot(parts: SnapshotParts): StorageSnapshot {
     dbWal.bytes +
     dbShm.bytes;
   const knownAppSupportBytes =
-    (parts.capturesInsideDataRoot ? documentsCaptures.bytes : 0) +
     appSupportCaptures.bytes +
     renderCache.bytes +
     chromiumHttpCache.bytes +
@@ -278,13 +295,15 @@ function buildStorageSnapshot(parts: SnapshotParts): StorageSnapshot {
   return {
     capturedAt: parts.capturedAt,
     totalBytes: parts.audit && parts.appSupportTotal !== undefined
-      ? appSupportTotal.bytes + (parts.capturesInsideDataRoot ? 0 : documentsCaptures.bytes)
+      ? appSupportTotal.bytes + documentsCaptures.bytes + homeCaptures.bytes
       : knownTotalBytes,
     sourceCaptures: {
-      bytes: documentsCaptures.bytes + appSupportCaptures.bytes,
-      fileCount: documentsCaptures.fileCount + appSupportCaptures.fileCount,
+      bytes: documentsCaptures.bytes + homeCaptures.bytes + appSupportCaptures.bytes,
+      fileCount:
+        documentsCaptures.fileCount + homeCaptures.fileCount + appSupportCaptures.fileCount,
       captureCount: parts.sourceStats.captureCount,
       documentsBytes: documentsCaptures.bytes,
+      homeBytes: homeCaptures.bytes,
       appSupportBytes: appSupportCaptures.bytes
     },
     renderCache,
@@ -302,7 +321,6 @@ function buildStorageSnapshot(parts: SnapshotParts): StorageSnapshot {
       fileCount: Math.max(
         0,
         appSupportTotal.fileCount -
-          (parts.capturesInsideDataRoot ? documentsCaptures.fileCount : 0) -
           appSupportCaptures.fileCount -
           renderCache.fileCount -
           chromiumCacheDir.fileCount -
@@ -321,9 +339,8 @@ function publishStorageSnapshot(snapshot: StorageSnapshot, scanning: boolean): v
   storageEmitter.emit("snapshot", { snapshot, scanning } satisfies StorageSnapshotUpdate);
 }
 
-function isPathWithinOrEqual(path: string, parent: string): boolean {
-  const relativePath = relative(resolve(parent), resolve(path));
-  return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
+function pathsEqual(first: string, second: string): boolean {
+  return resolve(first) === resolve(second);
 }
 
 export async function maintainRenderCache(

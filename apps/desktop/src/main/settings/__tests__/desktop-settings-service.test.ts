@@ -1148,8 +1148,8 @@ describe("DesktopSettingsService.appearance defaulting", () => {
   });
 });
 
-describe("DesktopSettingsService.storage filename timestamp zone", () => {
-  test("v1 file written before `storage` landed gets local-time filename default", async () => {
+describe("DesktopSettingsService.storage", () => {
+  test("v1 file written before `storage` landed gets additive storage defaults", async () => {
     const filePath = join(workDir, "settings.json");
     writeFileSync(
       filePath,
@@ -1162,6 +1162,7 @@ describe("DesktopSettingsService.storage filename timestamp zone", () => {
     const svc = new DesktopSettingsService({ filePath });
     const settings = await svc.read();
     expect(settings.storage.filenameTimestampZone).toBe("local");
+    expect(settings.storage.capturesLocation).toBe("documents");
   });
 
   test("invalid filename timestamp zone on disk falls back to local", async () => {
@@ -1185,6 +1186,22 @@ describe("DesktopSettingsService.storage filename timestamp zone", () => {
     expect(written.storage.filenameTimestampZone).toBe("utc");
     const reread = await svc.read();
     expect(reread.storage.filenameTimestampZone).toBe("utc");
+  });
+
+  test("home captures location persists and invalid on-disk values fall back", async () => {
+    const svc = makeService();
+    const written = await svc.write({ storage: { capturesLocation: "home" } });
+    expect(written.storage.capturesLocation).toBe("home");
+    expect((await svc.read()).storage.capturesLocation).toBe("home");
+
+    const filePath = join(workDir, "invalid-location.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({ schemaVersion: 1, storage: { capturesLocation: "desktop" } }),
+      "utf8"
+    );
+    const invalid = await new DesktopSettingsService({ filePath }).read();
+    expect(invalid.storage.capturesLocation).toBe("documents");
   });
 });
 

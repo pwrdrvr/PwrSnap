@@ -25,6 +25,7 @@ import { getMainLogger } from "../log";
 import { setFloatOverState } from "../float-over";
 import { broadcastCapturesChanged } from "../events";
 import { maybeEnqueueCaptureEnrichment } from "../handlers/codex-handlers";
+import { runWithCapturesDirFallback } from "../capture/capture-storage-gate";
 import { getCaptureById, insertCapture } from "../persistence/captures-repo";
 import {
   adoptExistingFileAsSource,
@@ -347,7 +348,9 @@ class NativeRecorderService implements RecordingService {
     setRecordingState({ phase: "processing", sessionId });
 
     // Adopt the file into the source store + record the metadata row.
-    const stored = await adoptExistingFileAsSource(stopped.outputPath);
+    const stored = await runWithCapturesDirFallback((outputDir) =>
+      adoptExistingFileAsSource(stopped.outputPath, outputDir)
+    );
     const sizeInfo = await statSource(stored.srcPath);
     const subject = this.subject!;
     const rect = subjectToPhysicalRect(subject);
@@ -566,7 +569,9 @@ type PersistStoppedRecordingInput = {
 };
 
 async function persistStoppedRecording(stopped: PersistStoppedRecordingInput): Promise<{ captureId: string }> {
-  const stored = await adoptExistingFileAsSource(stopped.outputPath);
+  const stored = await runWithCapturesDirFallback((outputDir) =>
+    adoptExistingFileAsSource(stopped.outputPath, outputDir)
+  );
   const sizeInfo = await statSource(stored.srcPath);
   const rect = subjectToPhysicalRect(stopped.subject);
 

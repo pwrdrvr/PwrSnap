@@ -96,8 +96,8 @@ importers:
         specifier: ^3.1.0
         version: 3.1.0
       wavesurfer.js:
-        specifier: ^7.12.8
-        version: 7.12.8
+        specifier: ^7.12.11
+        version: 7.12.11
       yauzl:
         specifier: ^3.4.0
         version: 3.4.0
@@ -3005,8 +3005,8 @@ packages:
     resolution: {integrity: sha512-o8qghlI8NZHU1lLPrpi2+Uq7abh4GGPpYANlalzWxyWteJOCsr/P+oPBA49TOLu5FTZO4d3F9MnWJfiMo4BkmA==}
     engines: {node: '>=18'}
 
-  wavesurfer.js@7.12.8:
-    resolution: {integrity: sha512-G3nxzcC4X+ZWrLtcIV17kCWHVq3ysJCS4dS0YkGKILrQ2esAb8cScw965zKNKYxUvpiZsPK93KLWgWTYdIBQiw==}
+  wavesurfer.js@7.12.11:
+    resolution: {integrity: sha512-Sx0yZIz7jRJ9J9p7UL+pl9y0UQBB6UN/XNo+R7Gy4tCR5xZI9jMyA0dnt1R8TMVSQ4LZ10SeB2HJYQ+dV2dPSA==}
 
   webcrypto-core@1.9.2:
     resolution: {integrity: sha512-gsXecm82UQNlTBURJGuqOWy1Ww08S3kZUcr3aOJS02Pk0xLtkfeUAVC0u0xhgdonFme80edSJUIJyuvL/7250Q==}
@@ -5992,7 +5992,7 @@ snapshots:
     dependencies:
       xml-name-validator: 5.0.0
 
-  wavesurfer.js@7.12.8: {}
+  wavesurfer.js@7.12.11: {}
 
   webcrypto-core@1.9.2:
     dependencies:

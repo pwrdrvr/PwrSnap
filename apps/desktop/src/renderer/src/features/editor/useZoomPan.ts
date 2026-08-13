@@ -19,8 +19,13 @@
 // rewrites the gesture into a synthetic ctrl+wheel). That's the only
 // way the renderer sees a trackpad pinch.
 //
-// Drag-to-pan is enabled when scale > 1 (canvas overflows the wrap)
-// or when Space is held (Photoshop convention).
+// Drag-to-pan arbitration is owned by the CALLER (Editor): Space-drag
+// from any tool (Photoshop convention), middle-button drag from
+// anywhere, and left-drag on the wrap background / empty canvas while
+// zoomed in. This hook just exposes `startPan` (unconditional) plus
+// the move/up handlers — it deliberately does NOT decide when a
+// left-click means "pan" vs "select/draw"; that call needs hit-test
+// context only the Editor has.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -130,10 +135,15 @@ export type UseZoomPanResult = {
   onGestureStart: (event: Event) => void;
   onGestureChange: (event: Event) => void;
   onGestureEnd: (event: Event) => void;
-  /** Pan handlers — attach to the wrap when `scale > 1 || spaceHeld`.
-   *  Drives `wrap.scrollLeft/scrollTop` directly; no React state for
-   *  pan position. */
-  onPanPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
+  /** Begin a pan drag UNCONDITIONALLY — no guards. The caller owns
+   *  the arbitration (Space-drag, middle-button drag, wrap-background
+   *  drag while zoomed, pointer-tool empty-canvas drag while zoomed)
+   *  because deciding whether a left-click means "pan" needs hit-test
+   *  context this hook doesn't have. Captures the pointer on
+   *  `event.target`; the move/up handlers below finish the gesture. */
+  startPan: (event: React.PointerEvent<HTMLElement>) => void;
+  /** Attach BOTH to the wrap unconditionally — they no-op unless a
+   *  pan started via `startPan` is in progress. */
   onPanPointerMove: (event: React.PointerEvent<HTMLElement>) => void;
   onPanPointerUp: (event: React.PointerEvent<HTMLElement>) => void;
 };
@@ -503,10 +513,8 @@ export function useZoomPan(opts: {
     };
   }, [spaceHeld]);
 
-  const onPanPointerDown = useCallback(
+  const startPan = useCallback(
     (event: React.PointerEvent<HTMLElement>): void => {
-      if (event.button !== 0) return;
-      if (state.scale <= 1 && !spaceHeld) return;
       event.preventDefault();
       (event.target as HTMLElement).setPointerCapture(event.pointerId);
       setIsPanning(true);
@@ -517,7 +525,7 @@ export function useZoomPan(opts: {
         basePanY: state.panY
       };
     },
-    [state.scale, state.panX, state.panY, spaceHeld]
+    [state.panX, state.panY]
   );
 
   const onPanPointerMove = useCallback(
@@ -578,7 +586,7 @@ export function useZoomPan(opts: {
     onGestureStart,
     onGestureChange,
     onGestureEnd,
-    onPanPointerDown,
+    startPan,
     onPanPointerMove,
     onPanPointerUp
   };

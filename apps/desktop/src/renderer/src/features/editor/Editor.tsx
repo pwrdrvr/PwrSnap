@@ -1754,6 +1754,15 @@ export function Editor({
     sourceWidthPx: number;
     sourceHeightPx: number;
   } | null>(null);
+  // Zoom/pan bridge — `zoom` (useZoomPan) lives inside EditorLoaded,
+  // but the pointer-tool miss branch of the OUTER onPointerDown needs
+  // it to fall back to drag-to-pan on empty canvas while zoomed in.
+  // EditorLoaded sync-writes this each render — same pattern as
+  // `overlaysRef` / `textHitDimsRef`. Null until the model resolves.
+  const zoomPanBridgeRef = useRef<{
+    scale: number;
+    startPan: (event: React.PointerEvent<HTMLElement>) => void;
+  } | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
   // Edit-mode keystroke sink — an invisible (color: transparent)
@@ -2086,6 +2095,15 @@ export function Editor({
           (event.target as HTMLElement).setPointerCapture(event.pointerId);
         }
         return;
+      }
+      // Miss on empty canvas while zoomed in: fall back to drag-to-pan
+      // (the click already cleared the selection above via the `clear`
+      // action). This keeps the old pointer-drag navigation available
+      // without ever stealing a click that lands on a layer — the
+      // hit-test above always wins.
+      const zoomPan = zoomPanBridgeRef.current;
+      if (hit === null && zoomPan !== null && zoomPan.scale > 1) {
+        zoomPan.startPan(event);
       }
       return;
     }
@@ -3987,6 +4005,7 @@ export function Editor({
       reorderSelectedRef={reorderSelectedRef}
       commitMultiDragRef={commitMultiDragRef}
       commitRasterDragRef={commitRasterDragRef}
+      zoomPanBridgeRef={zoomPanBridgeRef}
       modelLayers={model.layers}
       storedLayers={storedLayers}
       storedCanvasWidthPx={storedCanvasWidthPx}
@@ -4062,6 +4081,7 @@ function EditorLoaded({
   reorderSelectedRef,
   commitMultiDragRef,
   commitRasterDragRef,
+  zoomPanBridgeRef,
   modelLayers,
   storedLayers,
   storedCanvasWidthPx,
@@ -4278,6 +4298,13 @@ function EditorLoaded({
       ) => Promise<boolean>)
     | null
   >;
+  /** Sync-written each render with the live zoom scale + startPan so
+   *  the outer onPointerDown's pointer-tool miss branch can fall back
+   *  to drag-to-pan on empty canvas while zoomed in. */
+  zoomPanBridgeRef: React.RefObject<{
+    scale: number;
+    startPan: (event: React.PointerEvent<HTMLElement>) => void;
+  } | null>;
   /** In-progress raster drag override painted by RasterLayers (null when
    *  not dragging a raster). */
   rasterDrafts: ReadonlyMap<string, AffineTransform> | null;
@@ -4366,6 +4393,10 @@ function EditorLoaded({
     imageHeightPx: record.height_px,
     wrapRef: canvasWrapRef
   });
+  // Sync-write the zoom/pan bridge the OUTER onPointerDown reads (its
+  // pointer-tool miss branch pans on empty-canvas drag while zoomed).
+  // Render-phase ref write, same discipline as `overlaysRef`.
+  zoomPanBridgeRef.current = { scale: zoom.state.scale, startPan: zoom.startPan };
 
   // CANONICAL canvas CSS-pixel height — the single source of truth that
   // every text glyph (display + edit) reads to derive its on-screen
@@ -5770,22 +5801,56 @@ function EditorLoaded({
     };
   }, [canvasWrapRef]);
 
-  // When zoomed in or space-held, the canvas-wrap absorbs pan-drag
-  // pointer events instead of the canvas's drawing handlers.
-  // Single-finger drag arbitration on the canvas wrap:
+  // Single-finger drag arbitration between pan and select/draw:
   //   • Space held → always pan (Photoshop convention: hold Space
-  //     to grab + drag regardless of active tool).
-  //   • Pointer tool + zoomed in → pan (Pointer is the "no-op on
-  //     drag" tool, so we repurpose its drag for navigation).
-  //   • Any drawing tool (arrow, rect, highlight, blur, text) →
-  //     pointer events go to the canvas so the user can DRAW. Pan
-  //     stays accessible via Space+drag and via two-finger scroll
-  //     (which doesn't conflict with tool drag — it's a separate
-  //     gesture handled by useZoomPan's wheel handler).
+  //     to grab + drag regardless of active tool). This is the ONLY
+  //     case that detaches the canvas's own pointer handlers.
+  //   • Middle-button drag → pan from anywhere, any tool, any zoom
+  //     (the canvas handlers ignore non-left buttons, so the event
+  //     bubbles to the wrap's handler below).
+  //   • Left-drag on the wrap BACKGROUND (outside the canvas) while
+  //     zoomed in → pan (see onWrapPointerDown).
+  //   • Pointer tool + zoomed in + click on EMPTY canvas → pan
+  //     (armed from onPointerDown's miss branch, AFTER the hit-test —
+  //     a click on a layer selects/drags it instead; selection must
+  //     stay live at every zoom level).
+  //   • Any drawing tool → pointer events go to the canvas so the
+  //     user can DRAW. Two-finger scroll pans in every mode via
+  //     useZoomPan's wheel handler.
+  //
+  // Historical note: `wantPan` used to ALSO trip on
+  // `tool === "pointer" && scale > 1`, which silently disconnected
+  // every canvas pointer handler — in pointer mode past Fit zoom,
+  // nothing on the canvas was selectable at all and users read the
+  // capture as "baked." Pan now never steals a click that lands on
+  // a layer.
   //
   // Crop is excluded from the pan arbitration — its overlay catches
   // all pointer events directly via its own element handlers.
-  const wantPan = zoom.spaceHeld || (tool === "pointer" && zoom.state.scale > 1);
+  const wantPan = zoom.spaceHeld;
+
+  function onWrapPointerDown(event: React.PointerEvent<HTMLElement>): void {
+    // Middle-button drag pans from anywhere (preventDefault inside
+    // startPan also suppresses Chromium's autoscroll widget).
+    if (event.button === 1) {
+      zoom.startPan(event);
+      return;
+    }
+    if (event.button !== 0) return;
+    // Space held: pan takeover. The canvas handlers are detached
+    // (`wantPan`), so every left-drag inside the wrap pans.
+    if (zoom.spaceHeld) {
+      zoom.startPan(event);
+      return;
+    }
+    // Left-drag on the wrap background (the pasteboard area around
+    // the canvas) pans when zoomed in. Clicks ON the canvas bubble
+    // up with a different target and are never treated as pans here
+    // — the canvas's own handler owns those.
+    if (event.target === event.currentTarget && zoom.state.scale > 1) {
+      zoom.startPan(event);
+    }
+  }
 
   // -------------------- Canvas DOMRect for CropTool ----------------
   //
@@ -6036,9 +6101,9 @@ function EditorLoaded({
           (zoom.isPanning ? " is-panning" : "") +
           (drop.isDragOver ? " is-drop-target" : "")
         }
-        onPointerDown={wantPan ? zoom.onPanPointerDown : undefined}
-        onPointerMove={wantPan ? zoom.onPanPointerMove : undefined}
-        onPointerUp={wantPan ? zoom.onPanPointerUp : undefined}
+        onPointerDown={onWrapPointerDown}
+        onPointerMove={zoom.onPanPointerMove}
+        onPointerUp={zoom.onPanPointerUp}
         onDragOver={drop.onDragOver}
         onDragLeave={drop.onDragLeave}
         onDrop={(e) => void drop.onDrop(e)}

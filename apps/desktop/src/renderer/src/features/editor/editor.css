@@ -140,6 +140,13 @@
   min-width: 0;
   min-height: 0;
 }
+/* Zoomed past Fit: the wrap background (the pasteboard gutter around
+   the canvas) is a live pan surface — a left-drag there pans (see
+   onWrapPointerDown). The canvas and its children carry their own
+   per-tool cursors, so this grab only ever paints the gutter. */
+.editor-canvas-wrap.is-zoomed {
+  cursor: grab;
+}
 .editor-canvas-wrap.is-pannable {
   cursor: grab;
 }
@@ -211,14 +218,16 @@
 .editor-canvas[data-tool][data-hover-hit="true"] {
   cursor: move;
 }
-/* Pan takeover: Space-held detaches the canvas's own handlers and the
-   wrap shows grab/grabbing (.is-pannable / .is-panning above) — the
-   canvas must inherit that instead of fighting it with per-tool /
+/* Pan takeover: Space-held detaches the canvas's own pointerdown and
+   the wrap shows grab/grabbing (.is-pannable / .is-panning above) —
+   the canvas must inherit that instead of fighting it with per-tool /
    hover cursors. Also covers mid-pan (grabbing) for the middle-drag
-   and empty-canvas pan gestures. */
+   and empty-canvas pan gestures. `!important` is deliberate: this is
+   a genuine MODE override, and it must survive any future cursor rule
+   added below it at whatever specificity. */
 .editor-canvas-wrap.is-pannable .editor-canvas,
 .editor-canvas-wrap.is-panning .editor-canvas {
-  cursor: inherit;
+  cursor: inherit !important;
 }
 /* Crop clip box for the source <img>. `.editor-canvas` is
    overflow:visible so SelectionOutline + TransformHandles + draft

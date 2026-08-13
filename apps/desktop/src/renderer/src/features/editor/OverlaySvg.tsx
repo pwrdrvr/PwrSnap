@@ -2228,21 +2228,29 @@ export function TransformHandles({
       if (handle === "body" && (event.metaKey || event.ctrlKey)) {
         return;
       }
-      // Plain body-rect click: only claim the gesture when the shared
-      // canvas hit-test agrees this overlay is the TOPMOST layer under
+      // Plain body-rect click: propagate instead of claiming when the
+      // shared canvas hit-test says a DIFFERENT layer is topmost under
       // the cursor. The body rect is a full bbox, so for a large
       // selected layer (a highlight band, a wide arrow's bounds, a
-      // multi-line text block) it covers neighbors and empty canvas —
-      // pre-fix every click inside it re-dragged the SELECTED layer
-      // instead of selecting the layer the user aimed at (or clearing
-      // on a true miss). Letting the event bubble hands it to the
-      // canvas's dispatchCanvasClickSelection, which selects the real
-      // topmost layer and arms its drag in the same gesture. Resize /
-      // rotate handles stay claim-always — they're tiny explicit
-      // affordances rendered above everything.
+      // multi-line text block) it covers neighbors — pre-fix every
+      // click inside it re-dragged the SELECTED layer instead of
+      // selecting the layer the user aimed at. Letting the event
+      // bubble hands it to the canvas's dispatchCanvasClickSelection,
+      // which selects the real topmost layer and arms its drag in the
+      // same gesture.
+      //
+      // A `null` hit still CLAIMS: null means the press landed inside
+      // the forgiving bbox but on no layer's precise hit geometry —
+      // the empty interior of an arrow's bounds, a glyph's padding,
+      // or the off-canvas half of a layer dragged past the edge.
+      // Nothing else was aimed at, so honoring the bbox costs nothing;
+      // refusing it made arrows undraggable from inside their own
+      // bounds and off-canvas layer halves permanently unreachable.
+      // Resize / rotate handles stay claim-always — they're tiny
+      // explicit affordances rendered above everything.
       if (handle === "body" && hitTestTopmostLayerId !== undefined) {
         const topmost = hitTestTopmostLayerId(event.clientX, event.clientY);
-        if (topmost !== selectedOverlay.id) {
+        if (topmost !== null && topmost !== selectedOverlay.id) {
           return;
         }
       }

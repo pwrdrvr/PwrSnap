@@ -247,7 +247,16 @@ export function TextDraftInput({
   }
 
   return (
-    <div style={wrapperStyle}>
+    <div
+      style={wrapperStyle}
+      // The draft input owns every press inside it. Without this, the
+      // pointerdown bubbles to `.editor-canvas`, whose click dispatch
+      // hit-tests the overlay UNDER the input (the one being edited),
+      // arms a drag with canvas pointer capture, and turns a
+      // drag-to-select-characters gesture into a layer move — while
+      // the capture also breaks the textarea's native text selection.
+      onPointerDown={(e) => e.stopPropagation()}
+    >
       {/* Visible text — same `<div>` shape and CSS as
           TextHtml.tsx's display surface. NOT editable. Renders glyphs
           + halo identically to display. */}

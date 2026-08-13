@@ -533,9 +533,35 @@ export function useZoomPan(opts: {
     [state.panX, state.panY]
   );
 
+  /** Ends the pan. Also attach as the wrap's onPointerCancel — a
+   *  cancelled pointer never delivers pointerup, and the pan state
+   *  must not outlive the gesture (see onPanPointerMove's self-heal
+   *  for the case where even the cancel event is lost). */
+  const onPanPointerUp = useCallback((event: React.PointerEvent<HTMLElement>): void => {
+    if (panStart.current === null) return;
+    try {
+      (event.target as HTMLElement).releasePointerCapture(event.pointerId);
+    } catch {
+      // Best-effort: capture may already be gone (pointercancel
+      // releases it implicitly before this handler runs).
+    }
+    panStart.current = null;
+    setIsPanning(false);
+  }, []);
+
   const onPanPointerMove = useCallback(
     (event: React.PointerEvent<HTMLElement>): void => {
       if (panStart.current === null) return;
+      // Self-heal a cancelled pan. The move/up handlers are attached
+      // to the wrap PERMANENTLY (not only while pan-eligible), and an
+      // OS-level pointer cancellation (window blur, Mission Control,
+      // three-finger swipe) can eat the pointerup — without this
+      // check a stale panStart would make every subsequent button-up
+      // hover drag the canvas around forever.
+      if (event.buttons === 0) {
+        onPanPointerUp(event);
+        return;
+      }
       const dx = event.clientX - panStart.current.x;
       const dy = event.clientY - panStart.current.y;
       setState((prev) => {
@@ -549,15 +575,8 @@ export function useZoomPan(opts: {
           : { ...prev, ...next };
       });
     },
-    [clampPanToWrap]
+    [clampPanToWrap, onPanPointerUp]
   );
-
-  const onPanPointerUp = useCallback((event: React.PointerEvent<HTMLElement>): void => {
-    if (panStart.current === null) return;
-    (event.target as HTMLElement).releasePointerCapture(event.pointerId);
-    panStart.current = null;
-    setIsPanning(false);
-  }, []);
 
   const canvasStyle: { width: string; height: string; transform: string } | null =
     fitSize === null

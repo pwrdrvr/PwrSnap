@@ -571,6 +571,26 @@ describe("TransformHandles", () => {
     expect(onGeometryChange).toHaveBeenCalledTimes(1);
   });
 
+  test("body pointerdown CLAIMS the drag when the hit-test reports null (forgiving-bbox press)", async () => {
+    // null = the press landed inside the body bbox but on no layer's
+    // precise hit geometry — the empty interior of an arrow's bounds,
+    // or the off-canvas half of a layer dragged past the edge. Nothing
+    // else was aimed at, so the bbox keeps its pre-guard forgiveness;
+    // refusing here made arrows undraggable from inside their own
+    // bounds and off-canvas layer halves unreachable.
+    const onGeometryChange = vi.fn();
+    await render({
+      selectedOverlay: rectRow(),
+      onGeometryChange,
+      hitTestTopmostLayerId: () => null
+    });
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    firePointer(body, "pointerdown", 300, 300);
+    firePointer(body, "pointermove", 500, 400);
+    firePointer(body, "pointerup", 500, 400);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+  });
+
   test("body drag passes coordinates through without clamping (user can push layer off-canvas)", async () => {
     // Pre-fix this test asserted the body-drag clamp held the rect at
     // (0, 0). The clamp was removed in the "drag past edge" fix —

@@ -1941,10 +1941,15 @@ export function Editor({
    *     so they're hit-test separately and the topmost wins (higher
    *     z_index; a tie favors the raster). Same canvas-normalized
    *     space as the overlay hit-test. */
-  function dispatchCanvasClickSelection(
-    event: React.PointerEvent<HTMLDivElement>,
-    start: { xn: number; yn: number }
-  ): { hit: string | null } {
+  /** Pure hit-test half of the click dispatch — also runs per-frame
+   *  for the hover cursor affordance, so keep it allocation-light.
+   *  Returns the topmost layer id (overlay OR raster, z-arbitrated)
+   *  plus the raster half so the click dispatch can arm the solo
+   *  raster gesture. */
+  function hitTestCanvasPoint(start: { xn: number; yn: number }): {
+    hit: string | null;
+    rasterHit: { id: string; zIndex: number } | null;
+  } {
     const rect = canvasRef.current?.getBoundingClientRect();
     const shortSide =
       rect === undefined ? 1000 : Math.min(rect.width, rect.height);
@@ -1976,6 +1981,15 @@ export function Editor({
           : overlays.find((o) => o.id === overlayHit)?.z_index ?? Number.NEGATIVE_INFINITY;
       if (overlayHit === null || rasterHit.zIndex >= overlayZ) hit = rasterHit.id;
     }
+    return { hit, rasterHit };
+  }
+
+  function dispatchCanvasClickSelection(
+    event: React.PointerEvent<HTMLDivElement>,
+    start: { xn: number; yn: number }
+  ): { hit: string | null } {
+    const overlays = overlaysRef.current;
+    const { hit, rasterHit } = hitTestCanvasPoint(start);
     // Decision matrix lives in `decideClickSelection` so every tool
     // shares one source of truth (and one regression-tested module).
     // The `keep` action is the load-bearing piece for multi-select
@@ -2248,6 +2262,58 @@ export function Editor({
     }
   }
 
+  // -------------------- Hover cursor affordance --------------------
+  //
+  // The shared click dispatch selects an existing layer on hit and
+  // only draws / pans on empty canvas — but without feedback the
+  // cursor can't telegraph which outcome a click will have (design
+  // review finding on PR #384). A rAF-throttled hover hit-test writes
+  // `data-hover-hit` DIRECTLY on the canvas element (no React state —
+  // a per-pointermove re-render of the Editor would be pure waste)
+  // and editor.css maps it to `cursor: move` over any hit target.
+  // At most one hit-test per frame; it's the same math a click runs.
+  const hoverRafRef = useRef<number | null>(null);
+  const hoverPointRef = useRef<{ x: number; y: number } | null>(null);
+
+  function clearHoverHit(): void {
+    if (hoverRafRef.current !== null) {
+      cancelAnimationFrame(hoverRafRef.current);
+      hoverRafRef.current = null;
+    }
+    hoverPointRef.current = null;
+    delete canvasRef.current?.dataset["hoverHit"];
+  }
+
+  function updateHoverHit(clientX: number, clientY: number): void {
+    hoverPointRef.current = { x: clientX, y: clientY };
+    if (hoverRafRef.current !== null) return;
+    hoverRafRef.current = requestAnimationFrame(() => {
+      hoverRafRef.current = null;
+      const point = hoverPointRef.current;
+      const canvas = canvasRef.current;
+      if (point === null || canvas === null) return;
+      const start = clientToNormalized(point.x, point.y);
+      const hit =
+        start === null ? null : hitTestCanvasPoint(start).hit;
+      if (hit !== null) canvas.dataset["hoverHit"] = "true";
+      else delete canvas.dataset["hoverHit"];
+    });
+  }
+
+  // Cancel a pending hover frame on unmount so it never touches a
+  // dead canvas ref.
+  useEffect(() => {
+    return () => {
+      if (hoverRafRef.current !== null) {
+        cancelAnimationFrame(hoverRafRef.current);
+      }
+    };
+  }, []);
+
+  function onPointerLeave(): void {
+    clearHoverHit();
+  }
+
   function onPointerMove(event: React.PointerEvent<HTMLDivElement>): void {
     // Raster canvas drag live preview — runs first, mutually exclusive
     // with the multi-select drag (a raster never enters the overlay
@@ -2348,8 +2414,14 @@ export function Editor({
       }
       return;
     }
-    if (draft === null) return;
-    if (draft.kind === "text") return;
+    // No gesture in progress (or only an idle text draft): this move
+    // is a HOVER — update the cursor affordance and stop. Crop owns
+    // its own overlay element (with its own cursors), so skip the
+    // hit-test cost there.
+    if (draft === null || draft.kind === "text") {
+      if (tool !== "crop") updateHoverHit(event.clientX, event.clientY);
+      return;
+    }
     const cur = clientToNormalized(event.clientX, event.clientY);
     if (cur === null) return;
     if (draft.kind === "arrow") {
@@ -3972,6 +4044,7 @@ export function Editor({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
+      onPointerLeave={onPointerLeave}
       onContextMenu={onContextMenu}
       contextMenuState={contextMenuState}
       setContextMenuState={setContextMenuState}
@@ -4048,6 +4121,7 @@ function EditorLoaded({
   onPointerMove,
   onPointerUp,
   onPointerCancel,
+  onPointerLeave,
   onContextMenu,
   contextMenuState,
   setContextMenuState,
@@ -4154,6 +4228,10 @@ function EditorLoaded({
    *  state. EditorLoaded just forwards it to the canvas's
    *  onPointerCancel attribute. */
   onPointerCancel: (e: React.PointerEvent<HTMLDivElement>) => void;
+  /** Clears the hover cursor affordance when the pointer exits the
+   *  canvas (data-hover-hit would otherwise stick on the last-hovered
+   *  state). */
+  onPointerLeave: () => void;
   /** Right-click handler — opens the layer context menu over the
    *  canvas at the click anchor. Defined in the outer Editor so it
    *  can call into outer-scope helpers (hitTestOverlays + selection
@@ -6127,8 +6205,10 @@ function EditorLoaded({
           onPointerMove={wantPan ? undefined : onPointerMove}
           onPointerUp={wantPan ? undefined : onPointerUp}
           onPointerCancel={wantPan ? undefined : onPointerCancel}
+          onPointerLeave={onPointerLeave}
           onContextMenu={wantPan ? undefined : onContextMenu}
           data-tool={tool}
+          data-zoomed={zoom.state.scale > 1 ? "true" : undefined}
         >
           {/* Phase 3.6 — the <img> is sized so the SOURCE raster's
               natural pixels map 1:1 to canvas CSS pixels regardless of

@@ -190,6 +190,36 @@
 .editor-canvas[data-tool="text"] {
   cursor: text;
 }
+/* Hover affordances. The shared click dispatch (Editor.tsx's
+   dispatchCanvasClickSelection) selects an existing layer on hit and
+   only draws / pans on empty canvas — these rules make the cursor
+   telegraph which outcome a click will have (PR #384 design-review
+   finding).
+   - `data-zoomed` (React-rendered): pointer tool + zoomed past Fit →
+     empty-canvas drag pans, so show grab.
+   - `data-hover-hit` (written IMPERATIVELY on the element by the
+     rAF-throttled hover hit-test in Editor.tsx — not React state, so
+     don't expect it in the JSX): any tool, any zoom, pointer over a
+     selectable layer → show move.
+   All three tiers below share (0,3,0) specificity ON PURPOSE so
+   source order resolves them: hover-hit beats the grab affordance,
+   and the pan takeover beats both. Don't "simplify" a selector — a
+   specificity bump reorders the whole cascade. */
+.editor-canvas[data-tool="pointer"][data-zoomed="true"] {
+  cursor: grab;
+}
+.editor-canvas[data-tool][data-hover-hit="true"] {
+  cursor: move;
+}
+/* Pan takeover: Space-held detaches the canvas's own handlers and the
+   wrap shows grab/grabbing (.is-pannable / .is-panning above) — the
+   canvas must inherit that instead of fighting it with per-tool /
+   hover cursors. Also covers mid-pan (grabbing) for the middle-drag
+   and empty-canvas pan gestures. */
+.editor-canvas-wrap.is-pannable .editor-canvas,
+.editor-canvas-wrap.is-panning .editor-canvas {
+  cursor: inherit;
+}
 /* Crop clip box for the source <img>. `.editor-canvas` is
    overflow:visible so SelectionOutline + TransformHandles + draft
    glyphs can extend off-canvas (#125), which means it can't clip the

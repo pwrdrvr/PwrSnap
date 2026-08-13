@@ -118,6 +118,9 @@ interface HarnessProps {
    *  selected text overlays can be exercised end-to-end (synthetic
    *  click events fired after pointerup). */
   onRequestEdit?: (row: OverlayRow) => void;
+  /** The Editor's shared canvas hit-test — body-rect pointerdowns only
+   *  claim the drag when this reports the selected overlay as topmost. */
+  hitTestTopmostLayerId?: (clientX: number, clientY: number) => string | null;
 }
 
 async function render(props: HarnessProps): Promise<HTMLElement> {
@@ -142,7 +145,8 @@ async function render(props: HarnessProps): Promise<HTMLElement> {
         onGeometryDrag: props.onGeometryDrag,
         onDragStart: props.onDragStart,
         onDragEnd: props.onDragEnd,
-        onRequestEdit: props.onRequestEdit
+        onRequestEdit: props.onRequestEdit,
+        hitTestTopmostLayerId: props.hitTestTopmostLayerId
       } as Parameters<typeof TransformHandles>[0])
     );
   });
@@ -512,6 +516,79 @@ describe("TransformHandles", () => {
       expect(commit.rect.w).toBeCloseTo(0.4, 3);
       expect(commit.rect.h).toBeCloseTo(0.3, 3);
     }
+  });
+
+  test("body pointerdown PROPAGATES (no claim) when another layer is topmost under the cursor", async () => {
+    // The body-hit rect is a full bbox — more forgiving than the real
+    // hit geometry — so for a large selected layer it covers neighbors
+    // underneath. When the Editor's shared hit-test says the click
+    // actually landed on a DIFFERENT layer, the body rect must let the
+    // event bubble to the canvas (which selects that layer) instead of
+    // re-dragging the selection.
+    const onDragStart = vi.fn();
+    const onGeometryChange = vi.fn();
+    const hitTest = vi.fn(() => "layer_under_the_bbox");
+    await render({
+      selectedOverlay: rectRow(),
+      onDragStart,
+      onGeometryChange,
+      hitTestTopmostLayerId: hitTest
+    });
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    let bubbled = false;
+    let prevented = true;
+    document.addEventListener(
+      "pointerdown",
+      (e) => {
+        bubbled = true;
+        prevented = e.defaultPrevented;
+      },
+      { once: true }
+    );
+    firePointer(body, "pointerdown", 300, 300);
+    expect(hitTest).toHaveBeenCalledWith(300, 300);
+    // Not claimed: no drag armed, event reached the document
+    // unconsumed (stopPropagation / preventDefault not called).
+    expect(onDragStart).not.toHaveBeenCalled();
+    expect(bubbled).toBe(true);
+    expect(prevented).toBe(false);
+    firePointer(body, "pointermove", 500, 400);
+    firePointer(body, "pointerup", 500, 400);
+    expect(onGeometryChange).not.toHaveBeenCalled();
+  });
+
+  test("body pointerdown CLAIMS the drag when the hit-test reports the selected overlay topmost", async () => {
+    const onGeometryChange = vi.fn();
+    await render({
+      selectedOverlay: rectRow(),
+      onGeometryChange,
+      hitTestTopmostLayerId: () => "rect_1"
+    });
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    firePointer(body, "pointerdown", 300, 300);
+    firePointer(body, "pointermove", 500, 400);
+    firePointer(body, "pointerup", 500, 400);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+  });
+
+  test("body pointerdown CLAIMS the drag when the hit-test reports null (forgiving-bbox press)", async () => {
+    // null = the press landed inside the body bbox but on no layer's
+    // precise hit geometry — the empty interior of an arrow's bounds,
+    // or the off-canvas half of a layer dragged past the edge. Nothing
+    // else was aimed at, so the bbox keeps its pre-guard forgiveness;
+    // refusing here made arrows undraggable from inside their own
+    // bounds and off-canvas layer halves unreachable.
+    const onGeometryChange = vi.fn();
+    await render({
+      selectedOverlay: rectRow(),
+      onGeometryChange,
+      hitTestTopmostLayerId: () => null
+    });
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    firePointer(body, "pointerdown", 300, 300);
+    firePointer(body, "pointermove", 500, 400);
+    firePointer(body, "pointerup", 500, 400);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
   });
 
   test("body drag passes coordinates through without clamping (user can push layer off-canvas)", async () => {

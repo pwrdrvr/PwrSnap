@@ -1210,25 +1210,6 @@ export function hitTestOverlays(
       // bucket × source-shortSide). Inlined here so we don't have to
       // import @pwrsnap/shared into hitTestOverlays (the helper
       // requires more args than the rest of this function uses).
-      const sourceShort = Math.max(
-        1,
-        Math.min(sourceWidthPx, sourceHeightPx)
-      );
-      const bucketSizePx =
-        o.size === "large"
-          ? sourceShort / 18
-          : o.size === "medium"
-            ? sourceShort / 30
-            : sourceShort / 50;
-      const sizePx =
-        o.sizePx !== undefined &&
-        Number.isFinite(o.sizePx) &&
-        o.sizePx > 0
-          ? o.sizePx
-          : bucketSizePx;
-      const lines = o.body.split("\n");
-      const lineCount = Math.max(1, lines.length);
-      const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 1);
       // Preferred path: the glyph's REAL measured box (canvas px),
       // published by TextHtml — the same source the selection outline
       // reads, so the click target covers exactly what the user sees.
@@ -1248,6 +1229,30 @@ export function hitTestOverlays(
         naturalWidthPx = glyphMeasured.widthImagePx * TEXT_BBOX_HIT_WIDTH_SLOP;
         naturalHeightPx = glyphMeasured.heightImagePx;
       } else {
+        // Fallback sizing — computed HERE (not before the measured
+        // fast path above) because this branch is cold in real
+        // Chromium: the hover hit-test runs per frame over every
+        // overlay, and splitting/reducing every text body per frame
+        // was pure GC pressure for values the fast path discards.
+        const sourceShort = Math.max(
+          1,
+          Math.min(sourceWidthPx, sourceHeightPx)
+        );
+        const bucketSizePx =
+          o.size === "large"
+            ? sourceShort / 18
+            : o.size === "medium"
+              ? sourceShort / 30
+              : sourceShort / 50;
+        const sizePx =
+          o.sizePx !== undefined &&
+          Number.isFinite(o.sizePx) &&
+          o.sizePx > 0
+            ? o.sizePx
+            : bucketSizePx;
+        const lines = o.body.split("\n");
+        const lineCount = Math.max(1, lines.length);
+        const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 1);
         // Measure the REAL advance width (same metric the selection
         // outline uses) so the click target tracks the glyph extent
         // instead of a char-count guess that mis-sized wide-cap text like
@@ -1754,6 +1759,17 @@ export function Editor({
     sourceWidthPx: number;
     sourceHeightPx: number;
   } | null>(null);
+  // Zoom/pan bridge — `zoom` (useZoomPan) lives inside EditorLoaded,
+  // but the pointer-tool miss branch of the OUTER onPointerDown needs
+  // to fall back to drag-to-pan on empty canvas while zoomed in.
+  // EditorLoaded populates this with a SELF-ARBITRATING closure (it
+  // owns the "zoomed past Fit" check, so the threshold lives next to
+  // the zoom state instead of leaking across the component boundary)
+  // via the same effect-assigned ref-handoff pattern as
+  // `commitMultiDragRef`; nulled on unmount.
+  const startEmptyCanvasPanRef = useRef<
+    ((event: React.PointerEvent<HTMLElement>) => void) | null
+  >(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
   // Edit-mode keystroke sink — an invisible (color: transparent)
@@ -1913,6 +1929,268 @@ export function Editor({
     return { x: xn * rect.width, y: yn * rect.height };
   }
 
+  /** Shared click→selection dispatch for the pointer tool AND every
+   *  drawing tool: hit-test overlays and non-source raster layers,
+   *  route the result through `decideClickSelection`, apply the
+   *  selection mutation, and arm whichever drag gesture the click
+   *  begins — group drag on a multi-selected member, solo raster drag
+   *  on a raster. Returns the resolved hit so callers can branch on
+   *  hit-vs-miss (pointer tool: pan fallback; drawing tools: start a
+   *  new draft).
+   *
+   *  Hit-test notes:
+   *   • textHitDimsRef carries canvas + source dims — text overlays
+   *     get a full bounding-rect hit target (vs point-radius), and
+   *     rotated rect / highlight / blur are inverse-rotated into
+   *     local frame before bbox testing so the visible rotated glyph
+   *     is what's selectable.
+   *   • Non-source raster layers live outside the OverlayRow system,
+   *     so they're hit-test separately and the topmost wins (higher
+   *     z_index; a tie favors the raster). Same canvas-normalized
+   *     space as the overlay hit-test. */
+  /** Pure hit-test half of the click dispatch — also runs per-frame
+   *  for the hover cursor affordance, so keep it allocation-light.
+   *  Returns the topmost layer id (overlay OR raster, z-arbitrated)
+   *  plus the raster half so the click dispatch can arm the solo
+   *  raster gesture. Pass `canvasRect` when the caller already read
+   *  the canvas's bounding rect this frame — the hover path runs per
+   *  frame and a second rect read forces a redundant layout flush. */
+  function hitTestCanvasPoint(
+    start: { xn: number; yn: number },
+    canvasRect?: DOMRect
+  ): {
+    hit: string | null;
+    rasterHit: { id: string; zIndex: number } | null;
+  } {
+    const rect = canvasRect ?? canvasRef.current?.getBoundingClientRect();
+    const shortSide =
+      rect === undefined ? 1000 : Math.min(rect.width, rect.height);
+    // Project the LIVE overrides onto the rows before testing. During
+    // the commit-refetch window after a drag / nudge (and mid-group-
+    // drag) the renderers paint layers at draftGeometry / rasterDrafts
+    // positions while the model still holds the pre-gesture geometry —
+    // the hit-test must answer for the layers where the user SEES
+    // them, or a re-grab right after a drag misses and clears the
+    // selection. Zero-allocation on the common path: the maps are
+    // null outside the override window.
+    const rawOverlays = overlaysRef.current;
+    const overlays =
+      draftGeometry === null
+        ? rawOverlays
+        : rawOverlays.map((o) => {
+            const override = draftGeometry.get(o.id);
+            if (override === undefined) return o;
+            const adopted = applyGeometryLocally(o.data, override);
+            return adopted === null ? o : { ...o, data: adopted };
+          });
+    const rawRasters = rastersRef.current;
+    const rasters =
+      rasterDrafts === null
+        ? rawRasters
+        : rawRasters.map((r) => {
+            const transform = rasterDrafts.get(r.id);
+            return transform === undefined ? r : { ...r, transform };
+          });
+    const overlayHit = hitTestOverlays(
+      overlays,
+      start.xn,
+      start.yn,
+      shortSide,
+      textHitDimsRef.current ?? undefined
+    );
+    const dimsForHit = textHitDimsRef.current;
+    const rasterHit =
+      dimsForHit === null
+        ? null
+        : hitTestRasterLayers(
+            rasters,
+            start.xn,
+            start.yn,
+            dimsForHit.canvasWidthPx,
+            dimsForHit.canvasHeightPx,
+            0.006
+          );
+    let hit = overlayHit;
+    if (rasterHit !== null) {
+      const overlayZ =
+        overlayHit === null
+          ? Number.NEGATIVE_INFINITY
+          : overlays.find((o) => o.id === overlayHit)?.z_index ?? Number.NEGATIVE_INFINITY;
+      if (overlayHit === null || rasterHit.zIndex >= overlayZ) hit = rasterHit.id;
+    }
+    return { hit, rasterHit };
+  }
+
+  /** Client-coordinate wrapper around `hitTestCanvasPoint` for
+   *  consumers outside this handler cluster — TransformHandles' body
+   *  rect asks "is the topmost layer under this cursor a DIFFERENT
+   *  layer?" before claiming a drag, so clicks aimed at layers
+   *  beneath its (full-bbox, over-forgiving) hit area propagate back
+   *  to the canvas instead of re-dragging the selection.
+   *
+   *  UNCLAMPED on purpose: layers may sit partly off-canvas
+   *  (`.editor-canvas` is overflow:visible and body drags are
+   *  deliberately not edge-clamped), and their off-canvas pixels must
+   *  stay grabbable. The clamped variant returned null out there,
+   *  which read as "not mine" and made off-canvas layer halves
+   *  permanently un-draggable.
+   *
+   *  Identity-stable via the ref indirection so TransformHandles'
+   *  useCallback deps (and any future React.memo) keep meaning
+   *  something — the implementation closes over per-render state, but
+   *  the prop the child sees never changes. */
+  const hitTestTopmostLayerIdRef = useRef<
+    (clientX: number, clientY: number) => string | null
+  >(() => null);
+  hitTestTopmostLayerIdRef.current = (clientX, clientY) => {
+    const start = clientToNormalizedUnclamped(clientX, clientY);
+    if (start === null) return null;
+    return hitTestCanvasPoint(start).hit;
+  };
+  const hitTestTopmostLayerId = useCallback(
+    (clientX: number, clientY: number): string | null =>
+      hitTestTopmostLayerIdRef.current(clientX, clientY),
+    []
+  );
+
+  /** Arm the multi-drag machinery for `ids` (overlays AND rasters —
+   *  ids that match neither are skipped). Snapshots ADOPT the live
+   *  overrides (draftGeometry / rasterDrafts) — the on-screen truth —
+   *  so a drag starting inside another gesture's commit-refetch
+   *  window begins from the positions the user SEES, not the stale
+   *  model. Captures on the canvas element (NOT event.target): a
+   *  propagated body-rect click can change the selection and unmount
+   *  the element it targeted, and a capture on an unmounted node
+   *  silently drops the rest of the gesture. */
+  function armMultiDrag(
+    event: React.PointerEvent<HTMLDivElement>,
+    start: { xn: number; yn: number },
+    ids: readonly string[]
+  ): void {
+    const overlays = overlaysRef.current;
+    const snapshots = ids
+      .map((id) => {
+        const row = overlays.find((o) => o.id === id);
+        if (row === undefined) return null;
+        const override = draftGeometry?.get(id);
+        const adopted =
+          override !== undefined
+            ? applyGeometryLocally(row.data, override)
+            : null;
+        return { id, data: adopted ?? row.data };
+      })
+      .filter((s): s is { id: string; data: OverlayRow["data"] } => s !== null);
+    const rasterSnapshots = ids
+      .map((id) => rastersRef.current.find((r) => r.id === id))
+      .filter((r): r is NonNullable<typeof r> => r !== undefined)
+      .map((r) => ({
+        id: r.id,
+        transform: rasterDrafts?.get(r.id) ?? r.transform
+      }));
+    if (snapshots.length > 0 || rasterSnapshots.length > 0) {
+      multiDragStartRef.current = {
+        startXn: start.xn,
+        startYn: start.yn,
+        pointerId: event.pointerId,
+        snapshots,
+        rasterSnapshots
+      };
+      (canvasRef.current ?? (event.target as HTMLElement)).setPointerCapture(event.pointerId);
+    }
+  }
+
+  function dispatchCanvasClickSelection(
+    event: React.PointerEvent<HTMLDivElement>,
+    start: { xn: number; yn: number }
+  ): { hit: string | null } {
+    const { hit, rasterHit } = hitTestCanvasPoint(start);
+    // Decision matrix lives in `decideClickSelection` so every tool
+    // shares one source of truth (and one regression-tested module).
+    // The `keep` action is the load-bearing piece for multi-select
+    // drag: plain click on a layer ALREADY in the selection preserves
+    // the group instead of collapsing it to a singleton, so the user
+    // can drag the whole group together.
+    const additive = event.metaKey || event.ctrlKey;
+    const action = decideClickSelection({
+      hit,
+      currentSelection: selectedLayerIds,
+      additive
+    });
+    if (action.type === "replace") replaceSelection(action.id);
+    else if (action.type === "toggle") toggleSelection(action.id);
+    else if (action.type === "clear") clearSelection();
+    // `keep` = selection unchanged.
+    // GROUP drag first: if the click landed on a layer — overlay OR
+    // raster — already in a MULTI-selection, arm the group drag with
+    // BOTH kinds of snapshot so the whole selection moves together
+    // (the pre-unification code armed the solo raster gesture first,
+    // which dragged the raster alone out of a mixed selection).
+    // Single-layer clicks fall through to the solo raster / solo
+    // overlay arms below.
+    if (
+      action.type === "keep" &&
+      hit !== null &&
+      selectedLayerIds.length > 1 &&
+      selectedLayerIds.includes(hit)
+    ) {
+      armMultiDrag(event, start, selectedLayerIds);
+      return { hit };
+    }
+    // SOLO raster drag: a click on a non-base raster (pasted image /
+    // cursor) outside a multi-selection. Rasters have no
+    // TransformHandles, so the canvas owns their single-drag.
+    if (
+      rasterHit !== null &&
+      hit === rasterHit.id &&
+      (action.type === "replace" || action.type === "keep")
+    ) {
+      const node = rastersRef.current.find((r) => r.id === rasterHit.id);
+      if (node !== undefined) {
+        // Adopt the live override when present — a just-committed
+        // gesture/nudge may still be mid-refetch, and the override
+        // is the position the user SEES. Arming from the raw model
+        // would snap the raster back by the pending delta.
+        const startTransform = rasterDrafts?.get(node.id) ?? node.transform;
+        const canvasRect = canvasRef.current?.getBoundingClientRect() ?? null;
+        rasterDragRef.current = {
+          id: node.id,
+          startXn: start.xn,
+          startYn: start.yn,
+          startTransform,
+          current: startTransform,
+          pointerId: event.pointerId,
+          moved: false,
+          homeTransform: node.original_transform ?? null,
+          canvasScreenW: canvasRect?.width ?? 0,
+          canvasScreenH: canvasRect?.height ?? 0
+        };
+        (canvasRef.current ?? (event.target as HTMLElement)).setPointerCapture(event.pointerId);
+      }
+      return { hit };
+    }
+    // SOLO overlay drag: a plain click that just selected a single
+    // overlay (`replace`), or re-clicked a lone selected overlay whose
+    // TransformHandles body rect didn't catch the press (`keep` —
+    // degenerate arrow bbox, stroke-reach hits outside the body box,
+    // or the body rect declined on purpose because another layer is
+    // topmost under the cursor — OverlaySvg's hitTestTopmostLayerId
+    // check). Arm the multi-drag machinery with a one-entry snapshot
+    // so the layer moves in the SAME gesture. Pre-fix a select-click
+    // armed nothing — TransformHandles only mounts on the NEXT render,
+    // after the pointer is already down — so select-then-move took two
+    // separate press-release gestures for overlays while rasters
+    // already moved in one. The commit path's no-drag threshold keeps
+    // a plain click from writing a no-op translation.
+    if (
+      hit !== null &&
+      (action.type === "replace" ||
+        (action.type === "keep" && selectedLayerIds.includes(hit)))
+    ) {
+      armMultiDrag(event, start, [hit]);
+    }
+    return { hit };
+  }
+
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
     if (event.button !== 0) return;
     // Defensive clear of any stale multi-drag state. The arming path
@@ -1950,239 +2228,59 @@ export function Editor({
     if (tool === "pointer") {
       const start = clientToNormalized(event.clientX, event.clientY);
       if (start === null) return;
-      const rect = canvasRef.current?.getBoundingClientRect();
-      const shortSide =
-        rect === undefined ? 1000 : Math.min(rect.width, rect.height);
-      const overlays = overlaysRef.current;
-      // textHitDimsRef carries canvas + source dims for the hit-test:
-      //   • text overlays get full bounding-rect hit (vs point-radius)
-      //   • rect / highlight / blur with rotation get inverse-rotated
-      //     into local frame before bbox testing so the visible
-      //     rotated glyph is what's selectable.
-      const overlayHit = hitTestOverlays(
-        overlays,
-        start.xn,
-        start.yn,
-        shortSide,
-        textHitDimsRef.current ?? undefined
-      );
-      // Non-source raster layers live outside the OverlayRow system, so
-      // hit-test them separately and pick the topmost (higher z_index
-      // wins; a tie favors the raster). Same canvas-normalized space as
-      // the pointer + the overlay hit-test.
-      const dimsForHit = textHitDimsRef.current;
-      const rasterHit =
-        dimsForHit === null
-          ? null
-          : hitTestRasterLayers(
-              rastersRef.current,
-              start.xn,
-              start.yn,
-              dimsForHit.canvasWidthPx,
-              dimsForHit.canvasHeightPx,
-              0.006
-            );
-      let hit = overlayHit;
-      if (rasterHit !== null) {
-        const overlayZ =
-          overlayHit === null
-            ? Number.NEGATIVE_INFINITY
-            : overlays.find((o) => o.id === overlayHit)?.z_index ?? Number.NEGATIVE_INFINITY;
-        if (overlayHit === null || rasterHit.zIndex >= overlayZ) hit = rasterHit.id;
-      }
-      // Decision matrix lives in `decideClickSelection` so both the
-      // pointer-tool and drawing-tool branches share one source of
-      // truth (and one regression-tested module). The `keep` action
-      // is the load-bearing addition for multi-select drag: plain
-      // click on a layer ALREADY in the selection preserves the
-      // group instead of collapsing it to a singleton, so the user
-      // can drag the whole group together.
-      const additive = event.metaKey || event.ctrlKey;
-      const action = decideClickSelection({
-        hit,
-        currentSelection: selectedLayerIds,
-        additive
-      });
-      if (action.type === "replace") replaceSelection(action.id);
-      else if (action.type === "toggle") toggleSelection(action.id);
-      else if (action.type === "clear") clearSelection();
-      // `keep` = selection unchanged.
-      // GROUP drag first: if the click landed on a layer — overlay OR
-      // raster — already in a MULTI-selection, arm the group drag with
-      // BOTH kinds of snapshot so the whole selection moves together
-      // (the pre-unification code armed the solo raster gesture first,
-      // which dragged the raster alone out of a mixed selection).
-      // Single-selected overlay drags still go through TransformHandles'
-      // body-hit rect (which catches the pointerdown before this code
-      // runs), so the multi-drag only arms at >1 member.
-      if (
-        action.type === "keep" &&
-        hit !== null &&
-        selectedLayerIds.length > 1 &&
-        selectedLayerIds.includes(hit)
-      ) {
-        // Snapshots ADOPT the live overrides (see the solo arm) so a
-        // drag starting inside another gesture's commit-refetch window
-        // begins from the on-screen positions, not the stale model.
-        const snapshots = selectedLayerIds
-          .map((id) => {
-            const row = overlays.find((o) => o.id === id);
-            if (row === undefined) return null;
-            const override = draftGeometry?.get(id);
-            const adopted =
-              override !== undefined
-                ? applyGeometryLocally(row.data, override)
-                : null;
-            return { id, data: adopted ?? row.data };
-          })
-          .filter((s): s is { id: string; data: OverlayRow["data"] } => s !== null);
-        const rasterSnapshots = selectedLayerIds
-          .map((id) => rastersRef.current.find((r) => r.id === id))
-          .filter((r): r is NonNullable<typeof r> => r !== undefined)
-          .map((r) => ({
-            id: r.id,
-            transform: rasterDrafts?.get(r.id) ?? r.transform
-          }));
-        if (snapshots.length > 0 || rasterSnapshots.length > 0) {
-          multiDragStartRef.current = {
-            startXn: start.xn,
-            startYn: start.yn,
-            pointerId: event.pointerId,
-            snapshots,
-            rasterSnapshots
-          };
-          (event.target as HTMLElement).setPointerCapture(event.pointerId);
-        }
-        return;
-      }
-      // SOLO raster drag: a click on a non-base raster (pasted image /
-      // cursor) outside a multi-selection. Rasters have no
-      // TransformHandles, so the canvas owns their single-drag.
-      if (
-        rasterHit !== null &&
-        hit === rasterHit.id &&
-        (action.type === "replace" || action.type === "keep")
-      ) {
-        const node = rastersRef.current.find((r) => r.id === rasterHit.id);
-        if (node !== undefined) {
-          // Adopt the live override when present — a just-committed
-          // gesture/nudge may still be mid-refetch, and the override
-          // is the position the user SEES. Arming from the raw model
-          // would snap the raster back by the pending delta.
-          const startTransform = rasterDrafts?.get(node.id) ?? node.transform;
-          const canvasRect = canvasRef.current?.getBoundingClientRect() ?? null;
-          rasterDragRef.current = {
-            id: node.id,
-            startXn: start.xn,
-            startYn: start.yn,
-            startTransform,
-            current: startTransform,
-            pointerId: event.pointerId,
-            moved: false,
-            homeTransform: node.original_transform ?? null,
-            canvasScreenW: canvasRect?.width ?? 0,
-            canvasScreenH: canvasRect?.height ?? 0
-          };
-          (event.target as HTMLElement).setPointerCapture(event.pointerId);
-        }
-        return;
+      const { hit } = dispatchCanvasClickSelection(event, start);
+      // Miss on empty canvas: fall back to drag-to-pan (the closure
+      // no-ops at Fit zoom; the click already cleared the selection
+      // via the `clear` action). This keeps the old pointer-drag
+      // navigation available without ever stealing a click that lands
+      // on a layer — the hit-test always wins. Skipped while a text
+      // draft is open: startPan's preventDefault would suppress the
+      // focus change that blurs the draft input, so the typed text
+      // would never commit — the click-away-to-commit gesture owns
+      // this click instead.
+      if (hit === null && draft?.kind !== "text") {
+        startEmptyCanvasPanRef.current?.(event);
       }
       return;
     }
     if (tool === "crop") return;
-    // If we're mid-text and the user clicks elsewhere, commit/cancel
-    // the text first (the input's blur handler will fire).
-    if (draft?.kind === "text") return;
 
     const start = clientToNormalized(event.clientX, event.clientY);
     if (start === null) return;
 
     // Drawing tools (arrow / rect / highlight / blur / text) hit-test
     // existing layers BEFORE starting a new draft. A click that lands
-    // on an existing overlay should select it (so TransformHandles
-    // renders and the user can move/resize/delete via handles or
-    // Delete-key), NOT silently draw a fresh layer on top — the user
+    // on an existing overlay OR raster (pasted image / captured
+    // cursor) should select it (so the user can move/resize/delete
+    // it), NOT silently draw a fresh layer on top — the user
     // typically wants to edit the thing they clicked, not stack
-    // another one over it. Miss → fall through to the drawing-tool
-    // branches below.
+    // another one over it. Pre-fix the raster half was pointer-tool
+    // only: clicking a pasted image in any drawing tool missed the
+    // hit-test, cleared the selection, and drew over the image. Miss
+    // → fall through to the drawing-tool branches below.
+    //
+    // This runs even while a text draft is open: the click's focus
+    // change blurs the draft input, whose blur handler commits (or
+    // discards an empty) draft, and the selection applies on the SAME
+    // click. Neither path calls preventDefault before this point, so
+    // the blur is never suppressed.
     {
-      const rect = canvasRef.current?.getBoundingClientRect();
-      const shortSide =
-        rect === undefined ? 1000 : Math.min(rect.width, rect.height);
-      const overlays = overlaysRef.current;
-      // textHitDimsRef carries canvas + source dims — same
-      // rationale as the pointer-tool branch above.
-      const hit = hitTestOverlays(
-        overlays,
-        start.xn,
-        start.yn,
-        shortSide,
-        textHitDimsRef.current ?? undefined
-      );
-      if (hit !== null) {
-        // Same decision logic as the pointer-tool branch above.
-        // Drawing-tool clicks that land on an existing overlay
-        // route through the same selection model so the multi-
-        // select drag-to-move gesture works whether the user is on
-        // the pointer tool or any drawing tool.
-        const additive = event.metaKey || event.ctrlKey;
-        const action = decideClickSelection({
-          hit,
-          currentSelection: selectedLayerIds,
-          additive
-        });
-        if (action.type === "replace") replaceSelection(action.id);
-        else if (action.type === "toggle") toggleSelection(action.id);
-        else if (action.type === "clear") clearSelection();
-        // Multi-drag init — mirror of the pointer-tool branch (incl.
-        // selected rasters riding the group, even though drawing-tool
-        // clicks only hit-test overlays).
-        if (
-          action.type === "keep" &&
-          selectedLayerIds.length > 1 &&
-          selectedLayerIds.includes(hit)
-        ) {
-          // Adopt live overrides — mirror of the pointer-tool arm.
-          const snapshots = selectedLayerIds
-            .map((id) => {
-              const row = overlays.find((o) => o.id === id);
-              if (row === undefined) return null;
-              const override = draftGeometry?.get(id);
-              const adopted =
-                override !== undefined
-                  ? applyGeometryLocally(row.data, override)
-                  : null;
-              return { id, data: adopted ?? row.data };
-            })
-            .filter(
-              (s): s is { id: string; data: OverlayRow["data"] } => s !== null
-            );
-          const rasterSnapshots = selectedLayerIds
-            .map((id) => rastersRef.current.find((r) => r.id === id))
-            .filter((r): r is NonNullable<typeof r> => r !== undefined)
-            .map((r) => ({
-              id: r.id,
-              transform: rasterDrafts?.get(r.id) ?? r.transform
-            }));
-          if (snapshots.length > 0 || rasterSnapshots.length > 0) {
-            multiDragStartRef.current = {
-              startXn: start.xn,
-              startYn: start.yn,
-              pointerId: event.pointerId,
-              snapshots,
-              rasterSnapshots
-            };
-            (event.target as HTMLElement).setPointerCapture(event.pointerId);
-          }
-        }
-        return;
-      }
+      const { hit } = dispatchCanvasClickSelection(event, start);
+      if (hit !== null) return;
     }
+    // Mid-text-draft click that MISSED every layer: stop here — the
+    // blur commit above is the whole gesture ("click away to commit"),
+    // matching every annotation editor's text-tool convention. This
+    // guard used to run BEFORE the hit-test, which ate the first click
+    // on an existing layer while a draft was open — and in text mode
+    // the previous click almost always left a draft open, so selecting
+    // any object took two clicks.
+    if (draft?.kind === "text") return;
     // Drawing a new annotation on empty canvas deselects any previous
     // selection so the outline doesn't linger on top of the new draft.
     if (selectedLayerIds.length > 0) clearSelection();
     event.preventDefault();
-    (event.target as HTMLElement).setPointerCapture(event.pointerId);
+    (canvasRef.current ?? (event.target as HTMLElement)).setPointerCapture(event.pointerId);
 
     // Open a coalescing bracket for the drag. layerId uses the tool
     // name as a sentinel since the actual layer doesn't exist yet
@@ -2234,6 +2332,88 @@ export function Editor({
       setDraft({ kind: "text", xn: start.xn, yn: start.yn, body: "" });
       return;
     }
+  }
+
+  // -------------------- Hover cursor affordance --------------------
+  //
+  // The shared click dispatch selects an existing layer on hit and
+  // only draws / pans on empty canvas — but without feedback the
+  // cursor can't telegraph which outcome a click will have (design
+  // review finding on PR #384). A rAF-throttled hover hit-test writes
+  // `data-hover-hit` DIRECTLY on the canvas element (no React state —
+  // a per-pointermove re-render of the Editor would be pure waste)
+  // and editor.css maps it to `cursor: move` over any hit target.
+  // At most one hit-test per frame; it's the same math a click runs.
+  const hoverRafRef = useRef<number | null>(null);
+  const hoverPointRef = useRef<{ x: number; y: number } | null>(null);
+
+  function clearHoverHit(): void {
+    if (hoverRafRef.current !== null) {
+      cancelAnimationFrame(hoverRafRef.current);
+      hoverRafRef.current = null;
+    }
+    hoverPointRef.current = null;
+    delete canvasRef.current?.dataset["hoverHit"];
+  }
+
+  function updateHoverHit(clientX: number, clientY: number): void {
+    hoverPointRef.current = { x: clientX, y: clientY };
+    if (hoverRafRef.current !== null) return;
+    hoverRafRef.current = requestAnimationFrame(() => {
+      hoverRafRef.current = null;
+      const point = hoverPointRef.current;
+      const canvas = canvasRef.current;
+      if (point === null || canvas === null) return;
+      // ONE rect read per frame, shared by the conversion and the
+      // hit-test (which needs it for the hit radius) — a second
+      // getBoundingClientRect here forced a redundant layout flush
+      // every frame while the canvas transform was changing.
+      // UNCLAMPED conversion: layers may hang off-canvas
+      // (overflow:visible) and their off-canvas pixels are clickable,
+      // so the cursor must telegraph them too.
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const start = {
+        xn: (point.x - rect.left) / rect.width,
+        yn: (point.y - rect.top) / rect.height
+      };
+      const hit = hitTestCanvasPoint(start, rect).hit;
+      if (hit !== null) canvas.dataset["hoverHit"] = "true";
+      else delete canvas.dataset["hoverHit"];
+    });
+  }
+
+  // Re-aim the hover affordance when its NON-pointer inputs change
+  // under a stationary cursor: switching into crop (the attribute
+  // would otherwise stick as cursor:move for the whole crop session),
+  // and any layer-model change (delete / undo / redo / visibility
+  // toggle under the cursor). Pointer moves keep it fresh the rest of
+  // the time.
+  useEffect(() => {
+    if (tool === "crop") {
+      clearHoverHit();
+      return;
+    }
+    const point = hoverPointRef.current;
+    if (point !== null) updateHoverHit(point.x, point.y);
+    // updateHoverHit / clearHoverHit are stable-in-behavior plain
+    // functions recreated per render; depending on them would run the
+    // hit-test on every render (including 60Hz drag renders).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool, model]);
+
+  // Cancel a pending hover frame on unmount so it never touches a
+  // dead canvas ref.
+  useEffect(() => {
+    return () => {
+      if (hoverRafRef.current !== null) {
+        cancelAnimationFrame(hoverRafRef.current);
+      }
+    };
+  }, []);
+
+  function onPointerLeave(): void {
+    clearHoverHit();
   }
 
   function onPointerMove(event: React.PointerEvent<HTMLDivElement>): void {
@@ -2336,8 +2516,24 @@ export function Editor({
       }
       return;
     }
-    if (draft === null) return;
-    if (draft.kind === "text") return;
+    // No gesture in progress (or only an idle text draft): this move
+    // is a HOVER — update the cursor affordance and stop.
+    if (draft === null || draft.kind === "text") {
+      // Any button held means some gesture owns the pointer (a pan, a
+      // TransformHandles drag bubbling through, a captured drag) —
+      // hover is a button-up affordance, and running the hit-test at
+      // 60Hz during a drag is pure waste.
+      if (event.buttons !== 0) return;
+      // Crop owns its own overlay element (with its own cursors) —
+      // clear rather than skip so a hover state from the previous
+      // tool can't stick under the crop UI.
+      if (tool === "crop") {
+        clearHoverHit();
+        return;
+      }
+      updateHoverHit(event.clientX, event.clientY);
+      return;
+    }
     const cur = clientToNormalized(event.clientX, event.clientY);
     if (cur === null) return;
     if (draft.kind === "arrow") {
@@ -2364,17 +2560,11 @@ export function Editor({
     event.preventDefault();
     const start = clientToNormalized(event.clientX, event.clientY);
     if (start === null) return;
-    const rect = canvasRef.current?.getBoundingClientRect();
-    const shortSide =
-      rect === undefined ? 1000 : Math.min(rect.width, rect.height);
-    const overlays = overlaysRef.current;
-    const hit = hitTestOverlays(
-      overlays,
-      start.xn,
-      start.yn,
-      shortSide,
-      textHitDimsRef.current ?? undefined
-    );
+    // Same z-arbitrated overlay + raster hit-test the left-click and
+    // hover paths use — right-clicking a pasted image must select it
+    // like a left-click does, or the menu opens against the wrong
+    // selection.
+    const { hit } = hitTestCanvasPoint(start);
     // Selection-update rule (per issue #134 + Photoshop / Figma
     // convention):
     //   - hit + not already selected + no Cmd → REPLACE selection
@@ -2460,6 +2650,12 @@ export function Editor({
   }
 
   async function onPointerUp(event: React.PointerEvent<HTMLDivElement>): Promise<void> {
+    // Re-aim the hover affordance at the release point. A captured
+    // gesture suppresses pointerleave, so a drag released outside the
+    // canvas (or over a different layer) would otherwise strand a
+    // stale data-hover-hit from before the gesture. rAF-deferred and
+    // cheap; runs on every release path.
+    updateHoverHit(event.clientX, event.clientY);
     // Raster canvas drag commit — runs first (mutually exclusive with the
     // multi-drag). If the user actually moved it, persist the new
     // transform via the inner-component closure; keep the override until
@@ -3960,6 +4156,8 @@ export function Editor({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
+      onPointerLeave={onPointerLeave}
+      hitTestTopmostLayerId={hitTestTopmostLayerId}
       onContextMenu={onContextMenu}
       contextMenuState={contextMenuState}
       setContextMenuState={setContextMenuState}
@@ -3987,6 +4185,7 @@ export function Editor({
       reorderSelectedRef={reorderSelectedRef}
       commitMultiDragRef={commitMultiDragRef}
       commitRasterDragRef={commitRasterDragRef}
+      startEmptyCanvasPanRef={startEmptyCanvasPanRef}
       modelLayers={model.layers}
       storedLayers={storedLayers}
       storedCanvasWidthPx={storedCanvasWidthPx}
@@ -4035,6 +4234,8 @@ function EditorLoaded({
   onPointerMove,
   onPointerUp,
   onPointerCancel,
+  onPointerLeave,
+  hitTestTopmostLayerId,
   onContextMenu,
   contextMenuState,
   setContextMenuState,
@@ -4062,6 +4263,7 @@ function EditorLoaded({
   reorderSelectedRef,
   commitMultiDragRef,
   commitRasterDragRef,
+  startEmptyCanvasPanRef,
   modelLayers,
   storedLayers,
   storedCanvasWidthPx,
@@ -4140,6 +4342,14 @@ function EditorLoaded({
    *  state. EditorLoaded just forwards it to the canvas's
    *  onPointerCancel attribute. */
   onPointerCancel: (e: React.PointerEvent<HTMLDivElement>) => void;
+  /** Clears the hover cursor affordance when the pointer exits the
+   *  canvas (data-hover-hit would otherwise stick on the last-hovered
+   *  state). */
+  onPointerLeave: () => void;
+  /** Shared canvas hit-test in client coords — threaded down to
+   *  TransformHandles so its body rect only claims a drag when the
+   *  selected overlay really is the topmost layer under the cursor. */
+  hitTestTopmostLayerId: (clientX: number, clientY: number) => string | null;
   /** Right-click handler — opens the layer context menu over the
    *  canvas at the click anchor. Defined in the outer Editor so it
    *  can call into outer-scope helpers (hitTestOverlays + selection
@@ -4278,6 +4488,12 @@ function EditorLoaded({
       ) => Promise<boolean>)
     | null
   >;
+  /** Effect-assigned with a self-arbitrating closure (no-ops at Fit
+   *  zoom, pans past it) so the outer onPointerDown's pointer-tool
+   *  miss branch can fall back to drag-to-pan on empty canvas. */
+  startEmptyCanvasPanRef: React.RefObject<
+    ((event: React.PointerEvent<HTMLElement>) => void) | null
+  >;
   /** In-progress raster drag override painted by RasterLayers (null when
    *  not dragging a raster). */
   rasterDrafts: ReadonlyMap<string, AffineTransform> | null;
@@ -4366,6 +4582,20 @@ function EditorLoaded({
     imageHeightPx: record.height_px,
     wrapRef: canvasWrapRef
   });
+  // Populate the empty-canvas pan fallback the OUTER onPointerDown
+  // reads (its pointer-tool miss branch pans on empty-canvas drag
+  // while zoomed). The closure owns the "zoomed past Fit" check so
+  // the threshold lives with the zoom state. Same effect-assigned
+  // ref-handoff pattern as `commitMultiDragRef`; nulled on unmount.
+  useEffect(() => {
+    startEmptyCanvasPanRef.current = (event) => {
+      if (zoom.state.scale <= 1) return;
+      zoom.startPan(event);
+    };
+    return () => {
+      startEmptyCanvasPanRef.current = null;
+    };
+  }, [startEmptyCanvasPanRef, zoom.state.scale, zoom.startPan]);
 
   // CANONICAL canvas CSS-pixel height — the single source of truth that
   // every text glyph (display + edit) reads to derive its on-screen
@@ -5770,22 +6000,61 @@ function EditorLoaded({
     };
   }, [canvasWrapRef]);
 
-  // When zoomed in or space-held, the canvas-wrap absorbs pan-drag
-  // pointer events instead of the canvas's drawing handlers.
-  // Single-finger drag arbitration on the canvas wrap:
+  // Single-finger drag arbitration between pan and select/draw:
   //   • Space held → always pan (Photoshop convention: hold Space
-  //     to grab + drag regardless of active tool).
-  //   • Pointer tool + zoomed in → pan (Pointer is the "no-op on
-  //     drag" tool, so we repurpose its drag for navigation).
-  //   • Any drawing tool (arrow, rect, highlight, blur, text) →
-  //     pointer events go to the canvas so the user can DRAW. Pan
-  //     stays accessible via Space+drag and via two-finger scroll
-  //     (which doesn't conflict with tool drag — it's a separate
-  //     gesture handled by useZoomPan's wheel handler).
+  //     to grab + drag regardless of active tool). This is the ONLY
+  //     case that detaches the canvas's own pointer handlers.
+  //   • Middle-button drag → pan from anywhere, any tool, any zoom
+  //     (the canvas handlers ignore non-left buttons, so the event
+  //     bubbles to the wrap's handler below).
+  //   • Left-drag on the wrap BACKGROUND (outside the canvas) while
+  //     zoomed in → pan (see onWrapPointerDown).
+  //   • Pointer tool + zoomed in + click on EMPTY canvas → pan
+  //     (armed from onPointerDown's miss branch, AFTER the hit-test —
+  //     a click on a layer selects/drags it instead; selection must
+  //     stay live at every zoom level).
+  //   • Any drawing tool → pointer events go to the canvas so the
+  //     user can DRAW. Two-finger scroll pans in every mode via
+  //     useZoomPan's wheel handler.
   //
   // Crop is excluded from the pan arbitration — its overlay catches
   // all pointer events directly via its own element handlers.
-  const wantPan = zoom.spaceHeld || (tool === "pointer" && zoom.state.scale > 1);
+  //
+  // `wantPan` (Space held) detaches only the canvas's pointerDOWN +
+  // contextmenu — move/up/cancel stay attached so a gesture already
+  // in flight (the canvas holds pointer capture) completes normally
+  // even if Space is tapped mid-drag; detaching them stranded the
+  // armed drag with its live override painted forever.
+  const wantPan = zoom.spaceHeld;
+
+  function onWrapPointerDown(event: React.PointerEvent<HTMLElement>): void {
+    // Middle-button drag pans from anywhere (preventDefault inside
+    // startPan also suppresses Chromium's autoscroll widget).
+    if (event.button === 1) {
+      // Chord guard: `buttons` on a middle-press is 4 only when no
+      // OTHER button is already down. A middle-press during a left-
+      // drag would otherwise call startPan, whose setPointerCapture
+      // TRANSFERS capture from the canvas to the wrap and strands the
+      // in-flight draft/drag mid-gesture.
+      if (event.buttons !== 4) return;
+      zoom.startPan(event);
+      return;
+    }
+    if (event.button !== 0) return;
+    // Space held: pan takeover. The canvas handlers are detached
+    // (`wantPan`), so every left-drag inside the wrap pans.
+    if (zoom.spaceHeld) {
+      zoom.startPan(event);
+      return;
+    }
+    // Left-drag on the wrap background (the pasteboard area around
+    // the canvas) pans when zoomed in. Clicks ON the canvas bubble
+    // up with a different target and are never treated as pans here
+    // — the canvas's own handler owns those.
+    if (event.target === event.currentTarget && zoom.state.scale > 1) {
+      zoom.startPan(event);
+    }
+  }
 
   // -------------------- Canvas DOMRect for CropTool ----------------
   //
@@ -6033,12 +6302,14 @@ function EditorLoaded({
         className={
           "editor-canvas-wrap" +
           (wantPan ? " is-pannable" : "") +
+          (zoom.state.scale > 1 ? " is-zoomed" : "") +
           (zoom.isPanning ? " is-panning" : "") +
           (drop.isDragOver ? " is-drop-target" : "")
         }
-        onPointerDown={wantPan ? zoom.onPanPointerDown : undefined}
-        onPointerMove={wantPan ? zoom.onPanPointerMove : undefined}
-        onPointerUp={wantPan ? zoom.onPanPointerUp : undefined}
+        onPointerDown={onWrapPointerDown}
+        onPointerMove={zoom.onPanPointerMove}
+        onPointerUp={zoom.onPanPointerUp}
+        onPointerCancel={zoom.onPanPointerUp}
         onDragOver={drop.onDragOver}
         onDragLeave={drop.onDragLeave}
         onDrop={(e) => void drop.onDrop(e)}
@@ -6065,11 +6336,13 @@ function EditorLoaded({
             zoom.canvasStyle ?? { aspectRatio: `${record.width_px} / ${record.height_px}` }
           }
           onPointerDown={wantPan ? undefined : onPointerDown}
-          onPointerMove={wantPan ? undefined : onPointerMove}
-          onPointerUp={wantPan ? undefined : onPointerUp}
-          onPointerCancel={wantPan ? undefined : onPointerCancel}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerCancel}
+          onPointerLeave={onPointerLeave}
           onContextMenu={wantPan ? undefined : onContextMenu}
           data-tool={tool}
+          data-zoomed={zoom.state.scale > 1 ? "true" : undefined}
         >
           {/* Phase 3.6 — the <img> is sized so the SOURCE raster's
               natural pixels map 1:1 to canvas CSS pixels regardless of
@@ -6269,6 +6542,7 @@ function EditorLoaded({
               onDragStart={onHandleDragStart}
               onDragEnd={onHandleDragEnd}
               onRequestEdit={onRequestEditOverlay}
+              hitTestTopmostLayerId={hitTestTopmostLayerId}
             />
           )}
           {/* Raster resize handles — single-selected non-base raster only,

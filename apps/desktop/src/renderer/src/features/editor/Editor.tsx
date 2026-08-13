@@ -1922,6 +1922,160 @@ export function Editor({
     return { x: xn * rect.width, y: yn * rect.height };
   }
 
+  /** Shared click→selection dispatch for the pointer tool AND every
+   *  drawing tool: hit-test overlays (and, when `includeRasters`,
+   *  non-source raster layers), route the result through
+   *  `decideClickSelection`, apply the selection mutation, and arm
+   *  whichever drag gesture the click begins — group drag on a
+   *  multi-selected member, solo raster drag on a raster. Returns the
+   *  resolved hit so callers can branch on hit-vs-miss (pointer tool:
+   *  pan fallback; drawing tools: start a new draft).
+   *
+   *  Hit-test notes:
+   *   • textHitDimsRef carries canvas + source dims — text overlays
+   *     get a full bounding-rect hit target (vs point-radius), and
+   *     rotated rect / highlight / blur are inverse-rotated into
+   *     local frame before bbox testing so the visible rotated glyph
+   *     is what's selectable.
+   *   • Non-source raster layers live outside the OverlayRow system,
+   *     so they're hit-test separately and the topmost wins (higher
+   *     z_index; a tie favors the raster). Same canvas-normalized
+   *     space as the overlay hit-test. */
+  function dispatchCanvasClickSelection(
+    event: React.PointerEvent<HTMLDivElement>,
+    start: { xn: number; yn: number },
+    opts: { includeRasters: boolean }
+  ): { hit: string | null } {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    const shortSide =
+      rect === undefined ? 1000 : Math.min(rect.width, rect.height);
+    const overlays = overlaysRef.current;
+    const overlayHit = hitTestOverlays(
+      overlays,
+      start.xn,
+      start.yn,
+      shortSide,
+      textHitDimsRef.current ?? undefined
+    );
+    const dimsForHit = textHitDimsRef.current;
+    const rasterHit =
+      !opts.includeRasters || dimsForHit === null
+        ? null
+        : hitTestRasterLayers(
+            rastersRef.current,
+            start.xn,
+            start.yn,
+            dimsForHit.canvasWidthPx,
+            dimsForHit.canvasHeightPx,
+            0.006
+          );
+    let hit = overlayHit;
+    if (rasterHit !== null) {
+      const overlayZ =
+        overlayHit === null
+          ? Number.NEGATIVE_INFINITY
+          : overlays.find((o) => o.id === overlayHit)?.z_index ?? Number.NEGATIVE_INFINITY;
+      if (overlayHit === null || rasterHit.zIndex >= overlayZ) hit = rasterHit.id;
+    }
+    // Decision matrix lives in `decideClickSelection` so every tool
+    // shares one source of truth (and one regression-tested module).
+    // The `keep` action is the load-bearing piece for multi-select
+    // drag: plain click on a layer ALREADY in the selection preserves
+    // the group instead of collapsing it to a singleton, so the user
+    // can drag the whole group together.
+    const additive = event.metaKey || event.ctrlKey;
+    const action = decideClickSelection({
+      hit,
+      currentSelection: selectedLayerIds,
+      additive
+    });
+    if (action.type === "replace") replaceSelection(action.id);
+    else if (action.type === "toggle") toggleSelection(action.id);
+    else if (action.type === "clear") clearSelection();
+    // `keep` = selection unchanged.
+    // GROUP drag first: if the click landed on a layer — overlay OR
+    // raster — already in a MULTI-selection, arm the group drag with
+    // BOTH kinds of snapshot so the whole selection moves together
+    // (the pre-unification code armed the solo raster gesture first,
+    // which dragged the raster alone out of a mixed selection).
+    // Single-selected overlay drags still go through TransformHandles'
+    // body-hit rect (which catches the pointerdown before this code
+    // runs), so the multi-drag only arms at >1 member.
+    if (
+      action.type === "keep" &&
+      hit !== null &&
+      selectedLayerIds.length > 1 &&
+      selectedLayerIds.includes(hit)
+    ) {
+      // Snapshots ADOPT the live overrides (see the solo arm) so a
+      // drag starting inside another gesture's commit-refetch window
+      // begins from the on-screen positions, not the stale model.
+      const snapshots = selectedLayerIds
+        .map((id) => {
+          const row = overlays.find((o) => o.id === id);
+          if (row === undefined) return null;
+          const override = draftGeometry?.get(id);
+          const adopted =
+            override !== undefined
+              ? applyGeometryLocally(row.data, override)
+              : null;
+          return { id, data: adopted ?? row.data };
+        })
+        .filter((s): s is { id: string; data: OverlayRow["data"] } => s !== null);
+      const rasterSnapshots = selectedLayerIds
+        .map((id) => rastersRef.current.find((r) => r.id === id))
+        .filter((r): r is NonNullable<typeof r> => r !== undefined)
+        .map((r) => ({
+          id: r.id,
+          transform: rasterDrafts?.get(r.id) ?? r.transform
+        }));
+      if (snapshots.length > 0 || rasterSnapshots.length > 0) {
+        multiDragStartRef.current = {
+          startXn: start.xn,
+          startYn: start.yn,
+          pointerId: event.pointerId,
+          snapshots,
+          rasterSnapshots
+        };
+        (event.target as HTMLElement).setPointerCapture(event.pointerId);
+      }
+      return { hit };
+    }
+    // SOLO raster drag: a click on a non-base raster (pasted image /
+    // cursor) outside a multi-selection. Rasters have no
+    // TransformHandles, so the canvas owns their single-drag.
+    if (
+      rasterHit !== null &&
+      hit === rasterHit.id &&
+      (action.type === "replace" || action.type === "keep")
+    ) {
+      const node = rastersRef.current.find((r) => r.id === rasterHit.id);
+      if (node !== undefined) {
+        // Adopt the live override when present — a just-committed
+        // gesture/nudge may still be mid-refetch, and the override
+        // is the position the user SEES. Arming from the raw model
+        // would snap the raster back by the pending delta.
+        const startTransform = rasterDrafts?.get(node.id) ?? node.transform;
+        const canvasRect = canvasRef.current?.getBoundingClientRect() ?? null;
+        rasterDragRef.current = {
+          id: node.id,
+          startXn: start.xn,
+          startYn: start.yn,
+          startTransform,
+          current: startTransform,
+          pointerId: event.pointerId,
+          moved: false,
+          homeTransform: node.original_transform ?? null,
+          canvasScreenW: canvasRect?.width ?? 0,
+          canvasScreenH: canvasRect?.height ?? 0
+        };
+        (event.target as HTMLElement).setPointerCapture(event.pointerId);
+      }
+      return { hit };
+    }
+    return { hit };
+  }
+
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
     if (event.button !== 0) return;
     // Defensive clear of any stale multi-drag state. The arming path
@@ -1959,148 +2113,14 @@ export function Editor({
     if (tool === "pointer") {
       const start = clientToNormalized(event.clientX, event.clientY);
       if (start === null) return;
-      const rect = canvasRef.current?.getBoundingClientRect();
-      const shortSide =
-        rect === undefined ? 1000 : Math.min(rect.width, rect.height);
-      const overlays = overlaysRef.current;
-      // textHitDimsRef carries canvas + source dims for the hit-test:
-      //   • text overlays get full bounding-rect hit (vs point-radius)
-      //   • rect / highlight / blur with rotation get inverse-rotated
-      //     into local frame before bbox testing so the visible
-      //     rotated glyph is what's selectable.
-      const overlayHit = hitTestOverlays(
-        overlays,
-        start.xn,
-        start.yn,
-        shortSide,
-        textHitDimsRef.current ?? undefined
-      );
-      // Non-source raster layers live outside the OverlayRow system, so
-      // hit-test them separately and pick the topmost (higher z_index
-      // wins; a tie favors the raster). Same canvas-normalized space as
-      // the pointer + the overlay hit-test.
-      const dimsForHit = textHitDimsRef.current;
-      const rasterHit =
-        dimsForHit === null
-          ? null
-          : hitTestRasterLayers(
-              rastersRef.current,
-              start.xn,
-              start.yn,
-              dimsForHit.canvasWidthPx,
-              dimsForHit.canvasHeightPx,
-              0.006
-            );
-      let hit = overlayHit;
-      if (rasterHit !== null) {
-        const overlayZ =
-          overlayHit === null
-            ? Number.NEGATIVE_INFINITY
-            : overlays.find((o) => o.id === overlayHit)?.z_index ?? Number.NEGATIVE_INFINITY;
-        if (overlayHit === null || rasterHit.zIndex >= overlayZ) hit = rasterHit.id;
-      }
-      // Decision matrix lives in `decideClickSelection` so both the
-      // pointer-tool and drawing-tool branches share one source of
-      // truth (and one regression-tested module). The `keep` action
-      // is the load-bearing addition for multi-select drag: plain
-      // click on a layer ALREADY in the selection preserves the
-      // group instead of collapsing it to a singleton, so the user
-      // can drag the whole group together.
-      const additive = event.metaKey || event.ctrlKey;
-      const action = decideClickSelection({
-        hit,
-        currentSelection: selectedLayerIds,
-        additive
+      const { hit } = dispatchCanvasClickSelection(event, start, {
+        includeRasters: true
       });
-      if (action.type === "replace") replaceSelection(action.id);
-      else if (action.type === "toggle") toggleSelection(action.id);
-      else if (action.type === "clear") clearSelection();
-      // `keep` = selection unchanged.
-      // GROUP drag first: if the click landed on a layer — overlay OR
-      // raster — already in a MULTI-selection, arm the group drag with
-      // BOTH kinds of snapshot so the whole selection moves together
-      // (the pre-unification code armed the solo raster gesture first,
-      // which dragged the raster alone out of a mixed selection).
-      // Single-selected overlay drags still go through TransformHandles'
-      // body-hit rect (which catches the pointerdown before this code
-      // runs), so the multi-drag only arms at >1 member.
-      if (
-        action.type === "keep" &&
-        hit !== null &&
-        selectedLayerIds.length > 1 &&
-        selectedLayerIds.includes(hit)
-      ) {
-        // Snapshots ADOPT the live overrides (see the solo arm) so a
-        // drag starting inside another gesture's commit-refetch window
-        // begins from the on-screen positions, not the stale model.
-        const snapshots = selectedLayerIds
-          .map((id) => {
-            const row = overlays.find((o) => o.id === id);
-            if (row === undefined) return null;
-            const override = draftGeometry?.get(id);
-            const adopted =
-              override !== undefined
-                ? applyGeometryLocally(row.data, override)
-                : null;
-            return { id, data: adopted ?? row.data };
-          })
-          .filter((s): s is { id: string; data: OverlayRow["data"] } => s !== null);
-        const rasterSnapshots = selectedLayerIds
-          .map((id) => rastersRef.current.find((r) => r.id === id))
-          .filter((r): r is NonNullable<typeof r> => r !== undefined)
-          .map((r) => ({
-            id: r.id,
-            transform: rasterDrafts?.get(r.id) ?? r.transform
-          }));
-        if (snapshots.length > 0 || rasterSnapshots.length > 0) {
-          multiDragStartRef.current = {
-            startXn: start.xn,
-            startYn: start.yn,
-            pointerId: event.pointerId,
-            snapshots,
-            rasterSnapshots
-          };
-          (event.target as HTMLElement).setPointerCapture(event.pointerId);
-        }
-        return;
-      }
-      // SOLO raster drag: a click on a non-base raster (pasted image /
-      // cursor) outside a multi-selection. Rasters have no
-      // TransformHandles, so the canvas owns their single-drag.
-      if (
-        rasterHit !== null &&
-        hit === rasterHit.id &&
-        (action.type === "replace" || action.type === "keep")
-      ) {
-        const node = rastersRef.current.find((r) => r.id === rasterHit.id);
-        if (node !== undefined) {
-          // Adopt the live override when present — a just-committed
-          // gesture/nudge may still be mid-refetch, and the override
-          // is the position the user SEES. Arming from the raw model
-          // would snap the raster back by the pending delta.
-          const startTransform = rasterDrafts?.get(node.id) ?? node.transform;
-          const canvasRect = canvasRef.current?.getBoundingClientRect() ?? null;
-          rasterDragRef.current = {
-            id: node.id,
-            startXn: start.xn,
-            startYn: start.yn,
-            startTransform,
-            current: startTransform,
-            pointerId: event.pointerId,
-            moved: false,
-            homeTransform: node.original_transform ?? null,
-            canvasScreenW: canvasRect?.width ?? 0,
-            canvasScreenH: canvasRect?.height ?? 0
-          };
-          (event.target as HTMLElement).setPointerCapture(event.pointerId);
-        }
-        return;
-      }
       // Miss on empty canvas while zoomed in: fall back to drag-to-pan
-      // (the click already cleared the selection above via the `clear`
+      // (the click already cleared the selection via the `clear`
       // action). This keeps the old pointer-drag navigation available
       // without ever stealing a click that lands on a layer — the
-      // hit-test above always wins.
+      // hit-test always wins.
       const zoomPan = zoomPanBridgeRef.current;
       if (hit === null && zoomPan !== null && zoomPan.scale > 1) {
         zoomPan.startPan(event);
@@ -2124,77 +2144,10 @@ export function Editor({
     // another one over it. Miss → fall through to the drawing-tool
     // branches below.
     {
-      const rect = canvasRef.current?.getBoundingClientRect();
-      const shortSide =
-        rect === undefined ? 1000 : Math.min(rect.width, rect.height);
-      const overlays = overlaysRef.current;
-      // textHitDimsRef carries canvas + source dims — same
-      // rationale as the pointer-tool branch above.
-      const hit = hitTestOverlays(
-        overlays,
-        start.xn,
-        start.yn,
-        shortSide,
-        textHitDimsRef.current ?? undefined
-      );
-      if (hit !== null) {
-        // Same decision logic as the pointer-tool branch above.
-        // Drawing-tool clicks that land on an existing overlay
-        // route through the same selection model so the multi-
-        // select drag-to-move gesture works whether the user is on
-        // the pointer tool or any drawing tool.
-        const additive = event.metaKey || event.ctrlKey;
-        const action = decideClickSelection({
-          hit,
-          currentSelection: selectedLayerIds,
-          additive
-        });
-        if (action.type === "replace") replaceSelection(action.id);
-        else if (action.type === "toggle") toggleSelection(action.id);
-        else if (action.type === "clear") clearSelection();
-        // Multi-drag init — mirror of the pointer-tool branch (incl.
-        // selected rasters riding the group, even though drawing-tool
-        // clicks only hit-test overlays).
-        if (
-          action.type === "keep" &&
-          selectedLayerIds.length > 1 &&
-          selectedLayerIds.includes(hit)
-        ) {
-          // Adopt live overrides — mirror of the pointer-tool arm.
-          const snapshots = selectedLayerIds
-            .map((id) => {
-              const row = overlays.find((o) => o.id === id);
-              if (row === undefined) return null;
-              const override = draftGeometry?.get(id);
-              const adopted =
-                override !== undefined
-                  ? applyGeometryLocally(row.data, override)
-                  : null;
-              return { id, data: adopted ?? row.data };
-            })
-            .filter(
-              (s): s is { id: string; data: OverlayRow["data"] } => s !== null
-            );
-          const rasterSnapshots = selectedLayerIds
-            .map((id) => rastersRef.current.find((r) => r.id === id))
-            .filter((r): r is NonNullable<typeof r> => r !== undefined)
-            .map((r) => ({
-              id: r.id,
-              transform: rasterDrafts?.get(r.id) ?? r.transform
-            }));
-          if (snapshots.length > 0 || rasterSnapshots.length > 0) {
-            multiDragStartRef.current = {
-              startXn: start.xn,
-              startYn: start.yn,
-              pointerId: event.pointerId,
-              snapshots,
-              rasterSnapshots
-            };
-            (event.target as HTMLElement).setPointerCapture(event.pointerId);
-          }
-        }
-        return;
-      }
+      const { hit } = dispatchCanvasClickSelection(event, start, {
+        includeRasters: false
+      });
+      if (hit !== null) return;
     }
     // Drawing a new annotation on empty canvas deselects any previous
     // selection so the outline doesn't linger on top of the new draft.

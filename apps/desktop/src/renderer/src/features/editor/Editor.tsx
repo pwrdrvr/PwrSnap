@@ -1997,9 +1997,8 @@ export function Editor({
     // BOTH kinds of snapshot so the whole selection moves together
     // (the pre-unification code armed the solo raster gesture first,
     // which dragged the raster alone out of a mixed selection).
-    // Single-selected overlay drags still go through TransformHandles'
-    // body-hit rect (which catches the pointerdown before this code
-    // runs), so the multi-drag only arms at >1 member.
+    // Single-layer clicks fall through to the solo raster / solo
+    // overlay arms below.
     if (
       action.type === "keep" &&
       hit !== null &&
@@ -2071,6 +2070,40 @@ export function Editor({
         (event.target as HTMLElement).setPointerCapture(event.pointerId);
       }
       return { hit };
+    }
+    // SOLO overlay drag: a plain click that just selected a single
+    // overlay (`replace`), or re-clicked a lone selected overlay whose
+    // TransformHandles body rect didn't catch the press (`keep` —
+    // degenerate arrow bbox, stroke-reach hits outside the body box).
+    // Arm the multi-drag machinery with a one-entry snapshot so the
+    // layer moves in the SAME gesture. Pre-fix a select-click armed
+    // nothing — TransformHandles only mounts on the NEXT render, after
+    // the pointer is already down — so select-then-move took two
+    // separate press-release gestures for overlays while rasters
+    // already moved in one. The commit path's no-drag threshold keeps
+    // a plain click from writing a no-op translation.
+    if (
+      hit !== null &&
+      (action.type === "replace" ||
+        (action.type === "keep" && selectedLayerIds.includes(hit)))
+    ) {
+      const row = overlays.find((o) => o.id === hit);
+      if (row !== undefined) {
+        // Adopt the live override — same rationale as the arms above.
+        const override = draftGeometry?.get(hit);
+        const adopted =
+          override !== undefined
+            ? applyGeometryLocally(row.data, override)
+            : null;
+        multiDragStartRef.current = {
+          startXn: start.xn,
+          startYn: start.yn,
+          pointerId: event.pointerId,
+          snapshots: [{ id: hit, data: adopted ?? row.data }],
+          rasterSnapshots: []
+        };
+        (event.target as HTMLElement).setPointerCapture(event.pointerId);
+      }
     }
     return { hit };
   }

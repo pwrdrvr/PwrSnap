@@ -2072,7 +2072,8 @@ export function TransformHandles({
   onGeometryDrag,
   onDragStart,
   onDragEnd,
-  onRequestEdit
+  onRequestEdit,
+  hitTestTopmostLayerId
 }: {
   selectedOverlay: OverlayRow;
   /** Source dims for kind-specific bounding-box math (text). Rect /
@@ -2112,6 +2113,18 @@ export function TransformHandles({
    *  duplicate) the overlay on commit. Optional — when omitted, the
    *  text just isn't editable after first placement. */
   onRequestEdit?: (overlay: OverlayRow) => void;
+  /** The Editor's shared canvas hit-test (overlays + rasters,
+   *  z-arbitrated) in client coords. The body-hit rect is a full
+   *  bounding box — far more forgiving than the real hit geometry —
+   *  so it can cover OTHER layers (and empty canvas) around the
+   *  selected glyph. When provided, a plain body-rect pointerdown
+   *  only claims the drag if the topmost layer under the cursor IS
+   *  this overlay; otherwise the event propagates to the canvas,
+   *  which selects (and drag-arms) what the user actually aimed at.
+   *  Optional — when omitted, the body rect claims unconditionally
+   *  (pre-#384 behavior; unit tests exercise the handles without an
+   *  Editor around them). */
+  hitTestTopmostLayerId?: (clientX: number, clientY: number) => string | null;
 }): ReactElement | null {
   // Live geometry during the drag — used to render the handles in
   // their new positions before the round-trip lands. Falls back to
@@ -2215,6 +2228,24 @@ export function TransformHandles({
       if (handle === "body" && (event.metaKey || event.ctrlKey)) {
         return;
       }
+      // Plain body-rect click: only claim the gesture when the shared
+      // canvas hit-test agrees this overlay is the TOPMOST layer under
+      // the cursor. The body rect is a full bbox, so for a large
+      // selected layer (a highlight band, a wide arrow's bounds, a
+      // multi-line text block) it covers neighbors and empty canvas —
+      // pre-fix every click inside it re-dragged the SELECTED layer
+      // instead of selecting the layer the user aimed at (or clearing
+      // on a true miss). Letting the event bubble hands it to the
+      // canvas's dispatchCanvasClickSelection, which selects the real
+      // topmost layer and arms its drag in the same gesture. Resize /
+      // rotate handles stay claim-always — they're tiny explicit
+      // affordances rendered above everything.
+      if (handle === "body" && hitTestTopmostLayerId !== undefined) {
+        const topmost = hitTestTopmostLayerId(event.clientX, event.clientY);
+        if (topmost !== selectedOverlay.id) {
+          return;
+        }
+      }
       event.preventDefault();
       event.stopPropagation();
       (event.target as HTMLElement).setPointerCapture(event.pointerId);
@@ -2224,7 +2255,7 @@ export function TransformHandles({
       dragStartPtRef.current = startPt ?? { xn: 0, yn: 0 };
       onDragStart?.(selectedOverlay);
     },
-    [clientToNormalized, onDragStart, selectedOverlay]
+    [clientToNormalized, hitTestTopmostLayerId, onDragStart, selectedOverlay]
   );
 
   const onPointerMove = useCallback(

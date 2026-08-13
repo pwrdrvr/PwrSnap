@@ -516,7 +516,12 @@ export function useZoomPan(opts: {
   const startPan = useCallback(
     (event: React.PointerEvent<HTMLElement>): void => {
       event.preventDefault();
-      (event.target as HTMLElement).setPointerCapture(event.pointerId);
+      // Capture on currentTarget (the element the handler is attached
+      // to — canvas or wrap, both stable), NOT event.target: a click
+      // propagated through TransformHandles' body rect targets a div
+      // that unmounts when the same click clears the selection, and a
+      // capture on an unmounted element silently drops the gesture.
+      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
       setIsPanning(true);
       panStart.current = {
         x: event.clientX,

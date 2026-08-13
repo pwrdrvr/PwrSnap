@@ -1984,6 +1984,21 @@ export function Editor({
     return { hit, rasterHit };
   }
 
+  /** Client-coordinate wrapper around `hitTestCanvasPoint` for
+   *  consumers outside this handler cluster — TransformHandles' body
+   *  rect asks "is the selected overlay the topmost layer under this
+   *  cursor?" before claiming a drag, so clicks aimed at layers
+   *  beneath its (full-bbox, over-forgiving) hit area propagate back
+   *  to the canvas instead of re-dragging the selection. */
+  function hitTestTopmostLayerId(
+    clientX: number,
+    clientY: number
+  ): string | null {
+    const start = clientToNormalized(clientX, clientY);
+    if (start === null) return null;
+    return hitTestCanvasPoint(start).hit;
+  }
+
   function dispatchCanvasClickSelection(
     event: React.PointerEvent<HTMLDivElement>,
     start: { xn: number; yn: number }
@@ -2049,7 +2064,7 @@ export function Editor({
           snapshots,
           rasterSnapshots
         };
-        (event.target as HTMLElement).setPointerCapture(event.pointerId);
+        (canvasRef.current ?? (event.target as HTMLElement)).setPointerCapture(event.pointerId);
       }
       return { hit };
     }
@@ -2081,7 +2096,7 @@ export function Editor({
           canvasScreenW: canvasRect?.width ?? 0,
           canvasScreenH: canvasRect?.height ?? 0
         };
-        (event.target as HTMLElement).setPointerCapture(event.pointerId);
+        (canvasRef.current ?? (event.target as HTMLElement)).setPointerCapture(event.pointerId);
       }
       return { hit };
     }
@@ -2116,7 +2131,7 @@ export function Editor({
           snapshots: [{ id: hit, data: adopted ?? row.data }],
           rasterSnapshots: []
         };
-        (event.target as HTMLElement).setPointerCapture(event.pointerId);
+        (canvasRef.current ?? (event.target as HTMLElement)).setPointerCapture(event.pointerId);
       }
     }
     return { hit };
@@ -2208,7 +2223,7 @@ export function Editor({
     // selection so the outline doesn't linger on top of the new draft.
     if (selectedLayerIds.length > 0) clearSelection();
     event.preventDefault();
-    (event.target as HTMLElement).setPointerCapture(event.pointerId);
+    (canvasRef.current ?? (event.target as HTMLElement)).setPointerCapture(event.pointerId);
 
     // Open a coalescing bracket for the drag. layerId uses the tool
     // name as a sentinel since the actual layer doesn't exist yet
@@ -4045,6 +4060,7 @@ export function Editor({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
       onPointerLeave={onPointerLeave}
+      hitTestTopmostLayerId={hitTestTopmostLayerId}
       onContextMenu={onContextMenu}
       contextMenuState={contextMenuState}
       setContextMenuState={setContextMenuState}
@@ -4122,6 +4138,7 @@ function EditorLoaded({
   onPointerUp,
   onPointerCancel,
   onPointerLeave,
+  hitTestTopmostLayerId,
   onContextMenu,
   contextMenuState,
   setContextMenuState,
@@ -4232,6 +4249,10 @@ function EditorLoaded({
    *  canvas (data-hover-hit would otherwise stick on the last-hovered
    *  state). */
   onPointerLeave: () => void;
+  /** Shared canvas hit-test in client coords — threaded down to
+   *  TransformHandles so its body rect only claims a drag when the
+   *  selected overlay really is the topmost layer under the cursor. */
+  hitTestTopmostLayerId: (clientX: number, clientY: number) => string | null;
   /** Right-click handler — opens the layer context menu over the
    *  canvas at the click anchor. Defined in the outer Editor so it
    *  can call into outer-scope helpers (hitTestOverlays + selection
@@ -6408,6 +6429,7 @@ function EditorLoaded({
               onDragStart={onHandleDragStart}
               onDragEnd={onHandleDragEnd}
               onRequestEdit={onRequestEditOverlay}
+              hitTestTopmostLayerId={hitTestTopmostLayerId}
             />
           )}
           {/* Raster resize handles — single-selected non-base raster only,

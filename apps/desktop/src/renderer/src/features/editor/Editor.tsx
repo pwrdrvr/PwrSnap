@@ -2128,9 +2128,6 @@ export function Editor({
       return;
     }
     if (tool === "crop") return;
-    // If we're mid-text and the user clicks elsewhere, commit/cancel
-    // the text first (the input's blur handler will fire).
-    if (draft?.kind === "text") return;
 
     const start = clientToNormalized(event.clientX, event.clientY);
     if (start === null) return;
@@ -2143,12 +2140,26 @@ export function Editor({
     // typically wants to edit the thing they clicked, not stack
     // another one over it. Miss → fall through to the drawing-tool
     // branches below.
+    //
+    // This runs even while a text draft is open: the click's focus
+    // change blurs the draft input, whose blur handler commits (or
+    // discards an empty) draft, and the selection applies on the SAME
+    // click. Neither path calls preventDefault before this point, so
+    // the blur is never suppressed.
     {
       const { hit } = dispatchCanvasClickSelection(event, start, {
         includeRasters: false
       });
       if (hit !== null) return;
     }
+    // Mid-text-draft click that MISSED every layer: stop here — the
+    // blur commit above is the whole gesture ("click away to commit"),
+    // matching every annotation editor's text-tool convention. This
+    // guard used to run BEFORE the hit-test, which ate the first click
+    // on an existing layer while a draft was open — and in text mode
+    // the previous click almost always left a draft open, so selecting
+    // any object took two clicks.
+    if (draft?.kind === "text") return;
     // Drawing a new annotation on empty canvas deselects any previous
     // selection so the outline doesn't linger on top of the new draft.
     if (selectedLayerIds.length > 0) clearSelection();

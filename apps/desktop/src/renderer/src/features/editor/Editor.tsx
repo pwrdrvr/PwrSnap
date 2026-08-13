@@ -1923,13 +1923,13 @@ export function Editor({
   }
 
   /** Shared click→selection dispatch for the pointer tool AND every
-   *  drawing tool: hit-test overlays (and, when `includeRasters`,
-   *  non-source raster layers), route the result through
-   *  `decideClickSelection`, apply the selection mutation, and arm
-   *  whichever drag gesture the click begins — group drag on a
-   *  multi-selected member, solo raster drag on a raster. Returns the
-   *  resolved hit so callers can branch on hit-vs-miss (pointer tool:
-   *  pan fallback; drawing tools: start a new draft).
+   *  drawing tool: hit-test overlays and non-source raster layers,
+   *  route the result through `decideClickSelection`, apply the
+   *  selection mutation, and arm whichever drag gesture the click
+   *  begins — group drag on a multi-selected member, solo raster drag
+   *  on a raster. Returns the resolved hit so callers can branch on
+   *  hit-vs-miss (pointer tool: pan fallback; drawing tools: start a
+   *  new draft).
    *
    *  Hit-test notes:
    *   • textHitDimsRef carries canvas + source dims — text overlays
@@ -1943,8 +1943,7 @@ export function Editor({
    *     space as the overlay hit-test. */
   function dispatchCanvasClickSelection(
     event: React.PointerEvent<HTMLDivElement>,
-    start: { xn: number; yn: number },
-    opts: { includeRasters: boolean }
+    start: { xn: number; yn: number }
   ): { hit: string | null } {
     const rect = canvasRef.current?.getBoundingClientRect();
     const shortSide =
@@ -1959,7 +1958,7 @@ export function Editor({
     );
     const dimsForHit = textHitDimsRef.current;
     const rasterHit =
-      !opts.includeRasters || dimsForHit === null
+      dimsForHit === null
         ? null
         : hitTestRasterLayers(
             rastersRef.current,
@@ -2113,9 +2112,7 @@ export function Editor({
     if (tool === "pointer") {
       const start = clientToNormalized(event.clientX, event.clientY);
       if (start === null) return;
-      const { hit } = dispatchCanvasClickSelection(event, start, {
-        includeRasters: true
-      });
+      const { hit } = dispatchCanvasClickSelection(event, start);
       // Miss on empty canvas while zoomed in: fall back to drag-to-pan
       // (the click already cleared the selection via the `clear`
       // action). This keeps the old pointer-drag navigation available
@@ -2134,12 +2131,14 @@ export function Editor({
 
     // Drawing tools (arrow / rect / highlight / blur / text) hit-test
     // existing layers BEFORE starting a new draft. A click that lands
-    // on an existing overlay should select it (so TransformHandles
-    // renders and the user can move/resize/delete via handles or
-    // Delete-key), NOT silently draw a fresh layer on top — the user
+    // on an existing overlay OR raster (pasted image / captured
+    // cursor) should select it (so the user can move/resize/delete
+    // it), NOT silently draw a fresh layer on top — the user
     // typically wants to edit the thing they clicked, not stack
-    // another one over it. Miss → fall through to the drawing-tool
-    // branches below.
+    // another one over it. Pre-fix the raster half was pointer-tool
+    // only: clicking a pasted image in any drawing tool missed the
+    // hit-test, cleared the selection, and drew over the image. Miss
+    // → fall through to the drawing-tool branches below.
     //
     // This runs even while a text draft is open: the click's focus
     // change blurs the draft input, whose blur handler commits (or
@@ -2147,9 +2146,7 @@ export function Editor({
     // click. Neither path calls preventDefault before this point, so
     // the blur is never suppressed.
     {
-      const { hit } = dispatchCanvasClickSelection(event, start, {
-        includeRasters: false
-      });
+      const { hit } = dispatchCanvasClickSelection(event, start);
       if (hit !== null) return;
     }
     // Mid-text-draft click that MISSED every layer: stop here — the

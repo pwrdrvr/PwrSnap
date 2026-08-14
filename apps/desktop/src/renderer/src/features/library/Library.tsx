@@ -50,6 +50,7 @@ import { FixtureBackedRecords, isSameLocalDay, mapBundleIdToAppId } from "./adap
 import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
+import { GridCopyPalette } from "./GridCopyPalette";
 import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
 import { nextAfterDelete } from "./delete-nav";
 import { DeleteUndoStack } from "./delete-undo-stack";
@@ -1978,19 +1979,6 @@ export function Library() {
     persistedRange: selectedVideo?.defaultRange ?? null
   });
 
-  // Grid-first right rail: shows when there's something to show — a
-  // SELECTED capture (Info + OCR + Cart-when-non-empty + the L/M/H export
-  // footer) OR a non-empty cart with nothing selected (a cart-only rail
-  // hosting just the Cart tab). Either way the cart lives INSIDE the right
-  // bar, so the layout toggle collapses it and it's dismissable — there's
-  // no separate orphaned cart rail anymore.
-  const showGridInspector =
-    view.kind === "grid" && (selectedRecord !== null || !cartIsEmpty);
-  // The right rail is "showing" whenever it occupies the column: always
-  // in focus/reel, and in Grid only when the inspector is up. Drives the
-  // data-right column-width attribute (undefined until settings hydrate so
-  // it doesn't paint at the wrong width on cold start).
-  const railShowing = view.kind !== "grid" || showGridInspector;
   // Auto-collapse the grid right rail to its hover-pop activity bar when the
   // window is narrow, so the grid keeps its width (the cart/inspector becomes
   // "on mouse over only"). Focus/reel normally keep the rail at the user's
@@ -2001,6 +1989,24 @@ export function Library() {
   const railEffectivePinned =
     rightPinned &&
     !((view.kind === "grid" && isToolbarNarrow) || isWindowVeryNarrow);
+  // Grid rail occupancy is independent of selection so clicking a tile
+  // cannot reflow the virtualized grid under the cursor. The column is
+  // reserved when the rail is effectively pinned (always-on inspector,
+  // including the empty state) or when a non-empty cart needs a home.
+  // Unpinned + empty cart: column stays at 0. Copy actions live on the
+  // floating grid palette instead. Layout toggle / pin remain the only
+  // intentional ways to open the inspector.
+  const gridRailOccupiesColumn =
+    view.kind === "grid" && (railEffectivePinned || !cartIsEmpty);
+  // The right rail is "showing" whenever it occupies the column: always
+  // in focus/reel, and in Grid only when occupancy (above) says so.
+  // Drives the data-right column-width attribute (undefined until
+  // settings hydrate so it doesn't paint at the wrong width on cold start).
+  const railShowing = view.kind !== "grid" || gridRailOccupiesColumn;
+  // Compact L/M/H (or video export) overlay — only when Grid has a
+  // selection AND the inspector footer isn't occupying the column.
+  const showGridCopyPalette =
+    view.kind === "grid" && selectedRecord !== null && !railEffectivePinned;
   const railDataRight = !settingsHydrated
     ? undefined
     : railShowing
@@ -2598,13 +2604,14 @@ export function Library() {
       const usingOtherMod = event.ctrlKey || event.altKey;
 
       // ⌘1 / ⌘2 / ⌘3 — copy Low / Med / High for the selected capture.
-      // The labels live in DetailRail, so only honor them when the rail
-      // is visible (Focus/Reel) and the Library window has focus.
+      // Same helper the DetailRail footer + Grid copy palette use, so
+      // the shortcut always puts image bytes on the clipboard. Live in
+      // Focus/Reel (inspector footer) and Grid (palette or footer).
       if (
         usingMeta &&
         !event.shiftKey &&
         !usingOtherMod &&
-        (kind === "focus" || kind === "reel")
+        (kind === "focus" || kind === "reel" || kind === "grid")
       ) {
         const preset = copyPresetForShortcutKey(event.key);
         const record = selectedRecordRef.current;
@@ -3071,10 +3078,11 @@ export function Library() {
       // `data-right` controls the right column width (38px collapsed vs
       // 360px pinned) AND the footer/overflow rules. Computed as
       // `railDataRight` above: pinned/collapsed whenever the rail is
-      // showing (focus/reel always; Grid when a capture is selected OR
-      // the cart is non-empty), else undefined so the column collapses
-      // to 0. The cart now rides in the rail as a tab, so there's no
-      // separate cart rail / data-cart attribute anymore.
+      // showing (focus/reel always; Grid when the rail is pinned OR the
+      // cart is non-empty). Selection never toggles this — clicking a
+      // tile must not reflow the grid. The cart now rides in the rail
+      // as a tab, so there's no separate cart rail / data-cart
+      // attribute anymore.
       data-right={railDataRight}
     >
       <header
@@ -3770,6 +3778,9 @@ export function Library() {
             purgeCaptureAction={purgeCaptureAction}
           />
         </div>
+        {showGridCopyPalette && selectedRecord !== null ? (
+          <GridCopyPalette record={selectedRecord} copyPulses={copyPulses} />
+        ) : null}
         {error !== null && (
           <div className="psl__error" role="alert">
             Failed to load library: {error}
@@ -3958,37 +3969,38 @@ export function Library() {
 
       {/* Detail rail. Shows metadata + Codex caption + L/M/H export row
           + action row. In focus/reel it's always present; in Grid it
-          renders the restricted Info/OCR inspector for the selected
-          capture (record forced null while the standalone cart rail owns
-          the column, so the two never overlap). Lives in the third grid
-          column (360px pinned / 38px collapsed via data-right). */}
-      <DetailRail
-        view={view}
-        record={selectedRecord}
-        // The LIVE trim range, not the persisted one — see the
-        // `videoTrim` comment above. Null when the selection isn't a
-        // video (the rail's video branch is inert then anyway).
-        videoTrimRange={selectedVideo === null ? null : videoTrim.range}
-        copyPulses={copyPulses}
-        // Use the EFFECTIVE pin, not the raw one, so the rail's own render
-        // (activity-bar spine + hover-pop when unpinned) matches the
-        // `data-right` column width. Without this they disagree when narrow:
-        // the column collapses to 38px but DetailRail still paints its full
-        // panel, which then bleeds out past the window's right edge.
-        pinned={railEffectivePinned}
-        onPinChange={setRightPinned}
-        activeTab={rightActiveTab}
-        onActiveTabChange={setRightActiveTab}
-        onTrash={deleteCaptureById}
-        confirmBeforeTrash={confirmBeforeTrash}
-        onDontAskAgainTrash={suppressTrashConfirm}
-        onCartJumpTo={jumpToCapture}
-        onCartTrashAll={trashCartCaptures}
-        gridActiveTab={gridActiveTab}
-        onGridActiveTabChange={setGridActiveTab}
-        selectedLayerIds={selectedLayerIds}
-        layersApi={layersApi}
-      />
+          occupies the column only when pinned or the cart is non-empty
+          — never as a side-effect of selection. Lives in the third
+          grid column (360px pinned / 38px collapsed via data-right). */}
+      {railShowing ? (
+        <DetailRail
+          view={view}
+          record={selectedRecord}
+          // The LIVE trim range, not the persisted one — see the
+          // `videoTrim` comment above. Null when the selection isn't a
+          // video (the rail's video branch is inert then anyway).
+          videoTrimRange={selectedVideo === null ? null : videoTrim.range}
+          copyPulses={copyPulses}
+          // Use the EFFECTIVE pin, not the raw one, so the rail's own render
+          // (activity-bar spine + hover-pop when unpinned) matches the
+          // `data-right` column width. Without this they disagree when narrow:
+          // the column collapses to 38px but DetailRail still paints its full
+          // panel, which then bleeds out past the window's right edge.
+          pinned={railEffectivePinned}
+          onPinChange={setRightPinned}
+          activeTab={rightActiveTab}
+          onActiveTabChange={setRightActiveTab}
+          onTrash={deleteCaptureById}
+          confirmBeforeTrash={confirmBeforeTrash}
+          onDontAskAgainTrash={suppressTrashConfirm}
+          onCartJumpTo={jumpToCapture}
+          onCartTrashAll={trashCartCaptures}
+          gridActiveTab={gridActiveTab}
+          onGridActiveTabChange={setGridActiveTab}
+          selectedLayerIds={selectedLayerIds}
+          layersApi={layersApi}
+        />
+      ) : null}
 
       {/* Capture soft-delete Undo toast — lower-left, in the shared
           app-toast-stack so it stacks with the update/access banners and

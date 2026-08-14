@@ -55,7 +55,13 @@ import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
 import { nextAfterDelete } from "./delete-nav";
 import { DeleteUndoStack } from "./delete-undo-stack";
 import { mergeOpenedLiveRecords } from "./library-records";
-import { initialLibraryView, libraryReducer, type LibraryAction, type LibraryView } from "./library-view";
+import {
+  initialLibraryView,
+  libraryReducer,
+  resolveDefaultPinnedGridSelection,
+  type LibraryAction,
+  type LibraryView
+} from "./library-view";
 import {
   appRowState,
   describeFilterChips,
@@ -2492,6 +2498,31 @@ export function Library() {
       { history: "replace" }
     );
   }, [activeFilterKey, visibleRecords, viewDispatch]);
+
+  // Pinned Grid with no selection: select the first visible capture so
+  // the inspector column is occupied before the user scrolls. A later
+  // click then updates the rail in place instead of opening it and
+  // reflowing the virtualized grid under the cursor. Unpinned Grid is
+  // left alone — the floating copy palette covers that path.
+  const firstVisibleRecordId = visibleRecords[0]?.id ?? null;
+  useEffect(() => {
+    const nextId = resolveDefaultPinnedGridSelection({
+      kind: view.kind,
+      selectedRecordId: view.selectedRecordId,
+      railPinned: railEffectivePinned,
+      settingsHydrated,
+      firstVisibleId: firstVisibleRecordId
+    });
+    if (nextId === null) return;
+    viewDispatch({ type: "SELECT_IN_GRID", recordId: nextId }, { history: "replace" });
+  }, [
+    view.kind,
+    view.selectedRecordId,
+    railEffectivePinned,
+    settingsHydrated,
+    firstVisibleRecordId,
+    viewDispatch
+  ]);
 
   // Window keydown handler — Esc closes Focus, ←/→ navigate between
   // captures in Focus + Reel. Single listener for the lifetime of

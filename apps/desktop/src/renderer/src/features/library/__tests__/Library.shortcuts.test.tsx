@@ -293,6 +293,7 @@ describe("Library grid select vs edit", () => {
       root?.render(createElement(Library));
       await Promise.resolve();
       await Promise.resolve();
+      await Promise.resolve();
     });
   }
 
@@ -366,7 +367,41 @@ describe("Library grid select vs edit", () => {
   });
 
   test("Enter with nothing selected is a no-op", async () => {
+    // Default pinned Grid auto-selects the first tile. Use the unpinned
+    // path so this case still has a genuine empty selection.
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:list") {
+        return ok({
+          rows: [imageRecord],
+          nextCursor: null,
+          appStats: [],
+          totalLive: 1
+        });
+      }
+      if (name === "settings:read") {
+        return ok({
+          ...settings,
+          library: {
+            ...settings.library,
+            detailRail: { pinned: false, lastSelectedTab: "info" }
+          }
+        });
+      }
+      if (name === "settings:refreshCodexDiscovery") {
+        return ok({ resolvedPath: null, auth: null, candidates: [] });
+      }
+      if (name === "storage:summary") {
+        return ok({
+          capturedAt: "2026-05-15T18:24:00.000Z",
+          sourceCaptures: { bytes: imageRecord.byte_size, captureCount: 1 }
+        });
+      }
+      if (name === "sizzle:list") return ok({ projects: [] });
+      if (name === "app:version") return ok({ version: "0.0.0-test" });
+      return ok(undefined);
+    });
     await renderLibrary();
+    expect(cellEl()?.classList.contains("is-selected")).toBe(false);
     expect(hasStage()).toBe(false);
 
     await act(async () => {
@@ -381,7 +416,8 @@ describe("Library grid select vs edit", () => {
 
   test("an arrow key in grid moves the selection (and doesn't open the editor)", async () => {
     await renderLibrary();
-    expect(cellEl()?.classList.contains("is-selected")).toBe(false);
+    // Pinned Grid default-selects the first (only) tile on open.
+    expect(cellEl()?.classList.contains("is-selected")).toBe(true);
 
     // Nothing selected yet → the first arrow enters from an end and
     // selects a tile, staying in grid.
@@ -466,11 +502,18 @@ describe("Library grid selection does not reflow the inspector column", () => {
     return container?.querySelector<HTMLElement>('[data-cell-id="cap_image"]') ?? null;
   }
 
+  test("pinned: opening Grid default-selects the first visible capture", async () => {
+    await renderLibrary(true);
+    expect(cellEl()?.classList.contains("is-selected")).toBe(true);
+    expect(psl()?.getAttribute("data-right")).toBe("pinned");
+    expect(container?.querySelector('[data-testid="library-stage"]')).toBeNull();
+  });
+
   test("pinned: selecting a tile updates in place and does not change data-right", async () => {
     await renderLibrary(true);
     const before = psl()?.getAttribute("data-right") ?? null;
     expect(before).toBe("pinned");
-    expect(cellEl()?.classList.contains("is-selected")).toBe(false);
+    expect(cellEl()?.classList.contains("is-selected")).toBe(true);
     expect(container?.querySelector('[data-testid="psl-grid-copy-palette"]')).toBeNull();
 
     await act(async () => {
@@ -489,6 +532,7 @@ describe("Library grid selection does not reflow the inspector column", () => {
     await renderLibrary(false);
     const before = psl()?.getAttribute("data-right") ?? null;
     expect(before).toBeNull();
+    expect(cellEl()?.classList.contains("is-selected")).toBe(false);
 
     await act(async () => {
       cellEl()?.click();

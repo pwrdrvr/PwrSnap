@@ -619,10 +619,39 @@ export function DetailRail({
       </aside>
     );
   }
-  // No selection (and no cart to show) → no rail. This single guard covers
-  // grid-empty, focus, and reel alike. Hooks above this point run every
-  // render regardless of view.kind — do NOT move any hook below here
-  // (Rules of Hooks; guarded by DetailRail.test + library-*-spec).
+  // Pinned Grid with nothing selected: keep the inspector column (so
+  // selecting a tile later updates in place and cannot reflow the
+  // grid) but render an inert empty shell — no footer, no per-capture
+  // IPC beyond what the hooks above already gated on `record === null`.
+  if (record === null && view.kind === "grid" && pinned) {
+    return (
+      <aside className="psl__right psl__right--vertical" aria-label="Capture details">
+        <div className="psl__right-content">
+          <RightActivityBar
+            tabs={gridTabs}
+            activeTab={gridTabs.some((t) => t.id === gridTab) ? gridTab : "info"}
+            pinned={pinned}
+            onTabChange={setGridTab}
+            onPinChange={writePinned}
+            renderPanel={() => (
+              <div className="psl__right-body">
+                <div className="psl__right-empty" data-testid="psl-right-empty">
+                  Select a capture to inspect
+                </div>
+              </div>
+            )}
+            testIdPrefix="psl-right"
+            pinnedWidthPx={320}
+          />
+        </div>
+      </aside>
+    );
+  }
+  // No selection (and no cart / pinned-grid shell to show) → no rail.
+  // This single guard covers unpinned grid-empty, focus, and reel.
+  // Hooks above this point run every render regardless of view.kind —
+  // do NOT move any hook below here (Rules of Hooks; guarded by
+  // DetailRail.test + library-*-spec).
   if (record === null) return null;
 
   // Grid uses its own restricted tab set + local tab; focus/reel use the

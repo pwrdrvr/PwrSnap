@@ -901,6 +901,53 @@ describe("DetailRail", () => {
     ).not.toBeNull();
   });
 
+  test("pinned Grid with no selection renders an inert empty shell (no footer)", async () => {
+    installFakeApi(enrichment());
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(DetailRail, {
+          view: { kind: "grid", selectedRecordId: null } as LibraryView,
+          record: null,
+          pinned: true,
+          onPinChange: () => undefined
+        })
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container?.querySelector('[data-testid="psl-right-empty"]')?.textContent).toContain(
+      "Select a capture"
+    );
+    expect(container?.querySelector('[data-testid="psl-right-tab-info"]')).not.toBeNull();
+    expect(container?.querySelector('[data-testid="psl-right-footer"]')).toBeNull();
+    expect(container?.querySelector("video")).toBeNull();
+  });
+
+  test("unpinned Grid with no selection still returns null", async () => {
+    installFakeApi(enrichment());
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(DetailRail, {
+          view: { kind: "grid", selectedRecordId: null } as LibraryView,
+          record: null,
+          pinned: false,
+          onPinChange: () => undefined
+        })
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container?.querySelector(".psl__right")).toBeNull();
+  });
+
   test("OCR tab shows a notification badge when extracted text exists", async () => {
     const { el } = await renderDetailRail(enrichment({ ocrText: "snap content" }));
     const ocrTab = el.querySelector<HTMLButtonElement>(

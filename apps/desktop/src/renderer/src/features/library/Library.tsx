@@ -1996,21 +1996,24 @@ export function Library() {
     rightPinned &&
     !((view.kind === "grid" && isToolbarNarrow) || isWindowVeryNarrow);
   // Grid rail occupancy is independent of selection so clicking a tile
-  // cannot reflow the virtualized grid under the cursor. The column is
-  // reserved when the rail is effectively pinned (always-on inspector,
-  // including the empty state) or when a non-empty cart needs a home.
+  // cannot reflow the virtualized grid under the cursor. Use the user's
+  // pin intent (`rightPinned`), not `railEffectivePinned`. The latter is
+  // only the 360px-vs-38px decision: at ≤1024px a pinned Grid still
+  // occupies the collapsed hover-pop spine. Treating that collapse as
+  // "unpinned" omitted the inspector entirely and skipped default-select.
   // Unpinned + empty cart: column stays at 0. Copy actions live on the
-  // floating grid palette instead. Layout toggle / pin remain the only
-  // intentional ways to open the inspector.
+  // floating grid palette instead.
   const gridRailOccupiesColumn =
-    view.kind === "grid" && (railEffectivePinned || !cartIsEmpty);
+    view.kind === "grid" && (rightPinned || !cartIsEmpty);
   // The right rail is "showing" whenever it occupies the column: always
   // in focus/reel, and in Grid only when occupancy (above) says so.
   // Drives the data-right column-width attribute (undefined until
   // settings hydrate so it doesn't paint at the wrong width on cold start).
   const railShowing = view.kind !== "grid" || gridRailOccupiesColumn;
-  // Compact L/M/H (or video export) overlay — only when Grid has a
-  // selection AND the inspector footer isn't occupying the column.
+  // Compact L/M/H (or video export) overlay — when Grid has a selection
+  // AND the inspector footer is not in the 360px pinned column. Narrow
+  // pinned Grid still gets the palette because the collapsed spine hides
+  // the footer.
   const showGridCopyPalette =
     view.kind === "grid" && selectedRecord !== null && !railEffectivePinned;
   const railDataRight = !settingsHydrated
@@ -2509,7 +2512,7 @@ export function Library() {
     const nextId = resolveDefaultPinnedGridSelection({
       kind: view.kind,
       selectedRecordId: view.selectedRecordId,
-      railPinned: railEffectivePinned,
+      railPinned: rightPinned,
       settingsHydrated,
       firstVisibleId: firstVisibleRecordId
     });
@@ -2518,7 +2521,7 @@ export function Library() {
   }, [
     view.kind,
     view.selectedRecordId,
-    railEffectivePinned,
+    rightPinned,
     settingsHydrated,
     firstVisibleRecordId,
     viewDispatch

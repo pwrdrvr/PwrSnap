@@ -201,9 +201,13 @@ const INITIAL_COPY_PULSES: Record<CopyPreset, number> = {
  * Per-cell cart checkbox. Self-subscribes to the cart via context so a
  * cart toggle re-renders ONLY the checkboxes, not the enclosing cells
  * (thumbnail, app tag, etc.) or the whole virtualized grid. Dispatches
- * `cart:toggle` directly. The hover-reveal + the collected-cell accent
- * ring are pure CSS (`.psl__cell:hover .psl__cell-cart`,
- * `.psl__cell:has(.psl__cell-cart.is-checked)`).
+ * `cart:toggle` directly. The hover-reveal, the corner scrim that makes
+ * the unchecked box legible on light thumbnails, and the collected-cell
+ * accent ring are pure CSS (`.psl__cell:hover .psl__cell-cart`,
+ * `.psl__cell-cart::before`, `.psl__cell:has(.psl__cell-cart.is-checked)`).
+ * "Selection mode" — every box visible at rest once anything is checked —
+ * rides `data-selecting` on `.psl` instead, so it flips on the cart's
+ * empty↔non-empty edge rather than on every toggle.
  */
 function CartCellCheckbox({ captureId }: { captureId: string }): React.ReactElement {
   const cart = useCart();
@@ -224,7 +228,7 @@ function CartCellCheckbox({ captureId }: { captureId: string }): React.ReactElem
       }}
     >
       {inCart ? (
-        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
           <path d="m5 12 5 5 9-11" />
         </svg>
       ) : null}
@@ -3159,6 +3163,15 @@ export function Library() {
       // as a tab, so there's no separate cart rail / data-cart
       // attribute anymore.
       data-right={railDataRight}
+      // "Selection mode" — once ANYTHING is in the cart, every grid
+      // tile shows its checkbox at rest (CSS:
+      // `.psl[data-selecting="cart"] .psl__cell-cart`). Fed by
+      // `useCartIsEmpty()`, a PRIMITIVE context value, so this flips on
+      // the empty↔non-empty edge only: adding a 4th item to a cart of 3
+      // doesn't re-render the virtualized grid. The alternative —
+      // `.psl:has(.psl__cell-cart.is-checked)` — would make the browser
+      // rescan the whole grid subtree on every toggle instead.
+      data-selecting={cartIsEmpty ? undefined : "cart"}
     >
       <header
         className={
@@ -5060,19 +5073,12 @@ function CellRow({
                   <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" bundleId={c.bundleId ?? undefined} />
                 )}
               </span>
-              {/* Bottom-right rail. The duration chip (videos) sits at
-                  the left; hover-revealed action buttons slide in from
-                  the right edge, pushing the duration left rather than
-                  covering it. */}
+              {/* Bottom-right rail. Action buttons first, duration chip
+                  LAST — the chip owns the corner and never moves, while
+                  the buttons reserve their 28px slots to its left and
+                  fade in on hover (no width tween; see
+                  `.psl__cell-rail` / `.psl__cell-trash` in library.css). */}
               <span className="psl__cell-rail">
-                {record !== null && record.kind === "video" ? (
-                  <span
-                    className="psl__cell-duration"
-                    data-video-duration={(record.video?.durationSec ?? 0).toFixed(1)}
-                  >
-                    {formatDurationLabel(record.video?.durationSec ?? 0)}
-                  </span>
-                ) : null}
                 {projectId !== null ? (
                   <button
                     type="button"
@@ -5081,7 +5087,7 @@ function CellRow({
                     aria-label={`Duplicate ${c.n}`}
                     onClick={(event) => duplicateSizzleProject(projectId, event)}
                   >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <rect x="8" y="8" width="11" height="11" rx="2" />
                       <path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h9a1 1 0 0 1 1 1v1" />
                     </svg>
@@ -5103,7 +5109,7 @@ function CellRow({
                     }}
                     onDoubleClick={(e) => e.stopPropagation()}
                   >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M12 20h9" />
                       <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
                     </svg>
@@ -5119,7 +5125,7 @@ function CellRow({
                         aria-label="Restore from Trash"
                         onClick={(e) => restoreCaptureAction(c.id, e)}
                       >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M3 12a9 9 0 1 0 3-6.7" />
                           <path d="M3 4v5h5" />
                         </svg>
@@ -5131,7 +5137,7 @@ function CellRow({
                         aria-label="Delete permanently"
                         onClick={(e) => purgeCaptureAction(c.id, e)}
                       >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
                         </svg>
                       </button>
@@ -5153,13 +5159,21 @@ function CellRow({
                           aria-label="Move to Trash"
                           {...trigger}
                         >
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                             <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
                           </svg>
                         </button>
                       )}
                     </DeleteConfirm>
                   ))}
+                {record !== null && record.kind === "video" ? (
+                  <span
+                    className="psl__cell-duration"
+                    data-video-duration={(record.video?.durationSec ?? 0).toFixed(1)}
+                  >
+                    {formatDurationLabel(record.video?.durationSec ?? 0)}
+                  </span>
+                ) : null}
               </span>
             </div>
           </div>

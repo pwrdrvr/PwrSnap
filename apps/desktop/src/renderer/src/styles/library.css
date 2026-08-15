@@ -1594,6 +1594,36 @@
   color: var(--text-muted);
 }
 
+/* ============================================================
+   GRID TILE — ring states + corner chrome (one language)
+   ------------------------------------------------------------
+   THREE RING STATES, and only three. Every tile is in exactly one
+   of them (checked wins over selected wins over hover):
+
+     • hover     → 1px `--border-default` lift + `--shadow-sm`.
+                   NEUTRAL on purpose: hover means "the pointer is
+                   here", not "this is chosen", so it must not
+                   borrow the accent.
+     • selected  → 2px accent ring (1px `--accent` border + a 1px
+                   `0 0 0 1px --accent` box-shadow = 2px total) +
+                   an accent-tinted drop shadow. This is the tile
+                   the inspector / ⌘1-2-3 / Enter act on.
+     • checked   → accent ring (2px inset outline) + the cart
+                   checkbox filled with `--accent`. "In the cart"
+                   is a persisted set, so it reads at rest with no
+                   pointer anywhere near the tile.
+
+   CORNER CHROME — the four corners share ONE chrome so they read
+   as a matched set rather than four separate widgets:
+     top-left     cart checkbox   (24px, 2px stroke, over a scrim)
+     top-right    time badge      (10px mono chip)
+     bottom-left  app pill        (the ONE emphasized element —
+                                   keeps its accent outline)
+     bottom-right rail: action buttons + duration chip
+
+   `--psl-chip-bg` / `--psl-chip-radius` below are the shared
+   values. Change them here, not per-corner.
+   ============================================================ */
 .psl__cell {
   position: relative;
   border-radius: 7px;
@@ -1623,7 +1653,11 @@
    (the `transition: all 120ms` paced it to ~1/3 s). box-shadow gives the
    same elevation cue while leaving geometry — and the pointer's hover
    state — untouched. */
-.psl__cell:hover { border-color: var(--accent-border); box-shadow: var(--shadow-sm); }
+/* Hover = NEUTRAL 1px lift (see the ring-states block above). It used
+   to borrow `--accent-border`, which made hover, selected and checked
+   three shades of the same tangerine and left the user guessing which
+   ring meant what. */
+.psl__cell:hover { border-color: var(--border-default); box-shadow: var(--shadow-sm); }
 .psl__cell.is-selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent), 0 8px 24px var(--accent-shadow);
@@ -1631,6 +1665,9 @@
 .psl__cell-thumb {
   aspect-ratio: 16/10;
   position: relative;
+  /* Shared corner-chrome values — see the ring-states block above. */
+  --psl-chip-bg: color-mix(in srgb, var(--bg-app) 85%, transparent);
+  --psl-chip-radius: 5px;
 }
 /* Transparency checker behind the thumbnail for captures whose source PNG
    has alpha (`Capture.hasAlpha`). Gated, not blanket: a blanket checker
@@ -1664,13 +1701,19 @@
    content honest (a tiny menu-bar region capture should look small,
    not zoomed-and-cropped to fill the cell). */
 .psl__cell-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* Time badge — shares `--psl-chip-bg` / `--psl-chip-radius` / 10px mono
+   with the duration chip and the action pills (see the ring-states
+   block). z-index 2 keeps it above the corner scrims, which paint at
+   z-index 1 inside the cart / rail stacking contexts. */
 .psl__cell-time {
   position: absolute; top: 5px; right: 5px;
-  font: 600 9px/1 var(--font-mono);
-  background: color-mix(in srgb, var(--bg-app) 85%, transparent);
+  z-index: 2;
+  font: 600 10px/1 var(--font-mono);
+  background: var(--psl-chip-bg);
   color: var(--text-secondary);
-  padding: 2px 4px;
-  border-radius: 3px;
+  padding: 3px 5px;
+  border-radius: var(--psl-chip-radius);
+  backdrop-filter: blur(6px);
 }
 /* App-source chip overlay — mirrors .psl__cell-time but bottom-left,
    so each cell shows app + time as two corner pills over the thumb
@@ -1681,7 +1724,13 @@
    time pill in the opposite corner. */
 .psl__cell-app-overlay {
   position: absolute; bottom: 5px; left: 5px;
+  /* Above the bottom-right rail scrim — on a narrow tile the two can
+     overlap, and the pill's opaque fill must not get tinted. */
+  z-index: 2;
 }
+/* 10px mono to match the time badge / duration chip. The app pill keeps
+   its accent outline: it's the ONE emphasized corner. */
+.psl__cell-app-overlay > .ps-app-tag.is-sm { font-size: 10px; }
 /* The chip has no onClick — pass clicks through to the cell underneath
    so the rounded corners aren't dead zones for selection. */
 .psl__cell-app-overlay > .ps-app-tag { pointer-events: none; }
@@ -1715,58 +1764,97 @@
 .psl__cell-play svg { margin-left: 2px; }
 
 /* Bottom-right rail — a flex cluster pinned to the cell's corner. The
-   video duration chip (when present) is the left item and stays visible
-   at rest; the hover-revealed action buttons collapse to zero width when
-   idle and expand on hover. Right-anchored with no width means the
-   cluster grows LEFTWARD, so a button slides in beside the duration and
-   pushes it left rather than landing on top of it. pointer-events:none
-   lets clicks on the chip / empty rail fall through to the cell for
-   selection; the buttons re-enable their own. */
+   video duration chip (when present) is the LAST item, so it owns the
+   corner and NEVER moves; the action buttons sit to its left and
+   reserve their width at rest (they're invisible + pointer-transparent
+   until the tile is hovered/focused). Reserving the width is the point:
+   the old `max-width: 0 → 22px` tween animated layout, which slid the
+   duration chip sideways every time a button appeared.
+   pointer-events:none lets clicks on the chip / empty rail fall through
+   to the cell for selection; the buttons re-enable their own on reveal.
+   z-index 1 puts the rail (and its scrim, see ::before) above the
+   thumbnail image. */
 .psl__cell-rail {
   position: absolute; bottom: 5px; right: 5px;
-  display: flex; align-items: center;
+  z-index: 1;
+  display: flex; align-items: center; gap: 4px;
   pointer-events: none;
+}
+/* Bottom-right corner scrim. The action pills are translucent and sit
+   over an arbitrary thumbnail — on a white screenshot they'd be a pale
+   chip on white. The scrim is theme-STABLE (derived from
+   `--shadow-base`, not `--bg-app`, which flips to white in light
+   theme), so the pills read on any capture in either theme. It rides
+   the rail's own opacity so it can never linger without them. */
+.psl__cell-rail::before {
+  content: "";
+  position: absolute;
+  right: -5px; bottom: -5px;
+  width: 108px; height: 52px;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    farthest-corner at 100% 100%,
+    color-mix(in srgb, var(--shadow-base) 62%, transparent) 0%,
+    color-mix(in srgb, var(--shadow-base) 34%, transparent) 55%,
+    transparent 100%
+  );
+  transition: opacity 120ms var(--ease-out);
+}
+.psl__cell:hover .psl__cell-rail::before,
+.psl__cell-rail:focus-within::before {
+  opacity: 1;
 }
 /* Duration chip — mirrors the .psl__cell-time pill in the opposite
    corner so the two read as a matched set. */
 .psl__cell-duration {
-  font: 600 9px/1 var(--font-mono);
-  background: color-mix(in srgb, var(--bg-app) 85%, transparent);
+  font: 600 10px/1 var(--font-mono);
+  background: var(--psl-chip-bg);
   color: var(--text-secondary);
-  padding: 2px 4px;
-  border-radius: 3px;
+  padding: 3px 5px;
+  border-radius: var(--psl-chip-radius);
   white-space: nowrap;
   pointer-events: none;
+  backdrop-filter: blur(6px);
 }
-/* Hover-only action affordance inside the rail (trash / restore / purge
-   / duplicate). Hidden + zero-width by default; expands on cell hover so
-   it slides in from the right edge. stopPropagation in the click handler
-   prevents the parent cell's onClick from also firing (which would open
-   Focus on a record about to disappear). */
+/* Hover-revealed action affordance inside the rail (edit / trash /
+   restore / purge / duplicate). 28×28 target with a 16px glyph — the
+   old 22/12 was under the 24px minimum and read as decoration. Revealed
+   with opacity + a 2px translate only (100–130ms); the box never
+   changes size, so nothing else in the rail moves. stopPropagation in
+   the click handler prevents the parent cell's onClick from also firing
+   (which would open Focus on a record about to disappear). */
 .psl__cell-trash {
   flex: 0 0 auto;
   display: flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px;
-  max-width: 0;
-  margin-left: 0;
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--bg-app) 78%, transparent);
+  width: 28px; height: 28px;
+  border-radius: var(--psl-chip-radius);
+  background: var(--psl-chip-bg);
   border: 1px solid transparent;
   color: var(--text-secondary);
   cursor: pointer;
   opacity: 0;
-  overflow: hidden;
-  pointer-events: auto;
-  transition: max-width 130ms var(--ease-out), margin-left 130ms var(--ease-out),
-    opacity 100ms var(--ease-out), background 100ms var(--ease-out),
-    color 100ms var(--ease-out), border-color 100ms var(--ease-out);
+  transform: translateX(2px);
+  /* Invisible AND untouchable at rest — the button still occupies its
+     28px of rail so the duration chip stays put, but it must not eat
+     clicks meant for the tile. */
+  pointer-events: none;
+  backdrop-filter: blur(6px);
+  transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out),
+    background 100ms var(--ease-out), color 100ms var(--ease-out),
+    border-color 100ms var(--ease-out);
 }
+.psl__cell-trash > svg { width: 16px; height: 16px; }
 .psl__cell:hover .psl__cell-trash,
 .psl__cell-trash:focus-visible {
-  max-width: 22px;
-  margin-left: 4px;
   border-color: var(--border-subtle);
   opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  .psl__cell-trash { transform: none; }
 }
 .psl__cell-trash:hover {
   background: var(--danger-soft);
@@ -1832,30 +1920,58 @@
 }
 
 /* === Project Asset Cart — per-cell checkbox === */
-/* Top-LEFT of the cell so it never overlaps the bottom-right trash
-   affordance. Hover-revealed like the trash button, but ALSO stays
-   visible when checked (`.psl__cell.is-in-cart`) so the user can scan
-   what they've already collected at a glance. */
+/* Top-LEFT of the cell so it never overlaps the bottom-right action
+   rail. 24px box with a 2px stroke: HOLLOW white-on-scrim when
+   unchecked, filled accent when checked.
+   Why white-on-scrim and not the usual panel chrome: the box sits on an
+   arbitrary thumbnail, and most captures are screenshots of light UI. A
+   `--bg-app`-tinted box is a pale outline on white in light theme and a
+   dark outline on white in dark theme — either way invisible, which is
+   exactly the "undiscoverable checkbox" this replaces. The stroke is
+   `--media-scrim-text` (white in BOTH themes) over a theme-stable
+   `--shadow-base` scrim, same trick `.psl__cell-play` already uses.
+   Hover-revealed, but ALSO visible at rest when checked or when the
+   grid is in selection mode (`.psl[data-selecting="cart"]`, below). */
 .psl__cell-cart {
-  position: absolute; top: 5px; left: 5px;
+  position: absolute; top: 6px; left: 6px;
+  z-index: 1;
   display: flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--bg-app) 78%, transparent);
-  border: 1px solid var(--border-subtle);
-  color: var(--accent-bright, var(--accent));
+  width: 24px; height: 24px;
+  border-radius: var(--psl-chip-radius);
+  background: color-mix(in srgb, var(--shadow-base) 38%, transparent);
+  border: 2px solid var(--media-scrim-text);
+  color: var(--media-scrim-text);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 100ms var(--ease-out), background 100ms var(--ease-out),
-    border-color 100ms var(--ease-out);
+  transition: opacity 120ms var(--ease-out), background 100ms var(--ease-out),
+    border-color 100ms var(--ease-out), color 100ms var(--ease-out);
+}
+/* Top-left corner scrim, painted UNDER the box (z-index -1 inside the
+   box's own stacking context) so it can't be separated from it. This is
+   what buys the unchecked stroke its contrast on a pure-white capture:
+   at the box's inset the scrim is ~72% black, so white-on-scrim clears
+   3:1 even when the underlying thumbnail is #fff. */
+.psl__cell-cart::before {
+  content: "";
+  position: absolute;
+  top: -6px; left: -6px;
+  width: 52px; height: 52px;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(
+    farthest-corner at 0% 0%,
+    color-mix(in srgb, var(--shadow-base) 72%, transparent) 0%,
+    color-mix(in srgb, var(--shadow-base) 40%, transparent) 55%,
+    transparent 100%
+  );
 }
 .psl__cell:hover .psl__cell-cart,
 .psl__cell-cart:focus-visible {
   opacity: 1;
 }
 .psl__cell-cart:hover {
-  background: var(--accent-soft);
-  border-color: var(--accent-border);
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  border-color: var(--accent-bright, var(--accent));
 }
 /* Checked state: filled accent, always visible (overrides the
    hover-only opacity above). */
@@ -1865,6 +1981,20 @@
   border-color: var(--accent);
   color: var(--button-text-on-accent);
 }
+.psl__cell-cart.is-checked:hover {
+  background: var(--accent-bright, var(--accent));
+  border-color: var(--accent-bright, var(--accent));
+}
+/* SELECTION MODE — once ANY tile is checked, every tile's box is
+   visible at rest so the grid reads as "pick more of these" instead of
+   hiding the affordance behind a hover the user has no reason to try
+   (Photos / Drive do the same). Driven by a `data-selecting` attribute
+   on `.psl` fed by the cart's empty↔non-empty EDGE (a primitive context
+   value), NOT by a `:has()` scan of the whole virtualized grid and not
+   by re-rendering the cells: Library re-renders once when the cart goes
+   from empty to non-empty, and the class change restyles every tile. */
+.psl[data-selecting="cart"] .psl__cell-cart { opacity: 0.9; }
+.psl[data-selecting="cart"] .psl__cell:hover .psl__cell-cart { opacity: 1; }
 /* A subtle accent ring on the whole cell when it's in the cart, so
    collected items read as a set even when the checkbox is small.
    Driven by `:has()` rather than a React class so a cart toggle

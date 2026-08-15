@@ -11,6 +11,13 @@ on:
         description: "Tag to build (e.g. v0.0.1-alpha.1). Must already exist on the repo."
         required: true
         type: string
+  pull_request:
+    # `labeled` starts the opt-in signing check. `synchronize` and `reopened`
+    # keep it current while ci:windows-signing remains on the PR.
+    types:
+      - labeled
+      - synchronize
+      - reopened
 
 permissions:
   contents: read
@@ -19,6 +26,7 @@ permissions:
 jobs:
   prepare:
     name: Test and prepare signing input
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: macos-15 # Apple Silicon GH-hosted runner; matches signing identity
     timeout-minutes: 45
     permissions:
@@ -291,7 +299,20 @@ jobs:
   windows-prepare:
     name: Prepare Windows signing input
     runs-on: windows-2022
-    needs: prepare
+    if: >-
+      ${{
+        github.event_name != 'pull_request'
+        || (
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+            (github.event.action == 'labeled' && github.event.label.name == 'ci:windows-signing')
+            || (
+              github.event.action != 'labeled'
+              && contains(github.event.pull_request.labels.*.name, 'ci:windows-signing')
+            )
+          )
+        )
+      }}
     timeout-minutes: 45
     outputs:
       signing-input-sha256: ${{ steps.archive.outputs.sha256 }}
@@ -312,6 +333,7 @@ jobs:
           cache-electron: "true"
 
       - name: Check release metadata
+        if: ${{ github.event_name != 'pull_request' }}
         env:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: pnpm release:check
@@ -343,9 +365,23 @@ jobs:
     name: Sign and package Windows installer
     # Only this job can access the Azure service-principal credentials. It does
     # not check out source or install project dependencies/lifecycle scripts.
+    needs: windows-prepare
+    if: >-
+      ${{
+        github.event_name != 'pull_request'
+        || (
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+            (github.event.action == 'labeled' && github.event.label.name == 'ci:windows-signing')
+            || (
+              github.event.action != 'labeled'
+              && contains(github.event.pull_request.labels.*.name, 'ci:windows-signing')
+            )
+          )
+        )
+      }}
     environment: windows-signing
     runs-on: windows-2022
-    needs: windows-prepare
     timeout-minutes: 45
     permissions:
       contents: read
@@ -491,10 +527,31 @@ jobs:
           node apps/desktop/scripts/package-win.mjs
           --sign-stage-only --release --require-signing
 
+      - name: Verify Authenticode signatures
+        shell: pwsh
+        env:
+          EXPECTED_PUBLISHER: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}
+        run: |
+          $dist = "apps/desktop/release-stage/dist"
+          $installer = Get-ChildItem $dist -File -Filter "*-setup.exe" | Select-Object -First 1
+          $app = Get-ChildItem $dist -Recurse -File -Filter "PwrSnap.exe" | Select-Object -First 1
+          foreach ($target in @($installer, $app)) {
+            if ($null -eq $target) {
+              throw "Expected signed Windows executable is missing."
+            }
+            $signature = Get-AuthenticodeSignature $target.FullName
+            if ($signature.Status -ne "Valid") {
+              throw "Authenticode signature is not valid for $($target.FullName): $($signature.Status)"
+            }
+            if ($signature.SignerCertificate.Subject -notlike "*CN=$env:EXPECTED_PUBLISHER*") {
+              throw "Unexpected Authenticode signer for $($target.FullName): $($signature.SignerCertificate.Subject)"
+            }
+          }
+
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: windows-installer
+          name: ${{ github.event_name == 'pull_request' && 'windows-signed-installer-pr' || 'windows-installer' }}
           path: |
             apps/desktop/release-stage/dist/*-setup.exe
             apps/desktop/release-stage/dist/*-setup.exe.blockmap
@@ -504,6 +561,9 @@ jobs:
 
   publish-release-assets:
     name: Create release and publish platform assets
+    # PR signing smoke runs stop at the signed workflow artifact. Only tag or
+    # explicit release dispatch events may create a GitHub Release.
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04
     needs:
       - linux-build

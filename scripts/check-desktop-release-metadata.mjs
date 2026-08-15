@@ -9,10 +9,6 @@ const desktopPackagePath = resolve(repoRoot, "apps/desktop/package.json");
 const electronBuilderPath = resolve(repoRoot, "apps/desktop/electron-builder.yml");
 const ciWorkflowPath = resolve(repoRoot, ".github/workflows/ci.yml");
 const releaseWorkflowPath = resolve(repoRoot, ".github/workflows/release.yml");
-const windowsSigningSmokeWorkflowPath = resolve(
-  repoRoot,
-  ".github/workflows/windows-signing-smoke.yml",
-);
 const workflowsReadmePath = resolve(repoRoot, ".github/workflows/README.md");
 const windowsPackageScriptPath = resolve(repoRoot, "apps/desktop/scripts/package-win.mjs");
 const windowsArchiveScriptPath = resolve(
@@ -123,7 +119,6 @@ if (!ciWorkflow.includes("releases/**")) {
 }
 
 const releaseWorkflow = readFileSync(releaseWorkflowPath, "utf8");
-const windowsSigningSmokeWorkflow = readFileSync(windowsSigningSmokeWorkflowPath, "utf8");
 const workflowsReadme = readFileSync(workflowsReadmePath, "utf8");
 const windowsPackageScript = readFileSync(windowsPackageScriptPath, "utf8");
 const windowsArchiveScript = readFileSync(windowsArchiveScriptPath, "utf8");
@@ -147,45 +142,6 @@ if (!workflowsReadme.includes("ci:windows-signing")) {
 }
 
 for (const expected of [
-  "ci:windows-signing",
-  "github.event.pull_request.head.repo.full_name == github.repository",
-  "windows-signing-preflight:",
-  "windows-signing-prepare:",
-  "windows-signing:",
-  "environment: windows-signing",
-  "windows-signing-smoke-input",
-  "scripts/release/install-trusted-signing.ps1",
-  "--sign-stage-only --release --require-signing",
-  "Get-AuthenticodeSignature",
-  "windows-signed-installer-pr",
-]) {
-  if (!windowsSigningSmokeWorkflow.includes(expected)) {
-    fail(
-      `.github/workflows/windows-signing-smoke.yml must contain ${JSON.stringify(expected)}`,
-    );
-  }
-}
-for (const unexpected of ["pull_request_target", "gh release create", "--publish"]) {
-  if (windowsSigningSmokeWorkflow.includes(unexpected)) {
-    fail(
-      `.github/workflows/windows-signing-smoke.yml must not contain ${JSON.stringify(unexpected)}`,
-    );
-  }
-}
-const protectedSmokeJob = windowsSigningSmokeWorkflow.split("\n  windows-signing:\n")[1];
-if (!protectedSmokeJob) {
-  fail(".github/workflows/windows-signing-smoke.yml protected job is missing");
-} else {
-  for (const unexpected of ["actions/checkout", "pnpm install", "npm install"]) {
-    if (protectedSmokeJob.includes(unexpected)) {
-      fail(
-        `.github/workflows/windows-signing-smoke.yml protected job must not contain ${JSON.stringify(unexpected)}`,
-      );
-    }
-  }
-}
-
-for (const expected of [
   "  linux-build:",
   "  windows-prepare:",
   "  windows-sign:",
@@ -206,9 +162,32 @@ for (const expected of [
   "- windows-sign",
   "gh release create",
   "--verify-tag",
+  "pull_request:",
+  "ci:windows-signing",
+  "github.event.pull_request.head.repo.full_name == github.repository",
+  "Get-AuthenticodeSignature",
+  "windows-signed-installer-pr",
+  "if: ${{ github.event_name != 'pull_request' }}",
 ]) {
   if (!releaseWorkflow.includes(expected)) {
     fail(`.github/workflows/release.yml must contain ${JSON.stringify(expected)}`);
+  }
+}
+if (releaseWorkflow.includes("pull_request_target")) {
+  fail('.github/workflows/release.yml must not contain "pull_request_target"');
+}
+const protectedWindowsJob = releaseWorkflow
+  .split("\n  windows-sign:\n")[1]
+  ?.split("\n  publish-release-assets:\n")[0];
+if (!protectedWindowsJob) {
+  fail(".github/workflows/release.yml protected Windows job is missing");
+} else {
+  for (const unexpected of ["actions/checkout", "pnpm install", "npm install"]) {
+    if (protectedWindowsJob.includes(unexpected)) {
+      fail(
+        `.github/workflows/release.yml protected Windows job must not contain ${JSON.stringify(unexpected)}`,
+      );
+    }
   }
 }
 for (const unexpected of [

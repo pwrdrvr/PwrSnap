@@ -4,11 +4,10 @@
 >
 > Origin: [docs/plans/2026-05-04-002-feat-release-infrastructure-dmg-signing-plan.md](plans/2026-05-04-002-feat-release-infrastructure-dmg-signing-plan.md)
 
-This runbook covers cutting v0.x and v1.x desktop releases. macOS releases
-ship as universal Apple Silicon + Intel binaries; distribution is outside
-the Mac App Store via signed/notarized DMG with auto-update through
-`electron-updater` against the `pwrdrvr/PwrSnap` repo. Cross-
-platform (Windows / Linux) is deferred to Phase 8.
+This runbook covers cutting v0.x and v1.x desktop releases. macOS ships as a
+universal Apple Silicon + Intel build outside the Mac App Store; Windows ships
+as an Azure Artifact Signed x64 NSIS installer. Linux distribution remains
+Phase 8b, but a native Linux desktop build is a required release gate.
 
 All CI-published GitHub Releases are created as **Pre-release** entries by
 default, even when the version string has no prerelease suffix. Promotion to
@@ -65,10 +64,6 @@ release infrastructure plan.
      `pwrdrvr/pwrsnap-ffmpeg-builds` with read-only Actions and Contents
      permissions. The signing job uses the one-hour installation token only
      to download the pinned `ffmpeg-8.1.1-macos-universal` artifact.
-   - Optional publish secret, also environment-scoped if used:
-     `RELEASES_PAT` — fine-grained PAT scoped to `Contents: Read & Write` on
-     `pwrdrvr/PwrSnap`. The workflow falls back to `GITHUB_TOKEN` if absent.
-
    To migrate the existing repo-level secrets into the environment, run
    from your workstation (the `--env apple-signing` flag is what scopes the
    secret to the environment):
@@ -97,9 +92,24 @@ release infrastructure plan.
    done
    ```
 
-5. **GitHub repository secrets**.
+5. **GitHub `windows-signing` Environment**.
+   - Mirror PwrAgent's protected environment and Azure Artifact Signing values.
+   - Variables: `WIN_AZURE_SIGN_PUBLISHER_NAME`,
+     `WIN_AZURE_SIGN_ENDPOINT`, `WIN_AZURE_SIGN_ACCOUNT`,
+     `WIN_AZURE_SIGN_PROFILE`, and `FFMPEG_BUILDS_APP_CLIENT_ID`.
+   - Secrets: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
+     `AZURE_CLIENT_SECRET`, and `FFMPEG_BUILDS_APP_PRIVATE_KEY`.
+   - Do not add Azure credentials at repository scope. The protected job is the
+     only job that receives them, and it performs no checkout or dependency
+     installation. Full setup and failure behavior are in
+     [desktop-windows-signing.md](desktop-windows-signing.md).
+6. **GitHub repository secrets**.
    - Do **not** keep Apple signing/notarization material as repository secrets
      after the `apple-signing` environment secrets are configured.
+   - Optional `RELEASES_PAT` belongs at repository scope because the final
+     publication job is intentionally outside both signing environments. It
+     must be fine-grained to `Contents: Read & Write` on `pwrdrvr/PwrSnap`.
+     The workflow falls back to `GITHUB_TOKEN` when it is absent.
    - Non-release CI secrets (e.g. live smoke-test service keys) may remain at
      the repo level if their workflows require them.
 
@@ -146,107 +156,45 @@ pnpm --filter @pwrsnap/desktop version 0.0.1-alpha.1
 git push --follow-tags
 ```
 
-The `Release Desktop (macOS universal)` workflow on `macos-15` runs as two
-separate jobs so Apple signing/notarization secrets are never present on a
-runner that executes untrusted dependency or build code:
+The release workflow separates preparation, signing, and publication:
 
-1. **`Test and prepare signing input`** — `contents: read`, explicit
-   `id-token: none`, checkout with `persist-credentials: false`, no Apple
-   secrets. Installs dependencies, runs `release:check` (tag/version/
-   changelog gate) → `typecheck` → `test` →
-   `PWRSNAP_SKIP_FFMPEG_BUILD=1 apps/desktop/scripts/release.mjs --prepare-only`.
-   Archives the prepared stage plus the already-resolved `electron-builder`
-   toolchain into the `desktop-release-signing-input` workflow artifact and
-   emits its SHA-256 as a job output.
-2. **`Sign, notarize, publish`** — gated by the protected `apple-signing`
-   environment, with `contents: write` and explicit `id-token: none`. Does
-   not check out the repository or run `pnpm install` / postinstall
-   lifecycle scripts. Downloads the prepared artifact, verifies the
-   SHA-256 against the prepare-job output, expands it, and runs
-   `apps/desktop/scripts/release.mjs --sign-stage-only` with the
-   environment-scoped Apple secrets. Before packaging, it mints a scoped
-   FFmpeg build-repo installation token, downloads the pinned
-   `ffmpeg-8.1.1-macos-universal` artifact, verifies `manifest.json` and the
-   binary SHA-256, then stages the binary and LGPL source evidence under
-   `apps/desktop/release-stage/build/`.
+1. **`prepare`** installs dependencies without signing secrets, checks release
+   metadata, typechecks, tests, and creates the macOS signing input artifact.
+2. **`sign`** runs inside `apple-signing`, verifies the prepared input, injects
+   the pinned macOS FFmpeg artifact, signs/notarizes/packages with
+   `--sign-stage-only --no-publish`, and uploads the macOS payload. It does not
+   check out source or install dependencies.
+3. **`linux-build`** checks out the tag on Ubuntu and runs the desktop build.
+   Linux packages are not shipped yet, but a Linux regression blocks release
+   creation.
+4. **`windows-prepare`** builds a hoisted, self-contained Windows stage without
+   signing credentials. It archives the stage and records its SHA-256.
+5. **`windows-sign`** runs inside `windows-signing`, verifies the archive,
+   injects the pinned Windows FFmpeg artifact, installs `TrustedSigning`, and
+   packages via `--sign-stage-only --release --require-signing`. It does not
+   check out source or install dependencies. See
+   [desktop-windows-signing.md](desktop-windows-signing.md).
+6. **`publish-release-assets`** depends on successful Linux, macOS, and Windows
+   jobs. Only this job creates the GitHub Pre-release, with changelog notes,
+   macOS DMG/ZIP/updater metadata, the stable `PwrSnap.dmg` alias, the signed
+   Windows installer/updater metadata, and checksums.
 
-The Windows release job is gated by the protected `windows-signing`
-environment. By default it requires `WIN_CSC_LINK` and
-`WIN_CSC_KEY_PASSWORD`, then runs `package-win.mjs --publish` so
-electron-builder publishes the signed NSIS installer and updater metadata. If
-the signing certificate is not ready, set the `windows-signing` environment
-variable `WINDOWS_UNSIGNED_RELEASE=true`. That temporary mode still verifies
-the controlled Windows FFmpeg artifact, runs `package-win.mjs
---unsigned-release`, and uploads only a manually named
-`*-unsigned-setup.exe` asset. It intentionally does not upload `latest.yml`, so
-unsigned builds are not offered through the Windows updater feed.
+No signing job publishes directly. A macOS or Windows signing failure, an
+unapproved environment, or a Linux build failure leaves no partial GitHub
+Release behind.
 
-The no-secret prepare job:
+For a non-publishing Windows signing smoke check, apply `ci:windows-signing` to
+a same-repository PR after reviewing its head SHA. Temporarily allow that exact
+PR merge ref (`refs/pull/<number>/merge`) in the `windows-signing` environment,
+approve the protected job, and remove the rule after the
+`windows-signed-installer-pr` artifact passes Authenticode and launch
+validation. This is the same `release.yml` Windows prepare/sign path used by
+tags; `publish-release-assets` is disabled for PR events, so it never creates a
+tag or GitHub Release.
 
-1. Runs `pnpm licenses:check` so stale `THIRD_PARTY_LICENSES` or package
-   license-policy drift stops the release before packaging.
-2. Builds the Swift native helpers (`PwrSnapWindowList`) as a universal
-   binary.
-3. Skips the local FFmpeg compile; the protected signing job injects the
-   controlled artifact.
-4. Builds main/preload/renderer with electron-vite.
-5. Runs `pnpm deploy --prod` to materialize a flat `node_modules` tree under
-   `apps/desktop/release-stage/`.
-6. Rebuilds the staged `better-sqlite3` for the packaged Electron ABI
-   (universal) under `electron-native/`.
-7. Seeds the stage with `out/` + `build/` + `electron-builder.yml` +
-   `.npmrc` + `THIRD_PARTY_LICENSES` + `CHANGELOG.md`.
-8. Archives `apps/desktop/release-stage/` plus the resolved
-   `apps/desktop/node_modules` (electron-builder + electron-vite),
-   `apps/desktop/electron-builder.yml`,
-   `apps/desktop/scripts/{release,verify-asar-contents,rebuild-native-for-electron}.mjs`,
-   the root `node_modules`, and the workspace lockfile/config, then uploads
-   them with a SHA-256 digest.
-
-The environment-gated signing job:
-
-1. Verifies the prepared-artifact SHA-256 against the prepare-job output
-   before extracting it.
-2. Decodes `APPLE_API_KEY_BASE64` and `CSC_LINK` (if base64) into temp
-   files (mode 0600) and re-exports `APPLE_API_KEY` / `CSC_LINK` as paths.
-3. Runs `electron-builder --mac --universal --publish always` from the
-   downloaded artifact, by invoking the staged
-   `node_modules/electron-builder/cli.js` directly through `node`. No
-   `pnpm install`, no `npx`, no dependency lifecycle scripts.
-   `electron-builder` signs every helper bundle individually, signs the
-   main `.app`, submits to Apple's notarization service via `notarytool`,
-   staples the ticket, builds the universal DMG + updater ZIP, generates
-   `latest-mac.yml`, and uploads everything to a GitHub Release on
-   `pwrdrvr/PwrSnap`.
-4. Runs `lipo -verify_arch x86_64 arm64` against the main executable, the
-   bundled Swift `PwrSnapWindowList` helper, and the `better_sqlite3.node`
-   native addon. A single-arch slice slipping through means Intel users
-   would launch into an immediate SIGKILL.
-5. Runs `verify-asar-contents.mjs` against the packaged `.app` — fails the
-   release if forbidden patterns (TS sources, tests, docs, env files,
-   workspace `src/` leaks, screenshots) leaked into `app.asar`, or if
-   `THIRD_PARTY_LICENSES` / `CHANGELOG.md` are missing from
-   `Contents/Resources`.
-6. Copies the versioned DMG to `PwrSnap.dmg` and uploads it to the release
-   as a stable-name alias. After a later explicit promotion to Latest,
-   marketing + docs sites can link to this URL:
-
-   ```text
-   https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg
-   ```
-7. Publishes the matching `CHANGELOG.md` section into the GitHub Release body
-   with `gh release edit --notes-file`, then reads the release back and fails
-   the workflow if the body is still empty. This replaces electron-builder's
-   generated/default notes after all assets are present.
-8. Reads the release back and fails if GitHub reports `isPrerelease=false`.
-   This catches any regression where electron-builder would create the release
-   as Latest before validation.
-
-Do not approve the `apple-signing` environment unless the tag, commit, and
-release metadata are the intended release. Approving the wrong run still
-exposes the Apple secrets to signing-job code.
-
-Cycle time target: ≤ 12 minutes.
+Do not approve either signing environment unless the tag, commit, and release
+metadata are intended. Approval exposes that environment's credentials to its
+bounded packaging step.
 
 ---
 

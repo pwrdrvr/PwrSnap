@@ -29,6 +29,15 @@ function fakeApp() {
   return { appPath, resources };
 }
 
+function fakeWindowsApp() {
+  const root = mkdtempSync(join(tmpdir(), "pwrsnap-win-app-"));
+  const appPath = join(root, "win-unpacked");
+  const resources = join(appPath, "resources");
+  mkdirSync(resources, { recursive: true });
+  tempRoots.push(root);
+  return { appPath, resources };
+}
+
 function writeResource(resources, name) {
   writeFileSync(join(resources, name), `${name}\n`);
 }
@@ -107,6 +116,42 @@ describe("verify-asar-contents", () => {
     expect(() => verifyPackagedResources(appPath)).toThrow(
       /missing packaged resource\(s\): CHANGELOG\.md/,
     );
+  });
+
+  test("verifies Windows resources and native runtime sidecars", () => {
+    const { appPath, resources } = fakeWindowsApp();
+    for (const name of ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "PwrSnapWindowList.exe"]) {
+      writeResource(resources, name);
+    }
+    writeUnpackedNativeFixtures(resources, [
+      "app.asar.unpacked/node_modules/@img/sharp-win32-x64/lib/sharp-win32-x64.node",
+      "app.asar.unpacked/node_modules/better-sqlite3/electron-native/better_sqlite3.node"
+    ]);
+
+    expect(findMissingPackagedResources(appPath, "win32")).toEqual([]);
+    expect(findMissingUnpackedNative(appPath, "win32")).toEqual([]);
+    expect(() => verifyPackagedResources(appPath, "win32")).not.toThrow();
+    expect(() => verifyUnpackedNative(appPath, "win32")).not.toThrow();
+  });
+
+  test("requires the bundled Windows FFmpeg resource for release verification", () => {
+    const { appPath, resources } = fakeWindowsApp();
+    for (const name of ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "PwrSnapWindowList.exe"]) {
+      writeResource(resources, name);
+    }
+    const previous = process.env.PWRSNAP_REQUIRE_FFMPEG;
+    process.env.PWRSNAP_REQUIRE_FFMPEG = "1";
+    try {
+      expect(findMissingPackagedResources(appPath, "win32")).toContain("PwrSnapFFmpeg.exe");
+      writeResource(resources, "PwrSnapFFmpeg.exe");
+      expect(findMissingPackagedResources(appPath, "win32")).toEqual([]);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PWRSNAP_REQUIRE_FFMPEG;
+      } else {
+        process.env.PWRSNAP_REQUIRE_FFMPEG = previous;
+      }
+    }
   });
 
   test("passes unpacked-native verification when every platform binary is present", () => {

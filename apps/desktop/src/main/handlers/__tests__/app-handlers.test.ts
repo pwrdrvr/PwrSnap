@@ -1,8 +1,17 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   showAppDocumentWindow: vi.fn(),
-  openExternal: vi.fn(async () => undefined)
+  openExternal: vi.fn(async () => undefined),
+  resolveDevelopmentRuntimeIdentity: vi.fn((options: {
+    isPackaged: boolean;
+    nodeEnv: string | undefined;
+  }) => options.isPackaged || options.nodeEnv === "production"
+    ? undefined
+    : {
+        branch: "agent/show-dev-git-branch",
+        cwd: "/repo/PwrSnap"
+      })
 }));
 
 vi.mock("../../window", () => ({
@@ -12,17 +21,26 @@ vi.mock("../../window", () => ({
 vi.mock("electron", (): Partial<typeof import("electron")> => ({
   app: {
     getVersion: () => "1.0.0-test",
-    getAppPath: () => process.cwd()
+    getAppPath: () => process.cwd(),
+    isPackaged: false
   } as unknown as typeof import("electron").app,
   shell: {
     openExternal: mocks.openExternal
   } as unknown as typeof import("electron").shell
 }));
 
+vi.mock("../../runtime-identity", () => ({
+  resolveDevelopmentRuntimeIdentity: mocks.resolveDevelopmentRuntimeIdentity
+}));
+
 import { bus } from "../../command-bus";
 import { registerAppHandlers } from "../app-handlers";
 
 registerAppHandlers();
+
+beforeEach(() => {
+  mocks.resolveDevelopmentRuntimeIdentity.mockClear();
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -36,6 +54,28 @@ describe("app:* handlers", () => {
     if (!result.ok) throw new Error("expected ok");
     expect(result.value.version).toBe("1.0.0-test");
     expect(result.value.nodeVersion).toBe(process.versions.node);
+    expect(result.value.runtimeIdentity).toEqual({
+      branch: "agent/show-dev-git-branch",
+      cwd: "/repo/PwrSnap"
+    });
+    expect(mocks.resolveDevelopmentRuntimeIdentity).toHaveBeenCalledWith({
+      isPackaged: false,
+      nodeEnv: process.env.NODE_ENV
+    });
+  });
+
+  test("app:version omits runtime identity from production builds", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+
+    const result = await bus.dispatch("app:version", {}, { principal: "ipc" });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.runtimeIdentity).toBeUndefined();
+    expect(mocks.resolveDevelopmentRuntimeIdentity).toHaveBeenCalledWith({
+      isPackaged: false,
+      nodeEnv: "production"
+    });
   });
 
   test("app:version uses a fixed version when the E2E harness requests one", async () => {

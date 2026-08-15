@@ -230,11 +230,16 @@ Clear the override when testing a bundled installer:
 For a real signed Windows release, configure the protected GitHub
 `windows-signing` environment with:
 
-- `WIN_CSC_LINK`
-- `WIN_CSC_KEY_PASSWORD`
-- `FFMPEG_BUILDS_APP_CLIENT_ID`
-- `FFMPEG_BUILDS_APP_PRIVATE_KEY`
-- optional `RELEASES_PAT`
+- Variables: `WIN_AZURE_SIGN_PUBLISHER_NAME`, `WIN_AZURE_SIGN_ENDPOINT`,
+  `WIN_AZURE_SIGN_ACCOUNT`, `WIN_AZURE_SIGN_PROFILE`, and
+  `FFMPEG_BUILDS_APP_CLIENT_ID`.
+- Secrets: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, and
+  `FFMPEG_BUILDS_APP_PRIVATE_KEY`.
+
+The Azure service principal needs the `Artifact Signing Certificate Profile
+Signer` role on the signing account. See
+[Windows Code Signing](../desktop-windows-signing.md) for the environment,
+protection-rule, and signed PR smoke-check details.
 
 The FFmpeg GitHub App must be installed on the private
 `pwrdrvr/pwrsnap-ffmpeg-builds` repository with read-only Actions and
@@ -248,29 +253,25 @@ The release workflow downloads the pinned
 binary SHA-256 from that manifest, and then stages `ffmpeg.exe` as
 `PwrSnapFFmpeg.exe`.
 
-Local release-mode packaging requires Authenticode credentials and a vetted
-FFmpeg path:
+Local release-mode packaging requires the Azure Artifact Signing configuration,
+service-principal credentials, and a vetted FFmpeg path:
 
 ```powershell
-$env:WIN_CSC_LINK = "C:\secure\cert.p12"
-$env:WIN_CSC_KEY_PASSWORD = "<password>"
+$env:WIN_AZURE_SIGN_PUBLISHER_NAME = "PwrDrvr LLC"
+$env:WIN_AZURE_SIGN_ENDPOINT = "https://eus.codesigning.azure.net/"
+$env:WIN_AZURE_SIGN_ACCOUNT = "pwrdrvrsigning"
+$env:WIN_AZURE_SIGN_PROFILE = "<profile-name>"
+$env:AZURE_TENANT_ID = "<tenant-id>"
+$env:AZURE_CLIENT_ID = "<client-id>"
+$env:AZURE_CLIENT_SECRET = "<client-secret>"
 $env:PWRSNAP_WINDOWS_FFMPEG_PATH = "C:\secure\ffmpeg.exe"
 
 corepack pnpm --filter @pwrsnap/desktop package:win:release
 ```
 
-Until the Authenticode certificate is ready, the tagged release workflow can
-publish a manual-test unsigned installer. Set the `windows-signing`
-environment variable `WINDOWS_UNSIGNED_RELEASE=true`. In that mode the job
-still downloads and verifies the controlled Windows FFmpeg artifact, then runs:
-
-```powershell
-corepack pnpm --filter @pwrsnap/desktop package:win -- --unsigned-release
-```
-
-The workflow uploads only a clearly named `*-unsigned-setup.exe` asset. It
-does not publish `latest.yml`, so the unsigned installer is not treated as the
-Windows auto-update feed.
+Tagged releases fail closed when signing is unavailable; there is no unsigned
+release mode. Use `package:win` locally or the `build-preview` PR workflow when
+an unsigned installer is appropriate for development testing.
 
 Publishing from CI is wired through `.github/workflows/release.yml`.
 

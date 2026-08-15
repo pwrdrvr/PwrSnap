@@ -9,9 +9,8 @@
  * pnpm's symlinked virtual store. Differences from release.mjs:
  *
  *   - Target is `--win nsis --x64`, not `--mac --universal`.
- *   - Preview builds are unsigned; release/publish builds require
- *     Authenticode signing input so SmartScreen does not see an
- *     accidentally unsigned installer.
+ *   - Preview builds are unsigned; release builds require Azure Artifact
+ *     Signing so SmartScreen does not see an accidentally unsigned installer.
  *   - No bundled Swift native helpers or Quick Look extensions - those
  *     are macOS-only and live under `mac:` in electron-builder.yml.
  *   - Windows releases may bundle a vetted LGPL `ffmpeg.exe` when
@@ -21,18 +20,21 @@
  *
  * Modes:
  *   --dryrun  / default: build + pack an unsigned NSIS installer, no publish.
- *   --release: enforce Authenticode + bundled ffmpeg inputs, no publish.
- *   --unsigned-release: enforce release runtime inputs, but skip Authenticode
- *                       and electron-builder publishing. This is only for
- *                       temporary/manual installer testing before the Windows
- *                       signing cert is available; it must not publish an
- *                       updater feed.
- *   --publish: same release checks, then publish via electron-builder.
+ *   --release: enforce Azure signing + bundled ffmpeg inputs, no publish.
+ *   --prepare-only: build a self-contained, hoisted release-stage without
+ *                   packaging. The no-secret CI job archives this stage.
+ *   --sign-stage-only: package an already-prepared stage without installing
+ *                      dependencies or running project lifecycle scripts.
+ *   --require-signing: fail unless the complete Azure signing configuration is
+ *                      present. Release CI always passes this flag.
+ *   --publish: same release checks, then publish via electron-builder. Tagged
+ *              CI releases publish through the all-platform aggregation job.
  *
  * Output: apps/desktop/release-stage/dist/PwrSnap-<version>-windows-x64-setup.exe
  */
 
-import { execSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -46,11 +48,17 @@ const targetArch = "x64";
 
 const args = process.argv.slice(2);
 const publish = args.includes("--publish");
-const unsignedRelease = args.includes("--unsigned-release");
-const releaseMode = publish || args.includes("--release") || unsignedRelease;
+const prepareOnly = args.includes("--prepare-only");
+const signStageOnly = args.includes("--sign-stage-only");
+const requireSigning =
+  args.includes("--require-signing") || args.includes("--release") || publish;
+const releaseMode = publish || args.includes("--release") || requireSigning;
 
-if (publish && unsignedRelease) {
-  throw new Error("--publish and --unsigned-release cannot be combined");
+if (prepareOnly && signStageOnly) {
+  throw new Error("--prepare-only and --sign-stage-only cannot be combined");
+}
+if (prepareOnly && publish) {
+  throw new Error("--prepare-only and --publish cannot be combined");
 }
 
 // Force pnpm to ignore any user-level global-pnpmfile inside child
@@ -65,37 +73,33 @@ function step(label) {
   console.log(`\n→ ${label}`);
 }
 
-function run(cmd, opts = {}) {
-  console.log(`  $ ${cmd}`);
-  execSync(cmd, {
-    stdio: "inherit",
-    cwd: opts.cwd ?? desktopRoot,
-    env: { ...process.env, ...opts.env }
-  });
-}
-
 function runChecked(file, argv, opts = {}) {
   console.log(`  $ ${file} ${argv.join(" ")}`);
   const result = spawnSync(file, argv, {
     stdio: "inherit",
     cwd: opts.cwd ?? desktopRoot,
     env: { ...process.env, ...opts.env },
-    // pnpm/node resolve to .cmd shims on Windows; spawnSync needs a shell
-    // to find them on PATH.
-    shell: process.platform === "win32"
+    // Only pnpm is a .cmd shim on Windows. Keep node shell-free so Azure
+    // signing arguments containing spaces (publisherName=PwrDrvr LLC) remain
+    // one argument instead of being split by cmd.exe.
+    shell: process.platform === "win32" && file === "pnpm"
   });
+  if (result.error) {
+    throw result.error;
+  }
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
 }
 
-// electron-builder is a devDependency, so it lives in the dev node_modules,
-// not the production-only `pnpm deploy` stage. Prefer the staged copy if it
-// somehow exists (e.g. a non-prod stage), otherwise fall back to the desktop
-// dev tree. Mirrors release.mjs's electronBuilderCli().
 function resolveElectronBuilderCli() {
   const staged = join(stageDir, "node_modules", "electron-builder", "cli.js");
   if (existsSync(staged)) return staged;
+  if (signStageOnly) {
+    throw new Error(
+      `electron-builder CLI missing at ${staged}; signing jobs must use the self-contained prepared stage`
+    );
+  }
   const dev = join(desktopRoot, "node_modules", "electron-builder", "cli.js");
   if (existsSync(dev)) return dev;
   throw new Error(
@@ -122,22 +126,9 @@ function readStagedPackageJson(pkgName) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-function assertWindowsReleaseInputs({ requireSigning }) {
+function assertWindowsReleaseInputs() {
   if (process.platform !== "win32") {
     throw new Error("Windows release packaging must run on Windows so native packaging is exercised.");
-  }
-
-  const cscLink = process.env.WIN_CSC_LINK || process.env.CSC_LINK;
-  const cscPassword = process.env.WIN_CSC_KEY_PASSWORD || process.env.CSC_KEY_PASSWORD;
-  if (requireSigning && (!cscLink || !cscPassword)) {
-    throw new Error(
-      "Windows release packaging requires WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD " +
-        "(or CSC_LINK/CSC_KEY_PASSWORD) for Authenticode signing."
-    );
-  }
-  if (cscLink && cscPassword) {
-    process.env.CSC_LINK ??= cscLink;
-    process.env.CSC_KEY_PASSWORD ??= cscPassword;
   }
 
   if (publish && !process.env.GH_TOKEN && !process.env.GITHUB_TOKEN) {
@@ -151,6 +142,54 @@ function assertWindowsReleaseInputs({ requireSigning }) {
         "Set PWRSNAP_WINDOWS_FFMPEG_PATH (preferred) or PWRSNAP_FFMPEG_PATH."
     );
   }
+}
+
+// Azure Artifact Signing was originally named Trusted Signing. All four
+// WIN_AZURE_SIGN_* values and all three AZURE_* service-principal credentials
+// are required together. None means an intentional unsigned local/PR build;
+// any partial configuration is always an error.
+function resolveWindowsAzureSigning() {
+  const config = {
+    WIN_AZURE_SIGN_PUBLISHER_NAME:
+      process.env.WIN_AZURE_SIGN_PUBLISHER_NAME?.trim(),
+    WIN_AZURE_SIGN_ENDPOINT: process.env.WIN_AZURE_SIGN_ENDPOINT?.trim(),
+    WIN_AZURE_SIGN_ACCOUNT: process.env.WIN_AZURE_SIGN_ACCOUNT?.trim(),
+    WIN_AZURE_SIGN_PROFILE: process.env.WIN_AZURE_SIGN_PROFILE?.trim()
+  };
+  const missingConfig = Object.entries(config)
+    .filter(([, value]) => !value)
+    .map(([name]) => name);
+
+  if (missingConfig.length === Object.keys(config).length) {
+    return undefined;
+  }
+  if (missingConfig.length > 0) {
+    throw new Error(
+      `Windows signing is partially configured — missing: ${missingConfig.join(", ")}. ` +
+        "Set all values (see docs/desktop-windows-signing.md) or none to build unsigned."
+    );
+  }
+
+  const missingCredentials = Object.entries({
+    AZURE_TENANT_ID: process.env.AZURE_TENANT_ID?.trim(),
+    AZURE_CLIENT_ID: process.env.AZURE_CLIENT_ID?.trim(),
+    AZURE_CLIENT_SECRET: process.env.AZURE_CLIENT_SECRET?.trim()
+  })
+    .filter(([, value]) => !value)
+    .map(([name]) => name);
+  if (missingCredentials.length > 0) {
+    throw new Error(
+      `Windows signing is configured but service-principal credentials are missing: ${missingCredentials.join(", ")}. ` +
+        "Unset WIN_AZURE_SIGN_* to build unsigned instead."
+    );
+  }
+
+  return {
+    publisherName: config.WIN_AZURE_SIGN_PUBLISHER_NAME,
+    endpoint: config.WIN_AZURE_SIGN_ENDPOINT,
+    accountName: config.WIN_AZURE_SIGN_ACCOUNT,
+    profileName: config.WIN_AZURE_SIGN_PROFILE
+  };
 }
 
 function resolveWindowsFfmpegInput() {
@@ -263,78 +302,139 @@ function injectWin32PlatformPackages() {
   }
 }
 
+function findWindowsUnpackedDir(distDir) {
+  const candidates = readdirSync(distDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^win(?:-.+)?-unpacked$/.test(entry.name))
+    .map((entry) => join(distDir, entry.name))
+    .sort();
+  if (candidates.length === 0) {
+    throw new Error(`No Windows unpacked app directory found under ${distDir}`);
+  }
+  return candidates[0];
+}
+
+function windowsInstallerArtifacts(distDir) {
+  const artifacts = readdirSync(distDir)
+    .filter((entry) => entry.endsWith("-setup.exe"))
+    .sort()
+    .map((name) => ({ name, path: join(distDir, name) }));
+  if (artifacts.length === 0) {
+    throw new Error(`No Windows installer artifacts found under ${distDir}`);
+  }
+  return artifacts;
+}
+
+function writeWindowsChecksums(distDir) {
+  const lines = windowsInstallerArtifacts(distDir)
+    .map(({ name, path }) => {
+      const digest = createHash("sha256").update(readFileSync(path)).digest("hex");
+      return `${digest}  ${name}`;
+    })
+    .join("\n");
+  const checksumPath = join(distDir, "SHA256SUMS");
+  writeFileSync(checksumPath, `${lines}\n`);
+  return checksumPath;
+}
+
+if (!signStageOnly) {
+  // 1. License notices check (cheap, fail-fast).
+  step("license notices check");
+  runChecked("pnpm", ["licenses:check"], { cwd: repoRoot });
+
+  // 2. Build (electron-vite -> apps/desktop/out/).
+  step("electron-vite build");
+  runChecked("pnpm", ["--filter", "@pwrsnap/desktop", "build"], { cwd: repoRoot });
+
+  // 3. Materialize a self-contained, hoisted stage. Include dev dependencies
+  // so electron-builder and @electron/asar cross the signing boundary without
+  // an install in the credential-bearing job. Hoisting avoids Windows tar
+  // following pnpm's workspace junction graph back into itself.
+  step("pnpm deploy (hoisted) -> release-stage");
+  if (existsSync(stageDir)) {
+    rmSync(stageDir, { recursive: true, force: true });
+  }
+  mkdirSync(stageDir, { recursive: true });
+  runChecked(
+    "pnpm",
+    [
+      "deploy",
+      "--filter",
+      "@pwrsnap/desktop",
+      "--legacy",
+      "--config.node-linker=hoisted",
+      stageDir
+    ],
+    { cwd: repoRoot }
+  );
+
+  // 3b. Inject sharp's win32-x64 slice that `pnpm deploy` drops.
+  step("inject win32 platform packages from workspace pnpm store");
+  injectWin32PlatformPackages();
+
+  // 4. Build the staged Electron-native better-sqlite3 sidecar for win32-x64.
+  step("prepare staged better-sqlite3 Electron sidecar (win32-x64)");
+  runChecked("node", ["scripts/rebuild-native-for-electron.mjs"], {
+    cwd: stageDir,
+    env: {
+      PWRSNAP_ELECTRON_VERSION: readElectronBuilderVersion(),
+      npm_config_arch: targetArch,
+      npm_config_target_arch: targetArch
+    }
+  });
+
+  // 5. Seed the stage with build output + electron-builder inputs.
+  step("seed stage with build output + builder inputs");
+  for (const dir of ["out", "build"]) {
+    const target = join(stageDir, dir);
+    if (existsSync(target)) {
+      rmSync(target, { recursive: true, force: true });
+    }
+    const source = join(desktopRoot, dir);
+    if (!existsSync(source)) continue;
+    cpSync(source, target, { recursive: true });
+  }
+  cpSync(
+    join(desktopRoot, "electron-builder.yml"),
+    join(stageDir, "electron-builder.yml")
+  );
+  cpSync(join(repoRoot, ".npmrc"), join(stageDir, ".npmrc"));
+  for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md"]) {
+    cpSync(join(repoRoot, file), join(stageDir, file));
+  }
+  copyWindowsFfmpegIntoStage({ required: releaseMode });
+  assertRequiredWindowsResources();
+
+  if (prepareOnly) {
+    step("prepared release-stage");
+    console.log(`  stage: ${stageDir}`);
+    process.exit(0);
+  }
+} else {
+  if (!existsSync(stageDir)) {
+    throw new Error(
+      `release-stage is missing at ${stageDir}; --sign-stage-only requires a prepared stage`
+    );
+  }
+  copyWindowsFfmpegIntoStage({ required: releaseMode });
+  assertRequiredWindowsResources();
+}
+
 if (releaseMode) {
-  assertWindowsReleaseInputs({ requireSigning: !unsignedRelease });
+  assertWindowsReleaseInputs();
 }
 
-// 1. License notices check (cheap, fail-fast).
-step("license notices check");
-runChecked("pnpm", ["licenses:check"], { cwd: repoRoot });
-
-// 2. Build (electron-vite -> apps/desktop/out/).
-step("electron-vite build");
-runChecked("pnpm", ["--filter", "@pwrsnap/desktop", "build"], { cwd: repoRoot });
-
-// 3. Materialize a self-contained, flat node_modules under stage.
-step("pnpm deploy --prod -> release-stage");
-if (existsSync(stageDir)) {
-  rmSync(stageDir, { recursive: true, force: true });
+const azureSign = resolveWindowsAzureSigning();
+if (requireSigning && !azureSign) {
+  throw new Error(
+    "--require-signing was passed but no Windows signing configuration is present. " +
+      "Check that the job declares `environment: windows-signing` — see docs/desktop-windows-signing.md."
+  );
 }
-mkdirSync(stageDir, { recursive: true });
-runChecked(
-  "pnpm",
-  ["deploy", "--filter", "@pwrsnap/desktop", "--prod", "--legacy", stageDir],
-  { cwd: repoRoot }
-);
-
-// 3b. Inject sharp's win32-x64 slice that `pnpm deploy` drops.
-step("inject win32 platform packages from workspace pnpm store");
-injectWin32PlatformPackages();
-
-// 4. Build the staged Electron-native better-sqlite3 sidecar for
-//    win32-x64. The stage contains only production deps, so the script
-//    reads the packaged Electron version from electron-builder.yml and
-//    targets x64 via npm_config_arch.
-step("prepare staged better-sqlite3 Electron sidecar (win32-x64)");
-runChecked("node", ["scripts/rebuild-native-for-electron.mjs"], {
-  cwd: stageDir,
-  env: {
-    PWRSNAP_ELECTRON_VERSION: readElectronBuilderVersion(),
-    npm_config_arch: targetArch,
-    npm_config_target_arch: targetArch
-  }
-});
-
-// 5. Seed the stage with build output + electron-builder inputs.
-step("seed stage with build output + builder inputs");
-for (const dir of ["out", "build"]) {
-  const target = join(stageDir, dir);
-  if (existsSync(target)) {
-    rmSync(target, { recursive: true, force: true });
-  }
-  const source = join(desktopRoot, dir);
-  if (!existsSync(source)) continue;
-  cpSync(source, target, { recursive: true });
-}
-cpSync(
-  join(desktopRoot, "electron-builder.yml"),
-  join(stageDir, "electron-builder.yml")
-);
-cpSync(join(repoRoot, ".npmrc"), join(stageDir, ".npmrc"));
-for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md"]) {
-  cpSync(join(repoRoot, file), join(stageDir, file));
-}
-copyWindowsFfmpegIntoStage({ required: releaseMode });
-assertRequiredWindowsResources();
 
 // 6. electron-builder --win nsis --x64.
-//    electron-builder is a devDependency, so `pnpm deploy --prod` does NOT
-//    stage it. Resolve the CLI from the dev node_modules (same approach as
-//    release.mjs's electronBuilderCli fallback). Run with cwd = stageDir so
-//    electron-builder packages the flat, production-only staged tree.
 step(
-  `electron-builder --win nsis --${targetArch} (${
-    publish ? "publish" : unsignedRelease ? "unsigned release, no publish" : "no publish"
+  `electron-builder --win nsis --${targetArch} (${azureSign ? "Azure Artifact Signing" : "UNSIGNED"}, ${
+    publish ? "publish" : "no publish"
   })`
 );
 const builderCli = resolveElectronBuilderCli();
@@ -346,6 +446,14 @@ const builderArgs = [
   publish ? "--publish" : "--publish=never"
 ];
 if (publish) builderArgs.push("always");
+if (azureSign) {
+  builderArgs.push(
+    `--config.win.azureSignOptions.publisherName=${azureSign.publisherName}`,
+    `--config.win.azureSignOptions.endpoint=${azureSign.endpoint}`,
+    `--config.win.azureSignOptions.codeSigningAccountName=${azureSign.accountName}`,
+    `--config.win.azureSignOptions.certificateProfileName=${azureSign.profileName}`
+  );
+}
 runChecked("node", builderArgs.filter(Boolean), {
   cwd: stageDir,
   env: pnpmProjectConfigEnv
@@ -369,6 +477,23 @@ if (installers.length === 0) {
 for (const name of installers) {
   console.log(`  ✓ ${name}`);
 }
+
+const unpackedDir = findWindowsUnpackedDir(dist);
+step("verify packaged asar contents");
+runChecked(
+  "node",
+  [join(desktopRoot, "scripts", "verify-asar-contents.mjs"), unpackedDir],
+  {
+    env: {
+      PWRSNAP_ASAR_MODULE_ROOT: stageDir,
+      PWRSNAP_REQUIRE_FFMPEG: releaseMode ? "1" : "0"
+    }
+  }
+);
+
+step("write Windows checksums");
+const checksumPath = writeWindowsChecksums(dist);
+console.log(`  checksum: ${checksumPath}`);
 
 step("done");
 console.log(`  artifacts: ${dist}`);

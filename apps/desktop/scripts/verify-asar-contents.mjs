@@ -6,12 +6,15 @@
 
 import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 // @electron/asar is declared as a direct devDependency of @pwrsnap/desktop.
-// pnpm's isolated layout doesn't hoist transitive deps reliably, so we own it
-// directly to guarantee resolution from this script's location.
-const require = createRequire(import.meta.url);
+// The protected Windows signing job receives a self-contained staged toolchain,
+// so package-win.mjs points resolution at that stage without reinstalling.
+const asarModuleRoot = process.env.PWRSNAP_ASAR_MODULE_ROOT?.trim();
+const require = asarModuleRoot
+  ? createRequire(resolve(asarModuleRoot, "package.json"))
+  : createRequire(import.meta.url);
 
 // Each rule: [label, regex]. Anything matching → fail.
 const forbidden = [
@@ -34,7 +37,12 @@ const forbidden = [
 
 const allowedForbiddenEntries = [/^\/out\/main\/prompts\/[^/]+\.md$/];
 
-const requiredResources = ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "PwrSnapFFmpeg"];
+const macRequiredResources = ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "PwrSnapFFmpeg"];
+const windowsRequiredResources = [
+  "THIRD_PARTY_LICENSES",
+  "CHANGELOG.md",
+  "PwrSnapWindowList.exe"
+];
 
 // Universal-build invariants for unpacked native dependencies.
 // Each entry: a glob-like path expectation under
@@ -51,7 +59,7 @@ const requiredResources = ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "PwrSnapFFmpe
 // version-suffixed dylib name (`libvips-cpp.<ver>.dylib`) changes
 // across libvips upgrades, and a substring match decouples this
 // from the exact version in pnpm-lock.yaml.
-const requiredUnpackedNative = [
+const macRequiredUnpackedNative = [
   {
     label: "@img/sharp-darwin-arm64 native binding",
     dir: "app.asar.unpacked/node_modules/@img/sharp-darwin-arm64/lib",
@@ -74,6 +82,45 @@ const requiredUnpackedNative = [
   },
 ];
 
+const windowsRequiredUnpackedNative = [
+  {
+    label: "@img/sharp-win32-x64 native binding",
+    dir: "app.asar.unpacked/node_modules/@img/sharp-win32-x64/lib",
+    mustContain: ".node"
+  },
+  {
+    label: "better-sqlite3 Electron sidecar",
+    dir: "app.asar.unpacked/node_modules/better-sqlite3/electron-native",
+    mustContain: "better_sqlite3.node"
+  }
+];
+
+function packagedPlatform(appPath) {
+  return appPath.endsWith(".app") ? "darwin" : "win32";
+}
+
+function resourcesPath(appPath, platform = packagedPlatform(appPath)) {
+  return platform === "darwin"
+    ? resolve(appPath, "Contents/Resources")
+    : resolve(appPath, "resources");
+}
+
+function requiredResourcesFor(platform) {
+  const required = platform === "darwin"
+    ? macRequiredResources
+    : windowsRequiredResources;
+  if (platform === "win32" && process.env.PWRSNAP_REQUIRE_FFMPEG === "1") {
+    return [...required, "PwrSnapFFmpeg.exe"];
+  }
+  return required;
+}
+
+function requiredUnpackedNativeFor(platform) {
+  return platform === "darwin"
+    ? macRequiredUnpackedNative
+    : windowsRequiredUnpackedNative;
+}
+
 export function findForbiddenAsarEntries(listing) {
   const violations = [];
   for (const entry of listing) {
@@ -88,16 +135,16 @@ export function findForbiddenAsarEntries(listing) {
   return violations;
 }
 
-export function findMissingPackagedResources(appPath) {
-  const resourcesPath = resolve(appPath, "Contents/Resources");
-  return requiredResources.filter((file) => !existsSync(resolve(resourcesPath, file)));
+export function findMissingPackagedResources(appPath, platform = packagedPlatform(appPath)) {
+  const root = resourcesPath(appPath, platform);
+  return requiredResourcesFor(platform).filter((file) => !existsSync(resolve(root, file)));
 }
 
-export function findMissingUnpackedNative(appPath) {
-  const resourcesPath = resolve(appPath, "Contents/Resources");
+export function findMissingUnpackedNative(appPath, platform = packagedPlatform(appPath)) {
+  const root = resourcesPath(appPath, platform);
   const missing = [];
-  for (const { label, dir, mustContain } of requiredUnpackedNative) {
-    const absolute = resolve(resourcesPath, dir);
+  for (const { label, dir, mustContain } of requiredUnpackedNativeFor(platform)) {
+    const absolute = resolve(root, dir);
     if (!existsSync(absolute)) {
       missing.push({ label, reason: `directory missing: ${dir}` });
       continue;
@@ -145,16 +192,16 @@ export function verifyAsarListing(listing) {
   throw new Error(formatForbiddenViolations(violations));
 }
 
-export function verifyPackagedResources(appPath) {
-  const missingResources = findMissingPackagedResources(appPath);
+export function verifyPackagedResources(appPath, platform = packagedPlatform(appPath)) {
+  const missingResources = findMissingPackagedResources(appPath, platform);
   if (missingResources.length === 0) return;
   throw new Error(
     `verify-asar-contents: missing packaged resource(s): ${missingResources.join(", ")}`,
   );
 }
 
-export function verifyUnpackedNative(appPath) {
-  const missing = findMissingUnpackedNative(appPath);
+export function verifyUnpackedNative(appPath, platform = packagedPlatform(appPath)) {
+  const missing = findMissingUnpackedNative(appPath, platform);
   if (missing.length === 0) return;
   const lines = [
     `verify-asar-contents: ${missing.length} unpacked-native expectation(s) failed`,
@@ -175,7 +222,8 @@ export function verifyUnpackedNative(appPath) {
 
 export function runCli(args = process.argv.slice(2)) {
   const appPath = args[0] ?? resolve("release-stage/dist/mac-universal/PwrSnap.app");
-  const asarPath = resolve(appPath, "Contents/Resources/app.asar");
+  const platform = packagedPlatform(appPath);
+  const asarPath = join(resourcesPath(appPath, platform), "app.asar");
   if (!existsSync(asarPath)) {
     console.error(`verify-asar-contents: app.asar not found at ${asarPath}`);
     process.exit(1);
@@ -186,8 +234,8 @@ export function runCli(args = process.argv.slice(2)) {
 
   try {
     verifyAsarListing(listing);
-    verifyPackagedResources(appPath);
-    verifyUnpackedNative(appPath);
+    verifyPackagedResources(appPath, platform);
+    verifyUnpackedNative(appPath, platform);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

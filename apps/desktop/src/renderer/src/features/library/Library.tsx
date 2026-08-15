@@ -1892,6 +1892,10 @@ export function Library() {
   const railShowing = view.kind !== "grid" || gridRailOccupiesColumn;
   // Compact L/M/H (or video export) overlay — only when Grid has a
   // selection AND the inspector footer isn't occupying the column.
+  // Note this tracks the EFFECTIVE pin, not the raw one: on a narrow
+  // window the rail auto-collapses to its activity bar, which takes the
+  // L/M/H footer with it, so the palette correctly appears there even
+  // though the user's stored pin is still true.
   const showGridCopyPalette =
     view.kind === "grid" && selectedRecord !== null && !railEffectivePinned;
   const railDataRight = !settingsHydrated

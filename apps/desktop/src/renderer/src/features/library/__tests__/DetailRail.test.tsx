@@ -920,7 +920,7 @@ describe("DetailRail", () => {
     });
 
     expect(container?.querySelector('[data-testid="psl-right-empty"]')?.textContent).toContain(
-      "Select a capture"
+      "No captures match this filter."
     );
     expect(container?.querySelector('[data-testid="psl-right-tab-info"]')).not.toBeNull();
     expect(container?.querySelector('[data-testid="psl-right-footer"]')).toBeNull();

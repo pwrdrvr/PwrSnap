@@ -124,21 +124,13 @@ const windowsPackageScript = readFileSync(windowsPackageScriptPath, "utf8");
 const windowsArchiveScript = readFileSync(windowsArchiveScriptPath, "utf8");
 const trustedSigningScript = readFileSync(trustedSigningScriptPath, "utf8");
 
-for (const expected of [
-  "ci:windows-package",
-  "--prepare-only",
-  "--sign-stage-only",
-  "archive-windows-signing-input.ps1",
-]) {
-  if (!ciWorkflow.includes(expected)) {
-    fail(`.github/workflows/ci.yml must contain ${JSON.stringify(expected)}`);
-  }
-}
-if (!workflowsReadme.includes("ci:windows-package")) {
-  fail(".github/workflows/README.md must document ci:windows-package");
-}
 if (!workflowsReadme.includes("ci:windows-signing")) {
   fail(".github/workflows/README.md must document ci:windows-signing");
+}
+for (const unexpected of ["ci:windows-package", "\n  windows-package:\n"]) {
+  if (ciWorkflow.includes(unexpected)) {
+    fail(`.github/workflows/ci.yml must not contain ${JSON.stringify(unexpected)}`);
+  }
 }
 
 for (const expected of [

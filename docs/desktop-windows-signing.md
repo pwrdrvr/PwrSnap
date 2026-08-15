@@ -6,10 +6,9 @@ portal uses the new name; electron-builder still calls the configuration
 `win.azureSignOptions`, and the PowerShell module is still `TrustedSigning`.
 
 Release signing fails closed. Tagged release CI passes `--require-signing`, so
-missing or partial configuration cannot produce an unsigned release. The
-`ci:windows-package` PR label intentionally builds unsigned: it exercises the
-same hoisted prepare/archive/package path without exposing credentials or using
-the signing quota.
+missing or partial configuration cannot produce an unsigned release. Unsigned
+local and preview builds remain available through `package:win` and the
+`build-preview` workflow.
 
 For deliberate end-to-end validation, `ci:windows-signing` runs the existing
 release workflow's Windows prepare/sign jobs for a same-repository PR. Its
@@ -89,7 +88,7 @@ and no package installation.
 
 | Configuration | Result |
 |---|---|
-| No Azure values, local or `ci:windows-package` build | Unsigned package |
+| No Azure values, local or preview build | Unsigned package |
 | Some `WIN_AZURE_SIGN_*` values | Fail before packaging |
 | All signing variables but missing `AZURE_*` credentials | Fail before packaging |
 | Tagged release without the environment/configuration | Fail because `--require-signing` is set |

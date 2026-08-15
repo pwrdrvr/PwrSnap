@@ -183,6 +183,13 @@ No signing job publishes directly. A macOS or Windows signing failure, an
 unapproved environment, or a Linux build failure leaves no partial GitHub
 Release behind.
 
+For a non-publishing Windows signing smoke check, apply `ci:windows-signing` to
+a same-repository PR after reviewing its head SHA. Temporarily allow that exact
+branch in the `windows-signing` environment, approve the protected job, and
+remove the branch rule after the `windows-signed-installer-pr` artifact passes
+Authenticode and launch validation. The smoke workflow uses the same staged
+archive boundary as release CI and never creates a tag or GitHub Release.
+
 Do not approve either signing environment unless the tag, commit, and release
 metadata are intended. Approval exposes that environment's credentials to its
 bounded packaging step.

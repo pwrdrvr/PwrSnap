@@ -9,7 +9,22 @@ Release signing fails closed. Tagged release CI passes `--require-signing`, so
 missing or partial configuration cannot produce an unsigned release. The
 `ci:windows-package` PR label intentionally builds unsigned: it exercises the
 same hoisted prepare/archive/package path without exposing credentials or using
-the signing quota. There is no PR label that grants signing credentials.
+the signing quota.
+
+For deliberate end-to-end validation, `ci:windows-signing` runs a
+credential-free TrustedSigning preflight, then allows only a same-repository PR
+to request the protected `windows-signing` environment. Its preparation job has
+no credentials. Its protected job verifies the prepared archive, downloads the
+pinned Windows FFmpeg artifact, installs TrustedSigning, packages with
+`--require-signing`, verifies the installer and application Authenticode
+signatures, and uploads `windows-signed-installer-pr`. It never publishes a
+GitHub Release.
+
+The environment's normal deployment policy should remain limited to `v*` tags.
+To run the signed PR smoke check, temporarily allow the exact reviewed branch,
+approve the protected job, then remove the branch rule after validation. Never
+approve a fork PR or an unreviewed head SHA: the staged packaging code runs with
+the service-principal credentials during the irreducible signing step.
 
 ## GitHub environment
 
@@ -64,6 +79,10 @@ The job uploads a signed Windows artifact to the workflow. A separate
 `publish-release-assets` job creates the GitHub Release only after the Linux
 build gate, signed/notarized macOS package, and signed Windows package all
 succeed.
+
+The PR smoke workflow preserves the same prepare/archive/sign boundary but has
+no publication job. The protected smoke job performs no checkout and no package
+installation.
 
 ## Failure modes
 

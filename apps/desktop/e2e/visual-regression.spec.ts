@@ -160,6 +160,19 @@ async function launchVisualPwrSnap(): Promise<LaunchedApp> {
       TZ: "UTC",
       PWRSNAP_E2E_APP_VERSION: VISUAL_APP_VERSION
     },
+    // Pin the backing scale factor. Without this the goldens are
+    // machine-specific: Chromium rasterizes at the attached display's
+    // scale, so a Retina 2x session and a 1x session produce visibly
+    // identical but pixel-different screenshots (`scale: "css"` only
+    // normalizes the screenshot's logical size, not the rasterization).
+    // Measured on the macOS runner fleet: the same commit rendered on a
+    // 1x runner matched the golden exactly while a 2x session differed
+    // by ~325k pixels — the whole window, every glyph edge — which reads
+    // like a real regression but is pure environment drift. Forcing 1x
+    // is what the current goldens already encode, so this is a no-op for
+    // them; it just stops a differently-configured runner or a developer
+    // on a Retina display from failing the suite.
+    extraArgs: ["--force-device-scale-factor=1"],
     windowSize: LIBRARY_WINDOW_SIZE
   });
   // Library date buckets omit the year for captures in `new Date()`'s

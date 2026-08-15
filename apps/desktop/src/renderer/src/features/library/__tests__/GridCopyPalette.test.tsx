@@ -183,8 +183,36 @@ async function renderPalette(
   return container;
 }
 
+/** Payload shape for `events:settings:changed`, narrowed to what the
+ *  palette reads out of it. */
+function settingsChangedPayload(
+  gridCopyPalette: { anchor: string; previewOpen: boolean }
+): unknown {
+  return {
+    settings: {
+      ...settings,
+      library: {
+        ...(settings as unknown as { library: Record<string, unknown> }).library,
+        gridCopyPalette
+      }
+    },
+    secrets: {}
+  };
+}
+
+/** The palette's `events:settings:changed` handler, as registered by the
+ *  most recent mount. */
+function settingsChangedHandler(): (payload: unknown) => void {
+  const call = [...subscribeMock.mock.calls]
+    .reverse()
+    .find(([channel]) => channel === "events:settings:changed");
+  if (call === undefined) throw new Error("palette never subscribed to settings:changed");
+  return call[1];
+}
+
 beforeEach(() => {
   resetGridCopyPalettePositionForTests();
+  subscribeMock.mockClear();
   installRects();
   dispatchMock.mockImplementation(async (name: string) => {
     if (name === "settings:read") return ok(settings);
@@ -421,6 +449,69 @@ describe("GridCopyPalette", () => {
     // Re-anchored immediately, back onto the tile.
     expect(palette?.style.top).toBe("232px");
     expect(palette?.style.left).toBe("10px");
+  });
+
+  test("an older settings broadcast can't clobber a fresh local anchor write", async () => {
+    // Pinch-zoom queues `settings:write { library: { gridZoom } }`; the
+    // user then grabs the grip. That in-flight write broadcasts a
+    // snapshot assembled BEFORE our anchor write, carrying the old
+    // `follow`. It must not flip the palette back mid-drag.
+    const el = await renderPalette(imageRecord, { withTile: true });
+    const palette = el.querySelector<HTMLElement>('[data-testid="psl-grid-copy-palette"]');
+    const toggle = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-grid-copy-palette-anchor-toggle"]'
+    );
+    const onSettingsChanged = settingsChangedHandler();
+
+    await act(async () => {
+      toggle?.click();
+      await Promise.resolve();
+    });
+    expect(palette?.getAttribute("data-anchor")).toBe("pinned");
+
+    await act(async () => {
+      onSettingsChanged(
+        settingsChangedPayload({ anchor: "follow", previewOpen: false })
+      );
+      await Promise.resolve();
+    });
+    expect(palette?.getAttribute("data-anchor")).toBe("pinned");
+
+    // Our own write's broadcast lands — the gate lifts.
+    await act(async () => {
+      onSettingsChanged(
+        settingsChangedPayload({ anchor: "pinned", previewOpen: false })
+      );
+      await Promise.resolve();
+    });
+    expect(palette?.getAttribute("data-anchor")).toBe("pinned");
+
+    // A genuinely later change from another window still applies.
+    await act(async () => {
+      onSettingsChanged(
+        settingsChangedPayload({ anchor: "follow", previewOpen: false })
+      );
+      await Promise.resolve();
+    });
+    expect(palette?.getAttribute("data-anchor")).toBe("follow");
+  });
+
+  test("a peer broadcast applies when no local write is in flight", async () => {
+    const el = await renderPalette(imageRecord, { withTile: true });
+    const palette = el.querySelector<HTMLElement>('[data-testid="psl-grid-copy-palette"]');
+    const onSettingsChanged = settingsChangedHandler();
+    expect(palette?.getAttribute("data-anchor")).toBe("follow");
+
+    await act(async () => {
+      onSettingsChanged(
+        settingsChangedPayload({ anchor: "pinned", previewOpen: true })
+      );
+      await Promise.resolve();
+    });
+    expect(palette?.getAttribute("data-anchor")).toBe("pinned");
+    expect(
+      el.querySelector('[data-testid="psl-grid-copy-palette-preview"]')
+    ).not.toBeNull();
   });
 
   test("hydrates the persisted pinned anchor from settings", async () => {

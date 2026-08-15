@@ -117,6 +117,50 @@ function previewOpenFromSettings(settings: Settings | undefined): boolean {
   return settings?.library?.gridCopyPalette?.previewOpen === true;
 }
 
+/** A local settings write we've applied optimistically but haven't seen
+ *  echoed back on `events:settings:changed` yet. `seq` is the write's
+ *  ticket from `writeSeq`, so a stale release can't drop a newer gate. */
+type PendingWrite<T> = { seq: number; value: T } | null;
+
+/**
+ * Broadcast gate for one optimistically-written field.
+ *
+ * `settings:write` is optimistic here — the palette flips immediately,
+ * then main merges and broadcasts the whole snapshot to every window.
+ * A write that was ALREADY IN FLIGHT when ours landed (the `gridZoom`
+ * burst from a pinch-zoom, say) broadcasts a snapshot assembled BEFORE
+ * our write, so an unguarded handler flips the anchor back mid-drag and
+ * yanks the palette out from under the cursor until our own broadcast
+ * catches up. Per CLAUDE.md's "late resolutions are dropped" rule, hold
+ * the field until we see OUR value come back: that echo is the newest
+ * snapshot, and everything after it is genuinely newer, so peer windows
+ * changing the setting still land. A non-matching broadcast while the
+ * gate is up is either an older snapshot or a peer change our newer
+ * local write supersedes — dropping it is right in both cases.
+ *
+ * Returns true when the broadcast value should be applied.
+ */
+function acceptBroadcast<T>(
+  pending: { current: PendingWrite<T> },
+  next: T
+): boolean {
+  const inFlight = pending.current;
+  if (inFlight === null) return true;
+  if (inFlight.value !== next) return false;
+  pending.current = null;
+  return true;
+}
+
+/** Lift the gate when a write can never produce an echo (it failed, so
+ *  main never broadcast). Scoped by `seq` so a newer write's gate — set
+ *  after this one was dispatched — is left alone. */
+function releasePending<T>(
+  pending: { current: PendingWrite<T> },
+  seq: number
+): void {
+  if (pending.current?.seq === seq) pending.current = null;
+}
+
 export type GridCopyPaletteProps = {
   readonly record: CaptureRecord;
   readonly copyPulses?: Readonly<Record<CopyPreset, number>>;
@@ -143,8 +187,11 @@ export function GridCopyPalette({
   const paletteRef = useRef<HTMLDivElement | null>(null);
   const previewDrawerId = useId();
   // Bumped on every local settings write so a slower in-flight
-  // `settings:read` can't resolve over the user's fresh choice.
+  // `settings:read` can't resolve over the user's fresh choice. The
+  // same ticket scopes the per-field broadcast gates below.
   const writeSeq = useRef(0);
+  const pendingAnchor = useRef<PendingWrite<GridCopyPaletteAnchor>>(null);
+  const pendingPreviewOpen = useRef<PendingWrite<boolean>>(null);
   // One anchor flip per drag — a burst of pointermoves inside a single
   // React batch would otherwise fire several identical settings writes.
   const flippedThisDrag = useRef(false);
@@ -176,8 +223,16 @@ export function GridCopyPalette({
     const off = subscribe(EVENT_CHANNELS.settingsChanged, (payload) => {
       const evt = payload as SettingsChangedEvent;
       setExportStrategy(exportStrategyFromSettings(evt.settings));
-      setAnchor(anchorFromSettings(evt.settings));
-      setPreviewOpen(previewOpenFromSettings(evt.settings));
+      // Gated per field — a broadcast from an unrelated write that was
+      // queued ahead of ours carries a pre-write snapshot. See
+      // `acceptBroadcast`. Fields we haven't written locally (and every
+      // broadcast once our echo lands) apply unconditionally.
+      const nextAnchor = anchorFromSettings(evt.settings);
+      if (acceptBroadcast(pendingAnchor, nextAnchor)) setAnchor(nextAnchor);
+      const nextPreviewOpen = previewOpenFromSettings(evt.settings);
+      if (acceptBroadcast(pendingPreviewOpen, nextPreviewOpen)) {
+        setPreviewOpen(nextPreviewOpen);
+      }
     });
     return () => {
       cancelled = true;
@@ -187,19 +242,36 @@ export function GridCopyPalette({
 
   const writeAnchor = useCallback((next: GridCopyPaletteAnchor): void => {
     writeSeq.current += 1;
+    const seq = writeSeq.current;
+    pendingAnchor.current = { seq, value: next };
     setAnchor(next);
     void dispatch("settings:write", {
       library: { gridCopyPalette: { anchor: next } }
-    });
+    }).then(
+      (result) => {
+        // A successful write always broadcasts (main awaits the fan-out
+        // before replying), so the echo is what lifts the gate. Only a
+        // failed write needs releasing here.
+        if (!result.ok) releasePending(pendingAnchor, seq);
+      },
+      () => releasePending(pendingAnchor, seq)
+    );
   }, []);
 
   const togglePreview = useCallback((): void => {
     const next = !previewOpen;
     writeSeq.current += 1;
+    const seq = writeSeq.current;
+    pendingPreviewOpen.current = { seq, value: next };
     setPreviewOpen(next);
     void dispatch("settings:write", {
       library: { gridCopyPalette: { previewOpen: next } }
-    });
+    }).then(
+      (result) => {
+        if (!result.ok) releasePending(pendingPreviewOpen, seq);
+      },
+      () => releasePending(pendingPreviewOpen, seq)
+    );
   }, [previewOpen]);
 
   useEffect(() => {

@@ -638,10 +638,12 @@ export function DetailRail({
                 {/* Grid default-selects the first visible capture once
                     settings hydrate (resolveDefaultPinnedGridSelection),
                     so the only way to sit here for more than a frame is
-                    a filter that matches nothing. Say that, rather than
-                    telling the user to select something they can't. */}
+                    an empty visible set — a filter that matches nothing,
+                    or a library with no captures yet (first run). Word
+                    it so it's true in both, and don't tell the user to
+                    select something they can't. */}
                 <div className="psl__right-empty" data-testid="psl-right-empty">
-                  No captures match this filter.
+                  No captures to show.
                 </div>
               </div>
             )}

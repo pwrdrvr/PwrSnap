@@ -10,8 +10,10 @@
 //     text input does — see `video-transport-keys.ts`.
 //
 // The trim range is owned by `useVideoTrimRange` (local + debounced
-// `video:setDefaultRange`); the DetailRail reads the persisted range
-// off the record after main broadcasts `events:captures:changed`.
+// `video:setDefaultRange`), instantiated ONCE at the Library level and
+// passed in as `trim` — the DetailRail's export cards read that same
+// live object, so a click during the persist debounce can't export a
+// stale range.
 //
 // Plan: docs/plans/2026-08-15-001-feat-video-transport-trim-plan.md
 
@@ -27,7 +29,7 @@ import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
 import { captureSrcUrl } from "../../lib/pwrsnap";
 import { VideoTimeline } from "../shared/VideoTimeline";
 import { useVideoTimelineAssets } from "../shared/useVideoTimelineAssets";
-import { useVideoTrimRange } from "../shared/useVideoTrimRange";
+import type { UseVideoTrimRange } from "../shared/useVideoTrimRange";
 import {
   clampTime,
   DEFAULT_FRAME_STEP_SEC,
@@ -47,11 +49,17 @@ import {
 export type VideoStageProps = {
   record: CaptureRecord;
   video: VideoCaptureMetadata;
+  /** The window's shared trim-range instance (Library owns it; the
+   *  DetailRail's export cards read the same object). Deliberately NOT
+   *  instantiated here: a stage-local copy leaves the rail exporting
+   *  the persisted `defaultRange`, which lags the timeline by the
+   *  persist debounce plus an IPC round-trip. */
+  trim: UseVideoTrimRange;
 };
 
 const FILM_LANE_H = 56;
 
-export function VideoStage({ record, video }: VideoStageProps): ReactElement {
+export function VideoStage({ record, video, trim }: VideoStageProps): ReactElement {
   const captureId = record.id;
   const durationSec = video.durationSec;
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -66,11 +74,6 @@ export function VideoStage({ record, video }: VideoStageProps): ReactElement {
     null
   );
 
-  const trim = useVideoTrimRange({
-    captureId,
-    durationSec,
-    persistedRange: video.defaultRange
-  });
   const { range, setRange } = trim;
   const rangeRef = useRef(range);
   rangeRef.current = range;

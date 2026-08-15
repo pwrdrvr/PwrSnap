@@ -45,6 +45,7 @@ import type { Tool } from "../editor/editor-tools";
 import type { UseEditorToolStateReturn } from "../editor/useEditorToolState";
 import { AppTag } from "../shared/AppIcons";
 import { captureSrcUrl } from "../../lib/pwrsnap";
+import type { UseVideoTrimRange } from "../shared/useVideoTrimRange";
 import { DetailRail } from "./DetailRail";
 import { EditToolbar } from "./EditToolbar";
 import { VideoStage } from "./VideoStage";
@@ -74,6 +75,13 @@ export type StageProps = {
    *  neighbor available — at edges or filter has only one record). */
   readonly prevRecordId: string | null;
   readonly nextRecordId: string | null;
+  /** The window's ONE video trim-range instance, owned by Library and
+   *  shared with the DetailRail's export cards. Threaded through to
+   *  `<VideoStage>` so the timeline the user drags and the range the
+   *  rail exports are the same object — never a stage-local copy
+   *  racing the persisted `defaultRange`. Inert (`captureId: null`)
+   *  when the selection isn't a video. */
+  readonly videoTrim: UseVideoTrimRange;
   /** Lifted tool state for the chromeless Editor + the floating
    *  EditToolbar. Library owns the source of truth. */
   readonly tool: Tool;
@@ -153,6 +161,7 @@ function StageBody({
   posLabel,
   prevRecordId,
   nextRecordId,
+  videoTrim,
   tool,
   onToolChange,
   toolState,
@@ -300,7 +309,7 @@ function StageBody({
           // (speed / crop / split / cursor highlight) is a follow-up —
           // see docs/plans/2026-08-15-001-feat-video-transport-trim-plan.md.
           record.video !== null && record.video !== undefined ? (
-            <VideoStage record={record} video={record.video} />
+            <VideoStage record={record} video={record.video} trim={videoTrim} />
           ) : (
             <video
               src={captureSrcUrl(record.id)}

@@ -43,7 +43,8 @@ import type {
   LibrarySidebarTab,
   SettingsChangedEvent,
   Settings,
-  SuggestedTag
+  SuggestedTag,
+  VideoRange
 } from "@pwrsnap/shared";
 import {
   CopyButton,
@@ -99,6 +100,18 @@ export type DetailRailProps = {
    *  controlled mode. */
   readonly pinned?: boolean;
   readonly onPinChange?: (next: boolean) => void;
+  /** The LIVE video trim range the stage's timeline is showing, from
+   *  the window's single `useVideoTrimRange` instance (Library owns
+   *  it). This — not the record's persisted `defaultRange` — is what
+   *  the export cards encode, because the persisted value trails a
+   *  handle release by the 150 ms persist debounce plus an IPC round-
+   *  trip plus the `events:captures:changed` revalidation. An export
+   *  fired inside that window would otherwise encode the OLD range
+   *  while the timeline showed the new one.
+   *
+   *  `null` / omitted → fall back to the persisted `defaultRange`, so
+   *  the rail still works standalone (tests, future embeddings). */
+  readonly videoTrimRange?: VideoRange | null;
   /** Controlled active-tab — same shape as `pinned`. */
   readonly activeTab?: LibrarySidebarTab;
   readonly onActiveTabChange?: (next: LibrarySidebarTab) => void;
@@ -137,6 +150,7 @@ export function DetailRail({
   view,
   record,
   copyPulses,
+  videoTrimRange = null,
   pinned: pinnedProp,
   onPinChange,
   activeTab: activeTabProp,
@@ -171,16 +185,28 @@ export function DetailRail({
     record?.kind === "video" && record.video !== null && record.video !== undefined
       ? record.id
       : null;
-  // The persisted trim range (`defaultRange`) is the single source of
-  // truth for what exports. The stage's timeline writes it through
-  // `video:setDefaultRange`; main broadcasts `events:captures:changed`
-  // and the Library revalidates the record, so this value tracks the
-  // handles on release. It rides on every export/copy/drag call
-  // explicitly and keys the eyebrow + metrics below.
-  const videoRange =
+  // The trim range that exports. Prefer the LIVE range from the
+  // window's shared `useVideoTrimRange` instance (`videoTrimRange`,
+  // the very object the stage's timeline renders) and fall back to the
+  // record's persisted `defaultRange` only when the rail is mounted
+  // without it. Reading the persisted value here used to be a race:
+  // it lands a 150 ms debounce + an IPC round-trip + an
+  // `events:captures:changed` revalidation after the user releases a
+  // handle, so a card clicked in that window encoded the previous
+  // range. It rides on every export/copy/drag call explicitly and keys
+  // the eyebrow + metrics below.
+  const persistedVideoRange =
     record?.kind === "video" && record.video !== null && record.video !== undefined
       ? record.video.defaultRange
       : null;
+  const videoRange = videoTrimRange ?? persistedVideoRange;
+  // Byte/dimension estimates deliberately stay keyed on the PERSISTED
+  // range. They're labels, not payloads — no race to fix — and the
+  // live range changes on every pointermove, which would fire
+  // `video:presetMetrics` per frame and blank the cards mid-drag
+  // (the hook resets its map on each key change). They catch up on
+  // release, same as before.
+  const videoMetricsRange = persistedVideoRange;
   const {
     states: videoExportStates,
     triggerCopy: triggerVideoCopy,
@@ -194,9 +220,12 @@ export function DetailRail({
   // Per-(format, preset) dimensions + byte estimates for the grid
   // cards. Estimated until the user clicks a card and the cache
   // row lands; exact thereafter. Mirrors `usePresetRenderMetrics`
-  // for images. Re-fetched when the trim range changes so byte
-  // estimates re-derive from the range duration.
-  const videoPresetMetrics = useVideoPresetMetrics(videoCaptureId, videoRange ?? undefined);
+  // for images. Re-fetched when the PERSISTED trim range changes so
+  // byte estimates re-derive from the range duration.
+  const videoPresetMetrics = useVideoPresetMetrics(
+    videoCaptureId,
+    videoMetricsRange ?? undefined
+  );
   // Active tab + pin state. The pin pair and the tab pair are
   // controlled INDEPENDENTLY — a caller can control just the pin
   // (e.g. drive it from a title-bar toggle) while letting the rail

@@ -620,6 +620,7 @@
 .psl__topbar {
   grid-column: 1 / -1; grid-row: 1;
   display: flex; align-items: center; justify-content: space-between;
+  position: relative;
   /* leave room for the macOS traffic-light buttons under hiddenInset */
   padding: 0 16px 0 92px;
   background: var(--bg-sidebar);
@@ -773,6 +774,11 @@
 .psl__topbar.is-narrow .psl__search-wrap { flex-basis: 150px; }
 .psl__topbar.is-tight .psl__topbar-r { gap: 6px; }
 .psl__topbar.is-tight .psl__search-wrap { flex-basis: 120px; }
+:root:not([data-platform="win32"]) .psl__topbar.is-tight .psl__topbar-c {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
 .psl__topbar.is-tight .psl__capture-btn {
   width: 28px;
   padding: 0;
@@ -783,11 +789,10 @@
 .psl__topbar.is-compact .psl__capture-btn--video { display: none; }
 .psl__topbar.is-small .psl__search-wrap { flex-basis: 80px; }
 .psl__topbar.is-small .psl__capture-btn--quick { display: none; }
+.psl__topbar.is-small .psl__history,
+.psl__topbar.is-small .psl__count { display: none; }
 .psl__topbar.is-minimal .psl__search-wrap,
-.psl__topbar.is-minimal .lyt-toggle,
-.psl__topbar.is-minimal .psl__history,
-.psl__topbar.is-minimal .psl__count { display: none; }
-.psl__topbar.is-tiny .psl__topbar-c { display: none; }
+.psl__topbar.is-minimal .lyt-toggle { display: none; }
 
 /* Windows spends substantially more title-bar width on the custom menu and
    native caption-button overlay. Shed low-priority left/center chrome one

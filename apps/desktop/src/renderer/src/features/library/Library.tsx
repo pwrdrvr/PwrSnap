@@ -1198,16 +1198,21 @@ export function Library() {
   //   • small — hide Quick Capture too; its global hotkey remains live.
   //   • minimal / tiny — progressively yield secondary chrome so the
   //     supported 480px minimum still fits on macOS and Windows.
-  const isToolbarNarrow = useMediaQuery("(max-width: 1024px)");
-  const isToolbarTight = useMediaQuery("(max-width: 960px)");
-  const isToolbarCompact = useMediaQuery("(max-width: 840px)");
-  const isToolbarSmall = useMediaQuery("(max-width: 720px)");
-  const isToolbarMinimal = useMediaQuery("(max-width: 640px)");
-  const isToolbarTiny = useMediaQuery("(max-width: 560px)");
+  // One atomic tier drives every class. Independent media-query hooks can
+  // resolve on adjacent frames during a live resize, briefly combining old
+  // and new tiers and making the right cluster visibly shimmy.
+  const toolbarTier = useToolbarTier();
+  const toolbarTierRank = TOOLBAR_TIER_RANK[toolbarTier];
+  const isToolbarNarrow = toolbarTierRank >= TOOLBAR_TIER_RANK.narrow;
+  const isToolbarTight = toolbarTierRank >= TOOLBAR_TIER_RANK.tight;
+  const isToolbarCompact = toolbarTierRank >= TOOLBAR_TIER_RANK.compact;
+  const isToolbarSmall = toolbarTierRank >= TOOLBAR_TIER_RANK.small;
+  const isToolbarMinimal = toolbarTierRank >= TOOLBAR_TIER_RANK.minimal;
+  const isToolbarTiny = toolbarTierRank >= TOOLBAR_TIER_RANK.tiny;
   // Below this even focus/reel collapse the right rail: the left sidebar
   // (220) + a pinned rail (360) would otherwise leave the Stage near-zero
   // width. See `railEffectivePinned`.
-  const isWindowVeryNarrow = useMediaQuery("(max-width: 640px)");
+  const isWindowVeryNarrow = isToolbarMinimal;
 
   // Development instances identify their checkout branch in the footer;
   // packaged builds keep showing the app version. Both are stable at runtime,
@@ -3978,29 +3983,62 @@ type VirtualizedGridProps = {
   purgeCaptureAction: CellAction;
 };
 
-/** Reactive CSS media-query match. Drives the responsive toolbar: the
- *  renderer viewport is the Library window's content area, so these track
- *  the window width (DevTools-docked included). Single source of truth for
- *  each breakpoint — the matching CSS keys off the tier classes this
- *  component sets from these booleans, so thresholds never drift between
- *  JS and CSS. */
-function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState<boolean>(() =>
-    typeof window !== "undefined" && typeof window.matchMedia === "function"
-      ? window.matchMedia(query).matches
-      : false
+type ToolbarTier =
+  | "wide"
+  | "narrow"
+  | "tight"
+  | "compact"
+  | "small"
+  | "minimal"
+  | "tiny";
+
+const TOOLBAR_TIER_RANK: Readonly<Record<ToolbarTier, number>> = {
+  wide: 0,
+  narrow: 1,
+  tight: 2,
+  compact: 3,
+  small: 4,
+  minimal: 5,
+  tiny: 6
+};
+
+const TOOLBAR_BREAKPOINTS = [1024, 960, 840, 720, 640, 560] as const;
+
+function toolbarTierForWidth(width: number): ToolbarTier {
+  if (width <= 560) return "tiny";
+  if (width <= 640) return "minimal";
+  if (width <= 720) return "small";
+  if (width <= 840) return "compact";
+  if (width <= 960) return "tight";
+  if (width <= 1024) return "narrow";
+  return "wide";
+}
+
+/** Atomic responsive-toolbar tier. The renderer viewport is the Library
+ *  content width (DevTools-docked included). All breakpoint listeners read
+ *  the same live width and commit one tier, so a fast drag can never render
+ *  a mixture such as `small` capture buttons with pre-`narrow` search. */
+function useToolbarTier(): ToolbarTier {
+  const [tier, setTier] = useState<ToolbarTier>(() =>
+    typeof window === "undefined" || typeof window.matchMedia !== "function"
+      ? "wide"
+      : toolbarTierForWidth(window.innerWidth)
   );
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
       return;
     }
-    const mql = window.matchMedia(query);
-    const onChange = (): void => setMatches(mql.matches);
+    const queries = TOOLBAR_BREAKPOINTS.map((width) =>
+      window.matchMedia(`(max-width: ${width}px)`)
+    );
+    const onChange = (): void => setTier(toolbarTierForWidth(window.innerWidth));
     onChange();
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, [query]);
-  return matches;
+    for (const query of queries) query.addEventListener("change", onChange);
+    return () => {
+      for (const query of queries) query.removeEventListener("change", onChange);
+    };
+  }, []);
+  return tier;
 }
 
 /** Compute how many cells fit per row at the current container width.

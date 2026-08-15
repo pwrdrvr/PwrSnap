@@ -3070,6 +3070,26 @@ export function Library() {
     deleteCaptureById(record.id);
   }
 
+  /**
+   * Move-to-Trash from the tile CONTEXT MENU, gated on the same
+   * `library.confirmBeforeTrash` setting every other soft-delete door
+   * honors (see `deleteCaptureById`).
+   *
+   * The 28px rail button wraps itself in `<DeleteConfirm>`; a menu row
+   * can't. That popover portals to `document.body`, so it lands OUTSIDE
+   * the menu root and the menu's own click-outside dismiss would tear it
+   * down before the confirm click ever landed. Use the yes/no prompt the
+   * menu's sibling "Delete Permanently" row already uses instead
+   * (`purgeCaptureById`), so the menu has one confirm mechanism and
+   * neither door can skip the friction the other enforces.
+   */
+  function trashCaptureConfirmed(captureId: number): void {
+    if (confirmBeforeTrash && !window.confirm("Move this capture to Trash? You can undo this.")) {
+      return;
+    }
+    trashCapture(captureId);
+  }
+
   /** Restore a soft-deleted capture. Shared by the in-trash hover
    *  affordance and the tile context menu's Restore row. */
   function restoreCaptureById(recordId: string): void {
@@ -3988,7 +4008,7 @@ export function Library() {
             onToggleCart={() => {
               void dispatch("cart:toggle", { captureId: captureContextMenu.recordId });
             }}
-            onTrash={() => trashCapture(captureContextMenu.capture.id)}
+            onTrash={() => trashCaptureConfirmed(captureContextMenu.capture.id)}
             onRestore={() => restoreCaptureById(captureContextMenu.recordId)}
             onPurge={() => purgeCaptureById(captureContextMenu.recordId)}
           />

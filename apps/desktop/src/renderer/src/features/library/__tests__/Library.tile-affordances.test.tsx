@@ -148,6 +148,9 @@ const settings = {
     defaults: { enrichment: {} }
   },
   library: {
+    // The menu's Move to Trash row must honor this the same way the
+    // tile's DeleteConfirm popover does.
+    confirmBeforeTrash: true,
     detailRail: {
       pinned: true,
       lastSelectedTab: "info"
@@ -170,8 +173,15 @@ const emptyCart: DraftCart = {
  *  suite can boot the Library straight into selection mode. */
 let cartState: DraftCart = emptyCart;
 
+/** jsdom's window.confirm is a "not implemented" stub, so the menu's
+ *  destructive rows need it mocked. Defaults to "yes". */
+const confirmMock = vi.fn(() => true);
+
 beforeEach(() => {
   cartState = emptyCart;
+  confirmMock.mockReset();
+  confirmMock.mockReturnValue(true);
+  vi.stubGlobal("confirm", confirmMock);
   dispatchMock.mockImplementation(async (name: string) => {
     if (name === "library:list") {
       return ok({
@@ -210,6 +220,7 @@ afterEach(() => {
   container?.remove();
   container = null;
   dispatchMock.mockReset();
+  vi.unstubAllGlobals();
 });
 
 async function renderLibrary(): Promise<void> {
@@ -349,7 +360,7 @@ describe("capture tile context menu", () => {
     expect(container?.querySelector('[data-testid="library-stage"]')).not.toBeNull();
   });
 
-  test("Move to Trash dispatches library:delete", async () => {
+  test("Move to Trash confirms first, then dispatches library:delete", async () => {
     await renderLibrary();
     const menu = await openMenu();
 
@@ -358,7 +369,25 @@ describe("capture tile context menu", () => {
       await Promise.resolve();
     });
 
+    expect(confirmMock).toHaveBeenCalledTimes(1);
     expect(dispatchMock).toHaveBeenCalledWith("library:delete", { id: "cap_image" });
+  });
+
+  test("declining the Move to Trash confirm leaves the capture alone", async () => {
+    // The menu is a second door to soft-delete, so it must honor
+    // `library.confirmBeforeTrash` exactly like the tile's DeleteConfirm
+    // popover does — otherwise the menu is a confirm-free bypass.
+    confirmMock.mockReturnValue(false);
+    await renderLibrary();
+    const menu = await openMenu();
+
+    await act(async () => {
+      rowByLabel(menu, "Move to Trash").click();
+      await Promise.resolve();
+    });
+
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(dispatchMock.mock.calls.some(([name]) => name === "library:delete")).toBe(false);
   });
 
   test("picking a row closes the menu", async () => {

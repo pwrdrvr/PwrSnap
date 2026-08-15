@@ -147,7 +147,11 @@ import { insertVideoMetadata } from "./persistence/video-repo";
 import { failOrphanedRunsOnBoot } from "./persistence/ai-runs-repo";
 import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
-import { persistCaptureFromTempV2, sweepBundleTrash } from "./persistence/bundle-store";
+import {
+  cancelScheduledRepacks,
+  persistCaptureFromTempV2,
+  sweepBundleTrash
+} from "./persistence/bundle-store";
 import { getCacheSourcePath } from "./persistence/paths";
 import { runBundleFilenameMaintenanceOnBoot } from "./persistence/bundle-filename-maintenance";
 import { runVideoFilenameMaintenanceOnBoot } from "./persistence/video-filename-maintenance";
@@ -2268,6 +2272,11 @@ export function bootstrapApp(): void {
     // Electron handle's `app.close()` returns but the OS process
     // hasn't actually exited.
     destroyTextBakePool();
+    // Cancel pending debounced re-packs BEFORE the DB closes — a
+    // repack timer firing post-close throws uncaught from
+    // getCaptureById. Next boot's edits_version check re-packs
+    // whatever this drops.
+    cancelScheduledRepacks();
     closeDatabase();
   });
 }

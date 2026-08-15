@@ -33,7 +33,8 @@ import {
   exportStrategyFromSettings,
   resolveExportLadder,
   rungForPreset,
-  sizzleProjectHasCapture
+  sizzleProjectHasCapture,
+  sizzleSceneCaptureIds
 } from "@pwrsnap/shared";
 import type {
   AiEnrichmentBudgetStatus,
@@ -2053,15 +2054,39 @@ function ProjectTab({
   // Pulled in one round via library:listByIds, fall-through is the
   // capture for THIS row (already known) so the very common
   // "single-scene project" case doesn't pay a fetch.
-  type SceneCapture = { sceneIdx: number; record: CaptureRecord | null };
+  // One row per CLIP, not per scene: a reel is "one scene = one
+  // voiceover over N clips", so a scene's `captureId` is only its FIRST
+  // clip. Listing by scene would show a 12-clip reel as a single row and
+  // never highlight the capture this rail is showing.
+  type SceneCapture = {
+    sceneIdx: number;
+    clipIdx: number;
+    sceneId: string;
+    captureId: string;
+    record: CaptureRecord | null;
+  };
+  const clipRefs = useMemo(
+    () =>
+      active === null
+        ? []
+        : active.scenes.flatMap((s, sceneIdx) =>
+            sizzleSceneCaptureIds(s).map((captureId, clipIdx) => ({
+              sceneIdx,
+              clipIdx,
+              sceneId: s.id,
+              captureId
+            }))
+          ),
+    [active]
+  );
   const [sceneCaptures, setSceneCaptures] = useState<SceneCapture[]>([]);
   useEffect(() => {
-    if (active === null) {
+    if (clipRefs.length === 0) {
       setSceneCaptures([]);
       return;
     }
     let mounted = true;
-    const ids = active.scenes.map((s) => s.captureId);
+    const ids = [...new Set(clipRefs.map((c) => c.captureId))];
     void dispatch("library:listByIds", { ids }).then((r) => {
       if (!mounted) return;
       if (!r.ok) {
@@ -2070,16 +2095,13 @@ function ProjectTab({
       }
       const byId = new Map(r.value.rows.map((c) => [c.id, c]));
       setSceneCaptures(
-        active.scenes.map((s, i) => ({
-          sceneIdx: i,
-          record: byId.get(s.captureId) ?? null
-        }))
+        clipRefs.map((c) => ({ ...c, record: byId.get(c.captureId) ?? null }))
       );
     });
     return () => {
       mounted = false;
     };
-  }, [active]);
+  }, [clipRefs]);
 
   if (containingProjects.length === 0) {
     // Empty state: this capture isn't in any project. Show every
@@ -2151,16 +2173,16 @@ function ProjectTab({
         {sceneCaptures.length === 0 ? (
           <li className="psl__proj-hint">Loading scenes…</li>
         ) : (
-          sceneCaptures.map(({ sceneIdx, record: r }) => {
+          sceneCaptures.map(({ sceneIdx, clipIdx, sceneId, record: r }, rowIdx) => {
             const scene = active!.scenes[sceneIdx]!;
             const isCurrent = r?.id === record.id;
             return (
               <li
-                key={scene.id}
+                key={`${sceneId}:${clipIdx}`}
                 className={"psl__proj-scene" + (isCurrent ? " is-current" : "")}
               >
                 <span className="psl__proj-scene-order">
-                  {(sceneIdx + 1).toString().padStart(2, "0")}
+                  {(rowIdx + 1).toString().padStart(2, "0")}
                 </span>
                 <span className="psl__proj-scene-thumb">
                   {r === null ? (
@@ -2189,11 +2211,13 @@ function ProjectTab({
                     {r?.source_app_name ?? "—"}
                   </span>
                   <span className="psl__proj-scene-script">
-                    {scene.scriptLine.trim().length === 0
-                      ? "— no script —"
-                      : scene.scriptLine.length > 60
-                        ? scene.scriptLine.slice(0, 57) + "…"
-                        : scene.scriptLine}
+                    {clipIdx > 0
+                      ? "↳ same scene"
+                      : scene.scriptLine.trim().length === 0
+                        ? "— no script —"
+                        : scene.scriptLine.length > 60
+                          ? scene.scriptLine.slice(0, 57) + "…"
+                          : scene.scriptLine}
                   </span>
                 </span>
               </li>

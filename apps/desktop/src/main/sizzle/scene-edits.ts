@@ -10,6 +10,35 @@ import {
   sizzleProjectCaptureIds,
   type SizzleScene
 } from "@pwrsnap/shared";
+import { SIZZLE_LIMITS } from "../handlers/sizzle-validators";
+
+/**
+ * A scene may hold at most this many clips. The bus validator rejects
+ * an over-cap scene, and the store's sanitizer does NOT — so a commit
+ * that ignored the cap would write a project that can never be saved
+ * again from the editor (every later `sizzle:update` re-sends the whole
+ * scenes array and is rejected). Spill into further scenes instead.
+ */
+const MAX_CLIPS_PER_SCENE = SIZZLE_LIMITS.sequenceBeatsMax;
+
+function chunked(ids: readonly string[], size: number): string[][] {
+  const out: string[][] = [];
+  for (let i = 0; i < ids.length; i += size) out.push([...ids.slice(i, i + size)]);
+  return out;
+}
+
+/**
+ * The scenes a brand-new reel starts as: one scene holding every
+ * capture as a clip, spilling into additional scenes past the per-scene
+ * clip cap.
+ */
+export function newSequenceScenesForCaptures(
+  captureIds: readonly string[]
+): SizzleScene[] {
+  return chunked(captureIds, MAX_CLIPS_PER_SCENE).map((group) =>
+    newSizzleSequenceScene(group)
+  );
+}
 
 /**
  * Merge captures into a reel. New captures join the LAST scene as clips
@@ -33,15 +62,28 @@ export function appendCapturesToScenes(
     toAppend.push(id);
   }
   if (toAppend.length === 0) return [...scenes];
-  const last = scenes[scenes.length - 1];
+  const out = [...scenes];
+  let rest: readonly string[] = toAppend;
+  const last = out[out.length - 1];
   if (last !== undefined && last.kind === "sequence") {
-    const beats = normalizeSizzleSequenceBeatContinuity([
-      ...(last.beats ?? []),
-      ...toAppend.map((id) => newSizzleSequenceBeat(id))
-    ]);
-    return [...scenes.slice(0, -1), { ...last, beats }];
+    const existingBeats = last.beats ?? [];
+    // Only fill the last scene up to the cap; the remainder spills into
+    // new scenes rather than making the project unsavable.
+    const room = Math.max(0, MAX_CLIPS_PER_SCENE - existingBeats.length);
+    if (room > 0) {
+      const fill = rest.slice(0, room);
+      rest = rest.slice(room);
+      out[out.length - 1] = {
+        ...last,
+        beats: normalizeSizzleSequenceBeatContinuity([
+          ...existingBeats,
+          ...fill.map((id) => newSizzleSequenceBeat(id))
+        ])
+      };
+    }
   }
-  return [...scenes, newSizzleSequenceScene(toAppend)];
+  out.push(...newSequenceScenesForCaptures(rest));
+  return out;
 }
 
 /**

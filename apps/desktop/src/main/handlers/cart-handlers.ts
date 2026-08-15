@@ -16,7 +16,6 @@ import yazl from "yazl";
 import {
   EVENT_CHANNELS,
   err,
-  newSizzleSequenceScene,
   ok,
   slugifyFilenameStem,
   type CartExportProgressEvent,
@@ -29,7 +28,7 @@ import {
 import { bus } from "../command-bus";
 import { getCartStore } from "../cart/cart-store";
 import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-store";
-import { appendCapturesToScenes } from "../sizzle/scene-edits";
+import { appendCapturesToScenes, newSequenceScenesForCaptures } from "../sizzle/scene-edits";
 import { getCaptureById } from "../persistence/captures-repo";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 import { resolveImagePresetFile } from "../render/image-presets";
@@ -287,7 +286,7 @@ export function registerCartHandlers(): void {
       // editor action. `store.update` runs sanitizeScenes so the shape
       // is normalized.
       const created = await sizzle.create(projectName);
-      const scenes = [newSizzleSequenceScene(current.captureIds)];
+      const scenes = newSequenceScenesForCaptures(current.captureIds);
       const updated = await sizzle.update(created.id, { scenes });
       // Cart did its job — clear it. (Clear AFTER the project write
       // succeeds so a failed create doesn't lose the user's cart.)

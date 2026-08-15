@@ -7,7 +7,12 @@ import {
   sizzleSceneCaptureIds,
   type SizzleScene
 } from "@pwrsnap/shared";
-import { appendCapturesToScenes, removeCaptureFromScenes } from "../scene-edits";
+import {
+  appendCapturesToScenes,
+  newSequenceScenesForCaptures,
+  removeCaptureFromScenes
+} from "../scene-edits";
+import { SIZZLE_LIMITS } from "../../handlers/sizzle-validators";
 
 function simple(id: string, captureId: string): SizzleScene {
   return {
@@ -91,6 +96,44 @@ describe("appendCapturesToScenes", () => {
     const out = appendCapturesToScenes([seq], ["a"]);
     expect(out).toEqual([seq]);
     expect(out).not.toBe([seq]);
+  });
+});
+
+describe("per-scene clip cap", () => {
+  const cap = SIZZLE_LIMITS.sequenceBeatsMax;
+  const ids = (n: number, prefix = "c"): string[] =>
+    Array.from({ length: n }, (_, i) => `${prefix}${i}`);
+
+  test("a fresh reel spills past the cap into further scenes instead of one unsavable scene", () => {
+    const scenes = newSequenceScenesForCaptures(ids(cap + 5));
+    expect(scenes).toHaveLength(2);
+    expect(scenes[0]!.beats).toHaveLength(cap);
+    expect(scenes[1]!.beats).toHaveLength(5);
+    // Order is preserved across the split.
+    expect(scenes[0]!.beats![0]!.captureId).toBe("c0");
+    expect(scenes[1]!.beats![0]!.captureId).toBe(`c${cap}`);
+    for (const scene of scenes) {
+      expect(scene.beats!.length).toBeLessThanOrEqual(cap);
+    }
+  });
+
+  test("appending fills the last scene only up to the cap, then spills", () => {
+    const start = newSequenceScenesForCaptures(ids(cap - 2));
+    const out = appendCapturesToScenes(start, ids(5, "n"));
+    expect(out).toHaveLength(2);
+    expect(out[0]!.beats).toHaveLength(cap);
+    expect(out[1]!.beats).toHaveLength(3);
+    for (const scene of out) {
+      expect(scene.beats!.length).toBeLessThanOrEqual(cap);
+    }
+  });
+
+  test("a full last scene is left alone and the whole batch spills", () => {
+    const start = newSequenceScenesForCaptures(ids(cap));
+    const out = appendCapturesToScenes(start, ids(2, "n"));
+    expect(out).toHaveLength(2);
+    expect(out[0]!.beats).toHaveLength(cap);
+    expect(out[1]!.beats!.map((b) => b.captureId)).toEqual(["n0", "n1"]);
   });
 });
 

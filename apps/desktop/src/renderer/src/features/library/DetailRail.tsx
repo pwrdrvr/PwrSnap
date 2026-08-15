@@ -1617,7 +1617,9 @@ export function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): React
   const accounting = `${tokens}\n${mediaText}`;
 
   return (
-    <span className="psl__ai-usage" aria-label="AI usage" title={accounting}>
+    // role=group so the aria-label is actually exposed — a bare <span>
+    // with aria-label and no role is not reliably announced.
+    <span className="psl__ai-usage" role="group" aria-label="AI usage" title={accounting}>
       <span className="psl__ai-usage-model" title={modelName}>
         {modelName}
       </span>

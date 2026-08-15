@@ -2615,6 +2615,7 @@
   min-width: 0;
   display: inline-flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: 5px;
 }
 .psl__ai-usage-cost {
@@ -2633,10 +2634,11 @@
   white-space: nowrap;
 }
 /* Shown only when the agent overrode the user's model pick — draw the eye to it
-   with the accent without alarming. Wraps to its own line inside the pill row
-   because it is a sentence, not a datum. */
+   with the accent without alarming. `flex-basis: 100%` drops it onto its own
+   line inside the wrapping strip: it is a sentence, not a datum, and letting it
+   sit inline would push the cost off the end of the pill row. */
 .psl__ai-usage-override {
-  flex: 0 0 auto;
+  flex: 0 0 100%;
 }
 .psl__ai-usage-override span {
   color: var(--accent);
@@ -3861,7 +3863,6 @@
    horizontal padding. */
 .psl__right-footer .fo__copy-card {
   gap: 0;
-  border-radius: 8px;
   transition: transform 120ms var(--ease-out);
 }
 .psl__right-footer .fo__copy-btn {

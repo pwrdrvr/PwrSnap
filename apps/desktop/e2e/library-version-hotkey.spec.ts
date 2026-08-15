@@ -172,8 +172,31 @@ test("library capture actions progressively collapse and hide at narrow widths",
     await expect(quick).toBeHidden();
     await expect(video).toBeHidden();
 
+    const platform = await app.window.evaluate(() => window.pwrsnapApi?.platform);
+    const expectViewToggleCentered = async (): Promise<void> => {
+      const viewToggle = app.window.locator(".psl__topbar-c");
+      await expect(viewToggle).toBeVisible();
+      const centers = await topbar.evaluate((element) => {
+        const header = element.getBoundingClientRect();
+        const toggle = element.querySelector<HTMLElement>(".psl__topbar-c")?.getBoundingClientRect();
+        if (toggle === undefined) throw new Error("missing Library view toggle");
+        return {
+          header: header.left + header.width / 2,
+          toggle: toggle.left + toggle.width / 2
+        };
+      });
+      expect(Math.abs(centers.header - centers.toggle)).toBeLessThanOrEqual(1);
+    };
+
+    await resizeLibrary(app, 571);
+    await expect(topbar).toHaveClass(/\bis-minimal\b/);
+    if (platform !== "win32") await expectViewToggleCentered();
+
     await resizeLibrary(app, 480);
     await expect(topbar).toHaveClass(/\bis-tiny\b/);
+    if (platform !== "win32") {
+      await expectViewToggleCentered();
+    }
     const extents = await topbar.evaluate((element) => ({
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth

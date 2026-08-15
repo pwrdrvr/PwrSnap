@@ -180,6 +180,62 @@ describe("clipboard:copyVideoFile", () => {
   });
 });
 
+// Bus-boundary validation. `resolveVideoExport` is stubbed to always
+// succeed above, so a rejection here can only have come from the
+// validator running BEFORE the resolver — which is the point: the
+// caller-supplied `range` rides all the way to the export cache key
+// and to ffmpeg's `-ss` / `-t`, and `normalizeRange` is a clamp, not
+// a sanitizer.
+describe("video clipboard verbs validate the caller-supplied range", () => {
+  beforeEach(() => {
+    clipboardCalls.length = 0;
+  });
+
+  for (const verb of ["clipboard:copyVideoFile", "clipboard:copyVideoPath"] as const) {
+    test(`${verb} rejects a NaN range without touching the clipboard`, async () => {
+      const result = await bus.dispatch(
+        verb,
+        {
+          captureId: "cap_1",
+          format: "mp4",
+          preset: "med",
+          range: { start: Number.NaN, end: Number.NaN }
+        },
+        { principal: "ipc" }
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected a validation rejection");
+      expect(result.error.kind).toBe("validation");
+      expect(result.error.code).toBe("invalid_range");
+      expect(result.error.message).toContain(verb);
+      // No encode was kicked off and nothing landed on the pasteboard.
+      expect(clipboardCalls).toHaveLength(0);
+    });
+
+    test(`${verb} rejects an inverted range`, async () => {
+      const result = await bus.dispatch(
+        verb,
+        { captureId: "cap_1", format: "mp4", preset: "med", range: { start: 9, end: 2 } },
+        { principal: "ipc" }
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected a validation rejection");
+      expect(result.error.code).toBe("invalid_range");
+      expect(clipboardCalls).toHaveLength(0);
+    });
+
+    test(`${verb} still accepts a well-formed range`, async () => {
+      const result = await bus.dispatch(
+        verb,
+        { captureId: "cap_1", format: "mp4", preset: "med", range: { start: 1, end: 4 } },
+        { principal: "ipc" }
+      );
+      expect(result.ok).toBe(true);
+      expect(clipboardCalls.length).toBeGreaterThan(0);
+    });
+  }
+});
+
 describe("clipboard:copyVideoPath", () => {
   beforeEach(() => {
     clipboardCalls.length = 0;

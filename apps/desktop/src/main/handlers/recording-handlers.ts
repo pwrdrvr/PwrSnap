@@ -55,6 +55,7 @@ import {
   mapVideoResolveError,
   resolveVideoExport
 } from "../recording/video-export-resolver";
+import { validateVideoExportRequest } from "../recording/video-export-validation";
 import { ensureVideoPoster } from "../recording/video-poster";
 import { ensureVideoFrames, videoAssetDir } from "../recording/video-frames";
 import { extractVideoAudio } from "../sizzle/audio-extract";
@@ -102,46 +103,14 @@ async function fileHasBytes(path: string): Promise<boolean> {
 }
 
 /**
- * Validate a video:export request without crossing the bus. We can't
- * trust the renderer (or a future HTTP/MCP transport) to send well-
- * formed audio or range payloads, so every arm is checked.
+ * Validate a video:export request without crossing the bus. Thin
+ * wrapper over the shared `validateVideoExportRequest` — the same
+ * gate `clipboard:copyVideoFile` / `clipboard:copyVideoPath` /
+ * `video:prepareDrag` run, so no verb can accept a payload another
+ * one rejects.
  */
 function validateExportRequest(req: VideoExportRequest): Result<VideoExportRequest, PwrSnapError> {
-  if (typeof req.captureId !== "string" || req.captureId.length === 0) {
-    return err(validationError("invalid_capture_id", "video:export: captureId must be a non-empty string"));
-  }
-  if (req.format !== "gif" && req.format !== "mp4") {
-    return err(validationError("invalid_format", "video:export: format must be \"gif\" or \"mp4\""));
-  }
-  if (req.preset !== "low" && req.preset !== "med" && req.preset !== "high") {
-    return err(
-      validationError(
-        "invalid_preset",
-        "video:export: preset must be \"low\", \"med\", or \"high\""
-      )
-    );
-  }
-  if (req.range !== undefined) {
-    const r = req.range;
-    if (typeof r.start !== "number" || typeof r.end !== "number") {
-      return err(validationError("invalid_range", "video:export: range start/end must be numbers"));
-    }
-    if (!Number.isFinite(r.start) || !Number.isFinite(r.end)) {
-      return err(validationError("invalid_range", "video:export: range start/end must be finite"));
-    }
-    if (r.end < r.start) {
-      return err(validationError("invalid_range", "video:export: range end must be >= start"));
-    }
-  }
-  if (req.audio !== undefined) {
-    if (
-      typeof req.audio.includeSystemAudio !== "boolean" ||
-      typeof req.audio.includeMicrophone !== "boolean"
-    ) {
-      return err(validationError("invalid_audio", "video:export: audio toggles must be booleans"));
-    }
-  }
-  return ok(req);
+  return validateVideoExportRequest(req, "video:export");
 }
 
 let serviceOverrideForTests: RecordingService | null = null;
@@ -592,6 +561,11 @@ export function registerRecordingHandlers(): void {
   // `video:drag-start` (in `apps/desktop/src/main/ipc.ts`) calls
   // this then fires `event.sender.startDrag({ file, icon })`.
   bus.register("video:prepareDrag", async (req) => {
+    // `ipc.ts::parseVideoDragRequest` already screens the native
+    // drag payload, but the bus is reachable without it (HTTP RPC,
+    // MCP), so the verb validates for itself too.
+    const valid = validateVideoExportRequest(req, "video:prepareDrag");
+    if (!valid.ok) return valid;
     const resolved = await resolveVideoExport(req);
     if (!resolved.ok) {
       return err(mapVideoResolveError(resolved.error, "video:prepareDrag", req.captureId));

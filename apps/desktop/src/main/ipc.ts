@@ -244,7 +244,11 @@ function parseVideoDragRequest(req: unknown): VideoExportCoordinates | null {
       typeof r.end === "number" &&
       Number.isFinite(r.start) &&
       Number.isFinite(r.end) &&
-      r.end >= r.start
+      r.start >= 0 &&
+      // Must agree with `validateVideoExportRequest`, which the
+      // `video:prepareDrag` verb runs — a range this parser lets
+      // through only to have the verb reject it would kill the drag.
+      r.end > r.start
     ) {
       range = { start: r.start, end: r.end };
     }

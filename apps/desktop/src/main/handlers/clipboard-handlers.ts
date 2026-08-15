@@ -83,6 +83,7 @@ import { notifyClipboardChanged } from "../clipboard-events";
 import { writeMultiFormatClipboard } from "../native-clipboard";
 import { composeV2 } from "../render/compose-tree";
 import { mapVideoResolveError, resolveVideoExport } from "../recording/video-export-resolver";
+import { validateVideoExportRequest } from "../recording/video-export-validation";
 import { getMainLogger } from "../log";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
 import { getActiveExportStrategy } from "./settings-handlers";
@@ -427,6 +428,11 @@ export function registerClipboardHandlers(): void {
   // split: card click = "give me the file"; FILE chip = "give me
   // the path".
   bus.register("clipboard:copyVideoFile", async (req) => {
+    // Same gate `video:export` runs — the caller-supplied `range`
+    // reaches ffmpeg and the export cache key, and `normalizeRange`
+    // is a clamp, not a sanitizer (NaN survives it).
+    const valid = validateVideoExportRequest(req, "clipboard:copyVideoFile");
+    if (!valid.ok) return valid;
     const resolved = await resolveVideoExport(req);
     if (!resolved.ok) {
       return err(mapVideoResolveError(resolved.error, "clipboard:copyVideoFile", req.captureId));
@@ -476,6 +482,8 @@ export function registerClipboardHandlers(): void {
   // equivalent of dragging the file, for pasting paths into a
   // terminal or editor.
   bus.register("clipboard:copyVideoPath", async (req) => {
+    const valid = validateVideoExportRequest(req, "clipboard:copyVideoPath");
+    if (!valid.ok) return valid;
     const resolved = await resolveVideoExport(req);
     if (!resolved.ok) {
       return err(mapVideoResolveError(resolved.error, "clipboard:copyVideoPath", req.captureId));

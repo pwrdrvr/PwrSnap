@@ -2091,6 +2091,15 @@ function Editor(props: EditorProps): ReactElement {
     );
   };
 
+  // The render path hard-rejects a scene whose narration is empty (a
+  // scene IS one voiceover over its clips), so surface that as a
+  // precondition on the button instead of letting the user discover it
+  // as a failed render after the fact.
+  const unscriptedSceneIdx = project.scenes.findIndex(
+    (scene) => scene.scriptLine.trim().length === 0
+  );
+  const unscriptedSceneNumber =
+    unscriptedSceneIdx === -1 ? null : unscriptedSceneIdx + 1;
   const totalScenes = project.scenes.length;
   const rendering =
     status.phase !== "idle" &&
@@ -2823,7 +2832,13 @@ function Editor(props: EditorProps): ReactElement {
           className="szl__btn-primary"
           onClick={onRender}
           type="button"
-          disabled={rendering || project.scenes.length === 0}
+          disabled={rendering || project.scenes.length === 0 || unscriptedSceneNumber !== null}
+          title={
+            unscriptedSceneNumber === null
+              ? undefined
+              : `Scene ${unscriptedSceneNumber} has no narration — a scene is one voiceover over its clips, so it needs a script before the reel can render.`
+          }
+          data-testid="sizzle-render"
         >
           {rendering ? `Rendering… ${Math.round(status.ratio * 100)}%` : "Render"}
         </button>

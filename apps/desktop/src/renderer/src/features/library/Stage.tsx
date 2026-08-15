@@ -309,7 +309,15 @@ function StageBody({
           // (speed / crop / split / cursor highlight) is a follow-up —
           // see docs/plans/2026-08-15-001-feat-video-transport-trim-plan.md.
           record.video !== null && record.video !== undefined ? (
-            <VideoStage record={record} video={record.video} trim={videoTrim} />
+            <VideoStage
+              record={record}
+              video={record.video}
+              trim={videoTrim}
+              // Reel keeps ←/→ on prev/next-capture navigation until
+              // the user clicks into the video; Focus grabs the
+              // keyboard on mount. `dismissible` is the mode flag.
+              reel={!dismissible}
+            />
           ) : (
             <video
               src={captureSrcUrl(record.id)}

@@ -55,11 +55,28 @@ export type VideoStageProps = {
    *  the persisted `defaultRange`, which lags the timeline by the
    *  persist debounce plus an IPC round-trip. */
   trim: UseVideoTrimRange;
+  /** True in Reel mode. Reel is a BROWSING surface — ←/→ walk the
+   *  filmstrip between captures — so the stage does not grab focus on
+   *  mount there. Focus mode is a single-capture surface with nothing
+   *  else competing for the keyboard, so it still autofocuses and the
+   *  transport owns the arrows immediately.
+   *
+   *  Frame stepping is not lost in Reel: the stage's keydown handler
+   *  only runs when focus is already inside it, and one click on the
+   *  video puts it there (see `onPointerDownCapture`). Until then the
+   *  keydown targets `document.body`, never reaches this subtree, and
+   *  the Library's window-level handler navigates as it should. */
+  reel?: boolean;
 };
 
 const FILM_LANE_H = 56;
 
-export function VideoStage({ record, video, trim }: VideoStageProps): ReactElement {
+export function VideoStage({
+  record,
+  video,
+  trim,
+  reel = false
+}: VideoStageProps): ReactElement {
   const captureId = record.id;
   const durationSec = video.durationSec;
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -290,11 +307,22 @@ export function VideoStage({ record, video, trim }: VideoStageProps): ReactEleme
   }, [captureId, stopShuttle]);
 
   // Focus the stage on mount so the keyboard model is live immediately
-  // (Focus mode has nothing else that wants focus). `preventScroll`
-  // keeps the grid from jumping under the Focus overlay.
+  // — Focus mode ONLY. Focus is a single-capture surface with nothing
+  // else that wants focus, so claiming the arrows is free there.
+  //
+  // Reel is not: it's a browsing surface whose whole point is walking
+  // captures with ←/→ (Library's window keydown handler). Autofocusing
+  // here handed every arrow press to the transport — the stage's
+  // handler `stopPropagation`s a matched intent, and React's root-
+  // container delegation means that stops the native event before it
+  // reaches the window listener — so prev/next-capture navigation died
+  // the moment a video scrolled into the reel. Frame stepping still
+  // works in Reel once the user clicks into the video, which focuses
+  // the root and routes keydowns through this subtree.
   useEffect(() => {
+    if (reel) return;
     rootRef.current?.focus({ preventScroll: true });
-  }, [captureId]);
+  }, [captureId, reel]);
 
   useEffect(() => () => stopShuttle(), [stopShuttle]);
 

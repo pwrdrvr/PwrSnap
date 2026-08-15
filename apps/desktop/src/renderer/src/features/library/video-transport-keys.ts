@@ -15,6 +15,11 @@
 // while the viewer has focus — the stage stops propagation so the
 // window-level handler never sees them. Everything else (Esc, ⌘F,
 // ⌘[ / ⌘]) falls through untouched.
+//
+// "while the viewer has focus" is load-bearing: Focus mode autofocuses
+// the stage on mount, Reel mode does NOT (Reel's ←/→ walk the
+// filmstrip between captures until the user clicks into the video).
+// See `VideoStage.tsx`'s focus effect.
 
 export type TransportIntent =
   | { type: "togglePlay" }

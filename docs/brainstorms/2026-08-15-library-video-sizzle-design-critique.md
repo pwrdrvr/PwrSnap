@@ -391,7 +391,7 @@ Reviewed at `7f4adcc3` in `/Users/huntharo/.pwragent/worktrees/mst7dz52/PwrSnap`
 | 1 sidebar facets | [#392](https://github.com/pwrdrvr/PwrSnap/pull/392) | `main` | scope/types/sourceApps split, ⌘/⌥, hover **only**, chip row, `excludeAppBundleIds` (NULL-safe `NOT IN`; sidebar exclude is client-side for now) |
 | 2 palette follow-ups | [#390](https://github.com/pwrdrvr/PwrSnap/pull/390) | #385 | follow/pinned anchor mode + 📌, preview drawer, both persisted in Settings |
 | 3 right bar | [#388](https://github.com/pwrdrvr/PwrSnap/pull/388) | `main` | one separator (`pinnedWidthPx="fill"`), full-height rail with footer in the panel, merged Codex/cost row, FILE folded into cards |
-| 4 video phase A | in flight | `main` | plan doc + transport + filmstrip/waveform timeline + trim → export + FloatOver mini-trim |
+| 4 video phase A | [#393](https://github.com/pwrdrvr/PwrSnap/pull/393) | `main` | plan doc, `VideoStage`/`VideoTransport` (keys: space, J/K/L, ←→ frame, ⇧←→ 1 s, I/O, Home/End), `VideoTimeline` (filmstrip via new `video:frames`, waveform via `video:audio`, in/out handles → `defaultRange`), export cards + FloatOver mini-trim honor the range |
 | 5 grid tiles | [#391](https://github.com/pwrdrvr/PwrSnap/pull/391) | `main` | scrims, 24 px checkbox + selection mode, 28 px actions, unified chip chrome, capture context menu (+ new `capture:saveAs`) |
 | 6 slice 1 | [#387](https://github.com/pwrdrvr/PwrSnap/pull/387) | `main` | one scene, N clips by default; Scene/Clip vocabulary; clip-aware membership |
 | 6 slice 2 | [#389](https://github.com/pwrdrvr/PwrSnap/pull/389) | #387 | rail → crumb dropdown, resizable chat, reel-settings chip, **Split into scenes** |

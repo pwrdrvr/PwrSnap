@@ -326,6 +326,33 @@ export type VideoPresetMetricsResult = {
   metrics: VideoPresetMetric[];
 };
 
+/**
+ * Request for `video:frames`. `count` defaults to 24 and is clamped
+ * to [2, 96]; `frameWidth` defaults to 96 and is clamped to [16, 320].
+ * Both are quantized server-side so a slightly different renderer
+ * measurement doesn't fan out into dozens of near-identical strips.
+ */
+export type VideoFramesRequest = {
+  captureId: string;
+  count?: number | undefined;
+  frameWidth?: number | undefined;
+};
+
+/** Contact-strip descriptor returned by `video:frames`. The strip is
+ *  `frameCount` frames laid out left→right, each `frameWidth` ×
+ *  `frameHeight` px, sampled at `(i + 0.5) / frameCount` of the clip. */
+export type VideoFramesResult = {
+  url: string;
+  frameCount: number;
+  frameWidth: number;
+  frameHeight: number;
+};
+
+/** Result of `video:audio`. */
+export type VideoAudioResult =
+  | { hasAudio: false }
+  | { hasAudio: true; url: string; mimeType: "audio/mp4" };
+
 /** Response from `video:prepareDrag` — mirrors `capture:prepareDrag`.
  *  `path` is the human-friendly file alias (e.g.
  *  `<filename-stem>-<preset>.<ext>`); `iconPath` points at the poster
@@ -3686,6 +3713,30 @@ export type Commands = {
   "video:setDefaultRange": {
     req: { captureId: string; range: VideoRange };
     res: void;
+  };
+  /**
+   * Filmstrip contact strip for the Library / float-over timeline.
+   * Extracts `count` evenly spaced frames (each `frameWidth` px wide)
+   * into a single horizontal JPEG under the per-capture render cache
+   * and returns a `pwrsnap-cache://v/<id>/…` URL the sandboxed
+   * renderer can put in an `<img>`. Cached on disk by
+   * `(captureId, count, frameWidth)`; concurrent callers share one
+   * ffmpeg run. See plan 2026-08-15-001.
+   */
+  "video:frames": {
+    req: VideoFramesRequest;
+    res: VideoFramesResult;
+  };
+  /**
+   * Full-clip audio track for the timeline waveform lane. Returns
+   * `{ hasAudio: false }` when the source recorded no audio; otherwise
+   * a `pwrsnap-cache://v/<id>/audio.m4a` URL the renderer fetches
+   * into a Blob for wavesurfer. Extraction goes through the sizzle
+   * `audio-extract` path (native AAC).
+   */
+  "video:audio": {
+    req: { captureId: string };
+    res: VideoAudioResult;
   };
   /**
    * Render and return a GIF or MP4 export for the requested range,

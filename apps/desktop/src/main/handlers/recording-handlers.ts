@@ -9,6 +9,8 @@
 //   • Video export is a derived-artifact path keyed by the same
 //     command bus the renderer uses for image clipboard/drag.
 
+import { copyFile, mkdir, rename, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { ok, err } from "@pwrsnap/shared";
 import type {
   PwrSnapError,
@@ -54,6 +56,10 @@ import {
   resolveVideoExport
 } from "../recording/video-export-resolver";
 import { ensureVideoPoster } from "../recording/video-poster";
+import { ensureVideoFrames, videoAssetDir } from "../recording/video-frames";
+import { extractVideoAudio } from "../sizzle/audio-extract";
+import { videoAssetUrl } from "../protocols-parse";
+import { broadcastCapturesChanged } from "../events";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
@@ -80,6 +86,19 @@ function validationError(code: string, message: string): PwrSnapError {
 
 function recordingError(code: string, message: string, cause?: unknown): PwrSnapError {
   return { kind: "capture", code, message, cause };
+}
+
+/** Filename of the extracted full-clip audio under the video asset dir.
+ *  Must stay in the `parseVideoAssetUrl` whitelist. */
+const VIDEO_AUDIO_ASSET = "audio.m4a";
+
+async function fileHasBytes(path: string): Promise<boolean> {
+  try {
+    const s = await stat(path);
+    return s.isFile() && s.size > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -328,7 +347,103 @@ export function registerRecordingHandlers(): void {
       return err(validationError("not_a_video", `video:setDefaultRange: ${req.captureId} is not a video capture`));
     }
     setDefaultRange(req.captureId, normalizeRange(req.range, meta.durationSec));
+    // The Library revalidates the record on this broadcast, so the
+    // DetailRail's export eyebrow / metrics and any other window
+    // (float-over) pick up the new `defaultRange` without polling.
+    broadcastCapturesChanged([req.captureId]);
     return ok(undefined);
+  });
+
+  // ── video:frames ──────────────────────────────────────────────────
+  //
+  // Filmstrip contact strip for the timeline. Extraction + on-disk
+  // cache live in `recording/video-frames.ts`; the renderer displays
+  // the returned `pwrsnap-cache://v/…` URL through the serve-only
+  // protocol arm.
+  bus.register("video:frames", async (req) => {
+    if (typeof req.captureId !== "string" || req.captureId.length === 0) {
+      return err(validationError("invalid_capture_id", "video:frames: captureId must be a non-empty string"));
+    }
+    if (req.count !== undefined && (typeof req.count !== "number" || !Number.isFinite(req.count))) {
+      return err(validationError("invalid_count", "video:frames: count must be a finite number"));
+    }
+    if (
+      req.frameWidth !== undefined &&
+      (typeof req.frameWidth !== "number" || !Number.isFinite(req.frameWidth))
+    ) {
+      return err(validationError("invalid_frame_width", "video:frames: frameWidth must be a finite number"));
+    }
+    const record = getCaptureById(req.captureId);
+    if (record === null) {
+      return err(validationError("not_found", `video:frames: capture not found: ${req.captureId}`));
+    }
+    if (record.kind !== "video" || record.video === null || record.video === undefined) {
+      return err(validationError("not_a_video", `video:frames: ${req.captureId} is not a video capture`));
+    }
+    try {
+      const frames = await ensureVideoFrames(record, record.video, {
+        count: req.count,
+        frameWidth: req.frameWidth
+      });
+      return ok({
+        url: videoAssetUrl(record.id, frames.fileName),
+        frameCount: frames.spec.count,
+        frameWidth: frames.spec.frameWidth,
+        frameHeight: frames.spec.frameHeight
+      });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      log.error("video:frames failed", { captureId: req.captureId, message });
+      return err({ kind: "render", code: "video_frames_failed", message, cause });
+    }
+  });
+
+  // ── video:audio ───────────────────────────────────────────────────
+  //
+  // Full-clip audio for the waveform lane. Reuses the sizzle
+  // native-audio extractor (content-addressed under sizzle-cache) and
+  // mirrors the result into the per-capture video asset dir so the
+  // `pwrsnap-cache://v/<id>/audio.m4a` arm can serve it.
+  bus.register("video:audio", async (req) => {
+    if (typeof req.captureId !== "string" || req.captureId.length === 0) {
+      return err(validationError("invalid_capture_id", "video:audio: captureId must be a non-empty string"));
+    }
+    const record = getCaptureById(req.captureId);
+    if (record === null) {
+      return err(validationError("not_found", `video:audio: capture not found: ${req.captureId}`));
+    }
+    if (record.kind !== "video" || record.video === null || record.video === undefined) {
+      return err(validationError("not_a_video", `video:audio: ${req.captureId} is not a video capture`));
+    }
+    if (!record.video.hasSystemAudio && !record.video.hasMicrophoneAudio) {
+      return ok({ hasAudio: false as const });
+    }
+    if (record.legacy_src_path === null) {
+      return err(validationError("no_video_path", `video:audio: ${req.captureId} has no source path`));
+    }
+    try {
+      const target = join(videoAssetDir(record.id), VIDEO_AUDIO_ASSET);
+      if (!(await fileHasBytes(target))) {
+        const extracted = await extractVideoAudio({
+          videoPath: record.legacy_src_path,
+          startSec: 0,
+          durationSec: record.video.durationSec
+        });
+        await mkdir(videoAssetDir(record.id), { recursive: true });
+        const tmp = `${target}.${process.pid}.tmp`;
+        await copyFile(extracted, tmp);
+        await rename(tmp, target);
+      }
+      return ok({
+        hasAudio: true as const,
+        url: videoAssetUrl(record.id, VIDEO_AUDIO_ASSET),
+        mimeType: "audio/mp4" as const
+      });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      log.error("video:audio failed", { captureId: req.captureId, message });
+      return err({ kind: "render", code: "video_audio_failed", message, cause });
+    }
   });
 
   bus.register("video:export", async (req) => {

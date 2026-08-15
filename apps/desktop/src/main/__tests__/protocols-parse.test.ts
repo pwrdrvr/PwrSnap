@@ -11,7 +11,9 @@ import {
   parseCacheUrl,
   parseCaptureId,
   parseSourceUrl,
-  SCHEMES
+  parseVideoAssetUrl,
+  SCHEMES,
+  videoAssetUrl
 } from "../protocols-parse";
 
 // A valid 64-char lowercase-hex content hash for the per-layer-source URL.
@@ -288,5 +290,48 @@ describe("parseAppIconBundleId", () => {
   test("uses SCHEMES.appIcon", () => {
     expect(parseAppIconBundleId(`${SCHEMES.appIcon}://r/com.apple.finder`))
       .toBe("com.apple.finder");
+  });
+});
+
+describe("parseVideoAssetUrl", () => {
+  test("parses filmstrip + audio assets and preserves capture-id case", () => {
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/AbC_1-x/frames-n24-w96.jpg")).toEqual({
+      captureId: "AbC_1-x",
+      asset: "frames-n24-w96.jpg"
+    });
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/audio.m4a")).toEqual({
+      captureId: "cap",
+      asset: "audio.m4a"
+    });
+  });
+
+  test("strips cache-buster query and trailing slash", () => {
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/audio.m4a?v=3")?.asset).toBe("audio.m4a");
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-n8-w64.jpg/")?.asset).toBe(
+      "frames-n8-w64.jpg"
+    );
+  });
+
+  test("rejects anything outside the asset whitelist (no traversal, no free-form names)", () => {
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/../../secrets.bin")).toBeNull();
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/poster.png")).toBeNull();
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-n24-w96.png")).toBeNull();
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-nx-w96.jpg")).toBeNull();
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/a/audio.m4a")).toBeNull();
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap")).toBeNull();
+    expect(parseVideoAssetUrl("pwrsnap-cache://v//audio.m4a")).toBeNull();
+  });
+
+  test("rejects the r/ render-cache shape and other schemes", () => {
+    expect(parseVideoAssetUrl("pwrsnap-cache://r/cap/320w.webp")).toBeNull();
+    expect(parseVideoAssetUrl("pwrsnap-capture://v/cap/audio.m4a")).toBeNull();
+    // and vice-versa: the render-cache parser doesn't accept v/
+    expect(parseCacheUrl("pwrsnap-cache://v/cap/audio.m4a")).toBeNull();
+  });
+
+  test("videoAssetUrl round-trips through the parser", () => {
+    const url = videoAssetUrl("Cap_9", "frames-n24-w96.jpg");
+    expect(url).toBe(`${SCHEMES.cache}://v/Cap_9/frames-n24-w96.jpg`);
+    expect(parseVideoAssetUrl(url)).toEqual({ captureId: "Cap_9", asset: "frames-n24-w96.jpg" });
   });
 });

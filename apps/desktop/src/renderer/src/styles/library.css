@@ -3049,6 +3049,12 @@
 .psl__status-l, .psl__status-r { display: flex; gap: 14px; align-items: center; }
 .psl__status b { color: var(--text-primary); }
 .psl__status .a { color: var(--accent-bright); }
+.psl__runtime-label {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* Grid zoom stepper — a compact [−] N cols [+] control in the status bar.
    Steps the shared gridZoom target (same as pinch-to-zoom). */

@@ -9,7 +9,7 @@ import {
   test,
   vi
 } from "vitest";
-import type { CaptureRecord, Settings } from "@pwrsnap/shared";
+import type { AppRuntimeIdentity, CaptureRecord, Settings } from "@pwrsnap/shared";
 
 const dispatchMock = vi.fn();
 const subscribeMock = vi.fn((_channel: string, _handler: (payload: unknown) => void) => {
@@ -93,6 +93,10 @@ beforeAll(() => {
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
+let appVersionInfo: {
+  version: string;
+  runtimeIdentity?: AppRuntimeIdentity;
+};
 
 const imageRecord: CaptureRecord = {
   id: "cap_image",
@@ -146,6 +150,7 @@ function ok<T>(value: T) {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  appVersionInfo = { version: "0.0.0-test" };
   dispatchMock.mockImplementation(async (name: string) => {
     if (name === "library:list") {
       return ok({
@@ -170,7 +175,7 @@ beforeEach(() => {
       });
     }
     if (name === "sizzle:list") return ok({ projects: [] });
-    if (name === "app:version") return ok({ version: "0.0.0-test" });
+    if (name === "app:version") return ok(appVersionInfo);
     if (name === "clipboard:copy") return ok(undefined);
     return ok(undefined);
   });
@@ -178,6 +183,38 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+});
+
+describe("Library runtime footer", () => {
+  test("shows the Git branch for a development checkout", async () => {
+    appVersionInfo = {
+      version: "0.0.0-test",
+      runtimeIdentity: {
+        branch: "agent/show-dev-git-branch",
+        cwd: "/repo/PwrSnap"
+      }
+    };
+
+    await act(async () => {
+      root?.render(createElement(Library));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const label = container?.querySelector<HTMLElement>(".psl__runtime-label");
+    expect(label?.textContent).toBe("agent/show-dev-git-branch");
+    expect(label?.title).toBe("agent/show-dev-git-branch");
+  });
+
+  test("keeps showing the package version without a development checkout", async () => {
+    await act(async () => {
+      root?.render(createElement(Library));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container?.querySelector(".psl__runtime-label")?.textContent).toBe("v0.0.0-test");
+  });
 });
 
 afterEach(() => {

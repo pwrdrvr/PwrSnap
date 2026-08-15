@@ -18,6 +18,7 @@ import { err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { isAppDocumentKind, readAppDocument } from "../app-documents";
 import { readLaunchAtLoginStatus } from "../launch-at-login";
+import { resolveRuntimeIdentity } from "../runtime-identity";
 import { showAppDocumentWindow } from "../window";
 import {
   checkForAppUpdatesNow,
@@ -43,6 +44,14 @@ function resolveAppVersion(): string {
     return e2eVersion;
   }
   return app.getVersion();
+}
+
+function resolveDevelopmentRuntimeIdentity() {
+  if (app.isPackaged || process.env.NODE_ENV === "production") return undefined;
+
+  const identity = resolveRuntimeIdentity();
+  if (identity.branch === undefined && identity.commitSha === undefined) return undefined;
+  return identity;
 }
 
 /** URLs the renderer is allowed to open via `app:openExternal`. Keeps
@@ -81,11 +90,13 @@ export function registerAppHandlers(): void {
 /** Process-agnostic verbs — safe and useful in any role. */
 export function registerAppCommonHandlers(): void {
   bus.register("app:version", async () => {
+    const runtimeIdentity = resolveDevelopmentRuntimeIdentity();
     return ok({
       version: resolveAppVersion(),
       electronVersion: process.versions.electron ?? "",
       nodeVersion: process.versions.node ?? "",
-      chromeVersion: process.versions.chrome ?? ""
+      chromeVersion: process.versions.chrome ?? "",
+      ...(runtimeIdentity !== undefined ? { runtimeIdentity } : {})
     });
   });
   bus.register("app:launchAtLoginStatus", async () => {

@@ -1870,6 +1870,15 @@ export type AppDocument = {
   content: string;
 };
 
+/** Git identity for a development checkout. Packaged builds do not expose
+ *  this field; a detached checkout reports its commit instead of a branch. */
+export type AppRuntimeIdentity = {
+  branch?: string;
+  commitSha?: string;
+  cwd: string;
+  detachedHead?: boolean;
+};
+
 /** One formatted main-process log line streamed to the in-app Logs window. */
 export type AppLogEntry = {
   sequence: number;
@@ -3519,6 +3528,7 @@ export type Commands = {
       electronVersion: string;
       nodeVersion: string;
       chromeVersion: string;
+      runtimeIdentity?: AppRuntimeIdentity;
     };
   };
   "app:readDocument": {

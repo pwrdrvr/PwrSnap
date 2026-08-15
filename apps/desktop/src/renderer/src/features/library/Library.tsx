@@ -69,6 +69,7 @@ import {
   type LibraryFilterState,
   type LibraryTypeKey
 } from "./library-filters";
+import { useFilterDrain } from "./filter-drain";
 import { resolveCellIntent, toGridCell, type CellTrigger } from "./resolve-cell-intent";
 import { GRID_NAV_KEYS, nextGridSelectionId } from "./grid-nav";
 import { Stage } from "./Stage";
@@ -1972,6 +1973,27 @@ export function Library() {
     }
     return out;
   }, [visible, fixtureBacking]);
+
+  // Keep pagination alive when the EXCLUDE facet filters the loaded
+  // keyset window down to nothing. The facet is applied client-side
+  // (see the `includeFetchActive` note above) while `gridHasMore`
+  // stays true, and the grid's only load-more trigger is the
+  // virtualizer's near-tail effect — which cannot fire with zero rows
+  // rendered. Without this, a page that filters to empty strands the
+  // Library on a blank grid even though later pages have matches.
+  // Trash and search own their own row source, so neither drains.
+  const excludeFacetActive =
+    !isTrashView && !isSearchActive && sourceAppFacet.mode === "exclude" && appFacetActive;
+  useFilterDrain({
+    active: excludeFacetActive,
+    hasMore: gridHasMore,
+    isLoadingMore: gridIsLoadingMore,
+    // Captures only — project fixtures pass an exclude facet untouched,
+    // and their presence must not mask "zero captures matched".
+    visibleCount: visibleRecords.length,
+    loadedCount: records.length,
+    loadMore
+  });
 
   // Index of the selected record in the visible-records list. Drives
   // the position counter ("idx / total") and the prev/next neighbors.

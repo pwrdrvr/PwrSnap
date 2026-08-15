@@ -3797,6 +3797,17 @@
   letter-spacing: 0;
 }
 
+/* Trimmed-range half of the video export eyebrow —
+   `EXPORT · 0:03–0:11 (8 s)`. Mono + no uppercase so the `s` unit
+   keeps its case; secondary color so the range reads as data. */
+.psl__copy-eyebrow-range {
+  font: 600 9px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+
 /* L/M/H copy row — three-column grid of <CopyButton> instances. The
    buttons themselves emit .fo__copy-btn* classes (shared with the
    float-over toast); we only define the grid wrapper here. */

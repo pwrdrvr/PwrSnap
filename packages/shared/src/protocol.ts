@@ -3758,7 +3758,11 @@ export type Commands = {
    * cards before any click.
    */
   "video:presetMetrics": {
-    req: { captureId: string };
+    /** `range` is optional: the renderer passes the trim range it is
+     *  displaying so byte estimates re-derive from that duration even
+     *  before the debounced `video:setDefaultRange` lands. Omitted →
+     *  the record's persisted `defaultRange`. */
+    req: { captureId: string; range?: VideoRange | undefined };
     res: VideoPresetMetricsResult;
   };
   /**

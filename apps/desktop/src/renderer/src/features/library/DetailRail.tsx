@@ -58,6 +58,7 @@ import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { useVideoExportPresets } from "../shared/useVideoExportPresets";
 import { useVideoPresetMetrics } from "../shared/useVideoPresetMetrics";
 import { VideoExportPresetGrid } from "../shared/VideoExportPresetGrid";
+import { exportRangeLabel } from "../shared/video-range";
 import { AppTag } from "../shared/AppIcons";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
 import {
@@ -170,17 +171,32 @@ export function DetailRail({
     record?.kind === "video" && record.video !== null && record.video !== undefined
       ? record.id
       : null;
+  // The persisted trim range (`defaultRange`) is the single source of
+  // truth for what exports. The stage's timeline writes it through
+  // `video:setDefaultRange`; main broadcasts `events:captures:changed`
+  // and the Library revalidates the record, so this value tracks the
+  // handles on release. It rides on every export/copy/drag call
+  // explicitly and keys the eyebrow + metrics below.
+  const videoRange =
+    record?.kind === "video" && record.video !== null && record.video !== undefined
+      ? record.video.defaultRange
+      : null;
   const {
     states: videoExportStates,
     triggerCopy: triggerVideoCopy,
     triggerCopyPath: triggerVideoCopyPath,
     triggerDrag: triggerVideoDrag
-  } = useVideoExportPresets(videoCaptureId === null ? null : { captureId: videoCaptureId });
+  } = useVideoExportPresets(
+    videoCaptureId === null
+      ? null
+      : { captureId: videoCaptureId, range: videoRange ?? undefined }
+  );
   // Per-(format, preset) dimensions + byte estimates for the grid
   // cards. Estimated until the user clicks a card and the cache
   // row lands; exact thereafter. Mirrors `usePresetRenderMetrics`
-  // for images.
-  const videoPresetMetrics = useVideoPresetMetrics(videoCaptureId);
+  // for images. Re-fetched when the trim range changes so byte
+  // estimates re-derive from the range duration.
+  const videoPresetMetrics = useVideoPresetMetrics(videoCaptureId, videoRange ?? undefined);
   // Active tab + pin state. The pin pair and the tab pair are
   // controlled INDEPENDENTLY — a caller can control just the pin
   // (e.g. drive it from a title-bar toggle) while letting the rail
@@ -645,6 +661,10 @@ export function DetailRail({
       ? record.video
       : null;
   const isVideo = videoMeta !== null;
+  // `0:03–0:11 (8 s)` when the persisted trim is a strict sub-range,
+  // null for the full clip (eyebrow reads plain `EXPORT`).
+  const videoExportRangeLabel =
+    videoMeta === null ? null : exportRangeLabel(videoRange, videoMeta.durationSec);
   const codexStatus = enrichment?.status ?? null;
   const draftAvailable =
     (enrichment?.suggestedTitle ?? "").trim().length > 0 ||
@@ -780,7 +800,21 @@ export function DetailRail({
       >
         <div>
           <div className="psl__copy-eyebrow">
-            <span>{isVideo ? "Export" : "Copy to clipboard"}</span>
+            <span data-testid="psl-export-eyebrow">
+              {isVideo && videoMeta !== null ? (
+                <>
+                  Export
+                  {videoExportRangeLabel !== null && (
+                    <>
+                      {" · "}
+                      <span className="psl__copy-eyebrow-range">{videoExportRangeLabel}</span>
+                    </>
+                  )}
+                </>
+              ) : (
+                "Copy to clipboard"
+              )}
+            </span>
             <span className="psl__copy-eyebrow-line" />
             {isVideo ? null : (
               <span className="psl__copy-eyebrow-meta">

@@ -281,6 +281,8 @@ const pwrsnapApi = {
     captureId: string;
     format: "gif" | "mp4";
     preset: VideoPreset;
+    /** Optional explicit trim range; omitted = record's defaultRange. */
+    range?: { start: number; end: number };
   }): void {
     ipcRenderer.send(IPC_VIDEO_DRAG_START, payload);
   },

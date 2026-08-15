@@ -7,15 +7,17 @@
 //     (a stale echo must not revert a newer local edit).
 //   • `setRange(range, commit)`: updates local state immediately (so
 //     handles feel direct); on `commit` schedules a debounced
-//     `video:setDefaultRange`. Range is rounded to ms before persisting
-//     so the export cache key is stable.
+//     `video:setDefaultRange`. Valid ranges are adopted verbatim (the
+//     timeline / keyboard already round drag values to ms); only
+//     out-of-bounds input is clamped. Keeping the float identity is
+//     what makes the export cache key stable across surfaces.
 //
 // Shared by the Library video stage and the float-over mini-trim.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { VideoRange } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
-import { clampRange } from "./video-range";
+import { clampRange, isValidRange } from "./video-range";
 
 export const PERSIST_DEBOUNCE_MS = 150;
 
@@ -28,7 +30,10 @@ export type UseVideoTrimRange = {
 };
 
 function seedRange(persisted: VideoRange | null, durationSec: number): VideoRange {
-  return clampRange(persisted ?? { start: 0, end: durationSec }, durationSec);
+  if (persisted === null) return { start: 0, end: durationSec };
+  // Adopt a valid persisted range verbatim — clamping would round it
+  // and change the float identity the export cache is keyed on.
+  return isValidRange(persisted, durationSec) ? persisted : clampRange(persisted, durationSec);
 }
 
 export function useVideoTrimRange(input: {
@@ -77,7 +82,7 @@ export function useVideoTrimRange(input: {
 
   const setRange = useCallback(
     (next: VideoRange, commit: boolean): void => {
-      const clamped = clampRange(next, durationSec);
+      const clamped = isValidRange(next, durationSec) ? next : clampRange(next, durationSec);
       setLocal(clamped);
       draggingRef.current = !commit;
       if (!commit || captureId === null) return;

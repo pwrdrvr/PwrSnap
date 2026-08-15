@@ -16,7 +16,8 @@
 import { useEffect, useState } from "react";
 import type {
   VideoPreset,
-  VideoPresetMetric
+  VideoPresetMetric,
+  VideoRange
 } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 import {
@@ -38,9 +39,16 @@ export function videoPresetKey(
 }
 
 export function useVideoPresetMetrics(
-  captureId: string | null
+  captureId: string | null,
+  /** Trim range being displayed. Passed explicitly so byte estimates
+   *  re-derive from the range duration as soon as the handles move
+   *  (not only after the debounced persist). Omitted → main uses the
+   *  persisted `defaultRange`. */
+  range?: VideoRange | undefined
 ): VideoPresetMetricMap {
   const [metrics, setMetrics] = useState<VideoPresetMetricMap>({});
+  const rangeStart = range?.start;
+  const rangeEnd = range?.end;
 
   useEffect(() => {
     if (captureId === null) {
@@ -50,7 +58,11 @@ export function useVideoPresetMetrics(
 
     let cancelled = false;
     setMetrics({});
-    void dispatch("video:presetMetrics", { captureId }).then((result) => {
+    const req =
+      rangeStart === undefined || rangeEnd === undefined
+        ? { captureId }
+        : { captureId, range: { start: rangeStart, end: rangeEnd } };
+    void dispatch("video:presetMetrics", req).then((result) => {
       if (cancelled) return;
       if (!result.ok) return;
       setMetrics(metricsByKey(result.value.metrics));
@@ -62,7 +74,7 @@ export function useVideoPresetMetrics(
     return () => {
       cancelled = true;
     };
-  }, [captureId]);
+  }, [captureId, rangeStart, rangeEnd]);
 
   return metrics;
 }

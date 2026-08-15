@@ -77,10 +77,10 @@ describe("useVideoTrimRange", () => {
     expect(dispatched).toEqual([]);
   });
 
-  test("commit persists once after the debounce, with the ms-rounded range", async () => {
+  test("commit persists once after the debounce, adopting a valid range verbatim", async () => {
     mount({ captureId: "cap", durationSec: 16, persistedRange: { start: 0, end: 16 } });
     act(() => latest!.setRange({ start: 3.4, end: 11.2 }, false));
-    act(() => latest!.setRange({ start: 3.44444, end: 11.2 }, true));
+    act(() => latest!.setRange({ start: 3.444, end: 11.2 }, true));
     expect(latest!.pending).toBe(true);
     expect(dispatched).toEqual([]);
     await act(async () => {
@@ -91,6 +91,13 @@ describe("useVideoTrimRange", () => {
       { name: "video:setDefaultRange", req: { captureId: "cap", range: { start: 3.444, end: 11.2 } } }
     ]);
     expect(latest!.pending).toBe(false);
+  });
+
+  test("out-of-bounds commits are clamped; a valid persisted seed keeps its exact floats", () => {
+    mount({ captureId: "cap", durationSec: 16.0333333, persistedRange: { start: 0, end: 16.0333333 } });
+    expect(latest!.range).toEqual({ start: 0, end: 16.0333333 });
+    act(() => latest!.setRange({ start: -2, end: 40 }, true));
+    expect(latest!.range).toEqual({ start: 0, end: 16.033 });
   });
 
   test("rapid commits coalesce into the last value", async () => {

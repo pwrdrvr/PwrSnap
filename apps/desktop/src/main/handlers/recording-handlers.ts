@@ -525,7 +525,24 @@ export function registerRecordingHandlers(): void {
     if (record.kind !== "video" || record.video === null || record.video === undefined) {
       return err(validationError("not_a_video", `video:presetMetrics: ${req.captureId} is not a video`));
     }
-    const range = record.video.defaultRange;
+    if (req.range !== undefined) {
+      const r = req.range;
+      if (
+        typeof r?.start !== "number" ||
+        typeof r?.end !== "number" ||
+        !Number.isFinite(r.start) ||
+        !Number.isFinite(r.end) ||
+        r.end < r.start
+      ) {
+        return err(
+          validationError(
+            "invalid_range",
+            "video:presetMetrics: range start/end must be finite numbers with end >= start"
+          )
+        );
+      }
+    }
+    const range = req.range ?? record.video.defaultRange;
     const normalized = normalizeRange(range, record.video.durationSec);
     const durationSec = normalized.end - normalized.start;
     // Default audio choice mirrors the same fallback the encoder

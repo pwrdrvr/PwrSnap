@@ -12,7 +12,8 @@ import type {
   Req,
   Res,
   Result,
-  VideoPreset
+  VideoPreset,
+  VideoRange
 } from "@pwrsnap/shared";
 
 /**
@@ -86,9 +87,15 @@ export function startCaptureDrag(captureId: string, preset: RenderPreset = "high
 export function startVideoDrag(
   captureId: string,
   format: "gif" | "mp4",
-  preset: VideoPreset
+  preset: VideoPreset,
+  range?: VideoRange
 ): void {
-  window.pwrsnapApi?.startVideoDrag({ captureId, format, preset });
+  window.pwrsnapApi?.startVideoDrag({
+    captureId,
+    format,
+    preset,
+    ...(range !== undefined ? { range } : {})
+  });
 }
 
 /**

@@ -226,15 +226,33 @@ function parseVideoDragRequest(req: unknown): VideoExportCoordinates | null {
     captureId?: unknown;
     format?: unknown;
     preset?: unknown;
+    range?: unknown;
   };
   if (typeof value.captureId !== "string" || value.captureId.length === 0) return null;
   if (value.format !== "gif" && value.format !== "mp4") return null;
   if (value.preset !== "low" && value.preset !== "med" && value.preset !== "high") {
     return null;
   }
+  // Optional explicit trim range (the renderer passes the persisted
+  // defaultRange it is displaying). Malformed → treat as omitted so
+  // the resolver falls back to the record's defaultRange.
+  let range: VideoExportCoordinates["range"];
+  if (typeof value.range === "object" && value.range !== null) {
+    const r = value.range as { start?: unknown; end?: unknown };
+    if (
+      typeof r.start === "number" &&
+      typeof r.end === "number" &&
+      Number.isFinite(r.start) &&
+      Number.isFinite(r.end) &&
+      r.end >= r.start
+    ) {
+      range = { start: r.start, end: r.end };
+    }
+  }
   return {
     captureId: value.captureId,
     format: value.format,
-    preset: value.preset as VideoPreset
+    preset: value.preset as VideoPreset,
+    ...(range !== undefined ? { range } : {})
   };
 }

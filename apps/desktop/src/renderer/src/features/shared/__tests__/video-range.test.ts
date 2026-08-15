@@ -2,11 +2,13 @@ import { describe, expect, test } from "vitest";
 import {
   clampRange,
   exportEyebrowLabel,
+  exportRangeLabel,
   formatSpan,
   formatTimecode,
   formatTimecodeShort,
   fullRange,
   isFullRange,
+  isValidRange,
   MIN_RANGE_SEC,
   pxToSec,
   roundTime,
@@ -59,6 +61,9 @@ describe("labels", () => {
   test("export eyebrow shows the range when trimmed", () => {
     expect(exportEyebrowLabel({ start: 3.4, end: 11.2 }, 16)).toBe("EXPORT · 0:03–0:11 (8 s)");
     expect(exportEyebrowLabel({ start: 0, end: 8 }, 16)).toBe("EXPORT · 0:00–0:08 (8 s)");
+    expect(exportRangeLabel({ start: 3.4, end: 11.2 }, 16)).toBe("0:03–0:11 (8 s)");
+    expect(exportRangeLabel({ start: 0, end: 16 }, 16)).toBeNull();
+    expect(exportRangeLabel(null, 16)).toBeNull();
   });
 });
 
@@ -82,7 +87,12 @@ describe("clampRange / isFullRange", () => {
     expect(isFullRange({ start: 0, end: 16 }, 16)).toBe(true);
     expect(isFullRange({ start: 0.02, end: 15.97 }, 16)).toBe(true);
     expect(isFullRange({ start: 0.5, end: 16 }, 16)).toBe(false);
-    expect(fullRange(16.0004)).toEqual({ start: 0, end: 16 });
+    // Full range keeps the exact duration so a reset re-keys onto the
+    // recorder-seeded range (export cache hit).
+    expect(fullRange(16.0333333)).toEqual({ start: 0, end: 16.0333333 });
+    expect(isValidRange({ start: 0, end: 16.0333333 }, 16.0333333)).toBe(true);
+    expect(isValidRange({ start: 0, end: 17 }, 16)).toBe(false);
+    expect(isValidRange({ start: 5, end: 5.05 }, 16)).toBe(false);
   });
 });
 

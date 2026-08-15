@@ -49,7 +49,7 @@ type PendingResolver = {
   resolve: (value: unknown) => void;
 };
 const pendingResolvers: PendingResolver[] = [];
-const videoDragSink: Array<{ captureId: string; format: string; preset: string }> = [];
+const videoDragSink: Array<{ captureId: string; format: string; preset: string; range?: unknown }> = [];
 
 // Cast to `unknown` then to the full Window shape — the test stub
 // intentionally implements only the four hook-required surfaces
@@ -67,7 +67,7 @@ const videoDragSink: Array<{ captureId: string; format: string; preset: string }
     }),
   on: () => () => undefined,
   startCaptureDrag: () => undefined,
-  startVideoDrag: (payload: { captureId: string; format: string; preset: string }) => {
+  startVideoDrag: (payload: { captureId: string; format: string; preset: string; range?: unknown }) => {
     videoDragSink.push(payload);
   }
 };
@@ -98,11 +98,12 @@ type Snapshot = {
 
 type ProbeProps = {
   captureId: string | null;
+  range?: { start: number; end: number } | undefined;
   onSnapshot: (snapshot: Snapshot) => void;
 };
 
-function Probe({ captureId, onSnapshot }: ProbeProps): null {
-  const input = captureId === null ? null : { captureId };
+function Probe({ captureId, range, onSnapshot }: ProbeProps): null {
+  const input = captureId === null ? null : { captureId, range };
   const result = useVideoExportPresets(input);
   useEffect(() => {
     onSnapshot({
@@ -115,7 +116,10 @@ function Probe({ captureId, onSnapshot }: ProbeProps): null {
   return null;
 }
 
-function mount(initialCaptureId: string | null = "cap_1"): {
+function mount(
+  initialCaptureId: string | null = "cap_1",
+  range?: { start: number; end: number }
+): {
   snapshot: () => Snapshot;
   setCaptureId: (next: string | null) => void;
 } {
@@ -131,6 +135,7 @@ function mount(initialCaptureId: string | null = "cap_1"): {
       root!.render(
         createElement(Probe, {
           captureId,
+          range,
           onSnapshot: (snap) => {
             last = snap;
           }
@@ -304,6 +309,54 @@ describe("useVideoExportPresets", () => {
       kind: "done",
       path: "/cache/gif-high.gif"
     });
+  });
+
+  test("an explicit trim range rides on every copy / copy-path / drag / export request", async () => {
+    const range = { start: 3.4, end: 11.2 };
+    const harness = mount("cap_1", range);
+
+    act(() => harness.snapshot().triggerCopy("gif", "low"));
+    expect(pendingResolvers[0]?.name).toBe("clipboard:copyVideoFile");
+    expect(pendingResolvers[0]?.req).toEqual({
+      captureId: "cap_1",
+      format: "gif",
+      preset: "low",
+      range
+    });
+    await resolveNext({ ok: true, value: { path: "/cache/a.gif" } });
+
+    act(() => harness.snapshot().triggerCopyPath("mp4", "med"));
+    expect(pendingResolvers[0]?.name).toBe("clipboard:copyVideoPath");
+    expect(pendingResolvers[0]?.req).toEqual({
+      captureId: "cap_1",
+      format: "mp4",
+      preset: "med",
+      range
+    });
+    await resolveNext({ ok: true, value: { path: "/cache/b.mp4" } });
+
+    act(() => harness.snapshot().triggerDrag("mp4", "high"));
+    expect(videoDragSink.at(-1)).toEqual({
+      captureId: "cap_1",
+      format: "mp4",
+      preset: "high",
+      range
+    });
+    expect(pendingResolvers[0]?.name).toBe("video:export");
+    expect(pendingResolvers[0]?.req).toEqual({
+      captureId: "cap_1",
+      format: "mp4",
+      preset: "high",
+      range
+    });
+    await resolveNext({ ok: true, value: { path: "/cache/c.mp4" } });
+  });
+
+  test("without a range the requests omit it (main falls back to defaultRange)", () => {
+    const harness = mount("cap_1");
+    act(() => harness.snapshot().triggerCopy("gif", "low"));
+    const req = pendingResolvers[0]?.req as Record<string, unknown>;
+    expect(req.range).toBeUndefined();
   });
 });
 

@@ -57,8 +57,25 @@ export function isFullRange(range: VideoRange, durationSec: number): boolean {
   return range.start <= FULL_RANGE_EPS_SEC && range.end >= durationSec - FULL_RANGE_EPS_SEC;
 }
 
+/** The whole clip. `end` is the exact duration (not rounded) so a
+ *  reset writes the same key the recorder seeded and any earlier
+ *  full-clip export stays a cache hit. */
 export function fullRange(durationSec: number): VideoRange {
-  return { start: 0, end: roundTime(Math.max(durationSec, 0)) };
+  return { start: 0, end: Math.max(durationSec, 0) };
+}
+
+/** True when a range is already in bounds with a valid gap — such a
+ *  range is adopted verbatim (no rounding) so a persisted value keeps
+ *  its exact float identity for the export-cache key. */
+export function isValidRange(range: VideoRange, durationSec: number): boolean {
+  const d = Math.max(durationSec, 0);
+  return (
+    Number.isFinite(range.start) &&
+    Number.isFinite(range.end) &&
+    range.start >= 0 &&
+    range.end <= d &&
+    range.end - range.start >= Math.min(MIN_RANGE_SEC, d)
+  );
 }
 
 export function rangeDuration(range: VideoRange): number {
@@ -101,14 +118,22 @@ export function trimLabel(range: VideoRange): string {
   )}`;
 }
 
-/** Export eyebrow: `EXPORT` for the full clip, otherwise
- *  `EXPORT · 0:03–0:11 (8 s)`. */
-export function exportEyebrowLabel(range: VideoRange | null, durationSec: number): string {
-  if (range === null || isFullRange(range, durationSec)) return "EXPORT";
-  return `EXPORT · ${formatTimecodeShort(range.start)}–${formatTimecodeShort(range.end)} (${formatSpan(
+/** Range half of the export eyebrow — `0:03–0:11 (8 s)` — or `null`
+ *  for the full clip. Rendered in a non-uppercased mono span next to
+ *  the `EXPORT` word so the `s` unit keeps its case. */
+export function exportRangeLabel(range: VideoRange | null, durationSec: number): string | null {
+  if (range === null || isFullRange(range, durationSec)) return null;
+  return `${formatTimecodeShort(range.start)}–${formatTimecodeShort(range.end)} (${formatSpan(
     rangeDuration(range),
     0
   )})`;
+}
+
+/** Full export eyebrow text: `EXPORT` for the full clip, otherwise
+ *  `EXPORT · 0:03–0:11 (8 s)`. */
+export function exportEyebrowLabel(range: VideoRange | null, durationSec: number): string {
+  const rangeLabel = exportRangeLabel(range, durationSec);
+  return rangeLabel === null ? "EXPORT" : `EXPORT · ${rangeLabel}`;
 }
 
 export function secToPx(sec: number, durationSec: number, widthPx: number): number {

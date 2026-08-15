@@ -3378,15 +3378,18 @@ export function Library() {
               type="button"
               // aria-pressed mirrors the include-set membership so screen
               // readers announce the row as a toggle (rather than a
-              // static link) and report its current on/off state. The
-              // `.is-on`/`.is-off` class gives sighted users the same
-              // affordance via the leading state glyph — check when
-              // included, minus when excluded. Facet rows never take the
-              // scope rows' filled `.is-active` treatment; that fill is
-              // reserved for LIBRARY so the two paradigms stay legible.
+              // static link) and report its current on/off state.
               aria-pressed={on}
               aria-label={`${label} type filter (${on ? "showing" : "hidden"})`}
-              className={"psl__nav psl__facet-row" + (on ? " is-on" : " is-off")}
+              // Quiet by default: with every type on, the type facet is
+              // not narrowing anything, so the rows stay plain. Once the
+              // user turns one off, the surviving rows take the same
+              // selected fill the LIBRARY scope rows use and the hidden
+              // one takes the excluded treatment.
+              className={
+                "psl__nav psl__facet-row" +
+                (allTypesOn ? "" : on ? " is-active" : " is-excluded")
+              }
               onClick={(e) => {
                 applyFilterAction({
                   type: "TYPE_ROW_CLICK",
@@ -3400,17 +3403,6 @@ export function Library() {
                   : `Show ${label.toLowerCase()}`
               }
             >
-              <span className="psl__facet-state" aria-hidden="true">
-                {on ? (
-                  <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="m5 12 5 5 9-11" />
-                  </svg>
-                ) : (
-                  <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinecap="round">
-                    <path d="M5 12h14" />
-                  </svg>
-                )}
-              </span>
               <span className="psl__nav-icon">{icon}</span>
               <span className="psl__nav-label">{label}</span>
               {/* Hover-revealed "only" pill — the discoverable
@@ -3489,11 +3481,14 @@ export function Library() {
             clicking the one selected app returns to All — the Finder /
             Lightroom / Photos expectation the old `selectFilter` broke
             by never toggling). ⌘-click builds a multi-selection,
-            ⌥-click flips to exclusion. Like Types, these rows carry a
-            leading state glyph rather than the scope rows' fill. */}
+            ⌥-click flips to exclusion. Included rows take the same
+            selected fill the scope rows use; excluded rows are struck
+            and tinted; everything else stays plain. */}
         <div className="psl__left-section">Source App</div>
         {visibleApps.map(({ app, name, bundleId }) => {
           const rowState = appRowState(sourceAppFacet, app);
+          const excludeModeActive =
+            sourceAppFacet.mode === "exclude" && sourceAppFacet.appIds.length > 0;
           const isSoleInclude =
             rowState === "included" && sourceAppFacet.appIds.length === 1;
           return (
@@ -3511,7 +3506,7 @@ export function Library() {
               className={
                 "psl__nav psl__facet-row psl__facet-row--app" +
                 (rowState === "included"
-                  ? " is-on"
+                  ? " is-active"
                   : rowState === "excluded"
                     ? " is-excluded"
                     : "")
@@ -3528,20 +3523,14 @@ export function Library() {
                   ? `${name} is excluded · ⌥-click to stop excluding it`
                   : isSoleInclude
                     ? `Click to clear the ${name} filter · ⌘-click to add another app`
-                    : `Show only ${name} · ⌘-click to add · ⌥-click to exclude`
+                    : excludeModeActive
+                      ? // ⌘-click keeps the facet's polarity, so while the
+                        // facet is excluding it ADDS to the exclusion —
+                        // promising "⌘-click to add" here would be a lie.
+                        `Show only ${name} · ⌥-click to also exclude it`
+                      : `Show only ${name} · ⌘-click to add · ⌥-click to exclude`
               }
             >
-              <span className="psl__facet-state" aria-hidden="true">
-                {rowState === "included" ? (
-                  <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="m5 12 5 5 9-11" />
-                  </svg>
-                ) : rowState === "excluded" ? (
-                  <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinecap="round">
-                    <path d="M5 12h14" />
-                  </svg>
-                ) : null}
-              </span>
               <span className="psl__nav-icon">
                 <AppIcon app={app} size={11} name={name} bundleId={bundleId} />
               </span>

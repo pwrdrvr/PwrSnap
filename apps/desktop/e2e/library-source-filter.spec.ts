@@ -718,13 +718,11 @@ async function sourceFilterButtonState(
         const label = button.querySelector(".psl__nav-label")?.textContent?.trim() ?? "";
         const countText = button.querySelector(".psl__nav-count")?.textContent?.trim() ?? "";
         if (!pattern.test(label) || countText !== String(count)) continue;
-        // Scope rows (All / Today / Trash) keep the filled `is-active`
-        // treatment; facet rows (Types / Source App) moved to the
-        // leading-glyph `is-on` state in the composable-facets PR.
-        // Either means "this row is currently selected".
+        // Every row that is actively narrowing the view — scope or facet
+        // — now carries the same filled `is-active` state, so one check
+        // covers both paradigms.
         return {
-          active:
-            button.classList.contains("is-active") || button.classList.contains("is-on")
+          active: button.classList.contains("is-active")
         };
       }
       return { active: false };

@@ -911,54 +911,47 @@
 .psl__left-section:first-child { padding-top: 0; }
 
 /* === Facet rows in the sidebar (TYPES + SOURCE APP) ===
-   The sidebar hosts two different paradigms and they must not look
-   alike: LIBRARY is a radio SCOPE and owns the filled `.is-active`
-   row treatment (see `.psl__nav.is-active`), while TYPES and SOURCE
-   APP are composable FACETS and get a leading state glyph instead —
-   check when included, minus when excluded, empty when neutral.
-   Never give a facet row the `.is-active` fill; that's the whole
-   visual contract that tells a user which rows compose and which
-   ones replace each other. */
+   The sidebar hosts two paradigms: LIBRARY is a radio SCOPE, while
+   TYPES and SOURCE APP are composable FACETS. They share one row
+   vocabulary on purpose — a row that is narrowing the view reads as
+   selected (`.is-active`) wherever it lives, so the user learns one
+   visual. What separates the two is REACHABILITY, not decoration:
+   scope rows replace each other, facet rows compose (⌘ to add, ⌥ to
+   exclude, hover "only" to collapse), and the chip row above the grid
+   is what spells out the composed query.
+
+   Three facet states: plain when the row is not participating,
+   `.is-active` when it is included, `.is-excluded` when it is
+   negated. Default state (all types on, no app chosen) is plain
+   everywhere, so the rail is quiet until the user filters. */
 .psl__facet-row {
   position: relative;
 }
-.psl__facet-state {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 12px;
-  height: 12px;
-  border-radius: 3px;
-  border: 1px solid var(--border-default);
-  background: transparent;
-  color: var(--accent);
-  margin-right: 2px;
-  flex: 0 0 12px;
-}
-.psl__facet-row.is-on .psl__facet-state {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--button-text-on-accent);
-}
-.psl__facet-row.is-excluded .psl__facet-state {
+/* Facet rows carry the SAME selected fill as the LIBRARY scope rows —
+   a facet that is actively narrowing the view reads as "selected", and
+   an excluded one gets a distinct danger-tinted, struck treatment. A
+   facet that is not participating stays completely plain: with every
+   type on and no app chosen, the rail is quiet. (An earlier revision
+   put a checkbox on every row; twenty-odd empty boxes down the rail
+   were pure visual noise for a control used occasionally.) */
+.psl__facet-row.is-excluded {
   background: var(--danger-soft);
   border-color: var(--danger-border);
-  color: var(--danger-text);
-}
-.psl__facet-row.is-off {
   color: var(--text-muted);
-}
-.psl__facet-row.is-off .psl__nav-icon,
-.psl__facet-row.is-off .psl__nav-label {
-  opacity: 0.55;
 }
 /* An excluded row strikes its LABEL but keeps its COUNT at full
    strength — "everything except Electron (988)" is exactly why the
    number is there, so dimming it would hide the useful part. */
 .psl__facet-row.is-excluded .psl__nav-label {
+  /* The strike is the load-bearing signal that this row is NEGATED
+     rather than merely unselected, so it has to be legible: the
+     translucent border token washed out to nothing at 11px. */
   text-decoration: line-through;
-  text-decoration-color: var(--danger-border);
-  color: var(--text-muted);
+  text-decoration-color: var(--danger-text);
+  text-decoration-thickness: 1px;
+}
+.psl__facet-row.is-excluded .psl__nav-icon {
+  opacity: 0.6;
 }
 
 /* Hover-revealed "only" pill — collapses the current selection down to

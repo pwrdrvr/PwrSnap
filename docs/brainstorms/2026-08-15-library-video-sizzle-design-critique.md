@@ -384,6 +384,22 @@ Reviewed at `7f4adcc3` in `/Users/huntharo/.pwragent/worktrees/mst7dz52/PwrSnap`
 5. **Right bar seams (§3)** and **PR #385 follow-ups (§2)** — polish, both
    contained, both good Opus-sized PRs.
 
+## Status (2026-08-15, same day)
+
+| § | PR | Base | Notes |
+|---|---|---|---|
+| 1 sidebar facets | [#392](https://github.com/pwrdrvr/PwrSnap/pull/392) | `main` | scope/types/sourceApps split, ⌘/⌥, hover **only**, chip row, `excludeAppBundleIds` (NULL-safe `NOT IN`; sidebar exclude is client-side for now) |
+| 2 palette follow-ups | [#390](https://github.com/pwrdrvr/PwrSnap/pull/390) | #385 | follow/pinned anchor mode + 📌, preview drawer, both persisted in Settings |
+| 3 right bar | [#388](https://github.com/pwrdrvr/PwrSnap/pull/388) | `main` | one separator (`pinnedWidthPx="fill"`), full-height rail with footer in the panel, merged Codex/cost row, FILE folded into cards |
+| 4 video phase A | in flight | `main` | plan doc + transport + filmstrip/waveform timeline + trim → export + FloatOver mini-trim |
+| 5 grid tiles | [#391](https://github.com/pwrdrvr/PwrSnap/pull/391) | `main` | scrims, 24 px checkbox + selection mode, 28 px actions, unified chip chrome, capture context menu (+ new `capture:saveAs`) |
+| 6 slice 1 | [#387](https://github.com/pwrdrvr/PwrSnap/pull/387) | `main` | one scene, N clips by default; Scene/Clip vocabulary; clip-aware membership |
+| 6 slice 2 | [#389](https://github.com/pwrdrvr/PwrSnap/pull/389) | #387 | rail → crumb dropdown, resizable chat, reel-settings chip, **Split into scenes** |
+| 6 slice 3 | pending mockups | — | lane timeline; brief in the PwrDrvr Design System project (`briefs/sizzle-timeline-brief.md`) |
+
+All PRs note that darwin visual goldens need a headed refresh before merge.
+#391 and #392 both touch `Library.tsx` / `library.css`; merge one, rebase the other.
+
 ## Suggested PR fan-out
 
 | # | Branch base | Owner | Worktree | Docs first? |

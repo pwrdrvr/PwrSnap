@@ -418,14 +418,21 @@ export function describeFilterChips(
       }
     }
   }
-  for (const appId of state.sourceApps.appIds) {
-    chips.push({
-      id: `app:${appId}`,
-      kind: "app",
-      label: appLabel(appId),
-      negated: state.sourceApps.mode === "exclude",
-      clear: { type: "REMOVE_APP", appId }
-    });
+  // Trash suppresses the source-app chips for the same reason it
+  // suppresses the type chips: the grid bypasses both facets in trash
+  // scope (Library.tsx `visible`), so rendering them would advertise a
+  // filter that isn't being applied — dangerous next to Empty Trash,
+  // which purges the whole trash set.
+  if (state.scope !== "trash") {
+    for (const appId of state.sourceApps.appIds) {
+      chips.push({
+        id: `app:${appId}`,
+        kind: "app",
+        label: appLabel(appId),
+        negated: state.sourceApps.mode === "exclude",
+        clear: { type: "REMOVE_APP", appId }
+      });
+    }
   }
   return chips;
 }

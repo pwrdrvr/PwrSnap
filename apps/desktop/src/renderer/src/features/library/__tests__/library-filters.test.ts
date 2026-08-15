@@ -477,6 +477,21 @@ describe("chips", () => {
     expect(chips.map((c) => c.kind)).toEqual(["scope"]);
   });
 
+  test("Trash suppresses source-app chips — trash ignores the app facet", () => {
+    // The grid bypasses the app facet in trash scope (Library.tsx
+    // `visible`), and Empty Trash purges the WHOLE trash set — a chip
+    // claiming "not Electron" while the button destroys Electron rows
+    // too is the exact mismatch this guards.
+    const state = run(
+      initialLibraryFilter,
+      { type: "SET_SCOPE", scope: "trash" },
+      { type: "APP_ROW_CLICK", appId: ELECTRON, modifier: "alt" }
+    );
+    expect(state.sourceApps).toEqual({ mode: "exclude", appIds: [ELECTRON] });
+    const chips = describeFilterChips(state, upperLabel);
+    expect(chips.map((c) => c.kind)).toEqual(["scope"]);
+  });
+
   test("each chip's × action removes exactly that facet", () => {
     const state = run(
       initialLibraryFilter,

@@ -1735,13 +1735,29 @@ export function Library() {
   // synthetic `_sizzle_` app key, which is in neither list, so they
   // pass an exclude facet untouched and are already dropped upstream
   // for an include facet.
+  //
+  // Trash bypasses the source-app facet for the same reason it
+  // bypasses the Types facet above: Trash is a SCOPE (its own mode),
+  // and the sidebar's facet rows describe the live library. It is also
+  // load-bearing for safety — the trash banner count and the
+  // irreversible `library:purgeAll` both operate on the full
+  // `trashRecords` set, so letting a facet narrow the rows here would
+  // show "1 item" while Empty Trash destroyed all of them.
   const visible = useMemo(() => {
     if (isSearchActive) return fixtureCaptures;
     let out = fixtureCaptures;
     if (isTodayView) out = out.filter((c) => c.day === "Today");
-    if (appFacetActive) out = out.filter((c) => sourceAppMatches(sourceAppFacet, c.app));
+    if (!isTrashView && appFacetActive)
+      out = out.filter((c) => sourceAppMatches(sourceAppFacet, c.app));
     return out;
-  }, [fixtureCaptures, isSearchActive, isTodayView, appFacetActive, sourceAppFacet]);
+  }, [
+    fixtureCaptures,
+    isSearchActive,
+    isTodayView,
+    isTrashView,
+    appFacetActive,
+    sourceAppFacet
+  ]);
   const grouped = useMemo(() => groupByDay(visible), [visible]);
 
   // Per-app counts come from the denormalized `app_stats` table via
@@ -3597,14 +3613,19 @@ export function Library() {
                   : `${trashRecords.length} item${
                       trashRecords.length === 1 ? "" : "s"
                     } in trash. Items are permanently removed after 30 days.`}
-                {/* Trash deliberately ignores the Types facet (it's a
-                    mode, not a slice of the live library). Say so
-                    rather than letting a stale Types selection look
-                    like it's being applied. */}
-                {trashRecords.length > 0 && !allTypesOn ? (
+                {/* Trash deliberately ignores the Types and Source app
+                    facets (it's a mode, not a slice of the live
+                    library). Say so rather than letting a stale
+                    selection look like it's being applied — Empty
+                    Trash purges every row counted above. */}
+                {trashRecords.length > 0 && (!allTypesOn || appFacetActive) ? (
                   <span className="psl__trash-banner-note">
                     {" "}
-                    The Types filter doesn’t apply in Trash.
+                    {!allTypesOn && appFacetActive
+                      ? "The Types and Source app filters don’t apply in Trash."
+                      : appFacetActive
+                        ? "The Source app filter doesn’t apply in Trash."
+                        : "The Types filter doesn’t apply in Trash."}
                   </span>
                 ) : null}
               </span>

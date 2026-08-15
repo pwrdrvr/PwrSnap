@@ -31,7 +31,12 @@ import {
   type SettingsChangedEvent,
   type SizzleProject
 } from "@pwrsnap/shared";
-import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
+import {
+  defaultRangeExtractor,
+  measureElement as defaultMeasureElement,
+  useVirtualizer,
+  type Range
+} from "@tanstack/react-virtual";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
@@ -4201,7 +4206,31 @@ function VirtualizedGrid({
     estimateSize: (i) =>
       flatRows[i]?.kind === "header" ? HEADER_ESTIMATE_PX : cellRowEstimate,
     overscan: 5,
-    rangeExtractor
+    rangeExtractor,
+    // Zero-guard around TanStack's default measurement. The grid stays
+    // MOUNTED under `display: none` while the user is in Focus or Reel
+    // mode (`.psl[data-mode="focus"] .psl__grid-wrap { display: none }`)
+    // — and when that flips, the per-item ResizeObserver fires one entry
+    // per observed row with `borderBoxSize` = 0. virtual-core has no
+    // guard: it writes the 0 straight into itemSizeCache, collapsing
+    // every measured row (and getTotalSize) to ~0. Downstream: the
+    // wrap's scrollHeight caves in, Chromium clamps scrollTop to 0
+    // (Reel/Focus exits lose the user's position), and whichever rows
+    // don't win the re-measure races on return render at translateY(0)
+    // stacked UNDER the pinned day banner — the "first row chopped off
+    // by the date header" degenerate state. No real row is ever
+    // 0-height (headers ≈32px, cell rows ≥130px), so a measured 0
+    // always means "hidden, not resized": keep the previously-measured
+    // size (or the estimate) instead.
+    measureElement: (element, entry, instance) => {
+      const size = defaultMeasureElement(element, entry, instance);
+      if (size > 0) return size;
+      const index = instance.indexFromElement(element);
+      return (
+        instance.itemSizeCache.get(instance.options.getItemKey(index)) ??
+        instance.options.estimateSize(index)
+      );
+    }
     // NOTE: do NOT set `useScrollendEvent: true`. That opts into the
     // browser's `scrollend` event, which fires only when scroll stops
     // — so `rangeExtractor` doesn't update the active sticky header

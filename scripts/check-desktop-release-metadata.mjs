@@ -8,6 +8,17 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopPackagePath = resolve(repoRoot, "apps/desktop/package.json");
 const electronBuilderPath = resolve(repoRoot, "apps/desktop/electron-builder.yml");
 const ciWorkflowPath = resolve(repoRoot, ".github/workflows/ci.yml");
+const releaseWorkflowPath = resolve(repoRoot, ".github/workflows/release.yml");
+const workflowsReadmePath = resolve(repoRoot, ".github/workflows/README.md");
+const windowsPackageScriptPath = resolve(repoRoot, "apps/desktop/scripts/package-win.mjs");
+const windowsArchiveScriptPath = resolve(
+  repoRoot,
+  "scripts/release/archive-windows-signing-input.ps1",
+);
+const trustedSigningScriptPath = resolve(
+  repoRoot,
+  "scripts/release/install-trusted-signing.ps1",
+);
 const changelogPath = resolve(repoRoot, "CHANGELOG.md");
 
 function usage() {
@@ -105,6 +116,96 @@ if (!/^\s*releaseType:\s*prerelease\s*$/m.test(electronBuilder)) {
 const ciWorkflow = readFileSync(ciWorkflowPath, "utf8");
 if (!ciWorkflow.includes("releases/**")) {
   fail('.github/workflows/ci.yml must trigger CI for "releases/**" branches');
+}
+
+const releaseWorkflow = readFileSync(releaseWorkflowPath, "utf8");
+const workflowsReadme = readFileSync(workflowsReadmePath, "utf8");
+const windowsPackageScript = readFileSync(windowsPackageScriptPath, "utf8");
+const windowsArchiveScript = readFileSync(windowsArchiveScriptPath, "utf8");
+const trustedSigningScript = readFileSync(trustedSigningScriptPath, "utf8");
+
+for (const expected of [
+  "ci:windows-package",
+  "--prepare-only",
+  "--sign-stage-only",
+  "archive-windows-signing-input.ps1",
+]) {
+  if (!ciWorkflow.includes(expected)) {
+    fail(`.github/workflows/ci.yml must contain ${JSON.stringify(expected)}`);
+  }
+}
+if (!workflowsReadme.includes("ci:windows-package")) {
+  fail(".github/workflows/README.md must document ci:windows-package");
+}
+
+for (const expected of [
+  "  linux-build:",
+  "  windows-prepare:",
+  "  windows-sign:",
+  "  publish-release-assets:",
+  "environment: windows-signing",
+  "windows-release-signing-input",
+  "scripts/release/install-trusted-signing.ps1",
+  "--sign-stage-only --release --require-signing",
+  "vars.WIN_AZURE_SIGN_PUBLISHER_NAME",
+  "vars.WIN_AZURE_SIGN_ENDPOINT",
+  "vars.WIN_AZURE_SIGN_ACCOUNT",
+  "vars.WIN_AZURE_SIGN_PROFILE",
+  "secrets.AZURE_TENANT_ID",
+  "secrets.AZURE_CLIENT_ID",
+  "secrets.AZURE_CLIENT_SECRET",
+  "- linux-build",
+  "- sign",
+  "- windows-sign",
+  "gh release create",
+  "--verify-tag",
+]) {
+  if (!releaseWorkflow.includes(expected)) {
+    fail(`.github/workflows/release.yml must contain ${JSON.stringify(expected)}`);
+  }
+}
+for (const unexpected of [
+  "WINDOWS_UNSIGNED_RELEASE",
+  "WIN_CSC_LINK",
+  "WIN_CSC_KEY_PASSWORD",
+]) {
+  if (releaseWorkflow.includes(unexpected)) {
+    fail(`.github/workflows/release.yml must not contain ${JSON.stringify(unexpected)}`);
+  }
+}
+
+for (const expected of [
+  "resolveWindowsAzureSigning",
+  "--config.node-linker=hoisted",
+  "--config.win.azureSignOptions.publisherName",
+  "PWRSNAP_ASAR_MODULE_ROOT",
+  "writeWindowsChecksums",
+]) {
+  if (!windowsPackageScript.includes(expected)) {
+    fail(`apps/desktop/scripts/package-win.mjs must contain ${JSON.stringify(expected)}`);
+  }
+}
+for (const expected of [
+  "apps/desktop/release-stage/node_modules/.pnpm/node_modules",
+  "apps/desktop/release-stage",
+  "apps/desktop/scripts/package-win.mjs",
+  "scripts/release/install-trusted-signing.ps1",
+  "tar.exe -czf",
+]) {
+  if (!windowsArchiveScript.includes(expected)) {
+    fail(`${windowsArchiveScriptPath} must contain ${JSON.stringify(expected)}`);
+  }
+}
+for (const expected of [
+  "Install-Module",
+  "-Name TrustedSigning",
+  "-MinimumVersion 0.5.0",
+  "Get-Command Invoke-TrustedSigning",
+  "-NoProfile -NonInteractive -Command",
+]) {
+  if (!trustedSigningScript.includes(expected)) {
+    fail(`${trustedSigningScriptPath} must contain ${JSON.stringify(expected)}`);
+  }
 }
 
 let changelog = "";

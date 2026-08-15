@@ -1071,7 +1071,7 @@ Acceptance:
   tray icon, tray window, float-over, capture + region, window picker, and NSIS
   installer in [#218](https://github.com/pwrdrvr/PwrSnap/pull/218)). The core
   capture loop is functional on Windows. Status, architecture decisions, and the
-  remaining work (signing/notarization, auto-update, capture-trigger debounce,
+  remaining work (provisioning + first signed-release smoke, auto-update, capture-trigger debounce,
   shortcut-glyph + chrome polish) are tracked in the dedicated plan:
   [docs/plans/2026-06-08-001-feat-windows-cross-platform-port-plan.md](2026-06-08-001-feat-windows-cross-platform-port-plan.md).
   Implementation gotchas: [docs/solutions/2026-06-08-windows-gui-port-gotchas.md](../solutions/2026-06-08-windows-gui-port-gotchas.md).

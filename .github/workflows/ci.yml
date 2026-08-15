@@ -222,6 +222,68 @@ jobs:
       - name: Test
         run: pnpm run test
 
+  windows-package:
+    name: Windows installer (label-gated)
+    # Opt-in only: add `ci:windows-package` before opening the PR, push a
+    # commit after adding it, or rerun CI. PR label events intentionally do not
+    # start the full workflow.
+    if: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:windows-package') }}
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.1"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare Windows installer signing input
+        run: node apps/desktop/scripts/package-win.mjs --prepare-only
+
+      # Exercise the exact archive boundary used by protected release signing,
+      # without exposing credentials or consuming Azure signature quota.
+      - name: Archive and expand Windows installer signing input
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "windows-installer-pr-input.tgz"
+          ./scripts/release/archive-windows-signing-input.ps1 -ArchivePath $archive
+          $input = Join-Path $env:RUNNER_TEMP "windows-installer-pr-input"
+          New-Item -ItemType Directory -Path $input -Force | Out-Null
+          Push-Location $input
+          & tar.exe -xzf $archive
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to expand Windows installer signing input (exit code $LASTEXITCODE)."
+          }
+          Pop-Location
+
+      - name: Package Windows installer from prepared input (unsigned)
+        shell: pwsh
+        run: |
+          $input = Join-Path $env:RUNNER_TEMP "windows-installer-pr-input"
+          Push-Location $input
+          node apps/desktop/scripts/package-win.mjs --sign-stage-only
+          Pop-Location
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: windows-installer-pr
+          path: |
+            ${{ runner.temp }}/windows-installer-pr-input/apps/desktop/release-stage/dist/*-setup.exe
+            ${{ runner.temp }}/windows-installer-pr-input/apps/desktop/release-stage/dist/*-setup.exe.blockmap
+            ${{ runner.temp }}/windows-installer-pr-input/apps/desktop/release-stage/dist/SHA256SUMS
+          retention-days: 7
+
   windows-e2e:
     name: Windows Desktop E2E
     runs-on: windows-latest

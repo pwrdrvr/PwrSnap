@@ -1784,8 +1784,11 @@
    over an arbitrary thumbnail — on a white screenshot they'd be a pale
    chip on white. The scrim is theme-STABLE (derived from
    `--shadow-base`, not `--bg-app`, which flips to white in light
-   theme), so the pills read on any capture in either theme. It rides
-   the rail's own opacity so it can never linger without them. */
+   theme), so the pills read on any capture in either theme. Reveal is
+   gated on the same `.psl__cell:hover` / `:focus-within` conditions as
+   the buttons, so the scrim can never linger without them.
+   NOTE the duration chip stays legible at rest on its own `--psl-chip-bg`
+   fill — it does not depend on this scrim. */
 .psl__cell-rail::before {
   content: "";
   position: absolute;
@@ -1917,6 +1920,24 @@
   background: var(--bg-panel);
   color: var(--text-primary);
   outline: 0;
+}
+
+/* Group separator. The capture menu runs three groups — open/copy,
+   locate/collect, destroy — and the rule is what keeps "Move to Trash"
+   from sitting flush against "Add to Cart". */
+.psl__context-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border-subtle);
+}
+
+/* Destructive rows (Move to Trash / Delete Permanently) redden on
+   hover, matching the tile's own trash button so the two read as the
+   same action. */
+.psl__context-menu-row.is-danger:hover,
+.psl__context-menu-row.is-danger:focus-visible {
+  background: var(--danger-soft);
+  color: var(--danger-text);
 }
 
 /* === Project Asset Cart — per-cell checkbox === */

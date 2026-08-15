@@ -141,6 +141,16 @@ function copyPresetForShortcutKey(key: string): CopyPreset | null {
   return null;
 }
 
+/** Preset order + labels for the capture tile's context menu. Same
+ *  Low/Med/High rungs, in the same order, as the DetailRail copy cards
+ *  and the ⌘1/⌘2/⌘3 shortcuts. */
+const COPY_PRESET_ORDER = ["low", "med", "high"] as const;
+const COPY_PRESET_LABELS: Record<CopyPreset, string> = {
+  low: "Low",
+  med: "Med",
+  high: "High"
+};
+
 function sizzleProjectMatchesQuery(project: SizzleProject, query: string): boolean {
   const terms = query
     .trim()
@@ -169,8 +179,32 @@ type ProjectContextMenuState = {
   y: number;
 };
 
+/** Right-click target on a CAPTURE tile (as opposed to a Sizzle project
+ *  tile, which has its own menu). Parks the grid cell itself so the menu
+ *  can hand it back to the SAME handlers the tile's own buttons call —
+ *  `onSelectCell(capture, "edit-cta")`, `trashCapture(capture.id)` — and
+ *  the resolved `recordId` for the verbs that take a real capture id
+ *  (copy / save / reveal / cart). */
+type CaptureContextMenuState = {
+  capture: Capture;
+  recordId: string;
+  isVideo: boolean;
+  isTrashed: boolean;
+  x: number;
+  y: number;
+};
+
 const PROJECT_CONTEXT_MENU_WIDTH = 188;
 const PROJECT_CONTEXT_MENU_HEIGHT = 70;
+
+const CAPTURE_CONTEXT_MENU_WIDTH = 208;
+/** Rough menu height for the viewport clamp: 32px per row + 6px padding
+ *  top/bottom + a couple of 1px separators. Only used to keep the menu
+ *  on-screen, so an approximation is fine — the real box is laid out by
+ *  the browser. */
+function captureContextMenuHeight(rows: number): number {
+  return rows * 32 + 14;
+}
 
 function clampContextMenuPosition(
   x: number,
@@ -618,6 +652,8 @@ export function Library() {
   const [openedRecords, setOpenedRecords] = useState<CaptureRecord[]>([]);
   const [projectContextMenu, setProjectContextMenu] =
     useState<ProjectContextMenuState | null>(null);
+  const [captureContextMenu, setCaptureContextMenu] =
+    useState<CaptureContextMenuState | null>(null);
   const openedRecordsRef = useRef(openedRecords);
   // `captures:changed` listeners read this ref synchronously. Update it
   // before Focus navigation too: an event can arrive before React commits
@@ -2918,6 +2954,43 @@ export function Library() {
     });
   }
 
+  function closeCaptureContextMenu(): void {
+    setCaptureContextMenu(null);
+  }
+
+  /**
+   * Right-click on a capture tile. Mirrors `openProjectContextMenu`'s
+   * mechanism exactly (preventDefault + stopPropagation, clamp to the
+   * viewport, park the target in state) — only the row set differs.
+   *
+   * Fixture cells with no backing record have nothing to act on, so
+   * they fall through to the platform menu rather than opening an
+   * all-disabled one.
+   */
+  function openCaptureContextMenu(c: Capture, event: ReactMouseEvent<HTMLElement>): void {
+    const record = fixtureBacking.recordFor(c.id);
+    if (record === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const isVideo = record.kind === "video";
+    // Row count drives only the off-screen clamp; see
+    // captureContextMenuHeight.
+    const rows = isTrashView ? 3 : isVideo ? 4 : 8;
+    const position = clampContextMenuPosition(
+      event.clientX,
+      event.clientY,
+      CAPTURE_CONTEXT_MENU_WIDTH,
+      captureContextMenuHeight(rows)
+    );
+    setCaptureContextMenu({
+      capture: c,
+      recordId: record.id,
+      isVideo,
+      isTrashed: isTrashView,
+      ...position
+    });
+  }
+
   function openSizzleProject(projectId: string): void {
     void dispatch("sizzle:open", { projectId });
   }
@@ -3854,6 +3927,7 @@ export function Library() {
             onSelectCell={onSelectCell}
             duplicateSizzleProject={duplicateSizzleProject}
             openProjectContextMenu={openProjectContextMenu}
+            openCaptureContextMenu={openCaptureContextMenu}
             preloadFullRes={preloadFullRes}
             hasMore={gridHasMore}
             isLoadingMore={gridIsLoadingMore}
@@ -3878,6 +3952,44 @@ export function Library() {
             Failed to load library: {error}
           </div>
         )}
+        {captureContextMenu !== null ? (
+          <LibraryCaptureContextMenu
+            menu={captureContextMenu}
+            onClose={closeCaptureContextMenu}
+            // Every callback below routes to the SAME function the
+            // tile's own affordance calls — no parallel implementation,
+            // and in particular no second copy path (see
+            // clipboard-copy.ts).
+            onEdit={() => onSelectCell(captureContextMenu.capture, "edit-cta")}
+            onCopyPreset={(preset) => {
+              copyImagePreset(captureContextMenu.recordId, preset);
+              setCopyPulses((current) => ({ ...current, [preset]: current[preset] + 1 }));
+            }}
+            onSaveFile={() => {
+              void dispatch("capture:saveAs", {
+                captureId: captureContextMenu.recordId,
+                preset: "high"
+              });
+            }}
+            onReveal={() => {
+              void dispatch("capture:reveal", { captureId: captureContextMenu.recordId });
+            }}
+            onToggleCart={() => {
+              void dispatch("cart:toggle", { captureId: captureContextMenu.recordId });
+            }}
+            onTrash={() => trashCapture(captureContextMenu.capture.id)}
+            onRestore={() => {
+              void dispatch("library:restore", { id: captureContextMenu.recordId });
+            }}
+            onPurge={() => {
+              const confirmed = window.confirm(
+                "Permanently delete this capture? This cannot be undone."
+              );
+              if (!confirmed) return;
+              void dispatch("library:purge", { id: captureContextMenu.recordId });
+            }}
+          />
+        ) : null}
         {projectContextMenu !== null ? (
           <LibraryProjectContextMenu
             menu={projectContextMenu}
@@ -4406,6 +4518,7 @@ type VirtualizedGridProps = {
     projectName: string,
     event: ReactMouseEvent<HTMLElement>
   ) => void;
+  openCaptureContextMenu: (capture: Capture, event: ReactMouseEvent<HTMLElement>) => void;
   preloadFullRes: (record: CaptureRecord | null) => void;
   hasMore: boolean;
   isLoadingMore: boolean;
@@ -4542,19 +4655,18 @@ function useCellsPerRow(
   return cellsPerRow;
 }
 
-function LibraryProjectContextMenu({
-  menu,
-  onClose,
-  onOpenProject,
-  onDuplicateProject
-}: {
-  menu: ProjectContextMenuState;
-  onClose: () => void;
-  onOpenProject: (projectId: string) => void;
-  onDuplicateProject: (projectId: string) => void;
-}) {
-  const rootRef = useRef<HTMLDivElement | null>(null);
-
+/**
+ * Shared dismiss + focus mechanism for the grid's context menus:
+ * click-outside closes, Esc closes (capture phase, so it beats the
+ * window-level Esc handlers that collapse the rail / leave Focus), and
+ * the menu takes focus on the next frame so keyboard users land inside
+ * it. Both the project menu and the capture menu use this so the two
+ * can't drift.
+ */
+function useContextMenuDismiss(
+  rootRef: React.RefObject<HTMLDivElement | null>,
+  onClose: () => void
+): void {
   useEffect(() => {
     function onMouseDown(event: MouseEvent): void {
       const root = rootRef.current;
@@ -4574,11 +4686,186 @@ function LibraryProjectContextMenu({
       document.removeEventListener("mousedown", onMouseDown);
       document.removeEventListener("keydown", onKeyDown, { capture: true });
     };
-  }, [onClose]);
+  }, [onClose, rootRef]);
 
   useEffect(() => {
     requestAnimationFrame(() => rootRef.current?.focus());
-  }, []);
+  }, [rootRef]);
+}
+
+/**
+ * Right-click menu for a CAPTURE tile. Every row here is a second door
+ * to something the tile already does — the 28px hover buttons are no
+ * longer the ONLY path to edit / trash, and copy / save / reveal /
+ * cart, which had no tile affordance at all, become reachable without a
+ * trip through the inspector.
+ *
+ * Deliberately NOT a new copy path: the Low/Med/High rows call
+ * `copyImagePreset`, the same helper the DetailRail cards, the tray, the
+ * float-over and ⌘1/2/3 use (see clipboard-copy.ts — per-surface
+ * dispatch calls are exactly how PR #232 drifted two surfaces onto a
+ * file URL). Same for the cart (`cart:toggle`) and the trash / restore /
+ * purge actions, which are the tile's own handlers passed straight
+ * through.
+ */
+function LibraryCaptureContextMenu({
+  menu,
+  onClose,
+  onEdit,
+  onCopyPreset,
+  onSaveFile,
+  onReveal,
+  onToggleCart,
+  onTrash,
+  onRestore,
+  onPurge
+}: {
+  menu: CaptureContextMenuState;
+  onClose: () => void;
+  onEdit: () => void;
+  onCopyPreset: (preset: CopyPreset) => void;
+  onSaveFile: () => void;
+  onReveal: () => void;
+  onToggleCart: () => void;
+  onTrash: () => void;
+  onRestore: () => void;
+  onPurge: () => void;
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useContextMenuDismiss(rootRef, onClose);
+  // Self-subscribes to the cart for the Add/Remove label, exactly like
+  // the per-tile checkbox does. The menu is short-lived, so the extra
+  // subscriber costs nothing.
+  const cart = useCart();
+  const inCart = cart.captureIds.includes(menu.recordId);
+
+  function run(action: () => void): () => void {
+    return () => {
+      onClose();
+      action();
+    };
+  }
+
+  return (
+    <div
+      ref={rootRef}
+      className="psl__context-menu"
+      role="menu"
+      tabIndex={-1}
+      style={{ left: `${menu.x}px`, top: `${menu.y}px` }}
+      onContextMenu={(event) => event.preventDefault()}
+      aria-label={`${menu.capture.n} actions`}
+    >
+      {menu.isTrashed ? (
+        <>
+          <button
+            type="button"
+            role="menuitem"
+            className="psl__context-menu-row"
+            onClick={run(onReveal)}
+          >
+            Reveal in Finder
+          </button>
+          <div className="psl__context-menu-sep" role="separator" />
+          <button
+            type="button"
+            role="menuitem"
+            className="psl__context-menu-row"
+            onClick={run(onRestore)}
+          >
+            Restore
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="psl__context-menu-row is-danger"
+            onClick={run(onPurge)}
+          >
+            Delete Permanently
+          </button>
+        </>
+      ) : (
+        <>
+          <button
+            type="button"
+            role="menuitem"
+            className="psl__context-menu-row"
+            onClick={run(onEdit)}
+          >
+            Edit
+          </button>
+          {/* Video has no Low/Med/High preset model (see
+              `capture:presetMetrics`) and no `capture:saveAs` — its
+              export lives in the inspector's six-card panel. */}
+          {menu.isVideo ? null : (
+            <>
+              <div className="psl__context-menu-sep" role="separator" />
+              {COPY_PRESET_ORDER.map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  role="menuitem"
+                  className="psl__context-menu-row"
+                  onClick={run(() => onCopyPreset(preset))}
+                >
+                  {`Copy ${COPY_PRESET_LABELS[preset]}`}
+                </button>
+              ))}
+              <button
+                type="button"
+                role="menuitem"
+                className="psl__context-menu-row"
+                onClick={run(onSaveFile)}
+              >
+                Save File…
+              </button>
+            </>
+          )}
+          <div className="psl__context-menu-sep" role="separator" />
+          <button
+            type="button"
+            role="menuitem"
+            className="psl__context-menu-row"
+            onClick={run(onReveal)}
+          >
+            Reveal in Finder
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="psl__context-menu-row"
+            onClick={run(onToggleCart)}
+          >
+            {inCart ? "Remove from Cart" : "Add to Cart"}
+          </button>
+          <div className="psl__context-menu-sep" role="separator" />
+          <button
+            type="button"
+            role="menuitem"
+            className="psl__context-menu-row is-danger"
+            onClick={run(onTrash)}
+          >
+            Move to Trash
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function LibraryProjectContextMenu({
+  menu,
+  onClose,
+  onOpenProject,
+  onDuplicateProject
+}: {
+  menu: ProjectContextMenuState;
+  onClose: () => void;
+  onOpenProject: (projectId: string) => void;
+  onDuplicateProject: (projectId: string) => void;
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useContextMenuDismiss(rootRef, onClose);
 
   return (
     <div
@@ -4625,6 +4912,7 @@ function VirtualizedGrid({
   onSelectCell,
   duplicateSizzleProject,
   openProjectContextMenu,
+  openCaptureContextMenu,
   preloadFullRes,
   hasMore,
   isLoadingMore,
@@ -4907,6 +5195,7 @@ function VirtualizedGrid({
                 onSelectCell={onSelectCell}
                 duplicateSizzleProject={duplicateSizzleProject}
                 openProjectContextMenu={openProjectContextMenu}
+                openCaptureContextMenu={openCaptureContextMenu}
                 preloadFullRes={preloadFullRes}
                 isTrashView={isTrashView}
                 trashCapture={trashCapture}
@@ -4950,6 +5239,7 @@ function CellRow({
   onSelectCell,
   duplicateSizzleProject,
   openProjectContextMenu,
+  openCaptureContextMenu,
   preloadFullRes,
   isTrashView,
   trashCapture,
@@ -4973,6 +5263,7 @@ function CellRow({
     projectName: string,
     event: ReactMouseEvent<HTMLElement>
   ) => void;
+  openCaptureContextMenu: (capture: Capture, event: ReactMouseEvent<HTMLElement>) => void;
   preloadFullRes: (record: CaptureRecord | null) => void;
   isTrashView: boolean;
   trashCapture: TrashAction;
@@ -5048,7 +5339,12 @@ function CellRow({
             onContextMenu={(event) => {
               if (projectId !== null) {
                 openProjectContextMenu(projectId, c.n, event);
+                return;
               }
+              // Capture tiles get their own menu — Edit / Copy L-M-H /
+              // Save File / Reveal / Cart / Trash — so the 28px hover
+              // buttons are never the only path to any of it.
+              openCaptureContextMenu(c, event);
             }}
             onMouseEnter={() => preloadFullRes(record ?? null)}
           >

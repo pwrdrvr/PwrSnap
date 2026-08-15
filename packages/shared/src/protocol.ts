@@ -3293,6 +3293,21 @@ export type Commands = {
   };
   "capture:window": { req: { windowId: number }; res: CaptureRecord };
   "capture:reveal": { req: { captureId: string }; res: void };
+  /**
+   * Render a capture at `preset` and write it wherever the user points
+   * a native Save sheet. Image captures only — the Low/Med/High preset
+   * model is image-only, and video already has its own six-card export
+   * panel (`video:export`).
+   *
+   * `path: null` means the user cancelled the sheet. Cancellation is a
+   * normal outcome, not an error, so the renderer doesn't have to
+   * distinguish "user changed their mind" from "the write failed" —
+   * only a genuine render/copy failure comes back as `err`.
+   */
+  "capture:saveAs": {
+    req: { captureId: string; preset: RenderPreset };
+    res: { path: string | null };
+  };
   /** Pre-render the cache file used by `webContents.startDrag`. */
   "capture:prepareDrag": {
     req: { captureId: string; preset: RenderPreset };

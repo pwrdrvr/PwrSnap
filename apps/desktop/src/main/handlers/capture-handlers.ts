@@ -761,6 +761,77 @@ export function registerCaptureHandlers(): void {
     return ok(undefined);
   });
 
+  bus.register("capture:saveAs", async (req) => {
+    const record = getCaptureById(req.captureId);
+    if (record === null || record.deleted_at !== null) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture not found: ${req.captureId}`
+      });
+    }
+    // Image-only, deliberately. The Low/Med/High preset model doesn't
+    // apply to video (see `capture:presetMetrics`), and video already
+    // owns a richer export surface via `video:export`.
+    if (record.kind === "video") {
+      return err({
+        kind: "validation",
+        code: "unsupported_kind",
+        message: "capture:saveAs is image-only; use video:export for recordings"
+      });
+    }
+
+    try {
+      const strategy = await getActiveExportStrategy();
+      // Render (or hit the cache for) the preset the user asked for
+      // BEFORE showing the sheet, so the file is ready the instant they
+      // click Save and a slow render can't strand a half-written file
+      // at the chosen path.
+      const presetFile = await renderPresetFile(record, req.preset, strategy);
+      const displayName = buildPresetExportDisplayName({
+        record,
+        enrichment: getCaptureEnrichment(record.id),
+        preset: req.preset,
+        ext: "png"
+      });
+      const { BrowserWindow, dialog } = await import("electron");
+      // Parent the sheet to the Library window when it's open — that's
+      // the window the tile lives in — falling back to whatever's
+      // focused for the tray / float-over entry points.
+      const win = findMainLibraryWindow() ?? BrowserWindow.getFocusedWindow() ?? null;
+      const saveOpts = {
+        defaultPath: displayName,
+        filters: [{ name: "PNG Image", extensions: ["png"] }]
+      };
+      const dialogResult =
+        win !== null
+          ? await dialog.showSaveDialog(win, saveOpts)
+          : await dialog.showSaveDialog(saveOpts);
+      if (
+        dialogResult.canceled ||
+        dialogResult.filePath === undefined ||
+        dialogResult.filePath.length === 0
+      ) {
+        return ok({ path: null });
+      }
+      const { copyFile } = await import("node:fs/promises");
+      await copyFile(presetFile.path, dialogResult.filePath);
+      return ok({ path: dialogResult.filePath });
+    } catch (cause) {
+      log.error("save as failed", {
+        captureId: req.captureId,
+        preset: req.preset,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "render",
+        code: "save_as_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
+  });
+
   bus.register("capture:prepareDrag", async (req) => {
     const record = getCaptureById(req.captureId);
     if (record === null || record.deleted_at !== null) {

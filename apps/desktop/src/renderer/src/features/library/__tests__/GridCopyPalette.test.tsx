@@ -8,6 +8,7 @@
 //   • follow-mode anchoring: positions next to the selected tile,
 //     flips at the stage edges, drags into `pinned` (persisted), and
 //     re-anchors when the 📌 toggle flips back
+//   • the preview drawer opens/closes and persists its state
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -25,7 +26,13 @@ vi.mock("../../../lib/pwrsnap", () => ({
   subscribe: (...args: unknown[]) =>
     subscribeMock(args[0] as string, args[1] as (payload: unknown) => void),
   startCaptureDrag: (...args: unknown[]) => startCaptureDragMock(...args),
-  startVideoDrag: vi.fn()
+  startVideoDrag: vi.fn(),
+  // Pure URL builders — mirror the real implementations so the preview
+  // drawer's asserted src values stay meaningful.
+  captureSrcUrl: (captureId: string) => `pwrsnap-capture://r/${captureId}`,
+  cacheUrl: (captureId: string, width: number, format = "webp", v?: number) =>
+    `pwrsnap-cache://r/${captureId}/${width}w.${format}` +
+    (v === undefined ? "" : `?v=${v}`)
 }));
 
 import {
@@ -435,6 +442,70 @@ describe("GridCopyPalette", () => {
     expect(palette?.getAttribute("data-anchor")).toBe("pinned");
     // Pinned with no dragged position yet → CSS default, NOT the tile.
     expect(palette?.style.left).toBe("");
+  });
+
+  test("preview drawer is collapsed by default and persists when opened", async () => {
+    const el = await renderPalette();
+    const toggle = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-grid-copy-palette-preview-toggle"]'
+    );
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle?.getAttribute("aria-label")).toBe("Show preview");
+    expect(el.querySelector('[data-testid="psl-grid-copy-palette-preview"]')).toBeNull();
+
+    await act(async () => {
+      toggle?.click();
+      await Promise.resolve();
+    });
+
+    const drawer = el.querySelector<HTMLElement>(
+      '[data-testid="psl-grid-copy-palette-preview"]'
+    );
+    expect(drawer).not.toBeNull();
+    expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle?.getAttribute("aria-label")).toBe("Hide preview");
+    // The chevron drives the drawer via aria-controls.
+    expect(toggle?.getAttribute("aria-controls")).toBe(drawer?.id);
+    // Image capture → a contain-fit cache thumbnail, not the full-res
+    // capture protocol.
+    const img = drawer?.querySelector<HTMLImageElement>("img");
+    expect(img?.getAttribute("src")).toContain("pwrsnap-cache://r/cap_image/800w.webp");
+    expect(dispatchMock).toHaveBeenCalledWith("settings:write", {
+      library: { gridCopyPalette: { previewOpen: true } }
+    });
+
+    await act(async () => {
+      toggle?.click();
+      await Promise.resolve();
+    });
+    expect(el.querySelector('[data-testid="psl-grid-copy-palette-preview"]')).toBeNull();
+    expect(dispatchMock).toHaveBeenCalledWith("settings:write", {
+      library: { gridCopyPalette: { previewOpen: false } }
+    });
+  });
+
+  test("preview drawer hydrates open from settings and shows video inline", async () => {
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "settings:read") {
+        return ok({
+          ...settings,
+          library: {
+            ...(settings as unknown as { library: Record<string, unknown> }).library,
+            gridCopyPalette: { anchor: "follow", previewOpen: true }
+          }
+        });
+      }
+      if (name === "video:presetMetrics") return ok({ metrics: [] });
+      return ok(undefined);
+    });
+    const el = await renderPalette(videoRecord);
+    const drawer = el.querySelector<HTMLElement>(
+      '[data-testid="psl-grid-copy-palette-preview"]'
+    );
+    expect(drawer).not.toBeNull();
+    const video = drawer?.querySelector<HTMLVideoElement>("video");
+    expect(video?.getAttribute("src")).toBe("pwrsnap-capture://r/cap_video");
+    expect(video?.hasAttribute("muted") || video?.muted).toBeTruthy();
   });
 
   test("grip and copy buttons are keyboard-focusable", async () => {

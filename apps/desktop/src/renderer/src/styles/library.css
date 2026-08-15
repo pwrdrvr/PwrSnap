@@ -763,15 +763,40 @@
 }
 .psl__search-clear:hover { background: var(--text-primary); }
 
-/* Responsive toolbar — the `.is-narrow` / `.is-tight` classes are set by
-   Library.tsx from `useMediaQuery`, the single source of truth for these
-   breakpoints (the renderer viewport = the Library window content width).
-   Tiers declutter a crowded right cluster so the Quick Capture CTA stays
-   whole; the search field already absorbs the squeeze via flex-shrink. */
+/* Responsive toolbar — the tier classes are set by Library.tsx from
+   `useMediaQuery`, the single source of truth for these breakpoints (the
+   renderer viewport = the Library window content width). Capture actions
+   step down from labelled buttons → icon buttons → video hidden → both
+   hidden. Secondary chrome yields after that so the supported 480px minimum
+   remains usable on Windows as well as macOS. */
 .psl__topbar.is-narrow .psl__icon-btn { display: none; }
 .psl__topbar.is-narrow .psl__search-wrap { flex-basis: 150px; }
 .psl__topbar.is-tight .psl__topbar-r { gap: 6px; }
 .psl__topbar.is-tight .psl__search-wrap { flex-basis: 120px; }
+.psl__topbar.is-tight .psl__capture-btn {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+.psl__topbar.is-tight .psl__capture-label { display: none; }
+.psl__topbar.is-compact .psl__search-wrap { flex-basis: 100px; }
+.psl__topbar.is-compact .psl__capture-btn--video { display: none; }
+.psl__topbar.is-small .psl__search-wrap { flex-basis: 80px; }
+.psl__topbar.is-small .psl__capture-btn--quick { display: none; }
+.psl__topbar.is-minimal .psl__search-wrap,
+.psl__topbar.is-minimal .lyt-toggle,
+.psl__topbar.is-minimal .psl__history,
+.psl__topbar.is-minimal .psl__count { display: none; }
+.psl__topbar.is-tiny .psl__topbar-c { display: none; }
+
+/* Windows spends substantially more title-bar width on the custom menu and
+   native caption-button overlay. Shed low-priority left/center chrome one
+   tier earlier there so the actions never slide beneath min/max/close. */
+:root[data-platform="win32"] .psl__topbar.is-compact .psl__history,
+:root[data-platform="win32"] .psl__topbar.is-compact .psl__count,
+:root[data-platform="win32"] .psl__topbar.is-compact .psl__search-wrap,
+:root[data-platform="win32"] .psl__topbar.is-compact .psl__topbar-c { display: none; }
+:root[data-platform="win32"] .psl__topbar.is-tiny .psl__title { display: none; }
 
 /* Left: Source Apps.
  *
@@ -2680,6 +2705,7 @@
 }
 .psl__chip-btn--accent { background: var(--accent); border-color: var(--accent); color: var(--button-text-on-accent); }
 .psl__chip-btn--accent:hover { background: var(--accent-strong); color: var(--button-text-on-accent); }
+.psl__capture-btn { height: 28px; }
 /* "Breathe" the accent Quick Capture button while the Library is empty —
    a calm, expanding accent glow (+ a hair of scale) that pulls a first-
    run user's eye to the one action that fills the Library. The renderer

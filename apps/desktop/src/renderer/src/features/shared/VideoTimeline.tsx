@@ -131,6 +131,9 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
 
   const beginDrag = (mode: DragMode) => (e: ReactPointerEvent<HTMLElement>): void => {
     if (e.button !== 0) return;
+    // Compact strips (float-over) have no player to scrub — only the
+    // handles are interactive there.
+    if (mode === "scrub" && onSeek === undefined) return;
     e.preventDefault();
     e.stopPropagation();
     const strip = stripRef.current;

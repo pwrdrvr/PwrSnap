@@ -76,6 +76,19 @@ Ship the missing half of the surface as wiring, not new pipeline:
   renderers display them as `<img>` / `fetch()`→Blob without any Node access.
 - `video:setDefaultRange` unchanged in shape; now broadcasts
   `events:captures:changed` `[captureId]` after the write.
+- `video:presetMetrics` gains an optional `range` so byte estimates
+  re-derive from the displayed range immediately (falls back to the
+  persisted `defaultRange`); the `video:drag-start` IPC payload gains an
+  optional `range` too. Both are additive.
+
+## Range identity (cache-key hygiene)
+
+Persisted ranges are adopted verbatim by the renderer (`isValidRange` →
+no rounding); only drag-produced values are rounded to ms. `Full clip`
+resets to the exact `durationSec` the recorder seeded. This keeps the
+export-cache key `(capture, start, end, format, preset, audio)` identical
+across the stage, the DetailRail and the float-over, so no surface
+triggers a duplicate encode of the same clip.
 
 ## Files
 

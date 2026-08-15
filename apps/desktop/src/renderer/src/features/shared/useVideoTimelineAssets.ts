@@ -76,8 +76,14 @@ export function useVideoTimelineAssets(input: {
   );
   const specKey = spec === null ? null : `${spec.count}x${spec.frameWidth}`;
 
+  // Drop the strip only when the capture changes; a resize keeps the
+  // previous strip on screen until the re-quantized one arrives (no
+  // flash of empty lane).
   useEffect(() => {
     setFrames(null);
+  }, [captureId]);
+
+  useEffect(() => {
     if (captureId === null || spec === null) return;
     let cancelled = false;
     void (async () => {

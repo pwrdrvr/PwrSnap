@@ -32,7 +32,8 @@ import {
   EVENT_CHANNELS,
   exportStrategyFromSettings,
   resolveExportLadder,
-  rungForPreset
+  rungForPreset,
+  sizzleProjectHasCapture
 } from "@pwrsnap/shared";
 import type {
   AiEnrichmentBudgetStatus,
@@ -287,9 +288,7 @@ export function DetailRail({
     () =>
       record === null
         ? []
-        : sizzleProjects.filter((p) =>
-            p.scenes.some((s) => s.captureId === record.id)
-          ),
+        : sizzleProjects.filter((p) => sizzleProjectHasCapture(p.scenes, record.id)),
     [sizzleProjects, record]
   );
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);

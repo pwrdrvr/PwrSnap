@@ -16,6 +16,7 @@ import yazl from "yazl";
 import {
   EVENT_CHANNELS,
   err,
+  newSizzleSequenceScene,
   ok,
   slugifyFilenameStem,
   type CartExportProgressEvent,
@@ -23,12 +24,12 @@ import {
   type DraftCart,
   type EventPayloads,
   type RenderPreset,
-  type SizzleProject,
-  type SizzleScene
+  type SizzleProject
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getCartStore } from "../cart/cart-store";
 import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-store";
+import { appendCapturesToScenes } from "../sizzle/scene-edits";
 import { getCaptureById } from "../persistence/captures-repo";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 import { resolveImagePresetFile } from "../render/image-presets";
@@ -220,25 +221,6 @@ function broadcastProjectsChanged(projects: SizzleProject[]): void {
   }
 }
 
-/**
- * Build a fresh scene for a capture id. Mirrors `sizzle:toggleScene`'s
- * scene defaults — empty scriptLine (the chat agent or the user fills
- * it later), no media trim (seeded from the capture's video metadata
- * at render time if it's a video), auto audio source, crossfade
- * transition (the visual default).
- */
-function newSceneForCapture(captureId: string): SizzleScene {
-  return {
-    id: `sc_${randomUUID().slice(0, 10)}`,
-    captureId,
-    scriptLine: "",
-    durationOverrideSec: null,
-    mediaTrim: null,
-    audioSource: "auto",
-    transition: "crossfade"
-  };
-}
-
 export function registerCartHandlers(): void {
   const cart = getCartStore();
   const sizzle = getSizzleStore();
@@ -298,11 +280,14 @@ export function registerCartHandlers(): void {
     }
     const projectName = (v.name ?? current.name).trim() || "Untitled Sizzle";
     try {
-      // Create the project, then set its scenes from the cart order in
-      // a single update. `store.update` runs sanitizeScenes so the
-      // shape is normalized.
+      // Create the project, then set its scenes in a single update.
+      // A new reel is ONE sequence scene — one voiceover the user (or
+      // the composer agent) writes once, over every cart capture as a
+      // clip in check order. Splitting into more scenes is an explicit
+      // editor action. `store.update` runs sanitizeScenes so the shape
+      // is normalized.
       const created = await sizzle.create(projectName);
-      const scenes = current.captureIds.map(newSceneForCapture);
+      const scenes = [newSizzleSequenceScene(current.captureIds)];
       const updated = await sizzle.update(created.id, { scenes });
       // Cart did its job — clear it. (Clear AFTER the project write
       // succeeds so a failed create doesn't lose the user's cart.)
@@ -342,17 +327,10 @@ export function registerCartHandlers(): void {
           message: "Project not found"
         });
       }
-      // De-dup: only append captures not already scenes of the project.
-      // (Duplicate captures ARE legal in a reel — a user can show the
-      // same shot twice — but the "Add to existing" affordance is a
-      // bulk-merge, where the user expects "add the ones that aren't
-      // already here" rather than silently doubling existing scenes.)
-      const existing = new Set(project.scenes.map((s) => s.captureId));
-      const toAppend = current.captureIds.filter((id) => !existing.has(id));
-      const scenes = [
-        ...project.scenes,
-        ...toAppend.map(newSceneForCapture)
-      ];
+      // Duplicate captures ARE legal in a reel — a user can show the
+      // same shot twice — but see appendCapturesToScenes for why
+      // this bulk merge de-dups and where the new clips land.
+      const scenes = appendCapturesToScenes(project.scenes, current.captureIds);
       const updated = await sizzle.update(project.id, { scenes });
       const clearedCart = await cart.clear();
       broadcastCartChanged(clearedCart);

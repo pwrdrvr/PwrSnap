@@ -1364,6 +1364,95 @@ export function firstSizzleSceneCaptureId(scene: SizzleScene): string | null {
   return scene.captureId.length > 0 ? scene.captureId : null;
 }
 
+/**
+ * Every capture a scene shows: the scene's own `captureId` for simple
+ * scenes, or each beat's capture for sequence scenes. Use this (not
+ * `scene.captureId`) whenever asking "is this capture in the reel?" —
+ * a sequence scene's `captureId` only mirrors its first beat.
+ */
+export function sizzleSceneCaptureIds(scene: SizzleScene): string[] {
+  if (scene.kind === "sequence") {
+    return (scene.beats ?? [])
+      .map((beat) => beat.captureId)
+      .filter((id) => id.length > 0);
+  }
+  return scene.captureId.length > 0 ? [scene.captureId] : [];
+}
+
+export function sizzleProjectCaptureIds(
+  scenes: readonly SizzleScene[]
+): Set<string> {
+  const ids = new Set<string>();
+  for (const scene of scenes) {
+    for (const id of sizzleSceneCaptureIds(scene)) ids.add(id);
+  }
+  return ids;
+}
+
+export function sizzleProjectHasCapture(
+  scenes: readonly SizzleScene[],
+  captureId: string
+): boolean {
+  return scenes.some((scene) => sizzleSceneCaptureIds(scene).includes(captureId));
+}
+
+function sizzleRandomSuffix(): string {
+  // Web Crypto is a global in both Node ≥ 19 (main) and Chromium (renderer);
+  // the shared tsconfig has neither lib, so type the access locally.
+  const webCrypto = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (webCrypto?.randomUUID !== undefined) return webCrypto.randomUUID().slice(0, 10);
+  return Math.random().toString(36).slice(2, 12);
+}
+
+/**
+ * A fresh clip ("beat") for a sequence scene. `auto` timing — it slots
+ * evenly between anchored neighbours and needs no manual seconds; `cut`
+ * between clips (fast app-demo default); `smart-fit` for videos; a null
+ * trim falls back to the capture's `defaultRange` at plan time.
+ */
+export function newSizzleSequenceBeat(
+  captureId: string,
+  overrides: Partial<Omit<SizzleSequenceBeat, "id" | "captureId">> = {}
+): SizzleSequenceBeat {
+  return {
+    id: `bt_${sizzleRandomSuffix()}`,
+    captureId,
+    timing: { kind: "auto" },
+    mediaTrim: null,
+    transition: "cut",
+    videoFit: "smart-fit",
+    ...overrides
+  };
+}
+
+/**
+ * The default shape for a NEW reel: one scene = one continuous
+ * voiceover over N clips, in the order given. Splitting into several
+ * narration segments is an explicit editor action, not the default —
+ * a 30–60 s reel almost always wants one script timed to one track.
+ */
+export function newSizzleSequenceScene(
+  captureIds: readonly string[],
+  overrides: { narration?: string; transition?: SizzleTransition } = {}
+): SizzleScene {
+  const narration = overrides.narration ?? "";
+  const beats = normalizeSizzleSequenceBeatContinuity(
+    captureIds.map((captureId) => newSizzleSequenceBeat(captureId))
+  );
+  return {
+    id: `sc_${sizzleRandomSuffix()}`,
+    kind: "sequence",
+    captureId: captureIds[0] ?? "",
+    scriptLine: narration,
+    narration,
+    beats,
+    durationOverrideSec: null,
+    mediaTrim: null,
+    audioSource: "voiceover",
+    transition: overrides.transition ?? "crossfade"
+  };
+}
+
 export function defaultSizzleProjectCoverCaptureId(
   scenes: readonly SizzleScene[]
 ): string | null {

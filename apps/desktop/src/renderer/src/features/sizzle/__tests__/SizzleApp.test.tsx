@@ -340,13 +340,13 @@ describe("SizzleApp sequence authoring", () => {
       project({ scenes: [scene({ scriptLine: "one narration block" })] })
     );
 
-    expect(el.textContent).not.toContain("Sequence · one narration block");
+    expect(el.textContent).not.toContain("Scene · one voiceover");
 
     await act(async () => {
-      findButton(el, "Sequence").click();
+      findButton(el, "Convert to clips").click();
     });
 
-    expect(el.textContent).toContain("Sequence · one narration block");
+    expect(el.textContent).toContain("Scene · one voiceover");
     expect(scriptBox(el).value).toBe("one narration block");
     expect(el.querySelectorAll(".szl__sequence-beat")).toHaveLength(1);
     expect(el.textContent).toContain("Phrase anchors use timed transcript words from preview");
@@ -954,7 +954,7 @@ describe("sequence preview warnings", () => {
     expect(warnings).toEqual([
       {
         key: "media_trim_clamped-bt_4-0",
-        label: "Beat 4",
+        label: "Clip 4",
         message:
           "Media trim was clamped to the 4.204s source duration; using freeze-end because speed-to-fit would be too aggressive"
       }
@@ -981,7 +981,7 @@ describe("sequence preview warnings", () => {
     expect(warnings).toEqual([
       {
         key: "video_fit-bt_4-0",
-        label: "Beat 4",
+        label: "Clip 4",
         message:
           "Media trim was clamped to the 4.204s source duration; using freeze-end because speed-to-fit would be too aggressive"
       }
@@ -1000,7 +1000,7 @@ describe("sequence preview warnings", () => {
       ["bt_1", "bt_2"]
     );
 
-    expect(warnings[0]?.label).toBe("Beat 2");
+    expect(warnings[0]?.label).toBe("Clip 2");
   });
 });
 
@@ -1198,7 +1198,7 @@ describe("auto beat timing UI", () => {
   test("converting a scene to a sequence seeds an auto beat (R4)", async () => {
     const { el } = await renderApp(project({ scenes: [scene({ scriptLine: "narration here" })] }));
     await act(async () => {
-      findButton(el, "Sequence").click();
+      findButton(el, "Convert to clips").click();
     });
     const timingSelect = el.querySelector<HTMLSelectElement>(".szl__sequence-beat select");
     expect(timingSelect?.value).toBe("auto");
@@ -1256,7 +1256,7 @@ describe("beat reorder", () => {
     const { el } = await renderApp(project({ scenes: [seq()] }));
     expect(order(el)).toEqual(["cap_a", "cap_b", "cap_c"]);
     const firstRow = el.querySelectorAll(".szl__sequence-beat")[0]!;
-    const down = [...firstRow.querySelectorAll("button")].find((b) => b.title === "Move beat down")!;
+    const down = [...firstRow.querySelectorAll("button")].find((b) => b.title === "Move clip down")!;
     await act(async () => {
       down.click();
     });
@@ -1297,7 +1297,7 @@ describe("beat reorder", () => {
     };
     // reorder: first beat down → [b, a, c]
     const down = [...el.querySelectorAll(".szl__sequence-beat")[0]!.querySelectorAll("button")].find(
-      (b) => b.title === "Move beat down"
+      (b) => b.title === "Move clip down"
     )!;
     await act(async () => {
       down.click();
@@ -1317,7 +1317,7 @@ describe("beat reorder", () => {
     const { el, emit } = await renderApp(project({ scenes: [seq()] }));
     // local reorder → an undo entry + a pending debounced write
     const down = [...el.querySelectorAll(".szl__sequence-beat")[0]!.querySelectorAll("button")].find(
-      (b) => b.title === "Move beat down"
+      (b) => b.title === "Move clip down"
     )!;
     await act(async () => {
       down.click();

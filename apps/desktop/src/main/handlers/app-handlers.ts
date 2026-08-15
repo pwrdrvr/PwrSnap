@@ -18,7 +18,7 @@ import { err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { isAppDocumentKind, readAppDocument } from "../app-documents";
 import { readLaunchAtLoginStatus } from "../launch-at-login";
-import { resolveRuntimeIdentity } from "../runtime-identity";
+import { resolveDevelopmentRuntimeIdentity } from "../runtime-identity";
 import { showAppDocumentWindow } from "../window";
 import {
   checkForAppUpdatesNow,
@@ -26,14 +26,6 @@ import {
   readAppUpdateReleaseVersions,
   readAppUpdateStatus
 } from "../auto-updater";
-
-function resolveDevelopmentRuntimeIdentity() {
-  if (app.isPackaged || process.env.NODE_ENV === "production") return undefined;
-
-  const identity = resolveRuntimeIdentity();
-  if (identity.branch === undefined && identity.commitSha === undefined) return undefined;
-  return identity;
-}
 
 /** URLs the renderer is allowed to open via `app:openExternal`. Keeps
  *  `shell.openExternal` from becoming an arbitrary-navigation gadget: a
@@ -71,7 +63,10 @@ export function registerAppHandlers(): void {
 /** Process-agnostic verbs — safe and useful in any role. */
 export function registerAppCommonHandlers(): void {
   bus.register("app:version", async () => {
-    const runtimeIdentity = resolveDevelopmentRuntimeIdentity();
+    const runtimeIdentity = resolveDevelopmentRuntimeIdentity({
+      isPackaged: app.isPackaged,
+      nodeEnv: process.env.NODE_ENV
+    });
     return ok({
       version: app.getVersion(),
       electronVersion: process.versions.electron ?? "",

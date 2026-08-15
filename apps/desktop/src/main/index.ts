@@ -38,6 +38,10 @@ import { setFloatOverState } from "./float-over";
 import { bus } from "./command-bus";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 import { installDevelopmentDockIcon } from "./development-dock-icon";
+import {
+  resolveAboutPanelBuildVersion,
+  resolveDevelopmentRuntimeIdentity
+} from "./runtime-identity";
 import { installTerminalSignalShutdown } from "./terminal-signal-shutdown";
 // (showFloatOverForCapture is no longer called from the bootstrap;
 // the capture-handlers `capture:interactive` now drives the entire
@@ -143,7 +147,11 @@ import { insertVideoMetadata } from "./persistence/video-repo";
 import { failOrphanedRunsOnBoot } from "./persistence/ai-runs-repo";
 import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
-import { persistCaptureFromTempV2, sweepBundleTrash } from "./persistence/bundle-store";
+import {
+  cancelScheduledRepacks,
+  persistCaptureFromTempV2,
+  sweepBundleTrash
+} from "./persistence/bundle-store";
 import { getCacheSourcePath } from "./persistence/paths";
 import { runBundleFilenameMaintenanceOnBoot } from "./persistence/bundle-filename-maintenance";
 import { runVideoFilenameMaintenanceOnBoot } from "./persistence/video-filename-maintenance";
@@ -1498,10 +1506,15 @@ export function bootstrapApp(): void {
     app.setPath("sessionData", join(app.getPath("userData"), "library-session"));
   }
 
+  const appVersion = app.getVersion();
+  const runtimeIdentity = resolveDevelopmentRuntimeIdentity({
+    isPackaged: app.isPackaged,
+    nodeEnv: process.env.NODE_ENV
+  });
   app.setAboutPanelOptions({
     applicationName: APP_NAME,
-    applicationVersion: app.getVersion(),
-    version: app.getVersion(),
+    applicationVersion: appVersion,
+    version: resolveAboutPanelBuildVersion(appVersion, runtimeIdentity),
     copyright: APP_COPYRIGHT
   });
 
@@ -2259,6 +2272,11 @@ export function bootstrapApp(): void {
     // Electron handle's `app.close()` returns but the OS process
     // hasn't actually exited.
     destroyTextBakePool();
+    // Cancel pending debounced re-packs BEFORE the DB closes — a
+    // repack timer firing post-close throws uncaught from
+    // getCaptureById. Next boot's edits_version check re-packs
+    // whatever this drops.
+    cancelScheduledRepacks();
     closeDatabase();
   });
 }

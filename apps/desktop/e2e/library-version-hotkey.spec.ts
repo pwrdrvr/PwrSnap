@@ -28,7 +28,21 @@ import { launchPwrSnap } from "./fixtures/electron-app";
 test.setTimeout(60_000);
 
 const TOPBAR_QUICK_CAPTURE = ".psl__topbar-r .psl__chip-btn--accent";
+const TOPBAR_VIDEO_CAPTURE = ".psl__capture-btn--video";
+const TOPBAR_CAPTURE_LABEL = ".psl__capture-label";
 const FOOTER_VERSION = ".psl__status-r b";
+
+async function resizeLibrary(app: Awaited<ReturnType<typeof launchPwrSnap>>, width: number) {
+  await app.electronApp.evaluate(({ BrowserWindow }, targetWidth) => {
+    const win = BrowserWindow.getAllWindows().find((candidate) => {
+      if (candidate.isDestroyed()) return false;
+      const url = candidate.webContents.getURL();
+      return url.includes("/renderer/index.html") && !url.includes("stage=");
+    });
+    if (!win) throw new Error("no live library BrowserWindow to resize");
+    win.setContentSize(targetWidth, 720);
+  }, width);
+}
 
 test("library footer renders the version from app.getVersion()", async () => {
   const app = await launchPwrSnap();
@@ -130,6 +144,48 @@ test("library top bar falls back to bare 'Quick Capture' when the hotkey is unbo
     await expect(button).toHaveText("Quick Capture");
     await expect(button).not.toContainText("·");
     await expect(button).not.toContainText("⌘");
+  } finally {
+    await app.close();
+  }
+});
+
+test("library capture actions progressively collapse and hide at narrow widths", async () => {
+  const app = await launchPwrSnap({ windowSize: { width: 1440, height: 720 } });
+  try {
+    const topbar = app.window.locator(".psl__topbar");
+    const quick = app.window.locator(TOPBAR_QUICK_CAPTURE);
+    const video = app.window.locator(TOPBAR_VIDEO_CAPTURE);
+
+    await expect(quick.locator(TOPBAR_CAPTURE_LABEL)).toBeVisible();
+    await expect(video.locator(TOPBAR_CAPTURE_LABEL)).toBeVisible();
+
+    await resizeLibrary(app, 950);
+    await expect(topbar).toHaveClass(/\bis-tight\b/);
+    await expect(quick).toBeVisible();
+    await expect(video).toBeVisible();
+    await expect(quick).toHaveCSS("width", "28px");
+    await expect(video).toHaveCSS("width", "28px");
+    await expect(quick.locator("svg circle")).toHaveCount(1);
+    await expect(quick.locator(TOPBAR_CAPTURE_LABEL)).toBeHidden();
+    await expect(video.locator(TOPBAR_CAPTURE_LABEL)).toBeHidden();
+
+    await resizeLibrary(app, 800);
+    await expect(topbar).toHaveClass(/\bis-compact\b/);
+    await expect(quick).toBeVisible();
+    await expect(video).toBeHidden();
+
+    await resizeLibrary(app, 680);
+    await expect(topbar).toHaveClass(/\bis-small\b/);
+    await expect(quick).toBeHidden();
+    await expect(video).toBeHidden();
+
+    await resizeLibrary(app, 480);
+    await expect(topbar).toHaveClass(/\bis-tiny\b/);
+    const extents = await topbar.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth
+    }));
+    expect(extents.scrollWidth).toBeLessThanOrEqual(extents.clientWidth);
   } finally {
     await app.close();
   }

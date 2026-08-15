@@ -1188,14 +1188,22 @@ export function Library() {
 
   // Responsive toolbar. The right cluster (search + sidebar toggles +
   // Settings + Record Video + Quick Capture) overcrowds a narrow Library
-  // window and squeezes the orange Quick Capture CTA. Two tiers declutter:
+  // window and squeezes the orange Quick Capture CTA. Progressive tiers
+  // preserve the highest-value controls for as long as they fit:
   //   • narrow — hide Settings (still on the menu + ⌘,), drop the search
   //     placeholder, shrink the search field, drop the "captures" word from
   //     the count pill (just the number).
-  //   • tight  — collapse Record Video to an icon-only button.
-  // Quick Capture is never shrunk; the search field absorbs the squeeze.
+  //   • tight — collapse both capture actions to icon-only buttons.
+  //   • compact — hide Record Video, leaving the orange camera action.
+  //   • small — hide Quick Capture too; its global hotkey remains live.
+  //   • minimal / tiny — progressively yield secondary chrome so the
+  //     supported 480px minimum still fits on macOS and Windows.
   const isToolbarNarrow = useMediaQuery("(max-width: 1024px)");
-  const isToolbarTight = useMediaQuery("(max-width: 1000px)");
+  const isToolbarTight = useMediaQuery("(max-width: 960px)");
+  const isToolbarCompact = useMediaQuery("(max-width: 840px)");
+  const isToolbarSmall = useMediaQuery("(max-width: 720px)");
+  const isToolbarMinimal = useMediaQuery("(max-width: 640px)");
+  const isToolbarTiny = useMediaQuery("(max-width: 560px)");
   // Below this even focus/reel collapse the right rail: the left sidebar
   // (220) + a pinned rail (360) would otherwise leave the Stage near-zero
   // width. See `railEffectivePinned`.
@@ -2902,7 +2910,11 @@ export function Library() {
         className={
           "psl__topbar" +
           (isToolbarNarrow ? " is-narrow" : "") +
-          (isToolbarTight ? " is-tight" : "")
+          (isToolbarTight ? " is-tight" : "") +
+          (isToolbarCompact ? " is-compact" : "") +
+          (isToolbarSmall ? " is-small" : "") +
+          (isToolbarMinimal ? " is-minimal" : "") +
+          (isToolbarTiny ? " is-tiny" : "")
         }
       >
         <div className="psl__topbar-l">
@@ -3079,8 +3091,7 @@ export function Library() {
               the same flow the ⌘⌥C hotkey drives. Secondary (non-accent)
               chip styling keeps Quick Capture the single orange CTA. */}
           <button
-            className="psl__chip-btn"
-            style={{ height: 28 }}
+            className="psl__chip-btn psl__capture-btn psl__capture-btn--video"
             type="button"
             title="Pick a region or window to capture as a video clip"
             aria-label="Record Video"
@@ -3092,33 +3103,36 @@ export function Library() {
               <rect x="3" y="6" width="13" height="12" rx="2" />
               <path d="m16 10 5-3v10l-5-3z" />
             </svg>
-            {/* Below the tight breakpoint the label collapses to free room
-                for the Quick Capture CTA; the icon + aria-label carry it. */}
-            {isToolbarTight ? null : videoCaptureChord.length > 0
-              ? `Record Video · ${videoCaptureChord}`
-              : "Record Video"}
+            <span className="psl__capture-label">
+              {videoCaptureChord.length > 0
+                ? `Record Video · ${videoCaptureChord}`
+                : "Record Video"}
+            </span>
           </button>
           {/* Mirrors the tray's Quick Capture button — same wording,
               same action, same hotkey. Routes through `capture:interactive`
               with `auto` mode (smart pick: region / window / full screen
               based on what the cursor is pointing at). */}
           <button
-            className={`psl__chip-btn psl__chip-btn--accent${
+            className={`psl__chip-btn psl__chip-btn--accent psl__capture-btn psl__capture-btn--quick${
               libraryIsEmpty ? " psl__chip-btn--breathe" : ""
             }`}
-            style={{ height: 28 }}
             type="button"
             title="Smart auto-mode · picks region, window, or full screen"
+            aria-label="Quick Capture"
             onClick={() => {
               void dispatch("capture:interactive", { mode: "auto" });
             }}
           >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
-              <path d="M5 12h14M12 5v14" />
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M8.5 7 10 4.5h4L15.5 7H19a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h3.5Z" />
+              <circle cx="12" cy="13" r="3.5" />
             </svg>
-            {quickCaptureChord.length > 0
-              ? `Quick Capture · ${quickCaptureChord}`
-              : "Quick Capture"}
+            <span className="psl__capture-label">
+              {quickCaptureChord.length > 0
+                ? `Quick Capture · ${quickCaptureChord}`
+                : "Quick Capture"}
+            </span>
           </button>
         </div>
       </header>
@@ -3967,9 +3981,9 @@ type VirtualizedGridProps = {
 /** Reactive CSS media-query match. Drives the responsive toolbar: the
  *  renderer viewport is the Library window's content area, so these track
  *  the window width (DevTools-docked included). Single source of truth for
- *  each breakpoint — the matching CSS keys off `.is-narrow` / `.is-tight`
- *  classes the component sets from these booleans, so thresholds never
- *  drift between JS and CSS. */
+ *  each breakpoint — the matching CSS keys off the tier classes this
+ *  component sets from these booleans, so thresholds never drift between
+ *  JS and CSS. */
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState<boolean>(() =>
     typeof window !== "undefined" && typeof window.matchMedia === "function"

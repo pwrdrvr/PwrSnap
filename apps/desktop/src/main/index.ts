@@ -43,6 +43,10 @@ import {
 import { bus } from "./command-bus";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 import { installDevelopmentDockIcon } from "./development-dock-icon";
+import {
+  resolveAboutPanelBuildVersion,
+  resolveDevelopmentRuntimeIdentity
+} from "./runtime-identity";
 import { installTerminalSignalShutdown } from "./terminal-signal-shutdown";
 import { installTransientWindowTeardown } from "./transient-window-teardown";
 // (showFloatOverForCapture is no longer called from the bootstrap;
@@ -1614,10 +1618,15 @@ export function bootstrapApp(): void {
     app.setPath("sessionData", join(app.getPath("userData"), "library-session"));
   }
 
+  const appVersion = app.getVersion();
+  const runtimeIdentity = resolveDevelopmentRuntimeIdentity({
+    isPackaged: app.isPackaged,
+    nodeEnv: process.env.NODE_ENV
+  });
   app.setAboutPanelOptions({
     applicationName: APP_NAME,
-    applicationVersion: app.getVersion(),
-    version: app.getVersion(),
+    applicationVersion: appVersion,
+    version: resolveAboutPanelBuildVersion(appVersion, runtimeIdentity),
     copyright: APP_COPYRIGHT
   });
 

@@ -3,10 +3,15 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   showAppDocumentWindow: vi.fn(),
   openExternal: vi.fn(async () => undefined),
-  resolveRuntimeIdentity: vi.fn(() => ({
-    branch: "agent/show-dev-git-branch",
-    cwd: "/repo/PwrSnap"
-  }))
+  resolveDevelopmentRuntimeIdentity: vi.fn((options: {
+    isPackaged: boolean;
+    nodeEnv: string | undefined;
+  }) => options.isPackaged || options.nodeEnv === "production"
+    ? undefined
+    : {
+        branch: "agent/show-dev-git-branch",
+        cwd: "/repo/PwrSnap"
+      })
 }));
 
 vi.mock("../../window", () => ({
@@ -25,7 +30,7 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
 }));
 
 vi.mock("../../runtime-identity", () => ({
-  resolveRuntimeIdentity: mocks.resolveRuntimeIdentity
+  resolveDevelopmentRuntimeIdentity: mocks.resolveDevelopmentRuntimeIdentity
 }));
 
 import { bus } from "../../command-bus";
@@ -34,7 +39,7 @@ import { registerAppHandlers } from "../app-handlers";
 registerAppHandlers();
 
 beforeEach(() => {
-  mocks.resolveRuntimeIdentity.mockClear();
+  mocks.resolveDevelopmentRuntimeIdentity.mockClear();
 });
 
 afterEach(() => {
@@ -53,6 +58,10 @@ describe("app:* handlers", () => {
       branch: "agent/show-dev-git-branch",
       cwd: "/repo/PwrSnap"
     });
+    expect(mocks.resolveDevelopmentRuntimeIdentity).toHaveBeenCalledWith({
+      isPackaged: false,
+      nodeEnv: process.env.NODE_ENV
+    });
   });
 
   test("app:version omits runtime identity from production builds", async () => {
@@ -63,7 +72,10 @@ describe("app:* handlers", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
     expect(result.value.runtimeIdentity).toBeUndefined();
-    expect(mocks.resolveRuntimeIdentity).not.toHaveBeenCalled();
+    expect(mocks.resolveDevelopmentRuntimeIdentity).toHaveBeenCalledWith({
+      isPackaged: false,
+      nodeEnv: "production"
+    });
   });
 
   test("app:version uses a fixed version when the E2E harness requests one", async () => {

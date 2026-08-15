@@ -23,9 +23,11 @@ import {
   isCodexCaptionModel,
   isColorToken,
   isEditorSidebarPanel,
+  isGridCopyPaletteAnchor,
   isLibrarySidebarTab,
   isRedactionStyle,
   isSettingsPage,
+  GRID_COPY_PALETTE_ANCHORS,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
   isHotCpuProfileStartDelayMs,
@@ -627,8 +629,9 @@ function validateExperimentalPatch(raw: unknown): PwrSnapError | null {
   return null;
 }
 
-/** Validate the library section of a settings patch. Currently
- *  exposes a single nested object: `detailRail`. Symmetric with
+/** Validate the library section of a settings patch. Exposes two
+ *  nested objects — `detailRail` and `gridCopyPalette` — plus the flat
+ *  `confirmBeforeTrash` / `gridZoom` leaves. Symmetric with
  *  `validateEditorPatch`. */
 function validateLibraryPatch(raw: unknown): PwrSnapError | null {
   if (!isObject(raw)) {
@@ -657,6 +660,29 @@ function validateLibraryPatch(raw: unknown): PwrSnapError | null {
         `settings:write: library.detailRail.lastSelectedTab must be one of ${LIBRARY_SIDEBAR_TABS.join(
           "/"
         )}`
+      );
+    }
+  }
+  if (raw.gridCopyPalette !== undefined) {
+    if (!isObject(raw.gridCopyPalette)) {
+      return validationError(
+        "invalid_library_gridCopyPalette",
+        "settings:write: library.gridCopyPalette must be an object"
+      );
+    }
+    const gcp = raw.gridCopyPalette;
+    if (!isUndefined(gcp.anchor) && !isGridCopyPaletteAnchor(gcp.anchor)) {
+      return validationError(
+        "invalid_library_gridCopyPalette_anchor",
+        `settings:write: library.gridCopyPalette.anchor must be one of ${GRID_COPY_PALETTE_ANCHORS.join(
+          "/"
+        )}`
+      );
+    }
+    if (!isUndefined(gcp.previewOpen) && !isBoolean(gcp.previewOpen)) {
+      return validationError(
+        "invalid_library_gridCopyPalette_previewOpen",
+        "settings:write: library.gridCopyPalette.previewOpen must be a boolean"
       );
     }
   }

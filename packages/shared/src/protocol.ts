@@ -2443,8 +2443,53 @@ export type LibrarySidebarSettings = {
   lastSelectedTab: LibrarySidebarTab;
 };
 
+/** How the floating Grid copy palette picks its position.
+ *
+ *  - `follow` (default) — the palette re-anchors to the selected tile on
+ *    every selection change / grid scroll / resize, popover-style (below
+ *    the tile, flipping above or to the side when that would clip the
+ *    stage). Keeps the L/M/H cards next to what the user just clicked
+ *    instead of parked at the bottom of a 1400px-wide grid.
+ *  - `pinned` — the palette stays wherever the user dragged it. Dragging
+ *    the grip flips the mode here implicitly; the 📌 toggle flips back.
+ *
+ *  Only the MODE is persisted. The dragged position stays module-scoped
+ *  in the renderer (same as EditToolbar) — it's a per-session placement,
+ *  not a preference, and a saved viewport coordinate would be wrong on
+ *  the next launch at a different window size. */
+export type GridCopyPaletteAnchor = "follow" | "pinned";
+
+export const GRID_COPY_PALETTE_ANCHORS = [
+  "follow",
+  "pinned"
+] as const satisfies readonly GridCopyPaletteAnchor[];
+
+export function isGridCopyPaletteAnchor(
+  value: unknown
+): value is GridCopyPaletteAnchor {
+  return (
+    typeof value === "string" &&
+    (GRID_COPY_PALETTE_ANCHORS as readonly string[]).includes(value)
+  );
+}
+
+/** Persisted preferences for the floating Grid copy palette (the L/M/H
+ *  overlay shown when Grid has a selection but the inspector isn't
+ *  pinned). */
+export type LibraryGridCopyPaletteSettings = {
+  /** See {@link GridCopyPaletteAnchor}. Defaults to `follow`. */
+  anchor: GridCopyPaletteAnchor;
+  /** Whether the palette's preview drawer (a contain-fit thumbnail of
+   *  the selected capture) is expanded. Collapsed by default so the
+   *  palette stays small for users who already know what they picked. */
+  previewOpen: boolean;
+};
+
 export type LibrarySettings = {
   detailRail: LibrarySidebarSettings;
+  /** Floating Grid copy-palette preferences. See
+   *  {@link LibraryGridCopyPaletteSettings}. */
+  gridCopyPalette: LibraryGridCopyPaletteSettings;
   /** When true (default), moving a capture to Trash pops a small confirm
    *  popover next to the delete button. Users can untick "Don't ask again"
    *  in that popover to set this false — deletes then go straight to Trash
@@ -2675,6 +2720,9 @@ export type SettingsPatch = {
    *  surfaces over time. */
   library?: {
     detailRail?: Partial<LibrarySidebarSettings>;
+    /** Floating Grid copy-palette prefs (anchor mode + preview drawer).
+     *  See {@link LibraryGridCopyPaletteSettings}. */
+    gridCopyPalette?: Partial<LibraryGridCopyPaletteSettings>;
     confirmBeforeTrash?: boolean;
     /** Sticky grid thumbnail size (target min-width px). See
      *  {@link LibrarySettings.gridZoom}. */

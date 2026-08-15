@@ -5,6 +5,9 @@
 //   • video selection mounts the shared export grid
 //   • drag grip repositions; double-click resets
 //   • toolbar/grip remain keyboard-focusable
+//   • follow-mode anchoring: positions next to the selected tile,
+//     flips at the stage edges, drags into `pinned` (persisted), and
+//     re-anchors when the 📌 toggle flips back
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -29,6 +32,7 @@ import {
   GridCopyPalette,
   resetGridCopyPalettePositionForTests
 } from "../GridCopyPalette";
+import { resolveFollowAnchor } from "../grid-copy-palette-anchor";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -99,44 +103,71 @@ function ok<T>(value: T) {
   return { ok: true as const, value };
 }
 
+type Box = { left: number; top: number; width: number; height: number };
+
+function box(left: number, top: number, width: number, height: number): Box {
+  return { left, top, width, height };
+}
+
+function toDomRect(b: Box): DOMRect {
+  return {
+    x: b.left,
+    y: b.top,
+    left: b.left,
+    top: b.top,
+    width: b.width,
+    height: b.height,
+    right: b.left + b.width,
+    bottom: b.top + b.height,
+    toJSON: () => ({})
+  } as DOMRect;
+}
+
+// Mutable per-test geometry. `.psl__main` is the stage, the palette is
+// keyed off its testid, and any `.psl__cell` reports the tile box —
+// which is what the follow-anchor math consumes.
+let stageBox: Box = box(0, 0, 800, 600);
+let tileBox: Box = box(100, 100, 180, 120);
+let paletteBox: Box = box(200, 400, 360, 90);
+
 function installRects(): void {
+  stageBox = box(0, 0, 800, 600);
+  tileBox = box(100, 100, 180, 120);
+  paletteBox = box(200, 400, 360, 90);
   const proto = Element.prototype as Element & {
     getBoundingClientRect(): DOMRect;
   };
   proto.getBoundingClientRect = function getBoundingClientRect(): DOMRect {
-    const testId = (this as HTMLElement).getAttribute?.("data-testid");
-    if (testId === "psl-grid-copy-palette") {
-      return {
-        x: 200,
-        y: 400,
-        left: 200,
-        top: 400,
-        width: 360,
-        height: 90,
-        right: 560,
-        bottom: 490,
-        toJSON: () => ({})
-      } as DOMRect;
+    const el = this as HTMLElement;
+    if (el.getAttribute?.("data-testid") === "psl-grid-copy-palette") {
+      return toDomRect(paletteBox);
     }
-    return {
-      x: 0,
-      y: 0,
-      left: 0,
-      top: 0,
-      width: 800,
-      height: 600,
-      right: 800,
-      bottom: 600,
-      toJSON: () => ({})
-    } as DOMRect;
+    if (el.classList?.contains("psl__cell")) return toDomRect(tileBox);
+    return toDomRect(stageBox);
   };
 }
 
-async function renderPalette(record: CaptureRecord = imageRecord): Promise<HTMLDivElement> {
+/**
+ * Mount the palette inside a `.psl__main` stage. `withTile` adds the
+ * `.psl__cell[data-cell-id]` element the follow-anchor code looks for;
+ * tests that want the CSS-default (bottom-center) placement omit it.
+ */
+async function renderPalette(
+  record: CaptureRecord = imageRecord,
+  options: { withTile?: boolean } = {}
+): Promise<HTMLDivElement> {
   container = document.createElement("div");
   container.className = "psl__main";
   document.body.appendChild(container);
-  root = createRoot(container);
+  if (options.withTile === true) {
+    const tile = document.createElement("div");
+    tile.className = "psl__cell";
+    tile.setAttribute("data-cell-id", record.id);
+    container.appendChild(tile);
+  }
+  const mount = document.createElement("div");
+  container.appendChild(mount);
+  root = createRoot(mount);
   await act(async () => {
     root?.render(createElement(GridCopyPalette, { record }));
     await Promise.resolve();
@@ -281,6 +312,131 @@ describe("GridCopyPalette", () => {
     expect(palette?.classList.contains("is-positioned")).toBe(false);
   });
 
+  test("follow mode anchors the palette just below the selected tile", async () => {
+    const el = await renderPalette(imageRecord, { withTile: true });
+    const palette = el.querySelector<HTMLElement>('[data-testid="psl-grid-copy-palette"]');
+    expect(palette?.getAttribute("data-anchor")).toBe("follow");
+    // Tile is 180x120 at (100,100) → bottom 220; +12px gap = 232.
+    // Centered horizontally: 100 + 90 - 180 = 10 (inside the stage).
+    expect(palette?.style.top).toBe("232px");
+    expect(palette?.style.left).toBe("10px");
+    expect(palette?.classList.contains("is-positioned")).toBe(true);
+  });
+
+  test("follow mode leaves the CSS default when the tile isn't rendered", async () => {
+    const el = await renderPalette(imageRecord);
+    const palette = el.querySelector<HTMLElement>('[data-testid="psl-grid-copy-palette"]');
+    expect(palette?.style.left).toBe("");
+    expect(palette?.style.top).toBe("");
+  });
+
+  test("dragging switches the anchor to pinned and persists it", async () => {
+    const el = await renderPalette(imageRecord, { withTile: true });
+    const palette = el.querySelector<HTMLElement>('[data-testid="psl-grid-copy-palette"]');
+    const grip = el.querySelector<HTMLButtonElement>('[data-testid="psl-grid-copy-palette-grip"]');
+
+    await act(async () => {
+      grip?.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          clientX: 210,
+          clientY: 410,
+          pointerId: 1
+        })
+      );
+      grip?.dispatchEvent(
+        new PointerEvent("pointermove", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          clientX: 260,
+          clientY: 450,
+          pointerId: 1
+        })
+      );
+      grip?.dispatchEvent(
+        new PointerEvent("pointerup", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          clientX: 260,
+          clientY: 450,
+          pointerId: 1
+        })
+      );
+      await Promise.resolve();
+    });
+
+    expect(dispatchMock).toHaveBeenCalledWith("settings:write", {
+      library: { gridCopyPalette: { anchor: "pinned" } }
+    });
+    expect(palette?.getAttribute("data-anchor")).toBe("pinned");
+    // Dragged spot (palette top 400 + 40px of pointer travel), not the
+    // tile-relative one.
+    expect(palette?.style.top).toBe("440px");
+    expect(
+      dispatchMock.mock.calls.filter(
+        ([name]) => name === "settings:write"
+      )
+    ).toHaveLength(1);
+  });
+
+  test("📌 toggle flips back to follow and re-anchors to the tile", async () => {
+    const el = await renderPalette(imageRecord, { withTile: true });
+    const palette = el.querySelector<HTMLElement>('[data-testid="psl-grid-copy-palette"]');
+    const toggle = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-grid-copy-palette-anchor-toggle"]'
+    );
+    expect(toggle?.getAttribute("aria-pressed")).toBe("true");
+    expect(toggle?.getAttribute("aria-label")).toBe("Follow selection");
+
+    await act(async () => {
+      toggle?.click();
+      await Promise.resolve();
+    });
+    expect(palette?.getAttribute("data-anchor")).toBe("pinned");
+    expect(toggle?.getAttribute("aria-pressed")).toBe("false");
+    expect(toggle?.getAttribute("aria-label")).toBe("Stay put");
+    expect(dispatchMock).toHaveBeenCalledWith("settings:write", {
+      library: { gridCopyPalette: { anchor: "pinned" } }
+    });
+
+    await act(async () => {
+      toggle?.click();
+      await Promise.resolve();
+    });
+    expect(palette?.getAttribute("data-anchor")).toBe("follow");
+    expect(dispatchMock).toHaveBeenCalledWith("settings:write", {
+      library: { gridCopyPalette: { anchor: "follow" } }
+    });
+    // Re-anchored immediately, back onto the tile.
+    expect(palette?.style.top).toBe("232px");
+    expect(palette?.style.left).toBe("10px");
+  });
+
+  test("hydrates the persisted pinned anchor from settings", async () => {
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "settings:read") {
+        return ok({
+          ...settings,
+          library: {
+            ...(settings as unknown as { library: Record<string, unknown> }).library,
+            gridCopyPalette: { anchor: "pinned", previewOpen: false }
+          }
+        });
+      }
+      if (name === "capture:presetMetrics") return ok({ metrics: [] });
+      return ok(undefined);
+    });
+    const el = await renderPalette(imageRecord, { withTile: true });
+    const palette = el.querySelector<HTMLElement>('[data-testid="psl-grid-copy-palette"]');
+    expect(palette?.getAttribute("data-anchor")).toBe("pinned");
+    // Pinned with no dragged position yet → CSS default, NOT the tile.
+    expect(palette?.style.left).toBe("");
+  });
+
   test("grip and copy buttons are keyboard-focusable", async () => {
     const el = await renderPalette();
     const grip = el.querySelector<HTMLButtonElement>('[data-testid="psl-grid-copy-palette-grip"]');
@@ -293,5 +449,73 @@ describe("GridCopyPalette", () => {
 
     copy?.focus();
     expect(document.activeElement).toBe(copy);
+  });
+});
+
+// Pure placement math — exercised directly so the flip order is pinned
+// down without a DOM. Stage is 800x600 at the origin unless stated;
+// the palette is 360x90; gap 12, margin 8.
+describe("resolveFollowAnchor", () => {
+  const stage = box(0, 0, 800, 600);
+  const palette = box(0, 0, 360, 90);
+
+  test("prefers below the tile, horizontally centered", () => {
+    const r = resolveFollowAnchor({ stage, tile: box(200, 100, 180, 120), palette });
+    expect(r).toEqual({ x: 110, y: 232, placement: "below" });
+  });
+
+  test("flips above when below would clip the stage bottom", () => {
+    // Tile bottom 560 → below would need 560 + 12 + 90 = 662 > 592.
+    const r = resolveFollowAnchor({ stage, tile: box(200, 440, 180, 120), palette });
+    expect(r?.placement).toBe("above");
+    expect(r?.y).toBe(440 - 12 - 90);
+  });
+
+  test("flips to the side when neither below nor above fits", () => {
+    // Tall tile spanning most of the stage: no room above or below.
+    const r = resolveFollowAnchor({ stage, tile: box(60, 20, 180, 560), palette });
+    expect(r?.placement).toBe("right");
+    expect(r?.x).toBe(60 + 180 + 12);
+  });
+
+  test("flips to the left when the right side would clip", () => {
+    const r = resolveFollowAnchor({ stage, tile: box(440, 20, 180, 560), palette });
+    expect(r?.placement).toBe("left");
+    expect(r?.x).toBe(440 - 12 - 360);
+  });
+
+  test("clamps a centered placement into the stage at the left edge", () => {
+    // Tile at x=0 → centered left would be -135; clamps to the margin.
+    const r = resolveFollowAnchor({ stage, tile: box(0, 100, 90, 120), palette });
+    expect(r?.x).toBe(8);
+  });
+
+  test("clamps a centered placement into the stage at the right edge", () => {
+    const r = resolveFollowAnchor({ stage, tile: box(710, 100, 90, 120), palette });
+    expect(r?.x).toBe(800 - 360 - 8);
+  });
+
+  test("returns stage-relative coordinates for an offset stage", () => {
+    const r = resolveFollowAnchor({
+      stage: box(240, 60, 800, 600),
+      tile: box(440, 160, 180, 120),
+      palette
+    });
+    expect(r).toEqual({ x: 110, y: 232, placement: "below" });
+  });
+
+  test("falls back to the roomier side when nothing fits, staying on-stage", () => {
+    const r = resolveFollowAnchor({ stage, tile: box(0, 0, 800, 600), palette });
+    expect(r).not.toBeNull();
+    expect(r?.x).toBeGreaterThanOrEqual(8);
+    expect(r?.x).toBeLessThanOrEqual(800 - 360 - 8);
+    expect(r?.y).toBeGreaterThanOrEqual(8);
+    expect(r?.y).toBeLessThanOrEqual(600 - 90 - 8);
+  });
+
+  test("returns null for a zero-area stage", () => {
+    expect(
+      resolveFollowAnchor({ stage: box(0, 0, 0, 0), tile: box(0, 0, 10, 10), palette })
+    ).toBeNull();
   });
 });

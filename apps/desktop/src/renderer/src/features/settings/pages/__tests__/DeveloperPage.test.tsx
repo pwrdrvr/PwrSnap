@@ -78,6 +78,7 @@ const baseSettings: Settings = {
   },
   library: {
     detailRail: { pinned: true, lastSelectedTab: "info" },
+    gridCopyPalette: { anchor: "follow", previewOpen: false },
     confirmBeforeTrash: true,
     gridZoom: 180
   },

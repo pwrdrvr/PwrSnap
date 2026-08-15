@@ -286,6 +286,60 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(low.library.gridZoom).toBe(GRID_ZOOM_MIN);
   });
 
+  test("v1 shape missing `library.gridCopyPalette` gets the follow/collapsed defaults; junk falls back", async () => {
+    // gridCopyPalette landed well after v1 shipped, so older files won't
+    // carry it. It parses independently of detailRail (same rule as
+    // gridZoom / confirmBeforeTrash) and a garbage anchor degrades to
+    // the default rather than quarantining the whole file.
+    const missingPath = join(workDir, "settings-gcp-missing.json");
+    writeFileSync(
+      missingPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        library: { detailRail: { pinned: false, lastSelectedTab: "ocr" } }
+      }),
+      "utf8"
+    );
+    const missing = await new DesktopSettingsService({ filePath: missingPath }).read();
+    expect(missing.library.gridCopyPalette).toEqual({
+      anchor: "follow",
+      previewOpen: false
+    });
+    expect(missing.library.detailRail.lastSelectedTab).toBe("ocr");
+
+    const roundTripPath = join(workDir, "settings-gcp-roundtrip.json");
+    writeFileSync(
+      roundTripPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        library: { gridCopyPalette: { anchor: "pinned", previewOpen: true } }
+      }),
+      "utf8"
+    );
+    const roundTrip = await new DesktopSettingsService({
+      filePath: roundTripPath
+    }).read();
+    expect(roundTrip.library.gridCopyPalette).toEqual({
+      anchor: "pinned",
+      previewOpen: true
+    });
+
+    const junkPath = join(workDir, "settings-gcp-junk.json");
+    writeFileSync(
+      junkPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        library: { gridCopyPalette: { anchor: "sticky", previewOpen: "yes" } }
+      }),
+      "utf8"
+    );
+    const junk = await new DesktopSettingsService({ filePath: junkPath }).read();
+    expect(junk.library.gridCopyPalette).toEqual({
+      anchor: "follow",
+      previewOpen: false
+    });
+  });
+
   test("v1 shape missing `general.launchAtLogin` gets the opt-in default (false) filled in", async () => {
     // `general.launchAtLogin` landed after v1 shipped; older files
     // carry `general` with only `developerMode`. parseV1 fills the
@@ -1057,6 +1111,33 @@ describe("mergeSettings", () => {
     expect(mergeSettings(current, { library: { gridZoom: 10 } }).library.gridZoom).toBe(
       GRID_ZOOM_MIN
     );
+  });
+
+  test("library.gridCopyPalette patch merges per-field and leaves siblings alone", () => {
+    const current = defaultSettings();
+    expect(current.library.gridCopyPalette).toEqual({
+      anchor: "follow",
+      previewOpen: false
+    });
+    // A drag writes only `anchor`; the drawer's open/closed state must
+    // survive (and vice versa) — hence mergeSection, not replacement.
+    const dragged = mergeSettings(current, {
+      library: { gridCopyPalette: { anchor: "pinned" } }
+    });
+    expect(dragged.library.gridCopyPalette).toEqual({
+      anchor: "pinned",
+      previewOpen: false
+    });
+    const drawerOpened = mergeSettings(dragged, {
+      library: { gridCopyPalette: { previewOpen: true } }
+    });
+    expect(drawerOpened.library.gridCopyPalette).toEqual({
+      anchor: "pinned",
+      previewOpen: true
+    });
+    // Sibling library fields preserved.
+    expect(drawerOpened.library.detailRail).toEqual(current.library.detailRail);
+    expect(drawerOpened.library.gridZoom).toBe(current.library.gridZoom);
   });
 
   test("storage.filenameTimestampZone patch overwrites only the specified field", () => {

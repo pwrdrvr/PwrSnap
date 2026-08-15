@@ -3833,11 +3833,46 @@
   box-shadow: 0 20px 56px color-mix(in srgb, var(--shadow-base) 70%, transparent),
     inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
 }
-.psl__grid-copy-palette .psl__et-grip {
+/* Left rail: drag grip stacked over the 📌 follow/stay-put toggle.
+   Offset down so the grip lines up with the copy cards rather than the
+   eyebrow row above them. */
+.psl__grid-copy-palette-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   margin-top: 18px;
 }
 .psl__grid-copy-palette .psl__et-sep {
   margin-top: 22px;
+}
+/* 📌 anchor toggle. Muted when the palette is following the selection
+   (the default — nothing to call out); accented once the user has
+   parked it, since that's the state they need to be able to undo. */
+.psl__grid-copy-palette-anchor {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.psl__grid-copy-palette-anchor:hover {
+  background: color-mix(in srgb, var(--surface-highlight) 8%, transparent);
+  color: var(--text-primary);
+}
+.psl__grid-copy-palette-anchor:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.psl__grid-copy-palette-anchor[aria-pressed="false"] {
+  color: var(--accent);
 }
 .psl__grid-copy-palette-body {
   min-width: 280px;

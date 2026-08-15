@@ -168,6 +168,9 @@ for (const expected of [
   "Get-AuthenticodeSignature",
   "windows-signed-installer-pr",
   "if: ${{ github.event_name != 'pull_request' }}",
+  "find mac-dist/dist mac-dist/build/ffmpeg-source",
+  '"${mac_assets[@]}"',
+  '"${windows_assets[@]}"',
 ]) {
   if (!releaseWorkflow.includes(expected)) {
     fail(`.github/workflows/release.yml must contain ${JSON.stringify(expected)}`);
@@ -175,6 +178,9 @@ for (const expected of [
 }
 if (releaseWorkflow.includes("pull_request_target")) {
   fail('.github/workflows/release.yml must not contain "pull_request_target"');
+}
+if (releaseWorkflow.includes("mac-dist/*")) {
+  fail('.github/workflows/release.yml must not pass mac-dist directories to publication');
 }
 const protectedWindowsJob = releaseWorkflow
   .split("\n  windows-sign:\n")[1]

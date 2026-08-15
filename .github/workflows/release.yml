@@ -613,14 +613,36 @@ jobs:
             exit 1
           fi
 
+          for asset_dir in mac-dist/dist mac-dist/build/ffmpeg-source windows-dist; do
+            if [ ! -d "$asset_dir" ]; then
+              echo "::error::Downloaded release artifact directory is missing: $asset_dir" >&2
+              exit 1
+            fi
+          done
+          mapfile -t mac_assets < <(
+            find mac-dist/dist mac-dist/build/ffmpeg-source \
+              -maxdepth 1 -type f -print | sort
+          )
+          mapfile -t windows_assets < <(
+            find windows-dist -maxdepth 1 -type f -print | sort
+          )
+          if [ "${#mac_assets[@]}" -eq 0 ]; then
+            echo "::error::No macOS release asset files were downloaded." >&2
+            exit 1
+          fi
+          if [ "${#windows_assets[@]}" -eq 0 ]; then
+            echo "::error::No Windows release asset files were downloaded." >&2
+            exit 1
+          fi
+
           gh release create "$RELEASE_TAG" \
             --repo pwrdrvr/PwrSnap \
             --verify-tag \
             --title "$RELEASE_TAG" \
             --notes-file "$notes" \
             --prerelease \
-            mac-dist/* \
-            windows-dist/*
+            "${mac_assets[@]}" \
+            "${windows_assets[@]}"
 
           body_length="$(gh release view "$RELEASE_TAG" \
             --repo pwrdrvr/PwrSnap \

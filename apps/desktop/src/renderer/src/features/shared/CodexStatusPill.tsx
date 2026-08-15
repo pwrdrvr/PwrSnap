@@ -63,6 +63,12 @@ export type CodexStatusPillProps = {
   readonly modelLabel?: string | undefined;
   /** Failure message from the latest run, when available. */
   readonly error?: string | null | undefined;
+  /** Compact run metadata rendered on the SAME row as the status text,
+   *  separated by a middot (e.g. `· GPT-5.6-Luna · <$0.001`). Exists so
+   *  a surface can fold a second boxed "model / cost" card into this
+   *  one row instead of stacking two bordered strips above the first
+   *  field. Omitted → the row is exactly what it was before. */
+  readonly meta?: ReactNode;
   readonly action?: ReactNode;
   readonly style?: CSSProperties;
   readonly className?: string;
@@ -136,10 +142,13 @@ function labelFor(
           {provider} is queued<span className="ps-codex-pill__dots" />
         </>
       );
+    // No trailing period on the two "happy" labels: they are the head
+    // of a middot-joined run (`… from Codex · GPT-5.6 · <$0.001`) once
+    // a surface passes `meta`, and "Codex. · GPT-5.6" reads as a typo.
     case "ready":
-      return <>{provider} drafted a title + description.</>;
+      return <>{provider} drafted a title + description</>;
     case "accepted":
-      return <>Description filled from {provider}.</>;
+      return <>Description filled from {provider}</>;
     case "failed":
       return failedLabelFor(provider, error);
     case "safety-disabled":
@@ -182,6 +191,7 @@ export function CodexStatusPill({
   providerLabel = "Codex",
   modelLabel,
   error,
+  meta,
   action,
   style,
   className
@@ -212,7 +222,12 @@ export function CodexStatusPill({
           <path d="m12 2 2.5 5 5.5.5-4 4 1 5.5-5-3-5 3 1-5.5-4-4 5.5-.5z" />
         </svg>
       </span>
-      <span className="ps-codex-pill__text">{labelFor(kind, providerLabel, modelLabel, error)}</span>
+      <span className="ps-codex-pill__text">
+        {labelFor(kind, providerLabel, modelLabel, error)}
+        {meta !== undefined && meta !== null ? (
+          <span className="ps-codex-pill__meta">{meta}</span>
+        ) : null}
+      </span>
       {action !== undefined ? <span className="ps-codex-pill__action">{action}</span> : null}
     </div>
   );

@@ -43,6 +43,16 @@
   font-weight: 600;
 }
 
+/* Run metadata folded onto the status row (see the pill's `meta` prop).
+   The middot is a CSS ::before rather than part of the meta content so
+   the meta component stays renderable standalone (it is, in tests) and
+   so the separator can never double up. */
+.ps-codex-pill__meta::before {
+  content: "·";
+  margin: 0 5px;
+  opacity: 0.55;
+}
+
 .ps-codex-pill__dots::after {
   content: "";
   display: inline-block;

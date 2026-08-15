@@ -18,6 +18,28 @@
   min-height: 0;
 }
 
+/* `pinnedWidthPx="fill"` variant — for hosts that give the rail a
+   FIXED column (the Library's 360px `--right-col`). The slack track is
+   deleted outright and the panel takes the flexible track instead, so
+   there is no leftover 1–2px gutter between the host's `border-left`
+   and the panel's left edge. That gutter was the "double rule on the
+   top half of the rail" bug: two 1px lines separated by a sliver of
+   host background read as one thick, dirty separator.
+
+   `minmax(0, 1fr)` (not bare `1fr`) so the panel can shrink below its
+   min-content width when the host column collapses to the 38px spine
+   — otherwise the panel's own content would hold the track open and
+   push the activity bar off the right edge. */
+.rab--fill {
+  grid-template-columns: minmax(0, 1fr) 38px;
+}
+.rab--fill .rab__panel--pinned {
+  grid-column: 1;
+}
+.rab--fill .rab__activity {
+  grid-column: 2;
+}
+
 .rab__panel--pinned {
   grid-column: 2;
   grid-row: 1;
@@ -133,6 +155,16 @@
   flex: 1;
   overflow: auto;
   min-height: 0;
+}
+
+/* Sticky footer INSIDE the panel column (see `renderPanelFooter`).
+   Never scrolls with the body and never grows; the body absorbs all
+   the slack. `min-width: 0` lets grid/flex children inside the footer
+   shrink past their min-content width when the panel narrows, instead
+   of bleeding out past the panel's right edge. */
+.rab__panel-footer {
+  flex: 0 0 auto;
+  min-width: 0;
 }
 
 @keyframes rab-pop-in {

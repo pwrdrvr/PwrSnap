@@ -474,17 +474,22 @@ export function DetailRail({
   const hasLayersApi = layersApi !== null;
   const tabs: ReadonlyArray<RightActivityTab<SidebarTab>> = useMemo(
     () => [
+      // Every tab carries a `title` (tooltip) and, whenever it can show
+      // the accent dot, a `badgeLabel` naming what the dot points at.
+      // The dot means the same thing on every tab — "this tab has
+      // content waiting for you" — and `badgeLabel` says which content.
       {
         id: "info",
         label: "Info",
-        title: "Info",
+        title: "Info — details, AI drafts, tags",
         icon: INFO_ICON
       },
       {
         id: "ocr",
         label: "OCR",
-        title: hasOcrText ? "OCR — extracted text ready" : "OCR",
+        title: hasOcrText ? "OCR — extracted text ready" : "OCR — no extracted text",
         badge: hasOcrText,
+        badgeLabel: "extracted text available",
         icon: OCR_ICON
       },
       {
@@ -507,6 +512,7 @@ export function DetailRail({
                   ? `In ${containingProjects.length} Sizzle Reel${containingProjects.length === 1 ? "" : "s"}`
                   : "Not yet in a Sizzle Reel",
               badge: containingProjects.length > 0,
+              badgeLabel: "already in a Sizzle Reel",
               icon: PROJECT_ICON
             }
           ]
@@ -523,6 +529,7 @@ export function DetailRail({
               label: `Cart ${cartCount}`,
               title: `${cartCount} asset${cartCount === 1 ? "" : "s"} collected for a Sizzle Reel`,
               badge: true,
+              badgeLabel: `${cartCount} asset${cartCount === 1 ? "" : "s"} collected`,
               icon: CART_ICON
             }
           ]
@@ -613,7 +620,7 @@ export function DetailRail({
               </div>
             )}
             testIdPrefix="psl-right"
-            pinnedWidthPx={320}
+            pinnedWidthPx="fill"
           />
         </div>
       </aside>
@@ -754,30 +761,22 @@ export function DetailRail({
     );
   };
 
-  return (
-    <aside className="psl__right psl__right--vertical" aria-label="Capture details">
-      <div className="psl__right-content">
-        <RightActivityBar
-          tabs={railTabs}
-          activeTab={railActiveTab}
-          pinned={pinned}
-          onTabChange={onRailTabChange}
-          onPinChange={writePinned}
-          renderPanel={renderPanel}
-          testIdPrefix="psl-right"
-          pinnedWidthPx={320}
-        />
-      </div>
-
-      {/* The per-capture copy/file footer applies to the SELECTED capture,
-          which is confusing under the Cart tab (whose actions are about the
-          whole collection). Hide it there — the cart's own export (Zip)
-          lives in the Cart panel. */}
-      <div
-        className="psl__right-footer"
-        data-testid="psl-right-footer"
-        style={railActiveTab === "cart" ? { display: "none" } : undefined}
-      >
+  // Panel-local footer — the per-capture copy / export / file / trash
+  // controls. Rendered INSIDE the panel column (via `renderPanelFooter`)
+  // rather than as a sibling spanning the whole aside. Two things fall
+  // out of that: the 38px activity rail now runs unbroken from the top
+  // of the aside to its bottom edge instead of stopping where the
+  // footer started, and the hover-popped panel carries the exact same
+  // controls the pinned panel does (so unpinning no longer has to
+  // `display: none` the footer away).
+  const renderFooter = (id: SidebarTab): ReactElement | null => {
+    // The per-capture copy/file footer applies to the SELECTED capture,
+    // which is confusing under the Cart tab (whose actions are about the
+    // whole collection). Omit it there — the cart's own export (Zip)
+    // lives in the Cart panel.
+    if (id === "cart") return null;
+    return (
+      <div className="psl__right-footer" data-testid="psl-right-footer">
         <div>
           <div className="psl__copy-eyebrow">
             <span>{isVideo ? "Export" : "Copy to clipboard"}</span>
@@ -995,6 +994,29 @@ export function DetailRail({
             </>
           )}
         </div>
+      </div>
+    );
+  };
+
+  return (
+    <aside className="psl__right psl__right--vertical" aria-label="Capture details">
+      <div className="psl__right-content">
+        <RightActivityBar
+          tabs={railTabs}
+          activeTab={railActiveTab}
+          pinned={pinned}
+          onTabChange={onRailTabChange}
+          onPinChange={writePinned}
+          renderPanel={renderPanel}
+          renderPanelFooter={renderFooter}
+          testIdPrefix="psl-right"
+          // "fill", not 320: the aside owns a fixed 360px column
+          // (`--right-col`) and draws the ONE separator between the
+          // stage and the rail. A hardcoded panel width leaves the
+          // rail's slack track a 1–2px gutter beside that separator,
+          // which reads as a double rule.
+          pinnedWidthPx="fill"
+        />
       </div>
     </aside>
   );
@@ -1395,6 +1417,10 @@ function DetailTab({
         providerLabel={providerLabel}
         modelLabel={modelLabel}
         error={enrichment?.error}
+        // Model + cost ride on the SAME row as the status sentence
+        // (`✦ Description filled from Codex · GPT-5.6 · <$0.001`)
+        // instead of in a second bordered card underneath it.
+        {...(usageDetail !== null ? { meta: <AiRunUsageStrip detail={usageDetail} /> } : {})}
         action={
           <>
             {/* Prominent bulk Use — the common case. Covers title +
@@ -1426,8 +1452,6 @@ function DetailTab({
           </>
         }
       />
-
-      {usageDetail !== null ? <AiRunUsageStrip detail={usageDetail} /> : null}
 
       <div className="psl__detail-fields">
         <label className="psl__field">
@@ -1547,6 +1571,12 @@ function isAiRunUsageDetail(value: unknown): value is AiRunUsageDetail {
   return typeof value === "object" && value !== null && "cost" in value && "mediaInputs" in value;
 }
 
+/** Compact model + cost run-metadata, designed to ride INSIDE the
+ *  CodexStatusPill's row (`meta` prop) rather than as its own bordered
+ *  card below it. Two boxed strips stacked above the first field cost
+ *  ~70px of Description real estate and said nothing the one-liner
+ *  can't; the token / cache / media accounting that used to occupy the
+ *  second and third lines now lives in the strip's `title` tooltip. */
 export function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): ReactElement {
   const cost =
     detail.cost.status === "available"
@@ -1581,28 +1611,27 @@ export function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): React
     selectedId.length > 0 &&
     selectedId !== detail.model;
 
+  // Token + cache + media accounting moved off-screen into a tooltip.
+  // Kept as ONE newline-joined title string (not per-span titles) so a
+  // single hover anywhere on the strip surfaces the whole accounting.
+  const accounting = `${tokens}\n${mediaText}`;
+
   return (
-    <div className="psl__ai-usage" aria-label="AI usage">
-      <div className="psl__ai-usage-row">
-        <span className="psl__ai-usage-model" title={modelName}>
-          {modelName}
-        </span>
-        <b>{cost}</b>
-      </div>
-      <div className="psl__ai-usage-row is-muted">
-        <span>{tokens}</span>
-        <span>{mediaText}</span>
-      </div>
+    <span className="psl__ai-usage" aria-label="AI usage" title={accounting}>
+      <span className="psl__ai-usage-model" title={modelName}>
+        {modelName}
+      </span>
+      <b className="psl__ai-usage-cost">{cost}</b>
       {overrode ? (
-        <div className="psl__ai-usage-row is-muted psl__ai-usage-override" role="note">
+        <span className="psl__ai-usage-override" role="note">
           <span
             title={`The agent doesn't support switching to "${requestedName ?? selectedId}", so it ran ${modelName} instead.`}
           >
             ⚠ you picked {requestedName ?? selectedId} — agent ran {modelName}
           </span>
-        </div>
+        </span>
       ) : null}
-    </div>
+    </span>
   );
 }
 

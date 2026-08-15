@@ -56,8 +56,20 @@ export interface RightActivityTab<Id extends string> {
   readonly label: string;
   /** Tooltip override; falls back to `label` when omitted. */
   readonly title?: string;
-  /** Small notification dot next to the icon when truthy. */
+  /** Small notification dot next to the icon when truthy.
+   *
+   *  The dot means exactly ONE thing on every tab that uses it:
+   *  "this tab has content waiting for you". It is never a count, a
+   *  warning, or an unread marker. `badgeLabel` names the specific
+   *  content so the accent dot is never an unlabelled glyph. */
   readonly badge?: boolean;
+  /** What the dot is pointing at for THIS tab, e.g. "extracted text
+   *  available". Rendered as the dot's tooltip and appended to the
+   *  button's `aria-label`, so the dot is legible to sighted users
+   *  and screen readers alike. Required in spirit whenever `badge`
+   *  can be true — a dot with no legend is the bug this exists to
+   *  prevent. */
+  readonly badgeLabel?: string;
   /** Slot the tab into the bottom of the bar (after the spacer). */
   readonly bottom?: boolean;
   /** Icon element — typically a small svg. */
@@ -80,6 +92,14 @@ export interface RightActivityBarProps<Id extends string> {
    *  pinned / hover-pop slots; the renderer only needs the active
    *  tab id. */
   readonly renderPanel: (activeTab: Id) => ReactNode;
+  /** Optional render-prop for a sticky footer INSIDE the panel column,
+   *  below the scrolling panel body. Rendered identically in the pinned
+   *  and hover-popped panels, so a caller's "always available" controls
+   *  (the Library rail's copy / file / trash row) survive both a tab
+   *  switch and an unpin — and, critically, stay inside the panel's
+   *  width instead of spanning the whole host column. Return `null` for
+   *  a tab that should not carry the footer. */
+  readonly renderPanelFooter?: (activeTab: Id) => ReactNode;
   /** Optional className on the outer wrapper. Lets callers tag the
    *  rail surface (e.g. `psl__right`). */
   readonly className?: string;
@@ -88,8 +108,22 @@ export interface RightActivityBarProps<Id extends string> {
    *  `${testIdPrefix}-panel-pinned`, the hover-pop as
    *  `${testIdPrefix}-panel-hover`. Defaults to `right-activity-bar`. */
    readonly testIdPrefix?: string;
-  /** Width of the pinned panel in CSS pixels. Defaults to 320px. */
-  readonly pinnedWidthPx?: number;
+  /** Width of the pinned panel in CSS pixels, or `"fill"` to let the
+   *  panel take exactly whatever the 38px activity bar leaves over.
+   *
+   *  Prefer `"fill"` when the rail owns a fixed-width host column. A
+   *  hardcoded pixel width inside a fixed column leaves the `.rab`
+   *  slack track a 1–2px gutter between the host's `border-left` and
+   *  the panel's own edge — which reads as a double rule. `"fill"`
+   *  deletes the slack track outright, so the seam can't happen and
+   *  nobody has to keep `pinnedWidthPx` in sync with the column width.
+   *  Defaults to 320px. */
+  readonly pinnedWidthPx?: number | "fill";
+  /** Width of the hover-popped panel in CSS pixels. The hover panel is
+   *  absolutely positioned and therefore cannot "fill" anything, so it
+   *  always needs a number. Defaults to `pinnedWidthPx` when that is
+   *  numeric, else 320px. */
+  readonly hoverWidthPx?: number;
 }
 
 // CSS variable read with a numeric fallback (mirrors EditorChrome).
@@ -151,9 +185,11 @@ export function RightActivityBar<Id extends string>(
     onTabChange,
     onPinChange,
     renderPanel,
+    renderPanelFooter,
     className,
     testIdPrefix = "right-activity-bar",
-    pinnedWidthPx = 320
+    pinnedWidthPx = 320,
+    hoverWidthPx
   } = props;
 
   const [hoverPanel, setHoverPanel] = useState<Id | null>(null);
@@ -318,12 +354,22 @@ export function RightActivityBar<Id extends string>(
   const topTabs = useMemo(() => tabs.filter((t) => t.bottom !== true), [tabs]);
   const bottomTabs = useMemo(() => tabs.filter((t) => t.bottom === true), [tabs]);
 
+  const fillPinned = pinnedWidthPx === "fill";
   const rootClass =
     "rab" +
+    (fillPinned ? " rab--fill" : "") +
     (className !== undefined && className !== "" ? ` ${className}` : "") +
     (reducedMotion ? " is-reduced-motion" : "");
 
-  const pinnedStyle: CSSProperties = { width: `${pinnedWidthPx}px` };
+  // In fill mode the panel takes its width from the grid track, so it
+  // carries NO inline width — an inline width would beat the track's
+  // stretch and re-open the gutter this mode exists to close.
+  const pinnedStyle: CSSProperties | undefined = fillPinned
+    ? undefined
+    : { width: `${pinnedWidthPx}px` };
+  const hoverStyle: CSSProperties = {
+    width: `${hoverWidthPx ?? (typeof pinnedWidthPx === "number" ? pinnedWidthPx : 320)}px`
+  };
 
   // tabpanel id is keyed on the visible-tab id, NOT on pinned vs
   // hover-pop mode, so the tab→panel aria-controls link survives
@@ -342,9 +388,10 @@ export function RightActivityBar<Id extends string>(
           aria-labelledby={activeTabId}
           aria-label={`${labelFor(tabs, activeTab)} panel`}
           data-testid={`${testIdPrefix}-panel-pinned`}
-          style={pinnedStyle}
+          {...(pinnedStyle !== undefined ? { style: pinnedStyle } : {})}
         >
           <div className="rab__panel-body">{renderPanel(activeTab)}</div>
+          <PanelFooter activeTab={activeTab} render={renderPanelFooter} />
         </div>
       )}
 
@@ -396,14 +443,34 @@ export function RightActivityBar<Id extends string>(
             id={panelId}
             aria-labelledby={activeTabId}
             aria-label={`${labelFor(tabs, activeForPanel)} panel`}
-            style={pinnedStyle}
+            style={hoverStyle}
           >
             <div className="rab__panel-body">{renderPanel(activeForPanel)}</div>
+            {/* The hover-pop carries the SAME footer as the pinned
+                panel. Unpinning is a width gesture, not a "give up the
+                copy/file/trash controls" gesture. */}
+            <PanelFooter activeTab={activeForPanel} render={renderPanelFooter} />
           </div>
         </div>
       )}
     </div>
   );
+}
+
+/** Panel-local sticky footer. Renders nothing at all (not even the
+ *  wrapper) when the caller has no footer for this tab, so an empty
+ *  footer can't contribute a stray border-top to the panel. */
+function PanelFooter<Id extends string>({
+  activeTab,
+  render
+}: {
+  activeTab: Id;
+  render: ((activeTab: Id) => ReactNode) | undefined;
+}): ReactElement | null {
+  if (render === undefined) return null;
+  const content = render(activeTab);
+  if (content === null || content === undefined || content === false) return null;
+  return <div className="rab__panel-footer">{content}</div>;
 }
 
 const INLINE_BLOCK_WRAP_STYLE: CSSProperties = {
@@ -442,6 +509,14 @@ function ActivityButton<Id extends string>({
   onMouseEnter,
   onMouseLeave
 }: ActivityButtonProps<Id>): ReactElement {
+  // The accent dot is a 6px circle with no text. Fold its meaning into
+  // the button's accessible name and its own tooltip so it reads as
+  // "OCR — extracted text available" rather than "OCR" plus a mystery
+  // dot. Falls back to a generic legend if a caller forgets `badgeLabel`.
+  const badgeLabel =
+    tab.badge === true ? (tab.badgeLabel ?? "has content") : undefined;
+  const accessibleName =
+    badgeLabel === undefined ? tab.label : `${tab.label} — ${badgeLabel}`;
   return (
     <button
       type="button"
@@ -465,7 +540,7 @@ function ActivityButton<Id extends string>({
       tabIndex={active ? 0 : -1}
       id={`${testIdPrefix}-tab-${String(tab.id)}-button`}
       title={tab.title ?? tab.label}
-      aria-label={tab.label}
+      aria-label={accessibleName}
       data-tab={tab.id}
       data-testid={`${testIdPrefix}-tab-${tab.id}`}
       onClick={() => onClick(tab.id)}
@@ -473,8 +548,11 @@ function ActivityButton<Id extends string>({
       onMouseLeave={() => onMouseLeave(tab.id)}
     >
       <span className="rab__act-ico">{tab.icon}</span>
-      {tab.badge ? (
-        <span className="rab__act-badge" aria-hidden="true" />
+      {badgeLabel !== undefined ? (
+        // aria-hidden: the legend is already in the button's
+        // accessible name above, so exposing the dot separately would
+        // make a screen reader announce it twice.
+        <span className="rab__act-badge" title={badgeLabel} aria-hidden="true" />
       ) : null}
     </button>
   );

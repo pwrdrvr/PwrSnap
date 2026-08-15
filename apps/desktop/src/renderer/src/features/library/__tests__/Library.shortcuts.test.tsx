@@ -9,7 +9,7 @@ import {
   test,
   vi
 } from "vitest";
-import type { CaptureRecord, Settings } from "@pwrsnap/shared";
+import type { AppRuntimeIdentity, CaptureRecord, Settings } from "@pwrsnap/shared";
 
 const dispatchMock = vi.fn();
 const subscribeMock = vi.fn((_channel: string, _handler: (payload: unknown) => void) => {
@@ -92,23 +92,33 @@ beforeAll(() => {
   }
   Element.prototype.scrollIntoView = vi.fn();
   // Keep the Library rail from auto-collapsing: jsdom's default viewport
-  // is often 1024px, which matches the "narrow toolbar" media query and
-  // would hide the pinned inspector column. Tests that assert pin
-  // occupancy need a wide window.
-  window.matchMedia = ((query: string) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    dispatchEvent: () => false
-  })) as typeof window.matchMedia;
+  // is often 1024px (`narrow` in useToolbarTier). Tests that assert the
+  // 360px pinned column need a wide window; the occupancy test below
+  // overrides innerWidth to cover ≤1024px.
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
+  window.matchMedia = ((query: string) => {
+    const maxWidth = /\(max-width:\s*(\d+)px\)/.exec(query);
+    const matches =
+      maxWidth !== null ? window.innerWidth <= Number(maxWidth[1]) : false;
+    return {
+      matches,
+      media: query,
+      onchange: null,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      dispatchEvent: () => false
+    };
+  }) as typeof window.matchMedia;
 });
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
+let appVersionInfo: {
+  version: string;
+  runtimeIdentity?: AppRuntimeIdentity;
+};
 
 const imageRecord: CaptureRecord = {
   id: "cap_image",
@@ -162,6 +172,7 @@ function ok<T>(value: T) {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  appVersionInfo = { version: "0.0.0-test" };
   dispatchMock.mockImplementation(async (name: string) => {
     if (name === "library:list") {
       return ok({
@@ -186,7 +197,7 @@ beforeEach(() => {
       });
     }
     if (name === "sizzle:list") return ok({ projects: [] });
-    if (name === "app:version") return ok({ version: "0.0.0-test" });
+    if (name === "app:version") return ok(appVersionInfo);
     if (name === "clipboard:copy") return ok(undefined);
     if (name === "clipboard:copy-path") return ok(undefined);
     if (name === "capture:presetMetrics") return ok({ metrics: [] });
@@ -196,6 +207,38 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+});
+
+describe("Library runtime footer", () => {
+  test("shows the Git branch for a development checkout", async () => {
+    appVersionInfo = {
+      version: "0.0.0-test",
+      runtimeIdentity: {
+        branch: "agent/show-dev-git-branch",
+        cwd: "/repo/PwrSnap"
+      }
+    };
+
+    await act(async () => {
+      root?.render(createElement(Library));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const label = container?.querySelector<HTMLElement>(".psl__runtime-label");
+    expect(label?.textContent).toBe("agent/show-dev-git-branch");
+    expect(label?.title).toBe("agent/show-dev-git-branch");
+  });
+
+  test("keeps showing the package version without a development checkout", async () => {
+    await act(async () => {
+      root?.render(createElement(Library));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container?.querySelector(".psl__runtime-label")?.textContent).toBe("v0.0.0-test");
+  });
 });
 
 afterEach(() => {
@@ -575,5 +618,22 @@ describe("Library grid selection does not reflow the inspector column", () => {
     expect(psl()?.getAttribute("data-right")).toBe("pinned");
     expect(container?.querySelector('[data-testid="psl-grid-copy-palette"]')).toBeNull();
     expect(container?.querySelector('[data-testid="detail-rail"]')).not.toBeNull();
+  });
+
+  test("pinned narrow Grid keeps the collapsed spine and default-selects", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+    try {
+      await renderLibrary(true);
+      expect(cellEl()?.classList.contains("is-selected")).toBe(true);
+      // Pin intent still occupies the column; width is the 38px hover-pop
+      // spine, not a hidden rail and not a 360px reflow.
+      expect(psl()?.getAttribute("data-right")).toBe("collapsed");
+      expect(container?.querySelector('[data-testid="detail-rail"]')).not.toBeNull();
+      expect(container?.querySelector('[data-testid="library-stage"]')).toBeNull();
+      // Collapsed footer is hidden, so the floating copy palette stays up.
+      expect(container?.querySelector('[data-testid="psl-grid-copy-palette"]')).not.toBeNull();
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
+    }
   });
 });

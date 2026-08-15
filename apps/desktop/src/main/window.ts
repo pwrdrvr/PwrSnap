@@ -480,7 +480,7 @@ export function createMainWindow(): BrowserWindow {
     width: 1440,
     height: 960,
     // Keep this well below the responsive toolbar/grid breakpoints
-    // (≤1024 narrow, ≤1000 tight, ≤640 very-narrow, plus the grid's
+    // (≤1024 narrow through ≤560 tiny, ≤640 very-narrow, plus the grid's
     // <560px-pane cell floor) so the narrow layouts are reachable by
     // resizing the window — not only by docking DevTools (which shrinks
     // the renderer viewport while the window frame stays put). The old

@@ -7,6 +7,7 @@
  */
 
 .szl {
+  position: relative; /* anchors the popover rail (.szl--rail-popover) */
   width: 100%;
   height: 100%;
   display: grid;
@@ -78,6 +79,39 @@
   opacity: 0.5;
 }
 
+/* With a reel open the crumb is a button that drops the project rail
+   down under it (see .szl--rail-popover). Same eyebrow type as the
+   static crumb so the bar reads identically either way. */
+.szl__title-crumb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: -6px -8px;
+  padding: 6px 8px;
+  background: transparent;
+  color: inherit;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.szl__title-crumb-btn:hover,
+.szl__title-crumb-btn.is-open {
+  color: var(--text-primary);
+  background: var(--bg-panel-elevated);
+  border-color: var(--border-subtle);
+}
+.szl__title-crumb-btn:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
+}
+.szl__title-caret {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
 .szl__title-here {
   color: var(--text-primary);
   text-transform: none;
@@ -89,7 +123,12 @@
   white-space: nowrap;
 }
 
-/* Left rail — projects list. */
+/* Left rail — projects list. With NO reel open it is the left grid
+   column (you need the list to pick one). With a reel open (`.szl--
+   rail-popover`) the column collapses to 0 and the rail becomes a
+   dropdown under the "Sizzle Reels ▾" crumb, so the editor gets the
+   whole width — a list of other reels is not worth a third of the
+   window while authoring one. */
 .szl__rail {
   grid-column: 1;
   grid-row: 2;
@@ -101,6 +140,42 @@
   gap: 12px;
   overflow: hidden;
   min-height: 0;
+}
+.szl--rail-popover {
+  grid-template-columns: 0 1fr;
+}
+.szl--rail-popover .szl__rail {
+  position: absolute;
+  top: 52px;
+  left: 0;
+  bottom: 0;
+  width: 280px;
+  max-height: min(70vh, 640px);
+  z-index: 6;
+  border-right: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0 0 var(--radius-md) 0;
+  box-shadow: var(--shadow-md);
+  transform-origin: top left;
+  transform: translateY(-6px);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 120ms var(--ease-out),
+    transform 120ms var(--ease-out);
+}
+.szl--rail-popover.is-rail-open .szl__rail {
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  .szl--rail-popover .szl__rail {
+    transition: none;
+  }
+}
+.szl--rail-popover .szl__main {
+  grid-column: 1 / -1;
 }
 
 .szl__new {
@@ -385,10 +460,53 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 24px;
+  padding: 10px 24px;
   border-bottom: 1px solid var(--border-subtle);
   flex-wrap: wrap;
   background: var(--bg-panel);
+}
+
+/* Reel settings — a summary chip that discloses the voice / provider /
+   resolution selects. Set once per reel; not worth a toolbar row. */
+.szl__reel-settings {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  cursor: pointer;
+  font: 500 12px/1 var(--font-sans);
+}
+.szl__reel-settings:hover,
+.szl__reel-settings.is-open {
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}
+.szl__reel-settings:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
+}
+.szl__reel-settings-label {
+  font: 600 10px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+.szl__reel-settings-summary {
+  font: 500 11px/1 var(--font-mono);
+  color: var(--text-secondary);
+}
+.szl__reel-settings-fields {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.szl__reel-settings-fields[hidden] {
+  display: none;
 }
 
 .szl__field {
@@ -1316,8 +1434,10 @@
   display: flex;
 }
 
-/* The agent chat as a fixed-width right rail next to the editor. */
+/* The agent chat as a right rail next to the editor. Width is the
+   inline `flex-basis` (dragged via .szl__chat-resizer, 320–720px). */
 .szl__chat {
+  position: relative;
   flex: 0 0 400px;
   min-height: 0;
   min-width: 0;
@@ -1325,4 +1445,28 @@
   flex-direction: column;
   border-left: 1px solid var(--border-subtle);
   background: var(--bg-panel);
+}
+.szl__chat-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+}
+.szl__chat-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background 120ms var(--ease-out);
+}
+.szl__chat-resizer:hover::after,
+.szl__chat-resizer:active::after {
+  background: var(--accent-border);
 }

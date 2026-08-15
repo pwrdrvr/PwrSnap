@@ -6,7 +6,8 @@ import { EVENT_CHANNELS, type CaptureRecord, type SizzleProject, type SizzleScen
 import {
   SizzleApp,
   formatSequencePreviewWarnings,
-  formatTranscriptPhraseOptionLabel
+  formatTranscriptPhraseOptionLabel,
+  resetSizzleChatWidthForTests
 } from "../SizzleApp";
 
 // The sequence preview draws its waveform with wavesurfer.js, which needs
@@ -1133,6 +1134,96 @@ describe("render precondition", () => {
     const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
     expect(render?.disabled).toBe(true);
     expect(render?.title ?? "").toContain("no narration");
+  });
+});
+
+describe("SizzleApp shell layout", () => {
+  test("with a reel open the project rail is a dropdown under the crumb; picking a reel closes it", async () => {
+    const first = project({ id: "p1", name: "First reel" });
+    const second = project({ id: "p2", name: "Second reel" });
+    const { el } = await renderApp([first, second]);
+    const shell = el.querySelector(".szl")!;
+    expect(shell.classList.contains("szl--rail-popover")).toBe(true);
+    expect(shell.classList.contains("is-rail-open")).toBe(false);
+    const rail = el.querySelector("#szl-rail")!;
+    expect(rail.getAttribute("aria-hidden")).toBe("true");
+
+    const toggle = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-rail-toggle"]')!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(shell.classList.contains("is-rail-open")).toBe(true);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(rail.getAttribute("aria-hidden")).toBeNull();
+
+    // Picking a reel from the dropdown lands on it and closes the rail.
+    await act(async () => {
+      clickProjectRow(el.querySelector('[data-testid="sizzle-projects-list"]'), "Second reel");
+    });
+    expect(titleValue(el)).toBe("Second reel");
+    expect(shell.classList.contains("is-rail-open")).toBe(false);
+  });
+
+  test("Esc closes the rail dropdown; ⌘⇧L toggles it", async () => {
+    const { el } = await renderApp(project());
+    const shell = el.querySelector(".szl")!;
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "L", metaKey: true, shiftKey: true, bubbles: true })
+      );
+    });
+    expect(shell.classList.contains("is-rail-open")).toBe(true);
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(shell.classList.contains("is-rail-open")).toBe(false);
+  });
+
+  test("the chat pane resizes by dragging its divider (left widens), clamped, and double-click resets", async () => {
+    resetSizzleChatWidthForTests();
+    const { el } = await renderApp(project());
+    const chat = el.querySelector<HTMLElement>(".szl__chat")!;
+    expect(chat.style.flexBasis).toBe("400px");
+    const grip = el.querySelector<HTMLElement>('[data-testid="sizzle-chat-resizer"]')!;
+    // jsdom lacks pointer capture — stub it.
+    grip.setPointerCapture = () => undefined;
+    grip.releasePointerCapture = () => undefined;
+    const pointer = (type: string, clientX: number): void => {
+      grip.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, clientX, button: 0 }) as unknown as PointerEvent
+      );
+    };
+    await act(async () => {
+      pointer("pointerdown", 1000);
+      pointer("pointermove", 900); // drag left 100px → wider
+    });
+    expect(chat.style.flexBasis).toBe("500px");
+    await act(async () => {
+      pointer("pointermove", 200); // way past max → clamped
+      pointer("pointerup", 200);
+    });
+    expect(chat.style.flexBasis).toBe("720px");
+    await act(async () => {
+      grip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    expect(chat.style.flexBasis).toBe("400px");
+    resetSizzleChatWidthForTests();
+  });
+
+  test("reel settings hide behind a summary chip and disclose on click", async () => {
+    const { el } = await renderApp(project({ voice: "onyx", resolution: "720p" }));
+    const toggle = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-reel-settings-toggle"]')!;
+    expect(toggle.textContent).toContain("onyx");
+    expect(toggle.textContent).toContain("OpenAI");
+    expect(toggle.textContent).toContain("720p");
+    const fields = el.querySelector<HTMLElement>("#szl-reel-settings")!;
+    expect(fields.hidden).toBe(true);
+    await act(async () => {
+      toggle.click();
+    });
+    expect(fields.hidden).toBe(false);
+    expect(fields.querySelectorAll("select")).toHaveLength(3);
   });
 });
 

@@ -160,17 +160,31 @@
   transform: translateY(-6px);
   opacity: 0;
   pointer-events: none;
+  /* `visibility: hidden` (not just opacity) takes the whole rail out of
+     the tab order — otherwise Tab walks into an invisible "+ New Sizzle
+     Reel" button and up to 100 invisible project rows that can navigate
+     away from the reel being edited. Delayed so it only applies after
+     the fade-out; `visibility` is discretely animatable, so it flips at
+     the end of the transition on close and immediately on open. */
+  visibility: hidden;
   transition:
     opacity 120ms var(--ease-out),
-    transform 120ms var(--ease-out);
+    transform 120ms var(--ease-out),
+    visibility 0s linear 120ms;
 }
 .szl--rail-popover.is-rail-open .szl__rail {
   transform: none;
   opacity: 1;
   pointer-events: auto;
+  visibility: visible;
+  transition:
+    opacity 120ms var(--ease-out),
+    transform 120ms var(--ease-out),
+    visibility 0s linear 0s;
 }
 @media (prefers-reduced-motion: reduce) {
-  .szl--rail-popover .szl__rail {
+  .szl--rail-popover .szl__rail,
+  .szl--rail-popover.is-rail-open .szl__rail {
     transition: none;
   }
 }

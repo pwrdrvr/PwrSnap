@@ -4665,6 +4665,15 @@ function useCellsPerRow(
  * the menu takes focus on the next frame so keyboard users land inside
  * it. Both the project menu and the capture menu use this so the two
  * can't drift.
+ *
+ * Scroll / resize / blur also close, for the same reason `DeleteConfirm`
+ * closes on them: `.psl__context-menu` is `position: fixed` at the
+ * coordinates of the right-click, so it does NOT travel with the tile it
+ * was opened on. One wheel notch and the menu is pinned over a DIFFERENT
+ * capture while its rows still act on the original one — and in Trash
+ * view one of those rows is the irreversible "Delete Permanently". The
+ * scroll listener is capture-phase because the grid scrolls in an inner
+ * element, and scroll events don't bubble to window.
  */
 function useContextMenuDismiss(
   rootRef: React.RefObject<HTMLDivElement | null>,
@@ -4683,16 +4692,28 @@ function useContextMenuDismiss(
       event.stopPropagation();
       onClose();
     }
+    function onDetach(): void {
+      onClose();
+    }
     document.addEventListener("mousedown", onMouseDown);
     document.addEventListener("keydown", onKeyDown, { capture: true });
+    window.addEventListener("scroll", onDetach, true);
+    window.addEventListener("resize", onDetach);
+    window.addEventListener("blur", onDetach);
     return () => {
       document.removeEventListener("mousedown", onMouseDown);
       document.removeEventListener("keydown", onKeyDown, { capture: true });
+      window.removeEventListener("scroll", onDetach, true);
+      window.removeEventListener("resize", onDetach);
+      window.removeEventListener("blur", onDetach);
     };
   }, [onClose, rootRef]);
 
   useEffect(() => {
-    requestAnimationFrame(() => rootRef.current?.focus());
+    // preventScroll so taking focus never nudges a scroller — the
+    // close-on-scroll listener above would otherwise dismiss the menu the
+    // instant it opens (same reason DeleteConfirm does this).
+    requestAnimationFrame(() => rootRef.current?.focus({ preventScroll: true }));
   }, [rootRef]);
 }
 

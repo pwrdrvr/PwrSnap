@@ -386,6 +386,25 @@ describe("capture tile context menu", () => {
 
     expect(container?.querySelector('[role="menu"]')).toBeNull();
   });
+
+  test("scrolling the grid closes the menu", async () => {
+    // `.psl__context-menu` is position:fixed at the right-click point, so
+    // it does not travel with its tile. Left open across a scroll it ends
+    // up hovering a DIFFERENT capture while its rows still act on the
+    // original one — and in Trash view one of those rows is the
+    // irreversible "Delete Permanently". Scroll events don't bubble, so
+    // the listener has to be capture-phase on window.
+    await renderLibrary();
+    await openMenu();
+
+    const scroller = container?.querySelector<HTMLElement>(".psl__grid-wrap") ?? container;
+    await act(async () => {
+      (scroller ?? document).dispatchEvent(new Event("scroll", { bubbles: false }));
+      await Promise.resolve();
+    });
+
+    expect(container?.querySelector('[role="menu"]')).toBeNull();
+  });
 });
 
 describe("cart selection mode", () => {

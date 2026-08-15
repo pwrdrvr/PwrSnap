@@ -1703,8 +1703,9 @@
 .psl__cell-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
 /* Time badge — shares `--psl-chip-bg` / `--psl-chip-radius` / 10px mono
    with the duration chip and the action pills (see the ring-states
-   block). z-index 2 keeps it above the corner scrims, which paint at
-   z-index 1 inside the cart / rail stacking contexts. */
+   block). z-index 2 keeps it above the corner scrims: the rail's paints
+   at z-index 1 in this cell's stacking context, the cart's at -1 inside
+   the cart's own. */
 .psl__cell-time {
   position: absolute; top: 5px; right: 5px;
   z-index: 2;
@@ -1724,15 +1725,26 @@
    time pill in the opposite corner. */
 .psl__cell-app-overlay {
   position: absolute; bottom: 5px; left: 5px;
-  /* Above the bottom-right rail scrim — on a narrow tile the two can
-     overlap, and the pill's opaque fill must not get tinted. */
+  /* Middle of the cell's three overlay tiers: above the bottom-right
+     rail scrim (z-index 1) — on a narrow tile the two overlap, and the
+     pill's opaque fill must not get tinted — but BELOW the rail's own
+     28px action buttons (z-index 3), which the pill would otherwise
+     bury on a narrow tile with a long app name.
+     pointer-events:none on the WRAPPER, not just the inner pill: the
+     wrapper's box is what actually overlaps the Edit / Trash buttons,
+     and an `auto` wrapper swallows those clicks (they then bubble to
+     the cell and merely select the capture). Nothing in here has an
+     onClick, so hit-testing should always fall through — to the button
+     underneath when there is one, to the cell otherwise. */
   z-index: 2;
+  pointer-events: none;
 }
 /* 10px mono to match the time badge / duration chip. The app pill keeps
    its accent outline: it's the ONE emphasized corner. */
 .psl__cell-app-overlay > .ps-app-tag.is-sm { font-size: 10px; }
-/* The chip has no onClick — pass clicks through to the cell underneath
-   so the rounded corners aren't dead zones for selection. */
+/* Belt-and-braces with the wrapper rule above: the chip has no onClick
+   either, so clicks pass through to the cell underneath and the rounded
+   corners aren't dead zones for selection. */
 .psl__cell-app-overlay > .ps-app-tag { pointer-events: none; }
 /* Center play button — the primary, at-a-glance "this is a video" cue
    (a duration chip alone is too easy to miss). Translucent so it never
@@ -1772,13 +1784,25 @@
    duration chip sideways every time a button appeared.
    pointer-events:none lets clicks on the chip / empty rail fall through
    to the cell for selection; the buttons re-enable their own on reveal.
-   z-index 1 puts the rail (and its scrim, see ::before) above the
-   thumbnail image. */
+   Deliberately NO z-index here: with `z-index: auto` the rail does not
+   establish a stacking context, so its scrim and its contents stack
+   INDEPENDENTLY against the cell (which is a stacking context via
+   `contain: paint`). That's what lets the bottom-left app pill slot
+   BETWEEN them — scrim 1 < pill 2 < rail contents 3 — instead of the
+   whole rail landing on one side of the pill. */
 .psl__cell-rail {
   position: absolute; bottom: 5px; right: 5px;
-  z-index: 1;
   display: flex; align-items: center; gap: 4px;
   pointer-events: none;
+}
+/* Rail contents (action buttons + duration chip) sit ABOVE the app pill:
+   on a narrow tile with a long app name the pill's box reaches into the
+   rail, and a hover-revealed 28px Edit / Trash button must never end up
+   painted under it. Pairs with `pointer-events: none` on the pill
+   wrapper, so hit-testing agrees with the paint order. */
+.psl__cell-rail > * {
+  position: relative;
+  z-index: 3;
 }
 /* Bottom-right corner scrim. The action pills are translucent and sit
    over an arbitrary thumbnail — on a white screenshot they'd be a pale
@@ -1794,7 +1818,11 @@
   position: absolute;
   right: -5px; bottom: -5px;
   width: 108px; height: 52px;
-  z-index: -1;
+  /* Bottom tier of the cell's overlay stack (see .psl__cell-rail): below
+     the app pill at 2 so it can't tint the pill's opaque fill, and below
+     the rail's own contents at 3 so it can't tint the buttons or the
+     duration chip it exists to back. */
+  z-index: 1;
   pointer-events: none;
   opacity: 0;
   background: radial-gradient(

@@ -1378,6 +1378,22 @@ export function bootstrapApp(): void {
     app.disableHardwareAcceleration();
     app.commandLine.appendSwitch("disable-gpu");
   }
+  // Opt-in software rendering for virtualized macOS E2E. Some virtual GPU
+  // drivers reset under sustained Electron GPU submissions, delaying first
+  // paint or destabilizing the guest. Software rendering avoids that class
+  // of failure. Env-gated so other E2E keeps real-GPU coverage.
+  if (isE2E && process.env.PWRSNAP_E2E_DISABLE_GPU === "1") {
+    app.disableHardwareAcceleration();
+    app.commandLine.appendSwitch("disable-gpu");
+    // Hardware video codec init can leak guest kernel objects on some
+    // virtualized macOS environments. Once resource creation wedges,
+    // subsequent helpers hang at birth and app exit blocks waiting for
+    // them — the +6s/spec teardown cliff.
+    // disableHardwareAcceleration()/disable-gpu do NOT cover media codecs,
+    // so disable them explicitly.
+    app.commandLine.appendSwitch("disable-accelerated-video-decode");
+    app.commandLine.appendSwitch("disable-accelerated-video-encode");
+  }
   app.commandLine.appendSwitch("disk-cache-size", String(CHROMIUM_DISK_CACHE_LIMIT_BYTES));
 
   // open-file MUST be registered before the single-instance lock and

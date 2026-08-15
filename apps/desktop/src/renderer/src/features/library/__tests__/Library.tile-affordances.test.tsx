@@ -177,8 +177,18 @@ let cartState: DraftCart = emptyCart;
  *  destructive rows need it mocked. Defaults to "yes". */
 const confirmMock = vi.fn(() => true);
 
+/** What the mocked `capture:saveAs` resolves with. Defaults to the
+ *  CANCELLED shape (`ok({ path: null })`) — the handler distinguishes a
+ *  dismissed save sheet from a real failure, and only the latter should
+ *  reach the user. */
+let saveAsResult: { ok: true; value: { path: string | null } } | { ok: false; error: unknown } = {
+  ok: true,
+  value: { path: null }
+};
+
 beforeEach(() => {
   cartState = emptyCart;
+  saveAsResult = { ok: true, value: { path: null } };
   confirmMock.mockReset();
   confirmMock.mockReturnValue(true);
   vi.stubGlobal("confirm", confirmMock);
@@ -204,6 +214,7 @@ beforeEach(() => {
     if (name === "sizzle:list") return ok({ projects: [] });
     if (name === "app:version") return ok({ version: "0.0.0-test" });
     if (name === "cart:get" || name === "cart:toggle") return ok(cartState);
+    if (name === "capture:saveAs") return saveAsResult;
     return ok(undefined);
   });
   subscribeMock.mockClear();
@@ -312,6 +323,39 @@ describe("capture tile context menu", () => {
       captureId: "cap_image",
       preset: "high"
     });
+  });
+
+  test("a failed Save File… surfaces the error instead of failing silently", async () => {
+    saveAsResult = {
+      ok: false,
+      error: { kind: "io", code: "write_failed", message: "disk is full" }
+    };
+    await renderLibrary();
+    const menu = await openMenu();
+
+    await act(async () => {
+      rowByLabel(menu, "Save File…").click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const alert = container?.querySelector('[role="alert"].psl__error');
+    expect(alert?.textContent).toContain("disk is full");
+  });
+
+  test("a cancelled Save File… stays silent", async () => {
+    // The handler reports a dismissed save sheet as `ok({ path: null })`,
+    // NOT as an error — cancelling must not raise a banner.
+    await renderLibrary();
+    const menu = await openMenu();
+
+    await act(async () => {
+      rowByLabel(menu, "Save File…").click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container?.querySelector('[role="alert"].psl__error')).toBeNull();
   });
 
   test("Reveal in Finder dispatches capture:reveal", async () => {

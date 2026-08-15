@@ -121,6 +121,11 @@ import { Thumb } from "./Thumb";
  *  the session-lived undo stack regardless of whether the toast is showing. */
 const UNDO_TOAST_MS = 8000;
 
+/** How long a failed one-shot action (e.g. "Save File…") keeps its banner
+ *  up. Longer than the undo toast because there's nothing to act on — the
+ *  user just needs time to read why nothing happened. */
+const ACTION_ERROR_MS = 10_000;
+
 /** Cap on the in-memory capture-delete undo/redo stacks. Entries are just
  *  capture ids (a few bytes each), so this is generous — it only exists so a
  *  marathon session can't grow the arrays without bound. */
@@ -704,6 +709,23 @@ export function Library() {
   const clearLastDeleted = useCallback(() => {
     setLastDeleted(null);
   }, []);
+
+  /**
+   * Transient failure banner for one-shot actions the user explicitly
+   * asked for (the tile context menu's "Save File…", so far).
+   *
+   * The `error` further down comes from `useLibraryData` and only covers
+   * the list fetch. Command failures had no surface at all: a
+   * `void dispatch(...)` throws the `Result` away, so a save that failed
+   * in main looked exactly like a save that succeeded, and the user
+   * would go looking for a file that was never written.
+   */
+  const [actionError, setActionError] = useState<string | null>(null);
+  useEffect(() => {
+    if (actionError === null) return;
+    const timer = setTimeout(() => setActionError(null), ACTION_ERROR_MS);
+    return () => clearTimeout(timer);
+  }, [actionError]);
 
   // ⌘Z / Edit ▸ Undo / toast "Undo": restore the most-recently trashed
   // capture (the stack moves it onto its redo list).
@@ -3983,6 +4005,11 @@ export function Library() {
             Failed to load library: {error}
           </div>
         )}
+        {actionError !== null && (
+          <div className="psl__error" role="alert">
+            {actionError}
+          </div>
+        )}
         {captureContextMenu !== null ? (
           <LibraryCaptureContextMenu
             menu={captureContextMenu}
@@ -3997,10 +4024,21 @@ export function Library() {
               setCopyPulses((current) => ({ ...current, [preset]: current[preset] + 1 }));
             }}
             onSaveFile={() => {
-              void dispatch("capture:saveAs", {
-                captureId: captureContextMenu.recordId,
-                preset: "high"
-              });
+              const captureId = captureContextMenu.recordId;
+              void (async () => {
+                const result = await dispatch("capture:saveAs", {
+                  captureId,
+                  preset: "high"
+                });
+                // The handler deliberately distinguishes a CANCELLED save
+                // sheet (`ok({ path: null })`) from a FAILED one, so stay
+                // silent on both cancel and success — only a real failure
+                // gets a banner. Dropping the Result here is what made
+                // every main-process error a silent no-op.
+                if (!result.ok) {
+                  setActionError(`Couldn’t save the file — ${result.error.message}`);
+                }
+              })();
             }}
             onReveal={() => {
               void dispatch("capture:reveal", { captureId: captureContextMenu.recordId });

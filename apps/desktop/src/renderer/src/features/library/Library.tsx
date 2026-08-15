@@ -3070,26 +3070,37 @@ export function Library() {
     deleteCaptureById(record.id);
   }
 
-  /** Restore a soft-deleted capture from the in-trash hover affordance. */
+  /** Restore a soft-deleted capture. Shared by the in-trash hover
+   *  affordance and the tile context menu's Restore row. */
+  function restoreCaptureById(recordId: string): void {
+    void dispatch("library:restore", { id: recordId });
+  }
+
   function restoreCaptureAction(captureId: number, event: ReactMouseEvent): void {
     event.stopPropagation();
     const record = fixtureBacking.recordFor(captureId);
     if (record === null) return;
-    void dispatch("library:restore", { id: record.id });
+    restoreCaptureById(record.id);
   }
 
   /**
    * Permanently delete a single trashed capture. Confirms first —
    * library:purge is irreversible and the user shouldn't lose a
-   * capture to a stray click.
+   * capture to a stray click. Shared by the in-trash hover affordance
+   * and the tile context menu, so the confirm can't be skipped by
+   * taking the other door.
    */
+  function purgeCaptureById(recordId: string): void {
+    const ok = window.confirm("Permanently delete this capture? This cannot be undone.");
+    if (!ok) return;
+    void dispatch("library:purge", { id: recordId });
+  }
+
   function purgeCaptureAction(captureId: number, event: ReactMouseEvent): void {
     event.stopPropagation();
     const record = fixtureBacking.recordFor(captureId);
     if (record === null) return;
-    const ok = window.confirm("Permanently delete this capture? This cannot be undone.");
-    if (!ok) return;
-    void dispatch("library:purge", { id: record.id });
+    purgeCaptureById(record.id);
   }
 
   /**
@@ -3978,16 +3989,8 @@ export function Library() {
               void dispatch("cart:toggle", { captureId: captureContextMenu.recordId });
             }}
             onTrash={() => trashCapture(captureContextMenu.capture.id)}
-            onRestore={() => {
-              void dispatch("library:restore", { id: captureContextMenu.recordId });
-            }}
-            onPurge={() => {
-              const confirmed = window.confirm(
-                "Permanently delete this capture? This cannot be undone."
-              );
-              if (!confirmed) return;
-              void dispatch("library:purge", { id: captureContextMenu.recordId });
-            }}
+            onRestore={() => restoreCaptureById(captureContextMenu.recordId)}
+            onPurge={() => purgeCaptureById(captureContextMenu.recordId)}
           />
         ) : null}
         {projectContextMenu !== null ? (

@@ -10,6 +10,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type {
+  AppRuntimeIdentity,
   CaptureRecord,
   CaptureSearchResultRow,
   LibraryCursor,
@@ -1200,20 +1201,38 @@ export function Library() {
   // width. See `railEffectivePinned`.
   const isWindowVeryNarrow = useMediaQuery("(max-width: 640px)");
 
-  // App version for the footer — mirrors AboutPage. One-shot read on
-  // mount; the version doesn't change at runtime.
-  const [appVersion, setAppVersion] = useState<string | null>(null);
+  // Development instances identify their checkout branch in the footer;
+  // packaged builds keep showing the app version. Both are stable at runtime,
+  // so this remains a one-shot read on mount.
+  const [appBuild, setAppBuild] = useState<{
+    version: string;
+    runtimeIdentity?: AppRuntimeIdentity;
+  } | null>(null);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       const result = await dispatch("app:version", {});
       if (cancelled) return;
-      if (result.ok) setAppVersion(result.value.version);
+      if (result.ok) setAppBuild(result.value);
     })();
     return () => {
       cancelled = true;
     };
   }, []);
+
+  const runtimeBranch = appBuild?.runtimeIdentity?.branch;
+  const runtimeDetached = appBuild?.runtimeIdentity?.detachedHead === true;
+  let appBuildLabel = "—";
+  let appBuildTitle: string | undefined;
+  if (runtimeBranch !== undefined) {
+    appBuildLabel = runtimeBranch;
+    appBuildTitle = runtimeBranch;
+  } else if (runtimeDetached) {
+    appBuildLabel = "HEAD";
+    appBuildTitle = appBuild?.runtimeIdentity?.commitSha;
+  } else if (appBuild !== null) {
+    appBuildLabel = `v${appBuild.version}`;
+  }
 
   useEffect(() => {
     if (!storagePanelOpen) return;
@@ -3802,8 +3821,8 @@ export function Library() {
               </button>
             </div>
           ) : null}
-          <span>
-            <b>{appVersion !== null ? `v${appVersion}` : "—"}</b>
+          <span className="psl__runtime-label" title={appBuildTitle}>
+            <b>{appBuildLabel}</b>
           </span>
         </div>
       </footer>

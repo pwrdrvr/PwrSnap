@@ -1614,6 +1614,14 @@ export type AppDocument = {
   content: string;
 };
 
+/** Git identity for a development checkout. Packaged builds do not expose
+ *  this field; a detached checkout reports its commit instead of a branch. */
+export type AppRuntimeIdentity = {
+  branch?: string;
+  commitSha?: string;
+  cwd: string;
+  detachedHead?: boolean;
+};
 /** What the OS reports about PwrSnap's login-item registration right
  *  now — as opposed to `Settings.general.launchAtLogin`, which is the
  *  user's saved preference. The two diverge when the OS gates the
@@ -3066,6 +3074,7 @@ export type Commands = {
       electronVersion: string;
       nodeVersion: string;
       chromeVersion: string;
+      runtimeIdentity?: AppRuntimeIdentity;
     };
   };
   "app:readDocument": {

@@ -54,6 +54,21 @@ import { nextAfterDelete } from "./delete-nav";
 import { DeleteUndoStack } from "./delete-undo-stack";
 import { mergeOpenedLiveRecords } from "./library-records";
 import { initialLibraryView, libraryReducer, type LibraryAction, type LibraryView } from "./library-view";
+import {
+  appRowState,
+  describeFilterChips,
+  initialLibraryFilter,
+  libraryFilterKey,
+  libraryFilterReducer,
+  sameLibraryFilter,
+  sourceAppMatches,
+  summarizeLibraryFilter,
+  TYPE_KEYS,
+  type FacetModifier,
+  type LibraryFilterAction,
+  type LibraryFilterState,
+  type LibraryTypeKey
+} from "./library-filters";
 import { resolveCellIntent, toGridCell, type CellTrigger } from "./resolve-cell-intent";
 import { GRID_NAV_KEYS, nextGridSelectionId } from "./grid-nav";
 import { Stage } from "./Stage";
@@ -493,15 +508,9 @@ type SourceAppRowsState = {
   error: string | null;
 };
 
-type ActiveLibraryFilter =
-  | { kind: "all" }
-  | { kind: "today" }
-  | { kind: "trash" }
-  | { kind: "sourceApp"; appId: string };
-
 type LibraryHistoryLocation = {
   readonly view: LibraryView;
-  readonly activeFilter: ActiveLibraryFilter;
+  readonly activeFilter: LibraryFilterState;
   readonly searchQuery: string;
 };
 
@@ -517,11 +526,6 @@ function capturesChangedIds(payload: unknown): string[] | null {
   if (!Array.isArray(raw)) return null;
   const ids = raw.filter((id): id is string => typeof id === "string");
   return ids.length === 0 ? null : ids;
-}
-
-function sameActiveFilter(a: ActiveLibraryFilter, b: ActiveLibraryFilter): boolean {
-  if (a.kind !== b.kind) return false;
-  return a.kind !== "sourceApp" || b.kind !== "sourceApp" || a.appId === b.appId;
 }
 
 function sameLibraryView(a: LibraryView, b: LibraryView): boolean {
@@ -541,7 +545,7 @@ function sameHistoryLocation(
 ): boolean {
   return (
     sameLibraryView(a.view, b.view) &&
-    sameActiveFilter(a.activeFilter, b.activeFilter) &&
+    sameLibraryFilter(a.activeFilter, b.activeFilter) &&
     a.searchQuery === b.searchQuery
   );
 }
@@ -556,7 +560,12 @@ function appendHistoryLocation(
 }
 
 export function Library() {
-  const [activeFilter, setActiveFilter] = useState<ActiveLibraryFilter>({ kind: "all" });
+  // Composable sidebar filter — scope (radio) + types (include-set) +
+  // source apps (include/exclude facet). See library-filters.ts for
+  // the model and the gesture table. Types used to live in their own
+  // `useState` outside history; folding them in here means titlebar
+  // Back restores the whole composed query, not two thirds of it.
+  const [activeFilter, setActiveFilter] = useState<LibraryFilterState>(initialLibraryFilter);
   const activeFilterRef = useRef(activeFilter);
   useEffect(() => {
     activeFilterRef.current = activeFilter;
@@ -1110,33 +1119,26 @@ export function Library() {
   // membership lives in <CartCellCheckbox>, which self-subscribes to
   // the full-cart context so only the checkboxes re-render on a toggle.
   const cartIsEmpty = useCartIsEmpty();
-  // Library "Types" multi-pick filter. All three on by default so the
-  // library looks the same as before for users who don't touch it.
-  // Right-click / shift-click on a row sets that row as "Only" (the
-  // others get unchecked) — see onTypeRowClick below.
-  const [visibleTypes, setVisibleTypes] = useState<{
-    images: boolean;
-    videos: boolean;
-    projects: boolean;
-  }>({ images: true, videos: true, projects: true });
-  const toggleType = (key: "images" | "videos" | "projects"): void => {
-    setVisibleTypes((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
-  const onlyType = (key: "images" | "videos" | "projects"): void => {
-    setVisibleTypes({
-      images: key === "images",
-      videos: key === "videos",
-      projects: key === "projects"
-    });
-  };
+  // Library "Types" include-set — now a facet inside `activeFilter`
+  // (all three on by default, and never all-off: see
+  // library-filters.ts `applyTypeRowClick`). Read-only alias so the
+  // many `visibleTypes.x` call sites below stay untouched.
+  const visibleTypes = activeFilter.types;
+  const allTypesOn = visibleTypes.images && visibleTypes.videos && visibleTypes.projects;
+  // Programmatic "make this capture's type visible again" — used by the
+  // external open-capture intent so a capture whose type is currently
+  // filtered out doesn't land in an invisible grid. Deliberately does
+  // NOT go through `applyFilterAction`: it's not a user filter gesture,
+  // so it must not reset the grid scroll or push history.
   const ensureRecordTypeVisible = useCallback((record: CaptureRecord): void => {
-    if (record.kind === "image") {
-      setVisibleTypes((prev) => (prev.images ? prev : { ...prev, images: true }));
-      return;
-    }
-    if (record.kind === "video") {
-      setVisibleTypes((prev) => (prev.videos ? prev : { ...prev, videos: true }));
-    }
+    const key: LibraryTypeKey | null =
+      record.kind === "image" ? "images" : record.kind === "video" ? "videos" : null;
+    if (key === null) return;
+    setActiveFilter((prev) => {
+      const next = libraryFilterReducer(prev, { type: "TYPE_ENSURE_ON", key });
+      if (next !== prev) activeFilterRef.current = next;
+      return next;
+    });
   }, []);
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
   const selectedRecordId = view.selectedRecordId;
@@ -1396,20 +1398,38 @@ export function Library() {
     });
   }, [revalidateOpenedRecords]);
 
-  const isTodayView = activeFilter.kind === "today";
-  const isTrashView = activeFilter.kind === "trash";
-  const activeSourceAppId = activeFilter.kind === "sourceApp" ? activeFilter.appId : null;
-  const isSourceAppView = activeSourceAppId !== null;
+  const isTodayView = activeFilter.scope === "today";
+  const isTrashView = activeFilter.scope === "trash";
+  const sourceAppFacet = activeFilter.sourceApps;
+  const appFacetActive = sourceAppFacet.appIds.length > 0;
+  // Stable identity for the app facet — the facet's `appIds` are
+  // already sorted by the reducer, so this key is order-independent.
+  const sourceAppFacetKey = `${sourceAppFacet.mode}:${sourceAppFacet.appIds.join("|")}`;
+  // INCLUDE mode gets a dedicated server fetch (one `library:list`
+  // paginated loop over the union of every selected app's bundle ids)
+  // because the selected apps' captures may be far outside the loaded
+  // keyset window. EXCLUDE mode deliberately does NOT: "everything
+  // except Electron" against a large library would mean fetching
+  // essentially the whole table up front, whereas filtering the
+  // already-loaded live rows keeps the normal keyset pagination (and
+  // its "load more on scroll" behavior) intact. The server-side
+  // `excludeAppBundleIds` clause exists in captures-repo for callers
+  // that want the query pushed down — the sidebar just doesn't need
+  // it yet. Search + Trash both own their own row source, so neither
+  // triggers the include fetch.
+  const includeFetchActive =
+    !isTrashView && sourceAppFacet.mode === "include" && appFacetActive;
   const sourceAppBundleIds = useMemo<Array<string | null>>(() => {
-    if (activeSourceAppId === null) return [];
+    if (!includeFetchActive) return [];
+    const wanted = new Set(sourceAppFacet.appIds);
     const bundles: Array<string | null> = [];
     for (const stat of appStats) {
-      if (mapBundleIdToAppId(stat.bundleId) === activeSourceAppId) {
-        bundles.push(stat.bundleId);
-      }
+      if (wanted.has(mapBundleIdToAppId(stat.bundleId))) bundles.push(stat.bundleId);
     }
     return bundles;
-  }, [activeSourceAppId, appStats]);
+    // sourceAppFacetKey is the membership fingerprint for `appIds`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [includeFetchActive, sourceAppFacetKey, appStats]);
   const sourceAppBundleKey = useMemo(() => {
     const sourceAppBundleCounts = sourceAppBundleIds.map((bundleId) => {
       const stat = appStats.find((candidate) => candidate.bundleId === bundleId);
@@ -1419,15 +1439,15 @@ export function Library() {
   }, [appStats, sourceAppBundleIds]);
 
   useEffect(() => {
-    if (activeSourceAppId === null) return;
+    if (!includeFetchActive) return;
     if (sourceAppBundleIds.length === 0) return;
-    const cached = sourceAppRowsRef.current[activeSourceAppId];
+    const cached = sourceAppRowsRef.current[sourceAppFacetKey];
     // A same-key rerun cleans up the in-flight fetch first; restart if
     // the cached entry is still loading so the source view cannot stick empty.
     if (cached?.bundleKey === sourceAppBundleKey && !cached.loading) return;
 
     let cancelled = false;
-    const appKey = activeSourceAppId;
+    const appKey = sourceAppFacetKey;
     const bundleIds = sourceAppBundleIds;
     const bundleKey = sourceAppBundleKey;
     setSourceAppRows((prev) => ({
@@ -1492,7 +1512,8 @@ export function Library() {
       cancelled = true;
     };
   }, [
-    activeSourceAppId,
+    includeFetchActive,
+    sourceAppFacetKey,
     sourceAppBundleIds,
     sourceAppBundleKey
   ]);
@@ -1569,8 +1590,7 @@ export function Library() {
   // result set directly. Bus-side `library:search` excludes soft-
   // deleted rows (see captures-repo:503), so search ∩ trash is empty
   // by construction; the input is disabled in trash to make that clear.
-  const sourceAppState =
-    activeSourceAppId === null ? undefined : sourceAppRows[activeSourceAppId];
+  const sourceAppState = includeFetchActive ? sourceAppRows[sourceAppFacetKey] : undefined;
   const universeRecordsRaw = isTrashView
     ? trashRecords
     : isSearchActive
@@ -1596,31 +1616,38 @@ export function Library() {
   // SEARCH_LIMIT and the caller renders a "refine your search" hint
   // if hit. Loading the next page would mean re-running the query,
   // which doesn't compose with FTS5 rank ordering.
-  const gridHasMore = isSearchActive ? false : isSourceAppView ? false : hasMore;
+  // The include-mode source-app fetch drains its own cursor to
+  // completion, so there is nothing left to page. Exclude mode rides
+  // the normal live keyset window and keeps paginating.
+  const gridHasMore = isSearchActive ? false : includeFetchActive ? false : hasMore;
   // Search never paginates (gridHasMore is false), so it must not drive
   // the grid's bottom "Loading more…" footer — that label would be a
   // lie (we're re-running a query, not fetching the next page). The
   // topbar count badge already shows "searching…" for search progress.
   const gridIsLoadingMore = isSearchActive
     ? false
-    : isSourceAppView
+    : includeFetchActive
       ? sourceAppState?.loading ?? false
       : isLoadingMore;
 
   // Project fixtures only fold into the grid when:
   //   • the Types filter has "Projects" on (UI control), AND
   //   • we're NOT in trash view (projects don't go to trash today), AND
-  //   • we're NOT in a source-app filter (projects aren't FROM any
-  //     app — surfacing them inside e.g. "Safari" would be incoherent).
+  //   • we're NOT INCLUDING specific source apps (projects aren't FROM
+  //     any app — surfacing them inside e.g. "Safari" would be
+  //     incoherent). An EXCLUDE facet is the opposite case: "everything
+  //     except Electron" plainly still contains the projects, so they
+  //     stay.
   //
   // Note the deliberate asymmetry with the Images/Videos Types
   // filter below: those DO apply inside a source-app filter (a user
   // filtering to "Safari" can still narrow further to just images
   // from Safari). Projects can't compose that way because they have
   // no source-app dimension to begin with.
+  const includeFacetActive = sourceAppFacet.mode === "include" && appFacetActive;
   const gridProjects = useMemo(
     () => {
-      if (!visibleTypes.projects || isTrashView || activeSourceAppId !== null) return [];
+      if (!visibleTypes.projects || isTrashView || includeFacetActive) return [];
       if (!isSearchActive) return sizzleProjects;
       return sizzleProjects.filter((project) =>
         sizzleProjectMatchesQuery(project, searchQuery)
@@ -1629,7 +1656,7 @@ export function Library() {
     [
       visibleTypes.projects,
       isTrashView,
-      activeSourceAppId,
+      includeFacetActive,
       isSearchActive,
       sizzleProjects,
       searchQuery
@@ -1695,19 +1722,26 @@ export function Library() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectCoverIdsKey]);
 
-  // Search bypasses every other filter — the user gets exactly the
-  // result set from the bus, in rank/date order. Source-app + Today
-  // composition is a follow-up (see PR-2 cart plan); v1 keeps the
-  // grid swap unambiguous.
-  const visible = isSearchActive
-    ? fixtureCaptures
-    : activeFilter.kind === "all" || isTrashView
-      ? fixtureCaptures
-      : isTodayView
-      ? fixtureCaptures.filter((c) => c.day === "Today")
-      : activeSourceAppId === null
-      ? fixtureCaptures
-      : fixtureCaptures.filter((c) => c.app === activeSourceAppId);
+  // Compose the facets. Search still bypasses everything else — the
+  // user gets exactly the result set from the bus, in rank/date order.
+  // Outside search, scope and the source-app facet AND together, so
+  // "Today ∧ Activity Monitor ∧ ¬Electron" is expressible (it wasn't
+  // when scope and source app shared one union).
+  //
+  // The app predicate runs here for BOTH modes. For include mode it's
+  // redundant with the server fetch above (belt and braces while the
+  // cache warms / when an app has no `app_stats` bundle to fetch by);
+  // for exclude mode it IS the filter. Project fixtures carry the
+  // synthetic `_sizzle_` app key, which is in neither list, so they
+  // pass an exclude facet untouched and are already dropped upstream
+  // for an include facet.
+  const visible = useMemo(() => {
+    if (isSearchActive) return fixtureCaptures;
+    let out = fixtureCaptures;
+    if (isTodayView) out = out.filter((c) => c.day === "Today");
+    if (appFacetActive) out = out.filter((c) => sourceAppMatches(sourceAppFacet, c.app));
+    return out;
+  }, [fixtureCaptures, isSearchActive, isTodayView, appFacetActive, sourceAppFacet]);
   const grouped = useMemo(() => groupByDay(visible), [visible]);
 
   // Per-app counts come from the denormalized `app_stats` table via
@@ -1791,6 +1825,22 @@ export function Library() {
     return labels;
   }, [appStats, liveRecords]);
 
+  // appId → display name, with the same fallback chain the sidebar
+  // rows use. Feeds the filter chips and the Reel timeline header so a
+  // chip never renders a bare bundle id when a nicer label exists.
+  const resolveAppLabel = useCallback(
+    (appId: string): string =>
+      appLabels[appId] ?? APP_INFO[appId]?.name ?? appId,
+    [appLabels]
+  );
+  // The composed filter, rendered as chips above the grid. This is the
+  // affordance that makes multi-app / negative facets safe to ship —
+  // without it "Today ∧ Videos ∧ ¬Electron" is invisible state.
+  const filterChips = useMemo(
+    () => describeFilterChips(activeFilter, resolveAppLabel),
+    [activeFilter, resolveAppLabel]
+  );
+
   // Representative bundle id per app key — used by `<AppIcon>` to
   // resolve the full-color icon from the installed .app via the
   // `pwrsnap-app-icon://` protocol. The app key is the lowercased
@@ -1834,16 +1884,20 @@ export function Library() {
         bundleId: appBundleIds[app]
       });
     }
-    if (activeSourceAppId !== null && !seen.has(activeSourceAppId)) {
+    for (const appId of sourceAppFacet.appIds) {
+      if (seen.has(appId)) continue;
+      seen.add(appId);
       out.push({
-        app: activeSourceAppId,
-        name: appLabels[activeSourceAppId] ?? APP_INFO[activeSourceAppId]?.name ?? "Unknown app",
-        bundleId: appBundleIds[activeSourceAppId]
+        app: appId,
+        name: appLabels[appId] ?? APP_INFO[appId]?.name ?? "Unknown app",
+        bundleId: appBundleIds[appId]
       });
     }
     out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     return out;
-  }, [appCounts, appLabels, appBundleIds, activeSourceAppId]);
+    // sourceAppFacetKey is the membership fingerprint for `appIds`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appCounts, appLabels, appBundleIds, sourceAppFacetKey]);
 
   // The CaptureRecord for the currently-selected id — passed to
   // <DetailRail> + <Stage> so they can render metadata + L/M/H copy
@@ -2004,8 +2058,12 @@ export function Library() {
   // know exactly when to put it back, and we don't depend on
   // virtualizer-internal timing.
   const gridReturnScrollTopRef = useRef<number>(0);
-  const activeFilterKey =
-    activeFilter.kind === "sourceApp" ? `sourceApp:${activeFilter.appId}` : activeFilter.kind;
+  // One string identity for the whole composed filter (scope + types +
+  // app facet). Any change to any facet is a new query, so the grid
+  // scroll resets to the top and the FILTER_CHANGED effect below
+  // re-evaluates the selection — same contract as before the split,
+  // just over three axes instead of one union.
+  const activeFilterKey = libraryFilterKey(activeFilter);
   useLayoutEffect(() => {
     gridReturnScrollTopRef.current = 0;
     const el = gridScrollRef.current;
@@ -2013,13 +2071,28 @@ export function Library() {
     el.scrollTop = 0;
   }, [activeFilterKey]);
 
-  function selectFilter(next: ActiveLibraryFilter): void {
+  /** Single entry point for every user filter gesture (sidebar rows,
+   *  hover `only` pills, chip ×, Clear). Identity-stable actions are a
+   *  no-op — the reducer returns the same object and we skip the
+   *  scroll reset entirely. */
+  function applyFilterAction(action: LibraryFilterAction): void {
+    const next = libraryFilterReducer(activeFilterRef.current, action);
+    if (next === activeFilterRef.current) return;
     gridReturnScrollTopRef.current = 0;
     viewDispatch({ type: "RESET_FOCUS_RETURN_SCROLL" }, { history: "replace" });
     const el = gridScrollRef.current;
     if (el !== null) el.scrollTop = 0;
     activeFilterRef.current = next;
     setActiveFilter(next);
+  }
+
+  /** Map a click event's modifier keys onto the facet gesture model.
+   *  ⌘ on macOS / Ctrl elsewhere = multi-select; ⌥ = exclude. ⌥ wins
+   *  when both are held (exclude is the more specific intent). */
+  function facetModifier(e: { altKey: boolean; metaKey: boolean; ctrlKey: boolean }): FacetModifier {
+    if (e.altKey) return "alt";
+    if (e.metaKey || e.ctrlKey) return "meta";
+    return "none";
   }
 
   // Scroll probe — Phase 5 of the perf plan. Subscribes to the
@@ -2228,7 +2301,7 @@ export function Library() {
       if (typeof payload !== "object" || payload === null) return;
       const id = (payload as { captureId?: unknown }).captureId;
       if (typeof id !== "string") return;
-      const allFilter: ActiveLibraryFilter = { kind: "all" };
+      const allFilter: LibraryFilterState = initialLibraryFilter;
       const knownRecord =
         recordsRef.current.find((record) => record.id === id) ??
         openedRecordsRef.current.find((record) => record.id === id) ??
@@ -2243,7 +2316,7 @@ export function Library() {
       });
       activeFilterRef.current = allFilter;
       searchQueryRef.current = "";
-      setActiveFilter({ kind: "all" });
+      setActiveFilter(allFilter);
       setSearchQuery("");
       void (async () => {
         const result: Result<Res<"library:byId">, PwrSnapError> = await dispatch(
@@ -2277,7 +2350,7 @@ export function Library() {
     };
     const target: LibraryHistoryLocation = {
       view: nextView,
-      activeFilter: { kind: "all" },
+      activeFilter: initialLibraryFilter,
       searchQuery: ""
     };
     if (!sameHistoryLocation(pendingOpen.from, target)) {
@@ -2366,7 +2439,8 @@ export function Library() {
       viewDispatch({ type: "TOGGLE_VIEW", to: "grid", fallbackId: null });
     }
     if (!dayIdGroupsRef.current.flat().includes(captureId)) {
-      setActiveFilter({ kind: "all" });
+      activeFilterRef.current = initialLibraryFilter;
+      setActiveFilter(initialLibraryFilter);
       setSearchQuery("");
     }
     // Keep the rail on Cart — you clicked a cart item to find it, not to
@@ -2495,7 +2569,7 @@ export function Library() {
         const intent = resolveCellIntent("enter", {
           kind: "capture",
           recordId,
-          isTrashed: activeFilterRef.current.kind === "trash"
+          isTrashed: activeFilterRef.current.scope === "trash"
         });
         if (intent.kind === "edit") {
           event.preventDefault();
@@ -3170,9 +3244,15 @@ export function Library() {
               spine route through `setLeftPinned` so all three entry
               points stay in sync. */}
         </div>
+        {/* LIBRARY = SCOPE. Radio semantics, exactly one active, and
+            these are the ONLY sidebar rows that carry the filled
+            `.is-active` row treatment. The facet sections below
+            (Types, Source App) deliberately use leading state glyphs
+            instead so the two paradigms never look alike. */}
         <button
-          className={"psl__nav" + (activeFilter.kind === "all" ? " is-active" : "")}
-          onClick={() => selectFilter({ kind: "all" })}
+          className={"psl__nav" + (activeFilter.scope === "all" ? " is-active" : "")}
+          aria-current={activeFilter.scope === "all" ? "true" : undefined}
+          onClick={() => applyFilterAction({ type: "SET_SCOPE", scope: "all" })}
         >
           <span className="psl__nav-icon">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -3187,7 +3267,8 @@ export function Library() {
         </button>
         <button
           className={"psl__nav" + (isTodayView ? " is-active" : "")}
-          onClick={() => selectFilter({ kind: "today" })}
+          aria-current={isTodayView ? "true" : undefined}
+          onClick={() => applyFilterAction({ type: "SET_SCOPE", scope: "today" })}
         >
           <span className="psl__nav-icon">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -3200,7 +3281,8 @@ export function Library() {
         </button>
         <button
           className={"psl__nav" + (isTrashView ? " is-active" : "")}
-          onClick={() => selectFilter({ kind: "trash" })}
+          aria-current={isTrashView ? "true" : undefined}
+          onClick={() => applyFilterAction({ type: "SET_SCOPE", scope: "trash" })}
         >
           <span className="psl__nav-icon">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -3247,45 +3329,75 @@ export function Library() {
               )
             }
           ] as const
-        ).map(({ key, label, icon }) => (
-          <button
-            key={key}
-            type="button"
-            // aria-pressed mirrors visibleTypes[key] so screen readers
-            // announce the row as a toggle (rather than a static link)
-            // and report its current on/off state. The `.is-on`/`is-off`
-            // class gives sighted users the same affordance via the
-            // check column on the left edge.
-            aria-pressed={visibleTypes[key]}
-            aria-label={`${label} type filter (${
-              visibleTypes[key] ? "showing" : "hidden"
-            })`}
-            className={
-              "psl__nav psl__type-row" + (visibleTypes[key] ? " is-on" : " is-off")
-            }
-            onClick={(e) => {
-              // shift-click → "Only this" (uncheck the other two).
-              // Plain click → toggle this one.
-              if (e.shiftKey) onlyType(key);
-              else toggleType(key);
-            }}
-            title={
-              visibleTypes[key]
-                ? `Hide ${label.toLowerCase()} (Shift-click to show only ${label.toLowerCase()})`
-                : `Show ${label.toLowerCase()} (Shift-click to show only ${label.toLowerCase()})`
-            }
-          >
-            <span className="psl__type-check" aria-hidden="true">
-              {visibleTypes[key] ? (
-                <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="m5 12 5 5 9-11" />
-                </svg>
-              ) : null}
-            </span>
-            <span className="psl__nav-icon">{icon}</span>
-            <span className="psl__nav-label">{label}</span>
-          </button>
-        ))}
+        ).map(({ key, label, icon }) => {
+          const on = visibleTypes[key];
+          // Already "only this" — hide the only pill, it'd be a no-op.
+          const isSoleType =
+            on && TYPE_KEYS.every((other) => other === key || !visibleTypes[other]);
+          return (
+            <button
+              key={key}
+              type="button"
+              // aria-pressed mirrors the include-set membership so screen
+              // readers announce the row as a toggle (rather than a
+              // static link) and report its current on/off state. The
+              // `.is-on`/`.is-off` class gives sighted users the same
+              // affordance via the leading state glyph — check when
+              // included, minus when excluded. Facet rows never take the
+              // scope rows' filled `.is-active` treatment; that fill is
+              // reserved for LIBRARY so the two paradigms stay legible.
+              aria-pressed={on}
+              aria-label={`${label} type filter (${on ? "showing" : "hidden"})`}
+              className={"psl__nav psl__facet-row" + (on ? " is-on" : " is-off")}
+              onClick={(e) => {
+                applyFilterAction({
+                  type: "TYPE_ROW_CLICK",
+                  key,
+                  modifier: facetModifier(e)
+                });
+              }}
+              title={
+                on
+                  ? `Hide ${label.toLowerCase()} · ⌥-click to show everything except ${label.toLowerCase()}`
+                  : `Show ${label.toLowerCase()}`
+              }
+            >
+              <span className="psl__facet-state" aria-hidden="true">
+                {on ? (
+                  <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="m5 12 5 5 9-11" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinecap="round">
+                    <path d="M5 12h14" />
+                  </svg>
+                )}
+              </span>
+              <span className="psl__nav-icon">{icon}</span>
+              <span className="psl__nav-label">{label}</span>
+              {/* Hover-revealed "only" pill — the discoverable
+                  replacement for the old hidden shift-click. A span with
+                  an explicit role rather than a nested <button> (invalid
+                  inside a button), matching the `.psl__frame-trash`
+                  pattern already used on grid cells. */}
+              {isSoleType ? null : (
+                <span
+                  role="button"
+                  tabIndex={-1}
+                  className="psl__facet-only"
+                  title={`Show only ${label.toLowerCase()}`}
+                  aria-label={`Show only ${label.toLowerCase()}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    applyFilterAction({ type: "TYPE_ONLY", key });
+                  }}
+                >
+                  only
+                </span>
+              )}
+            </button>
+          );
+        })}
 
         {/* "+ New Sizzle Reel" CTA — single sidebar affordance for
             creating a reel. The user explicitly rejected enumerating
@@ -3335,20 +3447,93 @@ export function Library() {
           <span className="psl__nav-label">New Sizzle Reel</span>
         </button>
 
+        {/* SOURCE APP = FACET. Plain click selects only that app (and
+            clicking the one selected app returns to All — the Finder /
+            Lightroom / Photos expectation the old `selectFilter` broke
+            by never toggling). ⌘-click builds a multi-selection,
+            ⌥-click flips to exclusion. Like Types, these rows carry a
+            leading state glyph rather than the scope rows' fill. */}
         <div className="psl__left-section">Source App</div>
-        {visibleApps.map(({ app, name, bundleId }) => (
-          <button
-            key={app}
-            className={"psl__nav" + (activeSourceAppId === app ? " is-active" : "")}
-            onClick={() => selectFilter({ kind: "sourceApp", appId: app })}
-          >
-            <span className="psl__nav-icon">
-              <AppIcon app={app} size={11} name={name} bundleId={bundleId} />
-            </span>
-            <span className="psl__nav-label">{name}</span>
-            <span className="psl__nav-count">{appCounts[app] ?? 0}</span>
-          </button>
-        ))}
+        {visibleApps.map(({ app, name, bundleId }) => {
+          const rowState = appRowState(sourceAppFacet, app);
+          const isSoleInclude =
+            rowState === "included" && sourceAppFacet.appIds.length === 1;
+          return (
+            <button
+              key={app}
+              type="button"
+              aria-pressed={rowState !== "neutral"}
+              aria-label={
+                rowState === "excluded"
+                  ? `${name} source filter (excluded)`
+                  : rowState === "included"
+                    ? `${name} source filter (selected)`
+                    : `${name} source filter`
+              }
+              className={
+                "psl__nav psl__facet-row psl__facet-row--app" +
+                (rowState === "included"
+                  ? " is-on"
+                  : rowState === "excluded"
+                    ? " is-excluded"
+                    : "")
+              }
+              onClick={(e) => {
+                applyFilterAction({
+                  type: "APP_ROW_CLICK",
+                  appId: app,
+                  modifier: facetModifier(e)
+                });
+              }}
+              title={
+                rowState === "excluded"
+                  ? `${name} is excluded · ⌥-click to stop excluding it`
+                  : isSoleInclude
+                    ? `Click to clear the ${name} filter · ⌘-click to add another app`
+                    : `Show only ${name} · ⌘-click to add · ⌥-click to exclude`
+              }
+            >
+              <span className="psl__facet-state" aria-hidden="true">
+                {rowState === "included" ? (
+                  <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="m5 12 5 5 9-11" />
+                  </svg>
+                ) : rowState === "excluded" ? (
+                  <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinecap="round">
+                    <path d="M5 12h14" />
+                  </svg>
+                ) : null}
+              </span>
+              <span className="psl__nav-icon">
+                <AppIcon app={app} size={11} name={name} bundleId={bundleId} />
+              </span>
+              <span className="psl__nav-label">{name}</span>
+              {/* Count keeps reading the app's real total even when the
+                  row is excluded — "everything except Electron (988)"
+                  is the whole point of the number. */}
+              <span className="psl__nav-count">{appCounts[app] ?? 0}</span>
+              {/* only pill: offered on any row that isn't already the
+                  sole included app, but only once a selection exists —
+                  with nothing selected a plain click already means
+                  "only this app". */}
+              {appFacetActive && !isSoleInclude ? (
+                <span
+                  role="button"
+                  tabIndex={-1}
+                  className="psl__facet-only"
+                  title={`Show only ${name}`}
+                  aria-label={`Show only ${name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    applyFilterAction({ type: "APP_ONLY", appId: app });
+                  }}
+                >
+                  only
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
 
       </aside>
 
@@ -3365,6 +3550,44 @@ export function Library() {
             const below. The previous "filmstrip in main + Stage as
             sibling" layout had both elements landing in grid-column 2 /
             grid-row 2 which made Stage paint on top of the filmstrip. */}
+        {/* Composed-filter chip row. Lives in `.psl__main` ABOVE the
+            scroll container (not inside `.psl__grid-wrap`) so it stays
+            put while the grid scrolls — the chips are the readout of
+            what you're looking at, so scrolling them away defeats the
+            purpose. Hidden entirely for the neutral filter so the
+            default Library gains no chrome. */}
+        {filterChips.length > 0 && (
+          <div className="psl__chips" role="status" aria-label="Active filters">
+            {filterChips.map((chip) => (
+              <span
+                key={chip.id}
+                className={"psl__chip" + (chip.negated ? " is-negated" : "")}
+                data-chip-kind={chip.kind}
+              >
+                {chip.negated ? <span className="psl__chip-not">not</span> : null}
+                <span className="psl__chip-label">{chip.label}</span>
+                <button
+                  type="button"
+                  className="psl__chip-x"
+                  title={`Remove ${chip.negated ? `not ${chip.label}` : chip.label}`}
+                  aria-label={`Remove filter ${chip.negated ? `not ${chip.label}` : chip.label}`}
+                  onClick={() => applyFilterAction(chip.clear)}
+                >
+                  <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
+                    <path d="M6 6l12 12M18 6 6 18" />
+                  </svg>
+                </button>
+              </span>
+            ))}
+            <button
+              type="button"
+              className="psl__chips-clear"
+              onClick={() => applyFilterAction({ type: "CLEAR_ALL" })}
+            >
+              Clear
+            </button>
+          </div>
+        )}
         <div className="psl__grid-wrap" ref={gridScrollRef}>
           {isTrashView && (
             <div className="psl__trash-banner">
@@ -3374,6 +3597,16 @@ export function Library() {
                   : `${trashRecords.length} item${
                       trashRecords.length === 1 ? "" : "s"
                     } in trash. Items are permanently removed after 30 days.`}
+                {/* Trash deliberately ignores the Types facet (it's a
+                    mode, not a slice of the live library). Say so
+                    rather than letting a stale Types selection look
+                    like it's being applied. */}
+                {trashRecords.length > 0 && !allTypesOn ? (
+                  <span className="psl__trash-banner-note">
+                    {" "}
+                    The Types filter doesn’t apply in Trash.
+                  </span>
+                ) : null}
               </span>
               {trashRecords.length > 0 && (
                 <button
@@ -3485,18 +3718,7 @@ export function Library() {
                   <section className="psl__reel-wrap">
                     <div className="psl__reel-hdr">
                       <span className="psl__reel-title">
-                        Timeline ·{" "}
-                        {activeFilter.kind === "all"
-                          ? "all sources"
-                          : isTodayView
-                          ? "today"
-                          : isTrashView
-                          ? "trash"
-                          : activeSourceAppId === null
-                          ? "all sources"
-                          : appLabels[activeSourceAppId] ??
-                            APP_INFO[activeSourceAppId]?.name ??
-                            "Unknown app"}
+                        Timeline · {summarizeLibraryFilter(activeFilter, resolveAppLabel)}
                       </span>
                       <span className="psl__reel-hint" aria-hidden="true">
                         scrub <b>⌘[ / ⌘]</b>

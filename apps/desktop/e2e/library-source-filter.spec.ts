@@ -718,7 +718,14 @@ async function sourceFilterButtonState(
         const label = button.querySelector(".psl__nav-label")?.textContent?.trim() ?? "";
         const countText = button.querySelector(".psl__nav-count")?.textContent?.trim() ?? "";
         if (!pattern.test(label) || countText !== String(count)) continue;
-        return { active: button.classList.contains("is-active") };
+        // Scope rows (All / Today / Trash) keep the filled `is-active`
+        // treatment; facet rows (Types / Source App) moved to the
+        // leading-glyph `is-on` state in the composable-facets PR.
+        // Either means "this row is currently selected".
+        return {
+          active:
+            button.classList.contains("is-active") || button.classList.contains("is-on")
+        };
       }
       return { active: false };
     },

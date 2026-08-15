@@ -1,0 +1,446 @@
+// Library sidebar filter model — SCOPE + composable FACETS.
+//
+// The sidebar used to encode "All / Today / Trash / <source app>" as a
+// single union, which made Today and a source app *mutually exclusive
+// alternatives* instead of composable facets — you could not ask for
+// "Activity Monitor, today". Types lived in a separate `useState` that
+// history/back never restored, and all three types could be switched
+// off leaving a silently empty grid.
+//
+// The model here splits those into three orthogonal axes:
+//
+//   scope      — radio, always exactly one of all | today | trash.
+//                The LIBRARY section. Owns the "selected row" fill.
+//   types      — include-set over { images, videos, projects }.
+//                NEVER empty (see `toggleType` below).
+//   sourceApps — { mode: include | exclude, appIds }. Empty appIds
+//                means "no app facet at all" — the mode is then
+//                meaningless and normalized to "include".
+//
+// Everything composes with AND: `Today ∧ (Videos) ∧ ¬Electron` is a
+// legal, expressible state. The composed filter is rendered as a chip
+// row above the grid (`describeFilterChips`) so a multi-facet /
+// negative filter is never invisible.
+//
+// The reducer is pure (no React, no DOM) and IDENTITY-STABLE: an
+// action that doesn't change anything returns the same object, so
+// React bails out of the re-render and the memo chain downstream of
+// `activeFilter` doesn't churn. Tests: __tests__/library-filters.test.ts.
+//
+// Design source: docs/brainstorms/2026-08-15-library-video-sizzle-design-critique.md §1.
+
+/** LIBRARY section — radio scope. Exactly one is active at all times. */
+export type LibraryScope = "all" | "today" | "trash";
+
+export type LibraryTypeKey = "images" | "videos" | "projects";
+
+export type LibraryTypeSet = {
+  readonly images: boolean;
+  readonly videos: boolean;
+  readonly projects: boolean;
+};
+
+export type SourceAppFacetMode = "include" | "exclude";
+
+/** Source-app facet. `appIds` empty ⇒ no facet; `mode` is then
+ *  normalized to "include" so two "no facet" states compare equal. */
+export type SourceAppFacet = {
+  readonly mode: SourceAppFacetMode;
+  readonly appIds: readonly string[];
+};
+
+export type LibraryFilterState = {
+  readonly scope: LibraryScope;
+  readonly types: LibraryTypeSet;
+  readonly sourceApps: SourceAppFacet;
+};
+
+export const ALL_TYPES_ON: LibraryTypeSet = {
+  images: true,
+  videos: true,
+  projects: true
+};
+
+export const NO_APP_FACET: SourceAppFacet = { mode: "include", appIds: [] };
+
+export const initialLibraryFilter: LibraryFilterState = {
+  scope: "all",
+  types: ALL_TYPES_ON,
+  sourceApps: NO_APP_FACET
+};
+
+export const TYPE_KEYS: readonly LibraryTypeKey[] = ["images", "videos", "projects"];
+
+export const TYPE_LABELS: Readonly<Record<LibraryTypeKey, string>> = {
+  images: "Images",
+  videos: "Videos",
+  projects: "Projects"
+};
+
+/** Which modifier the user held on a facet row.
+ *  - `none` — plain click.
+ *  - `meta` — ⌘ (Cmd) / Ctrl: add-or-remove from a multi-selection.
+ *  - `alt`  — ⌥ (Option): exclude.
+ *  Shift is deliberately NOT a modifier here: the old undiscoverable
+ *  shift-click="only" is replaced by the hover `only` pill. */
+export type FacetModifier = "none" | "meta" | "alt";
+
+export type LibraryFilterAction =
+  /** LIBRARY row click. Pure radio — no toggle-off (there is no
+   *  "no scope" state; `all` IS the neutral scope). */
+  | { readonly type: "SET_SCOPE"; readonly scope: LibraryScope }
+  /** TYPES row click. `none` toggles, `alt` excludes, `meta` is
+   *  treated as a plain toggle (multi-select is meaningless for a
+   *  3-element include-set that already renders as checkboxes). */
+  | { readonly type: "TYPE_ROW_CLICK"; readonly key: LibraryTypeKey; readonly modifier: FacetModifier }
+  /** The hover `only` pill on a TYPES row. */
+  | { readonly type: "TYPE_ONLY"; readonly key: LibraryTypeKey }
+  /** Force a type back on without disturbing the others. Used when an
+   *  external "open this capture" intent lands on a capture whose type
+   *  is currently filtered out. */
+  | { readonly type: "TYPE_ENSURE_ON"; readonly key: LibraryTypeKey }
+  /** SOURCE APP row click. See `applyAppRowClick` for the full table. */
+  | { readonly type: "APP_ROW_CLICK"; readonly appId: string; readonly modifier: FacetModifier }
+  /** The hover `only` pill on a SOURCE APP row — collapses whatever
+   *  selection exists down to this single app in include mode. */
+  | { readonly type: "APP_ONLY"; readonly appId: string }
+  /** Chip × on an app chip. */
+  | { readonly type: "REMOVE_APP"; readonly appId: string }
+  /** Chip × on the scope chip — back to `all`. */
+  | { readonly type: "CLEAR_SCOPE" }
+  /** Chip × on a type chip — all types back on. */
+  | { readonly type: "CLEAR_TYPES" }
+  /** Drop the whole app facet. */
+  | { readonly type: "CLEAR_APPS" }
+  /** "Clear" at the end of the chip row. */
+  | { readonly type: "CLEAR_ALL" }
+  /** Hard reset to the default filter (external navigation intents). */
+  | { readonly type: "RESET" };
+
+function sortedUnique(appIds: readonly string[]): readonly string[] {
+  return Array.from(new Set(appIds)).sort();
+}
+
+function sameAppIds(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/** Build a facet, normalizing the empty case to `NO_APP_FACET` so
+ *  "excluded nothing" and "included nothing" are the same state. */
+function makeFacet(mode: SourceAppFacetMode, appIds: readonly string[]): SourceAppFacet {
+  const ids = sortedUnique(appIds);
+  if (ids.length === 0) return NO_APP_FACET;
+  return { mode, appIds: ids };
+}
+
+function sameFacet(a: SourceAppFacet, b: SourceAppFacet): boolean {
+  return a.mode === b.mode && sameAppIds(a.appIds, b.appIds);
+}
+
+function sameTypes(a: LibraryTypeSet, b: LibraryTypeSet): boolean {
+  return a.images === b.images && a.videos === b.videos && a.projects === b.projects;
+}
+
+export function sameLibraryFilter(a: LibraryFilterState, b: LibraryFilterState): boolean {
+  return (
+    a.scope === b.scope && sameTypes(a.types, b.types) && sameFacet(a.sourceApps, b.sourceApps)
+  );
+}
+
+function typesOnCount(types: LibraryTypeSet): number {
+  return (types.images ? 1 : 0) + (types.videos ? 1 : 0) + (types.projects ? 1 : 0);
+}
+
+/** All types on except `key`. This is the canonical "exclude one type"
+ *  shape — for a 3-element set, "not Videos" ≡ "Images + Projects", so
+ *  negation is derivable and we render it as the negative form only
+ *  when EXACTLY one type is off. */
+function excludeOnlyType(key: LibraryTypeKey): LibraryTypeSet {
+  return {
+    images: key !== "images",
+    videos: key !== "videos",
+    projects: key !== "projects"
+  };
+}
+
+function onlyType(key: LibraryTypeKey): LibraryTypeSet {
+  return {
+    images: key === "images",
+    videos: key === "videos",
+    projects: key === "projects"
+  };
+}
+
+/**
+ * TYPES row click.
+ *
+ * Plain click toggles. The one guard: turning off the LAST remaining
+ * type would leave an empty include-set and a silently blank grid, so
+ * instead we re-enable the others — i.e. the click reads as "not this
+ * one" rather than "nothing". That is exactly the `alt` (exclude)
+ * result, which keeps the two gestures consistent instead of
+ * introducing a second empty-state UI.
+ *
+ * ⌥-click excludes; ⌥-clicking an already-excluded row restores all
+ * three (the gesture is its own undo).
+ */
+function applyTypeRowClick(
+  types: LibraryTypeSet,
+  key: LibraryTypeKey,
+  modifier: FacetModifier
+): LibraryTypeSet {
+  if (modifier === "alt") {
+    const excluded = excludeOnlyType(key);
+    return sameTypes(types, excluded) ? ALL_TYPES_ON : excluded;
+  }
+  if (types[key]) {
+    // Turning this one off. Guard the empty set.
+    if (typesOnCount(types) === 1) return excludeOnlyType(key);
+    return { ...types, [key]: false };
+  }
+  return { ...types, [key]: true };
+}
+
+/**
+ * SOURCE APP row click.
+ *
+ *   plain, active single include  → clear the facet (back to All)
+ *   plain, anything else          → include exactly this app ("only")
+ *   ⌘,     mode preserved         → add/remove this app; empty ⇒ cleared
+ *   ⌥,     already excluding      → add/remove from the exclude set
+ *   ⌥,     not excluding          → switch to exclude with just this app
+ */
+function applyAppRowClick(
+  facet: SourceAppFacet,
+  appId: string,
+  modifier: FacetModifier
+): SourceAppFacet {
+  const inSet = facet.appIds.includes(appId);
+  if (modifier === "alt") {
+    if (facet.mode === "exclude") {
+      return makeFacet(
+        "exclude",
+        inSet ? facet.appIds.filter((id) => id !== appId) : [...facet.appIds, appId]
+      );
+    }
+    return makeFacet("exclude", [appId]);
+  }
+  if (modifier === "meta") {
+    return makeFacet(
+      facet.mode,
+      inSet ? facet.appIds.filter((id) => id !== appId) : [...facet.appIds, appId]
+    );
+  }
+  // Plain click. Clicking the ONE currently-included app is the
+  // universal "unselect" expectation (Finder, Lightroom, Photos).
+  if (facet.mode === "include" && facet.appIds.length === 1 && inSet) return NO_APP_FACET;
+  return makeFacet("include", [appId]);
+}
+
+export function libraryFilterReducer(
+  state: LibraryFilterState,
+  action: LibraryFilterAction
+): LibraryFilterState {
+  switch (action.type) {
+    case "SET_SCOPE":
+      if (state.scope === action.scope) return state;
+      return { ...state, scope: action.scope };
+
+    case "TYPE_ROW_CLICK": {
+      const types = applyTypeRowClick(state.types, action.key, action.modifier);
+      if (sameTypes(state.types, types)) return state;
+      return { ...state, types };
+    }
+
+    case "TYPE_ONLY": {
+      const types = onlyType(action.key);
+      if (sameTypes(state.types, types)) return state;
+      return { ...state, types };
+    }
+
+    case "TYPE_ENSURE_ON": {
+      if (state.types[action.key]) return state;
+      return { ...state, types: { ...state.types, [action.key]: true } };
+    }
+
+    case "APP_ROW_CLICK": {
+      const sourceApps = applyAppRowClick(state.sourceApps, action.appId, action.modifier);
+      if (sameFacet(state.sourceApps, sourceApps)) return state;
+      return { ...state, sourceApps };
+    }
+
+    case "APP_ONLY": {
+      const sourceApps = makeFacet("include", [action.appId]);
+      if (sameFacet(state.sourceApps, sourceApps)) return state;
+      return { ...state, sourceApps };
+    }
+
+    case "REMOVE_APP": {
+      if (!state.sourceApps.appIds.includes(action.appId)) return state;
+      const sourceApps = makeFacet(
+        state.sourceApps.mode,
+        state.sourceApps.appIds.filter((id) => id !== action.appId)
+      );
+      return { ...state, sourceApps };
+    }
+
+    case "CLEAR_SCOPE":
+      if (state.scope === "all") return state;
+      return { ...state, scope: "all" };
+
+    case "CLEAR_TYPES":
+      if (sameTypes(state.types, ALL_TYPES_ON)) return state;
+      return { ...state, types: ALL_TYPES_ON };
+
+    case "CLEAR_APPS":
+      if (sameFacet(state.sourceApps, NO_APP_FACET)) return state;
+      return { ...state, sourceApps: NO_APP_FACET };
+
+    case "CLEAR_ALL":
+    case "RESET":
+      if (sameLibraryFilter(state, initialLibraryFilter)) return state;
+      return initialLibraryFilter;
+  }
+}
+
+/** True when the filter is the neutral default — scope=All, every type
+ *  on, no app facet. The chip row hides in exactly this case. */
+export function isDefaultLibraryFilter(state: LibraryFilterState): boolean {
+  return sameLibraryFilter(state, initialLibraryFilter);
+}
+
+/**
+ * Stable string identity for the whole filter. Drives the grid
+ * scroll-reset `useLayoutEffect` and the `FILTER_CHANGED` dispatch —
+ * both want "did the query change?" without deep-comparing on every
+ * render. `appIds` is already sorted by `makeFacet`, so the key is
+ * order-independent by construction.
+ */
+export function libraryFilterKey(state: LibraryFilterState): string {
+  const types = TYPE_KEYS.filter((key) => state.types[key]).join("+");
+  const apps =
+    state.sourceApps.appIds.length === 0
+      ? "-"
+      : `${state.sourceApps.mode}:${state.sourceApps.appIds.join("|")}`;
+  return `${state.scope}/${types}/${apps}`;
+}
+
+/** Does a capture from `appId` survive the source-app facet? Projects
+ *  (which carry the synthetic `_sizzle_` app key) are handled by the
+ *  caller — they have no source-app dimension. */
+export function sourceAppMatches(facet: SourceAppFacet, appId: string): boolean {
+  if (facet.appIds.length === 0) return true;
+  const inSet = facet.appIds.includes(appId);
+  return facet.mode === "include" ? inSet : !inSet;
+}
+
+/** Is this app row part of the current selection (checked or excluded)? */
+export function appRowState(
+  facet: SourceAppFacet,
+  appId: string
+): "neutral" | "included" | "excluded" {
+  if (!facet.appIds.includes(appId)) return "neutral";
+  return facet.mode === "include" ? "included" : "excluded";
+}
+
+export type LibraryFilterChipKind = "scope" | "type" | "app";
+
+export type LibraryFilterChip = {
+  /** Stable React key + test hook. */
+  readonly id: string;
+  readonly kind: LibraryFilterChipKind;
+  readonly label: string;
+  /** Rendered with the `not ` prefix + strike styling. */
+  readonly negated: boolean;
+  /** What the chip's × dispatches. */
+  readonly clear: LibraryFilterAction;
+};
+
+const SCOPE_CHIP_LABELS: Readonly<Record<LibraryScope, string>> = {
+  all: "All Captures",
+  today: "Today",
+  trash: "Trash"
+};
+
+/**
+ * Render the composed filter as chips. This is the source of truth
+ * that makes a multi-facet / negative filter legible — without it,
+ * "Today + Videos + not Electron" is invisible state.
+ *
+ * TYPES chips are suppressed in Trash: trash deliberately ignores the
+ * type facet (the trash banner says so), and showing a "Videos" chip
+ * that isn't being applied would be a lie.
+ *
+ * `appLabel` resolves an appId to its display name; unknown ids fall
+ * back to the id itself so a chip is never blank.
+ */
+export function describeFilterChips(
+  state: LibraryFilterState,
+  appLabel: (appId: string) => string
+): readonly LibraryFilterChip[] {
+  const chips: LibraryFilterChip[] = [];
+  if (state.scope !== "all") {
+    chips.push({
+      id: `scope:${state.scope}`,
+      kind: "scope",
+      label: SCOPE_CHIP_LABELS[state.scope],
+      negated: false,
+      clear: { type: "CLEAR_SCOPE" }
+    });
+  }
+  if (state.scope !== "trash") {
+    const offKeys = TYPE_KEYS.filter((key) => !state.types[key]);
+    if (offKeys.length === 1) {
+      // Exactly one off reads better as the negative: "not Videos"
+      // instead of two chips for the two survivors.
+      const key = offKeys[0] as LibraryTypeKey;
+      chips.push({
+        id: `type:not:${key}`,
+        kind: "type",
+        label: TYPE_LABELS[key],
+        negated: true,
+        clear: { type: "CLEAR_TYPES" }
+      });
+    } else if (offKeys.length > 1) {
+      for (const key of TYPE_KEYS) {
+        if (!state.types[key]) continue;
+        chips.push({
+          id: `type:${key}`,
+          kind: "type",
+          label: TYPE_LABELS[key],
+          negated: false,
+          clear: { type: "CLEAR_TYPES" }
+        });
+      }
+    }
+  }
+  for (const appId of state.sourceApps.appIds) {
+    chips.push({
+      id: `app:${appId}`,
+      kind: "app",
+      label: appLabel(appId),
+      negated: state.sourceApps.mode === "exclude",
+      clear: { type: "REMOVE_APP", appId }
+    });
+  }
+  return chips;
+}
+
+/** One-line summary of the active filter — the Reel timeline header
+ *  ("Timeline · today · not Electron"). Returns "all sources" for the
+ *  neutral filter so the header never reads empty. */
+export function summarizeLibraryFilter(
+  state: LibraryFilterState,
+  appLabel: (appId: string) => string
+): string {
+  const chips = describeFilterChips(state, appLabel);
+  if (chips.length === 0) return "all sources";
+  return chips
+    .map((chip) => (chip.negated ? `not ${chip.label}` : chip.label))
+    .join(" · ")
+    .toLowerCase();
+}

@@ -1232,9 +1232,11 @@ describe("SizzleApp shell layout", () => {
     // jsdom lacks pointer capture — stub it.
     grip.setPointerCapture = () => undefined;
     grip.releasePointerCapture = () => undefined;
+    // `buttons: 1` mirrors a real drag — the resizer treats buttons === 0
+    // as "the gesture ended" so a lost capture can't leave it sticky.
     const pointer = (type: string, clientX: number): void => {
       grip.dispatchEvent(
-        new MouseEvent(type, { bubbles: true, clientX, button: 0 }) as unknown as PointerEvent
+        new MouseEvent(type, { bubbles: true, clientX, buttons: 1, button: 0 }) as unknown as PointerEvent
       );
     };
     await act(async () => {
@@ -1251,6 +1253,32 @@ describe("SizzleApp shell layout", () => {
       grip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     });
     expect(chat.style.flexBasis).toBe("400px");
+    resetSizzleChatWidthForTests();
+  });
+
+  test("a cancelled drag does not leave the resizer stuck in drag mode", async () => {
+    resetSizzleChatWidthForTests();
+    const { el } = await renderApp(project());
+    const chat = el.querySelector<HTMLElement>(".szl__chat")!;
+    const grip = el.querySelector<HTMLElement>('[data-testid="sizzle-chat-resizer"]')!;
+    grip.setPointerCapture = () => undefined;
+    grip.releasePointerCapture = () => undefined;
+    const send = (type: string, clientX: number, buttons = 1): void => {
+      grip.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, clientX, buttons, button: 0 }) as unknown as PointerEvent
+      );
+    };
+    await act(async () => {
+      send("pointerdown", 1000);
+      send("pointermove", 950);
+    });
+    expect(chat.style.flexBasis).toBe("450px");
+    // Gesture ends without a pointerup (OS cancel / lost capture).
+    await act(async () => {
+      grip.dispatchEvent(new MouseEvent("pointercancel", { bubbles: true }) as unknown as PointerEvent);
+      send("pointermove", 400, 0); // plain hover, no button held
+    });
+    expect(chat.style.flexBasis).toBe("450px");
     resetSizzleChatWidthForTests();
   });
 

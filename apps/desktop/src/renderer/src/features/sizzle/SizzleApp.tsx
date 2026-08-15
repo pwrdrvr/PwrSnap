@@ -112,6 +112,13 @@ function ChatResizer({
       }}
       onPointerMove={(event) => {
         if (drag.current === null) return;
+        // A cancelled or lost pointer capture never fires pointerup, which
+        // would otherwise leave the divider stuck in drag mode and resize
+        // the pane on a plain hover. No buttons held => the drag is over.
+        if (event.buttons === 0) {
+          drag.current = null;
+          return;
+        }
         // The pane sits on the right, so dragging LEFT widens it.
         const dx = drag.current.startX - event.clientX;
         const next = Math.round(
@@ -122,6 +129,12 @@ function ChatResizer({
       onPointerUp={(event) => {
         if (drag.current === null) return;
         (event.target as HTMLElement).releasePointerCapture(event.pointerId);
+        drag.current = null;
+      }}
+      onPointerCancel={() => {
+        drag.current = null;
+      }}
+      onLostPointerCapture={() => {
         drag.current = null;
       }}
       onDoubleClick={() => onResize(CHAT_WIDTH_DEFAULT)}

@@ -94,14 +94,29 @@ async function inspectTray(app: LaunchedApp): Promise<{
   });
 }
 
-/** Open the tray popover via the E2E bridge. */
+/** Open the tray popover via the E2E bridge — and make sure it STAYS
+ *  open. The popover auto-dismisses on `blur` (120ms debounce in
+ *  tray.ts `wireBlurDismiss`) — that's real production behavior, and
+ *  on a loaded VM the teardown of the PREVIOUS spec's Electron app
+ *  produces ambient key-window churn that can blur the popover right
+ *  after `showInactive()`, silently hiding it before the assertions
+ *  read it (seen as a `visible === false` flake in the Tart-VM
+ *  runs). Dismissal isn't the subject of this spec — sizing is — so
+ *  re-show up to a few times until visibility sticks. */
 async function showTray(app: LaunchedApp): Promise<void> {
-  await app.electronApp.evaluate(async () => {
-    const bridge = (
-      globalThis as unknown as { __PWRSNAP_TEST__: { showTrayPopover: () => void } }
-    ).__PWRSNAP_TEST__;
-    bridge.showTrayPopover();
-  });
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await app.electronApp.evaluate(async () => {
+      const bridge = (
+        globalThis as unknown as { __PWRSNAP_TEST__: { showTrayPopover: () => void } }
+      ).__PWRSNAP_TEST__;
+      bridge.showTrayPopover();
+    });
+    // Outwait the blur-dismiss debounce; if the popover survived it,
+    // we're stably visible. 120ms debounce + scheduling headroom.
+    await new Promise((r) => setTimeout(r, 250));
+    if ((await inspectTray(app)).visible) return;
+  }
+  throw new Error("tray popover would not stay visible after 4 show attempts");
 }
 
 /** Hide the tray popover via the E2E bridge. */

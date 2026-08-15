@@ -139,11 +139,31 @@ test.describe("video float-over", () => {
       await expect(floatOver.locator(".fo__hdr-title")).toHaveText("Recording saved");
       await expect(floatOver.locator(".fo__hdr-sub")).toContainText("12.5s");
 
-      // GIF + MP4 cards in the copy row, in that order.
-      const copyButtons = floatOver.locator(".fo__copy button.fo__copy-btn");
-      await expect(copyButtons).toHaveCount(2);
-      await expect(copyButtons.nth(0).locator(".fo__copy-label")).toHaveText("GIF");
-      await expect(copyButtons.nth(1).locator(".fo__copy-label")).toHaveText("MP4");
+      // 6-card export grid (GIF L/M/H + MP4 L/M/H) rendered by the
+      // shared VideoExportPresetsPanel — replaced the old 2-button
+      // GIF/MP4 buttons row in #161. The wrapper is `.fo__export-grid`,
+      // NOT `.fo__copy` (that class imposes the image row's 3-col grid
+      // and must stay absent on the video toast).
+      const exportGrid = floatOver.locator(".fo__export-grid");
+      await expect(exportGrid).toBeVisible({ timeout: 5000 });
+      await expect(floatOver.locator(".fo__copy")).toHaveCount(0);
+      const formatGroups = exportGrid.locator(".psl__copy-row-group");
+      await expect(formatGroups).toHaveCount(2);
+      // Exclude the decorative eyebrow-line span so the label match
+      // doesn't depend on DOM order within the eyebrow.
+      const eyebrowLabel = ".psl__copy-format-eyebrow span:not(.psl__copy-format-eyebrow-line)";
+      await expect(formatGroups.nth(0).locator(eyebrowLabel)).toHaveText("GIF");
+      await expect(formatGroups.nth(1).locator(eyebrowLabel)).toHaveText("MP4");
+      for (const format of ["gif", "mp4"] as const) {
+        const row = exportGrid.locator(
+          `[data-testid="psl-copy-row-video-${format}"]`
+        );
+        const cards = row.locator("button.fo__copy-btn .fo__copy-label");
+        await expect(cards).toHaveCount(3);
+        await expect(cards.nth(0)).toHaveText("Low");
+        await expect(cards.nth(1)).toHaveText("Med");
+        await expect(cards.nth(2)).toHaveText("High");
+      }
 
       // Discard button in the footer.
       await expect(floatOver.locator(".fo__foot-btn", { hasText: "Discard" })).toBeVisible();

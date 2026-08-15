@@ -355,6 +355,49 @@ describe("SizzleApp sequence authoring", () => {
     expect(el.textContent).toContain("unresolved");
   });
 
+  test("Split into scenes gives every clip its own scene; the first keeps id + narration", async () => {
+    const seq = scene({
+      id: "sc_seq",
+      kind: "sequence",
+      captureId: "cap_a",
+      scriptLine: "one voiceover",
+      narration: "one voiceover",
+      audioSource: "voiceover",
+      beats: [
+        { id: "bt_a", captureId: "cap_a", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" },
+        { id: "bt_b", captureId: "cap_b", timing: { kind: "offset", startSec: 3, endSec: null }, mediaTrim: { startSec: 1, endSec: 4 }, transition: "cut", videoFit: "loop" },
+        { id: "bt_c", captureId: "cap_c", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" }
+      ]
+    });
+    const { el, dispatch } = await renderApp(project({ scenes: [seq] }));
+    const split = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-split-scene-sc_seq"]');
+    expect(split).not.toBeNull();
+    await act(async () => {
+      split!.click();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    const updateCalls = dispatch.mock.calls.filter(([name]) => name === "sizzle:update");
+    const payload = updateCalls.at(-1)?.[1] as { patch?: { scenes?: SizzleScene[] } } | undefined;
+    const scenes = payload?.patch?.scenes ?? [];
+    expect(scenes).toHaveLength(3);
+    expect(scenes.map((s) => s.kind)).toEqual(["sequence", "sequence", "sequence"]);
+    expect(scenes.map((s) => s.beats?.map((b) => b.captureId))).toEqual([["cap_a"], ["cap_b"], ["cap_c"]]);
+    // First keeps the scene id + narration; the rest are fresh and empty.
+    expect(scenes[0]!.id).toBe("sc_seq");
+    expect(scenes[0]!.narration).toBe("one voiceover");
+    expect(scenes[1]!.id).not.toBe("sc_seq");
+    expect(scenes[1]!.narration).toBe("");
+    // Clip timing resets to auto; trim + fit travel with the clip.
+    expect(scenes[1]!.beats![0]).toMatchObject({
+      id: "bt_b",
+      timing: { kind: "auto" },
+      mediaTrim: { startSec: 1, endSec: 4 },
+      videoFit: "loop"
+    });
+    // A one-clip scene offers no split.
+    expect(el.querySelector('[data-testid="sizzle-split-scene-sc_seq"]')).toBeNull();
+  });
+
   test("hydrates active reel captures that are outside the initial library page", async () => {
     const sequence = scene({
       kind: "sequence",

@@ -2183,6 +2183,30 @@ function Editor(props: EditorProps): ReactElement {
     );
   };
 
+  // The inverse of the one-scene default: every clip becomes its own
+  // scene (one voiceover segment each). The first keeps this scene's id
+  // and narration so preview caches + undo stay anchored; the rest are
+  // fresh sequence scenes with empty narration, crossfading in. Clip
+  // timing resets to `auto` (a lone clip has nothing to anchor to);
+  // trims and fit policies travel with the clip.
+  const splitIntoScenes = (sceneId: string): void => {
+    onScenes(
+      project.scenes.flatMap((scene) => {
+        if (scene.id !== sceneId || scene.kind !== "sequence") return [scene];
+        const beats = scene.beats ?? [];
+        if (beats.length <= 1) return [scene];
+        return beats.map((beat, index): SizzleScene => {
+          const lone: SizzleSequenceBeat = { ...beat, timing: { kind: "auto" } };
+          if (index === 0) {
+            return { ...scene, captureId: beat.captureId, beats: [lone] };
+          }
+          const fresh = newSizzleSequenceScene([beat.captureId]);
+          return { ...fresh, beats: [lone] };
+        });
+      })
+    );
+  };
+
   // Move a beat from one index to another (drag-drop or the ↑/↓ arrows). A
   // splice-and-insert, not a pairwise swap, so dragging across several beats
   // shifts the rest sensibly. `auto` beats need no timing fixup;
@@ -2491,6 +2515,17 @@ function Editor(props: EditorProps): ReactElement {
                           Scene · one voiceover · {scene.beats?.length ?? 0} clip{(scene.beats?.length ?? 0) === 1 ? "" : "s"}
                         </span>
                         <span className="szl__spacer" />
+                        {(scene.beats?.length ?? 0) > 1 ? (
+                          <button
+                            className="szl__scene-action"
+                            onClick={() => splitIntoScenes(scene.id)}
+                            type="button"
+                            title="Give every clip its own scene (its own voiceover segment). This scene keeps the narration; the new scenes start empty."
+                            data-testid={`sizzle-split-scene-${scene.id}`}
+                          >
+                            Split into scenes
+                          </button>
+                        ) : null}
                         <button
                           className="szl__scene-action"
                           onClick={() => onPickSequenceBeat(scene.id)}

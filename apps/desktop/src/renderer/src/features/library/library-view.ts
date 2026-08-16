@@ -205,3 +205,23 @@ export function libraryReducer(state: LibraryView, action: LibraryAction): Libra
     }
   }
 }
+
+/**
+ * When Grid opens with the inspector pinned and nothing selected, pick
+ * the first visible capture so the rail is occupied from the start.
+ * That way a later click cannot pop the column open and reflow a
+ * scrolled grid. Returns null when the caller should leave selection
+ * alone (unpinned, not yet hydrated, already selected, empty set).
+ */
+export function resolveDefaultPinnedGridSelection(input: {
+  readonly kind: LibraryView["kind"];
+  readonly selectedRecordId: string | null;
+  readonly railPinned: boolean;
+  readonly settingsHydrated: boolean;
+  readonly firstVisibleId: string | null;
+}): string | null {
+  if (input.kind !== "grid") return null;
+  if (!input.settingsHydrated || !input.railPinned) return null;
+  if (input.selectedRecordId !== null) return null;
+  return input.firstVisibleId;
+}

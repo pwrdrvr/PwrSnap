@@ -567,20 +567,18 @@
 .psl[data-mode="reel"][data-right="collapsed"] {
   --right-col: 38px;
 }
-/* Grid mode normally has a 0-width right column (DetailRail returns
-   null). When the draft cart is non-empty, Library sets
-   `data-cart="open"` and we widen the column so the standalone cart
-   rail has room — this is the "right bar opens when you check an
-   item" behavior. */
+/* Grid mode normally has a 0-width right column. Occupancy is pin +
+   cart, never selection — clicking a tile must not reflow the grid.
+   When the draft cart is non-empty, Library sets `data-cart="open"`
+   and we widen the column so the standalone cart rail has room. */
 .psl[data-mode="grid"][data-cart="open"] {
   --right-col: 360px;
 }
-/* Grid-first inspector: when a capture is selected in Grid (and the
-   standalone cart rail isn't taking the column), the right rail opens
-   for the restricted Info/OCR inspector — pinned at 360px, or the 38px
-   activity-bar spine when unpinned, mirroring focus/reel. data-right is
-   only emitted in Grid when the inspector is showing (and never with
-   data-cart="open"), so these don't fight the cart rule above. */
+/* Grid inspector: pinned at 360px (including the empty-state shell),
+   or the 38px activity-bar spine when the cart keeps the column open
+   while unpinned. data-right is only emitted in Grid when the rail
+   occupies the column (pinned, or cart non-empty) — never as a
+   side-effect of selection. */
 .psl[data-mode="grid"][data-right="pinned"] {
   --right-col: 360px;
 }
@@ -4068,6 +4066,55 @@
   min-height: 20px;
   padding: 0 5px;
   border-radius: 0 0 8px 8px;
+}
+
+/* Floating Grid copy palette. Sits over `.psl__main` (not inside the
+   scrollable grid wrap) so scrolling the library doesn't drag it
+   away, and so it can't steal grid width. Default is bottom-center
+   — out of the way of the just-clicked tile. Drag uses the same
+   grip + clamp language as EditToolbar. */
+.psl__grid-copy-palette {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 4px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 6px 8px 8px 4px;
+  background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-base) 60%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
+  z-index: 4;
+}
+.psl__grid-copy-palette.is-positioned {
+  box-shadow: 0 20px 56px color-mix(in srgb, var(--shadow-base) 70%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
+}
+.psl__grid-copy-palette .psl__et-grip {
+  margin-top: 18px;
+}
+.psl__grid-copy-palette .psl__et-sep {
+  margin-top: 22px;
+}
+.psl__grid-copy-palette-body {
+  min-width: 280px;
+  max-width: 420px;
+}
+.psl__grid-copy-palette-body .psl__copy-eyebrow {
+  margin: 2px 2px 6px;
+}
+.psl__right-empty {
+  padding: 28px 16px;
+  color: var(--text-muted);
+  font: 500 12px/1.45 var(--font-sans);
+  text-align: center;
 }
 
 /* Per-(format) group wrapper for the video 6-card grid. Stacks the

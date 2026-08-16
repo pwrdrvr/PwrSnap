@@ -13,6 +13,7 @@ import { describe, expect, test } from "vitest";
 import {
   initialLibraryView,
   libraryReducer,
+  resolveDefaultPinnedGridSelection,
   type GridReturnAnchor,
   type LibraryView
 } from "../library-view";
@@ -427,5 +428,44 @@ describe("type-system guarantees", () => {
     // @ts-expect-error — focus state requires non-null selectedRecordId
     const _illegal: LibraryView = { kind: "focus", selectedRecordId: null };
     void _illegal;
+  });
+});
+
+describe("resolveDefaultPinnedGridSelection", () => {
+  const base = {
+    kind: "grid" as const,
+    selectedRecordId: null,
+    railPinned: true,
+    settingsHydrated: true,
+    firstVisibleId: "cap_first"
+  };
+
+  test("pinned hydrated Grid with no selection picks the first visible capture", () => {
+    expect(resolveDefaultPinnedGridSelection(base)).toBe("cap_first");
+  });
+
+  test("unpinned Grid does not synthesize a selection", () => {
+    expect(resolveDefaultPinnedGridSelection({ ...base, railPinned: false })).toBe(null);
+  });
+
+  test("already-selected Grid is left alone", () => {
+    expect(
+      resolveDefaultPinnedGridSelection({ ...base, selectedRecordId: "cap_other" })
+    ).toBe(null);
+  });
+
+  test("empty visible set returns null", () => {
+    expect(resolveDefaultPinnedGridSelection({ ...base, firstVisibleId: null })).toBe(null);
+  });
+
+  test("does not select before settings hydrate", () => {
+    expect(resolveDefaultPinnedGridSelection({ ...base, settingsHydrated: false })).toBe(
+      null
+    );
+  });
+
+  test("focus and reel are left alone", () => {
+    expect(resolveDefaultPinnedGridSelection({ ...base, kind: "focus" })).toBe(null);
+    expect(resolveDefaultPinnedGridSelection({ ...base, kind: "reel" })).toBe(null);
   });
 });

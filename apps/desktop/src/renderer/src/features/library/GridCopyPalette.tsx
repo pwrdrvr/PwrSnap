@@ -123,16 +123,6 @@ function acceptBroadcast<T>(
   return true;
 }
 
-/** Lift the gate when a write can never produce an echo (it failed, so
- *  main never broadcast). Scoped by `seq` so a newer write's gate — set
- *  after this one was dispatched — is left alone. */
-function releasePending<T>(
-  pending: { current: PendingWrite<T> },
-  seq: number
-): void {
-  if (pending.current?.seq === seq) pending.current = null;
-}
-
 export type GridCopyPaletteProps = {
   readonly record: CaptureRecord;
   readonly copyPulses?: Readonly<Record<CopyPreset, number>>;
@@ -165,6 +155,10 @@ export function GridCopyPalette({
   // same ticket scopes the per-field broadcast gates below.
   const writeSeq = useRef(0);
   const pendingAnchor = useRef<PendingWrite<GridCopyPaletteAnchor>>(null);
+  // Last value confirmed by settings:read or settings:changed. A local
+  // write updates the visible state first, but must roll back to this
+  // value when persistence fails rather than leaving a session-only mode.
+  const confirmedAnchor = useRef<GridCopyPaletteAnchor>("follow");
   const pendingPreviewOpen = useRef<PendingWrite<boolean>>(null);
   // One anchor flip per drag — a burst of pointermoves inside a single
   // React batch would otherwise fire several identical settings writes.
@@ -191,7 +185,9 @@ export function GridCopyPalette({
       if (writeSeq.current !== seqAtRead) return;
       const settings = result.value as Settings | undefined;
       setExportStrategy(exportStrategyFromSettings(settings));
-      setAnchor(anchorFromSettings(settings));
+      const nextAnchor = anchorFromSettings(settings);
+      confirmedAnchor.current = nextAnchor;
+      setAnchor(nextAnchor);
     });
     const off = subscribe(EVENT_CHANNELS.settingsChanged, (payload) => {
       const evt = payload as SettingsChangedEvent;
@@ -201,7 +197,10 @@ export function GridCopyPalette({
       // `acceptBroadcast`. Broadcasts once our echo lands, and any we
       // never wrote locally, apply unconditionally.
       const nextAnchor = anchorFromSettings(evt.settings);
-      if (acceptBroadcast(pendingAnchor, nextAnchor)) setAnchor(nextAnchor);
+      if (acceptBroadcast(pendingAnchor, nextAnchor)) {
+        confirmedAnchor.current = nextAnchor;
+        setAnchor(nextAnchor);
+      }
     });
     return () => {
       cancelled = true;
@@ -219,11 +218,19 @@ export function GridCopyPalette({
     }).then(
       (result) => {
         // A successful write always broadcasts (main awaits the fan-out
-        // before replying), so the echo is what lifts the gate. Only a
-        // failed write needs releasing here.
-        if (!result.ok) releasePending(pendingAnchor, seq);
+        // before replying), so the echo is what lifts the gate. A failed
+        // write never produces that echo: restore the last persisted mode
+        // instead of stranding this session in an optimistic-only state.
+        if (!result.ok && pendingAnchor.current?.seq === seq) {
+          pendingAnchor.current = null;
+          setAnchor(confirmedAnchor.current);
+        }
       },
-      () => releasePending(pendingAnchor, seq)
+      () => {
+        if (pendingAnchor.current?.seq !== seq) return;
+        pendingAnchor.current = null;
+        setAnchor(confirmedAnchor.current);
+      }
     );
   }, []);
 

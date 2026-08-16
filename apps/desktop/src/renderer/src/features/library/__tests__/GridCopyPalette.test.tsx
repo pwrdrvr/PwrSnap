@@ -608,6 +608,37 @@ describe("GridCopyPalette", () => {
     expect(palette?.style.left).toBe("");
   });
 
+  test("reverts the optimistic anchor when its settings write fails", async () => {
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "settings:read") return ok(settings);
+      if (name === "settings:write") {
+        return {
+          ok: false as const,
+          error: { kind: "settings", code: "write_failed", message: "disk full" }
+        };
+      }
+      if (name === "capture:presetMetrics") return ok({ metrics: [] });
+      return ok(undefined);
+    });
+    const el = await renderPalette(imageRecord, { withTile: true });
+    const palette = el.querySelector<HTMLElement>('[data-testid="psl-grid-copy-palette"]');
+    const toggle = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-grid-copy-palette-anchor-toggle"]'
+    );
+    expect(palette?.getAttribute("data-anchor")).toBe("follow");
+
+    await act(async () => {
+      toggle?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(dispatchMock).toHaveBeenCalledWith("settings:write", {
+      library: { gridCopyPalette: { anchor: "pinned" } }
+    });
+    expect(palette?.getAttribute("data-anchor")).toBe("follow");
+  });
+
   test("grip and copy buttons are keyboard-focusable", async () => {
     const el = await renderPalette();
     const grip = el.querySelector<HTMLButtonElement>('[data-testid="psl-grid-copy-palette-grip"]');

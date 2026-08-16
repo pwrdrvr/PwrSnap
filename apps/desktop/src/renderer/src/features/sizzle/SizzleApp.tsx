@@ -67,6 +67,88 @@ const IDLE_STATUS: RenderStatus = {
 
 const RECENT_PROJECT_LIMIT = 5;
 const PROJECT_LIST_LIMIT = 100;
+
+/** True when a keystroke belongs to a text field rather than the app. */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (target === null || !(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
+/** Agent-chat pane width. Dragged via ChatResizer; module-scoped so it
+ *  survives remounts within a session and resets on launch. */
+const CHAT_WIDTH_DEFAULT = 400;
+const CHAT_WIDTH_MIN = 320;
+const CHAT_WIDTH_MAX = 720;
+let savedChatWidth = CHAT_WIDTH_DEFAULT;
+
+/** Test-only: reset the session-scoped chat width between cases. */
+export function resetSizzleChatWidthForTests(): void {
+  savedChatWidth = CHAT_WIDTH_DEFAULT;
+}
+
+/**
+ * Drag handle on the chat pane's left edge. Pointer-captured so a fast
+ * drag doesn't lose the handle; the pane is `flex-basis`-sized so the
+ * editor takes the remainder. Double-click resets to the default.
+ */
+function ChatResizer({
+  width,
+  onResize
+}: {
+  width: number;
+  onResize: (next: number) => void;
+}): ReactElement {
+  const drag = useRef<{ startX: number; startWidth: number } | null>(null);
+  return (
+    <div
+      className="szl__chat-resizer"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize chat (drag · double-click to reset)"
+      aria-valuenow={width}
+      aria-valuemin={CHAT_WIDTH_MIN}
+      aria-valuemax={CHAT_WIDTH_MAX}
+      title="Drag to resize · double-click to reset"
+      data-testid="sizzle-chat-resizer"
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        (event.target as HTMLElement).setPointerCapture(event.pointerId);
+        drag.current = { startX: event.clientX, startWidth: width };
+      }}
+      onPointerMove={(event) => {
+        if (drag.current === null) return;
+        // A cancelled or lost pointer capture never fires pointerup, which
+        // would otherwise leave the divider stuck in drag mode and resize
+        // the pane on a plain hover. No buttons held => the drag is over.
+        if (event.buttons === 0) {
+          drag.current = null;
+          return;
+        }
+        // The pane sits on the right, so dragging LEFT widens it.
+        const dx = drag.current.startX - event.clientX;
+        const next = Math.round(
+          Math.min(CHAT_WIDTH_MAX, Math.max(CHAT_WIDTH_MIN, drag.current.startWidth + dx))
+        );
+        onResize(next);
+      }}
+      onPointerUp={(event) => {
+        if (drag.current === null) return;
+        (event.target as HTMLElement).releasePointerCapture(event.pointerId);
+        drag.current = null;
+      }}
+      onPointerCancel={() => {
+        drag.current = null;
+      }}
+      onLostPointerCapture={() => {
+        drag.current = null;
+      }}
+      onDoubleClick={() => onResize(CHAT_WIDTH_DEFAULT)}
+    />
+  );
+}
 const PROJECT_CONTEXT_MENU_WIDTH = 188;
 const PROJECT_CONTEXT_MENU_HEIGHT = 70;
 
@@ -801,6 +883,17 @@ export function SizzleApp(): ReactElement {
   // swap) so the scene list stays visible + updates live as the agent
   // edits. Shown by default — chat is the primary way to compose a reel.
   const [showChat, setShowChat] = useState(true);
+  // The project rail. With no reel open it is the left column (you need
+  // the list to pick one). With a reel open it collapses into a dropdown
+  // under the "Sizzle Reels ▾" crumb so the editor gets the full width —
+  // a list of OTHER reels is not worth a third of the window while
+  // authoring one. Ephemeral UI state, deliberately not in Settings.
+  const [railOpen, setRailOpen] = useState(false);
+  const railRef = useRef<HTMLElement | null>(null);
+  const railCrumbRef = useRef<HTMLButtonElement | null>(null);
+  // Chat pane width — drag the divider; module-scoped so it survives
+  // remounts within a session (like EditToolbar's position).
+  const [chatWidth, setChatWidth] = useState<number>(() => savedChatWidth);
   const [projectContextMenu, setProjectContextMenu] =
     useState<ProjectContextMenuState | null>(null);
 
@@ -825,7 +918,52 @@ export function SizzleApp(): ReactElement {
   const selectProject = useCallback((id: string): void => {
     setActiveId(id);
     setRecentProjectIds((prev) => admitRecentProject(prev, id));
+    setRailOpen(false);
   }, []);
+
+  // Rail-as-dropdown: close on outside click / Esc, toggle with ⌘⇧L.
+  const railIsPopover = active !== null;
+  useEffect(() => {
+    if (!railIsPopover || !railOpen) return;
+    const onPointerDown = (event: PointerEvent): void => {
+      const target = event.target as Node | null;
+      if (target === null) return;
+      if (railRef.current?.contains(target) === true) return;
+      if (railCrumbRef.current?.contains(target) === true) return;
+      setRailOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setRailOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [railIsPopover, railOpen]);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      // Only while a reel is open. Otherwise the rail IS the left column
+      // and the chord just latches `railOpen`, leaving the dropdown
+      // already expanded the next time a reel loads.
+      if (!railIsPopover) return;
+      // Never steal the chord from a text field: this editor is mostly
+      // narration textareas, the reel title, and per-clip timing inputs.
+      // Popping a dropdown mid-sentence while preventDefault swallows the
+      // keystroke is what makes a shortcut feel broken.
+      if (isTypingTarget(event.target)) return;
+      if (event.metaKey && event.shiftKey && !event.altKey && !event.ctrlKey && event.key.toLowerCase() === "l") {
+        event.preventDefault();
+        setRailOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [railIsPopover]);
+  useEffect(() => {
+    savedChatWidth = chatWidth;
+  }, [chatWidth]);
 
   const closeProjectContextMenu = useCallback((): void => {
     setProjectContextMenu(null);
@@ -1293,7 +1431,13 @@ export function SizzleApp(): ReactElement {
   );
 
   return (
-    <div className="szl">
+    <div
+      className={
+        "szl" +
+        (railIsPopover ? " szl--rail-popover" : "") +
+        (railIsPopover && railOpen ? " is-rail-open" : "")
+      }
+    >
       <header className="szl__titlebar">
         <div className="szl__title-brand">
           <span className="szl__title-mark">
@@ -1302,7 +1446,24 @@ export function SizzleApp(): ReactElement {
           <PwrSnapWordmark />
         </div>
         <span className="szl__title-crumb">
-          Sizzle Reels
+          {railIsPopover ? (
+            <button
+              ref={railCrumbRef}
+              type="button"
+              className={"szl__title-crumb-btn" + (railOpen ? " is-open" : "")}
+              aria-haspopup="true"
+              aria-expanded={railOpen}
+              aria-controls="szl-rail"
+              onClick={() => setRailOpen((v) => !v)}
+              title="Browse Sizzle Reels (⌘⇧L)"
+              data-testid="sizzle-rail-toggle"
+            >
+              Sizzle Reels
+              <span className="szl__title-caret" aria-hidden="true">▾</span>
+            </button>
+          ) : (
+            "Sizzle Reels"
+          )}
           {active !== null ? (
             <>
               <span className="szl__title-sep">›</span>
@@ -1325,7 +1486,12 @@ export function SizzleApp(): ReactElement {
           </>
         ) : null}
       </header>
-      <aside className="szl__rail">
+      <aside
+        id="szl-rail"
+        ref={railRef}
+        className="szl__rail"
+        aria-hidden={railIsPopover && !railOpen ? true : undefined}
+      >
         <button className="szl__new" onClick={onCreate} type="button">
           + New Sizzle Reel
         </button>
@@ -1410,7 +1576,8 @@ export function SizzleApp(): ReactElement {
               status={status}
             />
             {showChat ? (
-              <aside className="szl__chat">
+              <aside className="szl__chat" style={{ flexBasis: chatWidth }}>
+                <ChatResizer width={chatWidth} onResize={setChatWidth} />
                 <SizzleChatPanel key={active.id} projectId={active.id} />
               </aside>
             ) : null}
@@ -2046,6 +2213,30 @@ function Editor(props: EditorProps): ReactElement {
     );
   };
 
+  // The inverse of the one-scene default: every clip becomes its own
+  // scene (one voiceover segment each). The first keeps this scene's id
+  // and narration so preview caches + undo stay anchored; the rest are
+  // fresh sequence scenes with empty narration, crossfading in. Clip
+  // timing resets to `auto` (a lone clip has nothing to anchor to);
+  // trims and fit policies travel with the clip.
+  const splitIntoScenes = (sceneId: string): void => {
+    onScenes(
+      project.scenes.flatMap((scene) => {
+        if (scene.id !== sceneId || scene.kind !== "sequence") return [scene];
+        const beats = scene.beats ?? [];
+        if (beats.length <= 1) return [scene];
+        return beats.map((beat, index): SizzleScene => {
+          const lone: SizzleSequenceBeat = { ...beat, timing: { kind: "auto" } };
+          if (index === 0) {
+            return { ...scene, captureId: beat.captureId, beats: [lone] };
+          }
+          const fresh = newSizzleSequenceScene([beat.captureId]);
+          return { ...fresh, beats: [lone] };
+        });
+      })
+    );
+  };
+
   // Move a beat from one index to another (drag-drop or the ↑/↓ arrows). A
   // splice-and-insert, not a pairwise swap, so dragging across several beats
   // shifts the rest sensibly. `auto` beats need no timing fixup;
@@ -2112,10 +2303,19 @@ function Editor(props: EditorProps): ReactElement {
   const unscriptedSceneNumber =
     unscriptedSceneIdx === -1 ? null : unscriptedSceneIdx + 1;
   const totalScenes = project.scenes.length;
+  const totalClips = project.scenes.reduce(
+    (n, scene) => n + (scene.kind === "sequence" ? scene.beats?.length ?? 0 : 1),
+    0
+  );
   const rendering =
     status.phase !== "idle" &&
     status.phase !== "done" &&
     status.phase !== "failed";
+  // Voice / provider / resolution are set once per reel, so they hide
+  // behind a summary chip instead of taking a toolbar row every session.
+  const [reelSettingsOpen, setReelSettingsOpen] = useState(false);
+  const resolutionLabel = project.resolution === "1080p" ? "1080p" : "720p";
+  const providerLabel = project.ttsProvider === "openai" ? "OpenAI" : project.ttsProvider;
 
   return (
     <div className="szl__editor">
@@ -2128,6 +2328,7 @@ function Editor(props: EditorProps): ReactElement {
         />
         <div className="szl__editor-meta">
           {totalScenes} scene{totalScenes === 1 ? "" : "s"}
+          {totalClips !== totalScenes ? ` · ${totalClips} clip${totalClips === 1 ? "" : "s"}` : ""}
           {project.lastRenderedAt
             ? ` · rendered ${new Date(project.lastRenderedAt).toLocaleString()}`
             : ""}
@@ -2141,7 +2342,27 @@ function Editor(props: EditorProps): ReactElement {
         </button>
       </header>
 
-      <div className="szl__controls">
+      <div className={"szl__controls" + (reelSettingsOpen ? " is-open" : "")}>
+        <button
+          type="button"
+          className={"szl__reel-settings" + (reelSettingsOpen ? " is-open" : "")}
+          aria-expanded={reelSettingsOpen}
+          aria-controls="szl-reel-settings"
+          onClick={() => setReelSettingsOpen((v) => !v)}
+          title="Voice, provider and resolution for this reel"
+          data-testid="sizzle-reel-settings-toggle"
+        >
+          <span className="szl__reel-settings-label">Reel settings</span>
+          <span className="szl__reel-settings-summary">
+            {project.voice} · {providerLabel} · {resolutionLabel}
+          </span>
+          <span className="szl__title-caret" aria-hidden="true">{reelSettingsOpen ? "▴" : "▾"}</span>
+        </button>
+        <div
+          id="szl-reel-settings"
+          className="szl__reel-settings-fields"
+          hidden={!reelSettingsOpen}
+        >
         <label className="szl__field">
           <span>Voice</span>
           <select
@@ -2176,6 +2397,7 @@ function Editor(props: EditorProps): ReactElement {
             <option value="720p">1280 × 720</option>
           </select>
         </label>
+        </div>
         <span className="szl__spacer" />
         <button className="szl__btn" onClick={onPickCapture} type="button">
           + Add scene
@@ -2323,6 +2545,17 @@ function Editor(props: EditorProps): ReactElement {
                           Scene · one voiceover · {scene.beats?.length ?? 0} clip{(scene.beats?.length ?? 0) === 1 ? "" : "s"}
                         </span>
                         <span className="szl__spacer" />
+                        {(scene.beats?.length ?? 0) > 1 ? (
+                          <button
+                            className="szl__scene-action"
+                            onClick={() => splitIntoScenes(scene.id)}
+                            type="button"
+                            title="Give every clip its own scene (its own voiceover segment). This scene keeps the narration; the new scenes start empty."
+                            data-testid={`sizzle-split-scene-${scene.id}`}
+                          >
+                            Split into scenes
+                          </button>
+                        ) : null}
                         <button
                           className="szl__scene-action"
                           onClick={() => onPickSequenceBeat(scene.id)}

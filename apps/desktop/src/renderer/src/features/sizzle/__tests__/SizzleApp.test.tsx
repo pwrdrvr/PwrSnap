@@ -6,7 +6,8 @@ import { EVENT_CHANNELS, type CaptureRecord, type SizzleProject, type SizzleScen
 import {
   SizzleApp,
   formatSequencePreviewWarnings,
-  formatTranscriptPhraseOptionLabel
+  formatTranscriptPhraseOptionLabel,
+  resetSizzleChatWidthForTests
 } from "../SizzleApp";
 
 // The sequence preview draws its waveform with wavesurfer.js, which needs
@@ -352,6 +353,49 @@ describe("SizzleApp sequence authoring", () => {
     expect(el.textContent).toContain("Phrase anchors use timed transcript words from preview");
     expect(el.querySelector(".szl__sequence-timeline")).not.toBeNull();
     expect(el.textContent).toContain("unresolved");
+  });
+
+  test("Split into scenes gives every clip its own scene; the first keeps id + narration", async () => {
+    const seq = scene({
+      id: "sc_seq",
+      kind: "sequence",
+      captureId: "cap_a",
+      scriptLine: "one voiceover",
+      narration: "one voiceover",
+      audioSource: "voiceover",
+      beats: [
+        { id: "bt_a", captureId: "cap_a", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" },
+        { id: "bt_b", captureId: "cap_b", timing: { kind: "offset", startSec: 3, endSec: null }, mediaTrim: { startSec: 1, endSec: 4 }, transition: "cut", videoFit: "loop" },
+        { id: "bt_c", captureId: "cap_c", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" }
+      ]
+    });
+    const { el, dispatch } = await renderApp(project({ scenes: [seq] }));
+    const split = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-split-scene-sc_seq"]');
+    expect(split).not.toBeNull();
+    await act(async () => {
+      split!.click();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    const updateCalls = dispatch.mock.calls.filter(([name]) => name === "sizzle:update");
+    const payload = updateCalls.at(-1)?.[1] as { patch?: { scenes?: SizzleScene[] } } | undefined;
+    const scenes = payload?.patch?.scenes ?? [];
+    expect(scenes).toHaveLength(3);
+    expect(scenes.map((s) => s.kind)).toEqual(["sequence", "sequence", "sequence"]);
+    expect(scenes.map((s) => s.beats?.map((b) => b.captureId))).toEqual([["cap_a"], ["cap_b"], ["cap_c"]]);
+    // First keeps the scene id + narration; the rest are fresh and empty.
+    expect(scenes[0]!.id).toBe("sc_seq");
+    expect(scenes[0]!.narration).toBe("one voiceover");
+    expect(scenes[1]!.id).not.toBe("sc_seq");
+    expect(scenes[1]!.narration).toBe("");
+    // Clip timing resets to auto; trim + fit travel with the clip.
+    expect(scenes[1]!.beats![0]).toMatchObject({
+      id: "bt_b",
+      timing: { kind: "auto" },
+      mediaTrim: { startSec: 1, endSec: 4 },
+      videoFit: "loop"
+    });
+    // A one-clip scene offers no split.
+    expect(el.querySelector('[data-testid="sizzle-split-scene-sc_seq"]')).toBeNull();
   });
 
   test("hydrates active reel captures that are outside the initial library page", async () => {
@@ -1133,6 +1177,142 @@ describe("render precondition", () => {
     const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
     expect(render?.disabled).toBe(true);
     expect(render?.title ?? "").toContain("no narration");
+  });
+});
+
+describe("SizzleApp shell layout", () => {
+  test("with a reel open the project rail is a dropdown under the crumb; picking a reel closes it", async () => {
+    const first = project({ id: "p1", name: "First reel" });
+    const second = project({ id: "p2", name: "Second reel" });
+    const { el } = await renderApp([first, second]);
+    const shell = el.querySelector(".szl")!;
+    expect(shell.classList.contains("szl--rail-popover")).toBe(true);
+    expect(shell.classList.contains("is-rail-open")).toBe(false);
+    const rail = el.querySelector("#szl-rail")!;
+    expect(rail.getAttribute("aria-hidden")).toBe("true");
+
+    const toggle = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-rail-toggle"]')!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(shell.classList.contains("is-rail-open")).toBe(true);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(rail.getAttribute("aria-hidden")).toBeNull();
+
+    // Picking a reel from the dropdown lands on it and closes the rail.
+    await act(async () => {
+      clickProjectRow(el.querySelector('[data-testid="sizzle-projects-list"]'), "Second reel");
+    });
+    expect(titleValue(el)).toBe("Second reel");
+    expect(shell.classList.contains("is-rail-open")).toBe(false);
+  });
+
+  test("⌘⇧L is ignored while typing in the editor", async () => {
+    const { el } = await renderApp(project());
+    const shell = el.querySelector(".szl")!;
+    const box = scriptBox(el);
+    box.focus();
+    await act(async () => {
+      box.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "L",
+          metaKey: true,
+          shiftKey: true,
+          bubbles: true
+        })
+      );
+    });
+    expect(shell.classList.contains("is-rail-open")).toBe(false);
+  });
+
+  test("Esc closes the rail dropdown; ⌘⇧L toggles it", async () => {
+    const { el } = await renderApp(project());
+    const shell = el.querySelector(".szl")!;
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "L", metaKey: true, shiftKey: true, bubbles: true })
+      );
+    });
+    expect(shell.classList.contains("is-rail-open")).toBe(true);
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(shell.classList.contains("is-rail-open")).toBe(false);
+  });
+
+  test("the chat pane resizes by dragging its divider (left widens), clamped, and double-click resets", async () => {
+    resetSizzleChatWidthForTests();
+    const { el } = await renderApp(project());
+    const chat = el.querySelector<HTMLElement>(".szl__chat")!;
+    expect(chat.style.flexBasis).toBe("400px");
+    const grip = el.querySelector<HTMLElement>('[data-testid="sizzle-chat-resizer"]')!;
+    // jsdom lacks pointer capture — stub it.
+    grip.setPointerCapture = () => undefined;
+    grip.releasePointerCapture = () => undefined;
+    // `buttons: 1` mirrors a real drag — the resizer treats buttons === 0
+    // as "the gesture ended" so a lost capture can't leave it sticky.
+    const pointer = (type: string, clientX: number): void => {
+      grip.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, clientX, buttons: 1, button: 0 }) as unknown as PointerEvent
+      );
+    };
+    await act(async () => {
+      pointer("pointerdown", 1000);
+      pointer("pointermove", 900); // drag left 100px → wider
+    });
+    expect(chat.style.flexBasis).toBe("500px");
+    await act(async () => {
+      pointer("pointermove", 200); // way past max → clamped
+      pointer("pointerup", 200);
+    });
+    expect(chat.style.flexBasis).toBe("720px");
+    await act(async () => {
+      grip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    expect(chat.style.flexBasis).toBe("400px");
+    resetSizzleChatWidthForTests();
+  });
+
+  test("a cancelled drag does not leave the resizer stuck in drag mode", async () => {
+    resetSizzleChatWidthForTests();
+    const { el } = await renderApp(project());
+    const chat = el.querySelector<HTMLElement>(".szl__chat")!;
+    const grip = el.querySelector<HTMLElement>('[data-testid="sizzle-chat-resizer"]')!;
+    grip.setPointerCapture = () => undefined;
+    grip.releasePointerCapture = () => undefined;
+    const send = (type: string, clientX: number, buttons = 1): void => {
+      grip.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, clientX, buttons, button: 0 }) as unknown as PointerEvent
+      );
+    };
+    await act(async () => {
+      send("pointerdown", 1000);
+      send("pointermove", 950);
+    });
+    expect(chat.style.flexBasis).toBe("450px");
+    // Gesture ends without a pointerup (OS cancel / lost capture).
+    await act(async () => {
+      grip.dispatchEvent(new MouseEvent("pointercancel", { bubbles: true }) as unknown as PointerEvent);
+      send("pointermove", 400, 0); // plain hover, no button held
+    });
+    expect(chat.style.flexBasis).toBe("450px");
+    resetSizzleChatWidthForTests();
+  });
+
+  test("reel settings hide behind a summary chip and disclose on click", async () => {
+    const { el } = await renderApp(project({ voice: "onyx", resolution: "720p" }));
+    const toggle = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-reel-settings-toggle"]')!;
+    expect(toggle.textContent).toContain("onyx");
+    expect(toggle.textContent).toContain("OpenAI");
+    expect(toggle.textContent).toContain("720p");
+    const fields = el.querySelector<HTMLElement>("#szl-reel-settings")!;
+    expect(fields.hidden).toBe(true);
+    await act(async () => {
+      toggle.click();
+    });
+    expect(fields.hidden).toBe(false);
+    expect(fields.querySelectorAll("select")).toHaveLength(3);
   });
 });
 

@@ -6,7 +6,7 @@ import {
   useState,
   type ReactElement
 } from "react";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, sizzleProjectCaptureIds } from "@pwrsnap/shared";
 import type {
   CaptureRecord,
   CaptureEnrichment,
@@ -483,7 +483,10 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
                   >
                     <span className="psl__cart-picker-name">{p.name}</span>
                     <span className="psl__cart-picker-meta">
-                      {p.scenes.length} scene{p.scenes.length === 1 ? "" : "s"}
+                      {(() => {
+                        const clips = sizzleProjectCaptureIds(p.scenes).size;
+                        return `${clips} clip${clips === 1 ? "" : "s"}`;
+                      })()}
                     </span>
                   </button>
                 </li>

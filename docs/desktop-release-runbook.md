@@ -156,6 +156,22 @@ passing the existing tag as input, so GitHub evaluates both environment
 policies against the branch even though packaging and metadata validation use
 the tag.
 
+Desktop Settings let operators pick a **channel** (Stable or Beta) and a
+**track** (Latest or Prerelease). Tag suffixes map onto those four slots:
+
+| Settings slot | Tag | GitHub flag |
+|---|---|---|
+| Stable · Latest | `v1.0.5` | Latest |
+| Stable · Prerelease | `v1.0.6-prerelease.1` | Pre-release |
+| Beta · Latest | `v1.1.0-beta.3` | Pre-release |
+| Beta · Prerelease | `v1.1.0-alpha.7` | Pre-release |
+
+Use `-prerelease.N` for Stable RCs. Use `-alpha.N` / `-beta.N` on `main`.
+Every `main` tag with a prerelease suffix must stay a GitHub Pre-release so
+it cannot steal `/releases/latest` from the Stable train. Promote a smoked
+alpha by bumping `apps/desktop/package.json` and the CHANGELOG heading to
+the beta version, then tagging that commit. Do not retag the alpha SHA.
+
 ---
 
 ## Cutting a release (CI path — preferred)

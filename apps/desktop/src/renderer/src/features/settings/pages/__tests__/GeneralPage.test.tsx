@@ -61,7 +61,7 @@ const baseSettings: Settings = {
   },
   experimental: { processSplit: true, dpiAwareExport: false, allowRetinaExport: true },
   appearance: { theme: "system" },
-  updates: { channel: "latest" },
+  updates: { channel: "latest", train: "stable" },
   storage: { filenameTimestampZone: "local" },
   recording: {
     includeSystemAudio: false,
@@ -123,8 +123,14 @@ function installFakeApi(
             ok: true,
             value: {
               fetchedAt: 1,
-              latest: { version: "v1.2.3" },
-              prerelease: { version: "v1.3.0-beta.2" }
+              stable: {
+                latest: { version: "v1.2.3" },
+                prerelease: { version: "v1.2.4-prerelease.1" }
+              },
+              beta: {
+                latest: { version: "v1.3.0-beta.2" },
+                prerelease: { unavailableReason: "No beta prerelease found." }
+              }
             }
           };
         }
@@ -313,11 +319,13 @@ describe("GeneralPage — launch at login", () => {
 });
 
 describe("GeneralPage — updates", () => {
-  test("shows channel release versions and patches the selected channel", async () => {
+  test("shows all four published versions and persists both keys", async () => {
     await renderGeneral(baseSettings, healthyStatus);
 
     expect(container?.textContent).toContain("v1.2.3");
+    expect(container?.textContent).toContain("v1.2.4-prerelease.1");
     expect(container?.textContent).toContain("v1.3.0-beta.2");
+    expect(container?.textContent).toContain("Unavailable");
 
     const prerelease = Array.from(container!.querySelectorAll("button")).find(
       (el) => el.textContent?.includes("Prerelease")
@@ -326,7 +334,48 @@ describe("GeneralPage — updates", () => {
       prerelease?.click();
     });
 
-    expect(patchMock).toHaveBeenCalledWith({ updates: { channel: "prerelease" } });
+    expect(patchMock).toHaveBeenCalledWith({
+      updates: { train: "stable", channel: "prerelease" }
+    });
+  });
+
+  test("keeps Beta selectable when its slots are unavailable", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+    const beta = Array.from(container!.querySelectorAll("button")).find(
+      (el) => el.textContent?.includes("Beta")
+    );
+    expect(beta).toBeDefined();
+    expect(beta?.hasAttribute("disabled")).toBe(false);
+
+    await act(async () => {
+      beta?.click();
+    });
+
+    expect(patchMock).toHaveBeenCalledWith({
+      updates: { train: "beta", channel: "latest" }
+    });
+  });
+
+  test("composes rapid train then track clicks without a stale second write", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+    const beta = Array.from(container!.querySelectorAll("button")).find(
+      (el) => el.textContent?.includes("Beta")
+    );
+    const prerelease = Array.from(container!.querySelectorAll("button")).find(
+      (el) => el.textContent?.includes("Prerelease")
+    );
+
+    await act(async () => {
+      beta?.click();
+      prerelease?.click();
+    });
+
+    expect(patchMock).toHaveBeenNthCalledWith(1, {
+      updates: { train: "beta", channel: "latest" }
+    });
+    expect(patchMock).toHaveBeenNthCalledWith(2, {
+      updates: { train: "beta", channel: "prerelease" }
+    });
   });
 
   test("manual check dispatches app:update:check and shows the result", async () => {
@@ -377,7 +426,8 @@ describe("GeneralPage — updates", () => {
         version: "1.3.0-beta.5",
         currentVersion: "1.3.0-beta.4",
         attemptedAt: "2026-06-29T12:00:00.000Z",
-        channel: "prerelease"
+        channel: "prerelease",
+        train: "stable"
       } satisfies AppUpdateStatus);
     });
 

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import type { UpdateChannel } from "@pwrsnap/shared";
+import type { UpdateChannel, UpdateTrain } from "@pwrsnap/shared";
+import { isUpdateChannel, isUpdateTrain } from "@pwrsnap/shared";
 
 const SCHEMA_VERSION = 1;
 const ATTEMPT_FILE_NAME = "pwrsnap-update-install-attempt.json";
@@ -10,6 +11,7 @@ export type AppUpdateInstallAttempt = {
   expectedVersion: string;
   fromVersion: string;
   channel: UpdateChannel;
+  train: UpdateTrain;
   attemptedAt: string;
 };
 
@@ -19,10 +21,6 @@ export type AppUpdateInstallAttemptStore = {
   read(): AppUpdateInstallAttempt | undefined;
   write(attempt: Omit<AppUpdateInstallAttempt, "schemaVersion">): AppUpdateInstallAttempt;
 };
-
-function isUpdateChannel(value: unknown): value is UpdateChannel {
-  return value === "latest" || value === "prerelease";
-}
 
 function parseAttempt(raw: string): AppUpdateInstallAttempt | undefined {
   let parsed: unknown;
@@ -41,6 +39,9 @@ function parseAttempt(raw: string): AppUpdateInstallAttempt | undefined {
     return undefined;
   }
   if (!isUpdateChannel(value.channel)) return undefined;
+  // Older attempt files predate `train`; treat them as Stable so a
+  // leftover retry stays on the same feed the user had selected.
+  const train = isUpdateTrain(value.train) ? value.train : "stable";
   if (typeof value.attemptedAt !== "string" || value.attemptedAt.length === 0) {
     return undefined;
   }
@@ -49,6 +50,7 @@ function parseAttempt(raw: string): AppUpdateInstallAttempt | undefined {
     expectedVersion: value.expectedVersion,
     fromVersion: value.fromVersion,
     channel: value.channel,
+    train,
     attemptedAt: value.attemptedAt
   };
 }

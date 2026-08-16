@@ -1811,13 +1811,19 @@ export type Settings = {
   };
   updates: {
     /** GitHub release stream the auto-updater follows. `"latest"`
-     *  tracks stable releases only; `"prerelease"` also accepts beta /
-     *  alpha tags marked `prerelease: true` on GitHub. Mirrors
-     *  PwrAgnt's `updates.channel`. The auto-updater re-reads this on
-     *  every check, so flipping the toggle takes effect on the next
-     *  hourly poll (or immediately if the user invokes Check for
-     *  Updates from the Help menu). */
+     *  is the smoke-checked slot on the selected train; `"prerelease"`
+     *  is newer and may not install. Combined with `train` this is
+     *  one of four published slots (Stable/Beta × Latest/Prerelease).
+     *  The auto-updater re-reads this on every check, so flipping the
+     *  control takes effect on the next hourly poll (or immediately
+     *  if the user invokes Check for Updates from the Help menu). */
     channel: UpdateChannel;
+    /** Release train. `"stable"` is the 1.0 / GitHub Latest feed;
+     *  `"beta"` follows `main` (`-beta` / `-alpha` tags). Additive —
+     *  older settings files omit it and stay on Stable unless both
+     *  `train` and `channel` are absent, in which case the installed
+     *  app version seeds the pair. */
+    train: UpdateTrain;
   };
   /** Library storage and filename preferences. */
   storage: {
@@ -2273,6 +2279,84 @@ export const DEFAULT_APPEARANCE: Settings["appearance"] = {
 
 export type UpdateChannel = "latest" | "prerelease";
 
+export const UPDATE_CHANNELS = ["latest", "prerelease"] as const satisfies readonly UpdateChannel[];
+
+export const UPDATE_CHANNEL_DEFAULT: UpdateChannel = "latest";
+
+export function isUpdateChannel(value: unknown): value is UpdateChannel {
+  return value === "latest" || value === "prerelease";
+}
+
+export type UpdateTrain = "stable" | "beta";
+
+export const UPDATE_TRAINS = ["stable", "beta"] as const satisfies readonly UpdateTrain[];
+
+export const UPDATE_TRAIN_DEFAULT: UpdateTrain = "stable";
+
+export function isUpdateTrain(value: unknown): value is UpdateTrain {
+  return value === "stable" || value === "beta";
+}
+
+// Last 1.0 core that used `-beta.N` as the Stable prerelease line. Builds
+// at this core stay on Stable so a website Beta download cannot be confused
+// with historical `v1.0.0-beta.N` tags.
+const LEGACY_STABLE_BETA_CORE: [number, number, number] = [1, 0, 0];
+
+function parseUpdateVersion(
+  version: string
+): { core: [number, number, number]; pre: string[] } | undefined {
+  const trimmed = version.trim().replace(/^v/i, "");
+  const match = trimmed.match(
+    /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/
+  );
+  if (!match) return undefined;
+  const [, maj, min, patch, pre] = match;
+  return {
+    core: [Number(maj), Number(min), Number(patch)],
+    pre: pre ? pre.split(".") : []
+  };
+}
+
+/**
+ * Map an installed app version onto the Settings update train/track.
+ * Used only when both `updates.train` and `updates.channel` are unset so a
+ * GitHub or website download of Beta/Prerelease follows that feed. A
+ * pre-train config that only set `channel` stays on Stable.
+ */
+export function inferUpdateSelection(version: string): {
+  channel: UpdateChannel;
+  train: UpdateTrain;
+} {
+  const parsed = parseUpdateVersion(version);
+  if (!parsed || parsed.pre.length === 0) {
+    return {
+      channel: UPDATE_CHANNEL_DEFAULT,
+      train: UPDATE_TRAIN_DEFAULT
+    };
+  }
+  const id = parsed.pre[0];
+  if (id === "alpha") {
+    return { channel: "prerelease", train: "beta" };
+  }
+  if (id === "prerelease" || id === "rc") {
+    return { channel: "prerelease", train: "stable" };
+  }
+  if (id === "beta") {
+    const isLegacyStableBeta =
+      parsed.core[0] === LEGACY_STABLE_BETA_CORE[0] &&
+      parsed.core[1] === LEGACY_STABLE_BETA_CORE[1] &&
+      parsed.core[2] === LEGACY_STABLE_BETA_CORE[2];
+    if (isLegacyStableBeta) {
+      return {
+        channel: UPDATE_CHANNEL_DEFAULT,
+        train: UPDATE_TRAIN_DEFAULT
+      };
+    }
+    return { channel: "latest", train: "beta" };
+  }
+  return { channel: "prerelease", train: UPDATE_TRAIN_DEFAULT };
+}
+
 /** Timestamp zone used in generated `.pwrsnap` filenames. */
 export type FilenameTimestampZone = "local" | "utc";
 
@@ -2378,6 +2462,7 @@ export type AppUpdateStatus =
       currentVersion: string;
       attemptedAt: string;
       channel: UpdateChannel;
+      train: UpdateTrain;
     }
   | { status: "error"; message: string };
 
@@ -2393,9 +2478,14 @@ export type AppUpdateReleaseInfo = {
   unavailableReason?: string;
 };
 
-export type AppUpdateReleaseVersions = {
+export type AppUpdateReleaseSlotVersions = {
   latest: AppUpdateReleaseInfo;
   prerelease: AppUpdateReleaseInfo;
+};
+
+export type AppUpdateReleaseVersions = {
+  stable: AppUpdateReleaseSlotVersions;
+  beta: AppUpdateReleaseSlotVersions;
   fetchedAt: number;
 };
 

@@ -2677,6 +2677,16 @@ export function Library() {
         });
         if (intent.kind === "edit") {
           event.preventDefault();
+          const record =
+            recordsRef.current.find((candidate) => candidate.id === intent.recordId) ??
+            openedRecordsRef.current.find((candidate) => candidate.id === intent.recordId) ??
+            null;
+          if (record !== null) {
+            setOpenedRecords((prev) => [
+              record,
+              ...prev.filter((existing) => existing.id !== record.id)
+            ]);
+          }
           const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
           gridReturnScrollTopRef.current = savedScrollTop;
           viewDispatch({
@@ -2780,6 +2790,16 @@ export function Library() {
         // already focused on (e.g. a double-click landing on the Edit CTA)
         // must not push a duplicate history entry.
         if (cur.kind === "focus" && cur.selectedRecordId === intent.recordId) return;
+        // A head-page refresh deliberately drops previously loaded pages.
+        // Retain the record we are about to focus so an unrelated
+        // captures-changed event (including a video trim save) cannot make
+        // Focus lose an otherwise-live selection while its page reloads.
+        if (record !== null) {
+          setOpenedRecords((prev) => [
+            record,
+            ...prev.filter((existing) => existing.id !== record.id)
+          ]);
+        }
         const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
         gridReturnScrollTopRef.current = savedScrollTop;
         viewDispatch({

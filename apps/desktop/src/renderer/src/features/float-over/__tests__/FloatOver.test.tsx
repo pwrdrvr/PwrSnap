@@ -691,9 +691,11 @@ describe("FloatOver AI suggestions", () => {
     );
     // Pill says "Codex drafted a title + description" — it must NOT echo the
     // description text itself, because the textarea already shows it.
-    expect(el.querySelector(".ps-codex-pill__text")?.textContent).not.toContain(
+    const statusText = el.querySelector(".ps-codex-pill__text")?.textContent;
+    expect(statusText).not.toContain(
       "Dark-mode LINE desktop chat showing PwrAgent command help."
     );
+    expect(statusText).toContain("Codex drafted a title + description.");
     expect(el.querySelector(".fo__ai-accept")?.textContent).toBe("Save");
   });
 

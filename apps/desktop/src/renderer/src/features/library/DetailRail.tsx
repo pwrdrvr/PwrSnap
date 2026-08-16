@@ -1582,6 +1582,7 @@ export function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): React
     detail.cost.status === "available"
       ? formatCostMicros(detail.cost.totalCostMicros)
       : "Price unavailable";
+  const showCost = detail.cost.status === "available";
   const tokens =
     detail.tokens === null
       ? "Usage unavailable"
@@ -1614,7 +1615,7 @@ export function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): React
   // Token + cache + media accounting moved off-screen into a tooltip.
   // Kept as ONE newline-joined title string (not per-span titles) so a
   // single hover anywhere on the strip surfaces the whole accounting.
-  const accounting = `${tokens}\n${mediaText}`;
+  const accounting = `${cost}\n${tokens}\n${mediaText}`;
 
   return (
     // role=group so the aria-label is actually exposed — a bare <span>
@@ -1623,7 +1624,7 @@ export function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): React
       <span className="psl__ai-usage-model" title={modelName}>
         {modelName}
       </span>
-      <b className="psl__ai-usage-cost">{cost}</b>
+      {showCost ? <b className="psl__ai-usage-cost">{cost}</b> : null}
       {overrode ? (
         <span className="psl__ai-usage-override" role="note">
           <span

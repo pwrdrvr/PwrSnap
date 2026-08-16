@@ -647,14 +647,30 @@ describe("DetailRail", () => {
 
     // …and the row lives inside the pill, not beside it.
     expect(el.querySelector(".ps-codex-pill__meta .psl__ai-usage")).not.toBeNull();
+    expect(el.querySelector(".ps-codex-pill")?.classList.contains("has-meta")).toBe(true);
 
     // Token / cache / media accounting moved into the strip's tooltip.
     const accounting = usage?.getAttribute("title") ?? "";
+    expect(accounting).toContain("$0.002");
     expect(accounting).toContain("800 uncached in");
     expect(accounting).toContain("100 cached");
     expect(accounting).toContain("300 out (25 reasoning)");
     expect(accounting).toContain("1024×742 JPEG");
     expect(accounting).toContain("q75");
+  });
+
+  test("keeps unavailable pricing in the tooltip instead of the headline", async () => {
+    const { el } = await renderDetailRail(enrichment(), {
+      usageDetail: () =>
+        aiUsageDetail({
+          cost: { status: "unavailable", reason: "pricing catalog missing" }
+        })
+    });
+
+    const usage = el.querySelector(".psl__ai-usage");
+    expect(usage?.textContent).toContain("gpt-5.4-mini");
+    expect(usage?.textContent).not.toContain("Price unavailable");
+    expect(usage?.getAttribute("title")).toContain("Price unavailable");
   });
 
   test("refreshes latest AI run usage when the same run completes", async () => {

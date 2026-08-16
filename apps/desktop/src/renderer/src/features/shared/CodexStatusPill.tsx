@@ -125,7 +125,8 @@ function labelFor(
   kind: StatusKind,
   provider: string,
   model: string | undefined,
-  error: string | null | undefined
+  error: string | null | undefined,
+  hasMeta: boolean
 ): ReactNode {
   const withModel = model !== undefined && model.length > 0 ? ` (${model})` : "";
   switch (kind) {
@@ -142,13 +143,10 @@ function labelFor(
           {provider} is queued<span className="ps-codex-pill__dots" />
         </>
       );
-    // No trailing period on the two "happy" labels: they are the head
-    // of a middot-joined run (`… from Codex · GPT-5.6 · <$0.001`) once
-    // a surface passes `meta`, and "Codex. · GPT-5.6" reads as a typo.
     case "ready":
-      return <>{provider} drafted a title + description</>;
+      return <>{provider} drafted a title + description{hasMeta ? "" : "."}</>;
     case "accepted":
-      return <>Description filled from {provider}</>;
+      return <>Description filled from {provider}{hasMeta ? "" : "."}</>;
     case "failed":
       return failedLabelFor(provider, error);
     case "safety-disabled":
@@ -197,10 +195,12 @@ export function CodexStatusPill({
   className
 }: CodexStatusPillProps): ReactElement {
   const kind = resolveKind(status, draftAvailable, accepted, needsConsent, safetyDisabled);
+  const hasMeta = meta !== undefined && meta !== null;
   const classes = [
     "ps-codex-pill",
     `ps-codex-pill--${variant}`,
     `is-${kind}`,
+    hasMeta ? "has-meta" : "",
     className ?? ""
   ]
     .join(" ")
@@ -223,8 +223,10 @@ export function CodexStatusPill({
         </svg>
       </span>
       <span className="ps-codex-pill__text">
-        {labelFor(kind, providerLabel, modelLabel, error)}
-        {meta !== undefined && meta !== null ? (
+        <span className="ps-codex-pill__summary">
+          {labelFor(kind, providerLabel, modelLabel, error, hasMeta)}
+        </span>
+        {hasMeta ? (
           <span className="ps-codex-pill__meta">{meta}</span>
         ) : null}
       </span>

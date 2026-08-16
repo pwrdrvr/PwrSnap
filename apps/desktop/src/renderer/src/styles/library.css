@@ -2220,7 +2220,7 @@
 
 .psl__right-footer {
   border-top: 1px solid var(--border-subtle);
-  padding: 12px 14px;
+  padding: 11px 10px 10px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -3843,7 +3843,7 @@
 .psl__copy-row {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  gap: 6px;
+  gap: 5px;
 }
 
 /* --- Rail-footer copy cards: FILE chip folded into the card ---------
@@ -3867,7 +3867,7 @@
 }
 .psl__right-footer .fo__copy-btn {
   height: 56px;
-  padding: 8px 7px 7px;
+  padding: 8px 6px 7px;
   border-bottom: none;
   border-radius: 8px 8px 0 0;
 }

@@ -4,7 +4,7 @@
 // (covered by cart-store.test.ts / sizzle-store.test.ts).
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import type { DraftCart, SizzleProject } from "@pwrsnap/shared";
+import type { DraftCart, SizzleProject, SizzleScene } from "@pwrsnap/shared";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (req: unknown) => Promise<unknown>>(),
@@ -198,7 +198,7 @@ describe("cart:commitToNewProject", () => {
     expect(mocks.sizzle.create).not.toHaveBeenCalled();
   });
 
-  test("creates a project with scenes in cart order, then clears the cart", async () => {
+  test("creates a project with ONE scene holding every cart capture as a clip, in cart order, then clears the cart", async () => {
     mocks.cart.get.mockResolvedValue(
       makeCart({ name: "My Reel", captureIds: ["cap-a", "cap-b", "cap-c"] })
     );
@@ -218,19 +218,34 @@ describe("cart:commitToNewProject", () => {
 
     // Project created with the cart's name.
     expect(mocks.sizzle.create).toHaveBeenCalledWith("My Reel");
-    // Scenes set in cart order with the right captureIds.
+    // One sequence scene — one voiceover over N clips — with the clips
+    // in cart order. Splitting into more scenes is an explicit editor
+    // action, never the default.
     const updateArgs = mocks.sizzle.update.mock.calls[0]!;
     expect(updateArgs[0]).toBe("new-proj");
-    const scenes = (updateArgs[1] as { scenes: Array<{ captureId: string }> }).scenes;
-    expect(scenes.map((s) => s.captureId)).toEqual(["cap-a", "cap-b", "cap-c"]);
-    // Each scene has the expected defaults.
-    expect(scenes[0]).toMatchObject({
+    const scenes = (updateArgs[1] as { scenes: SizzleScene[] }).scenes;
+    expect(scenes).toHaveLength(1);
+    const [scene] = scenes;
+    expect(scene).toMatchObject({
+      kind: "sequence",
+      captureId: "cap-a",
       scriptLine: "",
+      narration: "",
       durationOverrideSec: null,
       mediaTrim: null,
-      audioSource: "auto",
+      audioSource: "voiceover",
       transition: "crossfade"
     });
+    expect(scene!.beats!.map((b) => b.captureId)).toEqual(["cap-a", "cap-b", "cap-c"]);
+    // Every clip is an auto-timed cut with smart-fit — the app-demo defaults.
+    for (const beat of scene!.beats!) {
+      expect(beat).toMatchObject({
+        timing: { kind: "auto" },
+        mediaTrim: null,
+        transition: "cut",
+        videoFit: "smart-fit"
+      });
+    }
     // Cart cleared after the commit.
     expect(mocks.cart.clear).toHaveBeenCalled();
     // Both broadcasts fired (cart + projects).
@@ -308,13 +323,63 @@ describe("cart:commitToExisting", () => {
     const h = await load("cart:commitToExisting");
     await h({ projectId: "proj-1" });
 
-    const scenes = (mocks.sizzle.update.mock.calls[0]![1] as {
-      scenes: Array<{ captureId: string }>;
-    }).scenes;
-    // Existing scene preserved at the front; only the two NEW captures
-    // appended (the duplicate "existing" is skipped).
-    expect(scenes.map((s) => s.captureId)).toEqual(["existing", "new-1", "new-2"]);
+    const scenes = (mocks.sizzle.update.mock.calls[0]![1] as { scenes: SizzleScene[] }).scenes;
+    // Existing (legacy simple) scene preserved at the front; the two NEW
+    // captures land as clips of ONE appended sequence scene (the
+    // duplicate "existing" is skipped).
+    expect(scenes).toHaveLength(2);
+    expect(scenes[0]!.captureId).toBe("existing");
+    expect(scenes[1]!.kind).toBe("sequence");
+    expect(scenes[1]!.beats!.map((b) => b.captureId)).toEqual(["new-1", "new-2"]);
     expect(mocks.cart.clear).toHaveBeenCalled();
+  });
+
+  test("appends as clips of the LAST scene when that scene is a sequence", async () => {
+    mocks.cart.get.mockResolvedValue(makeCart({ captureIds: ["b", "c", "a"] }));
+    const project = makeProject({
+      id: "proj-2",
+      scenes: [
+        {
+          id: "sc-0",
+          kind: "sequence",
+          captureId: "a",
+          scriptLine: "hello",
+          narration: "hello",
+          beats: [
+            {
+              id: "bt-0",
+              captureId: "a",
+              timing: { kind: "auto" },
+              mediaTrim: null,
+              transition: "cut",
+              videoFit: "smart-fit"
+            }
+          ],
+          durationOverrideSec: null,
+          mediaTrim: null,
+          audioSource: "voiceover",
+          transition: "crossfade"
+        }
+      ]
+    });
+    mocks.sizzle.get.mockResolvedValue(project);
+    mocks.sizzle.update.mockImplementation(async (id: string, patch: { scenes?: unknown }) => ({
+      ...project,
+      id,
+      scenes: patch.scenes
+    }));
+    mocks.cart.clear.mockResolvedValue(makeCart());
+    mocks.sizzle.list.mockResolvedValue([project]);
+
+    const h = await load("cart:commitToExisting");
+    await h({ projectId: "proj-2" });
+
+    const scenes = (mocks.sizzle.update.mock.calls[0]![1] as { scenes: SizzleScene[] }).scenes;
+    // Still one scene; "a" was already a clip so only b + c join, in
+    // cart order, after the existing clip. Narration untouched.
+    expect(scenes).toHaveLength(1);
+    expect(scenes[0]!.narration).toBe("hello");
+    expect(scenes[0]!.beats!.map((b) => b.captureId)).toEqual(["a", "b", "c"]);
   });
 
   test("does NOT clear the cart if the project update throws", async () => {

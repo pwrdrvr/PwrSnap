@@ -13,9 +13,11 @@ import {
   EVENT_CHANNELS,
   SIZZLE_VOICES,
   distributeSequenceBeatStarts,
+  newSizzleSequenceScene,
   normalizeSizzleSequenceBeatContinuity,
   resolveSizzleAudioSource,
   resolveSizzleVideoFit,
+  sizzleProjectCaptureIds,
   type CaptureRecord,
   type SizzleBeatTiming,
   type SizzleProject,
@@ -385,7 +387,7 @@ function labelForSequenceWarning(
 ): string {
   if (warning.beatId === undefined) return "Scene warning";
   const beatNumber = beatNumberById.get(warning.beatId);
-  return beatNumber === undefined ? "Beat warning" : `Beat ${beatNumber}`;
+  return beatNumber === undefined ? "Clip warning" : `Clip ${beatNumber}`;
 }
 
 function transitionType(transition: SizzleTransition): SizzleTransitionType {
@@ -683,7 +685,7 @@ function SequenceTimelinePreview(props: {
     <div className="szl__sequence-preview">
       <div className="szl__sequence-preview-stage">
         {activeBeat === null ? (
-          <span className="szl__sequence-preview-empty">No beats</span>
+          <span className="szl__sequence-preview-empty">No clips</span>
         ) : activeCapture?.kind === "video" ? (
           <video
             ref={videoRef}
@@ -704,7 +706,7 @@ function SequenceTimelinePreview(props: {
           onClick={onPlay}
           disabled={loading || scene.scriptLine.trim().length === 0}
           type="button"
-          title={scene.scriptLine.trim().length === 0 ? "Write narration to preview" : "Preview sequence"}
+          title={scene.scriptLine.trim().length === 0 ? "Write narration to preview" : "Preview scene"}
         >
           {loading ? "…" : playing ? "■" : "▶"}
         </button>
@@ -732,7 +734,7 @@ function SequenceTimelinePreview(props: {
         className="szl__sequence-timeline"
         type="button"
         onClick={(event) => seekFromPointer(event.clientX, event.currentTarget)}
-        aria-label="Sequence timeline"
+        aria-label="Scene timeline"
       >
         {audioBlob === undefined ? (
           // No narration decoded yet — a flat dim baseline (no fabricated
@@ -1241,15 +1243,15 @@ export function SizzleApp(): ReactElement {
               endSec: captureVideo.defaultRange.end
             }
           : null;
-      const scene: SizzleScene = {
-        id: `sc_${Date.now().toString(36)}`,
-        captureId,
-        scriptLine,
-        durationOverrideSec: null,
-        mediaTrim,
-        audioSource: "auto",
-        transition: "crossfade"
-      };
+      // A new scene is a sequence scene from the start — one voiceover
+      // over N clips (this capture is clip 1; "+ Clip" adds more). The
+      // legacy one-capture "simple" scene is no longer created by the UI.
+      const scene: SizzleScene = newSizzleSequenceScene([captureId], {
+        narration: scriptLine
+      });
+      if (mediaTrim !== null && scene.beats !== undefined && scene.beats[0] !== undefined) {
+        scene.beats = [{ ...scene.beats[0], mediaTrim }, ...scene.beats.slice(1)];
+      }
       await onUpdate(active.id, { scenes: [...active.scenes, scene] });
       setPicker(null);
     },
@@ -1428,7 +1430,7 @@ export function SizzleApp(): ReactElement {
           existing={
             new Set(
               picker.kind === "scene"
-                ? active.scenes.map((s) => s.captureId)
+                ? [...sizzleProjectCaptureIds(active.scenes)]
                 : active.scenes
                     .find((s) => s.id === picker.sceneId)
                     ?.beats?.map((beat) => beat.captureId) ?? []
@@ -2089,6 +2091,26 @@ function Editor(props: EditorProps): ReactElement {
     );
   };
 
+  // The render path rejects an empty script only when the scene's audio
+  // actually resolves to VOICEOVER, so mirror that condition rather than
+  // "any empty scriptLine". A sequence scene is always voiceover, but a
+  // legacy simple scene over a video with `auto` audio resolves to
+  // `native` and renders fine with the clip's own sound — disabling
+  // Render for those would strand every reel built before the one-scene
+  // default. An unknown capture is not blocked: the render path reports
+  // that case with a better message than a disabled button can.
+  const unscriptedSceneIdx = project.scenes.findIndex((scene) => {
+    if (scene.scriptLine.trim().length !== 0) return false;
+    if (scene.kind === "sequence") return true;
+    const capture = captureMap.get(scene.captureId) ?? null;
+    if (capture === null) return false;
+    return (
+      resolveSizzleAudioSource(scene.audioSource, capture.kind, scene.scriptLine) ===
+      "voiceover"
+    );
+  });
+  const unscriptedSceneNumber =
+    unscriptedSceneIdx === -1 ? null : unscriptedSceneIdx + 1;
   const totalScenes = project.scenes.length;
   const rendering =
     status.phase !== "idle" &&
@@ -2287,7 +2309,7 @@ function Editor(props: EditorProps): ReactElement {
                     <>
                       <textarea
                         className="szl__scene-script"
-                        placeholder="Narration for this sequence"
+                        placeholder="What does the narrator say over this scene?"
                         value={scene.narration ?? scene.scriptLine}
                         onChange={(e) =>
                           editScene(scene.id, {
@@ -2298,7 +2320,7 @@ function Editor(props: EditorProps): ReactElement {
                       />
                       <div className="szl__scene-row">
                         <span className="szl__scene-app">
-                          Sequence · one narration block
+                          Scene · one voiceover · {scene.beats?.length ?? 0} clip{(scene.beats?.length ?? 0) === 1 ? "" : "s"}
                         </span>
                         <span className="szl__spacer" />
                         <button
@@ -2306,7 +2328,7 @@ function Editor(props: EditorProps): ReactElement {
                           onClick={() => onPickSequenceBeat(scene.id)}
                           type="button"
                         >
-                          + Beat
+                          + Clip
                         </button>
                       </div>
                       <div className="szl__sequence-beats">
@@ -2346,7 +2368,7 @@ function Editor(props: EditorProps): ReactElement {
                                   e.dataTransfer.setData("text/plain", String(beatIdx));
                                   e.dataTransfer.effectAllowed = "move";
                                 }}
-                                title="Drag to reorder (or use the ↑/↓ buttons)"
+                                title="Drag to reorder clips (or use the ↑/↓ buttons)"
                                 aria-hidden="true"
                               >
                                 ⠿
@@ -2417,7 +2439,7 @@ function Editor(props: EditorProps): ReactElement {
                                           }
                                         });
                                       }}
-                                      title={isFirstBeat ? "The first beat always starts at 0" : "Beat start seconds"}
+                                      title={isFirstBeat ? "The first clip always starts at 0" : "Clip start seconds"}
                                     />
                                   </label>
                                   <label className="szl__sequence-time-field">
@@ -2443,7 +2465,7 @@ function Editor(props: EditorProps): ReactElement {
                                           }
                                         });
                                       }}
-                                      title={isFinalBeat ? "Optional final beat end seconds" : "Non-final beats end automatically at the next beat anchor"}
+                                      title={isFinalBeat ? "Optional final clip end seconds" : "Non-final clips end automatically at the next clip\u2019s anchor"}
                                     />
                                   </label>
                                 </>
@@ -2525,7 +2547,7 @@ function Editor(props: EditorProps): ReactElement {
                                 onClick={() => reorderSequenceBeat(scene.id, beatIdx, beatIdx - 1)}
                                 disabled={beatIdx === 0}
                                 type="button"
-                                title="Move beat up"
+                                title="Move clip up"
                               >
                                 ↑
                               </button>
@@ -2534,7 +2556,7 @@ function Editor(props: EditorProps): ReactElement {
                                 onClick={() => reorderSequenceBeat(scene.id, beatIdx, beatIdx + 1)}
                                 disabled={beatIdx === (scene.beats?.length ?? 0) - 1}
                                 type="button"
-                                title="Move beat down"
+                                title="Move clip down"
                               >
                                 ↓
                               </button>
@@ -2543,7 +2565,7 @@ function Editor(props: EditorProps): ReactElement {
                                 onClick={() => removeSequenceBeat(scene.id, beat.id)}
                                 disabled={(scene.beats?.length ?? 0) <= 1}
                                 type="button"
-                                title="Remove beat"
+                                title="Remove clip"
                               >
                                 ✕
                               </button>
@@ -2552,7 +2574,7 @@ function Editor(props: EditorProps): ReactElement {
                         })}
                       </div>
                       <div className="szl__scene-hint">
-                        Sequence scene: one script across {scene.beats?.length ?? 0} asset beat{(scene.beats?.length ?? 0) === 1 ? "" : "s"}. Phrase anchors use timed transcript words from preview; the transcript can differ from the written script.
+                        One voiceover across {scene.beats?.length ?? 0} clip{(scene.beats?.length ?? 0) === 1 ? "" : "s"}. Clips cut at their anchors; auto clips share the time between anchored neighbours. Phrase anchors use timed transcript words from preview, which can differ from the written script.
                       </div>
                       <SequenceTimelinePreview
                         scene={scene}
@@ -2732,8 +2754,9 @@ function Editor(props: EditorProps): ReactElement {
                       className="szl__scene-action"
                       onClick={() => convertToSequence(scene.id)}
                       type="button"
+                      title="Turn this one-capture scene into a scene with clips: one voiceover, many visuals"
                     >
-                      Sequence
+                      Convert to clips
                     </button>
                     <button
                       className="szl__scene-mini szl__scene-mini--play"
@@ -2820,7 +2843,13 @@ function Editor(props: EditorProps): ReactElement {
           className="szl__btn-primary"
           onClick={onRender}
           type="button"
-          disabled={rendering || project.scenes.length === 0}
+          disabled={rendering || project.scenes.length === 0 || unscriptedSceneNumber !== null}
+          title={
+            unscriptedSceneNumber === null
+              ? undefined
+              : `Scene ${unscriptedSceneNumber} has no narration — a scene is one voiceover over its clips, so it needs a script before the reel can render.`
+          }
+          data-testid="sizzle-render"
         >
           {rendering ? `Rendering… ${Math.round(status.ratio * 100)}%` : "Render"}
         </button>

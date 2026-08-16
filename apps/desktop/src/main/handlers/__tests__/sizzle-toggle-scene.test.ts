@@ -388,17 +388,30 @@ describe("sizzle:toggleScene — add path", () => {
     expect(patch.scenes).toHaveLength(1);
     const appendedScene = patch.scenes![0]!;
     // Pin the defaults — these are the contract the "+ Add captures"
-    // flow relies on (crossfade default = visual win, audioSource auto
-    // = let render-time policy decide, mediaTrim null = seed from
-    // capture metadata at render time if it's a video).
+    // flow relies on. A new scene is a SEQUENCE scene (one voiceover
+    // over N clips) holding this capture as its only clip: crossfade
+    // into the scene (visual win), voiceover audio, empty narration;
+    // the clip is auto-timed, cut, smart-fit, mediaTrim null (seeded
+    // from capture metadata at plan time if it's a video).
+    expect(appendedScene.kind).toBe("sequence");
     expect(appendedScene.captureId).toBe("cap-new");
     expect(appendedScene.scriptLine).toBe("");
+    expect(appendedScene.narration).toBe("");
     expect(appendedScene.durationOverrideSec).toBeNull();
     expect(appendedScene.mediaTrim).toBeNull();
-    expect(appendedScene.audioSource).toBe("auto");
+    expect(appendedScene.audioSource).toBe("voiceover");
     expect(appendedScene.transition).toBe("crossfade");
-    // Scene id is auto-generated — assert prefix only.
+    expect(appendedScene.beats).toHaveLength(1);
+    expect(appendedScene.beats![0]).toMatchObject({
+      captureId: "cap-new",
+      timing: { kind: "auto" },
+      mediaTrim: null,
+      transition: "cut",
+      videoFit: "smart-fit"
+    });
+    // Ids are auto-generated — assert prefixes only.
     expect(appendedScene.id).toMatch(/^sc_/);
+    expect(appendedScene.beats![0]!.id).toMatch(/^bt_/);
   });
 
   test("appends to the END of the scenes array (not the head)", async () => {

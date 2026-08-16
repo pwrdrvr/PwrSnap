@@ -1,12 +1,13 @@
 import { BrowserWindow, app, shell } from "electron";
 import { join } from "node:path";
 import { mkdir, readFile } from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   EVENT_CHANNELS,
   err,
   ok,
   resolveSizzleAudioSource,
+  sizzleProjectHasCapture,
   type CaptureRecord,
   type EventPayloads,
   type PwrSnapError,
@@ -19,6 +20,7 @@ import {
 import { bus, type CommandContext, type CommandDispatchOptions } from "../command-bus";
 import { getMainLogger } from "../log";
 import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-store";
+import { appendCapturesToScenes, removeCaptureFromScenes } from "../sizzle/scene-edits";
 import { cleanupProjectChats, forkProjectChats } from "./sizzle-chat-handlers";
 import {
   pruneTtsCache,
@@ -495,11 +497,12 @@ export function registerSizzleHandlers(): void {
     if (project === null) {
       return err({ kind: "validation", code: "not_found", message: "Project not found" });
     }
-    const existingIdx = project.scenes.findIndex((s) => s.captureId === v.captureId);
     let nextScenes: SizzleScene[];
-    if (existingIdx >= 0) {
-      // Remove the existing scene
-      nextScenes = project.scenes.filter((_, i) => i !== existingIdx);
+    if (sizzleProjectHasCapture(project.scenes, v.captureId)) {
+      // Remove the capture wherever it appears: a simple scene goes
+      // away whole; a clip is pulled out of its sequence scene, and a
+      // scene left with no clips goes away too.
+      nextScenes = removeCaptureFromScenes(project.scenes, v.captureId);
     } else {
       if (ctx?.principal === "mcp") {
         const capture = await loadCapture(v.captureId, ctx);
@@ -511,20 +514,13 @@ export function registerSizzleHandlers(): void {
           });
         }
       }
-      // Append a new scene with empty script — the user fills it in
-      // from the sizzle editor. (The editor's "Add scene" flow does
-      // a separate Codex enrichment prefill; for the in-library +/✓
-      // toggle we keep it cheap and snappy.)
-      const newScene: SizzleScene = {
-        id: `sc_${randomUUID().slice(0, 10)}`,
-        captureId: v.captureId,
-        scriptLine: "",
-        durationOverrideSec: null,
-        mediaTrim: null,
-        audioSource: "auto",
-        transition: "crossfade"
-      };
-      nextScenes = [...project.scenes, newScene];
+      // Add the capture as a clip of the last scene when that scene is
+      // a sequence (the default reel shape: one voiceover, N clips), or
+      // as a fresh one-clip sequence scene otherwise. Narration stays
+      // empty — the user fills it in from the sizzle editor. (The
+      // editor's "Add scene" flow does a separate Codex enrichment
+      // prefill; for the in-library +/✓ toggle we keep it cheap.)
+      nextScenes = appendCapturesToScenes(project.scenes, [v.captureId]);
     }
     try {
       const updated = await store.update(project.id, { scenes: nextScenes });

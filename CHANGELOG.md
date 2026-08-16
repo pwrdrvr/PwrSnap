@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.1 - 2026-08-16
+
+- Library Toolbar - Fixed capture controls so they stay usable and stable while resizing a narrow Library window.
+- Library Grid - Fixed grid rows and scroll position after returning from Focus or Reel view, keeping captures laid out correctly.
+- Capture Reliability - Fixed app shutdown with pending capture edits so deferred rendering safely resumes on the next launch.
+- Windows - Added a signed PwrDrvr installer and updater metadata for trusted installs and updates.
+
 ## v1.0.0 - 2026-08-09
 
 PwrSnap 1.0 is the first stable release of PwrDrvr's desktop capture

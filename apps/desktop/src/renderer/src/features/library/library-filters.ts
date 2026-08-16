@@ -11,8 +11,10 @@
 //
 //   scope      — radio, always exactly one of all | today | trash.
 //                The LIBRARY section. Owns the "selected row" fill.
-//   types      — include-set over { images, videos, projects }.
-//                NEVER empty (see `toggleType` below).
+//   types      — selected-set over { images, videos, projects }, with an
+//                explicit include/exclude mode. A plain click starts an
+//                include selection ("only this"); ⌥-click is the explicit
+//                negative form. The selected set is never empty.
 //   sourceApps — { mode: include | exclude, appIds }. Empty appIds
 //                means "no app facet at all" — the mode is then
 //                meaningless and normalized to "include".
@@ -40,6 +42,11 @@ export type LibraryTypeSet = {
   readonly projects: boolean;
 };
 
+/** How to interpret `types`: normal selections include their true entries;
+ *  an explicit ⌥-click excludes their false entries. Keeping this separate
+ *  prevents a two-item OR selection from masquerading as "not the third". */
+export type LibraryTypeFacetMode = "include" | "exclude";
+
 export type SourceAppFacetMode = "include" | "exclude";
 
 /** Source-app facet. `appIds` empty ⇒ no facet; `mode` is then
@@ -52,6 +59,7 @@ export type SourceAppFacet = {
 export type LibraryFilterState = {
   readonly scope: LibraryScope;
   readonly types: LibraryTypeSet;
+  readonly typeMode: LibraryTypeFacetMode;
   readonly sourceApps: SourceAppFacet;
 };
 
@@ -66,6 +74,7 @@ export const NO_APP_FACET: SourceAppFacet = { mode: "include", appIds: [] };
 export const initialLibraryFilter: LibraryFilterState = {
   scope: "all",
   types: ALL_TYPES_ON,
+  typeMode: "include",
   sourceApps: NO_APP_FACET
 };
 
@@ -89,9 +98,9 @@ export type LibraryFilterAction =
   /** LIBRARY row click. Pure radio — no toggle-off (there is no
    *  "no scope" state; `all` IS the neutral scope). */
   | { readonly type: "SET_SCOPE"; readonly scope: LibraryScope }
-  /** TYPES row click. `none` toggles, `alt` excludes, `meta` is
-   *  treated as a plain toggle (multi-select is meaningless for a
-   *  3-element include-set that already renders as checkboxes). */
+  /** TYPES row click. Plain clicks form an OR selection: from neutral,
+   *  select only this type; thereafter add/remove. ⌥-click explicitly
+   *  excludes a type. `meta` follows the same add/remove behavior. */
   | { readonly type: "TYPE_ROW_CLICK"; readonly key: LibraryTypeKey; readonly modifier: FacetModifier }
   /** The hover `only` pill on a TYPES row. */
   | { readonly type: "TYPE_ONLY"; readonly key: LibraryTypeKey }
@@ -147,7 +156,10 @@ function sameTypes(a: LibraryTypeSet, b: LibraryTypeSet): boolean {
 
 export function sameLibraryFilter(a: LibraryFilterState, b: LibraryFilterState): boolean {
   return (
-    a.scope === b.scope && sameTypes(a.types, b.types) && sameFacet(a.sourceApps, b.sourceApps)
+    a.scope === b.scope &&
+    a.typeMode === b.typeMode &&
+    sameTypes(a.types, b.types) &&
+    sameFacet(a.sourceApps, b.sourceApps)
   );
 }
 
@@ -178,31 +190,34 @@ function onlyType(key: LibraryTypeKey): LibraryTypeSet {
 /**
  * TYPES row click.
  *
- * Plain click toggles. The one guard: turning off the LAST remaining
- * type would leave an empty include-set and a silently blank grid, so
- * instead we re-enable the others — i.e. the click reads as "not this
- * one" rather than "nothing". That is exactly the `alt` (exclude)
- * result, which keeps the two gestures consistent instead of
- * introducing a second empty-state UI.
+ * A plain click starts an include selection. Thus, neutral + Images means
+ * "Images", not "everything except Images". Further plain (or ⌘) clicks
+ * add/remove values from that OR set. Removing the sole selected type clears
+ * the type facet back to neutral instead of creating an empty result set.
  *
  * ⌥-click excludes; ⌥-clicking an already-excluded row restores all
  * three (the gesture is its own undo).
  */
 function applyTypeRowClick(
   types: LibraryTypeSet,
+  typeMode: LibraryTypeFacetMode,
   key: LibraryTypeKey,
   modifier: FacetModifier
-): LibraryTypeSet {
+): Pick<LibraryFilterState, "types" | "typeMode"> {
   if (modifier === "alt") {
     const excluded = excludeOnlyType(key);
-    return sameTypes(types, excluded) ? ALL_TYPES_ON : excluded;
+    return sameTypes(types, excluded) && typeMode === "exclude"
+      ? { types: ALL_TYPES_ON, typeMode: "include" }
+      : { types: excluded, typeMode: "exclude" };
   }
-  if (types[key]) {
-    // Turning this one off. Guard the empty set.
-    if (typesOnCount(types) === 1) return excludeOnlyType(key);
-    return { ...types, [key]: false };
+  // A plain click after an explicit negative selection starts a normal
+  // positive selection. It should never silently preserve "not X".
+  if (typeMode === "exclude" || sameTypes(types, ALL_TYPES_ON)) {
+    return { types: onlyType(key), typeMode: "include" };
   }
-  return { ...types, [key]: true };
+  if (!types[key]) return { types: { ...types, [key]: true }, typeMode: "include" };
+  if (typesOnCount(types) === 1) return { types: ALL_TYPES_ON, typeMode: "include" };
+  return { types: { ...types, [key]: false }, typeMode: "include" };
 }
 
 /**
@@ -251,20 +266,27 @@ export function libraryFilterReducer(
       return { ...state, scope: action.scope };
 
     case "TYPE_ROW_CLICK": {
-      const types = applyTypeRowClick(state.types, action.key, action.modifier);
-      if (sameTypes(state.types, types)) return state;
-      return { ...state, types };
+      const next = applyTypeRowClick(state.types, state.typeMode, action.key, action.modifier);
+      if (sameTypes(state.types, next.types) && state.typeMode === next.typeMode) return state;
+      return { ...state, ...next };
     }
 
     case "TYPE_ONLY": {
       const types = onlyType(action.key);
-      if (sameTypes(state.types, types)) return state;
-      return { ...state, types };
+      if (sameTypes(state.types, types) && state.typeMode === "include") return state;
+      return { ...state, types, typeMode: "include" };
     }
 
     case "TYPE_ENSURE_ON": {
       if (state.types[action.key]) return state;
-      return { ...state, types: { ...state.types, [action.key]: true } };
+      const types = { ...state.types, [action.key]: true };
+      return {
+        ...state,
+        types,
+        typeMode: state.typeMode === "exclude" && sameTypes(types, ALL_TYPES_ON)
+          ? "include"
+          : state.typeMode
+      };
     }
 
     case "APP_ROW_CLICK": {
@@ -293,8 +315,8 @@ export function libraryFilterReducer(
       return { ...state, scope: "all" };
 
     case "CLEAR_TYPES":
-      if (sameTypes(state.types, ALL_TYPES_ON)) return state;
-      return { ...state, types: ALL_TYPES_ON };
+      if (sameTypes(state.types, ALL_TYPES_ON) && state.typeMode === "include") return state;
+      return { ...state, types: ALL_TYPES_ON, typeMode: "include" };
 
     case "CLEAR_APPS":
       if (sameFacet(state.sourceApps, NO_APP_FACET)) return state;
@@ -326,7 +348,7 @@ export function libraryFilterKey(state: LibraryFilterState): string {
     state.sourceApps.appIds.length === 0
       ? "-"
       : `${state.sourceApps.mode}:${state.sourceApps.appIds.join("|")}`;
-  return `${state.scope}/${types}/${apps}`;
+  return `${state.scope}/${state.typeMode}:${types}/${apps}`;
 }
 
 /** Does a capture from `appId` survive the source-app facet? Projects
@@ -393,26 +415,17 @@ export function describeFilterChips(
     });
   }
   if (state.scope !== "trash") {
-    const offKeys = TYPE_KEYS.filter((key) => !state.types[key]);
-    if (offKeys.length === 1) {
-      // Exactly one off reads better as the negative: "not Videos"
-      // instead of two chips for the two survivors.
-      const key = offKeys[0] as LibraryTypeKey;
-      chips.push({
-        id: `type:not:${key}`,
-        kind: "type",
-        label: TYPE_LABELS[key],
-        negated: true,
-        clear: { type: "CLEAR_TYPES" }
-      });
-    } else if (offKeys.length > 1) {
-      for (const key of TYPE_KEYS) {
-        if (!state.types[key]) continue;
+    const keys =
+      state.typeMode === "exclude"
+        ? TYPE_KEYS.filter((key) => !state.types[key])
+        : TYPE_KEYS.filter((key) => state.types[key]);
+    if (!sameTypes(state.types, ALL_TYPES_ON)) {
+      for (const key of keys) {
         chips.push({
-          id: `type:${key}`,
+          id: `type:${state.typeMode === "exclude" ? "not:" : ""}${key}`,
           kind: "type",
           label: TYPE_LABELS[key],
-          negated: false,
+          negated: state.typeMode === "exclude",
           clear: { type: "CLEAR_TYPES" }
         });
       }

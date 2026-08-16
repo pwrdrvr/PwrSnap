@@ -9,8 +9,9 @@
 //   2. TOGGLE-OFF — clicking the one selected app returns to All. The
 //      old `selectFilter` re-set the same filter, so the click did
 //      nothing.
-//   3. NO EMPTY TYPE SET — turning off the last type re-enables the
-//      others rather than leaving a silently blank grid.
+//   3. TYPE SELECTION — a first plain click means "only this", and
+//      removing the last selection clears the facet rather than leaving
+//      a silently blank grid.
 
 import { describe, expect, test } from "vitest";
 import {
@@ -48,6 +49,7 @@ describe("initial state", () => {
     expect(initialLibraryFilter).toEqual({
       scope: "all",
       types: { images: true, videos: true, projects: true },
+      typeMode: "include",
       sourceApps: { mode: "include", appIds: [] }
     });
     expect(isDefaultLibraryFilter(initialLibraryFilter)).toBe(true);
@@ -62,7 +64,7 @@ describe("scope (LIBRARY section — radio)", () => {
       { type: "SET_SCOPE", scope: "today" }
     );
     expect(next.scope).toBe("today");
-    expect(next.types.images).toBe(false);
+    expect(next.types).toEqual({ images: true, videos: false, projects: false });
   });
 
   test("re-selecting the active scope is identity-stable (no re-render)", () => {
@@ -84,25 +86,26 @@ describe("scope (LIBRARY section — radio)", () => {
 });
 
 describe("types (facet, include-set)", () => {
-  test("plain click toggles one type off", () => {
+  test("first plain click selects only that type", () => {
     const next = libraryFilterReducer(initialLibraryFilter, {
       type: "TYPE_ROW_CLICK",
       key: "videos",
       modifier: "none"
     });
-    expect(next.types).toEqual({ images: true, videos: false, projects: true });
+    expect(next.types).toEqual({ images: false, videos: true, projects: false });
+    expect(next.typeMode).toBe("include");
   });
 
-  test("plain click toggles a hidden type back on", () => {
+  test("plain click adds a different type to the OR selection", () => {
     const next = run(
       initialLibraryFilter,
       { type: "TYPE_ROW_CLICK", key: "videos", modifier: "none" },
-      { type: "TYPE_ROW_CLICK", key: "videos", modifier: "none" }
+      { type: "TYPE_ROW_CLICK", key: "images", modifier: "none" }
     );
-    expect(next.types).toEqual(ALL_TYPES_ON);
+    expect(next.types).toEqual({ images: true, videos: true, projects: false });
   });
 
-  test("turning off the LAST remaining type re-enables the others instead of emptying the grid", () => {
+  test("removing the LAST selected type clears the facet instead of emptying the grid", () => {
     const onlyImages = libraryFilterReducer(initialLibraryFilter, {
       type: "TYPE_ONLY",
       key: "images"
@@ -114,8 +117,8 @@ describe("types (facet, include-set)", () => {
       key: "images",
       modifier: "none"
     });
-    // Never { false, false, false }.
-    expect(next.types).toEqual({ images: false, videos: true, projects: true });
+    expect(next.types).toEqual(ALL_TYPES_ON);
+    expect(next.typeMode).toBe("include");
   });
 
   test("no gesture sequence can switch every type off", () => {
@@ -141,6 +144,7 @@ describe("types (facet, include-set)", () => {
       modifier: "alt"
     });
     expect(next.types).toEqual({ images: true, videos: false, projects: true });
+    expect(next.typeMode).toBe("exclude");
   });
 
   test("⌥-click on an already-excluded type restores all three", () => {
@@ -150,6 +154,7 @@ describe("types (facet, include-set)", () => {
       { type: "TYPE_ROW_CLICK", key: "videos", modifier: "alt" }
     );
     expect(next.types).toEqual(ALL_TYPES_ON);
+    expect(next.typeMode).toBe("include");
   });
 
   test("TYPE_ONLY collapses to a single type", () => {
@@ -334,6 +339,7 @@ describe("composition — the whole point of the split", () => {
     expect(state).toEqual({
       scope: "today",
       types: { images: false, videos: true, projects: false },
+      typeMode: "include",
       sourceApps: { mode: "include", appIds: [ACTIVITY] }
     });
   });
@@ -349,6 +355,7 @@ describe("composition — the whole point of the split", () => {
     expect(state.sourceApps).toEqual({ mode: "exclude", appIds: [ELECTRON] });
     expect(state.types.videos).toBe(false);
     expect(state.types.images).toBe(true);
+    expect(state.typeMode).toBe("exclude");
   });
 
   test("changing the app facet does not disturb scope or types", () => {
@@ -416,6 +423,21 @@ describe("libraryFilterKey", () => {
       appId: SAFARI,
       modifier: "alt"
     });
+    expect(libraryFilterKey(include)).not.toBe(libraryFilterKey(exclude));
+  });
+
+  test("include and exclude interpretations of the same type bits are different keys", () => {
+    const include = run(
+      initialLibraryFilter,
+      { type: "TYPE_ROW_CLICK", key: "images", modifier: "none" },
+      { type: "TYPE_ROW_CLICK", key: "videos", modifier: "none" }
+    );
+    const exclude = libraryFilterReducer(initialLibraryFilter, {
+      type: "TYPE_ROW_CLICK",
+      key: "projects",
+      modifier: "alt"
+    });
+    expect(include.types).toEqual(exclude.types);
     expect(libraryFilterKey(include)).not.toBe(libraryFilterKey(exclude));
   });
 

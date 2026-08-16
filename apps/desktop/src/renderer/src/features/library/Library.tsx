@@ -1121,10 +1121,10 @@ export function Library() {
   // membership lives in <CartCellCheckbox>, which self-subscribes to
   // the full-cart context so only the checkboxes re-render on a toggle.
   const cartIsEmpty = useCartIsEmpty();
-  // Library "Types" include-set — now a facet inside `activeFilter`
-  // (all three on by default, and never all-off: see
-  // library-filters.ts `applyTypeRowClick`). Read-only alias so the
-  // many `visibleTypes.x` call sites below stay untouched.
+  // Library "Types" facet — now an explicit include/exclude mode inside
+  // `activeFilter` (all three on by default, and never all-off: see
+  // library-filters.ts `applyTypeRowClick`). Read-only alias so the many
+  // `visibleTypes.x` call sites below stay untouched.
   const visibleTypes = activeFilter.types;
   const allTypesOn = visibleTypes.images && visibleTypes.videos && visibleTypes.projects;
   // Programmatic "make this capture's type visible again" — used by the
@@ -3320,11 +3320,7 @@ export function Library() {
               spine route through `setLeftPinned` so all three entry
               points stay in sync. */}
         </div>
-        {/* LIBRARY = SCOPE. Radio semantics, exactly one active, and
-            these are the ONLY sidebar rows that carry the filled
-            `.is-active` row treatment. The facet sections below
-            (Types, Source App) deliberately use leading state glyphs
-            instead so the two paradigms never look alike. */}
+        {/* LIBRARY = SCOPE. Radio semantics, exactly one active. */}
         <button
           className={"psl__nav" + (activeFilter.scope === "all" ? " is-active" : "")}
           aria-current={activeFilter.scope === "all" ? "true" : undefined}
@@ -3407,26 +3403,29 @@ export function Library() {
           ] as const
         ).map(({ key, label, icon }) => {
           const on = visibleTypes[key];
+          const typeFacetActive = !allTypesOn;
+          const selected =
+            typeFacetActive && activeFilter.typeMode === "include" && on;
+          const excluded =
+            typeFacetActive && activeFilter.typeMode === "exclude" && !on;
           // Already "only this" — hide the only pill, it'd be a no-op.
           const isSoleType =
-            on && TYPE_KEYS.every((other) => other === key || !visibleTypes[other]);
+            selected && TYPE_KEYS.every((other) => other === key || !visibleTypes[other]);
           return (
             <button
               key={key}
               type="button"
-              // aria-pressed mirrors the include-set membership so screen
-              // readers announce the row as a toggle (rather than a
-              // static link) and report its current on/off state.
-              aria-pressed={on}
-              aria-label={`${label} type filter (${on ? "showing" : "hidden"})`}
-              // Quiet by default: with every type on, the type facet is
-              // not narrowing anything, so the rows stay plain. Once the
-              // user turns one off, the surviving rows take the same
-              // selected fill the LIBRARY scope rows use and the hidden
-              // one takes the excluded treatment.
+              // A plain click creates a selection rather than toggling a
+              // visibility bit. Default is deliberately all-unpressed;
+              // selected values alone highlight, so an Images selection
+              // does not paint Videos and Projects as negative choices.
+              aria-pressed={selected}
+              aria-label={`${label} type filter (${
+                excluded ? "excluded" : selected ? "selected" : "not selected"
+              })`}
               className={
                 "psl__nav psl__facet-row" +
-                (allTypesOn ? "" : on ? " is-active" : " is-excluded")
+                (selected ? " is-active" : excluded ? " is-excluded" : "")
               }
               onClick={(e) => {
                 applyFilterAction({
@@ -3436,9 +3435,15 @@ export function Library() {
                 });
               }}
               title={
-                on
-                  ? `Hide ${label.toLowerCase()} · ⌥-click to show everything except ${label.toLowerCase()}`
-                  : `Show ${label.toLowerCase()}`
+                excluded
+                  ? `${label} is excluded · ⌥-click to clear the exclusion`
+                  : selected
+                    ? isSoleType
+                      ? `Click to clear the ${label.toLowerCase()} filter`
+                      : `Remove ${label.toLowerCase()} from the filter`
+                    : typeFacetActive
+                      ? `Add ${label.toLowerCase()} to the filter`
+                      : `Show only ${label.toLowerCase()}`
               }
             >
               <span className="psl__nav-icon">{icon}</span>
@@ -3448,7 +3453,7 @@ export function Library() {
                   an explicit role rather than a nested <button> (invalid
                   inside a button), matching the `.psl__frame-trash`
                   pattern already used on grid cells. */}
-              {isSoleType ? null : (
+              {typeFacetActive && activeFilter.typeMode === "include" && !isSoleType ? (
                 <span
                   role="button"
                   tabIndex={-1}
@@ -3462,7 +3467,7 @@ export function Library() {
                 >
                   only
                 </span>
-              )}
+              ) : null}
             </button>
           );
         })}

@@ -82,7 +82,8 @@ describe("AppUpdateBanner", () => {
         version: "1.0.0-beta.23",
         currentVersion: "1.0.0-beta.22",
         attemptedAt: "2026-06-29T12:00:00.000Z",
-        channel: "prerelease"
+        channel: "prerelease",
+        train: "stable"
       } satisfies AppUpdateStatus);
     });
 

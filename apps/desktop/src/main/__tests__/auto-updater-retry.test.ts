@@ -21,7 +21,8 @@ const mocks = vi.hoisted(() => {
         handlers.set(event, eventHandlers);
         return mocks.autoUpdater;
       }),
-      quitAndInstall: vi.fn()
+      quitAndInstall: vi.fn(),
+      setFeedURL: vi.fn()
     },
     emit: (event: string, ...args: unknown[]) => {
       for (const handler of handlers.get(event) ?? []) handler(...args);
@@ -57,6 +58,7 @@ function writeInstallAttempt(userData: string): void {
       expectedVersion: "1.0.0-beta.23",
       fromVersion: "1.0.0-beta.22",
       channel: "prerelease",
+      train: "stable",
       attemptedAt: "2026-06-29T12:00:00.000Z"
     }),
     "utf8"
@@ -65,13 +67,16 @@ function writeInstallAttempt(userData: string): void {
 
 describe("auto-updater failed install retry", () => {
   const originalNodeEnv = process.env.NODE_ENV;
+  const originalFetch = globalThis.fetch;
   const roots: string[] = [];
 
   afterEach(async () => {
     process.env.NODE_ENV = originalNodeEnv;
+    globalThis.fetch = originalFetch;
     mocks.handlers.clear();
     mocks.autoUpdater.checkForUpdates.mockReset();
     mocks.autoUpdater.quitAndInstall.mockReset();
+    mocks.autoUpdater.setFeedURL.mockReset();
     mocks.autoUpdater.on.mockClear();
     await vi.resetModules();
     while (roots.length > 0) {
@@ -90,8 +95,24 @@ describe("auto-updater failed install retry", () => {
     mocks.autoUpdater.checkForUpdates.mockResolvedValue({
       updateInfo: { version: "1.0.0-beta.23" }
     });
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [
+        {
+          tag_name: "v1.0.0-beta.23",
+          prerelease: true,
+          draft: false,
+          assets: [
+            { name: "latest-mac.yml", state: "uploaded" },
+            { name: "PwrSnap-1.0.0-beta.23-universal-mac.zip", state: "uploaded" }
+          ]
+        }
+      ]
+    }) as unknown as typeof fetch;
 
-    const { initAppUpdater, installDownloadedAppUpdate } = await import("../auto-updater");
+    const { initAppUpdater, installDownloadedAppUpdate, setUpdateSelectionResolver } =
+      await import("../auto-updater");
+    setUpdateSelectionResolver(() => ({ channel: "prerelease", train: "stable" }));
     initAppUpdater();
 
     const installResult = installDownloadedAppUpdate();

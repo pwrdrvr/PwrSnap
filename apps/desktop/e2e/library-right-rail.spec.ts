@@ -253,6 +253,11 @@ test("library-right-rail: a trim refresh keeps an off-page video in Focus", asyn
 
     const videoCell = win.locator(`.psl__cell[data-cell-id="${captureId}"]`);
     await videoCell.waitFor({ state: "visible", timeout: 15_000 });
+    // Edit is a hover-revealed tile affordance: at rest its reserved slot is
+    // intentionally pointer-transparent so clicking the thumbnail selects
+    // the capture instead. Reproduce the real interaction before targeting
+    // the CTA directly.
+    await videoCell.hover();
     await videoCell.locator(".psl__cell-edit").click();
     await win.locator('.psl[data-mode="focus"]').waitFor({ state: "visible", timeout: 15_000 });
 

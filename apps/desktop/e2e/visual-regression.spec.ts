@@ -162,23 +162,22 @@ async function waitForFonts(page: Page): Promise<void> {
  * run in an unpinned environment happily writes a golden that then
  * fails on every runner. That is exactly how the library-grid golden
  * broke main. Assert the pin instead of trusting it.
+ *
+ * Called from `launchVisualPwrSnap` rather than from each screenshot so
+ * a new visual test cannot forget it — the scale cannot change during a
+ * test, so checking once at launch is equivalent and un-skippable.
+ *
+ * NOTE on tolerance: this suite compares at Playwright's default (no
+ * `maxDiffPixels`), because every macOS runner in the fleet reproduces
+ * the goldens exactly once pinned — #395 passed on M2-Max, M5-Max and
+ * pwrlab-m4 with zero tolerance. PwrAgnt's harness does carry a small
+ * floor (20) because its lab guest and CI rasterize 8 pixels apart. If
+ * PwrSnap ever generates goldens somewhere with a real floor, measure it
+ * and add the tolerance then — do not copy the number across.
  */
 async function expectPinnedDeviceScale(page: Page): Promise<void> {
   expect(await page.evaluate(() => window.devicePixelRatio)).toBe(1);
 }
-
-/**
- * Antialiasing floor between machines that are otherwise pinned.
- *
- * Real changes in this suite are orders of magnitude larger — the grid
- * tile chrome refresh moved 2626 pixels and the sidebar facet restyle
- * 2818, while a same-code comparison between this repo's reference
- * runners is 0. 20 is a margin over residual per-machine noise, not a
- * license to bless drift: treat a diff between 20 and a few hundred as
- * a finding to investigate, and if the floor ever climbs past 20 the
- * runners have diverged and THAT is the bug.
- */
-const VISUAL_MAX_DIFF_PIXELS = 20;
 
 async function launchVisualPwrSnap(): Promise<LaunchedApp> {
   const app = await launchPwrSnap({
@@ -206,6 +205,7 @@ async function launchVisualPwrSnap(): Promise<LaunchedApp> {
   // before seeded records are converted into Library fixtures. Playwright's
   // setFixedTime intentionally leaves rendering timers running.
   await app.window.clock.setFixedTime(VISUAL_CLOCK_TIME);
+  await expectPinnedDeviceScale(app.window);
   return app;
 }
 
@@ -234,12 +234,10 @@ test.describe("visual regression", () => {
         `v${VISUAL_APP_VERSION}`
       );
 
-      await expectPinnedDeviceScale(app.window);
       await expect(library).toHaveScreenshot("library-grid.webp", {
         animations: "disabled",
         caret: "hide",
-        scale: "css",
-        maxDiffPixels: VISUAL_MAX_DIFF_PIXELS
+        scale: "css"
       });
     } finally {
       await app.close();
@@ -258,12 +256,10 @@ test.describe("visual regression", () => {
       await expect(app.window.locator('[data-testid="editor-image"]')).toBeVisible();
       await waitForFonts(app.window);
 
-      await expectPinnedDeviceScale(app.window);
       await expect(focus).toHaveScreenshot("editor-focus.webp", {
         animations: "disabled",
         caret: "hide",
-        scale: "css",
-        maxDiffPixels: VISUAL_MAX_DIFF_PIXELS
+        scale: "css"
       });
     } finally {
       await app.close();

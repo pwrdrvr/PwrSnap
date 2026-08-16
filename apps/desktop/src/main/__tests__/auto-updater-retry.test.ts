@@ -104,7 +104,9 @@ describe("auto-updater failed install retry", () => {
           draft: false,
           assets: [
             { name: "latest-mac.yml", state: "uploaded" },
-            { name: "PwrSnap-1.0.0-beta.23-universal-mac.zip", state: "uploaded" }
+            { name: "PwrSnap-1.0.0-beta.23-universal-mac.zip", state: "uploaded" },
+            { name: "latest.yml", state: "uploaded" },
+            { name: "PwrSnap Setup 1.0.0-beta.23.exe", state: "uploaded" }
           ]
         }
       ]

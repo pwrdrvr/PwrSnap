@@ -92,6 +92,13 @@ function recordingError(code: string, message: string, cause?: unknown): PwrSnap
 /** Filename of the extracted full-clip audio under the video asset dir.
  *  Must stay in the `parseVideoAssetUrl` whitelist. */
 const VIDEO_AUDIO_ASSET = "audio.m4a";
+/** Matches the timeline's smallest supported trim span. */
+const MIN_VIDEO_RANGE_SEC = 0.1;
+
+// The Library and float-over can ask for the same waveform asset at once.
+// Coalesce extraction + the final atomic copy so they never race on the
+// per-process temporary filename.
+const videoAudioInFlight = new Map<string, Promise<void>>();
 
 async function fileHasBytes(path: string): Promise<boolean> {
   try {
@@ -99,6 +106,38 @@ async function fileHasBytes(path: string): Promise<boolean> {
     return s.isFile() && s.size > 0;
   } catch {
     return false;
+  }
+}
+
+async function ensureVideoAudioAsset(input: {
+  captureId: string;
+  videoPath: string;
+  durationSec: number;
+}): Promise<void> {
+  const existing = videoAudioInFlight.get(input.captureId);
+  if (existing !== undefined) return existing;
+
+  const work = (async () => {
+    const target = join(videoAssetDir(input.captureId), VIDEO_AUDIO_ASSET);
+    if (await fileHasBytes(target)) return;
+
+    const extracted = await extractVideoAudio({
+      videoPath: input.videoPath,
+      startSec: 0,
+      durationSec: input.durationSec
+    });
+    await mkdir(videoAssetDir(input.captureId), { recursive: true });
+    const tmp = `${target}.${process.pid}.tmp`;
+    await copyFile(extracted, tmp);
+    await rename(tmp, target);
+  })();
+  videoAudioInFlight.set(input.captureId, work);
+  try {
+    await work;
+  } finally {
+    if (videoAudioInFlight.get(input.captureId) === work) {
+      videoAudioInFlight.delete(input.captureId);
+    }
   }
 }
 
@@ -315,7 +354,20 @@ export function registerRecordingHandlers(): void {
     if (meta === null) {
       return err(validationError("not_a_video", `video:setDefaultRange: ${req.captureId} is not a video capture`));
     }
-    setDefaultRange(req.captureId, normalizeRange(req.range, meta.durationSec));
+    if (req.range.end <= req.range.start) {
+      return err(validationError("invalid_range", "video:setDefaultRange: range end must be greater than start"));
+    }
+    const range = normalizeRange(req.range, meta.durationSec);
+    const minimumRange = Math.min(MIN_VIDEO_RANGE_SEC, Math.max(meta.durationSec, 0));
+    if (range.end <= range.start || range.end - range.start < minimumRange) {
+      return err(
+        validationError(
+          "invalid_range",
+          `video:setDefaultRange: range must span at least ${String(minimumRange)} seconds`
+        )
+      );
+    }
+    setDefaultRange(req.captureId, range);
     // The Library revalidates the record on this broadcast, so the
     // DetailRail's export eyebrow / metrics and any other window
     // (float-over) pick up the new `defaultRange` without polling.
@@ -391,18 +443,11 @@ export function registerRecordingHandlers(): void {
       return err(validationError("no_video_path", `video:audio: ${req.captureId} has no source path`));
     }
     try {
-      const target = join(videoAssetDir(record.id), VIDEO_AUDIO_ASSET);
-      if (!(await fileHasBytes(target))) {
-        const extracted = await extractVideoAudio({
-          videoPath: record.legacy_src_path,
-          startSec: 0,
-          durationSec: record.video.durationSec
-        });
-        await mkdir(videoAssetDir(record.id), { recursive: true });
-        const tmp = `${target}.${process.pid}.tmp`;
-        await copyFile(extracted, tmp);
-        await rename(tmp, target);
-      }
+      await ensureVideoAudioAsset({
+        captureId: record.id,
+        videoPath: record.legacy_src_path,
+        durationSec: record.video.durationSec
+      });
       return ok({
         hasAudio: true as const,
         url: videoAssetUrl(record.id, VIDEO_AUDIO_ASSET),

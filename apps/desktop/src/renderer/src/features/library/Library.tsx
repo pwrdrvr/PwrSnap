@@ -460,7 +460,26 @@ function PreviewVideoThumb({
   onError?: () => void;
 }): React.ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
   const [hovering, setHovering] = useState(false);
+
+  // The preview is deliberately non-interactive so its native video surface
+  // cannot cover the tile controls. Follow the enclosing tile instead: that
+  // preserves hover playback when the pointer is anywhere over the capture,
+  // including its overlaid Edit / Trash actions.
+  useEffect(() => {
+    const cell = previewRef.current?.closest(".psl__cell");
+    if (cell === null || cell === undefined) return;
+    const onEnter = (): void => setHovering(true);
+    const onLeave = (): void => setHovering(false);
+    cell.addEventListener("mouseenter", onEnter);
+    cell.addEventListener("mouseleave", onLeave);
+    return () => {
+      cell.removeEventListener("mouseenter", onEnter);
+      cell.removeEventListener("mouseleave", onLeave);
+    };
+  }, []);
+
   useEffect(() => {
     const el = videoRef.current;
     if (el === null) return;
@@ -474,13 +493,13 @@ function PreviewVideoThumb({
   }, [hovering]);
   return (
     <div
-      onMouseEnter={() => setHovering(true)}
-      onMouseLeave={() => setHovering(false)}
+      ref={previewRef}
       style={{
         position: "relative",
         width: "100%",
         height: "100%",
-        background: "var(--bg)"
+        background: "var(--bg)",
+        pointerEvents: "none"
       }}
     >
       <video
@@ -494,10 +513,7 @@ function PreviewVideoThumb({
           width: "100%",
           height: "100%",
           objectFit: "contain",
-          display: "block",
-          // The preview is decorative. Let the cell and its overlaid actions
-          // own hit testing so a native video surface cannot cover Edit/Trash.
-          pointerEvents: "none"
+          display: "block"
         }}
       />
       {showPlayButton ? (

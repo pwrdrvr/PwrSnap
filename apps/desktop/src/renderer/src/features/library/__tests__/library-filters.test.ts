@@ -18,6 +18,7 @@ import {
   ALL_TYPES_ON,
   appRowState,
   describeFilterChips,
+  filterFixturesByScopeAndSourceAppFacet,
   initialLibraryFilter,
   isDefaultLibraryFilter,
   libraryFilterKey,
@@ -325,6 +326,25 @@ describe("sourceAppMatches", () => {
     // Project fixtures carry the synthetic `_sizzle_` app key, so an
     // exclude facet leaves them alone.
     expect(sourceAppMatches(facet, "_sizzle_")).toBe(true);
+  });
+});
+
+describe("scope + source-app fixture composition", () => {
+  const fixtures = [
+    { id: "today-electron", day: "Today", app: ELECTRON },
+    { id: "today-safari", day: "Today", app: SAFARI },
+    { id: "yesterday-electron", day: "Yesterday", app: ELECTRON }
+  ] as const;
+
+  test("applies Today and source-app facets to any fixture source, including search", () => {
+    const state = run(
+      initialLibraryFilter,
+      { type: "SET_SCOPE", scope: "today" },
+      { type: "APP_ROW_CLICK", appId: ELECTRON, modifier: "alt" }
+    );
+    expect(filterFixturesByScopeAndSourceAppFacet(fixtures, state).map((fixture) => fixture.id)).toEqual([
+      "today-safari"
+    ]);
   });
 });
 

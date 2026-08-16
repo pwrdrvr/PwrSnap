@@ -58,11 +58,11 @@ import { initialLibraryView, libraryReducer, type LibraryAction, type LibraryVie
 import {
   appRowState,
   describeFilterChips,
+  filterFixturesByScopeAndSourceAppFacet,
   initialLibraryFilter,
   libraryFilterKey,
   libraryFilterReducer,
   sameLibraryFilter,
-  sourceAppMatches,
   summarizeLibraryFilter,
   TYPE_KEYS,
   type FacetModifier,
@@ -1433,6 +1433,9 @@ export function Library() {
 
   const isTodayView = activeFilter.scope === "today";
   const isTrashView = activeFilter.scope === "trash";
+  // Search swaps the record source below, but its other sidebar facets
+  // still compose over those results.
+  const isSearchActive = searchQuery.trim().length > 0;
   const sourceAppFacet = activeFilter.sourceApps;
   const appFacetActive = sourceAppFacet.appIds.length > 0;
   // Stable identity for the app facet — the facet's `appIds` are
@@ -1451,7 +1454,7 @@ export function Library() {
   // it yet. Search + Trash both own their own row source, so neither
   // triggers the include fetch.
   const includeFetchActive =
-    !isTrashView && sourceAppFacet.mode === "include" && appFacetActive;
+    !isTrashView && !isSearchActive && sourceAppFacet.mode === "include" && appFacetActive;
   const sourceAppBundleIds = useMemo<Array<string | null>>(() => {
     if (!includeFetchActive) return [];
     const wanted = new Set(sourceAppFacet.appIds);
@@ -1611,18 +1614,14 @@ export function Library() {
     };
   }, [searchQuery]);
 
-  // True whenever the user has a non-empty trimmed query — drives the
-  // grid swap, the "Search results" hdr, and the cap-hint affordance.
-  const isSearchActive = searchQuery.trim().length > 0;
-
   // Universe of records the current view operates on. Trash is a
   // top-level swap (not a per-app filter) so the per-app filter only
-  // applies when viewing live captures. Search takes precedence over
-  // everything — when the user is searching, the source-app sidebar +
-  // Today/Trash filters are bypassed and the grid renders the search
-  // result set directly. Bus-side `library:search` excludes soft-
-  // deleted rows (see captures-repo:503), so search ∩ trash is empty
-  // by construction; the input is disabled in trash to make that clear.
+  // applies when viewing live captures. Search swaps the record source
+  // but still composes with Today, Types, and Source App below, so the
+  // chip row never describes a filter the grid ignored. Bus-side
+  // `library:search` excludes soft-deleted rows (see captures-repo:503),
+  // so search ∩ trash is empty by construction; the input is disabled in
+  // trash to make that clear.
   const sourceAppState = includeFetchActive ? sourceAppRows[sourceAppFacetKey] : undefined;
   const universeRecordsRaw = isTrashView
     ? trashRecords
@@ -1704,7 +1703,6 @@ export function Library() {
     [universeRecords, gridProjects, todayDateStr]
   );
   const fixtureCaptures = useMemo(() => fixtureBacking.fixtures(), [fixtureBacking]);
-  const searchResultCount = searchState.rows.length + (isSearchActive ? gridProjects.length : 0);
   const projectCoverIds = useMemo(
     () =>
       Array.from(
@@ -1755,11 +1753,9 @@ export function Library() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectCoverIdsKey]);
 
-  // Compose the facets. Search still bypasses everything else — the
-  // user gets exactly the result set from the bus, in rank/date order.
-  // Outside search, scope and the source-app facet AND together, so
-  // "Today ∧ Activity Monitor ∧ ¬Electron" is expressible (it wasn't
-  // when scope and source app shared one union).
+  // Compose scope and source-app facets over every row source, including
+  // FTS search. Thus "Today ∧ Activity Monitor ∧ ¬Electron" is
+  // expressible and its chips always describe the visible grid.
   //
   // The app predicate runs here for BOTH modes. For include mode it's
   // redundant with the server fetch above (belt and braces while the
@@ -1777,20 +1773,9 @@ export function Library() {
   // `trashRecords` set, so letting a facet narrow the rows here would
   // show "1 item" while Empty Trash destroyed all of them.
   const visible = useMemo(() => {
-    if (isSearchActive) return fixtureCaptures;
-    let out = fixtureCaptures;
-    if (isTodayView) out = out.filter((c) => c.day === "Today");
-    if (!isTrashView && appFacetActive)
-      out = out.filter((c) => sourceAppMatches(sourceAppFacet, c.app));
-    return out;
-  }, [
-    fixtureCaptures,
-    isSearchActive,
-    isTodayView,
-    isTrashView,
-    appFacetActive,
-    sourceAppFacet
-  ]);
+    return filterFixturesByScopeAndSourceAppFacet(fixtureCaptures, activeFilter);
+  }, [fixtureCaptures, activeFilter]);
+  const searchResultCount = isSearchActive ? visible.length : 0;
   const grouped = useMemo(() => groupByDay(visible), [visible]);
 
   // Per-app counts come from the denormalized `app_stats` table via
@@ -2036,9 +2021,10 @@ export function Library() {
     active: captureTypeFacetActive || excludeFacetActive,
     hasMore: gridHasMore,
     isLoadingMore: gridIsLoadingMore,
-    // Captures only — project fixtures pass an exclude facet untouched,
-    // and their presence must not mask "zero captures matched".
-    visibleCount: visibleRecords.length,
+    // Count every rendered fixture. A matching Project provides the grid
+    // tail that can request the next normal page, so it must stop this
+    // empty-grid-only drain just like a matching capture does.
+    visibleCount: visible.length,
     candidateCount: drainCandidateCount,
     loadedCount: records.length,
     loadMore

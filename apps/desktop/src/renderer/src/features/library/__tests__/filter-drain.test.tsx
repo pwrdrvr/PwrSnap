@@ -102,6 +102,12 @@ describe("useFilterDrain", () => {
     expect(loadMore).toHaveBeenCalledTimes(1);
   });
 
+  test("a rendered project row stops the capture-only drain", () => {
+    const loadMore = vi.fn(async () => undefined);
+    render({ ...base, visibleCount: 1, loadMore });
+    expect(loadMore).not.toHaveBeenCalled();
+  });
+
   test("does not drain when an unrelated scope already emptied the page", () => {
     const loadMore = vi.fn(async () => undefined);
     render({ ...base, candidateCount: 0, loadMore });

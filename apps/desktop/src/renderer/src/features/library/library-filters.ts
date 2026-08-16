@@ -360,6 +360,20 @@ export function sourceAppMatches(facet: SourceAppFacet, appId: string): boolean 
   return facet.mode === "include" ? inSet : !inSet;
 }
 
+/** The shared scope + source-app stage for the grid's fixture rows.
+ * Types are applied earlier to CaptureRecords, before project fixtures are
+ * mixed in. Keeping this stage independent of a row source means the same
+ * sidebar state composes with both timeline pages and FTS search results. */
+export function filterFixturesByScopeAndSourceAppFacet<
+  T extends { readonly day: string; readonly app: string }
+>(items: readonly T[], state: LibraryFilterState): T[] {
+  let out = state.scope === "today" ? items.filter((item) => item.day === "Today") : [...items];
+  if (state.scope !== "trash" && state.sourceApps.appIds.length > 0) {
+    out = out.filter((item) => sourceAppMatches(state.sourceApps, item.app));
+  }
+  return out;
+}
+
 /** Is this app row part of the current selection (checked or excluded)? */
 export function appRowState(
   facet: SourceAppFacet,

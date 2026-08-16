@@ -136,11 +136,15 @@ function releasePending<T>(
 export type GridCopyPaletteProps = {
   readonly record: CaptureRecord;
   readonly copyPulses?: Readonly<Record<CopyPreset, number>>;
+  /** Scroll the selected capture back into view. When omitted the
+   *  locator is not offered. */
+  readonly onLocate?: (captureId: string) => void;
 };
 
 export function GridCopyPalette({
   record,
-  copyPulses
+  copyPulses,
+  onLocate
 }: GridCopyPaletteProps): ReactElement {
   // Two independent positions, selected by `anchor`. Keeping them apart
   // means flipping follow → pinned restores the user's last dragged
@@ -227,16 +231,25 @@ export function GridCopyPalette({
     savedPosition = pinnedPosition;
   }, [pinnedPosition]);
 
+  // True when the selected tile is not on screen — virtualized out of
+  // the DOM, or scrolled past while still mounted in the overscan band.
+  // Drives the locator: the palette stays usable (you can still copy the
+  // selection) but offers a way back to the tile it belongs to.
+  const [selectionOffscreen, setSelectionOffscreen] = useState(false);
+
   const isFollow = anchor === "follow";
   const position = isFollow ? followPosition : pinnedPosition;
   const isPositioned = position !== null;
 
-  // ---- follow mode: re-anchor to the selected tile -------------------
+  // ---- track the selected tile --------------------------------------
   // Runs on selection change (record.id), mode flip, grid scroll (capture
   // phase catches the scroll container inside `.psl__main`), and any
   // stage/palette resize. Cheap: one querySelector + three gBCRs.
+  //
+  // Runs in BOTH modes: follow mode re-anchors, and both modes need the
+  // on-screen check that drives the locator — a dragged palette is if
+  // anything more likely to be sitting far from its tile.
   useLayoutEffect(() => {
-    if (!isFollow) return;
     const palette = paletteRef.current;
     if (palette === null) return;
     const stageEl = getStageEl(palette);
@@ -247,12 +260,21 @@ export function GridCopyPalette({
         // Tile scrolled out of the DOM (virtualized) or not rendered yet
         // — fall back to the CSS default (bottom-center) rather than
         // freezing at a stale spot that no longer means anything.
-        setFollowPosition(null);
+        setSelectionOffscreen(true);
+        if (isFollow) setFollowPosition(null);
         return;
       }
+      const stageRect = stageEl.getBoundingClientRect();
+      const tileRect = tile.getBoundingClientRect();
+      // Mounted but scrolled past: the virtualizer keeps an overscan band
+      // in the DOM, so presence is not visibility.
+      setSelectionOffscreen(
+        tileRect.bottom <= stageRect.top || tileRect.top >= stageRect.bottom
+      );
+      if (!isFollow) return;
       const next = resolveFollowAnchor({
-        stage: stageEl.getBoundingClientRect(),
-        tile: tile.getBoundingClientRect(),
+        stage: stageRect,
+        tile: tileRect,
         palette: palette.getBoundingClientRect()
       });
       if (next === null) return;
@@ -442,6 +464,31 @@ export function GridCopyPalette({
             <circle cx="7.5" cy="11.5" r="1.1" />
           </svg>
         </button>
+        {onLocate !== undefined && selectionOffscreen ? (
+          <button
+            type="button"
+            className="psl__grid-copy-palette-locate"
+            aria-label="Scroll the selected capture back into view"
+            title="Selected capture is off screen — click to scroll to it"
+            data-testid="psl-grid-copy-palette-locate"
+            onClick={() => onLocate(record.id)}
+          >
+            {/* Crosshair: "you are here". */}
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="5.5" />
+              <path d="M12 1.8v3.4M12 18.8v3.4M1.8 12h3.4M18.8 12h3.4" />
+            </svg>
+          </button>
+        ) : null}
         <button
           type="button"
           className={

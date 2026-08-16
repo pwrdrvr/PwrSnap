@@ -154,7 +154,7 @@ function installRects(): void {
  */
 async function renderPalette(
   record: CaptureRecord = imageRecord,
-  options: { withTile?: boolean } = {}
+  options: { withTile?: boolean; onLocate?: (id: string) => void } = {}
 ): Promise<HTMLDivElement> {
   container = document.createElement("div");
   container.className = "psl__main";
@@ -169,7 +169,12 @@ async function renderPalette(
   container.appendChild(mount);
   root = createRoot(mount);
   await act(async () => {
-    root?.render(createElement(GridCopyPalette, { record }));
+    root?.render(
+      createElement(GridCopyPalette, {
+        record,
+        ...(options.onLocate === undefined ? {} : { onLocate: options.onLocate })
+      })
+    );
     await Promise.resolve();
     await Promise.resolve();
   });
@@ -502,6 +507,49 @@ describe("GridCopyPalette", () => {
       await Promise.resolve();
     });
     expect(palette?.getAttribute("data-anchor")).toBe("pinned");
+  });
+
+  test("offers no locator while the selected tile is on screen", async () => {
+    const el = await renderPalette(imageRecord, { withTile: true, onLocate: () => undefined });
+    expect(
+      el.querySelector('[data-testid="psl-grid-copy-palette-locate"]')
+    ).toBeNull();
+  });
+
+  test("offers the locator once the tile scrolls past, and calls back with the id", async () => {
+    const onLocate = vi.fn();
+    const el = await renderPalette(imageRecord, { withTile: true, onLocate });
+    expect(el.querySelector('[data-testid="psl-grid-copy-palette-locate"]')).toBeNull();
+
+    // Scroll the tile above the stage's top edge. Still mounted (the
+    // virtualizer keeps an overscan band) but no longer visible.
+    tileBox = box(100, -400, 180, 120);
+    await act(async () => {
+      el.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await Promise.resolve();
+    });
+    const locate = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-grid-copy-palette-locate"]'
+    );
+    expect(locate).not.toBeNull();
+    await act(async () => {
+      locate?.click();
+    });
+    expect(onLocate).toHaveBeenCalledWith(imageRecord.id);
+  });
+
+  test("offers the locator when the tile is virtualized out of the DOM", async () => {
+    const el = await renderPalette(imageRecord, { withTile: false, onLocate: () => undefined });
+    expect(
+      el.querySelector('[data-testid="psl-grid-copy-palette-locate"]')
+    ).not.toBeNull();
+  });
+
+  test("stays silent when no locator callback is supplied", async () => {
+    const el = await renderPalette(imageRecord, { withTile: false });
+    expect(
+      el.querySelector('[data-testid="psl-grid-copy-palette-locate"]')
+    ).toBeNull();
   });
 
   test("hydrates the persisted pinned anchor from settings", async () => {

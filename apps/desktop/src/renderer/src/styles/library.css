@@ -3898,6 +3898,31 @@
     0 0 0 1px color-mix(in srgb, var(--shadow-base) 45%, transparent),
     inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 5%, transparent);
 }
+/* Locator — only rendered while the selected capture is off screen.
+   Accent-tinted because it is a call to action, not ambient chrome: it
+   is the answer to "where is the thing these buttons act on?". */
+.psl__grid-copy-palette-locate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  cursor: pointer;
+}
+.psl__grid-copy-palette-locate:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent-bright);
+}
+.psl__grid-copy-palette-locate:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
+}
+
 /* Left rail: drag grip stacked over the 📌 follow/stay-put toggle.
    Offset down so the grip lines up with the copy cards rather than the
    eyebrow row above them. */

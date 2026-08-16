@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.1 - 2026-08-16
+## v1.0.1-prerelease.1 - 2026-08-16
 
 - Library Toolbar - Fixed capture controls so they stay usable and stable while resizing a narrow Library window.
 - Library Grid - Fixed grid rows and scroll position after returning from Focus or Reel view, keeping captures laid out correctly.

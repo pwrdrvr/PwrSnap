@@ -17,16 +17,6 @@
 // Placement math lives in ./grid-copy-palette-anchor.ts so the flip
 // order is testable without a DOM.
 //
-// ---- Preview drawer -----------------------------------------------
-//
-// A chevron on the eyebrow row expands a contain-fit preview of the
-// selected capture (`library.gridCopyPalette.previewOpen`, collapsed by
-// default). With small tiles at 5+ columns the selection ring is the
-// only cue for what the L/M/H cards are about to copy; the drawer makes
-// it explicit without opening the inspector. The palette body scrolls
-// under a 60vh cap so the tall video variant (6 export cards + drawer)
-// can't outgrow the stage.
-//
 // `pinned` keeps whatever spot the user dragged the palette to. Drag
 // flips the mode implicitly; the 📌 button on the rail flips it back
 // (and re-anchors immediately). Only the MODE persists — the dragged
@@ -38,7 +28,6 @@
 import {
   useCallback,
   useEffect,
-  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -68,14 +57,7 @@ import {
 } from "../shared/CopyButton";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
-import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
-import {
-  cacheUrl,
-  captureSrcUrl,
-  dispatch,
-  startCaptureDrag,
-  subscribe
-} from "../../lib/pwrsnap";
+import { dispatch, startCaptureDrag, subscribe } from "../../lib/pwrsnap";
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { resolveFollowAnchor } from "./grid-copy-palette-anchor";
 
@@ -87,11 +69,6 @@ const COPY_LABELS: Record<(typeof COPY_PRESETS)[number], string> = {
 };
 
 const DRAG_MARGIN_PX = 8;
-
-/** Width requested from the thumbnail cache for the drawer preview.
- *  ~2x the drawer's rendered width so it stays crisp on a Retina
- *  display without pulling the full-res render. */
-const PREVIEW_CACHE_WIDTH_PX = 800;
 
 let savedPosition: { x: number; y: number } | null = null;
 
@@ -110,11 +87,6 @@ function anchorFromSettings(settings: Settings | undefined): GridCopyPaletteAnch
   return settings?.library?.gridCopyPalette?.anchor === "pinned"
     ? "pinned"
     : "follow";
-}
-
-/** Same tolerance for the preview drawer's open/closed state. */
-function previewOpenFromSettings(settings: Settings | undefined): boolean {
-  return settings?.library?.gridCopyPalette?.previewOpen === true;
 }
 
 /** A local settings write we've applied optimistically but haven't seen
@@ -182,10 +154,8 @@ export function GridCopyPalette({
     y: number;
   } | null>(null);
   const [anchor, setAnchor] = useState<GridCopyPaletteAnchor>("follow");
-  const [previewOpen, setPreviewOpen] = useState(false);
   const [exportStrategy, setExportStrategy] = useState<ExportStrategy>("legacy");
   const paletteRef = useRef<HTMLDivElement | null>(null);
-  const previewDrawerId = useId();
   // Bumped on every local settings write so a slower in-flight
   // `settings:read` can't resolve over the user's fresh choice. The
   // same ticket scopes the per-field broadcast gates below.
@@ -218,21 +188,16 @@ export function GridCopyPalette({
       const settings = result.value as Settings | undefined;
       setExportStrategy(exportStrategyFromSettings(settings));
       setAnchor(anchorFromSettings(settings));
-      setPreviewOpen(previewOpenFromSettings(settings));
     });
     const off = subscribe(EVENT_CHANNELS.settingsChanged, (payload) => {
       const evt = payload as SettingsChangedEvent;
       setExportStrategy(exportStrategyFromSettings(evt.settings));
-      // Gated per field — a broadcast from an unrelated write that was
-      // queued ahead of ours carries a pre-write snapshot. See
-      // `acceptBroadcast`. Fields we haven't written locally (and every
-      // broadcast once our echo lands) apply unconditionally.
+      // Gated — a broadcast from an unrelated write that was queued
+      // ahead of ours carries a pre-write snapshot. See
+      // `acceptBroadcast`. Broadcasts once our echo lands, and any we
+      // never wrote locally, apply unconditionally.
       const nextAnchor = anchorFromSettings(evt.settings);
       if (acceptBroadcast(pendingAnchor, nextAnchor)) setAnchor(nextAnchor);
-      const nextPreviewOpen = previewOpenFromSettings(evt.settings);
-      if (acceptBroadcast(pendingPreviewOpen, nextPreviewOpen)) {
-        setPreviewOpen(nextPreviewOpen);
-      }
     });
     return () => {
       cancelled = true;
@@ -257,22 +222,6 @@ export function GridCopyPalette({
       () => releasePending(pendingAnchor, seq)
     );
   }, []);
-
-  const togglePreview = useCallback((): void => {
-    const next = !previewOpen;
-    writeSeq.current += 1;
-    const seq = writeSeq.current;
-    pendingPreviewOpen.current = { seq, value: next };
-    setPreviewOpen(next);
-    void dispatch("settings:write", {
-      library: { gridCopyPalette: { previewOpen: next } }
-    }).then(
-      (result) => {
-        if (!result.ok) releasePending(pendingPreviewOpen, seq);
-      },
-      () => releasePending(pendingPreviewOpen, seq)
-    );
-  }, [previewOpen]);
 
   useEffect(() => {
     savedPosition = pinnedPosition;
@@ -534,59 +483,7 @@ export function GridCopyPalette({
               {hasExactRenderMetrics ? "actual files" : "rendering files"}
             </span>
           )}
-          <button
-            type="button"
-            className={
-              "psl__grid-copy-palette-drawer-toggle" +
-              (previewOpen ? " is-open" : "")
-            }
-            aria-label={previewOpen ? "Hide preview" : "Show preview"}
-            aria-expanded={previewOpen}
-            aria-controls={previewDrawerId}
-            title={previewOpen ? "Hide preview" : "Show preview"}
-            data-testid="psl-grid-copy-palette-preview-toggle"
-            onClick={togglePreview}
-          >
-            <svg
-              width="10"
-              height="10"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="m6 9 6 6 6-6" />
-            </svg>
-          </button>
         </div>
-        {previewOpen ? (
-          <div
-            className="psl__grid-copy-palette-preview"
-            id={previewDrawerId}
-            data-testid="psl-grid-copy-palette-preview"
-          >
-            {isVideo ? (
-              // Muted by construction (HoverAutoplayVideo sets `muted`
-              // so Chromium's autoplay policy lets hover start it).
-              <HoverAutoplayVideo src={captureSrcUrl(record.id)} />
-            ) : (
-              <img
-                className="psl__grid-copy-palette-preview-img"
-                src={cacheUrl(
-                  record.id,
-                  PREVIEW_CACHE_WIDTH_PX,
-                  "webp",
-                  record.edits_version
-                )}
-                alt=""
-                decoding="async"
-              />
-            )}
-          </div>
-        ) : null}
         {isVideo ? (
           <div data-testid="psl-grid-copy-palette-video">
             <VideoExportPresetsPanel captureId={record.id} />

@@ -1462,24 +1462,6 @@
 /* Grid below reel — day-grouped traditional */
 .psl__grid-wrap {
   flex: 1; overflow-y: auto;
-  /* Reserve the scrollbar's gutter so `clientWidth` never changes when the
-     scrollbar appears or disappears.
-   
-     `useCellsPerRow` derives the column count from this element's
-     clientWidth, and the virtualizer derives total height from the column
-     count. On a platform whose scrollbars CONSUME layout width (Windows;
-     macOS and the xvfb theme use overlay scrollbars, which is why this only
-     ever bit Windows) that closes a feedback loop: scrollbar toggles ->
-     clientWidth shifts ~15px -> column count can change -> row count and
-     total height change -> scrollbar toggles again. Symptom on the Windows
-     E2E runner was a grid row that never held still, so Playwright's
-     "visible and stable" gate could not find two consecutive quiet frames
-     even over 30s. For a user it is a grid that reflows its columns when
-     the content crosses the scrollable boundary.
-   
-     `stable` is a no-op where scrollbars are already overlay, so macOS
-     layout — and the visual goldens — are unaffected. */
-  scrollbar-gutter: stable;
   /* Zero padding so the sticky day-hdr below can extend its solid
      background across the FULL width of the scroll pane. The
      prior `0 18px 18px` left 18px transparent strips on the left

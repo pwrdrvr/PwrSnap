@@ -354,6 +354,13 @@ export type CaptureFilter = {
   limit?: number | undefined;
   appBundleId?: string | undefined;
   appBundleIds?: Array<string | null> | undefined;
+  /** Negative source-app facet — drop rows whose `source_app_bundle_id`
+   *  is in this list. `null` in the list means "drop rows with NO
+   *  source app". Composes conjunctively with the positive
+   *  `appBundleId(s)` filter (include ∧ ¬exclude), though the Library
+   *  sidebar only ever sends one side at a time. An empty array is a
+   *  no-op, NOT "exclude everything". */
+  excludeAppBundleIds?: ReadonlyArray<string | null> | undefined;
   includeDeleted?: boolean | undefined;
 };
 
@@ -3174,6 +3181,10 @@ export type Commands = {
       limit?: number | undefined;
       appBundleId?: string | undefined;
       appBundleIds?: Array<string | null> | undefined;
+      /** Negative source-app facet — see `CaptureFilter`. A request
+       *  carrying only this field is still a "filtered" request, so it
+       *  does NOT get the head-page `appStats` / `totalLive` payload. */
+      excludeAppBundleIds?: ReadonlyArray<string | null> | undefined;
       includeDeleted?: boolean | undefined;
     };
     res: {

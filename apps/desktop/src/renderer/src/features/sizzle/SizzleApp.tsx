@@ -2091,13 +2091,24 @@ function Editor(props: EditorProps): ReactElement {
     );
   };
 
-  // The render path hard-rejects a scene whose narration is empty (a
-  // scene IS one voiceover over its clips), so surface that as a
-  // precondition on the button instead of letting the user discover it
-  // as a failed render after the fact.
-  const unscriptedSceneIdx = project.scenes.findIndex(
-    (scene) => scene.scriptLine.trim().length === 0
-  );
+  // The render path rejects an empty script only when the scene's audio
+  // actually resolves to VOICEOVER, so mirror that condition rather than
+  // "any empty scriptLine". A sequence scene is always voiceover, but a
+  // legacy simple scene over a video with `auto` audio resolves to
+  // `native` and renders fine with the clip's own sound — disabling
+  // Render for those would strand every reel built before the one-scene
+  // default. An unknown capture is not blocked: the render path reports
+  // that case with a better message than a disabled button can.
+  const unscriptedSceneIdx = project.scenes.findIndex((scene) => {
+    if (scene.scriptLine.trim().length !== 0) return false;
+    if (scene.kind === "sequence") return true;
+    const capture = captureMap.get(scene.captureId) ?? null;
+    if (capture === null) return false;
+    return (
+      resolveSizzleAudioSource(scene.audioSource, capture.kind, scene.scriptLine) ===
+      "voiceover"
+    );
+  });
   const unscriptedSceneNumber =
     unscriptedSceneIdx === -1 ? null : unscriptedSceneIdx + 1;
   const totalScenes = project.scenes.length;

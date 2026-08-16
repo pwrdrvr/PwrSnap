@@ -1090,6 +1090,52 @@ describe("SizzleApp project rail", () => {
   });
 });
 
+describe("render precondition", () => {
+  test("a legacy simple video scene with no script stays renderable", async () => {
+    // Native audio: the render path only rejects an empty script when the
+    // scene resolves to VOICEOVER, and `auto` over a video with no script
+    // resolves to `native`. Disabling Render here would strand every reel
+    // built before the one-scene default.
+    const { el } = await renderApp(
+      project({ scenes: [scene({ captureId: "cap_a", scriptLine: "", audioSource: "auto" })] }),
+      { "library:list": { ok: true, value: { rows: [videoCapture("cap_a")] } } }
+    );
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
+    expect(render).not.toBeNull();
+    expect(render?.disabled).toBe(false);
+  });
+
+  test("a sequence scene with no narration blocks Render", async () => {
+    const { el } = await renderApp(
+      project({
+        scenes: [
+          scene({
+            kind: "sequence",
+            captureId: "cap_a",
+            scriptLine: "",
+            narration: "",
+            audioSource: "voiceover",
+            beats: [
+              {
+                id: "bt_a",
+                captureId: "cap_a",
+                timing: { kind: "auto" },
+                mediaTrim: null,
+                transition: "cut",
+                videoFit: "smart-fit"
+              }
+            ]
+          })
+        ]
+      }),
+      { "library:list": { ok: true, value: { rows: [videoCapture("cap_a")] } } }
+    );
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
+    expect(render?.disabled).toBe(true);
+    expect(render?.title ?? "").toContain("no narration");
+  });
+});
+
 describe("sequence waveform", () => {
   test("renders the idle baseline until a preview decodes the narration", async () => {
     const sequence = scene({

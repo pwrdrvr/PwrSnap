@@ -46,7 +46,10 @@ afterEach(() => {
   rectSpy = null;
 });
 
-function render(props: Partial<VideoTimelineProps> & { range: VideoRange }): {
+function render(
+  props: Partial<VideoTimelineProps> & { range: VideoRange },
+  onParentClick?: () => void
+): {
   el: HTMLDivElement;
   rerender: (next: Partial<VideoTimelineProps> & { range: VideoRange }) => void;
 } {
@@ -61,10 +64,19 @@ function render(props: Partial<VideoTimelineProps> & { range: VideoRange }): {
     onRangeChange: () => undefined,
     ...p
   });
-  act(() => root!.render(createElement(VideoTimeline, base(props))));
+  act(() =>
+    root!.render(
+      createElement("div", { onClick: onParentClick }, createElement(VideoTimeline, base(props)))
+    )
+  );
   return {
     el: container,
-    rerender: (next) => act(() => root!.render(createElement(VideoTimeline, base(next))))
+    rerender: (next) =>
+      act(() =>
+        root!.render(
+          createElement("div", { onClick: onParentClick }, createElement(VideoTimeline, base(next)))
+        )
+      )
   };
 }
 
@@ -83,7 +95,7 @@ describe("VideoTimeline", () => {
       range: { start: 0, end: 16 },
       onRangeChange: (range, commit) => changes.push({ range, commit })
     });
-    const inHandle = el.querySelector('[data-testid="video-timeline-in"]')!;
+    const inHandle = el.querySelector('[data-testid="video-timeline-in"]') as HTMLButtonElement;
     const strip = el.querySelector(".vtl__strip")!;
     // 800 px ↔ 16 s → 50 px per second.
     pointer(inHandle, "pointerdown", 100);
@@ -94,6 +106,25 @@ describe("VideoTimeline", () => {
       { range: { start: 3.4, end: 16 }, commit: false },
       { range: { start: 3.4, end: 16 }, commit: true }
     ]);
+  });
+
+  test("consumes the click synthesized after a trim-handle drag", () => {
+    let parentClicks = 0;
+    const { el } = render(
+      { range: { start: 0, end: 16 } },
+      () => {
+        parentClicks += 1;
+      }
+    );
+    const inHandle = el.querySelector('[data-testid="video-timeline-in"]') as HTMLButtonElement;
+    const strip = el.querySelector(".vtl__strip")!;
+
+    pointer(inHandle, "pointerdown", 0);
+    pointer(strip, "pointermove", 170);
+    pointer(strip, "pointerup", 170);
+    act(() => inHandle.click());
+
+    expect(parentClicks).toBe(0);
   });
 
   test("the out-handle can't cross the in-handle (keeps the minimum gap)", () => {

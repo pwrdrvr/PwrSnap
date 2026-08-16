@@ -203,6 +203,72 @@ test("library-right-rail: video capture footer renders the 6-card preset grid", 
   }
 });
 
+test("library-right-rail: a trim refresh keeps an off-page video in Focus", async () => {
+  // A normal grid edit can open a record from page 2. `useLibrary` then
+  // reloads only page 1 for every captures-changed event. Persisting a trim
+  // emits that event, so Focus must retain its opened record while page 2 is
+  // temporarily absent from the paginated snapshot.
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedVideoCapture(app, {
+      capturedAt: new Date(Date.now() - 60_000).toISOString()
+    });
+    const win = app.window;
+
+    await app.electronApp.evaluate((_electron) => {
+      const bridge = (
+        globalThis as unknown as {
+          __PWRSNAP_TEST__: { seedCaptures: (inputs: Record<string, unknown>[]) => void };
+        }
+      ).__PWRSNAP_TEST__;
+      const now = Date.now();
+      bridge.seedCaptures(
+        Array.from({ length: 101 }, (_, index) => ({
+          id: `trim-page-one-${index.toString().padStart(3, "0")}`,
+          kind: "image",
+          captured_at: new Date(now + index * 1_000).toISOString(),
+          source_app_bundle_id: "com.test.spec",
+          source_app_name: "Trim pagination spec",
+          legacy_src_path: null,
+          width_px: 1,
+          height_px: 1,
+          device_pixel_ratio: 1,
+          byte_size: 1,
+          sha256: `trim-page-one-${index}`
+        }))
+      );
+    });
+    await broadcastCapturesChanged(app);
+
+    await win.locator('.psl[data-mode="grid"] .psl__cell[data-cell-id]').first().waitFor({
+      state: "visible",
+      timeout: 15_000
+    });
+    await win.evaluate(() => {
+      const grid = document.querySelector<HTMLElement>(".psl__grid-wrap");
+      if (grid === null) throw new Error("grid wrap missing");
+      grid.scrollTop = grid.scrollHeight;
+      grid.dispatchEvent(new Event("scroll"));
+    });
+
+    const videoCell = win.locator(`.psl__cell[data-cell-id="${captureId}"]`);
+    await videoCell.waitFor({ state: "visible", timeout: 15_000 });
+    await videoCell.locator(".psl__cell-edit").click();
+    await win.locator('.psl[data-mode="focus"]').waitFor({ state: "visible", timeout: 15_000 });
+
+    // A second window can broadcast as soon as Focus renders, before a
+    // passive effect gets a chance to mirror state into openedRecordsRef.
+    const persisted = await app.dispatch("video:setDefaultRange", {
+      captureId,
+      range: { start: 0.25, end: 1.5 }
+    });
+    expect(persisted.ok).toBe(true);
+    await expect(win.locator('.psl[data-mode="focus"]')).toBeVisible({ timeout: 5_000 });
+  } finally {
+    await app.close();
+  }
+});
+
 test("library-right-rail: video preset metrics populate exact dims on cache hit", async () => {
   // Verifies the lazy estimated-→-exact flow. `video:presetMetrics`
   // is dispatched on rail mount; cache-miss entries come back with
@@ -294,7 +360,19 @@ test("library-right-rail: video:export rejects unknown preset values", async () 
 
 // ---- Shared helpers --------------------------------------------------
 
-async function seedVideoCapture(app: LaunchedApp): Promise<string> {
+async function broadcastCapturesChanged(app: LaunchedApp): Promise<void> {
+  await app.electronApp.evaluate((electronModule) => {
+    const { BrowserWindow } = electronModule;
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send("events:captures:changed", { changedIds: [] });
+    }
+  });
+}
+
+async function seedVideoCapture(
+  app: LaunchedApp,
+  options: { capturedAt?: string } = {}
+): Promise<string> {
   // Mirrors `recording-flow.spec.ts`'s helper: drop a placeholder .mp4
   // under <homeRoot>/Documents/PwrSnap, then seed a `kind: "video"`
   // capture row + its video_captures metadata row through the E2E
@@ -309,7 +387,7 @@ async function seedVideoCapture(app: LaunchedApp): Promise<string> {
   await writeFile(mp4Path, Buffer.from("fake mp4 placeholder bytes"));
 
   await app.electronApp.evaluate(
-    (_electron, payload: { id: string; mp4Path: string }) => {
+    (_electron, payload: { id: string; mp4Path: string; capturedAt: string }) => {
       const bridge = (
         globalThis as unknown as {
           __PWRSNAP_TEST__: {
@@ -321,7 +399,7 @@ async function seedVideoCapture(app: LaunchedApp): Promise<string> {
       bridge.seedCapture({
         id: payload.id,
         kind: "video",
-        captured_at: new Date().toISOString(),
+        captured_at: payload.capturedAt,
         source_app_bundle_id: "com.test.spec",
         source_app_name: "Right Rail Video Spec",
         src_path: payload.mp4Path,
@@ -344,7 +422,7 @@ async function seedVideoCapture(app: LaunchedApp): Promise<string> {
         }
       });
     },
-    { id: captureId, mp4Path }
+    { id: captureId, mp4Path, capturedAt: options.capturedAt ?? new Date().toISOString() }
   );
   return captureId;
 }

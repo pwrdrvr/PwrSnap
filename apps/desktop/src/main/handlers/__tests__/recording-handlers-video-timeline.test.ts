@@ -12,6 +12,7 @@
 //
 // ffmpeg, better-sqlite3, and the recorder are all mocked.
 
+import { rm, writeFile } from "node:fs/promises";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, VideoRange } from "@pwrsnap/shared";
 
@@ -132,12 +133,13 @@ function videoCapture(overrides: Partial<NonNullable<CaptureRecord["video"]>> = 
   } as CaptureRecord;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   mocks.capture = videoCapture();
   mocks.setDefaultRange.mockClear();
   mocks.broadcast.mockClear();
   mocks.ensureVideoFrames.mockReset();
   mocks.extractVideoAudio.mockReset();
+  await rm("/tmp/pwrsnap-test-cache/video/vid_Timeline1", { recursive: true, force: true });
 });
 
 describe("video:setDefaultRange", () => {
@@ -181,6 +183,24 @@ describe("video:setDefaultRange", () => {
     expect(img.ok).toBe(false);
     if (img.ok) throw new Error("expected error");
     expect(img.error.code).toBe("not_a_video");
+    expect(mocks.setDefaultRange).not.toHaveBeenCalled();
+    expect(mocks.broadcast).not.toHaveBeenCalled();
+  });
+
+  test("rejects inverted and too-short ranges without persisting a zero-length default", async () => {
+    for (const range of [
+      { start: 10, end: 2 },
+      { start: 4, end: 4.05 }
+    ]) {
+      const result = await bus.dispatch(
+        "video:setDefaultRange",
+        { captureId: "vid_Timeline1", range },
+        { principal: "ipc" }
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected error");
+      expect(result.error.code).toBe("invalid_range");
+    }
     expect(mocks.setDefaultRange).not.toHaveBeenCalled();
     expect(mocks.broadcast).not.toHaveBeenCalled();
   });
@@ -266,6 +286,42 @@ describe("video:audio", () => {
       startSec: 0,
       durationSec: 16
     });
+  });
+
+  test("joins concurrent extraction requests for the same capture", async () => {
+    mocks.capture = videoCapture({ hasSystemAudio: true });
+    const extracted = `/tmp/video-audio-${Date.now().toString(36)}.m4a`;
+    let finishExtraction: ((path: string) => void) | undefined;
+    mocks.extractVideoAudio.mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          finishExtraction = resolve;
+        })
+    );
+
+    const first = bus.dispatch(
+      "video:audio",
+      { captureId: "vid_Timeline1" },
+      { principal: "ipc" }
+    );
+    await vi.waitFor(() => expect(mocks.extractVideoAudio).toHaveBeenCalledTimes(1));
+    const second = bus.dispatch(
+      "video:audio",
+      { captureId: "vid_Timeline1" },
+      { principal: "ipc" }
+    );
+    await Promise.resolve();
+    expect(mocks.extractVideoAudio).toHaveBeenCalledTimes(1);
+
+    await writeFile(extracted, "audio");
+    if (finishExtraction === undefined) throw new Error("extraction did not start");
+    finishExtraction(extracted);
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult.ok).toBe(true);
+    expect(secondResult.ok).toBe(true);
+    expect(mocks.extractVideoAudio).toHaveBeenCalledTimes(1);
+    await rm(extracted, { force: true });
+    await rm("/tmp/pwrsnap-test-cache/video/vid_Timeline1", { recursive: true, force: true });
   });
 });
 

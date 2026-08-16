@@ -206,6 +206,10 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
     <div
       className={`vtl${compact ? " vtl--compact" : ""}${dragging ? " is-dragging" : ""}`}
       data-testid={compact ? "video-timeline-compact" : "video-timeline"}
+      // A pointer drag on a handle produces a native click after pointerup.
+      // The timeline is direct manipulation, so that click must not reach a
+      // parent capture/card handler and navigate away from the active video.
+      onClick={(event) => event.stopPropagation()}
     >
       {!compact && (
         <div className="vtl__ticks" aria-hidden="true">

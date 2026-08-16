@@ -1665,6 +1665,10 @@
 .psl__cell-thumb {
   aspect-ratio: 16/10;
   position: relative;
+  /* The cell owns its thumbnail click. Keeping this structural wrapper out
+     of hit testing means it cannot cover its sibling Edit / Trash rail on
+     Windows, Linux, or macOS. Explicit interactive children opt back in. */
+  pointer-events: none;
   /* Shared corner-chrome values — see the ring-states block above. */
   --psl-chip-bg: color-mix(in srgb, var(--bg-app) 85%, transparent);
   --psl-chip-radius: 5px;
@@ -1982,6 +1986,10 @@
 .psl__cell-cart {
   position: absolute; top: 6px; left: 6px;
   z-index: 1;
+  /* `.psl__cell-thumb` is pointer-transparent so the surrounding tile and
+     bottom action rail stay clickable; the cart checkbox is the one
+     intentional interactive child in that wrapper. */
+  pointer-events: auto;
   display: flex; align-items: center; justify-content: center;
   width: 24px; height: 24px;
   border-radius: var(--psl-chip-radius);

@@ -1784,16 +1784,14 @@
    duration chip sideways every time a button appeared.
    pointer-events:none lets clicks on the chip / empty rail fall through
    to the cell for selection; the buttons re-enable their own on reveal.
-   Deliberately NO z-index here: with `z-index: auto` the rail does not
-   establish a stacking context, so its scrim and its contents stack
-   INDEPENDENTLY against the cell (which is a stacking context via
-   `contain: paint`). That's what lets the bottom-left app pill slot
-   BETWEEN them — scrim 1 < pill 2 < rail contents 3 — instead of the
-   whole rail landing on one side of the pill. */
+   It must be explicitly stacked above the thumbnail: native video previews
+   can otherwise win hit testing over the visual z-index on the individual
+   button, even though the button is visible. */
 .psl__cell-rail {
   position: absolute; bottom: 5px; right: 5px;
   display: flex; align-items: center; gap: 4px;
   pointer-events: none;
+  z-index: 3;
 }
 /* Rail contents (action buttons + duration chip) sit ABOVE the app pill:
    on a narrow tile with a long app name the pill's box reaches into the

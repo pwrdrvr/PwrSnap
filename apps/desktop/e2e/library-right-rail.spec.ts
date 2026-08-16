@@ -255,10 +255,9 @@ test("library-right-rail: a trim refresh keeps an off-page video in Focus", asyn
     await videoCell.waitFor({ state: "visible", timeout: 15_000 });
     await videoCell.locator(".psl__cell-edit").click();
     await win.locator('.psl[data-mode="focus"]').waitFor({ state: "visible", timeout: 15_000 });
-    // Match the timeline's debounced release save and let the focused-record
-    // retention state commit before the captures-changed broadcast arrives.
-    await win.waitForTimeout(250);
 
+    // A second window can broadcast as soon as Focus renders, before a
+    // passive effect gets a chance to mirror state into openedRecordsRef.
     const persisted = await app.dispatch("video:setDefaultRange", {
       captureId,
       range: { start: 0.25, end: 1.5 }

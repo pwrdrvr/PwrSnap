@@ -608,6 +608,20 @@ export function Library() {
   const [projectContextMenu, setProjectContextMenu] =
     useState<ProjectContextMenuState | null>(null);
   const openedRecordsRef = useRef(openedRecords);
+  // `captures:changed` listeners read this ref synchronously. Update it
+  // before Focus navigation too: an event can arrive before React commits
+  // the matching state update for an off-page record.
+  const retainOpenedRecord = useCallback((record: CaptureRecord): void => {
+    openedRecordsRef.current = [
+      record,
+      ...openedRecordsRef.current.filter((existing) => existing.id !== record.id)
+    ];
+    setOpenedRecords((prev) => {
+      const next = [record, ...prev.filter((existing) => existing.id !== record.id)];
+      openedRecordsRef.current = next;
+      return next;
+    });
+  }, []);
   useEffect(() => {
     openedRecordsRef.current = openedRecords;
   }, [openedRecords]);
@@ -2430,13 +2444,10 @@ export function Library() {
         if (!result.ok || result.value === null || result.value.deleted_at !== null) return;
         const record = result.value;
         ensureRecordTypeVisible(record);
-        setOpenedRecords((prev) => [
-          record,
-          ...prev.filter((existing) => existing.id !== record.id)
-        ]);
+        retainOpenedRecord(record);
       })();
     });
-  }, [currentHistoryLocation, ensureRecordTypeVisible]);
+  }, [currentHistoryLocation, ensureRecordTypeVisible, retainOpenedRecord]);
   useEffect(() => {
     if (pendingOpen === null) return;
     const record = liveRecords.find((r) => r.id === pendingOpen.captureId);
@@ -2682,10 +2693,7 @@ export function Library() {
             openedRecordsRef.current.find((candidate) => candidate.id === intent.recordId) ??
             null;
           if (record !== null) {
-            setOpenedRecords((prev) => [
-              record,
-              ...prev.filter((existing) => existing.id !== record.id)
-            ]);
+            retainOpenedRecord(record);
           }
           const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
           gridReturnScrollTopRef.current = savedScrollTop;
@@ -2795,10 +2803,7 @@ export function Library() {
         // captures-changed event (including a video trim save) cannot make
         // Focus lose an otherwise-live selection while its page reloads.
         if (record !== null) {
-          setOpenedRecords((prev) => [
-            record,
-            ...prev.filter((existing) => existing.id !== record.id)
-          ]);
+          retainOpenedRecord(record);
         }
         const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
         gridReturnScrollTopRef.current = savedScrollTop;

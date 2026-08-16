@@ -68,6 +68,14 @@ const IDLE_STATUS: RenderStatus = {
 const RECENT_PROJECT_LIMIT = 5;
 const PROJECT_LIST_LIMIT = 100;
 
+/** True when a keystroke belongs to a text field rather than the app. */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (target === null || !(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
 /** Agent-chat pane width. Dragged via ChatResizer; module-scoped so it
  *  survives remounts within a session and resets on launch. */
 const CHAT_WIDTH_DEFAULT = 400;
@@ -936,6 +944,15 @@ export function SizzleApp(): ReactElement {
   }, [railIsPopover, railOpen]);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
+      // Only while a reel is open. Otherwise the rail IS the left column
+      // and the chord just latches `railOpen`, leaving the dropdown
+      // already expanded the next time a reel loads.
+      if (!railIsPopover) return;
+      // Never steal the chord from a text field: this editor is mostly
+      // narration textareas, the reel title, and per-clip timing inputs.
+      // Popping a dropdown mid-sentence while preventDefault swallows the
+      // keystroke is what makes a shortcut feel broken.
+      if (isTypingTarget(event.target)) return;
       if (event.metaKey && event.shiftKey && !event.altKey && !event.ctrlKey && event.key.toLowerCase() === "l") {
         event.preventDefault();
         setRailOpen((v) => !v);
@@ -943,7 +960,7 @@ export function SizzleApp(): ReactElement {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [railIsPopover]);
   useEffect(() => {
     savedChatWidth = chatWidth;
   }, [chatWidth]);

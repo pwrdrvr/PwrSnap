@@ -1208,6 +1208,24 @@ describe("SizzleApp shell layout", () => {
     expect(shell.classList.contains("is-rail-open")).toBe(false);
   });
 
+  test("⌘⇧L is ignored while typing in the editor", async () => {
+    const { el } = await renderApp(project());
+    const shell = el.querySelector(".szl")!;
+    const box = scriptBox(el);
+    box.focus();
+    await act(async () => {
+      box.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "L",
+          metaKey: true,
+          shiftKey: true,
+          bubbles: true
+        })
+      );
+    });
+    expect(shell.classList.contains("is-rail-open")).toBe(false);
+  });
+
   test("Esc closes the rail dropdown; ⌘⇧L toggles it", async () => {
     const { el } = await renderApp(project());
     const shell = el.querySelector(".szl")!;

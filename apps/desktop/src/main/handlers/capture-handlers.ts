@@ -135,7 +135,89 @@ export function librarySourceWindowIds(ctx: CommandContext): number[] {
   return library.id === ctx.sourceWindowId ? [library.id] : [];
 }
 
-export function registerCaptureHandlers(): void {
+/**
+ * Save As is capture-owned for its render/copy work, but Library-owned in
+ * split mode because a native sheet must be created by the process that owns
+ * the calling BrowserWindow. `sourceWindowId` crosses the bridge unchanged,
+ * so resolving it here makes the sheet modal to the exact Library window
+ * rather than a detached application dialog.
+ */
+export function registerCaptureSaveAsHandler(): void {
+  bus.register("capture:saveAs", async (req, ctx) => {
+    const record = getCaptureById(req.captureId);
+    if (record === null || record.deleted_at !== null) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture not found: ${req.captureId}`
+      });
+    }
+    // Image-only, deliberately. The Low/Med/High preset model doesn't
+    // apply to video (see `capture:presetMetrics`), and video already
+    // owns a richer export surface via `video:export`.
+    if (record.kind === "video") {
+      return err({
+        kind: "validation",
+        code: "unsupported_kind",
+        message: "capture:saveAs is image-only; use video:export for recordings"
+      });
+    }
+
+    try {
+      const strategy = await getActiveExportStrategy();
+      // Render (or hit the cache for) the preset the user asked for
+      // BEFORE showing the sheet, so the file is ready the instant they
+      // click Save and a slow render can't strand a half-written file
+      // at the chosen path.
+      const presetFile = await renderPresetFile(record, req.preset, strategy);
+      const displayName = buildPresetExportDisplayName({
+        record,
+        enrichment: getCaptureEnrichment(record.id),
+        preset: req.preset,
+        ext: "png"
+      });
+      const { BrowserWindow, dialog } = await import("electron");
+      const sourceWindow =
+        ctx.sourceWindowId === undefined ? null : BrowserWindow.fromId(ctx.sourceWindowId);
+      // In combined mode, and for non-Library callers, retain the existing
+      // fallbacks. In split mode a Library-originated request arrives in the
+      // Library process, so `sourceWindow` is the true sheet parent.
+      const win = sourceWindow ?? findMainLibraryWindow() ?? BrowserWindow.getFocusedWindow() ?? null;
+      const saveOpts = {
+        defaultPath: displayName,
+        filters: [{ name: "PNG Image", extensions: ["png"] }]
+      };
+      const dialogResult =
+        win !== null
+          ? await dialog.showSaveDialog(win, saveOpts)
+          : await dialog.showSaveDialog(saveOpts);
+      if (
+        dialogResult.canceled ||
+        dialogResult.filePath === undefined ||
+        dialogResult.filePath.length === 0
+      ) {
+        return ok({ path: null });
+      }
+      const { copyFile } = await import("node:fs/promises");
+      await copyFile(presetFile.path, dialogResult.filePath);
+      return ok({ path: dialogResult.filePath });
+    } catch (cause) {
+      log.error("save as failed", {
+        captureId: req.captureId,
+        preset: req.preset,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "render",
+        code: "save_as_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
+  });
+}
+
+export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): void {
   bus.register("capture:region", async (req) => {
     // Headless/agent path — still trigger the OS prompt on a first-ever
     // attempt (it registers PwrSnap so captures can ever work), but don't
@@ -761,76 +843,7 @@ export function registerCaptureHandlers(): void {
     return ok(undefined);
   });
 
-  bus.register("capture:saveAs", async (req) => {
-    const record = getCaptureById(req.captureId);
-    if (record === null || record.deleted_at !== null) {
-      return err({
-        kind: "validation",
-        code: "not_found",
-        message: `capture not found: ${req.captureId}`
-      });
-    }
-    // Image-only, deliberately. The Low/Med/High preset model doesn't
-    // apply to video (see `capture:presetMetrics`), and video already
-    // owns a richer export surface via `video:export`.
-    if (record.kind === "video") {
-      return err({
-        kind: "validation",
-        code: "unsupported_kind",
-        message: "capture:saveAs is image-only; use video:export for recordings"
-      });
-    }
-
-    try {
-      const strategy = await getActiveExportStrategy();
-      // Render (or hit the cache for) the preset the user asked for
-      // BEFORE showing the sheet, so the file is ready the instant they
-      // click Save and a slow render can't strand a half-written file
-      // at the chosen path.
-      const presetFile = await renderPresetFile(record, req.preset, strategy);
-      const displayName = buildPresetExportDisplayName({
-        record,
-        enrichment: getCaptureEnrichment(record.id),
-        preset: req.preset,
-        ext: "png"
-      });
-      const { BrowserWindow, dialog } = await import("electron");
-      // Parent the sheet to the Library window when it's open — that's
-      // the window the tile lives in — falling back to whatever's
-      // focused for the tray / float-over entry points.
-      const win = findMainLibraryWindow() ?? BrowserWindow.getFocusedWindow() ?? null;
-      const saveOpts = {
-        defaultPath: displayName,
-        filters: [{ name: "PNG Image", extensions: ["png"] }]
-      };
-      const dialogResult =
-        win !== null
-          ? await dialog.showSaveDialog(win, saveOpts)
-          : await dialog.showSaveDialog(saveOpts);
-      if (
-        dialogResult.canceled ||
-        dialogResult.filePath === undefined ||
-        dialogResult.filePath.length === 0
-      ) {
-        return ok({ path: null });
-      }
-      const { copyFile } = await import("node:fs/promises");
-      await copyFile(presetFile.path, dialogResult.filePath);
-      return ok({ path: dialogResult.filePath });
-    } catch (cause) {
-      log.error("save as failed", {
-        captureId: req.captureId,
-        preset: req.preset,
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
-      return err({
-        kind: "render",
-        code: "save_as_failed",
-        message: cause instanceof Error ? cause.message : String(cause),
-        cause
-      });
-    }
-  });
+  if (options?.includeSaveAs ?? true) registerCaptureSaveAsHandler();
 
   bus.register("capture:prepareDrag", async (req) => {
     const record = getCaptureById(req.captureId);

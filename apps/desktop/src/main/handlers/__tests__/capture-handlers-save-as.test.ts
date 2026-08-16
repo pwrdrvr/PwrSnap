@@ -25,6 +25,7 @@ import type { CaptureRecord } from "@pwrsnap/shared";
 const mocks = vi.hoisted(() => ({
   getCaptureById: vi.fn((): CaptureRecord | null => null),
   showSaveDialog: vi.fn(),
+  findWindowById: vi.fn(),
   copyFile: vi.fn(async () => undefined),
   resolveImagePresetFile: vi.fn(async () => ({
     path: "/cache/cap_1-high.png",
@@ -44,6 +45,7 @@ vi.mock("electron", () => ({
   },
   screen: { getAllDisplays: () => [] },
   BrowserWindow: {
+    fromId: mocks.findWindowById,
     getAllWindows: () => [],
     getFocusedWindow: () => null
   },
@@ -160,6 +162,8 @@ const videoRecord = { ...imageRecord, kind: "video" } as unknown as CaptureRecor
 beforeEach(() => {
   mocks.getCaptureById.mockReset();
   mocks.showSaveDialog.mockReset();
+  mocks.findWindowById.mockReset();
+  mocks.findWindowById.mockReturnValue(null);
   mocks.copyFile.mockReset();
   mocks.copyFile.mockResolvedValue(undefined);
 });
@@ -184,6 +188,24 @@ describe("capture:saveAs", () => {
     expect(mocks.copyFile).toHaveBeenCalledWith(
       "/cache/cap_1-high.png",
       "/Users/me/Desktop/example.png"
+    );
+  });
+
+  test("parents the native sheet to the calling Library window", async () => {
+    const libraryWindow = { id: 42 };
+    mocks.getCaptureById.mockReturnValue(imageRecord);
+    mocks.findWindowById.mockReturnValue(libraryWindow);
+    mocks.showSaveDialog.mockResolvedValue({ canceled: true, filePath: undefined });
+
+    await bus.dispatch(
+      "capture:saveAs",
+      { captureId: "cap_1", preset: "high" },
+      { principal: "ipc", sourceWindowId: 42 }
+    );
+
+    expect(mocks.showSaveDialog).toHaveBeenCalledWith(
+      libraryWindow,
+      expect.objectContaining({ defaultPath: expect.any(String) })
     );
   });
 

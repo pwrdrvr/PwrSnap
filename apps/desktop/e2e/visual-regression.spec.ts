@@ -154,6 +154,31 @@ async function waitForFonts(page: Page): Promise<void> {
   });
 }
 
+/**
+ * Fail loudly if the backing scale pin did not take effect.
+ *
+ * Without this the harness degrades silently in the worst possible way:
+ * a screenshot taken at 2x still LOOKS right, so `--update-snapshots`
+ * run in an unpinned environment happily writes a golden that then
+ * fails on every runner. That is exactly how the library-grid golden
+ * broke main. Assert the pin instead of trusting it.
+ *
+ * Called from `launchVisualPwrSnap` rather than from each screenshot so
+ * a new visual test cannot forget it — the scale cannot change during a
+ * test, so checking once at launch is equivalent and un-skippable.
+ *
+ * NOTE on tolerance: this suite compares at Playwright's default (no
+ * `maxDiffPixels`), because every macOS runner in the fleet reproduces
+ * the goldens exactly once pinned — #395 passed on M2-Max, M5-Max and
+ * pwrlab-m4 with zero tolerance. PwrAgnt's harness does carry a small
+ * floor (20) because its lab guest and CI rasterize 8 pixels apart. If
+ * PwrSnap ever generates goldens somewhere with a real floor, measure it
+ * and add the tolerance then — do not copy the number across.
+ */
+async function expectPinnedDeviceScale(page: Page): Promise<void> {
+  expect(await page.evaluate(() => window.devicePixelRatio)).toBe(1);
+}
+
 async function launchVisualPwrSnap(): Promise<LaunchedApp> {
   const app = await launchPwrSnap({
     env: {
@@ -180,6 +205,7 @@ async function launchVisualPwrSnap(): Promise<LaunchedApp> {
   // before seeded records are converted into Library fixtures. Playwright's
   // setFixedTime intentionally leaves rendering timers running.
   await app.window.clock.setFixedTime(VISUAL_CLOCK_TIME);
+  await expectPinnedDeviceScale(app.window);
   return app;
 }
 

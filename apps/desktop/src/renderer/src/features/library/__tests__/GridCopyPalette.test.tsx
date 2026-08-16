@@ -179,7 +179,7 @@ async function renderPalette(
 /** Payload shape for `events:settings:changed`, narrowed to what the
  *  palette reads out of it. */
 function settingsChangedPayload(
-  gridCopyPalette: { anchor: string; previewOpen: boolean }
+  gridCopyPalette: { anchor: string }
 ): unknown {
   return {
     settings: {
@@ -464,7 +464,7 @@ describe("GridCopyPalette", () => {
 
     await act(async () => {
       onSettingsChanged(
-        settingsChangedPayload({ anchor: "follow", previewOpen: false })
+        settingsChangedPayload({ anchor: "follow" })
       );
       await Promise.resolve();
     });
@@ -473,7 +473,7 @@ describe("GridCopyPalette", () => {
     // Our own write's broadcast lands — the gate lifts.
     await act(async () => {
       onSettingsChanged(
-        settingsChangedPayload({ anchor: "pinned", previewOpen: false })
+        settingsChangedPayload({ anchor: "pinned" })
       );
       await Promise.resolve();
     });
@@ -482,7 +482,7 @@ describe("GridCopyPalette", () => {
     // A genuinely later change from another window still applies.
     await act(async () => {
       onSettingsChanged(
-        settingsChangedPayload({ anchor: "follow", previewOpen: false })
+        settingsChangedPayload({ anchor: "follow" })
       );
       await Promise.resolve();
     });
@@ -497,14 +497,11 @@ describe("GridCopyPalette", () => {
 
     await act(async () => {
       onSettingsChanged(
-        settingsChangedPayload({ anchor: "pinned", previewOpen: true })
+        settingsChangedPayload({ anchor: "pinned" })
       );
       await Promise.resolve();
     });
     expect(palette?.getAttribute("data-anchor")).toBe("pinned");
-    expect(
-      el.querySelector('[data-testid="psl-grid-copy-palette-preview"]')
-    ).not.toBeNull();
   });
 
   test("hydrates the persisted pinned anchor from settings", async () => {
@@ -514,7 +511,7 @@ describe("GridCopyPalette", () => {
           ...settings,
           library: {
             ...(settings as unknown as { library: Record<string, unknown> }).library,
-            gridCopyPalette: { anchor: "pinned", previewOpen: false }
+            gridCopyPalette: { anchor: "pinned" }
           }
         });
       }

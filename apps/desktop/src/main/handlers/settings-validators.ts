@@ -679,12 +679,6 @@ function validateLibraryPatch(raw: unknown): PwrSnapError | null {
         )}`
       );
     }
-    if (!isUndefined(gcp.previewOpen) && !isBoolean(gcp.previewOpen)) {
-      return validationError(
-        "invalid_library_gridCopyPalette_previewOpen",
-        "settings:write: library.gridCopyPalette.previewOpen must be a boolean"
-      );
-    }
   }
   if (!isUndefined(raw.gridZoom)) {
     if (

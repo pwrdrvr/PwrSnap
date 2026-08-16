@@ -42,14 +42,10 @@ function writeGridCopyPalette(gridCopyPalette: unknown) {
 }
 
 describe("validateSettingsWrite — library.gridCopyPalette", () => {
-  test("accepts both anchor modes and the preview flag", () => {
+  test("accepts both anchor modes", () => {
     expect(writeGridCopyPalette({ anchor: "follow" }).ok).toBe(true);
     expect(writeGridCopyPalette({ anchor: "pinned" }).ok).toBe(true);
-    expect(writeGridCopyPalette({ previewOpen: true }).ok).toBe(true);
-    expect(
-      writeGridCopyPalette({ anchor: "pinned", previewOpen: false }).ok
-    ).toBe(true);
-    // Deep-partial: an empty object leaves both fields alone.
+    // Deep-partial: an empty object leaves the field alone.
     expect(writeGridCopyPalette({}).ok).toBe(true);
   });
 
@@ -58,12 +54,6 @@ describe("validateSettingsWrite — library.gridCopyPalette", () => {
     expect(writeGridCopyPalette({ anchor: "" }).ok).toBe(false);
     expect(writeGridCopyPalette({ anchor: null }).ok).toBe(false);
     expect(writeGridCopyPalette({ anchor: 1 }).ok).toBe(false);
-  });
-
-  test("rejects a non-boolean previewOpen", () => {
-    expect(writeGridCopyPalette({ previewOpen: "true" }).ok).toBe(false);
-    expect(writeGridCopyPalette({ previewOpen: null }).ok).toBe(false);
-    expect(writeGridCopyPalette({ previewOpen: 1 }).ok).toBe(false);
   });
 
   test("rejects a non-object gridCopyPalette", () => {

@@ -243,10 +243,9 @@ function defaultLibrarySettings(): Settings["library"] {
     },
     // Follow-the-selection is the default: the floating copy palette
     // should show up next to the tile the user just clicked, not parked
-    // at the bottom of the stage. Preview drawer starts collapsed.
+    // at the bottom of the stage.
     gridCopyPalette: {
-      anchor: "follow",
-      previewOpen: false
+      anchor: "follow"
     },
     // Confirm soft-deletes by default; users can opt out via the popover's
     // "Don't ask again" or re-enable in Settings → Storage & retention.
@@ -1024,8 +1023,7 @@ function parseGridCopyPaletteSettings(
 ): Settings["library"]["gridCopyPalette"] {
   if (!isRecord(raw)) return defaults;
   return {
-    anchor: isGridCopyPaletteAnchor(raw.anchor) ? raw.anchor : defaults.anchor,
-    previewOpen: pickBoolean(raw.previewOpen, defaults.previewOpen)
+    anchor: isGridCopyPaletteAnchor(raw.anchor) ? raw.anchor : defaults.anchor
   };
 }
 

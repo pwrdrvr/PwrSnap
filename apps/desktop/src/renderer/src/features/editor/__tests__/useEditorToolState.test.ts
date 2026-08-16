@@ -128,7 +128,7 @@ function makeSettings(overrides?: {
       matchingText: { enabled: overrides?.matchingTextEnabled ?? true },
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
     },
-    library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow", previewOpen: false }, confirmBeforeTrash: true, gridZoom: 180 },
+    library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180 },
   localAgents: { enabled: false, grants: [], roles: [], audit: [] }
   };
 }

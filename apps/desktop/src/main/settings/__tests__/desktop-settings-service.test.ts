@@ -303,7 +303,6 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     const missing = await new DesktopSettingsService({ filePath: missingPath }).read();
     expect(missing.library.gridCopyPalette).toEqual({
       anchor: "follow",
-      previewOpen: false
     });
     expect(missing.library.detailRail.lastSelectedTab).toBe("ocr");
 
@@ -312,7 +311,7 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
       roundTripPath,
       JSON.stringify({
         schemaVersion: 1,
-        library: { gridCopyPalette: { anchor: "pinned", previewOpen: true } }
+        library: { gridCopyPalette: { anchor: "pinned" } }
       }),
       "utf8"
     );
@@ -321,7 +320,6 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     }).read();
     expect(roundTrip.library.gridCopyPalette).toEqual({
       anchor: "pinned",
-      previewOpen: true
     });
 
     const junkPath = join(workDir, "settings-gcp-junk.json");
@@ -329,14 +327,13 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
       junkPath,
       JSON.stringify({
         schemaVersion: 1,
-        library: { gridCopyPalette: { anchor: "sticky", previewOpen: "yes" } }
+        library: { gridCopyPalette: { anchor: "sticky" } }
       }),
       "utf8"
     );
     const junk = await new DesktopSettingsService({ filePath: junkPath }).read();
     expect(junk.library.gridCopyPalette).toEqual({
       anchor: "follow",
-      previewOpen: false
     });
   });
 
@@ -1117,7 +1114,6 @@ describe("mergeSettings", () => {
     const current = defaultSettings();
     expect(current.library.gridCopyPalette).toEqual({
       anchor: "follow",
-      previewOpen: false
     });
     // A drag writes only `anchor`; the drawer's open/closed state must
     // survive (and vice versa) — hence mergeSection, not replacement.
@@ -1126,18 +1122,10 @@ describe("mergeSettings", () => {
     });
     expect(dragged.library.gridCopyPalette).toEqual({
       anchor: "pinned",
-      previewOpen: false
-    });
-    const drawerOpened = mergeSettings(dragged, {
-      library: { gridCopyPalette: { previewOpen: true } }
-    });
-    expect(drawerOpened.library.gridCopyPalette).toEqual({
-      anchor: "pinned",
-      previewOpen: true
     });
     // Sibling library fields preserved.
-    expect(drawerOpened.library.detailRail).toEqual(current.library.detailRail);
-    expect(drawerOpened.library.gridZoom).toBe(current.library.gridZoom);
+    expect(dragged.library.detailRail).toEqual(current.library.detailRail);
+    expect(dragged.library.gridZoom).toBe(current.library.gridZoom);
   });
 
   test("storage.filenameTimestampZone patch overwrites only the specified field", () => {

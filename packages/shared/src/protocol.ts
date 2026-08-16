@@ -2488,10 +2488,6 @@ export function isGridCopyPaletteAnchor(
 export type LibraryGridCopyPaletteSettings = {
   /** See {@link GridCopyPaletteAnchor}. Defaults to `follow`. */
   anchor: GridCopyPaletteAnchor;
-  /** Whether the palette's preview drawer (a contain-fit thumbnail of
-   *  the selected capture) is expanded. Collapsed by default so the
-   *  palette stays small for users who already know what they picked. */
-  previewOpen: boolean;
 };
 
 export type LibrarySettings = {

@@ -718,7 +718,12 @@ async function sourceFilterButtonState(
         const label = button.querySelector(".psl__nav-label")?.textContent?.trim() ?? "";
         const countText = button.querySelector(".psl__nav-count")?.textContent?.trim() ?? "";
         if (!pattern.test(label) || countText !== String(count)) continue;
-        return { active: button.classList.contains("is-active") };
+        // Every row that is actively narrowing the view — scope or facet
+        // — now carries the same filled `is-active` state, so one check
+        // covers both paradigms.
+        return {
+          active: button.classList.contains("is-active")
+        };
       }
       return { active: false };
     },

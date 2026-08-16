@@ -938,34 +938,89 @@
 }
 .psl__left-section:first-child { padding-top: 0; }
 
-/* === Types multi-pick rows in the sidebar === */
-.psl__type-row {
+/* === Facet rows in the sidebar (TYPES + SOURCE APP) ===
+   The sidebar hosts two paradigms: LIBRARY is a radio SCOPE, while
+   TYPES and SOURCE APP are composable FACETS. They share one row
+   vocabulary on purpose — a row that is narrowing the view reads as
+   selected (`.is-active`) wherever it lives, so the user learns one
+   visual. What separates the two is REACHABILITY, not decoration:
+   scope rows replace each other, facet rows compose (⌘ to add, ⌥ to
+   exclude, hover "only" to collapse), and the chip row above the grid
+   is what spells out the composed query.
+
+   Three facet states: plain when the row is not participating,
+   `.is-active` when it is included, `.is-excluded` when it is
+   negated. Default state (all types on, no app chosen) is plain
+   everywhere, so the rail is quiet until the user filters. */
+.psl__facet-row {
   position: relative;
 }
-.psl__type-check {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 12px;
-  height: 12px;
-  border-radius: 3px;
-  border: 1px solid var(--border-default);
-  background: transparent;
-  color: var(--accent);
-  margin-right: 2px;
-  flex: 0 0 12px;
-}
-.psl__type-row.is-on .psl__type-check {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--button-text-on-accent);
-}
-.psl__type-row.is-off {
+/* Facet rows carry the SAME selected fill as the LIBRARY scope rows —
+   a facet that is actively narrowing the view reads as "selected", and
+   an excluded one gets a distinct danger-tinted, struck treatment. A
+   facet that is not participating stays completely plain: with every
+   type on and no app chosen, the rail is quiet. (An earlier revision
+   put a checkbox on every row; twenty-odd empty boxes down the rail
+   were pure visual noise for a control used occasionally.) */
+.psl__facet-row.is-excluded {
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
   color: var(--text-muted);
 }
-.psl__type-row.is-off .psl__nav-icon,
-.psl__type-row.is-off .psl__nav-label {
-  opacity: 0.55;
+/* An excluded row strikes its LABEL but keeps its COUNT at full
+   strength — "everything except Electron (988)" is exactly why the
+   number is there, so dimming it would hide the useful part. */
+.psl__facet-row.is-excluded .psl__nav-label {
+  /* The strike is the load-bearing signal that this row is NEGATED
+     rather than merely unselected, so it has to be legible: the
+     translucent border token washed out to nothing at 11px. */
+  text-decoration: line-through;
+  text-decoration-color: var(--danger-text);
+  text-decoration-thickness: 1px;
+}
+.psl__facet-row.is-excluded .psl__nav-icon {
+  opacity: 0.6;
+}
+
+/* Hover-revealed "only" pill — collapses the current selection down to
+   this one row. Replaces the old undiscoverable shift-click.
+
+   Collapsed to zero width instead of `display:none` so it animates in
+   without a reflow jump; the negative margin cancels `.psl__nav`'s 9px
+   flex `gap` while collapsed so there is no phantom gutter to the
+   right of the count. */
+.psl__facet-only {
+  flex: 0 0 auto;
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--accent-bright);
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: var(--accent-soft);
+  cursor: pointer;
+  max-width: 0;
+  padding: 3px 0;
+  margin-left: -9px;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition:
+    opacity 90ms var(--ease-out),
+    max-width 90ms var(--ease-out),
+    margin-left 90ms var(--ease-out);
+}
+.psl__facet-row:hover .psl__facet-only,
+.psl__facet-only:focus-visible {
+  max-width: 48px;
+  padding-left: 5px;
+  padding-right: 5px;
+  margin-left: 0;
+  border-color: var(--accent-border);
+  opacity: 1;
+}
+.psl__facet-only:hover {
+  background: var(--accent);
+  color: var(--button-text-on-accent);
 }
 
 /* === Project cell — Sizzle Reels project rendered inline in the
@@ -1325,6 +1380,85 @@
   color: var(--accent-bright, var(--accent));
 }
 
+/* === Composed-filter chip row ===
+   Sits in `.psl__main` ABOVE the scroll container so it does not
+   scroll away — it's the readout of what the grid is currently
+   showing, and a multi-facet or negative filter is unsafe to ship
+   without it. Rendered only when at least one facet is non-default,
+   so the untouched Library gains no chrome. */
+.psl__chips {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 18px 0;
+}
+.psl[data-mode="reel"] .psl__chips,
+.psl[data-mode="focus"] .psl__chips {
+  display: none;
+}
+.psl__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 3px 0 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+  font: 600 11px/1 var(--font-sans);
+}
+.psl__chip.is-negated {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.psl__chip-not {
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+.psl__chip.is-negated .psl__chip-label {
+  text-decoration: line-through;
+  text-decoration-color: var(--danger-border);
+}
+.psl__chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 100ms var(--ease-out), background 100ms var(--ease-out);
+}
+.psl__chip-x:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--surface-highlight) 14%, transparent);
+}
+.psl__chips-clear {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  font: 600 11px/1 var(--font-sans);
+  padding: 4px 6px;
+  border-radius: var(--radius-xs);
+  transition: color 100ms var(--ease-out), background 100ms var(--ease-out);
+}
+.psl__chips-clear:hover {
+  color: var(--text-primary);
+  background: var(--bg-panel-hover);
+}
+
 /* Grid below reel — day-grouped traditional */
 .psl__grid-wrap {
   flex: 1; overflow-y: auto;
@@ -1433,6 +1567,9 @@
   color: var(--text-secondary);
 }
 .psl__trash-banner-text { flex: 1; }
+/* Trash ignores the Types facet on purpose — this note says so
+   rather than letting a stale Types selection look like it applies. */
+.psl__trash-banner-note { color: var(--text-muted); }
 .psl__trash-banner-btn {
   font: 600 11px/1 var(--font-sans);
   padding: 6px 10px;
@@ -3830,6 +3967,17 @@
   font: 500 9px/1 var(--font-mono);
   text-transform: none;
   letter-spacing: 0;
+}
+
+/* Trimmed-range half of the video export eyebrow —
+   `EXPORT · 0:03–0:11 (8 s)`. Mono + no uppercase so the `s` unit
+   keeps its case; secondary color so the range reads as data. */
+.psl__copy-eyebrow-range {
+  font: 600 9px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
 }
 
 /* L/M/H copy row — three-column grid of <CopyButton> instances. The

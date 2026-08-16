@@ -51,7 +51,9 @@ import type {
   TextFontWeight,
   TextToolStyle,
   ToolColor,
-  ToolSizePreset
+  ToolSizePreset,
+  UpdateChannel,
+  UpdateTrain
 } from "@pwrsnap/shared";
 import {
   DEFAULT_AI_SURFACE_DEFAULTS,
@@ -83,7 +85,10 @@ import {
   defaultLocalAgentRoleConstraints,
   isValidRole,
   LOCAL_AGENT_BUILT_IN_ROLES,
-  isRedactionStyle
+  isRedactionStyle,
+  inferUpdateSelection,
+  isUpdateChannel,
+  isUpdateTrain
 } from "@pwrsnap/shared";
 import {
   compareCodexCliVersions,
@@ -110,6 +115,11 @@ type Logger = ReturnType<typeof getMainLogger>;
 export type DesktopSettingsServiceConfig = {
   filePath: string;
   logger?: Logger;
+  /** Installed app version used to seed `updates.train` / `updates.channel`
+   *  when both keys are absent from the file. Tests pass this explicitly
+   *  so inference does not depend on Electron. */
+  appVersion?: string;
+  resolveAppVersion?: () => string;
 };
 
 export function defaultSettings(): Settings {
@@ -180,10 +190,11 @@ export function defaultSettings(): Settings {
       theme: "system"
     },
     updates: {
-      // Default to stable. Power users + beta testers flip to
-      // "prerelease" in Settings; auto-updater picks it up on the next
-      // check (hourly, or immediately via Help → Check for Updates).
-      channel: "latest"
+      // Default to Stable Latest. A missing settings file still goes
+      // through `inferUpdateSelection` in `read()` so a website Beta
+      // download follows that feed until the user picks something.
+      channel: "latest",
+      train: "stable"
     },
     storage: {
       // Local timestamps match what single users remember seeing on
@@ -333,7 +344,7 @@ function defaultEditorSettings(): EditorSettings {
  *  PwrAgnt's docs/config-file-evolution.md. */
 type ShapeEntry = {
   shape: string;
-  parse(raw: unknown): Settings | null;
+  parse(raw: unknown, appVersion: string): Settings | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -611,7 +622,28 @@ function migrateEnrichmentDefaultToManagedLuna(defaults: AiSurfaceDefaults): AiS
   };
 }
 
-function parseV1(raw: unknown): Settings | null {
+function parseUpdates(
+  raw: unknown,
+  appVersion: string,
+  defaults: Settings["updates"]
+): Settings["updates"] {
+  const updates = isRecord(raw) ? raw : {};
+  const hasChannel = isUpdateChannel(updates.channel);
+  const hasTrain = isUpdateTrain(updates.train);
+  // Infer the version-derived pair only when neither key exists. A
+  // pre-train config with only `channel = "prerelease"` must stay on
+  // Stable so installing a 1.1.0-beta binary does not silently move
+  // that operator onto Beta Prerelease / alphas.
+  if (!hasChannel && !hasTrain) {
+    return inferUpdateSelection(appVersion);
+  }
+  return {
+    channel: hasChannel ? (updates.channel as UpdateChannel) : defaults.channel,
+    train: hasTrain ? (updates.train as UpdateTrain) : defaults.train
+  };
+}
+
+function parseV1(raw: unknown, appVersion = ""): Settings | null {
   if (!isRecord(raw)) return null;
   if (raw.schemaVersion !== 1) return null;
   const defaults = defaultSettings();
@@ -774,12 +806,7 @@ function parseV1(raw: unknown): Settings | null {
       // shape.
       theme: pickAppearanceTheme(appearance.theme, defaults.appearance.theme)
     },
-    updates: {
-      // `updates.channel` landed after v1 shipped; older files won't
-      // have it. Fall back to the current default ("latest") so the
-      // field is always present in-memory.
-      channel: updates.channel === "prerelease" ? "prerelease" : defaults.updates.channel
-    },
+    updates: parseUpdates(updates, appVersion, defaults.updates),
     storage: {
       // `storage.filenameTimestampZone` landed after v1 shipped;
       // older files default to local time so filenames match what
@@ -1379,6 +1406,7 @@ const CODEX_DISCOVERY_CACHE_TTL_MS = 30_000;
 export class DesktopSettingsService {
   private readonly filePath: string;
   private readonly log: Logger;
+  private readonly resolveAppVersion: () => string;
 
   /**
    * Serializes all writes. Read isn't gated through this chain — the
@@ -1408,6 +1436,20 @@ export class DesktopSettingsService {
   constructor(config: DesktopSettingsServiceConfig) {
     this.filePath = config.filePath;
     this.log = config.logger ?? getMainLogger("pwrsnap:settings-service");
+    this.resolveAppVersion =
+      config.resolveAppVersion ??
+      (() => config.appVersion ?? "");
+  }
+
+  private currentAppVersion(): string {
+    return this.resolveAppVersion();
+  }
+
+  private withInferredUpdates(settings: Settings): Settings {
+    return {
+      ...settings,
+      updates: inferUpdateSelection(this.currentAppVersion())
+    };
   }
 
   getFilePath(): string {
@@ -1430,13 +1472,13 @@ export class DesktopSettingsService {
       raw = await readFile(this.filePath, "utf8");
     } catch (cause) {
       if (isNodeError(cause) && cause.code === "ENOENT") {
-        return defaultSettings();
+        return this.withInferredUpdates(defaultSettings());
       }
       this.log.warn("settings-service: read failed, using defaults", {
         path: this.filePath,
         message: cause instanceof Error ? cause.message : String(cause)
       });
-      return defaultSettings();
+      return this.withInferredUpdates(defaultSettings());
     }
 
     let parsed: unknown;
@@ -1444,16 +1486,16 @@ export class DesktopSettingsService {
       parsed = JSON.parse(raw);
     } catch (cause) {
       await this.quarantine(`json_parse: ${cause instanceof Error ? cause.message : String(cause)}`);
-      return defaultSettings();
+      return this.withInferredUpdates(defaultSettings());
     }
 
     for (const entry of SHAPE_CATALOG) {
-      const normalized = entry.parse(parsed);
+      const normalized = entry.parse(parsed, this.currentAppVersion());
       if (normalized !== null) return normalized;
     }
 
     await this.quarantine("no_shape_matched");
-    return defaultSettings();
+    return this.withInferredUpdates(defaultSettings());
   }
 
   /**

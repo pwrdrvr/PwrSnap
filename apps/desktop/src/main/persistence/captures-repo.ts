@@ -409,6 +409,10 @@ export type ListCapturesArgs = {
   limit?: number | undefined;
   appBundleId?: string | undefined;
   appBundleIds?: Array<string | null> | undefined;
+  /** Negative source-app facet. Emits a `NOT (…)` clause alongside
+   *  (not instead of) any positive filter. `null` entries exclude the
+   *  "no source app" bucket. An empty array is a no-op. */
+  excludeAppBundleIds?: ReadonlyArray<string | null> | undefined;
   includeDeleted?: boolean | undefined;
 };
 
@@ -419,6 +423,46 @@ export type ListCapturesResult = {
 
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 200;
+
+/**
+ * Build the negative source-app clause for `excludeAppBundleIds`.
+ * Exported for direct SQL-shape testing — the NULL handling here is
+ * the whole reason this isn't a one-liner.
+ *
+ * SQL's three-valued logic makes the naive `source_app_bundle_id NOT
+ * IN (…)` a trap: for a row with a NULL bundle id the expression
+ * evaluates to NULL, which WHERE treats as false, so "everything
+ * except Electron" would silently also drop every capture with no
+ * source app. We therefore add an explicit `IS NULL` arm — unless the
+ * caller passed `null` in the exclude list, which means they DID want
+ * the no-source-app bucket gone, and the arm flips to `IS NOT NULL`.
+ *
+ * Returns `null` for an empty list (a no-op filter, not "exclude
+ * everything"). Mutates `params` with the bound values.
+ */
+export function buildExcludeAppBundleClause(
+  bundleIds: ReadonlyArray<string | null>,
+  params: Record<string, unknown>
+): string | null {
+  const placeholders: string[] = [];
+  let excludesNullBundle = false;
+  for (const [index, bundleId] of bundleIds.entries()) {
+    if (bundleId === null) {
+      excludesNullBundle = true;
+      continue;
+    }
+    const key = `excludeAppBundleId${index}`;
+    placeholders.push(`@${key}`);
+    params[key] = bundleId;
+  }
+  if (placeholders.length === 0) {
+    return excludesNullBundle ? "source_app_bundle_id IS NOT NULL" : null;
+  }
+  const notIn = `source_app_bundle_id NOT IN (${placeholders.join(", ")})`;
+  return excludesNullBundle
+    ? `(source_app_bundle_id IS NOT NULL AND ${notIn})`
+    : `(source_app_bundle_id IS NULL OR ${notIn})`;
+}
 
 export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
   const db = getDb();
@@ -458,6 +502,13 @@ export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
   } else if (filter.appBundleId !== undefined) {
     where.push("source_app_bundle_id = @appBundleId");
     params.appBundleId = filter.appBundleId;
+  }
+  // Negative facet — composes conjunctively with the positive one
+  // above (include ∧ ¬exclude), though the Library sidebar's facet
+  // model only ever sends one side at a time.
+  if (filter.excludeAppBundleIds !== undefined) {
+    const excludeClause = buildExcludeAppBundleClause(filter.excludeAppBundleIds, params);
+    if (excludeClause !== null) where.push(excludeClause);
   }
 
   const sql = `SELECT * FROM captures

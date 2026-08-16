@@ -442,6 +442,9 @@ export function FloatOverHost(): React.ReactElement {
           src: previewSrc,
           captureId: record.id,
           durationSec: record.video!.durationSec,
+          widthPx: record.width_px,
+          heightPx: record.height_px,
+          defaultRange: record.video!.defaultRange,
           onDiscard: () => {
             // library:delete (soft-delete + trash move) is the only
             // path that updates app_stats correctly; library:purge

@@ -45,8 +45,10 @@ import type { Tool } from "../editor/editor-tools";
 import type { UseEditorToolStateReturn } from "../editor/useEditorToolState";
 import { AppTag } from "../shared/AppIcons";
 import { captureSrcUrl } from "../../lib/pwrsnap";
+import type { UseVideoTrimRange } from "../shared/useVideoTrimRange";
 import { DetailRail } from "./DetailRail";
 import { EditToolbar } from "./EditToolbar";
+import { VideoStage } from "./VideoStage";
 import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryAction, LibraryView } from "./library-view";
 
@@ -73,6 +75,13 @@ export type StageProps = {
    *  neighbor available — at edges or filter has only one record). */
   readonly prevRecordId: string | null;
   readonly nextRecordId: string | null;
+  /** The window's ONE video trim-range instance, owned by Library and
+   *  shared with the DetailRail's export cards. Threaded through to
+   *  `<VideoStage>` so the timeline the user drags and the range the
+   *  rail exports are the same object — never a stage-local copy
+   *  racing the persisted `defaultRange`. Inert (`captureId: null`)
+   *  when the selection isn't a video. */
+  readonly videoTrim: UseVideoTrimRange;
   /** Lifted tool state for the chromeless Editor + the floating
    *  EditToolbar. Library owns the source of truth. */
   readonly tool: Tool;
@@ -152,6 +161,7 @@ function StageBody({
   posLabel,
   prevRecordId,
   nextRecordId,
+  videoTrim,
   tool,
   onToolChange,
   toolState,
@@ -288,26 +298,41 @@ function StageBody({
           frame grows with the canvas under zoom. Aspect-ratio for
           video captures is still set inline below so the <video>
           element gets a sensible default size. */}
-      <div className="psl__stage-img">
+      <div className={`psl__stage-img${record.kind === "video" ? " is-video" : ""}`}>
         {record.kind === "video" ? (
-          // Video captures render as a native <video> player. The
-          // overlay editor is image-only (annotation tools operate
-          // on PNG/WebP renders) so we don't mount <Editor> here —
-          // the GIF/MP4 sub-range editor lives in the float-over
-          // and a richer video editor lands in a follow-up.
-          <video
-            src={captureSrcUrl(record.id)}
-            controls
-            playsInline
-            preload="metadata"
-            style={{
-              width: "100%",
-              height: "100%",
-              objectFit: "contain",
-              background: "#000",
-              display: "block"
-            }}
-          />
+          // Video captures render through VideoStage: chromeless
+          // <video> + our transport + the filmstrip/waveform trim
+          // timeline. The overlay editor is image-only (annotation
+          // tools operate on PNG/WebP renders) so we don't mount
+          // <Editor> here. Trim in/out persists to the record's
+          // `defaultRange` and drives every export. Phase B editing
+          // (speed / crop / split / cursor highlight) is a follow-up —
+          // see docs/plans/2026-08-15-001-feat-video-transport-trim-plan.md.
+          record.video !== null && record.video !== undefined ? (
+            <VideoStage
+              record={record}
+              video={record.video}
+              trim={videoTrim}
+              // Reel keeps ←/→ on prev/next-capture navigation until
+              // the user clicks into the video; Focus grabs the
+              // keyboard on mount. `dismissible` is the mode flag.
+              reel={!dismissible}
+            />
+          ) : (
+            <video
+              src={captureSrcUrl(record.id)}
+              controls
+              playsInline
+              preload="metadata"
+              style={{
+                width: "100%",
+                height: "100%",
+                objectFit: "contain",
+                background: "#000",
+                display: "block"
+              }}
+            />
+          )
         ) : (
           <Editor
             captureId={captureId}

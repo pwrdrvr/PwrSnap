@@ -171,7 +171,8 @@ export function registerLibraryDataHandlers(): void {
     if (
       req.cursor === undefined &&
       req.appBundleId === undefined &&
-      req.appBundleIds === undefined
+      req.appBundleIds === undefined &&
+      req.excludeAppBundleIds === undefined
     ) {
       return ok({
         rows,

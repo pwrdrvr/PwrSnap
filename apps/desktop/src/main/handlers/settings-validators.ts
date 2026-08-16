@@ -465,6 +465,19 @@ export function validateSettingsWrite(
         )
       };
     }
+    if (
+      !isUndefined(updates.train) &&
+      updates.train !== "stable" &&
+      updates.train !== "beta"
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_updates_train",
+          "settings:write: updates.train must be \"stable\" or \"beta\""
+        )
+      };
+    }
   }
 
   if (p.storage !== undefined) {

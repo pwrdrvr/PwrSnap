@@ -234,6 +234,12 @@
 .fo__export-grid {
   padding: 10px 12px 4px;
 }
+/* Mini trim strip above the video export cards — the compact
+   `VideoTimeline` (40px filmstrip + in/out handles + TRIM eyebrow).
+   Styles for the strip itself live in video-timeline.css. */
+.fo__trim {
+  margin-bottom: 8px;
+}
 .fo__copy-card {
   display: flex;
   flex-direction: column;

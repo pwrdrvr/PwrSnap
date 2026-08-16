@@ -25,8 +25,8 @@
 // so a slow encode resolving after a navigation doesn't paint stale
 // state onto the new capture's cards.
 
-import { useCallback, useEffect, useReducer, useRef } from "react";
-import type { VideoPreset } from "@pwrsnap/shared";
+import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import type { VideoPreset, VideoRange } from "@pwrsnap/shared";
 import { dispatch, startVideoDrag } from "../../lib/pwrsnap";
 import { videoPresetKey, type VideoPresetKey } from "./useVideoPresetMetrics";
 
@@ -41,6 +41,11 @@ export type VideoExportPresetsState = Partial<Record<VideoPresetKey, ExportButto
 
 export type VideoExportPresetsInput = {
   readonly captureId: string;
+  /** Trim range to export. Callers pass the persisted `defaultRange`
+   *  they are displaying (DetailRail eyebrow / float-over mini-trim)
+   *  so what the user sees is what encodes. Omitted → main falls back
+   *  to the record's `defaultRange` (same value; explicit is clearer). */
+  readonly range?: VideoRange | undefined;
 };
 
 export type UseVideoExportPresetsResult = {
@@ -77,9 +82,22 @@ export function useVideoExportPresets(
   // Reset when capture changes — a new selection shouldn't inherit
   // the prior capture's per-cell "Saved" / "Failed" badges.
   const captureId = input?.captureId ?? null;
+  const rangeStart = input?.range?.start;
+  const rangeEnd = input?.range?.end;
+  const rangeKey =
+    rangeStart === undefined || rangeEnd === undefined ? null : `${rangeStart}|${rangeEnd}`;
   useEffect(() => {
     dispatchAction({ kind: "reset" });
-  }, [captureId]);
+  }, [captureId, rangeKey]);
+  // Stable range object keyed on its values so the callbacks below
+  // don't churn on every parent render.
+  const range = useMemo<VideoRange | undefined>(
+    () =>
+      rangeStart === undefined || rangeEnd === undefined
+        ? undefined
+        : { start: rangeStart, end: rangeEnd },
+    [rangeStart, rangeEnd]
+  );
 
   // Track the current captureId in a ref so a `.then` callback fired
   // from a stale in-flight dispatch can bail before painting state
@@ -103,7 +121,8 @@ export function useVideoExportPresets(
       void dispatch("clipboard:copyVideoFile", {
         captureId: issuedFor,
         format,
-        preset
+        preset,
+        range
       }).then((res) => {
         // Bail if the user navigated to a different capture mid-encode.
         if (currentCaptureIdRef.current !== issuedFor) return;
@@ -114,7 +133,7 @@ export function useVideoExportPresets(
         }
       });
     },
-    [captureId]
+    [captureId, range]
   );
 
   const triggerCopyPath = useCallback(
@@ -126,7 +145,8 @@ export function useVideoExportPresets(
       void dispatch("clipboard:copyVideoPath", {
         captureId: issuedFor,
         format,
-        preset
+        preset,
+        range
       }).then((res) => {
         if (currentCaptureIdRef.current !== issuedFor) return;
         if (res.ok) {
@@ -136,7 +156,7 @@ export function useVideoExportPresets(
         }
       });
     },
-    [captureId]
+    [captureId, range]
   );
 
   const triggerDrag = useCallback(
@@ -147,7 +167,7 @@ export function useVideoExportPresets(
       // Kick the native drag. Main does its own encode inside
       // `video:prepareDrag` (idempotent via main-side in-flight
       // de-dup with the `video:export` call below).
-      startVideoDrag(issuedFor, format, preset);
+      startVideoDrag(issuedFor, format, preset, range);
       // Parallel `video:export` dispatch so the card surfaces an
       // `Encoding…` state while the encode runs. Without this the
       // drag handle "dies" silently during a slow encode with no
@@ -157,7 +177,8 @@ export function useVideoExportPresets(
       void dispatch("video:export", {
         captureId: issuedFor,
         format,
-        preset
+        preset,
+        range
       }).then((res) => {
         if (currentCaptureIdRef.current !== issuedFor) return;
         if (res.ok) {
@@ -167,7 +188,7 @@ export function useVideoExportPresets(
         }
       });
     },
-    [captureId]
+    [captureId, range]
   );
 
   return { states, triggerCopy, triggerCopyPath, triggerDrag };

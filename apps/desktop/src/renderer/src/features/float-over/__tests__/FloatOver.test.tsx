@@ -76,7 +76,7 @@ const baseSettings: Settings = {
   },
   experimental: { processSplit: true, dpiAwareExport: false, allowRetinaExport: true },
   appearance: { theme: "system" },
-  updates: { channel: "latest" },
+  updates: { channel: "latest", train: "stable" },
   storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
   recording: {
     includeSystemAudio: false,
@@ -254,12 +254,15 @@ describe("FloatOver asset mode", () => {
     } as unknown as NonNullable<Window["pwrsnapApi"]>;
   });
 
-  test("video asset renders <video> in fo__preview and the 6-card export grid", async () => {
+  test("video asset renders <video> in fo__preview, the mini-trim strip, and the 6-card export grid", async () => {
     const el = await renderToast({
       kind: "video",
       src: "pwrsnap-capture://r/abc",
       captureId: "abc",
-      durationSec: 12.5
+      durationSec: 12.5,
+      widthPx: 1920,
+      heightPx: 1080,
+      defaultRange: { start: 0, end: 12.5 }
     });
 
     const preview = el.querySelector(".fo__preview");
@@ -269,6 +272,21 @@ describe("FloatOver asset mode", () => {
 
     expect(el.querySelector(".fo__hdr-title")?.textContent).toBe("Recording saved");
     expect(el.querySelector(".fo__hdr-sub")?.textContent).toContain("12.5s");
+
+    // Mini-trim strip: compact timeline with in/out handles and the
+    // Full-clip chip (disabled while the range is the whole clip).
+    const trim = el.querySelector('[data-testid="video-timeline-compact"]');
+    expect(trim).not.toBeNull();
+    expect(trim?.querySelector('[data-testid="video-timeline-in"]')).not.toBeNull();
+    expect(trim?.querySelector('[data-testid="video-timeline-out"]')).not.toBeNull();
+    expect(trim?.querySelector('[data-testid="video-timeline-playhead"]')).toBeNull();
+    expect(
+      (trim?.querySelector('[data-testid="video-timeline-full-clip"]') as HTMLButtonElement | null)
+        ?.disabled
+    ).toBe(true);
+    expect(trim?.querySelector('[data-testid="video-timeline-trim-label"]')?.textContent).toBe(
+      "FULL CLIP · 0:12.5"
+    );
 
     // Two format groups (GIF + MP4) with three cards each → 6 buttons.
     const groups = el.querySelectorAll(".psl__copy-row-group");

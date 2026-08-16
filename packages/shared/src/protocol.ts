@@ -326,6 +326,33 @@ export type VideoPresetMetricsResult = {
   metrics: VideoPresetMetric[];
 };
 
+/**
+ * Request for `video:frames`. `count` defaults to 24 and is clamped
+ * to [2, 96]; `frameWidth` defaults to 96 and is clamped to [16, 320].
+ * Both are quantized server-side so a slightly different renderer
+ * measurement doesn't fan out into dozens of near-identical strips.
+ */
+export type VideoFramesRequest = {
+  captureId: string;
+  count?: number | undefined;
+  frameWidth?: number | undefined;
+};
+
+/** Contact-strip descriptor returned by `video:frames`. The strip is
+ *  `frameCount` frames laid out left→right, each `frameWidth` ×
+ *  `frameHeight` px, sampled at `(i + 0.5) / frameCount` of the clip. */
+export type VideoFramesResult = {
+  url: string;
+  frameCount: number;
+  frameWidth: number;
+  frameHeight: number;
+};
+
+/** Result of `video:audio`. */
+export type VideoAudioResult =
+  | { hasAudio: false }
+  | { hasAudio: true; url: string; mimeType: "audio/mp4" };
+
 /** Response from `video:prepareDrag` — mirrors `capture:prepareDrag`.
  *  `path` is the human-friendly file alias (e.g.
  *  `<filename-stem>-<preset>.<ext>`); `iconPath` points at the poster
@@ -354,6 +381,13 @@ export type CaptureFilter = {
   limit?: number | undefined;
   appBundleId?: string | undefined;
   appBundleIds?: Array<string | null> | undefined;
+  /** Negative source-app facet — drop rows whose `source_app_bundle_id`
+   *  is in this list. `null` in the list means "drop rows with NO
+   *  source app". Composes conjunctively with the positive
+   *  `appBundleId(s)` filter (include ∧ ¬exclude), though the Library
+   *  sidebar only ever sends one side at a time. An empty array is a
+   *  no-op, NOT "exclude everything". */
+  excludeAppBundleIds?: ReadonlyArray<string | null> | undefined;
   includeDeleted?: boolean | undefined;
 };
 
@@ -2110,13 +2144,19 @@ export type Settings = {
   };
   updates: {
     /** GitHub release stream the auto-updater follows. `"latest"`
-     *  tracks stable releases only; `"prerelease"` also accepts beta /
-     *  alpha tags marked `prerelease: true` on GitHub. Mirrors
-     *  PwrAgnt's `updates.channel`. The auto-updater re-reads this on
-     *  every check, so flipping the toggle takes effect on the next
-     *  hourly poll (or immediately if the user invokes Check for
-     *  Updates from the Help menu). */
+     *  is the smoke-checked slot on the selected train; `"prerelease"`
+     *  is newer and may not install. Combined with `train` this is
+     *  one of four published slots (Stable/Beta × Latest/Prerelease).
+     *  The auto-updater re-reads this on every check, so flipping the
+     *  control takes effect on the next hourly poll (or immediately
+     *  if the user invokes Check for Updates from the Help menu). */
     channel: UpdateChannel;
+    /** Release train. `"stable"` is the 1.0 / GitHub Latest feed;
+     *  `"beta"` follows `main` (`-beta` / `-alpha` tags). Additive —
+     *  older settings files omit it and stay on Stable unless both
+     *  `train` and `channel` are absent, in which case the installed
+     *  app version seeds the pair. */
+    train: UpdateTrain;
   };
   /** Library storage and filename preferences. */
   storage: {
@@ -2640,6 +2680,84 @@ export const DEFAULT_APPEARANCE: Settings["appearance"] = {
 
 export type UpdateChannel = "latest" | "prerelease";
 
+export const UPDATE_CHANNELS = ["latest", "prerelease"] as const satisfies readonly UpdateChannel[];
+
+export const UPDATE_CHANNEL_DEFAULT: UpdateChannel = "latest";
+
+export function isUpdateChannel(value: unknown): value is UpdateChannel {
+  return value === "latest" || value === "prerelease";
+}
+
+export type UpdateTrain = "stable" | "beta";
+
+export const UPDATE_TRAINS = ["stable", "beta"] as const satisfies readonly UpdateTrain[];
+
+export const UPDATE_TRAIN_DEFAULT: UpdateTrain = "stable";
+
+export function isUpdateTrain(value: unknown): value is UpdateTrain {
+  return value === "stable" || value === "beta";
+}
+
+// Last 1.0 core that used `-beta.N` as the Stable prerelease line. Builds
+// at this core stay on Stable so a website Beta download cannot be confused
+// with historical `v1.0.0-beta.N` tags.
+const LEGACY_STABLE_BETA_CORE: [number, number, number] = [1, 0, 0];
+
+function parseUpdateVersion(
+  version: string
+): { core: [number, number, number]; pre: string[] } | undefined {
+  const trimmed = version.trim().replace(/^v/i, "");
+  const match = trimmed.match(
+    /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/
+  );
+  if (!match) return undefined;
+  const [, maj, min, patch, pre] = match;
+  return {
+    core: [Number(maj), Number(min), Number(patch)],
+    pre: pre ? pre.split(".") : []
+  };
+}
+
+/**
+ * Map an installed app version onto the Settings update train/track.
+ * Used only when both `updates.train` and `updates.channel` are unset so a
+ * GitHub or website download of Beta/Prerelease follows that feed. A
+ * pre-train config that only set `channel` stays on Stable.
+ */
+export function inferUpdateSelection(version: string): {
+  channel: UpdateChannel;
+  train: UpdateTrain;
+} {
+  const parsed = parseUpdateVersion(version);
+  if (!parsed || parsed.pre.length === 0) {
+    return {
+      channel: UPDATE_CHANNEL_DEFAULT,
+      train: UPDATE_TRAIN_DEFAULT
+    };
+  }
+  const id = parsed.pre[0];
+  if (id === "alpha") {
+    return { channel: "prerelease", train: "beta" };
+  }
+  if (id === "prerelease" || id === "rc") {
+    return { channel: "prerelease", train: "stable" };
+  }
+  if (id === "beta") {
+    const isLegacyStableBeta =
+      parsed.core[0] === LEGACY_STABLE_BETA_CORE[0] &&
+      parsed.core[1] === LEGACY_STABLE_BETA_CORE[1] &&
+      parsed.core[2] === LEGACY_STABLE_BETA_CORE[2];
+    if (isLegacyStableBeta) {
+      return {
+        channel: UPDATE_CHANNEL_DEFAULT,
+        train: UPDATE_TRAIN_DEFAULT
+      };
+    }
+    return { channel: "latest", train: "beta" };
+  }
+  return { channel: "prerelease", train: UPDATE_TRAIN_DEFAULT };
+}
+
 /** Timestamp zone used in generated `.pwrsnap` filenames. */
 export type FilenameTimestampZone = "local" | "utc";
 
@@ -2770,6 +2888,7 @@ export type AppUpdateStatus =
       currentVersion: string;
       attemptedAt: string;
       channel: UpdateChannel;
+      train: UpdateTrain;
     }
   | { status: "error"; message: string };
 
@@ -2785,9 +2904,14 @@ export type AppUpdateReleaseInfo = {
   unavailableReason?: string;
 };
 
-export type AppUpdateReleaseVersions = {
+export type AppUpdateReleaseSlotVersions = {
   latest: AppUpdateReleaseInfo;
   prerelease: AppUpdateReleaseInfo;
+};
+
+export type AppUpdateReleaseVersions = {
+  stable: AppUpdateReleaseSlotVersions;
+  beta: AppUpdateReleaseSlotVersions;
   fetchedAt: number;
 };
 
@@ -3128,6 +3252,10 @@ export type Commands = {
       limit?: number | undefined;
       appBundleId?: string | undefined;
       appBundleIds?: Array<string | null> | undefined;
+      /** Negative source-app facet — see `CaptureFilter`. A request
+       *  carrying only this field is still a "filtered" request, so it
+       *  does NOT get the head-page `appStats` / `totalLive` payload. */
+      excludeAppBundleIds?: ReadonlyArray<string | null> | undefined;
       includeDeleted?: boolean | undefined;
     };
     res: {
@@ -3742,6 +3870,30 @@ export type Commands = {
     res: void;
   };
   /**
+   * Filmstrip contact strip for the Library / float-over timeline.
+   * Extracts `count` evenly spaced frames (each `frameWidth` px wide)
+   * into a single horizontal JPEG under the per-capture render cache
+   * and returns a `pwrsnap-cache://v/<id>/…` URL the sandboxed
+   * renderer can put in an `<img>`. Cached on disk by
+   * `(captureId, count, frameWidth)`; concurrent callers share one
+   * ffmpeg run. See plan 2026-08-15-001.
+   */
+  "video:frames": {
+    req: VideoFramesRequest;
+    res: VideoFramesResult;
+  };
+  /**
+   * Full-clip audio track for the timeline waveform lane. Returns
+   * `{ hasAudio: false }` when the source recorded no audio; otherwise
+   * a `pwrsnap-cache://v/<id>/audio.m4a` URL the renderer fetches
+   * into a Blob for wavesurfer. Extraction goes through the sizzle
+   * `audio-extract` path (native AAC).
+   */
+  "video:audio": {
+    req: { captureId: string };
+    res: VideoAudioResult;
+  };
+  /**
    * Render and return a GIF or MP4 export for the requested range,
    * preset (LMH), and audio tracks. Cached against (captureId,
    * range, format, preset, audio choices) — re-export with the same
@@ -3761,7 +3913,11 @@ export type Commands = {
    * cards before any click.
    */
   "video:presetMetrics": {
-    req: { captureId: string };
+    /** `range` is optional: the renderer passes the trim range it is
+     *  displaying so byte estimates re-derive from that duration even
+     *  before the debounced `video:setDefaultRange` lands. Omitted →
+     *  the record's persisted `defaultRange`. */
+    req: { captureId: string; range?: VideoRange | undefined };
     res: VideoPresetMetricsResult;
   };
   /**

@@ -1,6 +1,6 @@
 ---
 name: release
-description: Prepare, validate, tag, publish, and monitor guarded PwrSnap desktop releases. Use when the user asks to release PwrSnap, prepare a vX.Y.Z or vX.Y.Z-prerelease tag, update release notes or CHANGELOG.md for a desktop release, verify package.json/tag/changelog alignment, trigger the macOS signed/notarized release workflow, or inspect release workflow status.
+description: Prepare, validate, tag, publish, and monitor guarded PwrSnap desktop releases. Use when the user asks to release PwrSnap, select alpha/beta/maintenance-candidate/RC/stable versions, prepare a vX.Y.Z or vX.Y.Z-prerelease tag, update release notes or CHANGELOG.md for a desktop release, verify package.json/tag/changelog alignment, trigger the macOS signed/notarized release workflow, or inspect release workflow status.
 ---
 
 # Release
@@ -47,36 +47,69 @@ Read these files before changing release metadata:
   before bumping version metadata.
 - Patch releases for an existing train must land on that train's branch. For
   example, prepare `v1.0.1` on `releases/1.0`, not on `main`.
-- Every GitHub Release must be born as a GitHub **Pre-release**. Do not let
-  electron-builder create a normal `Latest` release and rely on a later
-  `gh release edit --prerelease` as the normal path. Promotion to Latest is a
-  separate operator action after the build is validated.
 - Do not create or push the tag until the version and changelog are committed
   and present on the intended release branch.
 - Before pushing a release tag, verify the `apple-signing` GitHub Environment
   exists on `pwrdrvr/PwrSnap`, requires reviewer approval, is scoped to `v*`
-  release tags and `releases/*` maintenance branches, and has the Apple
-  signing/notarization secrets required by the workflow. The maintenance-branch
-  policy is required for a guarded manual-dispatch retry of an existing tag.
-  Apple signing/notarization secrets must NOT exist as repository-level secrets.
+  release tags, and has the Apple signing/notarization secrets required by the
+  workflow. A `releases/*` policy may only enable a guarded manual-dispatch
+  retry of an existing tag; do not require that retry allowance for a normal
+  tag-triggered release. Apple signing/notarization secrets must NOT exist as
+  repository-level secrets.
 - Do not use GitHub generated release notes as the final notes.
 - Do not create the GitHub Release by hand before the build succeeds. Let
-  electron-builder create or update the release from the signed/notarized CI
-  build, then replace the generated/empty release notes with the changelog
-  entry.
+  the CI publish job create it from the signed/notarized build and matching
+  changelog notes.
 - Do not force-push the default branch or rewrite an existing release tag
   without explicit user approval.
 - Keep the MIT license intact: do not swap LICENSE for a different SPDX or
   drift any workspace `package.json` away from `"license": "MIT"`.
 
+## Select SemVer Separately From GitHub Release State
+
+Make two independent decisions before editing metadata:
+
+1. **SemVer version channel** controls the app's baked version, the tag, and
+   the changelog heading. They must be the same value, except for the tag's
+   leading `v`.
+2. **GitHub Release creation state** is always `isPrerelease=true`. The
+   workflow's `--prerelease` is mandatory even for a bare stable SemVer tag;
+   promote a release to Latest only as an explicit later action after assets
+   and smoke checks pass. Never infer this GitHub flag from the SemVer suffix.
+
+Choose the SemVer form by source branch and intent:
+
+| Source branch and intent | Matching package / tag / heading version |
+| --- | --- |
+| `main` alpha | `N.N.N-alpha.N` |
+| `main` beta | `N.N.N-beta.N` |
+| `releases/N.N` smoke, install, or onboarding candidate | `N.N.P-prerelease.N` |
+| `releases/N.N` later release candidate | `N.N.P-rc.N` |
+| `releases/N.N` accepted stable release | `N.N.P` |
+
+Keep the same `N.N.P` while advancing a maintenance candidate from
+`-prerelease.N` to `-rc.N`; do not consume bare patch versions for candidates.
+For example, failed `1.0.0-prerelease.1` and unpromoted `1.0.0-rc.1` do not
+justify jumping the first stable release to `1.0.4`. Create or tag bare
+`N.N.P` only after the user explicitly says the candidate is accepted after
+smoke checks.
+
+The metadata checker compares the release tag with `apps/desktop/package.json`
+and the `CHANGELOG.md` heading. Therefore, an alpha commit cannot also receive
+a literal beta tag without changing metadata. If “beta” means the same
+application source, make a signed metadata-only commit that changes the
+package version and changelog heading to `N.N.N-beta.N`, then tag that commit.
+If the user instead requires the exact alpha SHA to be tagged as beta, stop and
+ask them to choose whether to change checker/workflow semantics before tagging;
+the current checker rejects that exact-SHA beta tag.
+
 ## Release Branch Preflight
 
 For every release, identify `RELEASE_BRANCH` before editing files:
 
-- Active-train beta or stable release: `main`.
-- A user-approved first stable promotion from an accepted prerelease:
-  `releases/<major>.<minor>`.
-- Prior-train patch release: `releases/<major>.<minor>`.
+- Active-train alpha or beta: `main`.
+- Maintenance candidates, release candidates, accepted stable releases, and
+  patches: `releases/<major>.<minor>`.
 
 When an accepted beta is promoted to its first stable release while `main`
 continues toward newer work, create the tracking branch from that exact signed
@@ -252,17 +285,23 @@ pass `Check release metadata` in the no-secret `Test and prepare signing input`
 job before the environment-gated `Sign, notarize, publish` job can request
 approval and access Apple signing secrets.
 
-For a manual dispatch, verify the tag already exists on GitHub:
+A normal tag push uses the `v*` deployment policy. A `releases/*` environment
+policy only permits a manual `workflow_dispatch` retry whose ref is a
+maintenance branch; do not treat that retry allowance as a preflight blocker
+for a normal tag-triggered release.
+
+For a manual dispatch retry, verify the tag already exists on GitHub and use
+the maintenance branch as the workflow ref:
 
 ```bash
 git ls-remote --tags origin v<version>
 gh workflow run release.yml --ref <RELEASE_BRANCH> -f tag=v<version>
 ```
 
-The `apple-signing` Environment must permit both `v*` tags and
-`releases/*` branches. The dispatch runs from the branch so it can use the
-workflow fix, while `tag` remains the immutable version that is checked out,
-validated, signed, and published.
+The `releases/*` policy is only needed for this retry; a normal tag-triggered
+release uses `v*`. The dispatch runs from the branch so it can use the workflow
+fix, while `tag` remains the immutable version that is checked out, validated,
+signed, and published.
 
 ## Monitor And Verify
 

@@ -43,6 +43,10 @@ import {
 import { bus } from "./command-bus";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 import { installDevelopmentDockIcon } from "./development-dock-icon";
+import {
+  resolveAboutPanelBuildVersion,
+  resolveDevelopmentRuntimeIdentity
+} from "./runtime-identity";
 import { installTerminalSignalShutdown } from "./terminal-signal-shutdown";
 import { installTransientWindowTeardown } from "./transient-window-teardown";
 // (showFloatOverForCapture is no longer called from the bootstrap;
@@ -110,7 +114,8 @@ import { DesktopSettingsService } from "./settings/desktop-settings-service";
 import {
   checkForAppUpdatesNow,
   initAppUpdater,
-  setUpdateChannelResolver
+  reconcileAppUpdateSelection,
+  setUpdateSelectionResolver
 } from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
@@ -771,9 +776,11 @@ async function wireHotkeyRegistrations(): Promise<void> {
   // index.ts depends on settings, not the handlers' internal state).
   const userData = app.getPath("userData");
   const service = new DesktopSettingsService({
-    filePath: join(userData, "pwrsnap-settings.json")
+    filePath: join(userData, "pwrsnap-settings.json"),
+    resolveAppVersion: () => app.getVersion()
   });
   let currentChannel: Settings["updates"]["channel"] = "latest";
+  let currentTrain: Settings["updates"]["train"] = "stable";
   try {
     const settings = await service.read();
     setTrayHotkeys(settings.hotkeys);
@@ -785,12 +792,16 @@ async function wireHotkeyRegistrations(): Promise<void> {
       installApplicationMenu(settings.general.developerMode);
     }
     currentChannel = settings.updates.channel;
+    currentTrain = settings.updates.train;
   } catch (cause) {
     log.warn("hotkey wire-up: initial read failed (continuing with no bindings)", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
   }
-  setUpdateChannelResolver(() => currentChannel);
+  setUpdateSelectionResolver(() => ({
+    channel: currentChannel,
+    train: currentTrain
+  }));
   onSettingsChanged((settings) => {
     setTrayHotkeys(settings.hotkeys);
     applyHotkeys(settings.hotkeys);
@@ -798,6 +809,8 @@ async function wireHotkeyRegistrations(): Promise<void> {
       installApplicationMenu(settings.general.developerMode);
     }
     currentChannel = settings.updates.channel;
+    currentTrain = settings.updates.train;
+    reconcileAppUpdateSelection();
     // Theme may have changed — re-color the Windows title-bar overlay so the
     // caption strip tracks the active theme (no-op off win32).
     refreshWindowsTitleBarOverlay();
@@ -1614,10 +1627,15 @@ export function bootstrapApp(): void {
     app.setPath("sessionData", join(app.getPath("userData"), "library-session"));
   }
 
+  const appVersion = app.getVersion();
+  const runtimeIdentity = resolveDevelopmentRuntimeIdentity({
+    isPackaged: app.isPackaged,
+    nodeEnv: process.env.NODE_ENV
+  });
   app.setAboutPanelOptions({
     applicationName: APP_NAME,
-    applicationVersion: app.getVersion(),
-    version: app.getVersion(),
+    applicationVersion: appVersion,
+    version: resolveAboutPanelBuildVersion(appVersion, runtimeIdentity),
     copyright: APP_COPYRIGHT
   });
 

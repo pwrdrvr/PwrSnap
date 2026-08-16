@@ -1306,3 +1306,71 @@ describe("DesktopSettingsService.library.confirmBeforeTrash", () => {
     expect(reread.library.confirmBeforeTrash).toBe(false);
   });
 });
+
+describe("DesktopSettingsService updates train/track", () => {
+  test("defaults the update selection from the running app version", async () => {
+    const svc = makeService();
+    const initial = await svc.read();
+    expect(initial.updates).toEqual({ channel: "latest", train: "stable" });
+
+    await svc.write({ updates: { channel: "prerelease", train: "beta" } });
+    expect(JSON.parse(readFileSync(join(workDir, "settings.json"), "utf8")).updates).toEqual({
+      channel: "prerelease",
+      train: "beta"
+    });
+    expect((await svc.read()).updates).toEqual({ channel: "prerelease", train: "beta" });
+
+    await svc.write({ updates: { channel: "latest", train: "stable" } });
+    expect(JSON.parse(readFileSync(join(workDir, "settings.json"), "utf8")).updates).toEqual({
+      channel: "latest",
+      train: "stable"
+    });
+    expect((await svc.read()).updates).toEqual({ channel: "latest", train: "stable" });
+  });
+
+  test("infers Beta Prerelease from an alpha desktop version when both keys are absent", async () => {
+    const svc = new DesktopSettingsService({
+      filePath: join(workDir, "settings.json"),
+      appVersion: "1.1.0-alpha.7"
+    });
+    expect((await svc.read()).updates).toEqual({
+      channel: "prerelease",
+      train: "beta"
+    });
+  });
+
+  test("keeps a legacy prerelease config on the Stable train", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({ schemaVersion: 1, updates: { channel: "prerelease" } }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({
+      filePath,
+      appVersion: "1.1.0-beta.2"
+    });
+    expect((await svc.read()).updates).toEqual({
+      channel: "prerelease",
+      train: "stable"
+    });
+  });
+
+  test("keeps an explicit Stable choice on a Beta binary", async () => {
+    const filePath = join(workDir, "settings.json");
+    const svc = new DesktopSettingsService({
+      filePath,
+      appVersion: "1.1.0-beta.2"
+    });
+    expect((await svc.read()).updates.train).toBe("beta");
+    await svc.write({ updates: { train: "stable", channel: "latest" } });
+    expect((await svc.read()).updates).toEqual({
+      channel: "latest",
+      train: "stable"
+    });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).updates).toEqual({
+      channel: "latest",
+      train: "stable"
+    });
+  });
+});

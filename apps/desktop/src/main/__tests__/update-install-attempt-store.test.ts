@@ -27,6 +27,7 @@ describe("createAppUpdateInstallAttemptStore", () => {
       expectedVersion: "1.0.0-beta.23",
       fromVersion: "1.0.0-beta.22",
       channel: "prerelease",
+      train: "stable",
       attemptedAt: "2026-06-29T12:00:00.000Z"
     });
 
@@ -35,6 +36,7 @@ describe("createAppUpdateInstallAttemptStore", () => {
       expectedVersion: "1.0.0-beta.23",
       fromVersion: "1.0.0-beta.22",
       channel: "prerelease",
+      train: "stable",
       attemptedAt: "2026-06-29T12:00:00.000Z"
     });
     expect(store.read()).toEqual(written);

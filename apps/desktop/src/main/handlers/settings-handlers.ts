@@ -66,7 +66,14 @@ function ensureServices(): {
   if (settingsService === null) {
     const userData = app.getPath("userData");
     settingsService = new DesktopSettingsService({
-      filePath: join(userData, "pwrsnap-settings.json")
+      filePath: join(userData, "pwrsnap-settings.json"),
+      resolveAppVersion: () => {
+        try {
+          return typeof app.getVersion === "function" ? app.getVersion() : "";
+        } catch {
+          return "";
+        }
+      }
     });
   }
   if (secretStore === null) {

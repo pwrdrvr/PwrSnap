@@ -4049,7 +4049,19 @@
   transition: transform 120ms var(--ease-out);
 }
 .psl__right-footer .fo__copy-btn {
-  height: 56px;
+  /* Content-driven, not a fixed 56px. These cards are ~97px wide inside
+     the 320px panel, which is narrow enough that the dimensions wrap to
+     two lines; add the DPI ladder's scale tag (¼× / 1× / RETINA) and the
+     column needs 65px. At a fixed height the tag was sliced in half —
+     the float-over shows the same three lines correctly because its
+     cards are wider and only need two.
+
+     `flex: 1` keeps the three buttons the same height as the tallest
+     (the grid row stretches every card), so the FILE lips stay on one
+     line even when only HIGH carries a RETINA tag. */
+  height: auto;
+  min-height: 56px;
+  flex: 1;
   padding: 8px 6px 7px;
   border-bottom: none;
   border-radius: 8px 8px 0 0;

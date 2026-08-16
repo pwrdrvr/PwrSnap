@@ -4,8 +4,9 @@
 // window-list payload. It creates normal top-level BrowserWindows at known DIP
 // rectangles, starts the real capture:interactive flow, lets the bundled C++
 // helper enumerate their HWNDs, and verifies the selector renders each native
-// window at the same bounds Electron reports. This pins the physical-pixel ->
-// DIP conversion required when Windows display scaling is above 100%.
+// window at the same bounds Electron reports, within the small frame rounding
+// difference between Electron and DWM. This pins the physical-pixel -> DIP
+// conversion required when Windows display scaling is above 100%.
 
 import { type Page } from "@playwright/test";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
@@ -13,6 +14,8 @@ import {
   spawnTargetWindows,
   type TargetWindowSpec
 } from "./fixtures/target-windows";
+
+const WINDOWS_FRAME_TOLERANCE_CSS_PX = 3;
 
 test.skip(process.platform !== "win32", "native HWND enumeration is Windows-only");
 
@@ -125,7 +128,7 @@ test("placed native windows are detected and highlighted at their Electron DIP b
             height: Number.parseFloat(html.style.height)
           };
         });
-        expect(rendered).toEqual({
+        expectRectNear(rendered, {
           x: local.x * rendererScale,
           y: local.y * rendererScale,
           width: local.width * rendererScale,
@@ -183,4 +186,20 @@ async function lockWindowSnap(selector: Page, x: number, y: number): Promise<voi
       return selector.locator("body").getAttribute("data-snap");
     })
     .toBe("window");
+}
+
+function expectRectNear(
+  actual: Readonly<Record<"x" | "y" | "width" | "height", number>>,
+  expected: Readonly<Record<"x" | "y" | "width" | "height", number>>
+): void {
+  // BrowserWindow.getBounds() describes Electron's window rectangle, while the
+  // native picker intentionally uses DWMWA_EXTENDED_FRAME_BOUNDS (the visible
+  // frame). Windows can round those rectangles apart by a couple of DIP/CSS
+  // pixels, especially when a display is scaled above 100%.
+  for (const key of ["x", "y", "width", "height"] as const) {
+    expect(
+      Math.abs(actual[key] - expected[key]),
+      `${key}: expected ${expected[key]}, received ${actual[key]}`
+    ).toBeLessThanOrEqual(WINDOWS_FRAME_TOLERANCE_CSS_PX);
+  }
 }

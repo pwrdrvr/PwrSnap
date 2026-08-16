@@ -257,8 +257,20 @@ test("library-right-rail: a trim refresh keeps an off-page video in Focus", asyn
     // intentionally pointer-transparent so clicking the thumbnail selects
     // the capture instead. Reproduce the real interaction before targeting
     // the CTA directly.
-    await videoCell.hover();
-    await videoCell.locator(".psl__cell-edit").click();
+    //
+    // Retried as a unit because the grid is virtualized and this test jams
+    // scrollTop to the bottom of 100+ rows: the row can still be settling
+    // when we arrive, and a bare `hover()` waits for the element to be
+    // "visible and stable" — two CONSECUTIVE animation frames with an
+    // identical box. On the Windows runner that never caught a quiet pair
+    // and timed out at 30s while macOS and Linux passed. Each attempt
+    // re-reads the row's position instead of betting on one snapshot, and
+    // the click keeps its full actionability checks, so what the test
+    // proves is unchanged.
+    await expect(async () => {
+      await videoCell.hover({ timeout: 5_000 });
+      await videoCell.locator(".psl__cell-edit").click({ timeout: 5_000 });
+    }).toPass({ timeout: 30_000 });
     await win.locator('.psl[data-mode="focus"]').waitFor({ state: "visible", timeout: 15_000 });
 
     // A second window can broadcast as soon as Focus renders, before a

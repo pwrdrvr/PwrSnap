@@ -63,6 +63,12 @@ export type CodexStatusPillProps = {
   readonly modelLabel?: string | undefined;
   /** Failure message from the latest run, when available. */
   readonly error?: string | null | undefined;
+  /** Compact run metadata rendered on the SAME row as the status text,
+   *  separated by a middot (e.g. `· GPT-5.6-Luna · <$0.001`). Exists so
+   *  a surface can fold a second boxed "model / cost" card into this
+   *  one row instead of stacking two bordered strips above the first
+   *  field. Omitted → the row is exactly what it was before. */
+  readonly meta?: ReactNode;
   readonly action?: ReactNode;
   readonly style?: CSSProperties;
   readonly className?: string;
@@ -119,7 +125,8 @@ function labelFor(
   kind: StatusKind,
   provider: string,
   model: string | undefined,
-  error: string | null | undefined
+  error: string | null | undefined,
+  hasMeta: boolean
 ): ReactNode {
   const withModel = model !== undefined && model.length > 0 ? ` (${model})` : "";
   switch (kind) {
@@ -137,9 +144,9 @@ function labelFor(
         </>
       );
     case "ready":
-      return <>{provider} drafted a title + description.</>;
+      return <>{provider} drafted a title + description{hasMeta ? "" : "."}</>;
     case "accepted":
-      return <>Description filled from {provider}.</>;
+      return <>Description filled from {provider}{hasMeta ? "" : "."}</>;
     case "failed":
       return failedLabelFor(provider, error);
     case "safety-disabled":
@@ -182,15 +189,18 @@ export function CodexStatusPill({
   providerLabel = "Codex",
   modelLabel,
   error,
+  meta,
   action,
   style,
   className
 }: CodexStatusPillProps): ReactElement {
   const kind = resolveKind(status, draftAvailable, accepted, needsConsent, safetyDisabled);
+  const hasMeta = meta !== undefined && meta !== null;
   const classes = [
     "ps-codex-pill",
     `ps-codex-pill--${variant}`,
     `is-${kind}`,
+    hasMeta ? "has-meta" : "",
     className ?? ""
   ]
     .join(" ")
@@ -212,7 +222,14 @@ export function CodexStatusPill({
           <path d="m12 2 2.5 5 5.5.5-4 4 1 5.5-5-3-5 3 1-5.5-4-4 5.5-.5z" />
         </svg>
       </span>
-      <span className="ps-codex-pill__text">{labelFor(kind, providerLabel, modelLabel, error)}</span>
+      <span className="ps-codex-pill__text">
+        <span className="ps-codex-pill__summary">
+          {labelFor(kind, providerLabel, modelLabel, error, hasMeta)}
+        </span>
+        {hasMeta ? (
+          <span className="ps-codex-pill__meta">{meta}</span>
+        ) : null}
+      </span>
       {action !== undefined ? <span className="ps-codex-pill__action">{action}</span> : null}
     </div>
   );

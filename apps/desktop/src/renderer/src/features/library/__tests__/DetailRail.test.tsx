@@ -642,14 +642,39 @@ describe("DetailRail", () => {
   test("shows latest AI run usage and sent media accounting", async () => {
     const { el } = await renderDetailRail(enrichment());
 
+    // Model + cost stay ON SCREEN, folded onto the Codex status row
+    // (`✦ … from Codex · gpt-5.4-mini · $0.002`) rather than in a
+    // second bordered card below it.
     const usage = el.querySelector(".psl__ai-usage");
     expect(usage?.textContent).toContain("gpt-5.4-mini");
     expect(usage?.textContent).toContain("$0.002");
-    expect(usage?.textContent).toContain("800 uncached in");
-    expect(usage?.textContent).toContain("100 cached");
-    expect(usage?.textContent).toContain("300 out (25 reasoning)");
-    expect(usage?.textContent).toContain("1024×742 JPEG");
-    expect(usage?.textContent).toContain("q75");
+
+    // …and the row lives inside the pill, not beside it.
+    expect(el.querySelector(".ps-codex-pill__meta .psl__ai-usage")).not.toBeNull();
+    expect(el.querySelector(".ps-codex-pill")?.classList.contains("has-meta")).toBe(true);
+
+    // Token / cache / media accounting moved into the strip's tooltip.
+    const accounting = usage?.getAttribute("title") ?? "";
+    expect(accounting).toContain("$0.002");
+    expect(accounting).toContain("800 uncached in");
+    expect(accounting).toContain("100 cached");
+    expect(accounting).toContain("300 out (25 reasoning)");
+    expect(accounting).toContain("1024×742 JPEG");
+    expect(accounting).toContain("q75");
+  });
+
+  test("keeps unavailable pricing in the tooltip instead of the headline", async () => {
+    const { el } = await renderDetailRail(enrichment(), {
+      usageDetail: () =>
+        aiUsageDetail({
+          cost: { status: "unavailable", reason: "pricing catalog missing" }
+        })
+    });
+
+    const usage = el.querySelector(".psl__ai-usage");
+    expect(usage?.textContent).toContain("gpt-5.4-mini");
+    expect(usage?.textContent).not.toContain("Price unavailable");
+    expect(usage?.getAttribute("title")).toContain("Price unavailable");
   });
 
   test("refreshes latest AI run usage when the same run completes", async () => {
@@ -667,7 +692,7 @@ describe("DetailRail", () => {
     );
 
     const usage = el.querySelector(".psl__ai-usage");
-    expect(usage?.textContent).toContain("Usage unavailable");
+    expect(usage?.getAttribute("title")).toContain("Usage unavailable");
     expect(
       dispatch.mock.calls.filter(([name]) => name === "codex:usageRunDetail")
     ).toHaveLength(1);
@@ -682,7 +707,9 @@ describe("DetailRail", () => {
       await Promise.resolve();
     });
 
-    expect(el.querySelector(".psl__ai-usage")?.textContent).toContain("800 uncached in");
+    expect(el.querySelector(".psl__ai-usage")?.getAttribute("title")).toContain(
+      "800 uncached in"
+    );
     expect(
       dispatch.mock.calls.filter(([name]) => name === "codex:usageRunDetail")
     ).toHaveLength(2);
@@ -874,6 +901,53 @@ describe("DetailRail", () => {
     // Persistent footer that hosts the L/M/H copy row + actions never
     // disappears across tab switches.
     expect(el.querySelector('[data-testid="psl-right-footer"]')).not.toBeNull();
+  });
+
+  test("the export footer lives INSIDE the panel column, not spanning the aside", async () => {
+    const { el } = await renderDetailRail(enrichment());
+
+    const aside = el.querySelector(".psl__right");
+    const panel = el.querySelector('[data-testid="psl-right-panel-pinned"]');
+    const footer = el.querySelector('[data-testid="psl-right-footer"]');
+    expect(panel).not.toBeNull();
+    expect(footer).not.toBeNull();
+
+    // Containment is the fix: while the footer was a sibling row of the
+    // aside's grid, the 38px activity rail stopped where the footer
+    // began. Inside the panel, the rail runs the full height.
+    expect(panel?.contains(footer ?? null)).toBe(true);
+
+    // …and the activity bar is a direct child of the same `.rab` the
+    // panel is, so both share the aside's full height.
+    const activity = aside?.querySelector(".rab__activity") ?? null;
+    expect(activity).not.toBeNull();
+    expect(activity?.parentElement?.classList.contains("rab")).toBe(true);
+    expect(panel?.parentElement).toBe(activity?.parentElement);
+  });
+
+  test("the rail mounts in fill mode so no slack gutter can open beside the separator", async () => {
+    const { el } = await renderDetailRail(enrichment());
+    // `.psl__right` draws the one separator; the panel must not be a
+    // fixed 320px inside the 360px column or a 1-2px gutter reappears.
+    expect(el.querySelector(".rab--fill")).not.toBeNull();
+    const panel = el.querySelector<HTMLElement>(
+      '[data-testid="psl-right-panel-pinned"]'
+    );
+    expect(panel?.style.width).toBe("");
+  });
+
+  test("OCR tab's accent dot is labelled, so it means exactly one thing", async () => {
+    const { el } = await renderDetailRail(enrichment({ ocrText: "snap content" }));
+    const ocrTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    expect(ocrTab?.querySelector(".rab__act-badge")?.getAttribute("title")).toBe(
+      "extracted text available"
+    );
+    expect(ocrTab?.getAttribute("aria-label")).toBe(
+      "OCR — extracted text available"
+    );
+    expect(ocrTab?.title).toBe("OCR — extracted text ready");
   });
 
   test("Grid mode renders the restricted Info/OCR inspector (no Chat tab)", async () => {

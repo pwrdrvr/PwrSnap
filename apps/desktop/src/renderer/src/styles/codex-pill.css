@@ -36,11 +36,33 @@
 
 .ps-codex-pill--strip .ps-codex-pill__text {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  row-gap: 2px;
 }
 
 .ps-codex-pill--strip .ps-codex-pill__text b {
   color: var(--text-primary);
   font-weight: 600;
+}
+
+/* Run metadata sits on a deliberate second line in the narrow strip.
+   Treating it as a middot-joined phrase looked tidy only while everything
+   fit; once the model wrapped, the separator dangled at the end or beginning
+   of a line. A stacked line remains stable across rail widths. */
+.ps-codex-pill__meta::before {
+  content: none;
+}
+.ps-codex-pill__meta {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+}
+.ps-codex-pill--strip.has-meta .ps-codex-pill__text {
+  flex-direction: column;
+  align-items: flex-start;
 }
 
 .ps-codex-pill__dots::after {

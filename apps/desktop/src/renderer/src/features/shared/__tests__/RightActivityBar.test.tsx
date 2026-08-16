@@ -50,6 +50,13 @@ interface RenderParams {
   active?: TabId;
   pinned?: boolean;
   badges?: Partial<Record<TabId, boolean>>;
+  /** Legend for the accent dot, per tab. */
+  badgeLabels?: Partial<Record<TabId, string>>;
+  /** Mount with a panel-local footer; the fn returns null for tabs that
+   *  opt out (mirrors the Library rail's Cart tab). */
+  footer?: ((id: TabId) => ReactElement | null) | undefined;
+  /** `pinnedWidthPx="fill"` instead of the default 320px. */
+  fill?: boolean;
 }
 
 interface RenderResult {
@@ -70,17 +77,26 @@ async function renderBar(params: RenderParams = {}): Promise<RenderResult> {
   let current: Required<RenderParams> = {
     active: params.active ?? "info",
     pinned: params.pinned ?? true,
-    badges: params.badges ?? {}
+    badges: params.badges ?? {},
+    badgeLabels: params.badgeLabels ?? {},
+    footer: params.footer,
+    fill: params.fill ?? false
   };
 
   function paint(next: Required<RenderParams>): ReactElement {
-    const tabs = TABS.map((t) =>
-      next.badges[t.id] === true ? { ...t, badge: true } : t
-    );
+    const tabs = TABS.map((t) => {
+      if (next.badges[t.id] !== true) return t;
+      const label = next.badgeLabels[t.id];
+      return label === undefined
+        ? { ...t, badge: true }
+        : { ...t, badge: true, badgeLabel: label };
+    });
     return createElement(RightActivityBar<TabId>, {
       tabs,
       activeTab: next.active,
       pinned: next.pinned,
+      ...(next.footer !== undefined ? { renderPanelFooter: next.footer } : {}),
+      ...(next.fill ? { pinnedWidthPx: "fill" as const } : {}),
       onTabChange: (id) => {
         current = { ...current, active: id };
         onTabChange(id);
@@ -117,7 +133,12 @@ async function renderBar(params: RenderParams = {}): Promise<RenderResult> {
     onPinChange,
     renderPanel,
     setProps: async (patch) => {
-      current = { ...current, ...patch, badges: patch.badges ?? current.badges };
+      current = {
+        ...current,
+        ...patch,
+        badges: patch.badges ?? current.badges,
+        badgeLabels: patch.badgeLabels ?? current.badgeLabels
+      };
       await rerender();
     }
   };
@@ -380,5 +401,119 @@ describe("RightActivityBar", () => {
     const ocrTabId = getTab(el, "ocr").getAttribute("id") ?? "";
     expect(ariaLabelledby).toBe(ocrTabId);
     expect(ariaLabelledby.length).toBeGreaterThan(0);
+  });
+
+  describe("panel-local footer", () => {
+    const footer = (id: TabId): ReactElement | null =>
+      id === "chat"
+        ? null
+        : createElement("div", { "data-testid": `footer-${id}` }, "footer");
+
+    test("renders INSIDE the pinned panel, not as a sibling of it", async () => {
+      const { el } = await renderBar({ active: "info", pinned: true, footer });
+      const panel = el.querySelector('[data-testid="rab-test-panel-pinned"]');
+      expect(panel).not.toBeNull();
+      // The containment is the whole point: a footer that is a sibling of
+      // the panel spans the host column and truncates the 38px icon rail.
+      expect(panel?.querySelector('[data-testid="footer-info"]')).not.toBeNull();
+      expect(panel?.querySelector(".rab__panel-footer")).not.toBeNull();
+    });
+
+    test("the hover-pop carries the same footer as the pinned panel", async () => {
+      const { el } = await renderBar({ active: "info", pinned: true, footer });
+      // Click the active icon → unpin, panel demotes to a hover-pop.
+      await act(async () => {
+        getTab(el, "info").click();
+        await Promise.resolve();
+      });
+      const hover = el.querySelector('[data-testid="rab-test-panel-hover"]');
+      expect(hover).not.toBeNull();
+      // Unpinning must not strand the user without the footer controls —
+      // this is what let the Library rail drop its `display: none`.
+      expect(hover?.querySelector('[data-testid="footer-info"]')).not.toBeNull();
+    });
+
+    test("a tab whose footer renders null gets no footer wrapper at all", async () => {
+      const { el } = await renderBar({ active: "chat", pinned: true, footer });
+      const panel = el.querySelector('[data-testid="rab-test-panel-pinned"]');
+      expect(panel?.querySelector('[data-testid="footer-chat"]')).toBeNull();
+      // Not even an empty wrapper — it would contribute a stray border.
+      expect(panel?.querySelector(".rab__panel-footer")).toBeNull();
+    });
+
+    test("no footer wrapper when the caller passes no renderPanelFooter", async () => {
+      const { el } = await renderBar({ active: "info", pinned: true });
+      expect(el.querySelector(".rab__panel-footer")).toBeNull();
+    });
+  });
+
+  describe("pinned panel width", () => {
+    test('pinnedWidthPx="fill" drops the inline width and the slack track', async () => {
+      const { el } = await renderBar({ active: "info", pinned: true, fill: true });
+      const panel = el.querySelector<HTMLElement>(
+        '[data-testid="rab-test-panel-pinned"]'
+      );
+      // An inline width would beat the grid track's stretch and re-open
+      // the 1–2px gutter beside the host's border-left — the double-rule
+      // bug this mode exists to kill.
+      expect(panel?.style.width).toBe("");
+      expect(el.querySelector(".rab--fill")).not.toBeNull();
+    });
+
+    test("numeric pinnedWidthPx still sets an inline width", async () => {
+      const { el } = await renderBar({ active: "info", pinned: true });
+      const panel = el.querySelector<HTMLElement>(
+        '[data-testid="rab-test-panel-pinned"]'
+      );
+      expect(panel?.style.width).toBe("320px");
+      expect(el.querySelector(".rab--fill")).toBeNull();
+    });
+
+    test('the hover-pop keeps a concrete width even in "fill" mode', async () => {
+      // The hover panel is absolutely positioned, so it has no track to
+      // fill; it must fall back to a pixel width or collapse to nothing.
+      const { el } = await renderBar({ active: "info", pinned: true, fill: true });
+      await act(async () => {
+        getTab(el, "info").click();
+        await Promise.resolve();
+      });
+      const hoverPanel = el.querySelector<HTMLElement>(".rab__panel--hover");
+      expect(hoverPanel?.style.width).toBe("320px");
+    });
+  });
+
+  describe("accent dot legend", () => {
+    test("the dot carries a tooltip and folds into the button's accessible name", async () => {
+      const { el } = await renderBar({
+        active: "info",
+        badges: { ocr: true },
+        badgeLabels: { ocr: "extracted text available" }
+      });
+      const ocrTab = getTab(el, "ocr");
+      const dot = ocrTab.querySelector(".rab__act-badge");
+      expect(dot).not.toBeNull();
+      expect(dot?.getAttribute("title")).toBe("extracted text available");
+      // aria-hidden on the dot: the legend is in the button's name, so
+      // exposing the dot too would announce it twice.
+      expect(dot?.getAttribute("aria-hidden")).toBe("true");
+      expect(ocrTab.getAttribute("aria-label")).toBe(
+        "OCR — extracted text available"
+      );
+    });
+
+    test("a badge with no label still gets a legend rather than a bare dot", async () => {
+      const { el } = await renderBar({ active: "info", badges: { ocr: true } });
+      const ocrTab = getTab(el, "ocr");
+      expect(ocrTab.querySelector(".rab__act-badge")?.getAttribute("title")).toBe(
+        "has content"
+      );
+      expect(ocrTab.getAttribute("aria-label")).toBe("OCR — has content");
+    });
+
+    test("no badge → the accessible name is just the label", async () => {
+      const { el } = await renderBar({ active: "info" });
+      expect(getTab(el, "ocr").getAttribute("aria-label")).toBe("OCR");
+      expect(getTab(el, "ocr").querySelector(".rab__act-badge")).toBeNull();
+    });
   });
 });

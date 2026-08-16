@@ -95,6 +95,7 @@ import { useGridPinchZoom } from "../../lib/useGridPinchZoom";
 import { registerCaptureUndoFallback } from "../../lib/editMenuBridge";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
 import { useHotkeys } from "../shared/useHotkeys";
+import { useVideoTrimRange } from "../shared/useVideoTrimRange";
 import { AppMenuBar } from "../shared/AppMenuBar";
 import { LayoutToggleButtons } from "../shared/LayoutToggleButtons";
 import "../shared/LayoutToggleButtons.css";
@@ -1947,6 +1948,36 @@ export function Library() {
     );
   }, [isTrashView, records, selectedRecordId, universeRecords]);
 
+  // ── Video trim range: ONE source of truth for the whole window ──────
+  //
+  // The stage's timeline and the rail's export cards must agree on the
+  // range at every instant. They can't if each reads its own copy: the
+  // stage owns live local state, while the persisted `defaultRange`
+  // only catches up a debounce + an IPC round-trip + an
+  // `events:captures:changed` revalidation after the user releases a
+  // handle. An export fired inside that window used to encode the OLD
+  // range while the timeline showed the new one.
+  //
+  // So the hook is lifted here (Library renders BOTH <Stage> and
+  // <DetailRail>) and the single `trim` object is threaded down. The
+  // float-over already does this correctly with its own single hook
+  // instance — see FloatOver.tsx.
+  const selectedVideo =
+    selectedRecord !== null &&
+    selectedRecord.kind === "video" &&
+    selectedRecord.video !== null &&
+    selectedRecord.video !== undefined
+      ? selectedRecord.video
+      : null;
+  // Unconditional hook call (rules of hooks). `captureId: null` when
+  // the selection isn't a video parks the hook: no persist timers, no
+  // dispatches.
+  const videoTrim = useVideoTrimRange({
+    captureId: selectedVideo === null ? null : selectedRecord!.id,
+    durationSec: selectedVideo?.durationSec ?? 0,
+    persistedRange: selectedVideo?.defaultRange ?? null
+  });
+
   // Grid-first right rail: shows when there's something to show — a
   // SELECTED capture (Info + OCR + Cart-when-non-empty + the L/M/H export
   // footer) OR a non-empty cart with nothing selected (a cart-only rail
@@ -3783,6 +3814,7 @@ export function Library() {
           }}
           prevRecordId={prevRecordId}
           nextRecordId={nextRecordId}
+          videoTrim={videoTrim}
           tool={tool}
           onToolChange={setTool}
           toolState={liftedToolState}
@@ -3933,6 +3965,10 @@ export function Library() {
       <DetailRail
         view={view}
         record={selectedRecord}
+        // The LIVE trim range, not the persisted one — see the
+        // `videoTrim` comment above. Null when the selection isn't a
+        // video (the rail's video branch is inert then anyway).
+        videoTrimRange={selectedVideo === null ? null : videoTrim.range}
         copyPulses={copyPulses}
         // Use the EFFECTIVE pin, not the raw one, so the rail's own render
         // (activity-bar spine + hover-pop when unpinned) matches the

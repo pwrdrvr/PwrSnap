@@ -102,6 +102,42 @@ export function parseCacheUrl(url: string): CacheUrlParts | null {
   return { captureId, width, format: format as "png" | "webp" };
 }
 
+/** Whitelisted derived-video asset filenames the `v/` arm may serve. */
+const VIDEO_ASSET_PATTERN = /^(frames-n\d{1,3}-w\d{1,4}\.jpg|audio\.m4a)$/;
+
+export type VideoAssetUrlParts = {
+  captureId: string;
+  asset: string;
+};
+
+/**
+ * Parse `pwrsnap-cache://v/<capture-id>/<asset>` → structured. The "v"
+ * host marks a derived video asset (filmstrip contact strip, extracted
+ * audio) living under `<render-cache>/video/<id>/`. The asset name is
+ * matched against a strict whitelist — never a free-form path — so
+ * the resolver can join it onto the per-capture directory without a
+ * traversal check. Strips any `?…` cache-buster. Returns `null` for
+ * anything malformed.
+ */
+export function parseVideoAssetUrl(url: string): VideoAssetUrlParts | null {
+  const prefix = `${SCHEMES.cache}://v/`;
+  if (!url.startsWith(prefix)) return null;
+  const noQuery = url.split(/[?#]/, 1)[0]!;
+  const rest = noQuery.slice(prefix.length).replace(/\/+$/, "");
+  const slash = rest.indexOf("/");
+  if (slash <= 0) return null;
+  const captureId = rest.slice(0, slash);
+  const asset = rest.slice(slash + 1);
+  if (!/^[a-zA-Z0-9_-]+$/.test(captureId)) return null;
+  if (!VIDEO_ASSET_PATTERN.test(asset)) return null;
+  return { captureId, asset };
+}
+
+/** Build the renderer-facing URL for a derived video asset. */
+export function videoAssetUrl(captureId: string, asset: string): string {
+  return `${SCHEMES.cache}://v/${captureId}/${asset}`;
+}
+
 /**
  * Parse `pwrsnap-app-icon://r/<bundle-id>` → `<bundle-id>`. Allows
  * `A-Za-z0-9._-` (the bundle-id alphabet). Strips any `?...` cache-

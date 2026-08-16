@@ -159,6 +159,36 @@ describe("video-repo metadata round-trip", () => {
     expect(getVideoMetadata("cap-clamp")!.defaultRange).toEqual({ start: 0, end: 10 });
   });
 
+  test("setDefaultRange round-trips a sub-range with sub-second precision (trim in/out)", async () => {
+    // The Library timeline persists in/out on handle release; the
+    // export path + presetMetrics read the same row back, so the
+    // float values must survive verbatim (cache rows key on them).
+    const { insertVideoMetadata, setDefaultRange, getVideoMetadata, listVideoMetadata } =
+      await import("../video-repo");
+    insertCaptureRow(mocks.db!, "cap-trim", "video");
+    insertVideoMetadata({
+      captureId: "cap-trim",
+      durationSec: 16,
+      containerFormat: "mp4",
+      hasSystemAudio: true,
+      hasMicrophoneAudio: false,
+      subject: { kind: "display", displayId: 1 }
+    });
+    expect(getVideoMetadata("cap-trim")!.defaultRange).toEqual({ start: 0, end: 16 });
+
+    const written = setDefaultRange("cap-trim", { start: 3.4, end: 11.2 });
+    expect(written).toEqual({ start: 3.4, end: 11.2 });
+    expect(getVideoMetadata("cap-trim")!.defaultRange).toEqual({ start: 3.4, end: 11.2 });
+    expect(listVideoMetadata(["cap-trim"]).get("cap-trim")!.defaultRange).toEqual({
+      start: 3.4,
+      end: 11.2
+    });
+
+    // Reset to full clip (the "Full clip" chip) — writes exactly [0, duration].
+    setDefaultRange("cap-trim", { start: 0, end: 16 });
+    expect(getVideoMetadata("cap-trim")!.defaultRange).toEqual({ start: 0, end: 16 });
+  });
+
   test("setDefaultRange returns null for missing video", async () => {
     const { setDefaultRange } = await import("../video-repo");
     expect(setDefaultRange("nope", { start: 0, end: 1 })).toBeNull();

@@ -42,6 +42,7 @@ const targets = [
   "apps/desktop/src/renderer/src/styles/app.css",
   "apps/desktop/src/renderer/src/styles/library.css",
   "apps/desktop/src/renderer/src/styles/float-over.css",
+  "apps/desktop/src/renderer/src/styles/video-timeline.css",
   "apps/desktop/src/renderer/src/styles/settings.css",
   "apps/desktop/src/renderer/src/styles/documents.css",
   "apps/desktop/src/renderer/src/features/editor/editor.css"

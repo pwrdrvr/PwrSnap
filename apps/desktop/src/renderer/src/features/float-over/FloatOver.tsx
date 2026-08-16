@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import type { CaptureEnrichment, CapturesLocation, ExportStrategy } from "@pwrsnap/shared";
+import type {
+  CaptureEnrichment,
+  CapturesLocation,
+  ExportStrategy,
+  VideoRange
+} from "@pwrsnap/shared";
 import { resolveExportLadder, rungForPreset } from "@pwrsnap/shared";
 import { PwrSnapMark } from "../shared/BrandMark";
 import {
@@ -15,6 +20,9 @@ import { useFieldEditor } from "../shared/useFieldEditor";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
 import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
+import { VideoTimeline } from "../shared/VideoTimeline";
+import { useVideoTimelineAssets } from "../shared/useVideoTimelineAssets";
+import { useVideoTrimRange } from "../shared/useVideoTrimRange";
 import { FoIcon } from "./FoIcons";
 
 const RES_PRESETS = [
@@ -132,10 +140,14 @@ function FoTags({
  *    new behavior; the asset object passes through unchanged.
  *  - `video`: same chrome (header / scanner / annotate / AI / footer /
  *    Edit) but the preview element is a native `<video>` and the
- *    Low / Med / High clipboard row is replaced by GIF / MP4
- *    full-clip export buttons that hit `video:export`. The toast
- *    stays cheap because `<video preload="metadata">` only loads
- *    the moov atom + first frame until the user actually plays.
+ *    Low / Med / High clipboard row is replaced by a mini trim strip
+ *    (40 px filmstrip + in/out handles bound to the record's
+ *    `defaultRange`, persisted via `video:setDefaultRange`) above the
+ *    GIF / MP4 L/M/H export cards. Every export / copy / drag call
+ *    carries the displayed range explicitly, so the toast and the
+ *    Library stage agree on what encodes. The toast stays cheap
+ *    because `<video preload="metadata">` only loads the moov atom +
+ *    first frame until the user actually plays.
  */
 export type FloatOverAsset =
   | {
@@ -162,6 +174,12 @@ export type FloatOverAsset =
        *  AND drives the short-clip warning banner (clips under 1.5s
        *  are usually an accidental Stop press right after Start). */
       durationSec: number;
+      /** Source pixel size — sizes the mini-trim filmstrip cells. */
+      widthPx: number;
+      heightPx: number;
+      /** Persisted trim range (`record.video.defaultRange`) that seeds
+       *  the mini-trim handles. Fresh recordings arrive full-clip. */
+      defaultRange: VideoRange;
       /** Discard the just-saved recording. Wired by the host to
        *  `library:delete` + `library:purge` + `float-over:dismiss`
        *  so the Library row, source file, and any cached exports
@@ -715,7 +733,7 @@ export function FloatOver({
         // 4px` so the grid sits at the same horizontal inset as
         // the image copy row.
         <div className="fo__export-grid">
-          <VideoExportPresetsPanel captureId={asset.captureId} />
+          <FloatOverVideoExport asset={asset} />
         </div>
       ) : (
         <div className="fo__copy">
@@ -1031,5 +1049,47 @@ export function FoDesktopFrame({
         {children}
       </div>
     </div>
+  );
+}
+
+/**
+ * Video export block for the toast: a compact trim strip (40 px
+ * filmstrip + in/out handles, no waveform / playhead) above the
+ * 6-card GIF / MP4 grid. The trim range is the same persisted
+ * `defaultRange` the Library stage edits — `useVideoTrimRange`
+ * persists on handle release (debounced) and the panel receives the
+ * displayed range explicitly so what you see is what encodes.
+ */
+function FloatOverVideoExport({ asset }: { asset: Extract<FloatOverAsset, { kind: "video" }> }) {
+  const [stripWidth, setStripWidth] = useState(0);
+  const trim = useVideoTrimRange({
+    captureId: asset.captureId,
+    durationSec: asset.durationSec,
+    persistedRange: asset.defaultRange
+  });
+  const assets = useVideoTimelineAssets({
+    captureId: asset.captureId,
+    stripWidthPx: stripWidth,
+    laneHeightPx: 40,
+    sourceWidthPx: asset.widthPx,
+    sourceHeightPx: asset.heightPx,
+    wantAudio: false,
+    hasAudioTrack: false
+  });
+  return (
+    <>
+      <div className="fo__trim" data-testid="fo-video-trim">
+        <VideoTimeline
+          compact
+          durationSec={asset.durationSec}
+          range={trim.range}
+          frames={assets.frames}
+          onRangeChange={trim.setRange}
+          onWidthChange={setStripWidth}
+          label="Trim recording"
+        />
+      </div>
+      <VideoExportPresetsPanel captureId={asset.captureId} range={trim.range} />
+    </>
   );
 }

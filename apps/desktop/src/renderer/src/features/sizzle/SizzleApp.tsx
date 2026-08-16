@@ -34,6 +34,7 @@ import {
 import { IterableQueueMapperSimple } from "@shutterstock/p-map-iterable";
 import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
+import { SequenceWaveform } from "../shared/SequenceWaveform";
 import { SizzleChatPanel } from "./SizzleChatPanel";
 import "./sizzle.css";
 
@@ -581,62 +582,6 @@ function sequencePreviewVideoState(args: {
     playbackRate: fit.playbackRate,
     shouldPlay: !(fit.renderMode === "freeze-end" && elapsedSec >= inputDurationSec)
   };
-}
-
-/**
- * Render the narration's real waveform with wavesurfer.js (BSD-3-Clause)
- * once a preview has decoded the audio. wavesurfer owns the decode →
- * peak extraction → canvas render; we keep it display-only (no clicks,
- * no cursor) and overlay our own beat track + playhead. Loaded by
- * dynamic import so it is code-split out of the initial bundle and so
- * jsdom unit tests (no canvas / ResizeObserver) never touch it.
- */
-function SequenceWaveform({ audioBlob }: { audioBlob: Blob }): ReactElement {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const container = containerRef.current;
-    if (container === null) return;
-    let instance: import("wavesurfer.js").default | null = null;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const { default: WaveSurfer } = await import("wavesurfer.js");
-        if (cancelled || containerRef.current === null) return;
-        // Canvas can't read CSS vars; resolve the accent at runtime so
-        // the waveform tracks the theme. The container's own opacity
-        // mutes it to match the rest of the timeline chrome.
-        const accent =
-          getComputedStyle(document.documentElement)
-            .getPropertyValue("--accent")
-            .trim() || "#ff8a1f";
-        instance = WaveSurfer.create({
-          container: containerRef.current,
-          height: 24,
-          barWidth: 2,
-          barGap: 2,
-          barRadius: 2,
-          waveColor: accent,
-          progressColor: accent,
-          cursorWidth: 0,
-          interact: false,
-          normalize: true
-        });
-        await instance.loadBlob(audioBlob);
-      } catch {
-        // jsdom (no canvas) or a decode failure — the idle baseline
-        // stays in place rather than a fabricated waveform.
-      }
-    })();
-    return () => {
-      cancelled = true;
-      try {
-        instance?.destroy();
-      } catch {
-        // Already torn down; nothing to clean up.
-      }
-    };
-  }, [audioBlob]);
-  return <div ref={containerRef} className="szl__sequence-wave-surfer" aria-hidden="true" />;
 }
 
 function SequenceTimelinePreview(props: {

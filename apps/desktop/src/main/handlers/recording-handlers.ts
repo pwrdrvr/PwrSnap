@@ -9,6 +9,8 @@
 //   • Video export is a derived-artifact path keyed by the same
 //     command bus the renderer uses for image clipboard/drag.
 
+import { copyFile, mkdir, rename, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { ok, err } from "@pwrsnap/shared";
 import type {
   PwrSnapError,
@@ -53,7 +55,12 @@ import {
   mapVideoResolveError,
   resolveVideoExport
 } from "../recording/video-export-resolver";
+import { validateVideoExportRequest } from "../recording/video-export-validation";
 import { ensureVideoPoster } from "../recording/video-poster";
+import { ensureVideoFrames, videoAssetDir } from "../recording/video-frames";
+import { extractVideoAudio } from "../sizzle/audio-extract";
+import { videoAssetUrl } from "../protocols-parse";
+import { broadcastCapturesChanged } from "../events";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
@@ -82,47 +89,28 @@ function recordingError(code: string, message: string, cause?: unknown): PwrSnap
   return { kind: "capture", code, message, cause };
 }
 
+/** Filename of the extracted full-clip audio under the video asset dir.
+ *  Must stay in the `parseVideoAssetUrl` whitelist. */
+const VIDEO_AUDIO_ASSET = "audio.m4a";
+
+async function fileHasBytes(path: string): Promise<boolean> {
+  try {
+    const s = await stat(path);
+    return s.isFile() && s.size > 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Validate a video:export request without crossing the bus. We can't
- * trust the renderer (or a future HTTP/MCP transport) to send well-
- * formed audio or range payloads, so every arm is checked.
+ * Validate a video:export request without crossing the bus. Thin
+ * wrapper over the shared `validateVideoExportRequest` — the same
+ * gate `clipboard:copyVideoFile` / `clipboard:copyVideoPath` /
+ * `video:prepareDrag` run, so no verb can accept a payload another
+ * one rejects.
  */
 function validateExportRequest(req: VideoExportRequest): Result<VideoExportRequest, PwrSnapError> {
-  if (typeof req.captureId !== "string" || req.captureId.length === 0) {
-    return err(validationError("invalid_capture_id", "video:export: captureId must be a non-empty string"));
-  }
-  if (req.format !== "gif" && req.format !== "mp4") {
-    return err(validationError("invalid_format", "video:export: format must be \"gif\" or \"mp4\""));
-  }
-  if (req.preset !== "low" && req.preset !== "med" && req.preset !== "high") {
-    return err(
-      validationError(
-        "invalid_preset",
-        "video:export: preset must be \"low\", \"med\", or \"high\""
-      )
-    );
-  }
-  if (req.range !== undefined) {
-    const r = req.range;
-    if (typeof r.start !== "number" || typeof r.end !== "number") {
-      return err(validationError("invalid_range", "video:export: range start/end must be numbers"));
-    }
-    if (!Number.isFinite(r.start) || !Number.isFinite(r.end)) {
-      return err(validationError("invalid_range", "video:export: range start/end must be finite"));
-    }
-    if (r.end < r.start) {
-      return err(validationError("invalid_range", "video:export: range end must be >= start"));
-    }
-  }
-  if (req.audio !== undefined) {
-    if (
-      typeof req.audio.includeSystemAudio !== "boolean" ||
-      typeof req.audio.includeMicrophone !== "boolean"
-    ) {
-      return err(validationError("invalid_audio", "video:export: audio toggles must be booleans"));
-    }
-  }
-  return ok(req);
+  return validateVideoExportRequest(req, "video:export");
 }
 
 let serviceOverrideForTests: RecordingService | null = null;
@@ -328,7 +316,103 @@ export function registerRecordingHandlers(): void {
       return err(validationError("not_a_video", `video:setDefaultRange: ${req.captureId} is not a video capture`));
     }
     setDefaultRange(req.captureId, normalizeRange(req.range, meta.durationSec));
+    // The Library revalidates the record on this broadcast, so the
+    // DetailRail's export eyebrow / metrics and any other window
+    // (float-over) pick up the new `defaultRange` without polling.
+    broadcastCapturesChanged([req.captureId]);
     return ok(undefined);
+  });
+
+  // ── video:frames ──────────────────────────────────────────────────
+  //
+  // Filmstrip contact strip for the timeline. Extraction + on-disk
+  // cache live in `recording/video-frames.ts`; the renderer displays
+  // the returned `pwrsnap-cache://v/…` URL through the serve-only
+  // protocol arm.
+  bus.register("video:frames", async (req) => {
+    if (typeof req.captureId !== "string" || req.captureId.length === 0) {
+      return err(validationError("invalid_capture_id", "video:frames: captureId must be a non-empty string"));
+    }
+    if (req.count !== undefined && (typeof req.count !== "number" || !Number.isFinite(req.count))) {
+      return err(validationError("invalid_count", "video:frames: count must be a finite number"));
+    }
+    if (
+      req.frameWidth !== undefined &&
+      (typeof req.frameWidth !== "number" || !Number.isFinite(req.frameWidth))
+    ) {
+      return err(validationError("invalid_frame_width", "video:frames: frameWidth must be a finite number"));
+    }
+    const record = getCaptureById(req.captureId);
+    if (record === null) {
+      return err(validationError("not_found", `video:frames: capture not found: ${req.captureId}`));
+    }
+    if (record.kind !== "video" || record.video === null || record.video === undefined) {
+      return err(validationError("not_a_video", `video:frames: ${req.captureId} is not a video capture`));
+    }
+    try {
+      const frames = await ensureVideoFrames(record, record.video, {
+        count: req.count,
+        frameWidth: req.frameWidth
+      });
+      return ok({
+        url: videoAssetUrl(record.id, frames.fileName),
+        frameCount: frames.spec.count,
+        frameWidth: frames.spec.frameWidth,
+        frameHeight: frames.spec.frameHeight
+      });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      log.error("video:frames failed", { captureId: req.captureId, message });
+      return err({ kind: "render", code: "video_frames_failed", message, cause });
+    }
+  });
+
+  // ── video:audio ───────────────────────────────────────────────────
+  //
+  // Full-clip audio for the waveform lane. Reuses the sizzle
+  // native-audio extractor (content-addressed under sizzle-cache) and
+  // mirrors the result into the per-capture video asset dir so the
+  // `pwrsnap-cache://v/<id>/audio.m4a` arm can serve it.
+  bus.register("video:audio", async (req) => {
+    if (typeof req.captureId !== "string" || req.captureId.length === 0) {
+      return err(validationError("invalid_capture_id", "video:audio: captureId must be a non-empty string"));
+    }
+    const record = getCaptureById(req.captureId);
+    if (record === null) {
+      return err(validationError("not_found", `video:audio: capture not found: ${req.captureId}`));
+    }
+    if (record.kind !== "video" || record.video === null || record.video === undefined) {
+      return err(validationError("not_a_video", `video:audio: ${req.captureId} is not a video capture`));
+    }
+    if (!record.video.hasSystemAudio && !record.video.hasMicrophoneAudio) {
+      return ok({ hasAudio: false as const });
+    }
+    if (record.legacy_src_path === null) {
+      return err(validationError("no_video_path", `video:audio: ${req.captureId} has no source path`));
+    }
+    try {
+      const target = join(videoAssetDir(record.id), VIDEO_AUDIO_ASSET);
+      if (!(await fileHasBytes(target))) {
+        const extracted = await extractVideoAudio({
+          videoPath: record.legacy_src_path,
+          startSec: 0,
+          durationSec: record.video.durationSec
+        });
+        await mkdir(videoAssetDir(record.id), { recursive: true });
+        const tmp = `${target}.${process.pid}.tmp`;
+        await copyFile(extracted, tmp);
+        await rename(tmp, target);
+      }
+      return ok({
+        hasAudio: true as const,
+        url: videoAssetUrl(record.id, VIDEO_AUDIO_ASSET),
+        mimeType: "audio/mp4" as const
+      });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      log.error("video:audio failed", { captureId: req.captureId, message });
+      return err({ kind: "render", code: "video_audio_failed", message, cause });
+    }
   });
 
   bus.register("video:export", async (req) => {
@@ -410,7 +494,24 @@ export function registerRecordingHandlers(): void {
     if (record.kind !== "video" || record.video === null || record.video === undefined) {
       return err(validationError("not_a_video", `video:presetMetrics: ${req.captureId} is not a video`));
     }
-    const range = record.video.defaultRange;
+    if (req.range !== undefined) {
+      const r = req.range;
+      if (
+        typeof r?.start !== "number" ||
+        typeof r?.end !== "number" ||
+        !Number.isFinite(r.start) ||
+        !Number.isFinite(r.end) ||
+        r.end < r.start
+      ) {
+        return err(
+          validationError(
+            "invalid_range",
+            "video:presetMetrics: range start/end must be finite numbers with end >= start"
+          )
+        );
+      }
+    }
+    const range = req.range ?? record.video.defaultRange;
     const normalized = normalizeRange(range, record.video.durationSec);
     const durationSec = normalized.end - normalized.start;
     // Default audio choice mirrors the same fallback the encoder
@@ -460,6 +561,11 @@ export function registerRecordingHandlers(): void {
   // `video:drag-start` (in `apps/desktop/src/main/ipc.ts`) calls
   // this then fires `event.sender.startDrag({ file, icon })`.
   bus.register("video:prepareDrag", async (req) => {
+    // `ipc.ts::parseVideoDragRequest` already screens the native
+    // drag payload, but the bus is reachable without it (HTTP RPC,
+    // MCP), so the verb validates for itself too.
+    const valid = validateVideoExportRequest(req, "video:prepareDrag");
+    if (!valid.ok) return valid;
     const resolved = await resolveVideoExport(req);
     if (!resolved.ok) {
       return err(mapVideoResolveError(resolved.error, "video:prepareDrag", req.captureId));

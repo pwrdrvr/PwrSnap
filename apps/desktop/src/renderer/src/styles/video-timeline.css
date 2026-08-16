@@ -1,0 +1,430 @@
+/* Video stage, transport row, and trim timeline.
+ *
+ *   .psl__video-stage   — the video arm of the Library stage (Focus/Reel)
+ *   .psl__vt            — transport row (play · timecode · loop · mute · fs)
+ *   .vtl                — timeline strip (shared with the float-over `.vtl--compact`)
+ *
+ * Tokens only: `--accent` for handles / waveform / playhead cap,
+ * `--text-primary` for the playhead line, `--font-mono` for timecodes.
+ * Motion: 120–180 ms ease-out on handle snaps only (transitions are
+ * suppressed while dragging via `.is-dragging`).
+ * Plan: docs/plans/2026-08-15-001-feat-video-transport-trim-plan.md
+ */
+
+/* ── Stage ─────────────────────────────────────────────────────────── */
+
+.psl__stage-img.is-video {
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+.psl__video-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  gap: 8px;
+  outline: none;
+  border-radius: 10px;
+}
+
+.psl__video-stage:focus-visible {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.psl__video-frame {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg-app);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-base) 45%, transparent);
+}
+
+.psl__video-el {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--bg-app);
+  cursor: pointer;
+}
+
+/* ── Transport ─────────────────────────────────────────────────────── */
+
+.psl__vt {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+  border: 1px solid var(--border-subtle);
+}
+
+.psl__vt-btn {
+  height: 28px;
+  min-width: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  transition: background var(--dur-fast, 120ms) var(--ease-out, ease-out),
+    color var(--dur-fast, 120ms) var(--ease-out, ease-out);
+}
+
+.psl__vt-btn:hover {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+}
+
+.psl__vt-btn.is-play {
+  color: var(--text-primary);
+}
+
+.psl__vt-btn.is-on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.psl__vt-btn svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.psl__vt-btn-label {
+  display: inline-block;
+}
+
+.psl__vt-time {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 0 6px;
+  font: 500 11px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.psl__vt-time b {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.psl__vt-time i {
+  font-style: normal;
+  color: var(--text-subtle);
+}
+
+.psl__vt-spacer {
+  flex: 1;
+}
+
+/* ── Timeline strip ────────────────────────────────────────────────── */
+
+.vtl {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.vtl__ticks {
+  position: relative;
+  height: 12px;
+  margin: 0;
+}
+
+.vtl__tick {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 4px;
+  background: color-mix(in srgb, var(--text-muted) 55%, transparent);
+  transform: translateX(-0.5px);
+}
+
+.vtl__tick.is-major {
+  height: 7px;
+  background: color-mix(in srgb, var(--text-muted) 85%, transparent);
+}
+
+.vtl__tick i {
+  position: absolute;
+  bottom: 8px;
+  left: 3px;
+  font: 500 10px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-style: normal;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.vtl__strip {
+  position: relative;
+  width: 100%;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  cursor: crosshair;
+  touch-action: none;
+  outline: none;
+}
+
+.vtl__film {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--bg-panel) 0,
+    var(--bg-panel) 47px,
+    var(--border-subtle) 47px,
+    var(--border-subtle) 48px
+  );
+}
+
+.vtl__film-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  pointer-events: none;
+}
+
+/* Subtle 1px separators between cells, painted over the strip. The
+   cell count comes from the strip descriptor via `--vtl-cells`. */
+.vtl__film::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0,
+    transparent calc(100% / var(--vtl-cells, 24) - 1px),
+    color-mix(in srgb, var(--bg-app) 55%, transparent) calc(100% / var(--vtl-cells, 24) - 1px),
+    color-mix(in srgb, var(--bg-app) 55%, transparent) calc(100% / var(--vtl-cells, 24))
+  );
+}
+
+.vtl__film-empty {
+  width: 100%;
+  height: 100%;
+}
+
+.vtl__wave {
+  position: relative;
+  width: 100%;
+  border-top: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-app) 60%, var(--bg-panel));
+}
+
+.vtl__wave-surfer {
+  height: 24px;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0.9;
+}
+
+.vtl__wave-empty {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.vtl__wave-empty.is-loading {
+  background: color-mix(in srgb, var(--text-muted) 35%, transparent);
+}
+
+/* Dimming scrim outside the trim range. */
+.vtl__scrim {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg-app) 68%, transparent);
+  transition: width 150ms var(--ease-out, ease-out), left 150ms var(--ease-out, ease-out);
+}
+
+.vtl__scrim.is-left {
+  left: 0;
+}
+
+/* Handles: 8px accent brackets sitting just inside the range. */
+.vtl__handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: var(--accent);
+  cursor: ew-resize;
+  transition: left 150ms var(--ease-out, ease-out), background 120ms var(--ease-out, ease-out);
+  z-index: 3;
+}
+
+.vtl__handle::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 2px;
+  height: 14px;
+  margin-top: -7px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--button-text-on-accent) 85%, transparent);
+}
+
+.vtl__handle.is-in {
+  border-radius: 6px 0 0 6px;
+}
+
+.vtl__handle.is-out {
+  border-radius: 0 6px 6px 0;
+}
+
+.vtl__handle:hover,
+.vtl__handle.is-active {
+  background: var(--accent-bright);
+}
+
+.vtl__handle:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: -2px;
+}
+
+.vtl.is-dragging .vtl__handle,
+.vtl.is-dragging .vtl__scrim {
+  transition: none;
+}
+
+/* Playhead: 1px --text-primary line + small triangle cap on top. */
+.vtl__playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  margin-left: -0.5px;
+  background: var(--text-primary);
+  pointer-events: none;
+  z-index: 4;
+}
+
+.vtl__playhead::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -4px;
+  border-left: 4.5px solid transparent;
+  border-right: 4.5px solid transparent;
+  border-top: 6px solid var(--accent);
+}
+
+.vtl__tip {
+  position: absolute;
+  top: 6px;
+  transform: translateX(-50%);
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg-panel-elevated) 96%, transparent);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font: 600 10px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 5;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--shadow-base) 45%, transparent);
+}
+
+/* Foot: TRIM eyebrow + Full clip chip. */
+.vtl__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px;
+}
+
+.vtl__trim-label {
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.vtl__foot-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.vtl__chip {
+  height: 18px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 120ms var(--ease-out, ease-out), border-color 120ms var(--ease-out, ease-out);
+}
+
+.vtl__chip:hover:not(:disabled) {
+  color: var(--accent-bright);
+  border-color: var(--accent-border);
+}
+
+.vtl__chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ── Compact (float-over mini-trim) ────────────────────────────────── */
+
+.vtl--compact .vtl__strip {
+  border-radius: 5px;
+  cursor: default;
+}
+
+.vtl--compact .vtl__handle {
+  width: 8px;
+}
+
+.vtl--compact .vtl__foot {
+  min-height: 14px;
+}

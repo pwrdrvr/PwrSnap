@@ -97,6 +97,7 @@ import { installRecordingController } from "./recording/recording-controller";
 import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
 import { isRecordingActive } from "./recording/recording-state";
+import { videoAssetDir } from "./recording/video-frames";
 import {
   getDesktopSettingsServices,
   getLocalAgentAuditService,
@@ -1310,6 +1311,18 @@ const protocolResolver: ProtocolResolver = {
   },
   async cacheFile(req) {
     return resolveCacheFile(req);
+  },
+  async videoAssetPath(captureId, asset) {
+    // Serve-only: the asset name is whitelisted by the URL parser and
+    // the directory is the per-capture render-cache dir, so a plain
+    // join is safe. Extraction happens in `video:frames` / `video:audio`.
+    const filePath = join(videoAssetDir(captureId), asset);
+    try {
+      await access(filePath);
+      return filePath;
+    } catch {
+      return null;
+    }
   },
   async appIconPath(bundleId) {
     return getAppIconPath(bundleId);

@@ -17,20 +17,26 @@
 // the panel is safe to mount even before a video selection lands.
 
 import type { ReactElement } from "react";
+import type { VideoRange } from "@pwrsnap/shared";
 import { useVideoExportPresets } from "./useVideoExportPresets";
 import { useVideoPresetMetrics } from "./useVideoPresetMetrics";
 import { VideoExportPresetGrid } from "./VideoExportPresetGrid";
 
 export type VideoExportPresetsPanelProps = {
   readonly captureId: string | null;
+  /** Trim range to export (rides explicitly on every copy / drag /
+   *  export call and re-keys the metrics). Omitted → main falls back
+   *  to the record's persisted `defaultRange`. */
+  readonly range?: VideoRange | undefined;
 };
 
 export function VideoExportPresetsPanel({
-  captureId
+  captureId,
+  range
 }: VideoExportPresetsPanelProps): ReactElement {
   const { states, triggerCopy, triggerCopyPath, triggerDrag } =
-    useVideoExportPresets(captureId === null ? null : { captureId });
-  const metrics = useVideoPresetMetrics(captureId);
+    useVideoExportPresets(captureId === null ? null : { captureId, range });
+  const metrics = useVideoPresetMetrics(captureId, range);
   return (
     <VideoExportPresetGrid
       metrics={metrics}

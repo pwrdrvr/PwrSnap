@@ -16,6 +16,12 @@
 //     the disk cache when present, compose-on-demand on miss. Used for
 //     library thumbnails, float-over preview, drag-out icons.
 //
+//   pwrsnap-cache://v/<capture-id>/<asset>
+//     Serve-only arm for derived video assets written by `video:frames`
+//     (filmstrip contact strip) and `video:audio` (extracted m4a) under
+//     <render-cache>/video/<id>/. Asset names are whitelisted in
+//     protocols-parse.ts; misses 404 (the IPC verbs are what extract).
+//
 //   pwrsnap-sizzle://r/<project-id>
 //     Resolves to a rendered sizzle-reel output movie for Library
 //     hover previews. Unknown, unrendered, or missing outputs 404.
@@ -44,6 +50,7 @@ import {
   parseCacheUrl,
   parseCaptureId,
   parseSourceUrl,
+  parseVideoAssetUrl,
   SCHEMES
 } from "./protocols-parse";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
@@ -142,6 +149,14 @@ export type ProtocolResolver = {
     width: number;
     format: "png" | "webp";
   }): Promise<string | null>;
+  /**
+   * Resolve `(captureId, asset)` to a derived video asset (filmstrip
+   * contact strip / extracted audio) that a `video:frames` /
+   * `video:audio` call already wrote under the capture's render-cache
+   * dir. Serve-only — never extracts on miss; returns null (404) when
+   * the file isn't there.
+   */
+  videoAssetPath(captureId: string, asset: string): Promise<string | null>;
   /**
    * Resolve a bundle id to a cached app-icon PNG. Returns null when
    * the app isn't installed locally or extraction failed — renderer
@@ -366,6 +381,24 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
   });
 
   protocol.handle(SCHEMES.cache, async (request) => {
+    // Derived video assets: `pwrsnap-cache://v/<id>/<asset>`. Checked
+    // before the `r/` render-cache shape since both share the scheme.
+    const videoAsset = parseVideoAssetUrl(request.url);
+    if (videoAsset !== null) {
+      try {
+        const filePath = await resolver.videoAssetPath(videoAsset.captureId, videoAsset.asset);
+        if (filePath === null) {
+          return new Response("not found", { status: 404 });
+        }
+        return await fileResponse(filePath, request);
+      } catch (cause) {
+        log.error("video-asset handler threw", {
+          ...videoAsset,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+        return new Response("internal error", { status: 500 });
+      }
+    }
     const parsed = parseCacheUrl(request.url);
     if (parsed === null) {
       log.warn("cache: invalid url", { url: request.url });

@@ -194,6 +194,10 @@ function installFakeApi(
     if (name === "library:removeTag") return { ok: true, value: accepted };
     if (name === "clipboard:copyText") return { ok: true, value: undefined };
     if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
+    if (name === "video:presetMetrics") return { ok: true, value: { metrics: [] } };
+    if (name === "clipboard:copyVideoFile") return { ok: true, value: { path: "/cache/x.gif" } };
+    if (name === "clipboard:copyVideoPath") return { ok: true, value: { path: "/cache/x.gif" } };
+    if (name === "video:export") return { ok: true, value: { path: "/cache/x.gif" } };
     if (name === "codex:libraryChat:list") return { ok: true, value: { threads: [] } };
     if (name === "codex:libraryChat:history") return { ok: true, value: { messages: [] } };
     return { ok: true, value: undefined };
@@ -790,6 +794,10 @@ describe("DetailRail", () => {
           error: { kind: "internal", code: "boom", message: "simulated failure" }
         };
       if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
+    if (name === "video:presetMetrics") return { ok: true, value: { metrics: [] } };
+    if (name === "clipboard:copyVideoFile") return { ok: true, value: { path: "/cache/x.gif" } };
+    if (name === "clipboard:copyVideoPath") return { ok: true, value: { path: "/cache/x.gif" } };
+    if (name === "video:export") return { ok: true, value: { path: "/cache/x.gif" } };
       return { ok: true, value: undefined };
     });
     (globalThis as unknown as { window: Window }).window.pwrsnapApi = {
@@ -1437,5 +1445,68 @@ describe("DetailRail — Layers tab", () => {
     });
     expect(el.querySelector('[data-testid="psl-right-tab-properties"]')).toBeNull();
     expect(el.querySelector('[data-testid="psl-right-tab-layers"]')).toBeNull();
+  });
+});
+
+describe("DetailRail video export honors the persisted trim range", () => {
+  const videoMeta = {
+    durationSec: 16,
+    containerFormat: "mp4" as const,
+    hasSystemAudio: false,
+    hasMicrophoneAudio: false,
+    previewPath: null,
+    previewStatus: "ready" as const
+  };
+
+  test("full clip: eyebrow reads EXPORT and metrics are fetched with the full range", async () => {
+    const videoRecord: CaptureRecord = {
+      ...record,
+      kind: "video",
+      video: { ...videoMeta, defaultRange: { start: 0, end: 16 } }
+    };
+    const { el, dispatch } = await renderDetailRail(enrichment(), undefined, {
+      record: videoRecord
+    });
+    expect(el.querySelector('[data-testid="psl-export-eyebrow"]')?.textContent).toBe("Export");
+    expect(el.querySelector(".psl__copy-eyebrow-range")).toBeNull();
+    const metricsCall = dispatch.mock.calls.find((c) => c[0] === "video:presetMetrics");
+    expect(metricsCall?.[1]).toEqual({
+      captureId: record.id,
+      range: { start: 0, end: 16 }
+    });
+  });
+
+  test("trimmed: eyebrow reads EXPORT · 0:03–0:11 (8 s), metrics + exports carry the range", async () => {
+    const videoRecord: CaptureRecord = {
+      ...record,
+      kind: "video",
+      video: { ...videoMeta, defaultRange: { start: 3.4, end: 11.2 } }
+    };
+    const { el, dispatch } = await renderDetailRail(enrichment(), undefined, {
+      record: videoRecord
+    });
+    const eyebrow = el.querySelector('[data-testid="psl-export-eyebrow"]');
+    expect(eyebrow?.textContent).toBe("Export · 0:03–0:11 (8 s)");
+    expect(eyebrow?.querySelector(".psl__copy-eyebrow-range")?.textContent).toBe("0:03–0:11 (8 s)");
+
+    const metricsCall = dispatch.mock.calls.find((c) => c[0] === "video:presetMetrics");
+    expect(metricsCall?.[1]).toEqual({
+      captureId: record.id,
+      range: { start: 3.4, end: 11.2 }
+    });
+
+    // Clicking a card exports the displayed range explicitly.
+    const card = el.querySelector(
+      '[data-testid="psl-copy-row-video"] button'
+    ) as HTMLButtonElement | null;
+    expect(card).not.toBeNull();
+    await act(async () => {
+      card!.click();
+      await Promise.resolve();
+    });
+    const copyCall = dispatch.mock.calls.find((c) => c[0] === "clipboard:copyVideoFile");
+    expect(copyCall?.[1]).toEqual(
+      expect.objectContaining({ captureId: record.id, range: { start: 3.4, end: 11.2 } })
+    );
   });
 });

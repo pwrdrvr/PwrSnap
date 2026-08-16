@@ -494,7 +494,10 @@ function PreviewVideoThumb({
           width: "100%",
           height: "100%",
           objectFit: "contain",
-          display: "block"
+          display: "block",
+          // The preview is decorative. Let the cell and its overlaid actions
+          // own hit testing so a native video surface cannot cover Edit/Trash.
+          pointerEvents: "none"
         }}
       />
       {showPlayButton ? (

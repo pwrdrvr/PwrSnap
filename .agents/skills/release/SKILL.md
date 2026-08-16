@@ -1,6 +1,6 @@
 ---
 name: release
-description: Prepare, validate, tag, publish, and monitor guarded PwrSnap desktop releases. Use when the user asks to release PwrSnap, prepare a vX.Y.Z or vX.Y.Z-prerelease tag, update release notes or CHANGELOG.md for a desktop release, verify package.json/tag/changelog alignment, trigger the macOS signed/notarized release workflow, or inspect release workflow status.
+description: Prepare, validate, tag, publish, and monitor guarded PwrSnap desktop releases. Use when the user asks to release PwrSnap, select alpha/beta/maintenance-candidate/RC/stable versions, prepare a vX.Y.Z or vX.Y.Z-prerelease tag, update release notes or CHANGELOG.md for a desktop release, verify package.json/tag/changelog alignment, trigger the macOS signed/notarized release workflow, or inspect release workflow status.
 ---
 
 # Release
@@ -36,22 +36,6 @@ Read these files before changing release metadata:
 - Always use a leading-`v` tag such as `v0.0.1-alpha.5`.
 - The tag version, `apps/desktop/package.json` version, and
   `CHANGELOG.md` release heading must match.
-- Desktop Settings expose two axes: **channel** (Stable or Beta) and
-  **track** (Latest or Prerelease). Encode those slots in the tag suffix
-  so GitHub `/releases/latest` stays on the Stable Latest train:
-  - Stable Latest: `v1.0.5` (no suffix; GitHub Latest)
-  - Stable Prerelease: `v1.0.6-prerelease.1` (GitHub Pre-release)
-  - Beta Latest: `v1.1.0-beta.3` (GitHub Pre-release; smoke-checked `main`)
-  - Beta Prerelease: `v1.1.0-alpha.7` (GitHub Pre-release; may not install)
-- Keep `-prerelease.N` for Stable RCs. Do not reuse `-beta` for 1.0 RCs;
-  `-beta` is the Beta Latest identifier.
-- `main` tags with a prerelease suffix must stay GitHub Pre-release so they
-  never steal `/releases/latest` from the Stable train.
-- To promote a smoked alpha to beta, bump `apps/desktop/package.json` and
-  add a CHANGELOG heading from `X.Y.Z-alpha.N` to `X.Y.Z-beta.M`, commit,
-  and tag that commit. The tree can otherwise match the alpha. Do not add
-  a second tag to the alpha SHA: the metadata gate and the baked app
-  version both come from `package.json`.
 - Before moving `main` to a new major/minor train, verify that the prior train's
   maintenance branch exists. For example, before preparing `1.1.0-beta.1` from
   a current `1.0.*` main, check for `origin/releases/1.0`. If it is missing,
@@ -59,10 +43,6 @@ Read these files before changing release metadata:
   before bumping version metadata.
 - Patch releases for an existing train must land on that train's branch. For
   example, prepare `v1.0.1` on `releases/1.0`, not on `main`.
-- Every GitHub Release must be born as a GitHub **Pre-release**. Do not let
-  electron-builder create a normal `Latest` release and rely on a later
-  `gh release edit --prerelease` as the normal path. Promotion to Latest is a
-  separate operator action after the build is validated.
 - Do not create or push the tag until the version and changelog are committed
   and present on the intended release branch.
 - Before pushing a release tag, verify the `apple-signing` GitHub Environment
@@ -72,22 +52,58 @@ Read these files before changing release metadata:
   repository-level secrets.
 - Do not use GitHub generated release notes as the final notes.
 - Do not create the GitHub Release by hand before the build succeeds. Let
-  electron-builder create or update the release from the signed/notarized CI
-  build, then replace the generated/empty release notes with the changelog
-  entry.
+  the CI publish job create it from the signed/notarized build and matching
+  changelog notes.
 - Do not force-push the default branch or rewrite an existing release tag
   without explicit user approval.
 - Keep the MIT license intact: do not swap LICENSE for a different SPDX or
   drift any workspace `package.json` away from `"license": "MIT"`.
 
+## Select SemVer Separately From GitHub Release State
+
+Make two independent decisions before editing metadata:
+
+1. **SemVer version channel** controls the app's baked version, the tag, and
+   the changelog heading. They must be the same value, except for the tag's
+   leading `v`.
+2. **GitHub Release creation state** is always `isPrerelease=true`. The
+   workflow's `--prerelease` is mandatory even for a bare stable SemVer tag;
+   promote a release to Latest only as an explicit later action after assets
+   and smoke checks pass. Never infer this GitHub flag from the SemVer suffix.
+
+Choose the SemVer form by source branch and intent:
+
+| Source branch and intent | Matching package / tag / heading version |
+| --- | --- |
+| `main` alpha | `N.N.N-alpha.N` |
+| `main` beta | `N.N.N-beta.N` |
+| `releases/N.N` smoke, install, or onboarding candidate | `N.N.P-prerelease.N` |
+| `releases/N.N` later release candidate | `N.N.P-rc.N` |
+| `releases/N.N` accepted stable release | `N.N.P` |
+
+Keep the same `N.N.P` while advancing a maintenance candidate from
+`-prerelease.N` to `-rc.N`; do not consume bare patch versions for candidates.
+For example, failed `1.0.0-prerelease.1` and unpromoted `1.0.0-rc.1` do not
+justify jumping the first stable release to `1.0.4`. Create or tag bare
+`N.N.P` only after the user explicitly says the candidate is accepted after
+smoke checks.
+
+The metadata checker compares the release tag with `apps/desktop/package.json`
+and the `CHANGELOG.md` heading. Therefore, an alpha commit cannot also receive
+a literal beta tag without changing metadata. If “beta” means the same
+application source, make a signed metadata-only commit that changes the
+package version and changelog heading to `N.N.N-beta.N`, then tag that commit.
+If the user instead requires the exact alpha SHA to be tagged as beta, stop and
+ask them to choose whether to change checker/workflow semantics before tagging;
+the current checker rejects that exact-SHA beta tag.
+
 ## Release Branch Preflight
 
 For every release, identify `RELEASE_BRANCH` before editing files:
 
-- Active-train beta or stable release: `main`.
-- A user-approved first stable promotion from an accepted prerelease:
-  `releases/<major>.<minor>`.
-- Prior-train patch release: `releases/<major>.<minor>`.
+- Active-train alpha or beta: `main`.
+- Maintenance candidates, release candidates, accepted stable releases, and
+  patches: `releases/<major>.<minor>`.
 
 When an accepted beta is promoted to its first stable release while `main`
 continues toward newer work, create the tracking branch from that exact signed
@@ -263,7 +279,13 @@ pass `Check release metadata` in the no-secret `Test and prepare signing input`
 job before the environment-gated `Sign, notarize, publish` job can request
 approval and access Apple signing secrets.
 
-For a manual dispatch, verify the tag already exists on GitHub:
+A normal tag push uses the `v*` deployment policy. A `releases/*` environment
+policy only permits a manual `workflow_dispatch` retry whose ref is a
+maintenance branch; do not treat that retry allowance as a preflight blocker
+for a normal tag-triggered release.
+
+For a manual dispatch retry, verify the tag already exists on GitHub and use
+the maintenance branch as the workflow ref:
 
 ```bash
 git ls-remote --tags origin v<version>

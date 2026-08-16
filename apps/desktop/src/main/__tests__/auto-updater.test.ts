@@ -349,4 +349,79 @@ describe("auto updater selection", () => {
     });
     expect(mocks.autoUpdater.autoInstallOnAppQuit).toBe(true);
   });
+
+  test("still finds Stable Latest after a full first page of newer prereleases", async () => {
+    mocks.autoUpdater.currentVersion = { version: "0.9.0" };
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({
+      updateInfo: { version: "1.0.0" }
+    });
+    const firstPage = Array.from({ length: 100 }, (_, index) =>
+      githubRelease(`v1.1.0-alpha.${100 - index}`, { prerelease: true })
+    );
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/releases/latest")) {
+        return { ok: true, json: async () => githubRelease("v1.0.0") };
+      }
+      const page = Number(new URL(url).searchParams.get("page") ?? "1");
+      return {
+        ok: true,
+        json: async () => (page === 1 ? firstPage : [githubRelease("v1.0.0")])
+      };
+    });
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
+
+    await expect(updater.checkForAppUpdatesNow("manual")).resolves.toEqual({
+      status: "available",
+      version: "1.0.0"
+    });
+    expect(mocks.autoUpdater.setFeedURL).toHaveBeenCalledWith({
+      provider: "generic",
+      url: "https://github.com/pwrdrvr/PwrSnap/releases/download/v1.0.0/"
+    });
+  });
+
+  test("does not join an in-flight check for a different train or channel", async () => {
+    let resolveFirstCheck: ((value: { updateInfo: { version: string } }) => void) | undefined;
+    mocks.autoUpdater.checkForUpdates.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveFirstCheck = resolve;
+        })
+    );
+    mockGitHubReleases([
+      githubRelease("v1.1.0-beta.2", { prerelease: true }),
+      githubRelease("v1.0.0")
+    ]);
+    mocks.autoUpdater.currentVersion = { version: "0.9.0" };
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
+
+    const first = updater.checkForAppUpdatesNow("startup", {
+      train: "stable",
+      channel: "latest"
+    });
+    await vi.waitFor(() => {
+      expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+    });
+
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({
+      updateInfo: { version: "1.1.0-beta.2" }
+    });
+    const second = updater.checkForAppUpdatesNow("manual", {
+      train: "beta",
+      channel: "latest"
+    });
+    expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+
+    resolveFirstCheck?.({ updateInfo: { version: "1.0.0" } });
+    await expect(first).resolves.toEqual({ status: "available", version: "1.0.0" });
+    await expect(second).resolves.toEqual({ status: "available", version: "1.1.0-beta.2" });
+    expect(mocks.autoUpdater.setFeedURL).toHaveBeenLastCalledWith({
+      provider: "generic",
+      url: "https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.0-beta.2/"
+    });
+    expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(2);
+  });
 });

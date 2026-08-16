@@ -14,7 +14,7 @@
 // re-reads the live OS state via `app:launchAtLoginStatus` so the card
 // can surface a macOS/Windows "disabled it OS-side" divergence.
 
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
   EVENT_CHANNELS,
   type AppearanceTheme,
@@ -95,8 +95,16 @@ export function GeneralPage(): ReactElement {
   const ready = settings !== null;
   const theme: AppearanceTheme = settings?.appearance.theme ?? "system";
   const launchAtLogin = settings?.general.launchAtLogin ?? false;
-  const channel: UpdateChannel = settings?.updates.channel ?? "latest";
-  const train: UpdateTrain = settings?.updates.train ?? "stable";
+  const [pendingSelection, setPendingSelection] = useState<{
+    channel: UpdateChannel;
+    train: UpdateTrain;
+  }>();
+  const channel: UpdateChannel =
+    pendingSelection?.channel ?? settings?.updates.channel ?? "latest";
+  const train: UpdateTrain =
+    pendingSelection?.train ?? settings?.updates.train ?? "stable";
+  const selectionRef = useRef({ channel, train });
+  selectionRef.current = { channel, train };
   const videoCaptureCursor = settings?.recording.videoCaptureCursor ?? true;
   const imageCaptureCursor = settings?.recording.imageCaptureCursor ?? true;
   const platform = window.pwrsnapApi?.platform;
@@ -114,6 +122,16 @@ export function GeneralPage(): ReactElement {
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateRestarting, setUpdateRestarting] = useState(false);
   const [updateRestartError, setUpdateRestartError] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (pendingSelection === undefined) return;
+    if (
+      settings?.updates.channel === pendingSelection.channel &&
+      settings?.updates.train === pendingSelection.train
+    ) {
+      setPendingSelection(undefined);
+    }
+  }, [pendingSelection, settings?.updates.channel, settings?.updates.train]);
 
   useEffect(() => {
     let cancelled = false;
@@ -185,19 +203,23 @@ export function GeneralPage(): ReactElement {
     train: UpdateTrain;
   }): void => {
     // Persist both keys, including stable/latest, so a Beta binary
-    // does not re-infer after the operator picks Stable.
+    // does not re-infer after the operator picks Stable. Keep the pair
+    // in local pending state so a second click before the settings
+    // broadcast cannot overwrite the first axis from a stale render.
+    selectionRef.current = next;
+    setPendingSelection(next);
     void patch({ updates: next });
   };
 
   const onTrainChange = ready
     ? (next: UpdateTrain): void => {
-        persistUpdateSelection({ train: next, channel });
+        persistUpdateSelection({ train: next, channel: selectionRef.current.channel });
       }
     : (): void => {};
 
   const onChannelChange = ready
     ? (next: UpdateChannel): void => {
-        persistUpdateSelection({ train, channel: next });
+        persistUpdateSelection({ train: selectionRef.current.train, channel: next });
       }
     : (): void => {};
 

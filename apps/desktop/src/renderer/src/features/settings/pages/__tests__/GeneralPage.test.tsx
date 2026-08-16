@@ -357,6 +357,28 @@ describe("GeneralPage — updates", () => {
     });
   });
 
+  test("composes rapid train then track clicks without a stale second write", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+    const beta = Array.from(container!.querySelectorAll("button")).find(
+      (el) => el.textContent?.includes("Beta")
+    );
+    const prerelease = Array.from(container!.querySelectorAll("button")).find(
+      (el) => el.textContent?.includes("Prerelease")
+    );
+
+    await act(async () => {
+      beta?.click();
+      prerelease?.click();
+    });
+
+    expect(patchMock).toHaveBeenNthCalledWith(1, {
+      updates: { train: "beta", channel: "latest" }
+    });
+    expect(patchMock).toHaveBeenNthCalledWith(2, {
+      updates: { train: "beta", channel: "prerelease" }
+    });
+  });
+
   test("manual check dispatches app:update:check and shows the result", async () => {
     const { calls } = await renderGeneral(baseSettings, healthyStatus);
     const button = Array.from(container!.querySelectorAll("button")).find(

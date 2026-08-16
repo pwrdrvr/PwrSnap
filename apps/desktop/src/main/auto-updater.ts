@@ -53,8 +53,10 @@ function autoUpdater(): typeof electronUpdater.autoUpdater {
 }
 
 const log = getMainLogger("pwrsnap:updater");
-const GITHUB_RELEASES_URL =
-  "https://api.github.com/repos/pwrdrvr/PwrSnap/releases?per_page=30";
+const GITHUB_RELEASES_URL = "https://api.github.com/repos/pwrdrvr/PwrSnap/releases";
+const GITHUB_LATEST_RELEASE_URL = `${GITHUB_RELEASES_URL}/latest`;
+const RELEASE_PAGE_SIZE = 100;
+const RELEASE_MAX_PAGES = 10;
 const RELEASE_FETCH_TIMEOUT_MS = 5_000;
 export const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
 const UPDATE_RETRY_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1_000;
@@ -438,14 +440,30 @@ export async function checkForAppUpdatesNow(
     return simulateDevUpdateCheck(trigger);
   }
 
-  if (updateCheckInFlight) {
-    log.info("joining in-flight update check", { trigger });
+  const requestedSelection = updateSelectionKey(selection);
+  if (updateCheckInFlight && updateCheckSelectionInFlight === requestedSelection) {
+    log.info("joining in-flight update check", {
+      trigger,
+      updateChannel: selection.channel,
+      updateTrain: selection.train
+    });
     return updateCheckInFlight;
   }
+  if (updateCheckInFlight) {
+    log.info("waiting for in-flight update check before switching selection", {
+      trigger,
+      inFlightSelection: updateCheckSelectionInFlight,
+      updateChannel: selection.channel,
+      updateTrain: selection.train
+    });
+    await updateCheckInFlight.catch(() => undefined);
+    return checkForAppUpdatesNow(trigger, selection);
+  }
 
+  updateCheckSelectionInFlight = requestedSelection;
   updateCheckInFlight = (async (): Promise<AppUpdateCheckResult> => {
     try {
-      const updateSelection = updateSelectionKey(selection);
+      const updateSelection = requestedSelection;
       reconcileAppUpdateSelection(updateSelection);
       const downloadedResult = downloadedUpdateMatchesSelection(updateSelection);
       if (downloadedResult) {
@@ -489,7 +507,6 @@ export async function checkForAppUpdatesNow(
         return result;
       }
       configureAutoUpdaterFeedForRelease(release);
-      updateCheckSelectionInFlight = updateSelection;
       const result = await autoUpdater().checkForUpdates();
       if (result?.updateInfo?.version !== currentVersion) {
         recordPendingDownloadSelection(result?.updateInfo?.version, updateSelection);
@@ -832,20 +849,74 @@ function githubReleaseHeaders(): HeadersInit {
   };
 }
 
-async function fetchGitHubReleases(signal?: AbortSignal): Promise<GitHubRelease[]> {
-  const response = await fetch(GITHUB_RELEASES_URL, {
+async function fetchGitHubJson(url: string, signal?: AbortSignal): Promise<unknown> {
+  const response = await fetch(url, {
     headers: githubReleaseHeaders(),
     ...(signal ? { signal } : {})
   });
   if (!response.ok) {
     throw new Error(`GitHub releases request failed with ${response.status}`);
   }
-  const payload = await response.json();
-  return Array.isArray(payload)
-    ? payload.filter(
+  return await response.json();
+}
+
+function asGitHubRelease(value: unknown): GitHubRelease | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const release = value as GitHubRelease;
+  return release.tag_name ? release : undefined;
+}
+
+function asGitHubReleaseList(value: unknown): GitHubRelease[] {
+  return Array.isArray(value)
+    ? value.filter(
         (release): release is GitHubRelease => typeof release === "object" && release !== null
       )
     : [];
+}
+
+// GitHub Latest is a separate endpoint because `/releases` is newest-first
+// and a long run of alpha/beta tags can push Stable Latest off the first
+// page. We also page until that Latest tag appears so Stable Prerelease
+// and Beta slots still see everything newer than it.
+async function fetchLatestGitHubRelease(signal?: AbortSignal): Promise<GitHubRelease | undefined> {
+  try {
+    return asGitHubRelease(await fetchGitHubJson(GITHUB_LATEST_RELEASE_URL, signal));
+  } catch {
+    return undefined;
+  }
+}
+
+function releasesPageUrl(page: number): string {
+  return `${GITHUB_RELEASES_URL}?per_page=${RELEASE_PAGE_SIZE}&page=${page}`;
+}
+
+async function fetchGitHubReleases(signal?: AbortSignal): Promise<GitHubRelease[]> {
+  const latestPromise = fetchLatestGitHubRelease(signal);
+  const collected: GitHubRelease[] = [];
+  const seen = new Set<string>();
+  const add = (release: GitHubRelease | undefined): void => {
+    if (!release?.tag_name || seen.has(release.tag_name)) return;
+    seen.add(release.tag_name);
+    collected.push(release);
+  };
+
+  for (let page = 1; page <= RELEASE_MAX_PAGES; page++) {
+    const pagePromise = fetchGitHubJson(releasesPageUrl(page), signal);
+    const [latest, payload] =
+      page === 1
+        ? await Promise.all([latestPromise, pagePromise])
+        : [await latestPromise, await pagePromise];
+    const pageReleases = asGitHubReleaseList(payload);
+    for (const release of pageReleases) add(release);
+    add(latest);
+    if (latest?.tag_name && seen.has(latest.tag_name)) break;
+    if (pageReleases.length < RELEASE_PAGE_SIZE) break;
+  }
+
+  add(await latestPromise);
+  return collected;
 }
 
 async function readAppUpdateReleaseForSelection(

@@ -2006,23 +2006,40 @@ export function Library() {
     return out;
   }, [visible, fixtureBacking]);
 
-  // Keep pagination alive when the EXCLUDE facet filters the loaded
-  // keyset window down to nothing. The facet is applied client-side
-  // (see the `includeFetchActive` note above) while `gridHasMore`
-  // stays true, and the grid's only load-more trigger is the
-  // virtualizer's near-tail effect — which cannot fire with zero rows
-  // rendered. Without this, a page that filters to empty strands the
-  // Library on a blank grid even though later pages have matches.
+  // Keep pagination alive when a client-side facet filters the loaded
+  // keyset window down to nothing. Types and EXCLUDE source-app facets
+  // are local over the normal live keyset; the grid's usual load-more
+  // trigger is its virtualized near-tail effect, which cannot fire with
+  // zero rendered rows. The pre-facet scope count deliberately gates
+  // the drain: "Today ∧ not Electron" must not walk every historical
+  // page when this page simply has no Today captures.
   // Trash and search own their own row source, so neither drains.
+  const captureTypeFacetActive =
+    (visibleTypes.images || visibleTypes.videos) &&
+    (!visibleTypes.images || !visibleTypes.videos);
   const excludeFacetActive =
     !isTrashView && !isSearchActive && sourceAppFacet.mode === "exclude" && appFacetActive;
+  const drainCandidateCount = useMemo(() => {
+    if (isTrashView || isSearchActive) return 0;
+    if (!isTodayView) return universeRecordsRaw.length;
+    const now = new Date();
+    let count = 0;
+    for (const record of universeRecordsRaw) {
+      if (isSameLocalDay(new Date(record.captured_at), now)) count += 1;
+    }
+    return count;
+    // todayDateStr keeps this calculation aligned with the fixture's
+    // day buckets across midnight and time-zone changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTrashView, isSearchActive, isTodayView, universeRecordsRaw, todayDateStr]);
   useFilterDrain({
-    active: excludeFacetActive,
+    active: captureTypeFacetActive || excludeFacetActive,
     hasMore: gridHasMore,
     isLoadingMore: gridIsLoadingMore,
     // Captures only — project fixtures pass an exclude facet untouched,
     // and their presence must not mask "zero captures matched".
     visibleCount: visibleRecords.length,
+    candidateCount: drainCandidateCount,
     loadedCount: records.length,
     loadMore
   });

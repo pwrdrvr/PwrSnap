@@ -1,17 +1,18 @@
 // filter-drain tests. The bug this module fixes: an exclude-mode
-// source-app facet is applied client-side over the loaded keyset
-// window, so a page whose captures are ALL excluded renders zero rows
-// — and the grid's only load-more trigger is the virtualizer's
-// near-tail effect, which never fires with zero virtual items. The
-// Library then shows an empty grid forever even though later pages
-// have matching captures.
+// source-app or type facet is applied client-side over the loaded
+// keyset window, so a page whose captures are ALL filtered out renders
+// zero rows — and the grid's only load-more trigger is the
+// virtualizer's near-tail effect, which never fires with zero virtual
+// items. The Library then shows an empty grid forever even though later
+// pages have matching captures.
 //
 // What's protected here:
 //   1. Page filters to EMPTY -> loadMore() is called.
 //   2. The drain keeps going as successive pages also filter to empty.
 //   3. It STOPS when the backend runs out (hasMore false) — the loop's
 //      termination condition, so a fully-drained cursor can't spin.
-//   4. It doesn't fire when rows are visible, when a fetch is already
+//   4. It doesn't scan farther when scope already made the page empty.
+//   5. It doesn't fire when rows are visible, when a fetch is already
 //      in flight, or when the facet isn't client-side (`active`).
 
 import { act, createElement } from "react";
@@ -56,6 +57,7 @@ const base: Omit<UseFilterDrainInput, "loadMore"> = {
   hasMore: true,
   isLoadingMore: false,
   visibleCount: 0,
+  candidateCount: 100,
   loadedCount: 100
 };
 
@@ -66,6 +68,7 @@ describe("shouldDrainForFilter", () => {
     expect(shouldDrainForFilter({ ...base, hasMore: false })).toBe(false);
     expect(shouldDrainForFilter({ ...base, isLoadingMore: true })).toBe(false);
     expect(shouldDrainForFilter({ ...base, visibleCount: 1 })).toBe(false);
+    expect(shouldDrainForFilter({ ...base, candidateCount: 0 })).toBe(false);
   });
 });
 
@@ -97,6 +100,12 @@ describe("useFilterDrain", () => {
 
     render({ ...base, loadedCount: 200, visibleCount: 3, loadMore });
     expect(loadMore).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not drain when an unrelated scope already emptied the page", () => {
+    const loadMore = vi.fn(async () => undefined);
+    render({ ...base, candidateCount: 0, loadMore });
+    expect(loadMore).not.toHaveBeenCalled();
   });
 
   test("stops when the backend has returned everything (hasMore false)", () => {

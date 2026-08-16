@@ -519,6 +519,7 @@ describe("GridCopyPalette", () => {
   test("offers the locator once the tile scrolls past, and calls back with the id", async () => {
     const onLocate = vi.fn();
     const el = await renderPalette(imageRecord, { withTile: true, onLocate });
+    const palette = el.querySelector<HTMLElement>('[data-testid="psl-grid-copy-palette"]');
     expect(el.querySelector('[data-testid="psl-grid-copy-palette-locate"]')).toBeNull();
 
     // Scroll the tile above the stage's top edge. Still mounted (the
@@ -532,10 +533,44 @@ describe("GridCopyPalette", () => {
       '[data-testid="psl-grid-copy-palette-locate"]'
     );
     expect(locate).not.toBeNull();
+    // An off-screen tile must return the palette to its CSS fallback,
+    // rather than following the stale overscan box to a clamped edge.
+    expect(palette?.style.left).toBe("");
+    expect(palette?.style.top).toBe("");
+    expect(palette?.classList.contains("is-positioned")).toBe(false);
     await act(async () => {
       locate?.click();
     });
     expect(onLocate).toHaveBeenCalledWith(imageRecord.id);
+  });
+
+  test("Find me clears the locator and re-anchors after the virtualizer remounts the tile", async () => {
+    let el: HTMLDivElement;
+    const onLocate = vi.fn(() => {
+      const tile = document.createElement("div");
+      tile.className = "psl__cell";
+      tile.setAttribute("data-cell-id", imageRecord.id);
+      el.appendChild(tile);
+    });
+    el = await renderPalette(imageRecord, { withTile: false, onLocate });
+    const palette = el.querySelector<HTMLElement>('[data-testid="psl-grid-copy-palette"]');
+    const locate = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-grid-copy-palette-locate"]'
+    );
+    expect(locate).not.toBeNull();
+
+    await act(async () => {
+      locate?.click();
+      await Promise.resolve();
+    });
+
+    expect(onLocate).toHaveBeenCalledWith(imageRecord.id);
+    expect(
+      el.querySelector('[data-testid="psl-grid-copy-palette-locate"]')
+    ).toBeNull();
+    expect(palette?.style.left).toBe("10px");
+    expect(palette?.style.top).toBe("232px");
+    expect(palette?.classList.contains("is-positioned")).toBe(true);
   });
 
   test("offers the locator when the tile is virtualized out of the DOM", async () => {

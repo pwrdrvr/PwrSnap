@@ -243,8 +243,9 @@ export function GridCopyPalette({
 
   // ---- track the selected tile --------------------------------------
   // Runs on selection change (record.id), mode flip, grid scroll (capture
-  // phase catches the scroll container inside `.psl__main`), and any
-  // stage/palette resize. Cheap: one querySelector + three gBCRs.
+  // phase catches the scroll container inside `.psl__main`), grid DOM
+  // changes (the virtualizer may remount a located tile after its scroll),
+  // and any stage/palette resize. Cheap: one querySelector + three gBCRs.
   //
   // Runs in BOTH modes: follow mode re-anchors, and both modes need the
   // on-screen check that drives the locator — a dragged palette is if
@@ -268,9 +269,17 @@ export function GridCopyPalette({
       const tileRect = tile.getBoundingClientRect();
       // Mounted but scrolled past: the virtualizer keeps an overscan band
       // in the DOM, so presence is not visibility.
-      setSelectionOffscreen(
-        tileRect.bottom <= stageRect.top || tileRect.top >= stageRect.bottom
-      );
+      const tileIsOffscreen =
+        tileRect.bottom <= stageRect.top || tileRect.top >= stageRect.bottom;
+      setSelectionOffscreen(tileIsOffscreen);
+      if (tileIsOffscreen) {
+        // The overscan band can keep an invisible tile mounted. Its box
+        // would resolve to a stage-edge clamp, which looks like a manual
+        // pin rather than a useful follow placement. Fall back until the
+        // tile is actually visible again.
+        if (isFollow) setFollowPosition(null);
+        return;
+      }
       if (!isFollow) return;
       const next = resolveFollowAnchor({
         stage: stageRect,
@@ -288,9 +297,12 @@ export function GridCopyPalette({
     const ro = new ResizeObserver(reanchor);
     ro.observe(stageEl);
     ro.observe(palette);
+    const mo = new MutationObserver(reanchor);
+    mo.observe(stageEl, { childList: true, subtree: true });
     stageEl.addEventListener("scroll", reanchor, true);
     return () => {
       ro.disconnect();
+      mo.disconnect();
       stageEl.removeEventListener("scroll", reanchor, true);
     };
   }, [isFollow, record.id]);

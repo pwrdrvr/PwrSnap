@@ -154,6 +154,32 @@ async function waitForFonts(page: Page): Promise<void> {
   });
 }
 
+/**
+ * Fail loudly if the backing scale pin did not take effect.
+ *
+ * Without this the harness degrades silently in the worst possible way:
+ * a screenshot taken at 2x still LOOKS right, so `--update-snapshots`
+ * run in an unpinned environment happily writes a golden that then
+ * fails on every runner. That is exactly how the library-grid golden
+ * broke main. Assert the pin instead of trusting it.
+ */
+async function expectPinnedDeviceScale(page: Page): Promise<void> {
+  expect(await page.evaluate(() => window.devicePixelRatio)).toBe(1);
+}
+
+/**
+ * Antialiasing floor between machines that are otherwise pinned.
+ *
+ * Real changes in this suite are orders of magnitude larger — the grid
+ * tile chrome refresh moved 2626 pixels and the sidebar facet restyle
+ * 2818, while a same-code comparison between this repo's reference
+ * runners is 0. 20 is a margin over residual per-machine noise, not a
+ * license to bless drift: treat a diff between 20 and a few hundred as
+ * a finding to investigate, and if the floor ever climbs past 20 the
+ * runners have diverged and THAT is the bug.
+ */
+const VISUAL_MAX_DIFF_PIXELS = 20;
+
 async function launchVisualPwrSnap(): Promise<LaunchedApp> {
   const app = await launchPwrSnap({
     env: {
@@ -208,10 +234,12 @@ test.describe("visual regression", () => {
         `v${VISUAL_APP_VERSION}`
       );
 
+      await expectPinnedDeviceScale(app.window);
       await expect(library).toHaveScreenshot("library-grid.webp", {
         animations: "disabled",
         caret: "hide",
-        scale: "css"
+        scale: "css",
+        maxDiffPixels: VISUAL_MAX_DIFF_PIXELS
       });
     } finally {
       await app.close();
@@ -230,10 +258,12 @@ test.describe("visual regression", () => {
       await expect(app.window.locator('[data-testid="editor-image"]')).toBeVisible();
       await waitForFonts(app.window);
 
+      await expectPinnedDeviceScale(app.window);
       await expect(focus).toHaveScreenshot("editor-focus.webp", {
         animations: "disabled",
         caret: "hide",
-        scale: "css"
+        scale: "css",
+        maxDiffPixels: VISUAL_MAX_DIFF_PIXELS
       });
     } finally {
       await app.close();

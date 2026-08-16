@@ -630,3 +630,51 @@ describe("prepareWindowListPayload — content-protected windows", () => {
     expect([...result.payload.windows.map((w) => w.windowId)].sort()).toEqual([10, 20]);
   });
 });
+
+describe("windowSnapshotInElectronDip — Windows native bounds", () => {
+  const physicalWindow: WindowInfo = {
+    windowId: 30,
+    pid: 6000,
+    bundleId: "C:\\Program Files\\Fixture\\fixture.exe",
+    appName: "fixture",
+    title: "Placed fixture window",
+    bounds: { x: 150, y: 225, width: 900, height: 600 },
+    layer: 0,
+    alpha: 1,
+    isFrontmostInApp: true
+  };
+
+  test("converts physical HWND bounds to Electron DIPs before picker filtering and rendering", async () => {
+    const { windowSnapshotInElectronDip } = await import("../capture/region-selector");
+    const screenToDipRect = vi.fn().mockReturnValue({
+      x: 100,
+      y: 150,
+      width: 600,
+      height: 400
+    });
+
+    const result = windowSnapshotInElectronDip(
+      [physicalWindow],
+      "win32",
+      screenToDipRect
+    );
+
+    expect(screenToDipRect).toHaveBeenCalledWith(physicalWindow.bounds);
+    expect(result[0]?.bounds).toEqual({ x: 100, y: 150, width: 600, height: 400 });
+    expect(physicalWindow.bounds).toEqual({ x: 150, y: 225, width: 900, height: 600 });
+  });
+
+  test("leaves macOS logical bounds unchanged without calling the Windows converter", async () => {
+    const { windowSnapshotInElectronDip } = await import("../capture/region-selector");
+    const screenToDipRect = vi.fn();
+
+    const result = windowSnapshotInElectronDip(
+      [physicalWindow],
+      "darwin",
+      screenToDipRect
+    );
+
+    expect(screenToDipRect).not.toHaveBeenCalled();
+    expect(result[0]?.bounds).toEqual(physicalWindow.bounds);
+  });
+});

@@ -28,6 +28,14 @@ export type TargetWindowSpec = {
   rect: { x: number; y: number; width: number; height: number };
   /** Optional title shown in the window's titlebar. Defaults to id. */
   title?: string;
+  /**
+   * Make this a genuine native window-picker target on Windows. The default
+   * fixture stays off the taskbar and is consequently a WS_EX_TOOLWINDOW,
+   * which the production native enumerator correctly ignores. Picker targets
+   * are normal top-level windows and are re-applied to their requested DIP
+   * bounds after lifting Electron's implicit constructor minimum.
+   */
+  nativePickerTarget?: boolean;
 };
 
 export type SpawnedTargets = {
@@ -70,8 +78,8 @@ export async function spawnTargetWindows(
         minimizable: false,
         maximizable: false,
         fullscreenable: false,
-        skipTaskbar: true,
-        focusable: false,
+        skipTaskbar: spec.nativePickerTarget !== true,
+        focusable: spec.nativePickerTarget === true,
         title: spec.title ?? spec.id,
         webPreferences: {
           contextIsolation: true,
@@ -79,6 +87,10 @@ export async function spawnTargetWindows(
           nodeIntegration: false
         }
       });
+      if (spec.nativePickerTarget === true) {
+        w.setMinimumSize(0, 0);
+        w.setBounds(spec.rect);
+      }
       await w.loadURL(html);
       w.show();
       // Tag the window with the test id so we can find it again to

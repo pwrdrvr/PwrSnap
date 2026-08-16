@@ -36,10 +36,11 @@
 //                     ("slack", "chrome", "Code"). Analogous to the
 //                     macOS owner name.
 //   - title         → GetWindowTextW. Null when empty.
-//   - bounds        → the window's extended frame bounds in virtual-
-//                     screen coordinates (top-left origin), matching
-//                     Electron's `screen.getDisplay*()` global coord
-//                     space — no remap needed. We prefer the DWM
+//   - bounds        → the window's extended frame bounds in physical
+//                     virtual-screen pixels (top-left origin). The shared
+//                     TypeScript boundary converts these to Electron DIPs
+//                     with `screen.screenToDipRect` before display filtering,
+//                     hit testing, or selector rendering. We prefer the DWM
 //                     extended-frame rect (DWMWA_EXTENDED_FRAME_BOUNDS)
 //                     over GetWindowRect because GetWindowRect on
 //                     DWM-composited windows includes the invisible
@@ -417,9 +418,9 @@ void AppendJsonStringOrNull(std::string *out, const std::wstring &value) {
 int wmain() {
   // Per-monitor DPI awareness so GetWindowRect / DWM bounds come back in
   // true physical pixels of the virtual-screen coordinate space rather
-  // than being virtualized by the OS for a DPI-unaware process. This
-  // matches the coordinate space the macOS helper reports and that
-  // Electron's screen API expects. SetProcessDpiAwarenessContext is
+  // than being virtualized by the OS for a DPI-unaware process. The
+  // TypeScript boundary deliberately converts these physical rectangles to
+  // Electron DIPs with screen.screenToDipRect. SetProcessDpiAwarenessContext is
   // Win10 1703+; fall back gracefully (older paths still produce usable
   // coords, just potentially DPI-scaled on mixed-DPI setups).
   HMODULE user32 = GetModuleHandleW(L"user32.dll");

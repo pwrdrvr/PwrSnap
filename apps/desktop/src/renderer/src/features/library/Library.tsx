@@ -1998,7 +1998,6 @@ export function Library() {
     durationSec: selectedVideo?.durationSec ?? 0,
     persistedRange: selectedVideo?.defaultRange ?? null
   });
-
   // Auto-collapse the grid right rail to its hover-pop activity bar when the
   // window is narrow, so the grid keeps its width (the cart/inspector becomes
   // "on mouse over only"). Focus/reel normally keep the rail at the user's
@@ -2586,6 +2585,23 @@ export function Library() {
   // it, then defer the scroll until the cell actually exists (the
   // pending-target effect below runs it once the grid reflects any
   // re-filter / re-fetch).
+  // Scroll a capture back into view without touching selection, filters
+  // or the rail's active tab. Shares the pending-target + `scrollToId`
+  // retry below with the cart jump, so there is one scroll path: the row
+  // may be virtualized away, and `scrollToId` returns false until it
+  // exists. Used by the floating copy palette's locator.
+  const revealCapture = useCallback((captureId: string): void => {
+    cartJumpTargetRef.current = captureId;
+    const found = gridScrollApiRef.current?.scrollToId(captureId) ?? false;
+    if (!found) return;
+    cartJumpTargetRef.current = null;
+    requestAnimationFrame(() => {
+      gridScrollRef.current
+        ?.querySelector(`[data-cell-id="${captureId}"]`)
+        ?.scrollIntoView({ block: "center" });
+    });
+  }, []);
+
   const jumpToCapture = useCallback((captureId: string): void => {
     const cur = viewRef.current;
     if (cur.kind === "focus") {
@@ -3838,7 +3854,11 @@ export function Library() {
           />
         </div>
         {showGridCopyPalette && selectedRecord !== null ? (
-          <GridCopyPalette record={selectedRecord} copyPulses={copyPulses} />
+          <GridCopyPalette
+            record={selectedRecord}
+            copyPulses={copyPulses}
+            onLocate={revealCapture}
+          />
         ) : null}
         {error !== null && (
           <div className="psl__error" role="alert">

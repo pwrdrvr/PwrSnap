@@ -687,8 +687,15 @@ export function DetailRail({
             onPinChange={writePinned}
             renderPanel={() => (
               <div className="psl__right-body">
+                {/* Grid default-selects the first visible capture once
+                    settings hydrate (resolveDefaultPinnedGridSelection),
+                    so the only way to sit here for more than a frame is
+                    an empty visible set — a filter that matches nothing,
+                    or a library with no captures yet (first run). Word
+                    it so it's true in both, and don't tell the user to
+                    select something they can't. */}
                 <div className="psl__right-empty" data-testid="psl-right-empty">
-                  Select a capture to inspect
+                  No captures to show.
                 </div>
               </div>
             )}

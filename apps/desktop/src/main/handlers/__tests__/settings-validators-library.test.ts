@@ -36,3 +36,29 @@ describe("validateSettingsWrite — library.gridZoom", () => {
     expect(validateSettingsWrite({ library: {} }).ok).toBe(true);
   });
 });
+
+function writeGridCopyPalette(gridCopyPalette: unknown) {
+  return validateSettingsWrite({ library: { gridCopyPalette } });
+}
+
+describe("validateSettingsWrite — library.gridCopyPalette", () => {
+  test("accepts both anchor modes", () => {
+    expect(writeGridCopyPalette({ anchor: "follow" }).ok).toBe(true);
+    expect(writeGridCopyPalette({ anchor: "pinned" }).ok).toBe(true);
+    // Deep-partial: an empty object leaves the field alone.
+    expect(writeGridCopyPalette({}).ok).toBe(true);
+  });
+
+  test("rejects an unknown anchor mode", () => {
+    expect(writeGridCopyPalette({ anchor: "sticky" }).ok).toBe(false);
+    expect(writeGridCopyPalette({ anchor: "" }).ok).toBe(false);
+    expect(writeGridCopyPalette({ anchor: null }).ok).toBe(false);
+    expect(writeGridCopyPalette({ anchor: 1 }).ok).toBe(false);
+  });
+
+  test("rejects a non-object gridCopyPalette", () => {
+    expect(writeGridCopyPalette("follow").ok).toBe(false);
+    expect(writeGridCopyPalette(null).ok).toBe(false);
+    expect(writeGridCopyPalette([]).ok).toBe(false);
+  });
+});

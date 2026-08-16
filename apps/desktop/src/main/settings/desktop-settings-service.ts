@@ -78,6 +78,7 @@ import {
   isEditorSidebarPanel,
   isHotCpuProfileStartDelayMs,
   isHotCpuProfileTriggerMode,
+  isGridCopyPaletteAnchor,
   isLibrarySidebarTab,
   isLocalAgentCapability,
   findRoleForCapabilities,
@@ -250,6 +251,12 @@ function defaultLibrarySettings(): Settings["library"] {
     detailRail: {
       pinned: true,
       lastSelectedTab: "info"
+    },
+    // Follow-the-selection is the default: the floating copy palette
+    // should show up next to the tile the user just clicked, not parked
+    // at the bottom of the stage.
+    gridCopyPalette: {
+      anchor: "follow"
     },
     // Confirm soft-deletes by default; users can opt out via the popover's
     // "Don't ask again" or re-enable in Settings → Storage & retention.
@@ -999,9 +1006,20 @@ function parseLibrarySettings(
   // clamped value to the nearest GRID_ZOOM_LEVELS entry, so we don't
   // force-snap here — any in-band number round-trips.
   const gridZoom = clampGridZoom(pickNumber(raw.gridZoom, defaults.gridZoom));
+  // gridCopyPalette is additive too (older files won't have it) and is
+  // parsed independently of detailRail for the same reason.
+  const gridCopyPalette = parseGridCopyPaletteSettings(
+    raw.gridCopyPalette,
+    defaults.gridCopyPalette
+  );
   const detailRaw = raw.detailRail;
   if (!isRecord(detailRaw)) {
-    return { detailRail: defaults.detailRail, confirmBeforeTrash, gridZoom };
+    return {
+      detailRail: defaults.detailRail,
+      gridCopyPalette,
+      confirmBeforeTrash,
+      gridZoom
+    };
   }
   // Route the on-disk tab value through the shared type guard so the
   // accepted set has a single source of truth (the protocol's
@@ -1017,8 +1035,22 @@ function parseLibrarySettings(
       pinned: pickBoolean(detailRaw.pinned, defaults.detailRail.pinned),
       lastSelectedTab: pickedTab
     },
+    gridCopyPalette,
     confirmBeforeTrash,
     gridZoom
+  };
+}
+
+/** Parse the persisted Grid copy-palette prefs. Unknown/garbage anchor
+ *  values fall back to the default (`follow`) rather than quarantining
+ *  the whole file — this is a cosmetic placement preference. */
+function parseGridCopyPaletteSettings(
+  raw: unknown,
+  defaults: Settings["library"]["gridCopyPalette"]
+): Settings["library"]["gridCopyPalette"] {
+  if (!isRecord(raw)) return defaults;
+  return {
+    anchor: isGridCopyPaletteAnchor(raw.anchor) ? raw.anchor : defaults.anchor
   };
 }
 
@@ -1901,6 +1933,10 @@ function mergeLibrary(
   if (patch === undefined) return current;
   return {
     detailRail: mergeSection(current.detailRail, patch.detailRail),
+    gridCopyPalette: mergeSection(
+      current.gridCopyPalette,
+      patch.gridCopyPalette
+    ),
     confirmBeforeTrash:
       patch.confirmBeforeTrash !== undefined
         ? patch.confirmBeforeTrash

@@ -4084,24 +4084,112 @@
   width: max-content;
   max-width: calc(100% - 24px);
   padding: 6px 8px 8px 4px;
-  background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  backdrop-filter: blur(20px) saturate(1.2);
-  -webkit-backdrop-filter: blur(20px) saturate(1.2);
-  box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-base) 60%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
+  /* Same surface recipe as the post-capture toast (`.fo` in
+     float-over.css) — they are the same kind of object (a floating
+     panel over arbitrary content) and were drifting: this used the warm
+     `--bg-panel-hover` hover-state token plus `saturate()`, which
+     float-over's own comment warns against because the blur then pulls
+     color from whatever is behind it. Over a grid of dark screenshots
+     that left the palette nearly invisible.
+
+     Two deliberate departures from `.fo`, both because this panel
+     floats over the LIBRARY CANVAS rather than the desktop:
+
+     1. `--bg-panel-elevated`, not `--bg-app`. In a dark theme elevation
+        reads as a LIGHTER surface; painting a floating panel with the
+        canvas token gives it zero contrast against the canvas it sits
+        on. The toast can use `--bg-app` because what's behind it is the
+        user's desktop, not our own black.
+     2. `--border-strong`. A subtle hairline is enough over a desktop;
+        over a grid of dark screenshots it disappears.
+
+     The 1px contact ring in the shadow stack does the rest — a border
+     alone still washes out against a bright thumbnail. */
+  background: color-mix(in srgb, var(--bg-panel-elevated) 96%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow:
+    0 24px 64px color-mix(in srgb, var(--shadow-base) 55%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--shadow-base) 40%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 5%, transparent);
   z-index: 4;
 }
+/* Dragged: lift it further off the canvas, but KEEP the contact ring —
+   dropping it here is what made a dragged palette vanish over a dark
+   thumbnail. */
 .psl__grid-copy-palette.is-positioned {
-  box-shadow: 0 20px 56px color-mix(in srgb, var(--shadow-base) 70%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
+  box-shadow:
+    0 28px 72px color-mix(in srgb, var(--shadow-base) 70%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--shadow-base) 45%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 5%, transparent);
 }
-.psl__grid-copy-palette .psl__et-grip {
+/* Locator — only rendered while the selected capture is off screen.
+   Accent-tinted because it is a call to action, not ambient chrome: it
+   is the answer to "where is the thing these buttons act on?". */
+.psl__grid-copy-palette-locate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  cursor: pointer;
+}
+.psl__grid-copy-palette-locate:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent-bright);
+}
+.psl__grid-copy-palette-locate:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
+}
+
+/* Left rail: drag grip stacked over the 📌 follow/stay-put toggle.
+   Offset down so the grip lines up with the copy cards rather than the
+   eyebrow row above them. */
+.psl__grid-copy-palette-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   margin-top: 18px;
 }
 .psl__grid-copy-palette .psl__et-sep {
   margin-top: 22px;
+}
+/* 📌 anchor toggle. Muted when the palette is following the selection
+   (the default — nothing to call out); accented once the user has
+   parked it, since that's the state they need to be able to undo. */
+.psl__grid-copy-palette-anchor {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.psl__grid-copy-palette-anchor:hover {
+  background: color-mix(in srgb, var(--surface-highlight) 8%, transparent);
+  color: var(--text-primary);
+}
+.psl__grid-copy-palette-anchor:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.psl__grid-copy-palette-anchor[aria-pressed="false"] {
+  color: var(--accent);
 }
 .psl__grid-copy-palette-body {
   min-width: 280px;

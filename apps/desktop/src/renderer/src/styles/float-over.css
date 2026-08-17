@@ -258,11 +258,15 @@
      inspector rail). With the legacy ladder there is no tag, the content
      is ~54px, and the floor keeps today's geometry exactly.
 
-     `flex: 1` lets the button absorb the slack when a card is stretched
-     by a grid row, so the FILE chips stay on one line even if a future
-     preset renders a tag its siblings do not. */
+     `flex: 1 0 auto`, not `flex: 1`: grow into the slack when a card is
+     stretched by a grid row (so the FILE chips stay on one line even if
+     a future preset renders a tag its siblings do not), but never
+     shrink. The shorthand `flex: 1` means `1 1 0%`, and an explicit
+     min-height also replaces the flex item's automatic min-content
+     floor — together those would let a constrained column squeeze the
+     button back to 60px and re-clip the tag this rule exists to keep. */
   min-height: 60px;
-  flex: 1;
+  flex: 1 0 auto;
   padding: 8px 9px 7px;
   /* `--bg-panel-elevated` gives the button a 1-step lift over the
      float-over's `--bg-panel-hover` surface in both palettes. The

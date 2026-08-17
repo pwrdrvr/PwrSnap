@@ -460,18 +460,29 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
 });
 
 const isMac = process.platform === "darwin";
+const isWindows = process.platform === "win32";
 
-test("Source-app sidebar row renders the real bundle icon for an installed app (Finder)", async () => {
-  // Bundle-icon resolution goes through the Swift helper +
-  // NSWorkspace.urlForApplication(...). Both are macOS-only and
-  // require the helper binary the postinstall step compiles.
-  test.skip(!isMac, "app-icon extraction is macOS-only");
+test("Source-app sidebar row renders the real native icon for an installed app", async () => {
+  // A cold Windows VM launch can consume most of this file's 10s default
+  // before the shell icon request begins. Extraction itself is bounded to 5s;
+  // leave enough total room for startup, both AppIcon instances, and teardown.
+  test.setTimeout(30_000);
+  test.skip(!isMac && !isWindows, "native app-icon extraction is macOS/Windows only");
 
-  // Finder is present on every macOS Playwright runner — guaranteed
-  // to resolve via NSWorkspace and produce a real PNG. Using a
-  // synthetic bundle id would 404 and fall back to the procedural
-  // glyph, defeating the assertion.
-  const FINDER_BUNDLE_ID = "com.apple.finder";
+  // Finder and Task Manager are present on every corresponding runner.
+  // This deliberately exercises the two identifier shapes: reverse-DNS on
+  // macOS and a drive-absolute executable path on Windows.
+  const nativeApp = isWindows
+    ? {
+        identifier: `${process.env.WINDIR ?? "C:\\Windows"}\\System32\\Taskmgr.exe`,
+        name: "Taskmgr",
+        captureId: "app-icon-real-taskmgr"
+      }
+    : {
+        identifier: "com.apple.finder",
+        name: "Finder",
+        captureId: "app-icon-real-finder"
+      };
 
   const app = await launchSourceFilterPwrSnap();
   try {
@@ -484,7 +495,10 @@ test("Source-app sidebar row renders the real bundle icon for an installed app (
     await writeFile(imagePath, fixtureImageBytes());
 
     await app.electronApp.evaluate(
-      (_electron, payload: { imagePath: string; bundleId: string }) => {
+      (
+        _electron,
+        payload: { imagePath: string; identifier: string; name: string; captureId: string }
+      ) => {
         type Bridge = {
           seedCapture: (input: {
             id: string;
@@ -502,37 +516,41 @@ test("Source-app sidebar row renders the real bundle icon for an installed app (
         };
         const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
         bridge.seedCapture({
-          id: "app-icon-real-finder",
+          id: payload.captureId,
           kind: "image",
           captured_at: new Date().toISOString(),
-          source_app_bundle_id: payload.bundleId,
-          source_app_name: "Finder",
+          source_app_bundle_id: payload.identifier,
+          source_app_name: payload.name,
           src_path: payload.imagePath,
           width_px: 800,
           height_px: 600,
           device_pixel_ratio: 1,
           byte_size: 70,
-          sha256: "app-icon-real-finder"
+          sha256: payload.captureId
         });
       },
-      { imagePath, bundleId: FINDER_BUNDLE_ID }
+      { imagePath, ...nativeApp }
     );
 
     await broadcastCapturesChanged(app);
-    await waitForAppStat(app, FINDER_BUNDLE_ID, 1);
+    await waitForAppStat(app, nativeApp.identifier, 1);
 
-    // The sidebar Source App row for Finder should:
+    // The sidebar Source App row for the native fixture app should:
     //   1. Exist and show the count.
     //   2. Contain an <img class="ps-app-icon-img"> — the real-icon
     //      path — NOT a procedural <svg>.
     //   3. The img must have loaded successfully (naturalWidth > 0).
-    const finderRow = window
+    const appRow = window
       .locator("button.psl__nav")
-      .filter({ has: window.locator(".psl__nav-label", { hasText: /^Finder$/ }) });
-    await expect(finderRow).toHaveCount(1, { timeout: 10_000 });
+      .filter({
+        has: window.locator(".psl__nav-label", {
+          hasText: new RegExp(`^${nativeApp.name}$`)
+        })
+      });
+    await expect(appRow).toHaveCount(1, { timeout: 10_000 });
 
-    const finderIconImg = finderRow.first().locator(".psl__nav-icon img.ps-app-icon-img");
-    await expect(finderIconImg).toHaveCount(1, { timeout: 10_000 });
+    const nativeIconImg = appRow.first().locator(".psl__nav-icon img.ps-app-icon-img");
+    await expect(nativeIconImg).toHaveCount(1, { timeout: 10_000 });
 
     // Wait for the protocol handler to extract + serve the PNG. The
     // <img> reports naturalWidth > 0 only after Chromium successfully
@@ -541,8 +559,22 @@ test("Source-app sidebar row renders the real bundle icon for an installed app (
     await expect
       .poll(
         async () =>
-          finderIconImg.evaluate((el) => (el as HTMLImageElement).naturalWidth),
-        { timeout: 5_000 }
+          nativeIconImg.evaluate((el) => (el as HTMLImageElement).naturalWidth),
+        { timeout: 10_000 }
+      )
+      .toBeGreaterThan(0);
+
+    // The capture card's AppTag is a separate AppIcon instance. Verify the
+    // same native asset loads there too—the visible surface from the original
+    // Windows regression, not merely the sidebar facet.
+    const cardIconImg = window
+      .locator(`.psl__cell[data-cell-id='${nativeApp.captureId}']`)
+      .locator(".ps-app-tag img.ps-app-icon-img");
+    await expect(cardIconImg).toHaveCount(1, { timeout: 10_000 });
+    await expect
+      .poll(
+        async () => cardIconImg.evaluate((el) => (el as HTMLImageElement).naturalWidth),
+        { timeout: 10_000 }
       )
       .toBeGreaterThan(0);
   } finally {

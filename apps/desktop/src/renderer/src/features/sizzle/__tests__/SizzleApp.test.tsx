@@ -1223,6 +1223,50 @@ describe("render button reel length", () => {
     expect(render?.title ?? "").toContain("narration length isn't known until it's synthesized");
   });
 
+  test("goes exact after a preview measures the voiceover, and back to estimated when the script changes", async () => {
+    // Video trimmed to 2s with a script — the scene resolves to voiceover,
+    // so its true length is the narration (4s + tail pad), not the trim.
+    const { el } = await renderApp(
+      project({
+        scenes: [scene({ captureId: "cap_a", scriptLine: "hello", audioSource: "auto" })]
+      }),
+      {
+        "library:list": {
+          ok: true,
+          value: { rows: [videoCapture("cap_a", { start: 0, end: 2 })] }
+        }
+      }
+    );
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
+    // Unmeasured: the trim is only a floor.
+    expect(render?.textContent).toBe("Render · ~0:02");
+
+    const play = el.querySelector<HTMLButtonElement>(".szl__scene-mini--play");
+    if (play === null) throw new Error("scene preview play button not found");
+    await act(async () => {
+      play.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // Measured at 4s → 4.35s with the tail pad, and now exact.
+    expect(render?.textContent).toBe("Render · 0:04");
+
+    const script = el.querySelector<HTMLTextAreaElement>("textarea.szl__scene-script");
+    if (script === null) throw new Error("scene script textarea not found");
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+      )!.set!;
+      setValue.call(script, "a much longer narration than before");
+      script.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // The measurement belongs to the OLD script — reporting it as exact
+    // would be a confidently wrong number.
+    expect(render?.textContent).toBe("Render · ~0:02");
+  });
+
   test("keeps a bare Render label when the reel has no scenes", async () => {
     const { el } = await renderApp(project({ scenes: [] }));
     const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');

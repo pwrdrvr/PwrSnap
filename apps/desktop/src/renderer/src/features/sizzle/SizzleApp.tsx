@@ -590,6 +590,15 @@ function sequenceTranscriptKey(scene: SizzleScene): string {
   });
 }
 
+/** Cache key for a scene's MEASURED voiceover duration. Narration length
+ *  is a function of the script text, so rewriting the script invalidates
+ *  the measurement. Without this the Render button would keep reporting
+ *  the old length — and report it as exact, which is precisely the
+ *  confidently-wrong number the `~` prefix exists to avoid. */
+function sceneVoiceoverKey(scene: SizzleScene): string {
+  return scene.scriptLine;
+}
+
 type CachedSequencePreviewPlan = {
   key: string;
   transcriptKey: string;
@@ -1821,8 +1830,14 @@ function Editor(props: EditorProps): ReactElement {
   // hint on video scenes so the user understands the render math
   // before hitting Render.
   const [previewDurations, setPreviewDurations] = useState<
-    Record<string, number>
+    Record<string, { key: string; durationSec: number }>
   >({});
+  /** The measured voiceover duration for `scene`, or undefined when none
+   *  was measured or the script has changed since it was. */
+  const measuredVoiceoverDurationSec = (scene: SizzleScene): number | undefined => {
+    const entry = previewDurations[scene.id];
+    return entry?.key === sceneVoiceoverKey(scene) ? entry.durationSec : undefined;
+  };
   // Hold the currently-mounted object URL so we can revoke it before
   // assigning a new src. A data: URL would leak ~33% memory per
   // preview AND keep the prior buffer pinned in memory; object URLs
@@ -1904,7 +1919,10 @@ function Editor(props: EditorProps): ReactElement {
       audioRef.current.src.length > 0
     ) {
       const el = audioRef.current;
-      const durationSec = cachedSequencePlan?.durationSec ?? previewDurations[sceneId] ?? el.duration;
+      const durationSec =
+        cachedSequencePlan?.durationSec ??
+        previewDurations[sceneId]?.durationSec ??
+        el.duration;
       if (Number.isFinite(durationSec) && el.currentTime >= durationSec - 0.05) {
         el.currentTime = 0;
         setPreviewTimeSec(0);
@@ -1976,7 +1994,10 @@ function Editor(props: EditorProps): ReactElement {
     // scene's row without forcing the user to render to find out.
     setPreviewDurations((prev) => ({
       ...prev,
-      [sceneId]: previewAudio.durationSec
+      [sceneId]: {
+        key: scene === undefined ? "" : sceneVoiceoverKey(scene),
+        durationSec: previewAudio.durationSec
+      }
     }));
     const el = audioRef.current;
     if (el === null) {
@@ -2136,7 +2157,7 @@ function Editor(props: EditorProps): ReactElement {
         : undefined;
     const durationSec =
       cachedPlan?.durationSec ??
-      previewDurations[sceneId] ??
+      previewDurations[sceneId]?.durationSec ??
       0;
     const clamped = clampTime(timeSec, durationSec);
     setPreviewTimeSec(clamped);
@@ -2330,15 +2351,19 @@ function Editor(props: EditorProps): ReactElement {
         return {
           capture: capture === null ? null : { kind: capture.kind, video: capture.video },
           sequencePlanDurationSec: planDurationSec,
-          voiceoverDurationSec: previewDurations[scene.id]
+          voiceoverDurationSec: measuredVoiceoverDurationSec(scene)
         };
       }),
     [project.scenes, captureMap, sequencePreviewPlans, previewDurations]
   );
+  // Guard on the FORMATTED value, not the raw seconds: a sub-half-second
+  // reel (a short trim, a small duration override) is > 0 but rounds to
+  // "0:00", and `Render · 0:00` reads as broken.
+  const reelDurationText = formatSizzleDuration(reelDuration.totalSec);
   const reelDurationLabel =
-    reelDuration.sceneCount === 0 || reelDuration.totalSec <= 0
+    reelDuration.sceneCount === 0 || reelDurationText === "0:00"
       ? null
-      : `${reelDuration.exact ? "" : "~"}${formatSizzleDuration(reelDuration.totalSec)}`;
+      : `${reelDuration.exact ? "" : "~"}${reelDurationText}`;
   // Voice / provider / resolution are set once per reel, so they hide
   // behind a summary chip instead of taking a toolbar row every session.
   const [reelSettingsOpen, setReelSettingsOpen] = useState(false);
@@ -2966,7 +2991,7 @@ function Editor(props: EditorProps): ReactElement {
                     // shows once the user has previewed (so we have
                     // a measured TTS duration to compare against).
                     if (!isVideo || effectiveAudio !== "voiceover") return null;
-                    const audioDur = previewDurations[scene.id];
+                    const audioDur = measuredVoiceoverDurationSec(scene);
                     if (audioDur === undefined) return null;
                     const trimDur =
                       (scene.mediaTrim?.endSec ??
@@ -3134,9 +3159,13 @@ function RenderStatusBar({ status }: { status: RenderStatus }): ReactElement {
     );
   }
   if (status.phase === "failed") {
+    // The footer truncates this to one line so it can't push the buttons
+    // around, so carry the full text in `title` — an ffmpeg failure is
+    // often long and is the whole point of the message.
+    const detail = status.error ?? status.message;
     return (
-      <span className="szl__status szl__status--err">
-        Render failed: {status.error ?? status.message}
+      <span className="szl__status szl__status--err" title={detail}>
+        Render failed: {detail}
       </span>
     );
   }
@@ -3153,7 +3182,7 @@ function RenderStatusBar({ status }: { status: RenderStatus }): ReactElement {
           style={{ width: `${Math.round(status.ratio * 100)}%` }}
         />
       </span>
-      <span>{status.message}</span>
+      <span title={status.message}>{status.message}</span>
     </span>
   );
 }

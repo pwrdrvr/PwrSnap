@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isCliEntrypoint } from "./lib/cli-entrypoint.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -27,7 +28,15 @@ const licenseTextsDir = join(scriptDir, "license-texts");
 // a dedicated section below the per-package License Texts. The texts are the
 // verbatim FSF distributions of https://www.gnu.org/licenses/lgpl-2.1.txt and
 // https://www.gnu.org/licenses/lgpl-3.0.txt.
-const weakCopyleftBundledBinaries = [
+//
+// The macOS arm64 native sharp packages are optional dependencies, so they are
+// absent from `pnpm licenses list --no-optional` and absent entirely on Linux
+// CI. Their versions are therefore derived from the installed `sharp`
+// manifest's own optionalDependencies rather than hardcoded — a hardcoded pin
+// silently keeps claiming the old version after a sharp bump, and no platform
+// is able to notice. See resolveMacArm64Versions below.
+export function buildWeakCopyleftBundledBinaries({ libvipsDarwinArm64 }) {
+  return [
   {
     name: "FFmpeg",
     version: "8.1.1",
@@ -56,7 +65,7 @@ const weakCopyleftBundledBinaries = [
   },
   {
     name: "@img/sharp-libvips-darwin-arm64",
-    version: "1.2.4",
+    version: libvipsDarwinArm64,
     declaredLicense: "LGPL-3.0-or-later",
     licenseTextFile: "lgpl-3.0.txt",
     licenseTitle: "GNU LESSER GENERAL PUBLIC LICENSE, Version 3",
@@ -75,8 +84,14 @@ const weakCopyleftBundledBinaries = [
       "support@pwrdrvr.com for at least three years from the date of distribution.",
     ].join("\n"),
   },
-];
-const supplementalMacArm64Records = [
+  ];
+}
+
+export function buildSupplementalMacArm64Records({
+  sharpDarwinArm64,
+  libvipsDarwinArm64,
+}) {
+  return [
   {
     name: "FFmpeg",
     version: "8.1.1",
@@ -97,14 +112,14 @@ const supplementalMacArm64Records = [
   },
   {
     name: "@img/sharp-darwin-arm64",
-    version: "0.34.5",
+    version: sharpDarwinArm64,
     declaredLicense: "Apache-2.0",
     source: "https://github.com/lovell/sharp",
     description: "Prebuilt sharp for use with macOS 64-bit ARM",
   },
   {
     name: "@img/sharp-libvips-darwin-arm64",
-    version: "1.2.4",
+    version: libvipsDarwinArm64,
     declaredLicense: "LGPL-3.0-or-later",
     source: "https://github.com/lovell/sharp-libvips",
     description: "Prebuilt libvips and dependencies for use with sharp on macOS 64-bit ARM",
@@ -117,7 +132,37 @@ const supplementalMacArm64Records = [
       "The full GNU Lesser General Public License, version 3, and the corresponding relinking / source offer are reproduced below under \"Full License Texts — Weak-Copyleft Bundled Binaries\"."
     ].join("\n"),
   },
-];
+  ].map((record) => ({ ...record, supplemental: true }));
+}
+
+/**
+ * Read the macOS arm64 native package versions out of the installed `sharp`
+ * manifest. `sharp` is a plain production dependency, so it is materialized on
+ * every platform and this resolves identically on macOS and Linux CI — unlike
+ * the packages themselves, which only ever install on darwin-arm64.
+ */
+export function resolveMacArm64Versions(productionRecords) {
+  const sharp = productionRecords.find((record) => record.name === "sharp");
+  if (sharp === undefined) {
+    throw new Error(
+      "Cannot resolve macOS arm64 native package versions: no `sharp` record in the production license report.",
+    );
+  }
+  const optional = readPackageJson(sharp.packagePath)?.optionalDependencies ?? {};
+  const versions = {
+    sharpDarwinArm64: optional["@img/sharp-darwin-arm64"],
+    libvipsDarwinArm64: optional["@img/sharp-libvips-darwin-arm64"],
+  };
+  for (const [key, value] of Object.entries(versions)) {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(
+        `Cannot resolve ${key} from sharp@${sharp.version} optionalDependencies. ` +
+          "The supplemental macOS arm64 notice entries would silently claim a stale version.",
+      );
+    }
+  }
+  return versions;
+}
 
 export function runPnpmLicenses(args, options = {}) {
   const result = spawnSync(
@@ -317,6 +362,53 @@ function readPackageJson(packagePath) {
   return JSON.parse(readFileSync(packageJsonPath, "utf8"));
 }
 
+/**
+ * Records whose package directory is not actually present on disk.
+ *
+ * `pnpm licenses list` reports paths derived from the lockfile. When
+ * node_modules has drifted from the lockfile — the usual cause is switching
+ * branches across a dependency bump without reinstalling — those paths do not
+ * exist. Without this guard, enrichRecord silently substitutes the pnpm-
+ * reported homepage for the manifest `repository` URL and a synthetic
+ * boilerplate license body for the package's real license text, producing a
+ * plausible-looking but wrong notice. See docs/third-party-license-notices.md
+ * § "How the check can fail open".
+ */
+export const STALE_INSTALL_CODE = "PWRSNAP_STALE_INSTALL";
+
+export function findUnmaterializedRecords(records) {
+  return records.filter((record) => {
+    if (record.supplemental === true) return false;
+    if (!record.packagePath) return true;
+    return !existsSync(join(record.packagePath, "package.json"));
+  });
+}
+
+export function assertPackagesMaterialized(records) {
+  const missing = findUnmaterializedRecords(records);
+  if (missing.length === 0) return;
+  const listed = missing
+    .slice(0, 20)
+    .map((record) => `  - ${stableRecordKey(record)} (${record.packagePath ?? "no path reported"})`);
+  const overflow =
+    missing.length > listed.length ? [`  ... and ${missing.length - listed.length} more`] : [];
+  const error = new Error(
+    [
+      `${missing.length} package(s) in the license report are not installed on disk:`,
+      ...listed,
+      ...overflow,
+      "",
+      "node_modules is out of sync with pnpm-lock.yaml, so the generated notice would",
+      "silently replace real upstream license texts with generated placeholders.",
+      "",
+      "Run `pnpm install` and retry. Do NOT run `pnpm licenses:generate` to resolve",
+      "this — that would commit the degraded notice.",
+    ].join("\n"),
+  );
+  error.code = STALE_INSTALL_CODE;
+  throw error;
+}
+
 function enrichRecord(record) {
   const packageJson = readPackageJson(record.packagePath);
   const licensePath = findLicenseFile(record.packagePath);
@@ -347,14 +439,23 @@ function enrichRecord(record) {
 export function buildThirdPartyLicenseNotice({
   productionReport,
   allReport,
-  supplementalRecords = supplementalMacArm64Records,
-  weakCopyleftBinaries = weakCopyleftBundledBinaries,
+  macArm64Versions,
+  supplementalRecords,
+  weakCopyleftBinaries,
   licenseTextsBaseDir = licenseTextsDir,
   productName = "PwrSnap",
   packageFilter = desktopFilter,
 }) {
   const productionRecords = flattenLicenseReport(productionReport);
   const allRecords = flattenLicenseReport(allReport);
+  // Resolved from the installed sharp manifest unless the caller pins them.
+  // Only computed when actually needed, so callers that pass both collections
+  // explicitly (the unit tests) do not require sharp to be installed.
+  const resolveVersions = () => macArm64Versions ?? resolveMacArm64Versions(productionRecords);
+  const resolvedSupplementalRecords =
+    supplementalRecords ?? buildSupplementalMacArm64Records(resolveVersions());
+  const resolvedWeakCopyleftBinaries =
+    weakCopyleftBinaries ?? buildWeakCopyleftBundledBinaries(resolveVersions());
   const recordsByKey = new Map();
 
   for (const record of productionRecords) {
@@ -365,11 +466,15 @@ export function buildThirdPartyLicenseNotice({
       recordsByKey.set(stableRecordKey(record), record);
     }
   }
-  for (const record of supplementalRecords) {
+  for (const record of resolvedSupplementalRecords) {
     recordsByKey.set(stableRecordKey(record), record);
   }
 
-  const records = Array.from(recordsByKey.values()).sort(compareRecords).map(enrichRecord);
+  const selectedRecords = Array.from(recordsByKey.values()).sort(compareRecords);
+  // Fail before enriching: enrichRecord's fallbacks are silent, so an install
+  // that has drifted from the lockfile must be rejected here, not papered over.
+  assertPackagesMaterialized(selectedRecords);
+  const records = selectedRecords.map(enrichRecord);
 
   const recordsByLicense = new Map();
   for (const record of records) {
@@ -475,7 +580,7 @@ export function buildThirdPartyLicenseNotice({
     lines.push("");
   }
 
-  lines.push(...buildWeakCopyleftSection(weakCopyleftBinaries, licenseTextsBaseDir));
+  lines.push(...buildWeakCopyleftSection(resolvedWeakCopyleftBinaries, licenseTextsBaseDir));
 
   return `${lines.join("\n").replace(/[ \t]+$/gm, "").trimEnd()}\n`;
 }
@@ -496,6 +601,12 @@ function runCli() {
     if (error && typeof error.status === "number") {
       process.stderr.write(error.message);
       process.exit(error.status);
+    }
+    if (error && error.code === STALE_INSTALL_CODE) {
+      // Expected operator error, not a bug — report it without a stack trace,
+      // and never let it be mistaken for "the committed notice is stale".
+      console.error(error.message);
+      process.exit(1);
     }
     throw error;
   }
@@ -518,6 +629,6 @@ function runCli() {
   console.log(`wrote ${relative(repoRoot, outputPath)} (${count} production package records plus Electron)`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntrypoint(import.meta.url)) {
   runCli();
 }

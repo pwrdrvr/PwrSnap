@@ -5,8 +5,19 @@ import { afterEach, describe, expect, test } from "vitest";
 import {
   buildThirdPartyLicenseNotice,
   declaredLicenseFallbackText,
+  findUnmaterializedRecords,
+  resolveMacArm64Versions,
+  STALE_INSTALL_CODE,
 } from "../generate-third-party-licenses.mjs";
 import { checkPackageLicensePolicy } from "../check-package-license-policy.mjs";
+
+// Arbitrary sentinel versions. The real ones are derived from the installed
+// sharp manifest, so tests must never hardcode the shipping values — that is
+// exactly the drift that let the notice claim sharp 0.34.5 while 0.35.3 shipped.
+const PINNED_MAC_ARM64_VERSIONS = {
+  sharpDarwinArm64: "9.9.9",
+  libvipsDarwinArm64: "8.8.8",
+};
 
 let tempRoots = [];
 
@@ -36,6 +47,7 @@ function packageDir(root, name, version, licenseText, packageJson = {}) {
         homepage: packageJson.homepage ?? `https://example.test/${name}`,
         author: packageJson.author,
         repository: packageJson.repository,
+        optionalDependencies: packageJson.optionalDependencies,
       },
       null,
       2,
@@ -82,6 +94,7 @@ describe("buildThirdPartyLicenseNotice", () => {
         MIT: [{ name: "electron", version: "41.2.1", packagePath: electron }],
       }),
       supplementalRecords: [],
+      macArm64Versions: PINNED_MAC_ARM64_VERSIONS,
     });
 
     expect(output).toContain("alpha@1.0.0 (MIT)");
@@ -112,6 +125,7 @@ describe("buildThirdPartyLicenseNotice", () => {
       }),
       allReport: {},
       supplementalRecords: [],
+      macArm64Versions: PINNED_MAC_ARM64_VERSIONS,
     });
 
     expect(output).toContain("Bundled Asset Notes");
@@ -126,10 +140,11 @@ describe("buildThirdPartyLicenseNotice", () => {
     const output = buildThirdPartyLicenseNotice({
       productionReport: {},
       allReport: {},
+      macArm64Versions: PINNED_MAC_ARM64_VERSIONS,
     });
 
-    expect(output).toContain("@img/sharp-darwin-arm64@0.34.5");
-    expect(output).toContain("@img/sharp-libvips-darwin-arm64@1.2.4");
+    expect(output).toContain("@img/sharp-darwin-arm64@9.9.9");
+    expect(output).toContain("@img/sharp-libvips-darwin-arm64@8.8.8");
     expect(output).toContain("deterministic when checked on Linux CI");
   });
 
@@ -137,6 +152,7 @@ describe("buildThirdPartyLicenseNotice", () => {
     const output = buildThirdPartyLicenseNotice({
       productionReport: {},
       allReport: {},
+      macArm64Versions: PINNED_MAC_ARM64_VERSIONS,
     });
 
     // Dedicated section heading.
@@ -183,6 +199,122 @@ describe("buildThirdPartyLicenseNotice", () => {
 
     expect(text).toContain("No license text file was found");
     expect(text).toContain("license: BSD-3-Clause");
+  });
+});
+
+// Regression: node_modules drifting from pnpm-lock.yaml (the usual cause is a
+// branch switch across a dependency bump without reinstalling) used to be
+// absorbed silently — pnpm reports lockfile-derived paths, those directories do
+// not exist, and enrichRecord quietly swapped each package's real license text
+// for generated boilerplate and its manifest `repository` URL for the pnpm
+// homepage. The result looked plausible and made `--check` report the COMMITTED
+// file as stale, which invited regenerating and committing the degraded notice.
+describe("stale-install detection", () => {
+  test("flags report records whose package directory is not on disk", () => {
+    const root = tempRoot();
+    const present = packageDir(root, "present", "1.0.0", "MIT License");
+
+    const missing = findUnmaterializedRecords([
+      { name: "present", version: "1.0.0", packagePath: present },
+      { name: "absent", version: "2.0.0", packagePath: join(root, "absent@2.0.0") },
+      { name: "no-path", version: "3.0.0", packagePath: undefined },
+    ]);
+
+    expect(missing.map((record) => record.name)).toEqual(["absent", "no-path"]);
+  });
+
+  test("supplemental records are exempt — they never have an installed path", () => {
+    expect(
+      findUnmaterializedRecords([
+        { name: "FFmpeg", version: "8.1.1", packagePath: undefined, supplemental: true },
+      ]),
+    ).toEqual([]);
+  });
+
+  test("throws instead of emitting placeholder text when a package is unmaterialized", () => {
+    const root = tempRoot();
+
+    let thrown;
+    try {
+      buildThirdPartyLicenseNotice({
+        productionReport: report({
+          MIT: [
+            // Path is reported by pnpm but was never materialized.
+            { name: "ghost", version: "1.0.0", packagePath: join(root, "ghost@1.0.0") },
+          ],
+        }),
+        allReport: {},
+        supplementalRecords: [],
+        weakCopyleftBinaries: [],
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeDefined();
+    expect(thrown.code).toBe(STALE_INSTALL_CODE);
+    expect(thrown.message).toContain("ghost@1.0.0");
+    expect(thrown.message).toContain("node_modules is out of sync with pnpm-lock.yaml");
+    // The misdiagnosis that caused the original incident.
+    expect(thrown.message).toContain("Do NOT run `pnpm licenses:generate`");
+  });
+});
+
+// Regression: the macOS arm64 native sharp packages are optional deps, so they
+// are invisible to `--no-optional` on macOS and absent entirely on Linux CI.
+// They were hardcoded, so a sharp bump left the shipped notice claiming
+// @img/sharp-darwin-arm64@0.34.5 and libvips@1.2.4 while 0.35.3 / 1.3.2 shipped,
+// and no platform could detect it.
+describe("resolveMacArm64Versions", () => {
+  test("derives versions from the installed sharp manifest", () => {
+    const root = tempRoot();
+    const sharp = packageDir(root, "sharp", "0.35.3", "Apache License", {
+      license: "Apache-2.0",
+      optionalDependencies: {
+        "@img/sharp-darwin-arm64": "0.35.3",
+        "@img/sharp-libvips-darwin-arm64": "1.3.2",
+        "@img/sharp-linux-x64": "0.35.3",
+      },
+    });
+
+    expect(
+      resolveMacArm64Versions([{ name: "sharp", version: "0.35.3", packagePath: sharp }]),
+    ).toEqual({ sharpDarwinArm64: "0.35.3", libvipsDarwinArm64: "1.3.2" });
+  });
+
+  test("the emitted notice tracks sharp's manifest rather than a hardcoded pin", () => {
+    const root = tempRoot();
+    const sharp = packageDir(root, "sharp", "1.2.3", "Apache License", {
+      license: "Apache-2.0",
+      optionalDependencies: {
+        "@img/sharp-darwin-arm64": "1.2.3",
+        "@img/sharp-libvips-darwin-arm64": "4.5.6",
+      },
+    });
+
+    const output = buildThirdPartyLicenseNotice({
+      productionReport: report({
+        "Apache-2.0": [{ name: "sharp", version: "1.2.3", packagePath: sharp }],
+      }),
+      allReport: {},
+    });
+
+    expect(output).toContain("@img/sharp-darwin-arm64@1.2.3");
+    expect(output).toContain("@img/sharp-libvips-darwin-arm64@4.5.6");
+    expect(output).not.toContain("@img/sharp-darwin-arm64@0.34.5");
+  });
+
+  test("throws when sharp is missing or declares no darwin-arm64 optional deps", () => {
+    const root = tempRoot();
+    const sharp = packageDir(root, "sharp", "0.35.3", "Apache License", {
+      license: "Apache-2.0",
+      optionalDependencies: { "@img/sharp-linux-x64": "0.35.3" },
+    });
+
+    expect(() => resolveMacArm64Versions([])).toThrow(/no `sharp` record/);
+    expect(() =>
+      resolveMacArm64Versions([{ name: "sharp", version: "0.35.3", packagePath: sharp }]),
+    ).toThrow(/sharpDarwinArm64/);
   });
 });
 

@@ -13,6 +13,8 @@ import {
   EVENT_CHANNELS,
   SIZZLE_VOICES,
   distributeSequenceBeatStarts,
+  estimateSizzleReelDurationSec,
+  formatSizzleDuration,
   newSizzleSequenceScene,
   normalizeSizzleSequenceBeatContinuity,
   resolveSizzleAudioSource,
@@ -2311,6 +2313,32 @@ function Editor(props: EditorProps): ReactElement {
     status.phase !== "idle" &&
     status.phase !== "done" &&
     status.phase !== "failed";
+  // Reel length for the Render button. Exact for scenes the user has
+  // previewed this session (their cached plan carries the real narration
+  // timeline); estimated for the rest, because a voiceover scene runs as
+  // long as its synthesized narration and nothing measures that short of
+  // doing the TTS. `estimated` drives the leading `~`.
+  const reelDuration = useMemo(
+    () =>
+      estimateSizzleReelDurationSec(project.scenes, (scene) => {
+        const capture = captureMap.get(scene.captureId) ?? null;
+        const cached = sequencePreviewPlans[scene.id];
+        const planDurationSec =
+          scene.kind === "sequence" && cached?.key === sequencePreviewPlanKey(scene)
+            ? cached.plan.durationSec
+            : undefined;
+        return {
+          capture: capture === null ? null : { kind: capture.kind, video: capture.video },
+          sequencePlanDurationSec: planDurationSec,
+          voiceoverDurationSec: previewDurations[scene.id]
+        };
+      }),
+    [project.scenes, captureMap, sequencePreviewPlans, previewDurations]
+  );
+  const reelDurationLabel =
+    reelDuration.sceneCount === 0 || reelDuration.totalSec <= 0
+      ? null
+      : `${reelDuration.exact ? "" : "~"}${formatSizzleDuration(reelDuration.totalSec)}`;
   // Voice / provider / resolution are set once per reel, so they hide
   // behind a summary chip instead of taking a toolbar row every session.
   const [reelSettingsOpen, setReelSettingsOpen] = useState(false);
@@ -3078,13 +3106,19 @@ function Editor(props: EditorProps): ReactElement {
           type="button"
           disabled={rendering || project.scenes.length === 0 || unscriptedSceneNumber !== null}
           title={
-            unscriptedSceneNumber === null
-              ? undefined
-              : `Scene ${unscriptedSceneNumber} has no narration — a scene is one voiceover over its clips, so it needs a script before the reel can render.`
+            unscriptedSceneNumber !== null
+              ? `Scene ${unscriptedSceneNumber} has no narration — a scene is one voiceover over its clips, so it needs a script before the reel can render.`
+              : reelDurationLabel !== null && !reelDuration.exact
+                ? "Approximate length. Scenes you haven't previewed are estimated — a scene runs as long as its narration, and narration length isn't known until it's synthesized."
+                : undefined
           }
           data-testid="sizzle-render"
         >
-          {rendering ? `Rendering… ${Math.round(status.ratio * 100)}%` : "Render"}
+          {rendering
+            ? `Rendering… ${Math.round(status.ratio * 100)}%`
+            : reelDurationLabel === null
+              ? "Render"
+              : `Render · ${reelDurationLabel}`}
         </button>
       </footer>
     </div>

@@ -1,4 +1,4 @@
-import type { SizzleMediaTrim } from "@pwrsnap/shared";
+import type { SizzleMediaTrim } from "./protocol";
 
 export function normalizeVideoMediaTrim(args: {
   trim: SizzleMediaTrim | null;

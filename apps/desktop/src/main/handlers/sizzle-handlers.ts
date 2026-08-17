@@ -5,8 +5,11 @@ import { createHash } from "node:crypto";
 import {
   EVENT_CHANNELS,
   err,
+  mediaTrimWasClamped,
+  normalizeVideoMediaTrim,
   ok,
   resolveSizzleAudioSource,
+  resolveVoiceoverSceneDurationSec,
   sizzleProjectHasCapture,
   type CaptureRecord,
   type EventPayloads,
@@ -41,8 +44,6 @@ import {
   planSequenceTimeline,
   SequencePlannerError
 } from "../sizzle/sequence-planner";
-import { mediaTrimWasClamped, normalizeVideoMediaTrim } from "../sizzle/media-trim";
-import { resolveVoiceoverSceneDurationSec } from "../sizzle/scene-duration";
 import {
   compose,
   ComposeError,

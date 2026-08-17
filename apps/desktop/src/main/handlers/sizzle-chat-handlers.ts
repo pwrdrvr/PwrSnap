@@ -35,6 +35,7 @@ import {
   buildSizzleTurnContext
 } from "../ai/sizzle-chat-system-prompt";
 import { makeSizzleChatTools, SIZZLE_TOOL_LABELS } from "../ai/sizzle-tool-catalog";
+import { getChatsRoot } from "../persistence/paths";
 
 const log = getMainLogger("pwrsnap:sizzle-chat-handlers");
 // Tool callbacks outlive sendMessage(), so retain the latest turn origin.
@@ -95,7 +96,7 @@ let sizzleStore: ChatThreadStore | null = null;
 
 function getSizzleStore(): ChatThreadStore {
   if (sizzleStore === null) {
-    sizzleStore = new ChatThreadStore({ chatsDir: join(app.getPath("documents"), "PwrSnap", "Chats") });
+    sizzleStore = new ChatThreadStore({ chatsDir: getChatsRoot() });
   }
   return sizzleStore;
 }
@@ -116,7 +117,7 @@ function getSizzleCache(): KeyedChatControllerCache<ChatThreadController<Setting
         acpEnabled: s.ai.acp.enabledAgentIds ?? null
       }),
     build: async (config, settings) => {
-      const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
+      const chatsDir = getChatsRoot();
       const projectStore = new ChatThreadStore({ chatsDir });
       const tools = makeSizzleChatTools({
         resolveProjectId: async (threadId) =>
@@ -378,7 +379,7 @@ function codexUnreachable(cause: unknown): Result<never, PwrSnapError> {
 }
 
 function chatsDirPath(): string {
-  return join(app.getPath("documents"), "PwrSnap", "Chats");
+  return getChatsRoot();
 }
 
 /**

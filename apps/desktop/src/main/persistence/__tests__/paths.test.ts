@@ -122,3 +122,33 @@ describe("paths accessors compose from getDataRoot", () => {
     expect(getPerfRoot()).toBe(join(root, "perf"));
   });
 });
+
+// Chat + sizzle threads used to be hardcoded to ~/Documents/PwrSnap/Chats in
+// four handlers. `~/Documents` is TCC-gated on macOS, and #376's denial
+// fallback only covered the CAPTURE root — so a denied grant left captures
+// working while chat persistence silently broke. Chats now compose from the
+// captures root, inheriting that fallback.
+describe("paths.getChatsRoot", () => {
+  test("sits under the Documents captures root by default", async () => {
+    const { getChatsRoot, getCapturesRoot } = await import("../paths");
+    expect(getChatsRoot()).toBe(join("/tmp/pwrsnap-test-documents", "PwrSnap", "Chats"));
+    expect(getChatsRoot()).toBe(join(getCapturesRoot(), "Chats"));
+  });
+
+  test("follows the captures root to ~/PwrSnap when Documents is denied", async () => {
+    const { getChatsRoot, setCapturesLocation } = await import("../paths");
+    setCapturesLocation("home");
+    expect(getChatsRoot()).toBe(join("/tmp/pwrsnap-test-home", "PwrSnap", "Chats"));
+    // Never strands threads in the TCC-gated tree after a denial.
+    expect(getChatsRoot()).not.toContain("documents");
+  });
+
+  test("stays inside the data root in override mode, not the user's Documents", async () => {
+    process.env[ENV_KEY] = "/tmp/pwrsnap-override";
+    const { getChatsRoot } = await import("../paths");
+    // A dev seeder or profiling clone must not write threads into the real
+    // ~/Documents/PwrSnap (capture bundles live outside userData).
+    expect(getChatsRoot()).toBe(join("/tmp/pwrsnap-override", "captures", "Chats"));
+    expect(getChatsRoot()).not.toContain("documents");
+  });
+});

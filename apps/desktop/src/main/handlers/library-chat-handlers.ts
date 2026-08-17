@@ -38,6 +38,7 @@ import { toChatMessage, toLibraryThreadView } from "../ai/chat-event-adapter";
 import { buildLibrarySystemPrompt } from "../ai/library-chat-system-prompt";
 import { buildLibraryToolCatalog } from "../ai/library-tool-catalog";
 import { dispatchLibraryToolCall } from "../ai/library-tool-catalog";
+import { getChatsRoot } from "../persistence/paths";
 
 const log = getMainLogger("pwrsnap:library-chat-handlers");
 
@@ -156,7 +157,7 @@ export function registerLibraryChatHandlers(params?: {
   settingsReader?: LibraryChatSettingsReader;
 }): void {
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
-  const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
+  const chatsDir = getChatsRoot();
   // Reads each thread's persisted backend config (for routing) + writes it on
   // create. Lazy DB access — constructing it touches nothing.
   const store = new ChatThreadStore({ chatsDir });

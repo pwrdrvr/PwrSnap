@@ -238,11 +238,18 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
     setInteracting(false);
   };
 
-  // Escape abandons the drag and restores the range / playhead to what
-  // it was at pointerdown — the "I messed up, put it back" reflex.
+  // Escape abandons the drag — the "I messed up, put it back" reflex.
   // Restores with `commit: true` so the caller settles: an uncommitted
   // range never persists AND leaves `useVideoTrimRange` stuck in its
   // dragging state, blocking upstream adoption.
+  //
+  // What the preview lands on differs by mode, deliberately. A scrub
+  // goes back to `start.time`, the playhead's pre-drag position. A
+  // handle drag parks on the RESTORED EDGE instead — that edge is the
+  // thing the user just put back, so it's the frame worth confirming,
+  // and the float-over has no playhead of its own (`currentTime`
+  // defaults to 0 there), so honoring `start.time` would jump its
+  // preview to frame 0 on every cancel.
   const cancelDrag = (): void => {
     const d = dragRef.current;
     if (d === null) return;

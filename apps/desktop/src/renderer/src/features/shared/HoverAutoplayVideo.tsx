@@ -11,7 +11,7 @@
 // popover's "last recording" preview so the two surfaces feel
 // like siblings.
 
-import { useEffect, useRef, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, type ReactElement } from "react";
 
 export type HoverAutoplayVideoProps = {
   src: string;
@@ -43,10 +43,18 @@ export function HoverAutoplayVideo({
 
   // Mirror the element into the caller's ref so both the internal
   // hover-play effect and the caller see the same node.
-  const setVideoEl = (el: HTMLVideoElement | null): void => {
-    videoRef.current = el;
-    if (externalVideoRef !== undefined) externalVideoRef.current = el;
-  };
+  //
+  // Memoized because React detaches and reattaches a ref whose identity
+  // changed on every render — and the float-over re-renders at 60 Hz
+  // while its auto-dismiss countdown ticks, which would mean 60
+  // null-then-element round trips per second through both refs.
+  const setVideoEl = useCallback(
+    (el: HTMLVideoElement | null): void => {
+      videoRef.current = el;
+      if (externalVideoRef !== undefined) externalVideoRef.current = el;
+    },
+    [externalVideoRef]
+  );
 
   useEffect(() => {
     const container = containerRef.current;

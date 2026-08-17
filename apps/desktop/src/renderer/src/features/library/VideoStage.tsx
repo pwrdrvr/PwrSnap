@@ -163,6 +163,7 @@ export function VideoStage({
   const resumeAfterDragRef = useRef(false);
   const playingRef = useRef(playing);
   playingRef.current = playing;
+  const [pendingResume, setPendingResume] = useState(false);
   const onTimelineInteracting = useCallback(
     (interacting: boolean): void => {
       if (interacting) {
@@ -172,10 +173,23 @@ export function VideoStage({
       }
       if (!resumeAfterDragRef.current) return;
       resumeAfterDragRef.current = false;
-      play();
+      setPendingResume(true);
     },
-    [pause, play]
+    [pause]
   );
+
+  // Resume AFTER the commit, never inline in the drag-end callback.
+  // `play()`'s loop-in-range check reads `rangeRef`, which is assigned
+  // during render — so in the same synchronous tick it still holds the
+  // range as of the last commit. That matters for Escape-cancel, which
+  // restores the range and ends the drag in one tick: playing inline
+  // would test the head against the ABANDONED range and snap it to the
+  // in-point the user just backed out of.
+  useEffect(() => {
+    if (!pendingResume) return;
+    setPendingResume(false);
+    play();
+  }, [pendingResume, play]);
 
   // Reverse shuttle emulation: Chromium doesn't honor negative
   // playbackRate, so J steps `currentTime` backwards each frame.

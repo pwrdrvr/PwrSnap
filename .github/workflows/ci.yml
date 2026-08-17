@@ -21,9 +21,30 @@ permissions:
   contents: read
 
 jobs:
+  # Cache-priming gate. `lookup-only` makes this ~1s on a hit; on a miss it
+  # pays one cold install and saves the cache inline (not in a post step), so
+  # the fan-out below restores instead of each job installing from scratch.
+  # The cache key includes runner OS and arch, so Windows needs its own gate —
+  # see `windows-install-deps`. Gate and consumers must agree on every
+  # key-forming input (`node-version` major, `working-directory`,
+  # `package-manager`, `cache-electron`, `cache-key-suffix`); a mismatch warms
+  # a key nobody reads, silently and with no error.
   install-deps:
     name: Install Dependencies
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Node.js and dependencies
+        uses: pwrdrvr/configure-nodejs@v1
+        with:
+          node-version: "24.14.1"
+          lookup-only: "true"
+
+  windows-install-deps:
+    name: Install Dependencies (Windows)
+    runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -188,30 +209,24 @@ jobs:
 
   windows:
     name: Windows (lint + build + test)
+    # Scope is the unit suite + build + lint — the Electron GUI E2E (screen
+    # capture, tray, AppKit windowing) is macOS-specific and not yet ported to
+    # Windows.
     runs-on: windows-latest
+    needs: windows-install-deps
     timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      # The shared pwrdrvr/configure-nodejs action is bash/Linux-oriented
-      # (find/grep cache logic), so use the portable pnpm + setup-node combo
-      # here to keep the Windows job self-contained. Scope is the unit suite +
-      # build + lint — the Electron GUI E2E (screen capture, tray, AppKit
-      # windowing) is macOS-specific and not yet ported to Windows.
-      - name: Install pnpm
-        # Version comes from package.json's `packageManager` field (omit
-        # `version` here) so there's no second pnpm pin to drift on upgrade.
-        uses: pnpm/action-setup@v4
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
+      # Same action as the Linux jobs: it runs natively on Windows (no bash
+      # assumptions) and activates the pnpm version pinned in package.json's
+      # `packageManager` field via Corepack, so there's no second pnpm pin to
+      # drift on upgrade.
+      - name: Install Node.js and dependencies
+        uses: pwrdrvr/configure-nodejs@v1
         with:
           node-version: "24.14.1"
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Lint
         run: pnpm run lint
@@ -225,22 +240,16 @@ jobs:
   windows-e2e:
     name: Windows Desktop E2E
     runs-on: windows-latest
+    needs: windows-install-deps
     timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
+      - name: Install Node.js and dependencies
+        uses: pwrdrvr/configure-nodejs@v1
         with:
           node-version: "24.14.1"
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Run desktop Electron E2E specs (Windows)
         # windows-latest provides an interactive desktop session, so (unlike the

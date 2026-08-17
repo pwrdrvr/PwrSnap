@@ -131,19 +131,13 @@ jobs:
       - name: Checkout PR branch
         uses: actions/checkout@v5
 
-      # Portable pnpm + setup-node combo (the shared pwrdrvr/configure-nodejs
-      # action is bash/Linux-oriented). Mirrors the `windows` job in ci.yml.
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
+      # Same action as the macOS preview above; it runs natively on Windows.
+      # No cache-priming gate job here (unlike ci.yml): this is a label-gated
+      # one-off build, so there is no fan-out to prime for.
+      - name: Install Node.js and dependencies
+        uses: pwrdrvr/configure-nodejs@v1
         with:
           node-version: "24.14.1"
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
 
       # windows-latest defaults to pwsh; force bash for the version-stamp steps
       # so they stay identical to the macOS preview job above.

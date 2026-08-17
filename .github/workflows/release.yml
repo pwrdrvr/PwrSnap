@@ -42,7 +42,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@7c109865ae9af59c6fcd2f2a0e8cc851f6ded26a # v1
+        uses: pwrdrvr/configure-nodejs@e1bd1cc1494a20f0ee91dae622b0d2523b6fb53c # v1.4.0
         with:
           node-version: "24.14.1"
 

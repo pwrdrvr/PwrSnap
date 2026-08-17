@@ -64,6 +64,36 @@ Exactly **two** definitions exist, and they must stay byte-identical to the snip
 
 **Both must move together.** Any edit to one is incomplete until the other matches.
 
+### The stack is a HARD STACK, never a blend
+
+Wherever the mark is rendered with **per-tier alpha** instead of three opaque
+tints (the native generators: `apps/desktop/scripts/generate-app-icon.swift`,
+`apps/desktop/scripts/generate-tray-icon.mjs`), painting back → mid → front with
+plain source-over is *correct alpha compositing and the wrong mark*: the 0.3 back
+stroke shows through the 0.55 mid stroke and each crossing lights up as a
+brighter, more saturated patch — a fourth tone the palette never specified.
+
+Front and mid are **immutable in color and opacity anywhere they are visible**;
+the back rect is simply *behind* them. So every tier must be **knocked out**
+wherever a tier in front of it covers:
+
+- Swift/CoreGraphics — stroke each tier inside a clip built from
+  `CGPath.copy(strokingWithWidth:)` outlines of the tiers in front (bounds + ring
+  path, `.evenOdd`, clips intersected sequentially).
+- SVG — a `maskUnits="userSpaceOnUse"` luminance mask per tier, with the covering
+  tiers' stroke bands painted black into it.
+
+Antialiasing is unaffected: the knockout's partial coverage at a boundary is
+exactly `1 − (covering tier's coverage)`, the same weight source-over would have
+applied. No seams. PwrGit hit the sibling version of this bug (its dim branch arc
++ ring doubling up) and fixed it with a `beginTransparencyLayer` — that trick
+flattens *within* one tier only and is **not** sufficient here, where the
+compounding is *between* tiers of different alpha.
+
+Touching either generator means regenerating and committing the assets:
+`pnpm --filter @pwrsnap/desktop generate:app-icon` (+ `iconutil -c icns`) and
+`pnpm --filter @pwrsnap/desktop tray-icon`.
+
 ### Don'ts
 
 - ❌ Don't draw a lightning bolt. (Crept in during an unknown refactor; permanently retired.)
@@ -71,6 +101,7 @@ Exactly **two** definitions exist, and they must stay byte-identical to the snip
 - ❌ Don't reverse the offset direction.
 - ❌ Don't rely on `currentColor` for any of the three stroke colors.
 - ❌ Don't invent a fourth layer, a tile background inside the SVG, a frame, a shutter, or any "extra detail." Three rects, that's it.
+- ❌ Don't let the tiers blend into each other. See "hard stack" above.
 
 ---
 
@@ -91,7 +122,7 @@ Exactly **two** definitions exist, and they must stay byte-identical to the snip
 - The **macOS app icon** uses a separate, deeper orange **`#e8743a`** — *not*
   `--accent`. Two intentional oranges; don't unify them. PwrAgent uses the same
   split (UI `#ff8a1f`, icon `#e8743a`). Full notes:
-  [docs/solutions/2026-05-31-brand-oranges-and-app-icon.md](../docs/solutions/2026-05-31-brand-oranges-and-app-icon.md).
+  `docs/solutions/2026-05-31-brand-oranges-and-app-icon.md` in the PwrSnap repo.
 - `--button-text-on-accent` is `#000000`, not a warm near-black.
 - Geist + Geist Mono everywhere; never substitute Inter/Roboto/system fonts.
 

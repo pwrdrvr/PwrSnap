@@ -501,6 +501,13 @@ export function FloatOver({
   useEffect(() => {
     const finishNativeDrag = (event?: MouseEvent | DragEvent): void => {
       setNativeDragging(false);
+      // Backstop for the trim hold. The strip's own pointerup only
+      // reaches `VideoTimeline` while pointer capture holds; if capture
+      // was never taken (setPointerCapture threw) the release lands on
+      // whatever element is under the pointer and the hold would stick,
+      // pinning the toast on screen forever. A window-level mouseup
+      // means the button is up, so it can never fire mid-drag.
+      setTrimDragging(false);
       if (event !== undefined) {
         syncHoverFromPoint(event.clientX, event.clientY);
       }
@@ -1077,7 +1084,7 @@ function FloatOverVideoExport({
   onTrimDraggingChange
 }: {
   asset: Extract<FloatOverAsset, { kind: "video" }>;
-  onTrimDraggingChange?: ((dragging: boolean) => void) | undefined;
+  onTrimDraggingChange: (dragging: boolean) => void;
 }) {
   const [stripWidth, setStripWidth] = useState(0);
   const trim = useVideoTrimRange({
@@ -1104,9 +1111,7 @@ function FloatOverVideoExport({
           frames={assets.frames}
           onRangeChange={trim.setRange}
           onWidthChange={setStripWidth}
-          {...(onTrimDraggingChange !== undefined
-            ? { onInteractingChange: onTrimDraggingChange }
-            : {})}
+          onInteractingChange={onTrimDraggingChange}
           label="Trim recording"
         />
       </div>

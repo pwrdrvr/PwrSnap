@@ -195,6 +195,33 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
     }
   };
 
+  // Capture released without a pointerup / pointercancel (the OS took
+  // the gesture over). Finish the drag so the range still commits — an
+  // uncommitted range never persists and pins `useVideoTrimRange`'s
+  // dragging flag — and so the interaction hold drops.
+  //
+  // Deliberately commits at the LAST OBSERVED drag position rather than
+  // re-deriving one from the event: `lostpointercapture` is not a
+  // positional event, and its coordinates need not reflect where the
+  // pointer actually is. Committing `secAt(0)` from a zeroed event would
+  // silently persist a MIN_RANGE_SEC sliver over the user's clip.
+  //
+  // `endDrag` nulls `dragRef` before calling `releasePointerCapture`, so
+  // the lostpointercapture that a normal release fires lands here as a
+  // no-op. (Capture lost because the strip left the DOM does NOT reach
+  // this handler — the event has no path to React's delegated root
+  // listener once the node is detached. That case is covered by the
+  // unmount cleanup below, which drops the hold without committing.)
+  const onLostPointerCapture = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    const d = dragRef.current;
+    if (d === null || d.pointerId !== e.pointerId) return;
+    dragRef.current = null;
+    const sec = drag?.sec;
+    setDrag(null);
+    if (sec !== undefined) applyDrag(d.mode, sec, true);
+    setInteracting(false);
+  };
+
   // No drag-cancel gesture: the range follows the pointer and commits
   // on release, matching the handles' direct-manipulation feel.
 
@@ -262,14 +289,7 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
-        // Capture yanked without a pointerup — strip removed from the
-        // DOM, or the OS took the gesture over. Same release path, so
-        // the range still commits (an uncommitted range never persists
-        // and pins `useVideoTrimRange`'s dragging flag) and the
-        // interaction hold drops. `endDrag` nulls `dragRef` before
-        // calling `releasePointerCapture`, so the lostpointercapture a
-        // normal release fires lands here as a no-op.
-        onLostPointerCapture={endDrag}
+        onLostPointerCapture={onLostPointerCapture}
         role="slider"
         aria-label={props.label ?? "Video timeline"}
         aria-valuemin={0}

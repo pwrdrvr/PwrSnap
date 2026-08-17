@@ -1,6 +1,6 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   checkBundledFfmpegNotice,
@@ -170,10 +170,17 @@ describe("checkBundledFfmpegNotice", () => {
     const manifestPath = join(root, "manifest.json");
     writeFileSync(manifestPath, JSON.stringify({ version: BUNDLED_FFMPEG_VERSION }));
 
+    // `new URL(...).pathname` would be the obvious way to reach the repo root
+    // and is wrong on Windows: it yields "/D:/a/…", which readFileSync cannot
+    // open. That is the same file-URL-vs-path confusion that made
+    // licenses:check silently pass on Windows for months (see
+    // docs/third-party-license-notices.md § "How the check can fail open" #2).
+    const repoRoot = resolve(import.meta.dirname, "..", "..");
+
     expect(
       checkBundledFfmpegNotice({
         manifestPath,
-        noticePath: new URL("../../THIRD_PARTY_LICENSES", import.meta.url).pathname,
+        noticePath: join(repoRoot, "THIRD_PARTY_LICENSES"),
       }),
     ).toEqual({ version: BUNDLED_FFMPEG_VERSION });
   });

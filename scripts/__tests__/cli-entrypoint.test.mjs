@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
 import { isCliEntrypoint } from "../lib/cli-entrypoint.mjs";
+import { BUNDLED_FFMPEG_VERSION } from "../generate-third-party-licenses.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -123,4 +124,39 @@ describe("license CLIs report a result when run", () => {
       }
     });
   }
+
+  test("scripts/check-bundled-ffmpeg-notice.mjs produces a verdict", () => {
+    // This one is NOT guarded by isCliEntrypoint: it has to stay
+    // dependency-free so it can travel in the Windows signing-input tarball,
+    // which unpacks without a checkout and therefore without scripts/lib. It
+    // carries its own guard instead, which puts it in exactly the fail-open
+    // category described above — and it runs in the protected signing jobs,
+    // where silence would mean the release ships unverified. So spawn it.
+    const root = mkdtempSync(join(tmpdir(), "pwrsnap-ffmpeg-cli-"));
+    try {
+      const manifestPath = join(root, "manifest.json");
+      writeFileSync(manifestPath, JSON.stringify({ version: BUNDLED_FFMPEG_VERSION }));
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          join(repoRoot, "scripts/check-bundled-ffmpeg-notice.mjs"),
+          "--manifest",
+          manifestPath,
+          "--notice",
+          join(repoRoot, "THIRD_PARTY_LICENSES"),
+        ],
+        { cwd: repoRoot, encoding: "utf8", timeout: 120_000 },
+      );
+      const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+
+      expect(output).not.toBe("");
+      expect(output).toMatch(/bundled FFmpeg notice check (passed|failed)/);
+      if (result.status === 0) {
+        expect(output).toMatch(/passed/);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

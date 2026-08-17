@@ -121,6 +121,11 @@ import { Thumb } from "./Thumb";
  *  the session-lived undo stack regardless of whether the toast is showing. */
 const UNDO_TOAST_MS = 8000;
 
+/** How long a failed one-shot action (e.g. "Save File…") keeps its banner
+ *  up. Longer than the undo toast because there's nothing to act on — the
+ *  user just needs time to read why nothing happened. */
+const ACTION_ERROR_MS = 10_000;
+
 /** Cap on the in-memory capture-delete undo/redo stacks. Entries are just
  *  capture ids (a few bytes each), so this is generous — it only exists so a
  *  marathon session can't grow the arrays without bound. */
@@ -140,6 +145,16 @@ function copyPresetForShortcutKey(key: string): CopyPreset | null {
   if (key === "3") return "high";
   return null;
 }
+
+/** Preset order + labels for the capture tile's context menu. Same
+ *  Low/Med/High rungs, in the same order, as the DetailRail copy cards
+ *  and the ⌘1/⌘2/⌘3 shortcuts. */
+const COPY_PRESET_ORDER = ["low", "med", "high"] as const;
+const COPY_PRESET_LABELS: Record<CopyPreset, string> = {
+  low: "Low",
+  med: "Med",
+  high: "High"
+};
 
 function sizzleProjectMatchesQuery(project: SizzleProject, query: string): boolean {
   const terms = query
@@ -169,8 +184,32 @@ type ProjectContextMenuState = {
   y: number;
 };
 
+/** Right-click target on a CAPTURE tile (as opposed to a Sizzle project
+ *  tile, which has its own menu). Parks the grid cell itself so the menu
+ *  can hand it back to the SAME handlers the tile's own buttons call —
+ *  `onSelectCell(capture, "edit-cta")`, `trashCapture(capture.id)` — and
+ *  the resolved `recordId` for the verbs that take a real capture id
+ *  (copy / save / reveal / cart). */
+type CaptureContextMenuState = {
+  capture: Capture;
+  recordId: string;
+  isVideo: boolean;
+  isTrashed: boolean;
+  x: number;
+  y: number;
+};
+
 const PROJECT_CONTEXT_MENU_WIDTH = 188;
 const PROJECT_CONTEXT_MENU_HEIGHT = 70;
+
+const CAPTURE_CONTEXT_MENU_WIDTH = 208;
+/** Rough menu height for the viewport clamp: 32px per row + 6px padding
+ *  top/bottom + a couple of 1px separators. Only used to keep the menu
+ *  on-screen, so an approximation is fine — the real box is laid out by
+ *  the browser. */
+function captureContextMenuHeight(rows: number): number {
+  return rows * 32 + 14;
+}
 
 function clampContextMenuPosition(
   x: number,
@@ -201,9 +240,13 @@ const INITIAL_COPY_PULSES: Record<CopyPreset, number> = {
  * Per-cell cart checkbox. Self-subscribes to the cart via context so a
  * cart toggle re-renders ONLY the checkboxes, not the enclosing cells
  * (thumbnail, app tag, etc.) or the whole virtualized grid. Dispatches
- * `cart:toggle` directly. The hover-reveal + the collected-cell accent
- * ring are pure CSS (`.psl__cell:hover .psl__cell-cart`,
- * `.psl__cell:has(.psl__cell-cart.is-checked)`).
+ * `cart:toggle` directly. The hover-reveal, the corner scrim that makes
+ * the unchecked box legible on light thumbnails, and the collected-cell
+ * accent ring are pure CSS (`.psl__cell:hover .psl__cell-cart`,
+ * `.psl__cell-cart::before`, `.psl__cell:has(.psl__cell-cart.is-checked)`).
+ * "Selection mode" — every box visible at rest once anything is checked —
+ * rides `data-selecting` on `.psl` instead, so it flips on the cart's
+ * empty↔non-empty edge rather than on every toggle.
  */
 function CartCellCheckbox({ captureId }: { captureId: string }): React.ReactElement {
   const cart = useCart();
@@ -224,7 +267,7 @@ function CartCellCheckbox({ captureId }: { captureId: string }): React.ReactElem
       }}
     >
       {inCart ? (
-        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
           <path d="m5 12 5 5 9-11" />
         </svg>
       ) : null}
@@ -417,7 +460,26 @@ function PreviewVideoThumb({
   onError?: () => void;
 }): React.ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
   const [hovering, setHovering] = useState(false);
+
+  // The preview is deliberately non-interactive so its native video surface
+  // cannot cover the tile controls. Follow the enclosing tile instead: that
+  // preserves hover playback when the pointer is anywhere over the capture,
+  // including its overlaid Edit / Trash actions.
+  useEffect(() => {
+    const cell = previewRef.current?.closest(".psl__cell");
+    if (cell === null || cell === undefined) return;
+    const onEnter = (): void => setHovering(true);
+    const onLeave = (): void => setHovering(false);
+    cell.addEventListener("mouseenter", onEnter);
+    cell.addEventListener("mouseleave", onLeave);
+    return () => {
+      cell.removeEventListener("mouseenter", onEnter);
+      cell.removeEventListener("mouseleave", onLeave);
+    };
+  }, []);
+
   useEffect(() => {
     const el = videoRef.current;
     if (el === null) return;
@@ -431,13 +493,13 @@ function PreviewVideoThumb({
   }, [hovering]);
   return (
     <div
-      onMouseEnter={() => setHovering(true)}
-      onMouseLeave={() => setHovering(false)}
+      ref={previewRef}
       style={{
         position: "relative",
         width: "100%",
         height: "100%",
-        background: "var(--bg)"
+        background: "var(--bg)",
+        pointerEvents: "none"
       }}
     >
       <video
@@ -614,6 +676,8 @@ export function Library() {
   const [openedRecords, setOpenedRecords] = useState<CaptureRecord[]>([]);
   const [projectContextMenu, setProjectContextMenu] =
     useState<ProjectContextMenuState | null>(null);
+  const [captureContextMenu, setCaptureContextMenu] =
+    useState<CaptureContextMenuState | null>(null);
   const openedRecordsRef = useRef(openedRecords);
   // `captures:changed` listeners read this ref synchronously. Update it
   // before Focus navigation too: an event can arrive before React commits
@@ -664,6 +728,23 @@ export function Library() {
   const clearLastDeleted = useCallback(() => {
     setLastDeleted(null);
   }, []);
+
+  /**
+   * Transient failure banner for one-shot actions the user explicitly
+   * asked for (the tile context menu's "Save File…", so far).
+   *
+   * The `error` further down comes from `useLibraryData` and only covers
+   * the list fetch. Command failures had no surface at all: a
+   * `void dispatch(...)` throws the `Result` away, so a save that failed
+   * in main looked exactly like a save that succeeded, and the user
+   * would go looking for a file that was never written.
+   */
+  const [actionError, setActionError] = useState<string | null>(null);
+  useEffect(() => {
+    if (actionError === null) return;
+    const timer = setTimeout(() => setActionError(null), ACTION_ERROR_MS);
+    return () => clearTimeout(timer);
+  }, [actionError]);
 
   // ⌘Z / Edit ▸ Undo / toast "Undo": restore the most-recently trashed
   // capture (the stack moves it onto its redo list).
@@ -2914,6 +2995,43 @@ export function Library() {
     });
   }
 
+  function closeCaptureContextMenu(): void {
+    setCaptureContextMenu(null);
+  }
+
+  /**
+   * Right-click on a capture tile. Mirrors `openProjectContextMenu`'s
+   * mechanism exactly (preventDefault + stopPropagation, clamp to the
+   * viewport, park the target in state) — only the row set differs.
+   *
+   * Fixture cells with no backing record have nothing to act on, so
+   * they fall through to the platform menu rather than opening an
+   * all-disabled one.
+   */
+  function openCaptureContextMenu(c: Capture, event: ReactMouseEvent<HTMLElement>): void {
+    const record = fixtureBacking.recordFor(c.id);
+    if (record === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const isVideo = record.kind === "video";
+    // Row count drives only the off-screen clamp; see
+    // captureContextMenuHeight.
+    const rows = isTrashView ? 3 : isVideo ? 4 : 8;
+    const position = clampContextMenuPosition(
+      event.clientX,
+      event.clientY,
+      CAPTURE_CONTEXT_MENU_WIDTH,
+      captureContextMenuHeight(rows)
+    );
+    setCaptureContextMenu({
+      capture: c,
+      recordId: record.id,
+      isVideo,
+      isTrashed: isTrashView,
+      ...position
+    });
+  }
+
   function openSizzleProject(projectId: string): void {
     void dispatch("sizzle:open", { projectId });
   }
@@ -2993,26 +3111,57 @@ export function Library() {
     deleteCaptureById(record.id);
   }
 
-  /** Restore a soft-deleted capture from the in-trash hover affordance. */
+  /**
+   * Move-to-Trash from the tile CONTEXT MENU, gated on the same
+   * `library.confirmBeforeTrash` setting every other soft-delete door
+   * honors (see `deleteCaptureById`).
+   *
+   * The 28px rail button wraps itself in `<DeleteConfirm>`; a menu row
+   * can't. That popover portals to `document.body`, so it lands OUTSIDE
+   * the menu root and the menu's own click-outside dismiss would tear it
+   * down before the confirm click ever landed. Use the yes/no prompt the
+   * menu's sibling "Delete Permanently" row already uses instead
+   * (`purgeCaptureById`), so the menu has one confirm mechanism and
+   * neither door can skip the friction the other enforces.
+   */
+  function trashCaptureConfirmed(captureId: number): void {
+    if (confirmBeforeTrash && !window.confirm("Move this capture to Trash? You can undo this.")) {
+      return;
+    }
+    trashCapture(captureId);
+  }
+
+  /** Restore a soft-deleted capture. Shared by the in-trash hover
+   *  affordance and the tile context menu's Restore row. */
+  function restoreCaptureById(recordId: string): void {
+    void dispatch("library:restore", { id: recordId });
+  }
+
   function restoreCaptureAction(captureId: number, event: ReactMouseEvent): void {
     event.stopPropagation();
     const record = fixtureBacking.recordFor(captureId);
     if (record === null) return;
-    void dispatch("library:restore", { id: record.id });
+    restoreCaptureById(record.id);
   }
 
   /**
    * Permanently delete a single trashed capture. Confirms first —
    * library:purge is irreversible and the user shouldn't lose a
-   * capture to a stray click.
+   * capture to a stray click. Shared by the in-trash hover affordance
+   * and the tile context menu, so the confirm can't be skipped by
+   * taking the other door.
    */
+  function purgeCaptureById(recordId: string): void {
+    const ok = window.confirm("Permanently delete this capture? This cannot be undone.");
+    if (!ok) return;
+    void dispatch("library:purge", { id: recordId });
+  }
+
   function purgeCaptureAction(captureId: number, event: ReactMouseEvent): void {
     event.stopPropagation();
     const record = fixtureBacking.recordFor(captureId);
     if (record === null) return;
-    const ok = window.confirm("Permanently delete this capture? This cannot be undone.");
-    if (!ok) return;
-    void dispatch("library:purge", { id: record.id });
+    purgeCaptureById(record.id);
   }
 
   /**
@@ -3159,6 +3308,15 @@ export function Library() {
       // as a tab, so there's no separate cart rail / data-cart
       // attribute anymore.
       data-right={railDataRight}
+      // "Selection mode" — once ANYTHING is in the cart, every grid
+      // tile shows its checkbox at rest (CSS:
+      // `.psl[data-selecting="cart"] .psl__cell-cart`). Fed by
+      // `useCartIsEmpty()`, a PRIMITIVE context value, so this flips on
+      // the empty↔non-empty edge only: adding a 4th item to a cart of 3
+      // doesn't re-render the virtualized grid. The alternative —
+      // `.psl:has(.psl__cell-cart.is-checked)` — would make the browser
+      // rescan the whole grid subtree on every toggle instead.
+      data-selecting={cartIsEmpty ? undefined : "cart"}
     >
       <header
         className={
@@ -3841,6 +3999,7 @@ export function Library() {
             onSelectCell={onSelectCell}
             duplicateSizzleProject={duplicateSizzleProject}
             openProjectContextMenu={openProjectContextMenu}
+            openCaptureContextMenu={openCaptureContextMenu}
             preloadFullRes={preloadFullRes}
             hasMore={gridHasMore}
             isLoadingMore={gridIsLoadingMore}
@@ -3865,6 +4024,52 @@ export function Library() {
             Failed to load library: {error}
           </div>
         )}
+        {actionError !== null && (
+          <div className="psl__error" role="alert">
+            {actionError}
+          </div>
+        )}
+        {captureContextMenu !== null ? (
+          <LibraryCaptureContextMenu
+            menu={captureContextMenu}
+            onClose={closeCaptureContextMenu}
+            // Every callback below routes to the SAME function the
+            // tile's own affordance calls — no parallel implementation,
+            // and in particular no second copy path (see
+            // clipboard-copy.ts).
+            onEdit={() => onSelectCell(captureContextMenu.capture, "edit-cta")}
+            onCopyPreset={(preset) => {
+              copyImagePreset(captureContextMenu.recordId, preset);
+              setCopyPulses((current) => ({ ...current, [preset]: current[preset] + 1 }));
+            }}
+            onSaveFile={() => {
+              const captureId = captureContextMenu.recordId;
+              void (async () => {
+                const result = await dispatch("capture:saveAs", {
+                  captureId,
+                  preset: "high"
+                });
+                // The handler deliberately distinguishes a CANCELLED save
+                // sheet (`ok({ path: null })`) from a FAILED one, so stay
+                // silent on both cancel and success — only a real failure
+                // gets a banner. Dropping the Result here is what made
+                // every main-process error a silent no-op.
+                if (!result.ok) {
+                  setActionError(`Couldn’t save the file — ${result.error.message}`);
+                }
+              })();
+            }}
+            onReveal={() => {
+              void dispatch("capture:reveal", { captureId: captureContextMenu.recordId });
+            }}
+            onToggleCart={() => {
+              void dispatch("cart:toggle", { captureId: captureContextMenu.recordId });
+            }}
+            onTrash={() => trashCaptureConfirmed(captureContextMenu.capture.id)}
+            onRestore={() => restoreCaptureById(captureContextMenu.recordId)}
+            onPurge={() => purgeCaptureById(captureContextMenu.recordId)}
+          />
+        ) : null}
         {projectContextMenu !== null ? (
           <LibraryProjectContextMenu
             menu={projectContextMenu}
@@ -4393,6 +4598,7 @@ type VirtualizedGridProps = {
     projectName: string,
     event: ReactMouseEvent<HTMLElement>
   ) => void;
+  openCaptureContextMenu: (capture: Capture, event: ReactMouseEvent<HTMLElement>) => void;
   preloadFullRes: (record: CaptureRecord | null) => void;
   hasMore: boolean;
   isLoadingMore: boolean;
@@ -4529,19 +4735,27 @@ function useCellsPerRow(
   return cellsPerRow;
 }
 
-function LibraryProjectContextMenu({
-  menu,
-  onClose,
-  onOpenProject,
-  onDuplicateProject
-}: {
-  menu: ProjectContextMenuState;
-  onClose: () => void;
-  onOpenProject: (projectId: string) => void;
-  onDuplicateProject: (projectId: string) => void;
-}) {
-  const rootRef = useRef<HTMLDivElement | null>(null);
-
+/**
+ * Shared dismiss + focus mechanism for the grid's context menus:
+ * click-outside closes, Esc closes (capture phase, so it beats the
+ * window-level Esc handlers that collapse the rail / leave Focus), and
+ * the menu takes focus on the next frame so keyboard users land inside
+ * it. Both the project menu and the capture menu use this so the two
+ * can't drift.
+ *
+ * Scroll / resize / blur also close, for the same reason `DeleteConfirm`
+ * closes on them: `.psl__context-menu` is `position: fixed` at the
+ * coordinates of the right-click, so it does NOT travel with the tile it
+ * was opened on. One wheel notch and the menu is pinned over a DIFFERENT
+ * capture while its rows still act on the original one — and in Trash
+ * view one of those rows is the irreversible "Delete Permanently". The
+ * scroll listener is capture-phase because the grid scrolls in an inner
+ * element, and scroll events don't bubble to window.
+ */
+function useContextMenuDismiss(
+  rootRef: React.RefObject<HTMLDivElement | null>,
+  onClose: () => void
+): void {
   useEffect(() => {
     function onMouseDown(event: MouseEvent): void {
       const root = rootRef.current;
@@ -4555,17 +4769,204 @@ function LibraryProjectContextMenu({
       event.stopPropagation();
       onClose();
     }
+    function onDetach(): void {
+      onClose();
+    }
     document.addEventListener("mousedown", onMouseDown);
     document.addEventListener("keydown", onKeyDown, { capture: true });
+    window.addEventListener("scroll", onDetach, true);
+    window.addEventListener("resize", onDetach);
+    window.addEventListener("blur", onDetach);
     return () => {
       document.removeEventListener("mousedown", onMouseDown);
       document.removeEventListener("keydown", onKeyDown, { capture: true });
+      window.removeEventListener("scroll", onDetach, true);
+      window.removeEventListener("resize", onDetach);
+      window.removeEventListener("blur", onDetach);
     };
-  }, [onClose]);
+  }, [onClose, rootRef]);
 
   useEffect(() => {
-    requestAnimationFrame(() => rootRef.current?.focus());
-  }, []);
+    // preventScroll so taking focus never nudges a scroller — the
+    // close-on-scroll listener above would otherwise dismiss the menu the
+    // instant it opens (same reason DeleteConfirm does this).
+    requestAnimationFrame(() => rootRef.current?.focus({ preventScroll: true }));
+  }, [rootRef]);
+}
+
+/**
+ * Right-click menu for a CAPTURE tile. Every row here is a second door
+ * to something the tile already does — the 28px hover buttons are no
+ * longer the ONLY path to edit / trash, and copy / save / reveal /
+ * cart, which had no tile affordance at all, become reachable without a
+ * trip through the inspector.
+ *
+ * Deliberately NOT a new copy path: the Low/Med/High rows call
+ * `copyImagePreset`, the same helper the DetailRail cards, the tray, the
+ * float-over and ⌘1/2/3 use (see clipboard-copy.ts — per-surface
+ * dispatch calls are exactly how PR #232 drifted two surfaces onto a
+ * file URL). Same for the cart (`cart:toggle`) and the trash / restore /
+ * purge actions, which are the tile's own handlers passed straight
+ * through.
+ */
+function LibraryCaptureContextMenu({
+  menu,
+  onClose,
+  onEdit,
+  onCopyPreset,
+  onSaveFile,
+  onReveal,
+  onToggleCart,
+  onTrash,
+  onRestore,
+  onPurge
+}: {
+  menu: CaptureContextMenuState;
+  onClose: () => void;
+  onEdit: () => void;
+  onCopyPreset: (preset: CopyPreset) => void;
+  onSaveFile: () => void;
+  onReveal: () => void;
+  onToggleCart: () => void;
+  onTrash: () => void;
+  onRestore: () => void;
+  onPurge: () => void;
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useContextMenuDismiss(rootRef, onClose);
+  // Self-subscribes to the cart for the Add/Remove label, exactly like
+  // the per-tile checkbox does. The menu is short-lived, so the extra
+  // subscriber costs nothing.
+  const cart = useCart();
+  const inCart = cart.captureIds.includes(menu.recordId);
+
+  function run(action: () => void): () => void {
+    return () => {
+      onClose();
+      action();
+    };
+  }
+
+  return (
+    <div
+      ref={rootRef}
+      className="psl__context-menu"
+      role="menu"
+      tabIndex={-1}
+      style={{ left: `${menu.x}px`, top: `${menu.y}px` }}
+      onContextMenu={(event) => event.preventDefault()}
+      aria-label={`${menu.capture.n} actions`}
+    >
+      {menu.isTrashed ? (
+        <>
+          <button
+            type="button"
+            role="menuitem"
+            className="psl__context-menu-row"
+            onClick={run(onReveal)}
+          >
+            Reveal in Finder
+          </button>
+          <div className="psl__context-menu-sep" role="separator" />
+          <button
+            type="button"
+            role="menuitem"
+            className="psl__context-menu-row"
+            onClick={run(onRestore)}
+          >
+            Restore
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="psl__context-menu-row is-danger"
+            onClick={run(onPurge)}
+          >
+            Delete Permanently
+          </button>
+        </>
+      ) : (
+        <>
+          <button
+            type="button"
+            role="menuitem"
+            className="psl__context-menu-row"
+            onClick={run(onEdit)}
+          >
+            Edit
+          </button>
+          {/* Video has no Low/Med/High preset model (see
+              `capture:presetMetrics`) and no `capture:saveAs` — its
+              export lives in the inspector's six-card panel. */}
+          {menu.isVideo ? null : (
+            <>
+              <div className="psl__context-menu-sep" role="separator" />
+              {COPY_PRESET_ORDER.map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  role="menuitem"
+                  className="psl__context-menu-row"
+                  onClick={run(() => onCopyPreset(preset))}
+                >
+                  {`Copy ${COPY_PRESET_LABELS[preset]}`}
+                </button>
+              ))}
+              <button
+                type="button"
+                role="menuitem"
+                className="psl__context-menu-row"
+                onClick={run(onSaveFile)}
+              >
+                Save File…
+              </button>
+            </>
+          )}
+          <div className="psl__context-menu-sep" role="separator" />
+          <button
+            type="button"
+            role="menuitem"
+            className="psl__context-menu-row"
+            onClick={run(onReveal)}
+          >
+            Reveal in Finder
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="psl__context-menu-row"
+            onClick={run(onToggleCart)}
+          >
+            {inCart ? "Remove from Cart" : "Add to Cart"}
+          </button>
+          <div className="psl__context-menu-sep" role="separator" />
+          <button
+            type="button"
+            role="menuitem"
+            className="psl__context-menu-row is-danger"
+            onClick={run(onTrash)}
+          >
+            Move to Trash
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function LibraryProjectContextMenu({
+  menu,
+  onClose,
+  onOpenProject,
+  onDuplicateProject
+}: {
+  menu: ProjectContextMenuState;
+  onClose: () => void;
+  onOpenProject: (projectId: string) => void;
+  onDuplicateProject: (projectId: string) => void;
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useContextMenuDismiss(rootRef, onClose);
 
   return (
     <div
@@ -4612,6 +5013,7 @@ function VirtualizedGrid({
   onSelectCell,
   duplicateSizzleProject,
   openProjectContextMenu,
+  openCaptureContextMenu,
   preloadFullRes,
   hasMore,
   isLoadingMore,
@@ -4894,6 +5296,7 @@ function VirtualizedGrid({
                 onSelectCell={onSelectCell}
                 duplicateSizzleProject={duplicateSizzleProject}
                 openProjectContextMenu={openProjectContextMenu}
+                openCaptureContextMenu={openCaptureContextMenu}
                 preloadFullRes={preloadFullRes}
                 isTrashView={isTrashView}
                 trashCapture={trashCapture}
@@ -4937,6 +5340,7 @@ function CellRow({
   onSelectCell,
   duplicateSizzleProject,
   openProjectContextMenu,
+  openCaptureContextMenu,
   preloadFullRes,
   isTrashView,
   trashCapture,
@@ -4960,6 +5364,7 @@ function CellRow({
     projectName: string,
     event: ReactMouseEvent<HTMLElement>
   ) => void;
+  openCaptureContextMenu: (capture: Capture, event: ReactMouseEvent<HTMLElement>) => void;
   preloadFullRes: (record: CaptureRecord | null) => void;
   isTrashView: boolean;
   trashCapture: TrashAction;
@@ -5035,7 +5440,12 @@ function CellRow({
             onContextMenu={(event) => {
               if (projectId !== null) {
                 openProjectContextMenu(projectId, c.n, event);
+                return;
               }
+              // Capture tiles get their own menu — Edit / Copy L-M-H /
+              // Save File / Reveal / Cart / Trash — so the 28px hover
+              // buttons are never the only path to any of it.
+              openCaptureContextMenu(c, event);
             }}
             onMouseEnter={() => preloadFullRes(record ?? null)}
           >
@@ -5060,19 +5470,12 @@ function CellRow({
                   <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" bundleId={c.bundleId ?? undefined} />
                 )}
               </span>
-              {/* Bottom-right rail. The duration chip (videos) sits at
-                  the left; hover-revealed action buttons slide in from
-                  the right edge, pushing the duration left rather than
-                  covering it. */}
+              {/* Bottom-right rail. Action buttons first, duration chip
+                  LAST — the chip owns the corner and never moves, while
+                  the buttons reserve their 28px slots to its left and
+                  fade in on hover (no width tween; see
+                  `.psl__cell-rail` / `.psl__cell-trash` in library.css). */}
               <span className="psl__cell-rail">
-                {record !== null && record.kind === "video" ? (
-                  <span
-                    className="psl__cell-duration"
-                    data-video-duration={(record.video?.durationSec ?? 0).toFixed(1)}
-                  >
-                    {formatDurationLabel(record.video?.durationSec ?? 0)}
-                  </span>
-                ) : null}
                 {projectId !== null ? (
                   <button
                     type="button"
@@ -5081,7 +5484,7 @@ function CellRow({
                     aria-label={`Duplicate ${c.n}`}
                     onClick={(event) => duplicateSizzleProject(projectId, event)}
                   >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <rect x="8" y="8" width="11" height="11" rx="2" />
                       <path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h9a1 1 0 0 1 1 1v1" />
                     </svg>
@@ -5103,7 +5506,7 @@ function CellRow({
                     }}
                     onDoubleClick={(e) => e.stopPropagation()}
                   >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M12 20h9" />
                       <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
                     </svg>
@@ -5119,7 +5522,7 @@ function CellRow({
                         aria-label="Restore from Trash"
                         onClick={(e) => restoreCaptureAction(c.id, e)}
                       >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M3 12a9 9 0 1 0 3-6.7" />
                           <path d="M3 4v5h5" />
                         </svg>
@@ -5131,7 +5534,7 @@ function CellRow({
                         aria-label="Delete permanently"
                         onClick={(e) => purgeCaptureAction(c.id, e)}
                       >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
                         </svg>
                       </button>
@@ -5153,13 +5556,21 @@ function CellRow({
                           aria-label="Move to Trash"
                           {...trigger}
                         >
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                             <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
                           </svg>
                         </button>
                       )}
                     </DeleteConfirm>
                   ))}
+                {record !== null && record.kind === "video" ? (
+                  <span
+                    className="psl__cell-duration"
+                    data-video-duration={(record.video?.durationSec ?? 0).toFixed(1)}
+                  >
+                    {formatDurationLabel(record.video?.durationSec ?? 0)}
+                  </span>
+                ) : null}
               </span>
             </div>
           </div>

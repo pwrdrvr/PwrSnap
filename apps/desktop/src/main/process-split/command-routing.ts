@@ -33,6 +33,9 @@ const EXACT_OWNERS: Readonly<Record<string, CommandOwner>> = {
   "settings:open": "library",
   "app:openDocumentWindow": "library",
   "logs:openWindow": "library",
+  // The render and file copy are process-safe, but a native Save As sheet
+  // must be opened by the process that owns the Library BrowserWindow.
+  "capture:saveAs": "library",
   "library:focus": "library",
   "library:openInLibrary": "library",
   "library:export": "library",

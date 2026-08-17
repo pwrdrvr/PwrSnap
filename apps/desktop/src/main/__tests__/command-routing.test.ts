@@ -55,6 +55,7 @@ describe("commandOwner", () => {
     expect(commandOwner("logs:openWindow")).toBe("library");
     expect(commandOwner("render:captureExport")).toBe("library");
     expect(commandOwner("app:openDocumentWindow")).toBe("library");
+    expect(commandOwner("capture:saveAs")).toBe("library");
     // Exact override beats the clipboard: → agent prefix: copyText is
     // registered with its only callers, the library surfaces.
     expect(commandOwner("clipboard:copyText")).toBe("library");
@@ -88,6 +89,7 @@ describe("peerOwnsCommand", () => {
   test("agent forwards library-owned commands and keeps its own", () => {
     expect(peerOwnsCommand("agent", "library:focus")).toBe(true);
     expect(peerOwnsCommand("agent", "settings:open")).toBe(true);
+    expect(peerOwnsCommand("agent", "capture:saveAs")).toBe(true);
     expect(peerOwnsCommand("agent", "capture:interactive")).toBe(false);
     expect(peerOwnsCommand("agent", "app:version")).toBe(false);
   });

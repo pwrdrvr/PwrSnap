@@ -62,7 +62,8 @@ import {
 import {
   clipboardHasPasteableImage,
   librarySourceWindowIds,
-  registerCaptureHandlers
+  registerCaptureHandlers,
+  registerCaptureSaveAsHandler
 } from "./handlers/capture-handlers";
 import { registerCaptureVideoHandler } from "./handlers/capture-video-handler";
 import { registerAcpHandlers } from "./handlers/acp-handlers";
@@ -1845,7 +1846,10 @@ export function bootstrapApp(): void {
       registerCodexHandlers();
       registerCodexProfileHandlers();
       registerAcpHandlers();
-      registerCaptureHandlers();
+      // `capture:saveAs` is the one capture verb owned by the Library in
+      // split mode, so its sheet can be attached to the invoking window.
+      // Combined mode still registers everything locally.
+      registerCaptureHandlers({ includeSaveAs: role === "combined" });
       registerClipboardHandlers();
       registerFloatOverHandlers();
       registerRecordingHandlers();
@@ -1894,6 +1898,9 @@ export function bootstrapApp(): void {
     if (role !== "agent") {
       // Library half: the windows and everything that renders, edits,
       // or organizes captures inside them — chat surfaces included.
+      // Save As runs here too: the native sheet must be parented to the
+      // Library BrowserWindow that initiated the bridged capture command.
+      if (role === "library") registerCaptureSaveAsHandler();
       registerSettingsWindowHandlers();
       registerAppWindowHandlers();
       registerDiagnosticsHandlers();

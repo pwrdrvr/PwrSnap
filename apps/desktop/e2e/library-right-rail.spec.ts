@@ -208,7 +208,17 @@ test("library-right-rail: a trim refresh keeps an off-page video in Focus", asyn
   // reloads only page 1 for every captures-changed event. Persisting a trim
   // emits that event, so Focus must retain its opened record while page 2 is
   // temporarily absent from the paginated snapshot.
-  const app = await launchPwrSnap();
+  // Wide enough (>1024px) to keep the toolbar in its `wide` tier, which
+  // keeps the inspector EFFECTIVELY pinned. Below that the rail collapses
+  // and the floating grid copy palette takes over as the copy surface —
+  // and when its anchored tile is virtualized away (this test jumps to the
+  // bottom of 100+ rows, leaving the selected newest capture off screen)
+  // the palette parks bottom-center, directly over the last row. That is
+  // the video tile this test hovers, so the palette intercepted the
+  // pointer and the hover timed out on the Windows runner, whose default
+  // window width fell under the threshold. The palette is not what this
+  // test is about; give the rail room instead.
+  const app = await launchPwrSnap({ windowSize: { width: 1280, height: 900 } });
   try {
     const captureId = await seedVideoCapture(app, {
       capturedAt: new Date(Date.now() - 60_000).toISOString()
@@ -253,7 +263,24 @@ test("library-right-rail: a trim refresh keeps an off-page video in Focus", asyn
 
     const videoCell = win.locator(`.psl__cell[data-cell-id="${captureId}"]`);
     await videoCell.waitFor({ state: "visible", timeout: 15_000 });
-    await videoCell.locator(".psl__cell-edit").click();
+    // Edit is a hover-revealed tile affordance: at rest its reserved slot is
+    // intentionally pointer-transparent so clicking the thumbnail selects
+    // the capture instead. Reproduce the real interaction before targeting
+    // the CTA directly.
+    //
+    // Retried as a unit because the grid is virtualized and this test jams
+    // scrollTop to the bottom of 100+ rows: the row can still be settling
+    // when we arrive, and a bare `hover()` waits for the element to be
+    // "visible and stable" — two CONSECUTIVE animation frames with an
+    // identical box. On the Windows runner that never caught a quiet pair
+    // and timed out at 30s while macOS and Linux passed. Each attempt
+    // re-reads the row's position instead of betting on one snapshot, and
+    // the click keeps its full actionability checks, so what the test
+    // proves is unchanged.
+    await expect(async () => {
+      await videoCell.hover({ timeout: 5_000 });
+      await videoCell.locator(".psl__cell-edit").click({ timeout: 5_000 });
+    }).toPass({ timeout: 30_000 });
     await win.locator('.psl[data-mode="focus"]').waitFor({ state: "visible", timeout: 15_000 });
 
     // A second window can broadcast as soon as Focus renders, before a

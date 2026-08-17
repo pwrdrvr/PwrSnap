@@ -250,7 +250,19 @@
 .fo__copy-btn {
   position: relative;
   display: flex; flex-direction: column; align-items: stretch; gap: 4px;
-  height: 60px;
+  /* Content-driven with a 60px floor rather than a fixed 60px. Under the
+     DPI-aware export ladder the dimensions wrap to two lines AND a scale
+     tag (¼× / 1× / RETINA) sits under them, which needs 65px — at a
+     fixed height that third line was quietly sliced off on EVERY surface
+     using this card (the toast, the tray, the grid copy palette and the
+     inspector rail). With the legacy ladder there is no tag, the content
+     is ~54px, and the floor keeps today's geometry exactly.
+
+     `flex: 1` lets the button absorb the slack when a card is stretched
+     by a grid row, so the FILE chips stay on one line even if a future
+     preset renders a tag its siblings do not. */
+  min-height: 60px;
+  flex: 1;
   padding: 8px 9px 7px;
   /* `--bg-panel-elevated` gives the button a 1-step lift over the
      float-over's `--bg-panel-hover` surface in both palettes. The

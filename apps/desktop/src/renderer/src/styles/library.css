@@ -4029,56 +4029,13 @@
   gap: 5px;
 }
 
-/* --- Rail-footer copy cards: FILE chip folded into the card ---------
-   In the rail the footer used to say "this preset" three times over: the
-   card, a detached FILE chip floating under it, then the File / Editor /
-   trash row. Fusing the chip to the card's bottom edge turns two stacked
-   controls into one object with a body (click = copy pixels) and a lip
-   (click = copy path, drag = the file) — and buys back a row of height.
-
-   Scoped to `.psl__right-footer` on purpose: `CopyButton` is shared with
-   the float-over toast, the tray popover, and the cart's Zip cards,
-   which each have their own width budget and their own goldens. The
-   shared component is untouched; only its rail presentation changes.
-
-   The cards are also ~37px narrower now that the footer sits inside the
-   320px panel rather than spanning the 360px aside, hence the trimmed
-   horizontal padding. */
-.psl__right-footer .fo__copy-card {
-  gap: 0;
-  transition: transform 120ms var(--ease-out);
-}
-.psl__right-footer .fo__copy-btn {
-  /* Content-driven, not a fixed 56px. These cards are ~97px wide inside
-     the 320px panel, which is narrow enough that the dimensions wrap to
-     two lines; add the DPI ladder's scale tag (¼× / 1× / RETINA) and the
-     column needs 65px. At a fixed height the tag was sliced in half —
-     the float-over shows the same three lines correctly because its
-     cards are wider and only need two.
-
-     `flex: 1` keeps the three buttons the same height as the tallest
-     (the grid row stretches every card), so the FILE lips stay on one
-     line even when only HIGH carries a RETINA tag. */
-  height: auto;
-  min-height: 56px;
-  flex: 1;
-  padding: 8px 6px 7px;
-  border-bottom: none;
-  border-radius: 8px 8px 0 0;
-}
-/* The button's own hover lift would shear the card in half now that the
-   chip is attached to it — lift the whole card instead. */
-.psl__right-footer .fo__copy-btn:hover:not(:disabled):not(.is-running):not(.is-error) {
-  transform: none;
-}
-.psl__right-footer .fo__copy-card:hover {
-  transform: translateY(-1px);
-}
-.psl__right-footer .fo__copy-file {
-  min-height: 20px;
-  padding: 0 5px;
-  border-radius: 0 0 8px 8px;
-}
+/* The rail's copy cards deliberately carry NO presentation overrides.
+   They are the same object as the post-capture toast's, the tray's and
+   the grid copy palette's — same card, same separate FILE chip below it,
+   same radii — so the three surfaces stay recognisably one control. An
+   earlier revision fused the chip onto the button as a "lip" to buy back
+   a row of height; that invented a style unique to the rail and is gone.
+   `CopyButton` and `.fo__copy-*` own the presentation for everyone. */
 
 /* Floating Grid copy palette. Sits over `.psl__main` (not inside the
    scrollable grid wrap) so scrolling the library doesn't drag it

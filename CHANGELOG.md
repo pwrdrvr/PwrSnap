@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.1-prerelease.2 - 2026-08-17
+
+- Windows Library - Fixed the Library window so its size and position are restored safely after reopening, monitor changes, or taskbar layout changes.
+- Windows Window Picker - Fixed the capture window picker on scaled displays so its selection frame lines up with the window you choose.
+- Windows Source App Icons - Added the originating app's icon to Windows captures, making the Library easier to scan by source application.
+- App and Tray Icons - Fixed stacked icon artwork so its visual tiers stay crisp instead of blending together.
+
 ## v1.0.1-prerelease.1 - 2026-08-16
 
 - Library Toolbar - Fixed capture controls so they stay usable and stable while resizing a narrow Library window.

@@ -3,6 +3,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isCliEntrypoint } from "./lib/cli-entrypoint.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -236,10 +237,9 @@ function runCli() {
   console.log("dependency version policy check passed");
 }
 
-export function isCliEntrypoint(metaUrl, argvPath = process.argv[1]) {
-  if (argvPath === undefined) return false;
-  return fileURLToPath(metaUrl) === resolve(argvPath);
-}
+// Re-exported so existing importers (and scripts/__tests__) keep one name for
+// the guard; the implementation lives in scripts/lib/cli-entrypoint.mjs.
+export { isCliEntrypoint };
 
 if (isCliEntrypoint(import.meta.url)) {
   runCli();

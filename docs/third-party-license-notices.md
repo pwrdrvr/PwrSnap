@@ -23,6 +23,75 @@ pnpm licenses:check
 `pnpm lint` runs the license check, and `apps/desktop/scripts/release.mjs`
 runs it before any expensive build/package work.
 
+## How the check can fail open
+
+Investigated 2026-08-17, after `THIRD_PARTY_LICENSES` was believed to have gone
+stale on `main` without CI noticing. `pnpm lint` **is** wired into CI (the
+`Lint` and `Windows` jobs in `.github/workflows/ci.yml`), and the `--check` path
+does exit non-zero. Three separate defects were found instead, all now fixed and
+covered by `scripts/__tests__/`.
+
+### 1. The generator silently degraded on a stale `node_modules`
+
+`pnpm licenses list` reports package paths derived from `pnpm-lock.yaml`. When
+`node_modules` has drifted from the lockfile — the usual cause is switching
+branches across a dependency bump without reinstalling — those directories do
+not exist. The generator used to absorb that quietly: for every unmaterialized
+package it substituted the pnpm-reported `homepage` for the manifest
+`repository` URL, and generated boilerplate for the package's real license text.
+
+The output looked plausible, so `--check` failed with *"THIRD_PARTY_LICENSES is
+out of date. Run `pnpm licenses:generate`"* — blaming the committed file. Doing
+what that message says commits the degraded notice. That very nearly shipped: a
+regeneration produced from a drifted install replaced the real license texts of
+**172 packages** with `No license text file was found…` placeholders (316
+`package metadata` markers, versus 3 in the correct file) and rewrote source
+URLs (`github.com/lovell/sharp` → `sharp.pixelplumbing.com`, and similar for
+`wavesurfer.js`, `@modelcontextprotocol/sdk`, `json-schema-typed`).
+
+The generator now calls `assertPackagesMaterialized` before enriching any
+record and fails with an actionable message telling you to run `pnpm install` —
+explicitly *not* `pnpm licenses:generate`.
+
+**If `--check` fails, run `pnpm install` first, and only then trust the
+verdict.** CI is unaffected because CI always installs from a clean lockfile;
+this misfires only on developer machines.
+
+### 2. The check never ran at all on Windows
+
+`generate-third-party-licenses.mjs` guarded its CLI with
+`import.meta.url === ` \`file://${process.argv[1]}\`. On Windows `import.meta.url`
+is `file:///D:/a/…` while the concatenation yields `file://D:\a\…`, so the guard
+was false, `runCli()` never fired, and the script exited **0 without checking
+anything**. The Windows CI lane had been reporting a green `licenses:check` for
+months on the strength of the *other* script's output.
+
+The same expression also fails on any platform when the checkout path needs
+percent-encoding (a space, `#`, `?`, non-ASCII).
+
+The comparison now lives in `scripts/lib/cli-entrypoint.mjs` (`isCliEntrypoint`)
+and is shared by all three check scripts. `scripts/__tests__/cli-entrypoint.test.mjs`
+asserts each CLI actually prints a verdict when spawned, which is what catches a
+guard that fails open. Note that assertion only bites on the Windows lane — on
+POSIX the old expression happened to work — so it relies on the `windows` CI job
+running `pnpm test`.
+
+### 3. The macOS arm64 native versions were hardcoded and drifted
+
+The `@img/sharp-darwin-arm64` and `@img/sharp-libvips-darwin-arm64` entries are
+supplemental: they are optional dependencies, so `--no-optional` hides them on
+macOS and they are not installed at all on Linux CI. Because they were
+hardcoded, a `sharp` bump left the shipped notice claiming
+`@img/sharp-darwin-arm64@0.34.5` and `@img/sharp-libvips-darwin-arm64@1.2.4`
+while **0.35.3 / 1.3.2** actually shipped — including in the LGPL-3.0 relink
+offer, which named the wrong library version. No platform could detect it.
+
+Those versions are now derived at generation time from the installed `sharp`
+manifest's own `optionalDependencies` (`resolveMacArm64Versions`). `sharp` is a
+plain production dependency, so it is present on every platform and this
+resolves identically on macOS and Linux CI. Adding a new supplemental entry?
+Derive its version the same way rather than pinning a literal.
+
 ## Scope
 
 The generated notice covers:

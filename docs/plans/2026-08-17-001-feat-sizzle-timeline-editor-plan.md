@@ -570,18 +570,36 @@ engineering one.
 
 ## 7. Mockups
 
-Design project **PwrDrvr Design System** (`019debaf-c070-7afe-98db-4c9bbe10e72b`).
-Palette **spot-checked** 2026-08-17, not fully diffed: the repo's
-`design/ds/colors_and_type.css` is 345 lines, and the project's
-`colors_and_type.css` matched it on the header, the whole light-theme override
-block, the `ds-*` class definitions, the tail, and every token sampled
-(`--accent: #ff8a1f`, `--bg-app: #000000`, light-theme `--accent: #c45200`,
-radii, type scale). No drift found, so **no sync is proposed** — but if the
-mockups come back off-palette, run a real line-by-line diff before blaming the
-design app.
+Claude Design has two kinds of container and they are **not** interchangeable:
 
-`briefs/sizzle-timeline-brief.md` already exists (2026-08-15) and is broadly
-right. It needs updating, not replacing — deltas:
+- A **design system** is shared reference — tokens, primitives, the starting
+  point for every product that uses it. `PwrDrvr Design System`
+  (`019debaf-c070-7afe-98db-4c9bbe10e72b`).
+- A **project** holds one product's own design work. `PwrSnap`
+  (`019deed3-8009-7107-bd1e-68bcd3fd192f`, `type: PROJECT_TYPE_PROJECT`).
+
+**Sizzle mockups and their brief belong in the PwrSnap project.** A brief for one
+feature of one product is not design-system material. Note `DesignSync`'s
+`list_projects` returns design systems ONLY, so the PwrSnap project is invisible
+to it — you must address it by id. That gap is why a PwrSnap brief drifted into
+the design system in the first place.
+
+The brief now lives at `briefs/sizzle-timeline-brief.md` in the **PwrSnap**
+project. A stale copy remains in the design system and should be removed.
+
+Palette: the PwrSnap project carries its own `ds/colors_and_type.css` — that is
+the file the mockups actually resolve against, not the design system's copy.
+Read 2026-08-17 and identical to the repo's `design/ds/colors_and_type.css` on
+every token (`--accent: #ff8a1f`, `--bg-app: #000000`, light-theme
+`--accent: #c45200`, radii, type scale, `ds-*` classes). No sync needed. If
+mockups come back off-palette, diff **that** file, not the design system's.
+
+The existing `PwrSnap Sizzle Reels.html` in the project is stale — it predates
+the one-scene-with-N-clips default (#387) and the crumb-dropdown layout (#389),
+so it depicts a UI that no longer exists. **Replace it; do not add a second
+sizzle page.**
+
+The brief has already been updated with these deltas (2026-08-17):
 
 - Its `Compose | Clip` **tabs** contradict §4.6; change to chat + inspector
   drawer, both visible.
@@ -602,8 +620,9 @@ Variants to request:
   scene 1 is resolved.
 
 > **Operator action required:** generating these happens in the claude.ai/design
-> app, not through the `DesignSync` tool. Update
-> `briefs/sizzle-timeline-brief.md` with the deltas above, then generate A–D.
+> app, not through the `DesignSync` tool. Open the **PwrSnap** project, generate
+> A–D from `briefs/sizzle-timeline-brief.md`, and replace
+> `PwrSnap Sizzle Reels.html` rather than adding a new page.
 
 ---
 

@@ -58,7 +58,6 @@ jobs:
         run: pnpm test
 
       - name: Prepare release stage
-        env:
         run: node apps/desktop/scripts/release.mjs --prepare-only
 
       - name: Archive signing input

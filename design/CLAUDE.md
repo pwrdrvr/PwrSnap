@@ -128,7 +128,37 @@ Touching either generator means regenerating and committing the assets:
 
 Tokens live in `ds/colors_and_type.css`. Never hardcode brand colors in component files — reference the token. If a literal hex is unavoidable (e.g. in an SVG attribute that can't take `var()`), use `style={{ stroke: "var(--…)" }}` instead. Native (Swift) icon/DMG generators are outside the token system — they hardcode brand colors and **must use `deviceRGB`** (`calibratedRGB` drifts the rendered pixels lighter; that's what spawned the spurious `#ee894a`).
 
-The PwrAgent design system project (read-only) at `/projects/019debaf-c070-7afe-98db-4c9bbe10e72b/` is the visual reference for anything not pinned here.
+### Where this lives in Claude Design
+
+This file is exported from the **PwrSnap** project in Claude Design. Two
+containers are involved and they are **not** interchangeable:
+
+| | id | holds |
+|---|---|---|
+| **PwrSnap** (project) | `019deed3-8009-7107-bd1e-68bcd3fd192f` | this product's design work — `PwrSnap Library.html`, `PwrSnap Editor.html`, `PwrSnap Sizzle Reels.html`, `src/*.jsx`, `ds/colors_and_type.css`, `briefs/` |
+| **PwrDrvr Design System** | `019debaf-c070-7afe-98db-4c9bbe10e72b` | shared tokens + primitives — the starting point and visual reference for every PwrDrvr product |
+
+**Product work goes in the PwrSnap project, never in the design system.** A brief
+or mockup for one PwrSnap feature is not design-system material; putting it there
+pollutes the shared reference for PwrAgent, PwrGit, and everything else on it.
+(Three PwrSnap briefs had drifted into the design system and were moved back on
+2026-08-17.)
+
+> ⚠️ **You cannot find this project by listing.** `DesignSync`'s `list_projects`
+> returns **design systems only** — PwrSnap, PwrAgent and PwrGit never appear in
+> it. Address the project by the id above. Do not conclude from an empty listing
+> that the design system is the only writable target; that inference is exactly
+> what caused the drift. `get_project` on the id confirms
+> `type: PROJECT_TYPE_PROJECT`, `canEdit: true`, and writes work normally.
+
+Earlier revisions of this file called `019debaf-…` "the PwrAgent design system
+project (read-only)". It is neither PwrAgent's nor read-only — its name is
+**PwrDrvr Design System** and it is writable.
+
+Note the token file: this project carries its **own** `ds/colors_and_type.css`,
+and that is what its mockups resolve against — not the design system's copy. When
+checking for palette drift, diff *that* file against `design/ds/colors_and_type.css`
+in the repo. All three were identical as of 2026-08-17.
 
 ---
 

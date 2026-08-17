@@ -97,6 +97,10 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   const [width, setWidth] = useState(0);
   const [drag, setDrag] = useState<{ mode: DragMode; sec: number } | null>(null);
   const dragRef = useRef<{ mode: DragMode; pointerId: number } | null>(null);
+  // Where the drag started, so Escape can put things back. Captured at
+  // pointerdown because by the time the user wants out, `range` has
+  // already been walked to wherever they dragged it.
+  const dragStartRef = useRef<{ range: VideoRange; time: number } | null>(null);
 
   // Interaction notification goes through a ref so the unmount cleanup
   // can reach the latest callback without re-subscribing, and so a
@@ -176,6 +180,7 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
       /* jsdom */
     }
     dragRef.current = { mode, pointerId: e.pointerId };
+    dragStartRef.current = { range, time: currentTime };
     setInteracting(true);
     const sec = secAt(e.clientX);
     setDrag({ mode, sec });
@@ -194,6 +199,7 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
     const d = dragRef.current;
     if (d === null || d.pointerId !== e.pointerId) return;
     dragRef.current = null;
+    dragStartRef.current = null;
     const sec = secAt(e.clientX);
     setDrag(null);
     applyDrag(d.mode, sec, true);
@@ -232,8 +238,35 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
     setInteracting(false);
   };
 
-  // No drag-cancel gesture: the range follows the pointer and commits
-  // on release, matching the handles' direct-manipulation feel.
+  // Escape abandons the drag and restores the range / playhead to what
+  // it was at pointerdown — the "I messed up, put it back" reflex.
+  // Restores with `commit: true` so the caller settles: an uncommitted
+  // range never persists AND leaves `useVideoTrimRange` stuck in its
+  // dragging state, blocking upstream adoption.
+  const cancelDrag = (): void => {
+    const d = dragRef.current;
+    if (d === null) return;
+    const start = dragStartRef.current;
+    dragRef.current = null;
+    dragStartRef.current = null;
+    setDrag(null);
+    if (start !== null) {
+      if (d.mode === "scrub") {
+        onSeek?.(start.time);
+      } else {
+        onRangeChange(start.range, true);
+        onSeek?.(d.mode === "in" ? start.range.start : start.range.end);
+      }
+    }
+    setInteracting(false);
+    try {
+      stripRef.current?.releasePointerCapture(d.pointerId);
+    } catch {
+      /* jsdom */
+    }
+  };
+  const cancelDragRef = useRef(cancelDrag);
+  cancelDragRef.current = cancelDrag;
 
   const inX = secToPx(range.start, durationSec, width);
   const outX = secToPx(range.end, durationSec, width);
@@ -254,6 +287,23 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   const resetRange = (): void => {
     onRangeChange(fullRange(durationSec), true);
   };
+
+  useEffect(() => {
+    if (!dragging) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      // Capture phase on `window` is the earliest point in the dispatch
+      // path, so this beats every bubble-phase Escape handler in the app
+      // — notably the Library's focus-mode "close the editor". Stopping
+      // propagation here keeps the editor open: mid-drag, Escape means
+      // "undo this drag", not "throw away the whole session".
+      event.preventDefault();
+      event.stopPropagation();
+      cancelDragRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [dragging]);
 
   useEffect(() => {
     // Unmount mid-drag (capture navigated away): drop the pointer

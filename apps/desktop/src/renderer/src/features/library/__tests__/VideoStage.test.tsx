@@ -15,7 +15,7 @@
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
 
 beforeAll(() => {
@@ -141,5 +141,84 @@ describe("VideoStage keyboard ownership", () => {
     // Now the stage owns the keyboard: frame stepping works and the
     // window handler correctly does NOT also navigate.
     expect(pressArrowRight()).toBe(false);
+  });
+});
+
+// Dragging the timeline while the clip is playing used to fight itself:
+// the element kept advancing between the drag's seeks, so the frame
+// under the handle was never the frame on screen and the playhead
+// wandered off on its own. The gesture now pauses for its duration and
+// restores playback on release.
+describe("VideoStage timeline drag vs playback", () => {
+  function stubMedia(): { calls: string[]; restore: () => void } {
+    const calls: string[] = [];
+    const play = vi
+      .spyOn(HTMLMediaElement.prototype, "play")
+      .mockImplementation(function (this: HTMLMediaElement) {
+        calls.push("play");
+        return Promise.resolve();
+      });
+    const pause = vi
+      .spyOn(HTMLMediaElement.prototype, "pause")
+      .mockImplementation(function (this: HTMLMediaElement) {
+        calls.push("pause");
+      });
+    return {
+      calls,
+      restore: () => {
+        play.mockRestore();
+        pause.mockRestore();
+      }
+    };
+  }
+
+  function pointerOn(el: Element, type: string, clientX: number): void {
+    act(() => {
+      el.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY: 5, button: 0 })
+      );
+    });
+  }
+
+  function handles(stage: HTMLElement): { inHandle: Element; strip: Element } {
+    return {
+      inHandle: stage.querySelector('[data-testid="video-timeline-in"]')!,
+      strip: stage.querySelector(".vtl__strip")!
+    };
+  }
+
+  test("pauses for the drag and resumes when it was playing", () => {
+    const media = stubMedia();
+    try {
+      const stage = mountStage(false);
+      // The stage tracks playback off the element's own events.
+      act(() => {
+        stage.querySelector("video")!.dispatchEvent(new Event("play"));
+      });
+
+      const { inHandle, strip } = handles(stage);
+      pointerOn(inHandle, "pointerdown", 10);
+      pointerOn(strip, "pointermove", 40);
+      expect(media.calls).toEqual(["pause"]);
+
+      pointerOn(strip, "pointerup", 40);
+      expect(media.calls).toEqual(["pause", "play"]);
+    } finally {
+      media.restore();
+    }
+  });
+
+  test("a drag started while paused does not start playback on release", () => {
+    const media = stubMedia();
+    try {
+      const stage = mountStage(false);
+      const { inHandle, strip } = handles(stage);
+      pointerOn(inHandle, "pointerdown", 10);
+      pointerOn(strip, "pointermove", 40);
+      pointerOn(strip, "pointerup", 40);
+      expect(media.calls).not.toContain("play");
+    } finally {
+      media.restore();
+    }
   });
 });

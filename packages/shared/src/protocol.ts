@@ -4413,6 +4413,11 @@ export type Commands = {
           audioBase64: string;
           mimeType: "audio/mpeg";
           transcriptPhrases: SizzleSequenceTranscriptPhrase[];
+          /** Measured narration length from the cached speech timing, so
+           *  the composer can show an exact reel length on open without
+           *  synthesizing. Null when the audio is cached but its timing
+           *  sidecar is not. */
+          durationSec: number | null;
         }
       | { cached: false };
   };

@@ -1180,6 +1180,235 @@ describe("render precondition", () => {
   });
 });
 
+describe("render button reel length", () => {
+  const sequenceScene = (narration: string): SizzleScene =>
+    scene({
+      kind: "sequence",
+      captureId: "cap_a",
+      scriptLine: narration,
+      narration,
+      audioSource: "voiceover",
+      beats: [
+        {
+          id: "bt_a",
+          captureId: "cap_a",
+          timing: { kind: "auto" },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+
+  test("shows an exact length with no tilde when every scene is determined", async () => {
+    // Video + native audio: the scene is exactly its trim (0–5s), and
+    // nothing here waits on a narration measurement.
+    const { el } = await renderApp(
+      project({ scenes: [scene({ captureId: "cap_a", scriptLine: "", audioSource: "auto" })] }),
+      { "library:list": { ok: true, value: { rows: [videoCapture("cap_a")] } } }
+    );
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
+    expect(render?.textContent).toBe("Render · 0:05");
+    expect(render?.title ?? "").toBe("");
+  });
+
+  test("marks an unpreviewed sequence scene's length with a tilde and explains why", async () => {
+    const { el } = await renderApp(
+      project({
+        scenes: [
+          scene({
+            kind: "sequence",
+            captureId: "cap_a",
+            scriptLine: "hello",
+            narration: "hello",
+            audioSource: "voiceover",
+            beats: [
+              {
+                id: "bt_a",
+                captureId: "cap_a",
+                timing: { kind: "auto" },
+                mediaTrim: null,
+                transition: "cut",
+                videoFit: "smart-fit"
+              }
+            ]
+          })
+        ]
+      }),
+      { "library:list": { ok: true, value: { rows: [videoCapture("cap_a")] } } }
+    );
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
+    expect(render?.textContent).toBe("Render · ~0:01");
+    expect(render?.title ?? "").toContain("narration length isn't known until it's synthesized");
+  });
+
+  test("goes exact after a preview measures the voiceover, and back to estimated when the script changes", async () => {
+    // Video trimmed to 2s with a script — the scene resolves to voiceover,
+    // so its true length is the narration (4s + tail pad), not the trim.
+    const { el } = await renderApp(
+      project({
+        scenes: [scene({ captureId: "cap_a", scriptLine: "hello", audioSource: "auto" })]
+      }),
+      {
+        "library:list": {
+          ok: true,
+          value: { rows: [videoCapture("cap_a", { start: 0, end: 2 })] }
+        }
+      }
+    );
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
+    // Unmeasured: a one-word script doesn't overrun the 2s trim.
+    expect(render?.textContent).toBe("Render · ~0:02");
+
+    const play = el.querySelector<HTMLButtonElement>(".szl__scene-mini--play");
+    if (play === null) throw new Error("scene preview play button not found");
+    await act(async () => {
+      play.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // Measured at 4s → 4.35s with the tail pad, and now exact.
+    expect(render?.textContent).toBe("Render · 0:04");
+
+    const script = el.querySelector<HTMLTextAreaElement>("textarea.szl__scene-script");
+    if (script === null) throw new Error("scene script textarea not found");
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+      )!.set!;
+      setValue.call(script, "a much longer narration than before");
+      script.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // The measurement belongs to the OLD script — reporting it as exact
+    // would be a confidently wrong number. Falls back to the word-count
+    // estimate for the NEW script: 6 words at 160 wpm + 0.35s pad = 2.6s,
+    // which now overruns the 2s trim.
+    expect(render?.textContent).toBe("Render · ~0:03");
+  });
+
+  test("is exact on open when the narration is already in the TTS cache", async () => {
+    // A reel previewed or rendered in a PAST session: the cache-only
+    // load that runs on open carries the measured narration length, so
+    // the label is exact without the user previewing again.
+    const { el } = await renderApp(
+      project({
+        scenes: [
+          scene({
+            kind: "sequence",
+            captureId: "cap_a",
+            scriptLine: "hello",
+            narration: "hello",
+            audioSource: "voiceover",
+            beats: [
+              {
+                id: "bt_a",
+                captureId: "cap_a",
+                timing: { kind: "auto" },
+                mediaTrim: null,
+                transition: "cut",
+                videoFit: "smart-fit"
+              }
+            ]
+          })
+        ]
+      }),
+      {
+        "library:list": { ok: true, value: { rows: [videoCapture("cap_a")] } },
+        "sizzle:loadSequenceSceneAudio": {
+          ok: true,
+          value: {
+            cached: true,
+            audioBase64: "AA==",
+            mimeType: "audio/mpeg",
+            transcriptPhrases: [],
+            durationSec: 19
+          }
+        }
+      }
+    );
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
+    expect(render?.textContent).toBe("Render · 0:19");
+    expect(render?.title ?? "").toBe("");
+  });
+
+  test("drops back to estimated when the voice changes under a cached measurement", async () => {
+    // The measurement was taken with the reel's previous voice; a
+    // different voice speaks at a different rate, so keeping the old
+    // number AND the exactness claim would be a confidently wrong label.
+    const { el } = await renderApp(
+      project({ scenes: [sequenceScene("hello there")] }),
+      {
+        "library:list": { ok: true, value: { rows: [videoCapture("cap_a")] } },
+        "sizzle:loadSequenceSceneAudio": {
+          ok: true,
+          value: {
+            cached: true,
+            audioBase64: "AA==",
+            mimeType: "audio/mpeg",
+            transcriptPhrases: [],
+            durationSec: 19
+          }
+        }
+      }
+    );
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
+    expect(render?.textContent).toBe("Render · 0:19");
+
+    const settings = el.querySelector<HTMLButtonElement>(
+      '[data-testid="sizzle-reel-settings-toggle"]'
+    );
+    await act(async () => settings?.click());
+    const voice = [...el.querySelectorAll<HTMLSelectElement>("select")].find(
+      (s) => s.value === "onyx"
+    );
+    if (voice === undefined) throw new Error("voice select not found");
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(
+        HTMLSelectElement.prototype,
+        "value"
+      )!.set!;
+      setValue.call(voice, "nova");
+      voice.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    // 2 words at 160 wpm = 0.75s, floored to the 1s minimum.
+    expect(render?.textContent).toBe("Render · ~0:01");
+  });
+
+  test("ignores a zero-length cached measurement instead of calling it exact", async () => {
+    // A failed duration probe writes `durationSec: 0` into the timing
+    // sidecar, and the read path does not validate it.
+    const { el } = await renderApp(
+      project({ scenes: [sequenceScene("one two three four")] }),
+      {
+        "library:list": { ok: true, value: { rows: [videoCapture("cap_a")] } },
+        "sizzle:loadSequenceSceneAudio": {
+          ok: true,
+          value: {
+            cached: true,
+            audioBase64: "AA==",
+            mimeType: "audio/mpeg",
+            transcriptPhrases: [],
+            durationSec: 0
+          }
+        }
+      }
+    );
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
+    // Falls through to the word-count estimate (4 words = 1.5s), NOT an
+    // exact zero-second scene.
+    expect(render?.textContent).toBe("Render · ~0:02");
+  });
+
+  test("keeps a bare Render label when the reel has no scenes", async () => {
+    const { el } = await renderApp(project({ scenes: [] }));
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
+    expect(render?.textContent).toBe("Render");
+    expect(render?.disabled).toBe(true);
+  });
+});
+
 describe("SizzleApp shell layout", () => {
   test("with a reel open the project rail is a dropdown under the crumb; picking a reel closes it", async () => {
     const first = project({ id: "p1", name: "First reel" });

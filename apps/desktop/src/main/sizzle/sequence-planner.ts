@@ -9,7 +9,9 @@ import type {
 } from "@pwrsnap/shared";
 import {
   distributeSequenceBeatStarts,
+  mediaTrimWasClamped,
   normalizeSizzleSequenceBeatContinuity,
+  normalizeVideoMediaTrim,
   sizzleTransitionDurationSec,
   sizzleTransitionType
 } from "@pwrsnap/shared";
@@ -18,7 +20,6 @@ import {
  *  read" warning (R10; confirmed 2026-05-31). */
 const SHORT_SLICE_SEC = 0.4;
 import type { SceneInput } from "./composer";
-import { mediaTrimWasClamped, normalizeVideoMediaTrim } from "./media-trim";
 import { resolvePhraseTiming } from "./speech-timing";
 import { resolveVideoFit, type VideoFitDecision } from "./video-fit";
 

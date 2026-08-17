@@ -13,6 +13,9 @@ import {
   EVENT_CHANNELS,
   SIZZLE_VOICES,
   distributeSequenceBeatStarts,
+  estimateSequenceTimelineDurationSec,
+  estimateSizzleReelDurationSec,
+  formatSizzleDuration,
   newSizzleSequenceScene,
   normalizeSizzleSequenceBeatContinuity,
   resolveSizzleAudioSource,
@@ -538,7 +541,11 @@ function readInitialProjectId(): string | null {
 
 function fallbackSequenceBeats(scene: SizzleScene): SizzleSequencePreviewBeat[] {
   const beats = normalizeSizzleSequenceBeatContinuity(scene.beats ?? []);
-  const durationSec = Math.max(1, scene.durationOverrideSec ?? beats.length);
+  // Same narration-based estimate the Render button shows, so the strip
+  // and the button never claim different lengths for one scene. The old
+  // one-second-per-beat placement also clamped `offset` anchors past the
+  // clip count down onto a 3s timeline.
+  const durationSec = estimateSequenceTimelineDurationSec(scene);
   // Idle (pre-preview) placement: no speech timing here, so only `offset`
   // beats are anchors; `phrase` and `auto` are placed by the SAME shared
   // even-division distributor the main planner uses, so the editor strip and
@@ -586,6 +593,20 @@ function sequenceTranscriptKey(scene: SizzleScene): string {
   return JSON.stringify({
     scriptLine: scene.scriptLine
   });
+}
+
+/** Cache key for a scene's MEASURED voiceover duration. Narration length
+ *  is a function of the script text AND the synthesis settings, so
+ *  rewriting the script or switching voice / model / provider invalidates
+ *  the measurement. Without this the Render button would keep reporting
+ *  the old length — and report it as exact, which is precisely the
+ *  confidently-wrong number the `~` prefix exists to avoid. Mirrors the
+ *  tuple `cacheAttemptKey` uses for the on-open narration fetch. */
+function sceneVoiceoverKey(
+  scene: SizzleScene,
+  tts: Pick<SizzleProject, "ttsProvider" | "ttsModel" | "voice">
+): string {
+  return `${tts.ttsProvider}:${tts.ttsModel}:${tts.voice}:${scene.scriptLine}`;
 }
 
 type CachedSequencePreviewPlan = {
@@ -1819,8 +1840,14 @@ function Editor(props: EditorProps): ReactElement {
   // hint on video scenes so the user understands the render math
   // before hitting Render.
   const [previewDurations, setPreviewDurations] = useState<
-    Record<string, number>
+    Record<string, { key: string; durationSec: number }>
   >({});
+  /** The measured voiceover duration for `scene`, or undefined when none
+   *  was measured or the script has changed since it was. */
+  const measuredVoiceoverDurationSec = (scene: SizzleScene): number | undefined => {
+    const entry = previewDurations[scene.id];
+    return entry?.key === sceneVoiceoverKey(scene, project) ? entry.durationSec : undefined;
+  };
   // Hold the currently-mounted object URL so we can revoke it before
   // assigning a new src. A data: URL would leak ~33% memory per
   // preview AND keep the prior buffer pinned in memory; object URLs
@@ -1853,6 +1880,14 @@ function Editor(props: EditorProps): ReactElement {
   // the narration text changes (the audio is then stale).
   const [sequenceAudioBlobs, setSequenceAudioBlobs] = useState<
     Record<string, Blob>
+  >({});
+  // Narration lengths read from the content-addressed TTS cache when the
+  // reel opened. A reel previewed or rendered in ANY past session lands
+  // here without synthesizing anything, which is what lets the Render
+  // button show an exact length before the user previews this session.
+  // Keyed by narration text so a rewritten script drops the stale value.
+  const [cachedNarrationDurations, setCachedNarrationDurations] = useState<
+    Record<string, { key: string; durationSec: number }>
   >({});
 
   // Per-scene preview-request generation counter. Each click of ▶
@@ -1902,7 +1937,10 @@ function Editor(props: EditorProps): ReactElement {
       audioRef.current.src.length > 0
     ) {
       const el = audioRef.current;
-      const durationSec = cachedSequencePlan?.durationSec ?? previewDurations[sceneId] ?? el.duration;
+      const durationSec =
+        cachedSequencePlan?.durationSec ??
+        previewDurations[sceneId]?.durationSec ??
+        el.duration;
       if (Number.isFinite(durationSec) && el.currentTime >= durationSec - 0.05) {
         el.currentTime = 0;
         setPreviewTimeSec(0);
@@ -1974,7 +2012,10 @@ function Editor(props: EditorProps): ReactElement {
     // scene's row without forcing the user to render to find out.
     setPreviewDurations((prev) => ({
       ...prev,
-      [sceneId]: previewAudio.durationSec
+      [sceneId]: {
+        key: scene === undefined ? "" : sceneVoiceoverKey(scene, project),
+        durationSec: previewAudio.durationSec
+      }
     }));
     const el = audioRef.current;
     if (el === null) {
@@ -2104,6 +2145,20 @@ function Editor(props: EditorProps): ReactElement {
               }
             }));
           }
+          // Positive-finite, not just non-null: the timing sidecar is
+          // read back without validating `durationSec`, and a failed
+          // probe writes 0. Trusting that would put an EXACT zero-second
+          // scene in the reel total.
+          const cachedDurationSec = res.value.durationSec;
+          if (typeof cachedDurationSec === "number" && cachedDurationSec > 0) {
+            setCachedNarrationDurations((prev) => ({
+              ...prev,
+              [scene.id]: {
+                key: sceneVoiceoverKey(scene, project),
+                durationSec: cachedDurationSec
+              }
+            }));
+          }
         } catch {
           // A failed background load just leaves the idle baseline.
         }
@@ -2134,7 +2189,7 @@ function Editor(props: EditorProps): ReactElement {
         : undefined;
     const durationSec =
       cachedPlan?.durationSec ??
-      previewDurations[sceneId] ??
+      previewDurations[sceneId]?.durationSec ??
       0;
     const clamped = clampTime(timeSec, durationSec);
     setPreviewTimeSec(clamped);
@@ -2311,6 +2366,57 @@ function Editor(props: EditorProps): ReactElement {
     status.phase !== "idle" &&
     status.phase !== "done" &&
     status.phase !== "failed";
+  // Reel length for the Render button. Exact for scenes the user has
+  // previewed this session (their cached plan carries the real narration
+  // timeline); estimated for the rest, because a voiceover scene runs as
+  // long as its synthesized narration and nothing measures that short of
+  // doing the TTS. `estimated` drives the leading `~`.
+  const reelDuration = useMemo(
+    () =>
+      estimateSizzleReelDurationSec(project.scenes, (scene) => {
+        const capture = captureMap.get(scene.captureId) ?? null;
+        const cached = sequencePreviewPlans[scene.id];
+        const planDurationSec =
+          scene.kind === "sequence" && cached?.key === sequencePreviewPlanKey(scene)
+            ? cached.plan.durationSec
+            : undefined;
+        // Narration length survives edits a PLAN doesn't: reordering or
+        // retrimming clips invalidates the plan key while the narration
+        // text — and so its measured length — is untouched.
+        const narration = cachedNarrationDurations[scene.id];
+        const narrationDurationSec =
+          narration?.key === sceneVoiceoverKey(scene, project)
+            ? narration.durationSec
+            : measuredVoiceoverDurationSec(scene);
+        return {
+          capture: capture === null ? null : { kind: capture.kind, video: capture.video },
+          sequencePlanDurationSec: planDurationSec,
+          narrationDurationSec,
+          voiceoverDurationSec: measuredVoiceoverDurationSec(scene)
+        };
+      }),
+    [
+      project.scenes,
+      // The TTS tuple is part of every measurement's cache key, so a
+      // voice / model / provider switch has to re-run this — otherwise
+      // the label keeps a measurement the new settings invalidated.
+      project.ttsProvider,
+      project.ttsModel,
+      project.voice,
+      captureMap,
+      sequencePreviewPlans,
+      previewDurations,
+      cachedNarrationDurations
+    ]
+  );
+  // Guard on the FORMATTED value, not the raw seconds: a sub-half-second
+  // reel (a short trim, a small duration override) is > 0 but rounds to
+  // "0:00", and `Render · 0:00` reads as broken.
+  const reelDurationText = formatSizzleDuration(reelDuration.totalSec);
+  const reelDurationLabel =
+    reelDuration.sceneCount === 0 || reelDurationText === "0:00"
+      ? null
+      : `${reelDuration.exact ? "" : "~"}${reelDurationText}`;
   // Voice / provider / resolution are set once per reel, so they hide
   // behind a summary chip instead of taking a toolbar row every session.
   const [reelSettingsOpen, setReelSettingsOpen] = useState(false);
@@ -2938,7 +3044,7 @@ function Editor(props: EditorProps): ReactElement {
                     // shows once the user has previewed (so we have
                     // a measured TTS duration to compare against).
                     if (!isVideo || effectiveAudio !== "voiceover") return null;
-                    const audioDur = previewDurations[scene.id];
+                    const audioDur = measuredVoiceoverDurationSec(scene);
                     if (audioDur === undefined) return null;
                     const trimDur =
                       (scene.mediaTrim?.endSec ??
@@ -3078,13 +3184,19 @@ function Editor(props: EditorProps): ReactElement {
           type="button"
           disabled={rendering || project.scenes.length === 0 || unscriptedSceneNumber !== null}
           title={
-            unscriptedSceneNumber === null
-              ? undefined
-              : `Scene ${unscriptedSceneNumber} has no narration — a scene is one voiceover over its clips, so it needs a script before the reel can render.`
+            unscriptedSceneNumber !== null
+              ? `Scene ${unscriptedSceneNumber} has no narration — a scene is one voiceover over its clips, so it needs a script before the reel can render.`
+              : reelDurationLabel !== null && !reelDuration.exact
+                ? "Approximate length. A scene runs as long as its narration, and narration length isn't known until it's synthesized — so scenes with no synthesized narration yet are estimated from their word count."
+                : undefined
           }
           data-testid="sizzle-render"
         >
-          {rendering ? `Rendering… ${Math.round(status.ratio * 100)}%` : "Render"}
+          {rendering
+            ? `Rendering… ${Math.round(status.ratio * 100)}%`
+            : reelDurationLabel === null
+              ? "Render"
+              : `Render · ${reelDurationLabel}`}
         </button>
       </footer>
     </div>
@@ -3100,9 +3212,13 @@ function RenderStatusBar({ status }: { status: RenderStatus }): ReactElement {
     );
   }
   if (status.phase === "failed") {
+    // The footer truncates this to one line so it can't push the buttons
+    // around, so carry the full text in `title` — an ffmpeg failure is
+    // often long and is the whole point of the message.
+    const detail = status.error ?? status.message;
     return (
-      <span className="szl__status szl__status--err">
-        Render failed: {status.error ?? status.message}
+      <span className="szl__status szl__status--err" title={detail}>
+        Render failed: {detail}
       </span>
     );
   }
@@ -3119,7 +3235,7 @@ function RenderStatusBar({ status }: { status: RenderStatus }): ReactElement {
           style={{ width: `${Math.round(status.ratio * 100)}%` }}
         />
       </span>
-      <span>{status.message}</span>
+      <span title={status.message}>{status.message}</span>
     </span>
   );
 }

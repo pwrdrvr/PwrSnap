@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveVoiceoverSceneDurationSec } from "../scene-duration";
+import { resolveVoiceoverSceneDurationSec } from "../sizzle-reel-duration";
 
 describe("resolveVoiceoverSceneDurationSec", () => {
   it("preserves an explicit override that is shorter than the video trim but fits narration", () => {

@@ -31,7 +31,7 @@ import {
   createKeyedChatControllerCache,
   type ChatBackendConfig
 } from "../ai/chat-controller-cache";
-import { ChatThreadStore } from "../ai/chat-thread-store";
+import { rootKeyedChatThreadStore } from "../ai/chat-thread-store";
 import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import type { ChatBroadcast, ChatChannelSet } from "../ai/chat-event-adapter";
 import { toChatMessage, toLibraryThreadView } from "../ai/chat-event-adapter";
@@ -157,10 +157,9 @@ export function registerLibraryChatHandlers(params?: {
   settingsReader?: LibraryChatSettingsReader;
 }): void {
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
-  const chatsDir = getChatsRoot();
   // Reads each thread's persisted backend config (for routing) + writes it on
-  // create. Lazy DB access — constructing it touches nothing.
-  const store = new ChatThreadStore({ chatsDir });
+  // create. Root-keyed so it follows a runtime captures-location flip.
+  const store = rootKeyedChatThreadStore(getChatsRoot);
   // sendMessage returns at turn start; backend tool calls arrive later. Keep
   // the last turn origin per thread until a subsequent send replaces it.
   const activeToolContexts = new Map<string, CommandDispatchOptions>();
@@ -177,7 +176,12 @@ export function registerLibraryChatHandlers(params?: {
         command: codexCommandForSettings(s),
         profile: s.codex.profile ?? null,
         acpAgents: s.ai.acp.agents ?? null,
-        acpEnabled: s.ai.acp.enabledAgentIds ?? null
+        acpEnabled: s.ai.acp.enabledAgentIds ?? null,
+        // The chats root moves at runtime when a Documents denial flips the
+        // captures-location fallback. Keying on it disposes + rebuilds every
+        // controller against the new root, instead of leaving cached ones
+        // writing threads to the location that just proved inaccessible.
+        chatsDir: getChatsRoot()
       }),
     build: async (config, settings) => {
       const command = codexCommandForSettings(settings);
@@ -185,7 +189,7 @@ export function registerLibraryChatHandlers(params?: {
       const surface = await buildChatSurface({
         command,
         env,
-        chatsDir,
+        chatsDir: getChatsRoot(),
         readSettings: settingsReader,
         channels: LIBRARY_CHAT_CHANNELS,
         send: broadcast,
@@ -236,7 +240,7 @@ export function registerLibraryChatHandlers(params?: {
    *  else the provider baked into its id (acp:<id>:… / Codex), with model +
    *  reasoning left to the backend default. */
   const configForThread = async (threadId: string): Promise<ChatBackendConfig> => {
-    const sidecar = await store.get(threadId).catch(() => null);
+    const sidecar = await store().get(threadId).catch(() => null);
     const agentId = acpAgentIdFromThreadId(threadId);
     return {
       provider: sidecar?.provider ?? (agentId !== null ? `acp:${agentId}` : "codex"),
@@ -253,7 +257,7 @@ export function registerLibraryChatHandlers(params?: {
         ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
       // Merge each thread's persisted config into the view (locked chips).
-      const sidecars = await store
+      const sidecars = await store()
         .list({ includeArchived: req.includeArchived ?? false })
         .catch(() => []);
       const byId = new Map(sidecars.map((s) => [s.threadId, s]));
@@ -292,9 +296,9 @@ export function registerLibraryChatHandlers(params?: {
       });
       // Persist the locked config on the thread (skip in injected-controller
       // tests, which have no DB).
-      if (injected === null) store.setBackendConfig(view.threadId, config);
+      if (injected === null) store().setBackendConfig(view.threadId, config);
       if (injected === null && ctx.principal === "mcp" && ctx.localAgent !== undefined) {
-        store.setOwnerClientId(view.threadId, ctx.localAgent.clientId);
+        store().setOwnerClientId(view.threadId, ctx.localAgent.clientId);
       }
       return ok(toLibraryThreadView(view, config));
     } catch (cause) {
@@ -305,7 +309,7 @@ export function registerLibraryChatHandlers(params?: {
   bus.register("codex:libraryChat:send", async (req, ctx) => {
     try {
       if (ctx.principal === "mcp") {
-        const sidecar = await store.get(req.threadId);
+        const sidecar = await store().get(req.threadId);
         if (sidecar?.ownerClientId !== ctx.localAgent?.clientId) {
           return aiError("thread_owner_mismatch", "This chat belongs to another user or local client.");
         }

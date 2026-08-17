@@ -622,6 +622,61 @@ describe("Codex agent pool", () => {
     );
   });
 
+  // A transient failure must NOT downgrade read scoping. Only an error that
+  // actually names the permissions field/profile justifies the weaker posture.
+  test("does not downgrade the sandbox on a transient thread/start failure", async () => {
+    let startAttempts = 0;
+    mockConnectionRequest.mockImplementation(async (method: string) => {
+      if (method === "config/read") return { config: {} };
+      if (method === "thread/start") {
+        startAttempts += 1;
+        throw new Error("request timed out after 20000ms");
+      }
+      return {};
+    });
+
+    await expect(
+      runCodexOneShotFromPool({
+        command: "codex-test",
+        env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-transient-test" },
+        workspaceDir: "/tmp/pwrsnap-enrichment-jail",
+        prompt: "describe this image",
+        imagePaths: ["/tmp/capture.jpg"]
+      })
+    ).rejects.toThrow("timed out");
+
+    // One attempt only — no silent retry with sandbox:read-only.
+    expect(startAttempts).toBe(1);
+    expect(mockLogger.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("does NOT restrict reads"),
+      expect.anything()
+    );
+  });
+
+  test("does not downgrade the sandbox when the start is aborted", async () => {
+    let startAttempts = 0;
+    mockConnectionRequest.mockImplementation(async (method: string) => {
+      if (method === "config/read") return { config: {} };
+      if (method === "thread/start") {
+        startAttempts += 1;
+        throw new DOMException("one-shot turn aborted", "AbortError");
+      }
+      return {};
+    });
+
+    await expect(
+      runCodexOneShotFromPool({
+        command: "codex-test",
+        env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-abort-test" },
+        workspaceDir: "/tmp/pwrsnap-enrichment-jail",
+        prompt: "describe this image",
+        imagePaths: ["/tmp/capture.jpg"]
+      })
+    ).rejects.toThrow("aborted");
+
+    expect(startAttempts).toBe(1);
+  });
+
   test("denies an approval request from an enrichment turn and logs run + capture id", async () => {
     const { completeTurn } = stageHeldOneShot();
 

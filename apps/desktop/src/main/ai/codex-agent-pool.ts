@@ -618,6 +618,11 @@ class CodexAgentOwner {
     try {
       threadResponse = await startThreadWith("permissions");
     } catch (error) {
+      if (!isPermissionsProfileRejection(error)) throw error;
+      // Only downgrade when Codex actually REJECTED the profile. A bare catch
+      // would let any transient failure — a 20s request timeout on a busy App
+      // Server, a user abort — silently drop read scoping for that run on a
+      // build that supports it perfectly well.
       log.warn(
         "Codex rejected the read-scoped enrichment permissions profile; " +
           "falling back to sandbox:read-only, which does NOT restrict reads",
@@ -789,6 +794,30 @@ function makeOneShotHandlers(
  * whether this was an exec, a file change, or a tool call.
  */
 const TOOL_IDENTITY_KEYS = ["name", "toolName", "tool_name"] as const;
+
+/**
+ * Did `thread/start` fail because this Codex build doesn't understand the
+ * `permissions` field / profile, as opposed to failing for a transient reason?
+ *
+ * Only the former justifies retrying with the weaker `sandbox: "read-only"`
+ * posture. An abort or a timeout must propagate: downgrading read scoping
+ * because the App Server was briefly slow would be a silent security
+ * regression, and retrying an aborted start just creates a thread nobody
+ * wants.
+ *
+ * Matching is on the message because the App Server reports config/schema
+ * problems as JSON-RPC -32600 "Invalid request" with the detail in the text
+ * (e.g. "unknown field `permissions`", "`permissions` cannot be combined with
+ * `sandbox`", "failed to load configuration: ... permissions"). Unrecognized
+ * shapes are NOT in this set on purpose — Codex accepts those and fails
+ * closed, which is the behavior we want and must not trade away.
+ */
+function isPermissionsProfileRejection(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === "AbortError") return false;
+  const message = error instanceof Error ? error.message : String(error);
+  if (/timed out|timeout/i.test(message)) return false;
+  return /permission/i.test(message);
+}
 
 /** Best-effort tool identity from a backend-shaped params blob. Reads only
  *  `TOOL_IDENTITY_KEYS` — never arguments. */

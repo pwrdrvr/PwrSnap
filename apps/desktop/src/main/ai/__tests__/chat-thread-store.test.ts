@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ChatThreadSidecar } from "@pwrsnap/shared";
-import { ChatThreadStore, slugifyThreadName } from "../chat-thread-store";
+import { ChatThreadStore, slugifyThreadName, rootKeyedChatThreadStore } from "../chat-thread-store";
 
 let pwrsnapRoot = "";
 let chatsDir = "";
@@ -367,5 +367,33 @@ describe("ChatThreadStore legacy-sidecar import", () => {
     const store = makeStore();
     const listed = await store.list();
     expect(listed.map((s) => s.threadId)).toEqual(["good-1"]);
+  });
+});
+
+// `getChatsRoot()` composes from the captures location, which flips at runtime
+// when macOS denies the Documents grant (capture-storage-gate) or the user
+// switches locations. Handlers used to capture the root once at registration,
+// so after a flip they kept writing threads to the root that had just proved
+// inaccessible — defeating the fallback this is meant to inherit.
+describe("rootKeyedChatThreadStore", () => {
+  it("reuses one store while the root is unchanged", () => {
+    const get = rootKeyedChatThreadStore(() => "/tmp/a/Chats");
+    expect(get()).toBe(get());
+  });
+
+  it("rebuilds when the root moves, and follows it back", () => {
+    let root = "/tmp/documents/PwrSnap/Chats";
+    const get = rootKeyedChatThreadStore(() => root);
+    const first = get();
+
+    // Documents denied → captures-location flips to "home".
+    root = "/tmp/home/PwrSnap/Chats";
+    const second = get();
+    expect(second).not.toBe(first);
+    expect(get()).toBe(second);
+
+    // And back, if the grant is later given.
+    root = "/tmp/documents/PwrSnap/Chats";
+    expect(get()).not.toBe(second);
   });
 });

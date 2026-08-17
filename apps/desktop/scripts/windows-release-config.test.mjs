@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
+import { BUNDLED_FFMPEG_VERSION } from "../../../scripts/generate-third-party-licenses.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 
@@ -73,8 +74,8 @@ describe("Windows release configuration", () => {
     expect(workflow).toContain("secrets.AZURE_CLIENT_SECRET");
     expect(workflow).toContain("pwrdrvr/pwrsnap-ffmpeg-builds");
     expect(workflow).toContain("3d775403a83990a2ad9503d865f5d481d9c0316a");
-    expect(workflow).toContain("ffmpeg-8.1.1-macos-universal");
-    expect(workflow).toContain("ffmpeg-8.1.1-windows-x64");
+    expect(workflow).toContain(`ffmpeg-${BUNDLED_FFMPEG_VERSION}-macos-universal`);
+    expect(workflow).toContain(`ffmpeg-${BUNDLED_FFMPEG_VERSION}-windows-x64`);
     expect(workflow).toContain("apps/desktop/electron-builder.yml");
     expect(workflow).toContain("manifest.json");
     expect(workflow).toContain("h264_videotoolbox");
@@ -140,5 +141,79 @@ describe("Windows release configuration", () => {
       distinct,
       `FFmpeg build pins disagree: ${found.map((e) => `${e.source}=${e.sha}`).join(", ")}`
     ).toHaveLength(1);
+  });
+
+  test("every FFmpeg version pin agrees with the version THIRD_PARTY_LICENSES claims", () => {
+    // The bundled ffmpeg's version is owned by another repository
+    // (pwrdrvr/pwrsnap-ffmpeg-builds, FFMPEG_VERSION in scripts/lib/config.mjs)
+    // and cannot be derived from anything installed here, so it is restated in
+    // this repo once per consumer: the workflows' FFMPEG_VERSION guards, the
+    // artifact names they download, the reference doc's pin table, and — the
+    // one with legal consequences — the LGPL-2.1 attribution and written source
+    // offer in THIRD_PARTY_LICENSES.
+    //
+    // A repin PR that updates the workflows and forgets the notice would ship a
+    // correct binary under a false attribution, and every existing check would
+    // still pass: the workflows only compare the artifact against their own
+    // hardcode. This is the same shape as the @img/sharp-darwin-arm64 pin that
+    // drifted from 0.34.5 to a shipping 0.35.3 unnoticed (fixed in df421b58 by
+    // deriving it). Deriving is impossible across repos, so instead every
+    // restatement must agree, and the release jobs additionally reconcile the
+    // downloaded artifact's manifest against the notice.
+    const found = [{ source: "scripts/generate-third-party-licenses.mjs", version: BUNDLED_FFMPEG_VERSION }];
+
+    const workflowDir = resolve(repoRoot, ".github/workflows");
+    for (const entry of readdirSync(workflowDir)) {
+      if (!/\.ya?ml$/.test(entry)) continue;
+      const text = read(`.github/workflows/${entry}`);
+      for (const match of text.matchAll(/FFMPEG_VERSION:\s*([0-9][0-9A-Za-z.+-]*)/g)) {
+        found.push({ source: `${entry} (FFMPEG_VERSION)`, version: match[1] });
+      }
+      for (const match of text.matchAll(/ffmpeg-([0-9][0-9A-Za-z.+]*)-(?:macos|windows|linux)\b/g)) {
+        found.push({ source: `${entry} (artifact name)`, version: match[1] });
+      }
+    }
+
+    const docPath = "docs/ffmpeg-build-reference.md";
+    if (existsSync(resolve(repoRoot, docPath))) {
+      for (const match of read(docPath).matchAll(/ffmpeg-([0-9][0-9A-Za-z.+]*)-(?:macos|windows|linux)\b/g)) {
+        found.push({ source: docPath, version: match[1] });
+      }
+    }
+
+    // The shipped notice is the point of the exercise, not an afterthought.
+    for (const match of read("THIRD_PARTY_LICENSES").matchAll(/\bFFmpeg@([0-9][0-9A-Za-z.+-]*)/g)) {
+      found.push({ source: "THIRD_PARTY_LICENSES", version: match[1] });
+    }
+
+    // Generator + both release jobs + the notice, at an absolute minimum. A
+    // regex that silently stops matching would otherwise pass vacuously.
+    expect(found.length).toBeGreaterThanOrEqual(5);
+
+    const distinct = [...new Set(found.map((entry) => entry.version))];
+    expect(
+      distinct,
+      `FFmpeg version pins disagree: ${found.map((e) => `${e.source}=${e.version}`).join(", ")}`
+    ).toHaveLength(1);
+  });
+
+  test("both signing jobs reconcile the downloaded FFmpeg artifact against the shipped notice", () => {
+    const workflow = read(".github/workflows/release.yml");
+    const archiveScript = read("scripts/release/archive-windows-signing-input.ps1");
+
+    // Static agreement above only proves this repo is self-consistent. It
+    // cannot see the build repo, so it cannot catch an artifact whose manifest
+    // reports a version nobody mirrored here. The signing jobs close that by
+    // comparing the manifest that ships with the binary against the notice
+    // being packaged alongside it.
+    expect(workflow.match(/node scripts\/check-bundled-ffmpeg-notice\.mjs/g) ?? []).toHaveLength(2);
+    // ...and packs it into the macOS signing input, which also has no checkout.
+    expect(workflow).toContain("scripts/check-bundled-ffmpeg-notice.mjs \\");
+    expect(workflow).toContain("--notice apps/desktop/release-stage/THIRD_PARTY_LICENSES");
+
+    // windows-sign has no checkout, so the checker only exists there if the
+    // archive step packs it. Wiring the call without this is a release-time
+    // "file not found", which is why it is asserted rather than assumed.
+    expect(archiveScript).toContain("scripts/check-bundled-ffmpeg-notice.mjs");
   });
 });

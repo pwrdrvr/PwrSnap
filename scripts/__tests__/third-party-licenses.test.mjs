@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  BUNDLED_FFMPEG_VERSION,
   buildThirdPartyLicenseNotice,
   declaredLicenseFallbackText,
   findUnmaterializedRecords,
@@ -226,7 +227,7 @@ describe("stale-install detection", () => {
   test("supplemental records are exempt — they never have an installed path", () => {
     expect(
       findUnmaterializedRecords([
-        { name: "FFmpeg", version: "8.1.1", packagePath: undefined, supplemental: true },
+        { name: "FFmpeg", version: BUNDLED_FFMPEG_VERSION, packagePath: undefined, supplemental: true },
       ]),
     ).toEqual([]);
   });
@@ -310,7 +311,7 @@ describe("stale-install detection", () => {
     expect(output).toContain("@img/sharp-darwin-arm64@0.35.3");
     expect(output).toContain("@img/sharp-libvips-darwin-arm64@1.3.2");
     expect(output).toContain("Full License Texts — Weak-Copyleft Bundled Binaries");
-    expect(output).toContain("FFmpeg@8.1.1");
+    expect(output).toContain(`FFmpeg@${BUNDLED_FFMPEG_VERSION}`);
     expect(output).not.toContain("@undefined");
   });
 });

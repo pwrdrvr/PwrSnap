@@ -83,6 +83,15 @@ jobs:
           cp "$dir/SOURCE-OFFER.txt" apps/desktop/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-SOURCE-OFFER.txt
           cp "$dir/LGPL-NOTICE.txt" apps/desktop/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-LGPL-NOTICE.txt
 
+          # Preview DMGs bundle the same THIRD_PARTY_LICENSES the release does,
+          # so run the same artifact-vs-notice reconciliation the signing jobs
+          # run. A PR that repins the build repo to a new FFmpeg version fails
+          # here, rather than at tag time.
+          node scripts/check-bundled-ffmpeg-notice.mjs \
+            --manifest "$dir/manifest.json" \
+            --notice THIRD_PARTY_LICENSES \
+            --source-dir "$dir/source"
+
       - name: Compute preview version
         id: version
         run: |

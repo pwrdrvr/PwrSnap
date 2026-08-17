@@ -19,6 +19,9 @@ $paths = @(
   "apps/desktop/release-stage",
   "apps/desktop/scripts/package-win.mjs",
   "apps/desktop/scripts/verify-asar-contents.mjs",
+  # The signing job has no checkout, so the bundled-ffmpeg notice check has to
+  # travel with the stage it validates. It is dependency-free for this reason.
+  "scripts/check-bundled-ffmpeg-notice.mjs",
   "scripts/release/install-trusted-signing.ps1"
 )
 foreach ($path in $paths) {

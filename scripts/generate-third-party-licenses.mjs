@@ -19,6 +19,32 @@ const outputPath = join(repoRoot, "THIRD_PARTY_LICENSES");
 const desktopFilter = "@pwrsnap/desktop";
 const licenseTextsDir = join(scriptDir, "license-texts");
 
+/**
+ * The FFmpeg version this notice claims PwrSnap distributes.
+ *
+ * Unlike every other record here, this one cannot be derived from an installed
+ * manifest: the bundled ffmpeg is not an npm package. It is built by
+ * github.com/pwrdrvr/pwrsnap-ffmpeg-builds (which owns `FFMPEG_VERSION` in its
+ * scripts/lib/config.mjs) and downloaded by CI at release time, so the version
+ * lives in two repositories that have no compile-time link.
+ *
+ * This constant is therefore a *claim* that must be checked, not a source of
+ * truth, and it is checked twice:
+ *
+ *   1. At PR time, `apps/desktop/scripts/windows-release-config.test.mjs`
+ *      asserts it equals every `FFMPEG_VERSION` env and every
+ *      `FFMPEG_ARTIFACT_NAME` version across the workflows, plus the pin table
+ *      in docs/ffmpeg-build-reference.md.
+ *   2. At release time, `scripts/check-bundled-ffmpeg-notice.mjs` asserts the
+ *      version this notice claims equals the `version` in the manifest.json
+ *      emitted alongside the ffmpeg binary actually being packaged.
+ *
+ * Bumping this alone does nothing; see docs/ffmpeg-build-reference.md
+ * § "Bumping the bundled FFmpeg version" for the full list of pins.
+ */
+export const BUNDLED_FFMPEG_VERSION = "8.1.1";
+const bundledFfmpegSourceUrl = `https://ffmpeg.org/releases/ffmpeg-${BUNDLED_FFMPEG_VERSION}.tar.xz`;
+
 // PwrSnap bundles two weak-copyleft binaries whose licenses require shipping
 // the full license text plus a written offer to relink against modified
 // versions of the covered library. The npm packages that stand in for these
@@ -39,17 +65,17 @@ export function buildWeakCopyleftBundledBinaries({ libvipsDarwinArm64 }) {
   return [
   {
     name: "FFmpeg",
-    version: "8.1.1",
+    version: BUNDLED_FFMPEG_VERSION,
     declaredLicense: "LGPL-2.1-or-later",
     licenseTextFile: "lgpl-2.1.txt",
     licenseTitle: "GNU LESSER GENERAL PUBLIC LICENSE, Version 2.1",
     summary: [
-      "PwrSnap bundles an FFmpeg executable built from the official FFmpeg 8.1.1 source release",
+      `PwrSnap bundles an FFmpeg executable built from the official FFmpeg ${BUNDLED_FFMPEG_VERSION} source release`,
       "(build scripts: https://github.com/pwrdrvr/pwrsnap-ffmpeg-builds), configured without",
       "--enable-gpl, --enable-nonfree,",
       "--enable-libx264, --enable-libx265, --enable-libvidstab, or --enable-libfdk-aac, so the",
       "resulting binary is covered by the GNU Lesser General Public License, version 2.1 or later.",
-      "Source: https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
+      `Source: ${bundledFfmpegSourceUrl}`,
       "License guidance: https://ffmpeg.org/legal.html",
     ].join("\n"),
     relinkOffer: [
@@ -57,7 +83,7 @@ export function buildWeakCopyleftBundledBinaries({ libvipsDarwinArm64 }) {
       "(not statically linked into the application), so it may be replaced with a compatible",
       "build. The exact source used, the build scripts, and the verified configure flags live in",
       "https://github.com/pwrdrvr/pwrsnap-ffmpeg-builds, with a timestamped copy of the flags in",
-      "this repository at docs/ffmpeg-build-reference.md, alongside the FFmpeg 8.1.1 source",
+      `this repository at docs/ffmpeg-build-reference.md, alongside the FFmpeg ${BUNDLED_FFMPEG_VERSION} source`,
       "release linked above. PwrDrvr LLC will additionally provide the corresponding source on",
       "written request to support@pwrdrvr.com for at least three years from the date of",
       "distribution.",
@@ -94,17 +120,17 @@ export function buildSupplementalMacArm64Records({
   return [
   {
     name: "FFmpeg",
-    version: "8.1.1",
+    version: BUNDLED_FFMPEG_VERSION,
     declaredLicense: "LGPL-2.1-or-later",
-    source: "https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
+    source: bundledFfmpegSourceUrl,
     description:
       "Bundled ffmpeg executable built by github.com/pwrdrvr/pwrsnap-ffmpeg-builds without GPL or nonfree configure flags",
     licenseText: [
-      "PwrSnap bundles an FFmpeg executable built from the official FFmpeg 8.1.1 source release.",
+      `PwrSnap bundles an FFmpeg executable built from the official FFmpeg ${BUNDLED_FFMPEG_VERSION} source release.`,
       "The build repo verifies that the resulting binary configuration does not contain --enable-gpl, --enable-nonfree, --enable-libx264, --enable-libx265, --enable-libvidstab, or --enable-libfdk-aac.",
       "",
       "FFmpeg's source release includes its license texts and states that most files are under the GNU Lesser General Public License version 2.1 or later.",
-      "Source: https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
+      `Source: ${bundledFfmpegSourceUrl}`,
       "License guidance: https://ffmpeg.org/legal.html",
       "",
       "The full GNU Lesser General Public License, version 2.1, and the corresponding relinking / source offer are reproduced below under \"Full License Texts — Weak-Copyleft Bundled Binaries\"."

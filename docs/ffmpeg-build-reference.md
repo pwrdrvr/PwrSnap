@@ -43,6 +43,49 @@ decoder** shipped for two months. Every image-backed Sizzle reel failed with
 > `apps/desktop/scripts/windows-release-config.test.mjs` asserts every pin
 > agrees, so drift fails CI instead of shipping.
 
+## Bumping the bundled FFmpeg version
+
+`FFMPEG_VERSION` lives in the **build repo** (`scripts/lib/config.mjs`). PwrSnap
+never sees it — only the compiled artifact — so every mention of the version on
+this side is a *restatement* of another repository's constant. One of those
+restatements has legal weight: `THIRD_PARTY_LICENSES` carries the LGPL-2.1
+attribution and the written source offer, and if it names the wrong release, we
+are distributing an LGPL binary under a false notice pointing at source we did
+not build from.
+
+Bump all of these together:
+
+| what | where |
+|---|---|
+| `BUNDLED_FFMPEG_VERSION` | `scripts/generate-third-party-licenses.mjs` (then `pnpm licenses:generate` and commit `THIRD_PARTY_LICENSES`) |
+| `FFMPEG_VERSION` + `FFMPEG_ARTIFACT_NAME` | `.github/workflows/release.yml` — **both** the macOS and Windows jobs |
+| `FFMPEG_ARTIFACT_NAME` | `.github/workflows/preview-build.yml` |
+| `FFMPEG_BUILD_SHA` + `FFMPEG_SOURCE_SHA256` | both release jobs and the preview job (see the warning above) |
+| the pin table | this file |
+
+Two independent checks catch a partial bump:
+
+- **At PR time** — `apps/desktop/scripts/windows-release-config.test.mjs`
+  ("every FFmpeg version pin agrees…") requires the generator constant, every
+  workflow `FFMPEG_VERSION`, every artifact name, the table above, and
+  `THIRD_PARTY_LICENSES` to name one and the same version.
+- **At release time** — `scripts/check-bundled-ffmpeg-notice.mjs` runs in both
+  signing jobs and in the preview build, comparing the `version` in the
+  downloaded artifact's `manifest.json` against the version the staged
+  `THIRD_PARTY_LICENSES` claims, plus the staged `ffmpeg-<version>.tar.xz`. Only
+  this one can see across the repo boundary: the PR-time test proves PwrSnap is
+  self-consistent, not that it agrees with the binary it is about to ship.
+
+> ⚠️ Bumping the version pins **without** rerunning `pnpm licenses:generate`
+> leaves the notice claiming the old release. That was a latent hole until
+> 2026-08-17 — it is the same defect class as the hardcoded
+> `@img/sharp-darwin-arm64` version, which drifted from `0.34.5` to a shipping
+> `0.35.3` with nothing able to notice (fixed in `df421b58` by deriving it from
+> the installed `sharp` manifest). Deriving is not possible across repositories,
+> so the version is verified instead of derived. See
+> [third-party-license-notices.md](third-party-license-notices.md)
+> § "How the check can fail open".
+
 ## Configure flags — snapshot taken 2026-08-17
 
 Denormalized copy for reference only. **The build repo is authoritative**; if

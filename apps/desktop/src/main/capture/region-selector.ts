@@ -570,8 +570,13 @@ export async function pickRegion(
         frontmostPid: snapshot.frontmostPid,
         frontmostBundleId: snapshot.frontmostBundleId
       });
+      const normalizedWindows = windowSnapshotInElectronDip(
+        snapshot.windows,
+        process.platform,
+        (rect) => screen.screenToDipRect(null, rect)
+      );
       const prepared = prepareWindowListPayload({
-        rawSnapshot: snapshot.windows,
+        rawSnapshot: normalizedWindows,
         targetDisplay,
         displayCursor,
         ourPids,
@@ -805,6 +810,30 @@ export function decidePreviousAppPid(
 }
 
 type BoundsLike = { x: number; y: number; width: number; height: number };
+
+/**
+ * Normalize native-helper window bounds into Electron's screen coordinate
+ * space. The Windows helper is per-monitor-DPI-aware and DWM therefore gives
+ * it physical-pixel rectangles. Electron's Display bounds, cursor points,
+ * BrowserWindow bounds, and selector overlays are all DIPs on Windows.
+ *
+ * Keeping the conversion at this boundary means every downstream consumer
+ * (display filtering, renderer payloads, protected-window matching, and
+ * source-app hit testing through lastSnapshot) sees one coherent DIP space.
+ * macOS already emits the logical coordinates Electron uses, so it remains an
+ * identity path.
+ */
+export function windowSnapshotInElectronDip(
+  windows: readonly WindowInfo[],
+  platform: NodeJS.Platform,
+  screenToDipRect: (rect: BoundsLike) => BoundsLike
+): WindowInfo[] {
+  if (platform !== "win32") return [...windows];
+  return windows.map((windowInfo) => ({
+    ...windowInfo,
+    bounds: screenToDipRect(windowInfo.bounds)
+  }));
+}
 
 /** True when `b` matches one of the excluded windows' bounds within a
  *  small rounding tolerance — used to drop content-protected windows

@@ -3,9 +3,13 @@
 // `acp-approval-policy.test.ts`; this file pins the shared pieces those two
 // depend on — the posture object, the redaction rule, and the registry.
 
+import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __clearEnrichmentThreadsForTests,
+  agentScratchJail,
   codexEnrichmentThreadSandbox,
   defaultEnrichmentWorkspaceDir,
   denyEnrichmentEscalation,
@@ -34,10 +38,40 @@ describe("codexEnrichmentThreadSandbox", () => {
 
   it("defaults the jail to an app-owned scratch dir, not a user directory", () => {
     const dir = defaultEnrichmentWorkspaceDir();
-    expect(dir).toContain("pwrsnap");
-    expect(dir).toContain(".capture-metadata");
-    // Nothing the user cares about may be reachable as the agent's cwd.
-    expect(dir).not.toContain("Documents");
+    expect(dir).toBe(join(tmpdir(), "pwrsnap", "Chats", ".capture-metadata"));
+    expect(dir.startsWith(tmpdir())).toBe(true);
+  });
+
+  // The three destinations a scratch jail drifts toward, and why each is wrong:
+  // Documents holds the user's captures + chat threads AND is TCC-gated on
+  // macOS; userData holds pwrsnap.db + pwrsnap-secrets.bin; the home root is
+  // where config lands later.
+  it("keeps every jail out of the user's data and out of userData", () => {
+    for (const dir of [
+      agentScratchJail("Chats", ".capture-metadata"),
+      agentScratchJail(".acp-scratch")
+    ]) {
+      expect(dir).not.toContain("Documents");
+      expect(dir).not.toContain("Application Support");
+      expect(dir.startsWith(join(tmpdir(), "pwrsnap"))).toBe(true);
+    }
+  });
+});
+
+// The reason this file exists as more than a unit test: `CaptureEnrichmentClient`
+// defaulted to the tmpdir jail, but the PRODUCTION factory in codex-handlers
+// passed a `captureMetadataWorkspaceDir` override pointing at
+// ~/Documents/PwrSnap/Chats/.capture-metadata. Testing the default proved
+// nothing about what actually shipped. Pin the wiring, not just the default.
+describe("production enrichment client wiring", () => {
+  it("does not override the jail with a user path", () => {
+    const source = readFileSync(
+      new URL("../../handlers/codex-handlers.ts", import.meta.url),
+      "utf8"
+    );
+    const overrides = source.match(/captureMetadataWorkspaceDir:\s*[^\n]+/g) ?? [];
+    expect(overrides, `unexpected jail override: ${overrides.join(", ")}`).toEqual([]);
+    expect(source).not.toContain('"PwrSnap", "Chats", ".capture-metadata"');
   });
 });
 

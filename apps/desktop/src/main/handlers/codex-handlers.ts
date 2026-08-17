@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import { BrowserWindow, app } from "electron";
 import {
   AcceptAllDraftsRequestSchema,
@@ -33,7 +32,7 @@ import {
 import { broadcastRendererEventToLocalWindows } from "../events";
 import { relayRendererEventToPeer } from "../process-split/event-relay";
 import { AcpCaptureEnrichmentClient } from "../ai/acp-enrichment-client";
-import { acpPoolScratchCwd, resolveEnabledAcpAgent } from "../ai/acp-agent-pool";
+import { resolveEnabledAcpAgent } from "../ai/acp-agent-pool";
 import { findAcpModelLabel } from "../ai/acp-model-cache";
 import { findCodexModelLabel, saveCodexModelLabels } from "../ai/codex-model-cache";
 import { listCodexModels, type CodexModelLister } from "../ai/codex-model-client";
@@ -162,10 +161,6 @@ function withTurnTimeout<T>(
       }
     );
   });
-}
-
-function captureMetadataWorkspaceDir(): string {
-  return join(app.getPath("documents"), "PwrSnap", "Chats", ".capture-metadata");
 }
 
 function broadcastAiRunUpdated(payload: {
@@ -402,10 +397,7 @@ async function buildAcpEnrichmentClient(
 ): Promise<AcpCaptureEnrichmentClient | null> {
   const agent = await resolveEnabledAcpAgent({ settings, agentId });
   if (agent === null) return null;
-  return new AcpCaptureEnrichmentClient({
-    agent,
-    cwd: acpPoolScratchCwd(join(app.getPath("documents"), "PwrSnap", "Chats"))
-  });
+  return new AcpCaptureEnrichmentClient({ agent });
 }
 
 function triggerSourceOrDefault(
@@ -487,10 +479,14 @@ export function registerCodexHandlers(params?: {
   const clientFactory =
     params?.clientFactory ??
     ((command, env) => {
+      // No `captureMetadataWorkspaceDir` override: the client defaults to the
+      // app-owned scratch jail (`defaultEnrichmentWorkspaceDir`). This used to
+      // pass ~/Documents/PwrSnap/Chats/.capture-metadata, which put the agent's
+      // cwd and runtime workspace root two levels under the user's captures,
+      // inside the TCC-gated Documents tree. The option survives for tests.
       return new CaptureEnrichmentClient({
         command,
-        ...(env !== undefined ? { env } : {}),
-        captureMetadataWorkspaceDir: captureMetadataWorkspaceDir()
+        ...(env !== undefined ? { env } : {})
       });
     });
   const modelLister = params?.modelLister ?? listCodexModels;

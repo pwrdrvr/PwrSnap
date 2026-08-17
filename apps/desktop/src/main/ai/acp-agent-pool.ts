@@ -16,7 +16,7 @@
 // tools. Surfaces opt into `backendClientShared` so they don't clobber each
 // other's single-handler registrations on the shared client.
 
-import { join } from "node:path";
+import { mkdir } from "node:fs/promises";
 import {
   AcpAgentClient,
   AcpAgentClientPool,
@@ -32,6 +32,7 @@ import { resolveActiveAcpInstance } from "./acp-instance-resolver";
 import { acpDiscoveryOptionsForEnabledAgent } from "./acp-enabled-discovery";
 import { PWRSNAP_CLIENT_NAME, PWRSNAP_CLIENT_TITLE, toAgentKitLogger } from "./agent-kit-bindings";
 import { makePooledAcpApprovalHandler } from "./acp-approval-policy";
+import { agentScratchJail } from "./enrichment-sandbox";
 
 let pool: AcpAgentClientPool | undefined;
 
@@ -49,12 +50,27 @@ export function acpAgentPoolKey(agent: DiscoveredAcpAgent): string {
   return `${agent.strategyId}@${agent.command}`;
 }
 
-/** The shared scratch cwd every pooled ACP session uses (keeps the agent from
- *  scanning any real workspace on `session/new`). Every acquirer must pass the
- *  SAME dir — the pool key ignores cwd, so whichever surface constructs the
- *  client first fixes it for everyone. */
-export function acpPoolScratchCwd(chatsDir: string): string {
-  return join(chatsDir, ".acp-chat");
+/**
+ * The shared scratch cwd every pooled ACP session uses — chat AND capture
+ * enrichment, since they share one process.
+ *
+ * It keeps the agent from scanning a real workspace on `session/new`
+ * (multi-second + token bloat), but on the ACP path it is also a SECURITY
+ * control, and one of only two we have. ACP has no sandbox concept: the kit
+ * drops `sandbox` / `approvalPolicy` / `workspaceRoots` as Codex-only, so
+ * `cwd` plus the per-thread `mcpServers` set — backed by the host approval
+ * handler — is the whole posture. See AGENTS.md § "Capture enrichment runs in
+ * a sandbox jail".
+ *
+ * Takes NO arguments on purpose. It used to be `acpPoolScratchCwd(chatsDir)`,
+ * and every caller passed `~/Documents/PwrSnap/Chats` — putting the agent's
+ * cwd one directory above the user's captures, inside the TCC-gated Documents
+ * tree, with the doc comment reduced to asking callers to please pass the same
+ * value (the pool key ignores cwd, so the first acquirer fixes it for
+ * everyone). A parameterless jail makes that class of mistake unrepresentable.
+ */
+export function acpPoolScratchCwd(): string {
+  return agentScratchJail(".acp-scratch");
 }
 
 /** Construct (but don't warm) the shared client for an agent. NO client-level
@@ -94,9 +110,12 @@ function makeAcpAgentClient(agent: DiscoveredAcpAgent, cwd: string): AcpAgentCli
  *  use; dedups concurrent acquires onto one spawn. This is the ONLY way an
  *  ACP agent process starts. */
 export async function acquireAcpAgentClient(
-  agent: DiscoveredAcpAgent,
-  cwd: string
+  agent: DiscoveredAcpAgent
 ): Promise<AcpAgentClient> {
+  const cwd = acpPoolScratchCwd();
+  // tmpdir can be reaped between sessions — the agent's cwd must exist before
+  // `session/new`, and nothing else creates it.
+  await mkdir(cwd, { recursive: true });
   return getAcpAgentPool().acquire(acpAgentPoolKey(agent), () => makeAcpAgentClient(agent, cwd));
 }
 

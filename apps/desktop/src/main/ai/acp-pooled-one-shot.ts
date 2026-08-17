@@ -83,8 +83,6 @@ export type PooledAcpOneShotResponse = {
  */
 export async function runPooledAcpOneShot(input: {
   agent: DiscoveredAcpAgent;
-  /** Scratch cwd for the pooled client (see `acpPoolScratchCwd`). */
-  cwd: string;
   request: PooledAcpOneShotRequest;
 }): Promise<PooledAcpOneShotResponse> {
   const { agent, request } = input;
@@ -94,7 +92,7 @@ export async function runPooledAcpOneShot(input: {
     if (request.abortSignal?.aborted === true) throw abortError();
   };
   throwIfAborted();
-  const client = await acquireAcpAgentClient(agent, input.cwd);
+  const client = await acquireAcpAgentClient(agent);
   // A cancel during the acquire (a cold pool pays the multi-second agent
   // spawn here) arrives before any session exists — bail before opening one.
   throwIfAborted();
@@ -192,10 +190,8 @@ export async function runPooledAcpOneShot(input: {
  */
 export async function listPooledAcpModels(input: {
   agent: DiscoveredAcpAgent;
-  /** Scratch cwd for the pooled client (see `acpPoolScratchCwd`). */
-  cwd: string;
 }): Promise<AcpRuntimeModel[]> {
-  const client = await acquireAcpAgentClient(input.agent, input.cwd);
+  const client = await acquireAcpAgentClient(input.agent);
   let models: AcpRuntimeModel[] = [];
   const unsubscribe = client.onRuntimeCapabilities((event) => {
     const observed = modelsFromCapabilities(event.runtimeCapabilities);

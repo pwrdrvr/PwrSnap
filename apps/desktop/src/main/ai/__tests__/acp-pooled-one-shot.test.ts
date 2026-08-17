@@ -101,11 +101,10 @@ describe("runPooledAcpOneShot", () => {
 
     const response = await runPooledAcpOneShot({
       agent: AGENT,
-      cwd: "/tmp/Chats/.acp-chat",
       request: { prompt: "describe", imagePaths: ["/tmp/a.png"], effort: "low" }
     });
 
-    expect(acquireAcpAgentClient).toHaveBeenCalledWith(AGENT, "/tmp/Chats/.acp-chat");
+    expect(acquireAcpAgentClient).toHaveBeenCalledWith(AGENT);
     // Deltas win over the coalesced message — the folded-in thought prose
     // ("Let me think…") must NOT reach the caller's JSON parser.
     expect(response.rawText).toBe('{"title":"hi"}');
@@ -128,7 +127,6 @@ describe("runPooledAcpOneShot", () => {
 
     const response = await runPooledAcpOneShot({
       agent: AGENT,
-      cwd: "/cwd",
       request: { prompt: "p", model: "gemini-2.5-pro" }
     });
     expect(client.startThread).toHaveBeenCalledWith({ model: "gemini-2.5-pro" });
@@ -152,7 +150,6 @@ describe("runPooledAcpOneShot", () => {
 
     const response = await runPooledAcpOneShot({
       agent: AGENT,
-      cwd: "/cwd",
       request: { prompt: "p" }
     });
     expect(response.rawText).toBe("mine");
@@ -178,7 +175,6 @@ describe("runPooledAcpOneShot", () => {
 
     const response = await runPooledAcpOneShot({
       agent: AGENT,
-      cwd: "/cwd",
       request: { prompt: "describe this image…" }
     });
     expect(response.rawText).toBe("");
@@ -194,7 +190,7 @@ describe("runPooledAcpOneShot", () => {
     acquireAcpAgentClient.mockResolvedValue(client);
 
     await expect(
-      runPooledAcpOneShot({ agent: AGENT, cwd: "/cwd", request: { prompt: "p" } })
+      runPooledAcpOneShot({ agent: AGENT, request: { prompt: "p" } })
     ).rejects.toThrow("model exploded");
     expect(client.archiveThread).toHaveBeenCalledWith("th-1");
     expect(client.close).not.toHaveBeenCalled();
@@ -216,7 +212,6 @@ describe("runPooledAcpOneShot", () => {
     await expect(
       runPooledAcpOneShot({
         agent: AGENT,
-        cwd: "/cwd",
         request: { prompt: "p", abortSignal: abort.signal }
       })
     ).rejects.toMatchObject({ name: "AbortError" });
@@ -238,7 +233,6 @@ describe("runPooledAcpOneShot", () => {
     await expect(
       runPooledAcpOneShot({
         agent: AGENT,
-        cwd: "/cwd",
         request: { prompt: "p", abortSignal: abort.signal }
       })
     ).rejects.toMatchObject({ name: "AbortError" });
@@ -253,7 +247,6 @@ describe("runPooledAcpOneShot", () => {
     await expect(
       runPooledAcpOneShot({
         agent: AGENT,
-        cwd: "/cwd",
         request: { prompt: "p", abortSignal: abort.signal }
       })
     ).rejects.toMatchObject({ name: "AbortError" });
@@ -275,7 +268,6 @@ describe("runPooledAcpOneShot", () => {
     await expect(
       runPooledAcpOneShot({
         agent: AGENT,
-        cwd: "/cwd",
         request: { prompt: "p", abortSignal: abort.signal }
       })
     ).rejects.toMatchObject({ name: "AbortError" });
@@ -297,7 +289,6 @@ describe("runPooledAcpOneShot", () => {
     await expect(
       runPooledAcpOneShot({
         agent: AGENT,
-        cwd: "/cwd",
         request: { prompt: "p", abortSignal: abort.signal }
       })
     ).rejects.toMatchObject({ name: "AbortError" });
@@ -320,7 +311,7 @@ describe("listPooledAcpModels", () => {
     });
     acquireAcpAgentClient.mockResolvedValue(client);
 
-    const models = await listPooledAcpModels({ agent: AGENT, cwd: "/cwd" });
+    const models = await listPooledAcpModels({ agent: AGENT });
     expect(models.map((m) => m.id)).toEqual(["gemini-2.5-pro", "gemini-2.5-flash"]);
     expect(client.archiveThread).toHaveBeenCalledWith("th-1");
     expect(client.close).not.toHaveBeenCalled();
@@ -329,7 +320,7 @@ describe("listPooledAcpModels", () => {
   test("an agent that advertises nothing yields []", async () => {
     const client = makeFakeClient();
     acquireAcpAgentClient.mockResolvedValue(client);
-    const models = await listPooledAcpModels({ agent: AGENT, cwd: "/cwd" });
+    const models = await listPooledAcpModels({ agent: AGENT });
     expect(models).toEqual([]);
     expect(client.archiveThread).toHaveBeenCalledWith("th-1");
   });

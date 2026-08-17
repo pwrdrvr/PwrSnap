@@ -24,13 +24,27 @@ export type EnrichmentRunDiagnostics = {
 };
 
 /**
- * The app-owned scratch jail every enrichment turn runs in. Nothing PwrSnap
- * cares about lives here: not the user's captures (those are in
- * ~/Documents/PwrSnap), not userData, not the repo. It exists so the agent's
- * cwd is somewhere harmless rather than somewhere interesting.
+ * An app-owned scratch jail for an agent's cwd.
+ *
+ * The defining property is that nothing PwrSnap or the user cares about is
+ * reachable from here. That rules out the two locations this naturally drifts
+ * toward:
+ *   • `~/Documents/PwrSnap/...` — where the user's captures and chat threads
+ *     live, AND behind macOS's TCC gate for Documents, so a denied grant
+ *     leaves the agent with an unusable cwd.
+ *   • `userData` — `pwrsnap.db` and `pwrsnap-secrets.bin` are already there.
+ *
+ * `tmpdir()` has neither problem. It can be reaped by the OS between (or
+ * during) sessions, so every caller must `mkdir(..., { recursive: true })`
+ * before handing the path to an agent.
  */
+export function agentScratchJail(...segments: readonly string[]): string {
+  return join(tmpdir(), "pwrsnap", ...segments);
+}
+
+/** The jail every capture-enrichment turn runs in. */
 export function defaultEnrichmentWorkspaceDir(): string {
-  return join(tmpdir(), "pwrsnap", "Chats", ".capture-metadata");
+  return agentScratchJail("Chats", ".capture-metadata");
 }
 
 /** Codex `sandbox` mode for enrichment: denies writes and network. */

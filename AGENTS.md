@@ -185,11 +185,16 @@ and [acp-approval-policy.test.ts](apps/desktop/src/main/ai/__tests__/acp-approva
   tool + permission grants), `persistExtendedHistory: false`. **Do not
   inline these back into the `thread/start` call site** — one named object
   is what makes the posture greppable and testable.
-- **The scratch dir is the jail**, not a workspace. `tmpdir()/pwrsnap/
-  Chats/.capture-metadata` — nothing PwrSnap or the user cares about is
-  reachable from it. Captures live in `~/Documents/PwrSnap`; settings and
-  the DB live in userData. Neither is the cwd, and neither is a runtime
-  workspace root.
+- **The scratch dir is the jail**, not a workspace. Both jails come from
+  `agentScratchJail()` and live under `tmpdir()/pwrsnap` —
+  `Chats/.capture-metadata` for Codex enrichment, `.acp-scratch` for the
+  pooled ACP process. Nothing PwrSnap or the user cares about is reachable
+  from either. **Never point a jail at:** `~/Documents/PwrSnap` (the user's
+  captures + chat threads, and TCC-gated on macOS — a denied grant leaves
+  the agent with an unusable cwd), userData (`pwrsnap.db`,
+  `pwrsnap-secrets.bin`), or the home-dir root (where config lands later).
+  `tmpdir` can be reaped by the OS, so every caller `mkdir`s the jail
+  before handing the path to an agent.
 - **Configured MCP servers are force-disabled per run**
   (`disableConfiguredMcpServers`), so the user's own Codex MCP setup never
   attaches to an enrichment thread. `web_search: "disabled"` and
@@ -206,6 +211,36 @@ and [acp-approval-policy.test.ts](apps/desktop/src/main/ai/__tests__/acp-approva
   behavior — that input is user-authored.)
 - **The image travels as bounded image input**, never as a local path the
   agent could go read for itself.
+
+### The two backends are NOT equally protected
+
+Everything above describes the **Codex** path. The **ACP** path (Gemini /
+Qwen / Grok / Kimi, selected via `ai.defaults.enrichment.provider`) has
+far less, and the difference is in the protocol, not in our code:
+
+```ts
+// @pwrdrvr/agent-acp
+type AcpStartThreadOptions = { cwd?: string; mcpServers?: AcpMcpServerConfig[] };
+// "Codex-only fields (approvalPolicy, sandbox, config, environments,
+//  tools, serviceName, modelProvider, serviceTier, workspaceRoots) are dropped"
+```
+
+**ACP has no sandbox concept.** There is no `read-only` to set and no
+approval policy to pin. The entire posture is:
+
+1. `cwd` — the shared `acpPoolScratchCwd()` jail.
+2. the per-thread `mcpServers` set.
+3. `makePooledAcpApprovalHandler`, which denies the agent's built-in
+   shell/file/web tools by string-matching the permission request.
+
+That third one is a heuristic over inconsistent per-agent payload shapes,
+not a sandbox. Treat ACP enrichment as materially weaker than Codex
+enrichment and size features accordingly.
+
+One trap: **the pool key is `strategyId@command` — cwd is not in it.**
+One process per agent serves chat AND enrichment, so enrichment cannot
+have a tighter cwd than chat while they share it. `acpPoolScratchCwd()`
+therefore takes no arguments; do not add one.
 
 ### Known limit — reads are not scoped to the jail
 
@@ -233,6 +268,15 @@ widening anything else.
 History: the posture shipped with enrichment in #30; the transport-level
 enforcement, attribution, tests, and this section closed
 [#69](https://github.com/pwrdrvr/PwrSnap/issues/69).
+
+A caution from that work, worth keeping: the first draft of this section
+described the Codex jail as `tmpdir()/pwrsnap/Chats/.capture-metadata` and
+had a test asserting exactly that — but the test covered
+`CaptureEnrichmentClient`'s DEFAULT, while the production factory in
+`codex-handlers.ts` passed a `captureMetadataWorkspaceDir` override
+pointing into `~/Documents/PwrSnap`. The doc and the test agreed with each
+other and both disagreed with what shipped. When you pin a security
+property, pin the production wiring, not the default.
 
 ## Bundle format v2 — the only bundle format (v1 fully removed)
 

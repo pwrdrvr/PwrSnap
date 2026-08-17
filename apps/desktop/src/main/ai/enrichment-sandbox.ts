@@ -47,14 +47,80 @@ export function defaultEnrichmentWorkspaceDir(): string {
   return agentScratchJail("Chats", ".capture-metadata");
 }
 
-/** Codex `sandbox` mode for enrichment: denies writes and network. */
+/** Codex `sandbox` mode for the FALLBACK posture. Denies writes and network,
+ *  but permits reading the WHOLE filesystem — see
+ *  `codexEnrichmentPermissionProfile` for what replaces it and why. */
 export const ENRICHMENT_SANDBOX_MODE = "read-only";
 
-/** Codex `approvalPolicy` for enrichment: never escalate to a user prompt.
- *  Enrichment is a background job with no UI attached — there is nobody to
- *  ask, so an escalation request is an anomaly to deny and log, not a dialog
- *  to raise. */
+/**
+ * Codex `approvalPolicy` for enrichment: never escalate to a user prompt.
+ * Enrichment is a background job with no UI attached — there is nobody to ask,
+ * so an escalation request is an anomaly to deny and log, not a dialog to
+ * raise.
+ *
+ * Note what this does NOT mean. In Codex, `never` resolves to
+ * `Decision::Allow` — "allow the command to run, relying on the sandbox for
+ * protection" — not to a denial. And a Restricted sandbox only prompts when a
+ * command `requests_sandbox_override()`, so a plain read of an already-
+ * permitted path never prompts under ANY approval policy. The sandbox's
+ * permitted SET is the only thing that actually constrains reads. (Commands
+ * matching Codex's dangerous-command list ARE forbidden outright under
+ * `never`.)
+ */
 export const ENRICHMENT_APPROVAL_POLICY = "never";
+
+/** Profile id for the read-scoped posture. Arbitrary but stable: referenced by
+ *  `thread/start.permissions` and defined under the same name in the thread
+ *  config overlay. */
+export const ENRICHMENT_PERMISSION_PROFILE_ID = "pwrsnap_enrichment";
+
+/**
+ * How a `thread/start` expresses the enrichment sandbox.
+ *
+ * `"permissions"` is the posture we want and always try first. `"sandbox"` is
+ * the fallback for a Codex build that rejects the `permissions` field — it is
+ * exactly the pre-existing behavior, so falling back never makes things worse
+ * than they were; it only fails to make them better.
+ */
+export type EnrichmentSandboxKind = "permissions" | "sandbox";
+
+/**
+ * The thread `config` overlay fragment defining the read-scoped profile.
+ *
+ * Measured — see
+ * docs/solutions/2026-08-17-enrichment-read-scoping-probe.md. This denies
+ * `~/Documents`, `~/.ssh`, and `~/.aws` while keeping the jail readable and
+ * network denied. Under plain `sandbox: "read-only"` all three are READABLE.
+ *
+ * Two keys are load-bearing beyond the obvious one:
+ *   • `":minimal" = "read"` — without it, denying `":root"` also denies
+ *     reading `/bin/cat`, so no command can even exec and every attempt dies
+ *     with SIGABRT. `:minimal` grants the system paths needed to launch a
+ *     process and nothing else.
+ *   • `workspaceDir` — the jail itself, or the agent cannot read its own cwd.
+ *
+ * The shape is a FLATTENED `path → access` map. It deliberately does NOT
+ * match the `FileSystemSandboxEntry { path, access }` array in
+ * `@pwrdrvr/codex-app-server-protocol`: the TOML deserializer
+ * (`FilesystemPermissionsToml` in codex-rs) uses `#[serde(flatten)]`. Do not
+ * "fix" this to match the published types — an unrecognized profile denies
+ * EVERYTHING, including the jail.
+ */
+export function codexEnrichmentPermissionProfile(
+  workspaceDir: string
+): Record<string, unknown> {
+  return {
+    permissions: {
+      [ENRICHMENT_PERMISSION_PROFILE_ID]: {
+        filesystem: {
+          ":root": "deny",
+          ":minimal": "read",
+          [workspaceDir]: "read"
+        }
+      }
+    }
+  };
+}
 
 /**
  * The security-relevant half of an enrichment `thread/start`. Kept as one
@@ -62,15 +128,10 @@ export const ENRICHMENT_APPROVAL_POLICY = "never";
  * — changing any field here changes the sandbox, and
  * `codex-agent-pool.test.ts` fails until the change is deliberate.
  */
-export function codexEnrichmentThreadSandbox(workspaceDir: string): {
-  ephemeral: true;
-  cwd: string;
-  runtimeWorkspaceRoots: readonly string[];
-  approvalPolicy: typeof ENRICHMENT_APPROVAL_POLICY;
-  sandbox: typeof ENRICHMENT_SANDBOX_MODE;
-  environments: readonly never[];
-  persistExtendedHistory: false;
-} {
+export function codexEnrichmentThreadSandbox(
+  workspaceDir: string,
+  kind: EnrichmentSandboxKind = "permissions"
+): Record<string, unknown> {
   return {
     // Pool the App Server process, not the conversation: a fresh in-memory
     // thread per capture means no context (or injected instruction) from one
@@ -79,7 +140,12 @@ export function codexEnrichmentThreadSandbox(workspaceDir: string): {
     cwd: workspaceDir,
     runtimeWorkspaceRoots: [workspaceDir],
     approvalPolicy: ENRICHMENT_APPROVAL_POLICY,
-    sandbox: ENRICHMENT_SANDBOX_MODE,
+    // `permissions` and `sandbox` are MUTUALLY EXCLUSIVE — sending both is a
+    // hard thread/start error ("`permissions` cannot be combined with
+    // `sandbox`"). Exactly one of them is ever set.
+    ...(kind === "permissions"
+      ? { permissions: ENRICHMENT_PERMISSION_PROFILE_ID }
+      : { sandbox: ENRICHMENT_SANDBOX_MODE }),
     // No environment profiles — those can carry their own tool + permission
     // grants that would silently widen this posture.
     environments: [],

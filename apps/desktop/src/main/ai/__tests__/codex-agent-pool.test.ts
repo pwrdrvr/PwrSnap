@@ -539,15 +539,87 @@ describe("Codex agent pool", () => {
       // not userData, not the repo.
       cwd: "/tmp/pwrsnap-enrichment-jail",
       runtimeWorkspaceRoots: ["/tmp/pwrsnap-enrichment-jail"],
-      // Background job: nobody is at the keyboard to answer a prompt, so an
-      // escalation request is denied + logged rather than surfaced.
+      // Background job: nobody is at the keyboard to answer a prompt.
       approvalPolicy: "never",
-      // Denies writes and network.
-      sandbox: "read-only",
+      // READ-SCOPED posture: denies reads outside the jail. NOT
+      // `sandbox: "read-only"`, which permits reading the whole filesystem.
+      permissions: "pwrsnap_enrichment",
       // Environment profiles can carry their own tool/permission grants.
       environments: [],
-      persistExtendedHistory: false
+      persistExtendedHistory: false,
+      config: {
+        permissions: {
+          pwrsnap_enrichment: {
+            filesystem: {
+              ":root": "deny",
+              ":minimal": "read",
+              "/tmp/pwrsnap-enrichment-jail": "read"
+            }
+          }
+        }
+      }
     });
+    expect(start?.[1]).not.toHaveProperty("sandbox");
+  });
+
+  // A Codex build that rejects `permissions` must not break enrichment — it
+  // falls back to the older posture, which is exactly the pre-existing
+  // behavior. It is WEAKER (read-only permits whole-filesystem reads), so the
+  // fallback is logged rather than passing silently.
+  test("falls back to sandbox:read-only when Codex rejects the permissions profile", async () => {
+    let startAttempts = 0;
+    mockConnectionRequest.mockImplementation(async (method: string, params: unknown) => {
+      if (method === "config/read") return { config: {} };
+      if (method === "thread/start") {
+        startAttempts += 1;
+        const p = params as { permissions?: unknown };
+        if (p.permissions !== undefined) {
+          throw new Error("unknown field `permissions`");
+        }
+        return { thread: { id: "one-shot-thread-1" } };
+      }
+      if (method === "turn/start") {
+        const { threadId } = params as { threadId: string };
+        setTimeout(() => {
+          mockCodexThreadClients[0]?.emitEvent({
+            kind: "agent_message",
+            threadId,
+            turnId: "turn-1",
+            message: { text: "{}" }
+          });
+          mockCodexThreadClients[0]?.emitEvent({
+            kind: "turn_completed",
+            threadId,
+            turnId: "turn-1",
+            status: "completed"
+          });
+        }, 0);
+        return { turn: { id: "turn-1" } };
+      }
+      return {};
+    });
+
+    const result = await runCodexOneShotFromPool({
+      command: "codex-test",
+      env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-fallback-test" },
+      workspaceDir: "/tmp/pwrsnap-enrichment-jail",
+      prompt: "describe this image",
+      imagePaths: ["/tmp/capture.jpg"]
+    });
+
+    // Enrichment still succeeded.
+    expect(result.threadId).toBe("one-shot-thread-1");
+    expect(startAttempts).toBe(2);
+
+    const starts = mockConnectionRequest.mock.calls.filter(([m]) => m === "thread/start");
+    expect(starts[0]?.[1]).toMatchObject({ permissions: "pwrsnap_enrichment" });
+    expect(starts[1]?.[1]).toMatchObject({ sandbox: "read-only" });
+    expect(starts[1]?.[1]).not.toHaveProperty("permissions");
+    // The degradation is visible, not silent.
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("does NOT restrict reads"),
+      expect.anything()
+    );
   });
 
   test("denies an approval request from an enrichment turn and logs run + capture id", async () => {

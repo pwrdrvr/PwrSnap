@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __clearEnrichmentThreadsForTests,
   agentScratchJail,
+  codexEnrichmentPermissionProfile,
   codexEnrichmentThreadSandbox,
   defaultEnrichmentWorkspaceDir,
   denyEnrichmentEscalation,
@@ -24,8 +25,20 @@ beforeEach(() => {
 });
 
 describe("codexEnrichmentThreadSandbox", () => {
-  it("jails the thread to the supplied workspace with no approvals and no writes", () => {
+  it("defaults to the READ-SCOPED posture, not the legacy sandbox", () => {
     expect(codexEnrichmentThreadSandbox("/tmp/jail")).toEqual({
+      ephemeral: true,
+      cwd: "/tmp/jail",
+      runtimeWorkspaceRoots: ["/tmp/jail"],
+      approvalPolicy: "never",
+      permissions: "pwrsnap_enrichment",
+      environments: [],
+      persistExtendedHistory: false
+    });
+  });
+
+  it("expresses the fallback posture when asked", () => {
+    expect(codexEnrichmentThreadSandbox("/tmp/jail", "sandbox")).toEqual({
       ephemeral: true,
       cwd: "/tmp/jail",
       runtimeWorkspaceRoots: ["/tmp/jail"],
@@ -34,6 +47,57 @@ describe("codexEnrichmentThreadSandbox", () => {
       environments: [],
       persistExtendedHistory: false
     });
+  });
+
+  // Sending both is a hard thread/start error:
+  // "`permissions` cannot be combined with `sandbox`".
+  it("never sets `permissions` and `sandbox` together", () => {
+    for (const kind of ["permissions", "sandbox"] as const) {
+      const posture = codexEnrichmentThreadSandbox("/tmp/jail", kind);
+      expect(
+        ("permissions" in posture) && ("sandbox" in posture),
+        JSON.stringify(posture)
+      ).toBe(false);
+    }
+  });
+});
+
+describe("codexEnrichmentPermissionProfile", () => {
+  // Measured against live Codex: this denies ~/Documents, ~/.ssh and ~/.aws
+  // while keeping the jail readable. Plain `sandbox: "read-only"` allows all
+  // three. See docs/solutions/2026-08-17-enrichment-read-scoping-probe.md.
+  it("denies the filesystem root, keeps the jail readable", () => {
+    expect(codexEnrichmentPermissionProfile("/tmp/jail")).toEqual({
+      permissions: {
+        pwrsnap_enrichment: {
+          filesystem: {
+            ":root": "deny",
+            ":minimal": "read",
+            "/tmp/jail": "read"
+          }
+        }
+      }
+    });
+  });
+
+  // Without `:minimal`, denying `:root` also denies reading /bin/cat, so no
+  // command can exec at all and every attempt dies with SIGABRT — including
+  // ones that should have been allowed.
+  it("grants :minimal so a process can still be launched", () => {
+    const fs = (
+      codexEnrichmentPermissionProfile("/tmp/jail").permissions as Record<
+        string,
+        { filesystem: Record<string, string> }
+      >
+    ).pwrsnap_enrichment.filesystem;
+    expect(fs[":minimal"]).toBe("read");
+  });
+
+  // The TOML deserializer flattens this map. The `entries` array shape in
+  // @pwrdrvr/codex-app-server-protocol is NOT accepted and denies everything.
+  it("uses the flattened path -> access map, not an entries array", () => {
+    const profile = codexEnrichmentPermissionProfile("/tmp/jail");
+    expect(JSON.stringify(profile)).not.toContain("entries");
   });
 
   it("defaults the jail to an app-owned scratch dir, not a user directory", () => {

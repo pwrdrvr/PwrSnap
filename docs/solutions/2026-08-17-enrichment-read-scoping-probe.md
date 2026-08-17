@@ -3,7 +3,7 @@
 **Date:** 2026-08-17
 **Context:** [#69](https://github.com/pwrdrvr/PwrSnap/issues/69) /
 [#423](https://github.com/pwrdrvr/PwrSnap/pull/423)
-**Status:** schema solved and measured; not yet wired into PwrSnap
+**Status:** solved, measured, and shipped in #423 (profile + one-shot fallback)
 
 Read this before attempting to scope what a capture-enrichment turn can
 read. Everything below was measured against live Codex binaries

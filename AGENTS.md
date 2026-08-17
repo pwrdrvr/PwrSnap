@@ -180,9 +180,10 @@ and [acp-approval-policy.test.ts](apps/desktop/src/main/ai/__tests__/acp-approva
   half of every enrichment `thread/start`. Every field is load-bearing:
   `ephemeral: true` (no context — or injected instruction — survives into
   the next capture's turn), `cwd` + `runtimeWorkspaceRoots` pinned to an
-  app-owned scratch dir, `approvalPolicy: "never"`, `sandbox: "read-only"`
-  (denies writes and network), `environments: []` (profiles carry their own
-  tool + permission grants), `persistExtendedHistory: false`. **Do not
+  app-owned scratch dir, `approvalPolicy: "never"`,
+  `permissions: "pwrsnap_enrichment"` (see below), `environments: []`
+  (profiles carry their own tool + permission grants),
+  `persistExtendedHistory: false`. **Do not
   inline these back into the `thread/start` call site** — one named object
   is what makes the posture greppable and testable.
 - **The scratch dir is the jail**, not a workspace. Both jails come from
@@ -242,26 +243,53 @@ One process per agent serves chat AND enrichment, so enrichment cannot
 have a tighter cwd than chat while they share it. `acpPoolScratchCwd()`
 therefore takes no arguments; do not add one.
 
-### Known limit — reads are not scoped to the jail
+### Reads ARE scoped — via a permissions profile, not `sandbox`
 
-Codex's `SandboxMode` is `read-only | workspace-write |
-danger-full-access`. `read-only` denies writes and network but permits
-reading the whole filesystem; there is no "reads confined to cwd" mode to
-select. So if a shell tool is reachable on an ephemeral structured-output
-thread, a file read is not blocked at the sandbox layer — the deny
-handlers and the disabled MCP surface are what stand in the way, and
-network denial caps the blast radius to PwrSnap's own DB. If a future
-Codex release adds a narrower read scope, take it. Do not "fix" this by
-widening anything else.
+`SandboxMode` (`read-only | workspace-write | danger-full-access`) has no
+"reads confined to cwd" option, and `read-only` permits reading the WHOLE
+filesystem — measured: `~/Documents`, `~/.ssh`, and `~/.aws` are all
+readable under it. So enrichment does not use `sandbox` at all. It uses
+the other, mutually exclusive path:
 
-This was measured, not assumed — `read-only` demonstrably reads
-`~/Documents`, `~/.ssh`, and `~/.aws`. The narrower scope EXISTS today:
-a named `permissions` profile on `thread/start` (mutually exclusive with
-`sandbox`) denies all of those while keeping the jail readable. It is not
-wired in yet. Before doing so, read
-[docs/solutions/2026-08-17-enrichment-read-scoping-probe.md](docs/solutions/2026-08-17-enrichment-read-scoping-probe.md)
-— it has the probe recipe, the working `thread/start` shape, the traps,
-and what is still unknown.
+```jsonc
+"permissions": "pwrsnap_enrichment",     // NOT "sandbox" — cannot combine
+"config": { "permissions": { "pwrsnap_enrichment": {
+  "filesystem": { ":root": "deny", ":minimal": "read", "<jail>": "read" } } } }
+```
+
+Measured result: `~/Documents`, `~/.ssh`, `~/.aws`, and any path outside
+the jail are DENIED; the jail stays readable and network stays denied.
+
+Two things that bite if you touch this:
+
+- **`":minimal" = "read"` is load-bearing.** Denying `:root` also denies
+  reading `/bin/cat`, so without `:minimal` no command can exec at all
+  and everything dies with SIGABRT — including reads that should have
+  been allowed.
+- **`filesystem` is a FLATTENED `path → access` map.** It does not match
+  the `FileSystemSandboxEntry { path, access }` array that
+  `@pwrdrvr/codex-app-server-protocol` exposes; codex-rs's
+  `FilesystemPermissionsToml` uses `#[serde(flatten)]`. "Fixing" the
+  shape to match the published types silently denies EVERYTHING.
+
+**`approvalPolicy: "never"` is not a denial.** In codex-rs it resolves to
+`Decision::Allow` — "run it, relying on the sandbox for protection". And
+a Restricted sandbox only prompts when a command
+`requests_sandbox_override()`, so a plain read of an already-permitted
+path never prompts under any approval policy. The permitted SET is the
+only thing that constrains reads. That is why the profile matters, and
+why "give it an empty cwd and let the user say no" does not apply to a
+background job with no UI.
+
+There is a **one-shot fallback** to `sandbox: "read-only"` if a Codex
+build rejects the `permissions` field, logged at warn. The fallback is
+exactly the pre-profile behavior, so it can never be worse than not
+trying — but it is weaker, and the log line says so. `thread/start` with
+the profile is verified accepted on 0.146.0 and 0.148.0-alpha.9.
+
+Full measurements, the probe recipe (no model turns, so no tokens), and
+the codex-rs source pointers:
+[docs/solutions/2026-08-17-enrichment-read-scoping-probe.md](docs/solutions/2026-08-17-enrichment-read-scoping-probe.md).
 
 ### Rules for changing this
 

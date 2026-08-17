@@ -37,10 +37,12 @@ import {
 } from "../settings/codex-discovery";
 import { withEffectiveCodeModeSettings } from "./codex-thread-config";
 import {
+  codexEnrichmentPermissionProfile,
   codexEnrichmentThreadSandbox,
   defaultEnrichmentWorkspaceDir,
   denyEnrichmentEscalation,
-  type EnrichmentRunDiagnostics
+  type EnrichmentRunDiagnostics,
+  type EnrichmentSandboxKind
 } from "./enrichment-sandbox";
 
 const log = getMainLogger("pwrsnap:codex-pool");
@@ -569,33 +571,64 @@ class CodexAgentOwner {
       requestTimeoutMs
     );
     const threadConfig = disableConfiguredMcpServers(options.threadConfig, effectiveConfig);
-    const threadResponse = (await connection.request(
-      "thread/start",
-      {
-        model: options.model ?? null,
-        ...(options.modelProvider !== null && options.modelProvider !== undefined
-          ? { modelProvider: options.modelProvider }
-          : {}),
-        // The security-relevant posture — ephemeral thread, scratch-dir cwd +
-        // workspace roots, no approvals, read-only sandbox, no environments —
-        // is owned by `enrichment-sandbox.ts` and pinned by a test. Do NOT
-        // inline those fields back here; see AGENTS.md § "Capture enrichment
-        // runs in a sandbox jail". (The ephemeral thread is also why we never
-        // use thread/rollback: it's deprecated and doesn't remove every
-        // per-turn injected context item.)
-        ...codexEnrichmentThreadSandbox(workspaceDir),
-        serviceName: PWRSNAP_SERVICE_NAME,
-        ...(baseInstructions.length > 0 ? { baseInstructions } : {}),
-        ...(threadConfig !== undefined ? { config: threadConfig } : {}),
-        experimentalRawEvents: false
-      },
-      requestTimeoutMs
-    )) as {
+
+    // Try the READ-SCOPED posture first (a named permissions profile, which
+    // denies reads outside the jail), and fall back once to the older
+    // `sandbox: "read-only"` if this Codex build rejects it. The fallback is
+    // exactly the pre-existing behavior, so it can never be worse than not
+    // trying — but it IS weaker (read-only permits reading the whole
+    // filesystem), so it logs at warn rather than passing silently.
+    const startThreadWith = async (
+      kind: EnrichmentSandboxKind
+    ): Promise<Record<string, unknown>> =>
+      (await connection.request(
+        "thread/start",
+        {
+          model: options.model ?? null,
+          ...(options.modelProvider !== null && options.modelProvider !== undefined
+            ? { modelProvider: options.modelProvider }
+            : {}),
+          // The security-relevant posture — ephemeral thread, scratch-dir cwd +
+          // workspace roots, no approvals, read scoping, no environments — is
+          // owned by `enrichment-sandbox.ts` and pinned by a test. Do NOT
+          // inline those fields back here; see AGENTS.md § "Capture enrichment
+          // runs in a sandbox jail". (The ephemeral thread is also why we never
+          // use thread/rollback: it's deprecated and doesn't remove every
+          // per-turn injected context item.)
+          ...codexEnrichmentThreadSandbox(workspaceDir, kind),
+          serviceName: PWRSNAP_SERVICE_NAME,
+          ...(baseInstructions.length > 0 ? { baseInstructions } : {}),
+          config: {
+            ...(threadConfig ?? {}),
+            // The profile the `permissions` id above resolves to. Harmless on
+            // the fallback path — an unreferenced profile is inert.
+            ...codexEnrichmentPermissionProfile(workspaceDir)
+          },
+          experimentalRawEvents: false
+        },
+        requestTimeoutMs
+      )) as Record<string, unknown>;
+
+    let threadResponse: {
       thread?: { id?: unknown };
       model?: unknown;
       modelProvider?: unknown;
       serviceTier?: unknown;
     };
+    try {
+      threadResponse = await startThreadWith("permissions");
+    } catch (error) {
+      log.warn(
+        "Codex rejected the read-scoped enrichment permissions profile; " +
+          "falling back to sandbox:read-only, which does NOT restrict reads",
+        {
+          owner: this.key,
+          message: error instanceof Error ? error.message : String(error)
+        }
+      );
+      threadResponse = await startThreadWith("sandbox");
+    }
+
     const threadId = threadResponse.thread?.id;
     if (typeof threadId !== "string") {
       throw new Error("Codex one-shot thread/start returned no thread id");

@@ -82,7 +82,12 @@ feed, not a word list. The word ribbon needs the words.
 - Add `words` **and `durationSec`** to the `cached: true` arm of
   `sizzle:loadSequenceSceneAudio` (`protocol.ts:4408`). It returns audio today
   but *not* its duration, so the renderer must decode the blob to learn how long
-  the axis is. Both are cheap and both are needed before first paint.
+  the axis is. Both are free — they come off the `resolveCachedSpeechTiming`
+  result already loaded at `sizzle-handlers.ts:796` — and both are needed before
+  first paint. **Both are therefore nullable together**: when that call returns
+  `null` there is neither a duration nor words, which is exactly the `estimated`
+  state in §4.1. Do not add an ffprobe fallback to fill in duration alone; it
+  spawns a process per scene on reel open.
 - Note the silent 300-window cap: a >300-word script currently has unanchorable
   words past 300 with no indication. Sending `words` sidesteps it for the ribbon;
   raise or document the cap for the legacy picker.
@@ -96,11 +101,14 @@ spend the operator's OpenAI credits without being asked, and is a non-starter.
 
 ### 3.3 Genuinely new
 
-- `estimateNarrationDurationSec(text)` in `@pwrsnap/shared` — a words-per-second
-  estimate for the not-yet-synthesized state. `approximateSpeechTiming`
-  (`speech-timing.ts:143`) already does `text.length / 14` internally as its own
-  fallback; lift that constant into a shared, named, tested helper so the editor
-  and main agree. Today the renderer's fallback is
+- `estimateNarrationDurationSec(text)` in `@pwrsnap/shared` — a duration estimate
+  for the not-yet-synthesized state. `approximateSpeechTiming`
+  (`speech-timing.ts:143`) already does `Math.max(1, trimmed.length / 14)`
+  internally as its own fallback; lift that into a shared, named, tested helper so
+  the editor and main agree. **It is 14 *characters* per second, not words** —
+  roughly 165 wpm at an average English word length, which is a sane narration
+  pace. Do not reinterpret the constant as a words-per-second rate; that would
+  produce durations ~5× too short. Today the renderer's fallback is
   `scene.durationOverrideSec ?? beats.length` (`SizzleApp.tsx:541`) — i.e. **one
   second per clip**, which is not an estimate of anything.
 - The timeline view model + retime math (§5.2).
@@ -147,16 +155,35 @@ failure we are fixing.
 
 Cost, stated plainly: the axis needs a duration for *every* scene, including ones
 whose narration was never synthesized. That is what §3.3's estimator is for.
-Scene regions render in one of three states, visually distinct:
+Scene regions render in one of **two** states, visually distinct:
 
 | State | Source | Rendering |
 |---|---|---|
-| **exact** | preview plan resolved this session, or cached speech timing | solid, normal |
-| **cached** | narration audio in the TTS cache, duration known, word timings absent | solid, no word ribbon; ribbon slot shows "synthesize to anchor words" |
-| **estimated** | nothing cached — duration from `estimateNarrationDurationSec` | hatched region fill, `~` prefix on every duration label |
+| **resolved** | speech timing available — resolved this session, or from the speech-timing cache | solid fill, exact duration labels, word ribbon populated |
+| **estimated** | no cached speech timing — duration from `estimateNarrationDurationSec` | hatched region fill, `~` prefix on every duration label, empty ribbon with the "Synthesize narration" affordance |
 
 An estimated region must never look exact. Mixing the two silently is how a user
 ends up trusting a number that was invented.
+
+**Two states, not three — duration and words arrive together.** A "duration
+known but word timings absent" middle state looks plausible and is not reachable
+by the mechanism this plan proposes. Both come from the same cached
+`SizzleSpeechTiming`: the free source for a cached duration is
+`speechTiming.durationSec` off the `resolveCachedSpeechTiming` call already at
+`sizzle-handlers.ts:796`, and that same object carries `words`. Null timing means
+neither. Nor is the state reachable upstream — the preview path
+(`sizzle-handlers.ts:701`) and the render path (`sizzle-handlers.ts:1040`) both
+call `resolveSpeechTiming`, which writes the timing cache, so any sequence scene
+with cached audio has cached timing. The only way to split them is probing
+duration with ffprobe, which spawns a process per scene on reel open and is ruled
+out by §8's 200-scene concern.
+
+So `timeline-model.ts` carries a two-valued `exactness`, and PR 3 builds two
+region treatments. Word availability is not a third state; it is a property of
+the resolved state that happens to always be true. If a degenerate
+audio-without-timing case ever does appear (`resolveSpeechTiming` skips its cache
+write when the audio hash fails, `speech-timing.ts:97`), it degrades to
+**estimated** — which is honest, since we would have no exact duration either.
 
 ### 4.2 Timing changes on re-synthesis
 
@@ -215,9 +242,17 @@ ribbon and a "Synthesize narration" affordance, not fabricated words.
 
 `distributeSequenceBeatStarts` divides auto runs between anchors. So:
 
-- **Dragging a clip** pins *that clip* (phrase-snapped to the nearest word, or
+- **Dragging a clip** pins *that clip* (phrase-anchored to the nearest word, or
   offset) and leaves its neighbors `auto`. The neighbors re-flow around the new
   anchor. This is the whole point of the auto model and it must survive.
+- **Anchoring to a word does not quantize the drop position.** The phrase arm
+  carries `offsetSec`, which `resolvePhraseTiming` adds to the matched word's
+  start (`speech-timing.ts:212`). So a drag stores the nearest word *plus the
+  residual*: `offsetSec = droppedSec − word.startSec`. Writing `offsetSec: 0`
+  and snapping to the word boundary would make it impossible to place a clip
+  between two words — visible as the clip jumping backwards on release at 4×
+  zoom — for no gain, since the field already exists and the planner already
+  applies it.
 - **Dragging a boundary** between clips A and B pins **B** (the boundary *is*
   B's start). A's end follows automatically — non-final beats run to the next
   anchor by definition (`normalizeSizzleSequenceBeatContinuity`).
@@ -316,7 +351,7 @@ component.
 |---|---|
 | `packages/shared` (main + renderer) | `estimateNarrationDurationSec(text)`; `sizzleProjectDurationSec(...)` (§3.4) |
 | `features/shared/video-range.ts` | **existing**, extended only if zoom needs it — `secToPx(sec, duration, widthPx)` already generalizes with `widthPx` = content width at zoom |
-| `timeline/timeline-model.ts` | `buildTimelineModel({ project, resolvedByScene, estimator })` → scene regions + clips with `{ startSec, endSec, exactness }` + word positions. The single place the three exactness states are decided. |
+| `timeline/timeline-model.ts` | `buildTimelineModel({ project, resolvedByScene, estimator })` → scene regions + clips with `{ startSec, endSec, exactness }` + word positions. The single place the two exactness states are decided. |
 | `timeline/retime.ts` | `applyClipDrag(beats, index, targetStartSec, transcript)` and `applyBoundaryDrag(...)` → new `SizzleSequenceBeat[]`. Encodes §4.4 including "pin only what you touch". |
 | `timeline/anchor.ts` | `anchorTimingForWord(words, wordIndex)` (§4.3) |
 | `timeline/density.ts` | width → detail level (§4.5) |
@@ -341,7 +376,7 @@ the existing phrase picker gaining word granularity. Pure + handler tests.
 
 **PR 3 — `feat(desktop): sizzle timeline canvas (read-only)`**
 Ruler, clip lane sized by resolved duration, waveform lane, scene regions,
-playhead scrubbing driving the existing preview, zoom + fit + density, the three
+playhead scrubbing driving the existing preview, zoom + fit + density, the two
 exactness states. Poster images replace per-clip `<video>`. The old form rows
 survive underneath in a collapsed "Advanced" disclosure so nothing becomes
 unreachable mid-migration. **This is the PR where the operator's complaint
@@ -380,7 +415,7 @@ boundaries, the "Re-fit anchors" action (§4.2).
 
 1. **PR 1 is a large no-op diff.** Mitigated by characterization-tests-first, but
    it is still the riskiest merge in the sequence.
-2. **The estimator will be wrong sometimes.** A words-per-second estimate for a
+2. **The estimator will be wrong sometimes.** A characters-per-second estimate for a
    dense technical script can be off by 20 %. The hatched-region treatment is
    load-bearing — if estimated regions ever look exact, the feature actively
    misleads. Do not let this get value-engineered out of the mockups.
@@ -395,18 +430,22 @@ boundaries, the "Re-fit anchors" action (§4.2).
 ## 7. Mockups
 
 Design project **PwrDrvr Design System** (`019debaf-c070-7afe-98db-4c9bbe10e72b`).
-Palette verified in sync 2026-08-17: project `colors_and_type.css` and repo
-`design/ds/colors_and_type.css` are both 345 lines and identical across every
-sampled token (`--accent: #ff8a1f`, `--bg-app: #000000`, light-theme
-`--accent: #c45200`, radii, type scale, `ds-*` classes). **No sync needed.**
+Palette **spot-checked** 2026-08-17, not fully diffed: the repo's
+`design/ds/colors_and_type.css` is 345 lines, and the project's
+`colors_and_type.css` matched it on the header, the whole light-theme override
+block, the `ds-*` class definitions, the tail, and every token sampled
+(`--accent: #ff8a1f`, `--bg-app: #000000`, light-theme `--accent: #c45200`,
+radii, type scale). No drift found, so **no sync is proposed** — but if the
+mockups come back off-palette, run a real line-by-line diff before blaming the
+design app.
 
 `briefs/sizzle-timeline-brief.md` already exists (2026-08-15) and is broadly
 right. It needs updating, not replacing — deltas:
 
 - Its `Compose | Clip` **tabs** contradict §4.6; change to chat + inspector
   drawer, both visible.
-- Add the **three exactness states** (§4.1) — exact / cached / estimated. The
-  current brief assumes resolved timing throughout.
+- Add the **two exactness states** (§4.1) — resolved / estimated. The current
+  brief assumes resolved timing throughout.
 - Add the **zoom control and density ladder** (§4.5), plus a variant at 80 clips.
 - Add the **pre-synthesis** state — empty ribbon, "Synthesize narration"
   affordance, hatched estimated regions.
@@ -419,7 +458,7 @@ Variants to request:
   selected with the inspector open beside chat.
 - **C** — 80 clips at Fit and at 2× zoom, showing the density ladder.
 - **D** — two scenes with a boundary + transition pill; scene 2 estimated while
-  scene 1 is exact.
+  scene 1 is resolved.
 
 > **Operator action required:** generating these happens in the claude.ai/design
 > app, not through the `DesignSync` tool. Update
@@ -435,11 +474,16 @@ open PR carrying it; the absence of Sizzle E2E specs; the 3,226 / 1,308 line
 counts; that `loadSequenceSceneAudio` omits `durationSec`; that
 `buildTranscriptPhraseSuggestions` defaults to 5-word windows capped at 300; that
 the renderer's idle duration fallback is one second per clip; that the beat row
-mounts a `<video>` per clip; that the design project's palette matches the repo's.
+mounts a `<video>` per clip; that both the preview and render paths call
+`resolveSpeechTiming` and therefore always populate the timing cache alongside
+the audio cache (§4.1).
+
+**Spot-checked, not exhaustively verified:** the design project's palette against
+the repo's — see §7 for exactly what was compared.
 
 **Assumed, and worth checking during the build:**
-- That a words-per-second constant lifted from `approximateSpeechTiming`'s
-  `length / 14` is a good enough estimator for real narration. It is an estimate
+- That the characters-per-second constant lifted from `approximateSpeechTiming`'s
+  `trimmed.length / 14` is a good enough estimator for real narration. It is an estimate
   of an estimate; measure against a few real reels in PR 2.
 - That 40 px/s is a sensible 1× zoom. Picked by analogy to other NLEs, not
   measured against this design system's clip thumbnails.

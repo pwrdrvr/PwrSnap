@@ -1180,6 +1180,57 @@ describe("render precondition", () => {
   });
 });
 
+describe("render button reel length", () => {
+  test("shows an exact length with no tilde when every scene is determined", async () => {
+    // Video + native audio: the scene is exactly its trim (0–5s), and
+    // nothing here waits on a narration measurement.
+    const { el } = await renderApp(
+      project({ scenes: [scene({ captureId: "cap_a", scriptLine: "", audioSource: "auto" })] }),
+      { "library:list": { ok: true, value: { rows: [videoCapture("cap_a")] } } }
+    );
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
+    expect(render?.textContent).toBe("Render · 0:05");
+    expect(render?.title ?? "").toBe("");
+  });
+
+  test("marks an unpreviewed sequence scene's length with a tilde and explains why", async () => {
+    const { el } = await renderApp(
+      project({
+        scenes: [
+          scene({
+            kind: "sequence",
+            captureId: "cap_a",
+            scriptLine: "hello",
+            narration: "hello",
+            audioSource: "voiceover",
+            beats: [
+              {
+                id: "bt_a",
+                captureId: "cap_a",
+                timing: { kind: "auto" },
+                mediaTrim: null,
+                transition: "cut",
+                videoFit: "smart-fit"
+              }
+            ]
+          })
+        ]
+      }),
+      { "library:list": { ok: true, value: { rows: [videoCapture("cap_a")] } } }
+    );
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
+    expect(render?.textContent).toBe("Render · ~0:01");
+    expect(render?.title ?? "").toContain("narration length isn't known until it's synthesized");
+  });
+
+  test("keeps a bare Render label when the reel has no scenes", async () => {
+    const { el } = await renderApp(project({ scenes: [] }));
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
+    expect(render?.textContent).toBe("Render");
+    expect(render?.disabled).toBe(true);
+  });
+});
+
 describe("SizzleApp shell layout", () => {
   test("with a reel open the project rail is a dropdown under the crumb; picking a reel closes it", async () => {
     const first = project({ id: "p1", name: "First reel" });

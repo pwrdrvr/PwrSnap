@@ -1186,12 +1186,36 @@
   background: var(--bg-sidebar);
 }
 
+/* The footer's buttons carry variable-length labels — "Render · ~12:30",
+   "Rendering… 100%" — and the editor column narrows to ~480px with the
+   chat panel open on the minimum-width window. Without these, the button
+   is the flex item that gives: its label wraps to two or three lines and
+   the footer grows taller. Pin the buttons at their intrinsic width and
+   let the status message be the thing that truncates. */
+.szl__footer .szl__btn,
+.szl__footer .szl__btn-primary {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .szl__status {
   display: flex;
   align-items: center;
   gap: 10px;
   font: 500 12px/1 var(--font-sans);
   color: var(--text-secondary);
+  min-width: 0;
+}
+
+/* Single-line phases (idle / failed / complete) are one text node, so
+   they can ellipsis directly. */
+.szl__status--idle,
+.szl__status--err,
+.szl__status--ok {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .szl__status--idle {
@@ -1206,6 +1230,12 @@
   color: var(--accent);
 }
 
+.szl__status > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .szl__status-bar {
   width: 180px;
   height: 6px;
@@ -1213,6 +1243,10 @@
   border-radius: 3px;
   overflow: hidden;
   display: inline-block;
+  /* Shrinks under pressure in a narrow footer, but never collapses to
+     nothing — a zero-width progress bar reads as a broken render. */
+  flex: 0 1 auto;
+  min-width: 48px;
 }
 
 .szl__status-bar-fill {

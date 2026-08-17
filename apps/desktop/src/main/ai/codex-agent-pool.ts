@@ -8,8 +8,6 @@
 // but uses a fresh ephemeral thread for every capture.
 
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { CodexThreadClient } from "@pwrdrvr/agent-client";
 import { isAiReasoningEffort, type CodexModelOption } from "@pwrsnap/shared";
 import type {
@@ -38,6 +36,12 @@ import {
   resolveCodexCommand
 } from "../settings/codex-discovery";
 import { withEffectiveCodeModeSettings } from "./codex-thread-config";
+import {
+  codexEnrichmentThreadSandbox,
+  defaultEnrichmentWorkspaceDir,
+  denyEnrichmentEscalation,
+  type EnrichmentRunDiagnostics
+} from "./enrichment-sandbox";
 
 const log = getMainLogger("pwrsnap:codex-pool");
 const MODEL_LIST_TIMEOUT_MS = 20_000;
@@ -88,6 +92,9 @@ export type CodexOneShotPoolRunOptions = {
   model?: string | null;
   modelProvider?: string | null;
   abortSignal?: AbortSignal;
+  /** Identifies the enrichment run, so a denied escalation can be logged
+   *  against a specific capture. Omit only in tests/tools. */
+  diagnostics?: EnrichmentRunDiagnostics;
 };
 
 export type CodexOneShotPoolRunResult = {
@@ -407,6 +414,12 @@ class CodexAgentOwner {
     let turnFinished = false;
     let aborted = false;
     const requestTimeoutMs = options.requestTimeoutMs ?? ONE_SHOT_REQUEST_TIMEOUT_MS;
+    // Per-run deny handlers. The thread id isn't known until `thread/start`
+    // returns, so it's read through a closure at denial time.
+    const handlers = makeOneShotHandlers(
+      options.diagnostics ?? null,
+      () => thread?.threadId ?? null
+    );
 
     const abortHandler = (): void => {
       aborted = true;
@@ -432,7 +445,7 @@ class CodexAgentOwner {
       if (isAbortSignalAborted(options.abortSignal)) {
         throw new DOMException("one-shot turn aborted", "AbortError");
       }
-      thread = await this.startOneShotThread(options, connection, requestTimeoutMs);
+      thread = await this.startOneShotThread(options, connection, requestTimeoutMs, handlers);
       const input = [
         { type: "text", text: options.prompt, text_elements: [] },
         ...imagePathsToLocalImageInputs(options.imagePaths ?? [])
@@ -458,7 +471,8 @@ class CodexAgentOwner {
       const { rawText, tokenUsage } = await this.waitForOneShotTurn({
         threadId: thread.threadId,
         turnId,
-        timeoutMs: options.turnTimeoutMs ?? ONE_SHOT_TURN_TIMEOUT_MS
+        timeoutMs: options.turnTimeoutMs ?? ONE_SHOT_TURN_TIMEOUT_MS,
+        handlers
       });
       turnFinished = true;
       return {
@@ -475,7 +489,7 @@ class CodexAgentOwner {
     } finally {
       options.abortSignal?.removeEventListener("abort", abortHandler);
       if (thread !== null) {
-        this.releaseThread(thread.threadId, ONE_SHOT_HANDLERS);
+        this.releaseThread(thread.threadId, handlers);
       }
       if (thread !== null && turnId !== null && !turnFinished) {
         await connection
@@ -543,10 +557,10 @@ class CodexAgentOwner {
   private async startOneShotThread(
     options: CodexOneShotPoolRunOptions,
     connection: JsonRpcLikeConnection,
-    requestTimeoutMs: number
+    requestTimeoutMs: number,
+    handlers: CodexViewHandlers
   ): Promise<CodexOneShotThread> {
-    const workspaceDir =
-      options.workspaceDir ?? join(tmpdir(), "pwrsnap", "Chats", ".capture-metadata");
+    const workspaceDir = options.workspaceDir ?? defaultEnrichmentWorkspaceDir();
     const baseInstructions = options.baseInstructions ?? "";
     await mkdir(workspaceDir, { recursive: true });
     const effectiveConfig = await connection.request(
@@ -562,22 +576,18 @@ class CodexAgentOwner {
         ...(options.modelProvider !== null && options.modelProvider !== undefined
           ? { modelProvider: options.modelProvider }
           : {}),
-        // Pool the App Server process, not the conversation. A fresh in-memory
-        // thread prevents ambient developer / AGENTS / plugin messages from
-        // accumulating across captures. Do not replace this with
-        // thread/rollback: that method is deprecated and does not remove every
-        // per-turn injected context item.
-        ephemeral: true,
-        cwd: workspaceDir,
-        runtimeWorkspaceRoots: [workspaceDir],
+        // The security-relevant posture — ephemeral thread, scratch-dir cwd +
+        // workspace roots, no approvals, read-only sandbox, no environments —
+        // is owned by `enrichment-sandbox.ts` and pinned by a test. Do NOT
+        // inline those fields back here; see AGENTS.md § "Capture enrichment
+        // runs in a sandbox jail". (The ephemeral thread is also why we never
+        // use thread/rollback: it's deprecated and doesn't remove every
+        // per-turn injected context item.)
+        ...codexEnrichmentThreadSandbox(workspaceDir),
         serviceName: PWRSNAP_SERVICE_NAME,
-        approvalPolicy: "never",
-        sandbox: "read-only",
         ...(baseInstructions.length > 0 ? { baseInstructions } : {}),
         ...(threadConfig !== undefined ? { config: threadConfig } : {}),
-        environments: [],
-        experimentalRawEvents: false,
-        persistExtendedHistory: false
+        experimentalRawEvents: false
       },
       requestTimeoutMs
     )) as {
@@ -605,7 +615,7 @@ class CodexAgentOwner {
       modelProvider: worker.modelProvider,
       workspaceDir
     });
-    this.claimThread(threadId, ONE_SHOT_HANDLERS);
+    this.claimThread(threadId, handlers);
     return worker;
   }
 
@@ -613,6 +623,12 @@ class CodexAgentOwner {
     threadId: string;
     turnId: string;
     timeoutMs: number;
+    /** The run's handlers — REUSED, not replaced. Claiming a second handler
+     *  set here would evict the run's deny handlers for exactly the window in
+     *  which an escalation can arrive (a turn in flight), sending approvals
+     *  down the pool's generic unrouted-request path: still denied, but logged
+     *  at warn with no capture attribution. */
+    handlers: CodexViewHandlers;
   }): Promise<{ rawText: string; tokenUsage: NormalizedTokenUsage | null }> {
     return new Promise((resolve, reject) => {
       const agentMessages: string[] = [];
@@ -622,42 +638,37 @@ class CodexAgentOwner {
         const text = oneShotRawAssistantText(method, params, input.threadId, input.turnId);
         if (text.length > 0) agentMessages.push(text);
       });
-      const handlers: CodexViewHandlers = {
-        events: new Set([
-          (event) => {
-            if (!eventBelongsToTurn(event, input.threadId, input.turnId)) return;
-            if (event.kind === "agent_message") {
-              agentMessages.push(event.message.text);
-              return;
-            }
-            if (event.kind === "token_usage") {
-              tokenUsage = event.usage;
-              return;
-            }
-            if (event.kind === "error") {
-              lastError = event.message;
-              return;
-            }
-            if (event.kind !== "turn_completed") return;
-            cleanup();
-            if (event.status === "failed") {
-              reject(new Error(lastError ?? "Codex one-shot turn failed"));
-              return;
-            }
-            if (event.status === "interrupted" || event.status === "cancelled") {
-              reject(new DOMException("one-shot turn aborted", "AbortError"));
-              return;
-            }
-            const rawText = agentMessages.at(-1)?.trim();
-            if (!rawText) {
-              reject(new Error("Codex one-shot turn returned no assistant message"));
-              return;
-            }
-            resolve({ rawText, tokenUsage });
-          }
-        ]),
-        toolCall: null,
-        approval: null
+      const handlers = input.handlers;
+      const onEvent = (event: NormalizedThreadEvent): void => {
+        if (!eventBelongsToTurn(event, input.threadId, input.turnId)) return;
+        if (event.kind === "agent_message") {
+          agentMessages.push(event.message.text);
+          return;
+        }
+        if (event.kind === "token_usage") {
+          tokenUsage = event.usage;
+          return;
+        }
+        if (event.kind === "error") {
+          lastError = event.message;
+          return;
+        }
+        if (event.kind !== "turn_completed") return;
+        cleanup();
+        if (event.status === "failed") {
+          reject(new Error(lastError ?? "Codex one-shot turn failed"));
+          return;
+        }
+        if (event.status === "interrupted" || event.status === "cancelled") {
+          reject(new DOMException("one-shot turn aborted", "AbortError"));
+          return;
+        }
+        const rawText = agentMessages.at(-1)?.trim();
+        if (!rawText) {
+          reject(new Error("Codex one-shot turn returned no assistant message"));
+          return;
+        }
+        resolve({ rawText, tokenUsage });
       };
       const timer = setTimeout(() => {
         cleanup();
@@ -666,19 +677,83 @@ class CodexAgentOwner {
       const cleanup = (): void => {
         clearTimeout(timer);
         unsubscribeRaw();
-        this.releaseThread(input.threadId, handlers);
+        // Drop only THIS turn's listener; the thread claim (and with it the
+        // deny handlers) is released by `runOneShotInner`'s finally.
+        handlers.events.delete(onEvent);
       };
+      handlers.events.add(onEvent);
       this.claimThread(input.threadId, handlers);
     });
   }
 }
 
 const owners = new Map<string, CodexAgentOwner>();
-const ONE_SHOT_HANDLERS: CodexViewHandlers = {
-  events: new Set(),
-  toolCall: null,
-  approval: null
-};
+/**
+ * Handlers for one enrichment one-shot thread.
+ *
+ * These used to be a single shared `{ toolCall: null, approval: null }`
+ * constant, which fell through to the pool's generic "no handler registered →
+ * deny" branch: right outcome, but logged at warn with no run identity and
+ * indistinguishable from a routing bug. Now every one-shot thread carries its
+ * own EXPLICIT deny handlers plus the run's diagnostics, so a screenshot that
+ * successfully talks the model into asking for a shell surfaces in the log as
+ * an error naming the capture. See `enrichment-sandbox.ts`.
+ */
+function makeOneShotHandlers(
+  diagnostics: EnrichmentRunDiagnostics | null,
+  threadId: () => string | null
+): CodexViewHandlers {
+  return {
+    events: new Set(),
+    toolCall: async (call) => {
+      denyEnrichmentEscalation({
+        logger: log,
+        backend: "codex",
+        kind: "tool_call",
+        method: call.method,
+        threadId: threadId(),
+        diagnostics,
+        toolName: toolNameFromParams(call.params)
+      });
+      return {
+        success: false,
+        contentItems: [
+          {
+            type: "inputText",
+            text: "Tool use is not available in this thread. Analyze the provided image and metadata only."
+          }
+        ]
+      };
+    },
+    approval: async (method, params) =>
+      denyEnrichmentEscalation({
+        logger: log,
+        backend: "codex",
+        kind: "approval",
+        method,
+        threadId: threadId(),
+        diagnostics,
+        toolName: toolNameFromParams(params)
+      })
+  };
+}
+
+/** Best-effort tool identity from a backend-shaped params blob. Only NAME
+ *  fields are read — never arguments, which on an enrichment turn can carry
+ *  screenshot-derived text (see `redactToolIdentity`). */
+function toolNameFromParams(params: unknown): string | null {
+  const record = asRecord(params);
+  if (record === null) return null;
+  const toolCall = asRecord(record["toolCall"]);
+  for (const source of [record, toolCall]) {
+    if (source === null) continue;
+    for (const key of ["name", "toolName", "tool_name", "command", "title"]) {
+      const value = source[key];
+      if (typeof value === "string" && value.length > 0) return value;
+    }
+  }
+  return null;
+}
 
 function codexOwnerKey(command: string, env: NodeJS.ProcessEnv | undefined): string {
   return JSON.stringify([command, env?.["CODEX_HOME"] ?? ""]);

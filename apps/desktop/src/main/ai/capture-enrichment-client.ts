@@ -15,11 +15,13 @@
 // `NormalizedTokenUsage` back onto PwrSnap's `AiUsageTokenBreakdown` (carrying
 // `contextWindow → modelContextWindow`).
 
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import type { AiUsageTokenBreakdown, EnrichmentResult } from "@pwrsnap/shared";
 import { resolveCodexThreadConfigForCommand } from "./codex-thread-config";
 import { runCodexOneShotFromPool } from "./codex-agent-pool";
+import {
+  defaultEnrichmentWorkspaceDir,
+  type EnrichmentRunDiagnostics
+} from "./enrichment-sandbox";
 import {
   CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
   CAPTURE_ENRICHMENT_SCHEMA,
@@ -50,6 +52,9 @@ export type CaptureEnrichmentRequest = {
    *  Settings → AI per-surface default `ai.defaults.enrichment.reasoning`. */
   effort?: string;
   abortSignal?: AbortSignal;
+  /** Run + capture identity, used only to attribute a denied sandbox
+   *  escalation in the logs (see `enrichment-sandbox.ts`). */
+  diagnostics?: EnrichmentRunDiagnostics;
 };
 
 /** The backend-agnostic enrichment surface the handler depends on. Satisfied
@@ -109,8 +114,7 @@ export class CaptureEnrichmentClient {
     this.command = options.command;
     if (options.env !== undefined) this.env = options.env;
     this.workspaceDir =
-      options.captureMetadataWorkspaceDir ??
-      join(tmpdir(), "pwrsnap", "Chats", ".capture-metadata");
+      options.captureMetadataWorkspaceDir ?? defaultEnrichmentWorkspaceDir();
     if (options.requestTimeoutMs !== undefined) this.requestTimeoutMs = options.requestTimeoutMs;
     if (options.turnTimeoutMs !== undefined) this.turnTimeoutMs = options.turnTimeoutMs;
     // Pick the config overlay shape for the running Codex build (the schema
@@ -138,7 +142,8 @@ export class CaptureEnrichmentClient {
       effort: request.effort ?? "low",
       model: request.model ?? null,
       modelProvider: request.modelProvider ?? null,
-      ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {})
+      ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {}),
+      ...(request.diagnostics !== undefined ? { diagnostics: request.diagnostics } : {})
     });
     return {
       result: parseCaptureEnrichmentResponse(response.rawText),

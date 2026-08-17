@@ -316,7 +316,8 @@ export class AcpCaptureEnrichmentClient {
           // Collapse to the two thinking states the kit honors (Fast/Thinking);
           // never send a bare "medium" the agent would drop. Default Fast.
           effort: acpReasoningEffort(request.effort ?? "low"),
-          ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {})
+          ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {}),
+          ...(request.diagnostics !== undefined ? { diagnostics: request.diagnostics } : {})
         }
       });
 

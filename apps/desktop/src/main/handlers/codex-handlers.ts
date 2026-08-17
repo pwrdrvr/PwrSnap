@@ -1100,7 +1100,11 @@ async function runCaptureEnrichment(params: {
           ? { modelProvider: params.selectedProvider }
           : {}),
         effort: params.effort,
-        abortSignal: abortController.signal
+        abortSignal: abortController.signal,
+        // Attribution for a denied sandbox escalation. Enrichment never
+        // legitimately asks for a tool / file / network, so if this run does,
+        // the error log needs to name the capture that provoked it.
+        diagnostics: { runId: params.runId, captureId }
       }),
       params.turnTimeoutMs,
       () => abortController.abort()

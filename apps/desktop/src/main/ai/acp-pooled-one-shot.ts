@@ -27,6 +27,11 @@ import type { DiscoveredAcpAgent, AcpRuntimeModel } from "@pwrdrvr/agent-acp";
 import { modelsFromCapabilities } from "@pwrdrvr/agent-acp";
 import type { NormalizedTokenUsage } from "@pwrdrvr/agent-core";
 import { acquireAcpAgentClient } from "./acp-agent-pool";
+import {
+  markEnrichmentThread,
+  unmarkEnrichmentThread,
+  type EnrichmentRunDiagnostics
+} from "./enrichment-sandbox";
 
 /** The cancel signal the enrichment handler classifies on (`isAbort`) — a
  *  DOMException named AbortError, matching what Codex-side cancels surface. */
@@ -44,6 +49,12 @@ export type PooledAcpOneShotRequest = {
   /** Reasoning effort token (agent-specific). */
   effort?: string;
   abortSignal?: AbortSignal;
+  /** Present when this one-shot is a capture-enrichment run. Registers the
+   *  session in the enrichment-thread registry for the run's duration so the
+   *  app-lifetime pooled approval handler — shared with chat, and given only a
+   *  session id — can tell an enrichment escalation (error) from the chat
+   *  agent's routine denied shell request (warn). */
+  diagnostics?: EnrichmentRunDiagnostics;
 };
 
 export type PooledAcpOneShotResponse = {
@@ -90,6 +101,9 @@ export async function runPooledAcpOneShot(input: {
   const thread = await client.startThread(
     request.model !== undefined && request.model !== null ? { model: request.model } : {}
   );
+  if (request.diagnostics !== undefined) {
+    markEnrichmentThread(thread.threadId, request.diagnostics);
+  }
   let finalText = "";
   const deltas: string[] = [];
   let usage: NormalizedTokenUsage | null = null;
@@ -156,6 +170,7 @@ export async function runPooledAcpOneShot(input: {
     };
   } finally {
     request.abortSignal?.removeEventListener("abort", onAbort);
+    unmarkEnrichmentThread(thread.threadId);
     unsubscribe();
     // Drop the throwaway session locally (ACP has no remote delete); without
     // this every one-shot leaks an AcpSessionState for the app's lifetime.

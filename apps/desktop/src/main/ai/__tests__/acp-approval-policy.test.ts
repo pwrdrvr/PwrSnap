@@ -2,11 +2,16 @@
 // request). Pre-approve OUR configured MCP tools across agent naming
 // conventions (Gemini/Qwen/Kimi/Grok differ), deny the agent's own tools.
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   makePooledAcpApprovalHandler,
   permissionTargetsConfiguredMcpServer
 } from "../acp-approval-policy";
+import {
+  __clearEnrichmentThreadsForTests,
+  markEnrichmentThread,
+  unmarkEnrichmentThread
+} from "../enrichment-sandbox";
 
 const SERVERS = ["pwrsnap"];
 
@@ -108,7 +113,12 @@ describe("permissionTargetsConfiguredMcpServer", () => {
 });
 
 describe("makePooledAcpApprovalHandler", () => {
-  const logger = { debug: vi.fn(), warn: vi.fn() };
+  const logger = { debug: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __clearEnrichmentThreadsForTests();
+  });
 
   it("approves a configured MCP tool and denies the agent's own tools", async () => {
     const handler = makePooledAcpApprovalHandler(logger);
@@ -118,5 +128,66 @@ describe("makePooledAcpApprovalHandler", () => {
     await expect(
       handler("session/request_permission", perm({ toolCallId: "shell_1", title: "Run shell" }))
     ).resolves.toBe("denied");
+  });
+
+  // A denial on a CHAT session is routine policy — warn, and the args are the
+  // user's own text so logging them is fine.
+  it("logs a chat-session denial at warn", async () => {
+    const handler = makePooledAcpApprovalHandler(logger);
+    await expect(
+      handler("session/request_permission", {
+        ...perm({ toolCallId: "shell_1", title: "Run shell" }),
+        threadId: "chat-session-1"
+      })
+    ).resolves.toBe("denied");
+    expect(logger.warn).toHaveBeenCalledWith("acp permission denied", expect.anything());
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  // The same denial on an ENRICHMENT session is a security event: error level,
+  // attributed to the capture, with the arguments redacted.
+  it("escalates an enrichment-session denial to error with run + capture id", async () => {
+    markEnrichmentThread("enrich-session-1", { runId: "run-9", captureId: "cap-9" });
+    const handler = makePooledAcpApprovalHandler(logger);
+
+    await expect(
+      handler("session/request_permission", {
+        ...perm({
+          toolCallId: "shell_1",
+          title: "Run shell",
+          rawInput: { command: "cat ~/.aws/credentials" }
+        }),
+        threadId: "enrich-session-1"
+      })
+    ).resolves.toBe("denied");
+
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      "capture enrichment sandbox escalation denied",
+      expect.objectContaining({
+        backend: "acp",
+        kind: "approval",
+        method: "session/request_permission",
+        threadId: "enrich-session-1",
+        runId: "run-9",
+        captureId: "cap-9"
+      })
+    );
+    // The screenshot-derived arguments must never reach the log.
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("credentials");
+  });
+
+  it("stops treating a session as enrichment once the run releases it", async () => {
+    markEnrichmentThread("enrich-session-2", { runId: "run-1", captureId: "cap-1" });
+    unmarkEnrichmentThread("enrich-session-2");
+    const handler = makePooledAcpApprovalHandler(logger);
+
+    await handler("session/request_permission", {
+      ...perm({ toolCallId: "shell_1", title: "Run shell" }),
+      threadId: "enrich-session-2"
+    });
+
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalled();
   });
 });

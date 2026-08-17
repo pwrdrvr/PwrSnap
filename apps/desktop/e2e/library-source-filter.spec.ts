@@ -463,6 +463,10 @@ const isMac = process.platform === "darwin";
 const isWindows = process.platform === "win32";
 
 test("Source-app sidebar row renders the real native icon for an installed app", async () => {
+  // A cold Windows VM launch can consume most of this file's 10s default
+  // before the shell icon request begins. Extraction itself is bounded to 5s;
+  // leave enough total room for startup, both AppIcon instances, and teardown.
+  test.setTimeout(30_000);
   test.skip(!isMac && !isWindows, "native app-icon extraction is macOS/Windows only");
 
   // Finder and Task Manager are present on every corresponding runner.

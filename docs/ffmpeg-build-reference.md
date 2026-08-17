@@ -66,14 +66,17 @@ Shared base (`buildConfigureArgs`):
 
 Per platform (`PLATFORM_PROFILES`):
 
-| | macOS | Windows | Linux |
-|---|---|---|---|
-| target | `--target-os=darwin` | `--target-os=mingw32` | `--target-os=linux` |
-| arch | `--arch=<arm64\|x86_64>` (universal via `lipo`) | `--arch=x86_64` | — |
-| accel | `--enable-audiotoolbox` `--enable-videotoolbox` | `--enable-d3d11va` `--enable-mediafoundation` | — |
-| encoders | `h264_videotoolbox`, `aac` | `h264_mf`, `aac` | `aac`, `mpeg4` |
-| devices | — | `--enable-indev=gdigrab` | — |
-| other | `--disable-x86asm`, `-mmacosx-version-min=14.0` | `--extra-ldflags=-static` | — |
+| | macOS | Windows |
+|---|---|---|
+| target | `--target-os=darwin` | `--target-os=mingw32` |
+| arch | `--arch=<arm64\|x86_64>` (universal via `lipo`) | `--arch=x86_64` |
+| accel | `--enable-audiotoolbox` `--enable-videotoolbox` | `--enable-d3d11va` `--enable-mediafoundation` |
+| encoders | `h264_videotoolbox`, `aac` | `h264_mf`, `aac` |
+| devices | — | `--enable-indev=gdigrab` |
+| other | `--disable-x86asm`, `-mmacosx-version-min=14.0` | `--extra-ldflags=-static` |
+
+These are the only two profiles. A Linux profile existed until 2026-08-17 — see
+"Platform status" below.
 
 Required **decoders** are the same on every platform — `png`, `mjpeg`, `h264`,
 `aac`, `mp3` — and are verified per build, unlike the encoders above which vary
@@ -146,7 +149,28 @@ grep -E "CONFIG_(ZLIB|PNG_DECODER)\b" ffbuild/config.mak
 |---|---|---|
 | macOS (universal) | yes | yes |
 | Windows (x64) | yes | yes — injected by `scripts/package-win.mjs` |
-| Linux (x64) | **yes** | **no** — there is no `linux:` section in `electron-builder.yml` |
+| Linux (x64) | no — dropped 2026-08-17 | no — there is no `linux:` section in `electron-builder.yml` |
 
-The Linux artifact is built on every build-repo run and never consumed. Either
-wire up Linux packaging or drop the target; see the tracked follow-up.
+Every platform the build repo builds is packaged by PwrSnap. That is now
+enforced, not observed: the build repo's `npm run check` fails if its build
+matrix and `PLATFORM_PROFILES` name different platforms, in either direction.
+
+### Why Linux was dropped rather than wired up
+
+The build repo produced an `ffmpeg-8.1.1-linux-x64` artifact on every run that
+nothing ever downloaded. It was also unfit for the use it was waiting for: the
+profile required `aac` + `mpeg4` and shipped **no H.264 encoder**, because every
+common H.264 encoder on Linux needs GPL configuration or a patent-sensitive
+external dependency. Video export and Sizzle reel rendering both need H.264, so
+wiring that artifact into a Linux package would have failed at runtime while its
+green check advertised Linux support that did not exist.
+
+Linux packaging is Phase 8 (see `CLAUDE.md`, "macOS-first … cross-platform
+deferred to Phase 8") and starts with the H.264 licensing decision, not with the
+build. The restore recipe — profile shape, the `apt-get` line, and the
+PwrSnap-side `electron-builder.yml` / `release.yml` wiring — lives in the comment
+where the profile used to be in the build repo's `scripts/lib/config.mjs`.
+
+**This did not require a pin bump.** The macOS and Windows profiles are unchanged
+by the drop, so there is nothing for PwrSnap to pick up; `FFMPEG_BUILD_SHA` stays
+where it is.

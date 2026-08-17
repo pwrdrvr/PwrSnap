@@ -72,7 +72,7 @@ describe("Windows release configuration", () => {
     expect(workflow).toContain("secrets.AZURE_CLIENT_ID");
     expect(workflow).toContain("secrets.AZURE_CLIENT_SECRET");
     expect(workflow).toContain("pwrdrvr/pwrsnap-ffmpeg-builds");
-    expect(workflow).toContain("a72aa24cd310cb3aa684b2481261cb2d8e313bfd");
+    expect(workflow).toContain("3d775403a83990a2ad9503d865f5d481d9c0316a");
     expect(workflow).toContain("ffmpeg-8.1.1-macos-universal");
     expect(workflow).toContain("ffmpeg-8.1.1-windows-x64");
     expect(workflow).toContain("apps/desktop/electron-builder.yml");

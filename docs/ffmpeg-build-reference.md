@@ -22,17 +22,26 @@ downloads that run's artifact:
 |---|---|
 | `FFMPEG_BUILD_REPO` | `pwrdrvr/pwrsnap-ffmpeg-builds` |
 | `FFMPEG_BUILD_WORKFLOW` | `build.yml` |
-| `FFMPEG_BUILD_SHA` | `a72aa24cd310cb3aa684b2481261cb2d8e313bfd` |
+| `FFMPEG_BUILD_SHA` | `3d775403a83990a2ad9503d865f5d481d9c0316a` |
 | `FFMPEG_BUILD_PROFILE` | `pwrsnap-lgpl-clean-v1` |
 | macOS artifact | `ffmpeg-8.1.1-macos-universal` → `release-stage/build/ffmpeg/ffmpeg` |
 | Windows artifact | `ffmpeg-8.1.1-windows-x64` → injected by `scripts/package-win.mjs` as `PwrSnapFFmpeg.exe` |
 
 CI verifies the downloaded `manifest.json` (sha256, forbidden flags, required
-encoders/devices) before packaging.
+encoders, required decoders, required devices) before packaging.
 
-> ⚠️ **`FFMPEG_BUILD_SHA` is pinned in two places** in `release.yml` — the macOS
-> job and the Windows job. Landing a fix in the build repo does nothing until
-> **both** are bumped to the new commit.
+The decoder assertion exists because it was missing: encoders and devices were
+verified from the start, decoders never were, and a build with **no PNG
+decoder** shipped for two months. Every image-backed Sizzle reel failed with
+`Decoding requested, but no decoder found for: png`.
+
+> ⚠️ **`FFMPEG_BUILD_SHA` is pinned in three places** — the macOS job and the
+> Windows job in `release.yml`, and the macOS preview job in
+> `preview-build.yml` — plus the table above. Landing a fix in the build repo
+> does nothing until **all** are bumped to the new commit, and if they drift
+> apart, releases and preview DMGs ship ffmpegs built from different sources.
+> `apps/desktop/scripts/windows-release-config.test.mjs` asserts every pin
+> agrees, so drift fails CI instead of shipping.
 
 ## Configure flags — snapshot taken 2026-08-17
 
@@ -64,6 +73,10 @@ Per platform (`PLATFORM_PROFILES`):
 | accel | `--enable-audiotoolbox` `--enable-videotoolbox` | `--enable-d3d11va` `--enable-mediafoundation` | — |
 | encoders | `h264_videotoolbox`, `aac` | `h264_mf`, `aac` | `aac`, `mpeg4` |
 | devices | — | `--enable-indev=gdigrab` | — |
+
+Required **decoders** are the same on every platform — `png`, `mjpeg`, `h264`,
+`aac`, `mp3` — and are verified per build, unlike encoders which vary by
+platform.
 | other | `--disable-x86asm`, `-mmacosx-version-min=14.0` | `--extra-ldflags=-static` | — |
 
 Forbidden everywhere (asserted by `verify-ffmpeg.mjs` against the binary's own

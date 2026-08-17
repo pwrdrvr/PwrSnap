@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PwrSnap icon — hard stack fix</title>
+<link rel="stylesheet" href="ds/colors_and_type.css">
+<style>
+:root{--ink:#f5efe3;--ink-2:#a89e91;--ink-3:#6f665c;--acc:#ff8a1f;--line:#241f19;--panel:#0d0c0a}
+*{box-sizing:border-box}
+html,body{margin:0;background:#000;color:var(--ink);font-family:Geist,"Geist Sans",system-ui,sans-serif;font-feature-settings:"ss01"}
+a{color:var(--acc)}a:hover{color:#ffa552}
+.wrap{max-width:1180px;margin:0 auto;padding:56px 40px 96px}
+h1{font-size:26px;font-weight:600;letter-spacing:-.02em;margin:0 0 8px}
+.sub{color:var(--ink-2);font-size:14px;line-height:1.55;max-width:74ch;margin:0 0 6px}
+.mono{font-family:"Geist Mono",ui-monospace,monospace}
+.kicker{font:600 10px/1 "Geist Mono",monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);margin:52px 0 14px;display:flex;align-items:center;gap:12px}
+.kicker::after{content:"";flex:1;height:1px;background:var(--line)}
+.row{display:flex;gap:28px;flex-wrap:wrap}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}
+.tag{font:600 9px/1 "Geist Mono",monospace;letter-spacing:.1em;text-transform:uppercase;padding:4px 7px;border-radius:4px;display:inline-block}
+.tag.bad{color:#ff8b7a;background:rgba(255,95,87,.1);border:1px solid rgba(255,95,87,.24)}
+.tag.good{color:#7ee08f;background:rgba(40,200,64,.09);border:1px solid rgba(40,200,64,.24)}
+.cap{color:var(--ink-2);font-size:12.5px;line-height:1.5;margin:12px 0 0;max-width:40ch}
+canvas{display:block;image-rendering:auto}
+.zoomcv{border:1px solid var(--line);border-radius:6px;image-rendering:pixelated}
+.hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:16px}
+.strip{display:flex;align-items:flex-end;gap:20px}
+.sz{display:flex;flex-direction:column;align-items:center;gap:8px}
+.sz b{font:500 9px/1 "Geist Mono",monospace;color:var(--ink-3);letter-spacing:.06em}
+.bar{background:#141414;border:1px solid var(--line);border-radius:6px;padding:9px 14px;display:flex;align-items:center;gap:18px}
+.bar canvas{filter:none}
+ul{color:var(--ink-2);font-size:13.5px;line-height:1.7;padding-left:18px;margin:0;max-width:80ch}
+li b{color:var(--ink);font-weight:500}
+code{font-family:"Geist Mono",monospace;font-size:12.5px;color:#ffb877;background:rgba(255,138,31,.07);padding:1px 5px;border-radius:3px}
+.files{display:grid;gap:10px;margin-top:14px}
+.file{display:flex;gap:14px;align-items:baseline;border:1px solid var(--line);border-radius:8px;padding:12px 14px;background:var(--panel)}
+.file .p{font-family:"Geist Mono",monospace;font-size:12px;color:var(--acc);white-space:nowrap}
+.file .d{font-size:12.5px;color:var(--ink-2);line-height:1.5}
+.tbl{border-collapse:collapse;margin-top:22px;font-size:12.5px;width:100%;max-width:760px}
+.tbl th{text-align:left;font:600 9px/1 "Geist Mono",monospace;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);padding:0 20px 10px 0;border-bottom:1px solid var(--line)}
+.tbl td{padding:9px 20px 9px 0;border-bottom:1px solid var(--line);color:var(--ink-2)}
+.tbl td.mono{font-family:"Geist Mono",monospace;color:var(--ink)}
+.tbl tr.hi td{color:var(--ink);background:rgba(255,138,31,.04)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>The mark is a stack, not a blend</h1>
+<p class="sub">The three tiers were painted back → mid → front with plain alpha compositing. Correct Porter-Duff, wrong mark: the 30% back rect shows <em>through</em> the 55% mid rect, so every crossing lights up as a denser, more saturated patch. Fixed by knocking each tier out wherever a tier in front of it covers — front and mid are immutable in colour and opacity anywhere they're seen, back sits behind.</p>
+
+<div class="kicker">app icon · 1024</div>
+<div class="row">
+  <div class="card">
+    <div class="hdr"><span class="tag bad">before · blended</span><span class="mono" style="font-size:11px;color:var(--ink-3)">source-over ×3</span></div>
+    <canvas id="big-bad" width="360" height="360"></canvas>
+    <p class="cap">Four bright nodes where the back rect crosses the mid rect — a fourth tone the palette never specified.</p>
+  </div>
+  <div class="card">
+    <div class="hdr"><span class="tag good">after · hard stack</span><span class="mono" style="font-size:11px;color:var(--ink-3)">knockout clip</span></div>
+    <canvas id="big-good" width="360" height="360"></canvas>
+    <p class="cap">Three flat tiers. Each tone appears exactly once, at exactly its own value.</p>
+  </div>
+</div>
+
+<div class="kicker">the crossing · back × mid, 2×</div>
+<div class="row">
+  <div class="card">
+    <div class="hdr"><span class="tag bad">before</span></div>
+    <canvas id="zoom-bad" class="zoomcv" width="330" height="330"></canvas>
+    <p class="cap">Back stroke × mid stroke → a third, brighter tone that belongs to no tier.</p>
+  </div>
+  <div class="card">
+    <div class="hdr"><span class="tag good">after</span></div>
+    <canvas id="zoom-good" class="zoomcv" width="330" height="330"></canvas>
+    <p class="cap">The back stroke stops at the mid stroke's edge. Antialiasing intact — the clip's partial coverage is exactly <code>1 − covering coverage</code>, so no seam.</p>
+  </div>
+</div>
+
+<div class="kicker">iconset sizes · rendered natively at each px</div>
+<div class="card" style="width:100%">
+  <div class="strip" style="margin-bottom:22px">
+    <span class="tag bad" style="margin-right:6px">before</span>
+    <div class="sz"><canvas id="s-bad-16" width="16" height="16"></canvas><b>16</b></div>
+    <div class="sz"><canvas id="s-bad-32" width="32" height="32"></canvas><b>32</b></div>
+    <div class="sz"><canvas id="s-bad-64" width="64" height="64"></canvas><b>64</b></div>
+    <div class="sz"><canvas id="s-bad-128" width="128" height="128"></canvas><b>128</b></div>
+  </div>
+  <div class="strip">
+    <span class="tag good" style="margin-right:6px">after</span>
+    <div class="sz"><canvas id="s-good-16" width="16" height="16"></canvas><b>16</b></div>
+    <div class="sz"><canvas id="s-good-32" width="32" height="32"></canvas><b>32</b></div>
+    <div class="sz"><canvas id="s-good-64" width="64" height="64"></canvas><b>64</b></div>
+    <div class="sz"><canvas id="s-good-128" width="128" height="128"></canvas><b>128</b></div>
+  </div>
+</div>
+
+<div class="kicker">menubar template · same bug, alpha-only</div>
+<p class="sub" style="margin-bottom:16px">The tray generator has the identical defect in SVG form (<code>stroke-opacity</code> 0.3 / 0.55 layered). Because the template PNG is alpha-only and macOS tints it, the compounded alpha at each crossing renders as a brighter node in the menubar.</p>
+<div class="row">
+  <div class="card">
+    <div class="hdr"><span class="tag bad">before</span></div>
+    <div class="bar">
+      <canvas id="t-bad-16" width="16" height="16"></canvas>
+      <canvas id="t-bad-32" width="32" height="32"></canvas>
+      <canvas id="t-bad-48" width="48" height="48"></canvas>
+      <canvas id="t-bad-zoom" class="zoomcv" width="240" height="240" style="margin-left:8px"></canvas>
+    </div>
+  </div>
+  <div class="card">
+    <div class="hdr"><span class="tag good">after</span></div>
+    <div class="bar">
+      <canvas id="t-good-16" width="16" height="16"></canvas>
+      <canvas id="t-good-32" width="32" height="32"></canvas>
+      <canvas id="t-good-48" width="48" height="48"></canvas>
+      <canvas id="t-good-zoom" class="zoomcv" width="240" height="240" style="margin-left:8px"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="kicker">gradient parity · nothing drifted</div>
+<p class="sub" style="margin-bottom:18px">The tile is untouched — the background block in the patched generator is byte-identical to the shipped one, and the shipped PNG still samples to the same ramp as PwrAgent's icon at every stop. What actually changed is that a fourth orange left the palette.</p>
+<div class="row" style="align-items:flex-start">
+  <div class="card">
+    <div class="hdr"><span class="mono" style="font-size:11px;color:var(--ink-2)">PwrAgent icon.png · shipped</span></div>
+    <img src="scratch/pwragent-icon.png" width="210" height="210" alt="PwrAgent app icon" style="display:block;border-radius:10px">
+  </div>
+  <div class="card">
+    <div class="hdr"><span class="mono" style="font-size:11px;color:var(--ink-2)">PwrSnap icon.png · shipped</span><span class="tag bad">blended</span></div>
+    <img src="scratch/pwrsnap-icon-shipped.png" width="210" height="210" alt="PwrSnap app icon, shipped" style="display:block;border-radius:10px">
+  </div>
+  <div class="card">
+    <div class="hdr"><span class="mono" style="font-size:11px;color:var(--ink-2)">PwrSnap · patched</span><span class="tag good">hard stack</span></div>
+    <canvas id="parity-good" width="210" height="210" style="border-radius:10px"></canvas>
+  </div>
+</div>
+<table class="tbl">
+  <tr><th>tile gradient, sampled at x=6%</th><th>PwrAgent</th><th>PwrSnap shipped</th><th>PwrSnap patched</th></tr>
+  <tr><td>y = 10%</td><td class="mono">#1c1813</td><td class="mono">#1c1813</td><td class="mono">#1c1813</td></tr>
+  <tr><td>y = 50%</td><td class="mono">#14110e</td><td class="mono">#14110e</td><td class="mono">#14110e</td></tr>
+  <tr><td>y = 90%</td><td class="mono">#0c0a09</td><td class="mono">#0c0b09</td><td class="mono">#0c0b09</td></tr>
+  <tr><td>dominant mark orange</td><td class="mono">#e8743a</td><td class="mono">#e8743a</td><td class="mono">#e8743a</td></tr>
+  <tr class="hi"><td>phantom crossing tone <span class="mono">#a5552c</span></td><td class="mono">—</td><td class="mono">3,135 px</td><td class="mono">0 px</td></tr>
+</table>
+<p class="sub" style="margin-top:14px"><span class="mono">#a5552c</span> is mid-over-back-over-tile — <span class="mono">0.55×accent</span> composited onto <span class="mono">0.3×accent</span>. It is brighter than the mid tier's own <span class="mono">#884725</span> and passes a “saturated orange” filter the real mid tier fails, which is why the crossings read as a lighter wash sitting on the tile. Removing it is the whole visual delta; the ramp underneath never moved.</p>
+
+<div class="kicker">what changed</div>
+<ul>
+  <li><b>generate-app-icon.swift</b> — mark section rewritten. Rects become <code>CGPath</code>s; each tier is stroked inside a clip built from <code>copy(strokingWithWidth:)</code> outlines of the tiers in front of it (bounds + ring, even-odd, intersected sequentially). Colours moved off <code>NSColor</code> onto <code>CGContext.setStrokeColor(red:…)</code>, which is DeviceRGB — same <code>#e8743a</code>, no calibrated→device drift risk.</li>
+  <li><b>generate-tray-icon.mjs</b> — two <code>userSpaceOnUse</code> luminance masks (<code>ps-behind-front</code>, <code>ps-behind-mid-front</code>) cut the front/mid stroke bands out of the tiers behind. Geometry, stroke width and both variants unchanged.</li>
+  <li><b>Nothing else moves.</b> Tier alphas stay 1.0 / 0.55 / 0.3, offsets stay ±64 / ±80, the gradient tile and the two-orange split are untouched. The in-app SVG mark (<code>AppIcons.jsx</code> / <code>FoMark</code>) already uses three opaque tints and never had this bug.</li>
+</ul>
+
+<div class="kicker">to regenerate</div>
+<div class="files">
+  <div class="file"><span class="p">handoff/generate-app-icon.swift</span><span class="d">→ <span class="mono">apps/desktop/scripts/</span>, then <span class="mono">pnpm --filter @pwrsnap/desktop generate:app-icon</span> and <span class="mono">iconutil -c icns build/icon.iconset -o build/icon.icns</span>. Commits <span class="mono">build/icon.png</span> + all 10 iconset PNGs + the .icns.</span></div>
+  <div class="file"><span class="p">handoff/generate-tray-icon.mjs</span><span class="d">→ <span class="mono">apps/desktop/scripts/</span>, then <span class="mono">pnpm --filter @pwrsnap/desktop tray-icon</span>. Commits 6 tray PNGs (template + colored, 1×/2×/3×).</span></div>
+</div>
+<p class="sub" style="margin-top:14px">Verify per the existing solution doc: sample <span class="mono">build/icon.png</span> — dominant orange still <span class="mono">#e8743a</span>, gradient still <span class="mono">#1c1813 → #0c0b09</span>, and the crossings now sample to the mid tier's flat value rather than a fourth tone.</p>
+</div>
+
+<template id="__bundler_thumbnail">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#141210"/><g fill="none" stroke-linejoin="round"><rect x="42" y="26" width="34" height="26" rx="6" stroke="#6b3d1c" stroke-width="5"/><rect x="33" y="37" width="34" height="26" rx="6" stroke="#b35f15" stroke-width="5"/><rect x="24" y="48" width="34" height="26" rx="6" stroke="#ff8a1f" stroke-width="5"/></g></svg>
+</template>
+
+<script>
+const M={rw:450,rh:340,rx:48,sw:56,ox:64,oy:80},TILE_R=180,BG_TOP=[30,26,20],BG_BOT=[10,9,8],MARK=[232,116,58];
+const TIERS=[{dx:1,dy:-1,a:.3},{dx:0,dy:0,a:.55},{dx:-1,dy:1,a:1}];
+function tierRect(size,t){const k=size/1024,w=M.rw*k,h=M.rh*k;return[size/2-w/2+t.dx*M.ox*k,size/2-h/2+t.dy*M.oy*k,w,h,M.rx*k]}
+function strokeTier(ctx,size,t,color,alpha){const[x,y,w,h,r]=tierRect(size,t);ctx.save();ctx.lineWidth=M.sw*(size/1024);ctx.lineJoin="round";ctx.lineCap="round";ctx.strokeStyle=color;ctx.globalAlpha=alpha;ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.stroke();ctx.restore()}
+function tileBg(ctx,size){ctx.save();ctx.beginPath();ctx.roundRect(0,0,size,size,TILE_R*size/1024);ctx.clip();for(let row=0;row<size;row++){const t=size>1?row/(size-1):0,c=BG_TOP.map((v,i)=>Math.round(v+(BG_BOT[i]-v)*t));ctx.fillStyle=`rgb(${c[0]},${c[1]},${c[2]})`;ctx.fillRect(0,row,size,1)}ctx.restore()}
+function off(size){const c=document.createElement("canvas");c.width=c.height=size;return c}
+function markLayer(size,fixed,color){
+  const c=off(size),ctx=c.getContext("2d");
+  if(!fixed){TIERS.forEach(t=>strokeTier(ctx,size,t,color,t.a));return c}
+  TIERS.forEach((t,i)=>{
+    const lc=off(size),lx=lc.getContext("2d");
+    strokeTier(lx,size,t,color,t.a);
+    lx.globalCompositeOperation="destination-out";
+    for(let j=i+1;j<TIERS.length;j++)strokeTier(lx,size,TIERS[j],"#000",1);
+    ctx.drawImage(lc,0,0);
+  });
+  return c;
+}
+function icon(cv,size,fixed){const ctx=cv.getContext("2d");cv.width=cv.height=size;ctx.clearRect(0,0,size,size);tileBg(ctx,size);ctx.drawImage(markLayer(size,fixed,`rgb(${MARK.join(",")})`),0,0)}
+function iconAt(cv,render,display,fixed){const src=off(render);icon(src,render,fixed);cv.width=display;cv.height=display;const ctx=cv.getContext("2d");ctx.clearRect(0,0,display,display);ctx.drawImage(src,0,0,display,display)}
+function zoom(cv,fixed,cx,cy,box,src=1024){const s=off(src);icon(s,src,fixed);const ctx=cv.getContext("2d");ctx.imageSmoothingEnabled=false;ctx.clearRect(0,0,cv.width,cv.height);ctx.drawImage(s,cx-box/2,cy-box/2,box,box,0,0,cv.width,cv.height)}
+
+iconAt(document.getElementById("big-bad"),1024,360,false);
+iconAt(document.getElementById("big-good"),1024,360,true);
+zoom(document.getElementById("zoom-bad"),false,737,602,170);
+zoom(document.getElementById("zoom-good"),true,737,602,170);
+[16,32,64,128].forEach(n=>{icon(document.getElementById("s-bad-"+n),n,false);icon(document.getElementById("s-good-"+n),n,true)});
+iconAt(document.getElementById("parity-good"),1024,210,true);
+
+/* ---- menubar template: 128 viewBox, rects 78x62 rx8, sw13 ---- */
+const T=[{x:36,y:6,a:.3},{x:22,y:26,a:.55},{x:8,y:46,a:1}];
+function trayStroke(ctx,size,t,color,alpha){const k=size/128;ctx.save();ctx.lineWidth=13*k;ctx.lineJoin="round";ctx.strokeStyle=color;ctx.globalAlpha=alpha;ctx.beginPath();ctx.roundRect(t.x*k,t.y*k,78*k,62*k,8*k);ctx.stroke();ctx.restore()}
+function trayLayer(size,fixed,color){
+  const c=off(size),ctx=c.getContext("2d");
+  if(!fixed){T.forEach(t=>trayStroke(ctx,size,t,color,t.a));return c}
+  T.forEach((t,i)=>{const lc=off(size),lx=lc.getContext("2d");trayStroke(lx,size,t,color,t.a);lx.globalCompositeOperation="destination-out";for(let j=i+1;j<T.length;j++)trayStroke(lx,size,T[j],"#000",1);ctx.drawImage(lc,0,0)});
+  return c;
+}
+function tray(cv,size,fixed){cv.width=cv.height=size;const ctx=cv.getContext("2d");ctx.clearRect(0,0,size,size);ctx.drawImage(trayLayer(size,fixed,"#f5efe3"),0,0)}
+[16,32,48].forEach(n=>{tray(document.getElementById("t-bad-"+n),n,false);tray(document.getElementById("t-good-"+n),n,true)});
+[["t-bad-zoom",false],["t-good-zoom",true]].forEach(([id,fx])=>{const cv=document.getElementById(id),src=off(48);tray(src,48,fx);const ctx=cv.getContext("2d");ctx.imageSmoothingEnabled=false;ctx.drawImage(src,0,0,48,48,0,0,240,240)});
+</script>
+</body>
+</html>

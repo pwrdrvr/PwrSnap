@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Generates the macOS menubar template PNG (and @2x variant) from the
-// PwrSnap brand mark SVG. Output: apps/desktop/build/tray-icon-template{,@2x}.png
+// Generates the macOS menubar template PNG (and @2x/@3x variants) from the
+// PwrSnap brand mark SVG. Output: apps/desktop/build/tray-icon-template{,@2x,@3x}.png
 //
 // Template PNGs on macOS are alpha-only; the system inverts them to
 // match dark / light / accent menubars. We generate from the same
@@ -34,14 +34,43 @@ mkdirSync(buildDir, { recursive: true });
 //     template tinting on those platforms (the OS draws the icon as-is in
 //     the notification area), so the icon must carry its own color. Tangerine
 //     reads on both dark and light taskbars.
+//
+// HARD STACK, not a blend: the three tiers must never composite through one
+// another. Plain stroke-opacity layering lets the 0.3 back rect show through
+// the 0.55 mid rect, and every crossing lights up as a denser patch (in the
+// template variant that means extra alpha, which macOS then tints brighter).
+// So each tier behind another is masked by the stroke band of the tiers in
+// FRONT of it — the front and mid rects stay at exactly their own opacity
+// everywhere they are seen, and the back rect is simply behind them.
 const ACCENT = "#ff8a1f";
+const BACK = { x: 36, y: 6 };
+const MID = { x: 22, y: 26 };
+const FRONT = { x: 8, y: 46 };
+const RECT = 'width="78" height="62" rx="8"';
+const SW = 13;
+
+function cutRect({ x, y }) {
+  return `<rect x="${x}" y="${y}" ${RECT} fill="none" stroke="#000" stroke-width="${SW}" stroke-linejoin="round" />`;
+}
+
 function svgFor(stroke) {
   return `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <g fill="none" stroke="${stroke}" stroke-width="13" stroke-linejoin="round">
-    <rect x="36" y="6" width="78" height="62" rx="8" stroke-opacity="0.3" />
-    <rect x="22" y="26" width="78" height="62" rx="8" stroke-opacity="0.55" />
-    <rect x="8" y="46" width="78" height="62" rx="8" />
+  <defs>
+    <mask id="ps-behind-front" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
+      <rect width="128" height="128" fill="#fff" />
+      ${cutRect(FRONT)}
+    </mask>
+    <mask id="ps-behind-mid-front" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
+      <rect width="128" height="128" fill="#fff" />
+      ${cutRect(MID)}
+      ${cutRect(FRONT)}
+    </mask>
+  </defs>
+  <g fill="none" stroke="${stroke}" stroke-width="${SW}" stroke-linejoin="round">
+    <rect x="${BACK.x}" y="${BACK.y}" ${RECT} stroke-opacity="0.3" mask="url(#ps-behind-mid-front)" />
+    <rect x="${MID.x}" y="${MID.y}" ${RECT} stroke-opacity="0.55" mask="url(#ps-behind-front)" />
+    <rect x="${FRONT.x}" y="${FRONT.y}" ${RECT} />
   </g>
 </svg>
 `.trim();

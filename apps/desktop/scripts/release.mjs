@@ -69,7 +69,16 @@ const dryrun = args.includes("--dryrun");
 const noPublish = args.includes("--no-publish");
 const prepareOnly = args.includes("--prepare-only");
 const signStageOnly = args.includes("--sign-stage-only");
-const skipFfmpegBuild = process.env.PWRSNAP_SKIP_FFMPEG_BUILD === "1";
+// The bundled LGPL ffmpeg is NEVER built here. It is produced by the
+// controlled build repo (pwrdrvr/pwrsnap-ffmpeg-builds) and injected into
+// release-stage/build/ffmpeg by the workflow AFTER this script prepares the
+// stage. See docs/ffmpeg-build-reference.md.
+//
+// PWRSNAP_SKIP_FFMPEG_BUILD used to select between a local build and the
+// injected artifact; the local builder was deleted so there is exactly one
+// ffmpeg source of truth. Previously, preview DMGs shipped a locally-built
+// binary with a DIFFERENT codec set than release DMGs — that divergence hid a
+// missing PNG decoder in released builds for months.
 // `--skip-notarize`: produce a Developer-ID-signed but unnotarized
 // build. Useful for fast local iteration where you have a signing
 // keychain but no App Store Connect API key handy, and you're OK
@@ -426,20 +435,10 @@ if (!signStageOnly) {
     env: releaseArch === "universal" ? { PWRSNAP_NATIVE_UNIVERSAL: "1" } : {}
   });
 
-  if (skipFfmpegBuild) {
-    step("skip bundled LGPL ffmpeg build");
-    console.log("  external FFmpeg artifact will be injected before packaging");
-  } else {
-    // 3b. Build the bundled LGPL ffmpeg binary from upstream source.
-    // The previous npm binary was GPL+nonfree; this produces a
-    // redistributable binary and verifies the configure line before
-    // anything is packaged.
-    step("build bundled LGPL ffmpeg");
-    runChecked("pnpm", ["--filter", "@pwrsnap/desktop", "build:ffmpeg"], {
-      cwd: repoRoot,
-      env: releaseArch === "universal" ? { PWRSNAP_FFMPEG_UNIVERSAL: "1" } : {}
-    });
-  }
+  // 3b. The bundled LGPL ffmpeg is injected, not built. See the note by
+  // the imports and docs/ffmpeg-build-reference.md.
+  step("bundled LGPL ffmpeg (external artifact)");
+  console.log("  controlled artifact will be injected into release-stage/build/ffmpeg");
 
   // 4. Build (electron-vite -> apps/desktop/out/).
   step("electron-vite build");
@@ -509,12 +508,13 @@ if (!signStageOnly) {
     run(`cp ${join(repoRoot, file)} ${join(stageDir, file)}`);
   }
 
-  if (skipFfmpegBuild) {
-    for (const dir of ["build/ffmpeg", "build/ffmpeg-source"]) {
-      const target = join(stageDir, dir);
-      if (existsSync(target)) {
-        rmSync(target, { recursive: true, force: true });
-      }
+  // Leave no stale ffmpeg in the stage — the controlled artifact is copied in
+  // after this step, and a leftover binary from an earlier run would be
+  // packaged silently.
+  for (const dir of ["build/ffmpeg", "build/ffmpeg-source"]) {
+    const target = join(stageDir, dir);
+    if (existsSync(target)) {
+      rmSync(target, { recursive: true, force: true });
     }
   }
 

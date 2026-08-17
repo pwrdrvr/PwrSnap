@@ -59,7 +59,6 @@ jobs:
 
       - name: Prepare release stage
         env:
-          PWRSNAP_SKIP_FFMPEG_BUILD: "1"
         run: node apps/desktop/scripts/release.mjs --prepare-only
 
       - name: Archive signing input
@@ -145,7 +144,7 @@ jobs:
           GH_TOKEN: ${{ steps.ffmpeg-builds-token.outputs.token }}
           FFMPEG_BUILD_REPO: pwrdrvr/pwrsnap-ffmpeg-builds
           FFMPEG_BUILD_WORKFLOW: build.yml
-          FFMPEG_BUILD_SHA: a72aa24cd310cb3aa684b2481261cb2d8e313bfd
+          FFMPEG_BUILD_SHA: 3d775403a83990a2ad9503d865f5d481d9c0316a
           FFMPEG_ARTIFACT_NAME: ffmpeg-8.1.1-macos-universal
           FFMPEG_VERSION: 8.1.1
           FFMPEG_SOURCE_SHA256: b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3
@@ -433,7 +432,7 @@ jobs:
           GH_TOKEN: ${{ steps.ffmpeg-builds-token.outputs.token }}
           FFMPEG_BUILD_REPO: pwrdrvr/pwrsnap-ffmpeg-builds
           FFMPEG_BUILD_WORKFLOW: build.yml
-          FFMPEG_BUILD_SHA: a72aa24cd310cb3aa684b2481261cb2d8e313bfd
+          FFMPEG_BUILD_SHA: 3d775403a83990a2ad9503d865f5d481d9c0316a
           FFMPEG_ARTIFACT_NAME: ffmpeg-8.1.1-windows-x64
           FFMPEG_VERSION: 8.1.1
           FFMPEG_SOURCE_SHA256: b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3

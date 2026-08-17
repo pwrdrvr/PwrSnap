@@ -19,32 +19,239 @@ const outputPath = join(repoRoot, "THIRD_PARTY_LICENSES");
 const desktopFilter = "@pwrsnap/desktop";
 const licenseTextsDir = join(scriptDir, "license-texts");
 
-// PwrSnap bundles two weak-copyleft binaries whose licenses require shipping
-// the full license text plus a written offer to relink against modified
-// versions of the covered library. The npm packages that stand in for these
-// binaries do not ship the canonical FSF license text (and the macOS-arm64
-// libvips package is not even installed on Linux CI), so we embed the canonical
-// FSF texts as committed assets under scripts/license-texts/ and append them in
-// a dedicated section below the per-package License Texts. The texts are the
-// verbatim FSF distributions of https://www.gnu.org/licenses/lgpl-2.1.txt and
-// https://www.gnu.org/licenses/lgpl-3.0.txt.
+// sharp publishes its native code as OS+CPU-specific optional dependencies, so
+// `pnpm licenses list --no-optional` never reports them and `--prod` (optional
+// included) reports only the *host* slice — two packages on a macOS arm64 dev
+// machine, a different two on Linux CI. Neither is the set PwrSnap actually
+// ships, and either one alone makes the notice platform-dependent.
 //
-// The macOS arm64 native sharp packages are optional dependencies, so they are
-// absent from `pnpm licenses list --no-optional` and absent entirely on Linux
-// CI. Their versions are therefore derived from the installed `sharp`
-// manifest's own optionalDependencies rather than hardcoded — a hardcoded pin
-// silently keeps claiming the old version after a sharp bump, and no platform
-// is able to notice. See resolveMacArm64Versions below.
-export function buildWeakCopyleftBundledBinaries({ libvipsDarwinArm64 }) {
-  return [
+// So the shipped slices are enumerated here from what the release artifacts
+// bundle (electron-builder.yml: a universal macOS dmg/zip and an x64 Windows
+// nsis) and read off disk. pnpm-workspace.yaml's `supportedArchitectures`
+// materializes all of them on every platform, including Linux CI, so the
+// resulting notice is byte-identical everywhere.
+//
+// Versions, license ids, descriptions and license texts all come from each
+// package's own installed metadata — nothing here is hardcoded. A hardcoded
+// pin silently keeps claiming the old version after a sharp bump, and no
+// platform is able to notice; that is exactly how the notice came to claim
+// @img/sharp-darwin-arm64@0.34.5 while 0.35.3 shipped.
+//
+// There is no `linux:` block in electron-builder.yml — Linux is a build gate
+// only, nothing Linux-native is distributed — so no linux slice is listed.
+export const SHIPPED_PLATFORM_PACKAGES = [
   {
+    name: "@img/sharp-darwin-arm64",
+    shippedIn: "macOS universal build (arm64 slice)",
+  },
+  {
+    name: "@img/sharp-darwin-x64",
+    shippedIn: "macOS universal build (x64 slice)",
+  },
+  {
+    name: "@img/sharp-libvips-darwin-arm64",
+    shippedIn: "macOS universal build (arm64 slice)",
+    // Ships lib/libvips-cpp.<ver>.dylib.
+    lgpl: {
+      library: "libvips-cpp",
+      form: "a dynamic library (dylib) loaded at runtime",
+      sourceRepo: "https://github.com/lovell/sharp-libvips",
+    },
+  },
+  {
+    name: "@img/sharp-libvips-darwin-x64",
+    shippedIn: "macOS universal build (x64 slice)",
+    // Ships lib/libvips-cpp.<ver>.dylib.
+    lgpl: {
+      library: "libvips-cpp",
+      form: "a dynamic library (dylib) loaded at runtime",
+      sourceRepo: "https://github.com/lovell/sharp-libvips",
+    },
+  },
+  {
+    name: "@img/sharp-win32-x64",
+    shippedIn: "Windows x64 installer",
+    // Unlike the Darwin slices there is no separate @img/sharp-libvips-win32-x64
+    // package: this one package carries BOTH the Apache-2.0 sharp binding
+    // (lib/sharp-win32-x64-<ver>.node) and the LGPL-3.0 libvips DLLs
+    // (lib/libvips-42.dll, lib/libvips-cpp-<ver>.dll), which is why its manifest
+    // declares "Apache-2.0 AND LGPL-3.0-or-later".
+    //
+    // Its bundled LICENSE file contains ONLY the Apache-2.0 text. Publishing
+    // that text alone would under-disclose the LGPL-3.0 half, so this entry
+    // also feeds the weak-copyleft section below, and enrichRecord appends a
+    // pointer to it after the on-disk Apache text.
+    lgpl: {
+      library: "libvips and libvips-cpp",
+      form: "separate dynamic libraries (DLLs) loaded at runtime",
+      sourceRepo: "https://github.com/lovell/sharp-libvips",
+    },
+  },
+];
+
+/**
+ * Resolve a package directory the way Node itself does: walk `node_modules`
+ * upward from a starting directory until the package is found.
+ *
+ * This is deliberately not a hand-built `.pnpm/<name>@<version>` path. pnpm's
+ * virtual store places a package's dependencies as *siblings* of the package
+ * inside the same `node_modules` (which is why the upward walk finds them), and
+ * store directory names additionally grow a peer-dependency hash suffix for
+ * some packages. Walking sidesteps both, and keeps working under a hoisted
+ * npm/yarn layout too.
+ */
+export function resolvePackageDirFrom(fromDir, name) {
+  let dir = fromDir;
+  for (;;) {
+    const candidate = join(dir, "node_modules", name);
+    if (existsSync(join(candidate, "package.json"))) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/**
+ * Locate the installed shipped platform packages and turn each into an ordinary
+ * license record — real path, real version, real license text.
+ *
+ * Resolution starts from sharp's own installed directory, so each slice is the
+ * copy sharp itself would load rather than an unrelated hoisted one.
+ *
+ * Every failure here throws. A missing slice must never degrade into a
+ * placeholder record — a silently-absent copyleft package is the failure mode
+ * this whole notice exists to prevent.
+ */
+export function locateShippedPlatformPackages(
+  productionRecords,
+  shipped = SHIPPED_PLATFORM_PACKAGES,
+) {
+  const sharpRecords = productionRecords.filter((record) => record.name === "sharp");
+  if (sharpRecords.length === 0) {
+    throw new Error(
+      "Cannot locate the shipped sharp platform packages: no `sharp` record in the production " +
+        "license report.",
+    );
+  }
+  // More than one resolved sharp (a transitive copy alongside the direct one)
+  // would make the pick order-dependent, and the wrong pick lands silently in
+  // the LGPL-3.0 relink offer. Refuse rather than guess.
+  const distinctVersions = [...new Set(sharpRecords.map((record) => record.version))];
+  if (distinctVersions.length > 1) {
+    throw new Error(
+      `Cannot locate the shipped sharp platform packages: ${distinctVersions.length} sharp versions ` +
+        `resolved (${distinctVersions.sort().join(", ")}). Pin a single sharp so the notice cannot ` +
+        "name a version that was never shipped.",
+    );
+  }
+  const sharp = sharpRecords[0];
+  if (!sharp.packagePath) {
+    throw new Error(
+      "Cannot locate the shipped sharp platform packages: the license report gave no path for " +
+        `sharp@${sharp.version}.`,
+    );
+  }
+  const declaredPins = readPackageJson(sharp.packagePath)?.optionalDependencies ?? {};
+
+  return shipped.map((entry) => {
+    const packagePath = resolvePackageDirFrom(sharp.packagePath, entry.name);
+    if (packagePath === undefined) {
+      throw new Error(
+        [
+          `Shipped platform package ${entry.name} is not installed anywhere reachable from`,
+          `${sharp.packagePath}.`,
+          "",
+          `PwrSnap's release artifacts bundle it (${entry.shippedIn}), so the notice must cover`,
+          "it. pnpm-workspace.yaml's `supportedArchitectures` is what materializes every shipped",
+          "slice on every platform — check that it still lists the os/cpu this package needs,",
+          "then run `pnpm install` and retry.",
+          "",
+          "Refusing to emit a notice that omits a shipped package.",
+        ].join("\n"),
+      );
+    }
+    const packageJson = readPackageJson(packagePath);
+    if (typeof packageJson?.version !== "string" || packageJson.version.length === 0) {
+      throw new Error(
+        `Shipped platform package ${entry.name} at ${packagePath} has no version in its manifest.`,
+      );
+    }
+    if (typeof packageJson.license !== "string" || packageJson.license.length === 0) {
+      throw new Error(
+        `Shipped platform package ${entry.name}@${packageJson.version} declares no license in its ` +
+          "manifest. Refusing to guess one.",
+      );
+    }
+    // apps/desktop/scripts/release.mjs copies these slices into the packaged app
+    // by looking up sharp's optionalDependencies pin, so that pin is what
+    // actually ships. If the installed copy disagrees, the notice would name a
+    // version the artifact does not contain. Only checked when the pin is an
+    // exact version — a range legitimately cannot be compared this way.
+    const pin = declaredPins[entry.name];
+    if (
+      typeof pin === "string" &&
+      /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)*$/.test(pin.trim()) &&
+      pin.trim() !== packageJson.version
+    ) {
+      throw new Error(
+        `Shipped platform package ${entry.name} resolves to ${packageJson.version} on disk, but ` +
+          `sharp@${sharp.version} pins ${pin.trim()}. apps/desktop/scripts/release.mjs ships the ` +
+          "pinned version, so the notice would name a version the artifact does not contain. Run " +
+          "`pnpm install` and retry.",
+      );
+    }
+    return {
+      name: entry.name,
+      version: packageJson.version,
+      declaredLicense: packageJson.license,
+      packagePath,
+      description: packageJson.description,
+      shippedIn: entry.shippedIn,
+      lgpl: entry.lgpl,
+      // The on-disk LICENSE of a dual-licensed slice can cover only one half
+      // (see @img/sharp-win32-x64 above). Point readers at the section that
+      // carries the rest rather than letting the partial text stand alone.
+      licenseTextSuffix:
+        entry.lgpl === undefined
+          ? undefined
+          : [
+              "",
+              `${entry.name} ships ${entry.lgpl.library} under the GNU Lesser General Public License,`,
+              "version 3 or later. The full LGPL-3.0 text and the corresponding relinking / written",
+              'source offer are reproduced below under "Full License Texts — Weak-Copyleft Bundled',
+              'Binaries".',
+            ].join("\n"),
+    };
+  });
+}
+
+/**
+ * The bundled binaries whose licenses require shipping the full license text
+ * plus a written offer to relink against a modified version of the covered
+ * library.
+ *
+ * FFmpeg is not an npm package at all — CI injects a controlled build into
+ * build/ffmpeg/ — so it is described here by hand. The libvips-carrying sharp
+ * slices are passed in from locateShippedPlatformPackages so their versions
+ * track what is installed.
+ *
+ * None of these packages ship the canonical FSF license text (the libvips
+ * slices ship no license file whatsoever), so the verbatim FSF texts are
+ * committed under scripts/license-texts/ and appended in a dedicated section
+ * below the per-package License Texts. They are the verbatim FSF distributions
+ * of https://www.gnu.org/licenses/lgpl-2.1.txt and
+ * https://www.gnu.org/licenses/lgpl-3.0.txt.
+ */
+export function buildWeakCopyleftBundledBinaries(platformRecords = []) {
+  const ffmpeg = {
     name: "FFmpeg",
     version: "8.1.1",
     declaredLicense: "LGPL-2.1-or-later",
     licenseTextFile: "lgpl-2.1.txt",
     licenseTitle: "GNU LESSER GENERAL PUBLIC LICENSE, Version 2.1",
     summary: [
-      "PwrSnap bundles an FFmpeg executable built from the official FFmpeg 8.1.1 source release",
+      "PwrSnap's macOS release bundles an FFmpeg executable built from the official FFmpeg 8.1.1",
+      "source release",
       "(build scripts: https://github.com/pwrdrvr/pwrsnap-ffmpeg-builds), configured without",
       "--enable-gpl, --enable-nonfree,",
       "--enable-libx264, --enable-libx265, --enable-libvidstab, or --enable-libfdk-aac, so the",
@@ -62,144 +269,63 @@ export function buildWeakCopyleftBundledBinaries({ libvipsDarwinArm64 }) {
       "written request to support@pwrdrvr.com for at least three years from the date of",
       "distribution.",
     ].join("\n"),
-  },
-  {
-    name: "@img/sharp-libvips-darwin-arm64",
-    version: libvipsDarwinArm64,
-    declaredLicense: "LGPL-3.0-or-later",
-    licenseTextFile: "lgpl-3.0.txt",
-    licenseTitle: "GNU LESSER GENERAL PUBLIC LICENSE, Version 3",
-    summary: [
-      "PwrSnap's macOS arm64 release bundles the prebuilt libvips-cpp dynamic library shipped in",
-      "@img/sharp-libvips-darwin-arm64, used by sharp for image processing. libvips-cpp is",
-      "distributed under the GNU Lesser General Public License, version 3 or later.",
-      "Source: https://github.com/lovell/sharp-libvips",
-      "Upstream library: https://github.com/libvips/libvips",
-    ].join("\n"),
-    relinkOffer: [
-      "Relinking / source offer: the libvips library is bundled as a dynamic library (dylib)",
-      "loaded at runtime, so it may be replaced with a compatible build of the same major version.",
-      "The corresponding source for libvips and its dependencies is published at the URLs above.",
-      "PwrDrvr LLC will additionally provide the corresponding source on written request to",
-      "support@pwrdrvr.com for at least three years from the date of distribution.",
-    ].join("\n"),
-  },
-  ];
-}
-
-export function buildSupplementalMacArm64Records({
-  sharpDarwinArm64,
-  libvipsDarwinArm64,
-}) {
-  return [
-  {
-    name: "FFmpeg",
-    version: "8.1.1",
-    declaredLicense: "LGPL-2.1-or-later",
-    source: "https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
-    description:
-      "Bundled ffmpeg executable built by github.com/pwrdrvr/pwrsnap-ffmpeg-builds without GPL or nonfree configure flags",
-    licenseText: [
-      "PwrSnap bundles an FFmpeg executable built from the official FFmpeg 8.1.1 source release.",
-      "The build repo verifies that the resulting binary configuration does not contain --enable-gpl, --enable-nonfree, --enable-libx264, --enable-libx265, --enable-libvidstab, or --enable-libfdk-aac.",
-      "",
-      "FFmpeg's source release includes its license texts and states that most files are under the GNU Lesser General Public License version 2.1 or later.",
-      "Source: https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
-      "License guidance: https://ffmpeg.org/legal.html",
-      "",
-      "The full GNU Lesser General Public License, version 2.1, and the corresponding relinking / source offer are reproduced below under \"Full License Texts — Weak-Copyleft Bundled Binaries\"."
-    ].join("\n"),
-  },
-  {
-    name: "@img/sharp-darwin-arm64",
-    version: sharpDarwinArm64,
-    declaredLicense: "Apache-2.0",
-    source: "https://github.com/lovell/sharp",
-    description: "Prebuilt sharp for use with macOS 64-bit ARM",
-  },
-  {
-    name: "@img/sharp-libvips-darwin-arm64",
-    version: libvipsDarwinArm64,
-    declaredLicense: "LGPL-3.0-or-later",
-    source: "https://github.com/lovell/sharp-libvips",
-    description: "Prebuilt libvips and dependencies for use with sharp on macOS 64-bit ARM",
-    licenseText: [
-      "PwrSnap's macOS arm64 release bundles the prebuilt libvips-cpp dynamic library from this package.",
-      "libvips-cpp is distributed under the GNU Lesser General Public License, version 3 or later.",
-      "Source: https://github.com/lovell/sharp-libvips",
-      "Upstream library: https://github.com/libvips/libvips",
-      "",
-      "The full GNU Lesser General Public License, version 3, and the corresponding relinking / source offer are reproduced below under \"Full License Texts — Weak-Copyleft Bundled Binaries\"."
-    ].join("\n"),
-  },
-  ].map((record) => ({ ...record, supplemental: true }));
-}
-
-/**
- * Read the macOS arm64 native package versions out of the installed `sharp`
- * manifest. `sharp` is a plain production dependency, so it is materialized on
- * every platform and this resolves identically on macOS and Linux CI — unlike
- * the packages themselves, which only ever install on darwin-arm64.
- */
-export function resolveMacArm64Versions(productionRecords) {
-  const sharpRecords = productionRecords.filter((record) => record.name === "sharp");
-  if (sharpRecords.length === 0) {
-    throw new Error(
-      "Cannot resolve macOS arm64 native package versions: no `sharp` record in the production license report.",
-    );
-  }
-  // More than one resolved sharp (a transitive copy alongside the direct one)
-  // would make the pick order-dependent, and the wrong pick lands silently in
-  // the LGPL-3.0 relink offer. Refuse rather than guess.
-  const distinctVersions = [...new Set(sharpRecords.map((record) => record.version))];
-  if (distinctVersions.length > 1) {
-    throw new Error(
-      `Cannot resolve macOS arm64 native package versions: ${distinctVersions.length} sharp versions ` +
-        `resolved (${distinctVersions.sort().join(", ")}). Pin a single sharp so the notice cannot ` +
-        "name a version that was never shipped.",
-    );
-  }
-  const sharp = sharpRecords[0];
-  const optional = readPackageJson(sharp.packagePath)?.optionalDependencies ?? {};
-  return validateMacArm64Versions(
-    {
-      sharpDarwinArm64: optional["@img/sharp-darwin-arm64"],
-      libvipsDarwinArm64: optional["@img/sharp-libvips-darwin-arm64"],
-    },
-    `sharp@${sharp.version} optionalDependencies`,
-  );
-}
-
-/**
- * Reject anything that is not an exact version.
- *
- * `optionalDependencies` values are semver *ranges*. sharp pins exactly today,
- * but a future `^0.36.0` would otherwise be published verbatim as the shipped
- * version — in the Dependency Summary, the License Texts heading, and the
- * LGPL-3.0 written source offer. Both the derived and the caller-supplied path
- * go through here; validating only the derived one would leave the `??` in
- * buildThirdPartyLicenseNotice as a way to inject `undefined` into the notice.
- */
-export function validateMacArm64Versions(versions, source) {
-  for (const key of ["sharpDarwinArm64", "libvipsDarwinArm64"]) {
-    const value = versions?.[key];
-    if (typeof value !== "string" || value.trim().length === 0) {
-      throw new Error(
-        `Cannot resolve ${key} from ${source}. ` +
-          "The supplemental macOS arm64 notice entries would silently claim a stale version.",
-      );
-    }
-    if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)*$/.test(value.trim())) {
-      throw new Error(
-        `${key} resolved to "${value}" from ${source}, which is a version range rather than an ` +
-          "exact version. The notice would claim a version that was never distributed.",
-      );
-    }
-  }
-  return {
-    sharpDarwinArm64: versions.sharpDarwinArm64.trim(),
-    libvipsDarwinArm64: versions.libvipsDarwinArm64.trim(),
   };
+
+  const libvipsBinaries = platformRecords
+    .filter((record) => record.lgpl !== undefined)
+    .map((record) => ({
+      name: record.name,
+      version: record.version,
+      declaredLicense: "LGPL-3.0-or-later",
+      licenseTextFile: "lgpl-3.0.txt",
+      licenseTitle: "GNU LESSER GENERAL PUBLIC LICENSE, Version 3",
+      summary: [
+        `PwrSnap's ${record.shippedIn} bundles the prebuilt ${record.lgpl.library} shipped in`,
+        `${record.name}, used by sharp for image processing. It is distributed under the GNU`,
+        "Lesser General Public License, version 3 or later.",
+        `Source: ${record.lgpl.sourceRepo}`,
+        "Upstream library: https://github.com/libvips/libvips",
+      ].join("\n"),
+      relinkOffer: [
+        `Relinking / source offer: the libvips library is bundled as ${record.lgpl.form},`,
+        "so it may be replaced with a compatible build of the same major version.",
+        "The corresponding source for libvips and its dependencies is published at the URLs above.",
+        "PwrDrvr LLC will additionally provide the corresponding source on written request to",
+        "support@pwrdrvr.com for at least three years from the date of distribution.",
+      ].join("\n"),
+    }));
+
+  return [ffmpeg, ...libvipsBinaries];
+}
+
+/**
+ * Bundled binaries that are not npm packages, so there is no installed
+ * directory to read. Today this is only the CI-injected FFmpeg executable.
+ *
+ * Everything else in the notice — including every shipped platform package —
+ * is read from disk and is therefore subject to the materialization check.
+ */
+export function buildBundledBinaryRecords() {
+  return [
+    {
+      name: "FFmpeg",
+      version: "8.1.1",
+      declaredLicense: "LGPL-2.1-or-later",
+      source: "https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
+      description:
+        "Bundled ffmpeg executable built by github.com/pwrdrvr/pwrsnap-ffmpeg-builds without GPL or nonfree configure flags",
+      licenseText: [
+        "PwrSnap bundles an FFmpeg executable built from the official FFmpeg 8.1.1 source release.",
+        "The build repo verifies that the resulting binary configuration does not contain --enable-gpl, --enable-nonfree, --enable-libx264, --enable-libx265, --enable-libvidstab, or --enable-libfdk-aac.",
+        "",
+        "FFmpeg's source release includes its license texts and states that most files are under the GNU Lesser General Public License version 2.1 or later.",
+        "Source: https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
+        "License guidance: https://ffmpeg.org/legal.html",
+        "",
+        "The full GNU Lesser General Public License, version 2.1, and the corresponding relinking / source offer are reproduced below under \"Full License Texts — Weak-Copyleft Bundled Binaries\"."
+      ].join("\n"),
+    },
+  ].map((record) => ({ ...record, bundledBinary: true }));
 }
 
 export function runPnpmLicenses(args, options = {}) {
@@ -395,9 +521,30 @@ export function buildWeakCopyleftSection(binaries, baseDir = licenseTextsDir) {
     lines.push("");
     lines.push(binary.relinkOffer);
     lines.push("");
-    lines.push(`${binary.licenseTitle}:`);
+  }
+
+  // Several shipped slices carry the same covered library under the same
+  // license (both Darwin libvips slices plus the Windows one), so the canonical
+  // text is emitted once per distinct license with an explicit "Applies to"
+  // roster, rather than repeating a multi-thousand-line FSF text per binary.
+  const textGroups = new Map();
+  for (const binary of binaries) {
+    const group = textGroups.get(binary.licenseTextFile) ?? {
+      licenseTitle: binary.licenseTitle,
+      binaries: [],
+    };
+    group.binaries.push(binary);
+    textGroups.set(binary.licenseTextFile, group);
+  }
+  for (const [licenseTextFile, group] of textGroups) {
+    lines.push(`${group.licenseTitle}:`);
     lines.push("");
-    lines.push(readCanonicalLicenseText(binary.licenseTextFile, baseDir));
+    lines.push("Applies to:");
+    for (const binary of group.binaries) {
+      lines.push(`- ${stableRecordKey(binary)} (${binary.declaredLicense})`);
+    }
+    lines.push("");
+    lines.push(readCanonicalLicenseText(licenseTextFile, baseDir));
     lines.push("");
   }
   return lines;
@@ -431,10 +578,16 @@ export const STALE_INSTALL_CODE = "PWRSNAP_STALE_INSTALL";
  * boilerplate license body for the package's real license text, producing a
  * plausible-looking but wrong notice. See docs/third-party-license-notices.md
  * § "How the check can fail open".
+ *
+ * The only exemption is a bundled binary that is not an npm package at all
+ * (the CI-injected FFmpeg executable), which has no installed directory to
+ * check. Shipped platform packages are NOT exempt: they are read from disk
+ * like everything else, so a missing copyleft slice fails here rather than
+ * quietly dropping out of the notice.
  */
 export function findUnmaterializedRecords(records) {
   return records.filter((record) => {
-    if (record.supplemental === true) return false;
+    if (record.bundledBinary === true) return false;
     if (!record.packagePath) return true;
     return !existsSync(join(record.packagePath, "package.json"));
   });
@@ -468,11 +621,21 @@ export function assertPackagesMaterialized(records) {
 function enrichRecord(record) {
   const packageJson = readPackageJson(record.packagePath);
   const licensePath = findLicenseFile(record.packagePath);
-  const licenseText = licensePath
+  const baseText = licensePath
     ? normalizeLicenseText(readFileSync(licensePath, "utf8"))
     : typeof record.licenseText === "string"
       ? normalizeLicenseText(record.licenseText)
     : declaredLicenseFallbackText(record, packageJson);
+  // A dual-licensed package can ship a license file covering only one half of
+  // its declaration (@img/sharp-win32-x64 bundles LGPL-3.0 libvips DLLs but
+  // ships only the Apache-2.0 text). The suffix carries the cross-reference so
+  // the partial text is never presented as the whole story. It also splits such
+  // a package out of the shared-text group, which is correct — its notice
+  // genuinely differs from a plain Apache-2.0 package's.
+  const licenseText =
+    typeof record.licenseTextSuffix === "string"
+      ? `${baseText}\n${record.licenseTextSuffix}`
+      : baseText;
   return {
     ...record,
     source: normalizeSourceUrl(
@@ -485,7 +648,7 @@ function enrichRecord(record) {
     licenseFile: licensePath
       ? relative(record.packagePath, licensePath)
       : typeof record.licenseText === "string"
-        ? "supplemental notice"
+        ? "bundled binary notice"
       : "package metadata",
     licenseText,
     licenseTextHash: createHash("sha256").update(licenseText).digest("hex"),
@@ -495,8 +658,8 @@ function enrichRecord(record) {
 export function buildThirdPartyLicenseNotice({
   productionReport,
   allReport,
-  macArm64Versions,
-  supplementalRecords,
+  platformPackageRecords,
+  bundledBinaryRecords,
   weakCopyleftBinaries,
   licenseTextsBaseDir = licenseTextsDir,
   productName = "PwrSnap",
@@ -515,36 +678,37 @@ export function buildThirdPartyLicenseNotice({
     }
   }
 
-  // Assert BEFORE resolving versions. Version resolution reads sharp's manifest
-  // off disk, and sharp is one of the likelier packages to be unmaterialized
-  // (its store dir embeds a peer hash, so even a @types/node bump relocates it).
-  // Resolving first meant a drifted install reported "cannot resolve
-  // sharpDarwinArm64" — pointing at sharp instead of at `pnpm install`, which is
-  // the misdiagnosis this guard exists to prevent. Only report-derived records
-  // are checked; supplemental records are synthetic and have no installed path.
+  // Assert BEFORE locating the platform packages. Locating them reads sharp's
+  // installed directory, and sharp is one of the likelier packages to be
+  // unmaterialized (its store dir embeds a peer hash, so even a @types/node
+  // bump relocates it). Locating first meant a drifted install reported
+  // "@img/sharp-darwin-arm64 is not installed" — pointing at
+  // supportedArchitectures instead of at `pnpm install`, which is the
+  // misdiagnosis this guard exists to prevent.
   assertPackagesMaterialized(Array.from(recordsByKey.values()));
 
-  // Resolved from the installed sharp manifest unless the caller pins them.
-  // Computed once — resolveMacArm64Versions reads and parses a file.
-  const needsVersions = supplementalRecords === undefined || weakCopyleftBinaries === undefined;
-  const resolvedVersions = !needsVersions
-    ? undefined
-    : macArm64Versions === undefined
-      ? resolveMacArm64Versions(productionRecords)
-      : validateMacArm64Versions(macArm64Versions, "the supplied macArm64Versions");
-  const resolvedSupplementalRecords = (
-    supplementalRecords ?? buildSupplementalMacArm64Records(resolvedVersions)
-  ).map((record) =>
-    // Stamp the exemption here rather than only in the factory, so a
-    // caller-supplied supplemental record is not mistaken for a drifted install.
-    record.supplemental === true ? record : { ...record, supplemental: true },
-  );
-  const resolvedWeakCopyleftBinaries =
-    weakCopyleftBinaries ?? buildWeakCopyleftBundledBinaries(resolvedVersions);
-
-  for (const record of resolvedSupplementalRecords) {
+  // Read off disk unless the caller pins them. These are ordinary records with
+  // real paths, so enrichRecord picks up each package's own version, repository
+  // URL and license text — nothing about them is hardcoded here.
+  const resolvedPlatformRecords =
+    platformPackageRecords ?? locateShippedPlatformPackages(productionRecords);
+  for (const record of resolvedPlatformRecords) {
     recordsByKey.set(stableRecordKey(record), record);
   }
+
+  const resolvedBundledBinaryRecords = (
+    bundledBinaryRecords ?? buildBundledBinaryRecords()
+  ).map((record) =>
+    // Stamp the exemption here rather than only in the factory, so a
+    // caller-supplied record is not mistaken for a drifted install.
+    record.bundledBinary === true ? record : { ...record, bundledBinary: true },
+  );
+  for (const record of resolvedBundledBinaryRecords) {
+    recordsByKey.set(stableRecordKey(record), record);
+  }
+
+  const resolvedWeakCopyleftBinaries =
+    weakCopyleftBinaries ?? buildWeakCopyleftBundledBinaries(resolvedPlatformRecords);
 
   const records = Array.from(recordsByKey.values()).sort(compareRecords).map(enrichRecord);
 
@@ -600,12 +764,25 @@ export function buildThirdPartyLicenseNotice({
   lines.push(
     "Build-time-only assets that are rendered into images, such as the DMG background image, do not distribute the font software itself and are not listed separately here.",
   );
-  lines.push(
-    "PwrSnap's macOS arm64 release also bundles sharp's native optional runtime packages for macOS: @img/sharp-darwin-arm64 and @img/sharp-libvips-darwin-arm64. They are listed below explicitly so this notice remains deterministic when checked on Linux CI.",
-  );
-  lines.push(
-    "PwrSnap ships two weak-copyleft bundled binaries — the FFmpeg executable (LGPL-2.1-or-later) and libvips-cpp via @img/sharp-libvips-darwin-arm64 (LGPL-3.0-or-later). Their full canonical FSF license texts and the corresponding relinking / written source offers are reproduced in the \"Full License Texts — Weak-Copyleft Bundled Binaries\" section at the end of this notice.",
-  );
+  if (resolvedPlatformRecords.length > 0) {
+    lines.push(
+      "PwrSnap's release artifacts also bundle sharp's platform-specific native runtime packages. sharp publishes these as OS+CPU-specific optional dependencies, so a production dependency listing either hides them entirely or reports only the slice matching the machine that ran the listing. They are therefore enumerated from what the release artifacts actually bundle and read from their own installed metadata, which keeps this notice identical on every platform including Linux CI:",
+    );
+    for (const record of resolvedPlatformRecords.slice().sort(compareRecords)) {
+      lines.push(
+        `- ${stableRecordKey(record)} (${record.declaredLicense}) — ${record.shippedIn}`,
+      );
+    }
+  }
+  if (resolvedWeakCopyleftBinaries.length > 0) {
+    lines.push(
+      `PwrSnap ships ${resolvedWeakCopyleftBinaries.length} weak-copyleft bundled binaries — ` +
+        `${resolvedWeakCopyleftBinaries
+          .map((binary) => `${stableRecordKey(binary)} (${binary.declaredLicense})`)
+          .join(", ")}. ` +
+        "Their full canonical FSF license texts and the corresponding relinking / written source offers are reproduced in the \"Full License Texts — Weak-Copyleft Bundled Binaries\" section at the end of this notice.",
+    );
+  }
   lines.push("");
   lines.push("Dependency Summary");
   lines.push("------------------");

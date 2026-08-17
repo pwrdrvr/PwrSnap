@@ -52,8 +52,12 @@ describe("license CLIs report a result when run", () => {
     {
       script: "scripts/generate-third-party-licenses.mjs",
       args: ["--check"],
+      // Any real verdict is fine, including an environment failure (no pnpm on
+      // PATH). What must never happen is silence — that means the entrypoint
+      // guard did not fire. `pnpm licenses list` working is enforced by
+      // `licenses:check` in lint, not here.
       expected:
-        /third-party license notice check passed|THIRD_PARTY_LICENSES is out of date|not installed on disk|pnpm licenses list/,
+        /third-party license notice check passed|THIRD_PARTY_LICENSES is out of date|not installed on disk|pnpm licenses list|spawnSync/,
     },
   ];
 

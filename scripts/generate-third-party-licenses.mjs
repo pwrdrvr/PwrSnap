@@ -171,11 +171,23 @@ export function runPnpmLicenses(args, options = {}) {
     {
       cwd: options.cwd ?? repoRoot,
       encoding: "utf8",
+      // On Windows `pnpm` is a .CMD shim, and Node refuses to spawn .cmd/.bat
+      // without a shell (the CVE-2024-27980 hardening). Without this the call
+      // fails with ENOENT, empty stdio, and no diagnostic. Every argument here
+      // is a module constant, so there is no untrusted input to quote-inject.
+      shell: process.platform === "win32",
     },
   );
   if (result.status !== 0) {
-    const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
-    const error = new Error(details || "pnpm licenses list failed");
+    // result.error carries the spawn failure (ENOENT, ENOBUFS). Dropping it
+    // reduced a Windows spawn failure to a bare "pnpm licenses list failed".
+    const details = [result.error?.message, result.stderr, result.stdout]
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+    const error = new Error(
+      details || `pnpm licenses list exited with status ${result.status}`,
+    );
     error.status = result.status ?? 1;
     throw error;
   }

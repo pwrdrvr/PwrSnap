@@ -73,17 +73,15 @@ Per platform (`PLATFORM_PROFILES`):
 | accel | `--enable-audiotoolbox` `--enable-videotoolbox` | `--enable-d3d11va` `--enable-mediafoundation` | — |
 | encoders | `h264_videotoolbox`, `aac` | `h264_mf`, `aac` | `aac`, `mpeg4` |
 | devices | — | `--enable-indev=gdigrab` | — |
+| other | `--disable-x86asm`, `-mmacosx-version-min=14.0` | `--extra-ldflags=-static` | — |
 
 Required **decoders** are the same on every platform — `png`, `mjpeg`, `h264`,
-`aac`, `mp3` — and are verified per build, unlike encoders which vary by
-platform.
-| other | `--disable-x86asm`, `-mmacosx-version-min=14.0` | `--extra-ldflags=-static` | — |
+`aac`, `mp3` — and are verified per build, unlike the encoders above which vary
+by platform.
 
 Forbidden everywhere (asserted by `verify-ffmpeg.mjs` against the binary's own
 configure line): `--enable-gpl`, `--enable-nonfree`, `--enable-libx264`,
 `--enable-libx265`, `--enable-libvidstab`, `--enable-libfdk-aac`.
-
-Required decoders on every platform: `png`, `mjpeg`, `h264`, `aac`, `mp3`.
 
 ### Why `--enable-zlib` is load-bearing
 

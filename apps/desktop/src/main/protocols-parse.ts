@@ -15,12 +15,10 @@ export const SCHEMES = {
    *  url shape is `pwrsnap-screen://r/<id>` (same path/host trick as
    *  the capture scheme so nanoid case survives). */
   screen: "pwrsnap-screen",
-  /** Per-bundle-id app icon, extracted lazily from the installed
-   *  .app via the NSWorkspace helper and cached under
-   *  `<userData>/app-icons/`. URL shape: `pwrsnap-app-icon://r/<bundle-id>`.
-   *  Bundle ids contain dots and may carry case (`com.apple.Terminal`),
-   *  so the id sits in the path component (Chromium lowercases the
-   *  host for standard schemes; would collapse `Terminal` → `terminal`). */
+  /** Per-app icon, extracted lazily from the installed macOS bundle or
+   *  Windows executable and cached under `<userData>/app-icons/`. URL shape:
+   *  `pwrsnap-app-icon://r/<encoded-identifier>`. The identifier sits in the
+   *  path so case survives Chromium's authority-lowercasing pass. */
   appIcon: "pwrsnap-app-icon",
   /** Rendered sizzle reel output. URL shape:
    *  `pwrsnap-sizzle://r/<project-id>`; the project id uses the same
@@ -139,17 +137,29 @@ export function videoAssetUrl(captureId: string, asset: string): string {
 }
 
 /**
- * Parse `pwrsnap-app-icon://r/<bundle-id>` → `<bundle-id>`. Allows
- * `A-Za-z0-9._-` (the bundle-id alphabet). Strips any `?...` cache-
- * buster suffix the renderer might append. Returns `null` for any
- * malformed URL.
+ * Parse `pwrsnap-app-icon://r/<identifier>` → the platform app identifier.
+ * macOS bundle ids remain unescaped and use `A-Za-z0-9._-`. Windows absolute
+ * executable paths are encodeURIComponent-encoded by the renderer and are
+ * accepted only when they round-trip canonically and contain no traversal,
+ * device/UNC prefix, or illegal Windows path characters.
  */
 export function parseAppIconBundleId(url: string): string | null {
   const prefix = `${SCHEMES.appIcon}://r/`;
   if (!url.startsWith(prefix)) return null;
   const noQuery = url.split(/[?#]/, 1)[0]!;
   const rest = noQuery.slice(prefix.length).replace(/\/+$/, "");
-  if (rest.length === 0 || rest.length > 256) return null;
-  if (!/^[A-Za-z0-9._-]+$/.test(rest)) return null;
-  return rest;
+  if (rest.length === 0 || rest.length > 6144) return null;
+  if (rest.length <= 256 && /^[A-Za-z0-9._-]+$/.test(rest)) return rest;
+
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rest);
+  } catch {
+    return null;
+  }
+  if (encodeURIComponent(decoded) !== rest) return null;
+  if (decoded.length === 0 || decoded.length > 2048) return null;
+  if (!/^[A-Za-z]:\\[^<>:"|?*\r\n]+\.exe$/i.test(decoded)) return null;
+  if (/(?:^|\\)\.\.(?:\\|$)/.test(decoded)) return null;
+  return decoded;
 }

@@ -17,11 +17,8 @@
 //   - macOS: a Swift binary `window-list` (full surface — list,
 //     --activate-pid, --capture-window, --extract-app-icon).
 //   - Windows: a C++ binary `window-list.exe`
-//     (native/window-list-win/main.cpp) that implements only the
-//     default LIST command. The macOS-only subcommands (window capture,
-//     app-icon extraction, activate-pid) are not supported there and
-//     their wrappers short-circuit before shelling out (see
-//     `helperSupportsMacSubcommands`).
+//     (native/window-list-win/main.cpp) that implements LIST plus
+//     --extract-app-icon. Window capture and activate-pid remain macOS-only.
 //
 // In dev it lives at `<desktopRoot>/build/native/window-list[.exe]`; in
 // a packaged build it's shipped under `Contents/Resources/
@@ -72,14 +69,30 @@ const DEV_HELPER_NAME =
   process.platform === "win32" ? "window-list.exe" : "window-list";
 
 /**
- * True when the resolved helper supports the macOS-only subcommands
- * (--capture-window / --extract-app-icon / --activate-pid). Only the
- * Swift helper implements them; the Windows C++ helper is list-only.
- * Callers of those features short-circuit on non-darwin so we never
- * shell the Windows .exe with an argument it doesn't understand.
+ * True when the resolved helper supports the remaining macOS-only
+ * subcommands (--capture-window / --activate-pid). App-icon extraction has
+ * its own cross-platform capability check below.
  */
 function helperSupportsMacSubcommands(): boolean {
   return process.platform === "darwin";
+}
+
+/** Both native helpers implement app-icon extraction: NSWorkspace on macOS,
+ *  IShellItemImageFactory + WIC on Windows. */
+function helperSupportsAppIconExtraction(): boolean {
+  return process.platform === "darwin" || process.platform === "win32";
+}
+
+function isValidAppIconIdentifier(identifier: string): boolean {
+  if (process.platform === "win32") {
+    // QueryFullProcessImageNameW returns a drive-absolute executable path.
+    // Reject UNC/device paths and traversal before passing renderer-originated
+    // protocol input to the shell helper.
+    if (identifier.length > 2048) return false;
+    if (!/^[A-Za-z]:\\[^<>:"|?*\r\n]+\.exe$/i.test(identifier)) return false;
+    return !/(?:^|\\)\.\.(?:\\|$)/.test(identifier);
+  }
+  return identifier.length <= 256 && /^[A-Za-z0-9._-]+$/.test(identifier);
 }
 
 /** Resolve the window-list helper binary's path (production
@@ -175,38 +188,36 @@ export async function captureWindowImage(
 }
 
 /**
- * Resolve `bundleId` to its installed .app via NSWorkspace, extract
- * its icon at `size`×`size`, and write a PNG to `outputPath`. Returns
- * the resolved `.app` POSIX path on success — the caller can stat the
- * bundle's `Info.plist` mtime to invalidate cached extracts when the
- * app updates.
+ * Resolve a platform app identifier and write its native icon to a PNG.
+ * macOS identifiers are CFBundleIdentifiers resolved through NSWorkspace;
+ * Windows identifiers are absolute executable paths resolved through the
+ * shell. Returns the resolved app/executable path so the cache can invalidate
+ * when the installed app updates.
  *
  * Returns `{ ok: false }` on:
- *   - native helper missing (Linux/Windows or dev pre-build)
- *   - bundle id not installed locally (exit 3)
+ *   - native helper missing (Linux or dev pre-build)
+ *   - app identifier not installed locally (exit 3)
  *   - icon render / encode failure (exit 4)
  *
  * Callers should treat all failures uniformly — emit no icon and let
  * the renderer fall back to procedural initials.
  */
 export async function extractAppIcon(
-  bundleId: string,
+  identifier: string,
   outputPath: string,
   size: number
 ): Promise<{ ok: true; appPath: string } | { ok: false; message: string }> {
   const helper = resolveHelperPath();
-  if (helper === null || !helperSupportsMacSubcommands()) {
-    // Icon extraction is NSWorkspace-based; the Windows helper has no
-    // equivalent subcommand. Callers fall back to procedural initials.
+  if (helper === null || !helperSupportsAppIconExtraction()) {
     return { ok: false, message: "native helper not available" };
   }
-  if (bundleId.length === 0 || !/^[A-Za-z0-9._-]+$/.test(bundleId)) {
-    return { ok: false, message: `invalid bundleId: ${bundleId}` };
+  if (!isValidAppIconIdentifier(identifier)) {
+    return { ok: false, message: "invalid app icon identifier" };
   }
   try {
     const { stdout } = await execFileAsync(
       helper,
-      ["--extract-app-icon", bundleId, outputPath, String(size)],
+      ["--extract-app-icon", identifier, outputPath, String(size)],
       { timeout: 5_000, maxBuffer: 4 * 1024 }
     );
     const appPath = stdout.toString().trim();

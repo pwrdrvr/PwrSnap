@@ -238,6 +238,19 @@ describe("parseAppIconBundleId", () => {
       .toBe("com.pwrdrvr.synth_air-table_v2");
   });
 
+  test("decodes a canonical Windows executable identifier", () => {
+    expect(
+      parseAppIconBundleId(
+        "pwrsnap-app-icon://r/C%3A%5CProgram%20Files%5CMicrosoft%20VS%20Code%5CCode.exe"
+      )
+    ).toBe("C:\\Program Files\\Microsoft VS Code\\Code.exe");
+    expect(
+      parseAppIconBundleId(
+        "pwrsnap-app-icon://r/C%3A%5CWindows%5CSystem32%5CTaskmgr.exe"
+      )
+    ).toBe("C:\\Windows\\System32\\Taskmgr.exe");
+  });
+
   test("tolerates a trailing slash", () => {
     expect(parseAppIconBundleId("pwrsnap-app-icon://r/com.apple.finder/"))
       .toBe("com.apple.finder");
@@ -255,6 +268,31 @@ describe("parseAppIconBundleId", () => {
   test("returns null for an empty id", () => {
     expect(parseAppIconBundleId("pwrsnap-app-icon://r/")).toBeNull();
     expect(parseAppIconBundleId("pwrsnap-app-icon://r/////")).toBeNull();
+  });
+
+  test("rejects unsafe or non-canonical Windows executable identifiers", () => {
+    expect(
+      parseAppIconBundleId(
+        "pwrsnap-app-icon://r/C%3A%5CApps%5C..%5Csecret.exe"
+      )
+    ).toBeNull();
+    expect(
+      parseAppIconBundleId(
+        "pwrsnap-app-icon://r/%5C%5Cserver%5Cshare%5Capp.exe"
+      )
+    ).toBeNull();
+    expect(
+      parseAppIconBundleId(
+        "pwrsnap-app-icon://r/C%3A%5CWindows%5CSystem32%5Cnotepad.dll"
+      )
+    ).toBeNull();
+    // Renderer uses encodeURIComponent's uppercase escapes. Reject alternate
+    // spellings so one identifier has one cache/protocol representation.
+    expect(
+      parseAppIconBundleId(
+        "pwrsnap-app-icon://r/C%3a%5cWindows%5cSystem32%5cTaskmgr.exe"
+      )
+    ).toBeNull();
   });
 
   test("rejects ids with disallowed characters", () => {

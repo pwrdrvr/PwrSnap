@@ -1,19 +1,22 @@
-// Bundle-icon cache: per-bundle-id PNG extracted from the installed
-// .app via the Swift helper (`--extract-app-icon`), addressed by the
+// Native app-icon cache: per-platform-identifier PNG extracted from the
+// installed macOS bundle or Windows executable, addressed by the
 // `pwrsnap-app-icon://` protocol.
 //
 // Layout (under `getAppIconsRoot()`):
 //
-//   <bundleId>.png      — the icon PNG (`EXTRACT_SIZE_PX` × scale,
+//   <cacheKey>.png      — the icon PNG (`EXTRACT_SIZE_PX` × scale,
 //                          typically 256×256 on Retina)
-//   <bundleId>.json     — sidecar: { appPath, infoPlistMtimeMs,
-//                                     extractedAt, version }
+//   <cacheKey>.json     — sidecar: { identifier, sourcePath,
+//                                     sourceMtimeMs, extractedAt, version }
+//
+// Reverse-DNS bundle ids are already filename-safe and remain readable as
+// cache keys. Windows executable paths are SHA-256 keyed so drive separators
+// can never become filesystem structure under the cache root.
 //
 // Validity rule: a cached PNG is fresh when the sidecar's
-// `infoPlistMtimeMs` matches the live `Info.plist` mtime at the
-// recorded `appPath`. Apps update their bundle icon through
-// install/auto-update, both of which rewrite Info.plist. If the file
-// moved (Finder drag), we re-resolve via NSWorkspace and re-extract.
+// `sourceMtimeMs` matches the live `Info.plist` (macOS) or executable
+// (Windows) mtime at the recorded path. App updates rewrite that source;
+// moves and missing sources force re-resolution and extraction.
 //
 // In-flight dedup: two parallel `pwrsnap-app-icon://` requests for
 // the same bundle id share one extraction. Negative results
@@ -21,6 +24,7 @@
 // with a TTL so we don't shell out to the helper repeatedly while
 // the sidebar repaints.
 
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { extractAppIcon } from "../capture/window-list";
@@ -29,7 +33,7 @@ import { getAppIconsRoot } from "../persistence/paths";
 
 const log = getMainLogger("pwrsnap:app-icons");
 
-type Sidecar = {
+type LegacySidecar = {
   version: 1;
   bundleId: string;
   appPath: string;
@@ -37,9 +41,19 @@ type Sidecar = {
   extractedAt: number;
 };
 
-/** Extract size (px) passed to the Swift helper. AppKit doubles for
- *  Retina representations, so 128 → a 256×256 PNG (~40-100KB depending
- *  on icon complexity). Plenty for the largest in-app surface (the
+type Sidecar = {
+  version: 2;
+  identifier: string;
+  sourcePath: string;
+  sourceMtimeMs: number;
+  extractedAt: number;
+};
+
+type AnySidecar = LegacySidecar | Sidecar;
+
+/** Extract size (px) passed to the native helper. AppKit may add a Retina
+ *  representation; Windows asks the shell for the best icon at this size.
+ *  Plenty for the largest in-app surface (the
  *  26px AppTag tile on a 3× display = 78 actual pixels) and small
  *  enough to keep the per-bundle cache file tiny. */
 const EXTRACT_SIZE_PX = 128;
@@ -53,7 +67,7 @@ const NEGATIVE_TTL_MS = 5 * 60_000;
  *  id was captured (`"any"` from `mapBundleIdToAppId`, or `"unknown"`
  *  for legacy fixtures). Short-circuits before we hit the Swift
  *  helper or even the regex validator. Empty / malformed strings are
- *  already rejected by `isValidBundleId` below — no need to enumerate
+ *  already rejected by `isValidIdentifier` below — no need to enumerate
  *  them here. */
 const PERMANENT_MISS: ReadonlySet<string> = new Set<string>([
   "any",
@@ -64,7 +78,7 @@ const PERMANENT_MISS: ReadonlySet<string> = new Set<string>([
  *  identifiable running macOS app, so a Launch Services lookup would
  *  always miss. These are expected to be unresolvable, so we
  *  short-circuit BEFORE the extract call to skip both the miss log
- *  and the IPC roundtrip to the Swift helper. The renderer's
+ *  and the roundtrip to the native helper. The renderer's
  *  `AppIcon` component renders a domain-specific glyph for each
  *  (e.g., a clipboard for `com.pwrsnap.clipboard`).
  *
@@ -86,26 +100,32 @@ async function ensureRoot(): Promise<void> {
   rootEnsured = true;
 }
 
-function pngPathFor(bundleId: string): string {
-  return join(getAppIconsRoot(), `${bundleId}.png`);
+function cacheKeyFor(identifier: string): string {
+  if (/^[A-Za-z0-9._-]+$/.test(identifier)) return identifier;
+  return `win-${createHash("sha256").update(identifier).digest("hex")}`;
 }
 
-function sidecarPathFor(bundleId: string): string {
-  return join(getAppIconsRoot(), `${bundleId}.json`);
+function pngPathFor(identifier: string): string {
+  return join(getAppIconsRoot(), `${cacheKeyFor(identifier)}.png`);
 }
 
-async function readSidecar(bundleId: string): Promise<Sidecar | null> {
+function sidecarPathFor(identifier: string): string {
+  return join(getAppIconsRoot(), `${cacheKeyFor(identifier)}.json`);
+}
+
+async function readSidecar(identifier: string): Promise<AnySidecar | null> {
   try {
-    const buf = await readFile(sidecarPathFor(bundleId), "utf8");
+    const buf = await readFile(sidecarPathFor(identifier), "utf8");
     const parsed = JSON.parse(buf) as unknown;
     if (
       typeof parsed !== "object" ||
       parsed === null ||
-      (parsed as { version?: unknown }).version !== 1
+      ((parsed as { version?: unknown }).version !== 1 &&
+        (parsed as { version?: unknown }).version !== 2)
     ) {
       return null;
     }
-    return parsed as Sidecar;
+    return parsed as AnySidecar;
   } catch {
     return null;
   }
@@ -115,7 +135,7 @@ async function writeSidecar(sidecar: Sidecar): Promise<void> {
   // tmp + rename so a crash mid-write doesn't leave a half-flushed
   // JSON sidecar that parses but lies. If the rename itself fails,
   // best-effort unlink the tmp so it doesn't leak on disk forever.
-  const finalPath = sidecarPathFor(sidecar.bundleId);
+  const finalPath = sidecarPathFor(sidecar.identifier);
   const tmpPath = `${finalPath}.tmp-${process.pid}`;
   await writeFile(tmpPath, JSON.stringify(sidecar), "utf8");
   try {
@@ -126,48 +146,54 @@ async function writeSidecar(sidecar: Sidecar): Promise<void> {
   }
 }
 
-async function infoPlistMtime(appPath: string): Promise<number | null> {
+async function sourceMtime(sourcePath: string): Promise<number | null> {
   try {
-    const st = await stat(join(appPath, "Contents", "Info.plist"));
+    const statPath = sourcePath.toLowerCase().endsWith(".exe")
+      ? sourcePath
+      : join(sourcePath, "Contents", "Info.plist");
+    const st = await stat(statPath);
     return st.mtimeMs;
   } catch {
     return null;
   }
 }
 
-async function pngExists(bundleId: string): Promise<boolean> {
+async function pngExists(identifier: string): Promise<boolean> {
   try {
-    await stat(pngPathFor(bundleId));
+    await stat(pngPathFor(identifier));
     return true;
   } catch {
     return false;
   }
 }
 
-/** Validate `bundleId` matches the allow-list the Swift helper and
- *  protocol parser use — letters, digits, dot, underscore, dash. The
- *  protocol layer rejects malformed urls earlier; this is defence-
- *  in-depth so we never `${bundleId}` an unescaped string into a
- *  file path. */
-function isValidBundleId(bundleId: string): boolean {
-  return /^[A-Za-z0-9._-]+$/.test(bundleId);
+/** Defence-in-depth for protocol input. Windows paths are never used as cache
+ *  filenames (see cacheKeyFor), and traversal/device/UNC forms are rejected
+ *  before the native shell sees them. */
+function isValidIdentifier(identifier: string): boolean {
+  if (identifier.length <= 256 && /^[A-Za-z0-9._-]+$/.test(identifier)) {
+    return true;
+  }
+  if (identifier.length > 2048) return false;
+  if (!/^[A-Za-z]:\\[^<>:"|?*\r\n]+\.exe$/i.test(identifier)) return false;
+  return !/(?:^|\\)\.\.(?:\\|$)/.test(identifier);
 }
 
 /**
- * Return a path to a fresh icon PNG for `bundleId`, or `null` when
- * we can't produce one (bundle not installed locally, helper not
+ * Return a path to a fresh icon PNG for `identifier`, or `null` when
+ * we can't produce one (app not installed locally, helper not
  * available, etc.). Safe to call concurrently — duplicate requests
  * coalesce into one extraction.
  */
-export async function getAppIconPath(bundleId: string): Promise<string | null> {
-  if (PERMANENT_MISS.has(bundleId)) return null;
-  if (!isValidBundleId(bundleId)) return null;
+export async function getAppIconPath(identifier: string): Promise<string | null> {
+  if (PERMANENT_MISS.has(identifier)) return null;
+  if (!isValidIdentifier(identifier)) return null;
 
-  const negUntil = negativeCache.get(bundleId);
+  const negUntil = negativeCache.get(identifier);
   if (negUntil !== undefined && negUntil > Date.now()) return null;
-  if (negUntil !== undefined) negativeCache.delete(bundleId);
+  if (negUntil !== undefined) negativeCache.delete(identifier);
 
-  const existing = inFlight.get(bundleId);
+  const existing = inFlight.get(identifier);
   if (existing !== undefined) return existing;
 
   // PwrSnap-synthetic bundle ids — captures that didn't come from an
@@ -178,7 +204,7 @@ export async function getAppIconPath(bundleId: string): Promise<string | null> {
   // log a "miss" line for what's actually expected. The renderer's
   // `AppIcon` component has its own UI affordance for these (see
   // apps/desktop/src/renderer/src/features/shared/AppIcons.tsx).
-  if (SYNTHETIC_BUNDLE_IDS.has(bundleId)) {
+  if (SYNTHETIC_BUNDLE_IDS.has(identifier)) {
     return null;
   }
 
@@ -186,42 +212,55 @@ export async function getAppIconPath(bundleId: string): Promise<string | null> {
     try {
       await ensureRoot();
 
-      const sidecar = await readSidecar(bundleId);
-      if (sidecar !== null && (await pngExists(bundleId))) {
-        const liveMtime = await infoPlistMtime(sidecar.appPath);
-        if (liveMtime !== null && liveMtime === sidecar.infoPlistMtimeMs) {
-          return pngPathFor(bundleId);
+      const sidecar = await readSidecar(identifier);
+      if (sidecar !== null && (await pngExists(identifier))) {
+        const sidecarIdentifier = sidecar.version === 1
+          ? sidecar.bundleId
+          : sidecar.identifier;
+        const sourcePath = sidecar.version === 1
+          ? sidecar.appPath
+          : sidecar.sourcePath;
+        const recordedMtime = sidecar.version === 1
+          ? sidecar.infoPlistMtimeMs
+          : sidecar.sourceMtimeMs;
+        const liveMtime = await sourceMtime(sourcePath);
+        if (
+          sidecarIdentifier === identifier &&
+          liveMtime !== null &&
+          liveMtime === recordedMtime
+        ) {
+          return pngPathFor(identifier);
         }
       }
 
-      const outPath = pngPathFor(bundleId);
-      const result = await extractAppIcon(bundleId, outPath, EXTRACT_SIZE_PX);
+      const outPath = pngPathFor(identifier);
+      const result = await extractAppIcon(identifier, outPath, EXTRACT_SIZE_PX);
       if (!result.ok) {
-        log.info("app-icon extract miss", { bundleId, message: result.message });
-        negativeCache.set(bundleId, Date.now() + NEGATIVE_TTL_MS);
+        log.info("app-icon extract miss", { identifier, message: result.message });
+        negativeCache.set(identifier, Date.now() + NEGATIVE_TTL_MS);
         return null;
       }
-      const liveMtime = await infoPlistMtime(result.appPath);
+      const liveMtime = await sourceMtime(result.appPath);
       await writeSidecar({
-        version: 1,
-        bundleId,
-        appPath: result.appPath,
-        infoPlistMtimeMs: liveMtime ?? 0,
+        version: 2,
+        identifier,
+        sourcePath: result.appPath,
+        sourceMtimeMs: liveMtime ?? 0,
         extractedAt: Date.now()
       });
       return outPath;
     } catch (cause) {
       log.warn("app-icon resolve threw", {
-        bundleId,
+        identifier,
         message: cause instanceof Error ? cause.message : String(cause)
       });
-      negativeCache.set(bundleId, Date.now() + NEGATIVE_TTL_MS);
+      negativeCache.set(identifier, Date.now() + NEGATIVE_TTL_MS);
       return null;
     } finally {
-      inFlight.delete(bundleId);
+      inFlight.delete(identifier);
     }
   })();
 
-  inFlight.set(bundleId, work);
+  inFlight.set(identifier, work);
   return work;
 }

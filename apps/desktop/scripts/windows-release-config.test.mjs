@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 
@@ -92,5 +92,53 @@ describe("Windows release configuration", () => {
     expect(workflow).not.toContain("WINDOWS_UNSIGNED_RELEASE");
     expect(workflow).not.toContain("WIN_CSC_LINK");
     expect(workflow).not.toContain("FFMPEG_BUILDS_PAT");
+  });
+
+  test("release manifest verification asserts the decoder contract on both platforms", () => {
+    const workflow = read(".github/workflows/release.yml");
+
+    // The controlled build repo shipped a binary with no PNG decoder for two
+    // months because CI verified encoders and devices but never decoders. Every
+    // image-backed Sizzle reel failed to render in packaged builds. Both jobs
+    // must reject a manifest that does not carry the decoder contract.
+    expect(workflow).toContain("macOS FFmpeg manifest is missing required decoder check");
+    expect(workflow).toContain("Windows FFmpeg manifest is missing required decoder check");
+    expect(workflow.match(/requiredDecoders/g) ?? []).toHaveLength(2);
+  });
+
+  test("every FFmpeg build pin agrees across workflows and docs", () => {
+    // The macOS release job, the Windows release job, and (once the preview
+    // build consumes the controlled artifact) the preview job each pin
+    // FFMPEG_BUILD_SHA independently. If they drift, macOS and Windows ship
+    // binaries built from different sources and preview DMGs diverge from
+    // release DMGs — which is exactly what hid the missing PNG decoder.
+    const found = [];
+
+    const workflowDir = resolve(repoRoot, ".github/workflows");
+    for (const entry of readdirSync(workflowDir)) {
+      if (!/\.ya?ml$/.test(entry)) continue;
+      const text = read(`.github/workflows/${entry}`);
+      for (const match of text.matchAll(/FFMPEG_BUILD_SHA:\s*([0-9a-f]{40})\b/g)) {
+        found.push({ source: entry, sha: match[1] });
+      }
+    }
+
+    // Optional: the reference doc tabulates the same pin.
+    const docPath = "docs/ffmpeg-build-reference.md";
+    if (existsSync(resolve(repoRoot, docPath))) {
+      for (const match of read(docPath).matchAll(
+        /`FFMPEG_BUILD_SHA`\s*\|\s*`([0-9a-f]{40})`/g
+      )) {
+        found.push({ source: docPath, sha: match[1] });
+      }
+    }
+
+    expect(found.length).toBeGreaterThanOrEqual(2);
+
+    const distinct = [...new Set(found.map((entry) => entry.sha))];
+    expect(
+      distinct,
+      `FFmpeg build pins disagree: ${found.map((e) => `${e.source}=${e.sha}`).join(", ")}`
+    ).toHaveLength(1);
   });
 });

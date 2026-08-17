@@ -213,6 +213,14 @@ jobs:
           for (const encoder of ["h264_videotoolbox", "aac"]) {
             assert((manifest.requiredEncoders ?? []).includes(encoder), `macOS FFmpeg manifest is missing required encoder check: ${encoder}`);
           }
+          // Decoders were unverified until 2026-08, which is how a build with no
+          // PNG decoder shipped: --disable-autodetect turns off zlib, and ffmpeg
+          // selects png THROUGH zlib, so every image-backed Sizzle reel failed
+          // with "no decoder found for: png". Assert the manifest carries the
+          // decoder contract so a pin to a bad build fails the release instead.
+          for (const decoder of ["png", "mjpeg", "h264", "aac", "mp3"]) {
+            assert((manifest.requiredDecoders ?? []).includes(decoder), `macOS FFmpeg manifest is missing required decoder check: ${decoder}`);
+          }
           NODE
 
           mkdir -p apps/desktop/release-stage/build/ffmpeg
@@ -499,6 +507,13 @@ jobs:
           foreach ($encoder in @("h264_mf", "aac")) {
             if ($manifest.requiredEncoders -notcontains $encoder) {
               throw "Windows FFmpeg manifest is missing required encoder check: $encoder"
+            }
+          }
+          # See the matching decoder assertion in the macOS job: a build with no
+          # PNG decoder shipped because decoders were never verified.
+          foreach ($decoder in @("png", "mjpeg", "h264", "aac", "mp3")) {
+            if ($manifest.requiredDecoders -notcontains $decoder) {
+              throw "Windows FFmpeg manifest is missing required decoder check: $decoder"
             }
           }
           if ($manifest.requiredDevices -notcontains "gdigrab") {

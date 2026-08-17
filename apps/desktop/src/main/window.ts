@@ -30,6 +30,14 @@ import { activateForUserSurface } from "./process-split/activate-user-surface";
 import { signalLibraryWindowReady } from "./process-split/agent-bridge";
 import { showWindowWhenReady } from "./window-show";
 import { DesktopSettingsService } from "./settings/desktop-settings-service";
+import {
+  defaultLibraryWindowBounds,
+  fitLibraryWindowBoundsToWorkArea,
+  LIBRARY_WINDOW_MIN_HEIGHT,
+  LIBRARY_WINDOW_MIN_WIDTH,
+  readLibraryWindowBounds,
+  writeLibraryWindowBounds
+} from "./library-window-state";
 
 const log = getMainLogger("pwrsnap:window");
 const hotCpuLog = getMainLogger("pwrsnap:hot-cpu");
@@ -120,6 +128,8 @@ const SIZZLE_WINDOW_WIDTH = 1280;
 const SIZZLE_WINDOW_HEIGHT = 820;
 const APP_DOCUMENT_WINDOW_WIDTH = 920;
 const APP_DOCUMENT_WINDOW_HEIGHT = 760;
+const LIBRARY_WINDOW_STATE_FILENAME = "library-window-state.json";
+const LIBRARY_WINDOW_STATE_DEBOUNCE_MS = 250;
 
 type PlacementSource = {
   sourceWindowId?: number | undefined;
@@ -238,6 +248,53 @@ function themedWebPreferences(): Electron.WebPreferences {
 
 function isE2E(): boolean {
   return process.env.PWRSNAP_E2E === "1";
+}
+
+function libraryWindowStatePath(): string {
+  return join(app.getPath("userData"), LIBRARY_WINDOW_STATE_FILENAME);
+}
+
+function initialWindowsLibraryBounds(): Rectangle {
+  const saved = readLibraryWindowBounds(libraryWindowStatePath());
+  if (saved === null) {
+    return defaultLibraryWindowBounds(screen.getPrimaryDisplay().workArea);
+  }
+  const display = screen.getDisplayMatching(saved);
+  return fitLibraryWindowBoundsToWorkArea(saved, display.workArea);
+}
+
+function wireWindowsLibraryBoundsPersistence(window: BrowserWindow): void {
+  let timer: NodeJS.Timeout | null = null;
+
+  const persist = (): void => {
+    if (window.isDestroyed()) return;
+    try {
+      writeLibraryWindowBounds(libraryWindowStatePath(), window.getNormalBounds());
+    } catch (error) {
+      log.warn("failed to persist Library window bounds", {
+        message: serializeError(error)
+      });
+    }
+  };
+
+  const schedule = (): void => {
+    if (window.isMinimized() || window.isMaximized() || window.isFullScreen()) return;
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      persist();
+    }, LIBRARY_WINDOW_STATE_DEBOUNCE_MS);
+  };
+
+  window.on("move", schedule);
+  window.on("resize", schedule);
+  window.on("close", () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    persist();
+  });
 }
 
 function serializeError(error: unknown): string {
@@ -468,17 +525,17 @@ export function createMainWindow(): BrowserWindow {
   if (libraryWindow !== null && !libraryWindow.isDestroyed()) {
     return libraryWindow;
   }
+  const windowsBounds = process.platform === "win32" ? initialWindowsLibraryBounds() : null;
   const window = new BrowserWindow({
-    width: 1440,
-    height: 960,
+    ...(windowsBounds ?? { width: 1440, height: 960 }),
     // Keep this well below the responsive toolbar/grid breakpoints
     // (≤1024 narrow through ≤560 tiny, ≤640 very-narrow, plus the grid's
     // <560px-pane cell floor) so the narrow layouts are reachable by
     // resizing the window — not only by docking DevTools (which shrinks
     // the renderer viewport while the window frame stays put). The old
     // 1200 floor made every breakpoint unreachable in normal use.
-    minWidth: 480,
-    minHeight: 480,
+    minWidth: LIBRARY_WINDOW_MIN_WIDTH,
+    minHeight: LIBRARY_WINDOW_MIN_HEIGHT,
     show: false,
     title: "PwrSnap",
     // Main Library window keeps the native menu visible on Windows.
@@ -487,6 +544,9 @@ export function createMainWindow(): BrowserWindow {
     webPreferences: themedWebPreferences()
   });
   libraryWindow = window;
+  if (process.platform === "win32") {
+    wireWindowsLibraryBoundsPersistence(window);
+  }
 
   // No-op unless PWRSNAP_STARTUP_PROFILE=1 — captures a renderer CPU
   // profile + heap snapshot covering library startup. Must attach

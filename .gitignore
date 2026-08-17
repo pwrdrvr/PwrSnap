@@ -70,5 +70,8 @@ Thumbs.db
 # Design canvas iteration scraps (intermediate clipboard-paste images)
 design/uploads/
 
+# macOS Finder metadata from design handoffs; not a portable source asset.
+design/.thumbnail
+
 # /ce:review scratch dir — ephemeral review todos, not source
 todos/

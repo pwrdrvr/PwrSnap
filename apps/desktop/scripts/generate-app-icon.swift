@@ -3,6 +3,11 @@
 import AppKit
 import Foundation
 
+// Regenerates apps/desktop/build/icon.iconset/* and build/icon.png for PwrSnap.
+//
+//   swift scripts/generate-app-icon.swift build/icon.iconset
+//   iconutil -c icns build/icon.iconset -o build/icon.icns
+
 let outputDir = CommandLine.arguments.dropFirst().first ?? "build/icon.iconset"
 
 struct Color {
@@ -12,14 +17,20 @@ struct Color {
   // interpolate in linear light and render the upper half too bright.
   static let bgTop: (r: Double, g: Double, b: Double) = (30, 26, 20)
   static let bgBottom: (r: Double, g: Double, b: Double) = (10, 9, 8)
+
   // Accent orange — matched to PwrAgent's icon, whose most-saturated bar
-  // samples to rgb(232,116,58) / #e8743a. Defined in deviceRGB so the
-  // output pixels land on that exact value; the previous calibratedRGB
-  // value drifted lighter to #ee894a through the calibrated→device
-  // conversion. The mid/back layers are the same hue at lower opacity.
-  static let accent = NSColor(deviceRed: 232 / 255.0, green: 116 / 255.0, blue: 58 / 255.0, alpha: 1)
-  static let accentMid = NSColor(deviceRed: 232 / 255.0, green: 116 / 255.0, blue: 58 / 255.0, alpha: 0.55)
-  static let accentFaint = NSColor(deviceRed: 232 / 255.0, green: 116 / 255.0, blue: 58 / 255.0, alpha: 0.3)
+  // samples to rgb(232,116,58) / #e8743a. Kept as raw device-RGB components
+  // and handed straight to CGContext.setStrokeColor(red:green:blue:alpha:),
+  // which is DeviceRGB — the previous calibratedRGB NSColor drifted lighter
+  // to #ee894a through the calibrated→device conversion.
+  static let markR: CGFloat = 232 / 255.0
+  static let markG: CGFloat = 116 / 255.0
+  static let markB: CGFloat = 58 / 255.0
+
+  // The three depth tiers of the stacked-screenshots mark.
+  static let frontAlpha: CGFloat = 1.0
+  static let midAlpha: CGFloat = 0.55
+  static let backAlpha: CGFloat = 0.3
 }
 
 func renderIcon(size: Int) -> NSBitmapImageRep {
@@ -42,6 +53,8 @@ func renderIcon(size: Int) -> NSBitmapImageRep {
 
   let s = CGFloat(size)
   let scale = s / 1024.0
+  let cg = NSGraphicsContext.current!.cgContext
+  let bounds = CGRect(x: 0, y: 0, width: s, height: s)
 
   // Rounded-rect background — vertical gradient (warm charcoal at the top,
   // near-black at the bottom), matching the PwrAgent app icon. Filled per
@@ -65,7 +78,22 @@ func renderIcon(size: Int) -> NSBitmapImageRep {
   }
   NSGraphicsContext.restoreGraphicsState()
 
-  // Three stacked rectangles (PwrSnap mark) — centered in the icon
+  // ---------------------------------------------------------------------
+  // Three stacked rectangles (PwrSnap mark) — centered in the icon.
+  //
+  // The tiers are a HARD STACK, not a blend. Painting back → mid → front
+  // with plain source-over is technically correct alpha compositing, but it
+  // is not the mark: the back tier's 30% stroke shows *through* the mid
+  // tier's 55% stroke, and every crossing lights up as a brighter, more
+  // saturated patch — an X-ray look that reads as a rendering artifact.
+  //
+  // Instead each tier is knocked out wherever a tier in FRONT of it covers,
+  // so the front and mid rects are immutable in colour and opacity anywhere
+  // they are seen, and the back rect is simply behind them. Antialiasing is
+  // unaffected: the knockout clip's partial coverage at a boundary is
+  // exactly 1 − (the covering tier's coverage), i.e. the same weight plain
+  // source-over would have applied — so edges stay smooth, no seams.
+  // ---------------------------------------------------------------------
   let rectWidth = 450 * scale
   let rectHeight = 340 * scale
   let rx = 48 * scale
@@ -76,32 +104,50 @@ func renderIcon(size: Int) -> NSBitmapImageRep {
   let centerX = s / 2
   let centerY = s / 2
 
-  // Back rect (faintest)
-  let r3x = centerX - rectWidth / 2 + offsetX
-  let r3y = centerY - rectHeight / 2 + offsetY
-  let r3 = NSBezierPath(roundedRect: NSRect(x: r3x, y: r3y, width: rectWidth, height: rectHeight),
-                        xRadius: rx, yRadius: rx)
-  r3.lineWidth = strokeWidth
-  Color.accentFaint.setStroke()
-  r3.stroke()
+  func markPath(dx: CGFloat, dy: CGFloat) -> CGPath {
+    let rect = CGRect(x: centerX - rectWidth / 2 + dx,
+                      y: centerY - rectHeight / 2 + dy,
+                      width: rectWidth, height: rectHeight)
+    return CGPath(roundedRect: rect, cornerWidth: rx, cornerHeight: rx, transform: nil)
+  }
 
-  // Middle rect
-  let r2x = centerX - rectWidth / 2
-  let r2y = centerY - rectHeight / 2
-  let r2 = NSBezierPath(roundedRect: NSRect(x: r2x, y: r2y, width: rectWidth, height: rectHeight),
-                        xRadius: rx, yRadius: rx)
-  r2.lineWidth = strokeWidth
-  Color.accentMid.setStroke()
-  r2.stroke()
+  // The area a stroked tier actually covers — used to cut it out of the
+  // tiers behind it.
+  func strokeRegion(_ path: CGPath) -> CGPath {
+    path.copy(strokingWithWidth: strokeWidth, lineCap: .round, lineJoin: .round, miterLimit: 10)
+  }
 
-  // Front rect (full opacity)
-  let r1x = centerX - rectWidth / 2 - offsetX
-  let r1y = centerY - rectHeight / 2 - offsetY
-  let r1 = NSBezierPath(roundedRect: NSRect(x: r1x, y: r1y, width: rectWidth, height: rectHeight),
-                        xRadius: rx, yRadius: rx)
-  r1.lineWidth = strokeWidth
-  Color.accent.setStroke()
-  r1.stroke()
+  func paint(_ path: CGPath, alpha: CGFloat, occludedBy occluders: [CGPath]) {
+    cg.saveGState()
+    // Each clip is "the whole tile MINUS this occluder's stroke band",
+    // expressed even-odd (bounds + ring outline). Sequential clips
+    // intersect, so N occluders knock out their union.
+    for occluder in occluders {
+      let inverse = CGMutablePath()
+      inverse.addRect(bounds)
+      inverse.addPath(strokeRegion(occluder))
+      cg.addPath(inverse)
+      cg.clip(using: .evenOdd)
+    }
+    cg.addPath(path)
+    cg.setLineWidth(strokeWidth)
+    cg.setLineJoin(.round)
+    cg.setLineCap(.round)
+    cg.setStrokeColor(red: Color.markR, green: Color.markG, blue: Color.markB, alpha: alpha)
+    cg.strokePath()
+    cg.restoreGState()
+  }
+
+  // Back rect (faintest) — top-right of the stack, y-up context
+  let back = markPath(dx: offsetX, dy: offsetY)
+  // Middle rect — centered
+  let mid = markPath(dx: 0, dy: 0)
+  // Front rect (full opacity) — bottom-left of the stack
+  let front = markPath(dx: -offsetX, dy: -offsetY)
+
+  paint(back, alpha: Color.backAlpha, occludedBy: [mid, front])
+  paint(mid, alpha: Color.midAlpha, occludedBy: [front])
+  paint(front, alpha: Color.frontAlpha, occludedBy: [])
 
   NSGraphicsContext.restoreGraphicsState()
   return bitmap

@@ -127,6 +127,118 @@ describe("VideoTimeline", () => {
     expect(parentClicks).toBe(0);
   });
 
+  test("dragging a trim handle seeks the preview to the edge it lands on", () => {
+    const seeks: number[] = [];
+    const { el } = render({
+      range: { start: 0, end: 16 },
+      onSeek: (sec) => seeks.push(sec)
+    });
+    const outHandle = el.querySelector('[data-testid="video-timeline-out"]')!;
+    const strip = el.querySelector(".vtl__strip")!;
+    // 800 px ↔ 16 s → 50 px per second. Picking a trim point you can't
+    // see the frame for is guesswork, so every handle move seeks.
+    pointer(outHandle, "pointerdown", 700);
+    pointer(strip, "pointermove", 400);
+    pointer(strip, "pointerup", 400);
+    expect(seeks).toEqual([14, 8, 8]);
+  });
+
+  test("the trim seek follows the clamped handle, not the raw pointer", () => {
+    const seeks: number[] = [];
+    const { el } = render({
+      range: { start: 8, end: 16 },
+      onSeek: (sec) => seeks.push(sec)
+    });
+    const outHandle = el.querySelector('[data-testid="video-timeline-out"]')!;
+    const strip = el.querySelector(".vtl__strip")!;
+    // Dragged well past the in-handle: the out edge stops at the
+    // MIN_RANGE_SEC gap, and the preview must show THAT frame — not
+    // the 2 s the pointer is actually over.
+    pointer(outHandle, "pointerdown", 700);
+    pointer(strip, "pointermove", 100);
+    expect(seeks.at(-1)).toBe(8.1);
+  });
+
+  test("Escape mid-drag restores the range and does not reach other handlers", () => {
+    const changes: Array<{ range: VideoRange; commit: boolean }> = [];
+    const seeks: number[] = [];
+    // Stands in for the Library's focus-mode Esc ("close the editor"),
+    // which listens on window in the bubble phase.
+    let editorClosed = 0;
+    const closeEditor = (): void => {
+      editorClosed += 1;
+    };
+    window.addEventListener("keydown", closeEditor);
+    try {
+      const { el } = render({
+        range: { start: 2, end: 12 },
+        onSeek: (sec) => seeks.push(sec),
+        onRangeChange: (range, commit) => changes.push({ range, commit })
+      });
+      const outHandle = el.querySelector('[data-testid="video-timeline-out"]')!;
+      const strip = el.querySelector(".vtl__strip")!;
+
+      pointer(outHandle, "pointerdown", 600);
+      pointer(strip, "pointermove", 300);
+      expect(changes.at(-1)).toEqual({ range: { start: 2, end: 6 }, commit: false });
+
+      act(() => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+        );
+      });
+
+      // Range is back where the drag started, committed so the caller
+      // settles rather than sitting in a permanent "dragging" state.
+      expect(changes.at(-1)).toEqual({ range: { start: 2, end: 12 }, commit: true });
+      expect(seeks.at(-1)).toBe(12);
+      // The editor must NOT close — mid-drag, Esc means undo the drag.
+      expect(editorClosed).toBe(0);
+      // Drag is over: a later pointerup is inert, and the tooltip is gone.
+      expect(el.querySelector(".vtl__tip")).toBeNull();
+      pointer(strip, "pointerup", 100);
+      expect(changes.at(-1)).toEqual({ range: { start: 2, end: 12 }, commit: true });
+    } finally {
+      window.removeEventListener("keydown", closeEditor);
+    }
+  });
+
+  test("Escape with no drag in flight leaves other handlers alone", () => {
+    let editorClosed = 0;
+    const closeEditor = (): void => {
+      editorClosed += 1;
+    };
+    window.addEventListener("keydown", closeEditor);
+    try {
+      render({ range: { start: 2, end: 12 } });
+      act(() => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+        );
+      });
+      expect(editorClosed).toBe(1);
+    } finally {
+      window.removeEventListener("keydown", closeEditor);
+    }
+  });
+
+  test("reports drag start / end so the caller can pause playback", () => {
+    const events: boolean[] = [];
+    const { el } = render({
+      range: { start: 0, end: 16 },
+      onInteractingChange: (interacting) => events.push(interacting)
+    });
+    const inHandle = el.querySelector('[data-testid="video-timeline-in"]')!;
+    const strip = el.querySelector(".vtl__strip")!;
+
+    pointer(inHandle, "pointerdown", 100);
+    expect(events).toEqual([true]);
+    pointer(strip, "pointermove", 200);
+    expect(events).toEqual([true]);
+    pointer(strip, "pointerup", 200);
+    expect(events).toEqual([true, false]);
+  });
+
   test("the out-handle can't cross the in-handle (keeps the minimum gap)", () => {
     const changes: Array<{ range: VideoRange; commit: boolean }> = [];
     const { el } = render({

@@ -153,6 +153,44 @@ export function VideoStage({
     void el.play().catch(() => undefined);
   }, [durationSec, stopShuttle]);
 
+  // Scrubbing the timeline (body scrub or a trim handle) pauses for the
+  // duration of the gesture and restores playback on release. Without
+  // this, a drag started while playing fights itself — the element keeps
+  // advancing between the seeks, so the frame under the handle is never
+  // the frame you're looking at and the playhead wanders off on its own.
+  // Deliberately keyed off the element's own `playing` state, so a drag
+  // started while paused stays paused.
+  const resumeAfterDragRef = useRef(false);
+  const playingRef = useRef(playing);
+  playingRef.current = playing;
+  const [pendingResume, setPendingResume] = useState(false);
+  const onTimelineInteracting = useCallback(
+    (interacting: boolean): void => {
+      if (interacting) {
+        resumeAfterDragRef.current = playingRef.current;
+        pause();
+        return;
+      }
+      if (!resumeAfterDragRef.current) return;
+      resumeAfterDragRef.current = false;
+      setPendingResume(true);
+    },
+    [pause]
+  );
+
+  // Resume AFTER the commit, never inline in the drag-end callback.
+  // `play()`'s loop-in-range check reads `rangeRef`, which is assigned
+  // during render — so in the same synchronous tick it still holds the
+  // range as of the last commit. That matters for Escape-cancel, which
+  // restores the range and ends the drag in one tick: playing inline
+  // would test the head against the ABANDONED range and snap it to the
+  // in-point the user just backed out of.
+  useEffect(() => {
+    if (!pendingResume) return;
+    setPendingResume(false);
+    play();
+  }, [pendingResume, play]);
+
   // Reverse shuttle emulation: Chromium doesn't honor negative
   // playbackRate, so J steps `currentTime` backwards each frame.
   const shuttle = useCallback(
@@ -394,6 +432,7 @@ export function VideoStage({
         }}
         onRangeChange={setRange}
         onWidthChange={onStripWidth}
+        onInteractingChange={onTimelineInteracting}
         label="Recording timeline"
       />
     </div>

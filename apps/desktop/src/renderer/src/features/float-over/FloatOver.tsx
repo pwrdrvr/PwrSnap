@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   CaptureEnrichment,
   CapturesLocation,
@@ -350,6 +350,12 @@ export function FloatOver({
   const [tags, setTags] = useState<string[]>(acceptedTags);
   const [hovering, setHovering] = useState(false);
   const [nativeDragging, setNativeDragging] = useState(false);
+  // A trim-handle drag on the video strip takes pointer capture, so it
+  // keeps running after the pointer leaves the toast — `mouseleave`
+  // fires, `hovering` drops, and without this term the countdown would
+  // resume and close the toast mid-drag, losing the trim. Cleared by
+  // VideoTimeline on release / cancel / lost capture / unmount.
+  const [trimDragging, setTrimDragging] = useState(false);
   const [progress, setProgress] = useState(1);
   const [exiting, setExiting] = useState(false);
   const [storage, setStorage] = useState({ drive: false, dropbox: false, s3: false });
@@ -362,6 +368,9 @@ export function FloatOver({
   const elapsedAtPause = useRef(0);
   const rafRef = useRef<number | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  // The preview `<video>`, handed to the trim strip so dragging an
+  // in/out handle parks the preview on that frame.
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   // Stable ref to `onDismiss` so the countdown effect can call the
   // latest callback without re-subscribing on every parent re-render.
   // Without this, an enrichment-arrived re-render (which creates a
@@ -419,6 +428,7 @@ export function FloatOver({
     awaitingAi ||
     hovering ||
     nativeDragging ||
+    trimDragging ||
     hasUserDescription ||
     hasUserTitle ||
     userTagInteractions > 0;
@@ -494,6 +504,13 @@ export function FloatOver({
   useEffect(() => {
     const finishNativeDrag = (event?: MouseEvent | DragEvent): void => {
       setNativeDragging(false);
+      // Backstop for the trim hold. The strip's own pointerup only
+      // reaches `VideoTimeline` while pointer capture holds; if capture
+      // was never taken (setPointerCapture threw) the release lands on
+      // whatever element is under the pointer and the hold would stick,
+      // pinning the toast on screen forever. A window-level mouseup
+      // means the button is up, so it can never fire mid-drag.
+      setTrimDragging(false);
       if (event !== undefined) {
         syncHoverFromPoint(event.clientX, event.clientY);
       }
@@ -619,7 +636,7 @@ export function FloatOver({
           // controls. Same component the tray uses for its
           // "last recording" preview, so the surfaces behave
           // consistently.
-          <HoverAutoplayVideo src={asset.src} />
+          <HoverAutoplayVideo src={asset.src} videoRef={previewVideoRef} />
         ) : (
           <img
             src={visibleSrc}
@@ -733,7 +750,11 @@ export function FloatOver({
         // 4px` so the grid sits at the same horizontal inset as
         // the image copy row.
         <div className="fo__export-grid">
-          <FloatOverVideoExport asset={asset} />
+          <FloatOverVideoExport
+            asset={asset}
+            onTrimDraggingChange={setTrimDragging}
+            previewVideoRef={previewVideoRef}
+          />
         </div>
       ) : (
         <div className="fo__copy">
@@ -1059,9 +1080,38 @@ export function FoDesktopFrame({
  * `defaultRange` the Library stage edits — `useVideoTrimRange`
  * persists on handle release (debounced) and the panel receives the
  * displayed range explicitly so what you see is what encodes.
+ *
+ * `onTrimDraggingChange` forwards the strip's drag state up to the
+ * toast's auto-dismiss pause set — the drag holds pointer capture and
+ * routinely continues outside the toast's bounds, where hover state
+ * can no longer see it.
+ *
+ * `previewVideoRef` points at the toast's own preview `<video>`, which
+ * doubles as the trim strip's scrub monitor: dragging a handle (or
+ * pressing the filmstrip) parks it on that frame. Without it you're
+ * picking trim points off a 40 px filmstrip blind.
  */
-function FloatOverVideoExport({ asset }: { asset: Extract<FloatOverAsset, { kind: "video" }> }) {
+function FloatOverVideoExport({
+  asset,
+  onTrimDraggingChange,
+  previewVideoRef
+}: {
+  asset: Extract<FloatOverAsset, { kind: "video" }>;
+  onTrimDraggingChange: (dragging: boolean) => void;
+  previewVideoRef: React.RefObject<HTMLVideoElement | null>;
+}) {
   const [stripWidth, setStripWidth] = useState(0);
+  const seekPreview = useCallback(
+    (sec: number): void => {
+      const el = previewVideoRef.current;
+      if (el === null) return;
+      // Hovering the preview autoplays it; a live playhead would fight
+      // the scrub and immediately drift off the frame we just parked on.
+      el.pause();
+      el.currentTime = sec;
+    },
+    [previewVideoRef]
+  );
   const trim = useVideoTrimRange({
     captureId: asset.captureId,
     durationSec: asset.durationSec,
@@ -1084,8 +1134,10 @@ function FloatOverVideoExport({ asset }: { asset: Extract<FloatOverAsset, { kind
           durationSec={asset.durationSec}
           range={trim.range}
           frames={assets.frames}
+          onSeek={seekPreview}
           onRangeChange={trim.setRange}
           onWidthChange={setStripWidth}
+          onInteractingChange={onTrimDraggingChange}
           label="Trim recording"
         />
       </div>

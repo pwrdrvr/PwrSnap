@@ -314,6 +314,164 @@ describe("FloatOver asset mode", () => {
     expect(el.querySelector(".fo__hdr-title")?.textContent).toBe("Snap captured");
   });
 
+  // Regression: issue #77 / R12 — "auto-dismiss must continue to pause
+  // while the scrubber is being interacted with".
+  //
+  // `VideoTimeline.beginDrag` takes pointer capture, so a trim drag
+  // keeps running after the pointer leaves the toast — and with a 40 px
+  // strip inside a 360 px toast, leaving is the normal case. The toast
+  // drove its pause state purely off `onMouseEnter` / `onMouseLeave`,
+  // so `mouseleave` dropped `hovering`, the compact variant's 4000 ms
+  // countdown resumed, and the toast closed mid-drag, discarding the
+  // in-progress trim.
+  test("a trim-handle drag keeps the toast open after the pointer leaves it", async () => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame", "Date"]
+    });
+    const onDismiss = vi.fn();
+    const el = await renderFloatOver({
+      // compact: autoMs = 4000, and no annotate / AI rows to pause on.
+      variant: "compact",
+      asset: {
+        kind: "video",
+        src: "pwrsnap-capture://r/abc",
+        captureId: "abc",
+        durationSec: 12.5,
+        widthPx: 1920,
+        heightPx: 1080,
+        defaultRange: { start: 0, end: 12.5 }
+      },
+      src: "pwrsnap-capture://r/abc",
+      startCountdown: true,
+      onDismiss
+    });
+
+    const fo = el.querySelector(".fo")!;
+    const strip = el.querySelector(".vtl__strip")!;
+    const inHandle = el.querySelector('[data-testid="video-timeline-in"]')!;
+
+    // Baseline: nothing is holding the countdown.
+    expect(fo.classList.contains("is-paused")).toBe(false);
+
+    // Pointer enters the toast, then presses the in-handle.
+    await act(async () => {
+      fo.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true, relatedTarget: document.body })
+      );
+    });
+    await act(async () => {
+      inHandle.dispatchEvent(
+        new MouseEvent("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 40,
+          clientY: 10,
+          button: 0
+        })
+      );
+    });
+    expect(fo.classList.contains("is-paused")).toBe(true);
+
+    // Pointer is dragged off the toast. Pointer capture keeps the drag
+    // alive, but `mouseleave` fires and hover state drops — this is the
+    // exact moment the countdown used to restart.
+    await act(async () => {
+      fo.dispatchEvent(
+        new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })
+      );
+      window.dispatchEvent(new MouseEvent("mouseout", { relatedTarget: null, bubbles: true }));
+    });
+    expect(fo.classList.contains("is-paused")).toBe(true);
+
+    // Well past the compact variant's 4000 ms window plus the 220 ms
+    // exit animation: the toast must still be here, mid-drag.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8000);
+    });
+    expect(onDismiss).not.toHaveBeenCalled();
+    expect(fo.classList.contains("is-exiting")).toBe(false);
+    expect(el.querySelector('[data-testid="video-timeline-compact"]')).not.toBeNull();
+
+    // Release: the hold lifts and the countdown resumes. This half also
+    // proves the advance above would have dismissed an unheld toast.
+    await act(async () => {
+      strip.dispatchEvent(
+        new MouseEvent("pointerup", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 40,
+          clientY: 10,
+          button: 0
+        })
+      );
+    });
+    expect(fo.classList.contains("is-paused")).toBe(false);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8000);
+    });
+    expect(fo.classList.contains("is-exiting")).toBe(true);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  // The toast's preview <video> doubles as the trim strip's scrub
+  // monitor. Without this wiring you pick trim points off a 40 px
+  // filmstrip blind — the preview just sits on frame 0 no matter where
+  // the handles go, which makes the trim UI useless.
+  test("dragging a trim handle parks the preview video on that frame", async () => {
+    // jsdom has no layout; pin the strip to 800 px so px↔sec math runs.
+    const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 80,
+      width: 800,
+      height: 80,
+      toJSON: () => ({})
+    } as DOMRect);
+    try {
+      const el = await renderToast({
+        kind: "video",
+        src: "pwrsnap-capture://r/abc",
+        captureId: "abc",
+        durationSec: 12.5,
+        widthPx: 1920,
+        heightPx: 1080,
+        defaultRange: { start: 0, end: 12.5 }
+      });
+
+      const video = el.querySelector<HTMLVideoElement>(".fo__preview video")!;
+      const strip = el.querySelector(".vtl__strip")!;
+      const outHandle = el.querySelector('[data-testid="video-timeline-out"]')!;
+      expect(video.currentTime).toBe(0);
+
+      const at = (type: string, clientX: number): MouseEvent =>
+        new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY: 10, button: 0 });
+
+      // 800 px ↔ 12.5 s. Grab the out handle and drag it to the middle.
+      await act(async () => {
+        outHandle.dispatchEvent(at("pointerdown", 800));
+      });
+      await act(async () => {
+        strip.dispatchEvent(at("pointermove", 400));
+      });
+      expect(video.currentTime).toBe(6.25);
+
+      // Still tracking on release, and the range agrees with the frame.
+      await act(async () => {
+        strip.dispatchEvent(at("pointerup", 320));
+      });
+      expect(video.currentTime).toBe(5);
+      expect(el.querySelector('[data-testid="video-timeline-trim-label"]')?.textContent).toBe(
+        "TRIM 0:00.0 – 0:05.0 · 5 s"
+      );
+    } finally {
+      rect.mockRestore();
+    }
+  });
+
   test("labels the sticky home fallback as the saved destination", async () => {
     const el = await renderFloatOver({
       src: "pwrsnap-capture://r/img",

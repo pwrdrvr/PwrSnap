@@ -61,6 +61,16 @@ export type VideoTimelineProps = {
   /** Called with the measured strip width (CSS px) so the caller can
    *  size its `video:frames` request. */
   onWidthChange?: ((widthPx: number) => void) | undefined;
+  /** `true` when a pointer drag (scrub / trim handle) starts, `false`
+   *  when it ends — release, cancel, lost capture, or unmount mid-drag.
+   *
+   *  Exists because `beginDrag` takes pointer capture, so a drag keeps
+   *  running after the pointer leaves the strip (and, in the float-over
+   *  toast, after it leaves the toast entirely). Hover-driven "user is
+   *  busy" state therefore can't see the drag. The float-over feeds
+   *  this into its auto-dismiss pause set so the toast can't close out
+   *  from under an in-progress trim; the Library stage ignores it. */
+  onInteractingChange?: ((interacting: boolean) => void) | undefined;
   compact?: boolean | undefined;
   /** Test hook / a11y label prefix. */
   label?: string | undefined;
@@ -87,6 +97,22 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   const [width, setWidth] = useState(0);
   const [drag, setDrag] = useState<{ mode: DragMode; sec: number } | null>(null);
   const dragRef = useRef<{ mode: DragMode; pointerId: number } | null>(null);
+  // Where the drag started, so Escape can put things back. Captured at
+  // pointerdown because by the time the user wants out, `range` has
+  // already been walked to wherever they dragged it.
+  const dragStartRef = useRef<{ range: VideoRange; time: number } | null>(null);
+
+  // Interaction notification goes through a ref so the unmount cleanup
+  // can reach the latest callback without re-subscribing, and so a
+  // parent that re-creates the function each render doesn't churn.
+  const interactingCbRef = useRef(props.onInteractingChange);
+  interactingCbRef.current = props.onInteractingChange;
+  const interactingRef = useRef(false);
+  const setInteracting = useCallback((next: boolean): void => {
+    if (interactingRef.current === next) return;
+    interactingRef.current = next;
+    interactingCbRef.current?.(next);
+  }, []);
 
   // Measure the strip so px↔sec math and the frames request agree.
   useLayoutEffect(() => {
@@ -125,14 +151,24 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
           ? clampRange({ start: Math.min(sec, range.end - MIN_RANGE_SEC), end: range.end }, durationSec)
           : clampRange({ start: range.start, end: Math.max(sec, range.start + MIN_RANGE_SEC) }, durationSec);
       onRangeChange(next, commit);
+      // Park the preview on the edge being dragged. Choosing a trim
+      // point you can't see the frame for is guesswork — the whole
+      // reason to drag a handle is to watch where it lands.
+      //
+      // Seeks to the CLAMPED edge, not the raw pointer position, so the
+      // preview keeps matching the handle once it stops against the
+      // opposite handle's MIN_RANGE_SEC gap or a clip boundary.
+      onSeek?.(mode === "in" ? next.start : next.end);
     },
     [durationSec, onRangeChange, onSeek, range.end, range.start]
   );
 
   const beginDrag = (mode: DragMode) => (e: ReactPointerEvent<HTMLElement>): void => {
     if (e.button !== 0) return;
-    // Compact strips (float-over) have no player to scrub — only the
-    // handles are interactive there.
+    // Body-scrub needs somewhere to seek. Without `onSeek` there's no
+    // preview surface to drive, so a press on the strip body would move
+    // nothing — leave those presses inert and keep the handles the only
+    // interactive part.
     if (mode === "scrub" && onSeek === undefined) return;
     e.preventDefault();
     e.stopPropagation();
@@ -144,6 +180,8 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
       /* jsdom */
     }
     dragRef.current = { mode, pointerId: e.pointerId };
+    dragStartRef.current = { range, time: currentTime };
+    setInteracting(true);
     const sec = secAt(e.clientX);
     setDrag({ mode, sec });
     applyDrag(mode, sec, false);
@@ -161,9 +199,11 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
     const d = dragRef.current;
     if (d === null || d.pointerId !== e.pointerId) return;
     dragRef.current = null;
+    dragStartRef.current = null;
     const sec = secAt(e.clientX);
     setDrag(null);
     applyDrag(d.mode, sec, true);
+    setInteracting(false);
     try {
       stripRef.current?.releasePointerCapture(e.pointerId);
     } catch {
@@ -171,8 +211,69 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
     }
   };
 
-  // No drag-cancel gesture: the range follows the pointer and commits
-  // on release, matching the handles' direct-manipulation feel.
+  // Capture released without a pointerup / pointercancel (the OS took
+  // the gesture over). Finish the drag so the range still commits — an
+  // uncommitted range never persists and pins `useVideoTrimRange`'s
+  // dragging flag — and so the interaction hold drops.
+  //
+  // Deliberately commits at the LAST OBSERVED drag position rather than
+  // re-deriving one from the event: `lostpointercapture` is not a
+  // positional event, and its coordinates need not reflect where the
+  // pointer actually is. Committing `secAt(0)` from a zeroed event would
+  // silently persist a MIN_RANGE_SEC sliver over the user's clip.
+  //
+  // `endDrag` nulls `dragRef` before calling `releasePointerCapture`, so
+  // the lostpointercapture that a normal release fires lands here as a
+  // no-op. (Capture lost because the strip left the DOM does NOT reach
+  // this handler — the event has no path to React's delegated root
+  // listener once the node is detached. That case is covered by the
+  // unmount cleanup below, which drops the hold without committing.)
+  const onLostPointerCapture = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    const d = dragRef.current;
+    if (d === null || d.pointerId !== e.pointerId) return;
+    dragRef.current = null;
+    const sec = drag?.sec;
+    setDrag(null);
+    if (sec !== undefined) applyDrag(d.mode, sec, true);
+    setInteracting(false);
+  };
+
+  // Escape abandons the drag — the "I messed up, put it back" reflex.
+  // Restores with `commit: true` so the caller settles: an uncommitted
+  // range never persists AND leaves `useVideoTrimRange` stuck in its
+  // dragging state, blocking upstream adoption.
+  //
+  // What the preview lands on differs by mode, deliberately. A scrub
+  // goes back to `start.time`, the playhead's pre-drag position. A
+  // handle drag parks on the RESTORED EDGE instead — that edge is the
+  // thing the user just put back, so it's the frame worth confirming,
+  // and the float-over has no playhead of its own (`currentTime`
+  // defaults to 0 there), so honoring `start.time` would jump its
+  // preview to frame 0 on every cancel.
+  const cancelDrag = (): void => {
+    const d = dragRef.current;
+    if (d === null) return;
+    const start = dragStartRef.current;
+    dragRef.current = null;
+    dragStartRef.current = null;
+    setDrag(null);
+    if (start !== null) {
+      if (d.mode === "scrub") {
+        onSeek?.(start.time);
+      } else {
+        onRangeChange(start.range, true);
+        onSeek?.(d.mode === "in" ? start.range.start : start.range.end);
+      }
+    }
+    setInteracting(false);
+    try {
+      stripRef.current?.releasePointerCapture(d.pointerId);
+    } catch {
+      /* jsdom */
+    }
+  };
+  const cancelDragRef = useRef(cancelDrag);
+  cancelDragRef.current = cancelDrag;
 
   const inX = secToPx(range.start, durationSec, width);
   const outX = secToPx(range.end, durationSec, width);
@@ -195,10 +296,32 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   };
 
   useEffect(() => {
+    if (!dragging) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      // Capture phase on `window` is the earliest point in the dispatch
+      // path, so this beats every bubble-phase Escape handler in the app
+      // — notably the Library's focus-mode "close the editor". Stopping
+      // propagation here keeps the editor open: mid-drag, Escape means
+      // "undo this drag", not "throw away the whole session".
+      event.preventDefault();
+      event.stopPropagation();
+      cancelDragRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [dragging]);
+
+  useEffect(() => {
     // Unmount mid-drag (capture navigated away): drop the pointer
-    // bookkeeping so a late pointerup can't fire into a dead closure.
+    // bookkeeping so a late pointerup can't fire into a dead closure,
+    // and release the interaction hold so the caller isn't pinned.
     return () => {
       dragRef.current = null;
+      if (interactingRef.current) {
+        interactingRef.current = false;
+        interactingCbRef.current?.(false);
+      }
     };
   }, []);
 
@@ -233,6 +356,7 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onLostPointerCapture={onLostPointerCapture}
         role="slider"
         aria-label={props.label ?? "Video timeline"}
         aria-valuemin={0}

@@ -15,7 +15,7 @@
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
 
 beforeAll(() => {
@@ -88,6 +88,35 @@ function mountStage(reel: boolean): HTMLElement {
   return stage;
 }
 
+/** Like `mountStage`, but with a `trim` that actually holds state, so
+ *  `setRange` feeds a new range back through props the way the real
+ *  Library-level `useVideoTrimRange` does. Needed by anything that
+ *  depends on the stage seeing a committed range change. */
+function mountStatefulStage(initialRange = { start: 0, end: 10 }): HTMLElement {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  let current = initialRange;
+  const paint = (): void => {
+    root!.render(
+      createElement(VideoStage, {
+        record,
+        video,
+        reel: false,
+        trim: { range: current, setRange, pending: false }
+      })
+    );
+  };
+  function setRange(next: { start: number; end: number }): void {
+    current = next;
+    paint();
+  }
+  act(() => paint());
+  const stage = container.querySelector<HTMLElement>('[data-testid="video-stage"]');
+  if (stage === null) throw new Error("video stage did not render");
+  return stage;
+}
+
 /** Dispatch a keydown the way the browser would for the CURRENTLY
  *  focused element, and report whether a window-level listener (the
  *  Library's capture navigation) saw it. */
@@ -141,5 +170,132 @@ describe("VideoStage keyboard ownership", () => {
     // Now the stage owns the keyboard: frame stepping works and the
     // window handler correctly does NOT also navigate.
     expect(pressArrowRight()).toBe(false);
+  });
+});
+
+// Dragging the timeline while the clip is playing used to fight itself:
+// the element kept advancing between the drag's seeks, so the frame
+// under the handle was never the frame on screen and the playhead
+// wandered off on its own. The gesture now pauses for its duration and
+// restores playback on release.
+describe("VideoStage timeline drag vs playback", () => {
+  function stubMedia(): { calls: string[]; restore: () => void } {
+    const calls: string[] = [];
+    const play = vi
+      .spyOn(HTMLMediaElement.prototype, "play")
+      .mockImplementation(function (this: HTMLMediaElement) {
+        calls.push("play");
+        return Promise.resolve();
+      });
+    const pause = vi
+      .spyOn(HTMLMediaElement.prototype, "pause")
+      .mockImplementation(function (this: HTMLMediaElement) {
+        calls.push("pause");
+      });
+    return {
+      calls,
+      restore: () => {
+        play.mockRestore();
+        pause.mockRestore();
+      }
+    };
+  }
+
+  function pointerOn(el: Element, type: string, clientX: number): void {
+    act(() => {
+      el.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY: 5, button: 0 })
+      );
+    });
+  }
+
+  function handles(stage: HTMLElement): { inHandle: Element; strip: Element } {
+    return {
+      inHandle: stage.querySelector('[data-testid="video-timeline-in"]')!,
+      strip: stage.querySelector(".vtl__strip")!
+    };
+  }
+
+  test("pauses for the drag and resumes when it was playing", () => {
+    const media = stubMedia();
+    try {
+      const stage = mountStage(false);
+      // The stage tracks playback off the element's own events.
+      act(() => {
+        stage.querySelector("video")!.dispatchEvent(new Event("play"));
+      });
+
+      const { inHandle, strip } = handles(stage);
+      pointerOn(inHandle, "pointerdown", 10);
+      pointerOn(strip, "pointermove", 40);
+      expect(media.calls).toEqual(["pause"]);
+
+      pointerOn(strip, "pointerup", 40);
+      expect(media.calls).toEqual(["pause", "play"]);
+    } finally {
+      media.restore();
+    }
+  });
+
+  // `play()` reads `rangeRef`, which is assigned during render — so in
+  // the drag-end callback's own tick it still holds the range as of the
+  // last commit. Escape-cancel restores the range and ends the drag in
+  // one tick, so resuming inline would test the head against the range
+  // the user just abandoned and snap it to that in-point. The resume
+  // has to wait for the commit.
+  test("Escape-cancel resumes against the restored range, not the abandoned one", () => {
+    const media = stubMedia();
+    // jsdom has no layout; 800 px over a 10 s clip → 80 px per second.
+    const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 80,
+      width: 800,
+      height: 80,
+      toJSON: () => ({})
+    } as DOMRect);
+    try {
+      const stage = mountStatefulStage();
+      const el = stage.querySelector("video")!;
+      act(() => {
+        el.dispatchEvent(new Event("play"));
+      });
+
+      // Drag the in-handle out to 5 s, then back out of the whole thing.
+      const { inHandle, strip } = handles(stage);
+      pointerOn(inHandle, "pointerdown", 0);
+      pointerOn(strip, "pointermove", 400);
+      act(() => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+        );
+      });
+
+      expect(media.calls).toEqual(["pause", "play"]);
+      // The head must sit at the RESTORED in-point. Resuming inline
+      // would have let `play()`'s loop-in-range check read the
+      // abandoned {start: 5} range and snap the head to 5.
+      expect(el.currentTime).toBe(0);
+    } finally {
+      rect.mockRestore();
+      media.restore();
+    }
+  });
+
+  test("a drag started while paused does not start playback on release", () => {
+    const media = stubMedia();
+    try {
+      const stage = mountStage(false);
+      const { inHandle, strip } = handles(stage);
+      pointerOn(inHandle, "pointerdown", 10);
+      pointerOn(strip, "pointermove", 40);
+      pointerOn(strip, "pointerup", 40);
+      expect(media.calls).not.toContain("play");
+    } finally {
+      media.restore();
+    }
   });
 });

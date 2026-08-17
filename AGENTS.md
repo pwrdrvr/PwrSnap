@@ -254,11 +254,11 @@ network denial caps the blast radius to PwrSnap's own DB. If a future
 Codex release adds a narrower read scope, take it. Do not "fix" this by
 widening anything else.
 
-This was measured, not assumed — `read-only` demonstrably reads a canary
-file far outside the jail. There IS a lever (`thread/start` accepts a
-named `permissions` profile, mutually exclusive with `sandbox`, and it
-fails CLOSED), but its filesystem schema is not yet nailed down. Before
-attempting it, read
+This was measured, not assumed — `read-only` demonstrably reads
+`~/Documents`, `~/.ssh`, and `~/.aws`. The narrower scope EXISTS today:
+a named `permissions` profile on `thread/start` (mutually exclusive with
+`sandbox`) denies all of those while keeping the jail readable. It is not
+wired in yet. Before doing so, read
 [docs/solutions/2026-08-17-enrichment-read-scoping-probe.md](docs/solutions/2026-08-17-enrichment-read-scoping-probe.md)
 — it has the probe recipe, the working `thread/start` shape, the traps,
 and what is still unknown.

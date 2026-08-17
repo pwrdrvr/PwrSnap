@@ -3,7 +3,7 @@
 **Date:** 2026-08-17
 **Context:** [#69](https://github.com/pwrdrvr/PwrSnap/issues/69) /
 [#423](https://github.com/pwrdrvr/PwrSnap/pull/423)
-**Status:** open problem, lever identified, schema not yet nailed
+**Status:** schema solved and measured; not yet wired into PwrSnap
 
 Read this before attempting to scope what a capture-enrichment turn can
 read. Everything below was measured against live Codex binaries
@@ -85,66 +85,96 @@ instead of silently widening the posture. It is the opposite of the
 [codex-thread-config.ts](../../apps/desktop/src/main/ai/codex-thread-config.ts),
 where a bad value silently fell back to the full prompt.
 
-## What's still unknown — the profile schema
+## The schema — SOLVED
 
-Neither shape exposed by `@pwrdrvr/codex-app-server-protocol` is accepted
-by 0.146.0 **or** 0.148.0-alpha.9:
+Source of truth: `codex-rs/config/src/permissions_toml.rs` and
+`codex-rs/core/src/config/permissions.rs` in
+[openai/codex](https://github.com/openai/codex) (Apache-2.0, so reading it
+is allowed under AGENTS.md § "Dependency licensing").
 
-- `file_system.entries[{ path, access }]` (the `FileSystemSandboxEntry` form)
-- `file_system.read[] / write[]` (the legacy form the types mark as
-  "will be removed in favor of `entries`")
+`PermissionProfileToml` is `{ description, extends, workspace_roots,
+filesystem, network }`. The trap is that **`filesystem` is a flattened
+`path → access` map**, not an `entries` array — neither shape exposed by
+`@pwrdrvr/codex-app-server-protocol` matches, which is why every guess
+failed. `workspace_roots` is likewise a flattened `path → bool` map, not
+a list.
 
-Field names pulled from the binary's serde metadata suggest the real
-`PermissionProfileToml` is:
+Special keys (`parse_special_path`): `:root`, `:minimal`,
+`:workspace_roots` (alias `:project_roots`), `:tmpdir`, `:slash_tmp`.
+Anything else starting with `:` round-trips as `Unknown` and is warned +
+ignored rather than aborting config load, so new specials are
+forward-compatible. Access modes are `read | write | deny`.
 
+### The working profile
+
+```toml
+[permissions.pwrsnap_enrichment.filesystem]
+":root"    = "deny"
+":minimal" = "read"
+"<jail>"   = "read"
 ```
-description   extends   workspace_roots   filesystem   network
-```
 
-Note `filesystem` (one word), not `file_system`. `workspace_roots` is a
-**struct** (`WorkspaceRootsToml`), not an array — passing a list gives
-`invalid type: sequence, expected struct WorkspaceRootsToml`. The
-sub-shape of `filesystem` was not determined. `FileSystemAccessMode` is
-`read | write | deny` and `FileSystemPath` supports
-`{ type: "special", value: { kind: "root" | "minimal" | "tmpdir" |
-"project_roots" | "slash_tmp" } }` — which is exactly the "deny root,
-allow tmpdir" vocabulary this needs.
+**`:minimal` is required.** With only `":root" = "deny"` plus the jail,
+every command dies with SIGABRT — denying `:root` also denies reading
+`/bin/cat`, so the process cannot exec. `:minimal` grants the system
+paths needed to launch a process and nothing else.
 
-**Do not guess further from the type definitions.** Get the schema from
-Codex's own config documentation. Trial and error burned an afternoon and
-produced only fail-closed denials.
+### Measured result
 
-Also relevant: PwrSnap pins the protocol package at **0.144.0** while
-ChatGPT.app already ships **0.148.0-alpha.9**, so the package's types may
-lag the config surface the running binary actually accepts.
+Same probe harness, same machine:
 
-## Reproducing
+| Target | `sandbox: "read-only"` | permissions profile |
+|---|---|---|
+| file inside the jail | ALLOWED | ALLOWED |
+| file outside the jail | ALLOWED | DENIED |
+| `~/Documents` | **ALLOWED** | DENIED |
+| `~/.ssh` | **ALLOWED** | DENIED |
+| `~/.aws` | **ALLOWED** | DENIED |
+| network | DENIED | DENIED |
 
-`command/exec` is the cheapest probe — it runs a command in the server
-sandbox with no thread, no turn, and no model tokens, and takes either
-`sandboxPolicy` or `permissionProfile`:
+So the profile closes the read hole while preserving everything
+`read-only` already gave us.
+
+### Applying it to enrichment
+
+`permissions` and `sandbox` are mutually exclusive on `thread/start`, so
+the enrichment posture swaps one for the other and supplies the profile
+through the `config` overlay PwrSnap already sends:
 
 ```jsonc
-// initialize FIRST with experimentalApi, or runtimeWorkspaceRoots is rejected
-{ "method": "initialize", "params": {
-    "clientInfo": { "name": "probe", "title": null, "version": "0.0.0" },
-    "capabilities": { "experimentalApi": true, "requestAttestation": false } } }
-
-{ "method": "command/exec", "params": {
-    "command": ["cat", "<canary outside the jail>"],
-    "cwd": "<jail>",
-    "sandboxPolicy": { "type": "readOnly", "networkAccess": false } } }
+{
+  "permissions": "pwrsnap_enrichment",
+  // NOT "sandbox" — the two cannot be combined
+  "config": {
+    "permissions": {
+      "pwrsnap_enrichment": {
+        "filesystem": { ":root": "deny", ":minimal": "read", "<jail>": "read" }
+      }
+    }
+  }
+}
 ```
 
-Two traps:
+`default_permissions` is only needed when selecting a profile from
+config; passing `permissions` on `thread/start` selects it directly.
 
-- **`thread/shellCommand` is not a valid test.** Its own doc says it
-  "runs unsandboxed with full access rather than inheriting the thread
-  sandbox policy."
-- **`codex sandbox -c permissions.…` cannot express a profile.** `-c`
-  parses the value as TOML, and the profile path aborts the CLI with
-  SIGABRT and no message. Use a temp `CODEX_HOME` with a real
-  `config.toml`, or the app-server `config` overlay.
+Two things that make this safer than it looks:
+
+- **The sandbox constrains commands the agent runs, not the app-server
+  process itself.** Codex still reads its own `CODEX_HOME`, auth, and the
+  turn's image input normally. Enrichment is one prompt in, one JSON
+  object out with no tools, so a profile that denies everything has no
+  effect on a well-behaved turn — it only bites when the model tries
+  something enrichment should never do.
+- **It fails closed.** An unrecognized profile denies everything rather
+  than silently widening.
+
+The residual risk is a Codex build that rejects the `permissions` field
+outright, which would fail `thread/start` and break enrichment. PwrSnap's
+CLI floor is 0.144.0 and the pinned protocol package declares
+`permissions`, but the filesystem-key recognition was only verified on
+0.146.0 and 0.148.0-alpha.9. A one-shot fallback to
+`sandbox: "read-only"` on a `thread/start` rejection covers that.
 
 ## ACP has no equivalent lever
 

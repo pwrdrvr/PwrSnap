@@ -542,22 +542,29 @@ engineering one.
    keeps the cap until someone removes it.
 4. **Right-rail width** (§4.6) — chat + inspector genuinely do not both fit on a
    small display.
-5. **Unrelated but found while verifying §4.7, and worth someone's hour:** the
-   `PwrSnapFFmpeg` binary in the installed `/Applications/PwrSnap.app` (v8.1.1)
-   has **no PNG decoder** — `-decoders` lists `bmp`, `mjpeg`, `tiff`, `webp` but
-   not `png`, and feeding it a PNG fails with "no decoder found for: png". Every
-   image sizzle scene goes through `resolveImagePath`, which asks for
-   `format: "png"` (`sizzle-handlers.ts:214`). That combination cannot render.
-   **This is NOT confirmed against `main`:** that binary's configure line
-   (`--enable-static`, explicit `--enable-encoder=…`) does not match the repo's
-   current `build-ffmpeg.mjs`, which does a default build, so the installed
-   artifact is stale and current builds likely do include png (its decoder needs
-   zlib, which ffmpeg's configure finds without pkg-config on macOS). Dev runs
-   would mask it either way — `resolveFfmpegPath` falls through to whatever
-   `ffmpeg` is on PATH, typically a full homebrew build. Someone should run
-   `pnpm --filter @pwrsnap/desktop build:ffmpeg` and check `-decoders | grep png`
-   before the next release, and add that assertion to `verifyBinary` in
-   `build-ffmpeg.mjs` so it can never regress silently.
+5. **CONFIRMED LIVE BUG, found while verifying §4.7 — image-backed reels cannot
+   render in packaged builds.** The bundled `PwrSnapFFmpeg` has **no PNG
+   decoder**, and `resolveImagePath` (`sizzle-handlers.ts:214`) feeds ffmpeg
+   PNGs from the render cache. Root cause is in the separate private build repo
+   `pwrdrvr/pwrsnap-ffmpeg-builds`, not this one: `--disable-autodetect` turns
+   off zlib, and ffmpeg selects PNG through it
+   (`png_decoder_select="inflate_wrapper"` → `inflate_wrapper_deps="zlib"` →
+   `--disable-zlib […autodetect]`). Confirmed by re-running configure both ways
+   — `!CONFIG_PNG_DECODER=yes` with today's flags, `CONFIG_PNG_DECODER=yes` with
+   `--enable-zlib`, GPL/nonfree off in both.
+
+   Fix and a `REQUIRED_DECODERS` guard (encoders and devices were verified;
+   decoders never were) are in
+   [pwrsnap-ffmpeg-builds#1](https://github.com/pwrdrvr/pwrsnap-ffmpeg-builds/pull/1).
+   **This repo needs no change**, but it does need a rebuilt binary before the
+   fix reaches users.
+
+   Note for whoever picks this up: **dev runs mask it entirely** —
+   `resolveFfmpegPath` falls through to whatever `ffmpeg` is on `PATH`, usually
+   a full homebrew build with PNG. So "it renders on my machine" proves nothing
+   here; test against the packaged app. Scope is limited to Sizzle image scenes;
+   most `format: "png"` call sites in main go through sharp/Chromium rather than
+   ffmpeg, and video capture/trim/export decode h264+aac and are unaffected.
 
 ---
 
@@ -615,14 +622,18 @@ the audio cache (§4.1).
 **Verified by running ffmpeg (2026-08-17):** that `xfade` and every transition
 name the composer emits exist in ffmpeg 8.1.1, including `coverleft`; that the
 composer's exact filter graph renders a real 0.4 s crossfade with correct
-duration arithmetic (§4.7); that the installed app's bundled binary has no PNG
-decoder (§6.5).
+duration arithmetic (§4.7); that the bundled binary has no PNG decoder, that
+`--disable-autodetect` is the cause via zlib, and that `--enable-zlib` fixes it
+(§6.5, proven at configure level in both directions).
 
 **Spot-checked, not exhaustively verified:** the design project's palette against
 the repo's — see §7 for exactly what was compared.
 
-**Explicitly NOT verified:** whether a binary built from the repo's *current*
-`build-ffmpeg.mjs` decodes PNG. §6.5 says why that matters and how to settle it.
+**Explicitly NOT verified:** a full `make` of the corrected ffmpeg binary (§6.5)
+— configure output is decisive for codec selection, but only CI produces the
+shipped artifact. `apps/desktop/scripts/build-ffmpeg.mjs` in *this* repo is not
+what builds the shipped binary; `pwrdrvr/pwrsnap-ffmpeg-builds` is. Worth
+checking whether the in-repo script is dead code.
 
 **Assumed, and worth checking during the build:**
 - That the characters-per-second constant lifted from `approximateSpeechTiming`'s

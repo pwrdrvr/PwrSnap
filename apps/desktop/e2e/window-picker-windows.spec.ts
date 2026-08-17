@@ -8,8 +8,8 @@
 // difference between Electron and DWM. This pins the physical-pixel -> DIP
 // conversion required when Windows display scaling is above 100%.
 
-import { type Page } from "@playwright/test";
-import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
+import { expect, test, type Page } from "@playwright/test";
+import { launchPwrSnap } from "./fixtures/electron-app";
 import {
   spawnTargetWindows,
   type TargetWindowSpec

@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
@@ -26,12 +28,46 @@ describe("isCliEntrypoint", () => {
     expect(href).not.toBe(`file://${scriptPath}`);
   });
 
-  test("does not match a different script, and tolerates a missing argv[1]", () => {
+  test("does not match a different script", () => {
     const scriptPath = join(repoRoot, "scripts", "a.mjs");
     const otherPath = join(repoRoot, "scripts", "b.mjs");
 
     expect(isCliEntrypoint(pathToFileURL(scriptPath).href, otherPath)).toBe(false);
-    expect(isCliEntrypoint(pathToFileURL(scriptPath).href, undefined)).toBe(false);
+  });
+
+  test("tolerates a missing argv[1] (node --eval / REPL)", () => {
+    // Must clear process.argv[1] rather than pass `undefined` explicitly:
+    // an explicit undefined triggers the default parameter, so argvPath becomes
+    // the vitest runner path and the guarded branch never executes.
+    const scriptPath = join(repoRoot, "scripts", "a.mjs");
+    const original = process.argv[1];
+    try {
+      process.argv[1] = undefined;
+      expect(isCliEntrypoint(pathToFileURL(scriptPath).href)).toBe(false);
+    } finally {
+      process.argv[1] = original;
+    }
+  });
+
+  test("matches through a symlinked invocation path", () => {
+    // Node realpaths the main module for import.meta.url but leaves
+    // process.argv[1] as typed, so a symlinked checkout must still match.
+    const root = mkdtempSync(join(tmpdir(), "pwrsnap-cli-entry-"));
+    try {
+      const realDir = join(root, "real");
+      mkdirSync(realDir);
+      const scriptPath = join(realDir, "probe.mjs");
+      writeFileSync(scriptPath, "// probe\n");
+      const linkDir = join(root, "link");
+      symlinkSync(realDir, linkDir);
+
+      // import.meta.url side is realpathed by Node; argv side is the symlink.
+      expect(isCliEntrypoint(pathToFileURL(scriptPath).href, join(linkDir, "probe.mjs"))).toBe(
+        true,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -50,14 +86,21 @@ describe("license CLIs report a result when run", () => {
       expected: /package license policy check (passed|failed)/,
     },
     {
+      script: "scripts/check-dependency-version-policy.mjs",
+      args: [],
+      expected: /dependency version policy check (passed|failed)/,
+    },
+    {
       script: "scripts/generate-third-party-licenses.mjs",
       args: ["--check"],
-      // Any real verdict is fine, including an environment failure (no pnpm on
-      // PATH). What must never happen is silence — that means the entrypoint
-      // guard did not fire. `pnpm licenses list` working is enforced by
-      // `licenses:check` in lint, not here.
+      // Any real verdict is fine, including an environment failure. What must
+      // never happen is silence — that means the entrypoint guard did not fire.
+      // `pnpm licenses list` working is enforced by `licenses:check` in lint,
+      // not here, so tolerate every way a missing/broken pnpm reports itself:
+      // POSIX spawn ENOENT, cmd.exe's "is not recognized" under the win32
+      // `shell: true` path, and the generator's own resolve/stale diagnostics.
       expected:
-        /third-party license notice check passed|THIRD_PARTY_LICENSES is out of date|not installed on disk|pnpm licenses list|spawnSync/,
+        /third-party license notice check passed|THIRD_PARTY_LICENSES is out of date|not installed on disk|pnpm licenses list|spawnSync|is not recognized|Cannot resolve|ERR_PNPM/,
     },
   ];
 
@@ -66,6 +109,9 @@ describe("license CLIs report a result when run", () => {
       const result = spawnSync(process.execPath, [join(repoRoot, script), ...args], {
         cwd: repoRoot,
         encoding: "utf8",
+        // spawnSync blocks the worker's event loop, so vitest's own timeout
+        // cannot preempt it — a pnpm store-lock stall would hang the job.
+        timeout: 120_000,
       });
       const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
 

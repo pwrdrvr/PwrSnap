@@ -142,26 +142,64 @@ export function buildSupplementalMacArm64Records({
  * the packages themselves, which only ever install on darwin-arm64.
  */
 export function resolveMacArm64Versions(productionRecords) {
-  const sharp = productionRecords.find((record) => record.name === "sharp");
-  if (sharp === undefined) {
+  const sharpRecords = productionRecords.filter((record) => record.name === "sharp");
+  if (sharpRecords.length === 0) {
     throw new Error(
       "Cannot resolve macOS arm64 native package versions: no `sharp` record in the production license report.",
     );
   }
+  // More than one resolved sharp (a transitive copy alongside the direct one)
+  // would make the pick order-dependent, and the wrong pick lands silently in
+  // the LGPL-3.0 relink offer. Refuse rather than guess.
+  const distinctVersions = [...new Set(sharpRecords.map((record) => record.version))];
+  if (distinctVersions.length > 1) {
+    throw new Error(
+      `Cannot resolve macOS arm64 native package versions: ${distinctVersions.length} sharp versions ` +
+        `resolved (${distinctVersions.sort().join(", ")}). Pin a single sharp so the notice cannot ` +
+        "name a version that was never shipped.",
+    );
+  }
+  const sharp = sharpRecords[0];
   const optional = readPackageJson(sharp.packagePath)?.optionalDependencies ?? {};
-  const versions = {
-    sharpDarwinArm64: optional["@img/sharp-darwin-arm64"],
-    libvipsDarwinArm64: optional["@img/sharp-libvips-darwin-arm64"],
-  };
-  for (const [key, value] of Object.entries(versions)) {
-    if (typeof value !== "string" || value.length === 0) {
+  return validateMacArm64Versions(
+    {
+      sharpDarwinArm64: optional["@img/sharp-darwin-arm64"],
+      libvipsDarwinArm64: optional["@img/sharp-libvips-darwin-arm64"],
+    },
+    `sharp@${sharp.version} optionalDependencies`,
+  );
+}
+
+/**
+ * Reject anything that is not an exact version.
+ *
+ * `optionalDependencies` values are semver *ranges*. sharp pins exactly today,
+ * but a future `^0.36.0` would otherwise be published verbatim as the shipped
+ * version — in the Dependency Summary, the License Texts heading, and the
+ * LGPL-3.0 written source offer. Both the derived and the caller-supplied path
+ * go through here; validating only the derived one would leave the `??` in
+ * buildThirdPartyLicenseNotice as a way to inject `undefined` into the notice.
+ */
+export function validateMacArm64Versions(versions, source) {
+  for (const key of ["sharpDarwinArm64", "libvipsDarwinArm64"]) {
+    const value = versions?.[key];
+    if (typeof value !== "string" || value.trim().length === 0) {
       throw new Error(
-        `Cannot resolve ${key} from sharp@${sharp.version} optionalDependencies. ` +
+        `Cannot resolve ${key} from ${source}. ` +
           "The supplemental macOS arm64 notice entries would silently claim a stale version.",
       );
     }
+    if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)*$/.test(value.trim())) {
+      throw new Error(
+        `${key} resolved to "${value}" from ${source}, which is a version range rather than an ` +
+          "exact version. The notice would claim a version that was never distributed.",
+      );
+    }
   }
-  return versions;
+  return {
+    sharpDarwinArm64: versions.sharpDarwinArm64.trim(),
+    libvipsDarwinArm64: versions.libvipsDarwinArm64.trim(),
+  };
 }
 
 export function runPnpmLicenses(args, options = {}) {
@@ -186,7 +224,13 @@ export function runPnpmLicenses(args, options = {}) {
       .join("\n")
       .trim();
     const error = new Error(
-      details || `pnpm licenses list exited with status ${result.status}`,
+      details ||
+        // The fallback only fires when error/stderr/stdout are all empty, which
+        // per spawnSync semantics means a signal killed the child and `status`
+        // is null — so report the signal rather than "status null".
+        (result.signal
+          ? `pnpm licenses list was killed by ${result.signal}`
+          : `pnpm licenses list exited with status ${result.status}`),
     );
     error.status = result.status ?? 1;
     throw error;
@@ -374,6 +418,8 @@ function readPackageJson(packagePath) {
   return JSON.parse(readFileSync(packageJsonPath, "utf8"));
 }
 
+export const STALE_INSTALL_CODE = "PWRSNAP_STALE_INSTALL";
+
 /**
  * Records whose package directory is not actually present on disk.
  *
@@ -386,8 +432,6 @@ function readPackageJson(packagePath) {
  * plausible-looking but wrong notice. See docs/third-party-license-notices.md
  * § "How the check can fail open".
  */
-export const STALE_INSTALL_CODE = "PWRSNAP_STALE_INSTALL";
-
 export function findUnmaterializedRecords(records) {
   return records.filter((record) => {
     if (record.supplemental === true) return false;
@@ -460,14 +504,6 @@ export function buildThirdPartyLicenseNotice({
 }) {
   const productionRecords = flattenLicenseReport(productionReport);
   const allRecords = flattenLicenseReport(allReport);
-  // Resolved from the installed sharp manifest unless the caller pins them.
-  // Only computed when actually needed, so callers that pass both collections
-  // explicitly (the unit tests) do not require sharp to be installed.
-  const resolveVersions = () => macArm64Versions ?? resolveMacArm64Versions(productionRecords);
-  const resolvedSupplementalRecords =
-    supplementalRecords ?? buildSupplementalMacArm64Records(resolveVersions());
-  const resolvedWeakCopyleftBinaries =
-    weakCopyleftBinaries ?? buildWeakCopyleftBundledBinaries(resolveVersions());
   const recordsByKey = new Map();
 
   for (const record of productionRecords) {
@@ -478,15 +514,39 @@ export function buildThirdPartyLicenseNotice({
       recordsByKey.set(stableRecordKey(record), record);
     }
   }
+
+  // Assert BEFORE resolving versions. Version resolution reads sharp's manifest
+  // off disk, and sharp is one of the likelier packages to be unmaterialized
+  // (its store dir embeds a peer hash, so even a @types/node bump relocates it).
+  // Resolving first meant a drifted install reported "cannot resolve
+  // sharpDarwinArm64" — pointing at sharp instead of at `pnpm install`, which is
+  // the misdiagnosis this guard exists to prevent. Only report-derived records
+  // are checked; supplemental records are synthetic and have no installed path.
+  assertPackagesMaterialized(Array.from(recordsByKey.values()));
+
+  // Resolved from the installed sharp manifest unless the caller pins them.
+  // Computed once — resolveMacArm64Versions reads and parses a file.
+  const needsVersions = supplementalRecords === undefined || weakCopyleftBinaries === undefined;
+  const resolvedVersions = !needsVersions
+    ? undefined
+    : macArm64Versions === undefined
+      ? resolveMacArm64Versions(productionRecords)
+      : validateMacArm64Versions(macArm64Versions, "the supplied macArm64Versions");
+  const resolvedSupplementalRecords = (
+    supplementalRecords ?? buildSupplementalMacArm64Records(resolvedVersions)
+  ).map((record) =>
+    // Stamp the exemption here rather than only in the factory, so a
+    // caller-supplied supplemental record is not mistaken for a drifted install.
+    record.supplemental === true ? record : { ...record, supplemental: true },
+  );
+  const resolvedWeakCopyleftBinaries =
+    weakCopyleftBinaries ?? buildWeakCopyleftBundledBinaries(resolvedVersions);
+
   for (const record of resolvedSupplementalRecords) {
     recordsByKey.set(stableRecordKey(record), record);
   }
 
-  const selectedRecords = Array.from(recordsByKey.values()).sort(compareRecords);
-  // Fail before enriching: enrichRecord's fallbacks are silent, so an install
-  // that has drifted from the lockfile must be rejected here, not papered over.
-  assertPackagesMaterialized(selectedRecords);
-  const records = selectedRecords.map(enrichRecord);
+  const records = Array.from(recordsByKey.values()).sort(compareRecords).map(enrichRecord);
 
   const recordsByLicense = new Map();
   for (const record of records) {

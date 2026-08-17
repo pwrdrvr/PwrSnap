@@ -7,6 +7,9 @@
 import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
+// NOTE: this path must stay in the signing tarball's file list in
+// .github/workflows/release.yml — that list is an allowlist, not a glob.
+import { isCliEntrypoint } from "../../../scripts/lib/cli-entrypoint.mjs";
 
 // @electron/asar is declared as a direct devDependency of @pwrsnap/desktop.
 // The protected Windows signing job receives a self-contained staged toolchain,
@@ -244,6 +247,6 @@ export function runCli(args = process.argv.slice(2)) {
   console.log(`verify-asar-contents: OK (${listing.length} entries, no forbidden patterns)`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntrypoint(import.meta.url)) {
   runCli();
 }

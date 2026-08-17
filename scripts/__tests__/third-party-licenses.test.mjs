@@ -258,6 +258,61 @@ describe("stale-install detection", () => {
     // The misdiagnosis that caused the original incident.
     expect(thrown.message).toContain("Do NOT run `pnpm licenses:generate`");
   });
+
+  test("reports a stale install even when sharp itself is the drifted package", () => {
+    // Regression for an ordering bug: version resolution reads sharp's manifest
+    // off disk, so when it ran first a drifted sharp produced "cannot resolve
+    // sharpDarwinArm64" — blaming sharp instead of the install, with no
+    // STALE_INSTALL_CODE, which meant runCli rethrew it as a raw stack trace.
+    // This call shape matches generateNotice(): no supplemental/version pins.
+    const root = tempRoot();
+
+    let thrown;
+    try {
+      buildThirdPartyLicenseNotice({
+        productionReport: report({
+          "Apache-2.0": [
+            { name: "sharp", version: "0.35.3", packagePath: join(root, "sharp@0.35.3") },
+          ],
+        }),
+        allReport: {},
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeDefined();
+    expect(thrown.code).toBe(STALE_INSTALL_CODE);
+    expect(thrown.message).toContain("sharp@0.35.3");
+    expect(thrown.message).toContain("Run `pnpm install` and retry");
+  });
+
+  test("builds end-to-end through the default path generateNotice() uses", () => {
+    // No supplemental/weak-copyleft/version arguments — the shape the CLI runs,
+    // which every other test short-circuits via `??`.
+    const root = tempRoot();
+    const sharp = packageDir(root, "sharp", "0.35.3", "Apache License 2.0", {
+      license: "Apache-2.0",
+      optionalDependencies: {
+        "@img/sharp-darwin-arm64": "0.35.3",
+        "@img/sharp-libvips-darwin-arm64": "1.3.2",
+      },
+    });
+
+    const output = buildThirdPartyLicenseNotice({
+      productionReport: report({
+        "Apache-2.0": [{ name: "sharp", version: "0.35.3", packagePath: sharp }],
+      }),
+      allReport: {},
+    });
+
+    // Derived supplemental records and the weak-copyleft section both present.
+    expect(output).toContain("@img/sharp-darwin-arm64@0.35.3");
+    expect(output).toContain("@img/sharp-libvips-darwin-arm64@1.3.2");
+    expect(output).toContain("Full License Texts — Weak-Copyleft Bundled Binaries");
+    expect(output).toContain("FFmpeg@8.1.1");
+    expect(output).not.toContain("@undefined");
+  });
 });
 
 // Regression: the macOS arm64 native sharp packages are optional deps, so they
@@ -301,7 +356,74 @@ describe("resolveMacArm64Versions", () => {
 
     expect(output).toContain("@img/sharp-darwin-arm64@1.2.3");
     expect(output).toContain("@img/sharp-libvips-darwin-arm64@4.5.6");
-    expect(output).not.toContain("@img/sharp-darwin-arm64@0.34.5");
+    // The record's own version (1.2.3) must not leak in as the libvips version.
+    expect(output).not.toContain("@img/sharp-libvips-darwin-arm64@1.2.3");
+  });
+
+  test("rejects a semver range — the notice must never claim a version that was never shipped", () => {
+    const root = tempRoot();
+    const sharp = packageDir(root, "sharp", "0.35.3", "Apache License", {
+      license: "Apache-2.0",
+      optionalDependencies: {
+        "@img/sharp-darwin-arm64": "^0.36.0",
+        "@img/sharp-libvips-darwin-arm64": "1.3.2",
+      },
+    });
+
+    expect(() =>
+      resolveMacArm64Versions([{ name: "sharp", version: "0.35.3", packagePath: sharp }]),
+    ).toThrow(/version range rather than an exact version/);
+  });
+
+  test("refuses to guess when more than one sharp version resolves", () => {
+    const root = tempRoot();
+    const opts = {
+      license: "Apache-2.0",
+      optionalDependencies: {
+        "@img/sharp-darwin-arm64": "0.35.3",
+        "@img/sharp-libvips-darwin-arm64": "1.3.2",
+      },
+    };
+
+    expect(() =>
+      resolveMacArm64Versions([
+        { name: "sharp", version: "0.35.3", packagePath: packageDir(root, "sharp", "0.35.3", "A", opts) },
+        { name: "sharp", version: "0.33.1", packagePath: packageDir(root, "sharp", "0.33.1", "A", opts) },
+      ]),
+    ).toThrow(/2 sharp versions resolved/);
+  });
+
+  test("validates caller-supplied versions instead of trusting them", () => {
+    // The `??` default must not become a way to inject an unvalidated version:
+    // a partial object previously emitted "@undefined" into the notice.
+    expect(() =>
+      buildThirdPartyLicenseNotice({
+        productionReport: {},
+        allReport: {},
+        macArm64Versions: { sharpDarwinArm64: "1.2.3" },
+      }),
+    ).toThrow(/libvipsDarwinArm64/);
+  });
+
+  test("accepts caller-supplied supplemental records without a hand-set flag", () => {
+    // Regression: the exemption used to be stamped only inside the factory, so
+    // a hand-built supplemental record was rejected as an unmaterialized package.
+    const output = buildThirdPartyLicenseNotice({
+      productionReport: {},
+      allReport: {},
+      supplementalRecords: [
+        {
+          name: "SomeBundledBinary",
+          version: "1.0.0",
+          declaredLicense: "MIT",
+          source: "https://example.test/bin",
+          licenseText: "MIT License\n\nBundled binary.",
+        },
+      ],
+      weakCopyleftBinaries: [],
+    });
+
+    expect(output).toContain("SomeBundledBinary@1.0.0");
   });
 
   test("throws when sharp is missing or declares no darwin-arm64 optional deps", () => {

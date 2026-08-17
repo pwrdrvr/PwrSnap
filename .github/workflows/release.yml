@@ -73,6 +73,7 @@ jobs:
             .npmrc \
             CHANGELOG.md \
             scripts/check-desktop-release-metadata.mjs \
+            scripts/lib/cli-entrypoint.mjs \
             apps/desktop/package.json \
             apps/desktop/electron-builder.yml \
             apps/desktop/release-stage \

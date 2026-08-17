@@ -1871,6 +1871,14 @@ function Editor(props: EditorProps): ReactElement {
   const [sequenceAudioBlobs, setSequenceAudioBlobs] = useState<
     Record<string, Blob>
   >({});
+  // Narration lengths read from the content-addressed TTS cache when the
+  // reel opened. A reel previewed or rendered in ANY past session lands
+  // here without synthesizing anything, which is what lets the Render
+  // button show an exact length before the user previews this session.
+  // Keyed by narration text so a rewritten script drops the stale value.
+  const [cachedNarrationDurations, setCachedNarrationDurations] = useState<
+    Record<string, { key: string; durationSec: number }>
+  >({});
 
   // Per-scene preview-request generation counter. Each click of ▶
   // bumps it; the response only applies if it's still current.
@@ -2127,6 +2135,16 @@ function Editor(props: EditorProps): ReactElement {
               }
             }));
           }
+          const cachedDurationSec = res.value.durationSec;
+          if (cachedDurationSec !== null) {
+            setCachedNarrationDurations((prev) => ({
+              ...prev,
+              [scene.id]: {
+                key: sceneVoiceoverKey(scene),
+                durationSec: cachedDurationSec
+              }
+            }));
+          }
         } catch {
           // A failed background load just leaves the idle baseline.
         }
@@ -2348,13 +2366,28 @@ function Editor(props: EditorProps): ReactElement {
           scene.kind === "sequence" && cached?.key === sequencePreviewPlanKey(scene)
             ? cached.plan.durationSec
             : undefined;
+        // Narration length survives edits a PLAN doesn't: reordering or
+        // retrimming clips invalidates the plan key while the narration
+        // text — and so its measured length — is untouched.
+        const narration = cachedNarrationDurations[scene.id];
+        const narrationDurationSec =
+          narration?.key === sceneVoiceoverKey(scene)
+            ? narration.durationSec
+            : measuredVoiceoverDurationSec(scene);
         return {
           capture: capture === null ? null : { kind: capture.kind, video: capture.video },
           sequencePlanDurationSec: planDurationSec,
+          narrationDurationSec,
           voiceoverDurationSec: measuredVoiceoverDurationSec(scene)
         };
       }),
-    [project.scenes, captureMap, sequencePreviewPlans, previewDurations]
+    [
+      project.scenes,
+      captureMap,
+      sequencePreviewPlans,
+      previewDurations,
+      cachedNarrationDurations
+    ]
   );
   // Guard on the FORMATTED value, not the raw seconds: a sub-half-second
   // reel (a short trim, a small duration override) is > 0 but rounds to

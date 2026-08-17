@@ -26,12 +26,21 @@
 
 import type { SizzleAudioSource, SizzleScene, SizzleTransition } from "./protocol";
 import {
-  normalizeSizzleSequenceBeatContinuity,
   resolveSizzleAudioSource,
   sizzleTransitionDurationSec,
   sizzleTransitionType
 } from "./protocol";
 import { normalizeVideoMediaTrim } from "./sizzle-media-trim";
+
+/** Floor for an estimated scene, so an empty script still occupies the
+ *  timeline rather than reading as a zero-length scene. */
+const MIN_ESTIMATED_SCENE_SEC = 1;
+
+/** A sequence scene's narration. `scriptLine` mirrors `narration` for
+ *  compatibility, but `narration` is the field of record. */
+function sequenceNarration(scene: SizzleScene): string {
+  return scene.narration ?? scene.scriptLine;
+}
 
 /**
  * Slack appended to a voiceover scene so narration doesn't butt into the
@@ -48,11 +57,34 @@ export const SIZZLE_VOICEOVER_TAIL_PAD_SEC = 0.35;
 export const SIZZLE_IMAGE_SCENE_DEFAULT_SEC = 3.0;
 
 /**
- * Length of a sequence scene's fallback timeline, per beat, before a
- * preview has produced a real plan. Matches the editor's idle beat strip
- * (`fallbackSequenceBeats`), so the strip and the estimate agree.
+ * Assumed narration rate for a script nobody has synthesized yet.
+ *
+ * Word count is what actually drives narration length, so this is the
+ * only signal available before the TTS runs. Calibrated against an
+ * observed `tts-1` reel — a 52-token script that synthesized to 19.0s,
+ * i.e. ~164 wpm — and rounded down to 160 so the estimate leans long
+ * rather than short. It is a rough model, not a measurement: callers get
+ * `exact: false` and the composer prefixes the total with `~`.
+ *
+ * The predecessor here was one second per beat, which measured clip
+ * count rather than narration and under-reported that same reel as 3s.
  */
-export const SIZZLE_SEQUENCE_FALLBACK_SEC_PER_BEAT = 1;
+export const SIZZLE_ESTIMATED_NARRATION_WPM = 160;
+
+/**
+ * Rough spoken length of a script, in seconds. Zero for empty text, so
+ * callers can fall back to a visual default instead of claiming a
+ * near-zero scene.
+ *
+ * Splits on dashes as well as whitespace: "copy-to-clipboard" is one
+ * whitespace token but three spoken words, and compound-heavy technical
+ * narration is exactly what these reels carry.
+ */
+export function estimateNarrationDurationSec(text: string): number {
+  const tokens = text.trim().split(/[\s—–-]+/).filter((t) => t.length > 0);
+  if (tokens.length === 0) return 0;
+  return (tokens.length / SIZZLE_ESTIMATED_NARRATION_WPM) * 60;
+}
 
 export function resolveVoiceoverSceneDurationSec(args: {
   durationOverrideSec: number | null;
@@ -89,9 +121,17 @@ export type SizzleSceneDurationContext = {
   } | null;
   /**
    * Duration of a sequence scene's plan, from a preview the user already
-   * ran THIS session and whose plan key still matches the scene. Exact.
+   * ran THIS session and whose plan key still matches the scene. Exact,
+   * and already reflects any duration override.
    */
   sequencePlanDurationSec?: number | undefined;
+  /**
+   * Measured narration length for a sequence scene, read from the
+   * content-addressed TTS cache when the reel opened — so a reel
+   * previewed or rendered in ANY past session is exact on open without
+   * synthesizing anything. Pre-override, unlike `sequencePlanDurationSec`.
+   */
+  narrationDurationSec?: number | undefined;
   /**
    * Measured TTS length for a simple voiceover scene, from a preview the
    * user already ran. Exact.
@@ -118,18 +158,21 @@ export function estimateSizzleSceneDurationSec(
       : null;
 
   if (scene.kind === "sequence") {
+    // A cached plan is the whole answer — it already applied the override.
     if (context.sequencePlanDurationSec !== undefined) {
       return { durationSec: context.sequencePlanDurationSec, exact: true };
     }
-    // Same idle placement the editor's beat strip uses pre-preview: one
-    // second per beat, floored at one second. The real timeline is
-    // max(override, narration) and narration is unmeasured here.
-    const beatCount = normalizeSizzleSequenceBeatContinuity(scene.beats ?? []).length;
+    // `planSequenceTimeline` treats the override as a FLOOR under the
+    // narration, not a replacement for it, so both remaining branches max.
+    if (context.narrationDurationSec !== undefined) {
+      return {
+        durationSec: Math.max(overrideSec ?? 0, context.narrationDurationSec),
+        exact: true
+      };
+    }
+    const narration = estimateNarrationDurationSec(sequenceNarration(scene));
     return {
-      durationSec: Math.max(
-        SIZZLE_SEQUENCE_FALLBACK_SEC_PER_BEAT,
-        overrideSec ?? beatCount * SIZZLE_SEQUENCE_FALLBACK_SEC_PER_BEAT
-      ),
+      durationSec: Math.max(overrideSec ?? 0, narration, MIN_ESTIMATED_SCENE_SEC),
       exact: false
     };
   }
@@ -170,19 +213,14 @@ export function estimateSizzleSceneDurationSec(
       // native / muted: the clip's own length wins unless overridden.
       return { durationSec: overrideSec ?? trimDurationSec, exact: true };
     }
-    if (context.voiceoverDurationSec === undefined) {
-      // Narration unmeasured. The render extends the scene to fit the
-      // voiceover when it overruns, so this is a floor, not a guess at
-      // the true length.
-      return { durationSec: overrideSec ?? trimDurationSec, exact: false };
-    }
+    const measured = context.voiceoverDurationSec;
     return {
       durationSec: resolveVoiceoverSceneDurationSec({
         durationOverrideSec: scene.durationOverrideSec,
-        voiceoverDurationSec: context.voiceoverDurationSec,
+        voiceoverDurationSec: measured ?? estimateNarrationDurationSec(scene.scriptLine),
         defaultVisualDurationSec: trimDurationSec
       }),
-      exact: true
+      exact: measured !== undefined
     };
   }
 
@@ -193,22 +231,19 @@ export function estimateSizzleSceneDurationSec(
       exact: true
     };
   }
-  if (context.voiceoverDurationSec === undefined) {
-    // A still has no intrinsic length, so there is nothing to fall back
-    // to but the image default. Under-reports a long narration — hence
-    // the estimated flag.
-    return {
-      durationSec: overrideSec ?? SIZZLE_IMAGE_SCENE_DEFAULT_SEC,
-      exact: false
-    };
-  }
+  const measured = context.voiceoverDurationSec;
   return {
     durationSec: resolveVoiceoverSceneDurationSec({
       durationOverrideSec: scene.durationOverrideSec,
-      voiceoverDurationSec: context.voiceoverDurationSec,
-      defaultVisualDurationSec: 0
+      voiceoverDurationSec: measured ?? estimateNarrationDurationSec(scene.scriptLine),
+      // A still has no intrinsic length of its own; with an empty script
+      // the image default is all that's left to stand on.
+      defaultVisualDurationSec:
+        measured === undefined && scene.scriptLine.trim().length === 0
+          ? SIZZLE_IMAGE_SCENE_DEFAULT_SEC
+          : 0
     }),
-    exact: true
+    exact: measured !== undefined
   };
 }
 

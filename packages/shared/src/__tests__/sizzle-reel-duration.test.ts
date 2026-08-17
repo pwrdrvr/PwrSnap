@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  estimateNarrationDurationSec,
   estimateSizzleReelDurationSec,
   estimateSizzleSceneDurationSec,
   formatSizzleDuration,
+  SIZZLE_IMAGE_SCENE_DEFAULT_SEC,
   type SizzleSceneDurationContext
 } from "../sizzle-reel-duration";
 import { newSizzleSequenceScene, type SizzleScene, type SizzleTransition } from "../protocol";
@@ -62,6 +64,39 @@ describe("formatSizzleDuration", () => {
   });
 });
 
+describe("estimateNarrationDurationSec", () => {
+  it("scales with word count at the assumed rate", () => {
+    expect(estimateNarrationDurationSec("one two three four")).toBeCloseTo(1.5, 6);
+    expect(estimateNarrationDurationSec("a ".repeat(160).trim())).toBeCloseTo(60, 6);
+  });
+
+  it("counts dash-joined compounds as the words they are spoken as", () => {
+    // "copy-to-clipboard" is one whitespace token but three spoken words;
+    // technical narration is full of these and whitespace-only splitting
+    // under-counts it.
+    expect(estimateNarrationDurationSec("copy-to-clipboard")).toBeCloseTo(
+      estimateNarrationDurationSec("copy to clipboard"),
+      6
+    );
+    expect(estimateNarrationDurationSec("buttons—and it")).toBeCloseTo(
+      estimateNarrationDurationSec("buttons and it"),
+      6
+    );
+  });
+
+  it("returns zero for empty or whitespace-only text", () => {
+    expect(estimateNarrationDurationSec("")).toBe(0);
+    expect(estimateNarrationDurationSec("   \n  ")).toBe(0);
+  });
+
+  it("ignores leading and trailing whitespace when counting", () => {
+    expect(estimateNarrationDurationSec("  one two  ")).toBeCloseTo(
+      estimateNarrationDurationSec("one two"),
+      6
+    );
+  });
+});
+
 describe("estimateSizzleSceneDurationSec — sequence scenes", () => {
   it("is exact when a cached preview plan is supplied", () => {
     const scene = newSizzleSequenceScene(["a", "b", "c"], { narration: "hello" });
@@ -73,15 +108,44 @@ describe("estimateSizzleSceneDurationSec — sequence scenes", () => {
     ).toEqual({ durationSec: 8.4, exact: true });
   });
 
-  it("falls back to one second per beat, flagged estimated", () => {
-    const scene = newSizzleSequenceScene(["a", "b", "c"], { narration: "hello" });
-    expect(estimateSizzleSceneDurationSec(scene, { capture: imageCapture })).toEqual({
-      durationSec: 3,
-      exact: false
-    });
+  it("is exact from a cached narration length, with the override as a floor", () => {
+    const scene = newSizzleSequenceScene(["a", "b"], { narration: "hello" });
+    expect(
+      estimateSizzleSceneDurationSec(scene, {
+        capture: imageCapture,
+        narrationDurationSec: 19
+      })
+    ).toEqual({ durationSec: 19, exact: true });
+    expect(
+      estimateSizzleSceneDurationSec(
+        { ...scene, durationOverrideSec: 25 },
+        { capture: imageCapture, narrationDurationSec: 19 }
+      )
+      // planSequenceTimeline floors at the override but never truncates
+      // narration, so the longer of the two wins.
+    ).toEqual({ durationSec: 25, exact: true });
   });
 
-  it("prefers a duration override over the per-beat fallback", () => {
+  it("estimates from the narration's word count, not the clip count", () => {
+    // Three clips, one long narration — clip count says 3s, the script
+    // says ~19s, and the script is the thing that drives the render.
+    const narration =
+      "Fixing this layout bug took three passes. The first invented a new style " +
+      "for the copy-to-clipboard buttons—and it wasn't good. The second stopped " +
+      "the text from squishing, but didn't restore the original look. The third " +
+      "finally brought the buttons back to the original style, with the layout " +
+      "just right.";
+    const scene = newSizzleSequenceScene(["a", "b", "c"], { narration });
+    const result = estimateSizzleSceneDurationSec(scene, { capture: imageCapture });
+    expect(result.exact).toBe(false);
+    // This script synthesized to 19.0s on tts-1 — the calibration sample
+    // behind SIZZLE_ESTIMATED_NARRATION_WPM. Hold the estimate to within
+    // 15% of it so a constant change that breaks the fit gets caught.
+    expect(result.durationSec).toBeGreaterThan(19 * 0.85);
+    expect(result.durationSec).toBeLessThan(19 * 1.15);
+  });
+
+  it("prefers a duration override over the narration estimate", () => {
     const scene = {
       ...newSizzleSequenceScene(["a", "b"], { narration: "hello" }),
       durationOverrideSec: 9
@@ -144,23 +208,45 @@ describe("estimateSizzleSceneDurationSec — simple scenes", () => {
     ).toEqual({ durationSec: 10, exact: true });
   });
 
-  it("falls back to the trim, flagged estimated, when the voiceover is unmeasured", () => {
-    const scene = simpleScene({ audioSource: "voiceover", scriptLine: "hi" });
-    expect(
-      estimateSizzleSceneDurationSec(scene, {
-        capture: videoCapture(30, { start: 0, end: 4 })
-      })
-    ).toEqual({ durationSec: 4, exact: false });
+  it("extends an unmeasured video scene past its trim when the script is long", () => {
+    const scene = simpleScene({
+      audioSource: "voiceover",
+      scriptLine: "one two three four five six seven eight nine ten eleven twelve"
+    });
+    const result = estimateSizzleSceneDurationSec(scene, {
+      capture: videoCapture(30, { start: 0, end: 4 })
+    });
+    expect(result.exact).toBe(false);
+    // 12 words at 160 wpm = 4.5s + 0.35s pad, which overruns the 4s trim.
+    expect(result.durationSec).toBeCloseTo(4.85, 6);
   });
 
-  it("gives an unmeasured image scene the image default, flagged estimated", () => {
-    // `auto` on an image resolves to voiceover, so this is unmeasured
-    // narration over a still — nothing intrinsic to fall back to.
-    const scene = simpleScene({ scriptLine: "hi" });
+  it("estimates an unmeasured image scene from its script, flagged estimated", () => {
+    // `auto` on an image resolves to voiceover, and a still has no
+    // intrinsic length — the script is the only signal.
+    const scene = simpleScene({ scriptLine: "one two three four five six seven eight" });
+    const result = estimateSizzleSceneDurationSec(scene, { capture: imageCapture });
+    expect(result.exact).toBe(false);
+    // 8 words at 160 wpm = 3.0s, plus the 0.35s narration tail pad.
+    expect(result.durationSec).toBeCloseTo(3.35, 6);
+  });
+
+  it("gives an empty-script image scene the image default rather than ~0s", () => {
+    const scene = simpleScene({ scriptLine: "" });
     expect(estimateSizzleSceneDurationSec(scene, { capture: imageCapture })).toEqual({
-      durationSec: 3,
+      durationSec: SIZZLE_IMAGE_SCENE_DEFAULT_SEC,
       exact: false
     });
+  });
+
+  it("keeps an unmeasured video voiceover scene at its trim when the script is short", () => {
+    // The render holds the last frame only if narration OVERRUNS the
+    // clip; a short script leaves the trim in charge.
+    const scene = simpleScene({ audioSource: "voiceover", scriptLine: "two words" });
+    const result = estimateSizzleSceneDurationSec(scene, {
+      capture: videoCapture(30, { start: 0, end: 10 })
+    });
+    expect(result).toEqual({ durationSec: 10, exact: false });
   });
 
   it("is exact for a muted image scene with an override", () => {

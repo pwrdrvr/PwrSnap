@@ -806,7 +806,11 @@ export function registerSizzleHandlers(): void {
         audioBase64: bytes.toString("base64"),
         mimeType: "audio/mpeg" as const,
         transcriptPhrases:
-          speechTiming === null ? [] : buildTranscriptPhraseSuggestions(speechTiming)
+          speechTiming === null ? [] : buildTranscriptPhraseSuggestions(speechTiming),
+        // Already computed above — hand it back so the composer can label
+        // the Render button exactly on open. Still cache-only: no
+        // synthesis, no API, no probe.
+        durationSec: speechTiming?.durationSec ?? null
       });
     } catch {
       return ok({ cached: false as const });

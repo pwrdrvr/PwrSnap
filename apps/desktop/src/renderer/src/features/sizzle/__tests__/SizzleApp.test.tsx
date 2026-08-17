@@ -1238,7 +1238,7 @@ describe("render button reel length", () => {
       }
     );
     const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
-    // Unmeasured: the trim is only a floor.
+    // Unmeasured: a one-word script doesn't overrun the 2s trim.
     expect(render?.textContent).toBe("Render · ~0:02");
 
     const play = el.querySelector<HTMLButtonElement>(".szl__scene-mini--play");
@@ -1263,8 +1263,55 @@ describe("render button reel length", () => {
       script.dispatchEvent(new Event("input", { bubbles: true }));
     });
     // The measurement belongs to the OLD script — reporting it as exact
-    // would be a confidently wrong number.
-    expect(render?.textContent).toBe("Render · ~0:02");
+    // would be a confidently wrong number. Falls back to the word-count
+    // estimate for the NEW script: 6 words at 160 wpm + 0.35s pad = 2.6s,
+    // which now overruns the 2s trim.
+    expect(render?.textContent).toBe("Render · ~0:03");
+  });
+
+  test("is exact on open when the narration is already in the TTS cache", async () => {
+    // A reel previewed or rendered in a PAST session: the cache-only
+    // load that runs on open carries the measured narration length, so
+    // the label is exact without the user previewing again.
+    const { el } = await renderApp(
+      project({
+        scenes: [
+          scene({
+            kind: "sequence",
+            captureId: "cap_a",
+            scriptLine: "hello",
+            narration: "hello",
+            audioSource: "voiceover",
+            beats: [
+              {
+                id: "bt_a",
+                captureId: "cap_a",
+                timing: { kind: "auto" },
+                mediaTrim: null,
+                transition: "cut",
+                videoFit: "smart-fit"
+              }
+            ]
+          })
+        ]
+      }),
+      {
+        "library:list": { ok: true, value: { rows: [videoCapture("cap_a")] } },
+        "sizzle:loadSequenceSceneAudio": {
+          ok: true,
+          value: {
+            cached: true,
+            audioBase64: "AA==",
+            mimeType: "audio/mpeg",
+            transcriptPhrases: [],
+            durationSec: 19
+          }
+        }
+      }
+    );
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]');
+    expect(render?.textContent).toBe("Render · 0:19");
+    expect(render?.title ?? "").toBe("");
   });
 
   test("keeps a bare Render label when the reel has no scenes", async () => {

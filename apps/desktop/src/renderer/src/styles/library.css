@@ -618,7 +618,6 @@
 .psl__topbar {
   grid-column: 1 / -1; grid-row: 1;
   display: flex; align-items: center; justify-content: space-between;
-  column-gap: 12px;
   position: relative;
   /* leave room for the macOS traffic-light buttons under hiddenInset */
   padding: 0 16px 0 92px;
@@ -634,6 +633,7 @@
 :root[data-platform="win32"] .psl__topbar {
   padding-left: 16px;
   padding-right: var(--win-caption-reserve);
+  column-gap: 12px;
 }
 .psl__topbar button,
 .psl__topbar input,

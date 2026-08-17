@@ -19,6 +19,10 @@ export type HoverAutoplayVideoProps = {
    *  letterbox the source via `object-fit: contain` on a black
    *  background. */
   style?: React.CSSProperties;
+  /** Optional handle on the underlying element so a caller can drive
+   *  `currentTime` — the float-over uses it to park the preview on the
+   *  frame under the trim handle being dragged. */
+  videoRef?: React.MutableRefObject<HTMLVideoElement | null> | undefined;
 };
 
 const DEFAULT_STYLE: React.CSSProperties = {
@@ -29,9 +33,20 @@ const DEFAULT_STYLE: React.CSSProperties = {
   background: "#000"
 };
 
-export function HoverAutoplayVideo({ src, style }: HoverAutoplayVideoProps): ReactElement {
+export function HoverAutoplayVideo({
+  src,
+  style,
+  videoRef: externalVideoRef
+}: HoverAutoplayVideoProps): ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Mirror the element into the caller's ref so both the internal
+  // hover-play effect and the caller see the same node.
+  const setVideoEl = (el: HTMLVideoElement | null): void => {
+    videoRef.current = el;
+    if (externalVideoRef !== undefined) externalVideoRef.current = el;
+  };
 
   useEffect(() => {
     const container = containerRef.current;
@@ -61,7 +76,7 @@ export function HoverAutoplayVideo({ src, style }: HoverAutoplayVideoProps): Rea
       style={{ width: "100%", height: "100%", display: "block" }}
     >
       <video
-        ref={videoRef}
+        ref={setVideoEl}
         src={src}
         controls
         playsInline

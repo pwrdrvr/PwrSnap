@@ -147,14 +147,24 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
           ? clampRange({ start: Math.min(sec, range.end - MIN_RANGE_SEC), end: range.end }, durationSec)
           : clampRange({ start: range.start, end: Math.max(sec, range.start + MIN_RANGE_SEC) }, durationSec);
       onRangeChange(next, commit);
+      // Park the preview on the edge being dragged. Choosing a trim
+      // point you can't see the frame for is guesswork — the whole
+      // reason to drag a handle is to watch where it lands.
+      //
+      // Seeks to the CLAMPED edge, not the raw pointer position, so the
+      // preview keeps matching the handle once it stops against the
+      // opposite handle's MIN_RANGE_SEC gap or a clip boundary.
+      onSeek?.(mode === "in" ? next.start : next.end);
     },
     [durationSec, onRangeChange, onSeek, range.end, range.start]
   );
 
   const beginDrag = (mode: DragMode) => (e: ReactPointerEvent<HTMLElement>): void => {
     if (e.button !== 0) return;
-    // Compact strips (float-over) have no player to scrub — only the
-    // handles are interactive there.
+    // Body-scrub needs somewhere to seek. Without `onSeek` there's no
+    // preview surface to drive, so a press on the strip body would move
+    // nothing — leave those presses inert and keep the handles the only
+    // interactive part.
     if (mode === "scrub" && onSeek === undefined) return;
     e.preventDefault();
     e.stopPropagation();

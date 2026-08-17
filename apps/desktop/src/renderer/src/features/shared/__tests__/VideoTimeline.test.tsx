@@ -127,6 +127,38 @@ describe("VideoTimeline", () => {
     expect(parentClicks).toBe(0);
   });
 
+  test("dragging a trim handle seeks the preview to the edge it lands on", () => {
+    const seeks: number[] = [];
+    const { el } = render({
+      range: { start: 0, end: 16 },
+      onSeek: (sec) => seeks.push(sec)
+    });
+    const outHandle = el.querySelector('[data-testid="video-timeline-out"]')!;
+    const strip = el.querySelector(".vtl__strip")!;
+    // 800 px ↔ 16 s → 50 px per second. Picking a trim point you can't
+    // see the frame for is guesswork, so every handle move seeks.
+    pointer(outHandle, "pointerdown", 700);
+    pointer(strip, "pointermove", 400);
+    pointer(strip, "pointerup", 400);
+    expect(seeks).toEqual([14, 8, 8]);
+  });
+
+  test("the trim seek follows the clamped handle, not the raw pointer", () => {
+    const seeks: number[] = [];
+    const { el } = render({
+      range: { start: 8, end: 16 },
+      onSeek: (sec) => seeks.push(sec)
+    });
+    const outHandle = el.querySelector('[data-testid="video-timeline-out"]')!;
+    const strip = el.querySelector(".vtl__strip")!;
+    // Dragged well past the in-handle: the out edge stops at the
+    // MIN_RANGE_SEC gap, and the preview must show THAT frame — not
+    // the 2 s the pointer is actually over.
+    pointer(outHandle, "pointerdown", 700);
+    pointer(strip, "pointermove", 100);
+    expect(seeks.at(-1)).toBe(8.1);
+  });
+
   test("the out-handle can't cross the in-handle (keeps the minimum gap)", () => {
     const changes: Array<{ range: VideoRange; commit: boolean }> = [];
     const { el } = render({

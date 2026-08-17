@@ -414,6 +414,64 @@ describe("FloatOver asset mode", () => {
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
+  // The toast's preview <video> doubles as the trim strip's scrub
+  // monitor. Without this wiring you pick trim points off a 40 px
+  // filmstrip blind — the preview just sits on frame 0 no matter where
+  // the handles go, which makes the trim UI useless.
+  test("dragging a trim handle parks the preview video on that frame", async () => {
+    // jsdom has no layout; pin the strip to 800 px so px↔sec math runs.
+    const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 80,
+      width: 800,
+      height: 80,
+      toJSON: () => ({})
+    } as DOMRect);
+    try {
+      const el = await renderToast({
+        kind: "video",
+        src: "pwrsnap-capture://r/abc",
+        captureId: "abc",
+        durationSec: 12.5,
+        widthPx: 1920,
+        heightPx: 1080,
+        defaultRange: { start: 0, end: 12.5 }
+      });
+
+      const video = el.querySelector<HTMLVideoElement>(".fo__preview video")!;
+      const strip = el.querySelector(".vtl__strip")!;
+      const outHandle = el.querySelector('[data-testid="video-timeline-out"]')!;
+      expect(video.currentTime).toBe(0);
+
+      const at = (type: string, clientX: number): MouseEvent =>
+        new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY: 10, button: 0 });
+
+      // 800 px ↔ 12.5 s. Grab the out handle and drag it to the middle.
+      await act(async () => {
+        outHandle.dispatchEvent(at("pointerdown", 800));
+      });
+      await act(async () => {
+        strip.dispatchEvent(at("pointermove", 400));
+      });
+      expect(video.currentTime).toBe(6.25);
+
+      // Still tracking on release, and the range agrees with the frame.
+      await act(async () => {
+        strip.dispatchEvent(at("pointerup", 320));
+      });
+      expect(video.currentTime).toBe(5);
+      expect(el.querySelector('[data-testid="video-timeline-trim-label"]')?.textContent).toBe(
+        "TRIM 0:00.0 – 0:05.0 · 5 s"
+      );
+    } finally {
+      rect.mockRestore();
+    }
+  });
+
   test("labels the sticky home fallback as the saved destination", async () => {
     const el = await renderFloatOver({
       src: "pwrsnap-capture://r/img",

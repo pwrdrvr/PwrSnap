@@ -2,8 +2,8 @@ import { useState, type ReactElement } from "react";
 
 // AppId is the renderer's app key. For known apps it's a curated
 // short id (`"slack"`, `"vscode"`, …); for unknown apps it's the
-// lowercased CFBundleIdentifier as captured by macOS
-// (`"com.spotify.client"`, `"com.hnc.discord"`). The set is open —
+// lowercased platform identifier as captured by the OS (a macOS
+// CFBundleIdentifier or Windows executable path). The set is open —
 // any new bundle id captured at runtime gets a procedural initials
 // icon and shows up in the Library sidebar with its real app name.
 export type AppId = string;
@@ -115,15 +115,22 @@ function ProceduralIcon({ size, label }: { size: number; label: string }): React
   );
 }
 
-/** Bundle ids appear in the wild as `com.apple.Terminal`,
- *  `com.tinyspeck.slackmacgap`, `com.openai.codex`. We allow letters,
- *  digits, dot, underscore, dash — the same alphabet the Swift helper
- *  and protocol parser accept. Anything else can't possibly resolve
- *  to a real bundle, so we skip the network round-trip entirely. */
-function isResolvableBundleId(bundleId: string | undefined): bundleId is string {
-  if (bundleId === undefined) return false;
-  if (bundleId.length === 0 || bundleId.length > 256) return false;
-  return /^[A-Za-z0-9._-]+$/.test(bundleId);
+/** Accept the identifiers emitted by our native window helpers: reverse-DNS
+ *  bundle ids on macOS and drive-absolute `.exe` paths on Windows. */
+export function isResolvableAppIdentifier(
+  identifier: string | undefined
+): identifier is string {
+  if (identifier === undefined || identifier.length === 0) return false;
+  if (identifier.length <= 256 && /^[A-Za-z0-9._-]+$/.test(identifier)) {
+    return true;
+  }
+  if (identifier.length > 2048) return false;
+  if (!/^[A-Za-z]:\\[^<>:"|?*\r\n]+\.exe$/i.test(identifier)) return false;
+  return !/(?:^|\\)\.\.(?:\\|$)/.test(identifier);
+}
+
+export function appIconUrl(identifier: string): string {
+  return `pwrsnap-app-icon://r/${encodeURIComponent(identifier)}`;
 }
 
 /** Clipboard glyph for paste-from-clipboard captures
@@ -211,7 +218,7 @@ export function AppIcon({
     return <ClipboardGlyph size={size} />;
   }
 
-  if (isResolvableBundleId(bundleId) && !imageFailed) {
+  if (isResolvableAppIdentifier(bundleId) && !imageFailed) {
     // Real bundle icons get a small density bump over the procedural
     // initials glyph size — macOS app icons carry their own rounded
     // shape and bezel, so 11px in an 18px tile feels lost. The CSS rule below
@@ -223,7 +230,7 @@ export function AppIcon({
     return (
       <img
         className="ps-app-icon-img"
-        src={`pwrsnap-app-icon://r/${bundleId}`}
+        src={appIconUrl(bundleId)}
         width={renderSize}
         height={renderSize}
         alt=""

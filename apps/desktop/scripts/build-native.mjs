@@ -484,7 +484,8 @@ function buildWindowsHelpers() {
   //   /Fe:    output exe path
   //   /Fo:    output obj path (keeps cwd clean)
   // Libraries: user32 (EnumWindows / window APIs), dwmapi (cloak +
-  // extended-frame bounds). Listed after the source per cl convention.
+  // extended-frame bounds), and the Windows shell/COM/WIC stack used by
+  // --extract-app-icon. Listed after the source per cl convention.
   const clArgs = [
     "/O2",
     "/EHsc",
@@ -494,7 +495,11 @@ function buildWindowsHelpers() {
     `/Fo:${objFile}`,
     source,
     "user32.lib",
-    "dwmapi.lib"
+    "gdi32.lib",
+    "dwmapi.lib",
+    "shell32.lib",
+    "ole32.lib",
+    "windowscodecs.lib"
   ];
 
   // Quote each cl arg so paths with spaces survive cmd parsing.

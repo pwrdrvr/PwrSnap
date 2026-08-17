@@ -5,7 +5,7 @@
 //
 //   1. Synthetic placeholders (`any` / `unknown`) and invalid bundle
 //      ids never shell out to the helper — short-circuited at the top.
-//   2. A fresh sidecar matching the live Info.plist mtime serves the
+//   2. A fresh sidecar matching the live app source mtime serves the
 //      cached PNG directly (no helper call).
 //   3. A stale sidecar (mtime changed) re-extracts.
 //   4. Negative results (helper miss) are cached so we don't hammer
@@ -13,7 +13,7 @@
 //   5. Two concurrent calls for the same bundle id share one extract.
 //
 // Implementation lives in `../app-icons/app-icon-cache.ts`. Mocks the
-// Swift helper wrapper + the icons-root path so tests run in a tmpdir
+// Native helper wrapper + the icons-root path so tests run in a tmpdir
 // without touching `<userData>`.
 
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, statSync } from "node:fs";
@@ -92,6 +92,36 @@ describe("getAppIconPath", () => {
     expect(await getAppIconPath("")).toBeNull();
     expect(await getAppIconPath("com.evil/../passwd")).toBeNull();
     expect(await getAppIconPath("com.spaces here")).toBeNull();
+    expect(mocks.extractAppIcon).not.toHaveBeenCalled();
+  });
+
+  test("Windows executable identifiers extract into a hashed cache filename", async () => {
+    const identifier = "C:\\Program Files\\Microsoft VS Code\\Code.exe";
+    const sourcePath = join(tmpRoot, "Code.exe");
+    writeFileSync(sourcePath, "fake executable", "utf8");
+
+    mocks.extractAppIcon.mockImplementation(async (_identifier, outPath) => {
+      writeFileSync(outPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      return { ok: true, appPath: sourcePath };
+    });
+
+    const { getAppIconPath } = await freshModule();
+    const iconPath = await getAppIconPath(identifier);
+
+    expect(iconPath).toMatch(/[\\/]win-[a-f0-9]{64}\.png$/);
+    expect(iconPath).not.toContain("Program Files");
+    expect(mocks.extractAppIcon).toHaveBeenCalledWith(
+      identifier,
+      expect.stringMatching(/[\\/]win-[a-f0-9]{64}\.png$/),
+      128
+    );
+  });
+
+  test("unsafe Windows executable identifiers never hit the helper", async () => {
+    const { getAppIconPath } = await freshModule();
+    expect(await getAppIconPath("C:\\Apps\\..\\secret.exe")).toBeNull();
+    expect(await getAppIconPath("\\\\server\\share\\app.exe")).toBeNull();
+    expect(await getAppIconPath("C:\\Windows\\System32\\notepad.dll")).toBeNull();
     expect(mocks.extractAppIcon).not.toHaveBeenCalled();
   });
 

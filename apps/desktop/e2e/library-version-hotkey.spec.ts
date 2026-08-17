@@ -148,11 +148,15 @@ test("library capture actions progressively collapse and hide at narrow widths",
     const topbar = app.window.locator(".psl__topbar");
     const quick = app.window.locator(TOPBAR_QUICK_CAPTURE);
     const video = app.window.locator(TOPBAR_VIDEO_CAPTURE);
+    const platform = await app.window.evaluate(() => window.pwrsnapApi?.platform);
 
     await expect(quick.locator(TOPBAR_CAPTURE_LABEL)).toBeVisible();
     await expect(video.locator(TOPBAR_CAPTURE_LABEL)).toBeVisible();
 
-    await resizeLibrary(app, 950);
+    // The Windows app menu occupies about 300px inside this same title-bar
+    // row. At the maximized 1218px lab width, the remaining control area is a
+    // tight-tier width even though the raw viewport is wider than 1024px.
+    await resizeLibrary(app, platform === "win32" ? 1218 : 950);
     await expect(topbar).toHaveClass(/\bis-tight\b/);
     await expect(quick).toBeVisible();
     await expect(video).toBeVisible();
@@ -162,17 +166,41 @@ test("library capture actions progressively collapse and hide at narrow widths",
     await expect(quick.locator(TOPBAR_CAPTURE_LABEL)).toBeHidden();
     await expect(video.locator(TOPBAR_CAPTURE_LABEL)).toBeHidden();
 
-    await resizeLibrary(app, 800);
+    if (platform === "win32") {
+      const groupGaps = await topbar.evaluate((element) => {
+        const left = element
+          .querySelector<HTMLElement>(".psl__topbar-l")
+          ?.getBoundingClientRect();
+        const center = element
+          .querySelector<HTMLElement>(".psl__topbar-c")
+          ?.getBoundingClientRect();
+        const firstVisibleRightControl = Array.from(
+          element.querySelector<HTMLElement>(".psl__topbar-r")?.children ?? []
+        )
+          .map((child) => (child as HTMLElement).getBoundingClientRect())
+          .find((rect) => rect.width > 0 && rect.height > 0);
+        if (left === undefined || center === undefined || firstVisibleRightControl === undefined) {
+          throw new Error("missing visible Library toolbar group");
+        }
+        return {
+          leftToCenter: center.left - left.right,
+          centerToRight: firstVisibleRightControl.left - center.right
+        };
+      });
+      expect(groupGaps.leftToCenter).toBeGreaterThanOrEqual(8);
+      expect(groupGaps.centerToRight).toBeGreaterThanOrEqual(8);
+    }
+
+    await resizeLibrary(app, platform === "win32" ? 1100 : 800);
     await expect(topbar).toHaveClass(/\bis-compact\b/);
     await expect(quick).toBeVisible();
     await expect(video).toBeHidden();
 
-    await resizeLibrary(app, 680);
+    await resizeLibrary(app, platform === "win32" ? 980 : 680);
     await expect(topbar).toHaveClass(/\bis-small\b/);
     await expect(quick).toBeHidden();
     await expect(video).toBeHidden();
 
-    const platform = await app.window.evaluate(() => window.pwrsnapApi?.platform);
     const expectViewToggleCentered = async (): Promise<void> => {
       const viewToggle = app.window.locator(".psl__topbar-c");
       await expect(viewToggle).toBeVisible();
@@ -188,15 +216,18 @@ test("library capture actions progressively collapse and hide at narrow widths",
       expect(Math.abs(centers.header - centers.toggle)).toBeLessThanOrEqual(1);
     };
 
-    await resizeLibrary(app, 571);
+    await resizeLibrary(app, platform === "win32" ? 871 : 571);
     await expect(topbar).toHaveClass(/\bis-minimal\b/);
     if (platform !== "win32") await expectViewToggleCentered();
 
-    await resizeLibrary(app, 480);
+    await resizeLibrary(app, platform === "win32" ? 780 : 480);
     await expect(topbar).toHaveClass(/\bis-tiny\b/);
     if (platform !== "win32") {
       await expectViewToggleCentered();
     }
+    // The supported minimum itself must remain overflow-free after all
+    // low-priority Windows chrome has yielded.
+    await resizeLibrary(app, 480);
     const extents = await topbar.evaluate((element) => ({
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth

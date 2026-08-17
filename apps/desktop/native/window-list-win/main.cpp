@@ -90,8 +90,15 @@
 //                                  around). A titled top-level survives
 //                                  even with no taskbar presence.
 //
+// Additional command:
+//   --extract-app-icon <exe-path> <output.png> <size>
+//     Resolves the executable's shell icon through IShellItemImageFactory
+//     and encodes it as PNG with Windows Imaging Component. This is the
+//     Windows counterpart to the Swift helper's NSWorkspace-backed command.
+//
 // Build: cl.exe /O2 /EHsc /std:c++17 main.cpp /Fe:window-list.exe
-//        user32.lib dwmapi.lib (compiled by
+//        user32.lib gdi32.lib dwmapi.lib shell32.lib ole32.lib
+//        windowscodecs.lib (compiled by
 //        apps/desktop/scripts/build-native.mjs's win32 branch).
 //        Shipped under Resources/PwrSnapWindowList.exe via the
 //        extraResources entry in electron-builder.yml.
@@ -111,9 +118,12 @@
 #include <windows.h>
 #include <dwmapi.h>
 #include <psapi.h>
+#include <shobjidl.h>
+#include <wincodec.h>
 
 #include <cstdint>
 #include <cstdio>
+#include <cwchar>
 #include <string>
 #include <vector>
 
@@ -136,6 +146,14 @@ struct WindowInfo {
   bool isFrontmostInApp;
 };
 
+template <typename T>
+void SafeRelease(T **value) {
+  if (*value != nullptr) {
+    (*value)->Release();
+    *value = nullptr;
+  }
+}
+
 // Convert a UTF-16 (wide) string to UTF-8 for JSON output.
 std::string ToUtf8(const std::wstring &w) {
   if (w.empty()) {
@@ -151,6 +169,127 @@ std::string ToUtf8(const std::wstring &w) {
   WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()),
                       &out[0], needed, nullptr, nullptr);
   return out;
+}
+
+// Encode a shell-provided HBITMAP as a transparent PNG using WIC. Keeping
+// this in the existing helper means Electron's sandboxed renderer never sees
+// or opens the executable path directly.
+HRESULT SaveBitmapAsPng(HBITMAP bitmap, const std::wstring &outputPath) {
+  IWICImagingFactory *factory = nullptr;
+  IWICBitmap *wicBitmap = nullptr;
+  IWICStream *stream = nullptr;
+  IWICBitmapEncoder *encoder = nullptr;
+  IWICBitmapFrameEncode *frame = nullptr;
+
+  HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+                                CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&factory));
+  if (SUCCEEDED(hr)) {
+    hr = factory->CreateBitmapFromHBITMAP(
+        bitmap, nullptr, WICBitmapUsePremultipliedAlpha, &wicBitmap);
+  }
+  if (SUCCEEDED(hr)) {
+    hr = factory->CreateStream(&stream);
+  }
+  if (SUCCEEDED(hr)) {
+    hr = stream->InitializeFromFilename(outputPath.c_str(), GENERIC_WRITE);
+  }
+  if (SUCCEEDED(hr)) {
+    hr = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+  }
+  if (SUCCEEDED(hr)) {
+    hr = encoder->Initialize(stream, WICBitmapEncoderNoCache);
+  }
+  if (SUCCEEDED(hr)) {
+    hr = encoder->CreateNewFrame(&frame, nullptr);
+  }
+  if (SUCCEEDED(hr)) {
+    hr = frame->Initialize(nullptr);
+  }
+  if (SUCCEEDED(hr)) {
+    UINT width = 0;
+    UINT height = 0;
+    hr = wicBitmap->GetSize(&width, &height);
+    if (SUCCEEDED(hr)) {
+      hr = frame->SetSize(width, height);
+    }
+  }
+  if (SUCCEEDED(hr)) {
+    WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppBGRA;
+    hr = frame->SetPixelFormat(&pixelFormat);
+  }
+  if (SUCCEEDED(hr)) {
+    hr = frame->WriteSource(wicBitmap, nullptr);
+  }
+  if (SUCCEEDED(hr)) {
+    hr = frame->Commit();
+  }
+  if (SUCCEEDED(hr)) {
+    hr = encoder->Commit();
+  }
+
+  SafeRelease(&frame);
+  SafeRelease(&encoder);
+  SafeRelease(&stream);
+  SafeRelease(&wicBitmap);
+  SafeRelease(&factory);
+  return hr;
+}
+
+int ExtractAppIcon(const std::wstring &exePath,
+                   const std::wstring &outputPath, int size) {
+  if (exePath.empty() || outputPath.empty() || size < 16 || size > 512) {
+    std::fputs("invalid app-icon arguments\n", stderr);
+    return 2;
+  }
+  const DWORD attrs = GetFileAttributesW(exePath.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES ||
+      (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    std::fputs("source executable is unavailable\n", stderr);
+    return 3;
+  }
+
+  const HRESULT initHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  const bool shouldUninitialize = SUCCEEDED(initHr);
+  if (FAILED(initHr) && initHr != RPC_E_CHANGED_MODE) {
+    std::fputs("COM initialization failed\n", stderr);
+    return 4;
+  }
+
+  IShellItemImageFactory *imageFactory = nullptr;
+  HRESULT hr = SHCreateItemFromParsingName(
+      exePath.c_str(), nullptr, IID_PPV_ARGS(&imageFactory));
+  HBITMAP bitmap = nullptr;
+  if (SUCCEEDED(hr)) {
+    const SIZE requested = {size, size};
+    const SIIGBF flags = static_cast<SIIGBF>(SIIGBF_ICONONLY |
+                                             SIIGBF_BIGGERSIZEOK);
+    hr = imageFactory->GetImage(requested, flags, &bitmap);
+  }
+  if (SUCCEEDED(hr) && bitmap == nullptr) {
+    hr = E_FAIL;
+  }
+  if (SUCCEEDED(hr) && bitmap != nullptr) {
+    hr = SaveBitmapAsPng(bitmap, outputPath);
+  }
+
+  if (bitmap != nullptr) {
+    DeleteObject(bitmap);
+  }
+  SafeRelease(&imageFactory);
+  if (shouldUninitialize) {
+    CoUninitialize();
+  }
+
+  if (FAILED(hr)) {
+    std::fprintf(stderr, "app-icon extraction failed (0x%08lx)\n",
+                 static_cast<unsigned long>(hr));
+    return 4;
+  }
+
+  const std::string sourceUtf8 = ToUtf8(exePath);
+  std::fwrite(sourceUtf8.data(), 1, sourceUtf8.size(), stdout);
+  return 0;
 }
 
 // Escape a UTF-8 string for embedding inside a JSON string literal.
@@ -415,7 +554,24 @@ void AppendJsonStringOrNull(std::string *out, const std::wstring &value) {
 
 }  // namespace
 
-int wmain() {
+int wmain(int argc, wchar_t *argv[]) {
+  if (argc >= 2 && std::wstring(argv[1]) == L"--extract-app-icon") {
+    if (argc != 5) {
+      std::fputs(
+          "usage: --extract-app-icon <exe-path> <output.png> <size>\n",
+          stderr);
+      return 2;
+    }
+    wchar_t *end = nullptr;
+    const long parsedSize = std::wcstol(argv[4], &end, 10);
+    if (end == argv[4] || *end != L'\0' || parsedSize < 16 ||
+        parsedSize > 512) {
+      std::fputs("invalid app-icon size\n", stderr);
+      return 2;
+    }
+    return ExtractAppIcon(argv[2], argv[3], static_cast<int>(parsedSize));
+  }
+
   // Per-monitor DPI awareness so GetWindowRect / DWM bounds come back in
   // true physical pixels of the virtual-screen coordinate space rather
   // than being virtualized by the OS for a DPI-unaware process. The

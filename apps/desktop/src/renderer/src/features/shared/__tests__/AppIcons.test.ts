@@ -5,7 +5,34 @@
 // any other procedural-icon decision.
 
 import { describe, expect, test } from "vitest";
-import { initialsFor, tokenInitials } from "../AppIcons";
+import {
+  appIconUrl,
+  initialsFor,
+  isResolvableAppIdentifier,
+  tokenInitials
+} from "../AppIcons";
+
+describe("native app-icon identifiers", () => {
+  test("accepts macOS bundle ids and Windows executable paths", () => {
+    expect(isResolvableAppIdentifier("com.apple.Terminal")).toBe(true);
+    expect(isResolvableAppIdentifier("C:\\Windows\\System32\\Taskmgr.exe")).toBe(true);
+    expect(
+      isResolvableAppIdentifier("C:\\Program Files\\Microsoft VS Code\\Code.exe")
+    ).toBe(true);
+  });
+
+  test("rejects Windows traversal, device paths, and non-executables", () => {
+    expect(isResolvableAppIdentifier("C:\\Apps\\..\\secret.exe")).toBe(false);
+    expect(isResolvableAppIdentifier("\\\\server\\share\\app.exe")).toBe(false);
+    expect(isResolvableAppIdentifier("C:\\Windows\\System32\\notepad.dll")).toBe(false);
+  });
+
+  test("percent-encodes Windows paths for the custom protocol", () => {
+    expect(appIconUrl("C:\\Windows\\System32\\Taskmgr.exe")).toBe(
+      "pwrsnap-app-icon://r/C%3A%5CWindows%5CSystem32%5CTaskmgr.exe"
+    );
+  });
+});
 
 describe("tokenInitials — captured user-facing app names", () => {
   // The common case: the renderer has a `source_app_name` from the

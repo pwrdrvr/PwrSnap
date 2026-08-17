@@ -635,6 +635,7 @@
 :root[data-platform="win32"] .psl__topbar {
   padding-left: 16px;
   padding-right: var(--win-caption-reserve);
+  column-gap: 12px;
 }
 .psl__topbar button,
 .psl__topbar input,
@@ -764,9 +765,10 @@
 }
 .psl__search-clear:hover { background: var(--text-primary); }
 
-/* Responsive toolbar — the tier classes are set by Library.tsx from
-   `useMediaQuery`, the single source of truth for these breakpoints (the
-   renderer viewport = the Library window content width). Capture actions
+/* Responsive toolbar — the tier classes are set by Library.tsx from one
+   atomic media-query set. On Windows that calculation first reserves the
+   width of the custom File / Edit / View / Window / Library / Help menu;
+   elsewhere the renderer viewport is the available toolbar width. Actions
    step down from labelled buttons → icon buttons → video hidden → both
    hidden. Secondary chrome yields after that so the supported 480px minimum
    remains usable on Windows as well as macOS. */

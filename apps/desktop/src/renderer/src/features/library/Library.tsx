@@ -1198,9 +1198,11 @@ export function Library() {
   //   • small — hide Quick Capture too; its global hotkey remains live.
   //   • minimal / tiny — progressively yield secondary chrome so the
   //     supported 480px minimum still fits on macOS and Windows.
-  // One atomic tier drives every class. Independent media-query hooks can
-  // resolve on adjacent frames during a live resize, briefly combining old
-  // and new tiers and making the right cluster visibly shimmy.
+  // Windows also paints the application menu into this same row, so its tier
+  // calculation subtracts that reserved width before applying the shared
+  // breakpoints. One atomic tier drives every class. Independent media-query
+  // hooks can resolve on adjacent frames during a live resize, briefly
+  // combining old and new tiers and making the right cluster visibly shimmy.
   const toolbarTier = useToolbarTier();
   const toolbarTierRank = TOOLBAR_TIER_RANK[toolbarTier];
   const isToolbarNarrow = toolbarTierRank >= TOOLBAR_TIER_RANK.narrow;
@@ -4003,14 +4005,21 @@ const TOOLBAR_TIER_RANK: Readonly<Record<ToolbarTier, number>> = {
 };
 
 const TOOLBAR_BREAKPOINTS = [1024, 960, 840, 720, 640, 560] as const;
+const WINDOWS_MENU_BAR_RESPONSIVE_RESERVE_PX = 300;
 
-function toolbarTierForWidth(width: number): ToolbarTier {
-  if (width <= 560) return "tiny";
-  if (width <= 640) return "minimal";
-  if (width <= 720) return "small";
-  if (width <= 840) return "compact";
-  if (width <= 960) return "tight";
-  if (width <= 1024) return "narrow";
+function toolbarTierForWidth(width: number, platform: string | undefined): ToolbarTier {
+  // Unlike macOS, Windows renders File / Edit / View / Window / Library / Help
+  // inside the Library toolbar. Treat that fixed menu as already-spent width;
+  // otherwise a 1218px VM viewport selects the wide tier even though the
+  // controls have only about 918px available and visibly crowd one another.
+  const availableWidth =
+    width - (platform === "win32" ? WINDOWS_MENU_BAR_RESPONSIVE_RESERVE_PX : 0);
+  if (availableWidth <= 560) return "tiny";
+  if (availableWidth <= 640) return "minimal";
+  if (availableWidth <= 720) return "small";
+  if (availableWidth <= 840) return "compact";
+  if (availableWidth <= 960) return "tight";
+  if (availableWidth <= 1024) return "narrow";
   return "wide";
 }
 
@@ -4022,16 +4031,19 @@ function useToolbarTier(): ToolbarTier {
   const [tier, setTier] = useState<ToolbarTier>(() =>
     typeof window === "undefined" || typeof window.matchMedia !== "function"
       ? "wide"
-      : toolbarTierForWidth(window.innerWidth)
+      : toolbarTierForWidth(window.innerWidth, window.pwrsnapApi?.platform)
   );
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
       return;
     }
+    const platform = window.pwrsnapApi?.platform;
+    const responsiveReserve =
+      platform === "win32" ? WINDOWS_MENU_BAR_RESPONSIVE_RESERVE_PX : 0;
     const queries = TOOLBAR_BREAKPOINTS.map((width) =>
-      window.matchMedia(`(max-width: ${width}px)`)
+      window.matchMedia(`(max-width: ${width + responsiveReserve}px)`)
     );
-    const onChange = (): void => setTier(toolbarTierForWidth(window.innerWidth));
+    const onChange = (): void => setTier(toolbarTierForWidth(window.innerWidth, platform));
     onChange();
     for (const query of queries) query.addEventListener("change", onChange);
     return () => {

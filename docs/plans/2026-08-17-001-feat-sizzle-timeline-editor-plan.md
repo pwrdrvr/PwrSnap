@@ -302,7 +302,105 @@ Flagged honestly: below roughly 480 px of rail width, chat + inspector both
 become unusable, and one has to yield. At that width the inspector takes over and
 chat collapses to its header — a documented degradation, not a surprise.
 
-### 4.7 Non-goals
+### 4.7 Preview fidelity — the other half of "you can't see the reel"
+
+Added 2026-08-17 after the operator reported transitions playing as cuts.
+Confirmed: they were watching the in-app ▶. The diagnosis is **not** that
+transitions were never built, and **not** that their durations are too short to
+see — though one of those is half-true.
+
+**The render implements transitions correctly — verified empirically, not just
+by reading.** `composer.ts:436` maps all eight types to real ffmpeg `xfade`
+filters (`fade`, `fadeblack`, `fadewhite`, `slideleft`, `zoomin`), and
+`composer.test.ts:445` locks the graph shape — but that test asserts the *args we
+build*, not that ffmpeg renders a blend. So a two-image reel was rendered through
+the exact graph `buildCompositionArgs` emits (1280×720@30, two 2.0 s image
+scenes, `crossfade` 0.4 s):
+
+- Output duration **3.600 s** = 2 + 2 − 0.4 overlap — the `chainEndSec` /
+  `offset` arithmetic at `composer.ts:389` is right.
+- Average frame colour across the transition window, red clip → blue clip:
+
+  | t (s) | 1.40 | 1.65 | 1.75 | 1.85 | 1.95 | 2.10 |
+  |---|---|---|---|---|---|---|
+  | R | 254 | 211 | 147 | 84 | 20 | 0 |
+  | B | 0 | 41 | 104 | 169 | 232 | 255 |
+
+  A clean linear ramp confined to exactly the 1.6 → 2.0 s window.
+
+**The export crossfade is real.** Nobody had ever confirmed it, because the
+preview never shows one and the defaults never produce one (below).
+
+**The preview implements none of them.** `SequenceTimelinePreview` resolves one
+`activeBeat` by time and renders a single `<img>` or `<video>`
+(`SizzleApp.tsx:769–783`). No second layer, no blend; the stage CSS has no
+opacity animation. Every boundary is a hard cut in preview *by construction*,
+whatever the user selected. Same story for Ken Burns — `zoompan` in the render,
+a static `<img>` in preview.
+
+The pattern across the feature is consistent: the model and render are ahead of
+the UI, and the preview is behind both.
+
+| | model | render | UI reach | preview |
+|---|---|---|---|---|
+| Transition types | 8 | all 8 | 7 per-clip, **2 per-scene** | **none** |
+| Transition duration | per-boundary | honored | **unreachable** | n/a |
+| Ken Burns (zoompan) | — | yes | n/a | **none** |
+| Video fit (loop / ping-pong / speed) | 6 | all 6 | all 6 | **yes** |
+| Audio under a video crossfade | — | **hard cut always** | n/a | n/a |
+
+The video-fit row is the proof of concept: `sequencePreviewVideoState`
+(`SizzleApp.tsx:625`) already makes the preview faithful to a render policy.
+Transitions and Ken Burns simply never got the same treatment.
+
+**Three defects, distinct from the gaps:**
+
+1. **`push-left` and `slide-left` both emit `slideleft`** (`composer.ts:444–446`)
+   — two menu entries, byte-identical output. `coverleft` is the likely correct
+   target for a push, **but verify it exists in the bundled LGPL ffmpeg build
+   before changing it** (`PwrSnapFFmpeg -h filter=xfade`); the xfade `cover*` /
+   `reveal*` family was added later than the `slide*` family.
+2. **The scene transition chip is a binary cut↔crossfade toggle**
+   (`SizzleApp.tsx:2478`) — six of eight types are unreachable at scene level.
+3. **Transition duration is model-only.** `transitionFromType`
+   (`SizzleApp.tsx:481`) hardcodes `0.18` for every non-crossfade type. 0.18 s is
+   5.4 frames at 30 fps; for `slide-left` and `zoom-cut` that reads as very
+   nearly a cut *in the export too*. This is the half-true part of the operator's
+   "they're all ~10 ms" hunch — right direction, wrong magnitude, and it only
+   affects the six types that are not `crossfade` (0.4 s) or `cut`.
+
+**Why a user would never see a transition even in a correct export.** Three
+defaults compound:
+
+- `newSizzleSequenceBeat` (`protocol.ts:1422`) sets every new clip to
+  `transition: "cut"`. A reel built from the cart is all cuts unless the user
+  opens each clip's dropdown.
+- The scene transition chip only renders `if (idx > 0)` (`SizzleApp.tsx:2464`),
+  so a **single-scene reel — today's default shape — has no scene-level
+  transition control at all**.
+- The preview can't show one regardless.
+
+So the honest summary is: the transitions are built and they work; the product
+never puts one in front of you. That is a defaults-and-affordances problem, not a
+rendering one, and it should be fixed as such — consider defaulting new clips to
+a short `crossfade` rather than `cut`, which is a one-line change with a large
+perceived-quality effect. Flagging rather than deciding: cut *is* the right
+default for fast app-demo montages, which is what `newSizzleSequenceBeat`'s
+comment says it was chosen for.
+
+**Requirements:**
+
+- The preview stage renders transitions and Ken Burns with enough fidelity to
+  judge a timing decision. It does **not** need to match ffmpeg pixel-for-pixel —
+  a CSS opacity/transform blend across the transition window is sufficient and is
+  what makes the timeline's transition pips mean something.
+- Per-clip transition **type and duration** are both editable (inspector, §4.6).
+- Scene-level transitions reach all eight types, not two.
+- Audio crossfade under a video crossfade stays **explicitly deferred** — it is a
+  composer change (`acrossfade`), not a UI one, and it is already documented as
+  future work at `composer.ts:178`. Listing it here so it stops being invisible.
+
+### 4.8 Non-goals
 
 Not in this plan: changing the render pipeline, the composer, TTS providers, the
 transition set, or `SizzleScene`/`SizzleSequenceBeat` shape. The data model is
@@ -360,6 +458,14 @@ component.
 
 Each is independently shippable and green.
 
+**PR 0 — `fix(desktop): distinct push-left transition + reachable transition set`**
+Independent of everything below; ships immediately. `push-left` → `coverleft`
+(verified present in ffmpeg 8.1.1 via `-h filter=xfade`; re-check against the
+repo-built binary, not a homebrew one). Scene chip gains the full eight types
+instead of a cut↔crossfade toggle. Extend `composer.test.ts`'s xfade block to
+assert `push-left` and `slide-left` emit *different* filters — the current tests
+would not have caught this.
+
 **PR 1 — `refactor(desktop): extract the Sizzle editor into components`**
 No behavior change. Characterization tests first, then extraction per §5.1.
 `SizzleApp.test.tsx` (1,579 lines / 41 tests) mostly keeps passing because it
@@ -391,12 +497,24 @@ Clip move + boundary retime on `retime.ts`, `VideoTimeline`'s pointer-capture an
 `commit` contract, drag-local state so undo stays clean.
 
 **PR 6 — `feat(desktop): sizzle clip inspector`**
-Right-rail drawer beside chat. Retire the form rows and the "Advanced"
+Right-rail drawer beside chat. Per-clip transition **type and duration** both
+editable here — closing §4.7 defect 3. Retire the form rows and the "Advanced"
 disclosure. Rewrite the three form-pinned test blocks against the timeline.
 
-**PR 7 — `feat(desktop): multi-scene timeline operations`**
+**PR 7 — `feat(desktop): preview renders transitions and Ken Burns`**
+Closes the §4.7 fidelity gap. Two-layer preview stage with a CSS
+opacity/transform blend across the transition window, and a zoompan-equivalent
+transform for image clips. Depends on PR 1's extraction but **not** on the
+timeline, so it can run in parallel with PRs 3–6. Fidelity target is "good enough
+to judge a timing decision", explicitly not pixel-parity with ffmpeg.
+
+**PR 8 — `feat(desktop): multi-scene timeline operations`**
 Split / merge / reorder scenes from the timeline, scene transition pills on
 boundaries, the "Re-fit anchors" action (§4.2).
+
+**Deferred, tracked not scheduled:** audio `acrossfade` under a video crossfade
+(§4.7); the new-clip `cut` vs `crossfade` default (§4.7) — a product call, not an
+engineering one.
 
 ### 5.4 Test strategy
 
@@ -424,6 +542,22 @@ boundaries, the "Re-fit anchors" action (§4.2).
    keeps the cap until someone removes it.
 4. **Right-rail width** (§4.6) — chat + inspector genuinely do not both fit on a
    small display.
+5. **Unrelated but found while verifying §4.7, and worth someone's hour:** the
+   `PwrSnapFFmpeg` binary in the installed `/Applications/PwrSnap.app` (v8.1.1)
+   has **no PNG decoder** — `-decoders` lists `bmp`, `mjpeg`, `tiff`, `webp` but
+   not `png`, and feeding it a PNG fails with "no decoder found for: png". Every
+   image sizzle scene goes through `resolveImagePath`, which asks for
+   `format: "png"` (`sizzle-handlers.ts:214`). That combination cannot render.
+   **This is NOT confirmed against `main`:** that binary's configure line
+   (`--enable-static`, explicit `--enable-encoder=…`) does not match the repo's
+   current `build-ffmpeg.mjs`, which does a default build, so the installed
+   artifact is stale and current builds likely do include png (its decoder needs
+   zlib, which ffmpeg's configure finds without pkg-config on macOS). Dev runs
+   would mask it either way — `resolveFfmpegPath` falls through to whatever
+   `ffmpeg` is on PATH, typically a full homebrew build. Someone should run
+   `pnpm --filter @pwrsnap/desktop build:ffmpeg` and check `-decoders | grep png`
+   before the next release, and add that assertion to `verifyBinary` in
+   `build-ffmpeg.mjs` so it can never regress silently.
 
 ---
 
@@ -478,8 +612,17 @@ mounts a `<video>` per clip; that both the preview and render paths call
 `resolveSpeechTiming` and therefore always populate the timing cache alongside
 the audio cache (§4.1).
 
+**Verified by running ffmpeg (2026-08-17):** that `xfade` and every transition
+name the composer emits exist in ffmpeg 8.1.1, including `coverleft`; that the
+composer's exact filter graph renders a real 0.4 s crossfade with correct
+duration arithmetic (§4.7); that the installed app's bundled binary has no PNG
+decoder (§6.5).
+
 **Spot-checked, not exhaustively verified:** the design project's palette against
 the repo's — see §7 for exactly what was compared.
+
+**Explicitly NOT verified:** whether a binary built from the repo's *current*
+`build-ffmpeg.mjs` decodes PNG. §6.5 says why that matters and how to settle it.
 
 **Assumed, and worth checking during the build:**
 - That the characters-per-second constant lifted from `approximateSpeechTiming`'s

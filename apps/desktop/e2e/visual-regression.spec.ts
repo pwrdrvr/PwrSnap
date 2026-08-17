@@ -265,4 +265,54 @@ test.describe("visual regression", () => {
       await app.close();
     }
   });
+
+  // The right rail's export cards in their TALLEST configuration.
+  //
+  // The other two goldens run under the default (legacy) export ladder,
+  // which renders no scale tag — so when the rail footer moved inside
+  // the 320px panel the cards narrowed, the dimensions wrapped to two
+  // lines, and the `¼× / 1× / RETINA` tag was clipped by a fixed card
+  // height with every golden still green. This case pins the variant
+  // that actually has a third line to lose.
+  //
+  // darwin only: the macOS runners are the active visual lane (the
+  // Linux job sets PWRSNAP_E2E_SKIP_LINUX_VISUAL_REGRESSION), and a
+  // Linux baseline generated on a machine nobody compares against
+  // would be a golden with no reader.
+  test("right rail export cards keep their scale tags", async () => {
+    test.skip(
+      process.platform !== "darwin",
+      "macOS is the active visual lane for this case"
+    );
+    const app = await launchVisualPwrSnap();
+    try {
+      const win = app.window;
+      await seedVisualCaptures(app);
+      await expect(win.locator(".psl__cell")).toHaveCount(FIXTURE_CAPTURES.length);
+
+      // The scale tags only exist under the DPI-aware ladder.
+      const applied = await app.dispatch("settings:write", {
+        experimental: { dpiAwareExport: true, allowRetinaExport: true }
+      });
+      expect(applied.ok, "settings:write should succeed").toBe(true);
+
+      await win.locator(".psl__cell").first().click();
+      const footer = win.locator(".psl__right-footer");
+      await expect(footer).toBeVisible();
+
+      // Byte figures land as estimates first and settle to measured
+      // values; the eyebrow flips to "actual files" when they do. Wait
+      // for the settled state or the golden races the render metrics.
+      await expect(footer.locator(".psl__copy-eyebrow-meta")).toHaveText("actual files");
+      await waitForFonts(win);
+
+      await expect(footer).toHaveScreenshot("right-rail-export-cards.webp", {
+        animations: "disabled",
+        caret: "hide",
+        scale: "css"
+      });
+    } finally {
+      await app.close();
+    }
+  });
 });

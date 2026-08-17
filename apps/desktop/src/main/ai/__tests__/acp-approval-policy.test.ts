@@ -177,6 +177,35 @@ describe("makePooledAcpApprovalHandler", () => {
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("credentials");
   });
 
+  // Qwen-shaped request: opaque toolCallId, no `name`, and the ARGUMENTS
+  // rendered into `title` (the same behavior `permissionTargetsConfiguredMcpServer`
+  // relies on). `title` must not be treated as a tool identity.
+  it("never logs an args-bearing title from an enrichment session", async () => {
+    markEnrichmentThread("enrich-session-3", { runId: "run-3", captureId: "cap-3" });
+    const handler = makePooledAcpApprovalHandler(logger);
+
+    await expect(
+      handler("session/request_permission", {
+        ...perm({
+          toolCallId: "call_a8109b06e9214d",
+          title: "Run: cat ~/.aws/credentials"
+        }),
+        threadId: "enrich-session-3"
+      })
+    ).resolves.toBe("denied");
+
+    expect(logger.error).toHaveBeenCalledWith(
+      "capture enrichment sandbox escalation denied",
+      expect.objectContaining({
+        runId: "run-3",
+        captureId: "cap-3",
+        // Falls back to the opaque call id, never the rendered title.
+        toolName: "call_a8109b06e9214d"
+      })
+    );
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("credentials");
+  });
+
   it("stops treating a session as enrichment once the run releases it", async () => {
     markEnrichmentThread("enrich-session-2", { runId: "run-1", captureId: "cap-1" });
     unmarkEnrichmentThread("enrich-session-2");

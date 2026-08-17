@@ -738,16 +738,34 @@ function makeOneShotHandlers(
   };
 }
 
-/** Best-effort tool identity from a backend-shaped params blob. Only NAME
- *  fields are read — never arguments, which on an enrichment turn can carry
- *  screenshot-derived text (see `redactToolIdentity`). */
+/**
+ * Fields that name a tool. This list is a security boundary, not a
+ * convenience: whatever it matches is logged on an enrichment denial, and on
+ * an enrichment turn the untrusted input is the SCREENSHOT — which reaches the
+ * approval request through the tool's ARGUMENTS.
+ *
+ * Two fields look tempting and must stay out:
+ *   • `command` — Codex's `CommandExecutionRequestApprovalParams` puts the
+ *     literal command line here, top level. A screenshot that talks the model
+ *     into `cat ~/.aws/credentials` would otherwise land that string in the
+ *     log verbatim.
+ *   • `title` — a human-rendered label, which every backend builds out of the
+ *     arguments.
+ *
+ * Losing them costs little: `method` is logged alongside and already says
+ * whether this was an exec, a file change, or a tool call.
+ */
+const TOOL_IDENTITY_KEYS = ["name", "toolName", "tool_name"] as const;
+
+/** Best-effort tool identity from a backend-shaped params blob. Reads only
+ *  `TOOL_IDENTITY_KEYS` — never arguments. */
 function toolNameFromParams(params: unknown): string | null {
   const record = asRecord(params);
   if (record === null) return null;
   const toolCall = asRecord(record["toolCall"]);
   for (const source of [record, toolCall]) {
     if (source === null) continue;
-    for (const key of ["name", "toolName", "tool_name", "command", "title"]) {
+    for (const key of TOOL_IDENTITY_KEYS) {
       const value = source[key];
       if (typeof value === "string" && value.length > 0) return value;
     }

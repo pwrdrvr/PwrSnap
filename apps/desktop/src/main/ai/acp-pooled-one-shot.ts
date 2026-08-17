@@ -101,9 +101,6 @@ export async function runPooledAcpOneShot(input: {
   const thread = await client.startThread(
     request.model !== undefined && request.model !== null ? { model: request.model } : {}
   );
-  if (request.diagnostics !== undefined) {
-    markEnrichmentThread(thread.threadId, request.diagnostics);
-  }
   let finalText = "";
   const deltas: string[] = [];
   let usage: NormalizedTokenUsage | null = null;
@@ -139,6 +136,13 @@ export async function runPooledAcpOneShot(input: {
   };
   request.abortSignal?.addEventListener("abort", onAbort, { once: true });
   try {
+    // Inside the try so the `finally` below is guaranteed to unmark it. A
+    // leaked registry entry would later mislabel a CHAT session that reuses
+    // this id as an enrichment escalation, logging a false security alert
+    // against a stale capture id.
+    if (request.diagnostics !== undefined) {
+      markEnrichmentThread(thread.threadId, request.diagnostics);
+    }
     // A cancel during session/new landed before the listener above existed,
     // and adding an "abort" listener to an already-aborted signal never fires
     // it retroactively — re-check now that the listener covers what follows

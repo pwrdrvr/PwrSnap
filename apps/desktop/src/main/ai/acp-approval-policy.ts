@@ -201,11 +201,13 @@ export function makePooledAcpApprovalHandler(
         method,
         threadId,
         diagnostics,
+        // NAME and opaque id only. NOT `title` — every ACP agent renders that
+        // from the arguments (this file's own matcher leans on Qwen putting
+        // `{"capture_id":…}` there), and on an enrichment turn the arguments
+        // are where screenshot-injected text arrives. `method` + `kind` are
+        // already logged, so a null name still leaves the denial actionable.
         toolName: toolCall
-          ? readString(toolCall, "name") ??
-            readString(toolCall, "toolCallId") ??
-            readString(toolCall, "title") ??
-            null
+          ? readString(toolCall, "name") ?? readString(toolCall, "toolCallId") ?? null
           : null
       });
     }

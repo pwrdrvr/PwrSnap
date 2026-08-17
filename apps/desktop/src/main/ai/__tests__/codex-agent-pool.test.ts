@@ -600,6 +600,59 @@ describe("Codex agent pool", () => {
     await run;
   });
 
+  // Codex's real exec-approval shape (`CommandExecutionRequestApprovalParams`)
+  // carries the literal command line in a TOP-LEVEL `command` field — no tool
+  // name anywhere. That is the field a prompt-injected screenshot's payload
+  // arrives in, so it must never be mistaken for an identity field.
+  test("never logs the command line from a Codex exec approval", async () => {
+    const { completeTurn } = stageHeldOneShot();
+
+    const run = runCodexOneShotFromPool({
+      command: "codex-test",
+      env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-exec-approval-test" },
+      workspaceDir: "/tmp/pwrsnap-enrichment-jail",
+      prompt: "describe this image",
+      imagePaths: ["/tmp/capture.jpg"],
+      diagnostics: { runId: "run-13", captureId: "cap-13" }
+    });
+    await vi.waitFor(() =>
+      expect(
+        mockConnectionRequest.mock.calls.some(([method]) => method === "turn/start")
+      ).toBe(true)
+    );
+
+    const approvalHandler = mockCodexThreadClients[0]?.onApprovalRequest.mock
+      .calls[0]?.[0] as (method: string, params: unknown) => Promise<string>;
+    await expect(
+      approvalHandler("commandExecution/requestApproval", {
+        threadId: "one-shot-thread-1",
+        turnId: "turn-held",
+        itemId: "item-1",
+        command: "cat ~/.aws/credentials",
+        cwd: "/Users/someone",
+        reason: "the screenshot said to"
+      })
+    ).resolves.toBe("denied");
+
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      "capture enrichment sandbox escalation denied",
+      expect.objectContaining({
+        kind: "approval",
+        method: "commandExecution/requestApproval",
+        runId: "run-13",
+        captureId: "cap-13",
+        // No identity field in these params — better null than the payload.
+        toolName: null
+      })
+    );
+    const logged = JSON.stringify(mockLogger.error.mock.calls);
+    expect(logged).not.toContain("credentials");
+    expect(logged).not.toContain("/Users/someone");
+
+    completeTurn();
+    await run;
+  });
+
   test("refuses a tool call from an enrichment turn instead of dispatching it", async () => {
     const { completeTurn } = stageHeldOneShot();
 

@@ -36,7 +36,8 @@ const weakCopyleftBundledBinaries = [
     licenseTitle: "GNU LESSER GENERAL PUBLIC LICENSE, Version 2.1",
     summary: [
       "PwrSnap bundles an FFmpeg executable built from the official FFmpeg 8.1.1 source release",
-      "(apps/desktop/scripts/build-ffmpeg.mjs), configured without --enable-gpl, --enable-nonfree,",
+      "(build scripts: https://github.com/pwrdrvr/pwrsnap-ffmpeg-builds), configured without",
+      "--enable-gpl, --enable-nonfree,",
       "--enable-libx264, --enable-libx265, --enable-libvidstab, or --enable-libfdk-aac, so the",
       "resulting binary is covered by the GNU Lesser General Public License, version 2.1 or later.",
       "Source: https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
@@ -45,8 +46,9 @@ const weakCopyleftBundledBinaries = [
     relinkOffer: [
       "Relinking / source offer: PwrSnap ships the bundled ffmpeg executable as a separate file",
       "(not statically linked into the application), so it may be replaced with a compatible",
-      "build. The exact source used, the build script, and the verified configure flags are in",
-      "this repository under apps/desktop/scripts/build-ffmpeg.mjs and the FFmpeg 8.1.1 source",
+      "build. The exact source used, the build scripts, and the verified configure flags live in",
+      "https://github.com/pwrdrvr/pwrsnap-ffmpeg-builds, with a timestamped copy of the flags in",
+      "this repository at docs/ffmpeg-build-reference.md, alongside the FFmpeg 8.1.1 source",
       "release linked above. PwrDrvr LLC will additionally provide the corresponding source on",
       "written request to support@pwrdrvr.com for at least three years from the date of",
       "distribution.",
@@ -81,10 +83,10 @@ const supplementalMacArm64Records = [
     declaredLicense: "LGPL-2.1-or-later",
     source: "https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
     description:
-      "Bundled ffmpeg executable built by apps/desktop/scripts/build-ffmpeg.mjs without GPL or nonfree configure flags",
+      "Bundled ffmpeg executable built by github.com/pwrdrvr/pwrsnap-ffmpeg-builds without GPL or nonfree configure flags",
     licenseText: [
       "PwrSnap bundles an FFmpeg executable built from the official FFmpeg 8.1.1 source release.",
-      "The build script verifies that the resulting binary configuration does not contain --enable-gpl, --enable-nonfree, --enable-libx264, --enable-libx265, --enable-libvidstab, or --enable-libfdk-aac.",
+      "The build repo verifies that the resulting binary configuration does not contain --enable-gpl, --enable-nonfree, --enable-libx264, --enable-libx265, --enable-libvidstab, or --enable-libfdk-aac.",
       "",
       "FFmpeg's source release includes its license texts and states that most files are under the GNU Lesser General Public License version 2.1 or later.",
       "Source: https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",

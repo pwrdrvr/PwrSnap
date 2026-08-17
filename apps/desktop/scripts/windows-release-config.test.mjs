@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 
@@ -38,20 +38,21 @@ describe("Windows release configuration", () => {
     expect(script).not.toContain("--unsigned-release");
   });
 
-  test("macOS release preparation can defer FFmpeg to the protected signing job", () => {
+  test("macOS release preparation always defers FFmpeg to the injected artifact", () => {
     const script = read("apps/desktop/scripts/release.mjs");
 
-    expect(script).toContain("PWRSNAP_SKIP_FFMPEG_BUILD");
-    expect(script).toContain("external FFmpeg artifact will be injected before packaging");
+    expect(script).toContain("controlled artifact will be injected into release-stage/build/ffmpeg");
     expect(script).toContain('for (const dir of ["build/ffmpeg", "build/ffmpeg-source"])');
     expect(script).toContain("forcePrereleasePublishConfig");
-    expect(script).toContain("build:ffmpeg");
+    // The in-repo ffmpeg builder was deleted so there is exactly one source of
+    // truth for the bundled binary; release.mjs must never build it again.
+    expect(script).not.toContain("build:ffmpeg");
+    expect(existsSync(resolve(repoRoot, "apps/desktop/scripts/build-ffmpeg.mjs"))).toBe(false);
   });
 
   test("tagged release workflow gates publication on Linux, macOS, and Azure-signed Windows", () => {
     const workflow = read(".github/workflows/release.yml");
 
-    expect(workflow).toContain("PWRSNAP_SKIP_FFMPEG_BUILD: \"1\"");
     expect(workflow).toContain("apple-signing");
     expect(workflow).toContain("windows-signing");
     expect(workflow).toContain("actions/create-github-app-token@v3");

@@ -194,7 +194,7 @@ async function extractFrames(
   const ffmpeg = resolveFfmpegPath();
   if (ffmpeg === null) {
     throw new Error(
-      "ffmpeg not found: bundled PwrSnapFFmpeg is missing and no ffmpeg was found on PATH — run build:ffmpeg or set PWRSNAP_FFMPEG_PATH"
+      "ffmpeg not found: bundled PwrSnapFFmpeg is missing and no ffmpeg was found on PATH — set PWRSNAP_FFMPEG_PATH (see docs/ffmpeg-build-reference.md)"
     );
   }
   await mkdir(dir, { recursive: true });

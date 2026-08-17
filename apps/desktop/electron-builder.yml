@@ -128,8 +128,10 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   # macOS-only native helpers (Swift CLIs that wrap macOS system APIs)
-  # + the LGPL ffmpeg binary. Compiled by scripts/build-native.mjs /
-  # build-ffmpeg.mjs into build/native/ and build/ffmpeg/; these paths
+  # + the LGPL ffmpeg binary. Helpers are compiled by
+  # scripts/build-native.mjs into build/native/; ffmpeg is NOT built here
+  # — CI injects the controlled artifact into build/ffmpeg/ (see
+  # docs/ffmpeg-build-reference.md). These paths
   # only exist on a darwin build (build-native.mjs is a no-op
   # off-darwin), so they live under `mac:` to keep Windows packaging
   # from trying to copy files that were never produced. Shipped under
@@ -148,8 +150,10 @@ mac:
     # can show a PwrSnap filename while raw image paste still works.
     - from: "build/native/pasteboard-writer"
       to: "PwrSnapPasteboardWriter"
-    # FFmpeg built from upstream source by scripts/build-ffmpeg.mjs
-    # with no GPL or nonfree configure flags. Spawned by GIF/MP4
+    # FFmpeg built from upstream source by the controlled build repo
+    # github.com/pwrdrvr/pwrsnap-ffmpeg-builds with no GPL or nonfree
+    # configure flags; injected here by CI, never built in this repo.
+    # See docs/ffmpeg-build-reference.md. Spawned by GIF/MP4
     # export, video poster extraction, enrichment frames, and sizzle
     # reel composition. It must be an actual filesystem executable,
     # not an app.asar entry.

@@ -43,6 +43,28 @@ function sequenceNarration(scene: SizzleScene): string {
 }
 
 /**
+ * Idle (pre-preview) timeline length for a sequence scene, from its
+ * narration word count with the duration override as a floor — the same
+ * shape `planSequenceTimeline` uses once the real narration is measured.
+ *
+ * The composer's Render label AND its idle beat strip both call this, so
+ * the two can't claim different lengths for the same scene. Do not
+ * reintroduce a beat-count fallback in either place: clip count is not
+ * duration, and a 3-clip / 19-second reel reads as 3s under it.
+ */
+export function estimateSequenceTimelineDurationSec(scene: SizzleScene): number {
+  const overrideSec =
+    scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
+      ? scene.durationOverrideSec
+      : 0;
+  return Math.max(
+    overrideSec,
+    estimateNarrationDurationSec(sequenceNarration(scene)),
+    MIN_ESTIMATED_SCENE_SEC
+  );
+}
+
+/**
  * Slack appended to a voiceover scene so narration doesn't butt into the
  * next cut. Part of the render contract — the composer sizes per-scene
  * audio as `measured + this`.
@@ -170,9 +192,8 @@ export function estimateSizzleSceneDurationSec(
         exact: true
       };
     }
-    const narration = estimateNarrationDurationSec(sequenceNarration(scene));
     return {
-      durationSec: Math.max(overrideSec ?? 0, narration, MIN_ESTIMATED_SCENE_SEC),
+      durationSec: estimateSequenceTimelineDurationSec(scene),
       exact: false
     };
   }

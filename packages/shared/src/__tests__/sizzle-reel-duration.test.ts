@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   estimateNarrationDurationSec,
+  estimateSequenceTimelineDurationSec,
   estimateSizzleReelDurationSec,
   estimateSizzleSceneDurationSec,
   formatSizzleDuration,
@@ -94,6 +95,37 @@ describe("estimateNarrationDurationSec", () => {
       estimateNarrationDurationSec("one two"),
       6
     );
+  });
+});
+
+describe("estimateSequenceTimelineDurationSec", () => {
+  it("is the same length the scene estimate reports, so the strip and the button agree", () => {
+    // The editor's idle beat strip and the Render button both call this.
+    // If they ever diverge, one surface is lying about the same scene.
+    const scene = newSizzleSequenceScene(["a", "b", "c"], {
+      narration: "one two three four five six seven eight"
+    });
+    expect(estimateSequenceTimelineDurationSec(scene)).toBeCloseTo(
+      estimateSizzleSceneDurationSec(scene, { capture: imageCapture }).durationSec,
+      6
+    );
+  });
+
+  it("does not fall back to the clip count", () => {
+    // Regression guard: 8 clips, 4 words. Clip count would say 8s.
+    const scene = newSizzleSequenceScene(
+      ["a", "b", "c", "d", "e", "f", "g", "h"],
+      { narration: "one two three four" }
+    );
+    expect(estimateSequenceTimelineDurationSec(scene)).toBeCloseTo(1.5, 6);
+  });
+
+  it("floors at one second and takes the override as a floor too", () => {
+    const empty = newSizzleSequenceScene(["a"], { narration: "" });
+    expect(estimateSequenceTimelineDurationSec(empty)).toBe(1);
+    expect(
+      estimateSequenceTimelineDurationSec({ ...empty, durationOverrideSec: 12 })
+    ).toBe(12);
   });
 });
 

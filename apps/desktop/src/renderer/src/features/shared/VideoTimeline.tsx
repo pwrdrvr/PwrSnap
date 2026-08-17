@@ -61,6 +61,16 @@ export type VideoTimelineProps = {
   /** Called with the measured strip width (CSS px) so the caller can
    *  size its `video:frames` request. */
   onWidthChange?: ((widthPx: number) => void) | undefined;
+  /** `true` when a pointer drag (scrub / trim handle) starts, `false`
+   *  when it ends — release, cancel, lost capture, or unmount mid-drag.
+   *
+   *  Exists because `beginDrag` takes pointer capture, so a drag keeps
+   *  running after the pointer leaves the strip (and, in the float-over
+   *  toast, after it leaves the toast entirely). Hover-driven "user is
+   *  busy" state therefore can't see the drag. The float-over feeds
+   *  this into its auto-dismiss pause set so the toast can't close out
+   *  from under an in-progress trim; the Library stage ignores it. */
+  onInteractingChange?: ((interacting: boolean) => void) | undefined;
   compact?: boolean | undefined;
   /** Test hook / a11y label prefix. */
   label?: string | undefined;
@@ -87,6 +97,18 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   const [width, setWidth] = useState(0);
   const [drag, setDrag] = useState<{ mode: DragMode; sec: number } | null>(null);
   const dragRef = useRef<{ mode: DragMode; pointerId: number } | null>(null);
+
+  // Interaction notification goes through a ref so the unmount cleanup
+  // can reach the latest callback without re-subscribing, and so a
+  // parent that re-creates the function each render doesn't churn.
+  const interactingCbRef = useRef(props.onInteractingChange);
+  interactingCbRef.current = props.onInteractingChange;
+  const interactingRef = useRef(false);
+  const setInteracting = useCallback((next: boolean): void => {
+    if (interactingRef.current === next) return;
+    interactingRef.current = next;
+    interactingCbRef.current?.(next);
+  }, []);
 
   // Measure the strip so px↔sec math and the frames request agree.
   useLayoutEffect(() => {
@@ -144,6 +166,7 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
       /* jsdom */
     }
     dragRef.current = { mode, pointerId: e.pointerId };
+    setInteracting(true);
     const sec = secAt(e.clientX);
     setDrag({ mode, sec });
     applyDrag(mode, sec, false);
@@ -164,6 +187,7 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
     const sec = secAt(e.clientX);
     setDrag(null);
     applyDrag(d.mode, sec, true);
+    setInteracting(false);
     try {
       stripRef.current?.releasePointerCapture(e.pointerId);
     } catch {
@@ -196,9 +220,14 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
 
   useEffect(() => {
     // Unmount mid-drag (capture navigated away): drop the pointer
-    // bookkeeping so a late pointerup can't fire into a dead closure.
+    // bookkeeping so a late pointerup can't fire into a dead closure,
+    // and release the interaction hold so the caller isn't pinned.
     return () => {
       dragRef.current = null;
+      if (interactingRef.current) {
+        interactingRef.current = false;
+        interactingCbRef.current?.(false);
+      }
     };
   }, []);
 
@@ -233,6 +262,14 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        // Capture yanked without a pointerup — strip removed from the
+        // DOM, or the OS took the gesture over. Same release path, so
+        // the range still commits (an uncommitted range never persists
+        // and pins `useVideoTrimRange`'s dragging flag) and the
+        // interaction hold drops. `endDrag` nulls `dragRef` before
+        // calling `releasePointerCapture`, so the lostpointercapture a
+        // normal release fires lands here as a no-op.
+        onLostPointerCapture={endDrag}
         role="slider"
         aria-label={props.label ?? "Video timeline"}
         aria-valuemin={0}

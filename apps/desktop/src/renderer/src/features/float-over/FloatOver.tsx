@@ -350,6 +350,12 @@ export function FloatOver({
   const [tags, setTags] = useState<string[]>(acceptedTags);
   const [hovering, setHovering] = useState(false);
   const [nativeDragging, setNativeDragging] = useState(false);
+  // A trim-handle drag on the video strip takes pointer capture, so it
+  // keeps running after the pointer leaves the toast — `mouseleave`
+  // fires, `hovering` drops, and without this term the countdown would
+  // resume and close the toast mid-drag, losing the trim. Cleared by
+  // VideoTimeline on release / cancel / lost capture / unmount.
+  const [trimDragging, setTrimDragging] = useState(false);
   const [progress, setProgress] = useState(1);
   const [exiting, setExiting] = useState(false);
   const [storage, setStorage] = useState({ drive: false, dropbox: false, s3: false });
@@ -419,6 +425,7 @@ export function FloatOver({
     awaitingAi ||
     hovering ||
     nativeDragging ||
+    trimDragging ||
     hasUserDescription ||
     hasUserTitle ||
     userTagInteractions > 0;
@@ -733,7 +740,7 @@ export function FloatOver({
         // 4px` so the grid sits at the same horizontal inset as
         // the image copy row.
         <div className="fo__export-grid">
-          <FloatOverVideoExport asset={asset} />
+          <FloatOverVideoExport asset={asset} onTrimDraggingChange={setTrimDragging} />
         </div>
       ) : (
         <div className="fo__copy">
@@ -1059,8 +1066,19 @@ export function FoDesktopFrame({
  * `defaultRange` the Library stage edits — `useVideoTrimRange`
  * persists on handle release (debounced) and the panel receives the
  * displayed range explicitly so what you see is what encodes.
+ *
+ * `onTrimDraggingChange` forwards the strip's drag state up to the
+ * toast's auto-dismiss pause set — the drag holds pointer capture and
+ * routinely continues outside the toast's bounds, where hover state
+ * can no longer see it.
  */
-function FloatOverVideoExport({ asset }: { asset: Extract<FloatOverAsset, { kind: "video" }> }) {
+function FloatOverVideoExport({
+  asset,
+  onTrimDraggingChange
+}: {
+  asset: Extract<FloatOverAsset, { kind: "video" }>;
+  onTrimDraggingChange?: ((dragging: boolean) => void) | undefined;
+}) {
   const [stripWidth, setStripWidth] = useState(0);
   const trim = useVideoTrimRange({
     captureId: asset.captureId,
@@ -1086,6 +1104,9 @@ function FloatOverVideoExport({ asset }: { asset: Extract<FloatOverAsset, { kind
           frames={assets.frames}
           onRangeChange={trim.setRange}
           onWidthChange={setStripWidth}
+          {...(onTrimDraggingChange !== undefined
+            ? { onInteractingChange: onTrimDraggingChange }
+            : {})}
           label="Trim recording"
         />
       </div>

@@ -314,6 +314,106 @@ describe("FloatOver asset mode", () => {
     expect(el.querySelector(".fo__hdr-title")?.textContent).toBe("Snap captured");
   });
 
+  // Regression: issue #77 / R12 — "auto-dismiss must continue to pause
+  // while the scrubber is being interacted with".
+  //
+  // `VideoTimeline.beginDrag` takes pointer capture, so a trim drag
+  // keeps running after the pointer leaves the toast — and with a 40 px
+  // strip inside a 360 px toast, leaving is the normal case. The toast
+  // drove its pause state purely off `onMouseEnter` / `onMouseLeave`,
+  // so `mouseleave` dropped `hovering`, the compact variant's 4000 ms
+  // countdown resumed, and the toast closed mid-drag, discarding the
+  // in-progress trim.
+  test("a trim-handle drag keeps the toast open after the pointer leaves it", async () => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame", "Date"]
+    });
+    const onDismiss = vi.fn();
+    const el = await renderFloatOver({
+      // compact: autoMs = 4000, and no annotate / AI rows to pause on.
+      variant: "compact",
+      asset: {
+        kind: "video",
+        src: "pwrsnap-capture://r/abc",
+        captureId: "abc",
+        durationSec: 12.5,
+        widthPx: 1920,
+        heightPx: 1080,
+        defaultRange: { start: 0, end: 12.5 }
+      },
+      src: "pwrsnap-capture://r/abc",
+      startCountdown: true,
+      onDismiss
+    });
+
+    const fo = el.querySelector(".fo")!;
+    const strip = el.querySelector(".vtl__strip")!;
+    const inHandle = el.querySelector('[data-testid="video-timeline-in"]')!;
+
+    // Baseline: nothing is holding the countdown.
+    expect(fo.classList.contains("is-paused")).toBe(false);
+
+    // Pointer enters the toast, then presses the in-handle.
+    await act(async () => {
+      fo.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true, relatedTarget: document.body })
+      );
+    });
+    await act(async () => {
+      inHandle.dispatchEvent(
+        new MouseEvent("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 40,
+          clientY: 10,
+          button: 0
+        })
+      );
+    });
+    expect(fo.classList.contains("is-paused")).toBe(true);
+
+    // Pointer is dragged off the toast. Pointer capture keeps the drag
+    // alive, but `mouseleave` fires and hover state drops — this is the
+    // exact moment the countdown used to restart.
+    await act(async () => {
+      fo.dispatchEvent(
+        new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })
+      );
+      window.dispatchEvent(new MouseEvent("mouseout", { relatedTarget: null, bubbles: true }));
+    });
+    expect(fo.classList.contains("is-paused")).toBe(true);
+
+    // Well past the compact variant's 4000 ms window plus the 220 ms
+    // exit animation: the toast must still be here, mid-drag.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8000);
+    });
+    expect(onDismiss).not.toHaveBeenCalled();
+    expect(fo.classList.contains("is-exiting")).toBe(false);
+    expect(el.querySelector('[data-testid="video-timeline-compact"]')).not.toBeNull();
+
+    // Release: the hold lifts and the countdown resumes. This half also
+    // proves the advance above would have dismissed an unheld toast.
+    await act(async () => {
+      strip.dispatchEvent(
+        new MouseEvent("pointerup", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 40,
+          clientY: 10,
+          button: 0
+        })
+      );
+    });
+    expect(fo.classList.contains("is-paused")).toBe(false);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8000);
+    });
+    expect(fo.classList.contains("is-exiting")).toBe(true);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
   test("labels the sticky home fallback as the saved destination", async () => {
     const el = await renderFloatOver({
       src: "pwrsnap-capture://r/img",

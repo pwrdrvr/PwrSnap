@@ -7,9 +7,10 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isCliEntrypoint } from "./lib/cli-entrypoint.mjs";
 
@@ -39,37 +40,48 @@ const licenseTextsDir = join(scriptDir, "license-texts");
 //
 // There is no `linux:` block in electron-builder.yml — Linux is a build gate
 // only, nothing Linux-native is distributed — so no linux slice is listed.
+
+// Both Darwin libvips slices ship the same payload under the same terms; keep
+// one descriptor so their relink offers cannot drift apart.
+const DARWIN_LIBVIPS_LGPL = {
+  library: "libvips-cpp",
+  form: "a dynamic library (dylib) loaded at runtime",
+  sourceRepo: "https://github.com/lovell/sharp-libvips",
+};
+
+// `resolveFrom` names the package whose `node_modules` the slice is resolved
+// from AND whose `optionalDependencies` pin its version. This is not always
+// `sharp`: sharp never loads the libvips packages — each `@img/sharp-<platform>`
+// binding does, pnpm materializes a separate libvips copy under that binding's
+// tree, and apps/desktop/scripts/release.mjs copies the binding's pin. Checking
+// libvips against sharp's pin would validate a copy the artifact never ships.
+// Entries must be ordered so a package's `resolveFrom` appears before it.
 export const SHIPPED_PLATFORM_PACKAGES = [
   {
     name: "@img/sharp-darwin-arm64",
+    resolveFrom: "sharp",
     shippedIn: "macOS universal build (arm64 slice)",
   },
   {
     name: "@img/sharp-darwin-x64",
+    resolveFrom: "sharp",
     shippedIn: "macOS universal build (x64 slice)",
   },
   {
     name: "@img/sharp-libvips-darwin-arm64",
+    resolveFrom: "@img/sharp-darwin-arm64",
     shippedIn: "macOS universal build (arm64 slice)",
-    // Ships lib/libvips-cpp.<ver>.dylib.
-    lgpl: {
-      library: "libvips-cpp",
-      form: "a dynamic library (dylib) loaded at runtime",
-      sourceRepo: "https://github.com/lovell/sharp-libvips",
-    },
+    lgpl: DARWIN_LIBVIPS_LGPL,
   },
   {
     name: "@img/sharp-libvips-darwin-x64",
+    resolveFrom: "@img/sharp-darwin-x64",
     shippedIn: "macOS universal build (x64 slice)",
-    // Ships lib/libvips-cpp.<ver>.dylib.
-    lgpl: {
-      library: "libvips-cpp",
-      form: "a dynamic library (dylib) loaded at runtime",
-      sourceRepo: "https://github.com/lovell/sharp-libvips",
-    },
+    lgpl: DARWIN_LIBVIPS_LGPL,
   },
   {
     name: "@img/sharp-win32-x64",
+    resolveFrom: "sharp",
     shippedIn: "Windows x64 installer",
     // Unlike the Darwin slices there is no separate @img/sharp-libvips-win32-x64
     // package: this one package carries BOTH the Apache-2.0 sharp binding
@@ -78,7 +90,7 @@ export const SHIPPED_PLATFORM_PACKAGES = [
     // declares "Apache-2.0 AND LGPL-3.0-or-later".
     //
     // Its bundled LICENSE file contains ONLY the Apache-2.0 text. Publishing
-    // that text alone would under-disclose the LGPL-3.0 half, so this entry
+    // that text alone would under-disclose the LGPL component, so this entry
     // also feeds the weak-copyleft section below, and enrichRecord appends a
     // pointer to it after the on-disk Apache text.
     lgpl: {
@@ -90,6 +102,46 @@ export const SHIPPED_PLATFORM_PACKAGES = [
 ];
 
 /**
+ * The canonical FSF text that backs each weak-copyleft license id we can ship.
+ *
+ * Keyed by the LGPL component parsed out of a package's own declared SPDX
+ * expression, so the emitted text and title follow the manifest rather than a
+ * hand-set constant. A slice that upstream relicenses to a version we have no
+ * canonical text for fails loudly instead of publishing the wrong one.
+ */
+export const WEAK_COPYLEFT_LICENSE_TEXTS = {
+  "LGPL-2.1": {
+    licenseTextFile: "lgpl-2.1.txt",
+    licenseTitle: "GNU LESSER GENERAL PUBLIC LICENSE, Version 2.1",
+    shortName: "LGPL-2.1",
+    prose: "version 2.1 or later",
+  },
+  "LGPL-3.0": {
+    licenseTextFile: "lgpl-3.0.txt",
+    licenseTitle: "GNU LESSER GENERAL PUBLIC LICENSE, Version 3",
+    shortName: "LGPL-3.0",
+    prose: "version 3 or later",
+  },
+};
+
+/**
+ * Pull the LGPL component out of a declared SPDX expression.
+ *
+ * Compound expressions are the reason this exists: @img/sharp-win32-x64
+ * declares "Apache-2.0 AND LGPL-3.0-or-later" because one package carries both
+ * the permissive binding and the copyleft DLLs. Returns the family key into
+ * WEAK_COPYLEFT_LICENSE_TEXTS ("LGPL-3.0"), or undefined when the expression
+ * names no LGPL component.
+ */
+export function lgplFamilyOf(declaredLicense) {
+  const match = /\bLGPL-(\d+\.\d+)/i.exec(
+    typeof declaredLicense === "string" ? declaredLicense : "",
+  );
+  if (match === null) return undefined;
+  return `LGPL-${match[1]}`;
+}
+
+/**
  * Resolve a package directory the way Node itself does: walk `node_modules`
  * upward from a starting directory until the package is found.
  *
@@ -99,24 +151,130 @@ export const SHIPPED_PLATFORM_PACKAGES = [
  * store directory names additionally grow a peer-dependency hash suffix for
  * some packages. Walking sidesteps both, and keeps working under a hoisted
  * npm/yarn layout too.
+ *
+ * The walk stops at `boundary` (the repo root) rather than at the filesystem
+ * root. Without that bound, a slice missing from the workspace would be
+ * silently satisfied by a stray `~/node_modules` or `/node_modules` copy, and
+ * that foreign package's LICENSE would be published as PwrSnap's — a wrong
+ * notice instead of the loud failure this module promises.
+ *
+ * `fromDir` is resolved through symlinks first. Under pnpm every dependency
+ * directory is a symlink into the store, and walking the *link* path searches
+ * the linker's dependency tree instead of the package's own — so starting from
+ * sharp's link to @img/sharp-darwin-arm64 would find sharp's libvips copy
+ * rather than the one that binding actually resolves at runtime.
  */
-export function resolvePackageDirFrom(fromDir, name) {
-  let dir = fromDir;
+export function resolvePackageDirFrom(fromDir, name, boundary = workspaceRootOf(fromDir)) {
+  const stopAt = existsSync(boundary) ? realpathSync(resolve(boundary)) : resolve(boundary);
+  let dir = existsSync(fromDir) ? realpathSync(resolve(fromDir)) : resolve(fromDir);
+  // Refuse to search outside the boundary at all. Bounding only the *upper* end
+  // would still let a walk that starts outside the workspace run to the
+  // filesystem root and adopt a stray copy.
+  if (dir !== stopAt && !dir.startsWith(stopAt + sep)) return undefined;
   for (;;) {
     const candidate = join(dir, "node_modules", name);
     if (existsSync(join(candidate, "package.json"))) return candidate;
+    if (dir === stopAt) return undefined;
     const parent = dirname(dir);
+    // Belt and braces: stop at the filesystem root so this can never loop.
     if (parent === dir) return undefined;
     dir = parent;
   }
 }
 
 /**
+ * The install root that a package directory belongs to: the parent of the
+ * outermost `node_modules` segment in its path.
+ *
+ * This is the natural boundary for the dependency walk. Deriving it from the
+ * path rather than hardcoding `repoRoot` keeps the bound correct for any
+ * install tree — including the temporary fixtures the tests build outside the
+ * repo — while still refusing to escape the workspace in the real one.
+ */
+export function workspaceRootOf(packageDir) {
+  const parts = resolve(packageDir).split(sep);
+  const first = parts.indexOf("node_modules");
+  if (first <= 0) return resolve(packageDir);
+  return parts.slice(0, first).join(sep) || sep;
+}
+
+export const SHIPPED_PACKAGE_CODE = "PWRSNAP_SHIPPED_PACKAGE";
+
+/**
+ * Errors that are the operator's to fix, not a bug in this script.
+ *
+ * runCli only formats errors carrying `.status` or `.code`; anything else is
+ * rethrown as a raw stack trace, which buries the remediation text. Every
+ * throw below therefore carries a code. PR #426 fixed exactly this misdiagnosis
+ * for the stale-install path; a bare `throw new Error(...)` here reintroduces it.
+ */
+function shippedPackageError(lines) {
+  const error = new Error(Array.isArray(lines) ? lines.join("\n") : lines);
+  error.code = SHIPPED_PACKAGE_CODE;
+  return error;
+}
+
+const EXACT_VERSION = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)*$/;
+
+/**
+ * Validate a platform record before any of its fields reach shipped legal text.
+ *
+ * Applies to caller-supplied records too. The deleted validateMacArm64Versions
+ * covered the caller path on purpose ("validating only the derived one would
+ * leave the `??` ... as a way to inject `undefined` into the notice"), and
+ * without this a missing field renders as `@undefined` in the Dependency
+ * Summary or a bare `undefined` mid-sentence in the relink offer.
+ */
+export function validatePlatformRecord(record) {
+  const label = record?.name ?? "<unnamed platform record>";
+  for (const field of ["name", "version", "declaredLicense", "shippedIn"]) {
+    const value = record?.[field];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw shippedPackageError(
+        `Shipped platform record ${label} has no ${field}. The notice would publish ` +
+          "`undefined` as shipped legal metadata.",
+      );
+    }
+  }
+  if (!EXACT_VERSION.test(record.version)) {
+    throw shippedPackageError(
+      `Shipped platform record ${label} has version "${record.version}", which is not an exact ` +
+        "version. The notice would claim a version that was never distributed.",
+    );
+  }
+  const family = lgplFamilyOf(record.declaredLicense);
+  // The copyleft disclosure must follow the declared license, not a hand-set
+  // key. Gating only on `lgpl` means dropping or mistyping that key silently
+  // ships a copyleft binary with no FSF text and no written source offer.
+  if (family !== undefined && record.lgpl === undefined) {
+    throw shippedPackageError([
+      `${label} declares "${record.declaredLicense}", which contains an LGPL component, but the`,
+      "SHIPPED_PLATFORM_PACKAGES entry carries no `lgpl` descriptor.",
+      "",
+      "Without one it would ship with no canonical license text and no written source offer.",
+      "Add `lgpl: { library, form, sourceRepo }` describing the covered library.",
+    ]);
+  }
+  if (family === undefined && record.lgpl !== undefined) {
+    throw shippedPackageError(
+      `${label} carries an \`lgpl\` descriptor but declares "${record.declaredLicense}", which ` +
+        "names no LGPL component. The notice would append an LGPL offer for a package that is " +
+        "not under the LGPL.",
+    );
+  }
+  if (family !== undefined && WEAK_COPYLEFT_LICENSE_TEXTS[family] === undefined) {
+    throw shippedPackageError(
+      `${label} declares ${family}, which has no canonical text committed under ` +
+        "scripts/license-texts/. Add the verbatim FSF text and register it in " +
+        "WEAK_COPYLEFT_LICENSE_TEXTS before shipping this package.",
+    );
+  }
+  return record;
+}
+
+/**
  * Locate the installed shipped platform packages and turn each into an ordinary
  * license record — real path, real version, real license text.
- *
- * Resolution starts from sharp's own installed directory, so each slice is the
- * copy sharp itself would load rather than an unrelated hoisted one.
  *
  * Every failure here throws. A missing slice must never degrade into a
  * placeholder record — a silently-absent copyleft package is the failure mode
@@ -128,143 +286,183 @@ export function locateShippedPlatformPackages(
 ) {
   const sharpRecords = productionRecords.filter((record) => record.name === "sharp");
   if (sharpRecords.length === 0) {
-    throw new Error(
+    throw shippedPackageError(
       "Cannot locate the shipped sharp platform packages: no `sharp` record in the production " +
         "license report.",
     );
   }
-  // More than one resolved sharp (a transitive copy alongside the direct one)
-  // would make the pick order-dependent, and the wrong pick lands silently in
-  // the LGPL-3.0 relink offer. Refuse rather than guess.
-  const distinctVersions = [...new Set(sharpRecords.map((record) => record.version))];
-  if (distinctVersions.length > 1) {
-    throw new Error(
-      `Cannot locate the shipped sharp platform packages: ${distinctVersions.length} sharp versions ` +
-        `resolved (${distinctVersions.sort().join(", ")}). Pin a single sharp so the notice cannot ` +
+  // More than one resolved sharp makes the pick order-dependent, and the wrong
+  // pick lands silently in the LGPL relink offer. Distinct *paths* are the
+  // hazard, not just distinct versions: two installs of the same version under
+  // different peer sets resolve different dependency trees.
+  const distinctPaths = [...new Set(sharpRecords.map((record) => record.packagePath))];
+  if (distinctPaths.length > 1) {
+    const versions = [...new Set(sharpRecords.map((record) => record.version))].sort();
+    throw shippedPackageError(
+      `Cannot locate the shipped sharp platform packages: ${distinctPaths.length} sharp installs ` +
+        `resolved (versions ${versions.join(", ")}). Pin a single sharp so the notice cannot ` +
         "name a version that was never shipped.",
     );
   }
   const sharp = sharpRecords[0];
   if (!sharp.packagePath) {
-    throw new Error(
+    throw shippedPackageError(
       "Cannot locate the shipped sharp platform packages: the license report gave no path for " +
         `sharp@${sharp.version}.`,
     );
   }
-  const declaredPins = readPackageJson(sharp.packagePath)?.optionalDependencies ?? {};
+
+  // name -> installed directory, so an entry can resolve from its real parent.
+  const resolved = new Map([["sharp", sharp.packagePath]]);
 
   return shipped.map((entry) => {
-    const packagePath = resolvePackageDirFrom(sharp.packagePath, entry.name);
-    if (packagePath === undefined) {
-      throw new Error(
-        [
-          `Shipped platform package ${entry.name} is not installed anywhere reachable from`,
-          `${sharp.packagePath}.`,
-          "",
-          `PwrSnap's release artifacts bundle it (${entry.shippedIn}), so the notice must cover`,
-          "it. pnpm-workspace.yaml's `supportedArchitectures` is what materializes every shipped",
-          "slice on every platform — check that it still lists the os/cpu this package needs,",
-          "then run `pnpm install` and retry.",
-          "",
-          "Refusing to emit a notice that omits a shipped package.",
-        ].join("\n"),
+    const parentName = entry.resolveFrom ?? "sharp";
+    const parentPath = resolved.get(parentName);
+    if (parentPath === undefined) {
+      throw shippedPackageError(
+        `SHIPPED_PLATFORM_PACKAGES lists ${entry.name} before its resolveFrom package ` +
+          `${parentName}. Reorder the list so each entry's parent appears first.`,
       );
     }
+    const packagePath = resolvePackageDirFrom(parentPath, entry.name);
+    if (packagePath === undefined) {
+      throw shippedPackageError([
+        `Shipped platform package ${entry.name} is not installed anywhere reachable from`,
+        `${parentPath} (search stopped at the repo root).`,
+        "",
+        `PwrSnap's release artifacts bundle it (${entry.shippedIn}), so the notice must cover`,
+        "it. pnpm-workspace.yaml's `supportedArchitectures` is what materializes every shipped",
+        "slice on every platform — check that it still lists the os/cpu this package needs,",
+        "then run `pnpm install` and retry.",
+        "",
+        "Refusing to emit a notice that omits a shipped package.",
+      ]);
+    }
+    resolved.set(entry.name, packagePath);
+
     const packageJson = readPackageJson(packagePath);
     if (typeof packageJson?.version !== "string" || packageJson.version.length === 0) {
-      throw new Error(
+      throw shippedPackageError(
         `Shipped platform package ${entry.name} at ${packagePath} has no version in its manifest.`,
       );
     }
     if (typeof packageJson.license !== "string" || packageJson.license.length === 0) {
-      throw new Error(
+      throw shippedPackageError(
         `Shipped platform package ${entry.name}@${packageJson.version} declares no license in its ` +
           "manifest. Refusing to guess one.",
       );
     }
     // apps/desktop/scripts/release.mjs copies these slices into the packaged app
-    // by looking up sharp's optionalDependencies pin, so that pin is what
+    // by looking up the parent's optionalDependencies pin, so that pin is what
     // actually ships. If the installed copy disagrees, the notice would name a
     // version the artifact does not contain. Only checked when the pin is an
     // exact version — a range legitimately cannot be compared this way.
-    const pin = declaredPins[entry.name];
+    const pin = readPackageJson(parentPath)?.optionalDependencies?.[entry.name];
     if (
       typeof pin === "string" &&
-      /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)*$/.test(pin.trim()) &&
+      EXACT_VERSION.test(pin.trim()) &&
       pin.trim() !== packageJson.version
     ) {
-      throw new Error(
+      throw shippedPackageError(
         `Shipped platform package ${entry.name} resolves to ${packageJson.version} on disk, but ` +
-          `sharp@${sharp.version} pins ${pin.trim()}. apps/desktop/scripts/release.mjs ships the ` +
-          "pinned version, so the notice would name a version the artifact does not contain. Run " +
+          `${parentName} pins ${pin.trim()}. apps/desktop/scripts/release.mjs ships the pinned ` +
+          "version, so the notice would name a version the artifact does not contain. Run " +
           "`pnpm install` and retry.",
       );
     }
-    return {
+
+    const declaredLicense = packageJson.license;
+    const family = lgplFamilyOf(declaredLicense);
+    const canonical = family === undefined ? undefined : WEAK_COPYLEFT_LICENSE_TEXTS[family];
+    return validatePlatformRecord({
       name: entry.name,
       version: packageJson.version,
-      declaredLicense: packageJson.license,
+      declaredLicense,
       packagePath,
-      description: packageJson.description,
       shippedIn: entry.shippedIn,
       lgpl: entry.lgpl,
-      // The on-disk LICENSE of a dual-licensed slice can cover only one half
-      // (see @img/sharp-win32-x64 above). Point readers at the section that
-      // carries the rest rather than letting the partial text stand alone.
+      // The on-disk LICENSE of a package with a compound license expression can
+      // cover only one component (see @img/sharp-win32-x64 above). Point readers
+      // at the section carrying the rest rather than letting the partial text
+      // stand alone. The license version comes from the declared expression, so
+      // a slice under a different LGPL version cannot be mislabelled here.
       licenseTextSuffix:
-        entry.lgpl === undefined
+        entry.lgpl === undefined || canonical === undefined
           ? undefined
           : [
               "",
               `${entry.name} ships ${entry.lgpl.library} under the GNU Lesser General Public License,`,
-              "version 3 or later. The full LGPL-3.0 text and the corresponding relinking / written",
-              'source offer are reproduced below under "Full License Texts — Weak-Copyleft Bundled',
-              'Binaries".',
+              `${canonical.prose}. The full ${canonical.shortName} text and the corresponding relinking /`,
+              'written source offer are reproduced below under "Full License Texts — Weak-Copyleft',
+              'Bundled Binaries".',
             ].join("\n"),
-    };
+    });
   });
 }
+
+// The bundled FFmpeg executable is not an npm package — CI injects a controlled
+// build into build/ffmpeg/ — so its facts are stated here rather than read off
+// disk. Kept in ONE place because two independently-maintained copies (the
+// dependency record and the weak-copyleft entry) can drift, and a partial edit
+// would publish two different versions for one binary in the same notice.
+//
+// NOTE: this version is not derived from anything. The build-time source of
+// truth is FFMPEG_VERSION / FFMPEG_ARTIFACT_NAME in .github/workflows/release.yml
+// (and preview-build.yml). Bumping the shipped binary REQUIRES editing this
+// constant and re-running `pnpm licenses:generate`; nothing detects the drift
+// automatically, and a stale value points the LGPL-2.1 written source offer at
+// the wrong release tarball.
+export const BUNDLED_FFMPEG = {
+  version: "8.1.1",
+  declaredLicense: "LGPL-2.1-or-later",
+  sourceUrl: "https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
+  buildRepo: "https://github.com/pwrdrvr/pwrsnap-ffmpeg-builds",
+  licenseGuidance: "https://ffmpeg.org/legal.html",
+  excludedFlags:
+    "--enable-gpl, --enable-nonfree, --enable-libx264, --enable-libx265, --enable-libvidstab, or --enable-libfdk-aac",
+};
 
 /**
  * The bundled binaries whose licenses require shipping the full license text
  * plus a written offer to relink against a modified version of the covered
  * library.
  *
- * FFmpeg is not an npm package at all — CI injects a controlled build into
- * build/ffmpeg/ — so it is described here by hand. The libvips-carrying sharp
- * slices are passed in from locateShippedPlatformPackages so their versions
- * track what is installed.
- *
- * None of these packages ship the canonical FSF license text (the libvips
- * slices ship no license file whatsoever), so the verbatim FSF texts are
- * committed under scripts/license-texts/ and appended in a dedicated section
- * below the per-package License Texts. They are the verbatim FSF distributions
- * of https://www.gnu.org/licenses/lgpl-2.1.txt and
+ * The libvips-carrying sharp slices are passed in from
+ * locateShippedPlatformPackages so their versions and license ids track what is
+ * installed. None of these packages ship the canonical FSF license text (the
+ * libvips slices ship no license file whatsoever), so the verbatim FSF texts
+ * are committed under scripts/license-texts/ and appended in a dedicated
+ * section below the per-package License Texts. They are the verbatim FSF
+ * distributions of https://www.gnu.org/licenses/lgpl-2.1.txt and
  * https://www.gnu.org/licenses/lgpl-3.0.txt.
  */
 export function buildWeakCopyleftBundledBinaries(platformRecords = []) {
+  const ffmpegCanonical = WEAK_COPYLEFT_LICENSE_TEXTS[lgplFamilyOf(BUNDLED_FFMPEG.declaredLicense)];
   const ffmpeg = {
     name: "FFmpeg",
-    version: "8.1.1",
-    declaredLicense: "LGPL-2.1-or-later",
-    licenseTextFile: "lgpl-2.1.txt",
-    licenseTitle: "GNU LESSER GENERAL PUBLIC LICENSE, Version 2.1",
+    version: BUNDLED_FFMPEG.version,
+    declaredLicense: BUNDLED_FFMPEG.declaredLicense,
+    licenseTextFile: ffmpegCanonical.licenseTextFile,
+    licenseTitle: ffmpegCanonical.licenseTitle,
     summary: [
-      "PwrSnap's macOS release bundles an FFmpeg executable built from the official FFmpeg 8.1.1",
+      // Platform-neutral on purpose: the macOS dmg/zip AND the Windows nsis
+      // installer both ship this executable (apps/desktop/scripts/package-win.mjs
+      // hard-fails a --release build without it). Naming one platform would
+      // scope the written source offer away from the other's recipients.
+      `PwrSnap bundles an FFmpeg executable built from the official FFmpeg ${BUNDLED_FFMPEG.version}`,
       "source release",
-      "(build scripts: https://github.com/pwrdrvr/pwrsnap-ffmpeg-builds), configured without",
-      "--enable-gpl, --enable-nonfree,",
-      "--enable-libx264, --enable-libx265, --enable-libvidstab, or --enable-libfdk-aac, so the",
+      `(build scripts: ${BUNDLED_FFMPEG.buildRepo}), configured without`,
+      `${BUNDLED_FFMPEG.excludedFlags}, so the`,
       "resulting binary is covered by the GNU Lesser General Public License, version 2.1 or later.",
-      "Source: https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
-      "License guidance: https://ffmpeg.org/legal.html",
+      `Source: ${BUNDLED_FFMPEG.sourceUrl}`,
+      `License guidance: ${BUNDLED_FFMPEG.licenseGuidance}`,
     ].join("\n"),
     relinkOffer: [
       "Relinking / source offer: PwrSnap ships the bundled ffmpeg executable as a separate file",
       "(not statically linked into the application), so it may be replaced with a compatible",
       "build. The exact source used, the build scripts, and the verified configure flags live in",
-      "https://github.com/pwrdrvr/pwrsnap-ffmpeg-builds, with a timestamped copy of the flags in",
-      "this repository at docs/ffmpeg-build-reference.md, alongside the FFmpeg 8.1.1 source",
+      `${BUNDLED_FFMPEG.buildRepo}, with a timestamped copy of the flags in`,
+      `this repository at docs/ffmpeg-build-reference.md, alongside the FFmpeg ${BUNDLED_FFMPEG.version} source`,
       "release linked above. PwrDrvr LLC will additionally provide the corresponding source on",
       "written request to support@pwrdrvr.com for at least three years from the date of",
       "distribution.",
@@ -273,27 +471,43 @@ export function buildWeakCopyleftBundledBinaries(platformRecords = []) {
 
   const libvipsBinaries = platformRecords
     .filter((record) => record.lgpl !== undefined)
-    .map((record) => ({
-      name: record.name,
-      version: record.version,
-      declaredLicense: "LGPL-3.0-or-later",
-      licenseTextFile: "lgpl-3.0.txt",
-      licenseTitle: "GNU LESSER GENERAL PUBLIC LICENSE, Version 3",
-      summary: [
-        `PwrSnap's ${record.shippedIn} bundles the prebuilt ${record.lgpl.library} shipped in`,
-        `${record.name}, used by sharp for image processing. It is distributed under the GNU`,
-        "Lesser General Public License, version 3 or later.",
-        `Source: ${record.lgpl.sourceRepo}`,
-        "Upstream library: https://github.com/libvips/libvips",
-      ].join("\n"),
-      relinkOffer: [
-        `Relinking / source offer: the libvips library is bundled as ${record.lgpl.form},`,
-        "so it may be replaced with a compatible build of the same major version.",
-        "The corresponding source for libvips and its dependencies is published at the URLs above.",
-        "PwrDrvr LLC will additionally provide the corresponding source on written request to",
-        "support@pwrdrvr.com for at least three years from the date of distribution.",
-      ].join("\n"),
-    }));
+    .map((record) => {
+      // Derived from the record's own declared expression rather than stamped,
+      // so an upstream relicense cannot leave this section asserting a license
+      // the package's manifest contradicts.
+      const family = lgplFamilyOf(record.declaredLicense);
+      const canonical = family === undefined ? undefined : WEAK_COPYLEFT_LICENSE_TEXTS[family];
+      if (canonical === undefined) {
+        throw shippedPackageError(
+          `${record.name}@${record.version} carries an \`lgpl\` descriptor but its declared ` +
+            `license "${record.declaredLicense}" names no LGPL version with a committed ` +
+            "canonical text.",
+        );
+      }
+      return {
+        name: record.name,
+        version: record.version,
+        // The LGPL component of the declared expression, not the whole
+        // expression: this section speaks only to the copyleft obligation.
+        declaredLicense: `${family}-or-later`,
+        licenseTextFile: canonical.licenseTextFile,
+        licenseTitle: canonical.licenseTitle,
+        summary: [
+          `PwrSnap's ${record.shippedIn} bundles the prebuilt ${record.lgpl.library} shipped in`,
+          `${record.name}, used by sharp for image processing. It is distributed under the GNU`,
+          `Lesser General Public License, ${canonical.prose}.`,
+          `Source: ${record.lgpl.sourceRepo}`,
+          "Upstream library: https://github.com/libvips/libvips",
+        ].join("\n"),
+        relinkOffer: [
+          `Relinking / source offer: the libvips library is bundled as ${record.lgpl.form},`,
+          "so it may be replaced with a compatible build of the same major version.",
+          "The corresponding source for libvips and its dependencies is published at the URLs above.",
+          "PwrDrvr LLC will additionally provide the corresponding source on written request to",
+          "support@pwrdrvr.com for at least three years from the date of distribution.",
+        ].join("\n"),
+      };
+    });
 
   return [ffmpeg, ...libvipsBinaries];
 }
@@ -309,23 +523,22 @@ export function buildBundledBinaryRecords() {
   return [
     {
       name: "FFmpeg",
-      version: "8.1.1",
-      declaredLicense: "LGPL-2.1-or-later",
-      source: "https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
-      description:
-        "Bundled ffmpeg executable built by github.com/pwrdrvr/pwrsnap-ffmpeg-builds without GPL or nonfree configure flags",
+      version: BUNDLED_FFMPEG.version,
+      declaredLicense: BUNDLED_FFMPEG.declaredLicense,
+      source: BUNDLED_FFMPEG.sourceUrl,
+      bundledBinary: true,
       licenseText: [
-        "PwrSnap bundles an FFmpeg executable built from the official FFmpeg 8.1.1 source release.",
-        "The build repo verifies that the resulting binary configuration does not contain --enable-gpl, --enable-nonfree, --enable-libx264, --enable-libx265, --enable-libvidstab, or --enable-libfdk-aac.",
+        `PwrSnap bundles an FFmpeg executable built from the official FFmpeg ${BUNDLED_FFMPEG.version} source release.`,
+        `The build repo verifies that the resulting binary configuration does not contain ${BUNDLED_FFMPEG.excludedFlags}.`,
         "",
         "FFmpeg's source release includes its license texts and states that most files are under the GNU Lesser General Public License version 2.1 or later.",
-        "Source: https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
-        "License guidance: https://ffmpeg.org/legal.html",
+        `Source: ${BUNDLED_FFMPEG.sourceUrl}`,
+        `License guidance: ${BUNDLED_FFMPEG.licenseGuidance}`,
         "",
         "The full GNU Lesser General Public License, version 2.1, and the corresponding relinking / source offer are reproduced below under \"Full License Texts — Weak-Copyleft Bundled Binaries\"."
       ].join("\n"),
     },
-  ].map((record) => ({ ...record, bundledBinary: true }));
+  ];
 }
 
 export function runPnpmLicenses(args, options = {}) {
@@ -416,10 +629,12 @@ export function normalizeSourceUrl(source) {
 }
 
 export function npmPackageUrl(name) {
-  return `https://www.npmjs.com/package/${encodeURIComponent(name).replace(
-    "%40",
-    "@",
-  )}`;
+  // npm's own URLs carry scoped names verbatim: /package/@img/sharp-win32-x64.
+  // The previous encodeURIComponent(...).replace("%40", "@") left the slash
+  // percent-encoded (@img%2Fsharp-win32-x64), which 404s. Only reachable as the
+  // last-resort fallback for a package declaring neither repository nor
+  // homepage, but every @img slice is scoped.
+  return `https://www.npmjs.com/package/${name}`;
 }
 
 export function findLicenseFile(packagePath) {
@@ -428,7 +643,9 @@ export function findLicenseFile(packagePath) {
     .filter((entry) => entry.isFile())
     .map((entry) => entry.name)
     .filter((name) => /^(licen[cs]e|copying|copyright|notice)(?:[.-].*)?$/i.test(name))
-    .sort((a, b) => a.localeCompare(b));
+    // Code-unit order: readdirSync order is filesystem-defined, and localeCompare
+    // would reintroduce the environment dependence compareStrings exists to avoid.
+    .sort(compareStrings);
   return candidates[0] ? join(packagePath, candidates[0]) : undefined;
 }
 
@@ -512,7 +729,11 @@ export function buildWeakCopyleftSection(binaries, baseDir = licenseTextsDir) {
   );
   lines.push("scripts/license-texts/.");
   lines.push("");
-  for (const binary of binaries) {
+  // Sorted, like every other list in this notice. Emitting in
+  // SHIPPED_PLATFORM_PACKAGES declaration order meant that merely reordering
+  // that constant churned bytes here while leaving the sorted sections alone.
+  const sorted = binaries.slice().sort(compareRecords);
+  for (const binary of sorted) {
     const binHeading = `${stableRecordKey(binary)} (${binary.declaredLicense})`;
     lines.push(binHeading);
     lines.push("~".repeat(binHeading.length));
@@ -528,7 +749,7 @@ export function buildWeakCopyleftSection(binaries, baseDir = licenseTextsDir) {
   // text is emitted once per distinct license with an explicit "Applies to"
   // roster, rather than repeating a multi-thousand-line FSF text per binary.
   const textGroups = new Map();
-  for (const binary of binaries) {
+  for (const binary of sorted) {
     const group = textGroups.get(binary.licenseTextFile) ?? {
       licenseTitle: binary.licenseTitle,
       binaries: [],
@@ -550,11 +771,27 @@ export function buildWeakCopyleftSection(binaries, baseDir = licenseTextsDir) {
   return lines;
 }
 
+/**
+ * Code-unit ordering, deliberately NOT String.prototype.localeCompare.
+ *
+ * localeCompare collates through ICU using the ambient LANG/LC_ALL, so the
+ * emitted order — and therefore the file's bytes — varied per machine. Measured
+ * on this tree: `--check` passed under LANG=C/en_US.UTF-8 but FAILED under
+ * et_EE.UTF-8, cs_CZ.UTF-8 and lt_LT.UTF-8 (Estonian sorts z between s and t,
+ * moving `zod`/`zwitch`). A contributor on a non-English locale would see a
+ * spurious "notice is out of date", regenerate, and commit a reordered file
+ * that then failed for everyone else. Byte-identical output is the whole point
+ * of this generator, so ordering must not depend on the environment.
+ */
+export function compareStrings(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 export function compareRecords(a, b) {
   return (
-    a.name.localeCompare(b.name) ||
-    a.version.localeCompare(b.version) ||
-    a.declaredLicense.localeCompare(b.declaredLicense)
+    compareStrings(a.name, b.name) ||
+    compareStrings(a.version, b.version) ||
+    compareStrings(a.declaredLicense, b.declaredLicense)
   );
 }
 
@@ -562,7 +799,19 @@ function readPackageJson(packagePath) {
   if (!packagePath) return undefined;
   const packageJsonPath = join(packagePath, "package.json");
   if (!existsSync(packageJsonPath)) return undefined;
-  return JSON.parse(readFileSync(packageJsonPath, "utf8"));
+  try {
+    return JSON.parse(readFileSync(packageJsonPath, "utf8"));
+  } catch (cause) {
+    // A truncated manifest (interrupted `pnpm install`) otherwise threw a bare
+    // "SyntaxError: Unexpected end of JSON input" naming neither the package
+    // nor the file, which runCli rethrows as a raw stack trace.
+    const error = new Error(
+      `Could not parse ${packageJsonPath}. node_modules looks corrupt — run \`pnpm install\` and retry.`,
+    );
+    error.code = STALE_INSTALL_CODE;
+    error.cause = cause;
+    throw error;
+  }
 }
 
 export const STALE_INSTALL_CODE = "PWRSNAP_STALE_INSTALL";
@@ -645,11 +894,16 @@ function enrichRecord(record) {
       record.homepage ??
       npmPackageUrl(record.name),
     ),
-    licenseFile: licensePath
-      ? relative(record.packagePath, licensePath)
-      : typeof record.licenseText === "string"
-        ? "bundled binary notice"
-      : "package metadata",
+    licenseFile:
+      (licensePath
+        ? relative(record.packagePath, licensePath)
+        : typeof record.licenseText === "string"
+          ? "bundled binary notice"
+        : "package metadata") +
+      // The suffix is PwrSnap's own cross-reference, not part of the upstream
+      // file. Naming the file alone would attribute those lines to it, and
+      // provenance is the entire purpose of this header.
+      (typeof record.licenseTextSuffix === "string" ? " + PwrSnap cross-reference" : ""),
     licenseText,
     licenseTextHash: createHash("sha256").update(licenseText).digest("hex"),
   };
@@ -690,8 +944,12 @@ export function buildThirdPartyLicenseNotice({
   // Read off disk unless the caller pins them. These are ordinary records with
   // real paths, so enrichRecord picks up each package's own version, repository
   // URL and license text — nothing about them is hardcoded here.
+  // Caller-supplied records go through the same validation as located ones —
+  // validating only the derived path would leave this parameter as a way to
+  // inject `undefined` into shipped legal text.
   const resolvedPlatformRecords =
-    platformPackageRecords ?? locateShippedPlatformPackages(productionRecords);
+    platformPackageRecords?.map(validatePlatformRecord) ??
+    locateShippedPlatformPackages(productionRecords);
   for (const record of resolvedPlatformRecords) {
     recordsByKey.set(stableRecordKey(record), record);
   }
@@ -709,6 +967,15 @@ export function buildThirdPartyLicenseNotice({
 
   const resolvedWeakCopyleftBinaries =
     weakCopyleftBinaries ?? buildWeakCopyleftBundledBinaries(resolvedPlatformRecords);
+
+  // Re-assert now that platform and bundled-binary records are in the map. The
+  // first call above deliberately runs earlier so a drifted `sharp` is reported
+  // as a stale install; this one is what actually covers the records merged
+  // since. Without it the guard never saw them at all, and a caller-supplied
+  // platformPackageRecords entry with a dead path silently produced
+  // "No license text file was found..." placeholder text standing in for a live
+  // copyleft slice's license.
+  assertPackagesMaterialized(Array.from(recordsByKey.values()));
 
   const records = Array.from(recordsByKey.values()).sort(compareRecords).map(enrichRecord);
 
@@ -789,7 +1056,7 @@ export function buildThirdPartyLicenseNotice({
   lines.push("");
 
   for (const [declaredLicense, group] of Array.from(recordsByLicense.entries()).sort(
-    ([a], [b]) => a.localeCompare(b),
+    ([a], [b]) => compareStrings(a, b),
   )) {
     lines.push(`${declaredLicense}`);
     lines.push("~".repeat(declaredLicense.length));
@@ -834,10 +1101,25 @@ export function buildThirdPartyLicenseNotice({
   return `${lines.join("\n").replace(/[ \t]+$/gm, "").trimEnd()}\n`;
 }
 
-export function generateNotice() {
+/**
+ * The pnpm invocations behind the notice.
+ *
+ * `--no-optional` is the determinism mechanism, not an optimization: with
+ * optional dependencies included, `pnpm licenses list` reports only the HOST's
+ * platform slice, so the notice would differ between a macOS dev machine and
+ * Linux CI. The shipped slices are enumerated explicitly instead (see
+ * SHIPPED_PLATFORM_PACKAGES). Exported so a test can assert the flags rather
+ * than only the prose that claims them.
+ */
+export const NOTICE_PNPM_ARGS = {
+  production: ["--prod", "--no-optional"],
+  all: ["--no-optional"],
+};
+
+export function generateNotice(runner = runPnpmLicenses) {
   return buildThirdPartyLicenseNotice({
-    productionReport: runPnpmLicenses(["--prod", "--no-optional"]),
-    allReport: runPnpmLicenses(["--no-optional"]),
+    productionReport: runner(NOTICE_PNPM_ARGS.production),
+    allReport: runner(NOTICE_PNPM_ARGS.all),
   });
 }
 
@@ -851,7 +1133,7 @@ function runCli() {
       process.stderr.write(error.message);
       process.exit(error.status);
     }
-    if (error && error.code === STALE_INSTALL_CODE) {
+    if (error && (error.code === STALE_INSTALL_CODE || error.code === SHIPPED_PACKAGE_CODE)) {
       // Expected operator error, not a bug — report it without a stack trace,
       // and never let it be mistaken for "the committed notice is stale".
       console.error(error.message);
@@ -874,8 +1156,15 @@ function runCli() {
 
   mkdirSync(dirname(outputPath), { recursive: true });
   writeFileSync(outputPath, output);
-  const count = flattenLicenseReport(runPnpmLicenses(["--prod"])).length;
-  console.log(`wrote ${relative(repoRoot, outputPath)} (${count} production package records plus Electron)`);
+  // `--no-optional` to match generateNotice(). Without it this counted the
+  // HOST's optional slice, so the one number the operator sees differed between
+  // macOS and Linux CI for a notice whose whole premise is being identical on
+  // both. Counted from the already-generated text so a spawn failure here
+  // cannot report failure for a file that was written correctly.
+  const count = (output.match(/^- \S+@\S* \| /gm) ?? []).length;
+  console.log(
+    `wrote ${relative(repoRoot, outputPath)} (${count} dependency records incl. Electron, shipped platform packages and bundled binaries)`,
+  );
 }
 
 if (isCliEntrypoint(import.meta.url)) {

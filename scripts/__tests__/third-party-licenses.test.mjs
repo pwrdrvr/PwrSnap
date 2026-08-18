@@ -4,10 +4,16 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   buildThirdPartyLicenseNotice,
+  compareStrings,
   declaredLicenseFallbackText,
   findUnmaterializedRecords,
+  generateNotice,
+  lgplFamilyOf,
   locateShippedPlatformPackages,
+  npmPackageUrl,
+  NOTICE_PNPM_ARGS,
   resolvePackageDirFrom,
+  SHIPPED_PACKAGE_CODE,
   SHIPPED_PLATFORM_PACKAGES,
   STALE_INSTALL_CODE,
 } from "../generate-third-party-licenses.mjs";
@@ -62,41 +68,54 @@ function packageDir(root, name, version, licenseText, packageJson = {}) {
  * `node_modules`, which is what the upward node_modules walk has to traverse.
  * Returns sharp's package directory.
  */
+function writeManifest(dir, manifest) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "package.json"), JSON.stringify(manifest, null, 2));
+}
+
+/**
+ * Build a pnpm-shaped tree. Slices default to living beside `sharp` in one
+ * `node_modules` (what the upward walk traverses); a slice with `parent` is
+ * instead placed inside THAT package's own `node_modules`, mirroring how pnpm
+ * gives each @img binding its own libvips copy. Returns sharp's directory.
+ */
 function sharpTree(root, { version = "0.35.3", slices = [] }) {
   const nodeModules = join(root, "node_modules");
   const sharpDir = join(nodeModules, "sharp");
-  mkdirSync(sharpDir, { recursive: true });
-  writeFileSync(
-    join(sharpDir, "package.json"),
-    JSON.stringify(
-      {
-        name: "sharp",
-        version,
-        license: "Apache-2.0",
-        optionalDependencies: Object.fromEntries(
-          slices.map((slice) => [slice.name, slice.pin ?? slice.version]),
-        ),
-      },
-      null,
-      2,
-    ),
-  );
-  for (const slice of slices) {
-    const dir = join(nodeModules, slice.name);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, "package.json"),
-      JSON.stringify(
-        {
-          name: slice.name,
-          version: slice.version,
-          license: slice.license,
-          description: slice.description,
-        },
-        null,
-        2,
-      ),
+  const dirOf = new Map([["sharp", sharpDir]]);
+  const pinsFor = (owner) =>
+    Object.fromEntries(
+      slices
+        .filter((slice) => (slice.parent ?? "sharp") === owner)
+        .map((slice) => [slice.name, slice.pin ?? slice.version]),
     );
+
+  writeManifest(sharpDir, {
+    name: "sharp",
+    version,
+    license: "Apache-2.0",
+    optionalDependencies: pinsFor("sharp"),
+  });
+
+  for (const slice of slices) {
+    const parent = slice.parent ?? "sharp";
+    const parentDir = dirOf.get(parent);
+    if (parentDir === undefined) {
+      throw new Error(`fixture slice ${slice.name} lists parent ${parent} before it is defined`);
+    }
+    // Siblings of the parent for sharp-owned slices; nested under the parent
+    // otherwise — both are shapes the node_modules walk must handle.
+    const dir =
+      parent === "sharp"
+        ? join(nodeModules, slice.name)
+        : join(parentDir, "node_modules", slice.name);
+    writeManifest(dir, {
+      name: slice.name,
+      version: slice.version,
+      license: slice.license,
+      optionalDependencies: pinsFor(slice.name),
+    });
+    dirOf.set(slice.name, dir);
     if (slice.licenseText !== undefined) {
       writeFileSync(join(dir, "LICENSE"), slice.licenseText);
     }
@@ -324,33 +343,29 @@ describe("stale-install detection", () => {
 // notice claiming @img/sharp-darwin-arm64@0.34.5 and libvips@1.2.4 while 0.35.3
 // / 1.3.2 shipped, and no platform could detect it. They are now read off disk.
 describe("locateShippedPlatformPackages", () => {
+  const APACHE = "Apache License 2.0 — real text on disk";
   const SLICES = [
     {
       name: "@img/sharp-darwin-arm64",
       version: "0.35.3",
       license: "Apache-2.0",
-      description: "Prebuilt sharp for macOS arm64",
-      licenseText: "Apache License 2.0 — real text on disk",
+      licenseText: APACHE,
     },
     {
       name: "@img/sharp-win32-x64",
       version: "0.35.3",
       license: "Apache-2.0 AND LGPL-3.0-or-later",
-      description: "Prebuilt sharp for Windows x64",
-      licenseText: "Apache License 2.0 — real text on disk",
+      licenseText: APACHE,
     },
   ];
+  const WIN32_LGPL = {
+    library: "libvips and libvips-cpp",
+    form: "separate dynamic libraries (DLLs) loaded at runtime",
+    sourceRepo: "https://github.com/lovell/sharp-libvips",
+  };
   const SHIPPED = [
     { name: "@img/sharp-darwin-arm64", shippedIn: "macOS universal build (arm64 slice)" },
-    {
-      name: "@img/sharp-win32-x64",
-      shippedIn: "Windows x64 installer",
-      lgpl: {
-        library: "libvips and libvips-cpp",
-        form: "separate dynamic libraries (DLLs) loaded at runtime",
-        sourceRepo: "https://github.com/lovell/sharp-libvips",
-      },
-    },
+    { name: "@img/sharp-win32-x64", shippedIn: "Windows x64 installer", lgpl: WIN32_LGPL },
   ];
 
   function locate(root, slices = SLICES, shipped = SHIPPED) {
@@ -363,8 +378,6 @@ describe("locateShippedPlatformPackages", () => {
 
   test("resolves each slice through the node_modules walk from sharp", () => {
     const root = tempRoot();
-    expect(resolvePackageDirFrom(join(root, "node_modules", "sharp"), "@img/nope")).toBeUndefined();
-
     const located = locate(root);
     expect(located.map((record) => record.name)).toEqual([
       "@img/sharp-darwin-arm64",
@@ -378,79 +391,247 @@ describe("locateShippedPlatformPackages", () => {
     expect(located[0]).toMatchObject({
       version: "0.35.3",
       declaredLicense: "Apache-2.0",
-      description: "Prebuilt sharp for macOS arm64",
       shippedIn: "macOS universal build (arm64 slice)",
     });
     expect(located[1].declaredLicense).toBe("Apache-2.0 AND LGPL-3.0-or-later");
   });
 
   test("tracks the installed version rather than a hardcoded pin", () => {
-    const root = tempRoot();
     const located = locate(
-      root,
+      tempRoot(),
       SLICES.map((slice) => ({ ...slice, version: "9.9.9" })),
     );
 
     expect(located.every((record) => record.version === "9.9.9")).toBe(true);
   });
 
+  test("resolves a slice from its own parent, not from sharp", () => {
+    // sharp never loads the libvips packages — each @img/sharp-<platform>
+    // binding does, and pnpm materializes a separate copy under that binding.
+    // Resolving from sharp would validate a copy the artifact never ships.
+    const root = tempRoot();
+    const located = locateShippedPlatformPackages(
+      [
+        {
+          name: "sharp",
+          version: "0.35.3",
+          packagePath: sharpTree(root, {
+            slices: [
+              ...SLICES,
+              // Same name at two versions: sharp's copy, and the binding's own.
+              { name: "@img/sharp-libvips-darwin-arm64", version: "1.0.0", license: "LGPL-3.0-or-later" },
+              {
+                name: "@img/sharp-libvips-darwin-arm64",
+                version: "1.3.2",
+                license: "LGPL-3.0-or-later",
+                parent: "@img/sharp-darwin-arm64",
+              },
+            ],
+          }),
+        },
+      ],
+      [
+        ...SHIPPED,
+        {
+          name: "@img/sharp-libvips-darwin-arm64",
+          resolveFrom: "@img/sharp-darwin-arm64",
+          shippedIn: "macOS universal build (arm64 slice)",
+          lgpl: {
+            library: "libvips-cpp",
+            form: "a dynamic library (dylib) loaded at runtime",
+            sourceRepo: "https://github.com/lovell/sharp-libvips",
+          },
+        },
+      ],
+    );
+
+    const libvips = located.find((record) => record.name === "@img/sharp-libvips-darwin-arm64");
+    expect(libvips.version).toBe("1.3.2");
+  });
+
   test("throws — never placeholders — when a shipped slice is not installed", () => {
     const root = tempRoot();
+    let thrown;
+    try {
+      locate(root, [SLICES[0]]);
+    } catch (error) {
+      thrown = error;
+    }
 
-    expect(() => locate(root, [SLICES[0]])).toThrow(
-      /@img\/sharp-win32-x64 is not installed anywhere reachable/,
-    );
-    expect(() => locate(root, [SLICES[0]])).toThrow(/supportedArchitectures/);
-    expect(() => locate(root, [SLICES[0]])).toThrow(
-      /Refusing to emit a notice that omits a shipped package/,
-    );
+    expect(thrown.message).toMatch(/@img\/sharp-win32-x64 is not installed anywhere reachable/);
+    expect(thrown.message).toMatch(/supportedArchitectures/);
+    expect(thrown.message).toMatch(/Refusing to emit a notice that omits a shipped package/);
+    // Must carry a code, or runCli rethrows it as a raw stack trace and buries
+    // the remediation — the misdiagnosis mode PR #426 fixed.
+    expect(thrown.code).toBe(SHIPPED_PACKAGE_CODE);
   });
 
-  test("throws when the installed slice disagrees with the version sharp pins", () => {
+  test("the node_modules walk stops at the repo root", () => {
+    // Unbounded, the walk escapes to / and can adopt a stray ~/node_modules or
+    // /node_modules copy, publishing a foreign package's LICENSE as PwrSnap's.
+    const root = tempRoot();
+    const outside = join(root, "outside");
+    writeManifest(join(outside, "node_modules", "@img/stray"), {
+      name: "@img/stray",
+      version: "1.0.0",
+      license: "MIT",
+    });
+    const inner = join(outside, "workspace", "node_modules", "sharp");
+    mkdirSync(inner, { recursive: true });
+
+    expect(resolvePackageDirFrom(inner, "@img/stray", outside)).toContain("outside");
+    expect(resolvePackageDirFrom(inner, "@img/stray", join(outside, "workspace"))).toBeUndefined();
+    // And with the DEFAULT boundary (the repo root), a walk rooted in a temp
+    // tree must find nothing at all rather than running to the filesystem root.
+    expect(resolvePackageDirFrom(inner, "@img/stray")).toBeUndefined();
+    // A walk rooted outside the boundary must not search at all — bounding only
+    // the upper end would still let it run to the filesystem root.
+    expect(
+      resolvePackageDirFrom(inner, "@img/stray", join(outside, "unrelated")),
+    ).toBeUndefined();
+  });
+
+  test("throws when the installed slice disagrees with the version its parent pins", () => {
     // release.mjs copies the pinned version into the packaged app, so a
     // disagreement means the notice would name a version that never shipped.
-    const root = tempRoot();
-
     expect(() =>
       locate(
-        root,
+        tempRoot(),
         SLICES.map((slice) => ({ ...slice, pin: "0.35.4" })),
       ),
-    ).toThrow(/resolves to 0\.35\.3 on disk, but sharp@0\.35\.3 pins 0\.35\.4/);
+    ).toThrow(/resolves to 0\.35\.3 on disk, but sharp pins 0\.35\.4/);
   });
 
-  test("refuses to guess when more than one sharp version resolves", () => {
+  test("refuses to guess when sharp resolves to more than one install", () => {
+    // Distinct PATHS are the hazard, not just distinct versions: two installs of
+    // one version under different peer sets resolve different dependency trees.
     const root = tempRoot();
-    const sharpDir = sharpTree(root, { slices: SLICES });
+    const a = sharpTree(root, { slices: SLICES });
+    const b = sharpTree(join(root, "second"), { slices: SLICES });
 
     expect(() =>
       locateShippedPlatformPackages(
         [
-          { name: "sharp", version: "0.35.3", packagePath: sharpDir },
-          { name: "sharp", version: "0.33.1", packagePath: sharpDir },
+          { name: "sharp", version: "0.35.3", packagePath: a },
+          { name: "sharp", version: "0.35.3", packagePath: b },
         ],
         SHIPPED,
       ),
-    ).toThrow(/2 sharp versions resolved/);
+    ).toThrow(/2 sharp installs resolved/);
   });
 
   test("throws when sharp is absent from the production report", () => {
     expect(() => locateShippedPlatformPackages([], SHIPPED)).toThrow(/no `sharp` record/);
   });
 
-  test("the shipped set covers both macOS arches and Windows x64, and no Linux", () => {
-    // electron-builder.yml ships a universal macOS dmg/zip and an x64 Windows
-    // nsis. Linux is a build gate only — there is no `linux:` block — so a Linux
-    // slice appearing here would be claiming something PwrSnap does not
-    // distribute.
-    const names = SHIPPED_PLATFORM_PACKAGES.map((entry) => entry.name);
+  test("rejects a slice whose declared license has an LGPL component but no lgpl descriptor", () => {
+    // The disclosure must follow the declared license, not a hand-set key.
+    // Dropping `lgpl:` previously removed the FSF text and the written source
+    // offer for a shipped copyleft binary with every test still green.
+    const root = tempRoot();
+    let thrown;
+    try {
+      locate(root, SLICES, [
+        SHIPPED[0],
+        { name: "@img/sharp-win32-x64", shippedIn: "Windows x64 installer" },
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
 
-    expect(names).toContain("@img/sharp-darwin-arm64");
-    expect(names).toContain("@img/sharp-darwin-x64");
-    expect(names).toContain("@img/sharp-libvips-darwin-arm64");
-    expect(names).toContain("@img/sharp-libvips-darwin-x64");
-    expect(names).toContain("@img/sharp-win32-x64");
-    expect(names.filter((name) => name.includes("linux"))).toEqual([]);
+    expect(thrown.message).toMatch(/contains an LGPL component/);
+    expect(thrown.message).toMatch(/no `lgpl` descriptor/);
+    expect(thrown.code).toBe(SHIPPED_PACKAGE_CODE);
+  });
+
+  test("rejects an lgpl descriptor on a package that declares no LGPL component", () => {
+    expect(() =>
+      locate(tempRoot(), SLICES, [
+        { ...SHIPPED[0], lgpl: WIN32_LGPL },
+        SHIPPED[1],
+      ]),
+    ).toThrow(/names no LGPL component/);
+  });
+
+  test("rejects a manifest with no version or no license", () => {
+    const root = tempRoot();
+    expect(() =>
+      locate(root, [{ ...SLICES[0], version: "" }, SLICES[1]]),
+    ).toThrow(/has no version in its manifest/);
+
+    expect(() =>
+      locate(tempRoot(), [{ ...SLICES[0], license: "" }, SLICES[1]]),
+    ).toThrow(/declares no license in its manifest/);
+  });
+
+  test("lgplFamilyOf reads the LGPL component out of a compound SPDX expression", () => {
+    expect(lgplFamilyOf("Apache-2.0 AND LGPL-3.0-or-later")).toBe("LGPL-3.0");
+    expect(lgplFamilyOf("LGPL-2.1-or-later")).toBe("LGPL-2.1");
+    expect(lgplFamilyOf("Apache-2.0")).toBeUndefined();
+    expect(lgplFamilyOf(undefined)).toBeUndefined();
+  });
+
+  test("the shipped set is exactly the packages the release artifacts bundle", () => {
+    // electron-builder.yml ships a universal macOS dmg/zip and an x64 Windows
+    // nsis. An exact-set assertion, because a one-directional `toContain` check
+    // cannot catch an ADDED entry — and over-claiming makes the notice assert
+    // PwrSnap distributes an artifact it does not. Linux is a build gate only
+    // (no `linux:` block), so no Linux slice belongs here.
+    expect(SHIPPED_PLATFORM_PACKAGES.map((entry) => entry.name)).toEqual([
+      "@img/sharp-darwin-arm64",
+      "@img/sharp-darwin-x64",
+      "@img/sharp-libvips-darwin-arm64",
+      "@img/sharp-libvips-darwin-x64",
+      "@img/sharp-win32-x64",
+    ]);
+  });
+
+  test("every entry's resolveFrom is declared before it", () => {
+    const seen = new Set(["sharp"]);
+    for (const entry of SHIPPED_PLATFORM_PACKAGES) {
+      expect(seen).toContain(entry.resolveFrom ?? "sharp");
+      seen.add(entry.name);
+    }
+  });
+});
+
+describe("deterministic output", () => {
+  test("record ordering is code-unit, not locale-collated", () => {
+    // localeCompare collates through ICU using the ambient LANG, which made the
+    // emitted byte order machine-dependent: `--check` passed under LANG=C but
+    // failed under et_EE.UTF-8 / cs_CZ.UTF-8 / lt_LT.UTF-8.
+    expect(compareStrings("FFmpeg", "accepts")).toBeLessThan(0);
+    expect("FFmpeg".localeCompare("accepts")).toBeGreaterThan(0);
+    expect([..."zod,zwitch,tar,ståhl,Zip".split(",")].sort(compareStrings)).toEqual([
+      "Zip",
+      "ståhl",
+      "tar",
+      "zod",
+      "zwitch",
+    ]);
+  });
+
+  test("generateNotice passes --no-optional on both listings", () => {
+    // This is the determinism mechanism, not an optimization: with optional deps
+    // included, `pnpm licenses list` reports only the HOST's platform slice.
+    expect(NOTICE_PNPM_ARGS.production).toContain("--no-optional");
+    expect(NOTICE_PNPM_ARGS.all).toContain("--no-optional");
+
+    const calls = [];
+    expect(() =>
+      generateNotice((args) => {
+        calls.push(args);
+        return {};
+      }),
+    ).toThrow(/no `sharp` record/);
+    expect(calls).toEqual([["--prod", "--no-optional"], ["--no-optional"]]);
+  });
+
+  test("npmPackageUrl keeps scoped names intact", () => {
+    // encodeURIComponent left the slash percent-encoded, producing a 404 URL.
+    expect(npmPackageUrl("@img/sharp-win32-x64")).toBe(
+      "https://www.npmjs.com/package/@img/sharp-win32-x64",
+    );
   });
 });
 
@@ -459,23 +640,27 @@ describe("weak-copyleft disclosure", () => {
   // Windows slice that carries the libvips DLLs inside the same package.
   const SLICES = [
     {
+      name: "@img/sharp-darwin-arm64",
+      version: "0.35.3",
+      license: "Apache-2.0",
+      licenseText: "Apache License\nVersion 2.0, January 2004",
+    },
+    {
       name: "@img/sharp-libvips-darwin-arm64",
       version: "1.3.2",
       license: "LGPL-3.0-or-later",
-      description: "Prebuilt libvips for macOS arm64",
+      parent: "@img/sharp-darwin-arm64",
       // Deliberately no LICENSE file — these packages genuinely ship none.
     },
     {
       name: "@img/sharp-libvips-darwin-x64",
       version: "1.3.2",
       license: "LGPL-3.0-or-later",
-      description: "Prebuilt libvips for macOS x64",
     },
     {
       name: "@img/sharp-win32-x64",
       version: "0.35.3",
       license: "Apache-2.0 AND LGPL-3.0-or-later",
-      description: "Prebuilt sharp for Windows x64",
       licenseText: "Apache License\nVersion 2.0, January 2004",
     },
   ];
@@ -485,8 +670,10 @@ describe("weak-copyleft disclosure", () => {
     sourceRepo: "https://github.com/lovell/sharp-libvips",
   };
   const SHIPPED = [
+    { name: "@img/sharp-darwin-arm64", shippedIn: "macOS universal build (arm64 slice)" },
     {
       name: "@img/sharp-libvips-darwin-arm64",
+      resolveFrom: "@img/sharp-darwin-arm64",
       shippedIn: "macOS universal build (arm64 slice)",
       lgpl: LGPL,
     },
@@ -502,17 +689,19 @@ describe("weak-copyleft disclosure", () => {
     },
   ];
 
-  function notice() {
-    const root = tempRoot();
-    const sharpDir = sharpTree(root, { slices: SLICES });
-    const platformPackageRecords = locateShippedPlatformPackages(
+  function platformRecords(slices = SLICES, shipped = SHIPPED) {
+    const sharpDir = sharpTree(tempRoot(), { slices });
+    return locateShippedPlatformPackages(
       [{ name: "sharp", version: "0.35.3", packagePath: sharpDir }],
-      SHIPPED,
+      shipped,
     );
+  }
+
+  function notice(slices = SLICES, shipped = SHIPPED) {
     return buildThirdPartyLicenseNotice({
       productionReport: {},
       allReport: {},
-      platformPackageRecords,
+      platformPackageRecords: platformRecords(slices, shipped),
     });
   }
 
@@ -520,7 +709,6 @@ describe("weak-copyleft disclosure", () => {
     const output = notice();
 
     expect(output).toContain("Full License Texts — Weak-Copyleft Bundled Binaries");
-    // Full canonical FSF texts, identified by their unmistakable version lines.
     expect(output).toContain("Version 2.1, February 1999");
     expect(output).toContain("Version 3, 29 June 2007");
     expect(output).toContain("Relinking / source offer");
@@ -528,8 +716,9 @@ describe("weak-copyleft disclosure", () => {
   });
 
   test("the relink / source offer names every shipped LGPL library", () => {
-    const output = notice();
-    const section = output.slice(output.lastIndexOf("Full License Texts — Weak-Copyleft"));
+    const section = notice().slice(
+      notice().lastIndexOf("Full License Texts — Weak-Copyleft"),
+    );
 
     for (const name of [
       "FFmpeg@8.1.1",
@@ -542,8 +731,6 @@ describe("weak-copyleft disclosure", () => {
   });
 
   test("emits each canonical license text once, with an Applies-to roster", () => {
-    // Three slices share LGPL-3.0. Repeating the full FSF text per binary would
-    // triple a multi-thousand-line block for no legal benefit.
     const output = notice();
 
     expect(output.match(/Version 3, 29 June 2007/g)).toHaveLength(1);
@@ -551,26 +738,60 @@ describe("weak-copyleft disclosure", () => {
     expect(output).toContain("GNU LESSER GENERAL PUBLIC LICENSE, Version 3:");
   });
 
-  test("a dual-licensed slice's partial license file is never left standing alone", () => {
-    // @img/sharp-win32-x64 declares "Apache-2.0 AND LGPL-3.0-or-later" because
-    // it bundles the libvips DLLs, but ships only the Apache-2.0 text. Emitting
-    // that text with no pointer would under-disclose the LGPL half.
+  test("the FFmpeg disclosure is platform-neutral — Windows ships it too", () => {
+    // package-win.mjs hard-fails a --release build without a vetted LGPL
+    // ffmpeg.exe, so scoping the written source offer to macOS would leave
+    // Windows recipients uncovered by the offer inside their own installer.
+    const output = notice();
+    // Anchor inside the weak-copyleft section — "FFmpeg@8.1.1" also appears in
+    // the Bundled Asset Notes summary sentence far above it.
+    const section = output.slice(output.lastIndexOf("Full License Texts — Weak-Copyleft"));
+    const start = section.indexOf("\nFFmpeg@8.1.1 (LGPL-2.1-or-later)\n~");
+    const ffmpegBlock = section.slice(start, section.indexOf("GNU LESSER", start));
+
+    expect(output).toContain("PwrSnap bundles an FFmpeg executable");
+    // The whole FFmpeg disclosure must name no single platform — scoping it
+    // either way leaves the other artifact's recipients outside the offer.
+    expect(ffmpegBlock).not.toMatch(/macOS|Windows|darwin|win32/i);
+  });
+
+  test("the emitted license id follows the manifest instead of a hardcoded LGPL-3.0", () => {
+    // An upstream relicense must not leave this section asserting a version the
+    // package's own manifest contradicts.
+    const output = notice(
+      SLICES.map((slice) =>
+        slice.name === "@img/sharp-libvips-darwin-x64"
+          ? { ...slice, license: "LGPL-2.1-or-later" }
+          : slice,
+      ),
+    );
+
+    expect(output).toContain("@img/sharp-libvips-darwin-x64@1.3.2 (LGPL-2.1-or-later)");
+    expect(output).not.toContain("@img/sharp-libvips-darwin-x64@1.3.2 (LGPL-3.0-or-later)");
+    // ...and it must be filed under the matching canonical text.
+    const lgpl21 = output.slice(output.indexOf("GNU LESSER GENERAL PUBLIC LICENSE, Version 2.1:"));
+    expect(lgpl21).toContain("@img/sharp-libvips-darwin-x64@1.3.2");
+  });
+
+  test("a compound-licensed slice's partial license file is never left standing alone", () => {
     const output = notice();
 
     expect(output).toContain("@img/sharp-win32-x64@0.35.3 (Apache-2.0 AND LGPL-3.0-or-later)");
     expect(output).toContain(
       "@img/sharp-win32-x64 ships libvips and libvips-cpp under the GNU Lesser General Public License,",
     );
+    // The appended cross-reference is PwrSnap's, not the upstream file's.
+    expect(output).toContain(
+      "Representative file: @img/sharp-win32-x64@0.35.3/LICENSE + PwrSnap cross-reference",
+    );
   });
 
   test("libvips slices ship no license file, so the notice says so and points at the LGPL text", () => {
     const output = notice();
 
-    // Truthful: these packages really do ship no license file.
     expect(output).toContain(
       "No license text file was found in the installed package for @img/sharp-libvips-darwin-x64@1.3.2.",
     );
-    // But never left as the whole story.
     expect(output).toContain(
       "@img/sharp-libvips-darwin-x64 ships libvips-cpp under the GNU Lesser General Public License,",
     );
@@ -585,25 +806,90 @@ describe("weak-copyleft disclosure", () => {
     expect(output).toContain("identical on every platform including Linux CI");
   });
 
+  test("a platform record with a dead path throws instead of emitting a placeholder", () => {
+    // The materialization guard must cover records merged after the report ones.
+    // Previously it ran first, so a caller-supplied record with a dead path
+    // silently produced "No license text file was found..." standing in for a
+    // live copyleft slice's license.
+    let thrown;
+    try {
+      buildThirdPartyLicenseNotice({
+        productionReport: {},
+        allReport: {},
+        platformPackageRecords: [
+          {
+            name: "@img/sharp-libvips-darwin-arm64",
+            version: "1.3.2",
+            declaredLicense: "LGPL-3.0-or-later",
+            shippedIn: "macOS universal build (arm64 slice)",
+            packagePath: "/definitely/not/here",
+            lgpl: LGPL,
+          },
+        ],
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeDefined();
+    expect(thrown.code).toBe(STALE_INSTALL_CODE);
+    expect(thrown.message).toContain("@img/sharp-libvips-darwin-arm64@1.3.2");
+  });
+
+  test("caller-supplied platform records are validated, not trusted", () => {
+    // The deleted validateMacArm64Versions covered the caller path on purpose;
+    // without it a missing field rendered as `@undefined` in the Dependency
+    // Summary or a bare `undefined` mid-sentence in the relink offer.
+    const base = {
+      name: "@img/sharp-win32-x64",
+      version: "0.35.3",
+      declaredLicense: "Apache-2.0",
+      shippedIn: "Windows x64 installer",
+      packagePath: undefined,
+    };
+    const build = (overrides) =>
+      buildThirdPartyLicenseNotice({
+        productionReport: {},
+        allReport: {},
+        platformPackageRecords: [{ ...base, ...overrides }],
+      });
+
+    expect(() => build({ version: undefined })).toThrow(/has no version/);
+    expect(() => build({ shippedIn: undefined })).toThrow(/has no shippedIn/);
+    expect(() => build({ declaredLicense: undefined })).toThrow(/has no declaredLicense/);
+    expect(() => build({ version: "^0.36.0" })).toThrow(/not an exact version/);
+  });
+
   test("builds end-to-end through the default path generateNotice() uses", () => {
     // No platform/bundled-binary/weak-copyleft arguments — the shape the CLI
-    // runs, which every other test short-circuits.
+    // runs. Every other test short-circuits this branch by passing records in.
     const root = tempRoot();
-    const sharpDir = sharpTree(root, { slices: SLICES });
+    const sharpDir = sharpTree(root, {
+      slices: [
+        { name: "@img/sharp-darwin-arm64", version: "0.35.3", license: "Apache-2.0", licenseText: "Apache" },
+        { name: "@img/sharp-darwin-x64", version: "0.35.3", license: "Apache-2.0", licenseText: "Apache" },
+        { name: "@img/sharp-libvips-darwin-arm64", version: "1.3.2", license: "LGPL-3.0-or-later", parent: "@img/sharp-darwin-arm64" },
+        { name: "@img/sharp-libvips-darwin-x64", version: "1.3.2", license: "LGPL-3.0-or-later", parent: "@img/sharp-darwin-x64" },
+        { name: "@img/sharp-win32-x64", version: "0.35.3", license: "Apache-2.0 AND LGPL-3.0-or-later", licenseText: "Apache" },
+      ],
+    });
+
+    // Exercises SHIPPED_PLATFORM_PACKAGES itself, including each entry's
+    // resolveFrom chain — the branch the CLI takes and no other test reaches.
     const output = buildThirdPartyLicenseNotice({
       productionReport: report({
         "Apache-2.0": [{ name: "sharp", version: "0.35.3", packagePath: sharpDir }],
       }),
       allReport: {},
-      platformPackageRecords: locateShippedPlatformPackages(
-        [{ name: "sharp", version: "0.35.3", packagePath: sharpDir }],
-        SHIPPED,
-      ),
     });
 
+    for (const entry of SHIPPED_PLATFORM_PACKAGES) {
+      expect(output).toContain(entry.name);
+    }
     expect(output).toContain("Full License Texts — Weak-Copyleft Bundled Binaries");
     expect(output).toContain("FFmpeg@8.1.1");
     expect(output).not.toContain("@undefined");
+    expect(output).not.toContain("— undefined");
   });
 });
 

@@ -29,6 +29,15 @@ jobs:
   # key-forming input (`node-version` major, `working-directory`,
   # `package-manager`, `cache-electron`, `cache-key-suffix`); a mismatch warms
   # a key nobody reads, silently and with no error.
+  #
+  # Deliberate divergence from PwrAgnt: we do NOT set `cache-electron`, which
+  # PwrAgnt sets on every call site. Measured on PwrSnap (PR #429) it takes the
+  # Windows cache entry from 259 MB to 397 MB while saving ~0.23s — the
+  # better-sqlite3 Electron prebuild that `rebuild:electron-native` fetches
+  # resolves locally, not over the network, so there is no download for the
+  # flag to capture. PwrGit reached the same conclusion independently and
+  # backed the flag out. Revisit only if a dependency starts making a real
+  # runtime download on a warm pnpm store.
   install-deps:
     name: Install Dependencies
     runs-on: ubuntu-latest

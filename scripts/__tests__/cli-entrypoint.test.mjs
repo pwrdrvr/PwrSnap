@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
 import { isCliEntrypoint } from "../lib/cli-entrypoint.mjs";
+import { BUNDLED_FFMPEG } from "../generate-third-party-licenses.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -123,4 +124,42 @@ describe("license CLIs report a result when run", () => {
       }
     });
   }
+
+  test("scripts/check-bundled-ffmpeg-notice.mjs produces a verdict", () => {
+    // This one runs inside the protected signing jobs, where silence means the
+    // release ships unverified, so it gets the same spawn coverage as the rest.
+    //
+    // It originally hand-rolled `argv[1].endsWith(<filename>)` to avoid
+    // importing scripts/lib, on the theory that the Windows signing tarball has
+    // no scripts/lib in it. That was both weaker (case-sensitive, while Windows
+    // paths are not; blind to symlink and wrapper invocations) and unnecessary:
+    // the tarball must carry cli-entrypoint.mjs regardless, because
+    // verify-asar-contents.mjs imports it.
+    const root = mkdtempSync(join(tmpdir(), "pwrsnap-ffmpeg-cli-"));
+    try {
+      const manifestPath = join(root, "manifest.json");
+      writeFileSync(manifestPath, JSON.stringify({ version: BUNDLED_FFMPEG.version }));
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          join(repoRoot, "scripts/check-bundled-ffmpeg-notice.mjs"),
+          "--manifest",
+          manifestPath,
+          "--notice",
+          join(repoRoot, "THIRD_PARTY_LICENSES"),
+        ],
+        { cwd: repoRoot, encoding: "utf8", timeout: 120_000 },
+      );
+      const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+
+      expect(output).not.toBe("");
+      expect(output).toMatch(/bundled FFmpeg notice check (passed|failed)/);
+      if (result.status === 0) {
+        expect(output).toMatch(/passed/);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

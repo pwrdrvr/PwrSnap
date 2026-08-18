@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  BUNDLED_FFMPEG,
   buildThirdPartyLicenseNotice,
   compareStrings,
   declaredLicenseFallbackText,
@@ -721,7 +722,7 @@ describe("weak-copyleft disclosure", () => {
     );
 
     for (const name of [
-      "FFmpeg@8.1.1",
+      `FFmpeg@${BUNDLED_FFMPEG.version}`,
       "@img/sharp-libvips-darwin-arm64@1.3.2",
       "@img/sharp-libvips-darwin-x64@1.3.2",
       "@img/sharp-win32-x64@0.35.3",
@@ -743,10 +744,10 @@ describe("weak-copyleft disclosure", () => {
     // ffmpeg.exe, so scoping the written source offer to macOS would leave
     // Windows recipients uncovered by the offer inside their own installer.
     const output = notice();
-    // Anchor inside the weak-copyleft section — "FFmpeg@8.1.1" also appears in
+    // Anchor inside the weak-copyleft section — the FFmpeg@<version> line also appears in
     // the Bundled Asset Notes summary sentence far above it.
     const section = output.slice(output.lastIndexOf("Full License Texts — Weak-Copyleft"));
-    const start = section.indexOf("\nFFmpeg@8.1.1 (LGPL-2.1-or-later)\n~");
+    const start = section.indexOf(`\nFFmpeg@${BUNDLED_FFMPEG.version} (LGPL-2.1-or-later)\n~`);
     const ffmpegBlock = section.slice(start, section.indexOf("GNU LESSER", start));
 
     expect(output).toContain("PwrSnap bundles an FFmpeg executable");
@@ -887,7 +888,7 @@ describe("weak-copyleft disclosure", () => {
       expect(output).toContain(entry.name);
     }
     expect(output).toContain("Full License Texts — Weak-Copyleft Bundled Binaries");
-    expect(output).toContain("FFmpeg@8.1.1");
+    expect(output).toContain(`FFmpeg@${BUNDLED_FFMPEG.version}`);
     expect(output).not.toContain("@undefined");
     expect(output).not.toContain("— undefined");
   });

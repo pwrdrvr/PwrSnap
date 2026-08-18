@@ -406,16 +406,31 @@ export function locateShippedPlatformPackages(
 // dependency record and the weak-copyleft entry) can drift, and a partial edit
 // would publish two different versions for one binary in the same notice.
 //
-// NOTE: this version is not derived from anything. The build-time source of
-// truth is FFMPEG_VERSION / FFMPEG_ARTIFACT_NAME in .github/workflows/release.yml
-// (and preview-build.yml). Bumping the shipped binary REQUIRES editing this
-// constant and re-running `pnpm licenses:generate`; nothing detects the drift
-// automatically, and a stale value points the LGPL-2.1 written source offer at
-// the wrong release tarball.
+// NOTE: this version is not derived from anything — it is a *claim* about a
+// constant owned by another repository (FFMPEG_VERSION in
+// pwrdrvr/pwrsnap-ffmpeg-builds scripts/lib/config.mjs), which PwrSnap only
+// ever sees as a compiled artifact. Bumping the shipped binary REQUIRES editing
+// this constant and re-running `pnpm licenses:generate`.
+//
+// The drift IS detected now, in two places, because a stale value points the
+// LGPL-2.1 written source offer at the wrong release tarball:
+//
+//   1. At PR time, `apps/desktop/scripts/windows-release-config.test.mjs`
+//      requires this to equal every FFMPEG_VERSION and FFMPEG_ARTIFACT_NAME in
+//      the workflows, the pin tables in three docs, and the committed notice.
+//   2. At release time, `scripts/check-bundled-ffmpeg-notice.mjs` reconciles it
+//      against the `version` in the manifest.json shipped with the binary being
+//      packaged. That one is the only check that crosses the repo boundary.
+//
+// See docs/ffmpeg-build-reference.md § "Bumping the bundled FFmpeg version".
+const BUNDLED_FFMPEG_VERSION = "8.1.1";
+
 export const BUNDLED_FFMPEG = {
-  version: "8.1.1",
+  version: BUNDLED_FFMPEG_VERSION,
   declaredLicense: "LGPL-2.1-or-later",
-  sourceUrl: "https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
+  // Derived: restating the version here is one more copy to forget, and this
+  // URL is the address the written source offer resolves to.
+  sourceUrl: `https://ffmpeg.org/releases/ffmpeg-${BUNDLED_FFMPEG_VERSION}.tar.xz`,
   buildRepo: "https://github.com/pwrdrvr/pwrsnap-ffmpeg-builds",
   licenseGuidance: "https://ffmpeg.org/legal.html",
   excludedFlags:

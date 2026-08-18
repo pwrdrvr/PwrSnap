@@ -72,6 +72,7 @@ jobs:
             .npmrc \
             CHANGELOG.md \
             scripts/check-desktop-release-metadata.mjs \
+            scripts/check-bundled-ffmpeg-notice.mjs \
             scripts/lib/cli-entrypoint.mjs \
             apps/desktop/package.json \
             apps/desktop/electron-builder.yml \
@@ -222,6 +223,17 @@ jobs:
             assert((manifest.requiredDecoders ?? []).includes(decoder), `macOS FFmpeg manifest is missing required decoder check: ${decoder}`);
           }
           NODE
+
+          # The checks above bind the artifact to FFMPEG_VERSION, which is a
+          # hardcode in this file. Nothing bound either to the version
+          # THIRD_PARTY_LICENSES claims we distribute, so a build-repo version
+          # bump could ship a correct binary with a false LGPL-2.1 attribution
+          # and a written source offer pointing at the wrong tarball. Reconcile
+          # the artifact against the notice that is about to go into the app.
+          node scripts/check-bundled-ffmpeg-notice.mjs \
+            --manifest "$manifest" \
+            --notice apps/desktop/release-stage/THIRD_PARTY_LICENSES \
+            --source-dir "$dir/source"
 
           mkdir -p apps/desktop/release-stage/build/ffmpeg
           mkdir -p apps/desktop/release-stage/build/ffmpeg-source
@@ -518,6 +530,23 @@ jobs:
           }
           if ($manifest.requiredDevices -notcontains "gdigrab") {
             throw "Windows FFmpeg manifest is missing required gdigrab check"
+          }
+
+          # See the matching call in the macOS job: bind the downloaded
+          # artifact to the version THIRD_PARTY_LICENSES claims, so a
+          # build-repo version bump cannot ship a false LGPL-2.1 attribution.
+          #
+          # No --source-dir here: unlike macOS, the Windows path never stages an
+          # ffmpeg source tree (package-win.mjs copies only ffmpeg.exe), and the
+          # flag now fails closed when it is passed but resolves to nothing.
+          # Passing it "for symmetry" would either abort the release or, worse,
+          # silently assert nothing. Windows shipping no LGPL source offer
+          # alongside the binary is a separate, pre-existing question.
+          node scripts/check-bundled-ffmpeg-notice.mjs `
+            --manifest $manifestPath `
+            --notice apps/desktop/release-stage/THIRD_PARTY_LICENSES
+          if ($LASTEXITCODE -ne 0) {
+            throw "Bundled FFmpeg notice check failed (exit code $LASTEXITCODE)."
           }
 
           "PWRSNAP_WINDOWS_FFMPEG_PATH=$ffmpeg" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8

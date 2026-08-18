@@ -215,6 +215,69 @@ The canonical FSF text is emitted **once per license** with an explicit
 "Applies to" roster, rather than repeated per binary — three copies of the
 LGPL-3.0 text would add thousands of lines for no legal benefit.
 
+### 4. The bundled FFmpeg version could not be derived, and so was unverified
+
+Closed 2026-08-17, before it caused a bad release. The FFmpeg entry is the same
+shape of defect as #3 — a hardcoded version in a supplemental record — but the
+fix from #3 does not apply: the bundled ffmpeg is not an npm package, so there
+is no installed manifest to derive from. It is built by
+[pwrdrvr/pwrsnap-ffmpeg-builds](https://github.com/pwrdrvr/pwrsnap-ffmpeg-builds),
+which owns `FFMPEG_VERSION` in its own `scripts/lib/config.mjs`, and PwrSnap only
+ever sees the compiled artifact.
+
+The version in the notice was therefore a hand-maintained claim about another
+repository's constant, restated across the generator, both release jobs, the
+preview job, and three docs — with nothing able to detect a partial bump.
+Because releases pin `FFMPEG_BUILD_SHA`, a bump in the build repo does nothing
+until PwrSnap repins; the failure mode was a repin PR that updated the workflows
+and forgot to regenerate the notice. Every existing check would still pass: the
+workflows only compared the downloaded artifact against their own hardcode.
+Shipping that means an LGPL-2.1 attribution naming the wrong upstream release
+and a written source offer resolving to source we did not build from.
+
+Since deriving is impossible, the version is **verified** in two places instead:
+
+- `BUNDLED_FFMPEG_VERSION` in the generator is now the single in-repo
+  restatement, and `apps/desktop/scripts/windows-release-config.test.mjs`
+  requires it to equal every workflow `FFMPEG_VERSION`, every artifact name, the
+  pin tables in `docs/ffmpeg-build-reference.md`,
+  `docs/desktop-release-runbook.md` and `docs/windows/README.md`, and the
+  committed `THIRD_PARTY_LICENSES`. The floors are per source, not a total: a
+  single count is satisfied by whichever sources still match, so an arm whose
+  regex stops matching contributes nothing and the test stays green.
+- `scripts/check-bundled-ffmpeg-notice.mjs` runs inside both signing jobs (and
+  the preview build), reconciling the `version` in the downloaded artifact's
+  `manifest.json` against the staged `THIRD_PARTY_LICENSES` about to be
+  packaged. This is the only check that crosses the repo boundary — the PR-time
+  test proves self-consistency, not agreement with the shipping binary. It uses
+  node builtins plus `isCliEntrypoint`, and both signing-input tarballs list
+  that helper; do not add a third-party import.
+
+  Its first draft hand-rolled the entrypoint guard as
+  `process.argv[1].endsWith(<filename>)` to dodge the `scripts/lib` import —
+  reintroducing defect #2 above in a new file. That comparison is
+  case-sensitive while Windows paths are not, and it is blind to symlink and
+  wrapper invocations, so the gate exited 0 having checked nothing while both
+  `set -e` and `if ($LASTEXITCODE -ne 0)` read success. Use `isCliEntrypoint`.
+
+  `--source-dir` fails closed: supplied-but-absent, not-a-directory, and
+  empty-directory are all errors, and the success line reports how many
+  tarballs it reconciled. Callers that stage no source (the Windows job) omit
+  the flag rather than passing a path that will never exist — a silent skip is
+  how this arm would rot into a no-op that still prints "passed".
+
+Both fail closed: a manifest with no `version`, an unparseable manifest, a
+notice with no FFmpeg record, and a notice claiming two different versions are
+all errors rather than skips. Recipe for a version bump:
+[ffmpeg-build-reference.md](ffmpeg-build-reference.md)
+§ "Bumping the bundled FFmpeg version".
+
+**The general rule from #3 and #4:** a supplemental record's version must be
+derived from something the build can observe. When it genuinely cannot be —
+because the artifact comes from outside this repo — it must be reconciled at
+release time against metadata shipped with the artifact. A literal that nothing
+checks is the defect, not the literal itself.
+
 ## Scope
 
 The generated notice covers:

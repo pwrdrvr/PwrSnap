@@ -214,6 +214,11 @@ for (const expected of [
   "apps/desktop/release-stage",
   "apps/desktop/scripts/package-win.mjs",
   "scripts/release/install-trusted-signing.ps1",
+  // The signing job has no checkout, so anything it runs — and anything those
+  // scripts import — must be archived. verify-asar-contents.mjs imports
+  // cli-entrypoint.mjs; omitting it is an ERR_MODULE_NOT_FOUND after signing.
+  "scripts/lib/cli-entrypoint.mjs",
+  "scripts/check-bundled-ffmpeg-notice.mjs",
   "tar.exe -czf",
 ]) {
   if (!windowsArchiveScript.includes(expected)) {

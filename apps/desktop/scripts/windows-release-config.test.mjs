@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import { describe, expect, test } from "vitest";
 import { BUNDLED_FFMPEG_VERSION } from "../../../scripts/generate-third-party-licenses.mjs";
 
@@ -281,6 +281,12 @@ describe("Windows release configuration", () => {
         .matchAll(/"([^"]+)"/g),
     ].map((match) => match[1]);
 
+    // The allowlist is written with forward slashes (it is consumed by tar and
+    // by PowerShell string matching), but node:path yields native separators —
+    // on Windows `relative()` returns "scripts\\lib\\cli-entrypoint.mjs", which
+    // matches no entry and reports every import as missing. Compare in one
+    // separator style.
+    const posix = (path) => path.split(sep).join("/");
     const covered = (path) =>
       listed.some((entry) => path === entry || path.startsWith(`${entry}/`));
 
@@ -290,7 +296,7 @@ describe("Windows release configuration", () => {
       if (seen.has(file) || !file.endsWith(".mjs") || !existsSync(resolve(repoRoot, file))) return;
       seen.add(file);
       for (const match of read(file).matchAll(/^import[^"']*from\s+["'](\.[^"']+)["']/gm)) {
-        const dep = relative(repoRoot, resolve(repoRoot, dirname(file), match[1]));
+        const dep = posix(relative(repoRoot, resolve(repoRoot, dirname(file), match[1])));
         if (!covered(dep)) missing.push(`${file} imports ${dep}`);
         walk(dep);
       }

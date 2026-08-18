@@ -118,6 +118,27 @@ export function getDurableCapturesRoots(): readonly DurableCapturesRoot[] {
   ];
 }
 
+/**
+ * Chat + sizzle thread store root. Always `<capturesRoot>/Chats`, so it
+ * inherits the captures-location fallback: when the macOS Documents TCC grant
+ * is denied, `capturesLocation` flips to "home" and chat threads follow to
+ * `~/PwrSnap/Chats` instead of failing to persist. It used to be hardcoded to
+ * `~/Documents/PwrSnap/Chats` in four handlers, which meant a denied grant
+ * silently broke chat persistence even though captures had recovered.
+ *
+ * Switching roots is NON-MIGRATING, exactly like captures
+ * (see {@link getDurableCapturesRoots}): threads written under the old root
+ * stay there and stop being listed. That is the same trade-off the capture
+ * fallback already makes, and it beats the alternative of not saving at all.
+ *
+ * In override mode this composes from the data root, so a dev-seeder or
+ * profiling clone no longer writes chat threads into the real
+ * `~/Documents/PwrSnap`.
+ */
+export function getChatsRoot(): string {
+  return join(getCapturesRoot(), "Chats");
+}
+
 export function getDocumentsCapturesRoot(): string {
   return join(app.getPath("documents"), "PwrSnap");
 }

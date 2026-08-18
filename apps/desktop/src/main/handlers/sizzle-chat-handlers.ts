@@ -20,7 +20,7 @@ import { acpAgentIdFromThreadId, EVENT_CHANNELS, err, ok } from "@pwrsnap/shared
 import { bus, type CommandDispatchOptions } from "../command-bus";
 import { getMainLogger } from "../log";
 import { resolveCodexThreadConfigForCommand } from "../ai/codex-thread-config";
-import { ChatThreadStore } from "../ai/chat-thread-store";
+import { ChatThreadStore, rootKeyedChatThreadStore } from "../ai/chat-thread-store";
 import { buildChatSurface, toKitApprovalDecision } from "../ai/chat-controller-factory";
 import {
   createKeyedChatControllerCache,
@@ -35,6 +35,7 @@ import {
   buildSizzleTurnContext
 } from "../ai/sizzle-chat-system-prompt";
 import { makeSizzleChatTools, SIZZLE_TOOL_LABELS } from "../ai/sizzle-tool-catalog";
+import { getChatsRoot } from "../persistence/paths";
 
 const log = getMainLogger("pwrsnap:sizzle-chat-handlers");
 // Tool callbacks outlive sendMessage(), so retain the latest turn origin.
@@ -91,13 +92,13 @@ let sizzleSettingsReader: SizzleChatSettingsReader = defaultSettingsReader;
 // real Codex child) — existing handler tests rely on this.
 let injectedSizzleController: ChatThreadController<Settings> | null = null;
 let sizzleCache: KeyedChatControllerCache<ChatThreadController<Settings>> | null = null;
-let sizzleStore: ChatThreadStore | null = null;
+// Root-keyed so it follows a runtime captures-location flip (Documents denial
+// or a Settings change) instead of writing threads to the old root.
+let sizzleStore: (() => ChatThreadStore) | null = null;
 
 function getSizzleStore(): ChatThreadStore {
-  if (sizzleStore === null) {
-    sizzleStore = new ChatThreadStore({ chatsDir: join(app.getPath("documents"), "PwrSnap", "Chats") });
-  }
-  return sizzleStore;
+  sizzleStore ??= rootKeyedChatThreadStore(getChatsRoot);
+  return sizzleStore();
 }
 
 /** ONE Sizzle controller per distinct (provider, model, reasoning) config, so
@@ -113,10 +114,15 @@ function getSizzleCache(): KeyedChatControllerCache<ChatThreadController<Setting
         command: codexCommandForSettings(s),
         profile: s.codex.profile ?? null,
         acpAgents: s.ai.acp.agents ?? null,
-        acpEnabled: s.ai.acp.enabledAgentIds ?? null
+        acpEnabled: s.ai.acp.enabledAgentIds ?? null,
+        // The chats root moves at runtime when a Documents denial flips the
+        // captures-location fallback. Keying on it disposes + rebuilds every
+        // controller against the new root, instead of leaving cached ones
+        // writing threads to the location that just proved inaccessible.
+        chatsDir: getChatsRoot()
       }),
     build: async (config, settings) => {
-      const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
+      const chatsDir = getChatsRoot();
       const projectStore = new ChatThreadStore({ chatsDir });
       const tools = makeSizzleChatTools({
         resolveProjectId: async (threadId) =>
@@ -378,7 +384,7 @@ function codexUnreachable(cause: unknown): Result<never, PwrSnapError> {
 }
 
 function chatsDirPath(): string {
-  return join(app.getPath("documents"), "PwrSnap", "Chats");
+  return getChatsRoot();
 }
 
 /**

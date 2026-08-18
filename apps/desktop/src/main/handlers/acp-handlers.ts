@@ -51,7 +51,6 @@ import {
 import { agentErrorMessage } from "../ai/agent-error-message";
 import { getMainLogger } from "../log";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
-import { acpPoolScratchCwd } from "../ai/acp-agent-pool";
 import { listPooledAcpModels } from "../ai/acp-pooled-one-shot";
 
 const log = getMainLogger("pwrsnap:acp-handlers");
@@ -275,9 +274,8 @@ export function registerAcpHandlers(params?: {
       discoveredAt: group.discoveredAt,
       ...(active.version !== undefined ? { version: active.version } : {})
     };
-    const cwd = acpPoolScratchCwd(join(app.getPath("documents"), "PwrSnap", "Chats"));
     try {
-      const models = await listPooledAcpModels({ agent, cwd });
+      const models = await listPooledAcpModels({ agent });
       const options: AcpAgentModelOption[] = models.map((m) => ({
         id: m.id,
         label: m.label ?? m.id,

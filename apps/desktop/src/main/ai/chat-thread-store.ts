@@ -105,6 +105,34 @@ export function slugifyThreadName(name: string): string {
   return slug.length > 0 ? slug : "thread";
 }
 
+/**
+ * A `ChatThreadStore` accessor that FOLLOWS a moving chats root.
+ *
+ * `getChatsRoot()` composes from the captures location, which changes at
+ * runtime: `capture-storage-gate` flips it to "home" when macOS denies the
+ * Documents grant, and the Settings listener flips it when the user switches
+ * locations. A store captured once at handler-registration time would keep
+ * writing threads to the root that just proved inaccessible — which is exactly
+ * the failure the captures fallback exists to prevent.
+ *
+ * Constructing a store touches nothing (lazy DB access), so rebuilding on a
+ * root change is cheap; the memo only avoids churning an object per call.
+ */
+export function rootKeyedChatThreadStore(
+  resolveChatsDir: () => string
+): () => ChatThreadStore {
+  let instance: ChatThreadStore | null = null;
+  let builtFor: string | null = null;
+  return () => {
+    const chatsDir = resolveChatsDir();
+    if (instance === null || builtFor !== chatsDir) {
+      instance = new ChatThreadStore({ chatsDir });
+      builtFor = chatsDir;
+    }
+    return instance;
+  };
+}
+
 export class ChatThreadStore {
   private readonly chatsDir: string;
   private readonly log: Logger;

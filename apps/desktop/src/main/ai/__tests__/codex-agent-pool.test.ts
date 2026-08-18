@@ -10,6 +10,8 @@ type MockCodexThreadClient = {
   startThread: ReturnType<typeof vi.fn>;
   forkThread: ReturnType<typeof vi.fn>;
   interruptTurn: ReturnType<typeof vi.fn>;
+  onToolCall: ReturnType<typeof vi.fn>;
+  onApprovalRequest: ReturnType<typeof vi.fn>;
   emitEvent(event: unknown): void;
 };
 
@@ -41,6 +43,21 @@ const mockResolveCodexCommand = vi.hoisted(() =>
 vi.mock("../../settings/codex-discovery", () => ({
   assertCodexCliVersion: mockAssertCodexCliVersion,
   resolveCodexCommand: mockResolveCodexCommand
+}));
+
+// The enrichment sandbox denies escalations at ERROR level with the run +
+// capture id (issue #69). Capture the scoped logger so a test can assert the
+// denial actually reaches the log, not just that the decision was "denied".
+const mockLogger = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn()
+}));
+
+vi.mock("../../log", () => ({
+  getMainLogger: () => mockLogger,
+  isMainLogDebugCollectionEnabled: () => false
 }));
 
 vi.mock("@pwrdrvr/agent-client", () => {
@@ -92,6 +109,7 @@ afterEach(async () => {
   await closeCodexAgentPool();
   mockCodexThreadClients.length = 0;
   vi.clearAllMocks();
+  mockLogger.error.mockClear();
   mockConnectionRequest.mockReset();
   mockConnectionRequest.mockResolvedValue({});
 });
@@ -431,6 +449,377 @@ describe("Codex agent pool", () => {
     expect(calls.filter(([method]) => method === "thread/unsubscribe")).toHaveLength(2);
     expect(calls.some(([method]) => method === "turn/interrupt")).toBe(false);
     expect(calls.some(([method]) => method === "thread/rollback")).toBe(false);
+  });
+
+  // --- Capture-enrichment sandbox invariant (issue #69) -------------------
+  //
+  // The enrichment turn's only input is a screenshot, which is untrusted: it
+  // can carry text engineered to talk the model into running a command or
+  // reading a file. `prompts/capture-enrichment.md` tells the model to ignore
+  // that, but a prompt is a request. These tests pin the CONTROLS.
+  // See AGENTS.md § "Capture enrichment runs in a sandbox jail".
+
+  /** Wire the connection mock for a one-shot whose turn is held open until the
+   *  returned `completeTurn()` is called — so a test can inject an App Server
+   *  request while the enrichment thread is live. */
+  function stageHeldOneShot(): { completeTurn: () => void } {
+    let held: (() => void) | null = null;
+    mockConnectionRequest.mockImplementation(async (method: string, params: unknown) => {
+      if (method === "config/read") return { config: {} };
+      if (method === "thread/start") return { thread: { id: "one-shot-thread-1" } };
+      if (method === "turn/start") {
+        const { threadId } = params as { threadId: string };
+        const turnId = "turn-held";
+        held = () => {
+          mockCodexThreadClients[0]?.emitEvent({
+            kind: "agent_message",
+            threadId,
+            turnId,
+            message: { text: '{"ok":true}' }
+          });
+          mockCodexThreadClients[0]?.emitEvent({
+            kind: "turn_completed",
+            threadId,
+            turnId,
+            status: "completed"
+          });
+        };
+        return { turn: { id: turnId } };
+      }
+      return {};
+    });
+    return {
+      completeTurn: () => {
+        held?.();
+      }
+    };
+  }
+
+  test("pins the sandbox posture on every enrichment thread/start", async () => {
+    mockConnectionRequest.mockImplementation(async (method: string, params: unknown) => {
+      if (method === "config/read") return { config: {} };
+      if (method === "thread/start") return { thread: { id: "one-shot-thread-1" } };
+      if (method === "turn/start") {
+        const { threadId } = params as { threadId: string };
+        setTimeout(() => {
+          mockCodexThreadClients[0]?.emitEvent({
+            kind: "agent_message",
+            threadId,
+            turnId: "turn-1",
+            message: { text: "{}" }
+          });
+          mockCodexThreadClients[0]?.emitEvent({
+            kind: "turn_completed",
+            threadId,
+            turnId: "turn-1",
+            status: "completed"
+          });
+        }, 0);
+        return { turn: { id: "turn-1" } };
+      }
+      return {};
+    });
+
+    await runCodexOneShotFromPool({
+      command: "codex-test",
+      env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-sandbox-test" },
+      workspaceDir: "/tmp/pwrsnap-enrichment-jail",
+      prompt: "describe this image",
+      imagePaths: ["/tmp/capture.jpg"]
+    });
+
+    const start = mockConnectionRequest.mock.calls.find(([method]) => method === "thread/start");
+    // Each field is load-bearing; widening ANY of them widens what an injected
+    // screenshot can talk the model into doing. Change deliberately or not at
+    // all.
+    expect(start?.[1]).toMatchObject({
+      // No context (or injected instruction) survives from one capture to the next.
+      ephemeral: true,
+      // The agent's cwd is an app-owned scratch dir — not the user's captures,
+      // not userData, not the repo.
+      cwd: "/tmp/pwrsnap-enrichment-jail",
+      runtimeWorkspaceRoots: ["/tmp/pwrsnap-enrichment-jail"],
+      // Background job: nobody is at the keyboard to answer a prompt.
+      approvalPolicy: "never",
+      // READ-SCOPED posture: denies reads outside the jail. NOT
+      // `sandbox: "read-only"`, which permits reading the whole filesystem.
+      permissions: "pwrsnap_enrichment",
+      // Environment profiles can carry their own tool/permission grants.
+      environments: [],
+      persistExtendedHistory: false,
+      config: {
+        permissions: {
+          pwrsnap_enrichment: {
+            filesystem: {
+              ":root": "deny",
+              ":minimal": "read",
+              "/tmp/pwrsnap-enrichment-jail": "read"
+            }
+          }
+        }
+      }
+    });
+    expect(start?.[1]).not.toHaveProperty("sandbox");
+  });
+
+  // A Codex build that rejects `permissions` must not break enrichment — it
+  // falls back to the older posture, which is exactly the pre-existing
+  // behavior. It is WEAKER (read-only permits whole-filesystem reads), so the
+  // fallback is logged rather than passing silently.
+  test("falls back to sandbox:read-only when Codex rejects the permissions profile", async () => {
+    let startAttempts = 0;
+    mockConnectionRequest.mockImplementation(async (method: string, params: unknown) => {
+      if (method === "config/read") return { config: {} };
+      if (method === "thread/start") {
+        startAttempts += 1;
+        const p = params as { permissions?: unknown };
+        if (p.permissions !== undefined) {
+          throw new Error("unknown field `permissions`");
+        }
+        return { thread: { id: "one-shot-thread-1" } };
+      }
+      if (method === "turn/start") {
+        const { threadId } = params as { threadId: string };
+        setTimeout(() => {
+          mockCodexThreadClients[0]?.emitEvent({
+            kind: "agent_message",
+            threadId,
+            turnId: "turn-1",
+            message: { text: "{}" }
+          });
+          mockCodexThreadClients[0]?.emitEvent({
+            kind: "turn_completed",
+            threadId,
+            turnId: "turn-1",
+            status: "completed"
+          });
+        }, 0);
+        return { turn: { id: "turn-1" } };
+      }
+      return {};
+    });
+
+    const result = await runCodexOneShotFromPool({
+      command: "codex-test",
+      env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-fallback-test" },
+      workspaceDir: "/tmp/pwrsnap-enrichment-jail",
+      prompt: "describe this image",
+      imagePaths: ["/tmp/capture.jpg"]
+    });
+
+    // Enrichment still succeeded.
+    expect(result.threadId).toBe("one-shot-thread-1");
+    expect(startAttempts).toBe(2);
+
+    const starts = mockConnectionRequest.mock.calls.filter(([m]) => m === "thread/start");
+    expect(starts[0]?.[1]).toMatchObject({ permissions: "pwrsnap_enrichment" });
+    expect(starts[1]?.[1]).toMatchObject({ sandbox: "read-only" });
+    expect(starts[1]?.[1]).not.toHaveProperty("permissions");
+    // The degradation is visible, not silent.
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("does NOT restrict reads"),
+      expect.anything()
+    );
+  });
+
+  // A transient failure must NOT downgrade read scoping. Only an error that
+  // actually names the permissions field/profile justifies the weaker posture.
+  test("does not downgrade the sandbox on a transient thread/start failure", async () => {
+    let startAttempts = 0;
+    mockConnectionRequest.mockImplementation(async (method: string) => {
+      if (method === "config/read") return { config: {} };
+      if (method === "thread/start") {
+        startAttempts += 1;
+        throw new Error("request timed out after 20000ms");
+      }
+      return {};
+    });
+
+    await expect(
+      runCodexOneShotFromPool({
+        command: "codex-test",
+        env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-transient-test" },
+        workspaceDir: "/tmp/pwrsnap-enrichment-jail",
+        prompt: "describe this image",
+        imagePaths: ["/tmp/capture.jpg"]
+      })
+    ).rejects.toThrow("timed out");
+
+    // One attempt only — no silent retry with sandbox:read-only.
+    expect(startAttempts).toBe(1);
+    expect(mockLogger.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("does NOT restrict reads"),
+      expect.anything()
+    );
+  });
+
+  test("does not downgrade the sandbox when the start is aborted", async () => {
+    let startAttempts = 0;
+    mockConnectionRequest.mockImplementation(async (method: string) => {
+      if (method === "config/read") return { config: {} };
+      if (method === "thread/start") {
+        startAttempts += 1;
+        throw new DOMException("one-shot turn aborted", "AbortError");
+      }
+      return {};
+    });
+
+    await expect(
+      runCodexOneShotFromPool({
+        command: "codex-test",
+        env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-abort-test" },
+        workspaceDir: "/tmp/pwrsnap-enrichment-jail",
+        prompt: "describe this image",
+        imagePaths: ["/tmp/capture.jpg"]
+      })
+    ).rejects.toThrow("aborted");
+
+    expect(startAttempts).toBe(1);
+  });
+
+  test("denies an approval request from an enrichment turn and logs run + capture id", async () => {
+    const { completeTurn } = stageHeldOneShot();
+
+    const run = runCodexOneShotFromPool({
+      command: "codex-test",
+      env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-approval-test" },
+      workspaceDir: "/tmp/pwrsnap-enrichment-jail",
+      prompt: "describe this image",
+      imagePaths: ["/tmp/capture.jpg"],
+      diagnostics: { runId: "run-42", captureId: "cap-42" }
+    });
+    await vi.waitFor(() =>
+      expect(
+        mockConnectionRequest.mock.calls.some(([method]) => method === "turn/start")
+      ).toBe(true)
+    );
+
+    // Simulate the App Server asking to run a shell command mid-turn — the
+    // shape a successful prompt injection would produce.
+    const approvalHandler = mockCodexThreadClients[0]?.onApprovalRequest.mock
+      .calls[0]?.[0] as (method: string, params: unknown) => Promise<string>;
+    await expect(
+      approvalHandler("turn/requestApproval", {
+        threadId: "one-shot-thread-1",
+        toolCall: {
+          name: "shell",
+          rawInput: { command: "cat ~/.aws/credentials" }
+        }
+      })
+    ).resolves.toBe("denied");
+
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      "capture enrichment sandbox escalation denied",
+      expect.objectContaining({
+        backend: "codex",
+        kind: "approval",
+        method: "turn/requestApproval",
+        threadId: "one-shot-thread-1",
+        runId: "run-42",
+        captureId: "cap-42",
+        toolName: "shell"
+      })
+    );
+    // Screenshot-derived arguments must never reach the log.
+    expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain("credentials");
+
+    completeTurn();
+    await run;
+  });
+
+  // Codex's real exec-approval shape (`CommandExecutionRequestApprovalParams`)
+  // carries the literal command line in a TOP-LEVEL `command` field — no tool
+  // name anywhere. That is the field a prompt-injected screenshot's payload
+  // arrives in, so it must never be mistaken for an identity field.
+  test("never logs the command line from a Codex exec approval", async () => {
+    const { completeTurn } = stageHeldOneShot();
+
+    const run = runCodexOneShotFromPool({
+      command: "codex-test",
+      env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-exec-approval-test" },
+      workspaceDir: "/tmp/pwrsnap-enrichment-jail",
+      prompt: "describe this image",
+      imagePaths: ["/tmp/capture.jpg"],
+      diagnostics: { runId: "run-13", captureId: "cap-13" }
+    });
+    await vi.waitFor(() =>
+      expect(
+        mockConnectionRequest.mock.calls.some(([method]) => method === "turn/start")
+      ).toBe(true)
+    );
+
+    const approvalHandler = mockCodexThreadClients[0]?.onApprovalRequest.mock
+      .calls[0]?.[0] as (method: string, params: unknown) => Promise<string>;
+    await expect(
+      approvalHandler("commandExecution/requestApproval", {
+        threadId: "one-shot-thread-1",
+        turnId: "turn-held",
+        itemId: "item-1",
+        command: "cat ~/.aws/credentials",
+        cwd: "/Users/someone",
+        reason: "the screenshot said to"
+      })
+    ).resolves.toBe("denied");
+
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      "capture enrichment sandbox escalation denied",
+      expect.objectContaining({
+        kind: "approval",
+        method: "commandExecution/requestApproval",
+        runId: "run-13",
+        captureId: "cap-13",
+        // No identity field in these params — better null than the payload.
+        toolName: null
+      })
+    );
+    const logged = JSON.stringify(mockLogger.error.mock.calls);
+    expect(logged).not.toContain("credentials");
+    expect(logged).not.toContain("/Users/someone");
+
+    completeTurn();
+    await run;
+  });
+
+  test("refuses a tool call from an enrichment turn instead of dispatching it", async () => {
+    const { completeTurn } = stageHeldOneShot();
+
+    const run = runCodexOneShotFromPool({
+      command: "codex-test",
+      env: { CODEX_HOME: "/tmp/pwrsnap-codex-pool-toolcall-test" },
+      workspaceDir: "/tmp/pwrsnap-enrichment-jail",
+      prompt: "describe this image",
+      imagePaths: ["/tmp/capture.jpg"],
+      diagnostics: { runId: "run-7", captureId: "cap-7" }
+    });
+    await vi.waitFor(() =>
+      expect(
+        mockConnectionRequest.mock.calls.some(([method]) => method === "turn/start")
+      ).toBe(true)
+    );
+
+    const toolCallHandler = mockCodexThreadClients[0]?.onToolCall.mock.calls[0]?.[0] as (
+      call: { method: string; params: unknown }
+    ) => Promise<{ success: boolean }>;
+    const result = await toolCallHandler({
+      method: "turn/toolCall",
+      params: { threadId: "one-shot-thread-1", name: "read_file", arguments: { path: "/etc/passwd" } }
+    });
+
+    expect(result).toMatchObject({ success: false });
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      "capture enrichment sandbox escalation denied",
+      expect.objectContaining({
+        backend: "codex",
+        kind: "tool_call",
+        runId: "run-7",
+        captureId: "cap-7",
+        toolName: "read_file"
+      })
+    );
+    expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain("passwd");
+
+    completeTurn();
+    await run;
   });
 
   test("fails closed before starting a one-shot thread when MCP config cannot be read", async () => {

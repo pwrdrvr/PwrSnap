@@ -5,6 +5,7 @@
 // never even discovered (probing can wake CLIs like Gemini), so an agent the
 // user set up but never invokes is never touched, let alone spawned.
 
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import type { Settings } from "@pwrsnap/shared";
@@ -134,8 +135,25 @@ describe("pool key + scratch cwd", () => {
     );
   });
 
-  test("every surface derives the same scratch cwd from the chats dir", () => {
-    // join() so the expectation holds on Windows separators too.
-    expect(acpPoolScratchCwd("/tmp/Chats")).toBe(join("/tmp/Chats", ".acp-chat"));
+  // On the ACP path the scratch cwd is not just a perf guard, it is one of only
+  // two configurable controls: the kit drops `sandbox` / `approvalPolicy` /
+  // `workspaceRoots` as Codex-only, so cwd + per-thread mcpServers IS the
+  // posture. It must never resolve into the user's data.
+  test("the scratch cwd is an app-owned jail, not a user directory", () => {
+    const cwd = acpPoolScratchCwd();
+    expect(cwd).toBe(join(tmpdir(), "pwrsnap", ".acp-scratch"));
+    // The three places it must never land: the captures/chats tree (also
+    // TCC-gated on macOS), the home dir root, and userData (which holds
+    // pwrsnap.db + pwrsnap-secrets.bin).
+    expect(cwd).not.toContain("Documents");
+    expect(cwd).not.toContain("Application Support");
+    expect(cwd.startsWith(tmpdir())).toBe(true);
+  });
+
+  // The pool key is (strategyId, command) — cwd is NOT part of it, so whichever
+  // surface acquires first fixes the cwd for every other surface sharing the
+  // process. A parameterless jail is what makes that safe.
+  test("takes no argument, so no caller can point it at a user path", () => {
+    expect(acpPoolScratchCwd).toHaveLength(0);
   });
 });

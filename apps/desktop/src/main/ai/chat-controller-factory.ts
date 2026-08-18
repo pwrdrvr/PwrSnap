@@ -239,7 +239,7 @@ async function defaultMakeAcpClient(input: {
   // Acquire the SHARED, warmed client for this agent (one process per agent,
   // reused across surfaces + warmed on first chat use) instead of spawning a
   // new one.
-  const client = await acquireAcpAgentClient(input.agent, input.cwd);
+  const client = await acquireAcpAgentClient(input.agent);
   return { client, mcpServers };
 }
 
@@ -335,11 +335,11 @@ async function resolveChatBackend(
     ...(active.version !== undefined ? { version: active.version } : {})
   };
   const makeAcp = deps.makeAcpClient ?? defaultMakeAcpClient;
-  // Pin the ACP session to a dedicated scratch dir under ~/Documents/PwrSnap/
-  // Chats so the agent doesn't scan the app/repo tree for "workspace context"
-  // (the cause of the multi-second chat stall). One shared dir is fine — chat
-  // tools reach PwrSnap over the bridge, not the agent's filesystem cwd.
-  const acpCwd = acpPoolScratchCwd(config.chatsDir);
+  // Pin the ACP session to an app-owned scratch jail so the agent doesn't scan
+  // the app/repo tree for "workspace context" (the cause of the multi-second
+  // chat stall) and has nothing interesting under its cwd. One shared dir is
+  // fine — chat tools reach PwrSnap over the bridge, not the filesystem.
+  const acpCwd = acpPoolScratchCwd();
   const result = await makeAcp({
     agent,
     loggerScope: config.loggerScope,

@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredAcpAgentGroup } from "@pwrdrvr/agent-acp";
 import type { ChatBackend } from "@pwrdrvr/agent-client";
@@ -172,10 +173,11 @@ describe("buildChatSurface — backend selection", () => {
     const agent = call?.agent;
     expect(agent?.command).toBe("/usr/local/bin/gemini");
     expect(agent?.args).toEqual(["--experimental-acp"]);
-    // The ACP session must be pinned to a small scratch dir under chatsDir —
-    // NOT process.cwd() — so Gemini doesn't scan the app/repo tree (the cause
-    // of the multi-second chat stall).
-    expect(call?.cwd).toBe(join("/tmp/pwrsnap-test-chats", ".acp-chat"));
+    // The ACP session must be pinned to the app-owned scratch jail — NOT
+    // process.cwd() (so Gemini doesn't scan the app/repo tree, the cause of the
+    // multi-second chat stall) and NOT chatsDir, which is the user's Documents
+    // tree. On ACP, cwd is one of only two real sandbox controls.
+    expect(call?.cwd).toBe(join(tmpdir(), "pwrsnap", ".acp-scratch"));
     expect(makeCodexClient).not.toHaveBeenCalled();
   });
 

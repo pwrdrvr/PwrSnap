@@ -37,8 +37,6 @@ export type AcpCaptureEnrichmentClientOptions = {
   /** The resolved active install of the agent (see `resolveEnabledAcpAgent`).
    *  Keys the shared pooled process every surface rides. */
   agent: DiscoveredAcpAgent;
-  /** Scratch cwd for the pooled client (see `acpPoolScratchCwd`). */
-  cwd: string;
 };
 
 /** Map the kit's token usage onto PwrSnap's persisted breakdown. */
@@ -292,12 +290,10 @@ export function parseEnrichmentReply(rawText: string): EnrichmentResult {
 
 export class AcpCaptureEnrichmentClient {
   private readonly agent: DiscoveredAcpAgent;
-  private readonly cwd: string;
   private readonly logger: ReturnType<typeof toAgentKitLogger>;
 
   constructor(options: AcpCaptureEnrichmentClientOptions) {
     this.agent = options.agent;
-    this.cwd = options.cwd;
     this.logger = toAgentKitLogger("pwrsnap:acp-enrichment");
   }
 
@@ -308,7 +304,6 @@ export class AcpCaptureEnrichmentClient {
     const runOnce = (prompt: string): Promise<PooledAcpOneShotResponse> =>
       runPooledAcpOneShot({
         agent: this.agent,
-        cwd: this.cwd,
         request: {
           prompt,
           imagePaths: request.imagePaths,
@@ -316,7 +311,8 @@ export class AcpCaptureEnrichmentClient {
           // Collapse to the two thinking states the kit honors (Fast/Thinking);
           // never send a bare "medium" the agent would drop. Default Fast.
           effort: acpReasoningEffort(request.effort ?? "low"),
-          ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {})
+          ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {}),
+          ...(request.diagnostics !== undefined ? { diagnostics: request.diagnostics } : {})
         }
       });
 

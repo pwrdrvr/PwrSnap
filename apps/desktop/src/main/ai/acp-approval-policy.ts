@@ -22,6 +22,10 @@
 
 import type { NormalizedApprovalDecision } from "@pwrdrvr/agent-core";
 import type { Logger } from "@pwrdrvr/agent-core";
+import {
+  denyEnrichmentEscalation,
+  enrichmentDiagnosticsForThread
+} from "./enrichment-sandbox";
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -160,15 +164,22 @@ export function permissionTargetsConfiguredMcpServer(params: Record<string, unkn
 /** The host approval handler registered on the pooled ACP client: pre-approve
  *  PwrSnap's own MCP tools, deny everything else (the agent's built-in tools).
  *
- *  Logging is asymmetric on purpose: an APPROVE is the common, expected case and
- *  the tool's actual execution is already logged at the MCP bridge ("mcp tool
- *  call"), so we stay quiet (one terse debug line). A DENY is the anomaly worth
- *  catching — it's the shape of a future "agent X got rejected" bug — so we log
- *  it at WARN with the full toolCall + param keys for diagnosis. */
+ *  Logging is three-way on purpose:
+ *   • APPROVE is the common, expected case and the tool's actual execution is
+ *     already logged at the MCP bridge ("mcp tool call"), so we stay quiet
+ *     (one terse debug line).
+ *   • DENY on a CHAT session is routine policy but still the shape of a future
+ *     "agent X got rejected" bug, so it goes to WARN with the full toolCall for
+ *     diagnosis. Chat input is user-authored, so logging the args is fine.
+ *   • DENY on an ENRICHMENT session is a security event — image enrichment has
+ *     no business requesting a tool at all — so it goes to ERROR through the
+ *     shared `denyEnrichmentEscalation` choke point, which carries the run +
+ *     capture id and REDACTS the arguments (they can contain screenshot-derived
+ *     text). See `enrichment-sandbox.ts`. */
 export function makePooledAcpApprovalHandler(
-  logger: Pick<Logger, "debug" | "warn">
+  logger: Pick<Logger, "debug" | "warn" | "error">
 ): (method: string, params: unknown) => Promise<NormalizedApprovalDecision> {
-  return async (_method, params) => {
+  return async (method, params) => {
     const record = asRecord(params) ?? {};
     const approve = permissionTargetsConfiguredMcpServer(record);
     if (approve) {
@@ -178,6 +189,27 @@ export function makePooledAcpApprovalHandler(
         title: toolCall ? readString(toolCall, "title") : undefined
       });
       return "approved";
+    }
+    const threadId = readString(record, "threadId") ?? readString(record, "sessionId") ?? null;
+    const diagnostics = enrichmentDiagnosticsForThread(threadId);
+    if (diagnostics !== null) {
+      const toolCall = asRecord(record.toolCall);
+      return denyEnrichmentEscalation({
+        logger: { error: (message, fields) => logger.error?.(message, fields) },
+        backend: "acp",
+        kind: "approval",
+        method,
+        threadId,
+        diagnostics,
+        // NAME and opaque id only. NOT `title` — every ACP agent renders that
+        // from the arguments (this file's own matcher leans on Qwen putting
+        // `{"capture_id":…}` there), and on an enrichment turn the arguments
+        // are where screenshot-injected text arrives. `method` + `kind` are
+        // already logged, so a null name still leaves the denial actionable.
+        toolName: toolCall
+          ? readString(toolCall, "name") ?? readString(toolCall, "toolCallId") ?? null
+          : null
+      });
     }
     logger.warn?.("acp permission denied", {
       mcpServerNames: readStringArray(record.mcpServerNames),

@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.1.0-alpha.1 - 2026-08-18
+
+This first 1.1 alpha opens PwrSnap to trusted PwrAgent workflows while adding
+more capable video and Library tools, stronger editor interactions, and signed
+Windows delivery.
+
+- PwrAgent and MCP - Added a local MCP connection that lets PwrAgent and other
+  approved local agents discover and search the Library, retrieve authorized
+  capture resources, request image edits, and work with Sizzle projects without
+  exposing PwrSnap's internal files.
+- Access Control - Added native OAuth consent and named, revocable MCP Sessions
+  with built-in and custom RBAC roles, requested-permission boundaries, capture
+  history horizons, and sliding usage budgets; MCP access stays off until you
+  enable it and every protected request is checked against the live policy.
+- Video Editing - Added a focused video viewer with transport controls,
+  filmstrip and waveform timelines, in/out trimming, frame stepping, keyboard
+  shuttling, and range-aware exports from the Library and Float-Over.
+- Library Workflows - Added composable sidebar facets with include, exclude,
+  multi-select, and only filters, plus clearer grid selection, context actions,
+  and copy/export affordances for handling larger capture collections.
+- Sizzle Reels - Improved reel creation and editing with sensible multi-clip
+  defaults, a clearer editor layout, draggable preview trimming, and visible
+  render durations.
+- Editor Interaction - Improved layer-property editing, arrow styling,
+  click-to-select behavior, and one-gesture moves so annotation changes land
+  more predictably on canvas.
+- Windows Delivery - Added the protected Azure Artifact Signing release path
+  for a signed Windows x64 installer and updater metadata alongside the macOS
+  release assets.
+
 ## v1.0.0-beta.25 - 2026-07-31
 
 This beta keeps PwrSnap's Codex integration current, makes large Libraries

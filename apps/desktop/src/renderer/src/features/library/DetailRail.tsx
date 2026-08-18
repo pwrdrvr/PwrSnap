@@ -489,7 +489,7 @@ export function DetailRail({
       {
         id: "chat",
         label: "Chat",
-        title: "Chat with Codex",
+        title: "Chat with AI",
         icon: CHAT_ICON
       },
       // Project tab appears only when any sizzle project exists in

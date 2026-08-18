@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
 import { isCliEntrypoint } from "../lib/cli-entrypoint.mjs";
-import { BUNDLED_FFMPEG_VERSION } from "../generate-third-party-licenses.mjs";
+import { BUNDLED_FFMPEG } from "../generate-third-party-licenses.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -138,7 +138,7 @@ describe("license CLIs report a result when run", () => {
     const root = mkdtempSync(join(tmpdir(), "pwrsnap-ffmpeg-cli-"));
     try {
       const manifestPath = join(root, "manifest.json");
-      writeFileSync(manifestPath, JSON.stringify({ version: BUNDLED_FFMPEG_VERSION }));
+      writeFileSync(manifestPath, JSON.stringify({ version: BUNDLED_FFMPEG.version }));
 
       const result = spawnSync(
         process.execPath,

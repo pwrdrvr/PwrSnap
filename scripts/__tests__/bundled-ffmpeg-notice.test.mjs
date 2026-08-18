@@ -6,7 +6,7 @@ import {
   checkBundledFfmpegNotice,
   collectNoticeFfmpegVersions,
 } from "../check-bundled-ffmpeg-notice.mjs";
-import { BUNDLED_FFMPEG_VERSION } from "../generate-third-party-licenses.mjs";
+import { BUNDLED_FFMPEG } from "../generate-third-party-licenses.mjs";
 
 // Deliberately not the shipping version. These tests assert the reconciliation
 // logic, and pinning them to whatever ships today would make them pass for the
@@ -258,7 +258,7 @@ describe("checkBundledFfmpegNotice", () => {
     // matches the generator's real output, not just the fixture's shape.
     const root = tempRoot();
     const manifestPath = join(root, "manifest.json");
-    writeFileSync(manifestPath, JSON.stringify({ version: BUNDLED_FFMPEG_VERSION }));
+    writeFileSync(manifestPath, JSON.stringify({ version: BUNDLED_FFMPEG.version }));
 
     // `new URL(...).pathname` would be the obvious way to reach the repo root
     // and is wrong on Windows: it yields "/D:/a/…", which readFileSync cannot
@@ -272,6 +272,6 @@ describe("checkBundledFfmpegNotice", () => {
         manifestPath,
         noticePath: join(repoRoot, "THIRD_PARTY_LICENSES"),
       }),
-    ).toEqual({ version: BUNDLED_FFMPEG_VERSION, sourceTarballs: 0 });
+    ).toEqual({ version: BUNDLED_FFMPEG.version, sourceTarballs: 0 });
   });
 });

@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import { describe, expect, test } from "vitest";
-import { BUNDLED_FFMPEG_VERSION } from "../../../scripts/generate-third-party-licenses.mjs";
+import { BUNDLED_FFMPEG } from "../../../scripts/generate-third-party-licenses.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 
@@ -74,8 +74,8 @@ describe("Windows release configuration", () => {
     expect(workflow).toContain("secrets.AZURE_CLIENT_SECRET");
     expect(workflow).toContain("pwrdrvr/pwrsnap-ffmpeg-builds");
     expect(workflow).toContain("3d775403a83990a2ad9503d865f5d481d9c0316a");
-    expect(workflow).toContain(`ffmpeg-${BUNDLED_FFMPEG_VERSION}-macos-universal`);
-    expect(workflow).toContain(`ffmpeg-${BUNDLED_FFMPEG_VERSION}-windows-x64`);
+    expect(workflow).toContain(`ffmpeg-${BUNDLED_FFMPEG.version}-macos-universal`);
+    expect(workflow).toContain(`ffmpeg-${BUNDLED_FFMPEG.version}-windows-x64`);
     expect(workflow).toContain("apps/desktop/electron-builder.yml");
     expect(workflow).toContain("manifest.json");
     expect(workflow).toContain("h264_videotoolbox");
@@ -168,7 +168,7 @@ describe("Windows release configuration", () => {
     const envPattern = new RegExp(`FFMPEG_VERSION:[ \\t]*["']?(${VERSION})["']?`, "g");
     const artifactPattern = new RegExp(`ffmpeg-(${VERSION})-(?:macos|windows|linux)\\b`, "g");
 
-    const found = [{ source: "generator", version: BUNDLED_FFMPEG_VERSION }];
+    const found = [{ source: "generator", version: BUNDLED_FFMPEG.version }];
     const push = (source, text, pattern) => {
       for (const match of text.matchAll(pattern)) found.push({ source, version: match[1] });
     };

@@ -127,9 +127,12 @@ function requiredUnpackedNativeFor(platform) {
 export function findForbiddenAsarEntries(listing) {
   const violations = [];
   for (const entry of listing) {
-    if (allowedForbiddenEntries.some((pattern) => pattern.test(entry))) continue;
+    // @electron/asar uses backslashes when the archive was built on Windows,
+    // while these packaging rules are written with POSIX-style paths.
+    const normalizedEntry = entry.replaceAll("\\", "/");
+    if (allowedForbiddenEntries.some((pattern) => pattern.test(normalizedEntry))) continue;
     for (const [label, pattern] of forbidden) {
-      if (pattern.test(entry)) {
+      if (pattern.test(normalizedEntry)) {
         violations.push({ label, entry });
         break;
       }

@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.0-alpha.1 - 2026-08-18
+## v1.1.0-alpha.2 - 2026-08-18
 
 This first 1.1 alpha opens PwrSnap to trusted PwrAgent workflows while adding
 more capable video and Library tools, stronger editor interactions, and signed

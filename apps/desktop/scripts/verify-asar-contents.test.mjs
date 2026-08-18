@@ -86,6 +86,11 @@ describe("verify-asar-contents", () => {
     expect(() => verifyAsarListing(["/out/main/prompts/capture-enrichment.md"])).not.toThrow();
   });
 
+  test("allows app-owned prompt Markdown reported with Windows separators", () => {
+    expect(findForbiddenAsarEntries(["\\out\\main\\prompts\\capture-enrichment.md"])).toEqual([]);
+    expect(() => verifyAsarListing(["\\out\\main\\prompts\\capture-enrichment.md"])).not.toThrow();
+  });
+
   test("passes packaged resource verification when notices and changelog exist", () => {
     const { appPath, resources } = fakeApp();
     writeResource(resources, "THIRD_PARTY_LICENSES");

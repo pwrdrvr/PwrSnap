@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.1 - 2026-08-18
+
+- Library Toolbar - Fixed capture controls and window-chrome spacing so the Library stays usable at narrow widths and with the Windows system menu enabled.
+- Library Grid - Fixed grid row sizing and scroll position after returning from Focus or Reel, keeping captures laid out correctly.
+- Capture Reliability - Fixed app shutdown with pending capture edits so deferred rendering safely resumes on the next launch.
+- Windows Library Window - Fixed the Library window so its size and position restore safely after reopening, monitor changes, or taskbar layout changes.
+- Windows Window Picker - Fixed the capture window picker on scaled displays so its selection frame lines up with the window you choose.
+- Windows Source App Icons - Added the originating app's icon to Windows captures, making the Library easier to scan by source application.
+- App and Tray Icons - Fixed stacked icon artwork so its visual tiers stay crisp instead of blending together.
+- Windows Installation - Added an Authenticode-signed PwrDrvr installer, updater metadata, and integrity checks for trusted installs and updates.
+
 ## v1.0.1-prerelease.2 - 2026-08-17
 
 - Windows Library - Fixed the Library window so its size and position are restored safely after reopening, monitor changes, or taskbar layout changes.

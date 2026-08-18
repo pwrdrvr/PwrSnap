@@ -75,6 +75,31 @@ describe("collectNoticeFfmpegVersions", () => {
     expect(collectNoticeFfmpegVersions(partial)).toEqual(["8.1.1", "8.2.0"]);
   });
 
+  test("each emission shape is collected independently", () => {
+    // Deleting either the "FFmpeg <v> source" or the release-URL regex used to
+    // leave every test in this file green, because noticeFor() puts the same
+    // version in all six lines. Give each shape a DISTINCT version so a regex
+    // that stops matching drops a value and fails loudly.
+    const mixed = [
+      "- FFmpeg@1.1.1 | x",
+      "PwrSnap bundles an FFmpeg executable built from the official FFmpeg 2.2.2 source release",
+      "Source: https://ffmpeg.org/releases/ffmpeg-3.3.3.tar.xz",
+    ].join("\n");
+
+    expect(collectNoticeFfmpegVersions(mixed)).toEqual(["1.1.1", "2.2.2", "3.3.3"]);
+  });
+
+  test("does not absorb trailing sentence punctuation into the version", () => {
+    // "…bundled FFmpeg@8.1.1." previously captured "8.1.1.", so a copy edit to
+    // the generator's prose would abort the signing job with a bogus
+    // "claims more than one FFmpeg version (8.1.1, 8.1.1.)".
+    expect(collectNoticeFfmpegVersions("PwrSnap ships FFmpeg@8.1.1.")).toEqual(["8.1.1"]);
+    expect(collectNoticeFfmpegVersions("Representative file: FFmpeg@8.1.1/supplemental")).toEqual([
+      "8.1.1",
+    ]);
+    expect(collectNoticeFfmpegVersions("FFmpeg@8.2.0-rc1 builds")).toEqual(["8.2.0-rc1"]);
+  });
+
   test("finds nothing in a notice with no FFmpeg record", () => {
     expect(collectNoticeFfmpegVersions("sharp@0.35.3 (Apache-2.0)\n")).toEqual([]);
   });
@@ -84,7 +109,10 @@ describe("checkBundledFfmpegNotice", () => {
   test("passes when the artifact, the notice, and the staged source agree", () => {
     const paths = fixture({ sourceTarball: ARTIFACT_VERSION });
 
-    expect(checkBundledFfmpegNotice(paths)).toEqual({ version: ARTIFACT_VERSION });
+    expect(checkBundledFfmpegNotice(paths)).toEqual({
+      version: ARTIFACT_VERSION,
+      sourceTarballs: 1,
+    });
   });
 
   test("fails when the build repo bumped but the notice was not regenerated", () => {
@@ -100,8 +128,37 @@ describe("checkBundledFfmpegNotice", () => {
   test("names every pin that has to move, so the failure is actionable at 2am", () => {
     const paths = fixture({ artifactVersion: "9.9.9", notice: noticeFor("8.1.1") });
 
-    expect(() => checkBundledFfmpegNotice(paths)).toThrow(/BUNDLED_FFMPEG_VERSION/);
-    expect(() => checkBundledFfmpegNotice(paths)).toThrow(/FFMPEG_ARTIFACT_NAME/);
+    // Assert the remediation is attached TO THE MISMATCH, not merely present
+    // somewhere. Matching /BUNDLED_FFMPEG_VERSION/ against the thrown message
+    // alone passed even for "manifest not found", because fail() appends the
+    // same footer to every error it raises — so the test held while the message
+    // it is named for could have been deleted outright.
+    let message = "";
+    try {
+      checkBundledFfmpegNotice(paths);
+    } catch (error) {
+      message = error.message;
+    }
+    expect(message).toMatch(/Bundled FFmpeg version mismatch/);
+    for (const pin of [
+      /BUNDLED_FFMPEG_VERSION/,
+      /FFMPEG_ARTIFACT_NAME/,
+      /FFMPEG_BUILD_SHA/,
+      /FFMPEG_SOURCE_SHA256/,
+      /manifest\.json,SOURCE-OFFER\.txt,LGPL-NOTICE\.txt/,
+    ]) {
+      expect(message).toMatch(pin);
+    }
+
+    // Wiring failures must NOT carry the pin list — it points at the wrong fix.
+    let ioMessage = "";
+    try {
+      checkBundledFfmpegNotice({ ...paths, manifestPath: join(tempRoot(), "absent.json") });
+    } catch (error) {
+      ioMessage = error.message;
+    }
+    expect(ioMessage).toMatch(/manifest not found/);
+    expect(ioMessage).not.toMatch(/BUNDLED_FFMPEG_VERSION/);
   });
 
   test("rejects a notice that claims two different FFmpeg versions", () => {
@@ -151,15 +208,48 @@ describe("checkBundledFfmpegNotice", () => {
     const paths = fixture({ artifactVersion: ARTIFACT_VERSION, sourceTarball: "8.1.1" });
 
     expect(() => checkBundledFfmpegNotice(paths)).toThrow(
-      /Staged FFmpeg source tarball ffmpeg-8\.1\.1\.tar\.xz/,
+      /do not name the packaged binary's version/,
     );
   });
 
-  test("skips the source check when no source directory is staged", () => {
+  test("fails closed when --source-dir is supplied but resolves to nothing", () => {
+    // Skipping silently is how this arm rots into a no-op that still prints
+    // "passed": a mistyped flag, a missing directory, and an empty directory
+    // all used to exit 0 having reconciled nothing.
     const paths = fixture();
 
-    expect(checkBundledFfmpegNotice({ ...paths, sourceDir: join(tempRoot(), "absent") })).toEqual({
+    expect(() =>
+      checkBundledFfmpegNotice({ ...paths, sourceDir: join(tempRoot(), "absent") }),
+    ).toThrow(/is not a directory/);
+
+    const empty = join(tempRoot(), "empty");
+    mkdirSync(empty);
+    expect(() => checkBundledFfmpegNotice({ ...paths, sourceDir: empty })).toThrow(
+      /contains no ffmpeg-\*\.tar\.xz/,
+    );
+  });
+
+  test("omitting --source-dir is the supported way to say nothing was staged", () => {
+    // Windows stages no ffmpeg source, so its call site omits the flag rather
+    // than passing a directory that will never exist.
+    expect(checkBundledFfmpegNotice(fixture())).toEqual({
       version: ARTIFACT_VERSION,
+      sourceTarballs: 0,
+    });
+  });
+
+  test("tolerates a build-repo tarball naming variant", () => {
+    // Every other consumer globs (`cp "$dir"/source/ffmpeg-*.tar.xz`), so an
+    // exact-filename assumption would hard-fail the signing job over a rename
+    // that broke nothing.
+    const root = tempRoot();
+    const sourceDir = join(root, "source");
+    mkdirSync(sourceDir);
+    writeFileSync(join(sourceDir, `ffmpeg-${ARTIFACT_VERSION}-lgpl.tar.xz`), "");
+
+    expect(checkBundledFfmpegNotice({ ...fixture(), sourceDir })).toEqual({
+      version: ARTIFACT_VERSION,
+      sourceTarballs: 1,
     });
   });
 
@@ -182,6 +272,6 @@ describe("checkBundledFfmpegNotice", () => {
         manifestPath,
         noticePath: join(repoRoot, "THIRD_PARTY_LICENSES"),
       }),
-    ).toEqual({ version: BUNDLED_FFMPEG_VERSION });
+    ).toEqual({ version: BUNDLED_FFMPEG_VERSION, sourceTarballs: 0 });
   });
 });

@@ -117,15 +117,31 @@ Since deriving is impossible, the version is **verified** in two places instead:
 - `BUNDLED_FFMPEG_VERSION` in the generator is now the single in-repo
   restatement, and `apps/desktop/scripts/windows-release-config.test.mjs`
   requires it to equal every workflow `FFMPEG_VERSION`, every artifact name, the
-  pin table in `docs/ffmpeg-build-reference.md`, and the committed
-  `THIRD_PARTY_LICENSES`.
+  pin tables in `docs/ffmpeg-build-reference.md`,
+  `docs/desktop-release-runbook.md` and `docs/windows/README.md`, and the
+  committed `THIRD_PARTY_LICENSES`. The floors are per source, not a total: a
+  single count is satisfied by whichever sources still match, so an arm whose
+  regex stops matching contributes nothing and the test stays green.
 - `scripts/check-bundled-ffmpeg-notice.mjs` runs inside both signing jobs (and
   the preview build), reconciling the `version` in the downloaded artifact's
   `manifest.json` against the staged `THIRD_PARTY_LICENSES` about to be
   packaged. This is the only check that crosses the repo boundary — the PR-time
-  test proves self-consistency, not agreement with the shipping binary. It is
-  dependency-free on purpose so it can travel in the Windows signing-input
-  tarball, which has no checkout.
+  test proves self-consistency, not agreement with the shipping binary. It uses
+  node builtins plus `isCliEntrypoint`, and both signing-input tarballs list
+  that helper; do not add a third-party import.
+
+  Its first draft hand-rolled the entrypoint guard as
+  `process.argv[1].endsWith(<filename>)` to dodge the `scripts/lib` import —
+  reintroducing defect #2 above in a new file. That comparison is
+  case-sensitive while Windows paths are not, and it is blind to symlink and
+  wrapper invocations, so the gate exited 0 having checked nothing while both
+  `set -e` and `if ($LASTEXITCODE -ne 0)` read success. Use `isCliEntrypoint`.
+
+  `--source-dir` fails closed: supplied-but-absent, not-a-directory, and
+  empty-directory are all errors, and the success line reports how many
+  tarballs it reconciled. Callers that stage no source (the Windows job) omit
+  the flag rather than passing a path that will never exist — a silent skip is
+  how this arm would rot into a no-op that still prints "passed".
 
 Both fail closed: a manifest with no `version`, an unparseable manifest, a
 notice with no FFmpeg record, and a notice claiming two different versions are

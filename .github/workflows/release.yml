@@ -535,11 +535,16 @@ jobs:
           # See the matching call in the macOS job: bind the downloaded
           # artifact to the version THIRD_PARTY_LICENSES claims, so a
           # build-repo version bump cannot ship a false LGPL-2.1 attribution.
-          $sourceDir = Join-Path $dir "source"
+          #
+          # No --source-dir here: unlike macOS, the Windows path never stages an
+          # ffmpeg source tree (package-win.mjs copies only ffmpeg.exe), and the
+          # flag now fails closed when it is passed but resolves to nothing.
+          # Passing it "for symmetry" would either abort the release or, worse,
+          # silently assert nothing. Windows shipping no LGPL source offer
+          # alongside the binary is a separate, pre-existing question.
           node scripts/check-bundled-ffmpeg-notice.mjs `
             --manifest $manifestPath `
-            --notice apps/desktop/release-stage/THIRD_PARTY_LICENSES `
-            --source-dir $sourceDir
+            --notice apps/desktop/release-stage/THIRD_PARTY_LICENSES
           if ($LASTEXITCODE -ne 0) {
             throw "Bundled FFmpeg notice check failed (exit code $LASTEXITCODE)."
           }

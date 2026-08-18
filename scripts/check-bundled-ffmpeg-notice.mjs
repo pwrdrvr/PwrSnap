@@ -31,12 +31,14 @@
  *     --notice   <THIRD_PARTY_LICENSES about to be packaged> \
  *     [--source-dir <dir holding the staged ffmpeg-<version>.tar.xz>]
  *
- * Intentionally dependency-free (node builtins only) so it can travel in the
- * Windows signing-input tarball, which has no checkout and no node_modules.
+ * Runs in jobs with no checkout and no node_modules, so it uses node builtins
+ * plus scripts/lib/cli-entrypoint.mjs, and both signing-input tarballs list
+ * that helper (release.yml for macOS, archive-windows-signing-input.ps1 for
+ * Windows). Do not add a third-party import.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename } from "node:path";
+import { isCliEntrypoint } from "./lib/cli-entrypoint.mjs";
 
 /**
  * Pull every version the notice attributes to FFmpeg.
@@ -47,19 +49,24 @@ import { basename } from "node:path";
  * grepping for the first — is deliberate: a partial hand-edit that fixes the
  * summary line but leaves the written offer claiming the old release is
  * exactly the kind of half-correct notice this check exists to reject.
+ *
+ * Each version tail must END on an alphanumeric. Letting it end on `.` or `-`
+ * means "…bundled FFmpeg@8.1.1." captures "8.1.1." and the signing job aborts
+ * with "claims more than one FFmpeg version (8.1.1, 8.1.1.)" — sending the
+ * operator after a version bump for what was a punctuation edit.
  */
 export function collectNoticeFfmpegVersions(notice) {
   const versions = new Set();
-  for (const match of notice.matchAll(/\bFFmpeg@(\d+\.\d+(?:\.\d+)?[0-9A-Za-z.+-]*)/g)) {
+  for (const match of notice.matchAll(/\bFFmpeg@(\d+\.\d+(?:\.\d+)?(?:[0-9A-Za-z.+-]*[0-9A-Za-z])?)/g)) {
     versions.add(match[1]);
   }
   for (const match of notice.matchAll(
-    /\bFFmpeg (\d+\.\d+(?:\.\d+)?[0-9A-Za-z.+-]*) source\b/g,
+    /\bFFmpeg (\d+\.\d+(?:\.\d+)?(?:[0-9A-Za-z.+-]*[0-9A-Za-z])?) source\b/g,
   )) {
     versions.add(match[1]);
   }
   for (const match of notice.matchAll(
-    /https:\/\/ffmpeg\.org\/releases\/ffmpeg-(\d+\.\d+(?:\.\d+)?[0-9A-Za-z.+-]*)\.tar\.xz/g,
+    /https:\/\/ffmpeg\.org\/releases\/ffmpeg-(\d+\.\d+(?:\.\d+)?(?:[0-9A-Za-z.+-]*[0-9A-Za-z])?)\.tar\.xz/g,
   )) {
     versions.add(match[1]);
   }
@@ -67,17 +74,30 @@ export function collectNoticeFfmpegVersions(notice) {
 }
 
 const REMEDIATION = [
-  "The bundled FFmpeg version is pinned in several places that have no compile-time link:",
+  "The bundled FFmpeg version is pinned in several places that have no compile-time link.",
+  "Every one of these must move together — the agreement test enforces all of them:",
   "  - BUNDLED_FFMPEG_VERSION in scripts/generate-third-party-licenses.mjs",
   "    (then run `pnpm licenses:generate` and commit THIRD_PARTY_LICENSES)",
   "  - FFMPEG_VERSION and FFMPEG_ARTIFACT_NAME in .github/workflows/release.yml (macOS + Windows jobs)",
   "  - FFMPEG_ARTIFACT_NAME in .github/workflows/preview-build.yml",
-  "  - the pin table in docs/ffmpeg-build-reference.md",
+  "  - the ffmpeg-<version>-*-{manifest.json,SOURCE-OFFER.txt,LGPL-NOTICE.txt} copy targets",
+  "    in both workflows (six lines; easy to miss because they are shell literals)",
+  "  - the pin tables in docs/ffmpeg-build-reference.md, docs/desktop-release-runbook.md",
+  "    and docs/windows/README.md",
+  "Repointing at a new build ALSO needs FFMPEG_BUILD_SHA (both release jobs + the",
+  "preview job) and FFMPEG_SOURCE_SHA256 (both release jobs); bumping the version",
+  "alone leaves CI downloading the previously pinned artifact.",
   "See docs/ffmpeg-build-reference.md § \"Bumping the bundled FFmpeg version\".",
 ].join("\n");
 
+/** A version disagreement — the operator needs the full list of pins. */
 function fail(message) {
   throw new Error(`${message}\n\n${REMEDIATION}`);
+}
+
+/** A wiring/IO failure — the pin list is noise pointing at the wrong fix. */
+function plainError(message) {
+  return new Error(message);
 }
 
 /**
@@ -86,17 +106,26 @@ function fail(message) {
  */
 export function checkBundledFfmpegNotice({ manifestPath, noticePath, sourceDir }) {
   if (!existsSync(manifestPath)) {
-    fail(`FFmpeg artifact manifest not found at ${manifestPath}`);
+    throw plainError(`FFmpeg artifact manifest not found at ${manifestPath}`);
   }
   if (!existsSync(noticePath)) {
-    fail(`THIRD_PARTY_LICENSES not found at ${noticePath}`);
+    throw plainError(`THIRD_PARTY_LICENSES not found at ${noticePath}`);
   }
 
+  // Read outside the try: a directory, a permissions error, or a truncated
+  // download is not a JSON problem, and reporting it as one points the on-call
+  // operator at version pins for what is a download failure.
+  let manifestText;
+  try {
+    manifestText = readFileSync(manifestPath, "utf8");
+  } catch (error) {
+    throw plainError(`Cannot read the FFmpeg artifact manifest at ${manifestPath}: ${error.message}`);
+  }
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest = JSON.parse(manifestText);
   } catch (error) {
-    fail(`FFmpeg artifact manifest at ${manifestPath} is not valid JSON: ${error.message}`);
+    throw plainError(`FFmpeg artifact manifest at ${manifestPath} is not valid JSON: ${error.message}`);
   }
 
   const artifactVersion = manifest?.version;
@@ -111,6 +140,7 @@ export function checkBundledFfmpegNotice({ manifestPath, noticePath, sourceDir }
     );
   }
 
+  const version = artifactVersion.trim();
   const notice = readFileSync(noticePath, "utf8");
   const claimed = collectNoticeFfmpegVersions(notice);
 
@@ -130,10 +160,10 @@ export function checkBundledFfmpegNotice({ manifestPath, noticePath, sourceDir }
   }
 
   const noticeVersion = claimed[0];
-  if (noticeVersion !== artifactVersion.trim()) {
+  if (noticeVersion !== version) {
     fail(
       `Bundled FFmpeg version mismatch: the artifact about to be packaged is ` +
-        `${artifactVersion} (per ${manifestPath}), but ${noticePath} claims ` +
+        `${version} (per ${manifestPath}), but ${noticePath} claims ` +
         `FFmpeg@${noticeVersion}.\n` +
         "Shipping this would attribute the wrong upstream release and point the " +
         "LGPL-2.1 written source offer at a tarball that is not the one linked " +
@@ -145,59 +175,104 @@ export function checkBundledFfmpegNotice({ manifestPath, noticePath, sourceDir }
   // and CI stages that tarball next to the binary. Its filename carries the
   // version independently of the manifest, so it is worth reconciling too: a
   // mismatch here means the offer resolves to source we did not build from.
-  if (sourceDir !== undefined && existsSync(sourceDir) && statSync(sourceDir).isDirectory()) {
-    const tarballs = readdirSync(sourceDir).filter(
-      (entry) => entry.startsWith("ffmpeg-") && entry.endsWith(".tar.xz"),
-    );
-    for (const tarball of tarballs) {
-      const match = /^ffmpeg-(.+)\.tar\.xz$/.exec(basename(tarball));
-      if (match !== null && match[1] !== artifactVersion.trim()) {
-        fail(
-          `Staged FFmpeg source tarball ${tarball} does not match the packaged ` +
-            `binary's version ${artifactVersion}. The written source offer in ` +
-            "THIRD_PARTY_LICENSES would resolve to the wrong release.",
-        );
-      }
+  //
+  // Supplying --source-dir asserts that source WAS staged. Absent, not a
+  // directory, or holding no ffmpeg tarball are all failures — silently
+  // skipping is how this arm would rot into a no-op that still prints
+  // "passed". Callers with no staged source must omit the flag.
+  let sourceTarballs = 0;
+  if (sourceDir !== undefined) {
+    if (!statSync(sourceDir, { throwIfNoEntry: false })?.isDirectory()) {
+      throw plainError(
+        `--source-dir ${sourceDir} is not a directory. Pass it only for platforms that ` +
+          "stage the FFmpeg source tarball; omit it otherwise, so a missing directory " +
+          "cannot be mistaken for a passing check.",
+      );
     }
+    // Match the version anywhere in the name rather than pinning the exact
+    // filename: every other consumer of this directory globs
+    // (`cp "$dir"/source/ffmpeg-*.tar.xz`), so a build-repo naming variant like
+    // ffmpeg-<v>-lgpl.tar.xz must not hard-fail a release it did not break.
+    const tarballs = readdirSync(sourceDir).filter((entry) => /^ffmpeg-.*\.tar\.xz$/.test(entry));
+    const matching = tarballs.filter((entry) => entry.includes(version));
+    if (tarballs.length === 0) {
+      throw plainError(
+        `--source-dir ${sourceDir} contains no ffmpeg-*.tar.xz. The LGPL-2.1 written ` +
+          "source offer would resolve to source this release never staged.",
+      );
+    }
+    if (matching.length === 0) {
+      fail(
+        `Staged FFmpeg source tarball(s) ${tarballs.join(", ")} do not name the packaged ` +
+          `binary's version ${version}. The written source offer in ${noticePath} would ` +
+          "resolve to the wrong release.",
+      );
+    }
+    sourceTarballs = matching.length;
   }
 
-  return { version: noticeVersion };
+  return { version: noticeVersion, sourceTarballs };
 }
 
-function parseArgs(argv) {
+const FLAGS = Object.freeze({
+  "--manifest": "manifestPath",
+  "--notice": "noticePath",
+  "--source-dir": "sourceDir",
+});
+
+/**
+ * Strict flag parsing: unknown flags and missing values are errors.
+ *
+ * Silently dropping an unrecognized argument is how a release gate rots — a
+ * single mistyped `--sourcedir` would turn the staged-source reconciliation off
+ * and still exit 0. `Object.hasOwn` (not `FLAGS[arg]`) keeps prototype keys
+ * like "toString" from reading back a function and swallowing the next argument.
+ */
+export function parseArgs(argv) {
   const options = {};
-  const keys = { "--manifest": "manifestPath", "--notice": "noticePath", "--source-dir": "sourceDir" };
   for (let index = 0; index < argv.length; index += 1) {
-    const key = keys[argv[index]];
-    if (key !== undefined) {
-      options[key] = argv[index + 1];
-      index += 1;
-      continue;
+    const arg = argv[index];
+    const inlineAt = arg.indexOf("=");
+    const name = inlineAt === -1 ? arg : arg.slice(0, inlineAt);
+    if (!Object.hasOwn(FLAGS, name)) {
+      throw plainError(`Unknown argument: ${arg}`);
     }
-    const inline = Object.entries(keys).find(([flag]) => argv[index].startsWith(`${flag}=`));
-    if (inline !== undefined) {
-      options[inline[1]] = argv[index].slice(inline[0].length + 1);
+    const value = inlineAt === -1 ? argv[(index += 1)] : arg.slice(inlineAt + 1);
+    if (value === undefined || value.length === 0 || value.startsWith("--")) {
+      throw plainError(`${name} needs a value (got ${value === undefined ? "nothing" : `"${value}"`})`);
     }
+    options[FLAGS[name]] = value;
   }
   return options;
 }
 
-// Guarded so the exported helpers stay unit-testable. Deliberately not using
-// scripts/lib/cli-entrypoint.mjs: this file must stay importable from the
-// Windows signing job, which unpacks a tarball with no scripts/lib in it.
-const invokedPath = process.argv[1] ?? "";
-if (invokedPath.endsWith("check-bundled-ffmpeg-notice.mjs")) {
-  const { manifestPath, noticePath, sourceDir } = parseArgs(process.argv.slice(2));
-  if (manifestPath === undefined || noticePath === undefined) {
-    console.error(
-      "Usage: node scripts/check-bundled-ffmpeg-notice.mjs --manifest <manifest.json> " +
-        "--notice <THIRD_PARTY_LICENSES> [--source-dir <dir>]",
-    );
-    process.exit(2);
-  }
+// Guarded so the exported helpers stay unit-testable. A suffix test on
+// process.argv[1] looks equivalent and fails OPEN: it is case-sensitive while
+// Windows paths are not, and it misses a symlinked or wrapper invocation, so
+// the gate exits 0 having checked nothing and both `set -e` and
+// `if ($LASTEXITCODE -ne 0)` read that as success. isCliEntrypoint normalizes
+// both sides; see docs/third-party-license-notices.md § "How the check can fail
+// open" #2, which is the post-mortem for exactly that mistake.
+if (isCliEntrypoint(import.meta.url)) {
   try {
-    const { version } = checkBundledFfmpegNotice({ manifestPath, noticePath, sourceDir });
-    console.log(`bundled FFmpeg notice check passed (FFmpeg@${version})`);
+    const { manifestPath, noticePath, sourceDir } = parseArgs(process.argv.slice(2));
+    if (manifestPath === undefined || noticePath === undefined) {
+      console.error(
+        "Usage: node scripts/check-bundled-ffmpeg-notice.mjs --manifest <manifest.json> " +
+          "--notice <THIRD_PARTY_LICENSES> [--source-dir <dir>]",
+      );
+      process.exit(2);
+    }
+    const { version, sourceTarballs } = checkBundledFfmpegNotice({
+      manifestPath,
+      noticePath,
+      sourceDir,
+    });
+    // Report what was actually reconciled: an identical success line whether it
+    // checked three tarballs or zero leaves no audit trail.
+    const staged =
+      sourceDir === undefined ? "no source dir checked" : `${sourceTarballs} source tarball(s)`;
+    console.log(`bundled FFmpeg notice check passed (FFmpeg@${version}, ${staged})`);
   } catch (error) {
     console.error(`bundled FFmpeg notice check failed: ${error.message}`);
     process.exit(1);

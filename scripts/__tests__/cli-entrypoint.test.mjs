@@ -126,12 +126,15 @@ describe("license CLIs report a result when run", () => {
   }
 
   test("scripts/check-bundled-ffmpeg-notice.mjs produces a verdict", () => {
-    // This one is NOT guarded by isCliEntrypoint: it has to stay
-    // dependency-free so it can travel in the Windows signing-input tarball,
-    // which unpacks without a checkout and therefore without scripts/lib. It
-    // carries its own guard instead, which puts it in exactly the fail-open
-    // category described above — and it runs in the protected signing jobs,
-    // where silence would mean the release ships unverified. So spawn it.
+    // This one runs inside the protected signing jobs, where silence means the
+    // release ships unverified, so it gets the same spawn coverage as the rest.
+    //
+    // It originally hand-rolled `argv[1].endsWith(<filename>)` to avoid
+    // importing scripts/lib, on the theory that the Windows signing tarball has
+    // no scripts/lib in it. That was both weaker (case-sensitive, while Windows
+    // paths are not; blind to symlink and wrapper invocations) and unnecessary:
+    // the tarball must carry cli-entrypoint.mjs regardless, because
+    // verify-asar-contents.mjs imports it.
     const root = mkdtempSync(join(tmpdir(), "pwrsnap-ffmpeg-cli-"));
     try {
       const manifestPath = join(root, "manifest.json");

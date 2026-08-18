@@ -60,8 +60,10 @@ Bump all of these together:
 | `BUNDLED_FFMPEG_VERSION` | `scripts/generate-third-party-licenses.mjs` (then `pnpm licenses:generate` and commit `THIRD_PARTY_LICENSES`) |
 | `FFMPEG_VERSION` + `FFMPEG_ARTIFACT_NAME` | `.github/workflows/release.yml` — **both** the macOS and Windows jobs |
 | `FFMPEG_ARTIFACT_NAME` | `.github/workflows/preview-build.yml` |
-| `FFMPEG_BUILD_SHA` + `FFMPEG_SOURCE_SHA256` | both release jobs and the preview job (see the warning above) |
-| the pin table | this file |
+| the `ffmpeg-<version>-*-{manifest.json,SOURCE-OFFER.txt,LGPL-NOTICE.txt}` copy targets | both workflows — six shell literals, easy to miss because they are not `env:` values |
+| `FFMPEG_BUILD_SHA` | both release jobs **and** the preview job (see the warning above) |
+| `FFMPEG_SOURCE_SHA256` | both release jobs only — the preview job does not pin it |
+| the pin tables | this file, `docs/desktop-release-runbook.md`, `docs/windows/README.md` |
 
 Two independent checks catch a partial bump:
 
@@ -200,8 +202,8 @@ matrix and `PLATFORM_PROFILES` name different platforms, in either direction.
 
 ### Why Linux was dropped rather than wired up
 
-The build repo produced an `ffmpeg-8.1.1-linux-x64` artifact on every run that
-nothing ever downloaded. It was also unfit for the use it was waiting for: the
+The build repo produced a Linux x64 artifact on every run that nothing ever
+downloaded. It was also unfit for the use it was waiting for: the
 profile required `aac` + `mpeg4` and shipped **no H.264 encoder**, because every
 common H.264 encoder on Linux needs GPL configuration or a patent-sensitive
 external dependency. Video export and Sizzle reel rendering both need H.264, so

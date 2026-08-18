@@ -311,7 +311,13 @@ describe("stale-install detection", () => {
     expect(output).toContain("@img/sharp-darwin-arm64@0.35.3");
     expect(output).toContain("@img/sharp-libvips-darwin-arm64@1.3.2");
     expect(output).toContain("Full License Texts — Weak-Copyleft Bundled Binaries");
-    expect(output).toContain(`FFmpeg@${BUNDLED_FFMPEG_VERSION}`);
+    // Deliberately not `toContain(\`FFmpeg@${BUNDLED_FFMPEG_VERSION}\`)`: the
+    // record is RENDERED from that same constant, so such an assertion passes
+    // for any value and proves only that string interpolation works. Assert the
+    // shape — that a real version reaches the notice — and let
+    // windows-release-config.test.mjs anchor the value against the workflows,
+    // docs, and the committed THIRD_PARTY_LICENSES.
+    expect(output).toMatch(/FFmpeg@\d+\.\d+\.\d+ \(LGPL-2\.1-or-later\)/);
     expect(output).not.toContain("@undefined");
   });
 });

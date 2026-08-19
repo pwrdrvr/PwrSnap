@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PwrSnap DMG — background options</title>
+<link rel="stylesheet" href="ds/colors_and_type.css">
+<style>
+:root{--ink:#f5efe3;--ink-2:#a89e91;--ink-3:#6f665c;--line:#241f19;--panel:#0d0c0a;--accent:#ff8a1f}
+*{box-sizing:border-box}
+html,body{margin:0;background:#000;color:var(--ink);font-family:Geist,"Geist Sans",system-ui,sans-serif}
+a{color:var(--accent)}a:hover{color:#ffa552}
+.wrap{max-width:1460px;margin:0 auto;padding:48px 40px 96px}
+h1{font-size:24px;font-weight:600;letter-spacing:-.02em;margin:0 0 8px}
+.sub{color:var(--ink-2);font-size:14px;line-height:1.55;max-width:84ch;margin:0 0 4px}
+.mono{font-family:"Geist Mono",ui-monospace,monospace}
+.kicker{font:600 10px/1 "Geist Mono",monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);margin:46px 0 14px;display:flex;align-items:center;gap:12px}
+.kicker::after{content:"";flex:1;height:1px;background:var(--line)}
+.opts{display:grid;grid-template-columns:minmax(0,1fr);gap:28px;justify-items:center}
+.card{width:100%;max-width:900px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:16px}
+.hdr{display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:13px}
+.nm{font:600 13px/1.2 Geist,sans-serif}
+.nm i{display:block;font:500 11px/1.4 "Geist Mono",monospace;color:var(--ink-3);font-style:normal;margin-top:5px}
+.chip{font:600 9px/1 "Geist Mono",monospace;letter-spacing:.08em;padding:5px 8px;border-radius:4px;border:1px solid var(--line);color:var(--ink-2);white-space:nowrap}
+.chip.ok{color:#7ee08f;border-color:rgba(40,200,64,.24)}
+.chip.no{color:#ff8b7a;border-color:rgba(255,95,87,.24)}
+.chip.warn{color:#ffc46b;border-color:rgba(255,180,80,.26)}
+/* ---- DMG mock: exact geometry from generate-dmg-background.swift, 660x400 ---- */
+.dmg{position:relative;width:660px;height:400px;border-radius:6px;overflow:hidden;transform-origin:top left}
+.dmg .card-bg{position:absolute;left:40px;top:20px;width:580px;height:268px;border-radius:20px;background:#0a0a0a}
+.dmg .pill{position:absolute;left:160px;top:20px;width:340px;height:100px;border-radius:16px}
+.dmg .word{position:absolute;left:0;right:0;top:30px;text-align:center;font:700 40px/1.2 Geist,sans-serif;letter-spacing:-.03em}
+.dmg .sub2{position:absolute;left:0;right:0;top:90px;text-align:center;font:500 11px/1.3 Geist,sans-serif}
+.dmg .shaft{position:absolute;left:246px;top:221px;width:158px;height:18px;border-radius:9px}
+.dmg .head{position:absolute;left:392px;top:206px;width:32px;height:48px;clip-path:polygon(0 0,100% 50%,0 100%)}
+.dmg .hint{position:absolute;left:0;right:0;top:349px;text-align:center;font:500 12px/1.3 Geist,sans-serif}
+.dmg .icon{position:absolute;width:112px;height:112px;top:174px}
+.dmg .icon img{width:112px;height:112px;display:block;border-radius:20px}
+.dmg .icon.app{left:114px}
+.dmg .icon.dest{left:444px;display:flex;align-items:center;justify-content:center}
+.dmg .folder{width:96px;height:78px;border-radius:9px;background:linear-gradient(#8fd0f2,#5ab0e0);position:relative}
+.dmg .folder::before{content:"";position:absolute;left:9px;top:-9px;width:40px;height:12px;border-radius:4px 4px 0 0;background:#8fd0f2}
+.dmg .lbl{position:absolute;top:292px;width:150px;text-align:center;font:500 11px/1.3 Geist,sans-serif}
+.dmg .lbl.a{left:95px}.dmg .lbl.b{left:425px}
+.scaler{width:100%;overflow:hidden;border-radius:6px;border:1px solid var(--line)}
+.note{color:var(--ink-2);font-size:13px;line-height:1.65;margin:13px 0 0}
+.note b{color:var(--ink);font-weight:500}
+.big .dmg{transform:scale(1.28)}
+.big .scaler{width:845px;max-width:100%;height:512px}
+code{font-family:"Geist Mono",monospace;font-size:12.5px;color:#ffb877;background:rgba(255,138,31,.07);padding:1px 5px;border-radius:3px}
+.tbl{border-collapse:collapse;font-size:12.5px;width:100%;max-width:940px;margin-top:6px}
+.tbl th{text-align:left;font:600 9px/1 "Geist Mono",monospace;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);padding:0 18px 10px 0;border-bottom:1px solid var(--line)}
+.tbl td{padding:9px 18px 9px 0;border-bottom:1px solid var(--line);color:var(--ink-2)}
+.tbl td.m{font-family:"Geist Mono",monospace;color:var(--ink)}
+.warnbox{border:1px solid rgba(255,180,80,.26);background:rgba(255,180,80,.05);border-radius:9px;padding:16px 18px;max-width:88ch;margin-top:16px}
+.warnbox p{margin:0;color:var(--ink-2);font-size:13.5px;line-height:1.7}
+.warnbox p+p{margin-top:10px}
+.warnbox b{color:var(--ink);font-weight:500}
+.mini{display:flex;gap:22px;flex-wrap:wrap;margin-top:4px}
+.mcell{border:1px solid var(--line);border-radius:9px;overflow:hidden;width:236px}
+.mcell .top{height:96px;display:flex;align-items:center;justify-content:center;font:700 30px/1 Geist,sans-serif;letter-spacing:-.03em;color:#f9f5ef}
+.mcell .cap{padding:11px 12px;font-size:11.5px;line-height:1.5;color:var(--ink-2);background:var(--panel);border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Where the DMG orange actually goes wrong</h1>
+<p class="sub">Your instinct is right about the cause, and it points at the arrow more than the wordmark. Reading the generator's geometry: the wordmark sits on the <span class="mono">#292929</span> pill, but <b style="color:var(--ink);font-weight:500">the arrow — shaft plus head, the single largest orange area in the file — sits directly on the <span class="mono">#f8f8f8</span> page.</b> Same <span class="mono">#ff8a1f</span> as the titlebar, dropped on near-white. That's the washed-out, slightly muddy orange you're seeing.</p>
+
+<div class="kicker">the same orange, three surrounds</div>
+<div class="mini">
+  <div class="mcell"><div class="top" style="background:#f8f8f8"><span style="color:#ff8a1f">Snap</span></div><div class="cap">on the DMG page <span class="mono">#f8f8f8</span> — reads dull, almost brownish</div></div>
+  <div class="mcell"><div class="top" style="background:#292929">Pwr<span style="color:#ff8a1f">Snap</span></div><div class="cap">on the DMG pill <span class="mono">#292929</span> — closer, still a touch flat</div></div>
+  <div class="mcell"><div class="top" style="background:#0a0a0a">Pwr<span style="color:#ff8a1f">Snap</span></div><div class="cap">on the titlebar <span class="mono">#0a0a0a</span> — the tangerine you know</div></div>
+</div>
+<p class="note" style="max-width:84ch">No hex changes across those three. Simultaneous contrast does all of it.</p>
+
+<div class="kicker">option F · the pill grows up — bolder, with a real tradeoff</div>
+<div class="opts">
+  <div class="card big">
+    <div class="hdr"><span class="nm">Option F — one dark card<i>card #0a0a0a, 580×268 r20 · arrow stays #ff8a1f</i></span><span class="chip warn">icon silhouette dissolves</span></div>
+    <div class="scaler"><div class="dmg" style="background:#f8f8f8">
+      <div class="card-bg"></div>
+      <div class="word" style="color:#f9f5ef;top:44px">Pwr<span style="color:#ff8a1f">Snap</span></div>
+      <div class="sub2" style="color:#8c857b;top:104px">screenshots / recordings</div>
+      <div class="shaft" style="background:#ff8a1f"></div><div class="head" style="background:#ff8a1f"></div>
+      <div class="icon app"><img src="scratch/pwrsnap-icon-fixed.png" alt="PwrSnap app icon"></div>
+      <div class="icon dest"><div class="folder"></div></div>
+      <div class="lbl a" style="color:#1d1d1f">PwrSnap</div><div class="lbl b" style="color:#1d1d1f">Applications</div>
+      <div class="hint" style="color:#737373">Drag to Applications</div>
+    </div></div>
+    <p class="note">Same instinct as the pill, one size up: <b>the pill becomes the panel</b> and the whole install gesture — wordmark, arrow, both icons — happens inside one shape. Nothing is bolted on. The geometry is tight rather than generous, and it has to be: the generator pins the icon row at <span class="mono">iconY 230</span>, so the icons occupy <span class="mono">174–286</span> and the Finder labels start at <span class="mono">292</span>. The card therefore ends at <span class="mono">288</span> — <b>icons flush to its bottom edge, labels immediately below on the light page</b>, where they stay readable in both appearance modes. Loosening that would mean moving <span class="mono">iconY</span> in both the generator and <span class="mono">electron-builder.yml</span>.</p>
+    <p class="note"><b>The tradeoff, which you'll see straight away:</b> the app-icon tile is itself a near-black gradient (<span class="mono">#1c1813 → #0c0b09</span>), so on a <span class="mono">#0a0a0a</span> card <b>its silhouette nearly vanishes</b> — the orange mark floats and the tile edge barely reads. The folder icon is unaffected. If that bothers you, F needs the card lightened until the tile separates, which starts pulling the wordmark's surround away from the titlebar match — the thing we came here to fix. Diff: replace the pill rect with <code>NSRect(x: 40, y: h - 288, width: 580, height: 268)</code>, radius 20, <span class="mono">#0a0a0a</span>; move wordmark and subtitle down 14pt.</p>
+  </div>
+</div>
+
+<div class="kicker">recommended · G — quiet arrow</div>
+<div class="opts">
+  <div class="card big">
+    <div class="hdr"><span class="nm">Option G — dark pill, neutral arrow<i>pill #0a0a0a · arrow #737373 · layout untouched</i></span><span class="chip ok">recommended · no side effects</span></div>
+    <div class="scaler"><div class="dmg" style="background:#f8f8f8">
+      <div class="pill" style="background:#0a0a0a"></div>
+      <div class="word" style="color:#f9f5ef">Pwr<span style="color:#ff8a1f">Snap</span></div>
+      <div class="sub2" style="color:#8c857b">screenshots / recordings</div>
+      <div class="shaft" style="background:#737373"></div><div class="head" style="background:#737373"></div>
+      <div class="icon app"><img src="scratch/pwrsnap-icon-fixed.png" alt="PwrSnap app icon"></div>
+      <div class="icon dest"><div class="folder"></div></div>
+      <div class="lbl a" style="color:#1d1d1f">PwrSnap</div><div class="lbl b" style="color:#1d1d1f">Applications</div>
+      <div class="hint" style="color:#737373">Drag to Applications</div>
+    </div></div>
+    <p class="note">The other way out of the contrast problem: <b>stop asking the orange to work on white.</b> The arrow is wayfinding, not brand — it becomes <span class="mono">#737373</span>, the grey already used for the “Drag to Applications” hint directly beneath it, so the two read as one instruction. Brand orange then appears exactly once, on the near-black pill, where it looks like itself.</p>
+    <p class="note">Two constants, no geometry, no new values: <span class="mono">pillBackground</span> → <span class="mono">#0a0a0a</span>, <span class="mono">arrowShaft</span> and the arrowhead → the existing instruction grey. Quieter than today's DMG, and closer to how macOS installers usually look.</p>
+  </div>
+</div>
+
+<div class="warnbox" style="border-color:rgba(255,180,80,.26)">
+  <p><b>Retracting the amber arrow I proposed last round.</b> I suggested <span class="mono">#e8743a</span> for the arrow on the grounds that it was the suite's value for reading against a lighter field. <b>I made that rationale up.</b> Having now read <span class="mono">docs/solutions/2026-05-31-brand-oranges-and-app-icon.md</span>, the actual rule is the opposite: <span class="mono">#e8743a</span> is <em>“the macOS app icon only … Nothing else”</em>, its real context is the icon's near-black gradient tile, and the doc closes with <em>“don't unify the icon to #ff8a1f or the wordmark to #e8743a.”</em> It also states plainly that the DMG wordmark and arrow are <span class="mono">#ff8a1f</span>.</p>
+  <p>So options C and C′ as I first drew them (both now withdrawn — see F and G above) would have put a third usage on a pinned token — the same class of mistake as the doc line recording PwrAgent's DMG bug as a decision. Both are corrected below to keep <span class="mono">#ff8a1f</span>. If you ever <em>do</em> want the amber on the arrow, that's a real brand call needing sign-off, not something this page should present as precedent.</p>
+</div>
+
+<div class="kicker">option A · ship as-is</div>
+<div class="opts">
+  <div class="card big">
+    <div class="hdr"><span class="nm">Current<i>page #f8f8f8 · pill #292929</i></span><span class="chip no">the look you flagged</span></div>
+    <div class="scaler"><div class="dmg" style="background:#f8f8f8">
+      <div class="pill" style="background:#292929"></div>
+      <div class="word" style="color:#f9f5ef">Pwr<span style="color:#ff8a1f">Snap</span></div>
+      <div class="sub2" style="color:#8c857b">screenshots / recordings</div>
+      <div class="icon app"><img src="scratch/pwrsnap-icon-fixed.png" alt="PwrSnap app icon"></div>
+      <div class="icon dest"><div class="folder"></div></div>
+      <div class="shaft" style="background:#ff8a1f"></div><div class="head" style="background:#ff8a1f"></div>
+      <div class="lbl a" style="color:#1d1d1f">PwrSnap</div><div class="lbl b" style="color:#1d1d1f">Applications</div>
+      <div class="hint" style="color:#737373">Drag to Applications</div>
+    </div></div>
+    <p class="note"><b>Finder labels are legible</b> — they're black-on-light in light mode, which is what this background was built for.</p>
+  </div>
+</div>
+
+<div class="kicker">option B · do not ship</div>
+<div class="opts">
+  <div class="card big">
+    <div class="hdr"><span class="nm">Option B — dark page<i>page #0a0a0a, pill dissolved</i></span><span class="chip warn">matches, but see the catch</span></div>
+    <div class="scaler"><div class="dmg" style="background:#0a0a0a">
+      <div class="word" style="color:#f9f5ef">Pwr<span style="color:#ff8a1f">Snap</span></div>
+      <div class="sub2" style="color:#8c857b">screenshots / recordings</div>
+      <div class="icon app"><img src="scratch/pwrsnap-icon-fixed.png" alt="PwrSnap app icon"></div>
+      <div class="icon dest"><div class="folder"></div></div>
+      <div class="shaft" style="background:#ff8a1f"></div><div class="head" style="background:#ff8a1f"></div>
+      <div class="lbl a" style="color:#1d1d1f">PwrSnap</div><div class="lbl b" style="color:#1d1d1f">Applications</div>
+      <div class="hint" style="color:#6f665c">Drag to Applications</div>
+    </div></div>
+    <p class="note"><b>Every orange pixel now sits on the same near-black as the app.</b> The pill has nothing left to do once the page is dark, so it goes. But look at the two icon labels — see the warning below.</p>
+  </div>
+</div>
+
+<div class="warnbox">
+  <p><b>The catch, and it's a real one:</b> the icon labels under “PwrSnap” and “Applications” are drawn by <b>Finder</b>, not by this PNG. Finder colours them by the <em>user's</em> appearance setting — near-black in Light Mode, white in Dark Mode — and the background image is fixed either way. A near-black background means <b>every Light Mode user gets black labels on black.</b> That is almost certainly why this DMG was built light in the first place.</p>
+  <p>Option B is only safe if you're willing to have the labels effectively vanish for Light Mode users. I would not ship it.</p>
+</div>
+
+<div class="kicker">option C · dark hero band, no pill</div>
+<div class="opts">
+  <div class="card big">
+    <div class="hdr"><span class="nm">Option C — dark hero band<i>band #0a0a0a · icon row stays light</i></span><span class="chip">wordmark only, no pill</span></div>
+    <div class="scaler"><div class="dmg" style="background:#f8f8f8">
+      <div style="position:absolute;left:0;right:0;top:0;height:150px;background:#0a0a0a"></div>
+      <div class="word" style="color:#f9f5ef;top:44px">Pwr<span style="color:#ff8a1f">Snap</span></div>
+      <div class="sub2" style="color:#8c857b;top:104px">screenshots / recordings</div>
+      <div class="icon app"><img src="scratch/pwrsnap-icon-fixed.png" alt="PwrSnap app icon"></div>
+      <div class="icon dest"><div class="folder"></div></div>
+      <div class="shaft" style="background:#ff8a1f"></div><div class="head" style="background:#ff8a1f"></div>
+      <div class="lbl a" style="color:#1d1d1f">PwrSnap</div><div class="lbl b" style="color:#1d1d1f">Applications</div>
+      <div class="hint" style="color:#737373">Drag to Applications</div>
+    </div></div>
+    <p class="note">Wordmark gets the near-black it wants — <b>pixel-identical condition to the titlebar</b>, no pill, full-bleed band. The icon row keeps its light background so Finder labels stay readable in both appearance modes. The arrow stays <span class="mono">#ff8a1f</span> on the light page, so — like option D — <b>this fixes the wordmark but leaves the arrow washed.</b> Option F fixes both in one shape.</p>
+  </div>
+</div>
+
+<div class="kicker">option D · smallest change</div>
+<div class="opts">
+  <div class="card big">
+    <div class="hdr"><span class="nm">Option D — darker pill only<i>pill #292929 → #0a0a0a</i></span><span class="chip warn">smallest change</span></div>
+    <div class="scaler"><div class="dmg" style="background:#f8f8f8">
+      <div class="pill" style="background:#0a0a0a"></div>
+      <div class="word" style="color:#f9f5ef">Pwr<span style="color:#ff8a1f">Snap</span></div>
+      <div class="sub2" style="color:#8c857b">screenshots / recordings</div>
+      <div class="icon app"><img src="scratch/pwrsnap-icon-fixed.png" alt="PwrSnap app icon"></div>
+      <div class="icon dest"><div class="folder"></div></div>
+      <div class="shaft" style="background:#ff8a1f"></div><div class="head" style="background:#ff8a1f"></div>
+      <div class="lbl a" style="color:#1d1d1f">PwrSnap</div><div class="lbl b" style="color:#1d1d1f">Applications</div>
+      <div class="hint" style="color:#737373">Drag to Applications</div>
+    </div></div>
+    <p class="note">One constant, zero layout risk: the wordmark now matches the titlebar exactly. <b>But the arrow is untouched</b> — and the arrow is the bigger offender, so most of what bothers you survives. Good if you want a one-line change today.</p>
+  </div>
+</div>
+
+<div class="kicker">and to be clear about PwrAgent</div>
+<p class="sub">None of this fixes PwrAgent. Its DMG wordmark is <span class="mono">#ef714a</span> — a genuinely wrong hex, not a contrast illusion. Darkening its background would just give you salmon on black, still disagreeing with its own titlebar. <b style="color:var(--ink);font-weight:500">Two independent bugs:</b> PwrAgent needs the colour corrected to <span class="mono">#ff8a1f</span>; PwrSnap's colour is already right and needs the surround changed. Doing one does not do the other.</p>
+
+<table class="tbl">
+  <tr><th>option</th><th>wordmark reads as</th><th>arrow reads as</th><th>Finder labels</th></tr>
+  <tr><td>F · one dark card</td><td>correct</td><td>correct</td><td>safe both modes — but app icon dissolves</td></tr>
+  <tr style="background:rgba(255,138,31,.05)"><td style="color:var(--ink)">G · dark pill + grey arrow</td><td>correct</td><td>neutral by design</td><td>safe both modes</td></tr>
+  <tr><td>A · current</td><td>slightly flat</td><td class="m">washed on #f8f8f8</td><td>safe both modes</td></tr>
+  <tr><td>B · dark page</td><td>correct</td><td>correct</td><td class="m" style="color:#ff8b7a">invisible in Light Mode</td></tr>
+  <tr><td>C · dark hero band (no pill)</td><td>correct</td><td class="m">still washed</td><td>safe both modes</td></tr>
+  <tr><td>D · darker pill</td><td>correct</td><td class="m">still washed</td><td>safe both modes</td></tr>
+</table>
+
+<template id="__bundler_thumbnail">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#f8f8f8"/><rect width="100" height="38" fill="#0a0a0a"/><rect x="22" y="16" width="20" height="7" rx="2" fill="#f9f5ef"/><rect x="45" y="16" width="22" height="7" rx="2" fill="#ff8a1f"/><rect x="24" y="54" width="52" height="18" rx="9" fill="#0a0a0a"/><rect x="30" y="60" width="34" height="7" rx="3.5" fill="#ff8a1f"/></svg>
+</template>
+</div>
+</body>
+</html>

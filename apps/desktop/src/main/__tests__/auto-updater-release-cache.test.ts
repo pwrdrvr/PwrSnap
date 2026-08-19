@@ -139,6 +139,7 @@ async function importAutoUpdater() {
 
 describe("auto updater release cache", () => {
   const originalNodeEnv = process.env.NODE_ENV;
+  const originalE2E = process.env.PWRSNAP_E2E;
   const originalPlatform = process.platform;
   const originalFetch = globalThis.fetch;
 
@@ -150,6 +151,7 @@ describe("auto updater release cache", () => {
       value: "darwin"
     });
     process.env.NODE_ENV = "production";
+    delete process.env.PWRSNAP_E2E;
     mocks.handlers.clear();
     mocks.autoUpdater.checkForUpdates.mockReset();
     mocks.autoUpdater.checkForUpdates.mockResolvedValue({
@@ -165,6 +167,11 @@ describe("auto updater release cache", () => {
 
   afterEach(async () => {
     process.env.NODE_ENV = originalNodeEnv;
+    if (originalE2E === undefined) {
+      delete process.env.PWRSNAP_E2E;
+    } else {
+      process.env.PWRSNAP_E2E = originalE2E;
+    }
     Object.defineProperty(process, "platform", {
       configurable: true,
       value: originalPlatform
@@ -283,5 +290,30 @@ describe("auto updater release cache", () => {
 
     expect(fetchMock.mock.calls.length).toBeGreaterThan(callsWhileLimited);
     expect(recovered.stable.latest.version).toBe(STABLE_TAG);
+  });
+
+  // E2E launches set NODE_ENV=production, so the production gate is open and
+  // these reads would be real network calls. `settings:open` with no page
+  // mounts Settings -> General, which reads the release list on mount.
+  test("makes no GitHub request under PWRSNAP_E2E", async () => {
+    process.env.PWRSNAP_E2E = "1";
+    const updater = await importAutoUpdater();
+
+    const versions = await updater.readAppUpdateReleaseVersions();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(versions.stable.latest.version).toBeUndefined();
+    expect(versions.stable.latest.unavailableReason).toBe("No stable release found.");
+  });
+
+  test("makes no GitHub request for a manual check under PWRSNAP_E2E", async () => {
+    process.env.PWRSNAP_E2E = "1";
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => ({ channel: "latest", train: "stable" }));
+
+    const check = await updater.checkForAppUpdatesNow("manual");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(check).toEqual({ status: "no-update", version: "0.9.0" });
   });
 });

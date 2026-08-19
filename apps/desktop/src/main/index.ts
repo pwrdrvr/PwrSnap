@@ -291,6 +291,11 @@ const isMac = process.platform === "darwin";
  *     would steal focus from the test browser window).
  *   - The single-instance lock (test launches use isolated userData
  *     and must be able to run beside a real/dev PwrSnap instance).
+ *   - `initAppUpdater` (below), and — enforced inside auto-updater.ts
+ *     rather than here — every GitHub release read behind the
+ *     `app:update:*` bus verbs, which stay registered and would
+ *     otherwise spend the runner's shared anonymous GitHub quota on
+ *     each spinup that opens Settings.
  * Everything else — DB, command bus, IPC dispatcher, region selector
  * pre-warm, main window — runs unchanged so the assertions exercise
  * the same code paths a real user hits.

@@ -1161,6 +1161,19 @@ async function refreshGitHubReleases(): Promise<GitHubRelease[]> {
   }
 }
 
+/** E2E launches set `NODE_ENV=production` so the app boots its production
+ *  paths, which leaves the GitHub release reads live. The bootstrap already
+ *  skips `initAppUpdater` under `PWRSNAP_E2E=1`, but the `app:update:*` bus
+ *  verbs stay registered, and `settings:open` with no page mounts
+ *  Settings -> General, which reads the release list on mount. Every spinup
+ *  would spend from the 60-requests-per-hour anonymous GitHub budget that
+ *  the whole runner shares — and make the four channel slots depend on live
+ *  network state. The block sits at the one function every read funnels
+ *  through so no caller has to remember it. */
+function releaseReadsDisabled(): boolean {
+  return process.env.PWRSNAP_E2E === "1";
+}
+
 /**
  * Single owner of the GitHub release list. Every caller in main goes through
  * this cache, and the renderer only ever reads it over the command bus, so
@@ -1169,6 +1182,9 @@ async function refreshGitHubReleases(): Promise<GitHubRelease[]> {
 async function readGitHubReleases(
   maxAgeMs = APP_UPDATE_RELEASE_CACHE_TTL_MS
 ): Promise<GitHubRelease[]> {
+  if (releaseReadsDisabled()) {
+    return [];
+  }
   const now = Date.now();
   if (releaseCache && now - releaseCache.fetchedAt < maxAgeMs) {
     return releaseCache.releases;

@@ -528,5 +528,89 @@ describe("auto updater selection", () => {
       version: "1.0.1",
       downgrade: true
     });
+    // Stepping backward waits for the explicit Restart. Dismissing the
+    // banner hides the notice; it must not leave a silent downgrade armed
+    // for the next quit.
+    expect(mocks.autoUpdater.autoInstallOnAppQuit).toBe(false);
+  });
+
+  test("still arms an ordinary downloaded update for install on quit", async () => {
+    mocks.resolveSelection.mockReturnValue({ channel: "latest", train: "stable" });
+    mocks.autoUpdater.currentVersion = { version: "1.0.0" };
+    mockGitHubReleases([githubRelease("v1.0.1")]);
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({
+      updateInfo: { version: "1.0.1" }
+    });
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
+    updater.initAppUpdater();
+    await vi.waitFor(() => {
+      expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+    });
+
+    mocks.emit("update-downloaded", { version: "1.0.1" });
+    expect(updater.readAppUpdateStatus()).toEqual({
+      status: "downloaded",
+      version: "1.0.1"
+    });
+    expect(mocks.autoUpdater.autoInstallOnAppQuit).toBe(true);
+  });
+
+  test("ignores a release whose tag does not parse as semver", async () => {
+    mocks.resolveSelection.mockReturnValue({ channel: "latest", train: "stable" });
+    mocks.autoUpdater.currentVersion = { version: "1.0.1" };
+    // Unparseable tags sort below every valid version, so a naive `< 0`
+    // would read this as "the selected slot is behind us" and try to
+    // install it.
+    mockGitHubReleases([githubRelease("latest-build")]);
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
+
+    await expect(updater.checkForAppUpdatesNow("manual")).resolves.toEqual({
+      status: "no-update",
+      version: "1.0.1"
+    });
+    expect(mocks.autoUpdater.allowDowngrade).toBe(false);
+    expect(mocks.autoUpdater.setFeedURL).not.toHaveBeenCalled();
+    expect(mocks.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  test("pages past the first page until the GitHub Latest tag is reached", async () => {
+    mocks.autoUpdater.currentVersion = { version: "1.0.0" };
+    mocks.resolveSelection.mockReturnValue({ channel: "prerelease", train: "stable" });
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({
+      updateInfo: { version: "1.0.2-prerelease.1" }
+    });
+    // 100 alphas fill page 1; the Stable Prerelease we must find sits on
+    // page 2, ahead of the Latest tag that terminates paging.
+    const firstPage = Array.from({ length: 100 }, (_, index) =>
+      githubRelease(`v1.1.0-alpha.${100 - index}`, { prerelease: true })
+    );
+    const secondPage = [
+      githubRelease("v1.0.2-prerelease.1", { prerelease: true }),
+      githubRelease("v1.0.1")
+    ];
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/releases/latest")) {
+        return { ok: true, json: async () => githubRelease("v1.0.1") };
+      }
+      const page = Number(new URL(url).searchParams.get("page") ?? "1");
+      return {
+        ok: true,
+        json: async () => (page === 1 ? firstPage : page === 2 ? secondPage : [])
+      };
+    });
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
+
+    await expect(updater.checkForAppUpdatesNow("manual")).resolves.toEqual({
+      status: "available",
+      version: "1.0.2-prerelease.1"
+    });
+    expect(mocks.autoUpdater.setFeedURL).toHaveBeenCalledWith({
+      provider: "generic",
+      url: "https://github.com/pwrdrvr/PwrSnap/releases/download/v1.0.2-prerelease.1/"
+    });
   });
 });

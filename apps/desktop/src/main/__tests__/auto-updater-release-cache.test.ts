@@ -292,6 +292,39 @@ describe("auto updater release cache", () => {
     expect(recovered.stable.latest.version).toBe(STABLE_TAG);
   });
 
+  // Losing the `/latest` terminator is expensive: the pager keeps walking
+  // until a short page, so a full first page costs RELEASE_MAX_PAGES (10)
+  // requests from the budget this cache exists to protect.
+  test("falls back to the cached latest tag when /releases/latest fails", async () => {
+    const updater = await importAutoUpdater();
+
+    await updater.readAppUpdateReleaseVersions();
+    const callsAfterWarmup = fetchMock.mock.calls.length;
+
+    // A full first page, so only the latest tag can stop the walk.
+    const fullPage = [
+      ...Array.from({ length: 99 }, (_, index) =>
+        githubRelease(`v1.1.0-alpha.${99 - index}`, true)
+      ),
+      githubRelease(STABLE_TAG)
+    ];
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/releases/latest")) {
+        return githubResponse({ message: "boom" }, { status: 500 });
+      }
+      return githubResponse(fullPage, { headers: { etag: 'W/"page1-moved"' } });
+    });
+    await vi.advanceTimersByTimeAsync(updater.APP_UPDATE_RELEASE_CACHE_TTL_MS + 1);
+
+    const versions = await updater.readAppUpdateReleaseVersions();
+
+    // `/releases/latest` + page 1 only — the cached tag still terminates the
+    // walk. Without the fallback this pages to RELEASE_MAX_PAGES.
+    expect(fetchMock.mock.calls.length).toBe(callsAfterWarmup + 2);
+    expect(versions.stable.latest.version).toBe(STABLE_TAG);
+  });
+
   // E2E launches set NODE_ENV=production, so the production gate is open and
   // these reads would be real network calls. `settings:open` with no page
   // mounts Settings -> General, which reads the release list on mount.

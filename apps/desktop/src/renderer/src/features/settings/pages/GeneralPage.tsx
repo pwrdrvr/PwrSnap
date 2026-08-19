@@ -305,6 +305,13 @@ export function GeneralPage(): ReactElement {
       }
       setUpdateResult(result.value);
       setUpdateStatus(result.value);
+      // The check just revalidated main's release cache, so this read is
+      // served from memory and costs no GitHub request. It clears any stale
+      // Unavailable slot labels left by an earlier failed read.
+      const versions = await dispatch("app:update:releases", {});
+      if (versions.ok) {
+        setReleaseVersions(versions.value);
+      }
     } finally {
       setUpdateChecking(false);
     }

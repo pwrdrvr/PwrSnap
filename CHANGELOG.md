@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.3 - 2026-08-19
+
+- Update Checks - Fixed update checks that stopped working after the app asked GitHub for the release list too many times. PwrSnap now reuses a recent answer instead of asking again, and when GitHub does turn it away, it says when checks will start working again rather than showing an error that looked like a sign-in problem.
+- Settings General - Fixed the Stable/Beta and Latest/Prerelease version labels staying stuck on "Unavailable" after a failed check, so a manual check now fills them back in.
+- Installer - Improved the macOS DMG window background so the PwrSnap wordmark sits on a near-black pill matching the app's titlebar, keeping the brand accent reading the same in the installer as it does in the app.
+
 ## v1.0.2 - 2026-08-18
 
 - Updates - Added Stable/Beta channel and Latest/Prerelease track selection, so update checks follow the release path you choose and manual checks can safely return an app installed from the wrong channel.

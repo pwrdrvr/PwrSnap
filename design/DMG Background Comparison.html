@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DMG backgrounds — PwrAgent vs PwrSnap</title>
+<link rel="stylesheet" href="ds/colors_and_type.css">
+<style>
+:root{--ink:#f5efe3;--ink-2:#a89e91;--ink-3:#6f665c;--line:#241f19;--panel:#0d0c0a}
+*{box-sizing:border-box}
+html,body{margin:0;background:#000;color:var(--ink);font-family:Geist,"Geist Sans",system-ui,sans-serif}
+a{color:#ff8a1f}a:hover{color:#ffa552}
+.wrap{max-width:1500px;margin:0 auto;padding:48px 40px 90px}
+h1{font-size:24px;font-weight:600;letter-spacing:-.02em;margin:0 0 8px}
+.sub{color:var(--ink-2);font-size:14px;line-height:1.55;max-width:82ch;margin:0 0 4px}
+.mono{font-family:"Geist Mono",ui-monospace,monospace}
+.kicker{font:600 10px/1 "Geist Mono",monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);margin:44px 0 14px;display:flex;align-items:center;gap:12px}
+.kicker::after{content:"";flex:1;height:1px;background:var(--line)}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+.hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:12px}
+.name{font:600 12px/1 "Geist Mono",monospace;letter-spacing:.02em}
+.chip{font:600 9px/1 "Geist Mono",monospace;letter-spacing:.08em;padding:5px 8px;border-radius:4px;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);color:var(--ink-2)}
+.sw{width:9px;height:9px;border-radius:2px;display:inline-block}
+img{display:block;width:100%;height:auto;border-radius:6px;border:1px solid var(--line)}
+.zoomrow{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+canvas{display:block;width:100%;height:auto;border-radius:6px;border:1px solid var(--line);image-rendering:pixelated}
+.tbl{border-collapse:collapse;margin-top:8px;font-size:12.5px;width:100%;max-width:900px}
+.tbl th{text-align:left;font:600 9px/1 "Geist Mono",monospace;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);padding:0 20px 10px 0;border-bottom:1px solid var(--line)}
+.tbl td{padding:9px 20px 9px 0;border-bottom:1px solid var(--line);color:var(--ink-2)}
+.tbl td.m{font-family:"Geist Mono",monospace;color:var(--ink)}
+.tbl tr.hi td{color:var(--ink);background:rgba(255,138,31,.05)}
+.tbl .sw{margin-right:7px;vertical-align:-1px}
+.note{color:var(--ink-2);font-size:13.5px;line-height:1.7;max-width:84ch;margin:16px 0 0}
+.note b{color:var(--ink);font-weight:500}
+code{font-family:"Geist Mono",monospace;font-size:12.5px;color:#ffb877;background:rgba(255,138,31,.07);padding:1px 5px;border-radius:3px}
+.three{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;max-width:760px;margin-top:6px}
+.tone{border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.tone .bar{height:74px}
+.tone .lbl{padding:11px 12px;font-size:12px;line-height:1.45;color:var(--ink-2)}
+.tone .lbl b{display:block;font-family:"Geist Mono",monospace;color:var(--ink);font-size:12.5px;font-weight:500;margin-bottom:3px}
+.gl{margin-bottom:14px}
+.gl img{border-radius:5px}
+.gl .meta{display:flex;justify-content:space-between;align-items:center;gap:14px;font-size:12px;color:var(--ink-2);padding:8px 2px 0}
+.gl .v{font-family:"Geist Mono",monospace;color:var(--ink);display:inline-flex;align-items:center;gap:7px}
+.demo{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;max-width:1000px}
+.dcell{border:1px solid var(--line);border-radius:9px;overflow:hidden;text-align:center}
+.dword{font-weight:700;letter-spacing:-.03em;color:#f9f5ef;padding:30px 0 22px}
+.dbar{height:34px}
+.dlab{font-size:11.5px;color:var(--ink-2);padding:11px 12px;background:var(--panel);border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>DMG backgrounds, side by side</h1>
+<p class="sub">Both shipped PNGs, 660×400, at full size. Every neutral is pixel-identical — same page white, same pill, same wordmark white, same greys, same geometry down to matching pixel counts. The wordmark accent is the one thing that differs.</p>
+<p class="sub" style="margin-top:10px">Measured across every PwrSnap surface — installer, app titlebar, marketing site — the wordmark is <span class="mono">#ff8a1f</span>. The single outlier in the whole suite is PwrAgent's installer.</p>
+
+<div class="kicker">shipped · full size</div>
+<div class="pair">
+  <div class="card">
+    <div class="hdr"><span class="name">pwrdrvr/PwrAgent</span><span class="chip"><i class="sw" style="background:#ef714a"></i>#ef714a</span></div>
+    <img src="scratch/pwragent-dmg.png" alt="PwrAgent DMG background">
+  </div>
+  <div class="card">
+    <div class="hdr"><span class="name">pwrdrvr/PwrSnap</span><span class="chip"><i class="sw" style="background:#ff8a1f"></i>#ff8a1f</span></div>
+    <img src="scratch/pwrsnap-dmg.png" alt="PwrSnap DMG background">
+  </div>
+</div>
+
+<div class="kicker">the wordmark · 3×</div>
+<div class="zoomrow">
+  <canvas id="z-agent" width="1020" height="330"></canvas>
+  <canvas id="z-snap" width="1020" height="330"></canvas>
+</div>
+
+<div class="kicker">proof · DMG and app, same screen</div>
+<p class="sub" style="margin-bottom:16px">Sampled straight out of your two screenshots — the DMG wordmark, the DMG arrow, and the running app's titlebar wordmark, in each product.</p>
+<div class="pair">
+  <div class="card">
+    <div class="hdr"><span class="name">PwrSnap</span><span class="chip" style="color:#7ee08f;border-color:rgba(40,200,64,.24)">all three agree</span></div>
+    <img src="uploads/PwrSnap-finder-high.png" alt="PwrSnap DMG and app window">
+    <table class="tbl" style="margin-top:14px">
+      <tr><td>DMG wordmark</td><td class="m"><i class="sw" style="background:#ff8a1f"></i>#ff8a20</td></tr>
+      <tr><td>DMG arrow</td><td class="m"><i class="sw" style="background:#ff8a1f"></i>#ff8a20</td></tr>
+      <tr><td>app titlebar wordmark</td><td class="m"><i class="sw" style="background:#ff8a1f"></i>#ff8a20</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <div class="hdr"><span class="name">PwrAgent</span><span class="chip" style="color:#ff8b7a;border-color:rgba(255,95,87,.24)">DMG ≠ its own app</span></div>
+    <img src="uploads/PwrSnap-finder-high-a57e045a.png" alt="PwrAgent DMG and app window">
+    <table class="tbl" style="margin-top:14px">
+      <tr class="hi"><td>DMG wordmark</td><td class="m"><i class="sw" style="background:#ef714a"></i>#ef714a</td></tr>
+      <tr class="hi"><td>DMG arrow</td><td class="m"><i class="sw" style="background:#ef714a"></i>#ef714a</td></tr>
+      <tr><td>app titlebar wordmark</td><td class="m"><i class="sw" style="background:#ff8a1f"></i>#ff8a20</td></tr>
+    </table>
+  </div>
+</div>
+<p class="note">PwrAgent's installer and PwrAgent's own titlebar disagree with each other, in the same screenshot. Nothing was ever chosen here — the DMG is just carrying a bug.</p>
+
+<div class="kicker">glyph pixels · magnified from your screenshots</div>
+<p class="sub" style="margin-bottom:16px">Nearest-neighbour crops, no resampling, with the measured core colour of each. Every fully-covered glyph pixel — the brightest, most common value in the run. The site's <span class="mono">#ff8b20</span> is <span class="mono">#ff8a1f</span> plus one step of capture compression noise; its Download button fill measures the same.</p>
+<div class="pair">
+  <div class="card">
+    <div class="hdr"><span class="name">PwrSnap</span><span class="chip" style="color:#7ee08f;border-color:rgba(40,200,64,.24)">same value</span></div>
+    <div class="gl"><img src="scratch/x-snap-dmg.png" alt="PwrSnap DMG wordmark magnified"><div class="meta"><span>DMG · 40pt on <span class="mono">#292929</span> pill</span><span class="v"><i class="sw" style="background:#ff8a20"></i>#ff8a20</span></div></div>
+    <div class="gl"><img src="scratch/x-snap-title.png" alt="PwrSnap titlebar wordmark magnified"><div class="meta"><span>titlebar · 15px on <span class="mono">#0a0a0a</span></span><span class="v"><i class="sw" style="background:#ff8a20"></i>#ff8a20</span></div></div>
+    <div class="gl"><img src="scratch/x-site-hero.png" alt="pwrsnap.com hero wordmark magnified"><div class="meta"><span>pwrsnap.com hero · 72px on <span class="mono">#000000</span></span><span class="v"><i class="sw" style="background:#ff8b20"></i>#ff8b20</span></div></div>
+  </div>
+  <div class="card">
+    <div class="hdr"><span class="name">PwrAgent</span><span class="chip" style="color:#ff8b7a;border-color:rgba(255,95,87,.24)">different value</span></div>
+    <div class="gl"><img src="scratch/x-agent-dmg.png" alt="PwrAgent DMG wordmark magnified"><div class="meta"><span>DMG · 40pt on <span class="mono">#292929</span> pill</span><span class="v"><i class="sw" style="background:#ef714a"></i>#ef714a</span></div></div>
+    <div class="gl"><img src="scratch/x-agent-title.png" alt="PwrAgent titlebar wordmark magnified"><div class="meta"><span>titlebar · 15px on <span class="mono">#0a0a0a</span></span><span class="v"><i class="sw" style="background:#ff8a20"></i>#ff8a20</span></div></div>
+    <p class="note" style="margin-top:18px">Salmon in the installer, tangerine in the titlebar — one product, two oranges, visible in a single screenshot.</p>
+  </div>
+</div>
+
+<div class="kicker">why PwrSnap's two look different anyway</div>
+<p class="sub" style="margin-bottom:16px">They are the same hex. What changes is what sits behind them and how thick the strokes are — a lighter surround and heavier glyphs read duller; near-black and thin strokes read hotter. Both blocks below are <span class="mono">#ff8a1f</span>, untouched.</p>
+<div class="demo">
+  <div class="dcell" style="background:#292929">
+    <div class="dword" style="font-size:44px">Pwr<span style="color:#ff8a1f">Snap</span></div>
+    <div class="dbar" style="background:#ff8a1f"></div>
+    <div class="dlab">on the DMG pill — <span class="mono">#292929</span></div>
+  </div>
+  <div class="dcell" style="background:#0a0a0a">
+    <div class="dword" style="font-size:44px">Pwr<span style="color:#ff8a1f">Snap</span></div>
+    <div class="dbar" style="background:#ff8a1f"></div>
+    <div class="dlab">on the titlebar — <span class="mono">#0a0a0a</span></div>
+  </div>
+  <div class="dcell" style="background:#0a0a0a">
+    <div class="dword" style="font-size:17px;padding:16px 0 15px">Pwr<span style="color:#ff8a1f">Snap</span></div>
+    <div class="dbar" style="background:#ff8a1f"></div>
+    <div class="dlab">titlebar, actual size — thin strokes read hotter</div>
+  </div>
+</div>
+
+<div class="kicker">three oranges, and only two are real</div>
+<div class="three">
+  <div class="tone"><div class="bar" style="background:#ff8a1f"></div><div class="lbl"><b>#ff8a1f</b>wordmark + all in-app UI accent. The <span class="mono">--accent</span> token, in both products.</div></div>
+  <div class="tone"><div class="bar" style="background:#e8743a"></div><div class="lbl"><b>#e8743a</b>macOS app icon only. Both products. Deliberately deeper.</div></div>
+  <div class="tone"><div class="bar" style="background:#ef714a"></div><div class="lbl"><b>#ef714a</b>PwrAgent's DMG wordmark. Belongs to nothing — a <span class="mono">calibratedRGB</span> drift.</div></div>
+</div>
+
+<table class="tbl">
+  <tr><th>sampled from the shipped PNGs</th><th>PwrAgent</th><th>PwrSnap</th><th></th></tr>
+  <tr><td>page background</td><td class="m"><i class="sw" style="background:#f8f8f8"></i>#f8f8f8 ×226,052</td><td class="m"><i class="sw" style="background:#f8f8f8"></i>#f8f8f8 ×226,052</td><td>identical</td></tr>
+  <tr><td>pill</td><td class="m"><i class="sw" style="background:#292929"></i>#292929</td><td class="m"><i class="sw" style="background:#292929"></i>#292929</td><td>identical</td></tr>
+  <tr><td>wordmark “Pwr”</td><td class="m"><i class="sw" style="background:#f9f5ef"></i>#f9f5ef</td><td class="m"><i class="sw" style="background:#f9f5ef"></i>#f9f5ef</td><td>identical</td></tr>
+  <tr><td>subtitle / hint greys</td><td class="m">#9e978d · #868686</td><td class="m">#9e978d · #868686</td><td>identical</td></tr>
+  <tr class="hi"><td>wordmark accent + arrow</td><td class="m"><i class="sw" style="background:#ef714a"></i>#ef714a</td><td class="m"><i class="sw" style="background:#ff8a1f"></i>#ff8a1f</td><td>the only difference</td></tr>
+</table>
+
+<p class="note"><b>PwrSnap is the correct one.</b> Its DMG draws the wordmark in <code>#ff8a1f</code> — the same <span class="mono">--accent</span> the in-app wordmark uses, pinned in <code>deviceRGB</code> so the pixels land exactly. PwrAgent's DMG is coded <code>NSColor(calibratedRed: 0.910, 0.353, 0.227)</code>, intending <code>#E85A3A</code>, and the calibrated→device conversion pushes it out to <code>#ef714a</code>. So PwrAgent's DMG wordmark is neither its own UI accent nor the app-icon orange — it's a third value that came from a bug, twice over (wrong source colour <em>and</em> wrong colour space).</p>
+<p class="note">The claim in <span class="mono">docs/solutions/2026-05-31-brand-oranges-and-app-icon.md</span> that this divergence was deliberate — “PwrSnap's DMG is intentionally tighter than PwrAgent's here” — is wrong and should be struck. It documents a bug as a decision.</p>
+<p class="note">Fix belongs in <span class="mono">PwrAgent/apps/desktop/scripts/generate-dmg-background.swift</span>: <code>accent</code> and <code>arrowShaft</code> → <code>NSColor(deviceRed: 255/255, green: 138/255, blue: 31/255, alpha: 1)</code>, then regenerate <span class="mono">build/dmg-background.png</span>. That lands both DMGs on <code>#ff8a1f</code> and nothing else moves.</p>
+
+<template id="__bundler_thumbnail">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#f8f8f8"/><rect x="18" y="30" width="64" height="30" rx="7" fill="#292929"/><rect x="26" y="41" width="22" height="8" rx="2" fill="#f9f5ef"/><rect x="51" y="41" width="24" height="8" rx="2" fill="#ff8a1f"/></svg>
+</template>
+
+<script>
+function zoom(id,src,sx,sy,sw){
+  const cv=document.getElementById(id),ctx=cv.getContext("2d"),img=new Image();
+  img.onload=()=>{ctx.imageSmoothingEnabled=false;ctx.fillStyle="#f8f8f8";ctx.fillRect(0,0,cv.width,cv.height);
+    ctx.drawImage(img,sx,sy,sw,sw*cv.height/cv.width,0,0,cv.width,cv.height)};
+  img.src=src;
+}
+zoom("z-agent","scratch/pwragent-dmg.png",160,20,340);
+zoom("z-snap","scratch/pwrsnap-dmg.png",160,20,340);
+</script>
+</div>
+</body>
+</html>

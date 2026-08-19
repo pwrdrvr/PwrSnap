@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.2 - 2026-08-18
+
+- Updates - Added Stable/Beta channel and Latest/Prerelease track selection, so update checks follow the release path you choose and manual checks can safely return an app installed from the wrong channel.
+- AI Experience - Updated AI consent, chat, and capture-enrichment language to accurately describe the configured AI provider.
+
 ## v1.0.1 - 2026-08-18
 
 - Library Toolbar - Fixed capture controls and window-chrome spacing so the Library stays usable at narrow widths and with the Windows system menu enabled.

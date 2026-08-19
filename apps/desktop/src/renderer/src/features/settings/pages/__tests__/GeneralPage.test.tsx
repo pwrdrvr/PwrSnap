@@ -339,6 +339,27 @@ describe("GeneralPage — updates", () => {
     });
   });
 
+  // The track control indexes by the selected train; the train control has
+  // to index by the selected track the same way, or it advertises a version
+  // that picking that train would not resolve to.
+  test("labels each train with the slot the selected track resolves to", async () => {
+    await renderGeneral(
+      { ...baseSettings, updates: { channel: "prerelease", train: "stable" } },
+      healthyStatus
+    );
+    const trainButton = (label: string): HTMLButtonElement | undefined =>
+      Array.from(container!.querySelectorAll("button")).find((el) =>
+        el.textContent?.startsWith(label)
+      );
+
+    expect(trainButton("Stable")?.textContent).toContain("v1.2.4-prerelease.1");
+    expect(trainButton("Stable")?.textContent).not.toContain("v1.2.3");
+    // beta.prerelease is unavailable in the fixture even though
+    // beta.latest is v1.3.0-beta.2.
+    expect(trainButton("Beta")?.textContent).toContain("Unavailable");
+    expect(trainButton("Beta")?.textContent).not.toContain("v1.3.0-beta.2");
+  });
+
   test("keeps Beta selectable when its slots are unavailable", async () => {
     await renderGeneral(baseSettings, healthyStatus);
     const beta = Array.from(container!.querySelectorAll("button")).find(

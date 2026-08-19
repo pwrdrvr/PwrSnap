@@ -424,8 +424,13 @@ function downloadedOrFailedMatchesSelection(
 }
 
 function syncAutoInstallOnAppQuit(updateSelection: UpdateSelectionKey): void {
+  const matching = downloadedUpdateMatchesSelection(updateSelection);
+  // Stepping the installed build BACKWARD is heavier than a forward update
+  // and the user only ever asked to see what was available. Hold it for the
+  // explicit Restart in the banner rather than applying it on the next quit
+  // — dismissing that banner hides the notice, it does not decline the move.
   autoUpdater().autoInstallOnAppQuit =
-    downloadedUpdateMatchesSelection(updateSelection) !== undefined ||
+    (matching !== undefined && matching.downgrade !== true) ||
     heldDownloadedUpdate === undefined;
 }
 
@@ -527,7 +532,12 @@ export async function checkForAppUpdatesNow(
       }
       const selectedVersion = release.tag_name.replace(/^v/i, "");
       const selectedVersusCurrent = compareSemver(selectedVersion, currentVersion);
-      if (selectedVersusCurrent === 0) {
+      // `compareSemver` sorts an unparseable tag below every valid version,
+      // which would otherwise read as "the selected slot is behind us" and
+      // pin the feed to a tag we could not even parse.
+      const comparable =
+        parseSemver(selectedVersion) !== undefined && parseSemver(currentVersion) !== undefined;
+      if (selectedVersusCurrent === 0 || (selectedVersusCurrent < 0 && !comparable)) {
         const result = { status: "no-update", version: currentVersion } as const;
         setUpdateStatusUnlessActionable(result);
         log.info("skipping app update check; selected release is not newer", {
@@ -975,8 +985,11 @@ async function fetchGitHubReleases(signal?: AbortSignal): Promise<GitHubRelease[
         : [await latestPromise, await pagePromise];
     const pageReleases = asGitHubReleaseList(payload);
     for (const release of pageReleases) add(release);
+    // Test BEFORE folding `latest` in, or `add` seeds `seen` with the very
+    // tag we are looking for and the loop always breaks on page 1.
+    const reachedLatest = latest?.tag_name !== undefined && seen.has(latest.tag_name);
     add(latest);
-    if (latest?.tag_name && seen.has(latest.tag_name)) break;
+    if (reachedLatest) break;
     if (pageReleases.length < RELEASE_PAGE_SIZE) break;
   }
 

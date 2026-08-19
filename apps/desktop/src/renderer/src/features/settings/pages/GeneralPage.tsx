@@ -254,7 +254,10 @@ export function GeneralPage(): ReactElement {
       meta:
         releaseVersions === undefined
           ? "Loading..."
-          : releaseVersionText(releaseVersions[option.id].latest)
+          // Index by the selected track, the same way the track control
+          // indexes by the selected train. Showing `.latest` here labels a
+          // train with a version that selecting it would not resolve to.
+          : releaseVersionText(releaseVersions[option.id][channel])
     }));
   const updateChannelOptions: readonly SegmentOption<UpdateChannel>[] =
     UPDATE_CHANNEL_OPTIONS.map((option) => ({

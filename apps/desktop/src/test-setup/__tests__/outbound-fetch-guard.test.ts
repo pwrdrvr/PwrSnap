@@ -8,6 +8,14 @@
 // fails the test in `afterEach` — so a test that deliberately trips the guard
 // has to consume its own record, and asserting on what it drained is how the
 // test proves the recording half works.
+//
+// The blocked-request cases deliberately target the reserved `.invalid` TLD
+// (RFC 2606), never a real host. If the guard is ever not installed — someone
+// drops the `setupFiles` entry — these calls reach the real `fetch`, and a
+// test that named `api.github.com` would then spend a request from the very
+// quota the guard exists to protect, on every run, while reporting only a
+// failed assertion. An unresolvable host costs a DNS failure instead, and
+// exercises identical guard logic: non-loopback, `https:` scheme.
 import { describe, expect, test } from "vitest";
 
 type Attempt = { method: string; url: string };
@@ -21,22 +29,22 @@ function drainAttempts(): Attempt[] {
 
 describe("outbound fetch guard", () => {
   test("blocks and records an external request", () => {
-    expect(() => fetch("https://api.github.com/repos/pwrdrvr/PwrSnap/releases")).toThrow(
-      "GET https://api.github.com/repos/pwrdrvr/PwrSnap/releases"
+    expect(() => fetch("https://guard.invalid/repos/pwrdrvr/PwrSnap/releases")).toThrow(
+      "GET https://guard.invalid/repos/pwrdrvr/PwrSnap/releases"
     );
 
     expect(drainAttempts()).toEqual([
-      { method: "GET", url: "https://api.github.com/repos/pwrdrvr/PwrSnap/releases" }
+      { method: "GET", url: "https://guard.invalid/repos/pwrdrvr/PwrSnap/releases" }
     ]);
   });
 
   test("names the method and URL of a Request object", () => {
     expect(() =>
-      fetch(new Request("https://api.openai.com/v1/audio/speech", { method: "POST" }))
-    ).toThrow("POST https://api.openai.com/v1/audio/speech");
+      fetch(new Request("https://guard.invalid/v1/audio/speech", { method: "POST" }))
+    ).toThrow("POST https://guard.invalid/v1/audio/speech");
 
     expect(drainAttempts()).toEqual([
-      { method: "POST", url: "https://api.openai.com/v1/audio/speech" }
+      { method: "POST", url: "https://guard.invalid/v1/audio/speech" }
     ]);
   });
 

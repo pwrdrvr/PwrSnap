@@ -1101,12 +1101,17 @@ async function fetchGitHubReleases(signal?: AbortSignal): Promise<ReleaseListFet
     if (page === 1) {
       const [latest, firstPage] = await Promise.all([latestPromise, pagePromise]);
       pageResult = firstPage;
-      if (latest?.notModified === true) {
-        latestRelease = releaseCache?.latest;
-      } else if (latest !== undefined) {
+      if (latest !== undefined && !latest.notModified) {
         latestRelease = latest.release;
         if (latest.etag !== undefined) etags[GITHUB_LATEST_RELEASE_URL] = latest.etag;
       }
+      // Falls back to the cached tag on a 304, on a failed request, and on an
+      // unparseable body alike. Without a terminator the loop walks all
+      // RELEASE_MAX_PAGES pages — 10 requests from the very budget this cache
+      // exists to protect. The cached tag is a conservative stand-in: it is no
+      // newer than the true latest, so stopping there still collects
+      // everything newer than it.
+      latestRelease ??= releaseCache?.latest;
     } else {
       pageResult = await pagePromise;
     }

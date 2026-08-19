@@ -39,7 +39,12 @@ let geistBoldName = registerFont(at: geistBoldPath)
 
 struct Color {
   static let background = NSColor(calibratedRed: 0.965, green: 0.965, blue: 0.965, alpha: 1)
-  static let pillBackground = NSColor(calibratedRed: 0.12, green: 0.12, blue: 0.12, alpha: 1)
+  // Pill behind the wordmark — near-black #0a0a0a, matching the app's titlebar
+  // background. The wordmark accent is unchanged; the pill was previously
+  // #292929, and on that lighter field the same #ff8a1f read flatter than it
+  // does in the app. Pinned deviceRGB so the pixels land exactly (calibratedRGB
+  // drifts lighter — see docs/solutions/2026-05-31-brand-oranges-and-app-icon.md).
+  static let pillBackground = NSColor(deviceRed: 10 / 255.0, green: 10 / 255.0, blue: 10 / 255.0, alpha: 1)
   static let text = NSColor(calibratedRed: 0.969, green: 0.953, blue: 0.922, alpha: 1)
   static let muted = NSColor(calibratedRed: 0.549, green: 0.522, blue: 0.478, alpha: 1)
   // Brand tangerine — design system: #ff8a1f (rgb 255, 138, 31). Pinned in

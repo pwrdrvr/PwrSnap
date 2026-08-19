@@ -59,6 +59,13 @@ const RELEASE_PAGE_SIZE = 100;
 const RELEASE_MAX_PAGES = 10;
 const RELEASE_FETCH_TIMEOUT_MS = 5_000;
 export const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
+// The GitHub REST API allows 60 anonymous requests per hour per IP, shared by
+// every process on the machine, and one release read here costs at least two
+// of them (`/releases/latest` plus a page). Settings reads the release
+// versions on every mount, so main caches the list and serves those reads
+// from memory instead of spending requests each time.
+export const APP_UPDATE_RELEASE_CACHE_TTL_MS = 15 * 60 * 1_000;
+const RATE_LIMIT_FALLBACK_BACKOFF_MS = 15 * 60 * 1_000;
 const UPDATE_RETRY_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1_000;
 const MAC_UPDATE_CHANNEL_FILE = "latest-mac.yml";
 const WIN_UPDATE_CHANNEL_FILE = "latest.yml";
@@ -113,6 +120,21 @@ const pendingDowngradeVersions = new Set<string>();
  *  set with the version the event actually reported. */
 let downgradeCheckInFlight = false;
 let installAttemptStore: AppUpdateInstallAttemptStore | undefined;
+/** The one copy of the GitHub release list in main. `latest` is the
+ *  `/releases/latest` body kept beside the pages so a 304 on that endpoint
+ *  still yields the tag the pager terminates on. `etags` is keyed by request
+ *  URL. */
+type ReleaseCacheEntry = {
+  etags: Record<string, string>;
+  fetchedAt: number;
+  latest: GitHubRelease | undefined;
+  releases: GitHubRelease[];
+};
+let releaseCache: ReleaseCacheEntry | undefined;
+let releaseFetchInFlight: Promise<GitHubRelease[]> | undefined;
+/** Epoch ms at which GitHub said the anonymous quota refills. While set and
+ *  unreached, no further request is issued. */
+let rateLimitResetAt: number | undefined;
 const retryDownloadWaiters = new Set<{
   expectedVersion: string;
   resolve: (result: AppUpdateCheckResult) => void;
@@ -527,7 +549,13 @@ export async function checkForAppUpdatesNow(
         updateTrain: selection.train
       });
       configureAutoUpdaterChannel(selection);
-      const release = await readAppUpdateReleaseForSelection(selection);
+      const release = await readAppUpdateReleaseForSelection(
+        selection,
+        // A user-initiated check should not answer from a 15-minute-old
+        // cache. Revalidation rides the stored etag, so the usual answer is
+        // a 304, which GitHub does not charge against the rate limit.
+        isUserInitiatedTrigger(trigger) ? 0 : undefined
+      );
       const currentVersion = autoUpdater().currentVersion?.version ?? "unknown";
       if (!release?.tag_name) {
         const result = { status: "no-update", version: currentVersion } as const;
@@ -925,24 +953,78 @@ function releaseForSelection(
   return selection.channel === "prerelease" ? selected.stablePrerelease : selected.stableLatest;
 }
 
-function githubReleaseHeaders(): HeadersInit {
+function githubReleaseHeaders(etag?: string): HeadersInit {
   const token = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim();
   return {
     Accept: "application/vnd.github+json",
     "User-Agent": "PwrSnap",
-    ...(token ? { Authorization: `Bearer ${token}` } : {})
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    // A conditional request that answers 304 is not charged against the
+    // GitHub rate limit, so revalidating a cached list stays free while
+    // nothing new has shipped.
+    ...(etag ? { "If-None-Match": etag } : {})
   };
 }
 
-async function fetchGitHubJson(url: string, signal?: AbortSignal): Promise<unknown> {
+function readResponseHeader(response: Response, name: string): string | undefined {
+  return response.headers?.get?.(name) ?? undefined;
+}
+
+function rateLimitedError(resetAt: number): Error {
+  const resumesAt = new Date(resetAt).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit"
+  });
+  return new Error(`GitHub rate limit reached. Update checks resume at ${resumesAt}.`);
+}
+
+/** A bare 403 reads like an auth failure, but anonymously we are far more
+ *  likely to have spent the hourly quota. Record the reset time so later
+ *  reads back off instead of digging the hole deeper. */
+function releaseRequestError(response: Response): Error {
+  const status = response.status;
+  const rateLimited =
+    (status === 403 || status === 429) &&
+    readResponseHeader(response, "x-ratelimit-remaining") === "0";
+  if (!rateLimited) {
+    return new Error(`GitHub releases request failed with ${status}`);
+  }
+  const resetSeconds = Number(readResponseHeader(response, "x-ratelimit-reset"));
+  rateLimitResetAt =
+    Number.isFinite(resetSeconds) && resetSeconds > 0
+      ? resetSeconds * 1_000
+      : Date.now() + RATE_LIMIT_FALLBACK_BACKOFF_MS;
+  log.warn("GitHub release rate limit reached", {
+    resetAt: new Date(rateLimitResetAt).toISOString(),
+    status
+  });
+  return rateLimitedError(rateLimitResetAt);
+}
+
+type GitHubJsonResult =
+  | { notModified: true }
+  | { etag: string | undefined; notModified: false; payload: unknown };
+
+async function fetchGitHubJson(
+  url: string,
+  signal?: AbortSignal,
+  etag?: string
+): Promise<GitHubJsonResult> {
   const response = await fetch(url, {
-    headers: githubReleaseHeaders(),
+    headers: githubReleaseHeaders(etag),
     ...(signal ? { signal } : {})
   });
-  if (!response.ok) {
-    throw new Error(`GitHub releases request failed with ${response.status}`);
+  if (response.status === 304) {
+    return { notModified: true };
   }
-  return await response.json();
+  if (!response.ok) {
+    throw releaseRequestError(response);
+  }
+  return {
+    etag: readResponseHeader(response, "etag"),
+    notModified: false,
+    payload: await response.json()
+  };
 }
 
 function asGitHubRelease(value: unknown): GitHubRelease | undefined {
@@ -961,13 +1043,23 @@ function asGitHubReleaseList(value: unknown): GitHubRelease[] {
     : [];
 }
 
+type LatestReleaseResult =
+  | { notModified: true }
+  | { etag: string | undefined; notModified: false; release: GitHubRelease | undefined };
+
 // GitHub Latest is a separate endpoint because `/releases` is newest-first
 // and a long run of alpha/beta tags can push Stable Latest off the first
 // page. We also page until that Latest tag appears so Stable Prerelease
 // and Beta slots still see everything newer than it.
-async function fetchLatestGitHubRelease(signal?: AbortSignal): Promise<GitHubRelease | undefined> {
+async function fetchLatestGitHubRelease(
+  signal?: AbortSignal,
+  etag?: string
+): Promise<LatestReleaseResult | undefined> {
   try {
-    return asGitHubRelease(await fetchGitHubJson(GITHUB_LATEST_RELEASE_URL, signal));
+    const result = await fetchGitHubJson(GITHUB_LATEST_RELEASE_URL, signal, etag);
+    return result.notModified
+      ? result
+      : { etag: result.etag, notModified: false, release: asGitHubRelease(result.payload) };
   } catch {
     return undefined;
   }
@@ -977,8 +1069,19 @@ function releasesPageUrl(page: number): string {
   return `${GITHUB_RELEASES_URL}?per_page=${RELEASE_PAGE_SIZE}&page=${page}`;
 }
 
-async function fetchGitHubReleases(signal?: AbortSignal): Promise<GitHubRelease[]> {
-  const latestPromise = fetchLatestGitHubRelease(signal);
+type ReleaseListFetch =
+  | { notModified: true }
+  | {
+      etags: Record<string, string>;
+      latest: GitHubRelease | undefined;
+      notModified: false;
+      releases: GitHubRelease[];
+    };
+
+async function fetchGitHubReleases(signal?: AbortSignal): Promise<ReleaseListFetch> {
+  const cachedEtags = releaseCache?.etags ?? {};
+  const etags: Record<string, string> = { ...cachedEtags };
+  const latestPromise = fetchLatestGitHubRelease(signal, cachedEtags[GITHUB_LATEST_RELEASE_URL]);
   const collected: GitHubRelease[] = [];
   const seen = new Set<string>();
   const add = (release: GitHubRelease | undefined): void => {
@@ -986,48 +1089,136 @@ async function fetchGitHubReleases(signal?: AbortSignal): Promise<GitHubRelease[
     seen.add(release.tag_name);
     collected.push(release);
   };
+  let latestRelease: GitHubRelease | undefined;
 
   for (let page = 1; page <= RELEASE_MAX_PAGES; page++) {
-    const pagePromise = fetchGitHubJson(releasesPageUrl(page), signal);
-    const [latest, payload] =
-      page === 1
-        ? await Promise.all([latestPromise, pagePromise])
-        : [await latestPromise, await pagePromise];
-    const pageReleases = asGitHubReleaseList(payload);
+    const url = releasesPageUrl(page);
+    // Only page 1 is revalidated conditionally. Pages past it are only ever
+    // requested when the newest page moved, so a conditional request there
+    // would answer 200 anyway.
+    const pagePromise = fetchGitHubJson(url, signal, page === 1 ? cachedEtags[url] : undefined);
+    let pageResult: GitHubJsonResult;
+    if (page === 1) {
+      const [latest, firstPage] = await Promise.all([latestPromise, pagePromise]);
+      pageResult = firstPage;
+      if (latest?.notModified === true) {
+        latestRelease = releaseCache?.latest;
+      } else if (latest !== undefined) {
+        latestRelease = latest.release;
+        if (latest.etag !== undefined) etags[GITHUB_LATEST_RELEASE_URL] = latest.etag;
+      }
+    } else {
+      pageResult = await pagePromise;
+    }
+
+    if (pageResult.notModified) {
+      // The newest page is unchanged, so every older page is too — the whole
+      // cached list still stands. (Only reachable with a cache to stand on,
+      // since the etag that earns the 304 comes from one.)
+      if (releaseCache) return { notModified: true };
+      break;
+    }
+    if (pageResult.etag !== undefined) etags[url] = pageResult.etag;
+
+    const pageReleases = asGitHubReleaseList(pageResult.payload);
     for (const release of pageReleases) add(release);
     // Test BEFORE folding `latest` in, or `add` seeds `seen` with the very
     // tag we are looking for and the loop always breaks on page 1.
-    const reachedLatest = latest?.tag_name !== undefined && seen.has(latest.tag_name);
-    add(latest);
+    const reachedLatest = latestRelease?.tag_name !== undefined && seen.has(latestRelease.tag_name);
+    add(latestRelease);
     if (reachedLatest) break;
     if (pageReleases.length < RELEASE_PAGE_SIZE) break;
   }
 
-  add(await latestPromise);
-  return collected;
+  add(latestRelease);
+  return { etags, latest: latestRelease, notModified: false, releases: collected };
 }
 
-async function readAppUpdateReleaseForSelection(
-  selection: UpdateSelection
-): Promise<GitHubRelease | undefined> {
+async function refreshGitHubReleases(): Promise<GitHubRelease[]> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), RELEASE_FETCH_TIMEOUT_MS);
   try {
-    const releases = await fetchGitHubReleases(controller.signal);
-    return releaseForSelection(selectAppUpdateReleases(releases), selection);
+    const result = await fetchGitHubReleases(controller.signal);
+    if (result.notModified) {
+      const cached = releaseCache;
+      if (cached) {
+        releaseCache = { ...cached, fetchedAt: Date.now() };
+        rateLimitResetAt = undefined;
+        return cached.releases;
+      }
+      return [];
+    }
+    releaseCache = {
+      etags: result.etags,
+      fetchedAt: Date.now(),
+      latest: result.latest,
+      releases: result.releases
+    };
+    rateLimitResetAt = undefined;
+    return result.releases;
   } finally {
     clearTimeout(timeout);
   }
 }
 
+/** E2E launches set `NODE_ENV=production` so the app boots its production
+ *  paths, which leaves the GitHub release reads live. The bootstrap already
+ *  skips `initAppUpdater` under `PWRSNAP_E2E=1`, but the `app:update:*` bus
+ *  verbs stay registered, and `settings:open` with no page mounts
+ *  Settings -> General, which reads the release list on mount. Every spinup
+ *  would spend from the 60-requests-per-hour anonymous GitHub budget that
+ *  the whole runner shares — and make the four channel slots depend on live
+ *  network state. The block sits at the one function every read funnels
+ *  through so no caller has to remember it. */
+function releaseReadsDisabled(): boolean {
+  return process.env.PWRSNAP_E2E === "1";
+}
+
+/**
+ * Single owner of the GitHub release list. Every caller in main goes through
+ * this cache, and the renderer only ever reads it over the command bus, so
+ * opening Settings costs no network request.
+ */
+async function readGitHubReleases(
+  maxAgeMs = APP_UPDATE_RELEASE_CACHE_TTL_MS
+): Promise<GitHubRelease[]> {
+  if (releaseReadsDisabled()) {
+    return [];
+  }
+  const now = Date.now();
+  if (releaseCache && now - releaseCache.fetchedAt < maxAgeMs) {
+    return releaseCache.releases;
+  }
+  if (rateLimitResetAt !== undefined && now < rateLimitResetAt) {
+    // Spending a request GitHub will only reject deepens the hole. Serve the
+    // last good list when we have one.
+    if (releaseCache) {
+      return releaseCache.releases;
+    }
+    throw rateLimitedError(rateLimitResetAt);
+  }
+  if (!releaseFetchInFlight) {
+    releaseFetchInFlight = refreshGitHubReleases().finally(() => {
+      releaseFetchInFlight = undefined;
+    });
+  }
+  return await releaseFetchInFlight;
+}
+
+async function readAppUpdateReleaseForSelection(
+  selection: UpdateSelection,
+  maxAgeMs?: number
+): Promise<GitHubRelease | undefined> {
+  const releases = await readGitHubReleases(maxAgeMs);
+  return releaseForSelection(selectAppUpdateReleases(releases), selection);
+}
+
 export async function readAppUpdateReleaseVersions(): Promise<AppUpdateReleaseVersions> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), RELEASE_FETCH_TIMEOUT_MS);
   try {
-    const releases = await fetchGitHubReleases(controller.signal);
+    const releases = await readGitHubReleases();
     const selected = selectAppUpdateReleases(releases);
     return {
-      fetchedAt: Date.now(),
+      fetchedAt: releaseCache?.fetchedAt ?? Date.now(),
       stable: {
         latest: releaseInfoFromGitHubRelease(
           selected.stableLatest,
@@ -1054,8 +1245,6 @@ export async function readAppUpdateReleaseVersions(): Promise<AppUpdateReleaseVe
       stable: { latest: unavailable, prerelease: unavailable },
       beta: { latest: unavailable, prerelease: unavailable }
     };
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -1229,4 +1418,7 @@ export function disposeAutoUpdater(): void {
     clearTimeout(waiter.timer);
   }
   retryDownloadWaiters.clear();
+  releaseCache = undefined;
+  releaseFetchInFlight = undefined;
+  rateLimitResetAt = undefined;
 }

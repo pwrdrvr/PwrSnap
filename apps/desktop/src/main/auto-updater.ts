@@ -104,6 +104,14 @@ const pendingDownloadSelectionsByVersion = new Map<string, UpdateSelectionKey>()
  *  as a switch rather than an update. Keyed by version because that is all
  *  those events carry. */
 const pendingDowngradeVersions = new Set<string>();
+/** True while a check that decided "the selected slot is behind us" is still
+ *  running. The version keys above come from the release TAG, while the
+ *  events carry the version electron-updater read out of the channel file;
+ *  if those ever drift, the lookup misses and a downgrade would be re-armed
+ *  for silent install on quit. The in-flight flag is the authoritative
+ *  answer for the window in which `update-available` fires, and seeds the
+ *  set with the version the event actually reported. */
+let downgradeCheckInFlight = false;
 let installAttemptStore: AppUpdateInstallAttemptStore | undefined;
 const retryDownloadWaiters = new Set<{
   expectedVersion: string;
@@ -343,6 +351,7 @@ function configureAutoUpdaterChannel(selection: UpdateSelection = currentUpdateS
  *  has no path back to the train they picked. */
 function allowAutoUpdaterDowngrade(selectedVersion: string): void {
   autoUpdater().allowDowngrade = true;
+  downgradeCheckInFlight = true;
   pendingDowngradeVersions.add(selectedVersion);
 }
 
@@ -612,6 +621,7 @@ export async function checkForAppUpdatesNow(
       });
       return errResult;
     } finally {
+      downgradeCheckInFlight = false;
       updateCheckSelectionInFlight = undefined;
       updateCheckInFlight = undefined;
     }
@@ -1142,10 +1152,14 @@ export function initAppUpdater(): void {
   autoUpdater().on("update-available", (info) => {
     log.info("update-available", { version: info.version });
     recordPendingDownloadSelection(info.version, updateCheckSelectionInFlight);
+    const isDowngrade = downgradeCheckInFlight || pendingDowngradeVersions.has(info.version);
+    // Re-key on what the event actually reported so `update-downloaded`,
+    // which lands well after the check has finished, still sees it.
+    if (isDowngrade && info.version) pendingDowngradeVersions.add(info.version);
     setUpdateStatus({
       status: "available",
       version: info.version,
-      ...(pendingDowngradeVersions.has(info.version) ? ({ downgrade: true } as const) : {})
+      ...(isDowngrade ? ({ downgrade: true } as const) : {})
     });
   });
   autoUpdater().on("update-not-available", (info) => {
@@ -1210,6 +1224,7 @@ export function disposeAutoUpdater(): void {
   heldInstallFailed = undefined;
   pendingDownloadSelectionsByVersion.clear();
   pendingDowngradeVersions.clear();
+  downgradeCheckInFlight = false;
   for (const waiter of retryDownloadWaiters) {
     clearTimeout(waiter.timer);
   }

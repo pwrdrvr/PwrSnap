@@ -534,6 +534,44 @@ describe("auto updater selection", () => {
     expect(mocks.autoUpdater.autoInstallOnAppQuit).toBe(false);
   });
 
+  // The version keys come from the release tag; the events carry whatever
+  // electron-updater read out of the channel file. If those drift, a
+  // version-keyed lookup misses and the downgrade silently re-arms itself
+  // for install on quit — it has to fail closed, not open.
+  test("marks the switch even when the reported version differs from the tag", async () => {
+    mocks.resolveSelection.mockReturnValue({ channel: "latest", train: "stable" });
+    mocks.autoUpdater.currentVersion = { version: "1.1.0-alpha.2" };
+    mockGitHubReleases([
+      githubRelease("v1.1.0-alpha.2", { prerelease: true }),
+      githubRelease("v1.0.1")
+    ]);
+    mocks.autoUpdater.checkForUpdates.mockImplementation(async () => {
+      mocks.emit("update-available", { version: "1.0.1+win" });
+      return { updateInfo: { version: "1.0.1+win" } };
+    });
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
+    updater.initAppUpdater();
+    await vi.waitFor(() => {
+      expect(updater.readAppUpdateStatus().status).toBe("no-update");
+    });
+
+    await updater.checkForAppUpdatesNow("manual");
+    expect(updater.readAppUpdateStatus()).toEqual({
+      status: "available",
+      version: "1.0.1+win",
+      downgrade: true
+    });
+
+    mocks.emit("update-downloaded", { version: "1.0.1+win" });
+    expect(updater.readAppUpdateStatus()).toEqual({
+      status: "downloaded",
+      version: "1.0.1+win",
+      downgrade: true
+    });
+    expect(mocks.autoUpdater.autoInstallOnAppQuit).toBe(false);
+  });
+
   test("still arms an ordinary downloaded update for install on quit", async () => {
     mocks.resolveSelection.mockReturnValue({ channel: "latest", train: "stable" });
     mocks.autoUpdater.currentVersion = { version: "1.0.0" };

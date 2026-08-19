@@ -1,10 +1,10 @@
 # Changelog
 
-## v1.1.0-alpha.2 - 2026-08-18
+## v1.1.0-alpha.3 - 2026-08-19
 
-This first 1.1 alpha opens PwrSnap to trusted PwrAgent workflows while adding
-more capable video and Library tools, stronger editor interactions, and signed
-Windows delivery.
+This 1.1 alpha opens PwrSnap to trusted PwrAgent workflows while adding more
+capable video and Library tools, stronger editor interactions, signed Windows
+delivery, and steadier update checks.
 
 - PwrAgent and MCP - Added a local MCP connection that lets PwrAgent and other
   approved local agents discover and search the Library, retrieve authorized
@@ -29,6 +29,16 @@ Windows delivery.
 - Windows Delivery - Added the protected Azure Artifact Signing release path
   for a signed Windows x64 installer and updater metadata alongside the macOS
   release assets.
+- Update Checks - Fixed Settings so the Stable and Beta version labels stay
+  populated instead of falling back to Unavailable, by caching GitHub release
+  data in the app and backing off with a clear message when GitHub rate-limits
+  the request.
+- Update Channels - Improved Check for Updates so a build that is ahead of the
+  channel you picked offers a switch back to that channel's release instead of
+  reporting that you are already up to date.
+- Installer - Improved the macOS DMG background so the drag-to-Applications
+  pill reads as true black against the window art.
+- Minor - Release-metadata and Windows packaging path fixes.
 
 ## v1.0.0-beta.25 - 2026-07-31
 

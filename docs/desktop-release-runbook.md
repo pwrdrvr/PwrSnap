@@ -156,6 +156,32 @@ passing the existing tag as input, so GitHub evaluates both environment
 policies against the branch even though packaging and metadata validation use
 the tag.
 
+Desktop Settings let operators pick a **channel** (Stable or Beta) and a
+**track** (Latest or Prerelease). Tag suffixes map onto those four slots:
+
+| Settings slot | Tag | GitHub flag |
+|---|---|---|
+| Stable · Latest | `v1.0.5` | Latest |
+| Stable · Prerelease | `v1.0.6-prerelease.1` | Pre-release |
+| Beta · Latest | `v1.1.0-beta.3` | Pre-release |
+| Beta · Prerelease | `v1.1.0-alpha.7` | Pre-release |
+
+Use `-prerelease.N` for Stable RCs. Use `-alpha.N` / `-beta.N` on `main`.
+Every `main` tag with a prerelease suffix must stay a GitHub Pre-release so
+it cannot steal `/releases/latest` from the Stable train. Promote a smoked
+alpha by bumping `apps/desktop/package.json` and the CHANGELOG heading to
+the beta version, then tagging that commit. Do not retag the alpha SHA.
+
+Moving a slot BACKWARD is supported. If a build ends up ahead of the slot the
+user selected — someone on a 1.1 alpha who picks Stable · Latest, or a tester
+stepping off Beta — the resolved release is older than what they are running,
+and the app offers the move back as a **switch**, not an update. It is only
+ever offered on a user-initiated check (the Settings "Check for Updates"
+button or the app menu item), never on the startup or hourly poll, so a
+deliberately-installed newer build does not nag. Changing the channel in
+Settings does not itself fire a check; tell testers to press Check for
+Updates after switching.
+
 ---
 
 ## Cutting a release (CI path — preferred)

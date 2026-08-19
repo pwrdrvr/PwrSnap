@@ -8,13 +8,13 @@
 // Theme writes flow through `useSettingsContext().patch`, which the
 // main process validates and broadcasts back; every other PwrSnap
 // window receives the broadcast via `useAppearanceSync` and re-paints
-// in lock-step. Update channel is re-read by the
+// in lock-step. Update train/track are re-read by the
 // auto-updater on the next check; Launch at login syncs the OS
 // login-item registration on the main side (launch-at-login.ts) and
 // re-reads the live OS state via `app:launchAtLoginStatus` so the card
 // can surface a macOS/Windows "disabled it OS-side" divergence.
 
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
   EVENT_CHANNELS,
   type AppearanceTheme,
@@ -23,7 +23,8 @@ import {
   type AppUpdateReleaseVersions,
   type AppUpdateStatus,
   type LaunchAtLoginStatus,
-  type UpdateChannel
+  type UpdateChannel,
+  type UpdateTrain
 } from "@pwrsnap/shared";
 import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
@@ -35,13 +36,28 @@ const THEME_OPTIONS: readonly SegmentOption<AppearanceTheme>[] = [
   { id: "light", label: "Light" }
 ];
 
+const UPDATE_TRAIN_OPTIONS: readonly SegmentOption<UpdateTrain>[] = [
+  { id: "stable", label: "Stable" },
+  { id: "beta", label: "Beta" }
+];
+
 const UPDATE_CHANNEL_OPTIONS: readonly SegmentOption<UpdateChannel>[] = [
-  { id: "latest", label: "Stable" },
+  { id: "latest", label: "Latest" },
   { id: "prerelease", label: "Prerelease" }
 ];
 
 function releaseVersionText(release: AppUpdateReleaseInfo | undefined): string {
   return release?.version ?? "Unavailable";
+}
+
+function releaseHelpText(releases: AppUpdateReleaseVersions | undefined): string {
+  if (!releases) return "Release versions are loading.";
+  return [
+    `Stable latest: ${releaseVersionText(releases.stable.latest)}`,
+    `Stable prerelease: ${releaseVersionText(releases.stable.prerelease)}`,
+    `Beta latest: ${releaseVersionText(releases.beta.latest)}`,
+    `Beta prerelease: ${releaseVersionText(releases.beta.prerelease)}`
+  ].join(". ");
 }
 
 function updateResultText(result: AppUpdateCheckResult): string {
@@ -50,22 +66,32 @@ function updateResultText(result: AppUpdateCheckResult): string {
   if (result.status === "checking") return "Checking for updates...";
   if (result.status === "no-update") return `You're up to date (v${result.version}).`;
   if (result.status === "downloaded") {
-    return `Update ready: v${result.version}. Restart to install.`;
+    return result.downgrade === true
+      ? `v${result.version} ready. Restart to switch.`
+      : `Update ready: v${result.version}. Restart to install.`;
   }
-  return `Update available: v${result.version}. Downloading in the background.`;
+  return result.downgrade === true
+    ? `Switching to v${result.version}. Downloading in the background.`
+    : `Update available: v${result.version}. Downloading in the background.`;
 }
 
 function updateStatusText(status: AppUpdateStatus): string | undefined {
   if (status.status === "checking") return "Checking for updates...";
   if (status.status === "available") {
-    return `Update available: v${status.version}. Downloading in the background.`;
+    return status.downgrade === true
+      ? `Switching to v${status.version}. Downloading in the background.`
+      : `Update available: v${status.version}. Downloading in the background.`;
   }
   if (status.status === "downloading") {
     const percent = status.percent === undefined ? "" : ` (${status.percent}%)`;
-    return `Downloading update v${status.version}${percent}.`;
+    return status.downgrade === true
+      ? `Downloading v${status.version}${percent}.`
+      : `Downloading update v${status.version}${percent}.`;
   }
   if (status.status === "downloaded") {
-    return `Update ready: v${status.version}. Restart to install.`;
+    return status.downgrade === true
+      ? `v${status.version} ready. Restart to switch.`
+      : `Update ready: v${status.version}. Restart to install.`;
   }
   if (status.status === "install-failed") {
     return `Update to v${status.version} did not finish installing. Retry to download it again and restart.`;
@@ -79,7 +105,16 @@ export function GeneralPage(): ReactElement {
   const ready = settings !== null;
   const theme: AppearanceTheme = settings?.appearance.theme ?? "system";
   const launchAtLogin = settings?.general.launchAtLogin ?? false;
-  const channel: UpdateChannel = settings?.updates.channel ?? "latest";
+  const [pendingSelection, setPendingSelection] = useState<{
+    channel: UpdateChannel;
+    train: UpdateTrain;
+  }>();
+  const channel: UpdateChannel =
+    pendingSelection?.channel ?? settings?.updates.channel ?? "latest";
+  const train: UpdateTrain =
+    pendingSelection?.train ?? settings?.updates.train ?? "stable";
+  const selectionRef = useRef({ channel, train });
+  selectionRef.current = { channel, train };
   const videoCaptureCursor = settings?.recording.videoCaptureCursor ?? true;
   const imageCaptureCursor = settings?.recording.imageCaptureCursor ?? true;
   const platform = window.pwrsnapApi?.platform;
@@ -97,6 +132,16 @@ export function GeneralPage(): ReactElement {
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateRestarting, setUpdateRestarting] = useState(false);
   const [updateRestartError, setUpdateRestartError] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (pendingSelection === undefined) return;
+    if (
+      settings?.updates.channel === pendingSelection.channel &&
+      settings?.updates.train === pendingSelection.train
+    ) {
+      setPendingSelection(undefined);
+    }
+  }, [pendingSelection, settings?.updates.channel, settings?.updates.train]);
 
   useEffect(() => {
     let cancelled = false;
@@ -163,9 +208,28 @@ export function GeneralPage(): ReactElement {
       }
     : undefined;
 
+  const persistUpdateSelection = (next: {
+    channel: UpdateChannel;
+    train: UpdateTrain;
+  }): void => {
+    // Persist both keys, including stable/latest, so a Beta binary
+    // does not re-infer after the operator picks Stable. Keep the pair
+    // in local pending state so a second click before the settings
+    // broadcast cannot overwrite the first axis from a stale render.
+    selectionRef.current = next;
+    setPendingSelection(next);
+    void patch({ updates: next });
+  };
+
+  const onTrainChange = ready
+    ? (next: UpdateTrain): void => {
+        persistUpdateSelection({ train: next, channel: selectionRef.current.channel });
+      }
+    : (): void => {};
+
   const onChannelChange = ready
     ? (next: UpdateChannel): void => {
-        void patch({ updates: { channel: next } });
+        persistUpdateSelection({ train: selectionRef.current.train, channel: next });
       }
     : (): void => {};
 
@@ -184,21 +248,35 @@ export function GeneralPage(): ReactElement {
       ? `Following the operating system — currently ${resolvedLabel.toLowerCase()}.`
       : `Locked to ${theme === "light" ? "light" : "dark"} regardless of the OS.`;
 
+  const updateTrainOptions: readonly SegmentOption<UpdateTrain>[] =
+    UPDATE_TRAIN_OPTIONS.map((option) => ({
+      ...option,
+      meta:
+        releaseVersions === undefined
+          ? "Loading..."
+          // Index by the selected track, the same way the track control
+          // indexes by the selected train. Showing `.latest` here labels a
+          // train with a version that selecting it would not resolve to.
+          : releaseVersionText(releaseVersions[option.id][channel])
+    }));
   const updateChannelOptions: readonly SegmentOption<UpdateChannel>[] =
     UPDATE_CHANNEL_OPTIONS.map((option) => ({
       ...option,
       meta:
         releaseVersions === undefined
           ? "Loading..."
-          : releaseVersionText(releaseVersions[option.id])
+          : releaseVersionText(releaseVersions[train][option.id])
     }));
   const updateAction =
     updateStatus.status === "downloaded"
       ? {
           version: updateStatus.version,
-          label: "Restart to Update",
+          label: updateStatus.downgrade === true ? "Restart to Switch" : "Restart to Update",
           busyLabel: "Restarting...",
-          ariaLabel: `Restart to Update (${updateStatus.version})`
+          ariaLabel:
+            updateStatus.downgrade === true
+              ? `Restart to Switch (${updateStatus.version})`
+              : `Restart to Update (${updateStatus.version})`
         }
       : updateStatus.status === "install-failed"
         ? {
@@ -253,7 +331,7 @@ export function GeneralPage(): ReactElement {
         <div className="pss__main-hdr-l">
           <div className="pss__main-eyebrow">General</div>
           <h1 className="pss__main-title">General</h1>
-          <p className="pss__main-sub">Appearance, startup, and update channel.</p>
+          <p className="pss__main-sub">Appearance, startup, and updates.</p>
         </div>
       </div>
 
@@ -348,10 +426,21 @@ export function GeneralPage(): ReactElement {
         ) : null}
       </Card>
 
-      <Card eyebrow="UPDATES" title="Update channel">
+      <Card eyebrow="UPDATES" title="Updates">
         <Row
-          label="Release stream"
-          sub='"Stable" tracks the latest signed release. "Prerelease" includes betas and alphas — earlier features, more rough edges. Takes effect on the next update check.'
+          label="Release channel"
+          sub="Stable is the smoke-checked train. Beta follows main and stays selectable even when its versions are still Unavailable."
+          tag={train}
+        >
+          <SegmentedControl
+            options={updateTrainOptions}
+            value={train}
+            onChange={onTrainChange}
+          />
+        </Row>
+        <Row
+          label="Update track"
+          sub={`Latest is smoke-checked. Prerelease is newer and may not install. ${releaseHelpText(releaseVersions)}`}
           tag={channel}
         >
           <div className="pss__update-channel">

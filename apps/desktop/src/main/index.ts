@@ -99,7 +99,8 @@ import { DesktopSettingsService } from "./settings/desktop-settings-service";
 import {
   checkForAppUpdatesNow,
   initAppUpdater,
-  setUpdateChannelResolver
+  reconcileAppUpdateSelection,
+  setUpdateSelectionResolver
 } from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
@@ -674,9 +675,11 @@ async function wireHotkeyRegistrations(): Promise<void> {
   // index.ts depends on settings, not the handlers' internal state).
   const userData = app.getPath("userData");
   const service = new DesktopSettingsService({
-    filePath: join(userData, "pwrsnap-settings.json")
+    filePath: join(userData, "pwrsnap-settings.json"),
+    resolveAppVersion: () => app.getVersion()
   });
   let currentChannel: Settings["updates"]["channel"] = "latest";
+  let currentTrain: Settings["updates"]["train"] = "stable";
   try {
     const settings = await service.read();
     setTrayHotkeys(settings.hotkeys);
@@ -688,12 +691,16 @@ async function wireHotkeyRegistrations(): Promise<void> {
       installApplicationMenu(settings.general.developerMode);
     }
     currentChannel = settings.updates.channel;
+    currentTrain = settings.updates.train;
   } catch (cause) {
     log.warn("hotkey wire-up: initial read failed (continuing with no bindings)", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
   }
-  setUpdateChannelResolver(() => currentChannel);
+  setUpdateSelectionResolver(() => ({
+    channel: currentChannel,
+    train: currentTrain
+  }));
   onSettingsChanged((settings) => {
     setTrayHotkeys(settings.hotkeys);
     applyHotkeys(settings.hotkeys);
@@ -701,6 +708,8 @@ async function wireHotkeyRegistrations(): Promise<void> {
       installApplicationMenu(settings.general.developerMode);
     }
     currentChannel = settings.updates.channel;
+    currentTrain = settings.updates.train;
+    reconcileAppUpdateSelection();
     // Theme may have changed — re-color the Windows title-bar overlay so the
     // caption strip tracks the active theme (no-op off win32).
     refreshWindowsTitleBarOverlay();

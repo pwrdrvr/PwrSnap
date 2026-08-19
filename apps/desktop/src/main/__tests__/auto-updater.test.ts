@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => {
       train: "stable"
     })),
     autoUpdater: {
+      allowDowngrade: false,
       allowPrerelease: false,
       autoDownload: false,
       autoInstallOnAppQuit: false,
@@ -225,6 +226,7 @@ describe("auto updater selection", () => {
     mocks.autoUpdater.quitAndInstall.mockReset();
     mocks.autoUpdater.setFeedURL.mockReset();
     mocks.autoUpdater.on.mockClear();
+    mocks.autoUpdater.allowDowngrade = false;
     mocks.autoUpdater.allowPrerelease = false;
     mocks.autoUpdater.autoInstallOnAppQuit = false;
     mocks.autoUpdater.currentVersion = { version: "1.0.0" };
@@ -423,5 +425,108 @@ describe("auto updater selection", () => {
       url: "https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.0-beta.2/"
     });
     expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(2);
+  });
+  // A user pulled onto a newer train than the one they picked — the 1.1
+  // alpha that reached 1.0.1 Prerelease installs — resolves Stable Latest
+  // to a version BEHIND the running build. Forward-only checks answer
+  // "you're up to date" forever and strand them there.
+  test("offers the switch back when the selected release is behind the running build", async () => {
+    mocks.resolveSelection.mockReturnValue({ channel: "latest", train: "stable" });
+    mocks.autoUpdater.currentVersion = { version: "1.1.0-alpha.2" };
+    mockGitHubReleases([
+      githubRelease("v1.1.0-alpha.2", { prerelease: true }),
+      githubRelease("v1.0.1")
+    ]);
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({
+      updateInfo: { version: "1.0.1" }
+    });
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
+
+    await expect(updater.checkForAppUpdatesNow("manual")).resolves.toEqual({
+      status: "available",
+      version: "1.0.1",
+      downgrade: true
+    });
+    expect(mocks.autoUpdater.allowDowngrade).toBe(true);
+    expect(mocks.autoUpdater.setFeedURL).toHaveBeenCalledWith({
+      provider: "generic",
+      url: "https://github.com/pwrdrvr/PwrSnap/releases/download/v1.0.1/"
+    });
+  });
+
+  test("keeps background checks quiet about an available downgrade", async () => {
+    mocks.resolveSelection.mockReturnValue({ channel: "latest", train: "stable" });
+    mocks.autoUpdater.currentVersion = { version: "1.1.0-alpha.2" };
+    mockGitHubReleases([
+      githubRelease("v1.1.0-alpha.2", { prerelease: true }),
+      githubRelease("v1.0.1")
+    ]);
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
+
+    await expect(updater.checkForAppUpdatesNow("periodic")).resolves.toEqual({
+      status: "no-update",
+      version: "1.1.0-alpha.2"
+    });
+    expect(mocks.autoUpdater.allowDowngrade).toBe(false);
+    expect(mocks.autoUpdater.setFeedURL).not.toHaveBeenCalled();
+    expect(mocks.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  test("leaves the forward path forward-only", async () => {
+    mocks.resolveSelection.mockReturnValue({ channel: "latest", train: "stable" });
+    mocks.autoUpdater.currentVersion = { version: "1.0.0" };
+    mockGitHubReleases([githubRelease("v1.0.1")]);
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({
+      updateInfo: { version: "1.0.1" }
+    });
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
+
+    await expect(updater.checkForAppUpdatesNow("manual")).resolves.toEqual({
+      status: "available",
+      version: "1.0.1"
+    });
+    expect(mocks.autoUpdater.allowDowngrade).toBe(false);
+  });
+
+  test("marks the downloaded switch so the renderer does not call it an update", async () => {
+    mocks.resolveSelection.mockReturnValue({ channel: "latest", train: "stable" });
+    mocks.autoUpdater.currentVersion = { version: "1.1.0-alpha.2" };
+    mockGitHubReleases([
+      githubRelease("v1.1.0-alpha.2", { prerelease: true }),
+      githubRelease("v1.0.1")
+    ]);
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({
+      updateInfo: { version: "1.0.1" }
+    });
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
+    updater.initAppUpdater();
+    // The startup check is background: it must not have reached
+    // electron-updater at all.
+    await vi.waitFor(() => {
+      expect(updater.readAppUpdateStatus()).toEqual({
+        status: "no-update",
+        version: "1.1.0-alpha.2"
+      });
+    });
+    expect(mocks.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+
+    await updater.checkForAppUpdatesNow("manual");
+    mocks.emit("update-available", { version: "1.0.1" });
+    expect(updater.readAppUpdateStatus()).toEqual({
+      status: "available",
+      version: "1.0.1",
+      downgrade: true
+    });
+
+    mocks.emit("update-downloaded", { version: "1.0.1" });
+    expect(updater.readAppUpdateStatus()).toEqual({
+      status: "downloaded",
+      version: "1.0.1",
+      downgrade: true
+    });
   });
 });

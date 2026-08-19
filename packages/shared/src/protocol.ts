@@ -2445,17 +2445,22 @@ export type AppUpdateCheckResult =
   | { status: "error"; message: string }
   | { status: "checking" }
   | { status: "no-update"; version: string }
-  | { status: "downloaded"; version: string }
-  | { status: "available"; version: string };
+  | { status: "downloaded"; version: string; downgrade?: true }
+  | { status: "available"; version: string; downgrade?: true };
 
+// `downgrade` marks the move BACK to a selected slot that sits behind the
+// running build — the way out of a train the user did not pick. It is not
+// an update, so the renderer words it as a switch. Absent (never `false`)
+// for the ordinary forward case; `exactOptionalPropertyTypes` means callers
+// spread it in conditionally rather than assigning `undefined`.
 export type AppUpdateStatus =
   | { status: "idle" }
   | { status: "skipped"; reason: string }
   | { status: "checking" }
   | { status: "no-update"; version: string }
-  | { status: "available"; version: string }
-  | { status: "downloading"; version: string; percent?: number }
-  | { status: "downloaded"; version: string }
+  | { status: "available"; version: string; downgrade?: true }
+  | { status: "downloading"; version: string; percent?: number; downgrade?: true }
+  | { status: "downloaded"; version: string; downgrade?: true }
   | {
       status: "install-failed";
       version: string;

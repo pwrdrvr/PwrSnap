@@ -101,4 +101,36 @@ describe("AppUpdateBanner", () => {
 
     expect(api.calls.some((call) => call.name === "app:update:install")).toBe(true);
   });
+  // A downgrade back to the selected train is not an update. Reading
+  // "Restart to update to v1.0.1" while running 1.1.0-alpha.2 looks like
+  // the app got the version wrong.
+  test("words a downloaded downgrade as a switch", async () => {
+    const api = await renderBanner();
+
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.appUpdateStatus, {
+        status: "downloaded",
+        version: "1.0.1",
+        downgrade: true
+      } satisfies AppUpdateStatus);
+    });
+
+    expect(container?.textContent).toContain("Switch ready");
+    expect(container?.textContent).toContain("Restart to switch to v1.0.1.");
+    expect(container?.textContent).not.toContain("Restart to update");
+  });
+
+  test("still words an ordinary downloaded update as an update", async () => {
+    const api = await renderBanner();
+
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.appUpdateStatus, {
+        status: "downloaded",
+        version: "1.0.2"
+      } satisfies AppUpdateStatus);
+    });
+
+    expect(container?.textContent).toContain("Update ready");
+    expect(container?.textContent).toContain("Restart to update to v1.0.2.");
+  });
 });

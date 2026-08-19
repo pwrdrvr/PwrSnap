@@ -172,6 +172,16 @@ it cannot steal `/releases/latest` from the Stable train. Promote a smoked
 alpha by bumping `apps/desktop/package.json` and the CHANGELOG heading to
 the beta version, then tagging that commit. Do not retag the alpha SHA.
 
+Moving a slot BACKWARD is supported. If a build ends up ahead of the slot the
+user selected — someone on a 1.1 alpha who picks Stable · Latest, or a tester
+stepping off Beta — the resolved release is older than what they are running,
+and the app offers the move back as a **switch**, not an update. It is only
+ever offered on a user-initiated check (the Settings "Check for Updates"
+button or the app menu item), never on the startup or hourly poll, so a
+deliberately-installed newer build does not nag. Changing the channel in
+Settings does not itself fire a check; tell testers to press Check for
+Updates after switching.
+
 ---
 
 ## Cutting a release (CI path — preferred)

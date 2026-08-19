@@ -76,7 +76,7 @@ export interface ComposerProps {
     text: string,
     attachments: readonly ComposerAttachment[]
   ) => Promise<void>;
-  /** Disabled (e.g. no Codex configured). Disables the textarea AND
+  /** Disabled (e.g. no AI provider configured). Disables the textarea AND
    *  the send button. */
   readonly disabled?: boolean;
   readonly placeholder?: string;
@@ -103,7 +103,7 @@ export function Composer(props: ComposerProps): ReactElement {
   const {
     onSubmit,
     disabled = false,
-    placeholder = "Message Codex…",
+    placeholder = "Message AI…",
     testIdPrefix = "composer"
   } = props;
 

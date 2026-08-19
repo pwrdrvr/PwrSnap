@@ -890,13 +890,13 @@ export function FloatOver({
             }
           />
           {!aiNeedsConsent && onSetAutoAccept !== undefined ? (
-            <label className="fo__auto-accept" title="Apply Codex drafts automatically when ready">
+            <label className="fo__auto-accept" title="Apply AI enrichment automatically when ready">
               <input
                 type="checkbox"
                 checked={autoAcceptSuggestions}
                 onChange={(event) => onSetAutoAccept(event.target.checked)}
               />
-              <span>Auto-apply Codex drafts</span>
+              <span>Auto-apply AI enrichment</span>
             </label>
           ) : null}
         </div>

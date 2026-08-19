@@ -69,6 +69,16 @@ const WIN_UPDATE_CHANNEL_FILE = "latest.yml";
 const DEV_FAKE_UPDATE_VERSION = "420.0.0";
 
 type AppUpdateCheckTrigger = "startup" | "periodic" | "manual" | "menu";
+
+/** A downgrade back to the selected slot is only ever OFFERED when the user
+ *  asked — the Settings "Check for Updates" button or the app menu item.
+ *  Background checks stay silent about it: someone who deliberately installed
+ *  a newer build and left their channel alone should not be nagged to go
+ *  back on every hourly poll. Switching channels in Settings does not itself
+ *  fire a check, so the button is the deliberate step either way. */
+function isUserInitiatedTrigger(trigger: AppUpdateCheckTrigger): boolean {
+  return trigger === "manual" || trigger === "menu";
+}
 type UpdateSelection = { channel: UpdateChannel; train: UpdateTrain };
 type UpdateSelectionKey = `${UpdateTrain}:${UpdateChannel}`;
 type SelectionResolver = () => UpdateSelection;
@@ -83,12 +93,25 @@ let periodicUpdateCheckTimer: ReturnType<typeof setInterval> | undefined;
 let updateCheckInFlight: Promise<AppUpdateCheckResult> | undefined;
 let updateCheckSelectionInFlight: UpdateSelectionKey | undefined;
 let heldDownloadedUpdate:
-  | { selection: UpdateSelectionKey; version: string }
+  | { selection: UpdateSelectionKey; version: string; downgrade?: true }
   | undefined;
 let heldInstallFailed:
   | Extract<AppUpdateStatus, { status: "install-failed" }>
   | undefined;
 const pendingDownloadSelectionsByVersion = new Map<string, UpdateSelectionKey>();
+/** Versions we deliberately asked electron-updater to move BACKWARD to, so
+ *  the `update-available` / `update-downloaded` events can mark their status
+ *  as a switch rather than an update. Keyed by version because that is all
+ *  those events carry. */
+const pendingDowngradeVersions = new Set<string>();
+/** True while a check that decided "the selected slot is behind us" is still
+ *  running. The version keys above come from the release TAG, while the
+ *  events carry the version electron-updater read out of the channel file;
+ *  if those ever drift, the lookup misses and a downgrade would be re-armed
+ *  for silent install on quit. The in-flight flag is the authoritative
+ *  answer for the window in which `update-available` fires, and seeds the
+ *  set with the version the event actually reported. */
+let downgradeCheckInFlight = false;
 let installAttemptStore: AppUpdateInstallAttemptStore | undefined;
 const retryDownloadWaiters = new Set<{
   expectedVersion: string;
@@ -311,11 +334,25 @@ function currentUpdateSelectionKey(): UpdateSelectionKey {
 
 function configureAutoUpdaterChannel(selection: UpdateSelection = currentUpdateSelection()): void {
   autoUpdater().allowPrerelease = selection.train === "beta" || selection.channel === "prerelease";
+  // Every check starts from the forward-only posture. `allowDowngrade` is
+  // opened for exactly one check, by `allowAutoUpdaterDowngrade`, once we
+  // have decided the selected release is behind the running build.
+  autoUpdater().allowDowngrade = false;
   log.info("configured auto-update channel", {
+    allowDowngrade: autoUpdater().allowDowngrade,
     allowPrerelease: autoUpdater().allowPrerelease,
     updateChannel: selection.channel,
     updateTrain: selection.train
   });
+}
+
+/** Open the one-way valve `configureAutoUpdaterChannel` just closed.
+ *  Without this electron-updater refuses the install outright and the user
+ *  has no path back to the train they picked. */
+function allowAutoUpdaterDowngrade(selectedVersion: string): void {
+  autoUpdater().allowDowngrade = true;
+  downgradeCheckInFlight = true;
+  pendingDowngradeVersions.add(selectedVersion);
 }
 
 function configureAutoUpdaterFeedForRelease(release: GitHubRelease): void {
@@ -372,7 +409,11 @@ function downloadedUpdateMatchesSelection(
   if (heldDownloadedUpdate?.selection !== updateSelection) {
     return undefined;
   }
-  return { status: "downloaded", version: heldDownloadedUpdate.version };
+  return {
+    status: "downloaded",
+    version: heldDownloadedUpdate.version,
+    ...(heldDownloadedUpdate.downgrade === true ? ({ downgrade: true } as const) : {})
+  };
 }
 
 function downloadedOrFailedMatchesSelection(
@@ -392,8 +433,13 @@ function downloadedOrFailedMatchesSelection(
 }
 
 function syncAutoInstallOnAppQuit(updateSelection: UpdateSelectionKey): void {
+  const matching = downloadedUpdateMatchesSelection(updateSelection);
+  // Stepping the installed build BACKWARD is heavier than a forward update
+  // and the user only ever asked to see what was available. Hold it for the
+  // explicit Restart in the banner rather than applying it on the next quit
+  // — dismissing that banner hides the notice, it does not decline the move.
   autoUpdater().autoInstallOnAppQuit =
-    downloadedUpdateMatchesSelection(updateSelection) !== undefined ||
+    (matching !== undefined && matching.downgrade !== true) ||
     heldDownloadedUpdate === undefined;
 }
 
@@ -494,7 +540,13 @@ export async function checkForAppUpdatesNow(
         return result;
       }
       const selectedVersion = release.tag_name.replace(/^v/i, "");
-      if (compareSemver(selectedVersion, currentVersion) <= 0) {
+      const selectedVersusCurrent = compareSemver(selectedVersion, currentVersion);
+      // `compareSemver` sorts an unparseable tag below every valid version,
+      // which would otherwise read as "the selected slot is behind us" and
+      // pin the feed to a tag we could not even parse.
+      const comparable =
+        parseSemver(selectedVersion) !== undefined && parseSemver(currentVersion) !== undefined;
+      if (selectedVersusCurrent === 0 || (selectedVersusCurrent < 0 && !comparable)) {
         const result = { status: "no-update", version: currentVersion } as const;
         setUpdateStatusUnlessActionable(result);
         log.info("skipping app update check; selected release is not newer", {
@@ -505,6 +557,34 @@ export async function checkForAppUpdatesNow(
           updateTrain: selection.train
         });
         return result;
+      }
+      // The selected slot is BEHIND the running build. That is what a user
+      // looks like after a newer train pulled them off the one they picked:
+      // Stable Latest resolves to v1.0.1 while they are sitting on a 1.1
+      // alpha, and forward-only checks answer "you're up to date" forever.
+      // Offer the way back, but only when they asked for a check.
+      const isDowngrade = selectedVersusCurrent < 0;
+      if (isDowngrade && !isUserInitiatedTrigger(trigger)) {
+        const result = { status: "no-update", version: currentVersion } as const;
+        setUpdateStatusUnlessActionable(result);
+        log.info("holding downgrade to the selected release for a user-initiated check", {
+          currentVersion,
+          selectedRelease: release.tag_name,
+          trigger,
+          updateChannel: selection.channel,
+          updateTrain: selection.train
+        });
+        return result;
+      }
+      if (isDowngrade) {
+        allowAutoUpdaterDowngrade(selectedVersion);
+        log.info("offering downgrade back to the selected release", {
+          currentVersion,
+          selectedRelease: release.tag_name,
+          trigger,
+          updateChannel: selection.channel,
+          updateTrain: selection.train
+        });
       }
       configureAutoUpdaterFeedForRelease(release);
       const result = await autoUpdater().checkForUpdates();
@@ -524,7 +604,11 @@ export async function checkForAppUpdatesNow(
       if (result.updateInfo.version === currentVersion) {
         return { status: "no-update", version: currentVersion };
       }
-      return { status: "available", version: result.updateInfo.version };
+      return {
+        status: "available",
+        version: result.updateInfo.version,
+        ...(isDowngrade ? ({ downgrade: true } as const) : {})
+      };
     } catch (err) {
       const errResult: AppUpdateCheckResult = {
         status: "error",
@@ -537,6 +621,7 @@ export async function checkForAppUpdatesNow(
       });
       return errResult;
     } finally {
+      downgradeCheckInFlight = false;
       updateCheckSelectionInFlight = undefined;
       updateCheckInFlight = undefined;
     }
@@ -910,8 +995,11 @@ async function fetchGitHubReleases(signal?: AbortSignal): Promise<GitHubRelease[
         : [await latestPromise, await pagePromise];
     const pageReleases = asGitHubReleaseList(payload);
     for (const release of pageReleases) add(release);
+    // Test BEFORE folding `latest` in, or `add` seeds `seen` with the very
+    // tag we are looking for and the loop always breaks on page 1.
+    const reachedLatest = latest?.tag_name !== undefined && seen.has(latest.tag_name);
     add(latest);
-    if (latest?.tag_name && seen.has(latest.tag_name)) break;
+    if (reachedLatest) break;
     if (pageReleases.length < RELEASE_PAGE_SIZE) break;
   }
 
@@ -1064,7 +1152,15 @@ export function initAppUpdater(): void {
   autoUpdater().on("update-available", (info) => {
     log.info("update-available", { version: info.version });
     recordPendingDownloadSelection(info.version, updateCheckSelectionInFlight);
-    setUpdateStatus({ status: "available", version: info.version });
+    const isDowngrade = downgradeCheckInFlight || pendingDowngradeVersions.has(info.version);
+    // Re-key on what the event actually reported so `update-downloaded`,
+    // which lands well after the check has finished, still sees it.
+    if (isDowngrade && info.version) pendingDowngradeVersions.add(info.version);
+    setUpdateStatus({
+      status: "available",
+      version: info.version,
+      ...(isDowngrade ? ({ downgrade: true } as const) : {})
+    });
   });
   autoUpdater().on("update-not-available", (info) => {
     log.info("update-not-available", { version: info.version });
@@ -1076,14 +1172,16 @@ export function initAppUpdater(): void {
       transferred: progress.transferred,
       total: progress.total
     });
-    const version =
+    const inProgress =
       updateStatus.status === "available" || updateStatus.status === "downloading"
-        ? updateStatus.version
-        : "unknown";
+        ? updateStatus
+        : undefined;
+    const version = inProgress?.version ?? "unknown";
     setUpdateStatus({
       status: "downloading",
       version,
-      percent: Math.round(progress.percent)
+      percent: Math.round(progress.percent),
+      ...(inProgress?.downgrade === true ? ({ downgrade: true } as const) : {})
     });
   });
   autoUpdater().on("update-downloaded", (info) => {
@@ -1091,13 +1189,16 @@ export function initAppUpdater(): void {
     const selection = info.version
       ? (pendingDownloadSelectionsByVersion.get(info.version) ?? currentUpdateSelectionKey())
       : undefined;
+    const isDowngrade = info.version ? pendingDowngradeVersions.has(info.version) : false;
     if (info.version) {
       pendingDownloadSelectionsByVersion.delete(info.version);
+      pendingDowngradeVersions.delete(info.version);
     }
     if (info.version && selection) {
       heldDownloadedUpdate = {
         selection,
-        version: info.version
+        version: info.version,
+        ...(isDowngrade ? ({ downgrade: true } as const) : {})
       };
     }
     reconcileAppUpdateSelection();
@@ -1122,6 +1223,8 @@ export function disposeAutoUpdater(): void {
   heldDownloadedUpdate = undefined;
   heldInstallFailed = undefined;
   pendingDownloadSelectionsByVersion.clear();
+  pendingDowngradeVersions.clear();
+  downgradeCheckInFlight = false;
   for (const waiter of retryDownloadWaiters) {
     clearTimeout(waiter.timer);
   }

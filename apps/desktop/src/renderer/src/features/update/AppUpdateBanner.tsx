@@ -53,8 +53,14 @@ export function AppUpdateBanner(): ReactElement | null {
     updateStatus.status === "downloaded"
       ? {
           key: `downloaded:${updateStatus.version}`,
-          eyebrow: "Update ready",
-          message: `Restart to update to v${updateStatus.version}.`,
+          // A downgrade is the way back to the train the user picked, not
+          // an update. Wording it as one reads as a mistake next to a
+          // version number that is lower than the one they are running.
+          eyebrow: updateStatus.downgrade === true ? "Switch ready" : "Update ready",
+          message:
+            updateStatus.downgrade === true
+              ? `Restart to switch to v${updateStatus.version}.`
+              : `Restart to update to v${updateStatus.version}.`,
           action: "Restart",
           busyAction: "Restarting..."
         }

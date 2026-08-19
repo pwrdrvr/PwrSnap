@@ -66,22 +66,32 @@ function updateResultText(result: AppUpdateCheckResult): string {
   if (result.status === "checking") return "Checking for updates...";
   if (result.status === "no-update") return `You're up to date (v${result.version}).`;
   if (result.status === "downloaded") {
-    return `Update ready: v${result.version}. Restart to install.`;
+    return result.downgrade === true
+      ? `v${result.version} ready. Restart to switch.`
+      : `Update ready: v${result.version}. Restart to install.`;
   }
-  return `Update available: v${result.version}. Downloading in the background.`;
+  return result.downgrade === true
+    ? `Switching to v${result.version}. Downloading in the background.`
+    : `Update available: v${result.version}. Downloading in the background.`;
 }
 
 function updateStatusText(status: AppUpdateStatus): string | undefined {
   if (status.status === "checking") return "Checking for updates...";
   if (status.status === "available") {
-    return `Update available: v${status.version}. Downloading in the background.`;
+    return status.downgrade === true
+      ? `Switching to v${status.version}. Downloading in the background.`
+      : `Update available: v${status.version}. Downloading in the background.`;
   }
   if (status.status === "downloading") {
     const percent = status.percent === undefined ? "" : ` (${status.percent}%)`;
-    return `Downloading update v${status.version}${percent}.`;
+    return status.downgrade === true
+      ? `Downloading v${status.version}${percent}.`
+      : `Downloading update v${status.version}${percent}.`;
   }
   if (status.status === "downloaded") {
-    return `Update ready: v${status.version}. Restart to install.`;
+    return status.downgrade === true
+      ? `v${status.version} ready. Restart to switch.`
+      : `Update ready: v${status.version}. Restart to install.`;
   }
   if (status.status === "install-failed") {
     return `Update to v${status.version} did not finish installing. Retry to download it again and restart.`;
@@ -244,7 +254,10 @@ export function GeneralPage(): ReactElement {
       meta:
         releaseVersions === undefined
           ? "Loading..."
-          : releaseVersionText(releaseVersions[option.id].latest)
+          // Index by the selected track, the same way the track control
+          // indexes by the selected train. Showing `.latest` here labels a
+          // train with a version that selecting it would not resolve to.
+          : releaseVersionText(releaseVersions[option.id][channel])
     }));
   const updateChannelOptions: readonly SegmentOption<UpdateChannel>[] =
     UPDATE_CHANNEL_OPTIONS.map((option) => ({
@@ -258,9 +271,12 @@ export function GeneralPage(): ReactElement {
     updateStatus.status === "downloaded"
       ? {
           version: updateStatus.version,
-          label: "Restart to Update",
+          label: updateStatus.downgrade === true ? "Restart to Switch" : "Restart to Update",
           busyLabel: "Restarting...",
-          ariaLabel: `Restart to Update (${updateStatus.version})`
+          ariaLabel:
+            updateStatus.downgrade === true
+              ? `Restart to Switch (${updateStatus.version})`
+              : `Restart to Update (${updateStatus.version})`
         }
       : updateStatus.status === "install-failed"
         ? {

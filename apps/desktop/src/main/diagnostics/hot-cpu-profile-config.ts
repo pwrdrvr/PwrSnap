@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import type { HotCpuProfileTriggerMode } from "@pwrsnap/shared";
+import type { HotCpuProfileTarget, HotCpuProfileTriggerMode } from "@pwrsnap/shared";
 import {
   HOT_CPU_PROFILE_SLOWBURN_THRESHOLD_DEFAULT_PERCENT,
   HOT_CPU_PROFILE_START_DELAY_DEFAULT_MS,
@@ -76,6 +76,13 @@ function parseTriggerMode(
   return isHotCpuProfileTriggerMode(normalized) ? normalized : fallback;
 }
 
+/** One config shape serves every monitored target (renderer + main);
+ *  each profiler instance evaluates its own target's CPU against these
+ *  thresholds independently. Pass `target: "main"` to let the
+ *  `PWRSNAP_HOT_CPU_PROFILING_MAIN_THRESHOLD_PERCENT` /
+ *  `PWRSNAP_HOT_CPU_PROFILING_MAIN_SLOWBURN_THRESHOLD_PERCENT` env vars
+ *  override the shared trigger thresholds for the main process only —
+ *  everything else stays shared on purpose. */
 export function resolveHotCpuProfileConfig(options?: {
   captureHeapSnapshot?: boolean;
   enabled?: boolean;
@@ -85,12 +92,22 @@ export function resolveHotCpuProfileConfig(options?: {
   repoRoot?: string;
   slowburnThresholdPercent?: number;
   startDelayMs?: number;
+  target?: HotCpuProfileTarget;
   triggerMode?: HotCpuProfileTriggerMode;
 }): HotCpuProfileConfig {
   const env = options?.env ?? process.env;
   if (!options?.enabled && !isEnabled(env.PWRSNAP_HOT_CPU_PROFILING)) {
     return { enabled: false };
   }
+
+  const isMainTarget = options?.target === "main";
+  const thresholdPercentEnv =
+    (isMainTarget ? env.PWRSNAP_HOT_CPU_PROFILING_MAIN_THRESHOLD_PERCENT : undefined) ??
+    env.PWRSNAP_HOT_CPU_PROFILING_THRESHOLD_PERCENT;
+  const slowburnThresholdPercentEnv =
+    (isMainTarget
+      ? env.PWRSNAP_HOT_CPU_PROFILING_MAIN_SLOWBURN_THRESHOLD_PERCENT
+      : undefined) ?? env.PWRSNAP_HOT_CPU_PROFILING_SLOWBURN_THRESHOLD_PERCENT;
 
   const repoRoot = resolve(env.PWRSNAP_HOT_CPU_PROFILING_ROOT ?? options?.repoRoot ?? process.cwd());
   const outputRoot =
@@ -112,13 +129,10 @@ export function resolveHotCpuProfileConfig(options?: {
       env.PWRSNAP_HOT_CPU_PROFILING_INTERVAL_MS,
       DEFAULT_INTERVAL_MS
     ),
-    thresholdPercent: parsePositiveNumber(
-      env.PWRSNAP_HOT_CPU_PROFILING_THRESHOLD_PERCENT,
-      DEFAULT_THRESHOLD_PERCENT
-    ),
+    thresholdPercent: parsePositiveNumber(thresholdPercentEnv, DEFAULT_THRESHOLD_PERCENT),
     slowburnThresholdPercent: clampPercent(
       parsePositiveNumber(
-        env.PWRSNAP_HOT_CPU_PROFILING_SLOWBURN_THRESHOLD_PERCENT,
+        slowburnThresholdPercentEnv,
         options?.slowburnThresholdPercent ?? HOT_CPU_PROFILE_SLOWBURN_THRESHOLD_DEFAULT_PERCENT
       )
     ),

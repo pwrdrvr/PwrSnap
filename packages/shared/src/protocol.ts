@@ -692,6 +692,24 @@ export type HotCpuProfileHeapSnapshotArtifact = {
   phase: string;
 };
 
+/** Which process a hot-CPU profiler instance watches and profiles.
+ *  GPU / utility processes cannot be JS-profiled, so they never appear
+ *  here — their CPU shows up in the per-process breakdown recorded in
+ *  every session's samples.ndjson instead. */
+export const HOT_CPU_PROFILE_TARGETS = ["renderer", "main"] as const;
+export type HotCpuProfileTarget = (typeof HOT_CPU_PROFILE_TARGETS)[number];
+
+export function isHotCpuProfileTarget(value: unknown): value is HotCpuProfileTarget {
+  return (
+    typeof value === "string" &&
+    (HOT_CPU_PROFILE_TARGETS as readonly string[]).includes(value)
+  );
+}
+
+export function formatHotCpuProfileTargetLabel(target: HotCpuProfileTarget): string {
+  return target === "main" ? "main process" : "renderer";
+}
+
 export type HotCpuProfileCapturedEvent = {
   capturedAt: string;
   heapSnapshotArtifacts?: HotCpuProfileHeapSnapshotArtifact[];
@@ -699,6 +717,7 @@ export type HotCpuProfileCapturedEvent = {
   profilePath: string;
   sessionDirectory: string;
   sessionDirectoryName: string;
+  target: HotCpuProfileTarget;
   triggerConsecutiveSamples: number;
   triggerCpuPercent: number;
   triggerMode: HotCpuProfileTriggerMode;
@@ -757,13 +776,14 @@ export function buildHotCpuProfileHandoffMessage(
       : [];
 
   return [
-    "PwrSnap captured a renderer CPU profile.",
+    `PwrSnap captured a ${formatHotCpuProfileTargetLabel(event.target)} CPU profile.`,
     "Analyze these artifacts as evidence; do not assume the captured issue is still active.",
     `Trigger: ${formatHotCpuProfileTriggerSummary(event)}`,
     `Session: ${event.sessionDirectory}`,
     `CPU profile: ${event.profilePath}`,
     ...heapSnapshotLines,
     "Sidecars: session.json, samples.ndjson, events.ndjson",
+    "samples.ndjson includes a per-process CPU breakdown (browser/gpu/renderer/utility), so check it for heat in processes that cannot be JS-profiled (e.g. GPU).",
     "Open the .cpuprofile in Chrome DevTools Performance, or inspect the session directory for samples, events, and optional heap snapshots."
   ].join("\n");
 }

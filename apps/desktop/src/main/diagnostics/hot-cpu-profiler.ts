@@ -1,3 +1,10 @@
+// Generalized hot-CPU monitor + profiler. One instance watches one
+// process (its "target"): the renderer (CDP via webContents.debugger)
+// or the Electron main process (node:inspector — see
+// main-process-hot-cpu-target.ts). Both speak the same Profiler domain,
+// so a target is just a debugger-shaped adapter; the trigger, cooldown,
+// and heap-snapshot machinery is shared.
+
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { ProcessMetric } from "electron";
@@ -7,13 +14,14 @@ import type {
 } from "@pwrsnap/shared";
 import type { HotCpuProfileConfig } from "./hot-cpu-profile-config";
 import type { HotCpuProfileSession } from "./hot-cpu-profile-session";
+import { ProcessCpuBreakdownTracker } from "./process-cpu-breakdown";
 import { getMainLogger } from "../log";
 
 const CHROME_DEBUGGER_PROTOCOL_VERSION = "1.3";
 
 type Logger = Pick<Console, "info" | "warn" | "error">;
 
-type RendererDebugger = {
+export type HotCpuTargetDebugger = {
   attach: (version: string) => void;
   detach: () => void;
   isAttached: () => boolean;
@@ -22,8 +30,8 @@ type RendererDebugger = {
   off?: (event: "detach", listener: (event: unknown, reason: string) => void) => void;
 };
 
-type RendererHotCpuTarget = {
-  debugger: RendererDebugger;
+export type HotCpuTarget = {
+  debugger: HotCpuTargetDebugger;
   getOSProcessId: () => number;
   isDestroyed?: () => boolean;
   takeHeapSnapshot?: (filePath: string) => Promise<void>;
@@ -52,7 +60,7 @@ function artifactFilename(filePath: string): string {
   return path.basename(filePath);
 }
 
-export class RendererHotCpuProfiler {
+export class HotCpuProfiler {
   private readonly detachListener = (_event: unknown, reason: string) => {
     this.debuggerAttached = false;
     void this.session.appendEvent({
@@ -60,8 +68,9 @@ export class RendererHotCpuProfiler {
       type: "debugger-detached",
       detail: { reason }
     });
-    this.logger.warn("[pwrsnap:hot-cpu] renderer debugger detached", {
+    this.logger.warn("[pwrsnap:hot-cpu] target debugger detached", {
       reason,
+      target: this.session.target,
       sessionDirectory: this.session.directoryPath
     });
   };
@@ -75,7 +84,8 @@ export class RendererHotCpuProfiler {
     event: HotCpuProfileCapturedEvent
   ) => void | Promise<void>) | undefined;
   private readonly session: HotCpuProfileSession;
-  private readonly target: RendererHotCpuTarget;
+  private readonly target: HotCpuTarget;
+  private readonly processBreakdown = new ProcessCpuBreakdownTracker();
 
   private activeProfileHeapSnapshotCaptures = new Set<Promise<void>>();
   private activeProfileHeapSnapshots: HotCpuProfileHeapSnapshotArtifact[] = [];
@@ -100,7 +110,7 @@ export class RendererHotCpuProfiler {
     config: Extract<HotCpuProfileConfig, { enabled: true }>;
     getAppMetrics: () => ProcessMetric[];
     session: HotCpuProfileSession;
-    target: RendererHotCpuTarget;
+    target: HotCpuTarget;
     logger?: Logger;
     now?: () => Date;
     onHeapSnapshotLimitReached?: () => void | Promise<void>;
@@ -135,6 +145,7 @@ export class RendererHotCpuProfiler {
       }
     });
     this.logger.info("[pwrsnap:hot-cpu] monitoring started", {
+      target: this.session.target,
       sessionDirectory: this.session.directoryPath,
       startDelayMs: this.config.startDelayMs,
       triggerMode: this.config.triggerMode,
@@ -184,7 +195,9 @@ export class RendererHotCpuProfiler {
     const capturedAtMs = capturedAtDate.getTime();
     try {
       const pid = this.target.getOSProcessId();
-      const metric = this.getAppMetrics().find((candidate) => candidate.pid === pid);
+      const metrics = this.getAppMetrics();
+      const processes = this.processBreakdown.sample(metrics, capturedAtMs);
+      const metric = metrics.find((candidate) => candidate.pid === pid);
       if (!metric) {
         await this.session.appendEvent({
           capturedAt,
@@ -222,7 +235,8 @@ export class RendererHotCpuProfiler {
         idleWakeupsPerSecond: metric.cpu.idleWakeupsPerSecond,
         workingSetSize: metric.memory.workingSetSize,
         peakWorkingSetSize: metric.memory.peakWorkingSetSize,
-        consecutiveHotSamples: this.consecutiveHotSamples
+        consecutiveHotSamples: this.consecutiveHotSamples,
+        processes
       });
 
       if (this.shouldStartProfile(cpuUsage.cpuPercent, capturedAt)) {
@@ -365,6 +379,7 @@ export class RendererHotCpuProfiler {
       this.logger.warn("[pwrsnap:hot-cpu] CPU profile started", {
         cpuPercent: options.cpuPercent,
         pid: options.pid,
+        target: this.session.target,
         sessionDirectory: this.session.directoryPath
       });
 
@@ -425,11 +440,10 @@ export class RendererHotCpuProfiler {
       const result = (await this.target.debugger.sendCommand("Profiler.stop")) as {
         profile?: unknown;
       };
-      await fs.writeFile(
-        profilePath,
-        `${JSON.stringify(result.profile ?? {}, null, 2)}\n`,
-        "utf8"
-      );
+      // Compact stringify on purpose: a pretty-printed multi-MB profile
+      // costs real main-thread time (and 2-3x the bytes) at exactly the
+      // moment the app is already hot. DevTools reads both forms.
+      await fs.writeFile(profilePath, `${JSON.stringify(result.profile ?? {})}\n`, "utf8");
       await this.session.registerArtifact(profileFilename);
       await this.session.appendEvent({
         capturedAt: this.now().toISOString(),
@@ -449,6 +463,7 @@ export class RendererHotCpuProfiler {
         profilePath,
         sessionDirectory: this.session.directoryPath,
         sessionDirectoryName: this.session.directoryName,
+        target: this.session.target,
         ...activeProfileTrigger
       });
     } catch (error) {
@@ -477,6 +492,7 @@ export class RendererHotCpuProfiler {
     this.samplingPausedForProfile = false;
     this.previousCumulativeCpuSeconds = null;
     this.previousSampleAtMs = null;
+    this.processBreakdown.reset();
     if (this.stopped || this.intervalTimer || this.isTargetDestroyed()) return;
 
     this.scheduleNextSample();
@@ -617,8 +633,9 @@ export class RendererHotCpuProfiler {
       this.debuggerAttached = false;
     } catch (error) {
       this.debuggerAttached = false;
-      this.logger.warn("[pwrsnap:hot-cpu] renderer debugger detach failed", {
+      this.logger.warn("[pwrsnap:hot-cpu] target debugger detach failed", {
         error: serializeError(error),
+        target: this.session.target,
         sessionDirectory: this.session.directoryPath
       });
     }

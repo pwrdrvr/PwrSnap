@@ -158,7 +158,7 @@ describe("DeveloperPage", () => {
     expect(container?.textContent).toContain("Advanced");
     expect(container?.textContent).toContain("Developer");
     expect(container?.textContent).toContain("Show developer menu items");
-    expect(container?.textContent).toContain("Hot renderer CPU profiling");
+    expect(container?.textContent).toContain("Hot CPU profiling");
   });
 
   test("developer mode patches the existing general setting", async () => {

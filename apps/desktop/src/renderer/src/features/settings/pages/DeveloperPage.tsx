@@ -1,7 +1,8 @@
 // Settings → Developer.
 //
-// Keeps developer-only application menu controls and hot renderer CPU
-// diagnostics out of the default General page. The backing settings
+// Keeps developer-only application menu controls and hot CPU
+// diagnostics (renderer + main-process monitors) out of the default
+// General page. The backing settings
 // remain under `general.*` for compatibility with the existing menu
 // code and settings files; this page is just the advanced developer UI.
 
@@ -155,7 +156,7 @@ export function DeveloperPage(): ReactElement {
           <div className="pss__main-eyebrow">Advanced</div>
           <h1 className="pss__main-title">Developer</h1>
           <p className="pss__main-sub">
-            Developer menu controls and diagnostics for troubleshooting hot renderers.
+            Developer menu controls and diagnostics for troubleshooting hot processes.
           </p>
         </div>
       </div>
@@ -179,10 +180,10 @@ export function DeveloperPage(): ReactElement {
         </Row>
       </Card>
 
-      <Card eyebrow="DIAGNOSTICS" title="Hot renderer CPU profiling">
+      <Card eyebrow="DIAGNOSTICS" title="Hot CPU profiling">
         <Row
           label="CPU profile capture"
-          sub="Arms the Library renderer monitor and writes a DevTools .cpuprofile when CPU stays hot."
+          sub="Arms the Library renderer and main-process monitors; writes a DevTools .cpuprofile when either stays hot, with per-process CPU (incl. GPU) in the session samples."
           tag={hotCpuEnabled ? "monitoring" : "not armed"}
         >
           <div className="pss__update-channel">

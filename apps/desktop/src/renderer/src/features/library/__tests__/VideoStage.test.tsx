@@ -403,6 +403,60 @@ describe("VideoStage playhead loop", () => {
     expect(timecodeOf(stage)).toBe("0:02.0");
   });
 
+  // The persisted `durationSec` is wall-clock elapsed recording time
+  // (recording-service.ts), so it runs longer than the encoded media.
+  // For a real recording the rAF wrap threshold therefore sits past
+  // where the media ends and is never reached — which used to leave
+  // loop-in-range parked at the end after a single pass.
+  test("whole-clip loop-in-range loops on the element, not the rAF wrap", () => {
+    const stage = mountStage(false);
+    // `video` above is the whole clip: durationSec 10, range [0, 10].
+    expect(stage.querySelector("video")!.loop).toBe(true);
+  });
+
+  test("a trimmed range does not take the element's loop", () => {
+    const stage = mountStatefulStage({ start: 2, end: 6 });
+    expect(stage.querySelector("video")!.loop).toBe(false);
+  });
+
+  test("ended wraps a trimmed range whose out-point the wrap never reached", () => {
+    const raf = stubRaf();
+    const stage = mountStatefulStage({ start: 2, end: 10 });
+    const video = stage.querySelector("video")!;
+    const clock = stubMediaClock(video);
+    // Row says 10 s; the media really ends at 9.7 s, so `t >= 9.995`
+    // never happens and the element fires `ended` instead.
+    Object.defineProperty(video, "duration", { value: 9.7, configurable: true });
+
+    act(() => video.dispatchEvent(new Event("play")));
+    clock.t = 9.7;
+    raf.step();
+    // `stubMediaClock` stubs play()/pause(), so jsdom's own `paused`
+    // never moves — the resumed playback shows up as the call.
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    act(() => video.dispatchEvent(new Event("ended")));
+
+    expect(clock.t).toBe(2);
+    expect(play).toHaveBeenCalled();
+  });
+
+  // Guard against the inverse: a range start PAST the media end clamps
+  // straight back to the end and re-fires `ended`, so replaying there
+  // spins (measured 61 ended / 62 play() in 6 s before this guard).
+  test("ended does not replay when the range start is past the media end", () => {
+    const stage = mountStatefulStage({ start: 5, end: 10 });
+    const video = stage.querySelector("video")!;
+    stubMediaClock(video);
+    Object.defineProperty(video, "duration", { value: 2, configurable: true });
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+
+    act(() => video.dispatchEvent(new Event("play")));
+    play.mockClear();
+    act(() => video.dispatchEvent(new Event("ended")));
+
+    expect(play).not.toHaveBeenCalled();
+  });
+
   test("pausing stops the loop and leaves the head where the element is", () => {
     stubRect(800);
     const raf = stubRaf();

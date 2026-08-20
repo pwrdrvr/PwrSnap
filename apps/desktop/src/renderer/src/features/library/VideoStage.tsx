@@ -105,6 +105,31 @@ export function VideoStage({
   const loopRef = useRef(loopInRange);
   loopRef.current = loopInRange;
 
+  // Whole-clip loops wrap in the media pipeline via the element's own
+  // `loop` attribute — no JS seek per iteration, and (the reason this
+  // exists) no dependence on the rAF wrap observing the end at all.
+  //
+  // The wrap below fires at `range.end - 5 ms`, and `range.end` comes
+  // from the persisted `durationSec`, which is WALL-CLOCK elapsed
+  // recording time (`recording-service.ts`), not the encoded media
+  // duration. Wall clock always runs long — recorder startup, the
+  // dropped tail, the final partial GOP — so for a real recording the
+  // threshold sits PAST where the media actually ends and the rAF tick
+  // never reaches it. Measured on a 2 s file whose row claimed 2.3 s:
+  // loop-in-range played once and parked at the end, paused.
+  //
+  // Exact bounds, deliberately, rather than `isFullRange`: that 50 ms
+  // tolerance is for the "FULL CLIP" label, not for playback. Native
+  // looping always wraps the WHOLE media, so adopting it for a range
+  // trimmed a few px inside the ends would silently discard those
+  // in/out points. Every whole-clip range the app produces
+  // (`fullRange`, the recorder's seed) is exact, so the common case
+  // still gets it; anything hand-trimmed falls to the wrap + the
+  // `ended` recovery below.
+  const nativeLoop = loopInRange && range.start <= 0 && range.end >= durationSec;
+  const nativeLoopRef = useRef(nativeLoop);
+  nativeLoopRef.current = nativeLoop;
+
   const assets = useVideoTimelineAssets({
     captureId,
     stripWidthPx: stripWidth,
@@ -333,6 +358,26 @@ export function VideoStage({
       settleTime();
     };
     const onEnded = (): void => {
+      // Same drift as above, for a TRIMMED range whose out-point is the
+      // clip end: the rAF wrap can't reach `range.end`, so the media
+      // ends first and loop-in-range would just stop. Wrap here instead.
+      // (A full-clip loop never gets here — `loop` is on the element.)
+      //
+      // The target is checked against the ELEMENT's duration, not the
+      // persisted one, precisely because the two disagree. A `start`
+      // past the real end clamps straight back to the end and re-fires
+      // `ended`, so an unguarded replay spins: measured 61 `ended` /
+      // 62 `play()` calls in 6 s against a 2 s file whose row claimed
+      // 12.5 s. `el.duration` is NaN until metadata loads, hence the
+      // fallback.
+      const wrapTo = rangeRef.current.start;
+      const mediaEnd = Number.isFinite(el.duration) ? el.duration : Number.POSITIVE_INFINITY;
+      if (loopRef.current && shuttleRef.current === null && wrapTo < mediaEnd - 0.01) {
+        el.currentTime = wrapTo;
+        playhead.set(roundTime(wrapTo));
+        void el.play().catch(() => undefined);
+        return;
+      }
       setPlaying(false);
       stopShuttle();
       settleTime();
@@ -350,7 +395,7 @@ export function VideoStage({
       el.removeEventListener("ended", onEnded);
       el.removeEventListener("loadedmetadata", onLoaded);
     };
-  }, [captureId, settleTime, stopShuttle]);
+  }, [captureId, playhead, settleTime, stopShuttle]);
 
   // Smooth playhead: rAF while playing (timeupdate is ~4 Hz), plus the
   // loop-in-range wrap.
@@ -367,7 +412,7 @@ export function VideoStage({
     const tick = (): void => {
       const r = rangeRef.current;
       let t = el.currentTime;
-      if (loopRef.current && t >= r.end - 0.005) {
+      if (!nativeLoopRef.current && loopRef.current && t >= r.end - 0.005) {
         el.currentTime = r.start;
         t = r.start;
       }
@@ -448,6 +493,7 @@ export function VideoStage({
           src={captureSrcUrl(captureId)}
           playsInline
           preload="metadata"
+          loop={nativeLoop}
           onClick={() => runIntent({ type: "togglePlay" })}
           onDoubleClick={toggleFullscreen}
         />

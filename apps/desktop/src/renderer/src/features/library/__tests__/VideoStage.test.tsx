@@ -302,9 +302,12 @@ describe("VideoStage timeline drag vs playback", () => {
 
 // The playhead is published on its own channel (`shared/playhead.ts`)
 // rather than through `useState`, so a playing video does not re-render
-// the transport + timeline on every animation frame. What has to keep
-// working regardless: the head and the timecode still advance at frame
-// rate, and the loop-in-range wrap still fires.
+// the transport + timeline on every animation frame (#446) — and the
+// publish itself is throttled off vsync, because any per-frame DOM
+// mutation makes the compositor produce a frame at the DISPLAY's rate
+// (#447). What has to keep working regardless: the head and the
+// timecode still advance, discrete positions (wrap, seek, pause) land
+// immediately, and the loop-in-range wrap still fires every frame.
 describe("VideoStage playhead loop", () => {
   function stubMediaClock(el: HTMLVideoElement): { t: number } {
     const clock = { t: 0 };
@@ -321,8 +324,11 @@ describe("VideoStage playhead loop", () => {
     return clock;
   }
 
-  /** Hand-cranked rAF so a "frame" is a deliberate step, not a wait. */
-  function stubRaf(): { step: () => void; pending: () => boolean } {
+  /** Hand-cranked rAF so a "frame" is a deliberate step, not a wait.
+   *  `step` takes the frame timestamp because the publish throttle is
+   *  keyed off it — stepping without moving the clock is a frame the
+   *  head is SUPPOSED to skip. */
+  function stubRaf(): { step: (nowMs?: number) => void; pending: () => boolean } {
     let queued: FrameRequestCallback | null = null;
     let handle = 0;
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
@@ -334,12 +340,57 @@ describe("VideoStage playhead loop", () => {
       queued = null;
     });
     return {
-      step: (): void => {
+      step: (nowMs = 0): void => {
         const cb = queued;
         queued = null;
-        if (cb !== null) act(() => cb(0));
+        if (cb !== null) act(() => cb(nowMs));
       },
       pending: (): boolean => queued !== null
+    };
+  }
+
+  /** Hand-cranked `requestVideoFrameCallback`. jsdom has none, so an
+   *  element only gets one when a test says it does — which is also
+   *  what the production code relies on to fall back to rAF. */
+  function stubVideoFrameCallback(el: HTMLVideoElement): {
+    frame: (nowMs: number, mediaTimeSec: number) => void;
+    cancelled: () => boolean;
+  } {
+    let queued: VideoFrameRequestCallback | null = null;
+    let handle = 0;
+    let cancelled = false;
+    Object.defineProperty(el, "requestVideoFrameCallback", {
+      configurable: true,
+      value: (cb: VideoFrameRequestCallback): number => {
+        queued = cb;
+        handle += 1;
+        return handle;
+      }
+    });
+    Object.defineProperty(el, "cancelVideoFrameCallback", {
+      configurable: true,
+      value: (): void => {
+        cancelled = true;
+        queued = null;
+      }
+    });
+    return {
+      frame: (nowMs: number, mediaTimeSec: number): void => {
+        const cb = queued;
+        queued = null;
+        if (cb === null) return;
+        act(() =>
+          cb(nowMs, {
+            expectedDisplayTime: nowMs,
+            height: 1080,
+            mediaTime: mediaTimeSec,
+            presentationTime: nowMs,
+            presentedFrames: 1,
+            width: 1920
+          })
+        );
+      },
+      cancelled: (): boolean => cancelled
     };
   }
 
@@ -360,6 +411,11 @@ describe("VideoStage playhead loop", () => {
 
   const headOf = (stage: HTMLElement): HTMLElement =>
     stage.querySelector<HTMLElement>('[data-testid="video-timeline-playhead"]')!;
+  /** The head's x in px. Numeric, not the `transform` string: `sec /
+   *  duration * width` lands on 440.00000000000006 for plenty of
+   *  perfectly ordinary inputs. */
+  const headXOf = (stage: HTMLElement): number =>
+    Number(/translateX\(([-\d.]+)px\)/.exec(headOf(stage).style.transform)?.[1] ?? NaN);
   const timecodeOf = (stage: HTMLElement): string =>
     stage.querySelector('[data-testid="video-transport-time"] b')!.textContent ?? "";
 
@@ -367,7 +423,7 @@ describe("VideoStage playhead loop", () => {
     vi.restoreAllMocks();
   });
 
-  test("advances the head and the timecode every frame while playing", () => {
+  test("advances the head and the timecode while playing", () => {
     stubRect(800);
     const raf = stubRaf();
     const stage = mountStage(false);
@@ -377,14 +433,164 @@ describe("VideoStage playhead loop", () => {
     act(() => video.dispatchEvent(new Event("play")));
 
     clock.t = 4;
-    raf.step();
+    raf.step(1000);
     expect(headOf(stage).style.transform).toBe("translateX(320px)");
     expect(timecodeOf(stage)).toBe("0:04.0");
 
     clock.t = 6.25;
-    raf.step();
+    raf.step(1040);
     expect(headOf(stage).style.transform).toBe("translateX(500px)");
     expect(timecodeOf(stage)).toBe("0:06.2");
+  });
+
+  // The point of PR #447: a head that moves every rAF forces a
+  // compositor frame at every vsync — 120 Hz on a ProMotion display —
+  // which measured MORE CPU than decoding and compositing the video.
+  // See the rate constants in `VideoStage.tsx`.
+  test("publishes at most ~30 Hz, so vsync does not drive the compositor", () => {
+    stubRect(800);
+    const raf = stubRaf();
+    const stage = mountStage(false);
+    const video = stage.querySelector("video")!;
+    const clock = stubMediaClock(video);
+
+    act(() => video.dispatchEvent(new Event("play")));
+
+    clock.t = 4;
+    raf.step(1000);
+    expect(headXOf(stage)).toBeCloseTo(320, 6);
+
+    // Three 120 Hz frames inside the 33 ms window: the wrap check runs
+    // every one of them, the head moves on none of them.
+    clock.t = 4.1;
+    raf.step(1008);
+    clock.t = 4.2;
+    raf.step(1016);
+    clock.t = 4.3;
+    raf.step(1024);
+    expect(headXOf(stage)).toBeCloseTo(320, 6);
+    expect(raf.pending()).toBe(true);
+
+    clock.t = 4.5;
+    raf.step(1033);
+    expect(headXOf(stage)).toBeCloseTo(360, 6);
+  });
+
+  // Discrete jumps must never be swallowed by the throttle — the
+  // picture snaps back at the out-point, so a head still drawing the
+  // far end for a beat reads as a glitch.
+  test("the loop-in-range wrap places the head immediately", () => {
+    stubRect(800);
+    const raf = stubRaf();
+    const stage = mountStatefulStage({ start: 2, end: 6 });
+    const video = stage.querySelector("video")!;
+    const clock = stubMediaClock(video);
+
+    act(() => video.dispatchEvent(new Event("play")));
+    clock.t = 5.5;
+    raf.step(1000);
+    expect(headXOf(stage)).toBeCloseTo(440, 6);
+
+    // 8 ms later — well inside the throttle window — the range ends.
+    clock.t = 6;
+    raf.step(1008);
+    expect(clock.t).toBe(2);
+    expect(headXOf(stage)).toBeCloseTo(160, 6);
+  });
+
+  // A seek is user-driven and discrete: it goes through `publishTime`,
+  // not the throttled playback path, so it lands on the frame it
+  // happens on no matter where the throttle window sits.
+  test("a scrub during playback places the head immediately", () => {
+    stubRect(800);
+    const raf = stubRaf();
+    const stage = mountStage(false);
+    const video = stage.querySelector("video")!;
+    const clock = stubMediaClock(video);
+
+    act(() => video.dispatchEvent(new Event("play")));
+    clock.t = 4;
+    raf.step(1000);
+    expect(headXOf(stage)).toBeCloseTo(320, 6);
+
+    const strip = stage.querySelector<HTMLElement>('[data-testid="video-timeline"] .vtl__strip')!;
+    act(() => {
+      strip.dispatchEvent(
+        new MouseEvent("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 600,
+          clientY: 5,
+          button: 0
+        })
+      );
+    });
+    expect(headXOf(stage)).toBeCloseTo(600, 6);
+    expect(timecodeOf(stage)).toBe("0:07.5");
+  });
+
+  // rVFC fires once per DECODED frame, so it self-limits to the media
+  // rate — there is no reason to move the head faster than the picture.
+  test("requestVideoFrameCallback drives the head when the element has it", () => {
+    stubRect(800);
+    const raf = stubRaf();
+    const stage = mountStage(false);
+    const video = stage.querySelector("video")!;
+    const clock = stubMediaClock(video);
+    const vfc = stubVideoFrameCallback(video);
+
+    act(() => video.dispatchEvent(new Event("play")));
+
+    clock.t = 4;
+    vfc.frame(1000, 4);
+    expect(headXOf(stage)).toBeCloseTo(320, 6);
+
+    // Once rVFC has fired, the rAF loop backs off to the 100 ms gap
+    // floor: it keeps running the wrap check, but stops publishing.
+    clock.t = 4.5;
+    raf.step(1050);
+    expect(headXOf(stage)).toBeCloseTo(320, 6);
+
+    clock.t = 5;
+    vfc.frame(1060, 5);
+    expect(headXOf(stage)).toBeCloseTo(400, 6);
+  });
+
+  // VFR screen recordings can go a long time between frames when
+  // nothing on screen moved. The clock is still running, so the head
+  // must not stall with it.
+  test("rAF covers a long gap between decoded frames", () => {
+    stubRect(800);
+    const raf = stubRaf();
+    const stage = mountStage(false);
+    const video = stage.querySelector("video")!;
+    const clock = stubMediaClock(video);
+    const vfc = stubVideoFrameCallback(video);
+
+    act(() => video.dispatchEvent(new Event("play")));
+    clock.t = 1;
+    vfc.frame(1000, 1);
+    expect(headXOf(stage)).toBeCloseTo(80, 6);
+
+    clock.t = 3;
+    raf.step(1101);
+    expect(headXOf(stage)).toBeCloseTo(240, 6);
+  });
+
+  test("pausing cancels the video-frame callback too", () => {
+    stubRect(800);
+    stubRaf();
+    const stage = mountStage(false);
+    const video = stage.querySelector("video")!;
+    stubMediaClock(video);
+    const vfc = stubVideoFrameCallback(video);
+
+    act(() => video.dispatchEvent(new Event("play")));
+    vfc.frame(1000, 1);
+    expect(vfc.cancelled()).toBe(false);
+
+    act(() => video.dispatchEvent(new Event("pause")));
+    expect(vfc.cancelled()).toBe(true);
   });
 
   test("loop-in-range still wraps the element back to the in-point", () => {

@@ -72,6 +72,49 @@ export type VideoStageProps = {
 
 const FILM_LANE_H = 56;
 
+// ── how fast the playhead is allowed to move ────────────────────────
+//
+// PR #446 took React off the playhead path; React is now absent from
+// renderer profiles during playback. What was left is not JS at all —
+// it is compositor frame production. ANY DOM mutation inside a frame
+// makes Chromium produce a compositor frame at that vsync, so a head
+// that moves every rAF pins frame production at the DISPLAY's rate
+// (120 Hz on ProMotion) instead of the ~48 Hz these VFR screen
+// recordings actually decode at. Measured A/B on a real capture, window
+// forced visible, display confirmed at 120 fps:
+//
+//   | variant                            | GPU proc | renderer |
+//   | video alone (native loop attr)     |   6.0 %  |   5.2 %  |
+//   | + JS seek loop (loop-in-range)     |   7.9 %  |   6.2 %  |
+//   | + filmstrip image, head FROZEN     |   8.4 %  |   6.2 %  |
+//   | + head moving every rAF (120 Hz)   |  18.1 %  |  14.1 %  |
+//   | + head throttled to ~30 Hz         |  11.4 %  |   9.1 %  |
+//
+// The moving head cost more than decoding and compositing the video
+// itself. Raster runs in the GPU process under out-of-process
+// rasterization, which is why it lands there and not in the renderer.
+//
+// Ruled out by measurement — do not retry these:
+//   • `will-change: transform` / `translateZ(0)` layer promotion on the
+//     head and/or the strip: 19.3 % vs 18.1 %, i.e. nothing.
+//   • The rounded border + `overflow: hidden` on `.psl__video-frame`:
+//     no measurable effect.
+//   • wavesurfer: built with `interact: false`, `cursorWidth: 0`, and
+//     never bound to the media element — it is static during playback.
+
+/** Ceiling on head publishes while playing. A 1 px line and a tenths-of-
+ *  a-second timecode gain nothing above ~30 Hz. */
+const PLAYHEAD_MIN_PUBLISH_MS = 33;
+
+/** Floor, once `requestVideoFrameCallback` is doing the driving. rVFC
+ *  fires once per DECODED frame, which is exactly the right rate —
+ *  there is no reason to move the head faster than the picture. But
+ *  these are VFR screen recordings: a stretch where nothing on screen
+ *  moved can go a long time between frames, and the head would visibly
+ *  stall even though the clock is running. The rAF loop covers that
+ *  gap. 100 ms is the tenths resolution the timecode renders at. */
+const PLAYHEAD_MAX_GAP_MS = 100;
+
 export function VideoStage({
   record,
   video,
@@ -397,8 +440,18 @@ export function VideoStage({
     };
   }, [captureId, playhead, settleTime, stopShuttle]);
 
-  // Smooth playhead: rAF while playing (timeupdate is ~4 Hz), plus the
-  // loop-in-range wrap.
+  // Smooth playhead: a frame loop while playing (timeupdate is ~4 Hz),
+  // plus the loop-in-range wrap.
+  //
+  // Two rates, deliberately, and they are not the same rate:
+  //
+  //   • The WRAP CHECK runs every animation frame. It has to — being a
+  //     frame late on the out-point is visible — and it costs nothing
+  //     at the compositor because setting `el.currentTime` mutates the
+  //     media pipeline, not the DOM.
+  //   • The PUBLISH is throttled. It is the only thing here that
+  //     touches the DOM, and that is what drives the whole rendering
+  //     pipeline — see `PLAYHEAD_MIN_PUBLISH_MS`.
   //
   // Publishes to `playhead` ONLY. `setCurrentTime` here re-rendered the
   // transport and the timeline — ~180 elements, one tick span per
@@ -408,19 +461,67 @@ export function VideoStage({
   useEffect(() => {
     const el = videoRef.current;
     if (el === null || !playing) return;
+
     let raf = 0;
-    const tick = (): void => {
+    let vfc = 0;
+    let lastPublishMs = Number.NEGATIVE_INFINITY;
+    // Flips on the first `requestVideoFrameCallback`, after which the
+    // rAF loop stops publishing except to cover a gap. Latching on the
+    // callback rather than on feature detection matters: rVFC EXISTS on
+    // every Chromium `HTMLVideoElement` but only FIRES when frames are
+    // actually being presented. Detecting the method and handing it the
+    // job would stall the head wherever it doesn't fire (jsdom, a
+    // suspended surface, an element with no decodable frames).
+    let vfcDriving = false;
+
+    /** Publish unless one landed less than `minGapMs` ago. `0` forces —
+     *  used for discrete jumps, which must never be swallowed. */
+    const publish = (nowMs: number, sec: number, minGapMs: number): void => {
+      if (nowMs - lastPublishMs < minGapMs) return;
+      lastPublishMs = nowMs;
+      playhead.set(roundTime(sec));
+    };
+
+    const tick = (nowMs: number): void => {
       const r = rangeRef.current;
       let t = el.currentTime;
       if (!nativeLoopRef.current && loopRef.current && t >= r.end - 0.005) {
         el.currentTime = r.start;
-        t = r.start;
+        // The wrap is a discrete jump, not continuous motion — a
+        // throttled head would keep drawing the far end for a beat
+        // after the picture had already snapped back.
+        publish(nowMs, r.start, 0);
+      } else {
+        publish(nowMs, t, vfcDriving ? PLAYHEAD_MAX_GAP_MS : PLAYHEAD_MIN_PUBLISH_MS);
       }
-      playhead.set(roundTime(t));
       raf = requestAnimationFrame(tick);
     };
+
+    const onVideoFrame = (nowMs: number, meta: VideoFrameCallbackMetadata): void => {
+      vfcDriving = true;
+      // `mediaTime` is the presentation time of the frame that is
+      // actually on screen — a truer head than `currentTime`, which has
+      // already run on past it. Except across a wrap: a frame decoded
+      // just before the out-point can arrive after the wrap already put
+      // the head back at the in-point, and publishing it would flick
+      // the head to the far end for an interval. A disagreement that
+      // large is always a seek or a wrap, so defer to the element.
+      const sec =
+        Math.abs(meta.mediaTime - el.currentTime) > 0.25 ? el.currentTime : meta.mediaTime;
+      publish(nowMs, sec, PLAYHEAD_MIN_PUBLISH_MS);
+      vfc = el.requestVideoFrameCallback(onVideoFrame);
+    };
+
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    if (typeof el.requestVideoFrameCallback === "function") {
+      vfc = el.requestVideoFrameCallback(onVideoFrame);
+    }
+    return () => {
+      cancelAnimationFrame(raf);
+      if (vfc !== 0 && typeof el.cancelVideoFrameCallback === "function") {
+        el.cancelVideoFrameCallback(vfc);
+      }
+    };
   }, [playhead, playing]);
 
   // Capture switch: reset transient state.

@@ -30,6 +30,7 @@ import {
   type ReactElement
 } from "react";
 import type { VideoFramesResult, VideoRange } from "@pwrsnap/shared";
+import type { PlayheadSource } from "./playhead";
 import { SequenceWaveform } from "./SequenceWaveform";
 import {
   clampRange,
@@ -46,8 +47,16 @@ import {
 
 export type VideoTimelineProps = {
   durationSec: number;
-  /** Playhead position. Ignored (not rendered) in `compact` mode. */
+  /** Playhead position. Ignored (not rendered) in `compact` mode.
+   *  During playback this prop only carries DISCRETE positions (seek,
+   *  pause) — the live head arrives on `playhead`. */
   currentTime?: number | undefined;
+  /** Live playhead channel. When present the playhead line and the
+   *  slider's aria value are written straight to the DOM from a
+   *  subscription instead of re-rendering this subtree every frame;
+   *  `currentTime` is then only the initial / fallback position. See
+   *  `playhead.ts`. Absent in `compact` mode (no playhead to draw). */
+  playhead?: PlayheadSource | undefined;
   range: VideoRange;
   /** Filmstrip descriptor from `video:frames`, `null` while loading /
    *  unavailable (lane renders an empty checker). */
@@ -90,10 +99,12 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
     onSeek,
     onRangeChange,
     onWidthChange,
+    playhead,
     compact = false
   } = props;
 
   const stripRef = useRef<HTMLDivElement | null>(null);
+  const playheadRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(0);
   const [drag, setDrag] = useState<{ mode: DragMode; sec: number } | null>(null);
   const dragRef = useRef<{ mode: DragMode; pointerId: number } | null>(null);
@@ -180,7 +191,10 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
       /* jsdom */
     }
     dragRef.current = { mode, pointerId: e.pointerId };
-    dragStartRef.current = { range, time: currentTime };
+    // The LIVE head, not the `currentTime` prop: during playback the
+    // prop only carries discrete positions, so an Escape-cancel keyed
+    // off it would restore the head to wherever playback last seeked.
+    dragStartRef.current = { range, time: playhead?.get() ?? currentTime };
     setInteracting(true);
     const sec = secAt(e.clientX);
     setDrag({ mode, sec });
@@ -275,9 +289,50 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   const cancelDragRef = useRef(cancelDrag);
   cancelDragRef.current = cancelDrag;
 
+  // Playhead placement runs OFF the render path — see `playhead.ts`.
+  // `transform` rather than `left` so a moving head never dirties
+  // layout, only the compositor.
+  const placePlayhead = useCallback(
+    (sec: number): void => {
+      const el = playheadRef.current;
+      if (el === null) return;
+      el.style.transform = `translateX(${secToPx(sec, durationSec, width)}px)`;
+    },
+    [durationSec, width]
+  );
+
+  // The slider's aria value follows the head, but only at the tenth-
+  // second precision `formatTimecode` renders — a screen reader has no
+  // use for 60 announcements a second, and each write is a DOM mutation.
+  const ariaTenthRef = useRef<number | null>(null);
+  const publishAria = useCallback((sec: number): void => {
+    const el = stripRef.current;
+    if (el === null) return;
+    const tenth = Math.floor(sec * 10);
+    if (ariaTenthRef.current === tenth) return;
+    ariaTenthRef.current = tenth;
+    el.setAttribute("aria-valuenow", String(sec));
+    el.setAttribute("aria-valuetext", formatTimecode(sec));
+  }, []);
+
+  useEffect(() => {
+    if (playhead === undefined) return;
+    return playhead.subscribe((sec) => {
+      placePlayhead(sec);
+      publishAria(sec);
+    });
+  }, [placePlayhead, playhead, publishAria]);
+
+  // Re-place after EVERY commit (no dep array): a render triggered by
+  // something else — a range change, a resize — re-renders the playhead
+  // element from the stale `currentTime` prop, and this puts the live
+  // position back before paint.
+  useLayoutEffect(() => {
+    placePlayhead(playhead?.get() ?? currentTime);
+  });
+
   const inX = secToPx(range.start, durationSec, width);
   const outX = secToPx(range.end, durationSec, width);
-  const playX = secToPx(currentTime, durationSec, width);
   const full = isFullRange(range, durationSec);
   const ticks = useMemo(
     () => (compact ? [] : tickMarks(durationSec, width)),
@@ -431,8 +486,8 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
         {/* Playhead */}
         {!compact && (
           <div
+            ref={playheadRef}
             className="vtl__playhead"
-            style={{ left: `${playX}px` }}
             aria-hidden="true"
             data-testid="video-timeline-playhead"
           />

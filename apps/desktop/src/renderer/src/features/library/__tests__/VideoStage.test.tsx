@@ -299,3 +299,125 @@ describe("VideoStage timeline drag vs playback", () => {
     }
   });
 });
+
+// The playhead is published on its own channel (`shared/playhead.ts`)
+// rather than through `useState`, so a playing video does not re-render
+// the transport + timeline on every animation frame. What has to keep
+// working regardless: the head and the timecode still advance at frame
+// rate, and the loop-in-range wrap still fires.
+describe("VideoStage playhead loop", () => {
+  function stubMediaClock(el: HTMLVideoElement): { t: number } {
+    const clock = { t: 0 };
+    // jsdom has no media pipeline: give the element a clock we drive.
+    Object.defineProperty(el, "currentTime", {
+      configurable: true,
+      get: () => clock.t,
+      set: (next: number) => {
+        clock.t = next;
+      }
+    });
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+    return clock;
+  }
+
+  /** Hand-cranked rAF so a "frame" is a deliberate step, not a wait. */
+  function stubRaf(): { step: () => void; pending: () => boolean } {
+    let queued: FrameRequestCallback | null = null;
+    let handle = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      queued = cb;
+      handle += 1;
+      return handle;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {
+      queued = null;
+    });
+    return {
+      step: (): void => {
+        const cb = queued;
+        queued = null;
+        if (cb !== null) act(() => cb(0));
+      },
+      pending: (): boolean => queued !== null
+    };
+  }
+
+  function stubRect(widthPx: number): void {
+    // jsdom has no layout; 800 px over a 10 s clip → 80 px per second.
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: widthPx,
+      bottom: 80,
+      width: widthPx,
+      height: 80,
+      toJSON: () => ({})
+    } as DOMRect);
+  }
+
+  const headOf = (stage: HTMLElement): HTMLElement =>
+    stage.querySelector<HTMLElement>('[data-testid="video-timeline-playhead"]')!;
+  const timecodeOf = (stage: HTMLElement): string =>
+    stage.querySelector('[data-testid="video-transport-time"] b')!.textContent ?? "";
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("advances the head and the timecode every frame while playing", () => {
+    stubRect(800);
+    const raf = stubRaf();
+    const stage = mountStage(false);
+    const video = stage.querySelector("video")!;
+    const clock = stubMediaClock(video);
+
+    act(() => video.dispatchEvent(new Event("play")));
+
+    clock.t = 4;
+    raf.step();
+    expect(headOf(stage).style.transform).toBe("translateX(320px)");
+    expect(timecodeOf(stage)).toBe("0:04.0");
+
+    clock.t = 6.25;
+    raf.step();
+    expect(headOf(stage).style.transform).toBe("translateX(500px)");
+    expect(timecodeOf(stage)).toBe("0:06.2");
+  });
+
+  test("loop-in-range still wraps the element back to the in-point", () => {
+    stubRect(800);
+    const raf = stubRaf();
+    const stage = mountStatefulStage({ start: 2, end: 6 });
+    const video = stage.querySelector("video")!;
+    const clock = stubMediaClock(video);
+
+    act(() => video.dispatchEvent(new Event("play")));
+
+    clock.t = 6;
+    raf.step();
+    expect(clock.t).toBe(2);
+    expect(headOf(stage).style.transform).toBe("translateX(160px)");
+    expect(timecodeOf(stage)).toBe("0:02.0");
+  });
+
+  test("pausing stops the loop and leaves the head where the element is", () => {
+    stubRect(800);
+    const raf = stubRaf();
+    const stage = mountStage(false);
+    const video = stage.querySelector("video")!;
+    const clock = stubMediaClock(video);
+
+    act(() => video.dispatchEvent(new Event("play")));
+    clock.t = 4;
+    raf.step();
+    expect(raf.pending()).toBe(true);
+
+    act(() => video.dispatchEvent(new Event("pause")));
+    expect(raf.pending()).toBe(false);
+    expect(headOf(stage).style.transform).toBe("translateX(320px)");
+    expect(timecodeOf(stage)).toBe("0:04.0");
+  });
+});

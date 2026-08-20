@@ -373,6 +373,41 @@ Run recipe, findings from the 2026-06 black-window investigation, and
 the clone-safety checklist:
 [docs/solutions/2026-06-12-library-startup-black-window-profiling.md](docs/solutions/2026-06-12-library-startup-black-window-profiling.md).
 
+## Multi-process trace harness — `PWRSNAP_TRACE=1`
+
+Env-gated, off by default, kept wired in production builds — same
+posture as the startup profiler above. Records an
+`Electron.contentTracing` Chrome trace across the browser, GPU, and
+every renderer, because the hot-CPU harness cannot explain a hot **GPU**
+process: that process runs no V8, so there is nothing to CPU-profile.
+Compositor frame cadence, tile raster, and overlay/CALayer attribution
+only exist in a trace.
+
+```bash
+PWRSNAP_TRACE=1 node apps/desktop/scripts/dev.mjs   # arms, records nothing
+kill -USR2 <main pid>                               # records 15 s (again = stop early)
+```
+
+Sessions land in `<userData>/diagnostics/trace/` laid out like a hot-cpu
+session, and `app.getAppMetrics()` is sampled into the same
+`events.ndjson` for the trace window — a trace shows what a process DID,
+not what it COST.
+
+Two things to know before measuring GPU-process CPU:
+
+- **Close DevTools first.** It composites through the same GPU process
+  and its Performance Monitor polls continuously; it inflated one
+  measurement by roughly 15 points. Drive the app over
+  `--remoteDebuggingPort` + `Runtime.evaluate` instead — CDP with no
+  domains enabled composites nothing.
+- **`ps`'s `%CPU` is a since-boot average.** Use `ps -o time=` deltas
+  over a wall window, the same cumulative-delta method the hot-CPU
+  harness uses.
+
+Worked example — the 2026-08 video-playback GPU burn, where a 1 px
+playhead was re-rasterizing a tile 120 times a second:
+[docs/solutions/2026-08-20-video-playback-gpu-process-burn.md](docs/solutions/2026-08-20-video-playback-gpu-process-burn.md).
+
 ## Repository conventions
 
 - **pnpm workspaces.** Apps in `apps/*`, packages in `packages/*`. Always run

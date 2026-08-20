@@ -1,10 +1,19 @@
 // Drives perf-bench/dist in headless Chromium and reports the renderer
-// JS cost of the video-stage playhead loop.
+// cost of one animation frame of video-stage playback.
 //
 //   node perf-bench/run.mjs [--seconds 15] [--runs 3] [--label baseline]
 //
-// Reports, per run: wall ms, total JS (non-idle) ms, ms attributed to
-// the React root work, ms per component, and observed rAF frames.
+// Reports, per run and averaged: total main-thread task time and its
+// script / style / layout breakdown (Performance.getMetrics deltas)
+// divided by the rAF frames actually observed in the same window, plus
+// DOM mutations per frame.
+//
+// `task` carries a fixed harness overhead (frame scheduling, the
+// mutation counter, the profiler) present in both arms — read the
+// script / style / layout columns, or the A/B delta.
+//
+// Which React the bundle was built against is detected at runtime, not
+// assumed: build with BENCH_REACT=development for the other arm.
 
 import http from "node:http";
 import fs from "node:fs";
@@ -24,10 +33,13 @@ const runs = Number(arg("runs", "3"));
 const label = arg("label", "run");
 
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
+// Trailing separator: without it a sibling directory whose name merely
+// starts with "dist" would satisfy the prefix check.
+const distRoot = dist + path.sep;
 const server = http.createServer((req, res) => {
   const rel = (req.url ?? "/").split("?")[0];
   const file = path.join(dist, rel === "/" ? "index.html" : rel);
-  if (!file.startsWith(dist) || !fs.existsSync(file)) {
+  if (!file.startsWith(distRoot) || !fs.existsSync(file)) {
     res.writeHead(404).end();
     return;
   }
@@ -39,8 +51,6 @@ const port = server.address().port;
 
 function analyze(profile) {
   const byId = new Map(profile.nodes.map((n) => [n.id, n]));
-  const parent = new Map();
-  for (const n of profile.nodes) for (const c of n.children ?? []) parent.set(c, n.id);
   const self = new Map();
   let total = 0;
   for (let i = 0; i < profile.samples.length; i += 1) {
@@ -48,52 +58,27 @@ function analyze(profile) {
     total += d;
     self.set(profile.samples[i], (self.get(profile.samples[i]) ?? 0) + d);
   }
-  const name = (n) => n.callFrame.functionName || "(anonymous)";
-  const inclusive = new Map();
-  for (const [id, t] of self) {
-    let cur = id;
-    const seen = new Set();
-    while (cur !== undefined && !seen.has(cur)) {
-      seen.add(cur);
-      inclusive.set(cur, (inclusive.get(cur) ?? 0) + t);
-      cur = parent.get(cur);
-    }
-  }
   let idle = 0;
   let program = 0;
   for (const [id, t] of self) {
     const n = byId.get(id);
     if (n === undefined) continue;
-    if (name(n) === "(idle)") idle += t;
-    if (name(n) === "(program)") program += t;
+    const name = n.callFrame.functionName || "(anonymous)";
+    if (name === "(idle)") idle += t;
+    if (name === "(program)") program += t;
   }
-  const best = (needle) => {
-    let out = 0;
-    for (const [id, t] of inclusive) {
-      const n = byId.get(id);
-      if (n !== undefined && name(n) === needle) out = Math.max(out, t);
-    }
-    return out;
-  };
-  const byName = new Map();
-  for (const [id, t] of inclusive) {
-    const n = byId.get(id);
-    if (n === undefined) continue;
-    const url = (n.callFrame.url ?? "").split("/").pop();
-    const k = `${name(n)}`;
-    byName.set(k, Math.max(byName.get(k) ?? 0, t));
-    void url;
-  }
+  // `jsMs` is a cross-check on the engine metrics, not the headline:
+  // per-component attribution is not available in a production React
+  // build (the frame names are minified away), which is why the report
+  // is built on Performance.getMetrics instead.
   return {
     totalMs: total / 1000,
-    idleMs: idle / 1000,
     programMs: program / 1000,
-    jsMs: (total - idle - program) / 1000,
-    reactMs: Math.max(best("performWorkUntilDeadline"), best("performWorkOnRoot")) / 1000,
-    rafMs: best("tick") / 1000
+    jsMs: (total - idle - program) / 1000
   };
 }
 
+let reactArm = "unknown React build";
 const browser = await chromium.launch({
   args: ["--force-device-scale-factor=2", "--autoplay-policy=no-user-gesture-required"]
 });
@@ -104,6 +89,9 @@ for (let i = 0; i < runs; i += 1) {
   await page.waitForSelector("[data-testid=video-timeline]");
   await page.waitForTimeout(500);
   if (i === 0) {
+    // The page reports which react-dom it was built against; the
+    // header must never assert an arm the bundle did not use.
+    reactArm = await page.evaluate(() => window.__bench.reactArm);
     const dom = await page.evaluate(() => ({
       stripWidth: document.querySelector(".vtl__strip")?.getBoundingClientRect().width,
       ticks: document.querySelectorAll(".vtl__tick").length,
@@ -134,16 +122,18 @@ for (let i = 0; i < runs; i += 1) {
     styleMs: metric("RecalcStyleDuration"),
     taskMs: metric("TaskDuration")
   };
-  const { frames, mutations } = await page.evaluate(() => window.__bench.stop());
+  // `elapsedMs` is the counter's OWN window, which is longer than
+  // `seconds` (the 300 ms settle plus the Profiler.stop / getMetrics
+  // round trip). Dividing by `seconds` instead inflated fps ~4 % and
+  // understated every per-frame figure by the same margin.
+  const { frames, mutations, elapsedMs } = await page.evaluate(() => window.__bench.stop());
   const stats = analyze(profile);
   results.push({
     ...stats,
     ...engine,
     frames,
     mutations,
-    fps: frames / seconds,
-    usPerFrame: ((stats.jsMs + stats.programMs) * 1000) / Math.max(frames, 1),
-    jsUsPerFrame: (stats.jsMs * 1000) / Math.max(frames, 1),
+    fps: (frames * 1000) / Math.max(elapsedMs, 1),
     mutPerFrame: mutations / Math.max(frames, 1)
   });
   await page.close();
@@ -154,7 +144,7 @@ await browser.close();
 
 const avg = (k) => results.reduce((a, r) => a + r[k], 0) / results.length;
 const fmt = (n) => n.toFixed(1).padStart(8);
-console.log(`\n=== ${label} — ${runs} runs × ${seconds}s (React production build)`);
+console.log(`\n=== ${label} — ${runs} runs × ${seconds}s (${reactArm})`);
 console.log(`   wall    task  script   style  layout  mut/frm     fps`);
 for (const r of results) {
   console.log(
@@ -163,6 +153,8 @@ for (const r of results) {
     )}${fmt(r.fps)}`
   );
 }
+// Engine metrics cover the profile window only, so scale by the frames
+// that window saw — the measured rate times its length.
 const perFrame = (k) => (avg(k) * 1000) / (avg("fps") * seconds);
 console.log(
   `AVG per frame: task ${perFrame("taskMs").toFixed(0)} us  ` +
@@ -184,13 +176,13 @@ console.log(
     label,
     seconds,
     runs,
+    reactArm,
     avg: {
       js: avg("jsMs"),
       taskUsPerFrame: perFrame("taskMs"),
       scriptUsPerFrame: perFrame("scriptMs"),
       styleUsPerFrame: perFrame("styleMs"),
       layoutUsPerFrame: perFrame("layoutMs"),
-      usPerFrame: avg("usPerFrame"),
       mutPerFrame: avg("mutPerFrame"),
       fps: avg("fps"),
       wall: avg("totalMs")

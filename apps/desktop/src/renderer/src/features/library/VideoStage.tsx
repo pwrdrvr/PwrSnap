@@ -255,8 +255,20 @@ export function VideoStage({
       el.currentTime = loopRef.current ? r.start : 0;
     }
     el.playbackRate = 1;
+    // Publish the snap BEFORE handing off to the element. If `play()`
+    // rejects — a decode failure on a damaged capture, an autoplay
+    // block — no `play` event fires, neither frame loop below starts,
+    // and nothing else would ever correct the head; the transport would
+    // go on reading the pre-snap position while the element sits at the
+    // in-point.
+    //
+    // Straight through `settleTime`, not the loop's throttled
+    // `publish`: that rate limit is scoped to the playback effect and
+    // governs continuous motion. A discrete jump must never be
+    // swallowed.
+    settleTime();
     void el.play().catch(() => undefined);
-  }, [durationSec, stopShuttle]);
+  }, [durationSec, settleTime, stopShuttle]);
 
   // Scrubbing the timeline (body scrub or a trim handle) pauses for the
   // duration of the gesture and restores playback on release. Without

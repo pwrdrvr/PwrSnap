@@ -27,11 +27,35 @@ const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
   return i === -1 ? fallback : process.argv[i + 1];
 };
-const videoPath = arg("video", null);
-const seconds = Number(arg("seconds", "16"));
-const rounds = Number(arg("rounds", "3"));
-const filmPath = arg("film", path.join(__dirname, "filmstrip.png"));
-if (videoPath === null) throw new Error("--video <path> required");
+/** Validated inside `run`, never at module scope. A throw while the
+ *  main script is loading does not exit Electron — it puts up a modal
+ *  "App threw an error during load" dialog and waits for a click, which
+ *  is the same stranded-window failure this harness is trying to avoid.
+ *
+ *  A benchmark that silently accepts nonsense also prints nonsense in
+ *  the same table as real data: `--seconds x` gives NaN, `sleep(NaN)`
+ *  resolves on the next tick (setTimeout coerces NaN to 0), and every
+ *  CPU row comes out `Infinity%`. */
+function config() {
+  const positive = (name, fallback) => {
+    const value = Number(arg(name, fallback));
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error(`--${name} must be a positive number`);
+    }
+    return value;
+  };
+  // `arg` yields undefined, not the fallback, when the flag is last on
+  // the command line with no value after it.
+  const videoPath = arg("video", null) ?? null;
+  if (videoPath === null) throw new Error("--video <path> required");
+  if (!existsSync(videoPath)) throw new Error(`--video not found: ${videoPath}`);
+  return {
+    videoPath,
+    seconds: positive("seconds", "16"),
+    rounds: positive("rounds", "3"),
+    filmPath: arg("film", path.join(__dirname, "filmstrip.png")) ?? ""
+  };
+}
 
 const ARMS = ["frozen", "raf", "throttled"];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -45,9 +69,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *  order of magnitude low (it is normalized across cores), so it gets
  *  the A/B ratio right but not the scale Activity Monitor shows. */
 const cpuSeconds = (pid) => {
-  const out = execFileSync("ps", ["-o", "cputime=", "-p", String(pid)], { encoding: "utf8" }).trim();
+  // `ps` EXITS NON-ZERO for a pid that is gone, so this throws rather
+  // than returning empty — and a GPU-process restart mid-run is routine
+  // under exactly the sustained video load this harness produces.
+  let out;
+  try {
+    out = execFileSync("ps", ["-o", "cputime=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+  } catch {
+    return null;
+  }
   if (out === "") return null;
-  const parts = out.split(/[:.]/).map(Number); // [mm, ss, hundredths] or [hh, mm, ss, hundredths]
+  // macOS `ps` always prints MM:SS.cc, with minutes unbounded rather
+  // than rolling into an hours field (`8463:04.83` is real output).
+  const parts = out.split(/[:.]/).map(Number);
   const cs = parts.pop();
   let secs = cs / 100;
   let mult = 1;
@@ -81,7 +118,20 @@ async function sample(ms) {
 
 app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 
-app.whenReady().then(async () => {
+/** Reject rather than hang. Every await in `run` is either a promise
+ *  the page controls or a fixed sleep; a page that never answers used
+ *  to strand the run behind a screen-saver-level always-on-top window
+ *  that only `kill` could clear. */
+const withTimeout = (promise, ms, what) =>
+  Promise.race([
+    promise,
+    sleep(ms).then(() => {
+      throw new Error(`timed out after ${ms} ms: ${what}`);
+    })
+  ]);
+
+async function run() {
+  const { videoPath, seconds, rounds, filmPath } = config();
   const win = new BrowserWindow({
     width: 1040,
     height: 640,
@@ -96,8 +146,12 @@ app.whenReady().then(async () => {
 
   const src = `file://${encodeURI(videoPath)}`;
   const film = existsSync(filmPath) ? `file://${encodeURI(path.resolve(filmPath))}` : "none";
-  const meta = await win.webContents.executeJavaScript(
-    `window.bench.load(${JSON.stringify(src)}, ${JSON.stringify(film)})`
+  const meta = await withTimeout(
+    win.webContents.executeJavaScript(
+      `window.bench.load(${JSON.stringify(src)}, ${JSON.stringify(film)})`
+    ),
+    30_000,
+    "loading the video"
   );
   console.log(`media: ${meta.duration.toFixed(1)} s · requestVideoFrameCallback: ${meta.hasVfc}`);
 
@@ -135,5 +189,18 @@ app.whenReady().then(async () => {
         `${mean(rs.map((r) => r.fps)).toFixed(1).padStart(7)}`
     );
   }
-  app.quit();
+}
+
+app.whenReady().then(async () => {
+  try {
+    await run();
+  } catch (err) {
+    console.error(`bench failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  } finally {
+    // ALWAYS. The window is always-on-top at screen-saver level, so a
+    // run that dies without quitting sits on top of everything the
+    // operator is doing until they find and kill the process.
+    app.quit();
+  }
 });

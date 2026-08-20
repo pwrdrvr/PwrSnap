@@ -545,15 +545,40 @@ describe("VideoStage playhead loop", () => {
     vfc.frame(1000, 4);
     expect(headXOf(stage)).toBeCloseTo(320, 6);
 
-    // Once rVFC has fired, the rAF loop backs off to the 100 ms gap
-    // floor: it keeps running the wrap check, but stops publishing.
+    // Once rVFC has fired, the rAF loop backs off to the gap floor: it
+    // keeps running the wrap check, but stops publishing.
     clock.t = 4.5;
-    raf.step(1050);
+    raf.step(1040);
     expect(headXOf(stage)).toBeCloseTo(320, 6);
 
     clock.t = 5;
     vfc.frame(1060, 5);
     expect(headXOf(stage)).toBeCloseTo(400, 6);
+  });
+
+  // The head follows the element, not `meta.mediaTime`: a frame decoded
+  // just before a loop wrap arrives AFTER the wrap has already put the
+  // head back at the in-point, and drawing its `mediaTime` would flick
+  // the head to the far end. No magnitude heuristic survives a range
+  // shorter than the threshold, and `MIN_RANGE_SEC` is 0.1 s.
+  test("a video frame published after a wrap draws the wrapped position", () => {
+    stubRect(800);
+    const raf = stubRaf();
+    const stage = mountStatefulStage({ start: 2, end: 2.1 });
+    const video = stage.querySelector("video")!;
+    const clock = stubMediaClock(video);
+    const vfc = stubVideoFrameCallback(video);
+
+    act(() => video.dispatchEvent(new Event("play")));
+    clock.t = 2.1;
+    raf.step(1000);
+    expect(clock.t).toBe(2);
+    expect(headXOf(stage)).toBeCloseTo(160, 6);
+
+    // The straggler: decoded at 2.09, delivered after the wrap. Only
+    // 0.09 s from the wrapped position, so no threshold saves this.
+    vfc.frame(1040, 2.09);
+    expect(headXOf(stage)).toBeCloseTo(160, 6);
   });
 
   // VFR screen recordings can go a long time between frames when
@@ -573,7 +598,7 @@ describe("VideoStage playhead loop", () => {
     expect(headXOf(stage)).toBeCloseTo(80, 6);
 
     clock.t = 3;
-    raf.step(1101);
+    raf.step(1051);
     expect(headXOf(stage)).toBeCloseTo(240, 6);
   });
 

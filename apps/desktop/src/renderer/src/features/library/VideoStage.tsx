@@ -112,8 +112,15 @@ const PLAYHEAD_MIN_PUBLISH_MS = 33;
  *  these are VFR screen recordings: a stretch where nothing on screen
  *  moved can go a long time between frames, and the head would visibly
  *  stall even though the clock is running. The rAF loop covers that
- *  gap. 100 ms is the tenths resolution the timecode renders at. */
-const PLAYHEAD_MAX_GAP_MS = 100;
+ *  gap.
+ *
+ *  50 ms, NOT the 100 ms the timecode's own tenths resolution suggests:
+ *  sampling a signal at its own period cannot reproduce it. rAF is
+ *  quantized to vsync, so a 100 ms floor yields real gaps of 100–108 ms,
+ *  which beat against `floor(sec * 10)` and drop a tenth outright every
+ *  couple of seconds — the readout visibly jumps 0:04.1 → 0:04.3. Two
+ *  publishes per tenth is the cheapest rate that always lands one. */
+const PLAYHEAD_MAX_GAP_MS = 50;
 
 export function VideoStage({
   record,
@@ -497,18 +504,20 @@ export function VideoStage({
       raf = requestAnimationFrame(tick);
     };
 
-    const onVideoFrame = (nowMs: number, meta: VideoFrameCallbackMetadata): void => {
+    const onVideoFrame = (nowMs: number): void => {
       vfcDriving = true;
-      // `mediaTime` is the presentation time of the frame that is
-      // actually on screen — a truer head than `currentTime`, which has
-      // already run on past it. Except across a wrap: a frame decoded
-      // just before the out-point can arrive after the wrap already put
-      // the head back at the in-point, and publishing it would flick
-      // the head to the far end for an interval. A disagreement that
-      // large is always a seek or a wrap, so defer to the element.
-      const sec =
-        Math.abs(meta.mediaTime - el.currentTime) > 0.25 ? el.currentTime : meta.mediaTime;
-      publish(nowMs, sec, PLAYHEAD_MIN_PUBLISH_MS);
+      // Deliberately `el.currentTime`, not the callback's
+      // `meta.mediaTime`. rVFC's value here is WHEN it fires — once per
+      // presented frame, which is what limits the rate to the media's —
+      // not what it reports. `mediaTime` is the truer head by less than
+      // one frame, which is below what a 1 px line and a tenths
+      // timecode can show, and trusting it needs a staleness heuristic:
+      // a frame decoded just before a loop wrap arrives AFTER the wrap
+      // put the head back at the in-point, so publishing its
+      // `mediaTime` flicks the head to the far end. Any magnitude
+      // threshold for that stops working once the trimmed range is
+      // shorter than the threshold, and `MIN_RANGE_SEC` is 0.1 s.
+      publish(nowMs, el.currentTime, PLAYHEAD_MIN_PUBLISH_MS);
       vfc = el.requestVideoFrameCallback(onVideoFrame);
     };
 

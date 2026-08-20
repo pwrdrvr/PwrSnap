@@ -35,7 +35,7 @@
   // "frozen"    — the baseline the change is aiming at: everything
   //               mounted and decoding, head never moves.
   const PLAYHEAD_MIN_PUBLISH_MS = 33;
-  const PLAYHEAD_MAX_GAP_MS = 100;
+  const PLAYHEAD_MAX_GAP_MS = 50;
 
   const v = document.getElementById("v");
   const head = document.getElementById("head");
@@ -105,10 +105,11 @@
       raf = requestAnimationFrame(tick);
     };
 
-    const onVideoFrame = (nowMs, meta) => {
+    const onVideoFrame = (nowMs) => {
+      // `el.currentTime`, not `meta.mediaTime` — rVFC's value here is
+      // WHEN it fires, not what it reports. Mirrors VideoStage.
       vfcDriving = true;
-      const sec = Math.abs(meta.mediaTime - v.currentTime) > 0.25 ? v.currentTime : meta.mediaTime;
-      publish(nowMs, sec, PLAYHEAD_MIN_PUBLISH_MS);
+      publish(nowMs, v.currentTime, PLAYHEAD_MIN_PUBLISH_MS);
       vfc = v.requestVideoFrameCallback(onVideoFrame);
     };
 
@@ -122,7 +123,24 @@
     async load(src, filmUrl) {
       document.getElementById("film").style.setProperty("--film", `url("${filmUrl}")`);
       v.src = src;
-      await new Promise((r) => v.addEventListener("loadedmetadata", r, { once: true }));
+      // Reject, never hang: a path the element cannot open fires
+      // `error` and never `loadedmetadata`, and the main process is
+      // sitting behind an always-on-top window waiting on this promise.
+      await new Promise((resolve, reject) => {
+        const done = (fn, arg) => {
+          v.removeEventListener("loadedmetadata", ok);
+          v.removeEventListener("error", fail);
+          fn(arg);
+        };
+        const ok = () => done(resolve);
+        const fail = () =>
+          done(reject, new Error(`cannot decode ${src}: ${v.error?.message ?? "media error"}`));
+        v.addEventListener("loadedmetadata", ok);
+        v.addEventListener("error", fail);
+      });
+      if (!Number.isFinite(v.duration) || v.duration <= 0) {
+        throw new Error(`unusable duration ${v.duration} for ${src}`);
+      }
       duration = v.duration;
       await v.play();
       start("frozen");

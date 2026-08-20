@@ -211,12 +211,14 @@ Same shape, different machine load — three alternating rounds on a
 
 | arm | GPU process | renderer | publish Hz |
 |---|---|---|---|
-| `frozen` | 5.0 % | 4.1 % | 0 |
-| `raf` (before) | 12.3 % | 9.9 % | 120.2 |
-| `throttled` (after) | **7.1 %** | **6.0 %** | 25.6 |
+| `frozen` | 6.0 % | 4.8 % | 0 |
+| `raf` (before) | 13.6 % | 10.5 % | 120.1 |
+| `throttled` (after) | **7.8 %** | **6.6 %** | 24.5 |
 
-≈ 70 % of the head's excess GPU-process CPU and ≈ 67 % of its excess
-renderer CPU, recovered.
+≈ 76 % of the head's excess GPU-process CPU and ≈ 68 % of its excess
+renderer CPU, recovered. The publish rate lands at 24.5 Hz rather than
+the 30 Hz ceiling — rVFC is pulling it down to the media's own frame
+rate, which is the point.
 
 ## What it is now
 
@@ -245,21 +247,34 @@ compositor frame the video update was going to force anyway.
   it does not fire — jsdom, a suspended surface, an element with no
   decodable frames. The rAF loop publishes at the 30 Hz cap until rVFC
   proves itself, so the latch can only ever *lower* the rate.
-- **VFR needs a floor.** These are screen recordings: a stretch where
-  nothing on screen moved can go a long time between decoded frames
-  while the clock keeps running. `PLAYHEAD_MAX_GAP_MS` (100 ms — the
-  tenths resolution the timecode renders at) lets the rAF loop cover
-  the gap once rVFC is driving.
+- **VFR needs a floor, and the floor is not the timecode's own
+  period.** These are screen recordings: a stretch where nothing on
+  screen moved can go a long time between decoded frames while the
+  clock keeps running, so `PLAYHEAD_MAX_GAP_MS` lets the rAF loop cover
+  the gap once rVFC is driving. The tempting value is 100 ms — the
+  tenths the timecode renders — and it is wrong: sampling a signal at
+  its own period cannot reproduce it. rAF is quantized to vsync, so a
+  100 ms floor yields real gaps of 100–108 ms, which beat against
+  `floor(sec * 10)` and drop a tenth outright every couple of seconds
+  (`0:04.1` → `0:04.3`). 50 ms — two publishes per tenth — always lands
+  one, and 20 Hz is far below the rate that already measured free.
 - **Discrete positions must never be swallowed by the throttle.** The
   loop wrap force-publishes; seek / scrub / pause / capture-switch go
   through `publishTime`, off the throttled path entirely. A head that
   lags a scrub by 33 ms reads as broken in a way a head that lags
   playback by 33 ms does not.
-- **`meta.mediaTime` needs a sanity check against `el.currentTime`.**
-  It is the truer head — the presentation time of the frame actually on
-  screen — but a frame decoded just before a loop wrap can arrive
-  *after* the wrap put the head back at the in-point, and publishing it
-  flicks the head to the far end for an interval.
+- **Publish `el.currentTime` from the rVFC callback, not
+  `meta.mediaTime`.** rVFC's value here is WHEN it fires — once per
+  presented frame, which is what limits the rate to the media's — not
+  what it reports. `mediaTime` is the truer head by less than one
+  frame, below what a 1 px line and a tenths timecode can show, and
+  trusting it requires a staleness check: a frame decoded just before a
+  loop wrap arrives *after* the wrap put the head back at the in-point,
+  so drawing its `mediaTime` flicks the head to the far end. The
+  obvious check — reject a disagreement larger than some threshold —
+  silently stops working once the trimmed range is shorter than that
+  threshold, and `MIN_RANGE_SEC` is 0.1 s. Reading the element has no
+  such cliff.
 
 ## Ruled out by measurement — do not retry these
 

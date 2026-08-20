@@ -310,6 +310,11 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   // promotion in video-timeline.css: promotion removes the per-frame
   // RASTER, this removes the per-frame SWAP. Neither subsumes the
   // other.
+  // What was last written, and to which node at which scale. Keyed on
+  // the element so a remount (the playhead is absent in `compact`)
+  // always writes, and on the scale so a drag to a display with a
+  // different DPR re-places rather than trusting a stale device pixel.
+  const placedRef = useRef<{ el: HTMLElement; devicePx: number; scale: number } | null>(null);
   const placePlayhead = useCallback(
     (sec: number): void => {
       const el = playheadRef.current;
@@ -318,16 +323,23 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
       // dragged between a Retina and a non-Retina display changes it
       // without re-running this callback's deps.
       const scale = window.devicePixelRatio || 1;
-      const px = Math.round(secToPx(sec, durationSec, width) * scale) / scale;
-      const next = `translateX(${px}px)`;
-      // Compared against the element's own inline style rather than a
-      // remembered value: the playhead unmounts in `compact` and
-      // remounts without a transform, and a read of inline style costs
-      // nothing (no forced layout). A remembered value would have to be
-      // invalidated by hand for every such case, and would silently
-      // skip the first placement the day someone adds another.
-      if (el.style.transform === next) return;
-      el.style.transform = next;
+      const devicePx = Math.round(secToPx(sec, durationSec, width) * scale);
+      const placed = placedRef.current;
+      if (
+        placed !== null &&
+        placed.el === el &&
+        placed.scale === scale &&
+        placed.devicePx === devicePx
+      ) {
+        return;
+      }
+      // Compared as a NUMBER, never by reading `el.style.transform`
+      // back: Blink re-serializes what it stores, so at a fractional
+      // DPR (Windows at 125% / 150%) `translateX(0.6666666666666666px)`
+      // reads back as `translateX(0.666667px)`, no comparison ever
+      // matches, and the skip silently stops skipping.
+      placedRef.current = { el, devicePx, scale };
+      el.style.transform = `translateX(${devicePx / scale}px)`;
     },
     [durationSec, width]
   );

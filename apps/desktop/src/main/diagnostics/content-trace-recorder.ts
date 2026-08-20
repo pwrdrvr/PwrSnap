@@ -18,7 +18,11 @@
 // dev run leaves alone (SIGINT/SIGTERM/SIGHUP are already owned by
 // `terminal-signal-shutdown.ts`), and because it needs no UI — which
 // matters when the whole point is to not perturb what is being measured.
+// libuv never RAISES SIGUSR2 on Windows, though: registering there is
+// harmless but inert, so on Windows the autostart delay is the only
+// trigger, and the armed log says so.
 
+import { basename } from "node:path";
 import { app, contentTracing } from "electron";
 import { getMainLogger } from "../log";
 import { resolveContentTraceConfig, type ContentTraceConfig } from "./content-trace-config";
@@ -35,6 +39,14 @@ type RecorderState = {
   config: Extract<ContentTraceConfig, { enabled: true }>;
   session: ContentTraceSession | null;
   traceIndex: number;
+  /** Claimed SYNCHRONOUSLY, before any await, and released only once a
+   *  recording has been both started and stopped. `recording` alone
+   *  cannot serve: it is not true until after `ensureSession` has
+   *  awaited a mkdir + writeFile, and a second trigger arriving inside
+   *  that window would pass the guard, lose the `startRecording` race,
+   *  and clear the flag out from under the live recording — leaving
+   *  contentTracing running with nothing left to stop it. */
+  busy: boolean;
   recording: boolean;
   stopTimer: NodeJS.Timeout | null;
   cpuTimer: NodeJS.Timeout | null;
@@ -108,15 +120,18 @@ function stopCpuSampling(current: RecorderState): void {
 export async function startContentTrace(reason: string): Promise<void> {
   const current = state;
   if (current === null) return;
-  if (current.recording) {
+  if (current.busy) {
     log().info("already recording — ignoring start");
     return;
   }
+  current.busy = true;
 
   const session = await ensureSession(current);
-  if (session === null) return;
+  if (session === null) {
+    current.busy = false;
+    return;
+  }
 
-  current.recording = true;
   current.traceIndex += 1;
   const index = current.traceIndex;
 
@@ -125,13 +140,24 @@ export async function startContentTrace(reason: string): Promise<void> {
       included_categories: current.config.categories
     });
   } catch (error) {
-    current.recording = false;
+    current.busy = false;
     log().warn(
       `startRecording failed: ${error instanceof Error ? error.message : String(error)}`
     );
     return;
   }
+  current.recording = true;
 
+  // Armed before any further await. Everything below is bookkeeping, and
+  // a bookkeeping write that rejects (a full disk) must not be able to
+  // leave contentTracing running with no scheduled stop.
+  current.stopTimer = setTimeout(() => {
+    void stopContentTrace("duration-elapsed").catch(() => undefined);
+  }, current.config.durationMs);
+  current.stopTimer.unref();
+
+  startCpuSampling(current, session);
+  log().info(`recording ${current.config.durationMs}ms (reason=${reason}, index=${index})`);
   await session.appendEvent({
     capturedAt: new Date().toISOString(),
     type: "trace-start",
@@ -142,15 +168,6 @@ export async function startContentTrace(reason: string): Promise<void> {
       durationMs: current.config.durationMs
     }
   });
-  startCpuSampling(current, session);
-  log().info(
-    `recording ${current.config.durationMs}ms (reason=${reason}, index=${index})`
-  );
-
-  current.stopTimer = setTimeout(() => {
-    void stopContentTrace("duration-elapsed");
-  }, current.config.durationMs);
-  current.stopTimer.unref();
 }
 
 export async function stopContentTrace(reason: string): Promise<string | null> {
@@ -174,9 +191,13 @@ export async function stopContentTrace(reason: string): Promise<string | null> {
       `stopRecording failed: ${error instanceof Error ? error.message : String(error)}`
     );
     return null;
+  } finally {
+    // Released whether or not the write succeeded, so a failed stop
+    // leaves the harness re-armed instead of permanently wedged.
+    current.busy = false;
   }
 
-  const filename = tracePath.slice(session.directoryPath.length + 1);
+  const filename = basename(tracePath);
   await session.registerArtifact(filename);
   await session.appendEvent({
     capturedAt: new Date().toISOString(),
@@ -193,10 +214,12 @@ export async function stopContentTrace(reason: string): Promise<string | null> {
 function handleToggleSignal(): void {
   if (state === null) return;
   if (state.recording) {
-    void stopContentTrace("sigusr2");
+    void stopContentTrace("sigusr2").catch(() => undefined);
     return;
   }
-  void startContentTrace("sigusr2");
+  // `busy` but not yet `recording` means a start is mid-flight; the
+  // guard inside startContentTrace turns this into a logged no-op.
+  void startContentTrace("sigusr2").catch(() => undefined);
 }
 
 export function installContentTraceHook(options?: {
@@ -214,32 +237,31 @@ export function installContentTraceHook(options?: {
     config,
     session: null,
     traceIndex: 0,
+    busy: false,
     recording: false,
     stopTimer: null,
     cpuTimer: null,
     cpuTracker: new ProcessCpuBreakdownTracker()
   };
 
+  // libuv never raises SIGUSR2 on Windows — registering is harmless but
+  // inert, so the log must not tell a Windows developer to send it.
+  // There the autostart delay is the only trigger.
+  const trigger =
+    process.platform === "win32"
+      ? "set PWRSNAP_TRACE_AUTOSTART_DELAY_MS=<ms> (SIGUSR2 does not fire on Windows)"
+      : `"kill -USR2 ${process.pid}"`;
   process.on("SIGUSR2", handleToggleSignal);
   log().info(
-    `armed (pid ${process.pid}) — "kill -USR2 ${process.pid}" to record ` +
+    `armed (pid ${process.pid}) — ${trigger} to record ` +
       `${config.durationMs}ms into ${config.outputRoot}`
   );
 
   if (config.autoStartDelayMs > 0) {
     const timer = setTimeout(() => {
-      void startContentTrace("autostart");
+      void startContentTrace("autostart").catch(() => undefined);
     }, config.autoStartDelayMs);
     timer.unref();
   }
   return true;
-}
-
-/** Test seam: drops the installed hook and its listener. */
-export function resetContentTraceHookForTests(): void {
-  if (state === null) return;
-  if (state.stopTimer !== null) clearTimeout(state.stopTimer);
-  stopCpuSampling(state);
-  process.off("SIGUSR2", handleToggleSignal);
-  state = null;
 }

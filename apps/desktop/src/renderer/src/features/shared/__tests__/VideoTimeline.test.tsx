@@ -81,6 +81,14 @@ function render(
   };
 }
 
+function restoreDpr(descriptor: PropertyDescriptor | undefined): void {
+  if (descriptor === undefined) {
+    delete (window as unknown as Record<string, unknown>).devicePixelRatio;
+    return;
+  }
+  Object.defineProperty(window, "devicePixelRatio", descriptor);
+}
+
 function pointer(el: Element, type: string, clientX: number): void {
   act(() => {
     el.dispatchEvent(
@@ -382,11 +390,45 @@ describe("VideoTimeline", () => {
       source.set(0.02); // 1.0 CSS px -> device px 2
       expect(writes).toEqual(["translateX(0.5px)", "translateX(1px)"]);
     } finally {
-      if (dpr === undefined) {
-        delete (window as unknown as Record<string, unknown>).devicePixelRatio;
-      } else {
-        Object.defineProperty(window, "devicePixelRatio", dpr);
-      }
+      restoreDpr(dpr);
+    }
+  });
+
+  test("the skip still fires at a fractional devicePixelRatio", () => {
+    // Windows at 150% scaling. Device pixels land on thirds, so the
+    // written string is a long repeating decimal that Blink re-
+    // serializes to something shorter. Comparing what we wrote against
+    // `el.style.transform` would therefore never match and the skip
+    // would silently stop skipping — hence the numeric comparison.
+    const dpr = Object.getOwnPropertyDescriptor(window, "devicePixelRatio");
+    Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 1.5 });
+    try {
+      const source = createPlayheadSource(0);
+      const { el } = render({ range: { start: 0, end: 16 }, currentTime: 0, playhead: source });
+      const head = el.querySelector('[data-testid="video-timeline-playhead"]') as HTMLElement;
+      const writes: string[] = [];
+      const proxy = new Proxy(head.style, {
+        set(target, prop, value: string) {
+          if (prop === "transform") writes.push(value);
+          return Reflect.set(target, prop, value);
+        }
+      });
+      Object.defineProperty(head, "style", { configurable: true, value: proxy });
+
+      // 50 px/s; a device pixel is 1/1.5 CSS px = 0.0133… s of clip.
+      source.set(0.014); // 0.7 CSS px -> device px 1
+      expect(writes).toEqual(["translateX(0.6666666666666666px)"]);
+
+      // Three more publishes that all round to the same device pixel.
+      source.set(0.015);
+      source.set(0.016);
+      source.set(0.017);
+      expect(writes).toHaveLength(1);
+
+      source.set(0.028); // 1.4 CSS px -> device px 2
+      expect(writes).toHaveLength(2);
+    } finally {
+      restoreDpr(dpr);
     }
   });
 

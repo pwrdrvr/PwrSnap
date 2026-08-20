@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -87,10 +87,17 @@ describe("createContentTraceSession", () => {
   });
 
   test("reports a failure result when the output root cannot be created", async () => {
+    // Rooted under a regular FILE, so `mkdir -p` fails on every
+    // platform. `/dev/null/...` only works on POSIX — on Windows that
+    // path is perfectly creatable and the assertion inverts.
+    outputRoot = await mkdtemp(join(tmpdir(), "pwrsnap-trace-"));
+    const blocker = join(outputRoot, "not-a-directory");
+    await writeFile(blocker, "", "utf8");
+
     const result = await createContentTraceSession({
       config: {
         enabled: true,
-        outputRoot: "/dev/null/nope",
+        outputRoot: join(blocker, "root"),
         categories: ["viz"],
         durationMs: 1_000,
         autoStartDelayMs: 0

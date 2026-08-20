@@ -388,6 +388,11 @@ PWRSNAP_TRACE=1 node apps/desktop/scripts/dev.mjs   # arms, records nothing
 kill -USR2 <main pid>                               # records 15 s (again = stop early)
 ```
 
+**On Windows there is no SIGUSR2** — libuv never raises it, so the
+listener is registered but inert. Use the delayed one-shot instead:
+`PWRSNAP_TRACE_AUTOSTART_DELAY_MS=20000`. The armed log line names
+whichever trigger actually works on the host.
+
 Sessions land in `<userData>/diagnostics/trace/` laid out like a hot-cpu
 session, and `app.getAppMetrics()` is sampled into the same
 `events.ndjson` for the trace window — a trace shows what a process DID,

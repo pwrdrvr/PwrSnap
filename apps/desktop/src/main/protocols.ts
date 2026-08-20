@@ -182,11 +182,15 @@ export type ProtocolResolver = {
  * NEW `pwrsnap-cache://` asset behind an `?v=edits_version` buster.
  * Only the file's LOCATION can change (trash rename, lazy re-extract)
  * — never its bytes for a given URL. So the raw source is safe to
- * cache hard: a day of freshness plus `immutable` keeps Chromium from
- * even revalidating inside a session — this is what lets a short
- * <video> loop (VideoStage seeks back to range start on every wrap)
- * replay from the HTTP cache instead of re-issuing Range reads
- * through this handler on every wrap.
+ * cache hard: a day of freshness plus `immutable` means image-class
+ * loads (the editor's source PNG, layer sources) are served straight
+ * from Chromium's HTTP cache across documents with zero handler
+ * requests. Video loads measure differently (Electron 41): within a
+ * document the media element's own buffer serves loop wraps and
+ * remounts (zero requests), while cross-document loads bypass the
+ * HTTP cache regardless of headers — for those the win is the
+ * streamed body + memoized resolve, not the cache. Details:
+ * docs/solutions/2026-08-20-protocol-http-cache-measurements.md.
  */
 const CAPTURE_SOURCE_CACHE_CONTROL = "private, max-age=86400, immutable";
 

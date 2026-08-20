@@ -1,18 +1,22 @@
 // File → Response builder for the custom protocol handlers, split out
 // of protocols.ts so it can be unit-tested without an electron import.
 //
-// Design goals (see PR that introduced this module):
+// Design goals (measurements in
+// docs/solutions/2026-08-20-protocol-http-cache-measurements.md):
 //
-//   • Cacheable media. Chromium's media stack fetches <video> sources
-//     almost exclusively with Range requests. The original handler
-//     stamped 206 responses `cache-control: no-cache` with NO validator
-//     (no ETag / Last-Modified), so every "revalidation" degraded to a
-//     full refetch — a 2s clip looping via the JS seek in VideoStage
-//     re-issued byte reads through the handler on every wrap. Now both
-//     200 and 206 carry the SAME cache-control plus a strong ETag and
+//   • Cacheable responses. The original handler stamped 206 responses
+//     `cache-control: no-cache` (while 200s said `max-age=300` — two
+//     policies for one URL) and no response carried a validator, so
+//     every revalidation degraded to a full refetch. Now both 200 and
+//     206 carry the SAME cache-control plus a strong ETag and
 //     Last-Modified, and conditional requests (If-None-Match /
-//     If-Modified-Since / If-Range) are answered with 304s instead of
-//     bytes.
+//     If-Modified-Since / If-Range) are answered with bodyless 304s.
+//     Measured effect on Electron 41: image/fetch-class loads over
+//     these schemes hit Chromium's HTTP cache across documents (pure
+//     cache hits under max-age, 304 revalidations under no-cache);
+//     <video> loads use the media element's own buffer within a
+//     document (loop wraps issue zero requests) but bypass the HTTP
+//     cache across documents regardless of headers.
 //
 //   • No per-request full-buffer copies. Bodies stream from an fs read
 //     stream (Range and whole-file alike) instead of Buffer.alloc +
@@ -172,6 +176,22 @@ export async function fileResponse(
     if (ifRange !== null && !ifRangeMatches(ifRange, etag, lastModified)) {
       rangeHeader = null;
     }
+  }
+  if (rangeHeader !== null && /^bytes=0-$/.test(rangeHeader.trim())) {
+    // `bytes=0-` asks for the entire file — it's how Chromium's media
+    // stack opens every <video> load. A server MAY ignore Range and
+    // answer 200 (RFC 9110 §14.2); we do, because the body is byte-
+    // identical (whole file, streamed) and a 200 is a response the
+    // HTTP cache in front of protocol.handle is willing to store,
+    // while an externally-ranged 206 never is (measured on Electron
+    // 41 — see docs/solutions/2026-08-20-protocol-http-cache-
+    // measurements.md; media loads currently bypass that cache
+    // regardless, so this is about not FORCING uncacheability for
+    // any load class). The media stack still sees `accept-ranges:
+    // bytes` and issues real mid-file ranges on seek, which keep
+    // their 206 semantics below. Playback + loop wraps verified
+    // unaffected by the 200 answer.
+    rangeHeader = null;
   }
   if (rangeHeader !== null) {
     const match = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader.trim());

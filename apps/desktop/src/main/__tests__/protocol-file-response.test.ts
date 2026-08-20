@@ -101,6 +101,20 @@ describe("range responses", () => {
     expect(Buffer.from(await res.arrayBuffer())).toEqual(CONTENT.subarray(4, 10));
   });
 
+  test("bytes=0- (the media stack's opening request) is answered as a full 200", async () => {
+    // A server MAY ignore Range (RFC 9110 §14.2). `bytes=0-` is the
+    // whole file, and only a 200 is storable by the HTTP cache in
+    // front of protocol.handle — an externally-ranged 206 never is.
+    const res = await fileResponse(filePath, req({ range: "bytes=0-" }), {
+      cacheControl: "private, max-age=86400, immutable"
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-range")).toBeNull();
+    expect(res.headers.get("content-length")).toBe(String(CONTENT.length));
+    expect(res.headers.get("accept-ranges")).toBe("bytes");
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(CONTENT);
+  });
+
   test("open-ended range runs to EOF", async () => {
     const res = await fileResponse(filePath, req({ range: "bytes=15-" }));
     expect(res.status).toBe(206);

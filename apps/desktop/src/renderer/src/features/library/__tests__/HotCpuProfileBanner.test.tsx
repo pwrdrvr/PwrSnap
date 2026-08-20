@@ -24,6 +24,7 @@ const event: HotCpuProfileCapturedEvent = {
   profilePath: "/diag/hot-cpu-2026-07-04-1543-8f0193/renderer-hot-0001.cpuprofile",
   sessionDirectory: "/diag/hot-cpu-2026-07-04-1543-8f0193",
   sessionDirectoryName: "hot-cpu-2026-07-04-1543-8f0193",
+  target: "renderer",
   triggerConsecutiveSamples: 2,
   triggerCpuPercent: 104.3,
   triggerMode: "sustained",
@@ -118,6 +119,22 @@ describe("HotCpuProfileBanner", () => {
       req: { sessionDirectoryName: event.sessionDirectoryName }
     });
     expect(container?.textContent).toContain(`Session: ${event.sessionDirectoryName}`);
+  });
+
+  test("labels which process the profile came from", async () => {
+    const api = await renderBanner();
+
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.hotCpuProfileCaptured, {
+        ...event,
+        target: "main",
+        profileFilename: "main-hot-0001.cpuprofile",
+        profilePath: "/diag/hot-cpu-2026-07-04-1543-8f0193/main-hot-0001.cpuprofile"
+      } satisfies HotCpuProfileCapturedEvent);
+    });
+
+    expect(container?.textContent).toContain("main process:");
+    expect(container?.textContent).toContain("main-hot-0001.cpuprofile");
   });
 
   test("keeps the banner visible when reveal fails", async () => {

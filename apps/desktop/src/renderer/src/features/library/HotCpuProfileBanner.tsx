@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   buildHotCpuProfileHandoffMessage,
   EVENT_CHANNELS,
+  formatHotCpuProfileTargetLabel,
   formatHotCpuProfileTriggerSummary,
   type HotCpuProfileCapturedEvent
 } from "@pwrsnap/shared";
@@ -42,8 +43,10 @@ export function HotCpuProfileBanner(): ReactElement | null {
 
   const heapCount = event.heapSnapshotArtifacts?.length ?? 0;
   const message = [
+    `${formatHotCpuProfileTargetLabel(event.target)}: `,
     `${formatHotCpuProfileTriggerSummary(event)} saved ${event.profileFilename}.`,
     heapCount > 0 ? ` ${heapCount} heap snapshots captured.` : "",
+    " Per-process CPU is in samples.ndjson.",
     " Copy this notice to hand off the profile path."
   ].join("");
 

@@ -9,6 +9,7 @@ import { join } from "node:path";
 import {
   EVENT_CHANNELS,
   type AppDocumentKind,
+  type HotCpuProfileTarget,
   type Settings
 } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
@@ -16,7 +17,8 @@ import { installDevelopmentDockIcon, showDockWithDevelopmentIcon } from "./devel
 import { createHotCpuProfileSession } from "./diagnostics/hot-cpu-profile-session";
 import { hotCpuDiagnosticsRoot } from "./diagnostics/hot-cpu-profile-paths";
 import { resolveHotCpuProfileConfig } from "./diagnostics/hot-cpu-profile-config";
-import { RendererHotCpuProfiler } from "./diagnostics/renderer-hot-cpu-profiler";
+import { HotCpuProfiler, type HotCpuTarget } from "./diagnostics/hot-cpu-profiler";
+import { createMainProcessHotCpuTarget } from "./diagnostics/main-process-hot-cpu-target";
 import { broadcastRendererEventToLocalWindows } from "./events";
 import { relayRendererEventToPeer } from "./process-split/event-relay";
 import {
@@ -326,6 +328,230 @@ export function syncHotCpuProfilersFromSettings(reason: string): void {
   }
 }
 
+type EnabledHotCpuConfig = Extract<
+  ReturnType<typeof resolveHotCpuProfileConfig>,
+  { enabled: true }
+>;
+
+type HotCpuProfilerSlot = {
+  sync: (reason: string) => void;
+  stop: (reason: string) => Promise<void>;
+};
+
+function hotCpuConfigKey(hotCpuConfig: EnabledHotCpuConfig): string {
+  return JSON.stringify({
+    startDelayMs: hotCpuConfig.startDelayMs,
+    triggerMode: hotCpuConfig.triggerMode,
+    intervalMs: hotCpuConfig.intervalMs,
+    thresholdPercent: hotCpuConfig.thresholdPercent,
+    slowburnThresholdPercent: hotCpuConfig.slowburnThresholdPercent,
+    consecutiveSamples: hotCpuConfig.consecutiveSamples,
+    profileDurationMs: hotCpuConfig.profileDurationMs,
+    cooldownMs: hotCpuConfig.cooldownMs,
+    maxProfiles: hotCpuConfig.maxProfiles,
+    captureHeapSnapshot: hotCpuConfig.captureHeapSnapshot,
+    heapSnapshotLimit: hotCpuConfig.heapSnapshotLimit
+  });
+}
+
+/** Session + profiler construction shared by the renderer and
+ *  main-process monitors. Each target gets its own session directory
+ *  (same session.json / samples.ndjson / events.ndjson format; the
+ *  manifest's `target` field and the `<target>-hot-NNNN.cpuprofile`
+ *  artifact names tell them apart). */
+async function createHotCpuProfilerForTarget(options: {
+  config: EnabledHotCpuConfig;
+  target: HotCpuProfileTarget;
+  hotCpuTarget: HotCpuTarget;
+}): Promise<HotCpuProfiler | null> {
+  const created = await createHotCpuProfileSession({
+    config: options.config,
+    target: options.target,
+    versions: {
+      appVersion: app.getVersion(),
+      electronVersion: process.versions.electron ?? "unknown",
+      chromeVersion: process.versions.chrome ?? "unknown",
+      nodeVersion: process.versions.node
+    }
+  });
+
+  if (!created.ok) {
+    hotCpuLog.error("failed to initialize hot CPU diagnostics", {
+      target: options.target,
+      message: created.message
+    });
+    return null;
+  }
+
+  hotCpuLog.info("session directory", {
+    target: options.target,
+    sessionDirectory: created.session.directoryPath
+  });
+
+  return new HotCpuProfiler({
+    config: options.config,
+    getAppMetrics: () => app.getAppMetrics(),
+    onHeapSnapshotLimitReached: async () => {
+      await bus.dispatch(
+        "settings:write",
+        { general: { hotCpuProfilingCaptureHeapSnapshot: false } },
+        { principal: "bridge" }
+      );
+      syncHotCpuProfilersFromSettings("heap-snapshot-limit-reached");
+    },
+    onProfileWritten: (event) => {
+      broadcastRendererEventToLocalWindows(EVENT_CHANNELS.hotCpuProfileCaptured, event);
+      relayRendererEventToPeer(EVENT_CHANNELS.hotCpuProfileCaptured, event);
+    },
+    session: created.session,
+    target: options.hotCpuTarget
+  });
+}
+
+/** Settings-synced lifecycle for one profiler target: serialized syncs,
+ *  config-key change detection, and generation-guarded stop. Both the
+ *  per-window renderer monitor and the app-global main-process monitor
+ *  run through this so their semantics cannot drift. */
+function createHotCpuProfilerSlot(options: {
+  target: HotCpuProfileTarget;
+  isReady: () => boolean;
+  createProfiler: (config: EnabledHotCpuConfig) => Promise<HotCpuProfiler | null>;
+}): HotCpuProfilerSlot {
+  let configKey: string | null = null;
+  let profilerPromise: Promise<HotCpuProfiler | null> | null = null;
+  let generation = 0;
+  let syncQueue: Promise<void> = Promise.resolve();
+
+  const stop = async (reason: string): Promise<void> => {
+    generation += 1;
+    const pending = profilerPromise;
+    configKey = null;
+    profilerPromise = null;
+    if (pending === null) return;
+
+    try {
+      const profiler = await pending;
+      await profiler?.stop(reason);
+    } catch (error) {
+      hotCpuLog.warn("failed to stop hot CPU diagnostics", {
+        reason,
+        target: options.target,
+        error: serializeError(error)
+      });
+    }
+  };
+
+  const run = async (reason: string): Promise<void> => {
+    try {
+      if (!options.isReady()) return;
+
+      const settings = await readHotCpuSettings();
+      const captureHeapSnapshot = settings.general.hotCpuProfilingCaptureHeapSnapshot;
+      const hotCpuConfig = resolveHotCpuProfileConfig({
+        captureHeapSnapshot,
+        enabled: settings.general.hotCpuProfilingEnabled || captureHeapSnapshot,
+        heapSnapshotLimit: settings.general.hotCpuProfilingHeapSnapshotLimit,
+        outputRoot: diagnosticsOutputRoot(),
+        repoRoot: process.cwd(),
+        slowburnThresholdPercent:
+          settings.general.hotCpuProfilingSlowburnThresholdPercent,
+        startDelayMs: settings.general.hotCpuProfilingStartDelayMs,
+        target: options.target,
+        triggerMode: settings.general.hotCpuProfilingTriggerMode
+      });
+
+      if (!hotCpuConfig.enabled) {
+        await stop(reason);
+        return;
+      }
+
+      const nextConfigKey = hotCpuConfigKey(hotCpuConfig);
+      if (profilerPromise !== null) {
+        if (configKey === nextConfigKey) return;
+        await stop(reason);
+      }
+
+      const startGeneration = generation;
+      configKey = nextConfigKey;
+      profilerPromise = options.createProfiler(hotCpuConfig);
+      const profiler = await profilerPromise;
+      if (startGeneration !== generation) {
+        await profiler?.stop("settings-changed");
+        return;
+      }
+
+      if (profiler === null) {
+        profilerPromise = null;
+        configKey = null;
+        return;
+      }
+
+      await profiler.start();
+    } catch (error) {
+      hotCpuLog.warn("failed to sync hot CPU diagnostics", {
+        reason,
+        target: options.target,
+        error: serializeError(error)
+      });
+    }
+  };
+
+  const sync = (reason: string): void => {
+    syncQueue = syncQueue.then(
+      () => run(reason),
+      () => run(reason)
+    );
+    void syncQueue;
+  };
+
+  return { sync, stop };
+}
+
+/** Sentinel key for the app-global main-process monitor in
+ *  `hotCpuProfilerSyncHandlers` (window ids are positive). */
+const MAIN_HOT_CPU_PROFILER_SYNC_KEY = -1;
+let mainHotCpuProfilerSlot: HotCpuProfilerSlot | null = null;
+
+/** Wire the main-process hot-CPU monitor once per process. The main
+ *  process is app-global (not tied to any window), so its slot lives at
+ *  module scope, keeps running when the library window closes, and
+ *  stops on app quit.
+ *
+ *  MUST be called from app boot in EVERY role, not from
+ *  `createMainWindow` — two boot paths never create a library window
+ *  and would otherwise leave the main process unmonitored:
+ *
+ *  - Login-item boot runs tray-only on purpose (`wasLaunchedAtLogin()`
+ *    in index.ts), and Settings opens through `createSettingsWindow`.
+ *    Arming the feature from the tray has to work with no Library open
+ *    — that unattended background burn is the case it exists for.
+ *  - In split mode `createMainWindow` runs in the LIBRARY child
+ *    process, so hanging the wiring off it would monitor the library
+ *    and never the agent process that owns the tray, global hotkeys,
+ *    and the capture pipeline.
+ *
+ *  Idempotent, so a redundant call is harmless. */
+export function installMainProcessHotCpuMonitor(): void {
+  if (mainHotCpuProfilerSlot !== null) return;
+
+  const slot = createHotCpuProfilerSlot({
+    target: "main",
+    isReady: () => true,
+    createProfiler: (config) =>
+      createHotCpuProfilerForTarget({
+        config,
+        target: "main",
+        hotCpuTarget: createMainProcessHotCpuTarget()
+      })
+  });
+  mainHotCpuProfilerSlot = slot;
+  hotCpuProfilerSyncHandlers.set(MAIN_HOT_CPU_PROFILER_SYNC_KEY, slot.sync);
+  app.on("will-quit", () => {
+    void slot.stop("app-quit");
+  });
+  slot.sync("main-profiler-wired");
+}
+
 function centeredWindowBoundsOnDisplay(
   width: number,
   height: number,
@@ -563,154 +789,24 @@ export function createMainWindow(): BrowserWindow {
   const { webContents } = window;
 
   let rendererLoaded = false;
-  let hotCpuProfilerConfigKey: string | null = null;
-  let hotCpuProfilerPromise: Promise<RendererHotCpuProfiler | null> | null = null;
-  let hotCpuProfilerGeneration = 0;
-  let hotCpuProfilerSyncQueue: Promise<void> = Promise.resolve();
-
-  const createHotCpuProfiler = async (
-    hotCpuConfig: Extract<ReturnType<typeof resolveHotCpuProfileConfig>, { enabled: true }>
-  ): Promise<RendererHotCpuProfiler | null> => {
-    const created = await createHotCpuProfileSession({
-      config: hotCpuConfig,
-      versions: {
-        appVersion: app.getVersion(),
-        electronVersion: process.versions.electron ?? "unknown",
-        chromeVersion: process.versions.chrome ?? "unknown",
-        nodeVersion: process.versions.node
-      }
-    });
-
-    if (!created.ok) {
-      hotCpuLog.error("failed to initialize hot CPU diagnostics", {
-        message: created.message
-      });
-      return null;
-    }
-
-    hotCpuLog.info("session directory", {
-      sessionDirectory: created.session.directoryPath
-    });
-
-    return new RendererHotCpuProfiler({
-      config: hotCpuConfig,
-      getAppMetrics: () => app.getAppMetrics(),
-      onHeapSnapshotLimitReached: async () => {
-        await bus.dispatch(
-          "settings:write",
-          { general: { hotCpuProfilingCaptureHeapSnapshot: false } },
-          { principal: "bridge" }
-        );
-        syncHotCpuProfilersFromSettings("heap-snapshot-limit-reached");
-      },
-      onProfileWritten: (event) => {
-        broadcastRendererEventToLocalWindows(EVENT_CHANNELS.hotCpuProfileCaptured, event);
-        relayRendererEventToPeer(EVENT_CHANNELS.hotCpuProfileCaptured, event);
-      },
-      session: created.session,
-      target: webContents
-    });
-  };
-
-  const stopHotCpuProfiler = async (reason: string): Promise<void> => {
-    hotCpuProfilerGeneration += 1;
-    const profilerPromise = hotCpuProfilerPromise;
-    hotCpuProfilerConfigKey = null;
-    hotCpuProfilerPromise = null;
-    if (profilerPromise === null) return;
-
-    try {
-      const profiler = await profilerPromise;
-      await profiler?.stop(reason);
-    } catch (error) {
-      hotCpuLog.warn("failed to stop hot CPU diagnostics", {
-        reason,
-        error: serializeError(error)
-      });
-    }
-  };
-
-  const hotCpuConfigKey = (
-    hotCpuConfig: Extract<ReturnType<typeof resolveHotCpuProfileConfig>, { enabled: true }>
-  ): string =>
-    JSON.stringify({
-      startDelayMs: hotCpuConfig.startDelayMs,
-      triggerMode: hotCpuConfig.triggerMode,
-      intervalMs: hotCpuConfig.intervalMs,
-      thresholdPercent: hotCpuConfig.thresholdPercent,
-      slowburnThresholdPercent: hotCpuConfig.slowburnThresholdPercent,
-      consecutiveSamples: hotCpuConfig.consecutiveSamples,
-      profileDurationMs: hotCpuConfig.profileDurationMs,
-      cooldownMs: hotCpuConfig.cooldownMs,
-      maxProfiles: hotCpuConfig.maxProfiles,
-      captureHeapSnapshot: hotCpuConfig.captureHeapSnapshot,
-      heapSnapshotLimit: hotCpuConfig.heapSnapshotLimit
-    });
-
-  const runHotCpuProfilerSync = async (reason: string): Promise<void> => {
-    try {
-      if (!rendererLoaded || window.isDestroyed() || webContents.isDestroyed()) return;
-
-      const settings = await readHotCpuSettings();
-      const captureHeapSnapshot = settings.general.hotCpuProfilingCaptureHeapSnapshot;
-      const hotCpuConfig = resolveHotCpuProfileConfig({
-        captureHeapSnapshot,
-        enabled: settings.general.hotCpuProfilingEnabled || captureHeapSnapshot,
-        heapSnapshotLimit: settings.general.hotCpuProfilingHeapSnapshotLimit,
-        outputRoot: diagnosticsOutputRoot(),
-        repoRoot: process.cwd(),
-        slowburnThresholdPercent:
-          settings.general.hotCpuProfilingSlowburnThresholdPercent,
-        startDelayMs: settings.general.hotCpuProfilingStartDelayMs,
-        triggerMode: settings.general.hotCpuProfilingTriggerMode
-      });
-
-      if (!hotCpuConfig.enabled) {
-        await stopHotCpuProfiler(reason);
-        return;
-      }
-
-      const nextConfigKey = hotCpuConfigKey(hotCpuConfig);
-      if (hotCpuProfilerPromise !== null) {
-        if (hotCpuProfilerConfigKey === nextConfigKey) return;
-        await stopHotCpuProfiler(reason);
-      }
-
-      const generation = hotCpuProfilerGeneration;
-      hotCpuProfilerConfigKey = nextConfigKey;
-      hotCpuProfilerPromise = createHotCpuProfiler(hotCpuConfig);
-      const profiler = await hotCpuProfilerPromise;
-      if (generation !== hotCpuProfilerGeneration) {
-        await profiler?.stop("settings-changed");
-        return;
-      }
-
-      if (profiler === null) {
-        hotCpuProfilerPromise = null;
-        hotCpuProfilerConfigKey = null;
-        return;
-      }
-
-      await profiler.start();
-    } catch (error) {
-      hotCpuLog.warn("failed to sync hot CPU diagnostics", {
-        reason,
-        error: serializeError(error)
-      });
-    }
-  };
-
-  const syncHotCpuProfiler = (reason: string): void => {
-    hotCpuProfilerSyncQueue = hotCpuProfilerSyncQueue.then(
-      () => runHotCpuProfilerSync(reason),
-      () => runHotCpuProfilerSync(reason)
-    );
-    void hotCpuProfilerSyncQueue;
-  };
-  hotCpuProfilerSyncHandlers.set(window.id, syncHotCpuProfiler);
+  const rendererHotCpuSlot = createHotCpuProfilerSlot({
+    target: "renderer",
+    isReady: () => rendererLoaded && !window.isDestroyed() && !webContents.isDestroyed(),
+    createProfiler: (config) =>
+      createHotCpuProfilerForTarget({
+        config,
+        target: "renderer",
+        hotCpuTarget: webContents
+      })
+  });
+  hotCpuProfilerSyncHandlers.set(window.id, rendererHotCpuSlot.sync);
+  // The main-process monitor is NOT wired here — it is app-global and
+  // installed at boot for every role by `installMainProcessHotCpuMonitor`.
+  // Backstop only, for windows created before/without that boot step.
+  installMainProcessHotCpuMonitor();
   webContents.once("did-finish-load", () => {
     rendererLoaded = true;
-    syncHotCpuProfiler("renderer-loaded");
+    rendererHotCpuSlot.sync("renderer-loaded");
   });
 
   const target = rendererTarget();
@@ -785,7 +881,7 @@ export function createMainWindow(): BrowserWindow {
     log.info("main window closed", { id: window.id });
     if (libraryWindow === window) libraryWindow = null;
     hotCpuProfilerSyncHandlers.delete(window.id);
-    void stopHotCpuProfiler("window-closed");
+    void rendererHotCpuSlot.stop("window-closed");
     // Combined mode: no library = no dock icon; the tray keeps the
     // app alive and the user re-opens via right-click → "Open
     // Library". The split-mode library PROCESS keeps its Dock icon

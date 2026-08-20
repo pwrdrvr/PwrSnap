@@ -12,6 +12,7 @@ const baseEvent: HotCpuProfileCapturedEvent = {
   sessionDirectory:
     "/Users/example/Library/Application Support/PwrSnap/diagnostics/hot-cpu/hot-cpu-2026-07-04-1543-8f0193",
   sessionDirectoryName: "hot-cpu-2026-07-04-1543-8f0193",
+  target: "renderer",
   triggerConsecutiveSamples: 2,
   triggerCpuPercent: 104.289,
   triggerMode: "sustained",
@@ -28,9 +29,24 @@ describe("buildHotCpuProfileHandoffMessage", () => {
     expect(message).toContain(`Session: ${baseEvent.sessionDirectory}`);
     expect(message).toContain(`CPU profile: ${baseEvent.profilePath}`);
     expect(message).toContain("Sidecars: session.json, samples.ndjson, events.ndjson");
+    expect(message).toContain("per-process CPU breakdown (browser/gpu/renderer/utility)");
     expect(message).not.toContain("Session basename:");
     expect(message).not.toContain("CPU profile basename:");
     expect(message).not.toContain("Heap snapshots:");
+  });
+
+  test("labels main-process captures as such", () => {
+    const message = buildHotCpuProfileHandoffMessage({
+      ...baseEvent,
+      target: "main",
+      profileFilename: "main-hot-0001.cpuprofile",
+      profilePath: `${baseEvent.sessionDirectory}/main-hot-0001.cpuprofile`
+    });
+
+    expect(message).toContain("PwrSnap captured a main process CPU profile.");
+    expect(message).toContain(
+      `CPU profile: ${baseEvent.sessionDirectory}/main-hot-0001.cpuprofile`
+    );
   });
 
   test("includes heap snapshot paths when memory captures are present", () => {

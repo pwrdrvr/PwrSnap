@@ -1,12 +1,18 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { HotCpuProfileTarget } from "@pwrsnap/shared";
 import type { HotCpuProfileConfig } from "./hot-cpu-profile-config";
+import type { HotCpuProcessBreakdownEntry } from "./process-cpu-breakdown";
 
 export type HotCpuProfileSample = {
   capturedAt: string;
   pid: number;
   cpuPercent: number;
+  /** Electron's instantaneous `percentCPUUsage` for the target pid.
+   *  Known-unreliable (read ~2.4% while cumulative-delta correctly read
+   *  ~43% during the 2026-08-20 incident) — kept only for comparison;
+   *  `cpuPercent` (cumulative-delta) is the reading that matters. */
   electronCpuPercent?: number;
   cumulativeCpuDeltaSeconds?: number;
   cumulativeCpuSeconds?: number;
@@ -15,6 +21,10 @@ export type HotCpuProfileSample = {
   workingSetSize?: number;
   peakWorkingSetSize?: number;
   consecutiveHotSamples: number;
+  /** Per-process CPU attribution across every Electron process
+   *  (browser/gpu/renderer/utility) — covers processes the monitor
+   *  cannot JS-profile, like the GPU process. */
+  processes?: HotCpuProcessBreakdownEntry[];
 };
 
 export type HotCpuProfileEvent = {
@@ -29,6 +39,7 @@ export type HotCpuProfileSession = {
   directoryPath: string;
   samplesPath: string;
   eventsPath: string;
+  target: HotCpuProfileTarget;
   appendSample: (sample: HotCpuProfileSample) => Promise<void>;
   appendEvent: (event: HotCpuProfileEvent) => Promise<void>;
   createProfilePath: (index: number) => string;
@@ -45,6 +56,7 @@ type HotCpuProfileSessionManifest = {
   directoryName: string;
   createdAt: string;
   outputRoot: string;
+  target: HotCpuProfileTarget;
   artifacts: string[];
   config: {
     startDelayMs: number;
@@ -91,6 +103,7 @@ export async function createHotCpuProfileSession(options: {
   config: Extract<HotCpuProfileConfig, { enabled: true }>;
   createdAt?: Date;
   sessionId?: string;
+  target: HotCpuProfileTarget;
   versions: HotCpuProfileSessionManifest["versions"];
 }): Promise<HotCpuProfileSessionCreateResult> {
   const createdAt = options.createdAt ?? new Date();
@@ -107,6 +120,7 @@ export async function createHotCpuProfileSession(options: {
     directoryName,
     createdAt: createdAt.toISOString(),
     outputRoot: options.config.outputRoot,
+    target: options.target,
     artifacts,
     config: {
       startDelayMs: options.config.startDelayMs,
@@ -158,14 +172,18 @@ export async function createHotCpuProfileSession(options: {
       directoryPath,
       samplesPath,
       eventsPath,
+      target: options.target,
       appendSample: async (sample) => appendRecord(samplesPath, sample),
       appendEvent: async (event) => appendRecord(eventsPath, event),
       createProfilePath: (index) =>
-        path.join(directoryPath, `renderer-hot-${String(index).padStart(4, "0")}.cpuprofile`),
+        path.join(
+          directoryPath,
+          `${options.target}-hot-${String(index).padStart(4, "0")}.cpuprofile`
+        ),
       createHeapSnapshotPath: (index, phase) =>
         path.join(
           directoryPath,
-          `renderer-hot-${String(index).padStart(4, "0")}-${phase}.heapsnapshot`
+          `${options.target}-hot-${String(index).padStart(4, "0")}-${phase}.heapsnapshot`
         ),
       registerArtifact
     }

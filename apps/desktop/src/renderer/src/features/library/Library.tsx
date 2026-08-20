@@ -1,7 +1,9 @@
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import {
+  createContext,
   memo,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -450,6 +452,29 @@ function ProjectMovieCellThumb({
   return <PreviewVideoThumb src={src} onError={() => setFailed(true)} />;
 }
 
+/** True while the surrounding surface is actually visible on screen.
+ *
+ *  The grid stays MOUNTED under `display: none` while the user is in
+ *  Focus or Reel mode (see the virtualizer notes below), and Chromium
+ *  keeps DECODING a playing muted <video> at full frame rate under a
+ *  display:none ancestor — element visibility is not part of its media
+ *  suspension logic, only page visibility is, and this app disables
+ *  backgroundThrottling so the page is always "visible". A hover
+ *  preview that's still playing when Focus opens (hover + Enter or
+ *  double-click; Chromium doesn't recompute :hover / fire mouseleave
+ *  without a mousemove) would silently decode a Retina screen
+ *  recording for as long as the user stays in the detail view.
+ *  Measured: 30fps decode continues under display:none; idle
+ *  preload="metadata" tiles hold no decode CPU, so paused tiles need
+ *  no further teardown (no src-detach — keeps back-to-grid instant).
+ *  Probe + numbers: docs/solutions/2026-08-20-hidden-grid-video-decode.md.
+ *
+ *  Scoped as a context (not derived from view.kind inside the thumb)
+ *  because CellThumb renders in TWO places: the grid pane (hidden in
+ *  focus/reel) and the Reel filmstrip (visible in reel). Only the grid
+ *  subtree gets a provider; the filmstrip inherits the `true` default. */
+const SurfaceVisibleContext = createContext(true);
+
 function PreviewVideoThumb({
   src,
   showPlayButton = false,
@@ -462,6 +487,13 @@ function PreviewVideoThumb({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const [hovering, setHovering] = useState(false);
+  const surfaceVisible = useContext(SurfaceVisibleContext);
+
+  // Drop the hover latch when the surface hides so a preview doesn't
+  // auto-resume on return to grid under a pointer that has long moved on.
+  useEffect(() => {
+    if (!surfaceVisible) setHovering(false);
+  }, [surfaceVisible]);
 
   // The preview is deliberately non-interactive so its native video surface
   // cannot cover the tile controls. Follow the enclosing tile instead: that
@@ -483,14 +515,14 @@ function PreviewVideoThumb({
   useEffect(() => {
     const el = videoRef.current;
     if (el === null) return;
-    if (hovering) {
+    if (hovering && surfaceVisible) {
       el.currentTime = 0;
       void el.play().catch(() => undefined);
     } else {
       el.pause();
       el.currentTime = 0;
     }
-  }, [hovering]);
+  }, [hovering, surfaceVisible]);
   return (
     <div
       ref={previewRef}
@@ -3979,6 +4011,13 @@ export function Library() {
                 No captures or Sizzle Reels match “{searchState.forQuery}”.
               </div>
             )}
+          {/* SurfaceVisibleContext: the grid pane is display:none in
+              focus/reel (grid stays mounted for scroll/virtualizer
+              state), and hidden video tiles must stop playing — see
+              PreviewVideoThumb. The Reel filmstrip's CellThumbs render
+              OUTSIDE this provider on purpose: they're visible in reel
+              mode and keep the default `true`. */}
+          <SurfaceVisibleContext.Provider value={view.kind === "grid"}>
           <VirtualizedGrid
             grouped={grouped}
             scrollElement={gridScrollRef}
@@ -4013,6 +4052,7 @@ export function Library() {
             restoreCaptureAction={restoreCaptureAction}
             purgeCaptureAction={purgeCaptureAction}
           />
+          </SurfaceVisibleContext.Provider>
         </div>
         {showGridCopyPalette && selectedRecord !== null ? (
           <GridCopyPalette

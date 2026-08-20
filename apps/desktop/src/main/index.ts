@@ -1293,6 +1293,18 @@ async function runInteractiveRecord(
 /**
  * Protocol resolver. captureSourcePath wired in Phase 1.3, cacheFile
  * wired in Phase 1.6 to the render coordinator.
+ *
+ * NOTE: do not "optimize" captureSourcePath with a captureId→path
+ * memo. It was tried and reverted for two reasons. (1) Correctness:
+ * a memo that trusts a cached path after an fs probe stops consulting
+ * the DB, so a capture whose row was hard-deleted while its file
+ * survived (library:purge removes files best-effort and drops the row
+ * even when the rm fails) keeps serving bytes instead of 404ing.
+ * (2) It isn't faster: the probe has to be async fs, which goes
+ * through the libuv threadpool at ~8µs, while the resolve it replaces
+ * is ~1.6µs — a cached prepared-statement point lookup (~0.8µs, see
+ * prepare-cached.ts) plus the existsSync inside ensureEffectiveSrcPath
+ * (~0.8µs). The DB lookup is not the expensive part of this path.
  */
 const protocolResolver: ProtocolResolver = {
   async captureSourcePath(captureId) {

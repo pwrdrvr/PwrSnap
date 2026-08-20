@@ -15,6 +15,7 @@ import type {
   VideoRange
 } from "@pwrsnap/shared";
 import { getDb } from "./db";
+import { prepareCached } from "./prepare-cached";
 
 type VideoRow = {
   capture_id: string;
@@ -128,10 +129,12 @@ export function insertVideoMetadata(input: InsertVideoMetadata): void {
  * stable seam.
  */
 export function getVideoMetadata(captureId: string): VideoCaptureMetadata | null {
+  // prepareCached: rides `getCaptureById` on the protocol resolver's
+  // hot path for every video capture — see that call site.
   const db = getDb();
-  const row = db
-    .prepare("SELECT * FROM video_captures WHERE capture_id = ?")
-    .get(captureId) as VideoRow | undefined;
+  const row = prepareCached(db, "SELECT * FROM video_captures WHERE capture_id = ?").get(
+    captureId
+  ) as VideoRow | undefined;
   if (row === undefined) return null;
   return rowToMetadata(row);
 }

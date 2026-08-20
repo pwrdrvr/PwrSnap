@@ -30,6 +30,7 @@ import type {
 import { normalizeTagLabel } from "@pwrsnap/shared";
 import { sep } from "node:path";
 import { getDb } from "./db";
+import { prepareCached } from "./prepare-cached";
 import { listEnrichmentsByCaptureIds } from "./enrichment-repo";
 import { getVideoMetadata, listVideoMetadata } from "./video-repo";
 
@@ -319,8 +320,12 @@ export function updateCaptureCanvasDimensions(
 }
 
 export function getCaptureById(id: string): CaptureRecord | null {
+  // prepareCached: this is the protocol resolver's per-media-fetch hot
+  // path — don't re-plan the point lookup on every renderer request.
   const db = getDb();
-  const row = db.prepare("SELECT * FROM captures WHERE id = ?").get(id) as CaptureRow | undefined;
+  const row = prepareCached(db, "SELECT * FROM captures WHERE id = ?").get(id) as
+    | CaptureRow
+    | undefined;
   if (row === undefined) return null;
   const record = rowToRecord(row);
   if (record.kind === "video") {

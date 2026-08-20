@@ -342,6 +342,23 @@
   background: var(--text-primary);
   pointer-events: none;
   z-index: 4;
+  /* Own compositor layer. Load-bearing for CPU, not for looks: a
+   * `transform` on an UNPROMOTED element is not a compositor-only
+   * change — cc re-rasterizes the whole containing tile every time it
+   * moves. Measured on a real 120 Hz ProMotion display with a video
+   * playing (2026-08-20, `PWRSNAP_TRACE=1`): without this, cc ran a
+   * RasterTask 118.6x/sec — one full tile raster per display frame,
+   * to move a 1 px line. With it, 9.9x/sec. GPU-process CPU 31.8% ->
+   * 22.3%; the GPU main thread's own instrumented time 19.9% -> 11.2%.
+   *
+   * The cost is not fill rate — the damage is ~2x78 px. It is the
+   * fixed per-raster round trip (paint-op serialize -> IPC -> GPU
+   * deserialize -> Metal flush -> IOSurface backpressure), which is
+   * why shrinking the damage rect does nothing and promotion does
+   * everything.
+   *
+   * See docs/solutions/2026-08-20-video-playback-gpu-process-burn.md. */
+  will-change: transform;
 }
 
 .vtl__playhead::before {

@@ -292,11 +292,42 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   // Playhead placement runs OFF the render path — see `playhead.ts`.
   // `transform` rather than `left` so a moving head never dirties
   // layout, only the compositor.
+  //
+  // Quantized to device pixels, and skipped when the quantized position
+  // is unchanged. This is not a throttle — it writes on every frame that
+  // renders differently and never writes one that doesn't. It matters
+  // because the rAF loop publishes at DISPLAY refresh while the head
+  // moves at STRIP WIDTH / DURATION: a 178 s clip across a 1044 px strip
+  // advances 5.9 px/sec, so on a 120 Hz display it crosses a device
+  // pixel roughly every tenth frame. The other 110 writes per second
+  // each produced a fresh compositor commit, draw, and swap for an
+  // identical picture.
+  //
+  // Measured with the pixel-identical writes dropped (2026-08-20,
+  // `PWRSNAP_TRACE=1`): compositor commits 118.7/sec -> 10.0/sec and
+  // swaps 118.7/sec -> 61.7/sec, i.e. down to the video's own frame
+  // rate, which is the floor. Complementary to the `will-change` layer
+  // promotion in video-timeline.css: promotion removes the per-frame
+  // RASTER, this removes the per-frame SWAP. Neither subsumes the
+  // other.
   const placePlayhead = useCallback(
     (sec: number): void => {
       const el = playheadRef.current;
       if (el === null) return;
-      el.style.transform = `translateX(${secToPx(sec, durationSec, width)}px)`;
+      // `devicePixelRatio` is read per call on purpose — a window
+      // dragged between a Retina and a non-Retina display changes it
+      // without re-running this callback's deps.
+      const scale = window.devicePixelRatio || 1;
+      const px = Math.round(secToPx(sec, durationSec, width) * scale) / scale;
+      const next = `translateX(${px}px)`;
+      // Compared against the element's own inline style rather than a
+      // remembered value: the playhead unmounts in `compact` and
+      // remounts without a transform, and a read of inline style costs
+      // nothing (no forced layout). A remembered value would have to be
+      // invalidated by hand for every such case, and would silently
+      // skip the first placement the day someone adds another.
+      if (el.style.transform === next) return;
+      el.style.transform = next;
     },
     [durationSec, width]
   );

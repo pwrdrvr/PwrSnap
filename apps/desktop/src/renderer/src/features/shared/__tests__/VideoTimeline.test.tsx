@@ -347,6 +347,49 @@ describe("VideoTimeline", () => {
     expect(strip.getAttribute("aria-valuetext")).toBe("0:08.0");
   });
 
+  test("head placement quantizes to device pixels and skips pixel-identical writes", () => {
+    // The rAF loop publishes at DISPLAY refresh while the head advances
+    // at strip-width / duration, so most published positions render
+    // identically. Each redundant write cost a full compositor commit +
+    // draw + swap; on a 120 Hz display with a 178 s clip that was ~110
+    // wasted swaps a second. See VideoTimeline.tsx `placePlayhead`.
+    const dpr = Object.getOwnPropertyDescriptor(window, "devicePixelRatio");
+    Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 2 });
+    try {
+      const source = createPlayheadSource(0);
+      const { el } = render({ range: { start: 0, end: 16 }, currentTime: 0, playhead: source });
+      const head = el.querySelector('[data-testid="video-timeline-playhead"]') as HTMLElement;
+      // 800 px strip / 16 s = 50 px/s, so a device pixel (0.5 CSS px at
+      // dpr 2) is 0.01 s of clip.
+      const writes: string[] = [];
+      const proxy = new Proxy(head.style, {
+        set(target, prop, value: string) {
+          if (prop === "transform") writes.push(value);
+          return Reflect.set(target, prop, value);
+        }
+      });
+      Object.defineProperty(head, "style", { configurable: true, value: proxy });
+
+      source.set(0.004); // 0.2 CSS px -> device px 0 -> already placed
+      expect(writes).toEqual([]);
+
+      source.set(0.008); // 0.4 CSS px -> device px 1 -> 0.5 CSS px
+      expect(writes).toEqual(["translateX(0.5px)"]);
+
+      source.set(0.012); // 0.6 CSS px -> device px 1 again -> no write
+      expect(writes).toEqual(["translateX(0.5px)"]);
+
+      source.set(0.02); // 1.0 CSS px -> device px 2
+      expect(writes).toEqual(["translateX(0.5px)", "translateX(1px)"]);
+    } finally {
+      if (dpr === undefined) {
+        delete (window as unknown as Record<string, unknown>).devicePixelRatio;
+      } else {
+        Object.defineProperty(window, "devicePixelRatio", dpr);
+      }
+    }
+  });
+
   test("a re-render from something else does not snap the head back to `currentTime`", () => {
     const source = createPlayheadSource(0);
     const { el, rerender } = render({

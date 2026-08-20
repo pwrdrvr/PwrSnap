@@ -7,13 +7,19 @@
 // Buttons `preventDefault` on mousedown so focus stays on the stage
 // root and the keyboard model keeps working after a click.
 
-import type { ReactElement } from "react";
+import { useEffect, useRef, type ReactElement } from "react";
+import type { PlayheadSource } from "../shared/playhead";
 import { formatTimecode } from "../shared/video-range";
 import { KEY_HINTS } from "./video-transport-keys";
 
 export type VideoTransportProps = {
   playing: boolean;
+  /** Discrete head position (seek / pause). While playing, the live
+   *  head arrives on `playhead` instead — see `shared/playhead.ts`. */
   currentTime: number;
+  /** Live playhead channel. Present, the timecode updates itself from a
+   *  subscription; absent, it renders `currentTime`. */
+  playhead?: PlayheadSource | undefined;
   durationSec: number;
   loopInRange: boolean;
   muted: boolean;
@@ -25,8 +31,39 @@ export type VideoTransportProps = {
 
 const keepFocus = (e: { preventDefault: () => void }): void => e.preventDefault();
 
+/** The elapsed half of the timecode. Writes its own text node from the
+ *  playhead subscription so a playing video does not re-render the
+ *  transport (four inline SVGs) 60 times a second. `formatTimecode` is
+ *  tenths, so most frames change nothing and are skipped outright.
+ *
+ *  React still owns the initial / discrete text: it only touches the
+ *  DOM when `currentTime` itself changes, so it never clobbers a live
+ *  value with a stale one. */
+function TransportTimecode({
+  currentTime,
+  playhead
+}: {
+  currentTime: number;
+  playhead: PlayheadSource | undefined;
+}): ReactElement {
+  const ref = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (playhead === undefined) return;
+    let painted: string | null = null;
+    return playhead.subscribe((sec) => {
+      const el = ref.current;
+      if (el === null) return;
+      const next = formatTimecode(sec);
+      if (next === painted) return;
+      painted = next;
+      el.textContent = next;
+    });
+  }, [playhead]);
+  return <b ref={ref}>{formatTimecode(currentTime)}</b>;
+}
+
 export function VideoTransport(props: VideoTransportProps): ReactElement {
-  const { playing, currentTime, durationSec, loopInRange, muted } = props;
+  const { playing, currentTime, playhead, durationSec, loopInRange, muted } = props;
   return (
     <div className="psl__vt" role="toolbar" aria-label="Video transport" data-testid="video-transport">
       <button
@@ -52,7 +89,7 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
       </button>
 
       <span className="psl__vt-time" title={KEY_HINTS.step} data-testid="video-transport-time">
-        <b>{formatTimecode(currentTime)}</b>
+        <TransportTimecode currentTime={currentTime} playhead={playhead} />
         <i>/</i>
         <span>{formatTimecode(durationSec)}</span>
       </span>

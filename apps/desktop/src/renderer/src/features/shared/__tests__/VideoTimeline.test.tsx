@@ -8,6 +8,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import type { VideoRange } from "@pwrsnap/shared";
+import { createPlayheadSource } from "../playhead";
 import { VideoTimeline, type VideoTimelineProps } from "../VideoTimeline";
 
 beforeAll(() => {
@@ -323,6 +324,42 @@ describe("VideoTimeline", () => {
     expect(img?.getAttribute("src")).toBe("pwrsnap-cache://v/cap/frames-n24-w96.jpg");
     expect(el.querySelectorAll(".vtl__tick.is-major").length).toBe(4); // 0,5,10,15
     const playhead = el.querySelector('[data-testid="video-timeline-playhead"]') as HTMLElement;
-    expect(playhead.style.left).toBe("200px");
+    // `transform`, not `left`: the head is written straight to the node
+    // at up to 60 Hz, so it must stay off the layout path.
+    expect(playhead.style.transform).toBe("translateX(200px)");
+  });
+
+  test("a playhead source moves the head without re-rendering, and keeps aria in step", () => {
+    const source = createPlayheadSource(0);
+    const { el } = render({ range: { start: 0, end: 16 }, currentTime: 0, playhead: source });
+    const head = el.querySelector('[data-testid="video-timeline-playhead"]') as HTMLElement;
+    const strip = el.querySelector(".vtl__strip") as HTMLElement;
+    expect(head.style.transform).toBe("translateX(0px)");
+
+    // No `act`: the whole point is that this never touches React state.
+    source.set(4);
+    expect(head.style.transform).toBe("translateX(200px)");
+    expect(strip.getAttribute("aria-valuenow")).toBe("4");
+    expect(strip.getAttribute("aria-valuetext")).toBe("0:04.0");
+
+    source.set(8);
+    expect(head.style.transform).toBe("translateX(400px)");
+    expect(strip.getAttribute("aria-valuetext")).toBe("0:08.0");
+  });
+
+  test("a re-render from something else does not snap the head back to `currentTime`", () => {
+    const source = createPlayheadSource(0);
+    const { el, rerender } = render({
+      range: { start: 0, end: 16 },
+      currentTime: 0,
+      playhead: source
+    });
+    const head = el.querySelector('[data-testid="video-timeline-playhead"]') as HTMLElement;
+    source.set(8);
+    expect(head.style.transform).toBe("translateX(400px)");
+    // `currentTime` is the DISCRETE head and lags during playback; a
+    // range change must not drag the live head back to it.
+    rerender({ range: { start: 2, end: 16 }, currentTime: 0, playhead: source });
+    expect(head.style.transform).toBe("translateX(400px)");
   });
 });

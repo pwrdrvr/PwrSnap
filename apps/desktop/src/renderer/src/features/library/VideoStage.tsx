@@ -27,6 +27,7 @@ import {
 } from "react";
 import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
 import { captureSrcUrl } from "../../lib/pwrsnap";
+import { usePlayheadSource } from "../shared/playhead";
 import { VideoTimeline } from "../shared/VideoTimeline";
 import { useVideoTimelineAssets } from "../shared/useVideoTimelineAssets";
 import type { UseVideoTrimRange } from "../shared/useVideoTrimRange";
@@ -85,7 +86,14 @@ export function VideoStage({
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
   const [loopInRange, setLoopInRange] = useState(true);
+  // `currentTime` is the DISCRETE head — seek, pause, capture switch.
+  // The per-frame head rides `playhead` instead, straight to the two
+  // DOM nodes that draw it, because re-rendering this subtree at 60 Hz
+  // is the single largest renderer cost of a playing video. See
+  // `shared/playhead.ts` and
+  // docs/solutions/2026-08-20-video-stage-playhead-cpu.md.
   const [currentTime, setCurrentTime] = useState(0);
+  const playhead = usePlayheadSource();
   const [stripWidth, setStripWidth] = useState(0);
   const shuttleRef = useRef<{ direction: -1 | 1; rate: number; raf: number; last: number } | null>(
     null
@@ -117,14 +125,35 @@ export function VideoStage({
     }
   }, []);
 
+  /** Publish a discrete head position to BOTH channels. Every
+   *  non-playback move goes through here so the two never drift. */
+  const publishTime = useCallback(
+    (sec: number): void => {
+      const t = roundTime(clampTime(sec, durationSec));
+      playhead.set(t);
+      setCurrentTime(t);
+    },
+    [durationSec, playhead]
+  );
+
+  /** Settle React state on whatever the element landed on. Called
+   *  wherever continuous motion stops — the rAF loops only publish to
+   *  `playhead`, so without this the discrete head would stay wherever
+   *  playback began. */
+  const settleTime = useCallback((): void => {
+    const el = videoRef.current;
+    if (el === null) return;
+    publishTime(el.currentTime);
+  }, [publishTime]);
+
   const seek = useCallback(
     (sec: number): void => {
       const el = videoRef.current;
       const t = roundTime(clampTime(sec, durationSec));
       if (el !== null) el.currentTime = t;
-      setCurrentTime(t);
+      publishTime(t);
     },
-    [durationSec]
+    [durationSec, publishTime]
   );
 
   const pause = useCallback((): void => {
@@ -135,7 +164,8 @@ export function VideoStage({
       el.playbackRate = 1;
     }
     setPlaying(false);
-  }, [stopShuttle]);
+    settleTime();
+  }, [settleTime, stopShuttle]);
 
   const play = useCallback((): void => {
     stopShuttle();
@@ -220,16 +250,17 @@ export function VideoStage({
         s.last = now;
         const next = Math.max(0, el.currentTime - dt * s.rate);
         el.currentTime = next;
-        setCurrentTime(roundTime(next));
+        playhead.set(roundTime(next));
         if (next <= 0) {
           shuttleRef.current = null;
+          settleTime();
           return;
         }
         s.raf = requestAnimationFrame(tick);
       };
       shuttleRef.current = { direction, rate, raf: requestAnimationFrame(tick), last: 0 };
     },
-    [playing, stopShuttle]
+    [playhead, playing, settleTime, stopShuttle]
   );
 
   const runIntent = useCallback(
@@ -297,10 +328,14 @@ export function VideoStage({
     const el = videoRef.current;
     if (el === null) return;
     const onPlay = (): void => setPlaying(true);
-    const onPause = (): void => setPlaying(false);
+    const onPause = (): void => {
+      setPlaying(false);
+      settleTime();
+    };
     const onEnded = (): void => {
       setPlaying(false);
       stopShuttle();
+      settleTime();
     };
     const onLoaded = (): void => {
       setMuted(el.muted);
@@ -315,10 +350,16 @@ export function VideoStage({
       el.removeEventListener("ended", onEnded);
       el.removeEventListener("loadedmetadata", onLoaded);
     };
-  }, [captureId, stopShuttle]);
+  }, [captureId, settleTime, stopShuttle]);
 
   // Smooth playhead: rAF while playing (timeupdate is ~4 Hz), plus the
   // loop-in-range wrap.
+  //
+  // Publishes to `playhead` ONLY. `setCurrentTime` here re-rendered the
+  // transport and the timeline — ~180 elements, one tick span per
+  // minute of source — on every animation frame; the two subscribers
+  // write their own nodes instead. React state settles on `pause` /
+  // `ended` / seek.
   useEffect(() => {
     const el = videoRef.current;
     if (el === null || !playing) return;
@@ -330,19 +371,20 @@ export function VideoStage({
         el.currentTime = r.start;
         t = r.start;
       }
-      setCurrentTime(roundTime(t));
+      playhead.set(roundTime(t));
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing]);
+  }, [playhead, playing]);
 
   // Capture switch: reset transient state.
   useEffect(() => {
     stopShuttle();
     setPlaying(false);
     setCurrentTime(0);
-  }, [captureId, stopShuttle]);
+    playhead.set(0);
+  }, [captureId, playhead, stopShuttle]);
 
   // Focus the stage on mount so the keyboard model is live immediately
   // — Focus mode ONLY. Focus is a single-capture surface with nothing
@@ -413,6 +455,7 @@ export function VideoStage({
       <VideoTransport
         playing={playing}
         currentTime={currentTime}
+        playhead={playhead}
         durationSec={durationSec}
         loopInRange={loopInRange}
         muted={muted}
@@ -424,6 +467,7 @@ export function VideoStage({
       <VideoTimeline
         durationSec={durationSec}
         currentTime={currentTime}
+        playhead={playhead}
         range={range}
         frames={assets.frames}
         audioBlob={assets.audioBlob}

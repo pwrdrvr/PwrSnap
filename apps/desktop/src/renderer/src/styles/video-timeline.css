@@ -328,11 +328,15 @@
   transition: none;
 }
 
-/* Playhead: 1px --text-primary line + small triangle cap on top. */
+/* Playhead: 1px --text-primary line + small triangle cap on top.
+   Positioned by `translateX` written straight to the node from the
+   playhead subscription (see features/shared/playhead.ts) — `left`
+   would put a 60 Hz value on the layout path. */
 .vtl__playhead {
   position: absolute;
   top: 0;
   bottom: 0;
+  left: 0;
   width: 1px;
   margin-left: -0.5px;
   background: var(--text-primary);

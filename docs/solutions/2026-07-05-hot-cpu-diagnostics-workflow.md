@@ -27,7 +27,7 @@ Each hot CPU session contains:
 - `samples.ndjson` - CPU and memory samples taken before a profile starts. Every sample carries a `processes` array: per-process CPU for every Electron process (browser/GPU/renderer/utility), computed from `cumulativeCPUUsage` deltas over wall time. This is how heat shows up in processes that cannot be JS-profiled — during the 2026-08-20 looping-video incident the GPU process was the burner (~56%) and the renderer-only tooling was blind to it. The `electronCpuPercent` field (Electron's instantaneous `percentCPUUsage`) is retained for comparison only; it read ~2.4% while the cumulative-delta `cpuPercent` correctly read ~43% in that same incident, so trust `cpuPercent`.
 - `events.ndjson` - monitor lifecycle events such as monitor start, profile start, profile write, heap snapshot write, and capture-limit events.
 - `renderer-hot-0001.cpuprofile` / `main-hot-0001.cpuprofile` - Chrome DevTools CPU profile for the hot process (compact JSON, one line).
-- `renderer-hot-0001-<phase>.heapsnapshot` / `main-hot-0001-<phase>.heapsnapshot` - optional V8 heap snapshots when smart heap snapshots were enabled.
+- `renderer-hot-0001-<phase>.heapsnapshot` - optional V8 heap snapshots when smart heap snapshots were enabled. Renderer sessions only: the main process has no async heap-snapshot API, and the synchronous `v8.writeHeapSnapshot` would freeze every window, IPC, the tray, and global hotkeys for the length of the write. Main sessions are CPU-profile only.
 
 Open `.cpuprofile` files in Chrome DevTools Performance or a compatible profile viewer. Open `.heapsnapshot` files in Chrome DevTools Memory.
 

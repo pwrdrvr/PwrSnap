@@ -8,7 +8,6 @@
 // .cpuprofile-shaped object for the main thread.
 
 import { Session } from "node:inspector";
-import { writeHeapSnapshot } from "node:v8";
 import type { HotCpuTarget } from "./hot-cpu-profiler";
 
 export function createMainProcessHotCpuTarget(): HotCpuTarget {
@@ -47,13 +46,18 @@ export function createMainProcessHotCpuTarget(): HotCpuTarget {
       on: () => {},
       off: () => {}
     },
-    getOSProcessId: () => process.pid,
-    // v8.writeHeapSnapshot is synchronous and pauses the main thread
-    // for the duration of the write. Heap snapshots are opt-in
-    // (Settings → Developer) precisely because of that cost; the
-    // renderer path pays the equivalent price in its own process.
-    takeHeapSnapshot: async (filePath) => {
-      writeHeapSnapshot(filePath);
-    }
+    getOSProcessId: () => process.pid
+    // Deliberately NO `takeHeapSnapshot`. The only main-process API for
+    // it, `v8.writeHeapSnapshot`, is SYNCHRONOUS: it blocks the main
+    // thread for the length of the write (~seconds on a heap of a few
+    // hundred MB), and with it every window, all IPC, the tray, and the
+    // global hotkeys. The profiler would call it up to three times per
+    // triggered profile (start/mid/stop), turning a background
+    // diagnostic into a user-visible app hang. Omitting it also keeps
+    // `heapSnapshotLimit` honest — the counter is per-profiler, so a
+    // second snapshotting target would silently double the user's
+    // configured budget. Main sessions are CPU-profile only; the
+    // renderer path still captures heap snapshots in its own process,
+    // where the stall is contained.
   };
 }

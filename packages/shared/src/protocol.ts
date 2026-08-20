@@ -699,13 +699,6 @@ export type HotCpuProfileHeapSnapshotArtifact = {
 export const HOT_CPU_PROFILE_TARGETS = ["renderer", "main"] as const;
 export type HotCpuProfileTarget = (typeof HOT_CPU_PROFILE_TARGETS)[number];
 
-export function isHotCpuProfileTarget(value: unknown): value is HotCpuProfileTarget {
-  return (
-    typeof value === "string" &&
-    (HOT_CPU_PROFILE_TARGETS as readonly string[]).includes(value)
-  );
-}
-
 export function formatHotCpuProfileTargetLabel(target: HotCpuProfileTarget): string {
   return target === "main" ? "main process" : "renderer";
 }

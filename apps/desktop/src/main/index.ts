@@ -206,6 +206,7 @@ import {
 import {
   createMainWindow,
   findMainLibraryWindow,
+  installMainProcessHotCpuMonitor,
   reclaimDockIconIfLibraryAlive,
   scheduleDockReclaim,
   refreshWindowsTitleBarOverlay,
@@ -2029,6 +2030,14 @@ export function bootstrapApp(): void {
     } else if (startupProfilingEnabled()) {
       markStartup("main: global hotkeys SKIPPED (profiling run)");
     }
+    // App-global main-process hot-CPU monitor. Installed here, before
+    // any window decision, because two boot paths never create a
+    // Library window: a login-item launch stays tray-only, and in split
+    // mode the Library lives in a child process — hanging this off
+    // `createMainWindow` would leave the main process (tray, hotkeys,
+    // capture pipeline) unmonitored in exactly those cases. Settings-
+    // gated and off by default, so this is inert until armed.
+    installMainProcessHotCpuMonitor();
     markStartup("main: createMainWindow begin");
     if (wasLaunchedAtLogin()) {
       // Login-item boot is background-only: the tray owns the session

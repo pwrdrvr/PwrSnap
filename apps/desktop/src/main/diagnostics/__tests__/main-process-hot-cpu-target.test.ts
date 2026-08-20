@@ -48,6 +48,16 @@ describe("createMainProcessHotCpuTarget", () => {
     expect(target.debugger.isAttached()).toBe(false);
   });
 
+  // Pins the CPU-only posture: v8.writeHeapSnapshot is synchronous, so a
+  // main-process heap snapshot would freeze every window, IPC, the tray,
+  // and the global hotkeys for the length of the write — up to three
+  // times per triggered profile. It would also double the user's
+  // configured heapSnapshotLimit, which is counted per profiler.
+  test("exposes no heap-snapshot hook, so the profiler never freezes the app", () => {
+    const target = createMainProcessHotCpuTarget();
+    expect(target.takeHeapSnapshot).toBeUndefined();
+  });
+
   test("attach twice throws until detached", () => {
     const target = createMainProcessHotCpuTarget();
     target.debugger.attach("1.3");

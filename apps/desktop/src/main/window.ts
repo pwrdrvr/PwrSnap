@@ -515,8 +515,23 @@ let mainHotCpuProfilerSlot: HotCpuProfilerSlot | null = null;
 /** Wire the main-process hot-CPU monitor once per process. The main
  *  process is app-global (not tied to any window), so its slot lives at
  *  module scope, keeps running when the library window closes, and
- *  stops on app quit. */
-function ensureMainHotCpuProfilerWiring(): void {
+ *  stops on app quit.
+ *
+ *  MUST be called from app boot in EVERY role, not from
+ *  `createMainWindow` — two boot paths never create a library window
+ *  and would otherwise leave the main process unmonitored:
+ *
+ *  - Login-item boot runs tray-only on purpose (`wasLaunchedAtLogin()`
+ *    in index.ts), and Settings opens through `createSettingsWindow`.
+ *    Arming the feature from the tray has to work with no Library open
+ *    — that unattended background burn is the case it exists for.
+ *  - In split mode `createMainWindow` runs in the LIBRARY child
+ *    process, so hanging the wiring off it would monitor the library
+ *    and never the agent process that owns the tray, global hotkeys,
+ *    and the capture pipeline.
+ *
+ *  Idempotent, so a redundant call is harmless. */
+export function installMainProcessHotCpuMonitor(): void {
   if (mainHotCpuProfilerSlot !== null) return;
 
   const slot = createHotCpuProfilerSlot({
@@ -785,9 +800,10 @@ export function createMainWindow(): BrowserWindow {
       })
   });
   hotCpuProfilerSyncHandlers.set(window.id, rendererHotCpuSlot.sync);
-  // Main-process monitor rides the same enable settings; wired once
-  // per process, independent of this window's lifetime.
-  ensureMainHotCpuProfilerWiring();
+  // The main-process monitor is NOT wired here — it is app-global and
+  // installed at boot for every role by `installMainProcessHotCpuMonitor`.
+  // Backstop only, for windows created before/without that boot step.
+  installMainProcessHotCpuMonitor();
   webContents.once("did-finish-load", () => {
     rendererLoaded = true;
     rendererHotCpuSlot.sync("renderer-loaded");

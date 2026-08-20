@@ -212,6 +212,7 @@ import {
   refreshWindowsTitleBarOverlay,
   syncHotCpuProfilersFromSettings
 } from "./window";
+import { installContentTraceHook } from "./diagnostics/content-trace-recorder";
 import { installLaunchAtLoginSync, wasLaunchedAtLogin } from "./launch-at-login";
 import { wireAppMenuBridge } from "./app-menu-bridge";
 import {
@@ -2050,6 +2051,12 @@ export function bootstrapApp(): void {
     // capture pipeline) unmonitored in exactly those cases. Settings-
     // gated and off by default, so this is inert until armed.
     installMainProcessHotCpuMonitor();
+    // Multi-process Chrome trace harness (PWRSNAP_TRACE=1). Inert
+    // without the env var; when armed it only installs a SIGUSR2
+    // listener, so an unarmed build pays nothing. Installed next to the
+    // hot-CPU monitor because the two answer halves of the same
+    // question: which process is hot, and what that process is doing.
+    installContentTraceHook();
     markStartup("main: createMainWindow begin");
     if (wasLaunchedAtLogin()) {
       // Login-item boot is background-only: the tray owns the session

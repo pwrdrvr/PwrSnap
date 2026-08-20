@@ -48,8 +48,9 @@ test.describe("video float-over", () => {
     // Tiny placeholder — the renderer's `<video>` element won't
     // successfully decode this but it'll render the element, which
     // is what the spec asserts on. The Range-aware protocol handler
-    // serves the byte range so the network request returns 206 and
-    // the element transitions to `metadata` ready state.
+    // answers the media stack's opening `bytes=0-` request with a
+    // full 200 (and real mid-file ranges with 206) and the element
+    // transitions to `metadata` ready state.
     await writeFile(mp4Path, Buffer.from("fake mp4 placeholder bytes"));
 
     await app.electronApp.evaluate(

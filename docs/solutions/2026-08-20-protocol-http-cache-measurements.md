@@ -19,9 +19,17 @@ Three practical consequences:
    up to 6.3MB / 25Mbps 1080p) is fully held by the media element's
    buffer; loop wraps via `currentTime = start` issue **zero** protocol
    requests, before and after the header fix. The real per-request
-   costs to attack were the full-buffer copies and the synchronous
-   SQLite resolve (both fixed — bodies now stream, lookups are
-   memoized/prepared-statement-cached).
+   costs to attack were the full-buffer copies and the per-request
+   SQL re-planning (both fixed — bodies now stream, and the point
+   lookups reuse prepared statements).
+
+   A caching resolver on top of that is NOT worth it, and was tried
+   and reverted: the cheapest correct "is this path still valid"
+   probe is an async `access()` at ~8µs (libuv threadpool), while
+   the resolve it would replace is ~1.6µs (prepared-statement
+   lookup ~0.8µs + `existsSync` ~0.8µs). It also made the DB
+   non-authoritative for existence, so a capture whose row was
+   purged while its file survived kept serving bytes.
 2. **Validators are load-bearing for every non-media surface.**
    `no-cache` without an ETag/Last-Modified (the pre-fix state) forces
    a full body refetch on every cross-document revalidation. With the

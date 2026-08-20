@@ -189,7 +189,7 @@ export type ProtocolResolver = {
  * document the media element's own buffer serves loop wraps and
  * remounts (zero requests), while cross-document loads bypass the
  * HTTP cache regardless of headers — for those the win is the
- * streamed body + memoized resolve, not the cache. Details:
+ * streamed body + cheaper resolve, not the cache. Details:
  * docs/solutions/2026-08-20-protocol-http-cache-measurements.md.
  */
 const CAPTURE_SOURCE_CACHE_CONTROL = "private, max-age=86400, immutable";

@@ -84,7 +84,16 @@ Scoped as a context rather than derived state because `CellThumb`
 renders in TWO places: the grid pane (hidden in focus/reel) and the
 Reel filmstrip (VISIBLE in reel mode, rendered inside Stage's
 `aboveStageSlot`). Only the grid subtree gets a provider; the
-filmstrip inherits the default and keeps its hover previews.
+filmstrip inherits the `true` default, which is the correct value for
+a surface that is on screen exactly when the grid is not.
+
+Note the filmstrip does not actually hover-play today, and never has:
+`PreviewVideoThumb` binds its mouseenter/mouseleave via
+`closest(".psl__cell")`, and a filmstrip thumb sits in
+`button.psl__frame` with no `.psl__cell` ancestor, so the listener is
+never attached. That is pre-existing and out of scope here — but it
+means the `true` default is a safety choice for when the filmstrip
+gains previews, not something protecting live behavior.
 
 Pinned by
 `apps/desktop/src/renderer/src/features/library/__tests__/Library.grid-video-preview.test.tsx`
@@ -101,3 +110,13 @@ Pinned by
   the detail view) is the detail surface itself, not the tiles —
   `VideoStage`'s per-frame `setCurrentTime` re-render while playing
   is the next thing to look at there.
+- **Known adjacent gap, not fixed here:** the gate keys on view mode
+  only, so it still reads "visible" when the whole WINDOW is
+  backgrounded or occluded. Hover a tile, then Cmd+Tab away without
+  moving the pointer off it: no `mouseleave` fires for an app
+  deactivation that doesn't move the cursor, `view.kind` is still
+  `"grid"`, and the preview (no `loop` attribute, but it does play
+  through) decodes the rest of the clip off-screen. Unmeasured —
+  confirm the no-`mouseleave` assumption before building on it. The
+  fix shape would be folding `document.visibilitychange` / window
+  blur into the same context rather than adding a second mechanism.

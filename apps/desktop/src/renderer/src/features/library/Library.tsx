@@ -4018,40 +4018,40 @@ export function Library() {
               OUTSIDE this provider on purpose: they're visible in reel
               mode and keep the default `true`. */}
           <SurfaceVisibleContext.Provider value={view.kind === "grid"}>
-          <VirtualizedGrid
-            grouped={grouped}
-            scrollElement={gridScrollRef}
-            cellMinWidth={gridZoom}
-            onColumnsChange={setLiveColumns}
-            cellsPerRowRef={cellsPerRowRef}
-            scrollApiRef={gridScrollApiRef}
-            // Recompute columns whenever the grid pane is resized by a
-            // layout change rather than a window resize — the right rail
-            // showing/hiding or collapsing (it claims/releases its column)
-            // is the main one. `railDataRight` already folds in rail
-            // visibility + the pinned/collapsed width.
-            layoutSignal={`${view.kind}|${leftPinned ? "lp" : "lc"}|${
-              railShowing ? "rail" : "norail"
-            }|${railDataRight ?? "none"}`}
-            selectedRecordId={selectedRecordId}
-            fixtureBacking={fixtureBacking}
-            projectCoverRecordsById={projectCoverRecordsById}
-            appLabels={appLabels}
-            onSelectCell={onSelectCell}
-            duplicateSizzleProject={duplicateSizzleProject}
-            openProjectContextMenu={openProjectContextMenu}
-            openCaptureContextMenu={openCaptureContextMenu}
-            preloadFullRes={preloadFullRes}
-            hasMore={gridHasMore}
-            isLoadingMore={gridIsLoadingMore}
-            loadMore={loadMore}
-            isTrashView={isTrashView}
-            trashCapture={trashCapture}
-            confirmBeforeTrash={confirmBeforeTrash}
-            onDontAskAgainTrash={suppressTrashConfirm}
-            restoreCaptureAction={restoreCaptureAction}
-            purgeCaptureAction={purgeCaptureAction}
-          />
+            <VirtualizedGrid
+              grouped={grouped}
+              scrollElement={gridScrollRef}
+              cellMinWidth={gridZoom}
+              onColumnsChange={setLiveColumns}
+              cellsPerRowRef={cellsPerRowRef}
+              scrollApiRef={gridScrollApiRef}
+              // Recompute columns whenever the grid pane is resized by a
+              // layout change rather than a window resize — the right rail
+              // showing/hiding or collapsing (it claims/releases its column)
+              // is the main one. `railDataRight` already folds in rail
+              // visibility + the pinned/collapsed width.
+              layoutSignal={`${view.kind}|${leftPinned ? "lp" : "lc"}|${
+                railShowing ? "rail" : "norail"
+              }|${railDataRight ?? "none"}`}
+              selectedRecordId={selectedRecordId}
+              fixtureBacking={fixtureBacking}
+              projectCoverRecordsById={projectCoverRecordsById}
+              appLabels={appLabels}
+              onSelectCell={onSelectCell}
+              duplicateSizzleProject={duplicateSizzleProject}
+              openProjectContextMenu={openProjectContextMenu}
+              openCaptureContextMenu={openCaptureContextMenu}
+              preloadFullRes={preloadFullRes}
+              hasMore={gridHasMore}
+              isLoadingMore={gridIsLoadingMore}
+              loadMore={loadMore}
+              isTrashView={isTrashView}
+              trashCapture={trashCapture}
+              confirmBeforeTrash={confirmBeforeTrash}
+              onDontAskAgainTrash={suppressTrashConfirm}
+              restoreCaptureAction={restoreCaptureAction}
+              purgeCaptureAction={purgeCaptureAction}
+            />
           </SurfaceVisibleContext.Provider>
         </div>
         {showGridCopyPalette && selectedRecord !== null ? (

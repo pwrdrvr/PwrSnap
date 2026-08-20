@@ -40,11 +40,10 @@
 // pattern VS Code adopted when it migrated off file:// URLs to
 // `vscode-file://`.
 
-import { open, readFile, stat } from "node:fs/promises";
-import { extname } from "node:path";
 import { app, protocol } from "electron";
 import { getMainLogger } from "./log";
 import { getSnapshotPath } from "./capture/screen-snapshot";
+import { fileResponse } from "./protocol-file-response";
 import {
   parseAppIconBundleId,
   parseCacheUrl,
@@ -170,99 +169,26 @@ export type ProtocolResolver = {
   sizzleOutputPath(projectId: string): Promise<string | null>;
 };
 
-const MIME_BY_EXT: Record<string, string> = {
-  ".png": "image/png",
-  ".webp": "image/webp",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  // Video sources. ScreenCaptureKit defaults to .mp4 (H.264 + AAC);
-  // the float-over <video> element + native drag-out both rely on
-  // the right Content-Type to render correctly.
-  ".mp4": "video/mp4",
-  ".mov": "video/quicktime",
-  ".gif": "image/gif"
-};
-
-function mimeForPath(filePath: string): string {
-  return MIME_BY_EXT[extname(filePath).toLowerCase()] ?? "application/octet-stream";
-}
+// File → Response construction (Range / 206, conditional-request 304s,
+// ETag + Last-Modified validators, streamed bodies) lives in
+// ./protocol-file-response.ts so it stays unit-testable without an
+// electron import.
 
 /**
- * Read a file and produce a Response. Honors HTTP Range requests
- * (`Range: bytes=START-END`) with 206 Partial Content — required
- * for HTML5 `<video>` playback over this scheme. Chromium's media
- * stack issues Range requests as soon as the video element loads;
- * without 206 + `Content-Range` + `Accept-Ranges` headers the
- * player either hangs on the loading spinner or refuses to seek.
- *
- * Range branch reads ONLY the requested chunk via `fs.open` +
- * `read(start, length)` — never loads the whole video into memory
- * even for the long-tail "seek to the end of a 30s clip" case.
- * Non-Range branch keeps the existing read-the-whole-file fast
- * path for small assets (PNG thumbnails, screen snapshots).
+ * Capture source bytes (`r/<id>` and `s/<id>/<sha>`) are write-once:
+ * the source-store owns `<capturesRoot>` under a source-immutability
+ * invariant, layer sources are content-addressed by sha, video trim /
+ * canvas crop are metadata-only, and every visual edit renders to a
+ * NEW `pwrsnap-cache://` asset behind an `?v=edits_version` buster.
+ * Only the file's LOCATION can change (trash rename, lazy re-extract)
+ * — never its bytes for a given URL. So the raw source is safe to
+ * cache hard: a day of freshness plus `immutable` keeps Chromium from
+ * even revalidating inside a session — this is what lets a short
+ * <video> loop (VideoStage seeks back to range start on every wrap)
+ * replay from the HTTP cache instead of re-issuing Range reads
+ * through this handler on every wrap.
  */
-async function fileResponse(
-  filePath: string,
-  request: Request,
-  options: { cacheControl?: string } = {}
-): Promise<Response> {
-  const cacheControl = options.cacheControl ?? "private, max-age=300";
-  const stats = await stat(filePath);
-  const total = stats.size;
-  const rangeHeader = request.headers.get("range");
-  if (rangeHeader !== null) {
-    const match = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader.trim());
-    if (match !== null) {
-      const start = Number.parseInt(match[1]!, 10);
-      const endRaw = match[2]!;
-      const end = endRaw.length > 0 ? Number.parseInt(endRaw, 10) : total - 1;
-      if (Number.isFinite(start) && Number.isFinite(end) && start <= end && end < total) {
-        const length = end - start + 1;
-        const fh = await open(filePath, "r");
-        try {
-          const buf = Buffer.alloc(length);
-          await fh.read(buf, 0, length, start);
-          const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
-          return new Response(ab, {
-            status: 206,
-            headers: {
-              "content-type": mimeForPath(filePath),
-              "content-length": String(length),
-              "content-range": `bytes ${start}-${end}/${total}`,
-              "accept-ranges": "bytes",
-              "cache-control": "no-cache"
-            }
-          });
-        } finally {
-          await fh.close();
-        }
-      }
-      // Unsatisfiable range — RFC 7233 §4.4 says 416 + Content-Range:
-      // bytes */<total>. The video element will retry without Range.
-      return new Response("range not satisfiable", {
-        status: 416,
-        headers: {
-          "content-range": `bytes */${total}`,
-          "accept-ranges": "bytes"
-        }
-      });
-    }
-  }
-  // No Range header (or unparseable) — return the whole file. Still
-  // advertise Accept-Ranges so the media element knows it can ask
-  // for a partial range next.
-  const body = await readFile(filePath);
-  const ab = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer;
-  return new Response(ab, {
-    status: 200,
-    headers: {
-      "content-type": mimeForPath(filePath),
-      "content-length": String(total),
-      "accept-ranges": "bytes",
-      "cache-control": cacheControl
-    }
-  });
-}
+const CAPTURE_SOURCE_CACHE_CONTROL = "private, max-age=86400, immutable";
 
 /**
  * Wires both protocol handlers. Must be called inside `app.whenReady()`.
@@ -282,7 +208,9 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
         if (filePath === null) {
           return new Response("not found", { status: 404 });
         }
-        return await fileResponse(filePath, request);
+        return await fileResponse(filePath, request, {
+          cacheControl: CAPTURE_SOURCE_CACHE_CONTROL
+        });
       } catch (cause) {
         log.error("capture source handler threw", {
           captureId: sourceUrl.captureId,
@@ -304,7 +232,9 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
         log.warn("capture: not found", { captureId });
         return new Response("not found", { status: 404 });
       }
-      const response = await fileResponse(filePath, request);
+      const response = await fileResponse(filePath, request, {
+        cacheControl: CAPTURE_SOURCE_CACHE_CONTROL
+      });
       if (profiling) {
         markStartup(`protocol capture ${captureId} ${Date.now() - startedAt}ms`);
       }
@@ -370,6 +300,8 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
       // so a "revalidation" is a single fast file stat. Without this,
       // Chromium's default 5-min HTTP cache would serve a stale PNG
       // for up to 5 minutes after an app auto-update changed the icon.
+      // fileResponse now stamps an ETag/Last-Modified, so those
+      // revalidations resolve as bodyless 304s rather than refetches.
       return await fileResponse(filePath, request, { cacheControl: "no-cache" });
     } catch (cause) {
       log.error("app-icon handler threw", {
@@ -457,6 +389,11 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
       if (filePath === null) {
         return new Response("not found", { status: 404 });
       }
+      // Sizzle outputs ARE replaced in place on re-render at the same
+      // project id, and callers may use the bare URL (no `?v=` buster),
+      // so `no-cache` stays. The ETag/Last-Modified that fileResponse
+      // stamps makes each revalidation a stat + 304 instead of a full
+      // refetch, which is what keeps hover-preview loops cheap.
       return await fileResponse(filePath, request, { cacheControl: "no-cache" });
     } catch (cause) {
       log.error("sizzle-output handler threw", {

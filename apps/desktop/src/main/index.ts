@@ -1291,11 +1291,37 @@ async function runInteractiveRecord(
 }
 
 /**
+ * captureId → resolved source path memo for the protocol resolver.
+ * Every un-cached `pwrsnap-capture://r/<id>` media fetch otherwise
+ * pays a synchronous SQLite point-lookup (+ video-metadata lookup) on
+ * the main thread before touching the file. Source BYTES for an id
+ * are immutable (source-store invariant), but the LOCATION can move —
+ * soft-delete renames into `.trash/`, restore renames back, Storage →
+ * Clear/Trim wipes lazy-extracted bundle sources — so a hit is only
+ * trusted after a cheap `access()` probe; a vanished file drops the
+ * entry and falls through to the full resolve (which re-extracts /
+ * re-points as needed). That check keeps the memo correct without any
+ * event plumbing, in both processes of the split. Bounded, simple
+ * insertion-order eviction.
+ */
+const captureSrcPathMemo = new Map<string, string>();
+const CAPTURE_SRC_PATH_MEMO_MAX = 512;
+
+/**
  * Protocol resolver. captureSourcePath wired in Phase 1.3, cacheFile
  * wired in Phase 1.6 to the render coordinator.
  */
 const protocolResolver: ProtocolResolver = {
   async captureSourcePath(captureId) {
+    const memoized = captureSrcPathMemo.get(captureId);
+    if (memoized !== undefined) {
+      try {
+        await access(memoized);
+        return memoized;
+      } catch {
+        captureSrcPathMemo.delete(captureId);
+      }
+    }
     const record = getCaptureById(captureId);
     if (record === null) {
       return null;
@@ -1306,7 +1332,13 @@ const protocolResolver: ProtocolResolver = {
     // to restore or permanently delete. Bundle-backed live captures
     // lazy-extract source.png from the bundle if the per-capture
     // cache file has been wiped (Storage → Clear/Trim, manual rm).
-    return await ensureEffectiveSrcPath(record);
+    const srcPath = await ensureEffectiveSrcPath(record);
+    if (captureSrcPathMemo.size >= CAPTURE_SRC_PATH_MEMO_MAX) {
+      const oldest = captureSrcPathMemo.keys().next().value;
+      if (oldest !== undefined) captureSrcPathMemo.delete(oldest);
+    }
+    captureSrcPathMemo.set(captureId, srcPath);
+    return srcPath;
   },
   async sourceBytesPath(captureId, sha256) {
     const record = getCaptureById(captureId);

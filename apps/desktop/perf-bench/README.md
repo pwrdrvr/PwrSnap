@@ -13,6 +13,13 @@ machine with `git stash`.
 Not wired into CI: absolute numbers are machine-specific, only
 same-machine deltas mean anything.
 
+**This bench measures JS only.** Once React was off the playhead path
+(#446) the remaining playback burn was compositor frame production,
+which is invisible here and mostly lands in the GPU process. That half
+has its own harness — [`playhead-cpu/`](playhead-cpu/README.md) — which
+runs the real Electron binary against a real recording and samples
+per-process CPU.
+
 ```bash
 source ~/.nvm/nvm.sh && nvm use
 npx playwright install chromium              # once

@@ -164,3 +164,111 @@ node perf-bench/run.mjs --seconds 10 --runs 3 --label "after / dev react"
 is not wired into CI — it is a measurement tool, and its absolute
 numbers are machine-specific; only same-machine A/B deltas mean
 anything.
+
+---
+
+# Act two: the head was still driving the compositor at vsync
+
+**Date:** 2026-08-20 (same day, after #446 landed)
+
+With React off the playhead path, React is **absent** from renderer CPU
+profiles during playback. The video kept burning CPU anyway, and the
+remaining cost is not JS at all.
+
+## The mechanism
+
+**Any DOM mutation inside a frame makes Chromium produce a compositor
+frame at that vsync.** A playhead that moves every `requestAnimation-
+Frame` therefore pins frame production at the **display's** rate —
+120 Hz on a ProMotion panel — instead of at the rate the video surface
+actually updates, which is ~48–57 Hz for these VFR screen recordings.
+It does not matter that the mutation is one `transform` on one 1 px
+div: the frame gets produced either way.
+
+Raster runs in the **GPU process** under out-of-process rasterization,
+so most of the cost lands there. That is why a renderer-only JS profile
+— the tool that found act one — cannot see any of this.
+
+## Measuring it
+
+Controlled A/B, repo's own Electron 41.10.3 binary, a real capture,
+window forced visible, display confirmed at 120 fps:
+
+| variant | GPU process | renderer |
+|---|---|---|
+| video alone (native `loop` attr) | 6.0 % | 5.2 % |
+| + JS seek loop (loop-in-range) | 7.9 % | 6.2 % |
+| + filmstrip image, playhead **frozen** | 8.4 % | 6.2 % |
+| + playhead moving every rAF (120 Hz) | **18.1 %** | **14.1 %** |
+| + playhead throttled to ~30 Hz | 11.4 % | 9.1 % |
+
+The moving head cost **more than decoding and compositing the video
+itself**.
+
+`perf-bench/playhead-cpu` reproduces this on demand (see its README).
+Same shape, different machine load — three alternating rounds on a
+178 s, ~57 fps capture:
+
+| arm | GPU process | renderer | publish Hz |
+|---|---|---|---|
+| `frozen` | 5.0 % | 4.1 % | 0 |
+| `raf` (before) | 12.3 % | 9.9 % | 120.2 |
+| `throttled` (after) | **7.1 %** | **6.0 %** | 25.6 |
+
+≈ 70 % of the head's excess GPU-process CPU and ≈ 67 % of its excess
+renderer CPU, recovered.
+
+## What it is now
+
+`VideoStage`'s playback loop runs at **two rates**, and conflating them
+is the bug:
+
+- The **wrap check** (loop-in-range) still runs every animation frame.
+  It has to — being a frame late on the out-point is visible — and it
+  costs nothing at the compositor, because setting `el.currentTime`
+  mutates the media pipeline, not the DOM.
+- The **publish** is capped at `PLAYHEAD_MIN_PUBLISH_MS` (33 ms). A 1 px
+  line and a tenths-of-a-second timecode gain nothing above ~30 Hz.
+
+Where `requestVideoFrameCallback` is available it drives the publish
+instead of rAF. That is the cleanest form of the fix: rVFC fires once
+per **decoded** frame, so it self-limits to the media's own rate, and
+publishing from inside that callback coalesces the DOM mutation into a
+compositor frame the video update was going to force anyway.
+
+## Traps if you touch this
+
+- **Latch rVFC on its FIRST CALLBACK, not on feature detection.**
+  `requestVideoFrameCallback` exists on every Chromium
+  `HTMLVideoElement` but only *fires* when frames are being presented.
+  Detecting the method and handing it the job stalls the head wherever
+  it does not fire — jsdom, a suspended surface, an element with no
+  decodable frames. The rAF loop publishes at the 30 Hz cap until rVFC
+  proves itself, so the latch can only ever *lower* the rate.
+- **VFR needs a floor.** These are screen recordings: a stretch where
+  nothing on screen moved can go a long time between decoded frames
+  while the clock keeps running. `PLAYHEAD_MAX_GAP_MS` (100 ms — the
+  tenths resolution the timecode renders at) lets the rAF loop cover
+  the gap once rVFC is driving.
+- **Discrete positions must never be swallowed by the throttle.** The
+  loop wrap force-publishes; seek / scrub / pause / capture-switch go
+  through `publishTime`, off the throttled path entirely. A head that
+  lags a scrub by 33 ms reads as broken in a way a head that lags
+  playback by 33 ms does not.
+- **`meta.mediaTime` needs a sanity check against `el.currentTime`.**
+  It is the truer head — the presentation time of the frame actually on
+  screen — but a frame decoded just before a loop wrap can arrive
+  *after* the wrap put the head back at the in-point, and publishing it
+  flicks the head to the far end for an interval.
+
+## Ruled out by measurement — do not retry these
+
+- **`will-change: transform` / `translateZ(0)` layer promotion** on the
+  playhead and/or the strip: 19.3 % vs 18.1 %, i.e. nothing. (Act one
+  measured it slightly *worse* in the JS bench, too.)
+- **The rounded border + `overflow: hidden` on `.psl__video-frame`**:
+  no measurable CPU effect. It can be dropped on styling grounds — it
+  was never a requirement — but not for CPU.
+- **wavesurfer**: built with `interact: false`, `cursorWidth: 0`,
+  blob-loaded, and never bound to the media element. It is static
+  during playback and does not redraw.

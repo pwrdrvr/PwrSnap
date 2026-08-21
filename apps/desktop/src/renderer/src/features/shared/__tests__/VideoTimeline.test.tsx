@@ -81,6 +81,14 @@ function render(
   };
 }
 
+function restoreDpr(descriptor: PropertyDescriptor | undefined): void {
+  if (descriptor === undefined) {
+    delete (window as unknown as Record<string, unknown>).devicePixelRatio;
+    return;
+  }
+  Object.defineProperty(window, "devicePixelRatio", descriptor);
+}
+
 function pointer(el: Element, type: string, clientX: number): void {
   act(() => {
     el.dispatchEvent(
@@ -345,6 +353,83 @@ describe("VideoTimeline", () => {
     source.set(8);
     expect(head.style.transform).toBe("translateX(400px)");
     expect(strip.getAttribute("aria-valuetext")).toBe("0:08.0");
+  });
+
+  test("head placement quantizes to device pixels and skips pixel-identical writes", () => {
+    // The rAF loop publishes at DISPLAY refresh while the head advances
+    // at strip-width / duration, so most published positions render
+    // identically. Each redundant write cost a full compositor commit +
+    // draw + swap; on a 120 Hz display with a 178 s clip that was ~110
+    // wasted swaps a second. See VideoTimeline.tsx `placePlayhead`.
+    const dpr = Object.getOwnPropertyDescriptor(window, "devicePixelRatio");
+    Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 2 });
+    try {
+      const source = createPlayheadSource(0);
+      const { el } = render({ range: { start: 0, end: 16 }, currentTime: 0, playhead: source });
+      const head = el.querySelector('[data-testid="video-timeline-playhead"]') as HTMLElement;
+      // 800 px strip / 16 s = 50 px/s, so a device pixel (0.5 CSS px at
+      // dpr 2) is 0.01 s of clip.
+      const writes: string[] = [];
+      const proxy = new Proxy(head.style, {
+        set(target, prop, value: string) {
+          if (prop === "transform") writes.push(value);
+          return Reflect.set(target, prop, value);
+        }
+      });
+      Object.defineProperty(head, "style", { configurable: true, value: proxy });
+
+      source.set(0.004); // 0.2 CSS px -> device px 0 -> already placed
+      expect(writes).toEqual([]);
+
+      source.set(0.008); // 0.4 CSS px -> device px 1 -> 0.5 CSS px
+      expect(writes).toEqual(["translateX(0.5px)"]);
+
+      source.set(0.012); // 0.6 CSS px -> device px 1 again -> no write
+      expect(writes).toEqual(["translateX(0.5px)"]);
+
+      source.set(0.02); // 1.0 CSS px -> device px 2
+      expect(writes).toEqual(["translateX(0.5px)", "translateX(1px)"]);
+    } finally {
+      restoreDpr(dpr);
+    }
+  });
+
+  test("the skip still fires at a fractional devicePixelRatio", () => {
+    // Windows at 150% scaling. Device pixels land on thirds, so the
+    // written string is a long repeating decimal that Blink re-
+    // serializes to something shorter. Comparing what we wrote against
+    // `el.style.transform` would therefore never match and the skip
+    // would silently stop skipping — hence the numeric comparison.
+    const dpr = Object.getOwnPropertyDescriptor(window, "devicePixelRatio");
+    Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 1.5 });
+    try {
+      const source = createPlayheadSource(0);
+      const { el } = render({ range: { start: 0, end: 16 }, currentTime: 0, playhead: source });
+      const head = el.querySelector('[data-testid="video-timeline-playhead"]') as HTMLElement;
+      const writes: string[] = [];
+      const proxy = new Proxy(head.style, {
+        set(target, prop, value: string) {
+          if (prop === "transform") writes.push(value);
+          return Reflect.set(target, prop, value);
+        }
+      });
+      Object.defineProperty(head, "style", { configurable: true, value: proxy });
+
+      // 50 px/s; a device pixel is 1/1.5 CSS px = 0.0133… s of clip.
+      source.set(0.014); // 0.7 CSS px -> device px 1
+      expect(writes).toEqual(["translateX(0.6666666666666666px)"]);
+
+      // Three more publishes that all round to the same device pixel.
+      source.set(0.015);
+      source.set(0.016);
+      source.set(0.017);
+      expect(writes).toHaveLength(1);
+
+      source.set(0.028); // 1.4 CSS px -> device px 2
+      expect(writes).toHaveLength(2);
+    } finally {
+      restoreDpr(dpr);
+    }
   });
 
   test("a re-render from something else does not snap the head back to `currentTime`", () => {

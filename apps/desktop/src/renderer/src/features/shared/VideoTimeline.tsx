@@ -292,11 +292,54 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   // Playhead placement runs OFF the render path — see `playhead.ts`.
   // `transform` rather than `left` so a moving head never dirties
   // layout, only the compositor.
+  //
+  // Quantized to device pixels, and skipped when the quantized position
+  // is unchanged. This is not a throttle — it writes on every frame that
+  // renders differently and never writes one that doesn't. It matters
+  // because the rAF loop publishes at DISPLAY refresh while the head
+  // moves at STRIP WIDTH / DURATION: a 178 s clip across a 1044 px strip
+  // advances 5.9 px/sec, so on a 120 Hz display it crosses a device
+  // pixel roughly every tenth frame. The other 110 writes per second
+  // each produced a fresh compositor commit, draw, and swap for an
+  // identical picture.
+  //
+  // Measured with the pixel-identical writes dropped (2026-08-20,
+  // `PWRSNAP_TRACE=1`): compositor commits 118.7/sec -> 10.0/sec and
+  // swaps 118.7/sec -> 61.7/sec, i.e. down to the video's own frame
+  // rate, which is the floor. Complementary to the `will-change` layer
+  // promotion in video-timeline.css: promotion removes the per-frame
+  // RASTER, this removes the per-frame SWAP. Neither subsumes the
+  // other.
+  // What was last written, and to which node at which scale. Keyed on
+  // the element so a remount (the playhead is absent in `compact`)
+  // always writes, and on the scale so a drag to a display with a
+  // different DPR re-places rather than trusting a stale device pixel.
+  const placedRef = useRef<{ el: HTMLElement; devicePx: number; scale: number } | null>(null);
   const placePlayhead = useCallback(
     (sec: number): void => {
       const el = playheadRef.current;
       if (el === null) return;
-      el.style.transform = `translateX(${secToPx(sec, durationSec, width)}px)`;
+      // `devicePixelRatio` is read per call on purpose — a window
+      // dragged between a Retina and a non-Retina display changes it
+      // without re-running this callback's deps.
+      const scale = window.devicePixelRatio || 1;
+      const devicePx = Math.round(secToPx(sec, durationSec, width) * scale);
+      const placed = placedRef.current;
+      if (
+        placed !== null &&
+        placed.el === el &&
+        placed.scale === scale &&
+        placed.devicePx === devicePx
+      ) {
+        return;
+      }
+      // Compared as a NUMBER, never by reading `el.style.transform`
+      // back: Blink re-serializes what it stores, so at a fractional
+      // DPR (Windows at 125% / 150%) `translateX(0.6666666666666666px)`
+      // reads back as `translateX(0.666667px)`, no comparison ever
+      // matches, and the skip silently stops skipping.
+      placedRef.current = { el, devicePx, scale };
+      el.style.transform = `translateX(${devicePx / scale}px)`;
     },
     [durationSec, width]
   );

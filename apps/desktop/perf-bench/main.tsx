@@ -6,7 +6,7 @@
 //
 // Drive it from `run.mjs`: `window.__bench.start()` / `.stop()`.
 
-import { StrictMode, useState, type ReactElement } from "react";
+import { StrictMode, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { VideoStage } from "../src/renderer/src/features/library/VideoStage";
 import { useVideoTrimRange } from "../src/renderer/src/features/shared/useVideoTrimRange";
@@ -77,8 +77,7 @@ function Bench(): ReactElement {
     durationSec: DURATION_SEC,
     persistedRange: { start: 0, end: DURATION_SEC }
   });
-  const [mounted] = useState(true);
-  return mounted ? <VideoStage record={RECORD} video={VIDEO} trim={trim} /> : <div />;
+  return <VideoStage record={RECORD} video={VIDEO} trim={trim} />;
 }
 
 const host = document.getElementById("root");
@@ -91,9 +90,12 @@ createRoot(host).render(
 
 // Frame counter + DOM-mutation counter so a run can prove the loop
 // actually re-rendered (and how much DOM it touched doing it).
+// `startedAt` is reported back so the driver divides by the counter's
+// OWN window rather than the (shorter) profile window.
 let frames = 0;
 let rafId = 0;
 let mutations = 0;
+let startedAt = 0;
 const countFrame = (): void => {
   frames += 1;
   rafId = requestAnimationFrame(countFrame);
@@ -106,7 +108,10 @@ declare global {
   interface Window {
     __bench: {
       start: () => void;
-      stop: () => { frames: number; mutations: number };
+      stop: () => { frames: number; mutations: number; elapsedMs: number };
+      /** Which react-dom this bundle was built against — replaced at
+       *  build time, so the driver never has to assume. */
+      reactArm: string;
       playing: () => boolean;
     };
   }
@@ -116,6 +121,7 @@ window.__bench = {
   start: (): void => {
     frames = 0;
     mutations = 0;
+    startedAt = performance.now();
     const el = document.querySelector("video");
     if (el === null) throw new Error("no <video> mounted");
     observer.observe(host, {
@@ -127,12 +133,16 @@ window.__bench = {
     void el.play();
     rafId = requestAnimationFrame(countFrame);
   },
-  stop: (): { frames: number; mutations: number } => {
+  stop: (): { frames: number; mutations: number; elapsedMs: number } => {
     cancelAnimationFrame(rafId);
     observer.disconnect();
     const el = document.querySelector("video");
     el?.pause();
-    return { frames, mutations };
+    return { frames, mutations, elapsedMs: performance.now() - startedAt };
   },
+  reactArm:
+    process.env.NODE_ENV === "development"
+      ? "React development build"
+      : "React production build",
   playing: (): boolean => clock.playing
 };

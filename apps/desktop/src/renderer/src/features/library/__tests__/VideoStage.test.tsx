@@ -688,6 +688,32 @@ describe("VideoStage playhead loop", () => {
     expect(play).not.toHaveBeenCalled();
   });
 
+  // `play()` snaps the head to the in-point when playback would start
+  // outside the range. If the element then refuses to play, no `play`
+  // event fires, so neither frame loop starts — both are gated on
+  // `playing` — and nothing downstream would ever correct the head.
+  // `play()` publishes the snap itself.
+  test("a rejected play() still publishes the in-point snap", async () => {
+    stubRect(800);
+    stubRaf();
+    const stage = mountStatefulStage({ start: 2, end: 8 });
+    const video = stage.querySelector("video")!;
+    const clock = stubMediaClock(video);
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockRejectedValue(new Error("decode failed"));
+
+    // Parked past the out-point, so `play()` will snap to the in-point.
+    clock.t = 9.5;
+    await act(async () => {
+      stage
+        .querySelector<HTMLButtonElement>('[data-testid="video-transport-play"]')!
+        .click();
+    });
+
+    expect(clock.t).toBe(2);
+    expect(headOf(stage).style.transform).toBe("translateX(160px)");
+    expect(timecodeOf(stage)).toBe("0:02.0");
+  });
+
   test("pausing stops the loop and leaves the head where the element is", () => {
     stubRect(800);
     const raf = stubRaf();

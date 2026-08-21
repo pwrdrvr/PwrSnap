@@ -34,8 +34,14 @@ node perf-bench/run.mjs --seconds 10 --runs 3 --label "after / dev react"
 ```
 
 Read the **script / style / layout** columns, not `task`: `task` carries
-a fixed ~290 µs/frame of harness overhead (frame scheduling, the
+a fixed ~215 µs/frame of harness overhead (frame scheduling, the
 mutation counter, the profiler) that is present in both arms.
+
+**Interleave the arms.** Absolute numbers drift 25 %+ with machine load;
+ratios do not. Run before → after → before → after in one sitting rather
+than comparing a run from an hour ago. The header line reports which
+react-dom the bundle was actually built against, so a pasted result can
+never be mis-attributed to the wrong arm.
 
 Findings and the numbers this produced:
 [docs/solutions/2026-08-20-video-stage-playhead-cpu.md](../../../docs/solutions/2026-08-20-video-stage-playhead-cpu.md)

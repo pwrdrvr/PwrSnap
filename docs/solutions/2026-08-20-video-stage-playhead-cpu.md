@@ -64,43 +64,63 @@ tick (the rAF)  0.96 %   144.5 ms
 the real `VideoStage` against a fake media clock (no decode, no IPC) in
 headless Chromium and reads `Performance.getMetrics` deltas. It renders
 the same shape the app does (902 px strip, 121 ticks, 176 elements).
-Per animation frame, 3 runs × 10 s each:
+Per animation frame, 3 rounds × 3 runs × 12 s each, **interleaved**
+(before → after → before → …) so machine drift hits both arms equally:
 
 | µs / frame | before | after |
-|---|---|---|
+|---|---:|---:|
 | **React production build** | | |
-| script | 255 | 36 |
-| style | 31 | 36 |
-| layout | 47 | 9 |
-| total main-thread task | 535 | 327 |
-| → at 60 fps | **3.2 % of a core** | **2.0 % of a core** |
+| script | 186 | 36 |
+| style | 28 | 36 |
+| layout | 38 | 8 |
+| script + style + layout | **252** | **80** |
+| total main-thread task | 422 | 299 |
+| → at 60 fps | **2.5 % of a core** | **1.8 % of a core** |
 | **React development build** (what `pnpm dev` runs) | | |
-| script | 1308 | 34 |
-| style | 23 | 34 |
-| layout | 33 | 8 |
-| total main-thread task | 1547 | 305 |
-| → at 60 fps | **9.3 % of a core** | **1.8 % of a core** |
+| script | 1195 | 34 |
+| style | 26 | 35 |
+| layout | 34 | 8 |
+| script + style + layout | **1255** | **77** |
+| total main-thread task | 1437 | 290 |
+| → at 60 fps | **8.6 % of a core** | **1.7 % of a core** |
 
-Two things to read carefully here:
+Four things to read carefully here:
 
-- **The bench's `task` number has a floor of roughly 290 µs/frame**
+- **The bench's `task` number has a floor of roughly 215 µs/frame**
   that is present in both arms (frame scheduling, the harness's own
   MutationObserver, the profiler). The honest figure is the *delta*, or
-  the script + style + layout columns: **333 → 81 µs/frame in
-  production, 1364 → 76 µs/frame in development.**
-- **Development React is ~5× the cost of production React here**, which
+  the script + style + layout row.
+- **Absolute numbers drift with machine load; the ratio does not.** The
+  three rounds above measured the production `script` column at
+  159 → 30, 198 → 39, and 200 → 39 µs — a 25 % spread in absolutes, but
+  5.3× / 5.1× / 5.1× in ratio. Interleave the arms and quote ratios;
+  a before-run and an after-run taken an hour apart will lie to you.
+- **Development React is ~6× the cost of production React here**, which
   is why the captured profiles look so much worse than a packaged build
-  would. The bench's development arm (1.3 ms of script per frame) lands
+  would. The bench's development arm (1.2 ms of script per frame) lands
   in the same range as the real dev-server profiles (1.9–2.8 ms of
   React work per frame, the extra being `jsxDEV` from the un-transformed
   dev JSX pipeline the bench's build-mode transform skips) — which is
   what makes the bench's production arm believable too.
+- An earlier revision of this table quoted 255 / 1308 µs for the two
+  `script` columns. Those came from non-interleaved runs on a frame
+  count that covered ~0.4 s more than the profile window (fixed in the
+  harness since). The corrected, interleaved numbers are above.
 
-So: in a packaged build this was worth ~1.2 points of a core, not 50.
+So: in a packaged build this was worth ~0.7 points of a core, not 50.
 It was never going to be the whole 50 % — most of that is decode and
 compositing, which a JS profile cannot see. In a dev window it was
-worth ~7.5 points, and it accounts for the entire React share of the
+worth ~6.9 points, and it accounts for the entire React share of the
 captured profiles.
+
+The rest of that 50 % has since been located: per-process sampling
+added to the hot-CPU harness for this incident put the **GPU process**
+at ~56 %, invisible to any renderer JS profile. See
+`2026-07-05-hot-cpu-diagnostics-workflow.md` — and note its warning
+that Electron's instantaneous `percentCPUUsage` read ~2.4 % while the
+cumulative-delta figure read ~43 % for the same process. Act two below
+and `2026-08-20-video-playback-gpu-process-burn.md` are where that half
+gets taken apart.
 
 ## What it is now
 
@@ -140,9 +160,27 @@ playback the stage does not re-render at all.
   same text node React last wrote. This only holds as long as the
   render path does not also set `transform` / `aria-valuenow` from
   `currentTime` — don't add that back.
-- **`will-change: transform` was tried and dropped.** It measured
-  slightly *worse* in the bench (95 → 81 µs/frame without it) and costs
-  a compositing layer.
+- **`will-change: transform` was tried and dropped here — and later
+  put back, for a reason this act could not see.** In the JS bench
+  above it measured slightly *worse* (95 → 81 µs/frame without it), so
+  act one shipped without it. That bench has no real raster, so the
+  only thing it could weigh was the layer's bookkeeping cost. #449
+  instrumented the compositor and found the promotion load-bearing:
+  without it cc ran a full tile RasterTask 118.6×/sec to move a 1 px
+  line, and GPU-process CPU went 31.8 % → 22.3 % with it. **The
+  property is in `video-timeline.css` today and must stay** — see
+  `2026-08-20-video-playback-gpu-process-burn.md`. Act two's ruled-out
+  list below records it as "nothing" (19.3 % vs 18.1 %) and carries the
+  same correction: that A/B ran on the standalone `playhead-cpu`
+  harness and read whole-process CPU, without cc instrumentation.
+- **`play()` must publish its own seek.** It snaps the head to the
+  in-point when playback would start outside the range, and `el.play()`
+  can reject (decode failure, autoplay block) — in which case no `play`
+  event fires, neither frame loop starts (rAF or the rVFC one act two
+  adds), and nothing else would ever correct the head. It calls
+  `settleTime()` before handing off. That publish deliberately bypasses
+  act two's rate limit: the limit lives inside the playback effect and
+  governs continuous motion, never a discrete jump.
 - **`useSyncExternalStore` is the wrong tool.** It exists to feed an
   external value back into render, which is the exact cost being
   removed.
@@ -281,6 +319,18 @@ compositor frame the video update was going to force anyway.
 - **`will-change: transform` / `translateZ(0)` layer promotion** on the
   playhead and/or the strip: 19.3 % vs 18.1 %, i.e. nothing. (Act one
   measured it slightly *worse* in the JS bench, too.)
+
+  **Superseded — the property ships, do not remove it.** #449
+  independently measured promotion on `.vtl__playhead` as load-bearing
+  on the real app under `PWRSNAP_TRACE=1`: cc RasterTask 118.6/sec →
+  9.9/sec, GPU-process CPU 31.8 % → 22.3 %. It is in
+  `video-timeline.css` today. The disagreement is not an ordering
+  artifact — the number above came from `playhead-cpu/index.html`,
+  which draws its OWN head (unconditional `translateX`, no device-pixel
+  skip, `will-change: auto`), so both arms measured the same regime with
+  different instruments: whole-process `ps` CPU here, cc tracing there.
+  Re-run #449's trace before touching it. See
+  `2026-08-20-video-playback-gpu-process-burn.md`.
 - **The rounded border + `overflow: hidden` on `.psl__video-frame`**:
   no measurable CPU effect. It can be dropped on styling grounds — it
   was never a requirement — but not for CPU.

@@ -5,8 +5,8 @@
 // the whole `VideoStage` subtree — transport + timeline, ~180 elements
 // including one tick span per minute of source — at up to 60 Hz, for a
 // value whose only visible consumers are a 1 px line and a tenths
-// timecode. Measured at ~2.4 % of a core in a production build and
-// ~8.5 % under React's development build (which is what `pnpm dev`
+// timecode. Measured at ~2.5 % of a core in a production build and
+// ~8.6 % under React's development build (which is what `pnpm dev`
 // runs); see docs/solutions/2026-08-20-video-stage-playhead-cpu.md.
 //
 // So the head travels on its own channel: `set()` from the rAF loop,

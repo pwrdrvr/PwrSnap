@@ -27,10 +27,10 @@
 <script>
   // ── the two publish policies under test ───────────────────────────
   //
-  // "raf"       — what shipped before #447: publish every animation
+  // "raf"       — what shipped before #448: publish every animation
   //               frame, which pins compositor frame production at the
   //               display's vsync rate.
-  // "throttled" — #447: rVFC drives the publish where it fires, capped
+  // "throttled" — #448: rVFC drives the publish where it fires, capped
   //               at ~30 Hz, with a 100 ms floor from the rAF loop.
   // "frozen"    — the baseline the change is aiming at: everything
   //               mounted and decoding, head never moves.

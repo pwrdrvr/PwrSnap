@@ -241,11 +241,12 @@ test.describe("video float-over", () => {
       await expect(cell).toBeVisible({ timeout: 10_000 });
       await cell.dblclick();
 
-      // Stage's app tag renders source_app_name verbatim. The class
-      // is shared with the image path so a renderer-side regression
-      // (e.g. someone narrowing the type to require non-null) would
-      // surface here for both kinds.
-      const appTag = window.locator(".psl__stage-meta .ps-app-tag__name").first();
+      // The DetailRail header's app tag renders source_app_name
+      // verbatim (the stage itself no longer repeats it). The class is
+      // shared with the image path so a renderer-side regression (e.g.
+      // someone narrowing the type to require non-null) would surface
+      // here for both kinds.
+      const appTag = window.locator(".psl__detail-tags .ps-app-tag__name").first();
       await expect(appTag).toBeVisible({ timeout: 5000 });
       await expect(appTag).toHaveText("Microsoft Edge");
     } finally {
@@ -311,7 +312,7 @@ test.describe("video float-over", () => {
       await expect(cell).toBeVisible({ timeout: 10_000 });
       await cell.dblclick();
 
-      const appTag = window.locator(".psl__stage-meta .ps-app-tag__name").first();
+      const appTag = window.locator(".psl__detail-tags .ps-app-tag__name").first();
       await expect(appTag).toBeVisible({ timeout: 5000 });
       await expect(appTag).toHaveText("Unknown app");
     } finally {

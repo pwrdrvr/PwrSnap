@@ -5,16 +5,20 @@
 // alongside the topbar / left sidebar / status bar / DetailRail —
 // preserving the app chrome instead of taking over the viewport.
 //
-// Focus mode (dismissible=true): plain div with class `psl__focus`,
-// adds the × close button + "back to grid esc" hint inside the
-// stage area. Esc dismissal is owned by Library's window keydown
-// handler (single source of truth — see Stage.tsx pre-Phase D
-// history for why we don't observe a dialog `close` event).
+// Focus mode (dismissible=true): plain div with class `psl__focus`.
+// Nothing but the media and the ←/→ nav paints inside the stage —
+// the "back to grid · esc" affordance and the "idx / total" position
+// counter live in the Library TITLE BAR (the REEL/GRID segmented
+// control and the `.psl__count` slot), so no chrome ever overlaps the
+// capture. Esc dismissal is owned by Library's window keydown handler
+// (single source of truth — see Stage.tsx pre-Phase D history for why
+// we don't observe a dialog `close` event). Source app / date / dims
+// are NOT repeated here either: the DetailRail header already shows
+// them 20px to the right.
 //
 // Reel mode (dismissible=false): plain div with class
 // `psl__reel-mode`, adds the filmstrip above the stage via the
-// `aboveStageSlot` prop. No × button — the user exits Reel via
-// the segmented control.
+// `aboveStageSlot` prop. The user exits Reel via the segmented control.
 //
 // We previously rendered Focus inside a native <dialog> with
 // showModal() to get free focus management + Esc + inert-behind +
@@ -28,11 +32,14 @@
 // us exactly the right framing without fighting the top-layer.
 //
 // Both modes share:
-//   • Top breadcrumb (capture metadata)
-//   • Position counter ("5 / 32")
-//   • Prev/Next nav buttons on left/right edges
+//   • Prev/Next nav buttons on left/right edges — vertically anchored
+//     to the MEDIA, not the pane: for images the canvas viewport fills
+//     the pane so 50% is right; for video the transport + trim timeline
+//     are docked inside the pane, so the buttons render INSIDE
+//     `.psl__video-frame` (via VideoStage's `navSlot`) and center on the
+//     frame band instead of sitting ~80px below it.
 //   • <Editor chrome="chromeless" tool onToolChange /> for the canvas
-//   • <EditToolbar /> floating bottom-center
+//   • <EditToolbar /> floating bottom-center (images only)
 //
 // Plan reference:
 //   docs/plans/2026-05-05-001-feat-library-three-state-view-model-plan.md
@@ -43,13 +50,11 @@ import type { BlurStyle, CaptureRecord } from "@pwrsnap/shared";
 import { Editor, type ZoomApi, type LayersPanelApi } from "../editor/Editor";
 import type { Tool } from "../editor/editor-tools";
 import type { UseEditorToolStateReturn } from "../editor/useEditorToolState";
-import { AppTag } from "../shared/AppIcons";
 import { captureSrcUrl } from "../../lib/pwrsnap";
 import type { UseVideoTrimRange } from "../shared/useVideoTrimRange";
 import { DetailRail } from "./DetailRail";
 import { EditToolbar } from "./EditToolbar";
 import { VideoStage } from "./VideoStage";
-import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryAction, LibraryView } from "./library-view";
 
 export type StageProps = {
@@ -60,16 +65,13 @@ export type StageProps = {
   /** The CaptureRecord matching `view.selectedRecordId`. Caller has
    *  already resolved this from the records list. */
   readonly record: CaptureRecord;
-  /** When true (Focus mode): shows the × close button + "back to
-   *  grid esc" hint, dispatches CLOSE_FOCUS on × click. Esc is
-   *  handled at the Library level. When false (Reel mode): no ×
-   *  button — the user exits Reel via the segmented control. */
+  /** True in Focus mode, false in Reel. Picks the wrapper element and
+   *  tells `<VideoStage>` whether to grab the keyboard on mount. The
+   *  close / Esc affordance itself lives in the Library title bar. */
   readonly dismissible: boolean;
   /** Library reducer dispatcher — Stage dispatches NAVIGATE for prev/
-   *  next and CLOSE_FOCUS for dismissible mode. */
+   *  next. */
   readonly dispatch: (action: LibraryAction) => void;
-  /** Position counter for the top-right of the stage ("idx / total"). */
-  readonly posLabel: { idx: number; total: number };
   /** Neighbor record ids for ←/→ navigation, computed by Library
    *  against the current visible filter. Either may be null (no
    *  neighbor available — at edges or filter has only one record). */
@@ -116,14 +118,9 @@ export function Stage(props: StageProps): ReactElement {
 }
 
 /** Focus mode — plain in-flow div in the Library's content area.
- *  Adds the × close button + Esc hint; Esc handling itself lives
- *  in Library's window keydown listener so there's exactly one
- *  authoritative dismissal path. */
+ *  Dismissal (× / Esc) lives in the Library title bar + window keydown
+ *  listener so there's exactly one authoritative path. */
 function FocusStage(props: StageProps): ReactElement {
-  const onClose = (): void => {
-    props.dispatch({ type: "CLOSE_FOCUS" });
-  };
-
   return (
     <div
       className="psl__focus"
@@ -131,34 +128,33 @@ function FocusStage(props: StageProps): ReactElement {
       data-capture-id={props.record.id}
     >
       <div className="psl__stage-wrap">
-        <StageBody {...props} onClose={onClose} />
+        <StageBody {...props} />
       </div>
     </div>
   );
 }
 
-/** Reel mode — plain in-flow content. No × button. */
+/** Reel mode — plain in-flow content. */
 function ReelStage(props: StageProps): ReactElement {
   return (
     <div className="psl__reel-mode">
       {props.aboveStageSlot}
       <div className="psl__stage-wrap">
-        <StageBody {...props} onClose={() => undefined} />
+        <StageBody {...props} />
       </div>
     </div>
   );
 }
 
-/** Body rendered inside both Focus dialog and Reel wrapper.
- *  Renders the breadcrumb + canvas + toolbar + nav. The
- *  DetailRail renders OUTSIDE Stage at the Library level — both
- *  Focus and Reel get the rail visible to the right of the stage. */
+/** Body rendered inside both Focus and Reel wrappers. Renders the
+ *  canvas + toolbar + nav. The DetailRail renders OUTSIDE Stage at
+ *  the Library level — both Focus and Reel get the rail visible to
+ *  the right of the stage. */
 function StageBody({
   view,
   record,
   dismissible,
   dispatch,
-  posLabel,
   prevRecordId,
   nextRecordId,
   videoTrim,
@@ -168,9 +164,8 @@ function StageBody({
   blurStyle,
   onBlurStyleChange,
   onSelectionChange,
-  onLayersApi,
-  onClose
-}: StageProps & { onClose: () => void }): ReactElement {
+  onLayersApi
+}: StageProps): ReactElement {
   const captureId = record.id;
   void view; // currently unused; kept in props for future variant logic
 
@@ -181,67 +176,21 @@ function StageBody({
   // when the Editor unmounts (e.g. navigating between captures).
   const [zoom, setZoom] = useState<ZoomApi>(null);
 
-  const sourceName = record.source_app_name ?? "Unknown app";
-  const appId = mapBundleIdToAppId(record.source_app_bundle_id);
-  const captured = new Date(record.captured_at);
-  const capturedDate = captured.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric"
-  });
-  const capturedTime = captured.toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit"
-  });
-
-  return (
+  // ←/→ prev/next. One element, rendered in one of two places:
+  //   • images (and the no-metadata video fallback): as a sibling of
+  //     the canvas inside the stage wrap — `top: 50%` of the wrap IS
+  //     the canvas center there;
+  //   • videos: handed to <VideoStage navSlot> and rendered inside
+  //     `.psl__video-frame`, so the buttons center on the frame band
+  //     rather than on frame + transport + timeline. Don't move this
+  //     back to the wrap with a hand-tuned offset — the transport and
+  //     timeline heights are not constants (`.vtl--compact`).
+  const navInFrame = record.kind === "video" && record.video !== null && record.video !== undefined;
+  const nav = (
     <>
-      <div className="psl__stage-meta">
-        <AppTag app={appId} name={sourceName} size="sm" bundleId={record.source_app_bundle_id ?? undefined} />
-        <span>
-          · {capturedDate} {capturedTime}
-        </span>
-        <span>
-          · {record.width_px}×{record.height_px}
-        </span>
-        {/* Position counter lives inline at the end of the breadcrumb so
-            it can't collide with the X / "back to grid" affordances on
-            the right edge. Used to be absolute-positioned at right:60,
-            which overlapped the close-hint at right:56. */}
-        <span className="psl__stage-pos">
-          <b>{posLabel.idx}</b> / {posLabel.total}
-        </span>
-      </div>
-
-      {dismissible && (
-        <>
-          <button
-            type="button"
-            className="psl__focus-close"
-            title="Back to grid (Esc)"
-            onClick={onClose}
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.2"
-              strokeLinecap="round"
-            >
-              <path d="M5 5l14 14M19 5L5 19" />
-            </svg>
-          </button>
-          <div className="psl__focus-close-hint">
-            back to grid
-            <span className="ps-kbd">esc</span>
-          </div>
-        </>
-      )}
-
       <button
         type="button"
-        className="psl__stage-nav is-prev"
+        className={"psl__stage-nav is-prev" + (navInFrame ? " is-in-frame" : "")}
         title="Previous (←)"
         disabled={prevRecordId === null}
         onClick={() => {
@@ -262,7 +211,7 @@ function StageBody({
       </button>
       <button
         type="button"
-        className="psl__stage-nav is-next"
+        className={"psl__stage-nav is-next" + (navInFrame ? " is-in-frame" : "")}
         title="Next (→)"
         disabled={nextRecordId === null}
         onClick={() => {
@@ -281,6 +230,12 @@ function StageBody({
           <path d="m9 6 6 6-6 6" />
         </svg>
       </button>
+    </>
+  );
+
+  return (
+    <>
+      {!navInFrame && nav}
 
       {/* Stage area — a RECTANGULAR viewport for the canvas-grows
           zoom model. Sized to fill stage-wrap minus a 32px reserve
@@ -317,6 +272,7 @@ function StageBody({
               // the user clicks into the video; Focus grabs the
               // keyboard on mount. `dismissible` is the mode flag.
               reel={!dismissible}
+              navSlot={nav}
             />
           ) : (
             <video

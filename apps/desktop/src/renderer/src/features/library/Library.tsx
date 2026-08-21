@@ -2225,6 +2225,34 @@ export function Library() {
     return visibleRecords[i]?.id ?? null;
   }, [visibleRecords, selectedIdx]);
 
+  // Title-bar position counter for Focus / Reel ("2 / 3 · star map").
+  // `total` is the SAME set ←/→ walk (`visibleRecords`) — it used to
+  // be `totalLive`, which read "1 / 3635" while → wrapped after the 3
+  // search hits. When no client-side filter narrows the set, the
+  // app-wide live count is the honest total (later keyset pages just
+  // aren't loaded yet); otherwise it's the filtered count, with a "+"
+  // when the keyset (or a capped search) may still hold more.
+  const stagePos = useMemo(() => {
+    if ((view.kind !== "focus" && view.kind !== "reel") || selectedIdx < 0) return null;
+    const whole =
+      !isTrashView && !isSearchActive && !isTodayView && !captureTypeFacetActive && !appFacetActive;
+    const total = whole ? totalLive : visibleRecords.length;
+    const partial = !whole && (isSearchActive ? searchState.capped : gridHasMore);
+    return { idx: selectedIdx + 1, total, partial };
+  }, [
+    view.kind,
+    selectedIdx,
+    isTrashView,
+    isSearchActive,
+    isTodayView,
+    captureTypeFacetActive,
+    appFacetActive,
+    totalLive,
+    visibleRecords.length,
+    searchState.capped,
+    gridHasMore
+  ]);
+
   // Lifted tool state — Phase 3.2: Library owns the single
   // `useEditorToolState` instance so the chromeless Editor (inside
   // <Stage>) and the floating <EditToolbar> share ONE hook. Pre-lift,
@@ -3399,23 +3427,41 @@ export function Library() {
               </svg>
             </button>
           </div>
-          <span className="psl__count">
-            {isSearchActive
-              ? searchState.loading && searchState.forQuery !== searchQuery.trim()
-                ? "searching…"
-                : searchState.error !== null
-                  ? "search failed"
-                  : searchState.capped
-                    ? `${searchResultCount}+ matches`
-                    : `${searchResultCount} ${searchResultCount === 1 ? "match" : "matches"}`
-              : isTrashView
-                ? isToolbarNarrow
-                  ? `${trashRecords.length} trash`
-                  : `${trashRecords.length} in trash`
-                : isToolbarNarrow
-                  ? `${totalLive}`
-                  : `${totalLive} captures`}
-          </span>
+          {stagePos !== null ? (
+            // Focus / Reel: position in the set ←/→ walk. The query rides
+            // along so "2 / 3" is obviously "of the 3 matches", not of
+            // the library. `.psl__count-q` hides at the narrow tier.
+            <span
+              className="psl__count is-stage"
+              data-testid="stage-pos"
+              title={`Capture ${stagePos.idx} of ${stagePos.total}${stagePos.partial ? "+" : ""}${isSearchActive ? ` matching “${searchQuery.trim()}”` : ""}`}
+            >
+              <b>{stagePos.idx}</b>
+              <span>
+                / {stagePos.total}
+                {stagePos.partial ? "+" : ""}
+              </span>
+              {isSearchActive ? <span className="psl__count-q">· {searchQuery.trim()}</span> : null}
+            </span>
+          ) : (
+            <span className="psl__count">
+              {isSearchActive
+                ? searchState.loading && searchState.forQuery !== searchQuery.trim()
+                  ? "searching…"
+                  : searchState.error !== null
+                    ? "search failed"
+                    : searchState.capped
+                      ? `${searchResultCount}+ matches`
+                      : `${searchResultCount} ${searchResultCount === 1 ? "match" : "matches"}`
+                : isTrashView
+                  ? isToolbarNarrow
+                    ? `${trashRecords.length} trash`
+                    : `${trashRecords.length} in trash`
+                  : isToolbarNarrow
+                    ? `${totalLive}`
+                    : `${totalLive} captures`}
+            </span>
+          )}
         </div>
         <div className="psl__topbar-c">
           <div className="psl__view">
@@ -3432,10 +3478,22 @@ export function Library() {
               </svg>
               Reel
             </button>
+            {/* In Focus this cell IS the way out — it reads "Back to grid
+                esc" and dispatches CLOSE_FOCUS (the same path as the Esc
+                key), replacing the × + hint that used to float over the
+                top-right of the capture. Grid / Reel keep TOGGLE_VIEW. */}
             <button
-              className={"psl__view-btn" + (view.kind === "grid" ? " is-active" : "")}
+              className={
+                "psl__view-btn" +
+                (view.kind === "grid" ? " is-active" : "") +
+                (view.kind === "focus" ? " is-back" : "")
+              }
+              data-testid={view.kind === "focus" ? "focus-back" : undefined}
+              title={view.kind === "focus" ? "Back to grid (Esc)" : undefined}
               onClick={() =>
-                viewDispatch({ type: "TOGGLE_VIEW", to: "grid", fallbackId: null })
+                view.kind === "focus"
+                  ? viewDispatch({ type: "CLOSE_FOCUS" })
+                  : viewDispatch({ type: "TOGGLE_VIEW", to: "grid", fallbackId: null })
               }
             >
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -3444,7 +3502,14 @@ export function Library() {
                 <rect x="3" y="14" width="7" height="7" />
                 <rect x="14" y="14" width="7" height="7" />
               </svg>
-              Grid
+              {view.kind === "focus" ? (
+                <>
+                  {isToolbarNarrow ? "Grid" : "Back to grid"}
+                  <span className="ps-kbd">esc</span>
+                </>
+              ) : (
+                "Grid"
+              )}
             </button>
           </div>
         </div>
@@ -4140,15 +4205,6 @@ export function Library() {
           record={selectedRecord}
           dismissible={view.kind === "focus"}
           dispatch={viewDispatch}
-          posLabel={{
-            idx: selectedIdx + 1,
-            // Use the denormalized total-live count from app_stats —
-            // same source as the top-bar's "N captures" indicator —
-            // so the 1/N matches whether or not later pages are
-            // loaded yet. `visibleRecords.length` only counts what
-            // the keyset cursor has fetched so far.
-            total: isTrashView ? visibleRecords.length : totalLive
-          }}
           prevRecordId={prevRecordId}
           nextRecordId={nextRecordId}
           videoTrim={videoTrim}

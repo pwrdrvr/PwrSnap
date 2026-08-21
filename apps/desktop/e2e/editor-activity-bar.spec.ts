@@ -260,6 +260,6 @@ test.skip("editor-activity-bar: stoplight coachmark shows once then hides foreve
 
 async function closeEditorWindow(app: LaunchedApp, win: Page): Promise<void> {
   void app;
-  await win.locator(".psl__focus-close").click();
+  await win.getByTestId("focus-back").click();
   await expect(win.locator(".psl__focus")).toHaveCount(0);
 }

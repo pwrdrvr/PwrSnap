@@ -23,7 +23,8 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
-  type ReactElement
+  type ReactElement,
+  type ReactNode
 } from "react";
 import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
 import { captureSrcUrl } from "../../lib/pwrsnap";
@@ -68,6 +69,12 @@ export type VideoStageProps = {
    *  keydown targets `document.body`, never reaches this subtree, and
    *  the Library's window-level handler navigates as it should. */
   reel?: boolean;
+  /** Stage's ←/→ prev/next buttons. Rendered INSIDE `.psl__video-frame`
+   *  so they vertically center on the picture, not on picture +
+   *  transport + timeline (the stage pane's 50% line sits ~80px below
+   *  the frame's center once the timeline is docked). Stage owns the
+   *  buttons and their dispatch; this is placement only. */
+  navSlot?: ReactNode;
 };
 
 const FILM_LANE_H = 56;
@@ -126,7 +133,8 @@ export function VideoStage({
   record,
   video,
   trim,
-  reel = false
+  reel = false,
+  navSlot
 }: VideoStageProps): ReactElement {
   const captureId = record.id;
   const durationSec = video.durationSec;
@@ -609,6 +617,7 @@ export function VideoStage({
       data-testid="video-stage"
     >
       <div className="psl__video-frame">
+        {navSlot}
         <video
           ref={videoRef}
           className="psl__video-el"

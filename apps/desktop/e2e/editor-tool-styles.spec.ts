@@ -158,7 +158,7 @@ test("editor-tool-styles: COLOR persists across editor reopen", async () => {
 
 async function closeEditorWindow(app: LaunchedApp, win: Page): Promise<void> {
   void app;
-  await win.locator(".psl__focus-close").click();
+  await win.getByTestId("focus-back").click();
   await expect(win.locator(".psl__focus")).toHaveCount(0);
 }
 

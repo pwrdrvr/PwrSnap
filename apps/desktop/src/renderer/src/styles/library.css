@@ -702,7 +702,15 @@
   opacity: 0.38;
   cursor: default;
 }
-.psl__count { font: 500 10px/1 var(--font-mono); color: var(--text-muted); padding: 3px 6px; background: var(--bg-panel-elevated); border-radius: var(--radius-pill); }
+.psl__count { font: 500 10px/1 var(--font-mono); color: var(--text-muted); padding: 3px 6px; background: var(--bg-panel-elevated); border-radius: var(--radius-pill); white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; }
+/* Focus / Reel: the slot becomes the stage position counter
+   ("2 / 3 · star map") — the SAME filtered set ←/→ walk, so it can
+   never disagree with what the arrows do. Lives here, not floating
+   over the capture. */
+.psl__count.is-stage { color: var(--text-secondary); border: 1px solid var(--accent-border); background: var(--accent-tint); }
+.psl__count.is-stage b { color: var(--accent-bright); font-weight: 600; }
+.psl__count-q { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.psl__topbar.is-narrow .psl__count-q { display: none; }
 .psl__topbar-c { display: flex; align-items: center; gap: 4px; }
 .psl__view {
   display: inline-flex; padding: 2px;
@@ -720,6 +728,13 @@
   display: inline-flex; align-items: center; gap: 4px;
 }
 .psl__view-btn.is-active { background: var(--accent-soft); color: var(--accent-bright); }
+/* Focus mode: the GRID cell is the way out, so it reads "Back to grid
+   esc" and takes primary text color. Replaces the × + 10px "back to
+   grid" hint that used to float over the top-right of the capture. */
+.psl__view-btn.is-back { color: var(--text-primary); }
+.psl__view-btn.is-back:hover { background: var(--bg-panel-hover); color: var(--accent-bright); }
+.psl__view-btn .ps-kbd { margin-left: 2px; min-width: 14px; height: 14px; padding: 0 3px; font-size: 9px; border-bottom-width: 1px; text-transform: none; letter-spacing: 0; }
+.psl__topbar.is-narrow .psl__view-btn .ps-kbd { display: none; }
 /* The right cluster takes the toolbar's slack and right-aligns. Every
    child holds its size EXCEPT the search field — so when the window gets
    narrow the search field is what shrinks, and the Quick Capture CTA (and
@@ -3711,8 +3726,11 @@
 }
 
 /* Stage interior. Contains the canvas (chromeless Editor), the
-   floating toolbar, breadcrumb meta row, position counter, prev/
-   next nav buttons, and (Focus only) the × close button. */
+   floating toolbar, and the prev/next nav buttons. The close / Esc
+   affordance and the "idx / total" counter live in the TITLE BAR
+   (`.psl__view-btn.is-back`, `.psl__count.is-stage`) so nothing
+   paints over the capture; the breadcrumb (app · date · dims) was
+   dropped because the DetailRail header already carries it. */
 .psl__focus,
 .psl__stage-wrap {
   position: relative;
@@ -3734,14 +3752,14 @@
    (often very tall) available space. Wide-aspect captures (e.g.
    3710×1892) plus center-align created a multi-hundred-pixel
    air gap below the filmstrip — visually jarring. With flex-start,
-   the canvas pins to the top with breadcrumb above it; any
-   leftover height collects at the bottom. */
+   the canvas pins to the top; any leftover height collects at the
+   bottom. */
 .psl__reel-mode .psl__stage-wrap {
   align-items: flex-start;
-  /* Top padding so the canvas clears the absolute breadcrumb +
-     position counter (top:12 + their ~22px height + breathing
-     room). */
-  padding-top: 44px;
+  /* Breathing room under the filmstrip. Used to be 44px to clear an
+     absolute breadcrumb + position counter; both moved to the title
+     bar. */
+  padding-top: 12px;
 }
 .psl__stage-wrap {
   flex: 1;
@@ -3756,41 +3774,6 @@
     ),
     var(--bg-app);
   overflow: hidden;
-}
-
-.psl__stage-meta {
-  position: absolute;
-  top: 12px;
-  left: 24px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font: 500 11px/1 var(--font-mono);
-  color: var(--text-muted);
-  z-index: 4;
-}
-.psl__stage-meta b {
-  color: var(--text-primary);
-  font: 600 12px/1 var(--font-sans);
-}
-/* Position counter ("5 / 32"). Lives inline as the last child of
-   `.psl__stage-meta` (see Stage.tsx) so it sits at the end of the
-   breadcrumb. The previous absolute positioning at top:12 right:60
-   collided with the focus-close-hint at right:56. Keeping the pill
-   look (mono font + rounded border + accent for the index) so it
-   still reads as a position indicator inside the breadcrumb. */
-.psl__stage-pos {
-  display: inline-flex; align-items: center;
-  font: 600 11px/1 var(--font-mono);
-  color: var(--text-muted);
-  background: var(--bg-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-  padding: 4px 9px;
-  margin-left: 4px;
-}
-.psl__stage-pos b {
-  color: var(--accent-bright);
 }
 
 .psl__stage-nav {
@@ -3825,6 +3808,16 @@
 .psl__stage-nav.is-next {
   right: 16px;
 }
+/* Video: the buttons live INSIDE `.psl__video-frame` (see Stage.tsx /
+   VideoStage `navSlot`) so `top: 50%` is the picture's center. The
+   frame is already inset 16px from the pane by `.psl__stage-img`, so
+   12px here lands the buttons just inside the frame's rounded edge. */
+.psl__stage-nav.is-in-frame.is-prev {
+  left: 12px;
+}
+.psl__stage-nav.is-in-frame.is-next {
+  right: 12px;
+}
 
 /* Stage canvas wrapper. The chromeless Editor renders inside; its
    .editor-root.is-chromeless variant (editor.css) sizes to fit.
@@ -3858,43 +3851,6 @@
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-/* × button on Focus only (Reel doesn't dismiss). */
-.psl__focus-close {
-  position: absolute;
-  top: 14px;
-  right: 14px;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--bg-panel-hover) 92%, transparent);
-  border: 1px solid var(--border-default);
-  color: var(--text-primary);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 5;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  transition: all 120ms var(--ease-out);
-}
-.psl__focus-close:hover {
-  border-color: var(--accent);
-  color: var(--accent-bright);
-  transform: rotate(90deg);
-}
-.psl__focus-close-hint {
-  position: absolute;
-  top: 18px;
-  right: 56px;
-  font: 500 10px/1 var(--font-mono);
-  color: var(--text-muted);
-  z-index: 5;
-}
-.psl__focus-close-hint .ps-kbd {
-  margin-left: 4px;
 }
 
 /* Floating bottom-center edit toolbar. Uses position:absolute (not

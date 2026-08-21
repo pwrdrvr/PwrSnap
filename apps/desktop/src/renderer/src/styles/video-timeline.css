@@ -35,6 +35,10 @@
 }
 
 .psl__video-frame {
+  /* Positioning context for the stage's ←/→ buttons (Stage hands them
+     in via VideoStage's `navSlot`) so they center on the PICTURE, not
+     on picture + transport + timeline. */
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;

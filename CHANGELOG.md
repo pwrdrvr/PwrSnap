@@ -1,10 +1,10 @@
 # Changelog
 
-## v1.1.0-alpha.3 - 2026-08-19
+## v1.1.0-alpha.4 - 2026-08-20
 
 This 1.1 alpha opens PwrSnap to trusted PwrAgent workflows while adding more
 capable video and Library tools, stronger editor interactions, signed Windows
-delivery, and steadier update checks.
+delivery, steadier update checks, and much lighter video playback.
 
 - PwrAgent and MCP - Added a local MCP connection that lets PwrAgent and other
   approved local agents discover and search the Library, retrieve authorized
@@ -38,7 +38,14 @@ delivery, and steadier update checks.
   reporting that you are already up to date.
 - Installer - Improved the macOS DMG background so the drag-to-Applications
   pill reads as true black against the window art.
-- Minor - Release-metadata and Windows packaging path fixes.
+- Video Playback - Fixed the CPU and GPU drain while a video plays or loops in
+  the Library detail view, so leaving a long recording open no longer pins a
+  core and runs the fans.
+- Video Trimming - Fixed Play so the jump to your trimmed in point is reflected
+  in the transport and timeline instead of leaving them showing a stale
+  position.
+- Minor - Release-metadata and Windows packaging path fixes, plus an
+  env-gated tracing harness for diagnosing GPU-process load.
 
 ## v1.0.0-beta.25 - 2026-07-31
 

@@ -22,8 +22,8 @@ arms:
 | arm | what it does |
 |---|---|
 | `frozen` | everything mounted and decoding, head never moves — the floor |
-| `raf` | publish every animation frame — what shipped before #447 |
-| `throttled` | `requestVideoFrameCallback`-driven, ~30 Hz cap, 100 ms floor — #447 |
+| `raf` | publish every animation frame — what shipped before #448 |
+| `throttled` | `requestVideoFrameCallback`-driven, ~30 Hz cap, 100 ms floor — #448 |
 
 CPU comes from the kernel's cumulative CPU time per pid (`ps -o
 cputime=`), sampled across the interval, so one core = 100 % and the

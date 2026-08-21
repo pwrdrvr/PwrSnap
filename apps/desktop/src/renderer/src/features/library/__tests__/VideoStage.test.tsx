@@ -690,8 +690,9 @@ describe("VideoStage playhead loop", () => {
 
   // `play()` snaps the head to the in-point when playback would start
   // outside the range. If the element then refuses to play, no `play`
-  // event fires and the rAF loop never starts — so nothing downstream
-  // would ever correct the head. `play()` publishes the snap itself.
+  // event fires, so neither frame loop starts — both are gated on
+  // `playing` — and nothing downstream would ever correct the head.
+  // `play()` publishes the snap itself.
   test("a rejected play() still publishes the in-point snap", async () => {
     stubRect(800);
     stubRaf();

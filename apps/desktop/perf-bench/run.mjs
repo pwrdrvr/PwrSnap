@@ -12,8 +12,12 @@
 // mutation counter, the profiler) present in both arms — read the
 // script / style / layout columns, or the A/B delta.
 //
-// Which React the bundle was built against is detected at runtime, not
-// assumed: build with BENCH_REACT=development for the other arm.
+// The header names which React the bundle was built against. That comes
+// from `BENCH_REACT`, folded into the bundle at build time and read back
+// off the page — it is not a probe of the loaded react-dom. The vite
+// config pins `NODE_ENV` and `resolve.conditions` off that one switch so
+// the label cannot drift from the bundle. Build with
+// BENCH_REACT=development for the other arm.
 
 import http from "node:http";
 import fs from "node:fs";
@@ -70,10 +74,11 @@ function analyze(profile) {
   // `jsMs` is a cross-check on the engine metrics, not the headline:
   // per-component attribution is not available in a production React
   // build (the frame names are minified away), which is why the report
-  // is built on Performance.getMetrics instead.
+  // is built on Performance.getMetrics instead. `program` is subtracted
+  // rather than reported — paint / compositing is what `playhead-cpu/`
+  // exists to measure, and this harness cannot see it.
   return {
     totalMs: total / 1000,
-    programMs: program / 1000,
     jsMs: (total - idle - program) / 1000
   };
 }

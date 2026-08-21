@@ -169,10 +169,10 @@ playback the stage does not re-render at all.
   without it cc ran a full tile RasterTask 118.6×/sec to move a 1 px
   line, and GPU-process CPU went 31.8 % → 22.3 % with it. **The
   property is in `video-timeline.css` today and must stay** — see
-  `2026-08-20-video-playback-gpu-process-burn.md`. Note that act two's
-  ruled-out list below still records it as "nothing" (19.3 % vs
-  18.1 %); that A/B read whole-process CPU without cc instrumentation.
-  Treat #449's tracing as the authority.
+  `2026-08-20-video-playback-gpu-process-burn.md`. Act two's ruled-out
+  list below records it as "nothing" (19.3 % vs 18.1 %) and carries the
+  same correction: that A/B ran on the standalone `playhead-cpu`
+  harness and read whole-process CPU, without cc instrumentation.
 - **`play()` must publish its own seek.** It snaps the head to the
   in-point when playback would start outside the range, and `el.play()`
   can reject (decode failure, autoplay block) — in which case no `play`
@@ -319,6 +319,18 @@ compositor frame the video update was going to force anyway.
 - **`will-change: transform` / `translateZ(0)` layer promotion** on the
   playhead and/or the strip: 19.3 % vs 18.1 %, i.e. nothing. (Act one
   measured it slightly *worse* in the JS bench, too.)
+
+  **Superseded — the property ships, do not remove it.** #449
+  independently measured promotion on `.vtl__playhead` as load-bearing
+  on the real app under `PWRSNAP_TRACE=1`: cc RasterTask 118.6/sec →
+  9.9/sec, GPU-process CPU 31.8 % → 22.3 %. It is in
+  `video-timeline.css` today. The disagreement is not an ordering
+  artifact — the number above came from `playhead-cpu/index.html`,
+  which draws its OWN head (unconditional `translateX`, no device-pixel
+  skip, `will-change: auto`), so both arms measured the same regime with
+  different instruments: whole-process `ps` CPU here, cc tracing there.
+  Re-run #449's trace before touching it. See
+  `2026-08-20-video-playback-gpu-process-burn.md`.
 - **The rounded border + `overflow: hidden` on `.psl__video-frame`**:
   no measurable CPU effect. It can be dropped on styling grounds — it
   was never a requirement — but not for CPU.

@@ -1,0 +1,159 @@
+<!doctype html>
+<meta charset="utf-8" />
+<style>
+  html, body { margin: 0; background: #000; color: #eee;
+    font: 12px/1.2 ui-monospace, Menlo, monospace; overflow: hidden; }
+  .stage { padding: 12px; }
+  .frame { border-radius: 10px; overflow: hidden; background: #0a0a0a; }
+  video { display: block; width: 100%; height: 420px; object-fit: contain; background: #000; }
+  .vt { display: flex; align-items: center; gap: 8px; height: 36px; }
+  .vt b { font-variant-numeric: tabular-nums; }
+  .strip { position: relative; height: 80px; margin-top: 6px; overflow: hidden;
+    border-radius: 6px; background: #111; }
+  .film { position: absolute; inset: 0 0 24px 0; background-size: cover;
+    background-image: var(--film); }
+  .head { position: absolute; top: 0; bottom: 0; left: 0; width: 1px;
+    background: #ff8a1f; will-change: auto; }
+  .arm { padding: 4px 0; color: #ff8a1f; }
+</style>
+<div class="stage">
+  <div class="frame"><video id="v" playsinline muted loop></video></div>
+  <div class="vt"><span>time</span><b id="tc">0:00.0</b><span id="arm" class="arm"></span></div>
+  <div class="strip" id="strip" role="slider" aria-valuenow="0" aria-valuetext="0:00.0">
+    <div class="film" id="film"></div>
+    <div class="head" id="head"></div>
+  </div>
+</div>
+<script>
+  // ── the two publish policies under test ───────────────────────────
+  //
+  // "raf"       — what shipped before #447: publish every animation
+  //               frame, which pins compositor frame production at the
+  //               display's vsync rate.
+  // "throttled" — #447: rVFC drives the publish where it fires, capped
+  //               at ~30 Hz, with a 100 ms floor from the rAF loop.
+  // "frozen"    — the baseline the change is aiming at: everything
+  //               mounted and decoding, head never moves.
+  const PLAYHEAD_MIN_PUBLISH_MS = 33;
+  const PLAYHEAD_MAX_GAP_MS = 50;
+
+  const v = document.getElementById("v");
+  const head = document.getElementById("head");
+  const tc = document.getElementById("tc");
+  const strip = document.getElementById("strip");
+  const armLabel = document.getElementById("arm");
+
+  const pad = (n) => String(n).padStart(2, "0");
+  const fmt = (s) => `${Math.floor(s / 60)}:${pad(Math.floor(s % 60))}.${Math.floor((s * 10) % 10)}`;
+
+  // Exactly the two subscribers the app has: the timeline's
+  // `placePlayhead` + `publishAria`, and the transport's timecode.
+  let painted = null;
+  let ariaTenth = null;
+  const draw = (sec) => {
+    head.style.transform = `translateX(${(sec / duration) * strip.clientWidth}px)`;
+    const tenth = Math.floor(sec * 10);
+    if (ariaTenth !== tenth) {
+      ariaTenth = tenth;
+      strip.setAttribute("aria-valuenow", String(sec));
+      strip.setAttribute("aria-valuetext", fmt(sec));
+    }
+    const next = fmt(sec);
+    if (next !== painted) {
+      painted = next;
+      tc.textContent = next;
+    }
+  };
+
+  let duration = 1;
+  let arm = "frozen";
+  let raf = 0;
+  let vfc = 0;
+  let publishes = 0;
+  let frames = 0;
+
+  function stop() {
+    if (raf !== 0) cancelAnimationFrame(raf);
+    if (vfc !== 0 && typeof v.cancelVideoFrameCallback === "function") v.cancelVideoFrameCallback(vfc);
+    raf = 0;
+    vfc = 0;
+  }
+
+  function start(nextArm) {
+    stop();
+    arm = nextArm;
+    armLabel.textContent = nextArm;
+    publishes = 0;
+    frames = 0;
+    let lastPublishMs = Number.NEGATIVE_INFINITY;
+    let vfcDriving = false;
+
+    const publish = (nowMs, sec, minGapMs) => {
+      if (nowMs - lastPublishMs < minGapMs) return;
+      lastPublishMs = nowMs;
+      publishes += 1;
+      draw(sec);
+    };
+
+    const tick = (nowMs) => {
+      frames += 1;
+      const t = v.currentTime;
+      if (arm === "raf") publish(nowMs, t, 0);
+      else if (arm === "throttled") {
+        publish(nowMs, t, vfcDriving ? PLAYHEAD_MAX_GAP_MS : PLAYHEAD_MIN_PUBLISH_MS);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+
+    const onVideoFrame = (nowMs) => {
+      // `el.currentTime`, not `meta.mediaTime` — rVFC's value here is
+      // WHEN it fires, not what it reports. Mirrors VideoStage.
+      vfcDriving = true;
+      publish(nowMs, v.currentTime, PLAYHEAD_MIN_PUBLISH_MS);
+      vfc = v.requestVideoFrameCallback(onVideoFrame);
+    };
+
+    raf = requestAnimationFrame(tick);
+    if (arm === "throttled" && typeof v.requestVideoFrameCallback === "function") {
+      vfc = v.requestVideoFrameCallback(onVideoFrame);
+    }
+  }
+
+  window.bench = {
+    async load(src, filmUrl) {
+      document.getElementById("film").style.setProperty("--film", `url("${filmUrl}")`);
+      v.src = src;
+      // Reject, never hang: a path the element cannot open fires
+      // `error` and never `loadedmetadata`, and the main process is
+      // sitting behind an always-on-top window waiting on this promise.
+      await new Promise((resolve, reject) => {
+        const done = (fn, arg) => {
+          v.removeEventListener("loadedmetadata", ok);
+          v.removeEventListener("error", fail);
+          fn(arg);
+        };
+        const ok = () => done(resolve);
+        const fail = () =>
+          done(reject, new Error(`cannot decode ${src}: ${v.error?.message ?? "media error"}`));
+        v.addEventListener("loadedmetadata", ok);
+        v.addEventListener("error", fail);
+      });
+      if (!Number.isFinite(v.duration) || v.duration <= 0) {
+        throw new Error(`unusable duration ${v.duration} for ${src}`);
+      }
+      duration = v.duration;
+      await v.play();
+      start("frozen");
+      return { duration, hasVfc: typeof v.requestVideoFrameCallback === "function" };
+    },
+    arm(name) {
+      start(name);
+    },
+    read() {
+      const out = { publishes, frames };
+      publishes = 0;
+      frames = 0;
+      return out;
+    }
+  };
+</script>

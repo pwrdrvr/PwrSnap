@@ -3504,7 +3504,7 @@ export function Library() {
               </svg>
               {view.kind === "focus" ? (
                 <>
-                  {isToolbarNarrow ? "Grid" : "Back to grid"}
+                  <span className="psl__view-label">{isToolbarNarrow ? "Grid" : "Back to grid"}</span>
                   <span className="ps-kbd">esc</span>
                 </>
               ) : (

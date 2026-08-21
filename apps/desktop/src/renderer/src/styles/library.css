@@ -818,6 +818,18 @@
 :root[data-platform="win32"] .psl__topbar.is-compact .psl__topbar-c { display: none; }
 :root[data-platform="win32"] .psl__topbar.is-tiny .psl__title { display: none; }
 
+/* Focus: the GRID cell ("Back to grid · esc") is the only visible way
+   out of Focus — the × that used to float over the capture is gone — so
+   it must survive EVERY tier. From `compact` down the segment collapses
+   to the bare ⊞ icon button (REEL cell + label hidden; the esc chip
+   already went at `narrow`; `title` still says "Back to grid (Esc)"),
+   and on Windows, where the whole center cluster is shed at `compact`,
+   that one ~26px button is kept. `:has()` scopes both rules to Focus so
+   Grid / Reel keep the existing tier behavior. */
+.psl__topbar.is-compact .psl__view:has(.psl__view-btn.is-back) .psl__view-btn:not(.is-back) { display: none; }
+.psl__topbar.is-compact .psl__view-btn.is-back .psl__view-label { display: none; }
+:root[data-platform="win32"] .psl__topbar.is-compact .psl__topbar-c:has(.psl__view-btn.is-back) { display: flex; }
+
 /* Left: Source Apps.
  *
  * Layout note — the rule below sets `overflow-y: auto` so the panel

@@ -140,3 +140,16 @@ the title bar.
   except the removed top padding.
 - Files: `Stage.tsx`, `VideoStage.tsx`, `Library.tsx` (3376–3418 topbar,
   4143–4151 posLabel), `library.css` (3681–3900), `video-timeline.css`.
+
+## Outcome (2026-08-21, PR #450)
+
+Shipped **B** — title bar owns close / esc / count; breadcrumb, × and hint
+removed from the stage; count computed over the filtered set.
+
+**Finding 1 (video ←/→ anchoring) was shipped and then reverted** within
+the PR. Anchoring the buttons to the video frame band fixed the static
+offset but, in a mixed image/video set (the default), made ←/→ jump ~80px
+on every other click — a moving target is worse than a ~13%-low one. Moving
+the arrows into the title bar (`‹ 3 / 5 ›`) was considered and rejected: a
+second back/forward pair next to the history `‹ ›` is confusing. The
+buttons stay at a fixed 50% of the pane for every capture kind.

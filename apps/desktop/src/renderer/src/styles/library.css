@@ -3820,16 +3820,11 @@
 .psl__stage-nav.is-next {
   right: 16px;
 }
-/* Video: the buttons live INSIDE `.psl__video-frame` (see Stage.tsx /
-   VideoStage `navSlot`) so `top: 50%` is the picture's center. The
-   frame is already inset 16px from the pane by `.psl__stage-img`, so
-   12px here lands the buttons just inside the frame's rounded edge. */
-.psl__stage-nav.is-in-frame.is-prev {
-  left: 12px;
-}
-.psl__stage-nav.is-in-frame.is-next {
-  right: 12px;
-}
+/* One fixed vertical position (50% of the pane) for images AND videos.
+   For video that is below the picture's center because the transport +
+   timeline are docked in the pane; anchoring to the frame instead was
+   tried and reverted — in a mixed set the buttons jumped ~80px between
+   items, which is worse than a static offset. See Stage.tsx header. */
 
 /* Stage canvas wrapper. The chromeless Editor renders inside; its
    .editor-root.is-chromeless variant (editor.css) sizes to fit.

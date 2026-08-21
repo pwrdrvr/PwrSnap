@@ -32,12 +32,14 @@
 // us exactly the right framing without fighting the top-layer.
 //
 // Both modes share:
-//   • Prev/Next nav buttons on left/right edges — vertically anchored
-//     to the MEDIA, not the pane: for images the canvas viewport fills
-//     the pane so 50% is right; for video the transport + trim timeline
-//     are docked inside the pane, so the buttons render INSIDE
-//     `.psl__video-frame` (via VideoStage's `navSlot`) and center on the
-//     frame band instead of sitting ~80px below it.
+//   • Prev/Next nav buttons on left/right edges at a FIXED position —
+//     50% of the stage pane — for images AND videos. For video that is
+//     ~80px below the picture's center (the transport + trim timeline
+//     are docked inside the pane), and that is deliberate: anchoring
+//     the buttons to the media band was tried and reverted because a
+//     mixed image/video set (the default) made ←/→ jump ~80px on every
+//     other click. The one control you click repeatedly must not move
+//     between items; a static offset beats a moving target.
 //   • <Editor chrome="chromeless" tool onToolChange /> for the canvas
 //   • <EditToolbar /> floating bottom-center (images only)
 //
@@ -176,21 +178,14 @@ function StageBody({
   // when the Editor unmounts (e.g. navigating between captures).
   const [zoom, setZoom] = useState<ZoomApi>(null);
 
-  // ←/→ prev/next. One element, rendered in one of two places:
-  //   • images (and the no-metadata video fallback): as a sibling of
-  //     the canvas inside the stage wrap — `top: 50%` of the wrap IS
-  //     the canvas center there;
-  //   • videos: handed to <VideoStage navSlot> and rendered inside
-  //     `.psl__video-frame`, so the buttons center on the frame band
-  //     rather than on frame + transport + timeline. Don't move this
-  //     back to the wrap with a hand-tuned offset — the transport and
-  //     timeline heights are not constants (`.vtl--compact`).
-  const navInFrame = record.kind === "video" && record.video !== null && record.video !== undefined;
+  // ←/→ prev/next, siblings of the canvas inside the stage wrap at a
+  // fixed `top: 50%` for every capture kind. See the header comment for
+  // why this is NOT anchored to the video frame band.
   const nav = (
     <>
       <button
         type="button"
-        className={"psl__stage-nav is-prev" + (navInFrame ? " is-in-frame" : "")}
+        className="psl__stage-nav is-prev"
         title="Previous (←)"
         disabled={prevRecordId === null}
         onClick={() => {
@@ -211,7 +206,7 @@ function StageBody({
       </button>
       <button
         type="button"
-        className={"psl__stage-nav is-next" + (navInFrame ? " is-in-frame" : "")}
+        className="psl__stage-nav is-next"
         title="Next (→)"
         disabled={nextRecordId === null}
         onClick={() => {
@@ -235,7 +230,7 @@ function StageBody({
 
   return (
     <>
-      {!navInFrame && nav}
+      {nav}
 
       {/* Stage area — a RECTANGULAR viewport for the canvas-grows
           zoom model. Sized to fill stage-wrap minus a 32px reserve
@@ -272,7 +267,6 @@ function StageBody({
               // the user clicks into the video; Focus grabs the
               // keyboard on mount. `dismissible` is the mode flag.
               reel={!dismissible}
-              navSlot={nav}
             />
           ) : (
             <video

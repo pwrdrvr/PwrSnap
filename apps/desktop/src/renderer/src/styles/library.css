@@ -618,6 +618,12 @@
 .psl__topbar {
   grid-column: 1 / -1; grid-row: 1;
   display: flex; align-items: center; justify-content: space-between;
+  /* `.psl__topbar-r` is `flex: 1 1 auto`, so it absorbs every pixel of
+     slack and `space-between` never has free space left to distribute —
+     without this gap the left group (count pill) and the center group
+     (REEL/GRID) sit flush against each other. Matches `-l`'s own 12px
+     internal rhythm. */
+  gap: 12px;
   position: relative;
   /* leave room for the macOS traffic-light buttons under hiddenInset */
   padding: 0 16px 0 92px;
@@ -728,13 +734,6 @@
   display: inline-flex; align-items: center; gap: 4px;
 }
 .psl__view-btn.is-active { background: var(--accent-soft); color: var(--accent-bright); }
-/* Focus mode: the GRID cell is the way out, so it reads "Back to grid
-   esc" and takes primary text color. Replaces the × + 10px "back to
-   grid" hint that used to float over the top-right of the capture. */
-.psl__view-btn.is-back { color: var(--text-primary); }
-.psl__view-btn.is-back:hover { background: var(--bg-panel-hover); color: var(--accent-bright); }
-.psl__view-btn .ps-kbd { margin-left: 2px; min-width: 14px; height: 14px; padding: 0 3px; font-size: 9px; border-bottom-width: 1px; text-transform: none; letter-spacing: 0; }
-.psl__topbar.is-narrow .psl__view-btn .ps-kbd { display: none; }
 /* The right cluster takes the toolbar's slack and right-aligns. Every
    child holds its size EXCEPT the search field — so when the window gets
    narrow the search field is what shrinks, and the Quick Capture CTA (and
@@ -817,18 +816,6 @@
 :root[data-platform="win32"] .psl__topbar.is-compact .psl__search-wrap,
 :root[data-platform="win32"] .psl__topbar.is-compact .psl__topbar-c { display: none; }
 :root[data-platform="win32"] .psl__topbar.is-tiny .psl__title { display: none; }
-
-/* Focus: the GRID cell ("Back to grid · esc") is the only visible way
-   out of Focus — the × that used to float over the capture is gone — so
-   it must survive EVERY tier. From `compact` down the segment collapses
-   to the bare ⊞ icon button (REEL cell + label hidden; the esc chip
-   already went at `narrow`; `title` still says "Back to grid (Esc)"),
-   and on Windows, where the whole center cluster is shed at `compact`,
-   that one ~26px button is kept. `:has()` scopes both rules to Focus so
-   Grid / Reel keep the existing tier behavior. */
-.psl__topbar.is-compact .psl__view:has(.psl__view-btn.is-back) .psl__view-btn:not(.is-back) { display: none; }
-.psl__topbar.is-compact .psl__view-btn.is-back .psl__view-label { display: none; }
-:root[data-platform="win32"] .psl__topbar.is-compact .psl__topbar-c:has(.psl__view-btn.is-back) { display: flex; }
 
 /* Left: Source Apps.
  *
@@ -3738,11 +3725,12 @@
 }
 
 /* Stage interior. Contains the canvas (chromeless Editor), the
-   floating toolbar, and the prev/next nav buttons. The close / Esc
-   affordance and the "idx / total" counter live in the TITLE BAR
-   (`.psl__view-btn.is-back`, `.psl__count.is-stage`) so nothing
-   paints over the capture; the breadcrumb (app · date · dims) was
-   dropped because the DetailRail header already carries it. */
+   floating toolbar, the prev/next nav buttons, and (Focus only) the ×
+   close button. The "idx / total" counter lives in the TITLE BAR
+   (`.psl__count.is-stage`), computed from the same filtered set ←/→
+   walk; the breadcrumb (app · date · dims) and the "back to grid esc"
+   hint are gone — the DetailRail header already carries the metadata
+   and the × keeps the shortcut in its tooltip. */
 .psl__focus,
 .psl__stage-wrap {
   position: relative;
@@ -3788,6 +3776,12 @@
   overflow: hidden;
 }
 
+/* Prev/next. ONE fixed vertical position (50% of the pane) for images
+   AND videos. For video that lands below the picture's center because
+   the transport + trim timeline are docked inside the pane; anchoring
+   to the frame instead was tried and reverted — in a mixed set the
+   buttons jumped ~80px between items, which is worse than a static
+   offset. See the Stage.tsx header. */
 .psl__stage-nav {
   position: absolute;
   top: 50%;
@@ -3820,12 +3814,6 @@
 .psl__stage-nav.is-next {
   right: 16px;
 }
-/* One fixed vertical position (50% of the pane) for images AND videos.
-   For video that is below the picture's center because the transport +
-   timeline are docked in the pane; anchoring to the frame instead was
-   tried and reverted — in a mixed set the buttons jumped ~80px between
-   items, which is worse than a static offset. See Stage.tsx header. */
-
 /* Stage canvas wrapper. The chromeless Editor renders inside; its
    .editor-root.is-chromeless variant (editor.css) sizes to fit.
    `aspect-ratio` is set inline (Stage.tsx) from the capture's
@@ -3858,6 +3846,36 @@
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* × close button, Focus only (Reel doesn't dismiss). Deliberately the
+   same circle as `.psl__stage-nav` above — the three stage affordances
+   read as one set — just 32px so it sits a touch lighter in the corner.
+   Its `title` is where the Esc shortcut lives now that the 10px "back
+   to grid esc" hint is gone. */
+.psl__focus-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bg-panel-hover) 92%, transparent);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: all 120ms var(--ease-out);
+}
+.psl__focus-close:hover {
+  border-color: var(--accent);
+  color: var(--accent-bright);
+  transform: rotate(90deg);
 }
 
 /* Floating bottom-center edit toolbar. Uses position:absolute (not

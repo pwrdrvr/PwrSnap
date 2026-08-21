@@ -5,20 +5,23 @@
 // alongside the topbar / left sidebar / status bar / DetailRail —
 // preserving the app chrome instead of taking over the viewport.
 //
-// Focus mode (dismissible=true): plain div with class `psl__focus`.
-// Nothing but the media and the ←/→ nav paints inside the stage —
-// the "back to grid · esc" affordance and the "idx / total" position
-// counter live in the Library TITLE BAR (the REEL/GRID segmented
-// control and the `.psl__count` slot), so no chrome ever overlaps the
-// capture. Esc dismissal is owned by Library's window keydown handler
+// Focus mode (dismissible=true): plain div with class `psl__focus`,
+// with the × close button in the top-right — same circular treatment
+// as the ←/→ nav buttons, so the three stage affordances read as one
+// set. What it does NOT carry any more: the 10px "back to grid esc"
+// hint (unreadable over arbitrary screenshot pixels — the × keeps the
+// shortcut in its tooltip) and the breadcrumb (source app / date /
+// dims), which the DetailRail header already shows 20px to the right.
+// The "idx / total" position counter moved to the Library TITLE BAR
+// (`.psl__count`), where it is computed from the same filtered set
+// ←/→ walk. Esc dismissal is owned by Library's window keydown handler
 // (single source of truth — see Stage.tsx pre-Phase D history for why
-// we don't observe a dialog `close` event). Source app / date / dims
-// are NOT repeated here either: the DetailRail header already shows
-// them 20px to the right.
+// we don't observe a dialog `close` event).
 //
 // Reel mode (dismissible=false): plain div with class
 // `psl__reel-mode`, adds the filmstrip above the stage via the
-// `aboveStageSlot` prop. The user exits Reel via the segmented control.
+// `aboveStageSlot` prop. No × button — the user exits Reel via the
+// segmented control.
 //
 // We previously rendered Focus inside a native <dialog> with
 // showModal() to get free focus management + Esc + inert-behind +
@@ -67,12 +70,14 @@ export type StageProps = {
   /** The CaptureRecord matching `view.selectedRecordId`. Caller has
    *  already resolved this from the records list. */
   readonly record: CaptureRecord;
-  /** True in Focus mode, false in Reel. Picks the wrapper element and
-   *  tells `<VideoStage>` whether to grab the keyboard on mount. The
-   *  close / Esc affordance itself lives in the Library title bar. */
+  /** When true (Focus mode): shows the × close button, which
+   *  dispatches CLOSE_FOCUS. Esc is handled at the Library level.
+   *  Also tells `<VideoStage>` whether to grab the keyboard on mount.
+   *  When false (Reel mode): no × — the user exits Reel via the
+   *  segmented control. */
   readonly dismissible: boolean;
   /** Library reducer dispatcher — Stage dispatches NAVIGATE for prev/
-   *  next. */
+   *  next and CLOSE_FOCUS for dismissible mode. */
   readonly dispatch: (action: LibraryAction) => void;
   /** Neighbor record ids for ←/→ navigation, computed by Library
    *  against the current visible filter. Either may be null (no
@@ -120,8 +125,9 @@ export function Stage(props: StageProps): ReactElement {
 }
 
 /** Focus mode — plain in-flow div in the Library's content area.
- *  Dismissal (× / Esc) lives in the Library title bar + window keydown
- *  listener so there's exactly one authoritative path. */
+ *  Adds the × close button; Esc handling itself lives in Library's
+ *  window keydown listener so there's exactly one authoritative
+ *  dismissal path. */
 function FocusStage(props: StageProps): ReactElement {
   return (
     <div
@@ -149,7 +155,7 @@ function ReelStage(props: StageProps): ReactElement {
 }
 
 /** Body rendered inside both Focus and Reel wrappers. Renders the
- *  canvas + toolbar + nav. The DetailRail renders OUTSIDE Stage at
+ *  canvas + toolbar + nav + (Focus only) the × close button. The DetailRail renders OUTSIDE Stage at
  *  the Library level — both Focus and Reel get the rail visible to
  *  the right of the stage. */
 function StageBody({
@@ -178,11 +184,35 @@ function StageBody({
   // when the Editor unmounts (e.g. navigating between captures).
   const [zoom, setZoom] = useState<ZoomApi>(null);
 
-  // ←/→ prev/next, siblings of the canvas inside the stage wrap at a
-  // fixed `top: 50%` for every capture kind. See the header comment for
-  // why this is NOT anchored to the video frame band.
-  const nav = (
+  // × close, then ←/→ prev/next — all three are siblings of the canvas
+  // inside the stage wrap. The nav pair sits at a fixed `top: 50%` for
+  // every capture kind; see the header comment for why that is NOT
+  // anchored to the video frame band.
+  return (
     <>
+      {dismissible && (
+        <button
+          type="button"
+          className="psl__focus-close"
+          // Stable hook for the E2E specs' closeEditorWindow() helper.
+          data-testid="focus-back"
+          title="Back to grid (Esc)"
+          onClick={() => dispatch({ type: "CLOSE_FOCUS" })}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+          >
+            <path d="M5 5l14 14M19 5L5 19" />
+          </svg>
+        </button>
+      )}
+
       <button
         type="button"
         className="psl__stage-nav is-prev"
@@ -225,12 +255,6 @@ function StageBody({
           <path d="m9 6 6 6-6 6" />
         </svg>
       </button>
-    </>
-  );
-
-  return (
-    <>
-      {nav}
 
       {/* Stage area — a RECTANGULAR viewport for the canvas-grows
           zoom model. Sized to fill stage-wrap minus a 32px reserve

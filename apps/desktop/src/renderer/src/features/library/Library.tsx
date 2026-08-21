@@ -2226,31 +2226,31 @@ export function Library() {
   }, [visibleRecords, selectedIdx]);
 
   // Title-bar position counter for Focus / Reel ("2 / 3 · star map").
-  // `total` is the SAME set ←/→ walk (`visibleRecords`) — it used to
-  // be `totalLive`, which read "1 / 3635" while → wrapped after the 3
-  // search hits. When no client-side filter narrows the set, the
-  // app-wide live count is the honest total (later keyset pages just
-  // aren't loaded yet); otherwise it's the filtered count, with a "+"
-  // when the keyset (or a capped search) may still hold more.
+  //
+  // `total` is ALWAYS `visibleRecords.length` — the very array
+  // `prevRecordId` / `nextRecordId` index and wrap around. Anything
+  // else eventually disagrees with what ←/→ actually do: the old
+  // `totalLive` read "1 / 3635" while → wrapped after the 3 search
+  // hits, and it lies for an UNFILTERED library too, where the keyset
+  // has only fetched its first 100-row page (→ would wrap at 100 under
+  // a counter promising 3638).
+  //
+  // `partial` renders that shortfall as a "+" instead of hiding it:
+  // rows the arrows cannot reach yet because the search capped or the
+  // keyset cursor hasn't drained. Trash rides the same keyset snapshot
+  // (`library:list` with includeDeleted, partitioned client-side), so
+  // `gridHasMore` is the right signal there too.
   const stagePos = useMemo(() => {
     if ((view.kind !== "focus" && view.kind !== "reel") || selectedIdx < 0) return null;
-    const whole =
-      !isTrashView && !isSearchActive && !isTodayView && !captureTypeFacetActive && !appFacetActive;
-    const total = whole ? totalLive : visibleRecords.length;
-    const partial = !whole && (isSearchActive ? searchState.capped : gridHasMore);
-    return { idx: selectedIdx + 1, total, partial };
+    const partial = isSearchActive ? searchState.capped : gridHasMore;
+    return { idx: selectedIdx + 1, total: visibleRecords.length, partial };
   }, [
     view.kind,
     selectedIdx,
-    isTrashView,
     isSearchActive,
-    isTodayView,
-    captureTypeFacetActive,
-    appFacetActive,
-    totalLive,
-    visibleRecords.length,
     searchState.capped,
-    gridHasMore
+    gridHasMore,
+    visibleRecords.length
   ]);
 
   // Lifted tool state — Phase 3.2: Library owns the single
@@ -3478,22 +3478,10 @@ export function Library() {
               </svg>
               Reel
             </button>
-            {/* In Focus this cell IS the way out — it reads "Back to grid
-                esc" and dispatches CLOSE_FOCUS (the same path as the Esc
-                key), replacing the × + hint that used to float over the
-                top-right of the capture. Grid / Reel keep TOGGLE_VIEW. */}
             <button
-              className={
-                "psl__view-btn" +
-                (view.kind === "grid" ? " is-active" : "") +
-                (view.kind === "focus" ? " is-back" : "")
-              }
-              data-testid={view.kind === "focus" ? "focus-back" : undefined}
-              title={view.kind === "focus" ? "Back to grid (Esc)" : undefined}
+              className={"psl__view-btn" + (view.kind === "grid" ? " is-active" : "")}
               onClick={() =>
-                view.kind === "focus"
-                  ? viewDispatch({ type: "CLOSE_FOCUS" })
-                  : viewDispatch({ type: "TOGGLE_VIEW", to: "grid", fallbackId: null })
+                viewDispatch({ type: "TOGGLE_VIEW", to: "grid", fallbackId: null })
               }
             >
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -3502,14 +3490,7 @@ export function Library() {
                 <rect x="3" y="14" width="7" height="7" />
                 <rect x="14" y="14" width="7" height="7" />
               </svg>
-              {view.kind === "focus" ? (
-                <>
-                  <span className="psl__view-label">{isToolbarNarrow ? "Grid" : "Back to grid"}</span>
-                  <span className="ps-kbd">esc</span>
-                </>
-              ) : (
-                "Grid"
-              )}
+              Grid
             </button>
           </div>
         </div>

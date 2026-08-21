@@ -146,6 +146,16 @@ the title bar.
 Shipped **B** — title bar owns close / esc / count; breadcrumb, × and hint
 removed from the stage; count computed over the filtered set.
 
+**The × close button stayed on the stage** — only the breadcrumb, the
+"back to grid esc" hint text and the floating counter left. B's title-bar
+`BACK TO GRID esc` cell was built, tried and reverted: the × already matched
+the ←/→ circles as one set of stage affordances, and the long label crowded
+the REEL/GRID segment against the count pill. The Esc shortcut lives in the
+×'s tooltip. (That crowding also exposed a real layout bug: `.psl__topbar`
+is `space-between` but `.psl__topbar-r` is `flex: 1 1 auto`, so it eats every
+pixel of slack and `space-between` never distributes any — the left and
+center groups were flush. Fixed with an explicit `gap: 12px`.)
+
 **Finding 1 (video ←/→ anchoring) was shipped and then reverted** within
 the PR. Anchoring the buttons to the video frame band fixed the static
 offset but, in a mixed image/video set (the default), made ←/→ jump ~80px

@@ -25,7 +25,9 @@ import type {
   CaptureSearchRequest,
   CaptureSearchResultRow,
   LibraryAppStat,
-  LibraryCursor
+  LibraryCountsRequest,
+  LibraryCursor,
+  LibraryKindStat
 } from "@pwrsnap/shared";
 import { normalizeTagLabel } from "@pwrsnap/shared";
 import { sep } from "node:path";
@@ -469,18 +471,24 @@ export function buildExcludeAppBundleClause(
     : `(source_app_bundle_id IS NULL OR ${notIn})`;
 }
 
-export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
-  const db = getDb();
-  const limit = Math.min(MAX_LIMIT, filter.limit ?? DEFAULT_LIMIT);
-  const where: string[] = [];
-  const params: Record<string, unknown> = { limit };
-
-  if (!filter.includeDeleted) where.push("deleted_at IS NULL");
-  if (filter.cursor !== undefined) {
-    where.push("(captured_at, id) < (@cursor_at, @cursor_id)");
-    params.cursor_at = filter.cursor.capturedAt;
-    params.cursor_id = filter.cursor.id;
-  }
+/**
+ * Push the source-app facet predicates (positive ∧ negative) onto a
+ * caller's `where` / `params`. Extracted from `listCaptures` so
+ * `countCaptures` composes byte-identical predicates — a count that
+ * disagreed with the list it labels would be worse than no count.
+ *
+ * The two facets compose conjunctively (include ∧ ¬exclude), though the
+ * Library sidebar's facet model only ever sends one side at a time.
+ */
+function pushSourceAppFacetClauses(
+  filter: {
+    appBundleId?: string | undefined;
+    appBundleIds?: ReadonlyArray<string | null> | undefined;
+    excludeAppBundleIds?: ReadonlyArray<string | null> | undefined;
+  },
+  where: string[],
+  params: Record<string, unknown>
+): void {
   const appBundleIds =
     filter.appBundleIds !== undefined
       ? filter.appBundleIds
@@ -508,13 +516,25 @@ export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
     where.push("source_app_bundle_id = @appBundleId");
     params.appBundleId = filter.appBundleId;
   }
-  // Negative facet — composes conjunctively with the positive one
-  // above (include ∧ ¬exclude), though the Library sidebar's facet
-  // model only ever sends one side at a time.
   if (filter.excludeAppBundleIds !== undefined) {
     const excludeClause = buildExcludeAppBundleClause(filter.excludeAppBundleIds, params);
     if (excludeClause !== null) where.push(excludeClause);
   }
+}
+
+export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
+  const db = getDb();
+  const limit = Math.min(MAX_LIMIT, filter.limit ?? DEFAULT_LIMIT);
+  const where: string[] = [];
+  const params: Record<string, unknown> = { limit };
+
+  if (!filter.includeDeleted) where.push("deleted_at IS NULL");
+  if (filter.cursor !== undefined) {
+    where.push("(captured_at, id) < (@cursor_at, @cursor_id)");
+    params.cursor_at = filter.cursor.capturedAt;
+    params.cursor_id = filter.cursor.id;
+  }
+  pushSourceAppFacetClauses(filter, where, params);
 
   const sql = `SELECT * FROM captures
     ${where.length > 0 ? "WHERE " + where.join(" AND ") : ""}
@@ -1047,6 +1067,86 @@ export function getTotalLive(): number {
   const row = db
     .prepare("SELECT COALESCE(SUM(count), 0) AS total FROM app_stats")
     .get() as { total: number };
+  return row.total;
+}
+
+/**
+ * Live capture count per kind, for the Library sidebar's Types rows.
+ *
+ * Deliberately NOT denormalized into `app_stats`. That table carries an
+ * incremental-maintenance invariant (see the module header) that every
+ * insert / soft-delete / restore path has to honor; adding a `kind`
+ * dimension would widen that contract for a query measured at ~3ms warm
+ * over a 3.7k-row library. A kind with no live captures is simply
+ * absent from the result — callers default to 0.
+ */
+export function getKindStats(): LibraryKindStat[] {
+  const db = getDb();
+  const rows = prepareCached(
+    db,
+    `SELECT kind, COUNT(*) AS count
+     FROM captures
+     WHERE deleted_at IS NULL
+     GROUP BY kind`
+  ).all() as Array<{ kind: "image" | "video"; count: number }>;
+  return rows;
+}
+
+/**
+ * Soft-deleted row count, for the sidebar's Trash row. The renderer
+ * partitions trash out of the same keyset window it uses for live rows,
+ * so its own `records.filter(deleted).length` only ever sees the loaded
+ * pages. Served by `idx_captures_deleted_at`.
+ */
+export function getTrashTotal(): number {
+  const db = getDb();
+  const row = prepareCached(
+    db,
+    "SELECT COUNT(*) AS total FROM captures WHERE deleted_at IS NOT NULL"
+  ).get() as { total: number };
+  return row.total;
+}
+
+/**
+ * Exact count of captures matching a composed sidebar filter. Backs
+ * `library:counts`; see that verb's protocol doc for why the renderer
+ * cannot answer this from its loaded rows.
+ *
+ * Predicate composition is shared with `listCaptures` via
+ * `pushSourceAppFacetClauses`, so the count and the grid it labels can
+ * never disagree about what a source-app facet means.
+ */
+export function countCaptures(filter: LibraryCountsRequest): number {
+  const db = getDb();
+  const where: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  where.push(filter.scope === "trash" ? "deleted_at IS NOT NULL" : "deleted_at IS NULL");
+
+  if (filter.capturedAtStart !== undefined) {
+    // `captured_at` is stored as ISO-8601 UTC, so a lexicographic
+    // comparison IS a chronological one (same assumption the keyset
+    // cursor in listCaptures relies on).
+    where.push("captured_at >= @capturedAtStart");
+    params.capturedAtStart = filter.capturedAtStart;
+  }
+
+  // Absent = both kinds. An explicitly empty array is "no kinds
+  // selected" and must count zero — see LibraryCountsRequest.kinds.
+  const kinds = filter.kinds;
+  if (kinds !== undefined) {
+    if (kinds.length === 0) return 0;
+    if (kinds.length === 1) {
+      where.push("kind = @kind");
+      params.kind = kinds[0];
+    }
+  }
+
+  pushSourceAppFacetClauses(filter, where, params);
+
+  const row = db
+    .prepare(`SELECT COUNT(*) AS total FROM captures WHERE ${where.join(" AND ")}`)
+    .get(params) as { total: number };
   return row.total;
 }
 

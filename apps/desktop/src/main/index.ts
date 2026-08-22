@@ -1031,21 +1031,6 @@ async function runAllScreensCapture(): Promise<void> {
  *  newest non-deleted capture straight from the repo (the float-over
  *  module keeps no persistent "last capture" of its own — its state
  *  resets to hidden on dismiss). No-op when the library is empty. */
-/** Open Library hotkey — raise the singleton Library window, creating
- *  it if the user closed it. Routed through the bus (not
- *  `bringLibraryForward` directly) so two-process mode dispatches it to
- *  whichever process owns the window, same as the tray's folder button. */
-async function runOpenLibrary(): Promise<void> {
-  const log = getMainLogger("pwrsnap:shortcut");
-  const result = await bus.dispatch("library:focus", {}, { principal: "ipc" });
-  if (!result.ok) {
-    log.warn("library:focus failed", {
-      code: result.error.code,
-      message: result.error.message
-    });
-  }
-}
-
 function runReshowLastFloatOver(): void {
   const log = getMainLogger("pwrsnap:shortcut");
   // Runs inside a globalShortcut callback, so swallow + log any error
@@ -1063,6 +1048,30 @@ function runReshowLastFloatOver(): void {
     setFloatOverState({ kind: "show-loaded", captureId: last.id, record: last });
   } catch (cause) {
     log.warn("re-show last float-over failed", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
+}
+
+/** Open Library hotkey — raise the singleton Library window, creating
+ *  it if the user closed it. Routed through the bus (not
+ *  `bringLibraryForward` directly) so two-process mode dispatches it to
+ *  whichever process owns the window, same as the tray's folder button.
+ *  Rejections are swallowed + logged for the same reason
+ *  `runReshowLastFloatOver` swallows: this runs inside a globalShortcut
+ *  callback, where a throw has nowhere to go. */
+async function runOpenLibrary(): Promise<void> {
+  const log = getMainLogger("pwrsnap:shortcut");
+  try {
+    const result = await bus.dispatch("library:focus", {}, { principal: "ipc" });
+    if (!result.ok) {
+      log.warn("library:focus failed", {
+        code: result.error.code,
+        message: result.error.message
+      });
+    }
+  } catch (cause) {
+    log.warn("library:focus threw", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
   }

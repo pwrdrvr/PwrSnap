@@ -217,7 +217,13 @@
   font: 600 10px/1 var(--font-sans);
   cursor: pointer;
 }
-.fo__hover-btn:hover { background: color-mix(in srgb, var(--bg-panel-elevated) 92%, transparent); border-color: var(--accent-border); color: var(--accent-bright); }
+.fo__hover-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--bg-panel-elevated) 92%, transparent); border-color: var(--accent-border); color: var(--accent-bright); }
+/* Without this, `disabled` is invisible: a hover button with no handler
+   renders at full opacity and still lights up accent-bright on hover —
+   i.e. it looks exactly like a live control that does nothing, which is
+   the bug the disabled guards exist to make impossible. Covers Drag,
+   Edit and Reveal. */
+.fo__hover-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ----- copy resolution buttons ----- */
 .fo__copy {

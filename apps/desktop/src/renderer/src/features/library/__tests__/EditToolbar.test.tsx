@@ -118,7 +118,7 @@ function makeSettings(matchingTextEnabled = true): Settings {
       timed: "",
       videoCapture: "CommandOrControl+Alt+C",
       reshowFloatOver: "CommandOrControl+Alt+Shift+F",
-    openLibrary: ""
+      openLibrary: ""
     },
     general: {
     developerMode: false,

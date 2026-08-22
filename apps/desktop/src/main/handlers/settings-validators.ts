@@ -46,6 +46,7 @@ import {
 import type {
   DesktopSettingsSecretName,
   PwrSnapError,
+  Settings,
   SettingsPage,
   SettingsPatch
 } from "@pwrsnap/shared";

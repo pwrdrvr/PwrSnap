@@ -499,6 +499,11 @@ export function FloatOverHost({
           onDragPreset: (preset: "low" | "med" | "high") => startCaptureDrag(record.id, preset)
         });
 
+    const openInLibraryAndDismiss = (): void => {
+      void dispatch("library:openInLibrary", { captureId: record.id });
+      void dispatch("float-over:dismiss", {});
+    };
+
     body = (
       <FloatOver
         key={record.id}

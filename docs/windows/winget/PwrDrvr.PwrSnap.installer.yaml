@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+
+PackageIdentifier: PwrDrvr.PwrSnap
+PackageVersion: 1.0.3
+InstallerType: nullsoft
+Scope: user
+MinimumOSVersion: 10.0.0.0
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+InstallerSwitches:
+  Silent: /S
+  SilentWithProgress: /S
+UpgradeBehavior: install
+FileExtensions:
+  - pwrsnap
+ReleaseDate: 2026-08-19
+InstallationMetadata:
+  DefaultInstallLocation: "%LOCALAPPDATA%\\Programs\\PwrSnap"
+AppsAndFeaturesEntries:
+  - DisplayName: PwrSnap
+    Publisher: PwrDrvr LLC
+    ProductCode: c8b3bdba-25e5-5dbd-b016-8e6ce14b4982
+    InstallerType: nullsoft
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.0.3/PwrSnap-1.0.3-windows-x64-setup.exe
+    InstallerSha256: 3EE981DFF0A529D960EB6FC4825A2899D9B0194F0064C5383291A8B57DD8E859
+ManifestType: installer
+ManifestVersion: 1.12.0

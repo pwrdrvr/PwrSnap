@@ -19,7 +19,7 @@ ReleaseDate: 2026-08-19
 InstallationMetadata:
   DefaultInstallLocation: "%LOCALAPPDATA%\\Programs\\PwrSnap"
 AppsAndFeaturesEntries:
-  - DisplayName: PwrSnap
+  - DisplayName: PwrSnap 1.0.3
     Publisher: PwrDrvr LLC
     ProductCode: c8b3bdba-25e5-5dbd-b016-8e6ce14b4982
     InstallerType: nullsoft

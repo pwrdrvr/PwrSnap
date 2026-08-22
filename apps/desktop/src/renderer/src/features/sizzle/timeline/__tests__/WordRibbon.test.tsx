@@ -125,7 +125,7 @@ describe("WordRibbon", () => {
   });
 
   test("dense words become ticks rather than overlapping labels; anchored words are placed first", () => {
-    const words = WORDS.map((w) => ({ ...w, absStartSec: w.startSec, absEndSec: w.endSec }));
+    const words = WORDS.map((w, pos) => ({ ...w, pos, absStartSec: w.startSec, absEndSec: w.endSec }));
     // 10 px/s: words 5 px apart — only a few labels fit, the rest tick.
     const placed = layoutRibbonWords(words, 10, new Set([8]));
     const ticks = placed.filter((p) => p.tick).length;
@@ -139,7 +139,7 @@ describe("WordRibbon", () => {
   });
 
   test("a label that would run past the lanes' right edge is a tick, so the ribbon never widens the scroll area", () => {
-    const words = WORDS.map((w) => ({ ...w, absStartSec: w.startSec, absEndSec: w.endSec }));
+    const words = WORDS.map((w, pos) => ({ ...w, pos, absStartSec: w.startSec, absEndSec: w.endSec }));
     // Word 15 ("sixteen") starts at 7.5 s = 937.5 px; its label needs ~58 px
     // (7 chars × 7.1 + the 8 px gap) → ends past a 990 px edge.
     const bounded = layoutRibbonWords(words, 125, new Set(), 990);

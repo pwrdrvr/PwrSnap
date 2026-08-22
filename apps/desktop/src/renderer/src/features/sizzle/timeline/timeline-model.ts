@@ -58,6 +58,17 @@ export type TimelineClip = {
 export type TimelineWord = SizzleWordTiming & {
   absStartSec: number;
   absEndSec: number;
+  /**
+   * Position in `scene.words` — NOT the same thing as `index`.
+   *
+   * `SizzleWordTiming.index` is stamped in `normalizeTranscribedWords`
+   * BEFORE a second filter drops empty-normalizing tokens, so a
+   * transcript containing "—" or "…" leaves permanent holes and
+   * `words[k].index !== k`. Anything that indexes INTO the array
+   * (`anchorTimingForWord`, `findPhraseOccurrences`) needs this field;
+   * anything that identifies a word across renders wants `index`.
+   */
+  pos: number;
 };
 
 export type TimelineSceneRegion = {
@@ -102,10 +113,13 @@ export function buildTimelineModel(args: {
 }): TimelineModel {
   const { scenes, sourceFor } = args;
   const sources = scenes.map((scene) => sourceFor(scene));
-  const layout = layoutSizzleScenes(scenes, (scene) => {
-    const i = scenes.indexOf(scene);
-    return sources[i]!.context;
-  });
+  // Keyed by scene, not by `indexOf`: the reverse scan was O(n²) over a
+  // list capped at 200 scenes AND its `!` was unsound — `contextFor`'s
+  // signature promises nothing about the scene being an element of
+  // `scenes`, so a future normalize-before-callback in the shared layout
+  // would have turned `sources[-1]!.context` into a render-phase throw.
+  const contextByScene = new Map(scenes.map((scene, i) => [scene, sources[i]!.context]));
+  const layout = layoutSizzleScenes(scenes, (scene) => contextByScene.get(scene) ?? { capture: null });
   const regions = scenes.map((scene, index): TimelineSceneRegion => {
     const placed = layout.scenes[index]!;
     const source = sources[index]!;
@@ -191,8 +205,9 @@ export function buildTimelineModel(args: {
       exactness: placed.exact ? "resolved" : "estimated",
       transition: scene.transition,
       clips,
-      words: words.map((w) => ({
+      words: words.map((w, pos) => ({
         ...w,
+        pos,
         absStartSec: placed.startSec + w.startSec,
         absEndSec: placed.startSec + w.endSec
       })),

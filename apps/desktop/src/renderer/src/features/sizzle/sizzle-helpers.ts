@@ -4,12 +4,17 @@
 // pin them in isolation.
 
 import {
+  findPhraseOccurrences,
+  SIZZLE_BEAT_TRANSITION_SEC,
   SIZZLE_CROSSFADE_SEC,
+  sizzleTransitionDurationSec,
+  sizzleTransitionType,
   type SizzleProject,
   type SizzleSequencePreviewWarning,
   type SizzleSequenceTranscriptPhrase,
   type SizzleTransition,
-  type SizzleTransitionType
+  type SizzleTransitionType,
+  type SizzleWordTiming
 } from "@pwrsnap/shared";
 
 /** True when a keystroke belongs to a text field rather than the app. */
@@ -28,8 +33,11 @@ export function isTypingTarget(target: EventTarget | null): boolean {
  */
 export function formatDur(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.round(seconds % 60);
+  // Round to whole seconds BEFORE splitting. Flooring the minutes first
+  // and rounding the remainder second renders 119.6 s as "1:60".
+  const total = Math.round(seconds);
+  const mins = Math.floor(total / 60);
+  const secs = total - mins * 60;
   if (mins === 0) return `${secs}s`;
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
@@ -155,6 +163,39 @@ export function transcriptPhraseMatches(
   return searchKey(phrase.text).includes(q);
 }
 
+/**
+ * Which occurrence of `phraseText` starts at `startSec`, counted with the
+ * SAME fuzzy matcher `resolvePhraseTiming` will use to resolve it.
+ *
+ * The exact-string counter below cannot do this: suggestions are raw word
+ * joins, so "The Library…" and "the Library…" are two texts to it but one
+ * occurrence class to the matcher — and the planner would then resolve
+ * `occurrence: 1` to the earlier one. Disambiguating by TIME also dodges
+ * the `index`-vs-position trap in `wordStartIndex`.
+ */
+export function occurrenceForPhraseAtTime(
+  words: readonly SizzleWordTiming[],
+  phraseText: string,
+  startSec: number
+): number | null {
+  // No words on hand (a plan from an older build, or pre-synthesis) — say
+  // so rather than guessing 1, which would silently retarget the anchor to
+  // the FIRST occurrence. The caller falls back to the exact-text count.
+  const starts = findPhraseOccurrences(words, phraseText);
+  if (starts.length === 0) return null;
+  let bestOrdinal = 0;
+  let bestDist = Number.POSITIVE_INFINITY;
+  starts.forEach((pos, ordinal) => {
+    const dist = Math.abs((words[pos]?.startSec ?? 0) - startSec);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestOrdinal = ordinal;
+    }
+  });
+  return bestOrdinal + 1;
+}
+
+/** Fallback for when no transcript words are on hand (pre-synthesis). */
 export function occurrenceForTranscriptPhrase(
   selected: SizzleSequenceTranscriptPhrase,
   phrases: SizzleSequenceTranscriptPhrase[]
@@ -186,13 +227,14 @@ export function referencedCaptureIdsForProject(project: SizzleProject | null): s
 
 // ── Transitions ────────────────────────────────────────────────────────
 
-export function transitionType(transition: SizzleTransition): SizzleTransitionType {
-  return typeof transition === "string" ? transition : transition.type;
-}
+export const transitionType = sizzleTransitionType;
 
-export function transitionFromType(type: SizzleTransitionType): SizzleTransition {
+export function transitionFromType(
+  type: SizzleTransitionType,
+  defaultDurationSec: number = SIZZLE_BEAT_TRANSITION_SEC
+): SizzleTransition {
   if (type === "cut" || type === "crossfade") return type;
-  return { type, durationSec: type === "none" ? 0 : 0.18 };
+  return { type, durationSec: type === "none" ? 0 : defaultDurationSec };
 }
 
 /** Change a transition's TYPE while keeping a duration the user already
@@ -201,13 +243,27 @@ export function transitionFromType(type: SizzleTransitionType): SizzleTransition
  *  cut / none starts from the type's default (`transitionFromType`). The
  *  inspector edits type and duration as two fields; this keeps them from
  *  fighting. */
-export function transitionWithType(current: SizzleTransition, type: SizzleTransitionType): SizzleTransition {
-  if (type === "cut" || type === "none") return transitionFromType(type);
-  const currentType = transitionType(current);
+export function transitionWithType(
+  current: SizzleTransition,
+  type: SizzleTransitionType,
+  defaultDurationSec: number = SIZZLE_BEAT_TRANSITION_SEC
+): SizzleTransition {
+  if (type === "cut" || type === "none") return transitionFromType(type, defaultDurationSec);
+  const currentType = sizzleTransitionType(current);
   const currentHard = currentType === "cut" || currentType === "none";
-  const currentSec = typeof current === "string" ? (current === "crossfade" ? SIZZLE_CROSSFADE_SEC : 0) : current.durationSec;
-  if (currentHard || !(currentSec > 0)) return transitionFromType(type);
+  const currentSec = sizzleTransitionDurationSec(current);
+  if (currentHard || !(currentSec > 0)) return transitionFromType(type, defaultDurationSec);
   return { type, durationSec: currentSec };
+}
+
+/** Scene-level variant: keeps a duration the user set, but defaults to the
+ *  crossfade length rather than the clip length — 0.18 s at a scene
+ *  boundary reads as a cut even in the export (plan §4.7). */
+export function sceneTransitionWithType(
+  current: SizzleTransition,
+  type: SizzleTransitionType
+): SizzleTransition {
+  return transitionWithType(current, type, SIZZLE_CROSSFADE_SEC);
 }
 
 /** Scene→scene transitions default to the crossfade length (0.4 s): a
@@ -215,8 +271,7 @@ export function transitionWithType(current: SizzleTransition, type: SizzleTransi
  *  level reads as a cut even in the export (plan §4.7). The per-boundary
  *  duration becomes editable with the inspector. */
 export function sceneTransitionFromType(type: SizzleTransitionType): SizzleTransition {
-  if (type === "cut" || type === "crossfade") return type;
-  return { type, durationSec: type === "none" ? 0 : SIZZLE_CROSSFADE_SEC };
+  return transitionFromType(type, SIZZLE_CROSSFADE_SEC);
 }
 
 export const TRANSITION_TYPE_LABELS: Record<SizzleTransitionType, string> = {
@@ -238,10 +293,7 @@ export function transitionLabel(transition: SizzleTransition): string {
 
 // ── Misc ───────────────────────────────────────────────────────────────
 
-export function clampTime(value: number, durationSec: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.min(Math.max(value, 0), Math.max(0, durationSec));
-}
+export { clampTime, roundTime } from "../shared/video-range";
 
 export function formatProjectDate(iso: string): string {
   const d = new Date(iso);

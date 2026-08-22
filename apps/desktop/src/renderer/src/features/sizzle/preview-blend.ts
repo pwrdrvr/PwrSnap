@@ -23,20 +23,17 @@ import {
   type SizzleTransitionType
 } from "@pwrsnap/shared";
 
-/** Ken Burns range — the composer's zoompan goes 1.0 ↔ 1.10. */
-export const KEN_BURNS_ZOOM = 0.1;
-
 export type KenBurnsDirection = "in" | "out";
+
+// NOTE: the zoom RANGE is not a constant here. The stage animates Ken Burns
+// with the CSS keyframes `szl-kb-in` / `szl-kb-out` (sizzle.css), which carry
+// the 1.0 ↔ 1.10 the composer's zoompan uses. A TS constant would have been a
+// second, unenforced copy — the previous one was exercised only by its own
+// unit test and could drift from the CSS without failing anything.
 
 /** Even clips zoom in, odd clips zoom out (the composer's input parity). */
 export function kenBurnsDirection(index: number): KenBurnsDirection {
   return index % 2 === 0 ? "in" : "out";
-}
-
-/** The scale at `progress` (0..1) through an image beat's visual span. */
-export function kenBurnsScale(index: number, progress: number): number {
-  const p = Math.min(1, Math.max(0, progress));
-  return kenBurnsDirection(index) === "in" ? 1 + KEN_BURNS_ZOOM * p : 1 + KEN_BURNS_ZOOM * (1 - p);
 }
 
 /** Seconds a fade-like transition INTO a beat overlaps the previous beat:

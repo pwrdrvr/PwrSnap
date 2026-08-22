@@ -26,7 +26,10 @@ export function pxPerSecFor(zoom: TimelineZoom, fitWidthPx: number, totalSec: nu
 export function zoomIn(zoom: TimelineZoom, fitPxPerSec: number): TimelineZoom {
   if (zoom === "fit") {
     const next = ([1, 2, 4] as const).find((z) => TIMELINE_PX_PER_SEC_1X * z > fitPxPerSec + 0.5);
-    return next ?? 4;
+    // A short reel can already be denser at fit than 4× (a 4 s reel in a
+    // 1000 px column is 250 px/s). Stepping to 4× would then zoom OUT and
+    // leave empty track past the end — so stay put, mirroring `zoomOut`.
+    return next ?? "fit";
   }
   return zoom === 1 ? 2 : 4;
 }

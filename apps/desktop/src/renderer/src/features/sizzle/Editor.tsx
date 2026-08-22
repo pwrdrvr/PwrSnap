@@ -29,6 +29,9 @@ import {
 } from "./timeline/timeline-model";
 import { RenderStatusBar, isRendering, type RenderStatus } from "./RenderStatusBar";
 import { createPortal } from "react-dom";
+import { usePlayheadSource } from "../shared/playhead";
+import { ReelPlayer } from "./ReelPlayer";
+import { useReelPlayback } from "./useReelPlayback";
 import { ClipInspector } from "./ClipInspector";
 import { SceneInspector } from "./SceneInspector";
 import { isTypingTarget } from "./sizzle-helpers";
@@ -244,6 +247,11 @@ export function Editor(props: EditorProps): ReactElement {
   // Follows playback while a scene previews; a scrub sets it and seeks
   // the preview of the scene under the pointer.
   const [playhead, setPlayhead] = useState<{ sceneId: string; localSec: number } | null>(null);
+  // The project-axis head. Published on its own channel so playback (which
+  // moves it every animation frame) never re-renders the timeline's 80
+  // clips + word ribbon; React state below keeps only discrete facts.
+  const head = usePlayheadSource();
+  const reelAudioRef = useRef<HTMLAudioElement | null>(null);
   // Selection is the shell's (the rail shows the inspector for it); the
   // editor's word-click / drag / select paths all go through these
   // setters. A clip and a scene are never selected together.
@@ -279,6 +287,7 @@ export function Editor(props: EditorProps): ReactElement {
       ? 0
       : Math.min(playheadRegion.endSec, playheadRegion.startSec + playhead.localSec);
   const onScrub = (sec: number): void => {
+    head.set(sec);
     const region = sceneAt(timelineModel, sec);
     if (region === null) return;
     const localSec = Math.max(0, Math.min(region.durationSec, sec - region.startSec));
@@ -290,6 +299,16 @@ export function Editor(props: EditorProps): ReactElement {
       // Bare track: nothing is selected — clip or scene.
       onSelectClipId(null);
       onSelectSceneId(null);
+      return;
+    }
+    // A legacy one-capture scene is drawn as ONE synthetic clip
+    // (`beatId: "scene:<id>"`) with no beat behind it, so the clip
+    // inspector would find nothing and render null — leaving the rail
+    // mounted around an empty host. Select the scene instead: that is
+    // the thing the user can actually edit.
+    const sceneRecord = project.scenes.find((s) => s.id === clip.sceneId);
+    if (sceneRecord === undefined || sceneRecord.kind !== "sequence") {
+      selectScene(clip.sceneId);
       return;
     }
     setSelectedClipId(clip.beatId);
@@ -304,7 +323,11 @@ export function Editor(props: EditorProps): ReactElement {
     const selected = scene.clips.find((c) => c.beatId === selectedClipId) ?? null;
     const target = selected ?? clipAt(scene, word.absStartSec);
     if (target === null || target.index === 0) return;
-    const timing = anchorTimingForWord(scene.words, word.index);
+    // `word.pos`, not `word.index`: the anchor helper indexes INTO the
+    // array, and `SizzleWordTiming.index` is stamped before a filter that
+    // can drop tokens, so the two spaces diverge on any transcript
+    // containing a word that normalizes to nothing ("—", "…").
+    const timing = anchorTimingForWord(scene.words, word.pos);
     const current = target.timing;
     const alreadyHere =
       current.kind === "phrase" &&
@@ -322,6 +345,18 @@ export function Editor(props: EditorProps): ReactElement {
   const onSynthesize = (sceneId: string): void => {
     void plan.onPreviewScene(sceneId);
   };
+  // Reel-level transport. Starting it stops any single-scene preview so the
+  // two <audio> elements can never sound at once.
+  const reel = useReelPlayback({
+    model: timelineModel,
+    head,
+    audioBlobs: plan.sequenceAudioBlobs,
+    audioRef: reelAudioRef,
+    onTakeOver: () => {
+      const playingScene = plan.previewingSceneId;
+      if (playingScene !== null) void plan.onPreviewScene(playingScene);
+    }
+  });
   // A finished clip drag: ONE scenes patch, built by the pure retime math
   // ("pin only what you touch", nearest word + residual, offset only when
   // there is no transcript). One patch per gesture is what keeps the undo
@@ -332,6 +367,10 @@ export function Editor(props: EditorProps): ReactElement {
     if (scene === undefined || region === undefined || scene.kind !== "sequence" || scene.beats === undefined) {
       return;
     }
+    // The drag froze `index` at pointerdown; make sure it still names the
+    // same clip before applying (an external scenes update or an inserted
+    // clip would otherwise retime a neighbour).
+    if (scene.beats[commit.index]?.id !== commit.beatId) return;
     const next =
       commit.kind === "start"
         ? applyClipStartDrag(scene.beats, commit.index, commit.sec, {
@@ -395,6 +434,18 @@ export function Editor(props: EditorProps): ReactElement {
     reelDuration.sceneCount === 0 || reelDurationText === "0:00"
       ? null
       : `${reelDuration.exact ? "" : "~"}${reelDurationText}`;
+  // One definition of the Render CTA, now that it lives in the reel player.
+  const renderTitle =
+    unscriptedSceneNumber !== null
+      ? `Scene ${unscriptedSceneNumber} has no narration — a scene is one voiceover over its clips, so it needs a script before the reel can render.`
+      : reelDurationLabel !== null && !reelDuration.exact
+        ? "Approximate length. A scene runs as long as its narration, and narration length isn't known until it's synthesized — so scenes with no synthesized narration yet are estimated from their word count."
+        : undefined;
+  const renderButtonLabel = rendering
+    ? `Rendering… ${Math.round(status.ratio * 100)}%`
+    : reelDurationLabel === null
+      ? "Render"
+      : `Render · ${reelDurationLabel}`;
   const [reelSettingsOpen, setReelSettingsOpen] = useState(false);
 
   return (
@@ -438,11 +489,24 @@ export function Editor(props: EditorProps): ReactElement {
       </div>
 
       {project.scenes.length > 0 ? (
+        <ReelPlayer
+          model={timelineModel}
+          captureMap={captureMap}
+          head={head}
+          playback={reel}
+          renderLabel={renderButtonLabel}
+          renderDisabled={rendering || project.scenes.length === 0 || unscriptedSceneNumber !== null}
+          renderTitle={renderTitle}
+          onRender={onRender}
+        />
+      ) : null}
+
+      {project.scenes.length > 0 ? (
         <SizzleTimeline
           model={timelineModel}
           captureMap={captureMap}
           audioBlobs={plan.sequenceAudioBlobs}
-          playheadSec={playheadSec}
+          head={head}
           onScrub={onScrub}
           selectedClipId={selectedClipId}
           onSelectClip={onSelectClip}
@@ -623,6 +687,9 @@ export function Editor(props: EditorProps): ReactElement {
         <div className="szl__preview-error">{plan.previewError}</div>
       ) : null}
       <audio ref={plan.audioRef} {...plan.audioElementProps} style={{ display: "none" }} />
+      {/* The reel player's own element: the per-scene preview owns the one
+          above, and the transport pauses that before taking over. */}
+      <audio ref={reelAudioRef} style={{ display: "none" }} />
 
       <footer className="szl__footer">
         <RenderStatusBar status={status} />
@@ -637,26 +704,20 @@ export function Editor(props: EditorProps): ReactElement {
             Reveal in Finder
           </button>
         ) : null}
-        <button
-          className="szl__btn-primary"
-          onClick={onRender}
-          type="button"
-          disabled={rendering || project.scenes.length === 0 || unscriptedSceneNumber !== null}
-          title={
-            unscriptedSceneNumber !== null
-              ? `Scene ${unscriptedSceneNumber} has no narration — a scene is one voiceover over its clips, so it needs a script before the reel can render.`
-              : reelDurationLabel !== null && !reelDuration.exact
-                ? "Approximate length. A scene runs as long as its narration, and narration length isn't known until it's synthesized — so scenes with no synthesized narration yet are estimated from their word count."
-                : undefined
-          }
-          data-testid="sizzle-render"
-        >
-          {rendering
-            ? `Rendering… ${Math.round(status.ratio * 100)}%`
-            : reelDurationLabel === null
-              ? "Render"
-              : `Render · ${reelDurationLabel}`}
-        </button>
+        {/* Render lives with the reel (in the player's transport), not down
+            here — this bar is the STATUS of a long-running job. A reel with
+            no scenes has no player, so it keeps a Render button here. */}
+        {project.scenes.length === 0 ? (
+          <button
+            className="szl__btn-primary"
+            onClick={onRender}
+            type="button"
+            disabled
+            data-testid="sizzle-render"
+          >
+            Render
+          </button>
+        ) : null}
       </footer>
     </div>
   );

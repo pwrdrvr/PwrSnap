@@ -1734,11 +1734,12 @@
 .szl__sequence-preview-layer.is-incoming.is-dip-white {
   background: white;
 }
-.szl__sequence-preview-layer.is-incoming.is-dip-black > img,
+/* The dip reveal is set INLINE by StageLayer (it has to outrank the inline
+   Ken Burns on the same element); a video's still has no inline style, so it
+   only needs the name plus the layer's own timing. */
 .szl__sequence-preview-layer.is-incoming.is-dip-black > video,
-.szl__sequence-preview-layer.is-incoming.is-dip-white > img,
 .szl__sequence-preview-layer.is-incoming.is-dip-white > video {
-  animation-name: szl-xf-dip-media !important;
+  animation-name: szl-xf-dip-media;
   animation-duration: inherit;
   animation-delay: inherit;
   animation-timing-function: linear;
@@ -1829,4 +1830,86 @@
 .szl__insp-offer b {
   color: var(--text-primary);
   font-weight: 600;
+}
+
+/* ── Reel player: the stage + transport that sit above the timeline ────
+   The reel had no player at all — a sequence scene's stage lived inside
+   its card and a legacy one-capture scene had none, so watching a reel
+   end to end meant rendering it and opening the file. Render lives in
+   this transport too, next to the thing it renders. */
+.szl__reel {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin: 0 24px 10px;
+  min-width: 0;
+}
+.szl__reel-stage {
+  position: relative;
+  flex: 0 0 auto;
+  width: 264px;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.szl__reel-transport {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 6px;
+  flex-wrap: wrap;
+}
+.szl__reel-time {
+  font: 500 12px/1 var(--font-mono);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.szl__reel-time b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.szl__reel-total {
+  color: var(--text-muted);
+}
+.szl__reel-where {
+  font: 500 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+/* The reel transport's play button. Deliberately NOT `.szl__scene-mini--play`:
+   the player renders above the scene list, so sharing that class made a bare
+   `.szl__scene-mini--play` lookup resolve to the reel instead of a scene. */
+.szl__reel-play {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-tint);
+  color: var(--accent-bright);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.szl__reel-play:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.szl__reel-play:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.szl__reel-play:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 2px;
 }

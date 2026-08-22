@@ -18,7 +18,7 @@ import { cacheUrl, captureSrcUrl } from "../../lib/pwrsnap";
 import { SequenceTimelinePreview } from "./PreviewStage";
 import {
   formatDur,
-  sceneTransitionFromType,
+  sceneTransitionWithType,
   transitionType,
   TRANSITION_TYPE_LABELS
 } from "./sizzle-helpers";
@@ -56,7 +56,9 @@ export function SceneTransitionChip({
           value={sceneTransition}
           onChange={(e) =>
             onEditScene({
-              transition: sceneTransitionFromType(e.target.value as SizzleTransitionType)
+              // Same writer the scene inspector uses: switching the TYPE must
+              // not silently discard a duration the user set on the pill.
+              transition: sceneTransitionWithType(scene.transition, e.target.value as SizzleTransitionType)
             })
           }
           data-testid={`sizzle-scene-transition-${idx}`}

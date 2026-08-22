@@ -15,15 +15,16 @@
 // smooth between audio ticks. Good enough to judge a timing decision; not
 // pixel parity with ffmpeg.
 
-import { useEffect, useRef, type CSSProperties, type ReactElement, type RefObject } from "react";
+import { useEffect, useRef, type ReactElement, type RefObject } from "react";
 import type {
   CaptureRecord,
   SizzleScene,
+  SizzleSequenceBeat,
   SizzleSequencePreviewBeat,
   SizzleSequencePreviewPlan
 } from "@pwrsnap/shared";
-import { cacheUrl, captureSrcUrl } from "../../lib/pwrsnap";
 import { SequenceWaveform } from "../shared/SequenceWaveform";
+import { StageLayer } from "./StageLayer";
 import { beatVisualWindow, kenBurnsDirection, stageFrameAt, type StageBlend } from "./preview-blend";
 import {
   fallbackSequenceBeats,
@@ -138,24 +139,26 @@ export function SequenceTimelinePreview(props: {
           <span className="szl__sequence-preview-empty">No clips</span>
         ) : (
           <>
-            <StageLayer
+            <SceneStageLayer
               key={`out:${activeBeat.beatId}`}
               role="outgoing"
               beat={activeBeat}
               index={activeIndex}
               capture={activeCapture}
+              sceneBeat={activeSceneBeat}
               timeSec={timeSec}
               playing={playing}
               blend={frame.blend}
               videoRef={videoRef}
             />
             {frame.blend !== null && incomingBeat !== null ? (
-              <StageLayer
+              <SceneStageLayer
                 key={`in:${incomingBeat.beatId}`}
                 role="incoming"
                 beat={incomingBeat}
                 index={frame.blend.incomingIndex}
                 capture={captureMap.get(incomingBeat.captureId) ?? null}
+                sceneBeat={(scene.beats ?? []).find((b) => b.id === incomingBeat.beatId) ?? null}
                 timeSec={timeSec}
                 playing={playing}
                 blend={frame.blend}
@@ -246,30 +249,15 @@ export function SequenceTimelinePreview(props: {
   );
 }
 
-/** A CSS animation parked at `elapsedSec` into a `durationSec` run: a
- *  negative delay seeks it, and it only runs while the scene plays. */
-function timedAnimation(name: string, durationSec: number, elapsedSec: number, playing: boolean): CSSProperties {
-  const dur = Math.max(0.05, durationSec);
-  const at = Math.min(dur, Math.max(0, elapsedSec));
-  return {
-    animationName: name,
-    animationDuration: `${dur.toFixed(3)}s`,
-    animationDelay: `-${at.toFixed(3)}s`,
-    animationTimingFunction: "linear",
-    animationFillMode: "both",
-    animationPlayState: playing ? "running" : "paused"
-  };
-}
-
-/** One stage layer: the outgoing (active) beat, or the incoming beat
- *  blending in. The layer carries the transition animation; an image
- *  inside carries Ken Burns; a video inside is the real player for the
- *  outgoing layer and a first-frame stand-in for the incoming one. */
-function StageLayer({
+/** Adapter: turns a scene-local beat into the shared stage layer's props.
+ *  The layer itself is shared with the reel player so the two surfaces
+ *  cannot draw the same clip differently. */
+function SceneStageLayer({
   role,
   beat,
   index,
   capture,
+  sceneBeat,
   timeSec,
   playing,
   blend,
@@ -279,6 +267,8 @@ function StageLayer({
   beat: SizzleSequencePreviewBeat;
   index: number;
   capture: CaptureRecord | null;
+  /** The stored beat, for a trim the preview plan may not carry. */
+  sceneBeat: SizzleSequenceBeat | null;
   timeSec: number;
   playing: boolean;
   blend: StageBlend | null;
@@ -286,58 +276,28 @@ function StageLayer({
 }): ReactElement {
   const visual = beatVisualWindow(beat, index);
   const visualDurationSec = Math.max(0.05, visual.endSec - visual.startSec);
-  const elapsedSec = timeSec - visual.startSec;
-  const blendStyle =
-    blend !== null
-      ? timedAnimation(`szl-xf-${role}-${blend.type}`, blend.durationSec, timeSec - blend.startSec, playing)
-      : undefined;
   const isVideo = capture !== null && capture.kind === "video";
-  const kb = capture !== null && !isVideo ? kenBurnsDirection(index) : null;
-  const thumb =
-    capture !== null
-      ? cacheUrl(beat.captureId, 800, "webp", capture.edits_version)
-      : cacheUrl(beat.captureId, 800, "webp");
-  let media: ReactElement;
-  if (capture === null) {
-    media = <span className="szl__sequence-preview-empty">Missing capture</span>;
-  } else if (isVideo) {
-    media =
-      role === "outgoing" && videoRef !== null ? (
-        <video ref={videoRef} key={beat.beatId} src={captureSrcUrl(beat.captureId)} muted playsInline />
-      ) : (
-        // The incoming video's first frame: a paused player parked at its
-        // source start (media fragment), never played from here.
-        <video
-          key={`in:${beat.beatId}`}
-          src={`${captureSrcUrl(beat.captureId)}#t=${(beat.mediaTrim?.startSec ?? 0).toFixed(3)}`}
-          muted
-          playsInline
-          preload="metadata"
-        />
-      );
-  } else {
-    media = (
-      <img
-        src={thumb}
-        alt=""
-        draggable={false}
-        style={kb !== null ? timedAnimation(`szl-kb-${kb}`, visualDurationSec, elapsedSec, playing) : undefined}
-        data-kb={kb ?? undefined}
-      />
-    );
-  }
   return (
-    <div
-      className={
-        `szl__sequence-preview-layer is-${role}` +
-        (blend !== null ? ` is-${blend.type}` : "")
+    <StageLayer
+      role={role}
+      captureId={beat.captureId}
+      capture={capture}
+      kenBurns={isVideo ? null : kenBurnsDirection(index)}
+      kenBurnsDurationSec={visualDurationSec}
+      kenBurnsElapsedSec={timeSec - visual.startSec}
+      blend={
+        blend === null
+          ? null
+          : { type: blend.type, durationSec: blend.durationSec, elapsedSec: timeSec - blend.startSec }
       }
-      style={blendStyle}
-      data-testid={`sizzle-preview-${role}`}
-      data-beat={beat.beatId}
-      data-progress={blend !== null ? blend.progress.toFixed(3) : undefined}
-    >
-      {media}
-    </div>
+      playing={playing}
+      videoRef={videoRef ?? undefined}
+      // The trim the export will cut to. `fallbackSequenceBeats` never sets
+      // `mediaTrim`, so without the stored beat's copy an untrimmed first
+      // frame blends in and then pops to the real one.
+      posterStartSec={beat.mediaTrim?.startSec ?? sceneBeat?.mediaTrim?.startSec ?? 0}
+      dataBeat={beat.beatId}
+      testId={`sizzle-preview-${role}`}
+    />
   );
 }

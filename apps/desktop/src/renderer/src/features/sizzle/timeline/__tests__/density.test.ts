@@ -46,3 +46,15 @@ describe("density ladder", () => {
     expect(zoomOut(4, 15)).toBe(2);
   });
 });
+
+describe("zoomIn never zooms out", () => {
+  test("a reel already denser at fit than 4x stays at fit", () => {
+    // A 4 s reel in a 1000 px column fits at 250 px/s; 4x is only 160, so
+    // stepping there would SHRINK the clips and leave empty track.
+    expect(zoomIn("fit", 250)).toBe("fit");
+    expect(zoomIn("fit", 161)).toBe("fit");
+    // Below the ladder it still steps up as usual.
+    expect(zoomIn("fit", 30)).toBe(1);
+    expect(zoomIn("fit", 55)).toBe(2);
+  });
+});

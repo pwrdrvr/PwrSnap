@@ -205,8 +205,11 @@ describe("scene-ops — multi-scene operations (plan PR 8)", () => {
     // The new scene's first clip is pinned at 0 (auto); "the" #2 would have
     // been occurrence 1 in the new scene anyway — it IS clip 0 now.
     expect(second.beats![0]!.timing).toEqual({ kind: "auto" });
-    // The offset rebases: 4.0 − 2.3 = 1.7.
-    expect(second.beats![1]!.timing).toEqual({ kind: "offset", startSec: 1.7, endSec: null });
+    // The offset rebases against the new scene's ZERO — the first moved word
+    // ("the" at 2.5 s), not the scrub point at 2.3 s. Rebasing by the
+    // playhead would land it 0.2 s late, and the gap grows if you split in
+    // a pause between sentences.
+    expect(second.beats![1]!.timing).toEqual({ kind: "offset", startSec: 1.5, endSec: null });
     expect(second.transition).toBe("cut");
     expect(second.captureId).toBe("cap_c3");
     // Occurrence re-count: a phrase anchor in the moved half drops by its

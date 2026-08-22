@@ -23,9 +23,14 @@ import {
   type SizzleVideoFitPolicy
 } from "@pwrsnap/shared";
 import { cacheUrl } from "../../lib/pwrsnap";
-import { formatSpan, formatTimecode } from "../shared/video-range";
+import { formatSpan, formatTimecode, roundTime } from "../shared/video-range";
 import { TranscriptPhrasePicker } from "./TranscriptPhrasePicker";
-import { occurrenceForTranscriptPhrase, TRANSITION_TYPE_LABELS, transitionWithType } from "./sizzle-helpers";
+import {
+  occurrenceForPhraseAtTime,
+  occurrenceForTranscriptPhrase,
+  TRANSITION_TYPE_LABELS,
+  transitionWithType
+} from "./sizzle-helpers";
 import { anchorTimingForWord, nearestWordAnchor } from "./timeline/anchor";
 import type { TimelineClip, TimelineSceneRegion } from "./timeline/timeline-model";
 
@@ -75,7 +80,7 @@ export function ClipInspector(props: ClipInspectorProps): ReactElement {
       return;
     }
     if (next === "offset") {
-      onEditBeat({ timing: { kind: "offset", startSec: round3(clip.localStartSec), endSec: null } });
+      onEditBeat({ timing: { kind: "offset", startSec: roundTime(clip.localStartSec), endSec: null } });
       return;
     }
     const near = nearestWordAnchor(scene.words, clip.localStartSec);
@@ -83,7 +88,7 @@ export function ClipInspector(props: ClipInspectorProps): ReactElement {
       timing:
         near === null
           ? { kind: "phrase", phrase: "", occurrence: null, offsetSec: 0, durationSec: null }
-          : anchorTimingForWord(scene.words, near.wordIndex, round3(near.offsetSec))
+          : anchorTimingForWord(scene.words, near.wordIndex, roundTime(near.offsetSec))
     });
   };
 
@@ -169,7 +174,12 @@ export function ClipInspector(props: ClipInspectorProps): ReactElement {
                     timing: {
                       kind: "phrase",
                       phrase: phrase.text,
-                      occurrence: occurrenceForTranscriptPhrase(phrase, transcriptPhrases),
+                      // Count it the way the planner will resolve it; fall
+                      // back to the exact-text count only when this scene has
+                      // no transcript words to match against.
+                      occurrence:
+                        occurrenceForPhraseAtTime(scene.words, phrase.text, phrase.startSec) ??
+                        occurrenceForTranscriptPhrase(phrase, transcriptPhrases),
                       offsetSec: timing.offsetSec,
                       durationSec: timing.durationSec
                     }
@@ -183,7 +193,13 @@ export function ClipInspector(props: ClipInspectorProps): ReactElement {
                   step={0.05}
                   value={timing.offsetSec}
                   onChange={(e) => {
-                    const v = Number(e.target.value);
+                    // `Number("")` is 0, not NaN, and an <input type=number>
+                    // reports "" for any transiently-unparseable entry — so
+                    // without this the first keystroke of "-0.5" commits 0
+                    // and wipes the sign.
+                    const raw = e.target.value.trim();
+                    if (raw === "") return;
+                    const v = Number(raw);
                     if (!Number.isFinite(v)) return;
                     onEditBeat({ timing: { ...timing, offsetSec: v } });
                   }}
@@ -214,7 +230,9 @@ export function ClipInspector(props: ClipInspectorProps): ReactElement {
                     step={0.1}
                     value={timing.startSec}
                     onChange={(e) => {
-                      const v = Number(e.target.value);
+                      const raw = e.target.value.trim();
+                      if (raw === "") return; // see the Offset field above
+                      const v = Number(raw);
                       if (!Number.isFinite(v)) return;
                       onEditBeat({ timing: { ...timing, startSec: Math.max(0, v) } });
                     }}
@@ -380,6 +398,3 @@ function ClipPoster({ clip, capture }: { clip: TimelineClip; capture: CaptureRec
   );
 }
 
-function round3(value: number): number {
-  return Math.round(value * 1000) / 1000;
-}

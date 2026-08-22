@@ -7,6 +7,11 @@ import type { ReactElement } from "react";
 import { SequenceWaveform } from "../../shared/SequenceWaveform";
 import type { TimelineModel } from "./timeline-model";
 
+/** Ceiling on the idle placeholder's bar count, mirroring the preview
+ *  stage's `SEQUENCE_WAVE_BARS`. Without it the count scales with the
+ *  scene's pixel width at zoom and mounts thousands of nodes. */
+const IDLE_WAVE_BARS_MAX = 120;
+
 const WAVE_HEIGHT_PX = 24;
 
 export function WaveformLane({
@@ -26,7 +31,10 @@ export function WaveformLane({
         const width = Math.max(0, x(scene.endSec) - left);
         const blob = scene.exact ? audioBlobs[scene.sceneId] : undefined;
         if (blob === undefined) {
-          const bars = Math.max(8, Math.floor(width / 9));
+          // Capped: `width` is PIXELS AT THE CURRENT ZOOM, so a 40 s scene at 4×
+              // is 6400 px → 711 nodes, rebuilt on every playhead tick. The
+              // stage's identical placeholder is capped at 52.
+              const bars = Math.min(IDLE_WAVE_BARS_MAX, Math.max(8, Math.floor(width / 9)));
           return (
             <span
               key={scene.sceneId}

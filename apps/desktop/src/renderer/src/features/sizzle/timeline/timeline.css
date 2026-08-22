@@ -115,6 +115,13 @@
   grid-template-rows: 22px 20px 72px 28px 44px;
   cursor: ew-resize;
   user-select: none;
+  /* Structural defense, not decoration: `.szt__scroll` is `overflow-x: auto`,
+     so ANY absolutely-positioned child painting past `lanesWidth` widens the
+     scroll area and puts a horizontal scrollbar on a reel that fits. Clipping
+     here makes that impossible for every present and future overlay (word
+     labels, the playhead tag, the drag tip, warnings) instead of each one
+     re-discovering the rule and being handed a `widthPx` bound. */
+  overflow-x: clip;
 }
 .szt__lanes.is-scrubbing {
   cursor: ew-resize;
@@ -228,7 +235,11 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
   white-space: nowrap;
-  pointer-events: none;
+  /* Clickable: the pill selects the scene so its transition can be edited.
+     It was decorative when written; PR 8 gave it a role + onClick, and a
+     leftover `pointer-events: none` sent the click to the region behind it.
+     (jsdom ignores hit-testing, so the test could not catch this.) */
+  cursor: pointer;
 }
 .szt__pill .szt__unit {
   text-transform: none;
@@ -711,4 +722,12 @@
   white-space: nowrap;
   z-index: 7;
   pointer-events: none;
+}
+
+/* The warnings strip scrolls with the axis — its chips are placed in
+   content-space pixels, so a static strip pointed at the wrong times the
+   moment the lanes scrolled. */
+.szt__warns-scroll {
+  overflow: hidden;
+  min-width: 0;
 }

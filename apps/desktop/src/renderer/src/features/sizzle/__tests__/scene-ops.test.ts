@@ -119,3 +119,136 @@ describe("scene-ops", () => {
     expect(splitSceneIntoScenes(lone, "s")).toEqual(lone);
   });
 });
+
+import {
+  mergeSceneIntoPrevious,
+  pseudoWordsFromText,
+  refitSceneOffsets,
+  sceneHasOffsetAnchors,
+  splitSceneAtSec,
+  splitTextAtWord
+} from "../scene-ops";
+import type { SizzleWordTiming } from "@pwrsnap/shared";
+
+describe("scene-ops — multi-scene operations (plan PR 8)", () => {
+  const phrase = (p: string, occurrence = 1, offsetSec = 0): SizzleSequenceBeat["timing"] => ({
+    kind: "phrase",
+    phrase: p,
+    occurrence,
+    offsetSec,
+    durationSec: null
+  });
+  const narrated = (id: string, text: string, beats: SizzleSequenceBeat[], patch: Partial<SizzleScene> = {}): SizzleScene => ({
+    ...sequence(id, beats),
+    scriptLine: text,
+    narration: text,
+    ...patch
+  });
+
+  test("mergeSceneIntoPrevious: narration concatenates, the boundary clip pins to the merged-in first words, occurrences re-count, offsets shift", () => {
+    const a = narrated("sa", "Open the Library to find the capture.", [beat("a1"), beat("a2", { timing: phrase("the", 2) })]);
+    const b = narrated(
+      "sb",
+      "The Library keeps every capture.",
+      [beat("b1"), beat("b2", { timing: phrase("capture", 1) }), beat("b3", { timing: { kind: "offset", startSec: 2, endSec: null } })],
+      { transition: { type: "dip-black", durationSec: 0.3 } }
+    );
+    const next = mergeSceneIntoPrevious([a, b], "sb", { prevDurationSec: 4.5 });
+    expect(next).toHaveLength(1);
+    const merged = next[0]!;
+    expect(merged.id).toBe("sa");
+    expect(merged.narration).toBe("Open the Library to find the capture. The Library keeps every capture.");
+    expect(merged.beats!.map((x) => x.id)).toEqual(["a1", "a2", "b1", "b2", "b3"]);
+    // The boundary clip: "The Library" occurs twice across the merged text
+    // ("the Library" in A, "The Library" in B) → grows to a unique phrase and
+    // counts the one in A; it carries the former scene transition.
+    const boundary = merged.beats![2]!;
+    expect(boundary.timing).toEqual(phrase("The Library keeps", 1));
+    expect(boundary.transition).toEqual({ type: "dip-black", durationSec: 0.3 });
+    // "capture" occurs once in A → B's anchor becomes occurrence 2.
+    expect(merged.beats![3]!.timing).toEqual(phrase("capture", 2));
+    // Offsets shift by the previous scene's length.
+    expect(merged.beats![4]!.timing).toEqual({ kind: "offset", startSec: 6.5, endSec: null });
+    // A's own clips are untouched.
+    expect(merged.beats![1]!.timing).toEqual(phrase("the", 2));
+    // Nothing to merge into: the first scene, or a simple scene before it.
+    expect(mergeSceneIntoPrevious([a, b], "sa", { prevDurationSec: 1 })).toEqual([a, b]);
+    expect(mergeSceneIntoPrevious([simple("s0"), b], "sb", { prevDurationSec: 1 })).toHaveLength(2);
+  });
+
+  test("splitSceneAtSec: the script divides at the word spoken at the split; clips before stay, the rest rebase into a new scene", () => {
+    const text = "Open the Library to find the capture, then share it.";
+    // 10 words, one every 0.5 s: Open 0, the 0.5, Library 1, to 1.5, find 2, the 2.5, capture 3, then 3.5, share 4, it 4.5
+    const words: SizzleWordTiming[] = text.split(" ").map((word, index) => ({
+      index,
+      word,
+      normalized: word.toLowerCase().replace(/[^a-z0-9]/g, ""),
+      startSec: index * 0.5,
+      endSec: index * 0.5 + 0.4
+    }));
+    const scene = narrated("s1", text, [
+      beat("c1"),
+      beat("c2", { timing: phrase("find", 1) }),
+      beat("c3", { timing: phrase("the", 2, 0.1) }),
+      beat("c4", { timing: { kind: "offset", startSec: 4, endSec: null } })
+    ]);
+    // Resolved starts: c1 0, c2 2.0 ("find"), c3 2.6 ("the" #2 + 0.1), c4 4.0.
+    const next = splitSceneAtSec([scene], "s1", 2.3, { words, clipStartsSec: [0, 2, 2.6, 4] });
+    expect(next).toHaveLength(2);
+    const [first, second] = next as [SizzleScene, SizzleScene];
+    expect(first.id).toBe("s1");
+    // The split falls before "the" (2.5 s) — word 5.
+    expect(first.narration).toBe("Open the Library to find");
+    expect(second.narration).toBe("the capture, then share it.");
+    expect(first.beats!.map((b) => b.id)).toEqual(["c1", "c2"]);
+    expect(second.beats!.map((b) => b.id)).toEqual(["c3", "c4"]);
+    // The new scene's first clip is pinned at 0 (auto); "the" #2 would have
+    // been occurrence 1 in the new scene anyway — it IS clip 0 now.
+    expect(second.beats![0]!.timing).toEqual({ kind: "auto" });
+    // The offset rebases: 4.0 − 2.3 = 1.7.
+    expect(second.beats![1]!.timing).toEqual({ kind: "offset", startSec: 1.7, endSec: null });
+    expect(second.transition).toBe("cut");
+    expect(second.captureId).toBe("cap_c3");
+    // Occurrence re-count: a phrase anchor in the moved half drops by its
+    // count before the split.
+    const scene2 = narrated("s2", text, [
+      beat("d1"),
+      beat("d2", { timing: phrase("the", 1) }),
+      beat("d3", { timing: phrase("the", 2) })
+    ]);
+    const split2 = splitSceneAtSec([scene2], "s2", 1.2, { words, clipStartsSec: [0, 0.5, 2.5] });
+    expect(split2).toHaveLength(2);
+    expect(split2[1]!.beats!.map((b) => b.id)).toEqual(["d3"]); // lone → auto
+    // No-ops: the split sits at the first word (nothing before it to keep), or past every word.
+    expect(splitSceneAtSec([scene], "s1", 0, { words, clipStartsSec: [0, 2, 2.6, 4] })).toEqual([scene]);
+    expect(splitSceneAtSec([scene], "s1", 9, { words, clipStartsSec: [0, 2, 2.6, 4] })).toEqual([scene]);
+    // Estimated scene (no words): nothing is fabricated — no split.
+    expect(splitSceneAtSec([scene], "s1", 2.3, { words: [], clipStartsSec: [0, 2, 2.6, 4] })).toEqual([scene]);
+  });
+
+  test("splitTextAtWord keeps punctuation with its word and trims the seam", () => {
+    expect(splitTextAtWord("Open the Library, then share it.", 3)).toEqual(["Open the Library,", "then share it."]);
+    expect(splitTextAtWord("one two", 0)).toEqual(["", "one two"]);
+    expect(splitTextAtWord("one two", 5)).toEqual(["one two", ""]);
+    expect(pseudoWordsFromText("It's the Library").map((w) => w.normalized)).toEqual(["its", "the", "library"]);
+  });
+
+  test("refitSceneOffsets scales only offsets, by new/old, and reports no change without any", () => {
+    const scene = narrated("s1", "n", [
+      beat("a"),
+      beat("b", { timing: { kind: "offset", startSec: 3, endSec: null } }),
+      beat("c", { timing: phrase("x") }),
+      beat("d", { timing: { kind: "offset", startSec: 6, endSec: 9 } })
+    ]);
+    expect(sceneHasOffsetAnchors(scene)).toBe(true);
+    const next = refitSceneOffsets([scene], "s1", 10, 8);
+    expect(next[0]!.beats![1]!.timing).toEqual({ kind: "offset", startSec: 2.4, endSec: null });
+    expect(next[0]!.beats![2]!.timing).toEqual(phrase("x"));
+    expect(next[0]!.beats![3]!.timing).toEqual({ kind: "offset", startSec: 4.8, endSec: 7.2 });
+    const none = narrated("s2", "n", [beat("a"), beat("b", { timing: phrase("x") })]);
+    expect(sceneHasOffsetAnchors(none)).toBe(false);
+    const input = [none];
+    expect(refitSceneOffsets(input, "s2", 10, 8)).toBe(input);
+    expect(refitSceneOffsets([scene], "s1", 0, 8)).toEqual([scene]);
+  });
+});

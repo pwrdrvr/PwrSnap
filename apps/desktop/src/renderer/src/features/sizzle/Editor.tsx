@@ -30,16 +30,20 @@ import {
 import { RenderStatusBar, isRendering, type RenderStatus } from "./RenderStatusBar";
 import { createPortal } from "react-dom";
 import { ClipInspector } from "./ClipInspector";
+import { SceneInspector } from "./SceneInspector";
 import { isTypingTarget } from "./sizzle-helpers";
 import { SceneTransitionChip, SequenceSceneCard, SimpleSceneCard } from "./SceneCard";
 import {
   convertSceneToSequence,
+  mergeSceneIntoPrevious,
   moveSceneBy,
   patchScene,
   patchSequenceBeat,
+  refitSceneOffsets,
   removeSceneById,
   removeSequenceBeatFrom,
   reorderSequenceBeatIn,
+  splitSceneAtSec,
   splitSceneIntoScenes
 } from "./scene-ops";
 import { useSequencePlan } from "./useSequencePlan";
@@ -66,6 +70,10 @@ export type EditorProps = {
    *  inspector for it). */
   selectedClipId: string | null;
   onSelectClipId: (beatId: string | null) => void;
+  /** The selected scene (a region / transition pill on the timeline);
+   *  mutually exclusive with the clip selection. */
+  selectedSceneId: string | null;
+  onSelectSceneId: (sceneId: string | null) => void;
   /** Where the clip inspector renders (a slot in the right rail); null
    *  while the rail is not mounted. */
   inspectorHost: HTMLElement | null;
@@ -92,6 +100,8 @@ export function Editor(props: EditorProps): ReactElement {
     onDelete,
     selectedClipId,
     onSelectClipId,
+    selectedSceneId,
+    onSelectSceneId,
     inspectorHost
   } = props;
 
@@ -235,18 +245,27 @@ export function Editor(props: EditorProps): ReactElement {
   // the preview of the scene under the pointer.
   const [playhead, setPlayhead] = useState<{ sceneId: string; localSec: number } | null>(null);
   // Selection is the shell's (the rail shows the inspector for it); the
-  // editor's word-click / drag / select paths all go through this setter.
-  const setSelectedClipId = onSelectClipId;
+  // editor's word-click / drag / select paths all go through these
+  // setters. A clip and a scene are never selected together.
+  const setSelectedClipId = (beatId: string | null): void => {
+    onSelectClipId(beatId);
+    if (beatId !== null) onSelectSceneId(null);
+  };
+  const selectScene = (sceneId: string | null): void => {
+    onSelectSceneId(sceneId);
+    if (sceneId !== null) onSelectClipId(null);
+  };
   // Esc closes the inspector (deselects) — never stolen from a text field.
   useEffect(() => {
-    if (selectedClipId === null) return;
+    if (selectedClipId === null && selectedSceneId === null) return;
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || isTypingTarget(event.target)) return;
       onSelectClipId(null);
+      onSelectSceneId(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedClipId, onSelectClipId]);
+  }, [selectedClipId, selectedSceneId, onSelectClipId, onSelectSceneId]);
   const playingSceneId = plan.previewingSceneId;
   const playingTimeSec = plan.previewTimeSec;
   useEffect(() => {
@@ -267,7 +286,13 @@ export function Editor(props: EditorProps): ReactElement {
     plan.seekPreview(region.sceneId, localSec);
   };
   const onSelectClip = (clip: TimelineClip | null): void => {
-    setSelectedClipId(clip === null ? null : clip.beatId);
+    if (clip === null) {
+      // Bare track: nothing is selected — clip or scene.
+      onSelectClipId(null);
+      onSelectSceneId(null);
+      return;
+    }
+    setSelectedClipId(clip.beatId);
   };
   // Click a word → the SELECTED clip (if it is in this scene) anchors there;
   // with nothing selected, the clip covering that moment does. Clip 0 is
@@ -321,6 +346,37 @@ export function Editor(props: EditorProps): ReactElement {
     if (next === scene.beats) return;
     editScene(scene.id, { beats: next });
     setSelectedClipId(commit.beatId);
+  };
+  // ── Scene operations from the scene inspector (plan PR 8) ──
+  // Split at the playhead needs the scene's RESOLVED words (nothing is
+  // fabricated); the region carries them along with the clips' starts.
+  const onSplitAtPlayhead = (region: TimelineSceneRegion): void => {
+    if (playhead === null || playhead.sceneId !== region.sceneId) return;
+    const next = splitSceneAtSec(project.scenes, region.sceneId, playhead.localSec, {
+      words: region.words,
+      clipStartsSec: region.clips.map((c) => c.localStartSec)
+    });
+    if (next === project.scenes) return;
+    onScenes(next);
+  };
+  const onMergeWithPrevious = (region: TimelineSceneRegion): void => {
+    const prevRegion = timelineModel.scenes[region.index - 1];
+    if (prevRegion === undefined) return;
+    const next = mergeSceneIntoPrevious(project.scenes, region.sceneId, {
+      prevDurationSec: prevRegion.durationSec
+    });
+    if (next === project.scenes) return;
+    onScenes(next);
+    selectScene(prevRegion.sceneId);
+  };
+  // Re-fit anchors (plan §4.2): explicit, scales offsets by new/old.
+  const onRefit = (sceneId: string): void => {
+    const scene = project.scenes.find((s) => s.id === sceneId);
+    const offer = scene === undefined ? null : plan.refitOfferForScene(scene);
+    if (scene === undefined || offer === null) return;
+    const next = refitSceneOffsets(project.scenes, sceneId, offer.fromSec, offer.toSec);
+    if (next !== project.scenes) onScenes(next);
+    plan.dismissRefitOffer(sceneId);
   };
   /** What a scene's own preview stage should show: its playback time while
    *  it plays / is loaded, else the project playhead if it sits in this
@@ -390,6 +446,8 @@ export function Editor(props: EditorProps): ReactElement {
           onScrub={onScrub}
           selectedClipId={selectedClipId}
           onSelectClip={onSelectClip}
+          selectedSceneId={selectedSceneId}
+          onSelectScene={(sceneId) => selectScene(sceneId)}
           onClickWord={onClickWord}
           onSynthesize={onSynthesize}
           onDragCommit={onDragCommit}
@@ -424,6 +482,42 @@ export function Editor(props: EditorProps): ReactElement {
                   onSelectClipId(null);
                 }}
                 onClose={() => onSelectClipId(null)}
+              />,
+              inspectorHost
+            );
+          })()
+        : null}
+      {inspectorHost !== null && selectedSceneId !== null
+        ? (() => {
+            const region = timelineModel.scenes.find((s) => s.sceneId === selectedSceneId);
+            const sceneRecord = project.scenes.find((s) => s.id === selectedSceneId);
+            if (region === undefined || sceneRecord === undefined) return null;
+            const prev = region.index > 0 ? project.scenes[region.index - 1] : undefined;
+            return createPortal(
+              <SceneInspector
+                scene={sceneRecord}
+                region={region}
+                sceneCount={project.scenes.length}
+                playheadLocalSec={
+                  playhead !== null && playhead.sceneId === region.sceneId ? playhead.localSec : null
+                }
+                canMergeWithPrevious={
+                  prev !== undefined && prev.kind === "sequence" && sceneRecord.kind === "sequence"
+                }
+                refit={plan.refitOfferForScene(sceneRecord)}
+                onEditScene={(patch) => editScene(sceneRecord.id, patch)}
+                onMoveScene={(delta) => moveScene(region.index, delta)}
+                onSplitAtPlayhead={() => onSplitAtPlayhead(region)}
+                onMergeWithPrevious={() => onMergeWithPrevious(region)}
+                onSplitIntoScenes={() => splitIntoScenes(sceneRecord.id)}
+                onRefit={() => onRefit(sceneRecord.id)}
+                onDismissRefit={() => plan.dismissRefitOffer(sceneRecord.id)}
+                onSynthesize={() => void plan.onPreviewScene(sceneRecord.id)}
+                onRemoveScene={() => {
+                  removeScene(sceneRecord.id);
+                  onSelectSceneId(null);
+                }}
+                onClose={() => onSelectSceneId(null)}
               />,
               inspectorHost
             );

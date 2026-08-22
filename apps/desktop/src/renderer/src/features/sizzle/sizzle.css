@@ -1798,3 +1798,35 @@
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* ── Scene inspector extras (shares the clip inspector's styling) ──── */
+.szl__insp-excerpt {
+  margin: 0;
+  font: 400 12px/1.45 var(--font-sans);
+  color: var(--text-secondary);
+}
+.szl__insp-excerpt em {
+  color: var(--text-muted);
+}
+.szl__insp-action {
+  width: auto;
+  padding: 0 9px;
+  font: 600 11px/1 var(--font-sans);
+  white-space: nowrap;
+}
+/* the §4.2 re-fit offer: a quiet notice, two explicit choices */
+.szl__insp-offer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--warn-border, var(--border-default));
+  border-radius: 6px;
+  background: var(--warn-tint, var(--bg-panel-elevated));
+  font: 400 11px/1.45 var(--font-sans);
+  color: var(--text-secondary);
+}
+.szl__insp-offer b {
+  color: var(--text-primary);
+  font-weight: 600;
+}

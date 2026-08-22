@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  validateLibraryCounts,
   validateLibraryDiscovery,
   validateLibraryListByIds,
   validateLibrarySearch,
@@ -1057,5 +1058,116 @@ describe("validateLibraryDiscovery", () => {
     const tooLarge = validateLibraryDiscovery({ limit: 501 });
     expect(tooLarge.ok).toBe(false);
     if (!tooLarge.ok) expect(tooLarge.error.code).toBe("limit_too_large");
+  });
+});
+
+describe("validateLibraryCounts", () => {
+  it("treats an absent payload as 'count everything live'", () => {
+    for (const empty of [null, undefined, {}]) {
+      const r = validateLibraryCounts(empty);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value).toEqual({});
+    }
+  });
+
+  it("rejects a non-object req", () => {
+    const r = validateLibraryCounts("oops");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("not_object");
+  });
+
+  describe("scope", () => {
+    it("accepts live and trash", () => {
+      for (const scope of ["live", "trash"] as const) {
+        const r = validateLibraryCounts({ scope });
+        expect(r.ok).toBe(true);
+        if (r.ok) expect(r.value.scope).toBe(scope);
+      }
+    });
+
+    it("rejects the sidebar's 'today', which is a date predicate here", () => {
+      const r = validateLibraryCounts({ scope: "today" });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("scope_invalid");
+    });
+  });
+
+  describe("kinds", () => {
+    it("preserves an EMPTY array — it means 'no kinds', not 'both'", () => {
+      const r = validateLibraryCounts({ kinds: [] });
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value.kinds).toEqual([]);
+    });
+
+    it("de-duplicates", () => {
+      const r = validateLibraryCounts({ kinds: ["image", "image", "video"] });
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value.kinds).toEqual(["image", "video"]);
+    });
+
+    it("rejects an unknown kind", () => {
+      const r = validateLibraryCounts({ kinds: ["image", "audio"] });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("kind_invalid");
+    });
+
+    it("rejects a non-array", () => {
+      const r = validateLibraryCounts({ kinds: "image" });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("kinds_invalid");
+    });
+  });
+
+  describe("source-app facets", () => {
+    it("accepts bundle ids and the null 'unknown app' bucket on both facets", () => {
+      const r = validateLibraryCounts({
+        appBundleIds: ["com.apple.Safari", null],
+        excludeAppBundleIds: [null]
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.appBundleIds).toEqual(["com.apple.Safari", null]);
+        expect(r.value.excludeAppBundleIds).toEqual([null]);
+      }
+    });
+
+    it("rejects an empty-string bundle id", () => {
+      const r = validateLibraryCounts({ appBundleIds: [""] });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("appBundleIds_entry_invalid");
+    });
+
+    it("caps each facet independently", () => {
+      const many = Array.from({ length: 501 }, (_, i) => `com.example.app${i}`);
+      const a = validateLibraryCounts({ appBundleIds: many });
+      expect(a.ok).toBe(false);
+      if (!a.ok) expect(a.error.code).toBe("appBundleIds_too_many");
+      const b = validateLibraryCounts({ excludeAppBundleIds: many });
+      expect(b.ok).toBe(false);
+      if (!b.ok) expect(b.error.code).toBe("excludeAppBundleIds_too_many");
+    });
+  });
+
+  describe("capturedAtStart", () => {
+    it("accepts an ISO-8601 instant", () => {
+      const r = validateLibraryCounts({ capturedAtStart: "2026-08-22T07:00:00.000Z" });
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value.capturedAtStart).toBe("2026-08-22T07:00:00.000Z");
+    });
+
+    it("rejects an unparseable string rather than letting it silently mis-count", () => {
+      // It is compared lexicographically against `captured_at`, so a
+      // junk value would not error — it would quietly count the wrong
+      // rows. That is the failure this check exists to prevent.
+      const r = validateLibraryCounts({ capturedAtStart: "yesterday" });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("capturedAtStart_unparseable");
+    });
+
+    it("rejects a non-string", () => {
+      const r = validateLibraryCounts({ capturedAtStart: 1755840000000 });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("capturedAtStart_invalid");
+    });
   });
 });

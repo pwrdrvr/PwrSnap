@@ -23,6 +23,7 @@ import {
   filterFixturesByScopeAndSourceAppFacet,
   initialLibraryFilter,
   isDefaultLibraryFilter,
+  libraryCountsRequestFor,
   libraryFilterKey,
   libraryFilterReducer,
   NO_APP_FACET,
@@ -598,5 +599,109 @@ describe("chips", () => {
     );
     expect(summarizeLibraryFilter(state, upperLabel)).toBe("today · not electron");
     expect(summarizeLibraryFilter(initialLibraryFilter, upperLabel)).toBe("all sources");
+  });
+});
+
+// ── libraryCountsRequestFor ─────────────────────────────────────────
+//
+// The translation from sidebar state to a `library:counts` request. It
+// is the only place three grid semantics get restated, and if any of
+// them drifts the topbar confidently reports a number for a match set
+// the grid isn't showing.
+
+describe("libraryCountsRequestFor", () => {
+  const TODAY_START = "2026-08-22T07:00:00.000Z";
+  const req = (state: LibraryFilterState, facetBundleIds: Array<string | null> = []) =>
+    libraryCountsRequestFor(state, { facetBundleIds, todayStartIso: TODAY_START });
+
+  test("the neutral filter asks for every live capture and nothing else", () => {
+    expect(req(initialLibraryFilter)).toEqual({ scope: "live" });
+  });
+
+  test("both kinds selected OMITS kinds — absent means both", () => {
+    // Sending [image, video] would be equivalent but forces the repo
+    // down the single-kind branch check for no reason; more to the
+    // point, `{}` is what "no type narrowing" should look like on the
+    // wire.
+    expect(req(initialLibraryFilter).kinds).toBeUndefined();
+  });
+
+  test("a single type selection narrows to that kind", () => {
+    const images = run(initialLibraryFilter, { type: "TYPE_ONLY", key: "images" });
+    expect(req(images)).toEqual({ scope: "live", kinds: ["image"] });
+    const videos = run(initialLibraryFilter, { type: "TYPE_ONLY", key: "videos" });
+    expect(req(videos)).toEqual({ scope: "live", kinds: ["video"] });
+  });
+
+  test("a projects-only filter sends an EMPTY kinds array, not an absent one", () => {
+    // The distinction is the whole reason the field is three-valued:
+    // absent = both kinds, [] = no captures at all. Getting this wrong
+    // would report the entire library next to a grid of projects.
+    const projectsOnly = run(initialLibraryFilter, { type: "TYPE_ONLY", key: "projects" });
+    expect(req(projectsOnly)).toEqual({ scope: "live", kinds: [] });
+  });
+
+  test("Today becomes a date predicate, not a scope the bus has to interpret", () => {
+    const today = run(initialLibraryFilter, { type: "SET_SCOPE", scope: "today" });
+    expect(req(today)).toEqual({ scope: "live", capturedAtStart: TODAY_START });
+  });
+
+  test("an include facet rides as appBundleIds, an exclude facet as the negative one", () => {
+    const include = run(initialLibraryFilter, {
+      type: "APP_ROW_CLICK",
+      appId: ELECTRON,
+      modifier: "none"
+    });
+    expect(req(include, [ELECTRON])).toEqual({ scope: "live", appBundleIds: [ELECTRON] });
+
+    const exclude = run(initialLibraryFilter, {
+      type: "APP_ROW_CLICK",
+      appId: ELECTRON,
+      modifier: "alt"
+    });
+    expect(req(exclude, [ELECTRON])).toEqual({
+      scope: "live",
+      excludeAppBundleIds: [ELECTRON]
+    });
+  });
+
+  test("no resolved bundle ids means no app clause, whatever the mode says", () => {
+    // `appIds` are renderer-side keys; if app_stats has nothing behind
+    // them there is no facet to send. Emitting `appBundleIds: []` would
+    // hit the repo's `0 = 1` arm and report zero for an unnarrowed view.
+    const include = run(initialLibraryFilter, {
+      type: "APP_ROW_CLICK",
+      appId: ELECTRON,
+      modifier: "none"
+    });
+    expect(req(include, [])).toEqual({ scope: "live" });
+  });
+
+  test("facets compose into one request", () => {
+    const state = run(
+      initialLibraryFilter,
+      { type: "SET_SCOPE", scope: "today" },
+      { type: "TYPE_ONLY", key: "videos" },
+      { type: "APP_ROW_CLICK", appId: ELECTRON, modifier: "alt" }
+    );
+    expect(req(state, [ELECTRON, SAFARI])).toEqual({
+      scope: "live",
+      kinds: ["video"],
+      capturedAtStart: TODAY_START,
+      excludeAppBundleIds: [ELECTRON, SAFARI]
+    });
+  });
+
+  test("Trash bypasses EVERY facet — it is a mode, not a narrowing", () => {
+    // Matches `visible`, which hands trash the unfiltered fixtures, and
+    // matches what Empty Trash actually destroys. A facet-narrowed
+    // trash count would understate an irreversible action.
+    const state = run(
+      initialLibraryFilter,
+      { type: "TYPE_ONLY", key: "images" },
+      { type: "APP_ROW_CLICK", appId: ELECTRON, modifier: "none" },
+      { type: "SET_SCOPE", scope: "trash" }
+    );
+    expect(req(state, [ELECTRON])).toEqual({ scope: "trash" });
   });
 });

@@ -66,10 +66,23 @@ export function useLibraryCount(request: LibraryCountsRequest | null): LibraryCo
           parsed
         );
         if (cancelled || seq.current !== mine) return;
+        if (!result.ok) {
+          setState({ total: null, loading: false, error: result.error.message });
+          return;
+        }
+        // Shape-check before commit. In production the bus contract
+        // guarantees `{ total: number }`, but several renderer tests stub
+        // `pwrsnapApi.dispatch` per-command and answer anything they
+        // don't recognize with `ok(undefined)` — see the same guard and
+        // the same note in `useSizzleProjects`. Leaving `total` null on a
+        // malformed payload is also the right production behavior: the
+        // topbar falls back to the unfiltered library total rather than
+        // rendering a wrong number.
+        const total = (result.value as { total?: unknown } | undefined)?.total;
         setState(
-          result.ok
-            ? { total: result.value.total, loading: false, error: null }
-            : { total: null, loading: false, error: result.error.message }
+          typeof total === "number"
+            ? { total, loading: false, error: null }
+            : { total: null, loading: false, error: null }
         );
       })();
     };

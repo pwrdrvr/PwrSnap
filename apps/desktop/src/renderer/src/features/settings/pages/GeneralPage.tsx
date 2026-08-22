@@ -13,6 +13,12 @@
 // login-item registration on the main side (launch-at-login.ts) and
 // re-reads the live OS state via `app:launchAtLoginStatus` so the card
 // can surface a macOS/Windows "disabled it OS-side" divergence.
+//
+// The two CAPTURE cards own the `settings.recording.*` defaults for new
+// captures: cursor baking (images + video) and audio sources (video).
+// Audio is the one pair with a hard dependency — `recording:start`
+// refuses to run when a requested source isn't granted — so opting in
+// surfaces a jump to System Permissions.
 
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
@@ -29,6 +35,7 @@ import {
 import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { useSettingsContext } from "../SettingsContext";
+import { setActivePage } from "../useActivePage";
 
 const THEME_OPTIONS: readonly SegmentOption<AppearanceTheme>[] = [
   { id: "system", label: "System" },
@@ -117,7 +124,16 @@ export function GeneralPage(): ReactElement {
   selectionRef.current = { channel, train };
   const videoCaptureCursor = settings?.recording.videoCaptureCursor ?? true;
   const imageCaptureCursor = settings?.recording.imageCaptureCursor ?? true;
+  // Audio defaults for new recordings. Both ship OFF — recording either
+  // source is privacy-relevant, so the user opts in explicitly.
+  const includeSystemAudio = settings?.recording.includeSystemAudio ?? false;
+  const includeMicrophone = settings?.recording.includeMicrophone ?? false;
   const platform = window.pwrsnapApi?.platform;
+  // The FFmpeg backend that drives Windows recording captures screen
+  // video only and logs a warning when either toggle is on
+  // (recording-service.ts). Say so rather than letting the switches
+  // imply audio the recorder will silently drop.
+  const audioSupported = platform !== "win32";
 
   // Live OS-side registration state, distinct from the saved toggle —
   // macOS/Windows let the user disable a registered login item OS-side
@@ -379,6 +395,67 @@ export function GeneralPage(): ReactElement {
             }}
           />
         </Row>
+      </Card>
+
+      <Card eyebrow="CAPTURE" title="Recording audio">
+        <Row
+          label="Include system audio"
+          sub={
+            audioSupported
+              ? "Records what your Mac is playing alongside the screen. Needs the System Audio permission — without it, recording refuses to start."
+              : "Windows recordings are video-only for now, so this has no effect there. The preference is saved for when the Windows recorder grows audio support."
+          }
+          tag="video"
+        >
+          <Switch
+            on={includeSystemAudio}
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ recording: { includeSystemAudio: next } });
+            }}
+          />
+        </Row>
+        <Row
+          label="Include your microphone"
+          sub={
+            audioSupported
+              ? "Records your voice alongside the screen — narration, walkthroughs. Needs the Microphone permission — without it, recording refuses to start."
+              : "Windows recordings are video-only for now, so this has no effect there. The preference is saved for when the Windows recorder grows audio support."
+          }
+          tag="video"
+        >
+          <Switch
+            on={includeMicrophone}
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ recording: { includeMicrophone: next } });
+            }}
+          />
+        </Row>
+        {audioSupported && (includeSystemAudio || includeMicrophone) ? (
+          // `recording:start` hard-fails when a requested audio source
+          // isn't granted (recording-handlers.ts preflight), so send the
+          // user to the grant surface the moment they opt in rather than
+          // letting them discover it mid-take.
+          <Row
+            label="Audio permissions"
+            sub="Recording refuses to start if a source you've enabled here isn't granted. Check the status of each source before your next take."
+            tag="check"
+          >
+            {/* `.pss__row-r` is a stretch column, so a bare button fills
+                the row's full width. Wrap it the way System Permissions
+                wraps its own row buttons so this one hugs its label. */}
+            <div style={{ display: "flex" }}>
+              <button
+                className="pss__top-btn"
+                type="button"
+                onClick={() => setActivePage("system-permissions")}
+              >
+                Open System Permissions
+              </button>
+            </div>
+          </Row>
+        ) : null}
       </Card>
 
       <Card eyebrow="STARTUP" title="Launch at login">

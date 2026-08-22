@@ -95,6 +95,64 @@ describe("Windows release configuration", () => {
     expect(workflow).not.toContain("FFMPEG_BUILDS_PAT");
   });
 
+  test("the signed Windows installer also publishes under a stable alias", () => {
+    const workflow = read(".github/workflows/release.yml");
+
+    // The websites want to hardcode releases/latest/download/<name>, so each
+    // platform attaches one version-free copy. Without the Windows half the
+    // site has to call the GitHub Releases API from the browser just to learn
+    // the installer's URL.
+    expect(workflow).toContain("Prepare stable-name DMG alias");
+    expect(workflow).toContain("Prepare stable-name Windows installer alias");
+
+    const protectedWindowsJob = workflow
+      .split("\n  windows-sign:\n")[1]
+      ?.split("\n  publish-release-assets:\n")[0];
+    expect(protectedWindowsJob, "the protected Windows job is missing").toBeDefined();
+
+    // The alias has to be born inside the protected job, after packaging and
+    // before the upload: anywhere earlier and it predates the installer,
+    // anywhere later and it is an unsigned file with a trusted name.
+    const order = (needle) => protectedWindowsJob.indexOf(needle);
+    expect(order("Prepare stable-name Windows installer alias")).toBeGreaterThan(
+      order("--sign-stage-only --release --require-signing"),
+    );
+    expect(order("Prepare stable-name Windows installer alias")).toBeLessThan(
+      order("Upload Windows installer artifact"),
+    );
+
+    const aliasStep = protectedWindowsJob
+      .split("- name: Prepare stable-name Windows installer alias")[1]
+      .split("\n      - name:")[0];
+
+    expect(aliasStep).toContain('$aliasName = "PwrSnap-windows-x64-setup.exe"');
+    // A copy, never a second trip through Azure signing — identical bytes keep
+    // the Authenticode signature the previous step just verified.
+    expect(aliasStep).toContain("Copy-Item -LiteralPath $versioned.FullName");
+    expect(aliasStep).not.toContain("Invoke-TrustedSigning");
+    // PwrSnap-windows-SHA256SUMS stays authoritative for every installer that
+    // ships, alias included.
+    expect(aliasStep).toContain('$lines += "$actual  $aliasName"');
+    // ...but the alias must never reach updater metadata. electron-updater
+    // resolves latest.yml and the .blockmap by exact filename, so aiming
+    // either at a name that moves every release breaks update resolution and
+    // delta downloads for everyone already installed. Assert against the
+    // executable lines only — the comment explaining the rule names both
+    // files, and should keep naming them.
+    const aliasScript = aliasStep
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line))
+      .join("\n");
+    expect(aliasScript).not.toContain("latest.yml");
+    expect(aliasScript).not.toContain("blockmap");
+
+    // Both aliases have to survive the trip into the release, and the glob
+    // that carries the Windows one is easy to narrow by accident.
+    expect(workflow).toContain("apps/desktop/release-stage/dist/*-setup.exe");
+    expect(workflow).toContain("mac-dist/dist/PwrSnap.dmg");
+    expect(workflow).toContain("windows-dist/PwrSnap-windows-x64-setup.exe");
+  });
+
   test("release manifest verification asserts the decoder contract on both platforms", () => {
     const workflow = read(".github/workflows/release.yml");
 

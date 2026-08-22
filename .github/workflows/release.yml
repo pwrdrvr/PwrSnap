@@ -591,10 +591,69 @@ jobs:
             }
           }
 
+      - name: Prepare stable-name Windows installer alias
+        # PwrSnap-windows-x64-setup.exe is the canonical Windows download URL
+        # for docs.pwrsnap.com and pwrsnap.com — it always points at the latest
+        # promoted release, mirroring PwrSnap.dmg on macOS. Without it the
+        # website has to call the GitHub Releases API from the browser just to
+        # learn the versioned installer's name. Copy the versioned installer
+        # under the alias name; the final publication job uploads both only
+        # after every gate passes.
+        #
+        # A copy, never a re-sign: the bytes are identical, so the Authenticode
+        # signature verified in the step above carries over untouched.
+        # latest.yml and the .blockmap keep naming the versioned file on
+        # purpose — electron-updater resolves updates through those, and
+        # aiming them at a moving name would break update resolution and delta
+        # downloads.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dist = "apps/desktop/release-stage/dist"
+          $aliasName = "PwrSnap-windows-x64-setup.exe"
+          $versioned = Get-ChildItem $dist -File -Filter "*-setup.exe" |
+            Where-Object { $_.Name -ne $aliasName } |
+            Sort-Object Name |
+            Select-Object -First 1
+          if ($null -eq $versioned) {
+            throw "No versioned Windows installer found under $dist."
+          }
+          $aliasPath = Join-Path $dist $aliasName
+          Copy-Item -LiteralPath $versioned.FullName -Destination $aliasPath -Force
+
+          # PwrSnap-windows-SHA256SUMS stays authoritative for every published
+          # installer, so the alias needs its own line — the same digest as the
+          # versioned file. Hash the copy rather than reusing the recorded
+          # digest, so a truncated copy fails the release instead of shipping a
+          # checksum that does not describe the file people download.
+          $checksums = (Resolve-Path (Join-Path $dist "SHA256SUMS")).Path
+          $expected = (Get-FileHash -LiteralPath $versioned.FullName -Algorithm SHA256).Hash.ToLower()
+          $actual = (Get-FileHash -LiteralPath $aliasPath -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) {
+            throw "Stable-name Windows alias is not byte-identical to $($versioned.Name): expected $expected, got $actual."
+          }
+          $lines = [System.IO.File]::ReadAllLines($checksums)
+          if ($lines -notcontains "$expected  $($versioned.Name)") {
+            throw "SHA256SUMS does not record $($versioned.Name) with digest $expected."
+          }
+          # Rewrite the whole file with LF endings and no BOM. package-win.mjs
+          # wrote it that way; Add-Content would append a CRLF line, and
+          # `sha256sum -c` reads a stray CR as part of the filename.
+          $lines += "$actual  $aliasName"
+          [System.IO.File]::WriteAllText(
+            $checksums,
+            ($lines -join "`n") + "`n",
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          Write-Host "  alias: $aliasName ($expected)"
+
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ github.event_name == 'pull_request' && 'windows-signed-installer-pr' || 'windows-installer' }}
+          # The *-setup.exe glob carries both the versioned installer and the
+          # stable-name alias prepared above. The alias deliberately has no
+          # .blockmap: only the versioned file is an updater target.
           path: |
             apps/desktop/release-stage/dist/*-setup.exe
             apps/desktop/release-stage/dist/*-setup.exe.blockmap
@@ -677,6 +736,19 @@ jobs:
             echo "::error::No Windows release asset files were downloaded." >&2
             exit 1
           fi
+
+          # The stable download URLs the websites point at
+          # (releases/latest/download/<name>) only resolve while these aliases
+          # are attached to the release. They are produced in the platform
+          # signing jobs, so an upload-glob change there would otherwise break
+          # a download button silently.
+          for stable_alias in mac-dist/dist/PwrSnap.dmg \
+            windows-dist/PwrSnap-windows-x64-setup.exe; do
+            if [ ! -f "$stable_alias" ]; then
+              echo "::error::Stable-name download alias is missing: $stable_alias" >&2
+              exit 1
+            fi
+          done
 
           gh release create "$RELEASE_TAG" \
             --repo pwrdrvr/PwrSnap \

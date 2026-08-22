@@ -1806,3 +1806,34 @@ describe("beat reorder", () => {
     expect(order(el)).toEqual(["cap_c", "cap_b", "cap_a"]);
   });
 });
+
+describe("scene transition chip", () => {
+  test("offers every transition type, not just cut and crossfade, and writes the object form", async () => {
+    const { el } = await renderApp(
+      project({
+        scenes: [scene({ id: "sc_a", captureId: "cap_a" }), scene({ id: "sc_b", captureId: "cap_b" })]
+      })
+    );
+    const select = el.querySelector<HTMLSelectElement>('[data-testid="sizzle-scene-transition-1"]');
+    expect(select).not.toBeNull();
+    expect([...select!.options].map((o) => o.value)).toEqual([
+      "none",
+      "cut",
+      "crossfade",
+      "dip-black",
+      "dip-white",
+      "push-left",
+      "slide-left",
+      "zoom-cut"
+    ]);
+    expect(select!.value).toBe("crossfade");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(select, "push-left");
+      select!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(select!.value).toBe("push-left");
+    // Fade-like types light the chip in accent; a hard cut does not.
+    expect(select!.closest(".szl__transition")?.classList.contains("szl__transition--fade")).toBe(true);
+  });
+});

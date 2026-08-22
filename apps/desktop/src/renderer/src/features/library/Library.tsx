@@ -2240,15 +2240,24 @@ export function Library() {
   // keyset cursor hasn't drained. Trash rides the same keyset snapshot
   // (`library:list` with includeDeleted, partitioned client-side), so
   // `gridHasMore` is the right signal there too.
+  //
+  // `query` is `searchState.forQuery` — the query the ROWS came from —
+  // never the live `searchQuery`. Editing the search box while Focus is
+  // open keeps the previous rows mounted for the 150ms debounce plus
+  // the IPC round-trip (the search effect sets `loading` but does not
+  // clear `rows`), so labelling the count with the live text would read
+  // "2 / 3 · star maps" while the 3 still belongs to "star map".
   const stagePos = useMemo(() => {
     if ((view.kind !== "focus" && view.kind !== "reel") || selectedIdx < 0) return null;
     const partial = isSearchActive ? searchState.capped : gridHasMore;
-    return { idx: selectedIdx + 1, total: visibleRecords.length, partial };
+    const query = isSearchActive ? searchState.forQuery : "";
+    return { idx: selectedIdx + 1, total: visibleRecords.length, partial, query };
   }, [
     view.kind,
     selectedIdx,
     isSearchActive,
     searchState.capped,
+    searchState.forQuery,
     gridHasMore,
     visibleRecords.length
   ]);
@@ -3434,14 +3443,16 @@ export function Library() {
             <span
               className="psl__count is-stage"
               data-testid="stage-pos"
-              title={`Capture ${stagePos.idx} of ${stagePos.total}${stagePos.partial ? "+" : ""}${isSearchActive ? ` matching “${searchQuery.trim()}”` : ""}`}
+              title={`Capture ${stagePos.idx} of ${stagePos.total}${stagePos.partial ? "+" : ""}${stagePos.query === "" ? "" : ` matching “${stagePos.query}”`}`}
             >
               <b>{stagePos.idx}</b>
               <span>
                 / {stagePos.total}
                 {stagePos.partial ? "+" : ""}
               </span>
-              {isSearchActive ? <span className="psl__count-q">· {searchQuery.trim()}</span> : null}
+              {stagePos.query === "" ? null : (
+                <span className="psl__count-q">· {stagePos.query}</span>
+              )}
             </span>
           ) : (
             <span className="psl__count">

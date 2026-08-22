@@ -580,6 +580,31 @@ Right-rail drawer beside chat. Per-clip transition **type and duration** both
 editable here — closing §4.7 defect 3. Retire the form rows and the "Advanced"
 disclosure. Rewrite the three form-pinned test blocks against the timeline.
 
+*As built (2026-08-22):* `ClipInspector.tsx` — head (clip N of M · app ·
+✕), capture card (poster, on-screen span, project window), Timing as a
+segmented Auto · Word · Offset (switching to Word pins the clip WHERE IT
+IS via nearest word + residual, to Offset at its current start — never a
+reset to 0 / an empty phrase; clip 0 reads "pinned at 0"), the transcript
+phrase picker + offset residual, Start / final End for offsets, the
+transition INTO the clip as type (all 8) **and** duration (0.05–2 s;
+`transitionWithType` keeps a user's duration across a type change), video
+fit, ◀ ▶ reorder, Remove. Selection moved to the shell (`SizzleApp`) and
+the Editor portals the inspector into a slot in the right rail
+(`createPortal`), so its state + handlers stay with the timeline model;
+Esc / ✕ / bare-track click close it. `SequenceBeatRow` + the "Clip rows"
+disclosure and their CSS are gone. One deliberate deviation from §4.6:
+the fold threshold is **360 px**, not "roughly 480" — the inspector is a
+bottom drawer (stacked under the chat, not beside it), so the binding
+constraint is its widest row (~300 px); 480 would have folded the chat
+on the default 400 px rail every time a clip was selected. Below 360 the
+chat folds to a one-line bar (still mounted — its state survives) until
+the inspector closes or the rail widens. Tests: the `sequence authoring`,
+`auto beat timing UI`, and `beat reorder` blocks now drive the timeline +
+inspector (`selectClip` / `inspectorTiming` helpers; reorder via ◀ ▶),
+plus a `clip inspector` block (open/close paths, transition type +
+duration in one patch, Word/Offset/Auto pin-in-place, fit + remove,
+narrow-rail fold).
+
 **PR 7 — `feat(desktop): preview renders transitions and Ken Burns`**
 Closes the §4.7 fidelity gap. Two-layer preview stage with a CSS
 opacity/transform blend across the transition window, and a zoompan-equivalent

@@ -41,6 +41,15 @@ export {
 } from "./sizzle-helpers";
 export { resetSizzleChatWidthForTests } from "./ChatResizer";
 
+/** Below this rail width the chat and the clip inspector cannot both be
+ *  usable (plan §4.6): the inspector takes the rail and the chat folds to
+ *  a one-line bar until the inspector closes or the rail widens. Plan §4.6
+ *  guessed "roughly 480"; the inspector is a bottom DRAWER (stacked, not
+ *  beside the chat), so the binding constraint is its widest row (type
+ *  select + duration, ~300 px) — 360 keeps the default 400 px rail whole
+ *  and folds only a deliberately narrowed one (the resizer floor is 320). */
+export const RAIL_NARROW_PX = 360;
+
 type PickerTarget =
   | { kind: "scene" }
   | { kind: "sequenceBeat"; sceneId: string };
@@ -69,6 +78,14 @@ export function SizzleApp(): ReactElement {
   } = useSizzleProject();
 
   const [picker, setPicker] = useState<PickerTarget | null>(null);
+  // The selected clip on the timeline. Lives here (not in the Editor)
+  // because the right rail shows the clip inspector for it beside the
+  // chat — the rail needs to know when there is one to show. Ephemeral.
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  // The inspector's DOM slot in the right rail; the Editor portals the
+  // inspector into it so the inspector's state + handlers stay with the
+  // timeline model that owns them.
+  const [inspectorHost, setInspectorHost] = useState<HTMLDivElement | null>(null);
   // Chat lives in a right sidebar alongside the editor (not a full-pane
   // swap) so the scene list stays visible + updates live as the agent
   // edits. Shown by default — chat is the primary way to compose a reel.
@@ -138,6 +155,11 @@ export function SizzleApp(): ReactElement {
   useEffect(() => {
     setSavedChatWidth(chatWidth);
   }, [chatWidth]);
+  // A clip selection belongs to one reel; switching reels drops it.
+  const selectedReelId = active?.id ?? null;
+  useEffect(() => {
+    setSelectedClipId(null);
+  }, [selectedReelId]);
 
   const closeProjectContextMenu = useCallback((): void => {
     setProjectContextMenu(null);
@@ -257,11 +279,48 @@ export function SizzleApp(): ReactElement {
               onDuplicate={() => void onDuplicate(active.id)}
               onDelete={() => void onDelete(active.id)}
               status={status}
+              selectedClipId={selectedClipId}
+              onSelectClipId={setSelectedClipId}
+              inspectorHost={inspectorHost}
             />
-            {showChat ? (
-              <aside className="szl__chat" style={{ flexBasis: chatWidth }}>
+            {showChat || selectedClipId !== null ? (
+              // The right rail: chat above, the clip inspector as a bottom
+              // drawer (plan §4.6) — beside the chat, never replacing it.
+              // Below RAIL_NARROW_PX the two cannot share the rail, so the
+              // inspector takes over and the chat folds to a one-line bar
+              // (still mounted — its state survives). A selected clip keeps
+              // the rail up even with the chat hidden.
+              <aside
+                className={
+                  "szl__chat" +
+                  (selectedClipId !== null ? " has-inspector" : "") +
+                  (chatWidth < RAIL_NARROW_PX ? " is-narrow" : "")
+                }
+                style={{ flexBasis: chatWidth }}
+                data-testid="sizzle-rail"
+              >
                 <ChatResizer width={chatWidth} onResize={setChatWidth} />
-                <SizzleChatPanel key={active.id} projectId={active.id} />
+                {showChat ? (
+                  <>
+                    {selectedClipId !== null && chatWidth < RAIL_NARROW_PX ? (
+                      <div className="szl__chat-folded" data-testid="sizzle-chat-folded">
+                        <span>Chat folded while the inspector is open — widen the rail, or</span>
+                        <button type="button" onClick={() => setSelectedClipId(null)}>
+                          close the inspector
+                        </button>
+                      </div>
+                    ) : null}
+                    <div
+                      className={
+                        "szl__chat-pane" +
+                        (selectedClipId !== null && chatWidth < RAIL_NARROW_PX ? " is-folded" : "")
+                      }
+                    >
+                      <SizzleChatPanel key={active.id} projectId={active.id} />
+                    </div>
+                  </>
+                ) : null}
+                <div className="szl__inspector-host" ref={setInspectorHost} data-testid="sizzle-inspector-host" />
               </aside>
             ) : null}
           </div>

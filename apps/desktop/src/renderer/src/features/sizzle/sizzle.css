@@ -728,102 +728,6 @@
   color: var(--text-secondary);
 }
 
-.szl__sequence-beats {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.szl__sequence-beat {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-  padding: 6px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-}
-
-.szl__sequence-beat-grip {
-  cursor: grab;
-  color: var(--text-muted);
-  font: 700 13px/1 var(--font-mono);
-  padding: 0 2px;
-  user-select: none;
-  align-self: stretch;
-  display: flex;
-  align-items: center;
-}
-
-.szl__sequence-beat-grip:active {
-  cursor: grabbing;
-}
-
-.szl__sequence-beat-num {
-  color: var(--accent);
-  font: 700 11px/1 var(--font-mono);
-  text-align: center;
-}
-
-.szl__sequence-beat-title {
-  min-width: 90px;
-  flex: 1 1 120px;
-  color: var(--text-secondary);
-  font: 500 11px/1.2 var(--font-mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.szl__sequence-beat-thumb {
-  width: 160px;
-  height: 90px;
-  flex: 0 0 160px;
-  border-radius: 5px;
-  overflow: hidden;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-subtle);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  font: 500 10px/1 var(--font-mono);
-}
-
-.szl__sequence-beat-thumb img,
-.szl__sequence-beat-thumb video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.szl__sequence-beat input,
-.szl__sequence-beat select {
-  min-width: 0;
-  height: 26px;
-  padding: 3px 6px;
-  background: var(--bg-panel);
-  color: var(--text-primary);
-  border: 1px solid var(--border-subtle);
-  border-radius: 5px;
-  font: 500 11px/1 var(--font-sans);
-}
-
-.szl__sequence-time {
-  width: 64px;
-}
-
-.szl__sequence-time-field {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--text-muted);
-  font: 600 9px/1 var(--font-mono);
-  text-transform: uppercase;
-}
-
 .szl__sequence-phrase {
   flex: 1 1 130px;
   width: 130px;
@@ -925,13 +829,6 @@
   padding: 8px;
   color: var(--text-muted);
   font: 500 11px/1.2 var(--font-sans);
-}
-
-.szl__sequence-beat-pinned {
-  color: var(--text-muted);
-  font: 600 9px/1 var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 
 .szl__sequence-preview {
@@ -1549,44 +1446,251 @@
   background: var(--accent-border);
 }
 
-/* ── Pre-timeline clip rows, behind a disclosure ───────────────────── */
-/* The timeline is the view of the clips now; the form rows stay
-   reachable here until the clip inspector retires them. */
-.szl__advanced {
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: var(--bg-input);
-  padding: 0 10px;
+
+/* ── Right rail: chat above, the clip inspector as a bottom drawer ──────
+   (plan §4.6) Both visible; the drawer collapses when nothing is selected.
+   Below RAIL_NARROW_PX (SizzleApp) the inspector takes the rail and the
+   chat folds to a one-line bar — still mounted, its state survives. */
+.szl__chat-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
-.szl__advanced[open] {
-  padding-bottom: 8px;
+.szl__chat-pane.is-folded {
+  display: none;
 }
-.szl__advanced-summary {
+.szl__chat-folded {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  font: 500 11px/1.3 var(--font-sans);
+  color: var(--text-muted);
+}
+.szl__chat-folded button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-bright);
+  font: inherit;
   cursor: pointer;
-  list-style: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.szl__inspector-host {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 58%;
+  display: flex;
+  flex-direction: column;
+}
+.szl__inspector-host:empty {
+  display: none;
+}
+.szl__chat.is-narrow.has-inspector .szl__inspector-host {
+  flex: 1 1 auto;
+  max-height: none;
+}
+
+/* ── Clip inspector ──────────────────────────────────────────────────── */
+.szl__insp {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--border-default);
+  background: var(--bg-panel);
+}
+.szl__insp-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 0;
-  font: 600 10px/1 var(--font-sans);
-  letter-spacing: 0.08em;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.szl__insp-eyebrow {
+  font: 600 10px/1 var(--font-mono);
   text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent-bright);
+  white-space: nowrap;
+}
+.szl__insp-name {
+  flex: 1;
+  min-width: 0;
+  font: 600 12px/1.2 var(--font-sans);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.szl__insp-close {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font: 500 12px/1 var(--font-sans);
+  cursor: pointer;
+}
+.szl__insp-close:hover {
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+}
+.szl__insp-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.szl__insp-cap {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.szl__insp-thumb {
+  flex: 0 0 auto;
+  width: 64px;
+  height: 40px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font: 600 10px/1 var(--font-mono);
+}
+.szl__insp-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.szl__insp-cap-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.szl__insp-cap-title {
+  font: 600 12px/1.2 var(--font-sans);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.szl__insp-cap-meta {
+  font: 500 10px/1.3 var(--font-mono);
   color: var(--text-muted);
 }
-.szl__advanced-summary::-webkit-details-marker {
-  display: none;
+.szl__insp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
-.szl__advanced-summary::before {
-  content: "▸";
-  font-size: 9px;
-  opacity: 0.7;
+.szl__insp-label {
+  font: 600 10px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
 }
-.szl__advanced[open] > .szl__advanced-summary::before {
-  content: "▾";
+.szl__insp-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
 }
-.szl__advanced-hint {
-  font: 500 10px/1 var(--font-mono);
-  letter-spacing: 0.02em;
+.szl__insp-field select {
+  padding: 6px 8px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  font: 500 12px/1 var(--font-sans);
+  cursor: pointer;
+  min-width: 0;
+}
+/* segmented Auto · Word · Offset */
+.szl__insp-seg {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-panel-elevated);
+}
+.szl__insp-seg button {
+  padding: 5px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.szl__insp-seg button + button {
+  border-left: 1px solid var(--border-subtle);
+}
+.szl__insp-seg button.is-on {
+  background: var(--accent-tint);
+  color: var(--accent-bright);
+}
+.szl__insp-num {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 10px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+.szl__insp-num input {
+  width: 72px;
+  padding: 5px 7px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  font: 500 12px/1 var(--font-mono);
+}
+.szl__insp-num input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.szl__insp-num i {
+  font-style: normal;
   text-transform: none;
-  color: var(--text-subtle);
+  letter-spacing: 0;
+}
+.szl__insp-hint {
+  margin: 0;
+  font: 400 11px/1.45 var(--font-sans);
+  color: var(--text-muted);
+}
+.szl__insp-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+.szl__insp-remove {
+  width: auto;
+  padding: 0 10px;
+  font: 600 11px/1 var(--font-sans);
+}
+/* The transcript phrase picker was styled for the old clip ROW (a flex
+   row: `flex: 1 1 210px` is a width basis there). Inside the inspector's
+   column that basis becomes a 210 px HEIGHT — a blank band under the
+   picker. Content-sized here, full width. */
+.szl__insp .szl__sequence-phrase-control {
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
 }

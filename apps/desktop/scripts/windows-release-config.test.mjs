@@ -147,8 +147,11 @@ describe("Windows release configuration", () => {
     expect(aliasScript).not.toContain("blockmap");
 
     // Both aliases have to survive the trip into the release, and the glob
-    // that carries the Windows one is easy to narrow by accident.
-    expect(workflow).toContain("apps/desktop/release-stage/dist/*-setup.exe");
+    // that carries the Windows one is easy to narrow by accident. Anchor to
+    // end-of-line: a plain toContain("...dist/*-setup.exe") is also satisfied
+    // by the "...dist/*-setup.exe.blockmap" line below it, so deleting the
+    // installer glob outright would still have passed.
+    expect(workflow).toMatch(/release-stage\/dist\/\*-setup\.exe\r?$/m);
     expect(workflow).toContain("mac-dist/dist/PwrSnap.dmg");
     expect(workflow).toContain("windows-dist/PwrSnap-windows-x64-setup.exe");
   });

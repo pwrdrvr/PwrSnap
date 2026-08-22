@@ -2,11 +2,29 @@
 // video of the active beat), transport, a read-only proportional strip
 // over the narration waveform, and the preview's warnings. The
 // horizontal timeline (plan PR 3) takes over the strip; the stage stays.
+//
+// Fidelity (plan §4.7 / PR 7): the stage is TWO layers. The active beat is
+// the outgoing layer; in the last `d` seconds before a beat with a
+// fade-like transition, that next beat is drawn on top as the incoming
+// layer and the two blend with a CSS animation shaped like the export's
+// xfade (fade · dip to black / white · cover-left push · slide · zoom).
+// Image beats carry the export's Ken Burns (zoompan 1.0 ↔ 1.10) as a
+// CSS animation too. Both animations are driven by the scene time: their
+// negative `animation-delay` is the elapsed time, and they run only while
+// the scene plays — so a scrub lands on the exact frame and playback is
+// smooth between audio ticks. Good enough to judge a timing decision; not
+// pixel parity with ffmpeg.
 
-import { useEffect, useRef, type ReactElement } from "react";
-import type { CaptureRecord, SizzleScene, SizzleSequencePreviewPlan } from "@pwrsnap/shared";
+import { useEffect, useRef, type CSSProperties, type ReactElement, type RefObject } from "react";
+import type {
+  CaptureRecord,
+  SizzleScene,
+  SizzleSequencePreviewBeat,
+  SizzleSequencePreviewPlan
+} from "@pwrsnap/shared";
 import { cacheUrl, captureSrcUrl } from "../../lib/pwrsnap";
 import { SequenceWaveform } from "../shared/SequenceWaveform";
+import { beatVisualWindow, kenBurnsDirection, stageFrameAt, type StageBlend } from "./preview-blend";
 import {
   fallbackSequenceBeats,
   SEQUENCE_WAVE_BARS,
@@ -40,31 +58,30 @@ export function SequenceTimelinePreview(props: {
   );
   const durationSec = Math.max(0.1, plan?.durationSec ?? fallbackDuration);
   const timeSec = clampTime(currentTimeSec, durationSec);
-  const activeBeat =
-    beats.find((beat) => timeSec >= beat.startSec && timeSec < beat.endSec) ??
-    beats.at(-1) ??
-    null;
+  const frame = stageFrameAt(beats, timeSec);
+  const activeIndex = frame.activeIndex;
+  const activeBeat = activeIndex >= 0 ? (beats[activeIndex] ?? null) : null;
+  const incomingBeat = frame.blend === null ? null : (beats[frame.blend.incomingIndex] ?? null);
   const activeCapture =
     activeBeat === null ? null : captureMap.get(activeBeat.captureId) ?? null;
-  const activeThumb =
-    activeCapture?.edits_version !== undefined && activeBeat !== null
-      ? cacheUrl(activeBeat.captureId, 800, "webp", activeCapture.edits_version)
-      : activeBeat !== null
-        ? cacheUrl(activeBeat.captureId, 800, "webp")
-        : "";
   const barCount = SEQUENCE_WAVE_BARS;
   const playheadLeft = `${(timeSec / durationSec) * 100}%`;
   const activeSceneBeat =
     activeBeat === null
       ? null
       : (scene.beats ?? []).find((beat) => beat.id === activeBeat.beatId) ?? null;
+  // The export extends a fade-in beat's VISUAL at its head by the overlap,
+  // so its video has already run `overlap` seconds by the audio start.
+  // Offset the timeline time the same way so the frame matches the render.
+  const activeHeadShiftSec =
+    activeBeat === null ? 0 : activeBeat.startSec - beatVisualWindow(activeBeat, activeIndex).startSec;
   const activeVideoState =
     activeBeat !== null && activeCapture !== null && activeSceneBeat !== null
       ? sequencePreviewVideoState({
           beat: activeBeat,
           sceneBeat: activeSceneBeat,
           capture: activeCapture,
-          timelineTimeSec: timeSec
+          timelineTimeSec: timeSec + activeHeadShiftSec
         })
       : null;
   const activeVideoBeatId = activeVideoState?.beatId ?? null;
@@ -116,21 +133,36 @@ export function SequenceTimelinePreview(props: {
 
   return (
     <div className="szl__sequence-preview">
-      <div className="szl__sequence-preview-stage">
+      <div className="szl__sequence-preview-stage" data-testid="sizzle-preview-stage">
         {activeBeat === null ? (
           <span className="szl__sequence-preview-empty">No clips</span>
-        ) : activeCapture?.kind === "video" ? (
-          <video
-            ref={videoRef}
-            key={activeBeat.beatId}
-            src={captureSrcUrl(activeBeat.captureId)}
-            muted
-            playsInline
-          />
-        ) : activeCapture !== null ? (
-          <img src={activeThumb} alt="" />
         ) : (
-          <span className="szl__sequence-preview-empty">Missing capture</span>
+          <>
+            <StageLayer
+              key={`out:${activeBeat.beatId}`}
+              role="outgoing"
+              beat={activeBeat}
+              index={activeIndex}
+              capture={activeCapture}
+              timeSec={timeSec}
+              playing={playing}
+              blend={frame.blend}
+              videoRef={videoRef}
+            />
+            {frame.blend !== null && incomingBeat !== null ? (
+              <StageLayer
+                key={`in:${incomingBeat.beatId}`}
+                role="incoming"
+                beat={incomingBeat}
+                index={frame.blend.incomingIndex}
+                capture={captureMap.get(incomingBeat.captureId) ?? null}
+                timeSec={timeSec}
+                playing={playing}
+                blend={frame.blend}
+                videoRef={null}
+              />
+            ) : null}
+          </>
         )}
       </div>
       <div className="szl__sequence-preview-controls">
@@ -210,6 +242,102 @@ export function SequenceTimelinePreview(props: {
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** A CSS animation parked at `elapsedSec` into a `durationSec` run: a
+ *  negative delay seeks it, and it only runs while the scene plays. */
+function timedAnimation(name: string, durationSec: number, elapsedSec: number, playing: boolean): CSSProperties {
+  const dur = Math.max(0.05, durationSec);
+  const at = Math.min(dur, Math.max(0, elapsedSec));
+  return {
+    animationName: name,
+    animationDuration: `${dur.toFixed(3)}s`,
+    animationDelay: `-${at.toFixed(3)}s`,
+    animationTimingFunction: "linear",
+    animationFillMode: "both",
+    animationPlayState: playing ? "running" : "paused"
+  };
+}
+
+/** One stage layer: the outgoing (active) beat, or the incoming beat
+ *  blending in. The layer carries the transition animation; an image
+ *  inside carries Ken Burns; a video inside is the real player for the
+ *  outgoing layer and a first-frame stand-in for the incoming one. */
+function StageLayer({
+  role,
+  beat,
+  index,
+  capture,
+  timeSec,
+  playing,
+  blend,
+  videoRef
+}: {
+  role: "outgoing" | "incoming";
+  beat: SizzleSequencePreviewBeat;
+  index: number;
+  capture: CaptureRecord | null;
+  timeSec: number;
+  playing: boolean;
+  blend: StageBlend | null;
+  videoRef: RefObject<HTMLVideoElement | null> | null;
+}): ReactElement {
+  const visual = beatVisualWindow(beat, index);
+  const visualDurationSec = Math.max(0.05, visual.endSec - visual.startSec);
+  const elapsedSec = timeSec - visual.startSec;
+  const blendStyle =
+    blend !== null
+      ? timedAnimation(`szl-xf-${role}-${blend.type}`, blend.durationSec, timeSec - blend.startSec, playing)
+      : undefined;
+  const isVideo = capture !== null && capture.kind === "video";
+  const kb = capture !== null && !isVideo ? kenBurnsDirection(index) : null;
+  const thumb =
+    capture !== null
+      ? cacheUrl(beat.captureId, 800, "webp", capture.edits_version)
+      : cacheUrl(beat.captureId, 800, "webp");
+  let media: ReactElement;
+  if (capture === null) {
+    media = <span className="szl__sequence-preview-empty">Missing capture</span>;
+  } else if (isVideo) {
+    media =
+      role === "outgoing" && videoRef !== null ? (
+        <video ref={videoRef} key={beat.beatId} src={captureSrcUrl(beat.captureId)} muted playsInline />
+      ) : (
+        // The incoming video's first frame: a paused player parked at its
+        // source start (media fragment), never played from here.
+        <video
+          key={`in:${beat.beatId}`}
+          src={`${captureSrcUrl(beat.captureId)}#t=${(beat.mediaTrim?.startSec ?? 0).toFixed(3)}`}
+          muted
+          playsInline
+          preload="metadata"
+        />
+      );
+  } else {
+    media = (
+      <img
+        src={thumb}
+        alt=""
+        draggable={false}
+        style={kb !== null ? timedAnimation(`szl-kb-${kb}`, visualDurationSec, elapsedSec, playing) : undefined}
+        data-kb={kb ?? undefined}
+      />
+    );
+  }
+  return (
+    <div
+      className={
+        `szl__sequence-preview-layer is-${role}` +
+        (blend !== null ? ` is-${blend.type}` : "")
+      }
+      style={blendStyle}
+      data-testid={`sizzle-preview-${role}`}
+      data-beat={beat.beatId}
+      data-progress={blend !== null ? blend.progress.toFixed(3) : undefined}
+    >
+      {media}
     </div>
   );
 }

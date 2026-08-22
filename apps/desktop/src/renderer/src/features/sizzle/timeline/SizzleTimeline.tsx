@@ -89,8 +89,9 @@ type ClipDragState = {
   /** Body drags keep the pointer's offset from the clip's start so the
    *  clip follows the hand; grips drag the edge itself. */
   grabOffsetSec: number;
-  /** Grips are live at once; a body press arms and activates past the
-   *  threshold (so a plain click still selects). */
+  /** A press arms; it becomes a drag past DRAG_THRESHOLD_PX. A press that
+   *  never does is a CLICK — it selects the clip and commits nothing (a
+   *  zero-movement press on a grip must not pin an auto clip). */
   active: boolean;
   /** Last observed (clamped, scene-local) target. */
   sec: number;
@@ -214,8 +215,11 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
     if (d === null) return;
     clipDragRef.current = null;
     setDragView(null);
+    // Either way the browser's trailing `click` is not a click of ours: with
+    // capture on the lanes it lands on the LANES (the capturing element),
+    // where it would read as a bare-track press and clear the selection.
+    suppressClickRef.current = true;
     if (d.active) {
-      suppressClickRef.current = true;
       if (commit) {
         onDragCommit?.({
           sceneId: d.scene.sceneId,
@@ -227,6 +231,10 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
           clipEndSec: d.clip.localEndSec
         });
       }
+    } else if (commit) {
+      // A press that never became a drag: a click on the clip (or its
+      // grip) — select it, write nothing.
+      onSelectClip(d.clip);
     }
     try {
       lanesRef.current?.releasePointerCapture(d.pointerId);
@@ -259,10 +267,9 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
       bounds,
       originX: event.clientX,
       grabOffsetSec: grab ? pointerSec - edgeSec : 0,
-      active: !grab,
+      active: false,
       sec: edgeSec
     };
-    if (!grab) moveClipDrag(event.clientX); // a grip is live at once
   };
   // Escape abandons the drag — nothing was written, so nothing to restore
   // beyond dropping the preview. Through a ref so the listener is bound once.

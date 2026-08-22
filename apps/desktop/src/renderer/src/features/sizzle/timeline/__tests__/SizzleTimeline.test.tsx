@@ -391,3 +391,40 @@ describe("SizzleTimeline — drag to move / retime (plan §4.4)", () => {
     expect(clipOf(ro, "b").classList.contains("is-grab")).toBe(false);
   });
 });
+
+describe("SizzleTimeline — a click is still a click under pointer capture", () => {
+  // With capture on the lanes, Chromium targets the trailing `click` at the
+  // LANES, not the clip: a press-release on a clip then reads as a bare-
+  // track click and would CLEAR the selection. Found in the live app; jsdom's
+  // `element.click()` cannot reproduce it, so this drives the real sequence.
+  const pointer = async (target: Element, type: string, clientX: number): Promise<void> => {
+    await act(async () => {
+      target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerId: 1, clientX }));
+    });
+  };
+
+  test("press + release on a clip body selects it; the browser's trailing click on the lanes is swallowed", async () => {
+    const onSelectClip = vi.fn();
+    const onDragCommit = vi.fn();
+    const el = await render({ model: resolvedModel(), onSelectClip, onDragCommit });
+    const lanes = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-lanes"]')!;
+    const b = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-clip-b"]')!;
+    await pointer(b, "pointerdown", 600);
+    await pointer(lanes, "pointerup", 601); // delivered to the capturing lanes
+    await act(async () => {
+      lanes.click(); // what the browser fires next, targeted at the lanes
+    });
+    expect(onSelectClip).toHaveBeenCalledTimes(1);
+    expect(onSelectClip).toHaveBeenCalledWith(expect.objectContaining({ beatId: "b" }));
+    expect(onDragCommit).not.toHaveBeenCalled();
+    // A zero-movement press on a grip selects too and pins NOTHING.
+    const grip = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-grip-c"]')!;
+    await pointer(grip, "pointerdown", 750);
+    await pointer(lanes, "pointerup", 750);
+    await act(async () => {
+      lanes.click();
+    });
+    expect(onSelectClip).toHaveBeenLastCalledWith(expect.objectContaining({ beatId: "c" }));
+    expect(onDragCommit).not.toHaveBeenCalled();
+  });
+});

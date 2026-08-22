@@ -274,6 +274,25 @@ function clickProjectRow(list: Element | null, name: string): void {
   button.click();
 }
 
+/** Select a clip on the timeline — the clip inspector (right rail) opens for it. */
+async function selectClip(el: HTMLElement, beatId: string): Promise<void> {
+  const clip = el.querySelector<HTMLButtonElement>(`[data-testid="sizzle-timeline-clip-${beatId}"]`);
+  if (clip === null) throw new Error(`timeline clip ${beatId} not found`);
+  await act(async () => {
+    clip.click();
+  });
+}
+
+/** Which timing the inspector shows for the selected clip ("pinned" = clip 0). */
+function inspectorTiming(el: HTMLElement): "auto" | "phrase" | "offset" | "pinned" | null {
+  if (el.querySelector('[data-testid="sizzle-inspector-pinned"]') !== null) return "pinned";
+  for (const kind of ["auto", "phrase", "offset"] as const) {
+    const button = el.querySelector(`[data-testid="sizzle-inspector-timing-${kind}"]`);
+    if (button?.getAttribute("aria-pressed") === "true") return kind;
+  }
+  return null;
+}
+
 function findButton(el: HTMLElement, label: string): HTMLButtonElement {
   const button = Array.from(el.querySelectorAll<HTMLButtonElement>("button"))
     .find((candidate) => candidate.textContent?.trim() === label);
@@ -359,8 +378,9 @@ describe("SizzleApp sequence authoring", () => {
 
     expect(el.textContent).toContain("Scene · one voiceover");
     expect(scriptBox(el).value).toBe("one narration block");
-    expect(el.querySelectorAll(".szl__sequence-beat")).toHaveLength(1);
-    expect(el.textContent).toContain("Phrase anchors use timed transcript words from preview");
+    // The clip lives on the timeline now (one clip); the form rows are gone.
+    expect(el.querySelectorAll('[data-testid^="sizzle-timeline-clip-"]')).toHaveLength(1);
+    expect(el.querySelector(".szl__sequence-beat")).toBeNull();
     expect(el.querySelector(".szl__sequence-timeline")).not.toBeNull();
     expect(el.textContent).toContain("unresolved");
   });
@@ -496,6 +516,8 @@ describe("SizzleApp sequence authoring", () => {
     expect(el.textContent).toContain("4s");
     expect(el.querySelector("select.szl__sequence-phrase")).toBeNull();
     expect(el.querySelector("datalist")).toBeNull();
+    // The phrase picker lives in the clip inspector: select the clip first.
+    await selectClip(el, "bt_2");
     const phrasePicker = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
     expect(phrasePicker?.textContent).toContain("next");
     expect(el.textContent).toContain("Phrase anchors use timed transcript words from preview");
@@ -597,6 +619,7 @@ describe("SizzleApp sequence authoring", () => {
       await Promise.resolve();
     });
 
+    await selectClip(el, "bt_2");
     const phrasePicker = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
     if (phrasePicker === null) throw new Error("sequence transcript phrase picker not found");
     await act(async () => {
@@ -657,6 +680,7 @@ describe("SizzleApp sequence authoring", () => {
       await Promise.resolve();
     });
 
+    await selectClip(el, "bt_2");
     const phrasePicker = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
     if (phrasePicker === null) throw new Error("sequence transcript phrase picker not found");
     await act(async () => {
@@ -950,6 +974,7 @@ describe("SizzleApp sequence authoring", () => {
     });
     const { el } = await renderApp(project({ scenes: [sequence] }));
 
+    await selectClip(el, "bt_2");
     expect(el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button")?.disabled).toBe(true);
     const play = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
     if (play === null) throw new Error("sequence preview play button not found");
@@ -1650,6 +1675,7 @@ describe("sequence waveform", () => {
     });
     expect(el.querySelector(".szl__sequence-wave-surfer")).not.toBeNull();
     expect(el.querySelector(".szl__sequence-wave--idle")).toBeNull();
+    await selectClip(el, "bt_2");
     const phrasePicker = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
     expect(phrasePicker?.textContent).toContain("Choose transcript phrase");
     await act(async () => {
@@ -1665,8 +1691,16 @@ describe("auto beat timing UI", () => {
     await act(async () => {
       findButton(el, "Convert to clips").click();
     });
-    const timingSelect = el.querySelector<HTMLSelectElement>(".szl__sequence-beat select");
-    expect(timingSelect?.value).toBe("auto");
+    // One clip on the timeline; selecting it opens the inspector, where the
+    // first clip reads as pinned at 0 (its seeded timing is auto).
+    const clip = el.querySelector<HTMLButtonElement>('[data-testid^="sizzle-timeline-clip-"]');
+    expect(clip).not.toBeNull();
+    await act(async () => {
+      clip!.click();
+    });
+    expect(inspectorTiming(el)).toBe("pinned");
+    expect(el.querySelector('[data-testid="sizzle-inspector-start"]')).toBeNull();
+    expect(el.querySelector(".szl__sequence-phrase-button")).toBeNull();
   });
 
   test("an auto beat shows the timing select but no start/length/phrase inputs (R9)", async () => {
@@ -1680,14 +1714,14 @@ describe("auto beat timing UI", () => {
       ]
     });
     const { el } = await renderApp(project({ scenes: [sequence] }));
-    const beatRows = el.querySelectorAll(".szl__sequence-beat");
-    expect(beatRows).toHaveLength(2);
-    // The 2nd (non-first) auto beat keeps the timing <select> for promotion
-    // but renders no value inputs.
-    const second = beatRows[1]!;
-    expect(second.querySelector<HTMLSelectElement>("select")?.value).toBe("auto");
-    expect(second.querySelector(".szl__sequence-time")).toBeNull();
-    expect(second.querySelector(".szl__sequence-phrase")).toBeNull();
+    expect(el.querySelectorAll('[data-testid^="sizzle-timeline-clip-"]')).toHaveLength(2);
+    // The 2nd (non-first) auto clip: the inspector offers Auto · Word ·
+    // Offset with Auto pressed, and renders no value inputs.
+    await selectClip(el, "bt_2");
+    expect(inspectorTiming(el)).toBe("auto");
+    expect(el.querySelector('[data-testid="sizzle-inspector-start"]')).toBeNull();
+    expect(el.querySelector('[data-testid="sizzle-inspector-offset"]')).toBeNull();
+    expect(el.querySelector(".szl__sequence-phrase")).toBeNull();
   });
 });
 
@@ -1707,44 +1741,43 @@ describe("beat reorder", () => {
       narration: "n",
       beats: [autoBeat("bt_a", "cap_a"), autoBeat("bt_b", "cap_b"), autoBeat("bt_c", "cap_c")]
     });
-  const order = (el: HTMLElement): (string | null)[] =>
-    [...el.querySelectorAll(".szl__sequence-beat-title")].map((n) => n.textContent);
-  const fireDrop = (row: Element, fromIndex: number): void => {
-    const ev = new Event("drop", { bubbles: true, cancelable: true });
-    Object.defineProperty(ev, "dataTransfer", {
-      value: { getData: () => String(fromIndex), dropEffect: "", effectAllowed: "" }
+  // Clip order as the TIMELINE draws it (beat ids, left to right).
+  const order = (el: HTMLElement): string[] =>
+    [...el.querySelectorAll('[data-testid^="sizzle-timeline-clip-"]')].map((n) =>
+      (n.getAttribute("data-testid") ?? "").replace("sizzle-timeline-clip-", "")
+    );
+  const moveLater = async (el: HTMLElement): Promise<void> => {
+    const later = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-inspector-move-later"]');
+    if (later === null) throw new Error("inspector 'Move clip later' not found");
+    await act(async () => {
+      later.click();
     });
-    row.dispatchEvent(ev);
   };
 
-  test("the ↓ button moves a beat down via a from→to splice", async () => {
+  test("the inspector's ▶ moves the selected clip later via a from→to splice", async () => {
     const { el } = await renderApp(project({ scenes: [seq()] }));
-    expect(order(el)).toEqual(["cap_a", "cap_b", "cap_c"]);
-    const firstRow = el.querySelectorAll(".szl__sequence-beat")[0]!;
-    const down = [...firstRow.querySelectorAll("button")].find((b) => b.title === "Move clip down")!;
-    await act(async () => {
-      down.click();
-    });
-    expect(order(el)).toEqual(["cap_b", "cap_a", "cap_c"]);
+    expect(order(el)).toEqual(["bt_a", "bt_b", "bt_c"]);
+    await selectClip(el, "bt_a");
+    await moveLater(el);
+    expect(order(el)).toEqual(["bt_b", "bt_a", "bt_c"]);
   });
 
-  test("dropping beat 0 onto beat 2 reorders by splice-and-insert (not swap)", async () => {
+  test("moving a clip later twice walks it to the end — splice-and-insert, not swap", async () => {
     const { el } = await renderApp(project({ scenes: [seq()] }));
-    const thirdRow = el.querySelectorAll(".szl__sequence-beat")[2]!;
-    await act(async () => {
-      fireDrop(thirdRow, 0); // drag index 0 → drop on index 2
-    });
-    // splice: [a,b,c] remove a → [b,c] insert at 2 → [b,c,a] (swap would give [c,b,a])
-    expect(order(el)).toEqual(["cap_b", "cap_c", "cap_a"]);
+    await selectClip(el, "bt_a");
+    await moveLater(el); // [b, a, c] — the selection follows the clip
+    await moveLater(el); // [b, c, a] (a swap of 0↔2 would give [c, b, a])
+    expect(order(el)).toEqual(["bt_b", "bt_c", "bt_a"]);
   });
 
-  test("self-drop (drop a beat on itself) is a no-op", async () => {
+  test("◀ is disabled on the first clip and ▶ on the last: no-op moves are not offered", async () => {
     const { el } = await renderApp(project({ scenes: [seq()] }));
-    const firstRow = el.querySelectorAll(".szl__sequence-beat")[0]!;
-    await act(async () => {
-      fireDrop(firstRow, 0); // from === to
-    });
-    expect(order(el)).toEqual(["cap_a", "cap_b", "cap_c"]);
+    await selectClip(el, "bt_a");
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="sizzle-inspector-move-earlier"]')?.disabled).toBe(true);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="sizzle-inspector-move-later"]')?.disabled).toBe(false);
+    await selectClip(el, "bt_c");
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="sizzle-inspector-move-later"]')?.disabled).toBe(true);
+    expect(order(el)).toEqual(["bt_a", "bt_b", "bt_c"]);
   });
 
   test("⌘Z restores a reorder and ⌘⇧Z re-applies it (AE16)", async () => {
@@ -1760,34 +1793,26 @@ describe("beat reorder", () => {
         })
       );
     };
-    // reorder: first beat down → [b, a, c]
-    const down = [...el.querySelectorAll(".szl__sequence-beat")[0]!.querySelectorAll("button")].find(
-      (b) => b.title === "Move clip down"
-    )!;
-    await act(async () => {
-      down.click();
-    });
-    expect(order(el)).toEqual(["cap_b", "cap_a", "cap_c"]);
+    // reorder: first clip later → [b, a, c]
+    await selectClip(el, "bt_a");
+    await moveLater(el);
+    expect(order(el)).toEqual(["bt_b", "bt_a", "bt_c"]);
     await act(async () => {
       fireKey(false); // ⌘Z → undo
     });
-    expect(order(el)).toEqual(["cap_a", "cap_b", "cap_c"]);
+    expect(order(el)).toEqual(["bt_a", "bt_b", "bt_c"]);
     await act(async () => {
       fireKey(true); // ⌘⇧Z → redo
     });
-    expect(order(el)).toEqual(["cap_b", "cap_a", "cap_c"]);
+    expect(order(el)).toEqual(["bt_b", "bt_a", "bt_c"]);
   });
 
   test("an external (chat) scenes change drops local undo history — no ⌘Z clobber", async () => {
     const { el, emit } = await renderApp(project({ scenes: [seq()] }));
     // local reorder → an undo entry + a pending debounced write
-    const down = [...el.querySelectorAll(".szl__sequence-beat")[0]!.querySelectorAll("button")].find(
-      (b) => b.title === "Move clip down"
-    )!;
-    await act(async () => {
-      down.click();
-    });
-    expect(order(el)).toEqual(["cap_b", "cap_a", "cap_c"]);
+    await selectClip(el, "bt_a");
+    await moveLater(el);
+    expect(order(el)).toEqual(["bt_b", "bt_a", "bt_c"]);
     // let the debounced write flush so the project is no longer "pending"
     await act(async () => {
       await new Promise((r) => setTimeout(r, 450));
@@ -1806,14 +1831,14 @@ describe("beat reorder", () => {
     await act(async () => {
       emit(EVENT_CHANNELS.sizzleProjectsChanged, { projects: [external] });
     });
-    expect(order(el)).toEqual(["cap_c", "cap_b", "cap_a"]);
+    expect(order(el)).toEqual(["bt_c", "bt_b", "bt_a"]);
     // ⌘Z must NOT restore the pre-reorder order — the stale history was dropped.
     await act(async () => {
       window.dispatchEvent(
         new KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true, cancelable: true })
       );
     });
-    expect(order(el)).toEqual(["cap_c", "cap_b", "cap_a"]);
+    expect(order(el)).toEqual(["bt_c", "bt_b", "bt_a"]);
   });
 });
 
@@ -1992,7 +2017,7 @@ describe("characterization — shell surfaces", () => {
     const cards = el.querySelectorAll(".szl__scene");
     expect(cards.length).toBe(1);
     expect(cards[0]!.classList.contains("szl__scene--sequence")).toBe(true);
-    expect(el.querySelector(".szl__sequence-beat-title")?.textContent).toBe("Video cap_v");
+    expect(el.querySelector('[data-testid^="sizzle-timeline-clip-"]')?.getAttribute("aria-label")).toBe("Clip 1, Video cap_v");
   });
 
   test("a legacy simple video scene shows trim + audio controls seeded from the capture", async () => {
@@ -2060,9 +2085,6 @@ describe("timeline word ribbon — click to anchor", () => {
       narration: "Open the Library to find every capture fast",
       beats: [autoBeat("bt_a", "cap_a"), autoBeat("bt_b", "cap_b"), autoBeat("bt_c", "cap_c")]
     });
-  const timingSelectOf = (el: HTMLElement, row: number): HTMLSelectElement =>
-    el.querySelectorAll(".szl__sequence-beat")[row]!.querySelector("select")!;
-
   test("clicking a word anchors the clip covering that moment (not clip 0), and clicking it again un-anchors", async () => {
     const { el } = await renderApp(project({ scenes: [seq()] }), {
       "sizzle:loadSequenceSceneAudio": cachedAudio
@@ -2075,21 +2097,23 @@ describe("timeline word ribbon — click to anchor", () => {
     }
     const find = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-timeline-word-0-4"]');
     expect(find).not.toBeNull();
-    expect(timingSelectOf(el, 1).value).toBe("auto");
+    expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')).toBeNull(); // nothing selected yet
     // "find" is at 2.0 s — inside clip 2 (auto clips split 4 s three ways:
-    // 0–1.33, 1.33–2.67, 2.67–4).
+    // 0–1.33, 1.33–2.67, 2.67–4). The click anchors it AND selects it, so
+    // the inspector opens on clip 2.
     await act(async () => {
       find!.click();
     });
-    expect(timingSelectOf(el, 1).value).toBe("phrase");
-    expect(el.querySelectorAll(".szl__sequence-beat")[1]!.querySelector(".szl__sequence-phrase-button")?.textContent).toContain("find");
+    expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')?.textContent).toContain("Clip 2 of 3");
+    expect(inspectorTiming(el)).toBe("phrase");
+    expect(el.querySelector(".szl__sequence-phrase-button")?.textContent).toContain("find");
     // The anchored word now carries the clip's badge in the ribbon.
     expect(el.querySelector('[data-testid="sizzle-timeline-word-0-4"] .szt__badge')?.textContent).toBe("2");
     // Clicking the same word again releases the anchor — back to auto.
     await act(async () => {
       el.querySelector<HTMLButtonElement>('[data-testid="sizzle-timeline-word-0-4"]')!.click();
     });
-    expect(timingSelectOf(el, 1).value).toBe("auto");
+    expect(inspectorTiming(el)).toBe("auto");
   });
 
   test("with a clip selected, the click anchors THAT clip; clip 0 is never anchored", async () => {
@@ -2108,16 +2132,16 @@ describe("timeline word ribbon — click to anchor", () => {
     await act(async () => {
       el.querySelector<HTMLButtonElement>('[data-testid="sizzle-timeline-word-0-2"]')!.click();
     });
-    expect(timingSelectOf(el, 2).value).toBe("phrase");
-    expect(timingSelectOf(el, 0).value).toBe("auto");
+    expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')?.textContent).toContain("Clip 3 of 3");
+    expect(inspectorTiming(el)).toBe("phrase");
     // Selecting clip 0 and clicking a word is a no-op: clip 0 is pinned to 0.
-    await act(async () => {
-      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-timeline-clip-bt_a"]')!.click();
-    });
+    await selectClip(el, "bt_a");
+    expect(inspectorTiming(el)).toBe("pinned");
     await act(async () => {
       el.querySelector<HTMLButtonElement>('[data-testid="sizzle-timeline-word-0-0"]')!.click();
     });
-    expect(timingSelectOf(el, 0).value).toBe("auto");
+    expect(inspectorTiming(el)).toBe("pinned");
+    expect(el.querySelector('[data-testid="sizzle-timeline-word-0-0"] .szt__badge')).toBeNull();
   });
 
   test("an unsynthesized scene shows the Synthesize affordance instead of words, and it previews the scene", async () => {
@@ -2182,8 +2206,6 @@ describe("timeline drag — move / retime commits once", () => {
       narration: "Open the Library to find every capture fast",
       beats: [autoBeat("bt_a", "cap_a"), autoBeat("bt_b", "cap_b"), autoBeat("bt_c", "cap_c")]
     });
-  const timingSelectOf = (el: HTMLElement, row: number): HTMLSelectElement =>
-    el.querySelectorAll(".szl__sequence-beat")[row]!.querySelector("select")!;
   const pointer = async (target: Element, type: string, clientX: number): Promise<void> => {
     await act(async () => {
       target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerId: 1, clientX }));
@@ -2212,8 +2234,10 @@ describe("timeline drag — move / retime commits once", () => {
     // Nothing written mid-drag.
     expect(dispatch.mock.calls.filter(([name]) => name === "sizzle:update")).toHaveLength(0);
     await pointer(lanes, "pointerup", 500);
-    expect(timingSelectOf(el, 1).value).toBe("phrase");
-    expect(el.querySelectorAll(".szl__sequence-beat")[1]!.querySelector(".szl__sequence-phrase-button")?.textContent).toContain("find");
+    // The commit selects the dragged clip; the inspector shows the anchor.
+    expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')?.textContent).toContain("Clip 2 of 3");
+    expect(inspectorTiming(el)).toBe("phrase");
+    expect(el.querySelector(".szl__sequence-phrase-button")?.textContent).toContain("find");
     // The lane re-lays out from the committed anchor through the SAME
     // planner: clip 2 now starts at 2.0 s.
     const clipB = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-clip-bt_b"]')!;
@@ -2234,6 +2258,190 @@ describe("timeline drag — move / retime commits once", () => {
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true, cancelable: true }));
     });
-    expect(timingSelectOf(el, 1).value).toBe("auto");
+    expect(inspectorTiming(el)).toBe("auto");
+  });
+});
+
+import { setSavedChatWidth } from "../ChatResizer";
+
+describe("clip inspector (right-rail drawer)", () => {
+  const autoBeat = (
+    id: string,
+    captureId: string,
+    patch: Partial<NonNullable<SizzleScene["beats"]>[number]> = {}
+  ): NonNullable<SizzleScene["beats"]>[number] => ({
+    id,
+    captureId,
+    timing: { kind: "auto" },
+    mediaTrim: null,
+    transition: "cut",
+    videoFit: "smart-fit",
+    ...patch
+  });
+  const WORDS = ["Open", "the", "Library", "to", "find", "every", "capture", "fast"].map((word, index) => ({
+    index,
+    word,
+    normalized: word.toLowerCase(),
+    startSec: index * 0.5,
+    endSec: index * 0.5 + 0.4
+  }));
+  const cachedAudio = {
+    ok: true,
+    value: { cached: true, audioBase64: "AA==", mimeType: "audio/mpeg", transcriptPhrases: [], durationSec: 4, words: WORDS }
+  };
+  const seq = (): SizzleScene =>
+    scene({
+      kind: "sequence",
+      scriptLine: "Open the Library to find every capture fast",
+      narration: "Open the Library to find every capture fast",
+      beats: [autoBeat("bt_a", "cap_a"), autoBeat("bt_b", "cap_b", { transition: "crossfade" }), autoBeat("bt_c", "cap_c")]
+    });
+  const lastScenesPatch = (dispatch: { mock: { calls: unknown[][] } }): SizzleScene[] => {
+    const updates = dispatch.mock.calls.filter(([name]) => name === "sizzle:update");
+    const payload = updates.at(-1)?.[1] as { patch?: { scenes?: SizzleScene[] } } | undefined;
+    return payload?.patch?.scenes ?? [];
+  };
+  const setNumber = async (input: HTMLInputElement, value: string): Promise<void> => {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+  const setSelect = async (select: HTMLSelectElement, value: string): Promise<void> => {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(select, value);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  };
+
+  test("opens beside the chat for the selected clip and closes on ✕, Esc, or bare-track click", async () => {
+    const { el } = await renderApp(project({ scenes: [seq()] }));
+    expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')).toBeNull();
+    await selectClip(el, "bt_b");
+    const insp = el.querySelector<HTMLElement>('[data-testid="sizzle-clip-inspector"]');
+    expect(insp).not.toBeNull();
+    expect(insp!.textContent).toContain("Clip 2 of 3");
+    // It lives in the right rail's slot, next to the chat — not in place of it.
+    expect(el.querySelector('[data-testid="sizzle-inspector-host"] [data-testid="sizzle-clip-inspector"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="sizzle-chat-panel"]')).not.toBeNull();
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-inspector-close"]')!.click();
+    });
+    expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')).toBeNull();
+    await selectClip(el, "bt_c");
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')).toBeNull();
+    await selectClip(el, "bt_c");
+    await act(async () => {
+      el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-lanes"]')!.click();
+    });
+    expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')).toBeNull();
+  });
+
+  test("edits the transition INTO the clip — type AND duration — and changing the type keeps a duration the user set", async () => {
+    const { el, dispatch } = await renderApp(project({ scenes: [seq()] }));
+    await selectClip(el, "bt_b");
+    const type = el.querySelector<HTMLSelectElement>('[data-testid="sizzle-inspector-transition"]')!;
+    const dur = el.querySelector<HTMLInputElement>('[data-testid="sizzle-inspector-transition-duration"]')!;
+    expect([...type.options].map((o) => o.value)).toEqual([
+      "none", "cut", "crossfade", "dip-black", "dip-white", "push-left", "slide-left", "zoom-cut"
+    ]);
+    expect(type.value).toBe("crossfade");
+    expect(dur.value).toBe("0.4");
+    expect(dur.disabled).toBe(false);
+    // Duration is now reachable (plan §4.7 defect 3).
+    await setNumber(dur, "0.75");
+    expect(el.querySelector<HTMLInputElement>('[data-testid="sizzle-inspector-transition-duration"]')!.value).toBe("0.75");
+    // Switching the type carries the user's duration over.
+    await setSelect(el.querySelector<HTMLSelectElement>('[data-testid="sizzle-inspector-transition"]')!, "dip-black");
+    expect(el.querySelector<HTMLInputElement>('[data-testid="sizzle-inspector-transition-duration"]')!.value).toBe("0.75");
+    // A cut has no duration.
+    await setSelect(el.querySelector<HTMLSelectElement>('[data-testid="sizzle-inspector-transition"]')!, "cut");
+    expect(el.querySelector<HTMLInputElement>('[data-testid="sizzle-inspector-transition-duration"]')!.disabled).toBe(true);
+    await setSelect(el.querySelector<HTMLSelectElement>('[data-testid="sizzle-inspector-transition"]')!, "slide-left");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    const beats = lastScenesPatch(dispatch)[0]!.beats!;
+    expect(beats[1]!.transition).toEqual({ type: "slide-left", durationSec: 0.18 }); // from a cut: the type default
+    expect(beats[0]!.transition).toBe("cut");
+  });
+
+  test("Word pins the clip where it is (nearest word + residual); Offset pins it at its current start; Auto releases it", async () => {
+    const { el, dispatch } = await renderApp(project({ scenes: [seq()] }), {
+      "sizzle:loadSequenceSceneAudio": cachedAudio
+    });
+    for (let i = 0; i < 10 && el.querySelector('[data-testid="sizzle-timeline-word-0-3"]') === null; i += 1) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    await selectClip(el, "bt_b"); // auto, at 1.333 s (4 s split three ways)
+    expect(inspectorTiming(el)).toBe("auto");
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-inspector-timing-phrase"]')!.click();
+    });
+    // Nearest word to 1.333 s is "to" (1.5 s): residual −0.167, so the clip does not move.
+    expect(inspectorTiming(el)).toBe("phrase");
+    expect(el.querySelector(".szl__sequence-phrase-button")?.textContent).toContain("to");
+    expect(el.querySelector<HTMLInputElement>('[data-testid="sizzle-inspector-offset"]')!.value).toBe("-0.167");
+    expect(el.querySelector<HTMLElement>('[data-testid="sizzle-inspector-window"]')!.textContent).toContain("0:01.3 → 0:02.6");
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-inspector-timing-offset"]')!.click();
+    });
+    expect(inspectorTiming(el)).toBe("offset");
+    expect(el.querySelector<HTMLInputElement>('[data-testid="sizzle-inspector-start"]')!.value).toBe("1.333");
+    expect(el.querySelector('[data-testid="sizzle-inspector-end"]')).toBeNull(); // not the final clip
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-inspector-timing-auto"]')!.click();
+    });
+    expect(inspectorTiming(el)).toBe("auto");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    expect(lastScenesPatch(dispatch)[0]!.beats![1]!.timing).toEqual({ kind: "auto" });
+  });
+
+  test("video fit shows for video captures only; Remove clip removes it and closes the inspector", async () => {
+    const { el } = await renderApp(project({ scenes: [seq()] }), {
+      "library:list": { ok: true, value: { rows: [videoCapture("cap_b")] } }
+    });
+    await selectClip(el, "bt_a");
+    expect(el.querySelector('[data-testid="sizzle-inspector-fit"]')).toBeNull();
+    await selectClip(el, "bt_b");
+    const fit = el.querySelector<HTMLSelectElement>('[data-testid="sizzle-inspector-fit"]');
+    expect(fit).not.toBeNull();
+    expect([...fit!.options].map((o) => o.value)).toEqual(["smart-fit", "loop", "ping-pong", "speed-to-fit", "freeze-end", "trim"]);
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-inspector-remove"]')!.click();
+    });
+    expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')).toBeNull();
+    expect([...el.querySelectorAll('[data-testid^="sizzle-timeline-clip-"]')].map((n) => n.getAttribute("data-testid"))).toEqual([
+      "sizzle-timeline-clip-bt_a",
+      "sizzle-timeline-clip-bt_c"
+    ]);
+  });
+
+  test("a narrow rail folds the chat (still mounted) while the inspector is open; closing it unfolds", async () => {
+    setSavedChatWidth(330);
+    try {
+      const { el } = await renderApp(project({ scenes: [seq()] }));
+      expect(el.querySelector('[data-testid="sizzle-chat-folded"]')).toBeNull();
+      await selectClip(el, "bt_b");
+      expect(el.querySelector('[data-testid="sizzle-chat-folded"]')).not.toBeNull();
+      expect(el.querySelector(".szl__chat-pane.is-folded [data-testid=\"sizzle-chat-panel\"]")).not.toBeNull();
+      await act(async () => {
+        el.querySelector<HTMLButtonElement>('[data-testid="sizzle-chat-folded"] button')!.click();
+      });
+      expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')).toBeNull();
+      expect(el.querySelector('[data-testid="sizzle-chat-folded"]')).toBeNull();
+      expect(el.querySelector(".szl__chat-pane.is-folded")).toBeNull();
+    } finally {
+      resetSizzleChatWidthForTests();
+    }
   });
 });

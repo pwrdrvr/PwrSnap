@@ -31,6 +31,8 @@
 //
 // Design source: docs/brainstorms/2026-08-15-library-video-sizzle-design-critique.md §1.
 
+import type { LibraryCountsRequest } from "@pwrsnap/shared";
+
 /** LIBRARY section — radio scope. Exactly one is active at all times. */
 export type LibraryScope = "all" | "today" | "trash";
 
@@ -372,6 +374,59 @@ export function filterFixturesByScopeAndSourceAppFacet<
     out = out.filter((item) => sourceAppMatches(state.sourceApps, item.app));
   }
   return out;
+}
+
+/**
+ * Translate a composed sidebar filter into a `library:counts` request,
+ * so the topbar can report the size of the match set rather than the
+ * size of the loaded keyset window.
+ *
+ * Three semantics from the grid pipeline are mirrored here, and the
+ * count is wrong if any of them drifts:
+ *
+ *   - **Trash bypasses every facet.** It is a SCOPE, not a narrowing —
+ *     the same reason `visible` hands trash the unfiltered fixtures.
+ *     A facet-narrowed trash count would disagree with what Empty
+ *     Trash actually destroys.
+ *   - **Today is a date predicate**, expressed as `capturedAtStart`.
+ *     The caller supplies the boundary because it is a *local* day.
+ *   - **Both kinds selected = no `kinds` field.** Absent means both;
+ *     an empty array means none, and that distinction is load-bearing
+ *     (a projects-only filter must count zero captures, not all).
+ *
+ * Projects are deliberately absent: they live outside the captures
+ * table, so the caller adds them from the filtered fixture list.
+ */
+export function libraryCountsRequestFor(
+  state: LibraryFilterState,
+  args: {
+    /** Bundle ids behind the facet's selected appIds, from app_stats. */
+    readonly facetBundleIds: ReadonlyArray<string | null>;
+    /** Local midnight today, as an ISO-8601 UTC instant. */
+    readonly todayStartIso: string;
+    /** Local midnight tomorrow — the EXCLUSIVE end of today. */
+    readonly todayEndIso: string;
+  }
+): LibraryCountsRequest {
+  if (state.scope === "trash") return { scope: "trash" };
+
+  const kinds: Array<"image" | "video"> = [];
+  if (state.types.images) kinds.push("image");
+  if (state.types.videos) kinds.push("video");
+
+  return {
+    scope: "live",
+    // Both on is the neutral case — omit rather than send [image, video].
+    ...(kinds.length === 2 ? {} : { kinds }),
+    ...(state.scope === "today"
+      ? { capturedAtStart: args.todayStartIso, capturedAtEnd: args.todayEndIso }
+      : {}),
+    ...(args.facetBundleIds.length === 0
+      ? {}
+      : state.sourceApps.mode === "include"
+        ? { appBundleIds: args.facetBundleIds }
+        : { excludeAppBundleIds: args.facetBundleIds })
+  };
 }
 
 /** Is this app row part of the current selection (checked or excluded)? */

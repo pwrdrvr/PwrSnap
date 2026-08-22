@@ -10,6 +10,7 @@ import { describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, SizzleProject } from "@pwrsnap/shared";
 import {
   FixtureBackedRecords,
+  countProjectsCreatedToday,
   isSameLocalDay,
   mapBundleIdToAppId,
   projectToFixture,
@@ -580,5 +581,46 @@ describe("recordToFixture — has_alpha threading", () => {
 
   test("opaque record → hasAlpha=false", () => {
     expect(recordToFixture(makeRecord({ has_alpha: false }), 1, now).hasAlpha).toBe(false);
+  });
+});
+
+describe("countProjectsCreatedToday", () => {
+  // The sidebar's Today badge is a promise about what clicking it will
+  // show, and the Today grid renders reels alongside captures. This is
+  // the half of that count the bus cannot supply: `library:counts` runs
+  // against the captures table, and projects are not in it.
+
+  test("counts only projects whose createdAt is the same LOCAL day", () => {
+    const now = new Date(2026, 4, 27, 14, 0, 0);
+    const projects = [
+      makeProject({ id: "a", createdAt: new Date(2026, 4, 27, 9, 0, 0).toISOString() }),
+      makeProject({ id: "b", createdAt: new Date(2026, 4, 27, 23, 59, 0).toISOString() }),
+      makeProject({ id: "c", createdAt: new Date(2026, 4, 26, 23, 30, 0).toISOString() }),
+      makeProject({ id: "d", createdAt: new Date(2026, 4, 28, 0, 1, 0).toISOString() })
+    ];
+    expect(countProjectsCreatedToday(projects, now)).toBe(2);
+  });
+
+  test("pivots on createdAt, not modifiedAt — matching the grid cell", () => {
+    // A reel created last week but edited today keeps last week's
+    // bucket in `projectToFixture`, so it must not count as Today here
+    // either; otherwise the badge exceeds the day header beneath it.
+    const now = new Date(2026, 4, 27, 14, 0, 0);
+    const project = makeProject({
+      createdAt: new Date(2026, 4, 20, 10, 0, 0).toISOString(),
+      modifiedAt: new Date(2026, 4, 27, 13, 0, 0).toISOString()
+    });
+    expect(countProjectsCreatedToday([project], now)).toBe(0);
+    expect(projectToFixture(project, 1, now).day).not.toBe("Today");
+  });
+
+  test("an empty list is zero, not a crash", () => {
+    expect(countProjectsCreatedToday([], new Date(2026, 4, 27, 14, 0, 0))).toBe(0);
+  });
+
+  test("a project created moments ago on the same day counts", () => {
+    const now = new Date(2026, 4, 27, 0, 30, 0);
+    const project = makeProject({ createdAt: new Date(2026, 4, 27, 0, 29, 0).toISOString() });
+    expect(countProjectsCreatedToday([project], now)).toBe(1);
   });
 });

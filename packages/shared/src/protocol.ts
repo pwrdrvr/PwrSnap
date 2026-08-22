@@ -414,6 +414,78 @@ export type LibraryAppStat = {
   sourceAppName: string | null;
 };
 
+/**
+ * One bucket of the live capture-kind breakdown. Returned in
+ * `library:list`'s head-page response so the sidebar's Types rows can
+ * show counts on first paint. Unlike `app_stats` this is NOT a
+ * denormalized table — it's a `GROUP BY kind` over the live captures
+ * (measured at ~3ms warm over 3.7k rows), which keeps the type badges
+ * off the incremental-maintenance invariant that `app_stats` carries.
+ *
+ * A kind with zero live captures is omitted, so callers must default a
+ * missing bucket to 0 rather than assuming both kinds are present.
+ */
+export type LibraryKindStat = {
+  kind: "image" | "video";
+  count: number;
+};
+
+/**
+ * Which side of the soft-delete line a `library:counts` request counts.
+ *
+ * Deliberately NOT the sidebar's `all | today | trash` scope row: the
+ * Today bucket is a date predicate, expressed by `capturedAtStart`
+ * below. Carrying both would let a caller send `scope: "today"` with no
+ * boundary and silently get the all-captures number back.
+ */
+export type LibraryCountScope = "live" | "trash";
+
+/**
+ * Facet set for `library:counts`. Every field is optional and supplied
+ * fields combine conjunctively (AND), mirroring how the Library
+ * sidebar composes scope ∧ types ∧ source-app. This exists because the
+ * renderer's filters are applied client-side over a partially-loaded
+ * keyset window — the loaded rows cannot answer "how many match?" for
+ * a library larger than the loaded pages.
+ */
+export type LibraryCountsRequest = {
+  /** Defaults to `live`. `trash` counts soft-deleted rows instead. */
+  scope?: LibraryCountScope | undefined;
+  /**
+   * Restrict to these capture kinds. **Absent = both kinds**; an
+   * explicitly EMPTY array means "no kinds selected" and counts 0.
+   * (Note the deliberate difference from `CaptureSearchRequest.kinds`,
+   * where an empty array means both — there, the caller is an agent
+   * that never means "none"; here it's a UI facet that genuinely can.)
+   */
+  kinds?: ReadonlyArray<"image" | "video"> | undefined;
+  /** Positive source-app facet — see `CaptureFilter`. */
+  appBundleIds?: ReadonlyArray<string | null> | undefined;
+  /** Negative source-app facet — see `CaptureFilter`. */
+  excludeAppBundleIds?: ReadonlyArray<string | null> | undefined;
+  /**
+   * Inclusive lower bound matched as a string against `captured_at`
+   * (ISO-8601 UTC, e.g. `2026-08-22T07:00:00.000Z`). Paired with
+   * `capturedAtEnd`, this is how the sidebar's Today scope is
+   * expressed. The RENDERER owns both values because Today is a
+   * *local*-day boundary and main must not re-derive the user's
+   * timezone.
+   */
+  capturedAtStart?: string | undefined;
+  /**
+   * EXCLUSIVE upper bound on `captured_at`, same encoding as
+   * `capturedAtStart`.
+   *
+   * A day bucket needs both ends. The grid buckets by
+   * `isSameLocalDay`, which is a closed interval, so a lower bound on
+   * its own would make "Today" mean "today or later" on this side of
+   * the wire — and a capture whose timestamp lands in the future
+   * (clock skew, an imported bundle) would be counted by the badge and
+   * filed under a different day header by the grid.
+   */
+  capturedAtEnd?: string | undefined;
+};
+
 /** How `library:search` orders matching captures. `relevance` requires a
  *  full-text `query`; without a query, the default and useful ordering is
  *  `newest`. */
@@ -3387,7 +3459,29 @@ export type Commands = {
       appStats?: LibraryAppStat[];
       /** Head-page only. Live row count served from app_stats. */
       totalLive?: number;
+      /** Head-page only. Live count per capture kind, for the sidebar's
+       *  Types rows. A kind with no live captures is omitted. */
+      kindStats?: LibraryKindStat[];
+      /** Head-page only. Soft-deleted row count, for the sidebar's
+       *  Trash row. The renderer partitions trash out of the loaded
+       *  keyset window, so it cannot count this itself. */
+      trashTotal?: number;
     };
+  };
+  /**
+   * Exact count of captures matching a composed sidebar filter. The
+   * Library's scope / types / source-app facets are applied
+   * client-side over a partially-loaded keyset window, so the renderer
+   * cannot count the match set itself — a `records.filter(...).length`
+   * would report the loaded page and climb as the user scrolls.
+   *
+   * One `COUNT(*)` per filter change. Does NOT include Sizzle Reels
+   * projects: those live outside the captures table and the renderer
+   * already holds the full list, so it adds them client-side.
+   */
+  "library:counts": {
+    req: LibraryCountsRequest;
+    res: { total: number };
   };
   "library:byId": { req: { id: string }; res: CaptureRecord | null };
   /**

@@ -11,16 +11,20 @@ import {
 } from "@pwrsnap/shared";
 import {
   validateLibraryDiscovery,
+  validateLibraryCounts,
   validateLibraryListByIds,
   validateLibrarySearch
 } from "./sizzle-validators";
 import { z } from "zod";
 import { bus } from "../command-bus";
 import {
+  countCaptures,
   getAppStats,
   getCaptureById,
   getCapturesByIds,
+  getKindStats,
   getTotalLive,
+  getTrashTotal,
   discoverCaptureSearchFacets,
   hardDeleteCapture,
   listCaptures,
@@ -178,10 +182,24 @@ export function registerLibraryDataHandlers(): void {
         rows,
         nextCursor,
         appStats: getAppStats(),
-        totalLive: getTotalLive()
+        totalLive: getTotalLive(),
+        kindStats: getKindStats(),
+        trashTotal: getTrashTotal()
       });
     }
     return ok({ rows, nextCursor });
+  });
+
+  // Exact match-set size for a composed sidebar filter. The renderer
+  // applies scope / types / source-app client-side over a partially
+  // loaded keyset window, so it can only count the rows it happens to
+  // hold — this verb answers for the whole table instead. One COUNT(*)
+  // per filter change; see `library:counts` in the protocol for why
+  // Sizzle Reels projects are excluded.
+  bus.register("library:counts", async (req) => {
+    const v = validateLibraryCounts(req);
+    if (!v.ok) return err(v.error);
+    return ok({ total: countCaptures(v.value) });
   });
 
   bus.register("library:byId", async (req) => {

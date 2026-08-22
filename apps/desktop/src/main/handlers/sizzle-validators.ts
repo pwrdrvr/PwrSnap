@@ -43,9 +43,17 @@ import {
   type SizzleTtsModel,
   type SizzleTtsProvider,
   type SizzleVoice,
+  type LibraryCountScope,
+  type LibraryCountsRequest,
   type PwrSnapError
 } from "@pwrsnap/shared";
 import { SEARCH_MAX_LIMIT } from "../persistence/captures-repo";
+
+/** Upper bound on either source-app facet in a `library:counts`
+ *  request. The sidebar can name at most one bundle id per installed
+ *  app, so this is far above any genuine selection while still
+ *  bounding the generated SQL. */
+const LIBRARY_COUNTS_MAX_BUNDLE_IDS = 500;
 
 /** Hard caps. Generous for legitimate use, tight enough to keep
  *  the JSON store small and TTS calls bounded. OpenAI's TTS API
@@ -805,6 +813,137 @@ export function validateLibraryListByIds(
     out.push(id);
   }
   return { ok: true, ids: out };
+}
+
+/**
+ * Validator for `library:counts`. The Library renderer is the only
+ * caller today, but this rides the same bus every other surface does,
+ * so the facets get the same boundary treatment as `library:search`.
+ *
+ * Caps mirror the sidebar's real shape: the source-app facet can name
+ * at most one row per installed app, so 500 bundle ids is far above any
+ * genuine selection while still bounding the generated SQL.
+ */
+export function validateLibraryCounts(
+  req: unknown
+):
+  | { ok: true; value: LibraryCountsRequest }
+  | { ok: false; error: PwrSnapError } {
+  if (req === null || req === undefined) return { ok: true, value: {} };
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  const out: {
+    scope?: LibraryCountScope;
+    kinds?: Array<"image" | "video">;
+    appBundleIds?: Array<string | null>;
+    excludeAppBundleIds?: Array<string | null>;
+    capturedAtStart?: string;
+    capturedAtEnd?: string;
+  } = {};
+
+  if (req.scope !== undefined && req.scope !== null) {
+    if (req.scope !== "live" && req.scope !== "trash") {
+      return {
+        ok: false,
+        error: validationError("scope_invalid", "scope must be 'live' or 'trash'")
+      };
+    }
+    out.scope = req.scope;
+  }
+
+  if (req.kinds !== undefined && req.kinds !== null) {
+    if (!Array.isArray(req.kinds)) {
+      return {
+        ok: false,
+        error: validationError("kinds_invalid", "kinds must be an array when provided")
+      };
+    }
+    const kinds: Array<"image" | "video"> = [];
+    for (let i = 0; i < req.kinds.length; i++) {
+      const v = req.kinds[i];
+      if (v !== "image" && v !== "video") {
+        return {
+          ok: false,
+          error: validationError("kind_invalid", `kinds[${i}] must be 'image' or 'video'`)
+        };
+      }
+      if (!kinds.includes(v)) kinds.push(v);
+    }
+    // An explicitly empty array is MEANINGFUL here ("no kinds
+    // selected" → count 0), so it is preserved rather than dropped.
+    out.kinds = kinds;
+  }
+
+  for (const field of ["appBundleIds", "excludeAppBundleIds"] as const) {
+    const raw = req[field];
+    if (raw === undefined || raw === null) continue;
+    if (!Array.isArray(raw)) {
+      return {
+        ok: false,
+        error: validationError(
+          `${field}_invalid`,
+          `${field} must be an array of strings (or nulls) when provided`
+        )
+      };
+    }
+    if (raw.length > LIBRARY_COUNTS_MAX_BUNDLE_IDS) {
+      return {
+        ok: false,
+        error: validationError(
+          `${field}_too_many`,
+          `${field} must contain at most ${LIBRARY_COUNTS_MAX_BUNDLE_IDS} entries`
+        )
+      };
+    }
+    const ids: Array<string | null> = [];
+    for (let i = 0; i < raw.length; i++) {
+      const v = raw[i];
+      if (v === null) {
+        ids.push(null);
+      } else if (typeof v === "string" && v.length > 0) {
+        ids.push(v);
+      } else {
+        return {
+          ok: false,
+          error: validationError(
+            `${field}_entry_invalid`,
+            `${field}[${i}] must be a non-empty string or null`
+          )
+        };
+      }
+    }
+    out[field] = ids;
+  }
+
+  // Both bounds get the same treatment: they are compared
+  // lexicographically against the stored `captured_at`, so a non-ISO
+  // string wouldn't error — it would silently count the wrong rows.
+  for (const field of ["capturedAtStart", "capturedAtEnd"] as const) {
+    const raw = req[field];
+    if (raw === undefined || raw === null) continue;
+    if (typeof raw !== "string" || raw.length === 0) {
+      return {
+        ok: false,
+        error: validationError(
+          `${field}_invalid`,
+          `${field} must be a non-empty ISO-8601 string when provided`
+        )
+      };
+    }
+    if (Number.isNaN(Date.parse(raw))) {
+      return {
+        ok: false,
+        error: validationError(
+          `${field}_unparseable`,
+          `${field} must be a parseable ISO-8601 timestamp`
+        )
+      };
+    }
+    out[field] = raw;
+  }
+
+  return { ok: true, value: out };
 }
 
 /**

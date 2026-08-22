@@ -5,15 +5,28 @@
 // Snapshot shape:
 //   - rows: CaptureRecord[]      // accumulated across loaded pages
 //   - appStats / totalLive       // populated from the head-page response
+//   - kindStats / trashTotal     // ditto — sidebar Types + Trash counts
 //   - hasMore: boolean           // there's a nextCursor — call loadMore()
 //   - loading, isLoadingMore     // first-fetch vs. successive-page state
 //   - loadMore(): Promise<void>  // appends the next page to `rows`
 //
-// The handler returns appStats + totalLive only on head-page requests,
-// so we cache them on the snapshot and don't refetch on every page.
+// The handler returns appStats / totalLive / kindStats / trashTotal only
+// on head-page requests, so we cache them on the snapshot and don't
+// refetch on every page.
+//
+// Note that trashTotal is NOT `rows.filter(deleted).length`: the head
+// page is a keyset window over live AND soft-deleted rows intermixed by
+// captured_at, so the loaded slice under-counts trash for any library
+// bigger than the loaded pages. Same reason the Types rows need
+// kindStats rather than a client-side tally.
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import type { CaptureRecord, LibraryAppStat, LibraryCursor } from "@pwrsnap/shared";
+import type {
+  CaptureRecord,
+  LibraryAppStat,
+  LibraryCursor,
+  LibraryKindStat
+} from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "./pwrsnap";
 
@@ -24,6 +37,8 @@ type Snapshot = {
   nextCursor: LibraryCursor | null;
   appStats: LibraryAppStat[];
   totalLive: number;
+  kindStats: LibraryKindStat[];
+  trashTotal: number;
   error: string | null;
   /** Bumps on every refetch — drives useSyncExternalStore. */
   version: number;
@@ -36,6 +51,8 @@ const initialSnapshot: Snapshot = {
   nextCursor: null,
   appStats: [],
   totalLive: 0,
+  kindStats: [],
+  trashTotal: 0,
   error: null,
   version: 0
 };
@@ -102,7 +119,7 @@ async function refetchHead(isInitial = false): Promise<void> {
         });
         return;
       }
-      const { rows, nextCursor, appStats, totalLive } = result.value;
+      const { rows, nextCursor, appStats, totalLive, kindStats, trashTotal } = result.value;
       setSnapshot({
         loading: false,
         isLoadingMore: false,
@@ -110,6 +127,8 @@ async function refetchHead(isInitial = false): Promise<void> {
         nextCursor,
         appStats: appStats ?? [],
         totalLive: totalLive ?? rows.length,
+        kindStats: kindStats ?? [],
+        trashTotal: trashTotal ?? 0,
         error: null,
         version: snapshot.version + 1
       });
@@ -211,6 +230,8 @@ export type UseLibraryResult = {
   hasMore: boolean;
   appStats: LibraryAppStat[];
   totalLive: number;
+  kindStats: LibraryKindStat[];
+  trashTotal: number;
   error: string | null;
   loadMore: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -230,6 +251,8 @@ export function useLibrary(): UseLibraryResult {
     hasMore: data.nextCursor !== null,
     appStats: data.appStats,
     totalLive: data.totalLive,
+    kindStats: data.kindStats,
+    trashTotal: data.trashTotal,
     error: data.error,
     loadMore,
     refresh: refetchHead

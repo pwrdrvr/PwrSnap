@@ -842,10 +842,10 @@ export function validateLibraryCounts(
   } = {};
 
   if (req.scope !== undefined && req.scope !== null) {
-    if (req.scope !== "all" && req.scope !== "today" && req.scope !== "trash") {
+    if (req.scope !== "live" && req.scope !== "trash") {
       return {
         ok: false,
-        error: validationError("scope_invalid", "scope must be 'all', 'today' or 'trash'")
+        error: validationError("scope_invalid", "scope must be 'live' or 'trash'")
       };
     }
     out.scope = req.scope;

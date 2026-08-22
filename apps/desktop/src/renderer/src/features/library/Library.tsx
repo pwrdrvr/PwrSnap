@@ -16,6 +16,7 @@ import type {
   CaptureRecord,
   CapturesLocation,
   CaptureSearchResultRow,
+  LibraryCountsRequest,
   LibraryCursor,
   LibrarySidebarTab,
   PwrSnapError,
@@ -50,7 +51,7 @@ import { useEditorToolState } from "../editor/useEditorToolState";
 import { DEFAULT_BLUR_STYLE, type BlurStyle } from "@pwrsnap/shared";
 import { FixtureBackedRecords, isSameLocalDay, mapBundleIdToAppId } from "./adapter";
 import type { Capture } from "./captures";
-import { APP_INFO, groupByDay } from "./captures";
+import { APP_INFO, PROJECT_APP_KEY, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
 import { GridCopyPalette } from "./GridCopyPalette";
 import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
@@ -69,6 +70,8 @@ import {
   describeChipRow,
   filterFixturesByScopeAndSourceAppFacet,
   initialLibraryFilter,
+  isDefaultLibraryFilter,
+  libraryCountsRequestFor,
   libraryFilterKey,
   libraryFilterReducer,
   sameLibraryFilter,
@@ -96,6 +99,7 @@ import {
 } from "../../lib/pwrsnap";
 import { copyImagePreset } from "../../lib/clipboard-copy";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
+import { useLibraryCount } from "../../lib/useLibraryCount";
 import { useCart, useCartIsEmpty } from "./CartContext";
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
@@ -1295,7 +1299,9 @@ export function Library() {
     loading,
     loadMore,
     totalLive,
-    appStats
+    appStats,
+    kindStats,
+    trashTotal
   } = useLibrary();
   // First-run nudge: while the Library has no live captures (and the
   // head fetch has resolved, so we don't flicker on cold start for users
@@ -1593,8 +1599,13 @@ export function Library() {
   // triggers the include fetch.
   const includeFetchActive =
     !isTrashView && !isSearchActive && sourceAppFacet.mode === "include" && appFacetActive;
-  const sourceAppBundleIds = useMemo<Array<string | null>>(() => {
-    if (!includeFetchActive) return [];
+  // Bundle ids behind the facet's selected appIds, for BOTH modes. An
+  // appId can front more than one bundle id (casing variants fold into
+  // one row), so this is a flat-map rather than a lookup. `library:counts`
+  // needs it in exclude mode too, which is why it is no longer gated on
+  // `includeFetchActive`.
+  const facetBundleIds = useMemo<Array<string | null>>(() => {
+    if (sourceAppFacet.appIds.length === 0) return [];
     const wanted = new Set(sourceAppFacet.appIds);
     const bundles: Array<string | null> = [];
     for (const stat of appStats) {
@@ -1603,7 +1614,11 @@ export function Library() {
     return bundles;
     // sourceAppFacetKey is the membership fingerprint for `appIds`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [includeFetchActive, sourceAppFacetKey, appStats]);
+  }, [sourceAppFacetKey, appStats]);
+  const sourceAppBundleIds = useMemo<Array<string | null>>(
+    () => (includeFetchActive ? facetBundleIds : []),
+    [includeFetchActive, facetBundleIds]
+  );
   const sourceAppBundleKey = useMemo(() => {
     const sourceAppBundleCounts = sourceAppBundleIds.map((bundleId) => {
       const stat = appStats.find((candidate) => candidate.bundleId === bundleId);
@@ -1931,25 +1946,91 @@ export function Library() {
     return counts;
   }, [appStats]);
 
-  // "Today" sidebar count — live records whose adapter-bucket lands
-  // in the Today bucket (see adapter.ts:dayBucket). Live-only because
-  // soft-deleted captures don't show up in the Today filter. Counted
-  // directly off the records with the adapter's same-local-day check —
-  // building a second FixtureBackedRecords (with per-record formatted
-  // date strings) just for this count doubled the page-append fixture
-  // cost on the main thread.
-  const todayCount = useMemo(() => {
+  // Live capture count per kind, for the sidebar's Types rows. Comes
+  // from the head-page response for the same reason `appCounts` does:
+  // stable on first paint, and it does NOT climb as keyset pages stream
+  // in — a client-side `records.filter(kind).length` would read "100"
+  // on a 3.7k-capture library and grow while the user scrolled. A kind
+  // with no live captures is absent from the payload, hence the `?? 0`.
+  const kindCounts = useMemo<{ images: number; videos: number }>(() => {
+    let images = 0;
+    let videos = 0;
+    for (const stat of kindStats) {
+      if (stat.kind === "image") images += stat.count;
+      else if (stat.kind === "video") videos += stat.count;
+    }
+    return { images, videos };
+  }, [kindStats]);
+
+  // Local midnight as a UTC instant — the boundary for everything
+  // "Today". Derived here (renderer) and passed down to `library:counts`
+  // because main must not re-derive the user's timezone.
+  const todayStartIso = useMemo(() => {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return start.toISOString();
+    // todayDateStr — see comment on `fixtureBacking` above. Recomputes
+    // across midnight and time-zone changes without a refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayDateStr]);
+
+  // "Today" sidebar count. Served by `library:counts` rather than a tally
+  // over `liveRecords`: the loaded keyset window is 100 rows deep on
+  // first paint, so the old local count silently under-reported for
+  // anyone who took more than a page's worth of captures in one day.
+  // The local tally survives as the pre-response value so the badge
+  // never flashes an empty state on mount.
+  const todayCountState = useLibraryCount(
+    useMemo(
+      () => ({ scope: "live" as const, capturedAtStart: todayStartIso }),
+      [todayStartIso]
+    )
+  );
+  const loadedTodayCount = useMemo(() => {
     const now = new Date();
     let count = 0;
     for (const r of liveRecords) {
       if (isSameLocalDay(new Date(r.captured_at), now)) count += 1;
     }
     return count;
-    // todayDateStr — see comment on `fixtureBacking` above. Same
-    // reason: recounts against the new local date so the Today badge
-    // resets to 0 at midnight without a refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveRecords, todayDateStr]);
+  const todayCount = todayCountState.total ?? loadedTodayCount;
+
+  // Topbar count when the sidebar is narrowing. The facets are applied
+  // client-side over a partially loaded keyset window, so the honest
+  // number has to come from the bus — `visible.length` would report the
+  // loaded page and climb as the user scrolled.
+  const isDefaultFilter = isDefaultLibraryFilter(activeFilter);
+  const filteredCountRequest = useMemo<LibraryCountsRequest | null>(() => {
+    // Three cases already know their answer without a round-trip:
+    // search reports its own match count, Trash has an exact total from
+    // the head page, and the neutral filter is just `totalLive`.
+    if (isSearchActive || isTrashView || isDefaultFilter) return null;
+    return libraryCountsRequestFor(activeFilter, { facetBundleIds, todayStartIso });
+  }, [
+    isSearchActive,
+    isTrashView,
+    isDefaultFilter,
+    activeFilter,
+    facetBundleIds,
+    todayStartIso
+  ]);
+  const filteredCountState = useLibraryCount(filteredCountRequest);
+  // Projects come from the filtered fixture list rather than the bus:
+  // they live outside the captures table, and the renderer holds every
+  // one of them, so `visible` is EXACT for projects even though it is
+  // only a window for captures. Counting them here also means the
+  // projects/source-app asymmetry (see `gridProjects`) is honored once,
+  // in the pipeline that already owns it.
+  const visibleProjectCount = useMemo(
+    () => visible.reduce((n, fixture) => (fixture.app === PROJECT_APP_KEY ? n + 1 : n), 0),
+    [visible]
+  );
+  const filteredTotal =
+    filteredCountState.total === null
+      ? null
+      : filteredCountState.total + visibleProjectCount;
 
   // Display name per app key. Like appCounts, derived from app_stats
   // so the sidebar is stable on first paint instead of filling in as
@@ -3269,10 +3350,13 @@ export function Library() {
    * prompt is the right friction.
    */
   function emptyTrash(): void {
-    if (trashRecords.length === 0) return;
+    if (trashTotal === 0) return;
+    // `trashTotal` (head-page COUNT), not `trashRecords.length` — the
+    // latter only sees the loaded keyset window, so on a large library
+    // this prompt used to understate what `library:purgeAll` destroys.
     const ok = window.confirm(
-      `Permanently delete ${trashRecords.length} capture${
-        trashRecords.length === 1 ? "" : "s"
+      `Permanently delete ${trashTotal} capture${
+        trashTotal === 1 ? "" : "s"
       }? This cannot be undone.`
     );
     if (!ok) return;
@@ -3483,7 +3567,27 @@ export function Library() {
               )}
             </span>
           ) : (
-            <span className="psl__count">
+            /* Narrowing the library rewrites this badge to the size of
+               the MATCH SET ("45 of 3668"), not the library. The number
+               is an exact COUNT(*) over the whole table — see
+               `filteredTotal` — because the facets themselves are
+               applied over a partially loaded window and so cannot
+               count themselves. */
+            <span
+              className="psl__count"
+              title={
+                isSearchActive
+                  ? undefined
+                  : isTrashView
+                    ? `${trashTotal} in Trash`
+                    : filteredTotal === null
+                      ? `${totalLive} captures`
+                      : `${filteredTotal} of ${totalLive} captures match ${summarizeLibraryFilter(
+                          activeFilter,
+                          resolveAppLabel
+                        )}`
+              }
+            >
               {isSearchActive
                 ? searchState.loading && searchState.forQuery !== searchQuery.trim()
                   ? "searching…"
@@ -3494,11 +3598,15 @@ export function Library() {
                       : `${searchResultCount} ${searchResultCount === 1 ? "match" : "matches"}`
                 : isTrashView
                   ? isToolbarNarrow
-                    ? `${trashRecords.length} trash`
-                    : `${trashRecords.length} in trash`
-                  : isToolbarNarrow
-                    ? `${totalLive}`
-                    : `${totalLive} captures`}
+                    ? `${trashTotal} trash`
+                    : `${trashTotal} in trash`
+                  : filteredTotal !== null
+                    ? isToolbarNarrow
+                      ? `${filteredTotal}`
+                      : `${filteredTotal} of ${totalLive}`
+                    : isToolbarNarrow
+                      ? `${totalLive}`
+                      : `${totalLive} captures`}
             </span>
           )}
         </div>
@@ -3757,7 +3865,7 @@ export function Library() {
             </svg>
           </span>
           <span className="psl__nav-label">Trash</span>
-          <span className="psl__nav-count">{trashRecords.length}</span>
+          <span className="psl__nav-count">{trashTotal}</span>
         </button>
 
         <div className="psl__left-section">Types</div>
@@ -3797,6 +3905,15 @@ export function Library() {
           ] as const
         ).map(({ key, label, icon }) => {
           const on = visibleTypes[key];
+          // Live totals for the whole library, NOT the loaded window —
+          // images/videos come from the head-page `kindStats`, projects
+          // from `useSizzleProjects`, which already holds every one.
+          const typeCount =
+            key === "images"
+              ? kindCounts.images
+              : key === "videos"
+                ? kindCounts.videos
+                : sizzleProjects.length;
           const typeFacetActive = !allTypesOn;
           const selected =
             typeFacetActive && activeFilter.typeMode === "include" && on;
@@ -3842,6 +3959,7 @@ export function Library() {
             >
               <span className="psl__nav-icon">{icon}</span>
               <span className="psl__nav-label">{label}</span>
+              <span className="psl__nav-count">{typeCount}</span>
               {/* Hover-revealed "only" pill — the discoverable
                   replacement for the old hidden shift-click. A span with
                   an explicit role rather than a nested <button> (invalid
@@ -4086,17 +4204,17 @@ export function Library() {
           {isTrashView && (
             <div className="psl__trash-banner">
               <span className="psl__trash-banner-text">
-                {trashRecords.length === 0
+                {trashTotal === 0
                   ? "Trash is empty."
-                  : `${trashRecords.length} item${
-                      trashRecords.length === 1 ? "" : "s"
+                  : `${trashTotal} item${
+                      trashTotal === 1 ? "" : "s"
                     } in trash. Items are permanently removed after 30 days.`}
                 {/* Trash deliberately ignores the Types and Source app
                     facets (it's a mode, not a slice of the live
                     library). Say so rather than letting a stale
                     selection look like it's being applied — Empty
                     Trash purges every row counted above. */}
-                {trashRecords.length > 0 && (!allTypesOn || appFacetActive) ? (
+                {trashTotal > 0 && (!allTypesOn || appFacetActive) ? (
                   <span className="psl__trash-banner-note">
                     {" "}
                     {!allTypesOn && appFacetActive
@@ -4107,7 +4225,7 @@ export function Library() {
                   </span>
                 ) : null}
               </span>
-              {trashRecords.length > 0 && (
+              {trashTotal > 0 && (
                 <button
                   type="button"
                   className="psl__trash-banner-btn"

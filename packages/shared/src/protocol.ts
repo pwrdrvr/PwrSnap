@@ -430,9 +430,15 @@ export type LibraryKindStat = {
   count: number;
 };
 
-/** Top-level scope of a `library:counts` request — mirrors the Library
- *  sidebar's radio-semantics scope row. */
-export type LibraryCountScope = "all" | "today" | "trash";
+/**
+ * Which side of the soft-delete line a `library:counts` request counts.
+ *
+ * Deliberately NOT the sidebar's `all | today | trash` scope row: the
+ * Today bucket is a date predicate, expressed by `capturedAtStart`
+ * below. Carrying both would let a caller send `scope: "today"` with no
+ * boundary and silently get the all-captures number back.
+ */
+export type LibraryCountScope = "live" | "trash";
 
 /**
  * Facet set for `library:counts`. Every field is optional and supplied
@@ -443,7 +449,7 @@ export type LibraryCountScope = "all" | "today" | "trash";
  * a library larger than the loaded pages.
  */
 export type LibraryCountsRequest = {
-  /** Defaults to `all` (live captures). `trash` counts soft-deleted rows. */
+  /** Defaults to `live`. `trash` counts soft-deleted rows instead. */
   scope?: LibraryCountScope | undefined;
   /**
    * Restrict to these capture kinds. **Absent = both kinds**; an
@@ -459,9 +465,10 @@ export type LibraryCountsRequest = {
   excludeAppBundleIds?: ReadonlyArray<string | null> | undefined;
   /**
    * Inclusive lower bound matched as a string against `captured_at`
-   * (ISO-8601 UTC, e.g. `2026-08-22T00:00:00.000Z`). The RENDERER owns
-   * this value because the Today bucket is a *local*-day boundary and
-   * main must not re-derive the user's timezone.
+   * (ISO-8601 UTC, e.g. `2026-08-22T07:00:00.000Z`). This is how the
+   * sidebar's Today scope is expressed. The RENDERER owns the value
+   * because Today is a *local*-day boundary and main must not
+   * re-derive the user's timezone.
    */
   capturedAtStart?: string | undefined;
 };

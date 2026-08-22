@@ -1548,3 +1548,45 @@
 .szl__chat-resizer:active::after {
   background: var(--accent-border);
 }
+
+/* ── Pre-timeline clip rows, behind a disclosure ───────────────────── */
+/* The timeline is the view of the clips now; the form rows stay
+   reachable here until the clip inspector retires them. */
+.szl__advanced {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-input);
+  padding: 0 10px;
+}
+.szl__advanced[open] {
+  padding-bottom: 8px;
+}
+.szl__advanced-summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  font: 600 10px/1 var(--font-sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.szl__advanced-summary::-webkit-details-marker {
+  display: none;
+}
+.szl__advanced-summary::before {
+  content: "▸";
+  font-size: 9px;
+  opacity: 0.7;
+}
+.szl__advanced[open] > .szl__advanced-summary::before {
+  content: "▾";
+}
+.szl__advanced-hint {
+  font: 500 10px/1 var(--font-mono);
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--text-subtle);
+}

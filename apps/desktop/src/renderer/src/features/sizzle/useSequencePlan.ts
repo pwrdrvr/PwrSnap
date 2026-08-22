@@ -265,7 +265,7 @@ export function useSequencePlan(args: {
         ...prev,
         [sceneId]: {
           key: sequenceTranscriptKey(scene),
-          words: planResult.value.words
+          words: planResult.value.words ?? []
         }
       }));
       previewAudio = planResult.value;
@@ -429,7 +429,7 @@ export function useSequencePlan(args: {
           // Words arrive with the cached timing (null = no sidecar, which
           // leaves the scene in the estimated state with an empty ribbon).
           const cachedWords = res.value.words;
-          if (cachedWords !== null) {
+          if (cachedWords !== null && cachedWords !== undefined) {
             setSequenceWords((prev) => ({
               ...prev,
               [scene.id]: { key: sequenceTranscriptKey(scene), words: cachedWords }

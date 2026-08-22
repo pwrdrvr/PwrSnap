@@ -17,7 +17,15 @@ import {
 } from "@pwrsnap/shared";
 import { ReelSettings } from "./ReelSettings";
 import { SizzleTimeline } from "./timeline/SizzleTimeline";
-import { buildTimelineModel, sceneAt, type TimelineClip } from "./timeline/timeline-model";
+import { anchorTimingForWord } from "./timeline/anchor";
+import {
+  buildTimelineModel,
+  clipAt,
+  sceneAt,
+  type TimelineClip,
+  type TimelineSceneRegion,
+  type TimelineWord
+} from "./timeline/timeline-model";
 import { RenderStatusBar, isRendering, type RenderStatus } from "./RenderStatusBar";
 import { SceneTransitionChip, SequenceSceneCard, SimpleSceneCard } from "./SceneCard";
 import {
@@ -235,6 +243,34 @@ export function Editor(props: EditorProps): ReactElement {
   const onSelectClip = (clip: TimelineClip | null): void => {
     setSelectedClipId(clip === null ? null : clip.beatId);
   };
+  // Click a word → the SELECTED clip (if it is in this scene) anchors there;
+  // with nothing selected, the clip covering that moment does. Clip 0 is
+  // pinned to 0 by the planner, so it is never the target. Clicking the
+  // word a clip is already anchored to un-anchors it (back to auto) —
+  // "pin only what you touch", and its neighbours re-flow either way.
+  const onClickWord = (scene: TimelineSceneRegion, word: TimelineWord): void => {
+    if (scene.kind !== "sequence") return;
+    const selected = scene.clips.find((c) => c.beatId === selectedClipId) ?? null;
+    const target = selected ?? clipAt(scene, word.absStartSec);
+    if (target === null || target.index === 0) return;
+    const timing = anchorTimingForWord(scene.words, word.index);
+    const current = target.timing;
+    const alreadyHere =
+      current.kind === "phrase" &&
+      current.phrase === timing.phrase &&
+      (current.occurrence ?? 1) === (timing.occurrence ?? 1) &&
+      Math.abs(current.offsetSec) < 0.0005;
+    editSequenceBeat(scene.sceneId, target.beatId, {
+      timing: alreadyHere ? { kind: "auto" } : timing
+    });
+    setSelectedClipId(target.beatId);
+  };
+  // The estimated region's affordance: synthesizing IS previewing the
+  // scene (cache-only loads never synthesize; this is the one explicit
+  // path that spends TTS credits).
+  const onSynthesize = (sceneId: string): void => {
+    void plan.onPreviewScene(sceneId);
+  };
   /** What a scene's own preview stage should show: its playback time while
    *  it plays / is loaded, else the project playhead if it sits in this
    *  scene (a scrub drives the stage even before the audio is loaded). */
@@ -303,6 +339,8 @@ export function Editor(props: EditorProps): ReactElement {
           onScrub={onScrub}
           selectedClipId={selectedClipId}
           onSelectClip={onSelectClip}
+          onClickWord={onClickWord}
+          onSynthesize={onSynthesize}
         />
       ) : null}
 

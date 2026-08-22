@@ -524,6 +524,27 @@ plan forbids a `<video>` per clip; a `video:poster` (or `video:frames` with
 Word ribbon, click-to-anchor via `anchorTimingForWord`, anchor pins and removal,
 the honest pre-synthesis empty state.
 
+*As built (2026-08-22):* `timeline/WordRibbon.tsx` (words at spoken times,
+three stagger rows, label-or-tick by density with anchored words placed
+first, the accent underline + index badge, the "Synthesize narration to
+anchor words" affordance on estimated scenes — explicit click only) and
+`timeline/anchor.ts` (`anchorTimingForWord`: extend rightward until unique
+or 5 words, occurrence from the match ordinal, judged by the SAME shared
+matcher the planner resolves with — `findPhraseOccurrences` in
+`sizzle-phrase-match.ts`; `nearestWordAnchor` for PR 5's residuals). Click
+targets the selected clip in that scene, else the clip covering the word;
+clip 0 is never anchored (pinned to 0); clicking the word a clip is already
+anchored to releases it to auto. The ribbon is the fifth lane
+(`grid-template-rows: 22px 20px 72px 28px 44px`). Verified in the live app
+on two cached-resolved reels (22 clips at 9 px/s; 4 clips with real
+phrase anchors + one unresolved-anchor warning), which surfaced three
+fixes: fit-to-width measures the scroll viewport (not the bordered
+canvas), a ribbon label or the playhead's timecode tag never runs past the
+lanes (tick / flip instead — an overflowing label widened the scroll area
+and put a scrollbar on a reel that fits), and the video-clip poster
+placeholder is a flat film-strip, not a hatch — hatching is reserved for
+ESTIMATED (§4.1).
+
 **PR 5 — `feat(desktop): drag to move and retime sizzle clips`**
 Clip move + boundary retime on `retime.ts`, `VideoTimeline`'s pointer-capture and
 `commit` contract, drag-local state so undo stays clean.

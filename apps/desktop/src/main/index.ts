@@ -277,7 +277,8 @@ type HotkeyKind =
   | "allScreens"
   | "timed"
   | "videoCapture"
-  | "reshowFloatOver";
+  | "reshowFloatOver"
+  | "openLibrary";
 const HOTKEY_KINDS: readonly HotkeyKind[] = [
   "quickCapture",
   "region",
@@ -286,7 +287,8 @@ const HOTKEY_KINDS: readonly HotkeyKind[] = [
   "allScreens",
   "timed",
   "videoCapture",
-  "reshowFloatOver"
+  "reshowFloatOver",
+  "openLibrary"
 ];
 const isMac = process.platform === "darwin";
 
@@ -748,6 +750,14 @@ function handlerFor(kind: HotkeyKind): () => void {
         log.info("global hotkey fired", { kind });
         return runReshowLastFloatOver();
       };
+    case "openLibrary":
+      // Bring the Library forward (creating the window if it was
+      // closed). Same `library:focus` verb the tray's folder button
+      // dispatches; unbound by default (see the schema doc).
+      return () => {
+        log.info("global hotkey fired", { kind });
+        void runOpenLibrary();
+      };
   }
 }
 
@@ -1008,6 +1018,21 @@ async function runAllScreensCapture(): Promise<void> {
  *  newest non-deleted capture straight from the repo (the float-over
  *  module keeps no persistent "last capture" of its own — its state
  *  resets to hidden on dismiss). No-op when the library is empty. */
+/** Open Library hotkey — raise the singleton Library window, creating
+ *  it if the user closed it. Routed through the bus (not
+ *  `bringLibraryForward` directly) so two-process mode dispatches it to
+ *  whichever process owns the window, same as the tray's folder button. */
+async function runOpenLibrary(): Promise<void> {
+  const log = getMainLogger("pwrsnap:shortcut");
+  const result = await bus.dispatch("library:focus", {}, { principal: "ipc" });
+  if (!result.ok) {
+    log.warn("library:focus failed", {
+      code: result.error.code,
+      message: result.error.message
+    });
+  }
+}
+
 function runReshowLastFloatOver(): void {
   const log = getMainLogger("pwrsnap:shortcut");
   // Runs inside a globalShortcut callback, so swallow + log any error

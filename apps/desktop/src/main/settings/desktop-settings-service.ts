@@ -746,7 +746,10 @@ function parseV1(raw: unknown, appVersion = ""): Settings | null {
       // `reshowFloatOver` landed after v1 shipped; older files won't have
       // it. pickString fills in the current default (⌘⌥⇧F) so the field
       // is always present in-memory.
-      reshowFloatOver: pickString(hotkeys.reshowFloatOver, defaults.hotkeys.reshowFloatOver)
+      reshowFloatOver: pickString(hotkeys.reshowFloatOver, defaults.hotkeys.reshowFloatOver),
+      // `openLibrary` landed after v1 shipped; older files won't have
+      // it. pickString fills in the current default ("" = unbound).
+      openLibrary: pickString(hotkeys.openLibrary, defaults.hotkeys.openLibrary)
     },
     general: {
       // `general.developerMode` and `general.launchAtLogin` landed

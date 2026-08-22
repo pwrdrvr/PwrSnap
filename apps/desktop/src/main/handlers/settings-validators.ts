@@ -273,7 +273,8 @@ export function validateSettingsWrite(
       "allScreens",
       "timed",
       "videoCapture",
-      "reshowFloatOver"
+      "reshowFloatOver",
+      "openLibrary"
     ] as const) {
       const v = hotkeys[key];
       if (isUndefined(v)) continue;

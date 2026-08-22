@@ -62,6 +62,7 @@ import {
   IPC_VIDEO_DRAG_START
 } from "@pwrsnap/shared/ipc";
 import type {
+  RecordingCapabilities,
   RenderPreset,
   VideoPreset
 } from "@pwrsnap/shared/protocol";
@@ -188,6 +189,8 @@ const pwrsnapApi = {
     /** Video-only: whether the recording bakes in the mouse cursor,
      *  from the selector's `C` toggle. Omitted for image captures. */
     captureCursor?: boolean;
+    /** Video-only audio choices from the selector toggles. */
+    recordingCapabilities?: RecordingCapabilities;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_RESULT_CHANNEL, payload);
   },
@@ -338,6 +341,8 @@ const pwrsnapApi = {
       intent?: "snap" | "video";
       /** Video-only seed for the cursor toggle. `undefined` = ON. */
       cursor?: boolean;
+      /** Video-only seed for the audio toggles. */
+      recordingCapabilities?: RecordingCapabilities;
     }) => void
   ): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
@@ -347,6 +352,7 @@ const pwrsnapApi = {
           screenUrl?: string;
           intent?: "snap" | "video";
           cursor?: boolean;
+          recordingCapabilities?: RecordingCapabilities;
         }
       );
     ipcRenderer.on(REGION_SELECTOR_MODE_CHANNEL, wrapped);

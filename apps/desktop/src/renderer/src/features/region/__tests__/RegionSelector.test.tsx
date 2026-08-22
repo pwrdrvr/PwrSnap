@@ -14,6 +14,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 
+import type { RecordingCapabilities } from "@pwrsnap/shared";
 import type { WindowSnapEntry } from "../../../preload-types";
 import { RegionSelector } from "../RegionSelector";
 
@@ -26,6 +27,8 @@ type ModePayload = {
   mode: "auto" | "region" | "window";
   screenUrl?: string;
   intent?: "snap" | "video";
+  cursor?: boolean;
+  recordingCapabilities?: RecordingCapabilities;
 };
 type SnapshotPayload = {
   windows: WindowSnapEntry[];
@@ -117,6 +120,19 @@ async function emitMode(p: ModePayload): Promise<void> {
   });
 }
 
+async function emitVideoMode(
+  recordingCapabilities: RecordingCapabilities = {
+    systemAudio: true,
+    microphone: false
+  }
+): Promise<void> {
+  await emitMode({
+    mode: "auto",
+    intent: "video",
+    recordingCapabilities
+  });
+}
+
 async function emitSnapshot(p: SnapshotPayload): Promise<void> {
   await act(async () => {
     snapshotHandler?.(p);
@@ -153,6 +169,19 @@ async function mouseUp(x: number, y: number): Promise<void> {
   });
 }
 
+async function targetMouseEvent(
+  target: EventTarget,
+  type: "mousemove" | "mouseup",
+  x: number,
+  y: number
+): Promise<void> {
+  await act(async () => {
+    target.dispatchEvent(
+      new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true })
+    );
+  });
+}
+
 async function keyDown(key: string, init: KeyboardEventInit = {}): Promise<void> {
   await act(async () => {
     window.dispatchEvent(
@@ -186,6 +215,14 @@ async function drawRect(): Promise<void> {
 function regionHintText(): string {
   const el = container?.querySelector(".region-hint");
   return (el?.textContent ?? "").toLowerCase();
+}
+
+function audioToggle(label: string): HTMLButtonElement {
+  const button = Array.from(
+    container?.querySelectorAll<HTMLButtonElement>(".region-audio-toggle") ?? []
+  ).find((candidate) => candidate.textContent?.includes(label));
+  if (button === undefined) throw new Error(`${label} toggle not found`);
+  return button;
 }
 
 function rectStyle(): { left: number; top: number; width: number; height: number } {
@@ -458,5 +495,90 @@ describe("U4 — border move-band", () => {
     await mouseMove(500, 450);
     await mouseUp(500, 450);
     expect(rectStyle()).toEqual({ left: 200, top: 200, width: 300, height: 250 });
+  });
+});
+
+describe("video recording audio controls", () => {
+  test("controls are video-only and reflect the seeded defaults", async () => {
+    await mount();
+    expect(container?.querySelector(".region-recording-controls")).toBeNull();
+
+    await emitVideoMode();
+
+    expect(audioToggle("System audio").getAttribute("aria-pressed")).toBe("true");
+    expect(audioToggle("Microphone").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  test("commit includes toggled recording capabilities", async () => {
+    await mount();
+    await emitVideoMode();
+
+    await act(async () => {
+      audioToggle("System audio").click();
+      audioToggle("Microphone").click();
+    });
+    await keyDown("Enter");
+
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: true,
+        recordingCapabilities: {
+          systemAudio: false,
+          microphone: true
+        }
+      })
+    );
+  });
+
+  test("focused controls own Enter without submitting the selection", async () => {
+    await mount();
+    await emitVideoMode();
+
+    const systemAudio = audioToggle("System audio");
+    systemAudio.focus();
+    await act(async () => {
+      systemAudio.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })
+      );
+      keyHandler?.({ key: "Enter" });
+    });
+    expect(submitRegion).not.toHaveBeenCalled();
+
+    systemAudio.blur();
+    await emitKey("Enter");
+    expect(submitRegion).toHaveBeenCalledOnce();
+  });
+
+  test("moving over audio controls does not change the snap target", async () => {
+    await mount();
+    await emitVideoMode();
+    await emitSnapshot({
+      windows: [WIN],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight }
+    });
+
+    await targetMouseEvent(audioToggle("System audio"), "mousemove", 300, 200);
+    await keyDown("Enter");
+
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.not.objectContaining({ snappedWindowId: WIN.windowId })
+    );
+  });
+
+  test("a drag can finish after crossing over the audio controls", async () => {
+    await mount();
+    await emitVideoMode();
+
+    await mouseMove(100, 100);
+    await mouseDown(100, 100);
+    await mouseMove(240, 180);
+    await targetMouseEvent(audioToggle("System audio"), "mouseup", 240, 180);
+    await keyDown("Enter");
+
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rect: { x: 100, y: 100, w: 140, h: 80 }
+      })
+    );
   });
 });

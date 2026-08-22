@@ -296,9 +296,9 @@ export function registerLibraryChatHandlers(params?: {
       });
       // Persist the locked config on the thread (skip in injected-controller
       // tests, which have no DB).
-      if (injected === null) store().setBackendConfig(view.threadId, config);
+      if (injected === null) await store().setBackendConfig(view.threadId, config);
       if (injected === null && ctx.principal === "mcp" && ctx.localAgent !== undefined) {
-        store().setOwnerClientId(view.threadId, ctx.localAgent.clientId);
+        await store().setOwnerClientId(view.threadId, ctx.localAgent.clientId);
       }
       return ok(toLibraryThreadView(view, config));
     } catch (cause) {

@@ -23,13 +23,23 @@
 //     line; a torn final line (crash mid-append) is skipped on read.
 //
 // Migration from the old sidecars: `ensureImported()` walks the Chats
-// dir ONCE per process and pulls any pre-existing `pwrsnap-thread.json`
-// into the index (INSERT OR IGNORE — never overwrites a live row, never
-// deletes the sidecar). New threads write only the index row; no sidecar
-// is created going forward.
+// dir ONCE per store instance and pulls any pre-existing
+// `pwrsnap-thread.json` into the index (INSERT OR IGNORE — never
+// overwrites a live row, never deletes the sidecar). New threads write
+// only the index row; no sidecar is created going forward.
+//
+// The walk is ASYNC and time-bounded, never synchronous. The Chats dir
+// sits under `~/Documents`, which macOS gates behind the "Allow Documents
+// access" TCC prompt: while that prompt is pending every read of the
+// folder parks until the user answers, and a denied grant fails with
+// EPERM. A `readdirSync` here ran on the main thread the first time the
+// Library listed threads and froze the whole app (beachball, "Application
+// Not Responding") for as long as the prompt stayed unanswered. Nothing
+// in this module may use the sync `node:fs` API for that reason — see
+// `LEGACY_IMPORT_WAIT_MS` and
+// docs/solutions/2026-06-12-macos-tcc-captures-folder-denials.md.
 
 import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type DatabaseT from "better-sqlite3";
 import type { ChatFocusEntry, ChatThreadSidecar } from "@pwrsnap/shared";
@@ -54,6 +64,21 @@ const METADATA_NEVER_INDEX = ".metadata_never_index";
 const FOCUS_HISTORY_MAX = 20;
 /** Slug length cap for the thread-dir name. */
 const SLUG_MAX = 40;
+/**
+ * Upper bound on how long any store method waits for the one-time legacy
+ * sidecar import before proceeding on the SQLite index alone.
+ *
+ * The import reads the Chats dir, which lives under the macOS TCC-gated
+ * Documents folder. While the "Allow Documents access" prompt is pending,
+ * that read parks until the user answers (an unbounded wait); when the
+ * grant is denied it fails with EPERM. Neither may hold up listing or
+ * creating threads: the SQLite index is the source of truth for every
+ * thread created since the index landed, and the sidecar walk only
+ * back-fills threads from before it. A healthy import takes milliseconds,
+ * so this bound never engages on an ordinary boot; when it does, the
+ * import keeps running in the background and a later call sees its rows.
+ */
+const LEGACY_IMPORT_WAIT_MS = 1500;
 
 export type ChatThreadStoreConfig = {
   /** The ~/Documents/PwrSnap/Chats root. Injectable for tests. */
@@ -62,6 +87,8 @@ export type ChatThreadStoreConfig = {
    *  inject an in-memory DB with the migrations applied. */
   db?: Database;
   logger?: Logger;
+  /** Test seam for {@link LEGACY_IMPORT_WAIT_MS}. */
+  legacyImportWaitMs?: number;
 };
 
 export type PreparedChatThreadDir = {
@@ -141,14 +168,18 @@ export class ChatThreadStore {
   /** True once the `.metadata_never_index` sentinel drop has been
    *  attempted, so we don't re-stat it on every `create()`. */
   private sentinelEnsured = false;
-  /** True once the one-time legacy-sidecar import has run for this store
-   *  instance (≈ once per process). */
-  private imported = false;
+  /** The one-time legacy-sidecar import for this store instance, started
+   *  on first use. `importSettled` flips once it has finished (imported,
+   *  skipped, or failed) so later calls take the no-timer fast path. */
+  private importPromise: Promise<void> | null = null;
+  private importSettled = false;
+  private readonly legacyImportWaitMs: number;
 
   constructor(config: ChatThreadStoreConfig) {
     this.chatsDir = config.chatsDir;
     this.log = config.logger ?? getMainLogger("pwrsnap:chat-thread-store");
     this.injectedDb = config.db ?? null;
+    this.legacyImportWaitMs = config.legacyImportWaitMs ?? LEGACY_IMPORT_WAIT_MS;
   }
 
   private db(): Database {
@@ -172,7 +203,7 @@ export class ChatThreadStore {
     model?: string | null;
     reasoning?: string | null;
   }): Promise<ChatThreadSidecar> {
-    this.ensureImported();
+    await this.ensureImported();
     const preparedDir = opts.preparedDir ?? (await this.prepareThreadDir(opts.name));
     const now = new Date().toISOString();
     const anchorCaptureId = opts.anchorCaptureId ?? null;
@@ -199,18 +230,18 @@ export class ChatThreadStore {
   /** Persist a thread's locked backend config (Provider / Model / Reasoning).
    *  Written once when the thread is created with a chosen config; thereafter
    *  the config is immutable (locked on first message). No-op for an unknown id. */
-  setBackendConfig(
+  async setBackendConfig(
     threadId: string,
     config: { provider: string | null; model: string | null; reasoning: string | null }
-  ): void {
-    this.ensureImported();
+  ): Promise<void> {
+    await this.ensureImported();
     this.db()
       .prepare(`UPDATE chat_threads SET provider = ?, model = ?, reasoning = ? WHERE thread_id = ?`)
       .run(config.provider ?? null, config.model ?? null, config.reasoning ?? null, threadId);
   }
 
-  setOwnerClientId(threadId: string, ownerClientId: string): void {
-    this.ensureImported();
+  async setOwnerClientId(threadId: string, ownerClientId: string): Promise<void> {
+    await this.ensureImported();
     this.db()
       .prepare(`UPDATE chat_threads SET owner_client_id = ? WHERE thread_id = ?`)
       .run(ownerClientId, threadId);
@@ -222,7 +253,7 @@ export class ChatThreadStore {
    * Electron/dev process cwd.
    */
   async prepareThreadDir(name: string): Promise<PreparedChatThreadDir> {
-    this.ensureImported();
+    await this.ensureImported();
     await this.ensureMetadataNeverIndex();
     const dirName = await this.mintThreadDir(name, new Date().toISOString());
     const path = join(this.chatsDir, dirName);
@@ -249,7 +280,7 @@ export class ChatThreadStore {
   async list(
     opts: { includeArchived?: boolean; anchorCaptureId?: string | null } = {}
   ): Promise<ChatThreadSidecar[]> {
-    this.ensureImported();
+    await this.ensureImported();
     const clauses: string[] = [];
     const params: unknown[] = [];
     if (opts.includeArchived !== true) clauses.push("archived = 0");
@@ -270,7 +301,7 @@ export class ChatThreadStore {
 
   /** Returns the sidecar for `threadId`, or null when absent. */
   async get(threadId: string): Promise<ChatThreadSidecar | null> {
-    this.ensureImported();
+    await this.ensureImported();
     const row = this.selectRow(threadId);
     return row === undefined ? null : rowToSidecar(row);
   }
@@ -286,7 +317,7 @@ export class ChatThreadStore {
     threadId: string,
     patch: Partial<Pick<ChatThreadSidecar, "name" | "anchorCaptureId" | "archived" | "pinned">>
   ): Promise<ChatThreadSidecar> {
-    this.ensureImported();
+    await this.ensureImported();
     const row = this.selectRow(threadId);
     if (row === undefined) {
       throw new Error(`chat-thread-store: update on unknown thread ${threadId}`);
@@ -315,7 +346,7 @@ export class ChatThreadStore {
    * (it's derived from the row's `dir_name`).
    */
   async delete(threadId: string): Promise<void> {
-    this.ensureImported();
+    await this.ensureImported();
     const dir = this.threadDir(threadId);
     this.db().prepare(`DELETE FROM chat_threads WHERE thread_id = ?`).run(threadId);
     if (dir !== null) {
@@ -328,7 +359,7 @@ export class ChatThreadStore {
    * FOCUS_HISTORY_MAX (newest kept). Bumps `modified_at`.
    */
   async appendFocus(threadId: string, captureId: string): Promise<void> {
-    this.ensureImported();
+    await this.ensureImported();
     const row = this.selectRow(threadId);
     if (row === undefined) {
       throw new Error(`chat-thread-store: appendFocus on unknown thread ${threadId}`);
@@ -349,7 +380,7 @@ export class ChatThreadStore {
    * (one indexed lookup, no directory scan).
    */
   async journalAppend(threadId: string, entry: unknown): Promise<void> {
-    this.ensureImported();
+    await this.ensureImported();
     const dir = this.threadDir(threadId);
     if (dir === null) {
       throw new Error(`chat-thread-store: journalAppend on unknown thread ${threadId}`);
@@ -363,7 +394,7 @@ export class ChatThreadStore {
    * than throwing. Returns `[]` for an unknown thread or a missing journal.
    */
   async readJournal(threadId: string): Promise<unknown[]> {
-    this.ensureImported();
+    await this.ensureImported();
     const dir = this.threadDir(threadId);
     if (dir === null) return [];
     let raw: string;
@@ -391,7 +422,7 @@ export class ChatThreadStore {
    * Throws if the thread is unknown.
    */
   async attachmentsDir(threadId: string): Promise<string> {
-    this.ensureImported();
+    await this.ensureImported();
     const dir = this.threadDir(threadId);
     if (dir === null) {
       throw new Error(`chat-thread-store: attachmentsDir on unknown thread ${threadId}`);
@@ -425,56 +456,105 @@ export class ChatThreadStore {
   }
 
   /**
+   * Await the one-time legacy-sidecar import, bounded by
+   * {@link LEGACY_IMPORT_WAIT_MS}. Every public method awaits this FIRST,
+   * before touching SQLite, so the read-modify-write methods (`update`,
+   * `appendFocus`) still run their SELECT and UPDATE with no yield point in
+   * between — the await sits ahead of the critical section, not inside it.
+   *
+   * Never rejects. If the import is still running when the bound elapses
+   * (a pending Documents TCC prompt parks the dir read; a denied grant
+   * rejects it), the caller proceeds on the index and the import finishes
+   * in the background. After the import settles, this is a no-timer fast
+   * path.
+   */
+  private ensureImported(): Promise<void> {
+    if (this.importSettled) return Promise.resolve();
+    if (this.importPromise === null) {
+      this.importPromise = this.importLegacySidecars().then(
+        () => {
+          this.importSettled = true;
+        },
+        (cause: unknown) => {
+          // `importLegacySidecars` catches its own failures; this only
+          // guards a programming error so a method can never hang on it.
+          this.importSettled = true;
+          this.log.warn("chat-thread-store: legacy sidecar import threw", {
+            message: errMessage(cause)
+          });
+        }
+      );
+    }
+    return settleWithin(this.importPromise, this.legacyImportWaitMs);
+  }
+
+  /**
    * One-time pull of legacy `pwrsnap-thread.json` sidecars into the
    * index. Idempotent (INSERT OR IGNORE on the threadId PK) and
-   * non-destructive (the sidecar file is left on disk). Synchronous so
-   * the read-modify-write methods stay free of a yield point between
-   * their SELECT and UPDATE. Best-effort — a missing Chats dir or a
-   * corrupt sidecar is silently skipped.
+   * non-destructive (the sidecar file is left on disk). Best-effort — a
+   * missing Chats dir or a corrupt sidecar is silently skipped; a dir
+   * that can't be listed (macOS Documents TCC denial → EPERM) is logged
+   * once and skipped, since the index still serves every thread it holds.
+   *
+   * All filesystem access here is ASYNC (`node:fs/promises`). The Chats
+   * dir is under the TCC-gated Documents folder, and a synchronous read
+   * of it on the main thread is what used to freeze the app at startup
+   * while the consent prompt was pending. The sidecars are read up front
+   * so the SQLite transaction stays a tight synchronous section.
    */
-  private ensureImported(): void {
-    if (this.imported) return;
-    this.imported = true;
-
+  private async importLegacySidecars(): Promise<void> {
     let entries: string[];
     try {
-      entries = readdirSync(this.chatsDir);
-    } catch {
-      return; // No Chats dir yet → nothing to import.
+      entries = await readdir(this.chatsDir);
+    } catch (cause) {
+      if (isNodeError(cause) && cause.code === "ENOENT") {
+        return; // No Chats dir yet → nothing to import.
+      }
+      this.log.warn("chat-thread-store: legacy sidecar import skipped — Chats dir unreadable", {
+        chatsDir: this.chatsDir,
+        code: isNodeError(cause) ? cause.code : undefined,
+        message: errMessage(cause)
+      });
+      return;
     }
 
-    const insert = this.db().prepare(
-      `INSERT OR IGNORE INTO chat_threads
-         (thread_id, dir_name, name, anchor_capture_id, archived, pinned, focus_history, created_at, modified_at, schema_version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
-    );
-    let importedCount = 0;
-    const tx = this.db().transaction(() => {
-      for (const entry of entries) {
-        let parsedJson: unknown;
-        try {
-          parsedJson = JSON.parse(readFileSync(join(this.chatsDir, entry, SIDECAR_FILE), "utf8"));
-        } catch {
-          continue; // No sidecar / unreadable / bad JSON → skip.
-        }
-        const parsed = chatThreadSidecarSchema.safeParse(parsedJson);
-        if (!parsed.success) continue;
-        const s = parsed.data;
-        const info = insert.run(
-          s.threadId,
-          entry,
-          s.name,
-          s.anchorCaptureId,
-          s.archived ? 1 : 0,
-          s.pinned ? 1 : 0,
-          JSON.stringify(s.focusHistory),
-          s.createdAt,
-          s.modifiedAt
-        );
-        if (info.changes > 0) importedCount += 1;
+    const sidecars: Array<{ dirName: string; sidecar: ChatThreadSidecar }> = [];
+    for (const entry of entries) {
+      let parsedJson: unknown;
+      try {
+        parsedJson = JSON.parse(await readFile(join(this.chatsDir, entry, SIDECAR_FILE), "utf8"));
+      } catch {
+        continue; // No sidecar / unreadable / bad JSON → skip.
       }
-    });
+      const parsed = chatThreadSidecarSchema.safeParse(parsedJson);
+      if (!parsed.success) continue;
+      sidecars.push({ dirName: entry, sidecar: parsed.data });
+    }
+    if (sidecars.length === 0) return;
+
+    let importedCount = 0;
     try {
+      const insert = this.db().prepare(
+        `INSERT OR IGNORE INTO chat_threads
+           (thread_id, dir_name, name, anchor_capture_id, archived, pinned, focus_history, created_at, modified_at, schema_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+      );
+      const tx = this.db().transaction(() => {
+        for (const { dirName, sidecar: s } of sidecars) {
+          const info = insert.run(
+            s.threadId,
+            dirName,
+            s.name,
+            s.anchorCaptureId,
+            s.archived ? 1 : 0,
+            s.pinned ? 1 : 0,
+            JSON.stringify(s.focusHistory),
+            s.createdAt,
+            s.modifiedAt
+          );
+          if (info.changes > 0) importedCount += 1;
+        }
+      });
       tx();
     } catch (cause) {
       this.log.warn("chat-thread-store: legacy sidecar import failed", {
@@ -609,4 +689,22 @@ function isNodeError(value: unknown): value is NodeJS.ErrnoException {
 
 function errMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+/**
+ * Resolve when `promise` settles (fulfilled OR rejected) or after `ms`,
+ * whichever comes first. Never rejects. The timer is cleared as soon as the
+ * promise settles and `unref`'d so a wait that is still parked (e.g. behind
+ * a TCC prompt) never pins the process open.
+ */
+function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+    const done = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    promise.then(done, done);
+  });
 }

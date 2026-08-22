@@ -107,7 +107,7 @@ describe("ChatThreadStore.create / get", () => {
       anchorCaptureId: "cap-123"
     });
 
-    store.setOwnerClientId("owned", "lag_client_a");
+    await store.setOwnerClientId("owned", "lag_client_a");
 
     expect(await store.get("owned")).toMatchObject({
       threadId: "owned",

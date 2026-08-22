@@ -353,6 +353,45 @@ See
 [docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md](docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md)
 §"Shipping Status" for the rollout history.
 
+## Never block the main thread on a TCC-gated path
+
+**No synchronous filesystem read of anything under `getCapturesRoot()`,
+`getChatsRoot()`, or `getDurableCapturesRoots()` in the main process —
+not at startup, not on window open, not on a hot path.** Those roots
+default to `~/Documents/PwrSnap`, and macOS gates `~/Documents` behind
+the "Allow Documents access" consent prompt. `open()` / `opendir()` under
+it **park without bound** while that prompt is pending for the running
+binary's TCC identity (a fresh worktree's Electron, a new packaged
+build) and return `EPERM` once denied. A `readdirSync` there on the main
+thread froze the whole app at startup — beachball, "Application Not
+Responding", ~0% CPU, main thread in `readdirSync → opendir →
+open$NOCANCEL` — because the event loop, the IPC dispatcher, and the
+AppKit run loop share that thread and there is no UI left to answer the
+prompt from. `PWRSNAP_E2E=1` hides the whole class (it rebases
+`documents` into userData), so E2E green proves nothing here.
+
+- Use `node:fs/promises` and let the caller `await` — or, when the read
+  is a nicety rather than the source of truth, bound the wait and
+  proceed without it (the template is `ChatThreadStore.ensureImported()`
+  + `LEGACY_IMPORT_WAIT_MS` in
+  [chat-thread-store.ts](apps/desktop/src/main/ai/chat-thread-store.ts)).
+- A pending prompt still parks the libuv threadpool thread that took the
+  async call. That is fine: the window paints, menus work, the OS dialog
+  can be answered, and everything drains when it is. The main thread is
+  the invariant, not the threadpool.
+- Metadata calls (`stat` / `access` / `existsSync`) don't open the file
+  and have not been observed to prompt, but don't add new sync ones under
+  these roots either.
+- Finding the next one:
+  `grep -rn -E "readdirSync|readFileSync|openSync|opendirSync" apps/desktop/src/main --include='*.ts' | grep -v __tests__`
+  then check each path argument against the roots above. Most hits are
+  userData / app resources and fine.
+
+History + the `sample` recipe:
+[docs/solutions/2026-06-12-macos-tcc-captures-folder-denials.md](docs/solutions/2026-06-12-macos-tcc-captures-folder-denials.md)
+§"Addendum (2026-08-22)". Pinned by
+[chat-thread-store-documents-access.test.ts](apps/desktop/src/main/ai/__tests__/chat-thread-store-documents-access.test.ts).
+
 ## Bake render cache — orphans are tolerated, not swept
 
 Content-addressed cache; `BAKE_PIPELINE_VERSION` is in the hash, so a

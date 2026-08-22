@@ -35,8 +35,8 @@
 // explicit filesystem candidate above, or pinned in Settings → AI.
 
 import { execFile as execFileCallback } from "node:child_process";
-import { constants as fsConstants, readdirSync } from "node:fs";
-import { access } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -224,11 +224,13 @@ export async function assertCodexCliVersion(
 
 /** Every installed nvm node version's bin dir, newest first — an
  *  `npm i -g codex` under nvm lands there, which a GUI-launched app's
- *  sparse PATH misses. Pure readdir; no shell is ever spawned. */
-export function nvmNodeBinDirs(home: string = os.homedir()): string[] {
+ *  sparse PATH misses. Pure readdir; no shell is ever spawned. Async so
+ *  discovery never does a synchronous directory read on the main thread
+ *  (the call chain is already async). */
+export async function nvmNodeBinDirs(home: string = os.homedir()): Promise<string[]> {
   const base = path.join(home, ".nvm", "versions", "node");
   try {
-    return readdirSync(base)
+    return (await readdir(base))
       .sort()
       .reverse()
       .map((version) => path.join(base, version, "bin"));
@@ -237,7 +239,7 @@ export function nvmNodeBinDirs(home: string = os.homedir()): string[] {
   }
 }
 
-function getCodexAppCandidatePaths(): string[] {
+async function getCodexAppCandidatePaths(): Promise<string[]> {
   if (process.platform === "win32") {
     // OpenAI's Windows installer drops the Codex CLI/Desktop under
     // %LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe (per-user); also
@@ -257,7 +259,7 @@ function getCodexAppCandidatePaths(): string[] {
     path.join(os.homedir(), "Applications/Codex.app/Contents/Resources/codex"),
     "/opt/homebrew/bin/codex",
     "/usr/local/bin/codex",
-    ...nvmNodeBinDirs().map((dir) => path.join(dir, "codex"))
+    ...(await nvmNodeBinDirs()).map((dir) => path.join(dir, "codex"))
   ];
 }
 
@@ -368,7 +370,7 @@ async function resolveCommandFromPath(
 export async function buildCodexAutoCandidates(env: NodeJS.ProcessEnv): Promise<
   Array<{ command: string; source: DesktopCodexCandidateSource }>
 > {
-  const appPaths = getCodexAppCandidatePaths();
+  const appPaths = await getCodexAppCandidatePaths();
   const appPathSet = new Set(appPaths);
   const seen = new Set<string>();
   const out: Array<{ command: string; source: DesktopCodexCandidateSource }> = [];

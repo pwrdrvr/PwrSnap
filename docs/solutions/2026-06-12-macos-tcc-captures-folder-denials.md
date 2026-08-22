@@ -244,3 +244,69 @@ every job. Apple references:
 [`NSDocumentsFolderUsageDescription`](https://developer.apple.com/documentation/bundleresources/information-property-list/nsdocumentsfolderusagedescription),
 [XCTest UI interruptions](https://developer.apple.com/documentation/xctest/handling-ui-interruptions), and
 [`AXUIElement`](https://developer.apple.com/documentation/applicationservices/axuielement_h).
+
+## Addendum (2026-08-22): startup beachball — a sync `readdir` on Documents parked the main thread
+
+**Symptom.** Launching a build from a NEW binary location (a fresh git
+worktree's `out/main/index.js`, so a TCC identity macOS had never seen)
+showed the Library window and then the whole app beachballed —
+"Application Not Responding", ~0% CPU. `sample` on the main process put
+the main thread in `readdirSync → uv_fs_scandir → opendir →
+open$NOCANCEL` under `~/Documents/PwrSnap`, renderers idle. A shell `ls
+~/Documents/PwrSnap` in the same state returned "Interrupted system call"
+— the Documents consent prompt was pending for that identity, and macOS
+parks every `open()`/`opendir()` under the folder until the user
+answers. `PWRSNAP_E2E=1` (which rebases `documents` into userData)
+avoided it entirely, which nailed the path.
+
+**Cause.** `ChatThreadStore.ensureImported()` — the one-time legacy
+`pwrsnap-thread.json` import — did `readdirSync(<captures>/Chats)` plus a
+`readFileSync` per entry, on the main thread, the first time any store
+method ran. The Library mounts `LibraryChatPanel`, which dispatches
+`codex:libraryChat:list` on mount, so the first read of a TCC-gated path
+in a fresh install happened synchronously, inside the first IPC after
+first paint. A *pending* prompt blocks that call indefinitely (the
+beachball); a *denied* grant would have EPERM'd it (caught, harmless).
+The Electron event loop, the IPC dispatcher, and the AppKit run loop all
+share that thread, so nothing — not even the OS consent dialog's
+activation of our app — could proceed.
+
+**Fix (#PR).** The import is now async (`node:fs/promises`) and
+time-bounded: every store method awaits `ensureImported()` BEFORE its
+SQLite section (so `update`/`appendFocus` keep their SELECT→UPDATE
+yield-free), and `ensureImported()` resolves when the import settles OR
+after `LEGACY_IMPORT_WAIT_MS` (1.5 s), whichever first. The SQLite index
+is the source of truth for every thread created since the index landed;
+the sidecar walk only back-fills pre-index threads, so proceeding without
+it is always correct and the background import lands whenever the read
+returns. A denied dir (`EPERM`/`EACCES`) logs one warn and skips; `ENOENT`
+stays silent. `setBackendConfig` / `setOwnerClientId` became async with
+it. `codex-discovery.ts`'s `nvmNodeBinDirs` lost its `readdirSync` too
+(not TCC-gated — `~/.nvm` — but it was the only other sync directory read
+on the main thread and its call chain was already async).
+
+**The rule.** Nothing in the main process may do a synchronous read
+(`readdirSync`, `readFileSync`, `openSync`, `opendirSync`, …) of a path
+under `getCapturesRoot()` / `getChatsRoot()` / `getDurableCapturesRoots()`
+— not at startup, not on window open, not on a hot path. `open()` and
+`opendir()` are the gated syscalls; a pending prompt parks them without
+bound and there is no UI on the main thread to answer it from. Use
+`node:fs/promises` and let the caller await or degrade (the bounded-wait
+shape above is the template). Metadata calls (`stat`/`access`/
+`existsSync`) don't open the file and have not been observed to prompt —
+but don't add new sync ones under these roots either.
+
+**Finding the next one.**
+
+```bash
+# Every sync fs call site in main; then check each path argument against
+# the captures/chats roots. Most hits are userData / app resources and fine.
+grep -rn -E "readdirSync|readFileSync|openSync|opendirSync" apps/desktop/src/main --include='*.ts' | grep -v __tests__
+```
+
+Pinned by
+`apps/desktop/src/main/ai/__tests__/chat-thread-store-documents-access.test.ts`:
+`list()`/`get()` answer from the index while the dir read is parked
+(hooked `readdir` that never settles) and when it is denied (`EPERM`),
+the import is attempted once per store, and the module never imports
+from `node:fs`.

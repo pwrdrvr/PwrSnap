@@ -269,13 +269,15 @@ export function registerSizzleChatHandlers(params?: {
         ...(req.name !== undefined ? { name: req.name } : {}),
         ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
-      if (injectedSizzleController === null) getSizzleStore().setBackendConfig(view.threadId, config);
+      if (injectedSizzleController === null) {
+        await getSizzleStore().setBackendConfig(view.threadId, config);
+      }
       if (
         injectedSizzleController === null &&
         ctx.principal === "mcp" &&
         ctx.localAgent !== undefined
       ) {
-        getSizzleStore().setOwnerClientId(view.threadId, ctx.localAgent.clientId);
+        await getSizzleStore().setOwnerClientId(view.threadId, ctx.localAgent.clientId);
       }
       return ok(toLibraryThreadView(view, config));
     } catch (cause) {

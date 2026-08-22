@@ -212,19 +212,19 @@ describe("nvmNodeBinDirs", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  test("lists every installed node version's bin dir, newest first", () => {
+  test("lists every installed node version's bin dir, newest first", async () => {
     const base = join(home, ".nvm", "versions", "node");
     mkdirSync(join(base, "v22.1.0"), { recursive: true });
     mkdirSync(join(base, "v24.14.1"), { recursive: true });
 
-    expect(nvmNodeBinDirs(home)).toEqual([
+    await expect(nvmNodeBinDirs(home)).resolves.toEqual([
       join(base, "v24.14.1", "bin"),
       join(base, "v22.1.0", "bin")
     ]);
   });
 
-  test("returns empty when nvm is not installed (no shell is spawned)", () => {
-    expect(nvmNodeBinDirs(home)).toEqual([]);
+  test("returns empty when nvm is not installed (no shell is spawned)", async () => {
+    await expect(nvmNodeBinDirs(home)).resolves.toEqual([]);
   });
 });
 

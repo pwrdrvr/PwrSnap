@@ -65,6 +65,13 @@ export function SceneRegions({
                 <span
                   className={"szt__pill" + (isFade ? " is-fade" : "")}
                   style={{ left: `${left}px` }}
+                  role={onSelectScene !== undefined ? "button" : undefined}
+                  title={`Transition into scene ${scene.index + 1} — click to edit in the inspector`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onSelectScene?.(scene.sceneId);
+                  }}
+                  onPointerDown={(event) => event.stopPropagation()}
                   data-testid={`sizzle-timeline-transition-${scene.index}`}
                 >
                   {type.replace(/-/g, " ")}

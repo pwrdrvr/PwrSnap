@@ -634,6 +634,31 @@ styles.
 Split / merge / reorder scenes from the timeline, scene transition pills on
 boundaries, the "Re-fit anchors" action (§4.2).
 
+*As built (2026-08-22):* clicking a scene region or its transition pill
+selects the SCENE and the rail drawer shows `SceneInspector.tsx` (a clip
+and a scene are never selected together): narration excerpt + synthesis
+state with Synthesize / Re-synthesize (explicit, spends TTS credits), the
+transition INTO the scene as type (all eight) + duration, ◀ ▶ move, and
+the structural operations as pure ops in `scene-ops.ts` — **merge with
+previous** (narration concatenates; the boundary clip is pinned to the
+merged-in narration's first words with the occurrence counted over the
+preceding text and takes the former scene transition as its clip
+transition; phrase occurrences re-count; offsets shift by the previous
+scene's length), **split at playhead** (RESOLVED scenes only — the script
+divides at the word spoken at the playhead, clips before it stay, the
+rest move to a new scene that cuts in with occurrences/offsets rebased;
+nothing is fabricated for an estimated scene, the button says why), the
+existing every-clip-its-own-scene split, and **Re-fit anchors**:
+`useSequencePlan` remembers each scene's last RESOLVED length in-session
+(the on-open cache seeds the baseline, never an offer) and when a
+re-synthesis changes it under offset-anchored clips the inspector offers
+"Re-fit anchors / Keep as is" — scaling by new/old, explicit, never
+automatic (§4.2; no "authored against" duration is persisted). Pure ops
+are unit-tested (occurrence re-counting, rebasing, the no-op edges), and
+the App tests drive region/pill selection, the transition edit, move +
+merge, split at the playhead over cached words, and the re-fit offer
+after a preview returns a longer narration.
+
 **Deferred, tracked not scheduled:** audio `acrossfade` under a video crossfade
 (§4.7); the new-clip `cut` vs `crossfade` default (§4.7) — a product call, not an
 engineering one.

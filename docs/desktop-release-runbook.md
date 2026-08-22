@@ -203,7 +203,25 @@ The release workflow separates preparation, signing, and publication:
 6. **`publish-release-assets`** depends on successful Linux, macOS, and Windows
    jobs. Only this job creates the GitHub Pre-release, with changelog notes,
    macOS DMG/ZIP/updater metadata, the stable `PwrSnap.dmg` alias, the signed
-   Windows installer/updater metadata, and checksums.
+   Windows installer/updater metadata, the stable
+   `PwrSnap-windows-x64-setup.exe` alias, and checksums.
+
+Both stable-name aliases exist so a download link never has to name a version:
+
+| Alias | Stable URL |
+| --- | --- |
+| `PwrSnap.dmg` | `https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg` |
+| `PwrSnap-windows-x64-setup.exe` | `https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap-windows-x64-setup.exe` |
+
+Each is a byte-identical copy of its versioned artifact, made inside the
+platform's protected signing job after signing, so the macOS notarization and
+the Windows Authenticode signature carry over without re-signing. The Windows
+alias is added to `PwrSnap-windows-SHA256SUMS` with the versioned installer's
+digest, so the checksum file covers every published installer. Neither alias is
+an updater target: `latest-mac.yml`, `latest.yml`, and the `.blockmap` files
+keep naming the versioned artifacts, because electron-updater resolves updates
+and delta downloads through them. `publish-release-assets` fails if either
+alias is missing from the downloaded artifacts.
 
 No signing job publishes directly. A macOS or Windows signing failure, an
 unapproved environment, or a Linux build failure leaves no partial GitHub

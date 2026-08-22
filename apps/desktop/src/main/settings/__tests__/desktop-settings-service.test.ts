@@ -219,7 +219,8 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
 
   test("v1 shape missing the newer hotkeys gets the defaults filled in", async () => {
     // Older PwrSnap installs wrote `hotkeys` without `videoCapture` /
-    // `fullScreen` / `allScreens` / `timed` / `reshowFloatOver`.
+    // `fullScreen` / `allScreens` / `timed` / `reshowFloatOver` /
+    // `openLibrary`.
     // parseV1 must fill the gaps so the in-memory shape always has
     // every field — even though the file on disk doesn't yet. The
     // next write upgrades the file in place.
@@ -246,6 +247,9 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.hotkeys.timed).toBe("");
     // Re-show last Float-Over defaults to the three-modifier ⌘⌥⇧F chord.
     expect(settings.hotkeys.reshowFloatOver).toBe("CommandOrControl+Alt+Shift+F");
+    // Open Library is unbound by default — ⌘⇧L is taken by editors and
+    // by our own Sizzle window, so we never register it out of the box.
+    expect(settings.hotkeys.openLibrary).toBe("");
   });
 
   test("v1 shape missing `library.gridZoom` gets the default filled in; out-of-range clamps", async () => {

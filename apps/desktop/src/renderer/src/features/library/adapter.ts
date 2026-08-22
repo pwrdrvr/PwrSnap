@@ -66,6 +66,33 @@ export function isSameLocalDay(a: Date, b: Date): boolean {
 }
 
 /**
+ * How many of these projects land in the grid's Today bucket.
+ *
+ * Projects are library items, not a side list: `projectToFixture` mixes
+ * them into the same day buckets as captures, and the day header counts
+ * them. So the sidebar's Today badge has to count them too, or it
+ * disagrees with the view it opens.
+ *
+ * The renderer has to do this itself — `library:counts` cannot. Projects
+ * live outside the captures table entirely, so the bus number is
+ * captures-only by construction.
+ *
+ * Pivots on `createdAt`, matching `projectToFixture`; a project edited
+ * today but created last week stays in last week's bucket, the same way
+ * its grid cell does.
+ */
+export function countProjectsCreatedToday(
+  projects: ReadonlyArray<SizzleProject>,
+  now: Date
+): number {
+  let count = 0;
+  for (const project of projects) {
+    if (isSameLocalDay(new Date(project.createdAt), now)) count += 1;
+  }
+  return count;
+}
+
+/**
  * Bucket a capture's date into a section header. The returned `day`
  * string is the section's grouping key (so it must be UNIQUE per
  * calendar day — otherwise `groupByDay` collapses different days

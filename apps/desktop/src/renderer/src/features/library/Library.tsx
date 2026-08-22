@@ -49,7 +49,12 @@ import type { CopyPreset } from "../shared/CopyButton";
 import type { Tool } from "../editor/editor-tools";
 import { useEditorToolState } from "../editor/useEditorToolState";
 import { DEFAULT_BLUR_STYLE, type BlurStyle } from "@pwrsnap/shared";
-import { FixtureBackedRecords, isSameLocalDay, mapBundleIdToAppId } from "./adapter";
+import {
+  FixtureBackedRecords,
+  countProjectsCreatedToday,
+  isSameLocalDay,
+  mapBundleIdToAppId
+} from "./adapter";
 import type { Capture } from "./captures";
 import { APP_INFO, PROJECT_APP_KEY, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
@@ -1995,7 +2000,25 @@ export function Library() {
     return count;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveRecords, todayDateStr]);
-  const todayCount = todayCountState.total ?? loadedTodayCount;
+  // Reels created today are cells in the Today grid and are counted by
+  // its day header, so the badge has to include them or it contradicts
+  // the view it opens. `library:counts` can't supply this — projects
+  // aren't in the captures table.
+  const todayProjectCount = useMemo(
+    () => countProjectsCreatedToday(sizzleProjects, new Date()),
+    // todayDateStr — recounts across midnight / time-zone changes, the
+    // same trigger `loadedTodayCount` uses.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sizzleProjects, todayDateStr]
+  );
+  const todayCount = (todayCountState.total ?? loadedTodayCount) + todayProjectCount;
+
+  // Every item the unfiltered grid renders. `totalLive` is the
+  // captures-table total (app_stats), which is why it needs the reels
+  // added: it is the denominator of the topbar's "N of M" whose
+  // numerator already counts them, and it is the All Captures badge
+  // that the three Types rows are supposed to sum to.
+  const totalItems = totalLive + sizzleProjects.length;
 
   // Topbar count when the sidebar is narrowing. The facets are applied
   // client-side over a partially loaded keyset window, so the honest
@@ -3581,8 +3604,8 @@ export function Library() {
                   : isTrashView
                     ? `${trashTotal} in Trash`
                     : filteredTotal === null
-                      ? `${totalLive} captures`
-                      : `${filteredTotal} of ${totalLive} captures match ${summarizeLibraryFilter(
+                      ? `${totalItems} captures`
+                      : `${filteredTotal} of ${totalItems} captures match ${summarizeLibraryFilter(
                           activeFilter,
                           resolveAppLabel
                         )}`
@@ -3603,10 +3626,10 @@ export function Library() {
                   : filteredTotal !== null
                     ? isToolbarNarrow
                       ? `${filteredTotal}`
-                      : `${filteredTotal} of ${totalLive}`
+                      : `${filteredTotal} of ${totalItems}`
                     : isToolbarNarrow
-                      ? `${totalLive}`
-                      : `${totalLive} captures`}
+                      ? `${totalItems}`
+                      : `${totalItems} captures`}
             </span>
           )}
         </div>
@@ -3837,7 +3860,7 @@ export function Library() {
             </svg>
           </span>
           <span className="psl__nav-label">All Captures</span>
-          <span className="psl__nav-count">{totalLive}</span>
+          <span className="psl__nav-count">{totalItems}</span>
         </button>
         <button
           className={"psl__nav" + (isTodayView ? " is-active" : "")}

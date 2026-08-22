@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
+
+PackageIdentifier: PwrDrvr.PwrSnap
+PackageVersion: 1.0.3
+PackageLocale: en-US
+Publisher: PwrDrvr LLC
+PublisherUrl: https://pwrsnap.com
+PublisherSupportUrl: https://github.com/pwrdrvr/PwrSnap/issues
+PackageName: PwrSnap
+PackageUrl: https://pwrsnap.com
+License: MIT
+LicenseUrl: https://github.com/pwrdrvr/PwrSnap/blob/main/LICENSE
+Copyright: Copyright (c) 2026 PwrDrvr LLC
+CopyrightUrl: https://github.com/pwrdrvr/PwrSnap/blob/main/LICENSE
+ShortDescription: Screen capture with a local-first library, one-click clipboard copies, and optional AI assist through your own Codex install.
+Description: |-
+  PwrSnap is a screen-capture and capture-library app. Press Control+Shift+C to
+  snap a region or a window, and a float-over toast offers a Low, Medium, or High
+  render to copy straight to the clipboard. Every capture lands in a searchable
+  library that groups captures by the app they came from, and a tray icon keeps
+  the most recent capture one click away for a re-copy or an edit. Hotkeys are
+  editable in Settings and rebind without a restart.
+
+  Captures are written to your own machine as a local SQLite index plus a
+  content-addressed store of the source images, and they stay there. PwrSnap
+  opens no account of its own, holds no API key of its own, and sends no
+  telemetry.
+
+  AI features are opt-in and run through the OpenAI Codex CLI or Codex Desktop
+  install you already have. Annotation, generated descriptions, tag suggestions,
+  smart filenames, and sensitive-data review all go through that local Codex
+  process on the plan you already have with it. Settings discovers every Codex
+  binary on the system and lets you pin a specific path.
+
+  Windows notes: this is a per-user install to %LOCALAPPDATA%\Programs\PwrSnap,
+  and it registers the .pwrsnap capture-bundle file type with File Explorer.
+  Windows video recording currently captures screen video only; audio capture is
+  not wired into the Windows backend yet.
+Moniker: pwrsnap
+Tags:
+  - annotate
+  - capture
+  - clipboard
+  - codex
+  - developer-tools
+  - local-first
+  - markup
+  - productivity
+  - screen-capture
+  - screen-recording
+  - screenshot
+  - screenshot-tool
+  - snip
+ReleaseNotesUrl: https://github.com/pwrdrvr/PwrSnap/releases/tag/v1.0.3
+Documentations:
+  - DocumentLabel: Documentation
+    DocumentUrl: https://docs.pwrsnap.com
+ManifestType: defaultLocale
+ManifestVersion: 1.12.0

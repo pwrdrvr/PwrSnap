@@ -16,6 +16,35 @@ is here for developers and release operators.
 - The real public release still needs final Authenticode signing, update-feed
   validation, and a legally vetted Windows FFmpeg binary source.
 
+## Install With winget
+
+Once the manifest is accepted into the Windows Package Manager community
+repository, the shipping installer is one command:
+
+```powershell
+winget install PwrDrvr.PwrSnap
+```
+
+That is a per-user install to `%LOCALAPPDATA%\Programs\PwrSnap`, run silently,
+from the same Authenticode-signed installer attached to the GitHub release.
+
+The three manifest files, the submission checklist, and the proposal for
+keeping the published version current live in
+[docs/windows/winget/](winget/README.md). The manifests there are the source of
+truth; the copies in `microsoft/winget-pkgs` are a downstream mirror.
+Submitting or updating that pull request is an operator action — nothing in
+this repository does it automatically.
+
+Schema-check the manifests before any submission, from the repository root, on
+any platform:
+
+```bash
+node docs/windows/winget/validate-manifests.mjs
+```
+
+`winget validate` and `Tools\SandboxTest.ps1` are the other two required gates,
+and both need a Windows machine.
+
 ## Use The Prepared Installer
 
 From a local package build, the installer is written here:

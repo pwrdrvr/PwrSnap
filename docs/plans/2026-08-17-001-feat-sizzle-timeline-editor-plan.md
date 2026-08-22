@@ -612,6 +612,24 @@ transform for image clips. Depends on PR 1's extraction but **not** on the
 timeline, so it can run in parallel with PRs 3–6. Fidelity target is "good enough
 to judge a timing decision", explicitly not pixel-parity with ffmpeg.
 
+*As built (2026-08-22):* `preview-blend.ts` (pure) + a two-layer
+`PreviewStage`. The math mirrors the export, not a guess at it: a
+fade-like transition INTO beat N overlaps the `d` seconds BEFORE N's
+audio start (the planner extends N's visual at its head, the composer's
+xfade sits at `chainEnd − d`), so the stage blends N in over `[N.start −
+d, N.start)`, runs N's video and Ken Burns from that earlier head (the
+live player's timeline time is shifted by the overlap), and image beats
+get zoompan's 1.0 ↔ 1.10 linear zoom by input parity. Blends are CSS
+animations shaped per xfade name — fade, fadeblack / fadewhite (color
+layer first half, media second), coverleft (incoming over a static
+outgoing), slideleft (both move), zoomin (outgoing zooms away) — seeked
+by a negative `animation-delay` and running only while the scene plays,
+so a scrub lands on the exact frame and playback is smooth between audio
+ticks. The incoming layer's video is a paused first-frame stand-in
+(`#t=` media fragment), never a second live player. Tests: the pure
+module, and a component test against the rendered layers / animation
+styles.
+
 **PR 8 — `feat(desktop): multi-scene timeline operations`**
 Split / merge / reorder scenes from the timeline, scene transition pills on
 boundaries, the "Re-fit anchors" action (§4.2).

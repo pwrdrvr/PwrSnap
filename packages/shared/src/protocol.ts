@@ -1358,7 +1358,13 @@ export type SizzleSequencePreviewPlan = {
   durationSec: number;
   timingQuality: SizzleSpeechTimingQuality;
   warnings: SizzleSequencePreviewWarning[];
+  /** Sliding 5-word windows (capped at 300) — a picker feed, kept for the
+   *  legacy phrase dropdown. The timeline's word ribbon reads `words`. */
   transcriptPhrases: SizzleSequenceTranscriptPhrase[];
+  /** Every transcribed word with its spoken time, straight off the
+   *  resolved speech timing. The word ribbon positions these on the axis
+   *  and `anchorTimingForWord` builds `phrase` anchors from them. */
+  words: SizzleWordTiming[];
   beats: SizzleSequencePreviewBeat[];
 };
 
@@ -4530,6 +4536,12 @@ export type Commands = {
            *  synthesizing. Null when the audio is cached but its timing
            *  sidecar is not. */
           durationSec: number | null;
+          /** The cached transcript's words with spoken times, for the
+           *  timeline's word ribbon. Null together with `durationSec` —
+           *  both come off the same cached speech timing, so "duration
+           *  known but no words" is not a reachable state: null timing is
+           *  the renderer's ESTIMATED state, non-null is RESOLVED. */
+          words: SizzleWordTiming[] | null;
         }
       | { cached: false };
   };

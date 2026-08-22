@@ -300,6 +300,23 @@ export function useEditorToolState(
     };
   }, [captureId, clearAutoDismissTimer]);
 
+  // Cancel site #6: the user turned the affordance OFF in Settings while
+  // it was live. `matchingTextEnabled` is otherwise consulted only when
+  // an annotation is placed, so without this the chip stays on screen
+  // for the rest of its 8s and — worse — an already-clicked "armed"
+  // state survives indefinitely, leaving the tool swapped to text and
+  // giving the NEXT text placement matching-text treatment from a
+  // feature the user just disabled.
+  //
+  // This became reachable when the toggle got a UI: previously the flag
+  // could only change by hand-editing pwrsnap-settings.json, which does
+  // not broadcast, so a live transition never happened.
+  useEffect(() => {
+    if (matchingTextEnabled) return;
+    clearAutoDismissTimer();
+    setMatchingText((current) => (current.kind === "idle" ? current : { kind: "idle" }));
+  }, [matchingTextEnabled, clearAutoDismissTimer]);
+
   // ---- Settings-write coalescer ----------------------------------
   //
   // Per-(tool, field) timers. Each setStyleField call resets ITS OWN

@@ -143,6 +143,10 @@ const imageRecord: CaptureRecord = {
 };
 
 const settings = {
+  // `satisfies` so a new `Settings["hotkeys"]` field is a compile error
+  // here rather than reaching the renderer as `undefined` — the outer
+  // object is a deliberate partial behind the cast below, but this block
+  // is read key-by-key by useHotkeys.
   hotkeys: {
     quickCapture: "",
     region: "",
@@ -151,8 +155,9 @@ const settings = {
     allScreens: "",
     timed: "",
     videoCapture: "",
-    reshowFloatOver: ""
-  },
+    reshowFloatOver: "",
+    openLibrary: ""
+  } satisfies Settings["hotkeys"],
   ai: {
     enabled: false,
     consentAcceptedAt: null,

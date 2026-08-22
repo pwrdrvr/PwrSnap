@@ -261,7 +261,12 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   // has to read live from settings rather than hard-coding a chord.
   // (It used to advertise a flat "(⌘⇧L)" that main never registered —
   // the button worked, the chord did nothing.) Empty = no parenthetical.
-  const openLibraryHk = acceleratorToDisplayKeys(hotkeys.openLibrary);
+  // `?? ""` because useHotkeys stores the broadcast payload verbatim with
+  // no per-key defaulting, and acceleratorToDisplayKeys dereferences
+  // `accel.length` on line 1 — an undefined here throws and the error
+  // boundary swaps the whole tray for the failure panel. Same guard
+  // applyHotkeys and HotkeysPage already use.
+  const openLibraryHk = acceleratorToDisplayKeys(hotkeys.openLibrary ?? "");
   const openLibraryTitle =
     openLibraryHk.length > 0
       ? `Open Library  (${openLibraryHk.join("")})`

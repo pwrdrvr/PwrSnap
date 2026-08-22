@@ -596,6 +596,21 @@ describe("FloatOverHost", () => {
     expect(dispatchMock.mock.calls.some((c) => c[0] === "float-over:dismiss")).toBe(true);
   });
 
+  // The other half of the guard: with no handler the button must render
+  // visibly dead. Without this, `disabled={onReveal === undefined}` could
+  // be deleted with the whole suite green (mutation-verified), which is
+  // how a live-looking no-op button gets back in.
+  test("the Reveal button disables itself when no handler is wired", async () => {
+    const el = await renderFloatOver({ src: "data:image/png;base64,iVBORw0KGgo=" });
+    const reveal = Array.from(el.querySelectorAll("button")).find(
+      (b) => b.getAttribute("title") === "Reveal in library"
+    );
+    expect(reveal).toBeDefined();
+    expect(reveal?.disabled).toBe(true);
+    // Icon-only button: the sr-only span is its only accessible name.
+    expect(reveal?.textContent).toContain("Reveal in library");
+  });
+
   test("reads settings from settings-change event payload", async () => {
     const api = installHostApi();
     container = document.createElement("div");

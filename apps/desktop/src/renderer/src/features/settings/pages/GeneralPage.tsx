@@ -43,6 +43,12 @@ import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { useSettingsContext } from "../SettingsContext";
 import { setActivePage } from "../useActivePage";
 
+/** Shared by both audio rows off macOS. One constant, not two literals:
+ *  only one of the two is pinned by a test, so a copy edit to the other
+ *  would ship stale. */
+const AUDIO_UNSUPPORTED_SUB =
+  "Recording audio is macOS-only for now — PwrSnap records video only on this platform. The preference is saved for when the recorder here grows audio support.";
+
 const THEME_OPTIONS: readonly SegmentOption<AppearanceTheme>[] = [
   { id: "system", label: "System" },
   { id: "dark", label: "Dark" },
@@ -139,11 +145,50 @@ export function GeneralPage(): ReactElement {
   // so mirror that here rather than flashing the switch off.
   const matchingTextEnabled = settings?.editor.matchingText.enabled ?? true;
   const platform = window.pwrsnapApi?.platform;
-  // The FFmpeg backend that drives Windows recording captures screen
-  // video only and logs a warning when either toggle is on
-  // (recording-service.ts). Say so rather than letting the switches
-  // imply audio the recorder will silently drop.
-  const audioSupported = platform !== "win32";
+  // Recording audio is macOS-only, so this is a POSITIVE test. Windows
+  // records through FFmpeg, which captures screen video only and logs a
+  // warning when either toggle is on (recording-service.ts); Linux has
+  // no recorder at all (resolveRecorderBinary returns null off darwin).
+  // `platform !== "win32"` would read Linux — and an absent preload
+  // bridge — as macOS and show them Mac-specific copy.
+  const audioSupported = platform === "darwin";
+
+  // Microphone opt-in has to REQUEST the grant, not just save a flag.
+  // macOS reports `not-determined` until something calls
+  // askForMediaAccess, and nothing else in the app ever does for the mic
+  // — while `recording:start` REJECTS an ungranted microphone rather
+  // than degrading to video-only (recording-handlers.ts preflight). So
+  // persisting `true` on an un-granted mic bricks every subsequent
+  // recording, with the failure surfacing only as a best-effort
+  // notification. index.ts's own routing comment asks for exactly this:
+  // "When mic features ship, request them in-context, not here."
+  //
+  // Off darwin `permissions:request` is a no-op that returns "granted",
+  // so this costs nothing there.
+  const [micDenied, setMicDenied] = useState(false);
+  const onMicrophoneChange = (next: boolean): void => {
+    if (!ready) return;
+    if (!next) {
+      setMicDenied(false);
+      void patch({ recording: { includeMicrophone: false } });
+      return;
+    }
+    if (!audioSupported) {
+      // No recorder here can use the mic, so there is no grant to ask
+      // for — just remember the preference for when one can.
+      void patch({ recording: { includeMicrophone: true } });
+      return;
+    }
+    void (async () => {
+      const result = await dispatch("permissions:request", {
+        permission: "microphone"
+      });
+      const granted = result.ok && result.value.status === "granted";
+      setMicDenied(!granted);
+      // Only persist the opt-in once the OS has actually said yes.
+      if (granted) await patch({ recording: { includeMicrophone: true } });
+    })();
+  };
 
   // Live OS-side registration state, distinct from the saved toggle —
   // macOS/Windows let the user disable a registered login item OS-side
@@ -412,8 +457,8 @@ export function GeneralPage(): ReactElement {
           label="Include system audio"
           sub={
             audioSupported
-              ? "Records what your Mac is playing alongside the screen. Needs the System Audio permission — without it, recording refuses to start."
-              : "Windows recordings are video-only for now, so this has no effect there. The preference is saved for when the Windows recorder grows audio support."
+              ? "Records what your Mac is playing alongside the screen. Shares the Screen Recording grant you already gave PwrSnap — there's no separate permission to enable."
+              : AUDIO_UNSUPPORTED_SUB
           }
           tag="video"
         >
@@ -429,41 +474,35 @@ export function GeneralPage(): ReactElement {
           label="Include your microphone"
           sub={
             audioSupported
-              ? "Records your voice alongside the screen — narration, walkthroughs. Needs the Microphone permission — without it, recording refuses to start."
-              : "Windows recordings are video-only for now, so this has no effect there. The preference is saved for when the Windows recorder grows audio support."
+              ? "Records your voice alongside the screen — narration, walkthroughs. macOS asks for permission the first time you switch this on."
+              : AUDIO_UNSUPPORTED_SUB
           }
           tag="video"
         >
           <Switch
             on={includeMicrophone}
-            onChange={(next) => {
-              if (!ready) return;
-              void patch({ recording: { includeMicrophone: next } });
-            }}
+            onChange={onMicrophoneChange}
           />
         </Row>
-        {audioSupported && (includeSystemAudio || includeMicrophone) ? (
-          // `recording:start` hard-fails when a requested audio source
-          // isn't granted (recording-handlers.ts preflight), so send the
-          // user to the grant surface the moment they opt in rather than
-          // letting them discover it mid-take.
+        {micDenied ? (
+          // The OS said no (or the user dismissed the prompt). We did NOT
+          // persist the toggle — `recording:start` REJECTS an ungranted
+          // microphone rather than degrading to video-only
+          // (recording-handlers.ts preflight), so saving it here would
+          // brick every subsequent recording with a failure that only
+          // surfaces as a best-effort notification.
           <Row
-            label="Audio permissions"
-            sub="Recording refuses to start if a source you've enabled here isn't granted. Check the status of each source before your next take."
-            tag="check"
+            label="Microphone is blocked"
+            sub="macOS won't prompt twice. Turn Microphone on for PwrSnap in System Settings → Privacy & Security, then switch this back on."
+            tag="action required"
           >
-            {/* `.pss__row-r` is a stretch column, so a bare button fills
-                the row's full width. Wrap it the way System Permissions
-                wraps its own row buttons so this one hugs its label. */}
-            <div style={{ display: "flex" }}>
-              <button
-                className="pss__top-btn"
-                type="button"
-                onClick={() => setActivePage("system-permissions")}
-              >
-                Open System Permissions
-              </button>
-            </div>
+            <button
+              className="pss__top-btn"
+              type="button"
+              onClick={() => setActivePage("system-permissions")}
+            >
+              Open System Permissions
+            </button>
           </Row>
         ) : null}
       </Card>
@@ -471,7 +510,7 @@ export function GeneralPage(): ReactElement {
       <Card eyebrow="EDITOR" title="Annotation">
         <Row
           label="Offer a label after placing an arrow"
-          sub="Pops a “+ Add label” chip near the arrow's tail for 8 seconds. Click it to drop matching text in the arrow's color; ignore it and it disappears."
+          sub="Pops a “+ Add label” chip near the arrow's tail. Click it to drop matching text in the arrow's color; ignore it and it fades on its own."
           tag="arrows"
         >
           <Switch

@@ -13,6 +13,32 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 import { DEFAULT_HOTKEYS, type Settings } from "@pwrsnap/shared";
 import { TrayMenu } from "../TrayMenu";
 
+// `useLibrary` owns a MODULE-LEVEL store (`let snapshot`, `subscribed`, a
+// listeners Set) plus an uncancelled `setTimeout(refetchHead, 100)` from
+// ensureSubscription(). Both outlive unmount, so unmocked: only the first
+// test here would ever dispatch `library:list` (the rest hit
+// `if (subscribed) return` and render its leftover snapshot), and the
+// stray timer can fire into a later test — or after the file ends, with
+// `pwrsnapApi` already deleted — updating a React store outside act().
+// `vi.resetModules()` does NOT fix this: TrayMenu is imported statically,
+// so the singleton is bound before any test runs. Mocking is the fix, and
+// costs nothing — these tests are about the header button, not the
+// last-snap block.
+vi.mock("../../../lib/useLibrary", () => ({
+  useLibrary: () => ({
+    loading: false,
+    isLoadingMore: false,
+    rows: [],
+    hasMore: false,
+    appStats: [],
+    totalLive: 0,
+    error: null,
+    loadMore: async () => undefined,
+    refresh: async () => undefined
+  }),
+  useSelectedCaptureId: () => [null, () => undefined]
+}));
+
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
     true;
@@ -36,8 +62,9 @@ let root: Root | null = null;
 type EventHandler = (payload: unknown) => void;
 
 /** Minimal `window.pwrsnapApi` for the tray: `useHotkeys` reads
- *  `settings:read`, `useLibrary` reads `library:list`, and the display
- *  strip reads `system:listDisplays`. Everything else resolves empty. */
+ *  `settings:read` and the display strip reads `system:listDisplays`.
+ *  (`useLibrary` is mocked above, so no `library:list` stub is needed.)
+ *  Everything else resolves empty. */
 function installTrayApi(hotkeys: Partial<Settings["hotkeys"]>): {
   calls: string[];
 } {
@@ -47,9 +74,6 @@ function installTrayApi(hotkeys: Partial<Settings["hotkeys"]>): {
       calls.push(name);
       if (name === "settings:read") {
         return { ok: true, value: { hotkeys: { ...DEFAULT_HOTKEYS, ...hotkeys } } };
-      }
-      if (name === "library:list") {
-        return { ok: true, value: { rows: [], nextCursor: null, appStats: [], totalLive: 0 } };
       }
       if (name === "system:listDisplays") return { ok: true, value: { displays: [] } };
       if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
@@ -85,10 +109,6 @@ function openLibraryButton(el: HTMLElement): HTMLButtonElement {
   return found as HTMLButtonElement;
 }
 
-beforeEach(() => {
-  vi.restoreAllMocks();
-});
-
 afterEach(() => {
   act(() => root?.unmount());
   container?.remove();
@@ -98,6 +118,14 @@ afterEach(() => {
 });
 
 describe("TrayMenu — Open Library button", () => {
+  // Self-pin the invariant the rest of this file assumes. `installTrayApi`
+  // spreads DEFAULT_HOTKEYS, so without this a flip of the shipped default
+  // to a real chord would leave all three tests green while the tray went
+  // back to advertising a binding by default.
+  test("openLibrary ships unbound", () => {
+    expect(DEFAULT_HOTKEYS.openLibrary).toBe("");
+  });
+
   test("advertises no chord when openLibrary is unbound (the shipped default)", async () => {
     installTrayApi({ openLibrary: "" });
     const el = await renderTray();
@@ -118,6 +146,9 @@ describe("TrayMenu — Open Library button", () => {
     const { calls } = installTrayApi({ openLibrary: "" });
     const el = await renderTray();
 
+    // Snapshot the mount-time dispatches first, so this asserts the BUTTON
+    // sent it rather than "something did at some point".
+    expect(calls).not.toContain("library:focus");
     await act(async () => {
       openLibraryButton(el).click();
     });

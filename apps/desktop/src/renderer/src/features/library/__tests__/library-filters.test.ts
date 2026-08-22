@@ -17,7 +17,9 @@ import { describe, expect, test } from "vitest";
 import {
   ALL_TYPES_ON,
   appRowState,
+  describeChipRow,
   describeFilterChips,
+  describeSearchChip,
   filterFixturesByScopeAndSourceAppFacet,
   initialLibraryFilter,
   isDefaultLibraryFilter,
@@ -547,6 +549,45 @@ describe("chips", () => {
     const after = libraryFilterReducer(state, safariChip!.clear);
     expect(after.scope).toBe("today");
     expect(after.sourceApps.appIds).toEqual([ACTIVITY]);
+  });
+
+  test("an active search renders a removable chip, ahead of the facets", () => {
+    const state = libraryFilterReducer(initialLibraryFilter, {
+      type: "TYPE_ONLY",
+      key: "images"
+    });
+    const chips = describeChipRow(state, upperLabel, "  star map  ");
+    expect(chips.map((c) => ({ kind: c.kind, label: c.label }))).toEqual([
+      // Search leads: it swaps the record source, the facets then
+      // narrow whatever it returned.
+      { kind: "search", label: "star map" },
+      { kind: "type", label: "Images" }
+    ]);
+    expect(chips[0]?.clear).toEqual({ type: "CLEAR_SEARCH" });
+  });
+
+  test("a whitespace-only query is not a search — no chip", () => {
+    expect(describeSearchChip("   ")).toBeNull();
+    expect(describeSearchChip("")).toBeNull();
+    expect(describeChipRow(initialLibraryFilter, upperLabel, "  ")).toEqual([]);
+  });
+
+  test("search alone still renders the row (the facets are all default)", () => {
+    const chips = describeChipRow(initialLibraryFilter, upperLabel, "star map");
+    expect(chips.map((c) => c.kind)).toEqual(["search"]);
+  });
+
+  test("Trash suppresses the search chip — trash bypasses the query", () => {
+    // Switching to Trash does not clear the search box (it only
+    // disables it), and `universeRecordsRaw` puts trash ahead of
+    // search — so a chip here would advertise a narrowing the grid
+    // ignored, right next to Empty Trash.
+    const state = libraryFilterReducer(initialLibraryFilter, {
+      type: "SET_SCOPE",
+      scope: "trash"
+    });
+    const chips = describeChipRow(state, upperLabel, "star map");
+    expect(chips.map((c) => c.kind)).toEqual(["scope"]);
   });
 
   test("summarizeLibraryFilter reads the composed query in one line", () => {

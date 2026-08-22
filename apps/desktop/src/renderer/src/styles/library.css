@@ -1412,6 +1412,26 @@
   color: var(--accent-bright);
   font: 600 11px/1 var(--font-sans);
 }
+/* Search chip. Same accent family as the facet chips — it belongs to
+   the same "what you're looking at" readout — but carries the magnifier
+   glyph and a mono label so a query never gets mistaken for a facet
+   name, and truncates rather than pushing the row into a second line
+   for a long query. */
+.psl__chip[data-chip-kind="search"] {
+  padding-left: 7px;
+}
+.psl__chip-glyph {
+  flex: none;
+  opacity: 0.85;
+}
+.psl__chip[data-chip-kind="search"] .psl__chip-label {
+  max-width: 26ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
 .psl__chip.is-negated {
   border-color: var(--danger-border);
   background: var(--danger-soft);

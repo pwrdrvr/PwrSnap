@@ -383,7 +383,15 @@ export function appRowState(
   return facet.mode === "include" ? "included" : "excluded";
 }
 
-export type LibraryFilterChipKind = "scope" | "type" | "app";
+export type LibraryFilterChipKind = "scope" | "type" | "app" | "search";
+
+/** Clearing the search chip is deliberately NOT a `LibraryFilterAction`.
+ *  The FTS query is not a facet of `LibraryFilterState` — it swaps the
+ *  record source rather than narrowing it, it has its own debounce +
+ *  in-flight state, and the reducer is pure over the sidebar model. So
+ *  the chip row's clear handler discriminates on this union instead of
+ *  growing a reducer case that would have to lie about owning search. */
+export type ChipClearAction = LibraryFilterAction | { readonly type: "CLEAR_SEARCH" };
 
 export type LibraryFilterChip = {
   /** Stable React key + test hook. */
@@ -393,6 +401,14 @@ export type LibraryFilterChip = {
   /** Rendered with the `not ` prefix + strike styling. */
   readonly negated: boolean;
   /** What the chip's × dispatches. */
+  readonly clear: ChipClearAction;
+};
+
+/** A chip that describes a FACET, so its × is always a reducer action.
+ *  `describeFilterChips` returns these, which keeps callers that feed
+ *  the result straight back into `libraryFilterReducer` type-safe — the
+ *  search chip is the only one that carries the non-reducer clear. */
+export type LibraryFacetChip = LibraryFilterChip & {
   readonly clear: LibraryFilterAction;
 };
 
@@ -417,8 +433,8 @@ const SCOPE_CHIP_LABELS: Readonly<Record<LibraryScope, string>> = {
 export function describeFilterChips(
   state: LibraryFilterState,
   appLabel: (appId: string) => string
-): readonly LibraryFilterChip[] {
-  const chips: LibraryFilterChip[] = [];
+): readonly LibraryFacetChip[] {
+  const chips: LibraryFacetChip[] = [];
   if (state.scope !== "all") {
     chips.push({
       id: `scope:${state.scope}`,
@@ -462,6 +478,59 @@ export function describeFilterChips(
     }
   }
   return chips;
+}
+
+/**
+ * The active search as a chip, or `null` when there is no query.
+ *
+ * Search used to be visible ONLY inside the search box in the top-right
+ * corner — the opposite end of the window from the grid it is
+ * narrowing. A composed filter got a chip row; a search that hid 3600
+ * captures got a text field the eye slides past. Same class of
+ * invisible state the chip row was built for, so it gets the same
+ * treatment: a removable chip in the row, and inclusion in "Clear".
+ *
+ * The label is the TRIMMED query, so leading/trailing whitespace never
+ * renders as a blank-looking chip. `negated` is always false — there is
+ * no "not this text" search.
+ */
+export function describeSearchChip(query: string): LibraryFilterChip | null {
+  const trimmed = query.trim();
+  if (trimmed.length === 0) return null;
+  return {
+    id: "search",
+    kind: "search",
+    label: trimmed,
+    negated: false,
+    clear: { type: "CLEAR_SEARCH" }
+  };
+}
+
+/**
+ * The whole chip row: search first, then the composed facets.
+ *
+ * Search leads because it is the coarsest narrowing on screen — it
+ * replaces the record source outright, while the facets then narrow
+ * whatever it returned (see Library.tsx `universeRecordsRaw`). Reading
+ * the row left-to-right therefore reads the query in the order it is
+ * applied.
+ *
+ * Trash suppresses the search chip for the same reason it suppresses
+ * the type and app chips: `universeRecordsRaw` reads
+ * `isTrashView ? trashRecords : isSearchActive ? …`, so trash wins and
+ * the query is bypassed outright. Switching to Trash does NOT clear the
+ * query (the input is merely disabled), so without this guard a chip
+ * would sit there advertising a narrowing that isn't being applied —
+ * next to Empty Trash, which purges every row the grid is listing.
+ */
+export function describeChipRow(
+  state: LibraryFilterState,
+  appLabel: (appId: string) => string,
+  searchQuery: string
+): readonly LibraryFilterChip[] {
+  const search = state.scope === "trash" ? null : describeSearchChip(searchQuery);
+  const facets = describeFilterChips(state, appLabel);
+  return search === null ? facets : [search, ...facets];
 }
 
 /** One-line summary of the active filter — the Reel timeline header

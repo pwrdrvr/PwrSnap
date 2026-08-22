@@ -66,7 +66,7 @@ import {
 } from "./library-view";
 import {
   appRowState,
-  describeFilterChips,
+  describeChipRow,
   filterFixturesByScopeAndSourceAppFacet,
   initialLibraryFilter,
   libraryFilterKey,
@@ -74,6 +74,7 @@ import {
   sameLibraryFilter,
   summarizeLibraryFilter,
   TYPE_KEYS,
+  type ChipClearAction,
   type FacetModifier,
   type LibraryFilterAction,
   type LibraryFilterState,
@@ -2004,12 +2005,19 @@ export function Library() {
       appLabels[appId] ?? APP_INFO[appId]?.name ?? appId,
     [appLabels]
   );
-  // The composed filter, rendered as chips above the grid. This is the
+  // The composed query, rendered as chips above the grid. This is the
   // affordance that makes multi-app / negative facets safe to ship —
-  // without it "Today ∧ Videos ∧ ¬Electron" is invisible state.
+  // without it "Today ∧ Videos ∧ ¬Electron" is invisible state. The
+  // active search rides in the same row for the same reason: the search
+  // box sits in the far top-right corner, so a query that hides
+  // thousands of captures is easy to miss when your eye is on the grid.
+  //
+  // The chip tracks the LIVE input rather than `searchState.forQuery`
+  // (which lags by the 150ms debounce) so the row never disagrees with
+  // the text in the box.
   const filterChips = useMemo(
-    () => describeFilterChips(activeFilter, resolveAppLabel),
-    [activeFilter, resolveAppLabel]
+    () => describeChipRow(activeFilter, resolveAppLabel, searchQuery),
+    [activeFilter, resolveAppLabel, searchQuery]
   );
 
   // Representative bundle id per app key — used by `<AppIcon>` to
@@ -2331,6 +2339,26 @@ export function Library() {
     if (el !== null) el.scrollTop = 0;
     activeFilterRef.current = next;
     setActiveFilter(next);
+  }
+
+  /** Chip × handler. Search is not part of `LibraryFilterState` (see
+   *  `ChipClearAction`), so the one non-facet chip is peeled off here
+   *  rather than faked as a reducer action. */
+  function applyChipClear(action: ChipClearAction): void {
+    if (action.type === "CLEAR_SEARCH") {
+      setSearchQuery("");
+      return;
+    }
+    applyFilterAction(action);
+  }
+
+  /** The chip row's "Clear". It clears everything the row is showing —
+   *  including the search. Clearing only the facets while leaving the
+   *  query in place was the old behavior and it read as a broken
+   *  button: the chips vanished, the grid stayed narrowed. */
+  function clearChipRow(): void {
+    applyFilterAction({ type: "CLEAR_ALL" });
+    setSearchQuery("");
   }
 
   /** Map a click event's modifier keys onto the facet gesture model.
@@ -3929,39 +3957,69 @@ export function Library() {
             const below. The previous "filmstrip in main + Stage as
             sibling" layout had both elements landing in grid-column 2 /
             grid-row 2 which made Stage paint on top of the filmstrip. */}
-        {/* Composed-filter chip row. Lives in `.psl__main` ABOVE the
+        {/* Composed-query chip row (search + filter facets). Lives in `.psl__main` ABOVE the
             scroll container (not inside `.psl__grid-wrap`) so it stays
             put while the grid scrolls — the chips are the readout of
             what you're looking at, so scrolling them away defeats the
             purpose. Hidden entirely for the neutral filter so the
             default Library gains no chrome. */}
         {filterChips.length > 0 && (
-          <div className="psl__chips" role="status" aria-label="Active filters">
-            {filterChips.map((chip) => (
-              <span
-                key={chip.id}
-                className={"psl__chip" + (chip.negated ? " is-negated" : "")}
-                data-chip-kind={chip.kind}
-              >
-                {chip.negated ? <span className="psl__chip-not">not</span> : null}
-                <span className="psl__chip-label">{chip.label}</span>
-                <button
-                  type="button"
-                  className="psl__chip-x"
-                  title={`Remove ${chip.negated ? `not ${chip.label}` : chip.label}`}
-                  aria-label={`Remove filter ${chip.negated ? `not ${chip.label}` : chip.label}`}
-                  onClick={() => applyFilterAction(chip.clear)}
+          <div className="psl__chips" role="status" aria-label="Active search and filters">
+            {filterChips.map((chip) => {
+              const isSearch = chip.kind === "search";
+              const described = chip.negated ? `not ${chip.label}` : chip.label;
+              return (
+                <span
+                  key={chip.id}
+                  className={"psl__chip" + (chip.negated ? " is-negated" : "")}
+                  data-chip-kind={chip.kind}
+                  // The row is a live region, and the search chip tracks
+                  // every keystroke — without this a screen reader would
+                  // re-announce the whole row per character typed. The ×
+                  // keeps its own label, so the chip stays reachable.
+                  aria-live={isSearch ? "off" : undefined}
                 >
-                  <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
-                    <path d="M6 6l12 12M18 6 6 18" />
-                  </svg>
-                </button>
-              </span>
-            ))}
+                  {isSearch ? (
+                    <svg
+                      className="psl__chip-glyph"
+                      viewBox="0 0 24 24"
+                      width="10"
+                      height="10"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.6"
+                      strokeLinecap="round"
+                      aria-hidden="true"
+                    >
+                      <circle cx="11" cy="11" r="7" />
+                      <path d="m20 20-3.5-3.5" />
+                    </svg>
+                  ) : null}
+                  {chip.negated ? <span className="psl__chip-not">not</span> : null}
+                  <span className="psl__chip-label" title={isSearch ? chip.label : undefined}>
+                    {chip.label}
+                  </span>
+                  <button
+                    type="button"
+                    className="psl__chip-x"
+                    title={isSearch ? `Clear search ${described}` : `Remove ${described}`}
+                    aria-label={
+                      isSearch ? `Clear search ${described}` : `Remove filter ${described}`
+                    }
+                    onClick={() => applyChipClear(chip.clear)}
+                  >
+                    <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
+                      <path d="M6 6l12 12M18 6 6 18" />
+                    </svg>
+                  </button>
+                </span>
+              );
+            })}
             <button
               type="button"
               className="psl__chips-clear"
-              onClick={() => applyFilterAction({ type: "CLEAR_ALL" })}
+              title="Clear filters and search"
+              onClick={clearChipRow}
             >
               Clear
             </button>

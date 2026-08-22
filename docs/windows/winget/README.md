@@ -100,16 +100,26 @@ Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" | Wher
 `AppsAndFeaturesEntries` block exactly. If any of the three differ, fix the
 manifest before opening the pull request.
 
-The `-like "PwrSnap*"` filter is deliberate: **the ARP `DisplayName` carries the
-version**, so it reads `PwrSnap 1.0.3`, not `PwrSnap`. That is electron-builder's
-default — `nsis.uninstallDisplayName` falls back to `${productName} ${version}`
-and this repo does not override it. It is a display string only; both registry
-keys that drive upgrade and uninstall (`Software\<APP_GUID>` and the
-`Uninstall\<APP_GUID>` key) are keyed on the GUID and do not vary by version.
+The `-like "PwrSnap*"` filter is deliberate, and which name it matches depends on
+when the installer was built:
 
-The practical consequence is that `AppsAndFeaturesEntries.DisplayName` is
-version-varying and has to be bumped every release along with the other
-per-release values. See "Keeping the manifest current" below.
+| Installer | ARP `DisplayName` | Manifest `AppsAndFeaturesEntries.DisplayName` |
+| --- | --- | --- |
+| v1.0.3 and earlier | `PwrSnap <that build's version>` | `PwrSnap 1.0.3` in the v1.0.3 manifest |
+| built after `nsis.uninstallDisplayName` was pinned | `PwrSnap` | `PwrSnap` |
+
+v1.0.3 shipped before [`apps/desktop/electron-builder.yml`](../../../apps/desktop/electron-builder.yml)
+set `nsis.uninstallDisplayName`, so it inherited electron-builder's
+`${productName} ${version}` default. That installer is published and immutable,
+so **its manifest keeps `PwrSnap 1.0.3`** — the field's job is to state the true
+ARP name, whatever it is. Releases built after the pin write a stable `PwrSnap`,
+and their manifests should say `PwrSnap`.
+
+The name is a display string only. Both registry keys that drive upgrade and
+uninstall (`Software\<APP_GUID>` and the `Uninstall\<APP_GUID>` key) are derived
+from `appId` and do not vary by version, so the change self-heals on upgrade
+rather than stranding v1.0.3 installs. winget's correlation rides the
+`ProductCode`, which is likewise unaffected.
 
 ### Two fields deliberately left out
 
@@ -320,8 +330,10 @@ version's three files, then change:
 
 - `PackageVersion` — all three files.
 - `InstallerUrl`, `InstallerSha256`, `ReleaseDate` — installer manifest.
-- `AppsAndFeaturesEntries.DisplayName` — installer manifest. This one is easy to
-  miss. It carries the version (`PwrSnap 1.0.3`), so it moves every release.
+- `AppsAndFeaturesEntries.DisplayName` — installer manifest. **Stable at
+  `PwrSnap` for anything built after `nsis.uninstallDisplayName` was pinned.**
+  Only the v1.0.3 manifest carries `PwrSnap 1.0.3`, because that installer
+  predates the pin. Set it once when bumping off v1.0.3, then leave it alone.
 - `ReleaseNotesUrl` — locale manifest.
 
 Then walk the checklist above. Stable releases are infrequent enough that the automation's setup cost
@@ -329,19 +341,12 @@ and its unattended-submission risk both outweigh the few minutes it saves, and a
 human confirming that the app actually launches on Windows before it reaches a
 public catalog is worth keeping. Revisit if the stable cadence tightens.
 
-**Worth considering either way: pin `nsis.uninstallDisplayName`.** Setting it to
-`PwrSnap` in [`apps/desktop/electron-builder.yml`](../../../apps/desktop/electron-builder.yml)
-would stop the ARP `DisplayName` from carrying the version, which removes one
-per-release value from the list above and drops the redundant version string
-from Add or Remove Programs, where the adjacent Version column already shows it.
-The installer rewrites `DisplayName` on every install and the upgrade path
-uninstalls the prior version first, so the change self-heals on upgrade rather
-than leaving stale entries. It does not affect upgrade or uninstall detection,
-both of which key on the GUID. It is a change to shipped installer behavior
-though, so it belongs in its own release rather than in a docs change — and
-v1.0.3 is already published, so this manifest has to say `PwrSnap 1.0.3`
-regardless.
+**Done: `nsis.uninstallDisplayName` is pinned.**
+[`apps/desktop/electron-builder.yml`](../../../apps/desktop/electron-builder.yml)
+now sets it to `PwrSnap`, so the ARP name no longer carries the version and
+`DisplayName` stops being a per-release value. Pinned by
+[`windows-release-config.test.mjs`](../../../apps/desktop/scripts/windows-release-config.test.mjs).
+v1.0.3 shipped before the change and keeps `PwrSnap 1.0.3` in its manifest.
 
-**Not this task.** No CI wiring and no installer change are being made here —
-this section is the proposal, and picking between the options is the operator's
-call.
+**No CI wiring here.** Automating the submission remains a proposal; picking
+between it and the manual bump is the operator's call.

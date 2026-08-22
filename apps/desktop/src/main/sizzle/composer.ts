@@ -441,7 +441,14 @@ function ffmpegXfadeName(type: SizzleTransitionType): string {
       return "fadeblack";
     case "dip-white":
       return "fadewhite";
+    // `push-left` and `slide-left` are two menu entries and must be two
+    // different pictures: a push has the incoming frame shove the outgoing
+    // one off-screen (xfade `coverleft` — the new frame slides in OVER the
+    // old one, which stays put until covered); a slide has both frames
+    // move together (`slideleft`). `coverleft` is present in the bundled
+    // PwrSnapFFmpeg 8.1.1 (`-h filter=xfade`, #50).
     case "push-left":
+      return "coverleft";
     case "slide-left":
       return "slideleft";
     case "zoom-cut":

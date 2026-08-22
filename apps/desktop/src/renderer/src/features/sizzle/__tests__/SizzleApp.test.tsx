@@ -168,6 +168,11 @@ function installApi(
               wordEndIndex: 5
             }
           ],
+          words: [
+            { index: 3, word: "the", normalized: "the", startSec: 1.5, endSec: 1.7 },
+            { index: 4, word: "next", normalized: "next", startSec: 1.7, endSec: 2.0 },
+            { index: 5, word: "screen", normalized: "screen", startSec: 2.0, endSec: 2.4 }
+          ],
           beats: [
             {
               beatId: "bt_1",

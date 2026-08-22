@@ -748,6 +748,7 @@ export function registerSizzleHandlers(): void {
         timingQuality: speechTiming.quality,
         warnings,
         transcriptPhrases: buildTranscriptPhraseSuggestions(speechTiming),
+        words: speechTiming.words,
         beats: mediaPlan.beatPlans
       });
     } catch (cause) {
@@ -805,12 +806,19 @@ export function registerSizzleHandlers(): void {
         cached: true as const,
         audioBase64: bytes.toString("base64"),
         mimeType: "audio/mpeg" as const,
+        // `transcriptPhrases` is the legacy picker feed: sliding 5-word
+        // windows capped at 300, so a >300-word script has unanchorable
+        // words past the cap there. The timeline's ribbon reads `words`
+        // instead, which is the full list.
         transcriptPhrases:
           speechTiming === null ? [] : buildTranscriptPhraseSuggestions(speechTiming),
         // Already computed above — hand it back so the composer can label
         // the Render button exactly on open. Still cache-only: no
-        // synthesis, no API, no probe.
-        durationSec: speechTiming?.durationSec ?? null
+        // synthesis, no API, no probe. `words` rides along for the
+        // timeline's word ribbon; null together with `durationSec`
+        // (no timing sidecar = the renderer's estimated state).
+        durationSec: speechTiming?.durationSec ?? null,
+        words: speechTiming?.words ?? null
       });
     } catch {
       return ok({ cached: false as const });

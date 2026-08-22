@@ -22,21 +22,16 @@
 //   • the journal is an append-only log — a single `appendFile` per
 //     line; a torn final line (crash mid-append) is skipped on read.
 //
-// Migration from the old sidecars: `ensureImported()` walks the Chats
-// dir ONCE per store instance and pulls any pre-existing
+// Migration from the old sidecars: `importLegacySidecars()` walks the
+// Chats dir ONCE per root per PROCESS and pulls any pre-existing
 // `pwrsnap-thread.json` into the index (INSERT OR IGNORE — never
 // overwrites a live row, never deletes the sidecar). New threads write
 // only the index row; no sidecar is created going forward.
 //
-// The walk is ASYNC and time-bounded, never synchronous. The Chats dir
-// sits under `~/Documents`, which macOS gates behind the "Allow Documents
-// access" TCC prompt: while that prompt is pending every read of the
-// folder parks until the user answers, and a denied grant fails with
-// EPERM. A `readdirSync` here ran on the main thread the first time the
-// Library listed threads and froze the whole app (beachball, "Application
-// Not Responding") for as long as the prompt stayed unanswered. Nothing
-// in this module may use the sync `node:fs` API for that reason — see
-// `LEGACY_IMPORT_WAIT_MS` and
+// The walk is ASYNC and time-bounded, never synchronous — see
+// `LEGACY_IMPORT_WAIT_MS` and `legacyImportFor()`. Nothing in this module
+// may use the sync `node:fs` API, because the Chats dir is TCC-gated and a
+// sync read of it on the main thread froze the whole app. Full story:
 // docs/solutions/2026-06-12-macos-tcc-captures-folder-denials.md.
 
 import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -45,6 +40,10 @@ import type DatabaseT from "better-sqlite3";
 import type { ChatFocusEntry, ChatThreadSidecar } from "@pwrsnap/shared";
 import { chatThreadSidecarSchema } from "@pwrsnap/shared";
 import { getDb } from "../persistence/db";
+import {
+  reportCapturesAccessFailure,
+  reportCapturesAccessSuccess
+} from "../storage/captures-access-health";
 import { getMainLogger } from "../log";
 
 type Logger = ReturnType<typeof getMainLogger>;
@@ -65,7 +64,7 @@ const FOCUS_HISTORY_MAX = 20;
 /** Slug length cap for the thread-dir name. */
 const SLUG_MAX = 40;
 /**
- * Upper bound on how long any store method waits for the one-time legacy
+ * Upper bound on how long store methods wait for the one-time legacy
  * sidecar import before proceeding on the SQLite index alone.
  *
  * The import reads the Chats dir, which lives under the macOS TCC-gated
@@ -75,10 +74,60 @@ const SLUG_MAX = 40;
  * creating threads: the SQLite index is the source of truth for every
  * thread created since the index landed, and the sidecar walk only
  * back-fills threads from before it. A healthy import takes milliseconds,
- * so this bound never engages on an ordinary boot; when it does, the
- * import keeps running in the background and a later call sees its rows.
+ * so this bound never engages on an ordinary boot.
+ *
+ * The bound is charged ONCE per root, not per call — see
+ * {@link legacyImportFor}.
  */
 const LEGACY_IMPORT_WAIT_MS = 1500;
+
+/** How many sidecar reads the import has in flight at once. Kept well under
+ *  libuv's default 4-thread pool so the back-fill never monopolizes it. */
+const LEGACY_IMPORT_READ_CONCURRENCY = 8;
+
+/**
+ * The process-wide legacy-sidecar import for ONE Chats root.
+ *
+ * Keyed by root rather than held per store instance because the import
+ * back-fills a process-wide SQLite table — per-instance state was never
+ * meaningful, and there are five `ChatThreadStore` construction sites
+ * (the two root-keyed handler stores, one per `buildChatSurface`, one per
+ * Sizzle surface build, and a throwaway per `cleanupProjectChats`). Under
+ * a pending Documents prompt, a per-instance import parked one libuv
+ * threadpool thread EACH against a default pool of four, which starves
+ * every other async fs/dns/crypto call in the main process. One shared
+ * import parks at most one.
+ */
+type LegacyImport = {
+  /** Resolves when the import settles OR {@link LEGACY_IMPORT_WAIT_MS}
+   *  elapses — whichever is first, computed ONCE. Every caller awaits this
+   *  same promise, so the bound is paid once for the root rather than
+   *  re-armed per call (which made waits additive: a "New chat" chained
+   *  four gated calls for 4 × the bound). */
+  gate: Promise<void>;
+  /** Resolves when the import itself finishes, however long that takes.
+   *  Test seam only — production code must await {@link gate}. */
+  settled: Promise<void>;
+  /** Threads deleted while the import was still in flight. The import
+   *  snapshots sidecars from disk before applying them, so without this a
+   *  `delete()` that ran after the bound elapsed would be undone by the
+   *  pending `INSERT OR IGNORE`. Cleared once the import settles. */
+  deleted: Set<string>;
+};
+
+const legacyImports = new Map<string, LegacyImport>();
+
+/** Test seam — drop the per-root import memo between specs. */
+export function resetLegacyImportsForTests(): void {
+  legacyImports.clear();
+}
+
+/** Test seam — await the REAL import (no bound) for a root, so specs that
+ *  assert imported rows don't race {@link LEGACY_IMPORT_WAIT_MS}. Resolves
+ *  immediately when no import has been started for that root. */
+export async function whenLegacyImportSettled(chatsDir: string): Promise<void> {
+  await legacyImports.get(chatsDir)?.settled;
+}
 
 export type ChatThreadStoreConfig = {
   /** The ~/Documents/PwrSnap/Chats root. Injectable for tests. */
@@ -168,11 +217,6 @@ export class ChatThreadStore {
   /** True once the `.metadata_never_index` sentinel drop has been
    *  attempted, so we don't re-stat it on every `create()`. */
   private sentinelEnsured = false;
-  /** The one-time legacy-sidecar import for this store instance, started
-   *  on first use. `importSettled` flips once it has finished (imported,
-   *  skipped, or failed) so later calls take the no-timer fast path. */
-  private importPromise: Promise<void> | null = null;
-  private importSettled = false;
   private readonly legacyImportWaitMs: number;
 
   constructor(config: ChatThreadStoreConfig) {
@@ -203,7 +247,10 @@ export class ChatThreadStore {
     model?: string | null;
     reasoning?: string | null;
   }): Promise<ChatThreadSidecar> {
-    await this.ensureImported();
+    // No `ensureImported()` here: this INSERTs a caller-supplied fresh
+    // threadId and reads back that same row, so a legacy-imported row cannot
+    // change either outcome. `prepareThreadDir` gates on its own when it
+    // mints the dir; gating here too just charged the bound twice.
     const preparedDir = opts.preparedDir ?? (await this.prepareThreadDir(opts.name));
     const now = new Date().toISOString();
     const anchorCaptureId = opts.anchorCaptureId ?? null;
@@ -235,13 +282,48 @@ export class ChatThreadStore {
     config: { provider: string | null; model: string | null; reasoning: string | null }
   ): Promise<void> {
     await this.ensureImported();
+    this.writeBackendConfig(threadId, config);
+  }
+
+  async setOwnerClientId(threadId: string, ownerClientId: string): Promise<void> {
+    await this.ensureImported();
+    this.writeOwnerClientId(threadId, ownerClientId);
+  }
+
+  /**
+   * Stamp a freshly created thread's locked backend config and, for a thread
+   * created by a local MCP client, its owner — in ONE synchronous block.
+   *
+   * Both writes must land without a yield between them. `codex:*Chat:list`
+   * treats `owner_client_id IS NULL` as "library-wide, show it in the UI", so
+   * a concurrent list that lands after the config write but before the owner
+   * write would render another local client's private thread in the user's
+   * Library — the tenancy boundary `codex:*Chat:send` enforces with
+   * "This chat belongs to another user or local client." Two separately
+   * awaited setters left exactly that window open.
+   */
+  async lockThreadProvenance(
+    threadId: string,
+    config: { provider: string | null; model: string | null; reasoning: string | null },
+    ownerClientId: string | null = null
+  ): Promise<void> {
+    await this.ensureImported();
+    this.writeBackendConfig(threadId, config);
+    if (ownerClientId !== null && ownerClientId !== "") {
+      this.writeOwnerClientId(threadId, ownerClientId);
+    }
+  }
+
+  private writeBackendConfig(
+    threadId: string,
+    config: { provider: string | null; model: string | null; reasoning: string | null }
+  ): void {
     this.db()
       .prepare(`UPDATE chat_threads SET provider = ?, model = ?, reasoning = ? WHERE thread_id = ?`)
       .run(config.provider ?? null, config.model ?? null, config.reasoning ?? null, threadId);
   }
 
-  async setOwnerClientId(threadId: string, ownerClientId: string): Promise<void> {
-    await this.ensureImported();
+  private writeOwnerClientId(threadId: string, ownerClientId: string): void {
     this.db()
       .prepare(`UPDATE chat_threads SET owner_client_id = ? WHERE thread_id = ?`)
       .run(ownerClientId, threadId);
@@ -253,7 +335,10 @@ export class ChatThreadStore {
    * Electron/dev process cwd.
    */
   async prepareThreadDir(name: string): Promise<PreparedChatThreadDir> {
-    await this.ensureImported();
+    // No `ensureImported()`: minting a dir reads the filesystem for the next
+    // per-day sequence number, never the index, so a pending back-fill
+    // cannot change the result. Gating here was pure added latency on the
+    // "New chat" path.
     await this.ensureMetadataNeverIndex();
     const dirName = await this.mintThreadDir(name, new Date().toISOString());
     const path = join(this.chatsDir, dirName);
@@ -346,7 +431,14 @@ export class ChatThreadStore {
    * (it's derived from the row's `dir_name`).
    */
   async delete(threadId: string): Promise<void> {
-    await this.ensureImported();
+    const legacyImport = this.legacyImportFor();
+    await legacyImport.gate;
+    // Tell a still-running import this thread is gone BEFORE removing the
+    // row. Both run to completion synchronously (better-sqlite3 is sync, and
+    // the import's transaction takes no awaits), so they cannot interleave —
+    // without this, an import that had already read the sidecar would
+    // re-insert the row and the deleted chat would come back.
+    legacyImport.deleted.add(threadId);
     const dir = this.threadDir(threadId);
     this.db().prepare(`DELETE FROM chat_threads WHERE thread_id = ?`).run(threadId);
     if (dir !== null) {
@@ -456,36 +548,48 @@ export class ChatThreadStore {
   }
 
   /**
-   * Await the one-time legacy-sidecar import, bounded by
-   * {@link LEGACY_IMPORT_WAIT_MS}. Every public method awaits this FIRST,
-   * before touching SQLite, so the read-modify-write methods (`update`,
-   * `appendFocus`) still run their SELECT and UPDATE with no yield point in
-   * between — the await sits ahead of the critical section, not inside it.
+   * The shared {@link LegacyImport} for this store's root, starting it on
+   * first use. One import per root per process; see {@link LegacyImport}.
+   */
+  private legacyImportFor(): LegacyImport {
+    const memo = legacyImports.get(this.chatsDir);
+    if (memo !== undefined) return memo;
+    const deleted = new Set<string>();
+    const settled = this.importLegacySidecars(deleted)
+      .catch((cause: unknown) => {
+        // `importLegacySidecars` handles its own failures; this only guards
+        // a programming error so a caller can never hang on it.
+        this.log.warn("chat-thread-store: legacy sidecar import threw", {
+          message: errMessage(cause)
+        });
+      })
+      .finally(() => {
+        // Nothing can be resurrected once the transaction has run.
+        deleted.clear();
+      });
+    const entry: LegacyImport = {
+      settled,
+      gate: settleWithin(settled, this.legacyImportWaitMs),
+      deleted
+    };
+    legacyImports.set(this.chatsDir, entry);
+    return entry;
+  }
+
+  /**
+   * Await the legacy-sidecar import, bounded by
+   * {@link LEGACY_IMPORT_WAIT_MS}. Methods that read or resolve an index
+   * row await this FIRST, before touching SQLite, so the read-modify-write
+   * methods (`update`, `appendFocus`) still run their SELECT and UPDATE
+   * with no yield point in between — the await sits ahead of the critical
+   * section, not inside it.
    *
-   * Never rejects. If the import is still running when the bound elapses
-   * (a pending Documents TCC prompt parks the dir read; a denied grant
-   * rejects it), the caller proceeds on the index and the import finishes
-   * in the background. After the import settles, this is a no-timer fast
-   * path.
+   * Never rejects, and never re-arms: the bound is a property of the root,
+   * so once it has elapsed every later call returns immediately and the
+   * import finishes in the background.
    */
   private ensureImported(): Promise<void> {
-    if (this.importSettled) return Promise.resolve();
-    if (this.importPromise === null) {
-      this.importPromise = this.importLegacySidecars().then(
-        () => {
-          this.importSettled = true;
-        },
-        (cause: unknown) => {
-          // `importLegacySidecars` catches its own failures; this only
-          // guards a programming error so a method can never hang on it.
-          this.importSettled = true;
-          this.log.warn("chat-thread-store: legacy sidecar import threw", {
-            message: errMessage(cause)
-          });
-        }
-      );
-    }
-    return settleWithin(this.importPromise, this.legacyImportWaitMs);
+    return this.legacyImportFor().gate;
   }
 
   /**
@@ -502,14 +606,25 @@ export class ChatThreadStore {
    * while the consent prompt was pending. The sidecars are read up front
    * so the SQLite transaction stays a tight synchronous section.
    */
-  private async importLegacySidecars(): Promise<void> {
+  private async importLegacySidecars(deleted: ReadonlySet<string>): Promise<void> {
     let entries: string[];
     try {
-      entries = await readdir(this.chatsDir);
+      // `withFileTypes` costs nothing extra (the type rides along on the
+      // same scandir) and skips `.DS_Store` / the `.metadata_never_index`
+      // sentinel, each of which would otherwise pay a doomed open.
+      entries = (await readdir(this.chatsDir, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
+      reportCapturesAccessSuccess(this.chatsDir);
     } catch (cause) {
       if (isNodeError(cause) && cause.code === "ENOENT") {
         return; // No Chats dir yet → nothing to import.
       }
+      // `getChatsRoot()` is `<capturesRoot>/Chats`, so an EPERM/EACCES here
+      // is the SAME macOS Documents denial the captures banner reports, with
+      // the same remedy. Route it through the single accounting point rather
+      // than inventing a second, silent one (2026-06-12 solution doc).
+      reportCapturesAccessFailure(this.chatsDir, cause);
       this.log.warn("chat-thread-store: legacy sidecar import skipped — Chats dir unreadable", {
         chatsDir: this.chatsDir,
         code: isNodeError(cause) ? cause.code : undefined,
@@ -518,17 +633,27 @@ export class ChatThreadStore {
       return;
     }
 
+    // Bounded-parallel so a big Chats dir doesn't serialize one threadpool
+    // round-trip per entry. Most entries have no sidecar at all (threads
+    // created since the index landed write none), so these are mostly
+    // ENOENT misses.
     const sidecars: Array<{ dirName: string; sidecar: ChatThreadSidecar }> = [];
-    for (const entry of entries) {
-      let parsedJson: unknown;
-      try {
-        parsedJson = JSON.parse(await readFile(join(this.chatsDir, entry, SIDECAR_FILE), "utf8"));
-      } catch {
-        continue; // No sidecar / unreadable / bad JSON → skip.
+    for (let i = 0; i < entries.length; i += LEGACY_IMPORT_READ_CONCURRENCY) {
+      const batch = entries.slice(i, i + LEGACY_IMPORT_READ_CONCURRENCY);
+      const read = await Promise.all(
+        batch.map(async (entry) => {
+          try {
+            const raw = await readFile(join(this.chatsDir, entry, SIDECAR_FILE), "utf8");
+            return { dirName: entry, parsed: chatThreadSidecarSchema.safeParse(JSON.parse(raw)) };
+          } catch {
+            return null; // No sidecar / unreadable / bad JSON → skip.
+          }
+        })
+      );
+      for (const item of read) {
+        if (item === null || !item.parsed.success) continue;
+        sidecars.push({ dirName: item.dirName, sidecar: item.parsed.data });
       }
-      const parsed = chatThreadSidecarSchema.safeParse(parsedJson);
-      if (!parsed.success) continue;
-      sidecars.push({ dirName: entry, sidecar: parsed.data });
     }
     if (sidecars.length === 0) return;
 
@@ -541,6 +666,11 @@ export class ChatThreadStore {
       );
       const tx = this.db().transaction(() => {
         for (const { dirName, sidecar: s } of sidecars) {
+          // A caller that gave up on the bound may have deleted this thread
+          // while we were reading. `INSERT OR IGNORE` would not protect it
+          // (the row is gone), so re-inserting would resurrect a chat the
+          // user just deleted — pointing at a directory `delete()` removed.
+          if (deleted.has(s.threadId)) continue;
           const info = insert.run(
             s.threadId,
             dirName,
@@ -694,8 +824,10 @@ function errMessage(cause: unknown): string {
 /**
  * Resolve when `promise` settles (fulfilled OR rejected) or after `ms`,
  * whichever comes first. Never rejects. The timer is cleared as soon as the
- * promise settles and `unref`'d so a wait that is still parked (e.g. behind
- * a TCC prompt) never pins the process open.
+ * promise settles, and `unref`'d so the deadline itself never holds the
+ * event loop open. (Only the timer: a parked `readdir` behind a TCC prompt
+ * is a ref'd libuv request that keeps the loop alive on its own — this
+ * bounds the WAIT, not the underlying read.)
  */
 function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
   return new Promise<void>((resolve) => {

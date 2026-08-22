@@ -294,11 +294,17 @@ export function registerLibraryChatHandlers(params?: {
         ...(req.name !== undefined ? { name: req.name } : {}),
         ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
-      // Persist the locked config on the thread (skip in injected-controller
-      // tests, which have no DB).
-      if (injected === null) await store().setBackendConfig(view.threadId, config);
-      if (injected === null && ctx.principal === "mcp" && ctx.localAgent !== undefined) {
-        await store().setOwnerClientId(view.threadId, ctx.localAgent.clientId);
+      // Persist the locked config + MCP owner on the thread in ONE write
+      // block (skip in injected-controller tests, which have no DB). Two
+      // separately awaited setters left a window where a concurrent `list`
+      // saw the row with a null owner and showed a local agent's private
+      // thread in the user's Library.
+      if (injected === null) {
+        await store().lockThreadProvenance(
+          view.threadId,
+          config,
+          ctx.principal === "mcp" ? (ctx.localAgent?.clientId ?? null) : null
+        );
       }
       return ok(toLibraryThreadView(view, config));
     } catch (cause) {

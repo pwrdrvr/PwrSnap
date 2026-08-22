@@ -230,13 +230,43 @@ export async function assertCodexCliVersion(
 export async function nvmNodeBinDirs(home: string = os.homedir()): Promise<string[]> {
   const base = path.join(home, ".nvm", "versions", "node");
   try {
-    return (await readdir(base))
-      .sort()
-      .reverse()
+    return (await readdir(base, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort(compareNodeVersionsNewestFirst)
       .map((version) => path.join(base, version, "bin"));
   } catch {
     return [];
   }
+}
+
+/**
+ * Newest-first compare for nvm's `vMAJOR.MINOR.PATCH` directory names.
+ * Component-wise numeric, because a plain string sort gets this wrong in two
+ * layouts people really have: `v9.x` sorts above `v24.x`, and `v20.9.0`
+ * sorts above the newer `v20.10.0`. Picking the wrong dir first means
+ * probing a stale `codex` and possibly tripping MINIMUM_CODEX_CLI_VERSION.
+ */
+function compareNodeVersionsNewestFirst(a: string, b: string): number {
+  const left = parseNodeVersionParts(a);
+  const right = parseNodeVersionParts(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const delta = (right[i] ?? 0) - (left[i] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  // Identical numerics (or two unparseable names) — stable, newest-ish last
+  // resort so the order never depends on readdir's arbitrary sequence.
+  return b.localeCompare(a);
+}
+
+function parseNodeVersionParts(name: string): number[] {
+  return name
+    .replace(/^v/, "")
+    .split(".")
+    .map((part) => {
+      const parsed = Number.parseInt(part, 10);
+      return Number.isFinite(parsed) ? parsed : 0;
+    });
 }
 
 async function getCodexAppCandidatePaths(): Promise<string[]> {

@@ -375,10 +375,22 @@ prompt from. `PWRSNAP_E2E=1` hides the whole class (it rebases
   proceed without it (the template is `ChatThreadStore.ensureImported()`
   + `LEGACY_IMPORT_WAIT_MS` in
   [chat-thread-store.ts](apps/desktop/src/main/ai/chat-thread-store.ts)).
-- A pending prompt still parks the libuv threadpool thread that took the
-  async call. That is fine: the window paints, menus work, the OS dialog
-  can be answered, and everything drains when it is. The main thread is
-  the invariant, not the threadpool.
+- **The threadpool is small — budget it.** A pending prompt parks the
+  libuv threadpool thread that took the async call, and the default pool
+  is **4 threads** shared by all of `fs/promises`, `dns.lookup`, `zlib`,
+  and `crypto.pbkdf2`. One parked read is fine: the window paints, menus
+  work, the dialog can be answered, everything drains. Four is not — it
+  starves every other async fs call in main and turns a diagnosable
+  beachball into an app that paints and silently completes nothing. So a
+  gated read must be shared per root, not issued once per object that
+  happens to want it (see `legacyImportFor()` and the module-level
+  `legacyImports` map, which exist for exactly this reason).
+- **Bound once, not per call.** Memoize the *bounded* promise, not the
+  raw one. Re-arming the deadline per call makes waits additive — one
+  "New chat" chaining four gated calls paid 4 × the bound.
+- Work that lands after the bound elapses must not clobber what the
+  caller did in the meantime. The legacy import skips threads deleted
+  while it was reading; anything similar needs the same guard.
 - Metadata calls (`stat` / `access` / `existsSync`) don't open the file
   and have not been observed to prompt, but don't add new sync ones under
   these roots either.

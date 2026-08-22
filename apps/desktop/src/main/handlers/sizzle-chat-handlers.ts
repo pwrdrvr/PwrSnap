@@ -269,15 +269,14 @@ export function registerSizzleChatHandlers(params?: {
         ...(req.name !== undefined ? { name: req.name } : {}),
         ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
+      // One write block: a split config/owner write let a concurrent `list`
+      // observe the row un-owned and surface an MCP client's thread in the UI.
       if (injectedSizzleController === null) {
-        await getSizzleStore().setBackendConfig(view.threadId, config);
-      }
-      if (
-        injectedSizzleController === null &&
-        ctx.principal === "mcp" &&
-        ctx.localAgent !== undefined
-      ) {
-        await getSizzleStore().setOwnerClientId(view.threadId, ctx.localAgent.clientId);
+        await getSizzleStore().lockThreadProvenance(
+          view.threadId,
+          config,
+          ctx.principal === "mcp" ? (ctx.localAgent?.clientId ?? null) : null
+        );
       }
       return ok(toLibraryThreadView(view, config));
     } catch (cause) {

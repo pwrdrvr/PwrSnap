@@ -19,9 +19,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThreadSidecar } from "@pwrsnap/shared";
-import { ChatThreadStore, type ChatThreadStoreConfig } from "../chat-thread-store";
+import {
+  ChatThreadStore,
+  resetLegacyImportsForTests,
+  whenLegacyImportSettled,
+  type ChatThreadStoreConfig
+} from "../chat-thread-store";
 
-type ReaddirHook = (path: string) => Promise<string[]> | null;
+// The import reads with `withFileTypes`, so a hook that answers a real
+// listing must hand back Dirents, not strings.
+type ReaddirHook = (path: string) => Promise<unknown> | null;
 
 const fsHook = vi.hoisted(() => ({
   /** When set, a `readdir(path)` whose hook returns a promise is answered by
@@ -121,6 +128,7 @@ async function seedLegacySidecar(dirName: string, threadId: string): Promise<voi
 }
 
 beforeEach(async () => {
+  resetLegacyImportsForTests();
   fsHook.readdir = null;
   fsHook.calls = [];
   pwrsnapRoot = await mkdtemp(join(tmpdir(), "pwrsnap-chat-store-documents-"));
@@ -130,6 +138,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  resetLegacyImportsForTests();
   fsHook.readdir = null;
   db.close();
   await rm(pwrsnapRoot, { force: true, recursive: true });
@@ -142,7 +151,7 @@ describe("ChatThreadStore while the Documents grant is pending or denied", () =>
 
     // Park the import's directory read exactly like a pending TCC prompt
     // does: the promise simply does not settle until "the user answers".
-    const parked = deferred<string[]>();
+    const parked = deferred<unknown>();
     fsHook.readdir = (path) => (path === chatsDir ? parked.promise : null);
     fsHook.calls = [];
 
@@ -156,7 +165,7 @@ describe("ChatThreadStore while the Documents grant is pending or denied", () =>
 
     // The prompt is answered: the parked read completes and the import
     // lands in the background, without another method having to drive it.
-    parked.resolve(readdirSync(chatsDir));
+    parked.resolve(readdirSync(chatsDir, { withFileTypes: true }));
     await vi.waitFor(async () => {
       expect((await store.list()).map((s) => s.threadId)).toContain("legacy-1");
     });
@@ -190,12 +199,67 @@ describe("ChatThreadStore while the Documents grant is pending or denied", () =>
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
+  it("charges the wait bound ONCE per root, not once per call", async () => {
+    await seedIndexedThread("indexed-1");
+    const parked = deferred<unknown>();
+    fsHook.readdir = (path) => (path === chatsDir ? parked.promise : null);
+
+    // Two stores on the same root, as production has (the root-keyed handler
+    // store plus the controller's own) — they must share one import.
+    const a = new ChatThreadStore({ chatsDir, db, legacyImportWaitMs: 120 });
+    const b = new ChatThreadStore({ chatsDir, db, legacyImportWaitMs: 120 });
+    fsHook.calls = [];
+
+    const started = Date.now();
+    await a.list();
+    await a.get("indexed-1");
+    await b.list();
+    await b.setBackendConfig("indexed-1", { provider: "codex", model: null, reasoning: null });
+    const elapsed = Date.now() - started;
+
+    // Four gated calls across two stores. Re-arming the bound per call would
+    // cost ~4x the bound; one shared deadline costs it once.
+    expect(elapsed).toBeLessThan(120 * 2);
+    // And only ONE parked read exists, so a pending prompt cannot occupy
+    // more than one of libuv's four threadpool slots.
+    expect(fsHook.calls.filter((path) => path === chatsDir)).toHaveLength(1);
+
+    parked.resolve(readdirSync(chatsDir, { withFileTypes: true }));
+    await whenLegacyImportSettled(chatsDir);
+  });
+
+  it("does not resurrect a thread deleted while the import was still reading", async () => {
+    // A legacy thread the import will pick up, plus a slow read so the delete
+    // lands after the bound but before the import's transaction.
+    await seedLegacySidecar("2026-05-01-001-legacy", "legacy-1");
+    const parked = deferred<unknown>();
+    fsHook.readdir = (path) => (path === chatsDir ? parked.promise : null);
+
+    const store = new ChatThreadStore({ chatsDir, db, legacyImportWaitMs: 20 });
+    // The bound elapses with the row still absent, and the user deletes it.
+    await store.delete("legacy-1");
+
+    // Now the prompt is answered and the import applies its pre-delete
+    // snapshot — which must skip the thread the user just deleted.
+    parked.resolve(readdirSync(chatsDir, { withFileTypes: true }));
+    await whenLegacyImportSettled(chatsDir);
+
+    expect(await store.get("legacy-1")).toBeNull();
+    expect((await store.list()).map((s) => s.threadId)).not.toContain("legacy-1");
+  });
+
   it("never imports the synchronous fs API", () => {
     // The whole incident was one `readdirSync` on a TCC-gated path. Pin the
     // module to `node:fs/promises` so a sync read can't creep back in — an
     // `import ... from "node:fs"` is the only way to get one.
     const source = readFileSync(new URL("../chat-thread-store.ts", import.meta.url), "utf8");
-    expect(source).not.toMatch(/from "node:fs"/);
+    // Cover every spelling that reaches the sync API, not just the one the
+    // original bug happened to use: either quote style, with or without the
+    // `node:` prefix, and the `require` / dynamic-import forms. The trailing
+    // quote is load-bearing — "node:fs/promises" contains "node:fs".
+    expect(source).not.toMatch(/from\s+['"](?:node:)?fs['"]/);
+    expect(source).not.toMatch(/require\(\s*['"](?:node:)?fs['"]\s*\)/);
+    expect(source).not.toMatch(/import\(\s*['"](?:node:)?fs['"]\s*\)/);
     expect(source).toMatch(/from "node:fs\/promises"/);
   });
 });

@@ -271,7 +271,7 @@ The Electron event loop, the IPC dispatcher, and the AppKit run loop all
 share that thread, so nothing — not even the OS consent dialog's
 activation of our app — could proceed.
 
-**Fix (#PR).** The import is now async (`node:fs/promises`) and
+**Fix ([#459](https://github.com/pwrdrvr/PwrSnap/pull/459)).** The import is now async (`node:fs/promises`) and
 time-bounded: every store method awaits `ensureImported()` BEFORE its
 SQLite section (so `update`/`appendFocus` keep their SELECT→UPDATE
 yield-free), and `ensureImported()` resolves when the import settles OR
@@ -282,8 +282,31 @@ it is always correct and the background import lands whenever the read
 returns. A denied dir (`EPERM`/`EACCES`) logs one warn and skips; `ENOENT`
 stays silent. `setBackendConfig` / `setOwnerClientId` became async with
 it. `codex-discovery.ts`'s `nvmNodeBinDirs` lost its `readdirSync` too
-(not TCC-gated — `~/.nvm` — but it was the only other sync directory read
-on the main thread and its call chain was already async).
+(not TCC-gated — `~/.nvm` — but its call chain was already async, so
+there was no reason to keep it sync). Other sync directory reads remain
+on the main thread and are fine: `persistence/db.ts` reads the bundled
+migrations dir, and `dev/seeder/wipe.ts` is gated behind
+`isOverriddenDataRoot()`. Neither can resolve under Documents.
+
+**One import per root, not per store.** The bound is charged once for a
+Chats root and shared by every `ChatThreadStore` pointed at it
+(`legacyImportFor()` + the module-level `legacyImports` map). Both halves
+matter. Per-*call* re-arming made waits additive — a "New chat" chained
+four gated calls and paid 4 × the bound, and `cleanupProjectChats` paid it
+once per thread deleted. Per-*instance* imports were worse: there are five
+`ChatThreadStore` construction sites, and libuv's default threadpool is
+**4 threads**, so five parked `readdir`s on a pending prompt would starve
+every other async fs / dns / crypto call in the main process — trading a
+diagnosable beachball for an app that paints and then silently completes
+nothing. If you add a store construction site, it costs nothing; if you
+move the import back onto the instance, it costs a threadpool slot each.
+
+**Deletes beat a late import.** The import snapshots sidecars from disk
+and applies them in one transaction, so a `delete()` that ran after the
+bound elapsed would be undone by the pending `INSERT OR IGNORE`. `delete()`
+records the id in `LegacyImport.deleted` before removing the row, and the
+transaction skips it. Pinned by "does not resurrect a thread deleted while
+the import was still reading".
 
 **The rule.** Nothing in the main process may do a synchronous read
 (`readdirSync`, `readFileSync`, `openSync`, `opendirSync`, …) of a path
@@ -307,6 +330,14 @@ grep -rn -E "readdirSync|readFileSync|openSync|opendirSync" apps/desktop/src/mai
 Pinned by
 `apps/desktop/src/main/ai/__tests__/chat-thread-store-documents-access.test.ts`:
 `list()`/`get()` answer from the index while the dir read is parked
-(hooked `readdir` that never settles) and when it is denied (`EPERM`),
-the import is attempted once per store, and the module never imports
-from `node:fs`.
+(hooked `readdir` that never settles) and when it is denied (`EPERM`); the
+bound is charged once per root across two stores and only one read is ever
+in flight; a delete during the import window is not resurrected; and the
+module never imports from `node:fs` in any spelling.
+
+**Still unbounded, deliberately:** `mintThreadDir`'s `readdir` and
+`ensureMetadataNeverIndex`'s `writeFile` on the create path. A pending
+prompt leaves "New chat" spinning (the IPC never resolves) — but the main
+thread is free, so it is not a beachball, and there is no correct way to
+create a directory in a folder the app has not been granted. Surfacing a
+timeout error there is a separate change.

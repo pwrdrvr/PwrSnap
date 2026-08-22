@@ -13,7 +13,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ChatThreadSidecar } from "@pwrsnap/shared";
-import { ChatThreadStore, slugifyThreadName, rootKeyedChatThreadStore } from "../chat-thread-store";
+import {
+  ChatThreadStore,
+  slugifyThreadName,
+  rootKeyedChatThreadStore,
+  resetLegacyImportsForTests,
+  whenLegacyImportSettled
+} from "../chat-thread-store";
 
 let pwrsnapRoot = "";
 let chatsDir = "";
@@ -32,6 +38,9 @@ function applyAllMigrations(target: Database.Database): void {
 }
 
 beforeEach(async () => {
+  // The legacy import is memoized per root for the process, so clear it or
+  // one spec's completed import satisfies the next spec's store.
+  resetLegacyImportsForTests();
   // Mirror the real layout: <root>/Chats is chatsDir; the sentinel lands
   // at <root>/.metadata_never_index.
   pwrsnapRoot = await mkdtemp(join(tmpdir(), "pwrsnap-chat-store-"));
@@ -329,6 +338,10 @@ describe("ChatThreadStore legacy-sidecar import", () => {
     await writeFile(join(legacyDir, "pwrsnap-thread.json"), JSON.stringify(sidecar), "utf8");
 
     const store = makeStore();
+    // `list()` kicks the import off but is bounded by LEGACY_IMPORT_WAIT_MS —
+    // await the real import so this never races the deadline on a cold FS.
+    await store.list();
+    await whenLegacyImportSettled(chatsDir);
     const listed = await store.list();
     expect(listed.map((s) => s.threadId)).toContain("legacy-1");
 
@@ -365,6 +378,8 @@ describe("ChatThreadStore legacy-sidecar import", () => {
     await writeFile(join(badDir, "pwrsnap-thread.json"), "this is not json {[", "utf8");
 
     const store = makeStore();
+    await store.list();
+    await whenLegacyImportSettled(chatsDir);
     const listed = await store.list();
     expect(listed.map((s) => s.threadId)).toEqual(["good-1"]);
   });

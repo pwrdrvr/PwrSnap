@@ -766,7 +766,10 @@ function parseV1(
     reshowFloatOver: pickString(
       hotkeys.reshowFloatOver,
       defaults.hotkeys.reshowFloatOver
-    )
+    ),
+    // `openLibrary` landed after v1 shipped; older files won't have it.
+    // pickString fills in the current default ("" = unbound).
+    openLibrary: pickString(hotkeys.openLibrary, defaults.hotkeys.openLibrary)
   };
   const storedDefaultsMigrationIndex =
     storedDefaultsMigrationVersion === undefined

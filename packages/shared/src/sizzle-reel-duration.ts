@@ -276,40 +276,78 @@ export type SizzleReelDurationEstimate = {
   sceneCount: number;
 };
 
+/** One scene's place on the reel's single time axis. */
+export type SizzleSceneLayout = {
+  sceneId: string;
+  index: number;
+  /** Where the scene begins on the project axis (its predecessor's end
+   *  minus any fade-like transition overlap). */
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  /** False when this scene's length stands in for an unmeasured narration. */
+  exact: boolean;
+};
+
+export type SizzleReelLayout = SizzleReelDurationEstimate & {
+  scenes: SizzleSceneLayout[];
+};
+
 /**
- * Total output length of a reel.
+ * Where every scene sits on the reel's ONE time axis, and how long the
+ * reel is. This is the single definition of the scene chain: the Render
+ * label (`estimateSizzleReelDurationSec`) and the timeline's scene
+ * regions both read it, so they can never disagree about where a scene
+ * starts or whether its length is exact.
  *
- * Scene lengths are summed, then each scene→scene boundary that uses a
+ * Scene lengths are chained, and each scene→scene boundary that uses a
  * fade-like transition gives back its overlap — the composer's
  * `buildTransitionChain` splices an `xfade` there, so the chain is
  * shorter than the sum by the fade duration (clamped to the chain length
  * so far and to the incoming scene). Hard cuts concat and lose nothing.
  * The first scene's transition is ignored; nothing precedes it.
  */
+export function layoutSizzleScenes(
+  scenes: readonly SizzleScene[],
+  contextFor: (scene: SizzleScene) => SizzleSceneDurationContext
+): SizzleReelLayout {
+  if (scenes.length === 0) {
+    return { totalSec: 0, exact: true, sceneCount: 0, scenes: [] };
+  }
+  let exact = true;
+  let chainEndSec = 0;
+  const layouts: SizzleSceneLayout[] = [];
+  scenes.forEach((scene, index) => {
+    const estimate = estimateSizzleSceneDurationSec(scene, contextFor(scene));
+    if (!estimate.exact) exact = false;
+    const overlapSec =
+      index === 0
+        ? 0
+        : Math.min(transitionOverlapSec(scene.transition), chainEndSec, estimate.durationSec);
+    const startSec = chainEndSec - overlapSec;
+    chainEndSec = startSec + estimate.durationSec;
+    layouts.push({
+      sceneId: scene.id,
+      index,
+      startSec,
+      endSec: chainEndSec,
+      durationSec: estimate.durationSec,
+      exact: estimate.exact
+    });
+  });
+  return { totalSec: chainEndSec, exact, sceneCount: scenes.length, scenes: layouts };
+}
+
+/**
+ * Total output length of a reel — the scene chain from
+ * `layoutSizzleScenes` without the per-scene positions.
+ */
 export function estimateSizzleReelDurationSec(
   scenes: readonly SizzleScene[],
   contextFor: (scene: SizzleScene) => SizzleSceneDurationContext
 ): SizzleReelDurationEstimate {
-  if (scenes.length === 0) {
-    return { totalSec: 0, exact: true, sceneCount: 0 };
-  }
-  let exact = true;
-  let chainEndSec = 0;
-  scenes.forEach((scene, index) => {
-    const estimate = estimateSizzleSceneDurationSec(scene, contextFor(scene));
-    if (!estimate.exact) exact = false;
-    if (index === 0) {
-      chainEndSec = estimate.durationSec;
-      return;
-    }
-    const overlapSec = Math.min(
-      transitionOverlapSec(scene.transition),
-      chainEndSec,
-      estimate.durationSec
-    );
-    chainEndSec = chainEndSec + estimate.durationSec - overlapSec;
-  });
-  return { totalSec: chainEndSec, exact, sceneCount: scenes.length };
+  const layout = layoutSizzleScenes(scenes, contextFor);
+  return { totalSec: layout.totalSec, exact: layout.exact, sceneCount: layout.sceneCount };
 }
 
 /**

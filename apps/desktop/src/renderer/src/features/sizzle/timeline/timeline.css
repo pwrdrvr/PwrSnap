@@ -1,0 +1,526 @@
+/* Sizzle timeline — one horizontal project time axis owning the editor's
+ * center column. Lanes top to bottom: ruler · scene regions · clips ·
+ * waveform (the word ribbon lands with PR 4). Block prefix `szt__`.
+ * All colors via tokens — never hardcoded.
+ *
+ * The two exactness states (plan §4.1) are load-bearing here: an ESTIMATED
+ * scene region is hatched across every lane, its clips have dashed borders,
+ * and every duration label in it carries a warn-tinted `~`. Do not let an
+ * estimated region look resolved. */
+
+.szt {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0 24px;
+  gap: 6px;
+}
+
+.szt__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+}
+.szt__eyebrow {
+  font: 600 10px/1 var(--font-sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.szt__meta {
+  font: 500 11px/1 var(--font-mono);
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.szt__meta .szt__tilde {
+  color: var(--warn-text);
+}
+.szt__spacer {
+  flex: 1;
+}
+.szt__kbd {
+  display: inline-flex;
+  gap: 4px;
+  font: 500 10px/1 var(--font-mono);
+  color: var(--text-muted);
+}
+.szt__kbd i {
+  font-style: normal;
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  padding: 2px 4px;
+  background: var(--bg-panel);
+}
+.szt__zoom {
+  display: inline-flex;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  padding: 2px;
+  gap: 2px;
+}
+.szt__zoom button {
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.szt__zoom button.is-on {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+.szt__zoom button:hover:not(.is-on) {
+  color: var(--text-secondary);
+}
+.szt__zoom button:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
+}
+
+/* ── canvas ── */
+.szt__canvas {
+  position: relative;
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-input);
+  overflow: hidden;
+}
+.szt__scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.szt__scroll::-webkit-scrollbar {
+  height: 8px;
+}
+.szt__scroll::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+/* ruler · regions · clips · waveform */
+.szt__lanes {
+  position: relative;
+  display: grid;
+  grid-template-rows: 22px 20px 72px 28px;
+  cursor: ew-resize;
+  user-select: none;
+}
+.szt__lanes.is-scrubbing {
+  cursor: ew-resize;
+}
+.szt__lane {
+  position: relative;
+  min-width: 0;
+}
+.szt__lane + .szt__lane {
+  border-top: 1px solid var(--border-subtle);
+}
+.szt__lane--ruler {
+  border-bottom: 1px solid var(--border-default);
+}
+
+/* estimated region overlay — hatched, spans every lane */
+.szt__est {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: repeating-linear-gradient(
+    135deg,
+    transparent 0 7px,
+    color-mix(in srgb, var(--text-primary) 9%, transparent) 7px 8px
+  );
+}
+.szt__est::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--text-primary) 2%, transparent);
+}
+
+/* ruler */
+.szt__tick {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 5px;
+  background: var(--border-strong);
+}
+.szt__tick.is-major {
+  height: 9px;
+  background: var(--text-subtle);
+}
+.szt__tick i {
+  position: absolute;
+  left: 4px;
+  bottom: 6px;
+  font: 500 9px/1 var(--font-mono);
+  color: var(--text-muted);
+  font-style: normal;
+  white-space: nowrap;
+}
+
+/* scene regions */
+.szt__region {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  overflow: hidden;
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.szt__region.is-est {
+  color: var(--text-muted);
+}
+.szt__region .szt__dim {
+  color: var(--text-muted);
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.szt__region .szt__tilde {
+  color: var(--warn-text);
+}
+.szt__boundary {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--border-strong);
+  z-index: 3;
+  pointer-events: none;
+}
+.szt__pill {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-panel-elevated);
+  color: var(--text-secondary);
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.szt__pill .szt__unit {
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 5px;
+  font-weight: 500;
+}
+.szt__pill.is-fade {
+  border-color: var(--accent-border);
+  color: var(--accent-bright);
+}
+
+/* clips */
+.szt__clip {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  border-radius: 5px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  display: flex;
+  overflow: hidden;
+  z-index: 1;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.szt__clip.is-est {
+  border-style: dashed;
+}
+.szt__clip.is-sel {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--accent-soft);
+  z-index: 2;
+}
+.szt__clip:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
+}
+/* bare tick — the clip is too narrow for any picture */
+.szt__clip.is-tick {
+  top: 6px;
+  bottom: 6px;
+  width: 2px !important;
+  min-width: 2px;
+  border: 0;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0.85;
+}
+.szt__clip.is-tick.is-auto {
+  background: var(--text-muted);
+  opacity: 0.6;
+}
+.szt__clip.is-tick.is-sel {
+  width: 4px !important;
+  opacity: 1;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft), 0 0 10px var(--accent);
+}
+/* Poster: a fixed slice of the clip so the label keeps room (38 %, 40–96 px);
+   a thumb-only clip (24–96 px wide, no label) fills the whole segment. */
+.szt__thumb {
+  position: relative;
+  height: 100%;
+  width: 38%;
+  min-width: 40px;
+  max-width: 96px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  background: var(--bg-panel-elevated);
+}
+.szt__clip > .szt__thumb:last-child {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+}
+.szt__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0.92;
+}
+/* Video clips carry no poster image (no `<video>` per clip — 80 media
+   elements at the cap is the regression this lane exists to avoid). */
+.szt__thumb--video {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: repeating-linear-gradient(
+    135deg,
+    var(--bg-panel-elevated) 0 6px,
+    color-mix(in srgb, var(--text-primary) 5%, transparent) 6px 7px
+  );
+  color: var(--text-muted);
+  font: 600 10px/1 var(--font-mono);
+}
+.szt__clip-label {
+  padding: 6px 8px 5px;
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  justify-content: center;
+}
+.szt__clip-name {
+  font: 600 11px/1.2 var(--font-sans);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.szt__clip-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.szt__clip-dur {
+  font: 500 10px/1 var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.szt__clip-dur .szt__tilde {
+  color: var(--warn-text);
+}
+.szt__fit {
+  padding: 2px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel-elevated);
+  font: 500 9px/1 var(--font-mono);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+/* anchored clips: tangerine pin on the left edge; auto clips a hairline */
+.szt__pin {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent);
+  z-index: 3;
+  pointer-events: none;
+}
+.szt__pin::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 9px;
+  height: 9px;
+  background: var(--accent);
+  border-radius: 0 0 6px 0;
+}
+.szt__pin.is-pending {
+  background: var(--warn);
+}
+.szt__pin.is-pending::after {
+  background: var(--warn);
+}
+.szt__hair {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  width: 1px;
+  background: var(--border-strong);
+  z-index: 2;
+  pointer-events: none;
+}
+/* transition pip hanging from the lane's top edge: | cut, ⟋ fade-like */
+.szt__pip {
+  position: absolute;
+  top: -1px;
+  transform: translateX(-50%);
+  z-index: 3;
+  width: 16px;
+  height: 12px;
+  border-radius: 0 0 5px 5px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-default);
+  border-top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 600 9px/1 var(--font-mono);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.szt__pip.is-fade {
+  color: var(--accent-bright);
+  border-color: var(--accent-border);
+}
+
+/* waveform */
+.szt__wave {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  overflow: hidden;
+}
+.szt__wave .szl__sequence-wave-surfer {
+  opacity: 0.85;
+}
+.szt__wave-idle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+.szt__wave-idle::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 1px dashed var(--border-strong);
+}
+.szt__wave-idle-bars {
+  position: absolute;
+  inset: 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  opacity: 0.35;
+}
+.szt__wave-idle-bars i {
+  flex: 1;
+  height: 30%;
+  background: var(--text-subtle);
+  border-radius: 1px;
+}
+.szt__wave-idle-bars i:nth-child(3n) {
+  height: 55%;
+}
+.szt__wave-idle-bars i:nth-child(4n) {
+  height: 18%;
+}
+
+/* playhead spans every lane; accent cap at the ruler */
+.szt__playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  z-index: 6;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-app) 50%, transparent);
+  will-change: transform;
+}
+.szt__playhead::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -5px;
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  clip-path: polygon(0 0, 100% 0, 100% 45%, 50% 100%, 0 45%);
+}
+.szt__playhead-time {
+  position: absolute;
+  top: 2px;
+  left: 9px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+  font: 700 9px/1 var(--font-mono);
+  white-space: nowrap;
+}
+
+/* warnings under the lanes, aligned to the clip */
+.szt__warns {
+  position: relative;
+  height: 22px;
+}
+.szt__warn {
+  position: absolute;
+  top: 4px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--warn-border);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+  font: 500 9px/1 var(--font-mono);
+  white-space: nowrap;
+}

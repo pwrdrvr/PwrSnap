@@ -2628,9 +2628,10 @@ export type EditorCoachmarks = {
 };
 
 /** Matching-text affordance gate. Default ON; the user can disable it
- *  from Settings → Editor (Phase 1.5 surface, not blocking) if the
- *  "+ Add label" affordance after arrow placement feels intrusive for
- *  their workflow. */
+ *  from the EDITOR card on Settings → General if the "+ Add label"
+ *  affordance after arrow placement feels intrusive for their
+ *  workflow. (There is no Settings → Editor page — this comment used
+ *  to point at one, which left the toggle unreachable from the UI.) */
 export type EditorMatchingText = {
   enabled: boolean;
 };

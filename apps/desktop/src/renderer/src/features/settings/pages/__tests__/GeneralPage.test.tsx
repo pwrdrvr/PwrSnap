@@ -315,6 +315,38 @@ describe("GeneralPage — recording audio", () => {
   });
 });
 
+describe("GeneralPage — editor annotation", () => {
+  // `editor.matchingText.enabled` was gated on a "Settings → Editor"
+  // page that settings-categories.ts never had, so the only way to turn
+  // the "+ Add label" chip off was hand-editing pwrsnap-settings.json.
+  test("matching-text toggle patches editor.matchingText.enabled", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+    const toggle = findSwitchIn("Offer a label after placing an arrow");
+    // Defaults ON.
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ editor: { matchingText: { enabled: false } } });
+  });
+
+  test("reflects a disabled affordance", async () => {
+    await renderGeneral(
+      {
+        ...baseSettings,
+        editor: { ...baseSettings.editor, matchingText: { enabled: false } }
+      },
+      healthyStatus
+    );
+    const toggle = findSwitchIn("Offer a label after placing an arrow");
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ editor: { matchingText: { enabled: true } } });
+  });
+});
+
 describe("GeneralPage — launch at login", () => {
   test("toggle patches general.launchAtLogin through the substrate", async () => {
     await renderGeneral(baseSettings, healthyStatus);

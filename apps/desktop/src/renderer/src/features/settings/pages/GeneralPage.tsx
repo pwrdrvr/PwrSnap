@@ -19,6 +19,12 @@
 // Audio is the one pair with a hard dependency — `recording:start`
 // refuses to run when a requested source isn't granted — so opting in
 // surfaces a jump to System Permissions.
+//
+// The EDITOR card hosts `editor.matchingText.enabled`. There is no
+// Settings → Editor page (see settings-categories.ts), and the schema
+// comments used to point at one — so the only opt-out for the
+// "+ Add label" chip was hand-editing pwrsnap-settings.json. One card
+// here beats a page for a single toggle.
 
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
@@ -128,6 +134,10 @@ export function GeneralPage(): ReactElement {
   // source is privacy-relevant, so the user opts in explicitly.
   const includeSystemAudio = settings?.recording.includeSystemAudio ?? false;
   const includeMicrophone = settings?.recording.includeMicrophone ?? false;
+  // Matching-text affordance ("+ Add label" after an arrow lands).
+  // Defaults ON; the hook falls back to true while settings are loading,
+  // so mirror that here rather than flashing the switch off.
+  const matchingTextEnabled = settings?.editor.matchingText.enabled ?? true;
   const platform = window.pwrsnapApi?.platform;
   // The FFmpeg backend that drives Windows recording captures screen
   // video only and logs a warning when either toggle is on
@@ -456,6 +466,22 @@ export function GeneralPage(): ReactElement {
             </div>
           </Row>
         ) : null}
+      </Card>
+
+      <Card eyebrow="EDITOR" title="Annotation">
+        <Row
+          label="Offer a label after placing an arrow"
+          sub="Pops a “+ Add label” chip near the arrow's tail for 8 seconds. Click it to drop matching text in the arrow's color; ignore it and it disappears."
+          tag="arrows"
+        >
+          <Switch
+            on={matchingTextEnabled}
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ editor: { matchingText: { enabled: next } } });
+            }}
+          />
+        </Row>
       </Card>
 
       <Card eyebrow="STARTUP" title="Launch at login">

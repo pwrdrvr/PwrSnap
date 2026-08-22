@@ -316,8 +316,8 @@ function defaultEditorSettings(): EditorSettings {
     },
     matchingText: {
       // "+ Add label" affordance appears after arrow placement by
-      // default. User can disable from Settings → Editor if it feels
-      // intrusive for their workflow.
+      // default. User can disable it from the EDITOR card on
+      // Settings → General if it feels intrusive for their workflow.
       enabled: true
     },
     sidebar: {

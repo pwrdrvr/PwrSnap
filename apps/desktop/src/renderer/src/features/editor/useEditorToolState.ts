@@ -135,8 +135,10 @@ export interface UseEditorToolStateReturn {
 // ---- Tunables -------------------------------------------------------
 
 /** 8s matching-text affordance auto-dismiss. Lifted into a named
- *  constant so the test + a future Settings → Editor tuning surface
- *  can read the same number. Plan §"Hover timings": this matches the
+ *  constant so the test + any future tuning surface can read the same
+ *  number. (The affordance's on/off switch lives on the EDITOR card on
+ *  Settings → General; the DURATION is still hardcoded here.) Plan
+ *  §"Hover timings": this matches the
  *  `--pse-affordance-auto-dismiss-ms` CSS var. */
 const MATCHING_TEXT_AUTO_DISMISS_MS = 8000;
 

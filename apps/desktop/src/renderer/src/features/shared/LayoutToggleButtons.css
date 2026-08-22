@@ -1,25 +1,42 @@
 /* LayoutToggleButtons — VS Code-style layout chips.
    Visual style:
-   - Tightly packed pair, no border between them — they read as one
-     controller.
+   - Tightly packed pair inside ONE segmented shell, no border between
+     them — they read as one controller.
    - The chip's "open" state shows an accent-tinted fill on the
      appropriate column inside the icon.
    - Hover: subtle background hint, no shape shift (per VS Code).
    - Focus: ring matches the rest of the renderer's focus convention.
-*/
+
+   The shell deliberately mirrors the Library top bar's REEL/GRID
+   segmented control (`.psl__view`): same 2px padding, `--bg-input`
+   fill, `--border-subtle` hairline, 6px radius, and the same 28px
+   outer height as `.psl__icon-btn` / `.psl__capture-btn`.
+
+   That shell is doing OPTICAL work, not decoration. The chips are
+   borderless, so before it existed their 28px hit boxes were invisible
+   and the eye measured from GLYPH to glyph: the painted frame sits
+   ~8.5px inside each chip, which put the gaps around the pair at
+   18.5 / 18.9 / 18.5px while every other neighbour pair in that row
+   (gear → Record Video → Quick Capture) sat at exactly 8px. Giving the
+   pair a visible edge makes the 8px flex gap read as 8px, and the
+   leftover inset becomes internal padding of a control rather than
+   dead air in the toolbar. Don't drop the shell without re-solving
+   that — the alternative is negative margins that compensate for the
+   chips' invisible padding. */
 
 .lyt-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
   padding: 2px;
   border-radius: var(--radius-sm);
-  background: transparent;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
 }
 
 .lyt-toggle__chip {
-  width: 28px;
-  height: 24px;
+  width: 24px;
+  height: 22px;
   padding: 0;
   margin: 0;
   display: inline-flex;
@@ -27,7 +44,7 @@
   justify-content: center;
   border: 1px solid transparent;
   background: transparent;
-  border-radius: 5px;
+  border-radius: 4px;
   color: var(--text-muted);
   cursor: pointer;
   transition: color 80ms ease, background 80ms ease, border-color 80ms ease;

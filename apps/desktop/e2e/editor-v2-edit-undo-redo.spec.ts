@@ -98,7 +98,7 @@ test("editor-v2-edit-undo-redo: a placed annotation survives an editor reopen", 
     // Close Focus and reopen it. The reopened
     // editor must reload the persisted layer through useCaptureModel's
     // layers:list fetch again with no error banner.
-    await firstWindow.locator(".psl__focus-close").click();
+    await firstWindow.getByTestId("focus-back").click();
     await expect(firstWindow.locator(".psl__focus")).toHaveCount(0);
     const reopened = await openEditor(app, captureId);
     await expectLayerCount(app, captureId, 1);

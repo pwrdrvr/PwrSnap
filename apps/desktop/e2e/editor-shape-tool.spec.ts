@@ -226,7 +226,7 @@ test("editor-shape-tool: drawing a circle paints an <ellipse> in the persisted g
 
 async function closeEditorWindow(app: LaunchedApp, win: Page): Promise<void> {
   void app;
-  await win.locator(".psl__focus-close").click();
+  await win.getByTestId("focus-back").click();
   await expect(win.locator(".psl__focus")).toHaveCount(0);
 }
 

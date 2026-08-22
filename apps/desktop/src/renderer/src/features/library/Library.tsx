@@ -2233,6 +2233,43 @@ export function Library() {
     return visibleRecords[i]?.id ?? null;
   }, [visibleRecords, selectedIdx]);
 
+  // Title-bar position counter for Focus / Reel ("2 / 3 · star map").
+  //
+  // `total` is ALWAYS `visibleRecords.length` — the very array
+  // `prevRecordId` / `nextRecordId` index and wrap around. Anything
+  // else eventually disagrees with what ←/→ actually do: the old
+  // `totalLive` read "1 / 3635" while → wrapped after the 3 search
+  // hits, and it lies for an UNFILTERED library too, where the keyset
+  // has only fetched its first 100-row page (→ would wrap at 100 under
+  // a counter promising 3638).
+  //
+  // `partial` renders that shortfall as a "+" instead of hiding it:
+  // rows the arrows cannot reach yet because the search capped or the
+  // keyset cursor hasn't drained. Trash rides the same keyset snapshot
+  // (`library:list` with includeDeleted, partitioned client-side), so
+  // `gridHasMore` is the right signal there too.
+  //
+  // `query` is `searchState.forQuery` — the query the ROWS came from —
+  // never the live `searchQuery`. Editing the search box while Focus is
+  // open keeps the previous rows mounted for the 150ms debounce plus
+  // the IPC round-trip (the search effect sets `loading` but does not
+  // clear `rows`), so labelling the count with the live text would read
+  // "2 / 3 · star maps" while the 3 still belongs to "star map".
+  const stagePos = useMemo(() => {
+    if ((view.kind !== "focus" && view.kind !== "reel") || selectedIdx < 0) return null;
+    const partial = isSearchActive ? searchState.capped : gridHasMore;
+    const query = isSearchActive ? searchState.forQuery : "";
+    return { idx: selectedIdx + 1, total: visibleRecords.length, partial, query };
+  }, [
+    view.kind,
+    selectedIdx,
+    isSearchActive,
+    searchState.capped,
+    searchState.forQuery,
+    gridHasMore,
+    visibleRecords.length
+  ]);
+
   // Lifted tool state — Phase 3.2: Library owns the single
   // `useEditorToolState` instance so the chromeless Editor (inside
   // <Stage>) and the floating <EditToolbar> share ONE hook. Pre-lift,
@@ -3427,23 +3464,43 @@ export function Library() {
               </svg>
             </button>
           </div>
-          <span className="psl__count">
-            {isSearchActive
-              ? searchState.loading && searchState.forQuery !== searchQuery.trim()
-                ? "searching…"
-                : searchState.error !== null
-                  ? "search failed"
-                  : searchState.capped
-                    ? `${searchResultCount}+ matches`
-                    : `${searchResultCount} ${searchResultCount === 1 ? "match" : "matches"}`
-              : isTrashView
-                ? isToolbarNarrow
-                  ? `${trashRecords.length} trash`
-                  : `${trashRecords.length} in trash`
-                : isToolbarNarrow
-                  ? `${totalLive}`
-                  : `${totalLive} captures`}
-          </span>
+          {stagePos !== null ? (
+            // Focus / Reel: position in the set ←/→ walk. The query rides
+            // along so "2 / 3" is obviously "of the 3 matches", not of
+            // the library. `.psl__count-q` hides at the narrow tier.
+            <span
+              className="psl__count is-stage"
+              data-testid="stage-pos"
+              title={`Capture ${stagePos.idx} of ${stagePos.total}${stagePos.partial ? "+" : ""}${stagePos.query === "" ? "" : ` matching “${stagePos.query}”`}`}
+            >
+              <b>{stagePos.idx}</b>
+              <span>
+                / {stagePos.total}
+                {stagePos.partial ? "+" : ""}
+              </span>
+              {stagePos.query === "" ? null : (
+                <span className="psl__count-q">· {stagePos.query}</span>
+              )}
+            </span>
+          ) : (
+            <span className="psl__count">
+              {isSearchActive
+                ? searchState.loading && searchState.forQuery !== searchQuery.trim()
+                  ? "searching…"
+                  : searchState.error !== null
+                    ? "search failed"
+                    : searchState.capped
+                      ? `${searchResultCount}+ matches`
+                      : `${searchResultCount} ${searchResultCount === 1 ? "match" : "matches"}`
+                : isTrashView
+                  ? isToolbarNarrow
+                    ? `${trashRecords.length} trash`
+                    : `${trashRecords.length} in trash`
+                  : isToolbarNarrow
+                    ? `${totalLive}`
+                    : `${totalLive} captures`}
+            </span>
+          )}
         </div>
         <div className="psl__topbar-c">
           <div className="psl__view">
@@ -4198,15 +4255,6 @@ export function Library() {
           record={selectedRecord}
           dismissible={view.kind === "focus"}
           dispatch={viewDispatch}
-          posLabel={{
-            idx: selectedIdx + 1,
-            // Use the denormalized total-live count from app_stats —
-            // same source as the top-bar's "N captures" indicator —
-            // so the 1/N matches whether or not later pages are
-            // loaded yet. `visibleRecords.length` only counts what
-            // the keyset cursor has fetched so far.
-            total: isTrashView ? visibleRecords.length : totalLive
-          }}
           prevRecordId={prevRecordId}
           nextRecordId={nextRecordId}
           videoTrim={videoTrim}

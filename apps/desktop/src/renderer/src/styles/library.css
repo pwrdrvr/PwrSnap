@@ -618,6 +618,12 @@
 .psl__topbar {
   grid-column: 1 / -1; grid-row: 1;
   display: flex; align-items: center; justify-content: space-between;
+  /* `.psl__topbar-r` is `flex: 1 1 auto`, so it absorbs every pixel of
+     slack and `space-between` never has free space left to distribute —
+     without this gap the left group (count pill) and the center group
+     (REEL/GRID) sit flush against each other. Matches `-l`'s own 12px
+     internal rhythm. */
+  gap: 12px;
   position: relative;
   /* leave room for the macOS traffic-light buttons under hiddenInset */
   padding: 0 16px 0 92px;
@@ -638,6 +644,12 @@
 .psl__topbar button,
 .psl__topbar input,
 .psl__topbar .psl__view,
+/* `.lyt-toggle` is a visible segmented shell (see
+   LayoutToggleButtons.css), so its 1px padding band reads as part of
+   the control — without this the band stays draggable and a click that
+   lands a pixel shy of a chip moves the window instead of toggling a
+   side bar. `.psl__view` is listed for the same reason. */
+.psl__topbar .lyt-toggle,
 .psl__topbar .psl__search-wrap { -webkit-app-region: no-drag; }
 .psl__topbar-l { display: flex; align-items: center; gap: 12px; }
 .psl__title { font: 700 14px/1 var(--font-display); letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
@@ -702,7 +714,15 @@
   opacity: 0.38;
   cursor: default;
 }
-.psl__count { font: 500 10px/1 var(--font-mono); color: var(--text-muted); padding: 3px 6px; background: var(--bg-panel-elevated); border-radius: var(--radius-pill); }
+.psl__count { font: 500 10px/1 var(--font-mono); color: var(--text-muted); padding: 3px 6px; background: var(--bg-panel-elevated); border-radius: var(--radius-pill); white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; }
+/* Focus / Reel: the slot becomes the stage position counter
+   ("2 / 3 · star map") — the SAME filtered set ←/→ walk, so it can
+   never disagree with what the arrows do. Lives here, not floating
+   over the capture. */
+.psl__count.is-stage { color: var(--text-secondary); border: 1px solid var(--accent-border); background: var(--accent-tint); }
+.psl__count.is-stage b { color: var(--accent-bright); font-weight: 600; }
+.psl__count-q { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.psl__topbar.is-narrow .psl__count-q { display: none; }
 .psl__topbar-c { display: flex; align-items: center; gap: 4px; }
 .psl__view {
   display: inline-flex; padding: 2px;
@@ -3731,8 +3751,12 @@
 }
 
 /* Stage interior. Contains the canvas (chromeless Editor), the
-   floating toolbar, breadcrumb meta row, position counter, prev/
-   next nav buttons, and (Focus only) the × close button. */
+   floating toolbar, the prev/next nav buttons, and (Focus only) the ×
+   close button. The "idx / total" counter lives in the TITLE BAR
+   (`.psl__count.is-stage`), computed from the same filtered set ←/→
+   walk; the breadcrumb (app · date · dims) and the "back to grid esc"
+   hint are gone — the DetailRail header already carries the metadata
+   and the × keeps the shortcut in its tooltip. */
 .psl__focus,
 .psl__stage-wrap {
   position: relative;
@@ -3754,14 +3778,14 @@
    (often very tall) available space. Wide-aspect captures (e.g.
    3710×1892) plus center-align created a multi-hundred-pixel
    air gap below the filmstrip — visually jarring. With flex-start,
-   the canvas pins to the top with breadcrumb above it; any
-   leftover height collects at the bottom. */
+   the canvas pins to the top; any leftover height collects at the
+   bottom. */
 .psl__reel-mode .psl__stage-wrap {
   align-items: flex-start;
-  /* Top padding so the canvas clears the absolute breadcrumb +
-     position counter (top:12 + their ~22px height + breathing
-     room). */
-  padding-top: 44px;
+  /* Breathing room under the filmstrip. Used to be 44px to clear an
+     absolute breadcrumb + position counter; both moved to the title
+     bar. */
+  padding-top: 12px;
 }
 .psl__stage-wrap {
   flex: 1;
@@ -3778,41 +3802,12 @@
   overflow: hidden;
 }
 
-.psl__stage-meta {
-  position: absolute;
-  top: 12px;
-  left: 24px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font: 500 11px/1 var(--font-mono);
-  color: var(--text-muted);
-  z-index: 4;
-}
-.psl__stage-meta b {
-  color: var(--text-primary);
-  font: 600 12px/1 var(--font-sans);
-}
-/* Position counter ("5 / 32"). Lives inline as the last child of
-   `.psl__stage-meta` (see Stage.tsx) so it sits at the end of the
-   breadcrumb. The previous absolute positioning at top:12 right:60
-   collided with the focus-close-hint at right:56. Keeping the pill
-   look (mono font + rounded border + accent for the index) so it
-   still reads as a position indicator inside the breadcrumb. */
-.psl__stage-pos {
-  display: inline-flex; align-items: center;
-  font: 600 11px/1 var(--font-mono);
-  color: var(--text-muted);
-  background: var(--bg-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-  padding: 4px 9px;
-  margin-left: 4px;
-}
-.psl__stage-pos b {
-  color: var(--accent-bright);
-}
-
+/* Prev/next. ONE fixed vertical position (50% of the pane) for images
+   AND videos. For video that lands below the picture's center because
+   the transport + trim timeline are docked inside the pane; anchoring
+   to the frame instead was tried and reverted — in a mixed set the
+   buttons jumped ~80px between items, which is worse than a static
+   offset. See the Stage.tsx header. */
 .psl__stage-nav {
   position: absolute;
   top: 50%;
@@ -3845,7 +3840,6 @@
 .psl__stage-nav.is-next {
   right: 16px;
 }
-
 /* Stage canvas wrapper. The chromeless Editor renders inside; its
    .editor-root.is-chromeless variant (editor.css) sizes to fit.
    `aspect-ratio` is set inline (Stage.tsx) from the capture's
@@ -3880,7 +3874,11 @@
   justify-content: center;
 }
 
-/* × button on Focus only (Reel doesn't dismiss). */
+/* × close button, Focus only (Reel doesn't dismiss). Deliberately the
+   same circle as `.psl__stage-nav` above — the three stage affordances
+   read as one set — just 32px so it sits a touch lighter in the corner.
+   Its `title` is where the Esc shortcut lives now that the 10px "back
+   to grid esc" hint is gone. */
 .psl__focus-close {
   position: absolute;
   top: 14px;
@@ -3904,17 +3902,6 @@
   border-color: var(--accent);
   color: var(--accent-bright);
   transform: rotate(90deg);
-}
-.psl__focus-close-hint {
-  position: absolute;
-  top: 18px;
-  right: 56px;
-  font: 500 10px/1 var(--font-mono);
-  color: var(--text-muted);
-  z-index: 5;
-}
-.psl__focus-close-hint .ps-kbd {
-  margin-left: 4px;
 }
 
 /* Floating bottom-center edit toolbar. Uses position:absolute (not

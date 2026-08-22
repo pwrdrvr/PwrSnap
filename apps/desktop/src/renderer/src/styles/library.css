@@ -644,6 +644,12 @@
 .psl__topbar button,
 .psl__topbar input,
 .psl__topbar .psl__view,
+/* `.lyt-toggle` is a visible segmented shell (see
+   LayoutToggleButtons.css), so its 1px padding band reads as part of
+   the control — without this the band stays draggable and a click that
+   lands a pixel shy of a chip moves the window instead of toggling a
+   side bar. `.psl__view` is listed for the same reason. */
+.psl__topbar .lyt-toggle,
 .psl__topbar .psl__search-wrap { -webkit-app-region: no-drag; }
 .psl__topbar-l { display: flex; align-items: center; gap: 12px; }
 .psl__title { font: 700 14px/1 var(--font-display); letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }

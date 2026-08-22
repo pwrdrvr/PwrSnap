@@ -18,6 +18,13 @@ describe("Windows release configuration", () => {
     expect(config).toContain("mimeType: application/vnd.pwrdrvr.pwrsnap.bundle+zip");
     expect(config).toContain("artifactName: \"${productName}-${version}-windows-${arch}-setup.${ext}\"");
     expect(config).toContain("releaseType: prerelease");
+
+    // The ARP DisplayName must not carry the version. electron-builder
+    // defaults uninstallDisplayName to "${productName} ${version}"; leaving
+    // it unset puts "PwrSnap <version>" in Add or Remove Programs and makes
+    // the winget manifest's AppsAndFeaturesEntries.DisplayName move every
+    // release. See docs/windows/winget/README.md.
+    expect(config).toMatch(/nsis:\r?\n[\s\S]*uninstallDisplayName: PwrSnap\r?\n/);
   });
 
   test("Windows packager isolates preparation and fails closed on Azure signing", () => {

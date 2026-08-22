@@ -576,6 +576,16 @@ export function FloatOverHost(): React.ReactElement {
           void dispatch("library:openInLibrary", { captureId: record.id });
           void dispatch("float-over:dismiss", {});
         }}
+        onReveal={() => {
+          // Folder button on the preview's hover row. Same verb + same
+          // dismiss as Edit above: `library:openInLibrary` is the only
+          // "show me this capture in the Library" path there is — it
+          // raises the window and navigates to the record (see
+          // open-file.ts, which uses it for double-clicked .pwrsnap
+          // files). Landing in Focus is what Library Focus IS.
+          void dispatch("library:openInLibrary", { captureId: record.id });
+          void dispatch("float-over:dismiss", {});
+        }}
       />
     );
   }

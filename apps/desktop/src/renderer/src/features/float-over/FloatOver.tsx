@@ -281,6 +281,7 @@ export function FloatOver({
   copyPulses,
   onDismiss,
   onEdit,
+  onReveal,
   onCopy,
   onCopyPath,
   onDragFile,
@@ -335,6 +336,12 @@ export function FloatOver({
   copyPulses?: Readonly<Record<CopyPreset, number>> | undefined;
   onDismiss?: () => void;
   onEdit?: () => void;
+  /** Fired from the folder button on the image preview's hover row.
+   *  Parent dispatches `library:openInLibrary` so the toast's capture
+   *  is showing in the Library when attention transfers there. Without
+   *  this prop wired (which was the original bug), the button rendered
+   *  fully enabled and did nothing at all on click. */
+  onReveal?: () => void;
   /** Fired when the user clicks Low / Med / High in the toast. The
    *  parent dispatches `clipboard:copy` with the preset; this
    *  component just animates the "copied" badge. Without this prop
@@ -876,8 +883,15 @@ export function FloatOver({
               >
                 <FoIcon name="pen-line" size={11} /> Edit
               </button>
-              <button className="fo__hover-btn" title="Reveal in library">
+              <button
+                className="fo__hover-btn"
+                type="button"
+                title="Reveal in library"
+                onClick={() => onReveal?.()}
+                disabled={onReveal === undefined}
+              >
                 <FoIcon name="folder-open" size={11} />
+                <span className="sr-only">Reveal in library</span>
               </button>
             </div>
           </div>

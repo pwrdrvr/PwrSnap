@@ -105,7 +105,7 @@ when the installer was built:
 
 | Installer | ARP `DisplayName` | Manifest `AppsAndFeaturesEntries.DisplayName` |
 | --- | --- | --- |
-| v1.0.3 and earlier | `PwrSnap 1.0.3` | `PwrSnap 1.0.3` |
+| v1.0.3 and earlier | `PwrSnap <that build's version>` | `PwrSnap 1.0.3` in the v1.0.3 manifest |
 | built after `nsis.uninstallDisplayName` was pinned | `PwrSnap` | `PwrSnap` |
 
 v1.0.3 shipped before [`apps/desktop/electron-builder.yml`](../../../apps/desktop/electron-builder.yml)

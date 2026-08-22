@@ -24,7 +24,16 @@ describe("Windows release configuration", () => {
     // it unset puts "PwrSnap <version>" in Add or Remove Programs and makes
     // the winget manifest's AppsAndFeaturesEntries.DisplayName move every
     // release. See docs/windows/winget/README.md.
-    expect(config).toMatch(/nsis:\r?\n[\s\S]*uninstallDisplayName: PwrSnap\r?\n/);
+    //
+    // Anchored on purpose, and worth keeping that way. `^` rejects the key
+    // commented out (`  # uninstallDisplayName: ...`), and walking only
+    // two-space-indented lines from `nsis:` — rather than `[\s\S]*` — stops
+    // the match escaping into a sibling top-level block, which would let the
+    // nsis target lose the setting while this test still passed. Both are
+    // realistic regressions that a looser pattern waves through.
+    expect(config).toMatch(
+      /^nsis:\r?\n(?: {2}.*\r?\n)*? {2}uninstallDisplayName: PwrSnap\r?$/m
+    );
   });
 
   test("Windows packager isolates preparation and fails closed on Azure signing", () => {

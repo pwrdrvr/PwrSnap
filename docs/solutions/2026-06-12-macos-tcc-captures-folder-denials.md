@@ -256,8 +256,12 @@ open$NOCANCEL` under `~/Documents/PwrSnap`, renderers idle. A shell `ls
 ~/Documents/PwrSnap` in the same state returned "Interrupted system call"
 — the Documents consent prompt was pending for that identity, and macOS
 parks every `open()`/`opendir()` under the folder until the user
-answers. `PWRSNAP_E2E=1` (which rebases `documents` into userData)
-avoided it entirely, which nailed the path.
+answers. Running with `PWRSNAP_E2E=1` **and** `PWRSNAP_USER_DATA` avoided
+it entirely, which nailed the path. Note it takes both: the
+`app.setPath("documents", …)` rebase sits inside the `PWRSNAP_USER_DATA`
+branch and is additionally gated on `isE2E`, so `PWRSNAP_E2E=1` alone
+changes nothing and a launch with only that flag still reads the real
+`~/Documents/PwrSnap`.
 
 **Cause.** `ChatThreadStore.ensureImported()` — the one-time legacy
 `pwrsnap-thread.json` import — did `readdirSync(<captures>/Chats)` plus a

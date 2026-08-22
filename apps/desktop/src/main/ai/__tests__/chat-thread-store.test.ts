@@ -116,7 +116,11 @@ describe("ChatThreadStore.create / get", () => {
       anchorCaptureId: "cap-123"
     });
 
-    await store.setOwnerClientId("owned", "lag_client_a");
+    await store.lockThreadProvenance(
+      "owned",
+      { provider: null, model: null, reasoning: null },
+      "lag_client_a"
+    );
 
     expect(await store.get("owned")).toMatchObject({
       threadId: "owned",

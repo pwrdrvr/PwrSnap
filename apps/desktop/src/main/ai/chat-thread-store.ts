@@ -81,9 +81,13 @@ const SLUG_MAX = 40;
  */
 const LEGACY_IMPORT_WAIT_MS = 1500;
 
-/** How many sidecar reads the import has in flight at once. Kept well under
- *  libuv's default 4-thread pool so the back-fill never monopolizes it. */
-const LEGACY_IMPORT_READ_CONCURRENCY = 8;
+/** How many sidecar reads the import has in flight at once. libuv's default
+ *  threadpool is FOUR threads, shared with every other `fs/promises` call plus
+ *  `dns.lookup` / `zlib` / `crypto`, so this stays below it — one free slot is
+ *  the difference between a slow background back-fill and a stalled app. It
+ *  matters most on an iCloud-synced Documents folder, where each evicted
+ *  sidecar blocks its thread on materialization. */
+const LEGACY_IMPORT_READ_CONCURRENCY = 3;
 
 /**
  * The process-wide legacy-sidecar import for ONE Chats root.
@@ -113,13 +117,24 @@ type LegacyImport = {
    *  `delete()` that ran after the bound elapsed would be undone by the
    *  pending `INSERT OR IGNORE`. Cleared once the import settles. */
   deleted: Set<string>;
+  /** True once the transaction has run. After that nothing can be
+   *  resurrected, so `delete()` stops recording ids (the set would
+   *  otherwise grow for the life of the process). */
+  done: boolean;
 };
 
+/** Whether a finished import may usefully be retried later. */
+type LegacyImportOutcome = "done" | "denied";
+
 const legacyImports = new Map<string, LegacyImport>();
+/** Roots whose "Chats dir unreadable" warn has already been emitted, so a
+ *  retry after a denial doesn't re-log it once per call. */
+const legacyImportWarnedRoots = new Set<string>();
 
 /** Test seam — drop the per-root import memo between specs. */
 export function resetLegacyImportsForTests(): void {
   legacyImports.clear();
+  legacyImportWarnedRoots.clear();
 }
 
 /** Test seam — await the REAL import (no bound) for a root, so specs that
@@ -277,30 +292,20 @@ export class ChatThreadStore {
   /** Persist a thread's locked backend config (Provider / Model / Reasoning).
    *  Written once when the thread is created with a chosen config; thereafter
    *  the config is immutable (locked on first message). No-op for an unknown id. */
-  async setBackendConfig(
-    threadId: string,
-    config: { provider: string | null; model: string | null; reasoning: string | null }
-  ): Promise<void> {
-    await this.ensureImported();
-    this.writeBackendConfig(threadId, config);
-  }
-
-  async setOwnerClientId(threadId: string, ownerClientId: string): Promise<void> {
-    await this.ensureImported();
-    this.writeOwnerClientId(threadId, ownerClientId);
-  }
-
   /**
    * Stamp a freshly created thread's locked backend config and, for a thread
-   * created by a local MCP client, its owner — in ONE synchronous block.
+   * created by a local MCP client, its owner — as ONE atomic write.
    *
-   * Both writes must land without a yield between them. `codex:*Chat:list`
-   * treats `owner_client_id IS NULL` as "library-wide, show it in the UI", so
-   * a concurrent list that lands after the config write but before the owner
-   * write would render another local client's private thread in the user's
-   * Library — the tenancy boundary `codex:*Chat:send` enforces with
-   * "This chat belongs to another user or local client." Two separately
-   * awaited setters left exactly that window open.
+   * This is deliberately a single entry point rather than two setters.
+   * `codex:*Chat:list` treats `owner_client_id IS NULL` as "library-wide,
+   * show it in the UI", so anything that lets a reader observe the row after
+   * the config write but before the owner write renders another local
+   * client's private thread in the user's Library — the tenancy boundary
+   * `codex:*Chat:send` enforces with "This chat belongs to another user or
+   * local client." Two separately awaited setters left exactly that window
+   * open, and even back to back they are two autocommit transactions: if the
+   * second threw, the first would already be durable and the thread would
+   * stay unowned forever. The explicit transaction makes it all-or-nothing.
    */
   async lockThreadProvenance(
     threadId: string,
@@ -308,25 +313,24 @@ export class ChatThreadStore {
     ownerClientId: string | null = null
   ): Promise<void> {
     await this.ensureImported();
-    this.writeBackendConfig(threadId, config);
-    if (ownerClientId !== null && ownerClientId !== "") {
-      this.writeOwnerClientId(threadId, ownerClientId);
-    }
-  }
-
-  private writeBackendConfig(
-    threadId: string,
-    config: { provider: string | null; model: string | null; reasoning: string | null }
-  ): void {
-    this.db()
-      .prepare(`UPDATE chat_threads SET provider = ?, model = ?, reasoning = ? WHERE thread_id = ?`)
-      .run(config.provider ?? null, config.model ?? null, config.reasoning ?? null, threadId);
-  }
-
-  private writeOwnerClientId(threadId: string, ownerClientId: string): void {
-    this.db()
-      .prepare(`UPDATE chat_threads SET owner_client_id = ? WHERE thread_id = ?`)
-      .run(ownerClientId, threadId);
+    const db = this.db();
+    const writeConfig = db.prepare(
+      `UPDATE chat_threads SET provider = ?, model = ?, reasoning = ? WHERE thread_id = ?`
+    );
+    const writeOwner = db.prepare(
+      `UPDATE chat_threads SET owner_client_id = ? WHERE thread_id = ?`
+    );
+    db.transaction(() => {
+      writeConfig.run(
+        config.provider ?? null,
+        config.model ?? null,
+        config.reasoning ?? null,
+        threadId
+      );
+      if (ownerClientId !== null && ownerClientId !== "") {
+        writeOwner.run(ownerClientId, threadId);
+      }
+    })();
   }
 
   /**
@@ -438,7 +442,7 @@ export class ChatThreadStore {
     // the import's transaction takes no awaits), so they cannot interleave —
     // without this, an import that had already read the sidecar would
     // re-insert the row and the deleted chat would come back.
-    legacyImport.deleted.add(threadId);
+    if (!legacyImport.done) legacyImport.deleted.add(threadId);
     const dir = this.threadDir(threadId);
     this.db().prepare(`DELETE FROM chat_threads WHERE thread_id = ?`).run(threadId);
     if (dir !== null) {
@@ -552,27 +556,40 @@ export class ChatThreadStore {
    * first use. One import per root per process; see {@link LegacyImport}.
    */
   private legacyImportFor(): LegacyImport {
-    const memo = legacyImports.get(this.chatsDir);
+    const root = this.chatsDir;
+    const memo = legacyImports.get(root);
     if (memo !== undefined) return memo;
     const deleted = new Set<string>();
+    let entry: LegacyImport;
     const settled = this.importLegacySidecars(deleted)
-      .catch((cause: unknown) => {
+      .catch((cause: unknown): LegacyImportOutcome => {
         // `importLegacySidecars` handles its own failures; this only guards
         // a programming error so a caller can never hang on it.
         this.log.warn("chat-thread-store: legacy sidecar import threw", {
           message: errMessage(cause)
         });
+        return "done";
       })
-      .finally(() => {
-        // Nothing can be resurrected once the transaction has run.
+      .then((outcome) => {
+        entry.done = true;
         deleted.clear();
+        // A DENIED grant fails fast, unlike a pending prompt (which parks in
+        // the memo until it settles). Drop the memo so a later call retries:
+        // if the user grants access mid-session the retry succeeds and calls
+        // reportCapturesAccessSuccess, letting the captures banner
+        // self-dismiss. Without this, one Chats-dir EPERM pins the banner up
+        // for the life of the process even after every capture path recovers.
+        if (outcome === "denied" && legacyImports.get(root) === entry) {
+          legacyImports.delete(root);
+        }
       });
-    const entry: LegacyImport = {
+    entry = {
       settled,
       gate: settleWithin(settled, this.legacyImportWaitMs),
-      deleted
+      deleted,
+      done: false
     };
-    legacyImports.set(this.chatsDir, entry);
+    legacyImports.set(root, entry);
     return entry;
   }
 
@@ -606,31 +623,45 @@ export class ChatThreadStore {
    * while the consent prompt was pending. The sidecars are read up front
    * so the SQLite transaction stays a tight synchronous section.
    */
-  private async importLegacySidecars(deleted: ReadonlySet<string>): Promise<void> {
+  private async importLegacySidecars(
+    deleted: ReadonlySet<string>
+  ): Promise<LegacyImportOutcome> {
     let entries: string[];
     try {
       // `withFileTypes` costs nothing extra (the type rides along on the
-      // same scandir) and skips `.DS_Store` / the `.metadata_never_index`
-      // sentinel, each of which would otherwise pay a doomed open.
+      // same scandir) and lets us skip `.DS_Store` / the
+      // `.metadata_never_index` sentinel, each of which would otherwise pay
+      // a doomed open.
+      //
+      // Filter on `isFile()`, NOT `isDirectory()`: libuv reports
+      // `UV_DIRENT_UNKNOWN` for filesystems that don't fill in `d_type`
+      // (SMB, NFS, exFAT, several FUSE + cloud-sync mounts) and never
+      // lstat()s to resolve it, so `isDirectory()` is false for EVERY entry
+      // there — which would silently import nothing at all. Excluding only
+      // what is definitely a plain file keeps unknowns and symlinked thread
+      // dirs in, exactly like the old name-only readdir.
       entries = (await readdir(this.chatsDir, { withFileTypes: true }))
-        .filter((entry) => entry.isDirectory())
+        .filter((entry) => !entry.isFile())
         .map((entry) => entry.name);
       reportCapturesAccessSuccess(this.chatsDir);
     } catch (cause) {
       if (isNodeError(cause) && cause.code === "ENOENT") {
-        return; // No Chats dir yet → nothing to import.
+        return "done"; // No Chats dir yet → nothing to import.
       }
       // `getChatsRoot()` is `<capturesRoot>/Chats`, so an EPERM/EACCES here
       // is the SAME macOS Documents denial the captures banner reports, with
       // the same remedy. Route it through the single accounting point rather
       // than inventing a second, silent one (2026-06-12 solution doc).
-      reportCapturesAccessFailure(this.chatsDir, cause);
-      this.log.warn("chat-thread-store: legacy sidecar import skipped — Chats dir unreadable", {
-        chatsDir: this.chatsDir,
-        code: isNodeError(cause) ? cause.code : undefined,
-        message: errMessage(cause)
-      });
-      return;
+      const denied = reportCapturesAccessFailure(this.chatsDir, cause);
+      if (!legacyImportWarnedRoots.has(this.chatsDir)) {
+        legacyImportWarnedRoots.add(this.chatsDir);
+        this.log.warn("chat-thread-store: legacy sidecar import skipped — Chats dir unreadable", {
+          chatsDir: this.chatsDir,
+          code: isNodeError(cause) ? cause.code : undefined,
+          message: errMessage(cause)
+        });
+      }
+      return denied ? "denied" : "done";
     }
 
     // Bounded-parallel so a big Chats dir doesn't serialize one threadpool
@@ -655,7 +686,7 @@ export class ChatThreadStore {
         sidecars.push({ dirName: item.dirName, sidecar: item.parsed.data });
       }
     }
-    if (sidecars.length === 0) return;
+    if (sidecars.length === 0) return "done";
 
     let importedCount = 0;
     try {
@@ -690,11 +721,12 @@ export class ChatThreadStore {
       this.log.warn("chat-thread-store: legacy sidecar import failed", {
         message: errMessage(cause)
       });
-      return;
+      return "done";
     }
     if (importedCount > 0) {
       this.log.info("chat-thread-store: imported legacy sidecars", { count: importedCount });
     }
+    return "done";
   }
 
   /**

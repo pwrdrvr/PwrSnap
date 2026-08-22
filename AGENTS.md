@@ -367,8 +367,12 @@ thread froze the whole app at startup — beachball, "Application Not
 Responding", ~0% CPU, main thread in `readdirSync → opendir →
 open$NOCANCEL` — because the event loop, the IPC dispatcher, and the
 AppKit run loop share that thread and there is no UI left to answer the
-prompt from. `PWRSNAP_E2E=1` hides the whole class (it rebases
-`documents` into userData), so E2E green proves nothing here.
+prompt from. `PWRSNAP_E2E=1` **together with** `PWRSNAP_USER_DATA`
+hides the whole class (that pair rebases `documents` into userData;
+neither does it alone — see the `isE2E` branch in
+[index.ts](apps/desktop/src/main/index.ts)), so E2E green proves nothing
+here. A local launch that sets only `PWRSNAP_E2E=1` still reads the real
+`~/Documents/PwrSnap` and can still hit the hang.
 
 - Use `node:fs/promises` and let the caller `await` — or, when the read
   is a nicety rather than the source of truth, bound the wait and

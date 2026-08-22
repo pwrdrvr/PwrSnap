@@ -20,6 +20,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThreadSidecar } from "@pwrsnap/shared";
 import {
+  getCapturesAccessHealth,
+  resetCapturesAccessHealthForTests
+} from "../../storage/captures-access-health";
+import {
   ChatThreadStore,
   resetLegacyImportsForTests,
   whenLegacyImportSettled,
@@ -129,6 +133,7 @@ async function seedLegacySidecar(dirName: string, threadId: string): Promise<voi
 
 beforeEach(async () => {
   resetLegacyImportsForTests();
+  resetCapturesAccessHealthForTests();
   fsHook.readdir = null;
   fsHook.calls = [];
   pwrsnapRoot = await mkdtemp(join(tmpdir(), "pwrsnap-chat-store-documents-"));
@@ -139,6 +144,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   resetLegacyImportsForTests();
+  resetCapturesAccessHealthForTests();
   fsHook.readdir = null;
   db.close();
   await rm(pwrsnapRoot, { force: true, recursive: true });
@@ -186,8 +192,10 @@ describe("ChatThreadStore while the Documents grant is pending or denied", () =>
       expect.stringContaining("Chats dir unreadable"),
       expect.objectContaining({ chatsDir, code: "EPERM" })
     );
-    // The import is attempted once per store; a later call neither retries
-    // nor re-logs it.
+    // A denial fails fast (it does not park), so the memo is dropped and a
+    // later call DOES retry — that is how the captures banner recovers if the
+    // user grants access mid-session. The warn is emitted once per root, so
+    // retrying never turns into log spam.
     await store.list();
     expect(logger.warn).toHaveBeenCalledTimes(1);
   });
@@ -214,7 +222,7 @@ describe("ChatThreadStore while the Documents grant is pending or denied", () =>
     await a.list();
     await a.get("indexed-1");
     await b.list();
-    await b.setBackendConfig("indexed-1", { provider: "codex", model: null, reasoning: null });
+    await b.lockThreadProvenance("indexed-1", { provider: "codex", model: null, reasoning: null });
     const elapsed = Date.now() - started;
 
     // Four gated calls across two stores. Re-arming the bound per call would
@@ -246,6 +254,28 @@ describe("ChatThreadStore while the Documents grant is pending or denied", () =>
 
     expect(await store.get("legacy-1")).toBeNull();
     expect((await store.list()).map((s) => s.threadId)).not.toContain("legacy-1");
+  });
+
+  it("raises the captures-access signal on a denial and clears it on recovery", async () => {
+    await seedIndexedThread("indexed-1");
+    let denyReads = true;
+    fsHook.readdir = (path) =>
+      path === chatsDir && denyReads ? Promise.reject(permissionDenied()) : null;
+
+    const store = new ChatThreadStore({ chatsDir, db, logger: fakeLogger() });
+    await store.list();
+    // A Chats-dir EPERM is the same Documents denial the captures banner
+    // reports, so it must reach the shared accounting point — not just a log.
+    expect(getCapturesAccessHealth()).toMatchObject({ denied: true, samplePath: chatsDir });
+
+    // The user grants access mid-session. A denial fails fast rather than
+    // parking, so the next call retries and the banner must self-dismiss —
+    // the module's documented contract. A latched memo would pin it up for
+    // the life of the process even after every capture path recovered.
+    denyReads = false;
+    await store.list();
+    await whenLegacyImportSettled(chatsDir);
+    expect(getCapturesAccessHealth().denied).toBe(false);
   });
 
   it("never imports the synchronous fs API", () => {

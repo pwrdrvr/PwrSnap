@@ -231,7 +231,11 @@ export async function nvmNodeBinDirs(home: string = os.homedir()): Promise<strin
   const base = path.join(home, ".nvm", "versions", "node");
   try {
     return (await readdir(base, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
+      // `!isFile()`, not `isDirectory()`: filesystems that leave `d_type`
+      // unset (SMB/NFS/exFAT — a network $HOME is not exotic) report every
+      // entry as UV_DIRENT_UNKNOWN, and `isDirectory()` would then drop all
+      // of them and erase every nvm bin dir. This still skips stray files.
+      .filter((entry) => !entry.isFile())
       .map((entry) => entry.name)
       .sort(compareNodeVersionsNewestFirst)
       .map((version) => path.join(base, version, "bin"));

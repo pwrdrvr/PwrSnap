@@ -514,13 +514,21 @@ export function describeSearchChip(query: string): LibraryFilterChip | null {
  * whatever it returned (see Library.tsx `universeRecordsRaw`). Reading
  * the row left-to-right therefore reads the query in the order it is
  * applied.
+ *
+ * Trash suppresses the search chip for the same reason it suppresses
+ * the type and app chips: `universeRecordsRaw` reads
+ * `isTrashView ? trashRecords : isSearchActive ? …`, so trash wins and
+ * the query is bypassed outright. Switching to Trash does NOT clear the
+ * query (the input is merely disabled), so without this guard a chip
+ * would sit there advertising a narrowing that isn't being applied —
+ * next to Empty Trash, which purges every row the grid is listing.
  */
 export function describeChipRow(
   state: LibraryFilterState,
   appLabel: (appId: string) => string,
   searchQuery: string
 ): readonly LibraryFilterChip[] {
-  const search = describeSearchChip(searchQuery);
+  const search = state.scope === "trash" ? null : describeSearchChip(searchQuery);
   const facets = describeFilterChips(state, appLabel);
   return search === null ? facets : [search, ...facets];
 }

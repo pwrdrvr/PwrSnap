@@ -577,6 +577,19 @@ describe("chips", () => {
     expect(chips.map((c) => c.kind)).toEqual(["search"]);
   });
 
+  test("Trash suppresses the search chip — trash bypasses the query", () => {
+    // Switching to Trash does not clear the search box (it only
+    // disables it), and `universeRecordsRaw` puts trash ahead of
+    // search — so a chip here would advertise a narrowing the grid
+    // ignored, right next to Empty Trash.
+    const state = libraryFilterReducer(initialLibraryFilter, {
+      type: "SET_SCOPE",
+      scope: "trash"
+    });
+    const chips = describeChipRow(state, upperLabel, "star map");
+    expect(chips.map((c) => c.kind)).toEqual(["scope"]);
+  });
+
   test("summarizeLibraryFilter reads the composed query in one line", () => {
     const state = run(
       initialLibraryFilter,

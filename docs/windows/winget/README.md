@@ -64,12 +64,12 @@ That is a schema check only. It is not a substitute for `winget validate` and
 | `FileExtensions` | `pwrsnap` | `win.fileAssociations` |
 | `InstallationMetadata.DefaultInstallLocation` | `%LOCALAPPDATA%\Programs\PwrSnap` | Per-user electron-builder NSIS default |
 | `AppsAndFeaturesEntries.DisplayName` | `PwrSnap 1.0.3` | electron-builder's `uninstallDisplayName` default is `${productName} ${version}`; confirmed on a real install |
-| `AppsAndFeaturesEntries.ProductCode` | `c8b3bdba-25e5-5dbd-b016-8e6ce14b4982` | See the warning below |
+| `AppsAndFeaturesEntries.ProductCode` | `c8b3bdba-25e5-5dbd-b016-8e6ce14b4982` | UUIDv5 of `appId`; confirmed against the real signed v1.0.3 install |
 | `MinimumOSVersion` | `10.0.0.0` | Windows 10 floor |
 | `InstallerSha256` | matches `PwrSnap-windows-SHA256SUMS` on the release | Verified against the published asset |
 | `License` / `LicenseUrl` | MIT / repo `LICENSE` | [`LICENSE`](../../../LICENSE) |
 
-### The `ProductCode` needs one confirmation on a real install
+### The `ProductCode`, and how it was confirmed
 
 electron-builder names the NSIS uninstall registry key after a UUIDv5 of the
 `appId` (`com.pwrdrvr.pwrsnap`) under electron-builder's own namespace. Computed
@@ -77,10 +77,20 @@ against the pinned electron-builder `26.15.7`, that is
 `c8b3bdba-25e5-5dbd-b016-8e6ce14b4982`, which is what winget wants as
 `ProductCode` for an NSIS package.
 
-It is worth confirming against an actual install rather than trusting the
-derivation, because a wrong `ProductCode` does not fail validation — it just
-makes `winget upgrade` quietly stop matching the installed app. After installing
-the real v1.0.3 installer on the test machine:
+**Confirmed 2026-08-22** against the real signed v1.0.3 installer on a Windows
+machine: the registry value matches the derivation exactly. The same check is
+what caught the `DisplayName` version suffix documented below.
+
+That confirmation was worth doing rather than trusting the derivation, because a
+wrong `ProductCode` does not fail validation — it just makes `winget upgrade`
+quietly stop matching the installed app.
+
+**This does not need repeating every release.** The uninstall key is derived from
+the `appId`, not the version, so the `ProductCode` is stable across releases.
+Re-verify only if `appId` changes, if `nsis.guid` is ever set explicitly, or
+after an electron-builder major-version bump that could move the derivation.
+
+To re-run the check on a machine with PwrSnap installed:
 
 ```powershell
 Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like "PwrSnap*" } | Select-Object PSChildName, @{n="DisplayName";e={(Get-ItemProperty $_.PSPath).DisplayName}}, @{n="Publisher";e={(Get-ItemProperty $_.PSPath).Publisher}}, @{n="DisplayVersion";e={(Get-ItemProperty $_.PSPath).DisplayVersion}}
@@ -213,11 +223,14 @@ install check instead and rely on the repo pipeline for sandbox coverage.
 
 ### 7. Local install check on the test machine
 
-Separate from the sandbox run, because this is where the `ProductCode` gets
-confirmed and where the app actually gets launched.
+Separate from the sandbox run, because this is where the ARP entry gets checked
+and where the app actually gets launched.
 
 - [ ] Silent install lands in `%LOCALAPPDATA%\Programs\PwrSnap`.
-- [ ] The registry query from the `ProductCode` section above matches the manifest.
+- [ ] The registry query from the `ProductCode` section above matches the
+      `AppsAndFeaturesEntries` block. `ProductCode` and `Publisher` are stable
+      across releases; `DisplayName` carries the version and is the one that
+      moves.
 - [ ] PwrSnap launches, and Control+Shift+C takes a capture.
 - [ ] A `.pwrsnap` file shows the PwrSnap icon in File Explorer.
 - [ ] `winget uninstall PwrDrvr.PwrSnap` removes it cleanly.

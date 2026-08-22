@@ -402,8 +402,10 @@ export function libraryCountsRequestFor(
   args: {
     /** Bundle ids behind the facet's selected appIds, from app_stats. */
     readonly facetBundleIds: ReadonlyArray<string | null>;
-    /** Local midnight as an ISO-8601 UTC instant. */
+    /** Local midnight today, as an ISO-8601 UTC instant. */
     readonly todayStartIso: string;
+    /** Local midnight tomorrow — the EXCLUSIVE end of today. */
+    readonly todayEndIso: string;
   }
 ): LibraryCountsRequest {
   if (state.scope === "trash") return { scope: "trash" };
@@ -416,7 +418,9 @@ export function libraryCountsRequestFor(
     scope: "live",
     // Both on is the neutral case — omit rather than send [image, video].
     ...(kinds.length === 2 ? {} : { kinds }),
-    ...(state.scope === "today" ? { capturedAtStart: args.todayStartIso } : {}),
+    ...(state.scope === "today"
+      ? { capturedAtStart: args.todayStartIso, capturedAtEnd: args.todayEndIso }
+      : {}),
     ...(args.facetBundleIds.length === 0
       ? {}
       : state.sourceApps.mode === "include"

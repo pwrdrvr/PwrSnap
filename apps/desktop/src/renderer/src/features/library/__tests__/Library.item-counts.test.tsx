@@ -200,14 +200,20 @@ function project(id: string, createdAt: string) {
   };
 }
 
-// Two captures today + one yesterday; one reel today + one last week.
-// So: Today = 2 captures + 1 reel = 3. All = 3 captures + 2 reels = 5.
+// Two captures today, one yesterday, one dated tomorrow; one reel today
+// and one last week. So: Today = 2 captures + 1 reel = 3 (the future
+// capture is NOT today). All = 4 captures + 2 reels = 6.
 const TODAY_CAPTURES = [
   imageRecord("cap_today_a", isoAt(0, 9)),
   imageRecord("cap_today_b", isoAt(0, 11))
 ];
 const OLDER_CAPTURES = [imageRecord("cap_older", isoAt(1, 9))];
-const ALL_CAPTURES = [...TODAY_CAPTURES, ...OLDER_CAPTURES];
+// Dated into the future — a clock skew or an imported bundle. The grid
+// buckets it under tomorrow's day header, so no Today count may include
+// it. Present specifically to catch a Today predicate that has a lower
+// bound and no upper one.
+const FUTURE_CAPTURES = [imageRecord("cap_future", isoAt(-1, 9))];
+const ALL_CAPTURES = [...FUTURE_CAPTURES, ...TODAY_CAPTURES, ...OLDER_CAPTURES];
 const PROJECTS = [project("proj_today", isoAt(0, 10)), project("proj_older", isoAt(7, 10))];
 
 /** Stand-in for `countCaptures`, honoring the fields this spec exercises. */
@@ -215,6 +221,7 @@ function countSeeded(req: {
   scope?: "live" | "trash";
   kinds?: Array<"image" | "video">;
   capturedAtStart?: string;
+  capturedAtEnd?: string;
 }): number {
   if (req.scope === "trash") return 0;
   let rows = ALL_CAPTURES;
@@ -222,6 +229,12 @@ function countSeeded(req: {
   if (req.capturedAtStart !== undefined) {
     const start = req.capturedAtStart;
     rows = rows.filter((r) => r.captured_at >= start);
+  }
+  // Exclusive, matching countCaptures. Honoring this is what lets the
+  // future-dated fixture below catch a start-only Today predicate.
+  if (req.capturedAtEnd !== undefined) {
+    const end = req.capturedAtEnd;
+    rows = rows.filter((r) => r.captured_at < end);
   }
   return rows.length;
 }
@@ -233,7 +246,9 @@ beforeEach(() => {
       return ok({
         rows: ALL_CAPTURES,
         nextCursor: null,
-        appStats: [{ bundleId: "com.example.app", count: 3, sourceAppName: "Example" }],
+        appStats: [
+          { bundleId: "com.example.app", count: ALL_CAPTURES.length, sourceAppName: "Example" }
+        ],
         totalLive: ALL_CAPTURES.length,
         kindStats: [{ kind: "image", count: ALL_CAPTURES.length }],
         trashTotal: 0
@@ -249,7 +264,7 @@ beforeEach(() => {
     if (name === "storage:summary") {
       return ok({
         capturedAt: isoAt(0, 12),
-        sourceCaptures: { bytes: 300_000, captureCount: ALL_CAPTURES.length }
+        sourceCaptures: { bytes: 400_000, captureCount: ALL_CAPTURES.length }
       });
     }
     if (name === "sizzle:list") return ok({ projects: PROJECTS });
@@ -350,10 +365,23 @@ describe("Library item counts", () => {
     expect(dayHeaderCounts().Today).toBe(3);
   });
 
+  test("a capture dated into the future is not counted as Today", async () => {
+    // Today is a half-open [start, end) interval. With a lower bound
+    // only, `cap_future` would inflate the badge to 4 while the Today
+    // day header stayed at 3 — the same badge-vs-grid contradiction
+    // the reel bug produced, from the other direction.
+    await renderLibrary();
+    await clickNav("Today");
+
+    expect(navCount("Today")).toBe(3);
+    expect(dayHeaderCounts().Today).toBe(3);
+    expect(topbarCount()).toBe(3);
+  });
+
   test("All Captures counts every item the unfiltered grid shows", async () => {
     await renderLibrary();
-    expect(navCount("All Captures")).toBe(5);
-    expect(topbarCount()).toBe(5);
+    expect(navCount("All Captures")).toBe(6);
+    expect(topbarCount()).toBe(6);
   });
 
   test("the Types rows sum to All Captures", async () => {

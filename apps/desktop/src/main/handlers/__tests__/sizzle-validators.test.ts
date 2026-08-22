@@ -1148,26 +1148,45 @@ describe("validateLibraryCounts", () => {
     });
   });
 
-  describe("capturedAtStart", () => {
-    it("accepts an ISO-8601 instant", () => {
-      const r = validateLibraryCounts({ capturedAtStart: "2026-08-22T07:00:00.000Z" });
+  describe("date bounds", () => {
+    it("accepts a half-open ISO-8601 interval", () => {
+      const r = validateLibraryCounts({
+        capturedAtStart: "2026-08-22T07:00:00.000Z",
+        capturedAtEnd: "2026-08-23T07:00:00.000Z"
+      });
       expect(r.ok).toBe(true);
-      if (r.ok) expect(r.value.capturedAtStart).toBe("2026-08-22T07:00:00.000Z");
+      if (r.ok) {
+        expect(r.value.capturedAtStart).toBe("2026-08-22T07:00:00.000Z");
+        expect(r.value.capturedAtEnd).toBe("2026-08-23T07:00:00.000Z");
+      }
     });
 
-    it("rejects an unparseable string rather than letting it silently mis-count", () => {
-      // It is compared lexicographically against `captured_at`, so a
-      // junk value would not error — it would quietly count the wrong
+    it("rejects an unparseable bound rather than letting it silently mis-count", () => {
+      // Bounds are compared lexicographically against `captured_at`, so
+      // a junk value would not error — it would quietly count the wrong
       // rows. That is the failure this check exists to prevent.
-      const r = validateLibraryCounts({ capturedAtStart: "yesterday" });
-      expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.error.code).toBe("capturedAtStart_unparseable");
+      for (const field of ["capturedAtStart", "capturedAtEnd"] as const) {
+        const r = validateLibraryCounts({ [field]: "yesterday" });
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.error.code).toBe(`${field}_unparseable`);
+      }
     });
 
-    it("rejects a non-string", () => {
-      const r = validateLibraryCounts({ capturedAtStart: 1755840000000 });
-      expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.error.code).toBe("capturedAtStart_invalid");
+    it("rejects a non-string bound", () => {
+      for (const field of ["capturedAtStart", "capturedAtEnd"] as const) {
+        const r = validateLibraryCounts({ [field]: 1755840000000 });
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.error.code).toBe(`${field}_invalid`);
+      }
+    });
+
+    it("allows either bound alone — an open-ended range is still legal", () => {
+      const a = validateLibraryCounts({ capturedAtStart: "2026-08-22T07:00:00.000Z" });
+      expect(a.ok).toBe(true);
+      if (a.ok) expect(a.value.capturedAtEnd).toBeUndefined();
+      const b = validateLibraryCounts({ capturedAtEnd: "2026-08-23T07:00:00.000Z" });
+      expect(b.ok).toBe(true);
+      if (b.ok) expect(b.value.capturedAtStart).toBeUndefined();
     });
   });
 });

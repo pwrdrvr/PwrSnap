@@ -465,12 +465,25 @@ export type LibraryCountsRequest = {
   excludeAppBundleIds?: ReadonlyArray<string | null> | undefined;
   /**
    * Inclusive lower bound matched as a string against `captured_at`
-   * (ISO-8601 UTC, e.g. `2026-08-22T07:00:00.000Z`). This is how the
-   * sidebar's Today scope is expressed. The RENDERER owns the value
-   * because Today is a *local*-day boundary and main must not
-   * re-derive the user's timezone.
+   * (ISO-8601 UTC, e.g. `2026-08-22T07:00:00.000Z`). Paired with
+   * `capturedAtEnd`, this is how the sidebar's Today scope is
+   * expressed. The RENDERER owns both values because Today is a
+   * *local*-day boundary and main must not re-derive the user's
+   * timezone.
    */
   capturedAtStart?: string | undefined;
+  /**
+   * EXCLUSIVE upper bound on `captured_at`, same encoding as
+   * `capturedAtStart`.
+   *
+   * A day bucket needs both ends. The grid buckets by
+   * `isSameLocalDay`, which is a closed interval, so a lower bound on
+   * its own would make "Today" mean "today or later" on this side of
+   * the wire — and a capture whose timestamp lands in the future
+   * (clock skew, an imported bundle) would be counted by the badge and
+   * filed under a different day header by the grid.
+   */
+  capturedAtEnd?: string | undefined;
 };
 
 /** How `library:search` orders matching captures. `relevance` requires a

@@ -1967,13 +1967,22 @@ export function Library() {
     return { images, videos };
   }, [kindStats]);
 
-  // Local midnight as a UTC instant — the boundary for everything
-  // "Today". Derived here (renderer) and passed down to `library:counts`
-  // because main must not re-derive the user's timezone.
-  const todayStartIso = useMemo(() => {
+  // Today as a HALF-OPEN interval of UTC instants, [start, end).
+  // Derived here (renderer) and passed down to `library:counts` because
+  // main must not re-derive the user's timezone.
+  //
+  // The end bound is not optional. The grid buckets by
+  // `isSameLocalDay` — a closed day — so a start-only predicate would
+  // make the bus count "today or later" and disagree with the day
+  // header for any capture whose timestamp lands in the future (clock
+  // skew, an imported bundle). `setDate(+1)` handles month/year rollover
+  // and re-normalizes across a DST boundary.
+  const todayBounds = useMemo(() => {
     const start = new Date();
     start.setHours(0, 0, 0, 0);
-    return start.toISOString();
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return { startIso: start.toISOString(), endIso: end.toISOString() };
     // todayDateStr — see comment on `fixtureBacking` above. Recomputes
     // across midnight and time-zone changes without a refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1987,8 +1996,12 @@ export function Library() {
   // never flashes an empty state on mount.
   const todayCountState = useLibraryCount(
     useMemo(
-      () => ({ scope: "live" as const, capturedAtStart: todayStartIso }),
-      [todayStartIso]
+      () => ({
+        scope: "live" as const,
+        capturedAtStart: todayBounds.startIso,
+        capturedAtEnd: todayBounds.endIso
+      }),
+      [todayBounds]
     )
   );
   const loadedTodayCount = useMemo(() => {
@@ -2030,14 +2043,18 @@ export function Library() {
     // search reports its own match count, Trash has an exact total from
     // the head page, and the neutral filter is just `totalLive`.
     if (isSearchActive || isTrashView || isDefaultFilter) return null;
-    return libraryCountsRequestFor(activeFilter, { facetBundleIds, todayStartIso });
+    return libraryCountsRequestFor(activeFilter, {
+      facetBundleIds,
+      todayStartIso: todayBounds.startIso,
+      todayEndIso: todayBounds.endIso
+    });
   }, [
     isSearchActive,
     isTrashView,
     isDefaultFilter,
     activeFilter,
     facetBundleIds,
-    todayStartIso
+    todayBounds
   ]);
   const filteredCountState = useLibraryCount(filteredCountRequest);
   // Projects come from the filtered fixture list rather than the bus:

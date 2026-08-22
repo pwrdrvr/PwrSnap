@@ -1123,18 +1123,29 @@ export function countCaptures(filter: LibraryCountsRequest): number {
 
   where.push(filter.scope === "trash" ? "deleted_at IS NOT NULL" : "deleted_at IS NULL");
 
+  // `captured_at` is stored as ISO-8601 UTC, so a lexicographic
+  // comparison IS a chronological one (same assumption the keyset
+  // cursor in listCaptures relies on). The upper bound is EXCLUSIVE so
+  // a caller can express a day as [midnight, next midnight) without
+  // having to name the last representable instant of the day.
   if (filter.capturedAtStart !== undefined) {
-    // `captured_at` is stored as ISO-8601 UTC, so a lexicographic
-    // comparison IS a chronological one (same assumption the keyset
-    // cursor in listCaptures relies on).
     where.push("captured_at >= @capturedAtStart");
     params.capturedAtStart = filter.capturedAtStart;
+  }
+  if (filter.capturedAtEnd !== undefined) {
+    where.push("captured_at < @capturedAtEnd");
+    params.capturedAtEnd = filter.capturedAtEnd;
   }
 
   // Absent = both kinds. An explicitly empty array is "no kinds
   // selected" and must count zero — see LibraryCountsRequest.kinds.
-  const kinds = filter.kinds;
-  if (kinds !== undefined) {
+  // Branch on DISTINCT kinds, not array length: `["image", "image"]`
+  // is a legal value of the parameter type, and reading its length as
+  // "both kinds" would drop the predicate and silently count the whole
+  // library. (The bus validator de-duplicates, but this function is
+  // exported and must not depend on that.)
+  if (filter.kinds !== undefined) {
+    const kinds = [...new Set(filter.kinds)];
     if (kinds.length === 0) return 0;
     if (kinds.length === 1) {
       where.push("kind = @kind");

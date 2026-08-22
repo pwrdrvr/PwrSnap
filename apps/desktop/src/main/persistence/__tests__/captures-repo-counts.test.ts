@@ -192,6 +192,17 @@ describe("countCaptures", () => {
     expect(countCaptures({ kinds: ["image", "video"] })).toBe(7);
   });
 
+  test("duplicate kinds still narrow — length is not a proxy for 'both'", async () => {
+    // `["image", "image"]` is a legal value of the parameter type.
+    // Reading its LENGTH as "both kinds selected" would drop the
+    // predicate and silently return the whole library.
+    await seedMixed();
+    const { countCaptures } = await import("../captures-repo");
+    expect(countCaptures({ kinds: ["image", "image"] })).toBe(4);
+    expect(countCaptures({ kinds: ["video", "video", "video"] })).toBe(3);
+    expect(countCaptures({ kinds: ["image", "video", "image"] })).toBe(7);
+  });
+
   test("an EMPTY kinds array counts zero — 'no types selected', not 'both'", async () => {
     // Load-bearing: a projects-only sidebar filter sends `kinds: []` and
     // must not fall back to the whole library. This is the one place the
@@ -201,13 +212,40 @@ describe("countCaptures", () => {
     expect(countCaptures({ kinds: [] })).toBe(0);
   });
 
-  test("capturedAtStart is an inclusive lower bound — this is how Today is expressed", async () => {
+  test("capturedAtStart is an INCLUSIVE lower bound", async () => {
     await seedMixed();
     const { countCaptures } = await import("../captures-repo");
     expect(countCaptures({ capturedAtStart: "2026-08-22T00:00:00.000Z" })).toBe(3);
     expect(countCaptures({ capturedAtStart: "2026-08-21T00:00:00.000Z" })).toBe(6);
-    // Inclusive: a capture exactly on the boundary is inside the day.
+    // Inclusive: a capture exactly on the boundary is inside the range.
     expect(countCaptures({ capturedAtStart: "2026-08-22T18:00:00.000Z" })).toBe(1);
+  });
+
+  test("capturedAtEnd is an EXCLUSIVE upper bound", async () => {
+    await seedMixed();
+    const { countCaptures } = await import("../captures-repo");
+    // Exclusive: the 18:00 capture is outside a range ending at 18:00.
+    expect(countCaptures({ capturedAtEnd: "2026-08-22T18:00:00.000Z" })).toBe(6);
+    expect(countCaptures({ capturedAtEnd: "2026-08-22T18:00:00.001Z" })).toBe(7);
+  });
+
+  test("the two bounds compose into a half-open day — how Today is expressed", async () => {
+    // A start-only predicate would mean "today or later": a capture
+    // dated into the future (clock skew, an imported bundle) would be
+    // counted by the Today badge while the grid files it under another
+    // day header. The pair is what makes the count a DAY.
+    await seed([
+      { id: "future", kind: "image", bundleId: ELECTRON, capturedAt: "2026-08-23T09:00:00.000Z" }
+    ]);
+    await seedMixed();
+    const { countCaptures } = await import("../captures-repo");
+    expect(countCaptures({ capturedAtStart: "2026-08-22T00:00:00.000Z" })).toBe(4);
+    expect(
+      countCaptures({
+        capturedAtStart: "2026-08-22T00:00:00.000Z",
+        capturedAtEnd: "2026-08-23T00:00:00.000Z"
+      })
+    ).toBe(3);
   });
 
   test("the positive source-app facet counts the union of the named bundles", async () => {

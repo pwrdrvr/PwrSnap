@@ -839,6 +839,7 @@ export function validateLibraryCounts(
     appBundleIds?: Array<string | null>;
     excludeAppBundleIds?: Array<string | null>;
     capturedAtStart?: string;
+    capturedAtEnd?: string;
   } = {};
 
   if (req.scope !== undefined && req.scope !== null) {
@@ -915,29 +916,31 @@ export function validateLibraryCounts(
     out[field] = ids;
   }
 
-  if (req.capturedAtStart !== undefined && req.capturedAtStart !== null) {
-    if (typeof req.capturedAtStart !== "string" || req.capturedAtStart.length === 0) {
+  // Both bounds get the same treatment: they are compared
+  // lexicographically against the stored `captured_at`, so a non-ISO
+  // string wouldn't error — it would silently count the wrong rows.
+  for (const field of ["capturedAtStart", "capturedAtEnd"] as const) {
+    const raw = req[field];
+    if (raw === undefined || raw === null) continue;
+    if (typeof raw !== "string" || raw.length === 0) {
       return {
         ok: false,
         error: validationError(
-          "capturedAtStart_invalid",
-          "capturedAtStart must be a non-empty ISO-8601 string when provided"
+          `${field}_invalid`,
+          `${field} must be a non-empty ISO-8601 string when provided`
         )
       };
     }
-    // Compared lexicographically against the stored `captured_at`, so a
-    // non-ISO string wouldn't error — it would silently count the wrong
-    // rows. Reject anything that doesn't round-trip as a real date.
-    if (Number.isNaN(Date.parse(req.capturedAtStart))) {
+    if (Number.isNaN(Date.parse(raw))) {
       return {
         ok: false,
         error: validationError(
-          "capturedAtStart_unparseable",
-          "capturedAtStart must be a parseable ISO-8601 timestamp"
+          `${field}_unparseable`,
+          `${field} must be a parseable ISO-8601 timestamp`
         )
       };
     }
-    out.capturedAtStart = req.capturedAtStart;
+    out[field] = raw;
   }
 
   return { ok: true, value: out };

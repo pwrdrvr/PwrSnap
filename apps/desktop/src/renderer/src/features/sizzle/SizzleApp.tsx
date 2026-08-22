@@ -11,6 +11,8 @@ import {
 } from "react";
 import {
   EVENT_CHANNELS,
+  SIZZLE_CROSSFADE_SEC,
+  SIZZLE_TRANSITIONS,
   SIZZLE_VOICES,
   distributeSequenceBeatStarts,
   estimateSequenceTimelineDurationSec,
@@ -483,6 +485,26 @@ function transitionFromType(type: SizzleTransitionType): SizzleTransition {
   if (type === "cut" || type === "crossfade") return type;
   return { type, durationSec: type === "none" ? 0 : 0.18 };
 }
+
+/** Scene→scene transitions default to the crossfade length (0.4 s): a
+ *  scene boundary is a bigger beat than a clip cut, and 0.18 s at scene
+ *  level reads as a cut even in the export (plan §4.7). The per-boundary
+ *  duration becomes editable with the inspector. */
+function sceneTransitionFromType(type: SizzleTransitionType): SizzleTransition {
+  if (type === "cut" || type === "crossfade") return type;
+  return { type, durationSec: type === "none" ? 0 : SIZZLE_CROSSFADE_SEC };
+}
+
+const TRANSITION_TYPE_LABELS: Record<SizzleTransitionType, string> = {
+  none: "None",
+  cut: "Cut",
+  crossfade: "Crossfade",
+  "dip-black": "Dip to black",
+  "dip-white": "Dip to white",
+  "push-left": "Push left",
+  "slide-left": "Slide left",
+  "zoom-cut": "Zoom cut"
+};
 
 function transitionLabel(transition: SizzleTransition): string {
   return transitionType(transition)
@@ -2566,31 +2588,46 @@ function Editor(props: EditorProps): ReactElement {
 
             const elements: ReactElement[] = [];
 
-            // Transition chip between scenes (skip before the first).
+            // Transition chip between scenes (skip before the first). The
+            // chip is a <select> over every transition type the composer
+            // renders — not a cut↔crossfade toggle — so the six fade-like
+            // types are reachable at scene level too.
             if (idx > 0) {
+              const sceneTransition = transitionType(scene.transition);
+              const isHardCut = sceneTransition === "cut" || sceneTransition === "none";
               elements.push(
                 <li
                   key={`tr-${scene.id}`}
                   className={
                     "szl__transition" +
-                    (transitionType(scene.transition) === "crossfade"
-                      ? " szl__transition--crossfade"
-                      : " szl__transition--cut")
+                    (isHardCut ? " szl__transition--cut" : " szl__transition--fade")
                   }
                 >
-                  <button
-                    type="button"
+                  <label
                     className="szl__transition-chip"
-                    onClick={() =>
-                      editScene(scene.id, {
-                        transition:
-                          transitionType(scene.transition) === "crossfade" ? "cut" : "crossfade"
-                      })
-                    }
-                    title="Toggle between Cut and Crossfade"
+                    title={`Transition into scene ${idx + 1}`}
                   >
-                    {transitionType(scene.transition) === "crossfade" ? "⌒ Crossfade ⌒" : "─ Cut ─"}
-                  </button>
+                    <span aria-hidden="true">{isHardCut ? "─" : "⌒"}</span>
+                    <select
+                      aria-label={`Transition into scene ${idx + 1}`}
+                      value={sceneTransition}
+                      onChange={(e) =>
+                        editScene(scene.id, {
+                          transition: sceneTransitionFromType(
+                            e.target.value as SizzleTransitionType
+                          )
+                        })
+                      }
+                      data-testid={`sizzle-scene-transition-${idx}`}
+                    >
+                      {SIZZLE_TRANSITIONS.map((type) => (
+                        <option key={type} value={type}>
+                          {TRANSITION_TYPE_LABELS[type]}
+                        </option>
+                      ))}
+                    </select>
+                    <span aria-hidden="true">{isHardCut ? "─" : "⌒"}</span>
+                  </label>
                 </li>
               );
             }

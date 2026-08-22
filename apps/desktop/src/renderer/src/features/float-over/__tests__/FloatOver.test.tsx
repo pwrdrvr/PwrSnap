@@ -62,7 +62,8 @@ const baseSettings: Settings = {
     allScreens: "",
     timed: "",
     videoCapture: "CommandOrControl+Alt+C",
-    reshowFloatOver: "CommandOrControl+Alt+Shift+F"
+    reshowFloatOver: "CommandOrControl+Alt+Shift+F",
+    openLibrary: ""
   },
   general: {
     developerMode: false,
@@ -485,6 +486,50 @@ describe("FloatOver asset mode", () => {
 });
 
 describe("FloatOverHost", () => {
+  // Regression: the preview hover row's folder button rendered fully
+  // enabled with title="Reveal in library" and NO onClick — it was a
+  // dead control from the day the toast shipped. Both halves matter:
+  // the host has to pass a handler, and the presentational component
+  // has to disable the button when nobody did.
+  test("the preview's Reveal button opens the toast's capture in the Library", async () => {
+    const api = installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(createElement(FloatOverHost));
+    });
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.floatOverState, {
+        kind: "show-loaded",
+        captureId: imageRecord.id,
+        record: imageRecord
+      });
+    });
+
+    const reveal = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.getAttribute("title") === "Reveal in library"
+    );
+    expect(reveal).toBeDefined();
+    expect(reveal?.disabled).toBe(false);
+
+    dispatchMock.mockClear();
+    await act(async () => {
+      reveal?.click();
+    });
+
+    expect(
+      dispatchMock.mock.calls.some(
+        (c) => c[0] === "library:openInLibrary" && (c[1] as { captureId: string }).captureId === imageRecord.id
+      )
+    ).toBe(true);
+    // Attention transfers to the Library — the toast shouldn't linger
+    // behind it. Same treatment as Edit.
+    expect(dispatchMock.mock.calls.some((c) => c[0] === "float-over:dismiss")).toBe(true);
+  });
+
   test("reads settings from settings-change event payload", async () => {
     const api = installHostApi();
     container = document.createElement("div");

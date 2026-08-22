@@ -82,7 +82,8 @@ function makeSettings(overrides?: {
       allScreens: "",
       timed: "",
       videoCapture: "CommandOrControl+Alt+C",
-      reshowFloatOver: "CommandOrControl+Alt+Shift+F"
+      reshowFloatOver: "CommandOrControl+Alt+Shift+F",
+    openLibrary: ""
     },
     general: {
     developerMode: false,

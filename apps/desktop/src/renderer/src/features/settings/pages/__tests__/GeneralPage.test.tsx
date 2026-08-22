@@ -47,7 +47,8 @@ const baseSettings: Settings = {
     allScreens: "",
     timed: "",
     videoCapture: "CommandOrControl+Alt+C",
-    reshowFloatOver: "CommandOrControl+Alt+Shift+F"
+    reshowFloatOver: "CommandOrControl+Alt+Shift+F",
+    openLibrary: ""
   },
   general: {
     developerMode: false,
@@ -200,6 +201,9 @@ afterEach(async () => {
   container = null;
   root = null;
   patchMock.mockClear();
+  // `setActivePage` writes window.location.hash; jsdom keeps it for the
+  // rest of the file, so clear it rather than leaking navigation state.
+  window.location.hash = "";
 });
 
 const healthyStatus: LaunchAtLoginStatus = {
@@ -237,6 +241,109 @@ describe("GeneralPage — cursor capture", () => {
       toggle.click();
     });
     expect(patchMock).toHaveBeenCalledWith({ recording: { videoCaptureCursor: false } });
+  });
+});
+
+describe("GeneralPage — recording audio", () => {
+  // The two `recording.include*Audio` fields have existed in the schema
+  // (and been honored by the macOS recorder) since Phase 1, but no
+  // renderer surface ever wrote them — the toggles below are the first.
+  test("system-audio toggle patches recording.includeSystemAudio", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+    const toggle = findSwitchIn("Include system audio");
+    // Defaults OFF — recording either source is privacy-relevant.
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ recording: { includeSystemAudio: true } });
+  });
+
+  test("microphone toggle patches recording.includeMicrophone", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+    const toggle = findSwitchIn("Include your microphone");
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ recording: { includeMicrophone: true } });
+  });
+
+  test("both sources off hides the System Permissions jump", async () => {
+    // The pointer only earns its row once the user has opted in — with
+    // both sources off there's no permission to go check.
+    await renderGeneral(baseSettings, healthyStatus);
+    expect(container?.textContent).not.toContain("Audio permissions");
+  });
+
+  test("opting a source in surfaces the System Permissions jump", async () => {
+    // `recording:start` hard-fails when a requested source isn't
+    // granted (recording-handlers.ts preflight), so send the user to the
+    // grant surface at opt-in time rather than mid-take.
+    await renderGeneral(
+      {
+        ...baseSettings,
+        recording: { ...baseSettings.recording, includeMicrophone: true }
+      },
+      healthyStatus
+    );
+    expect(container?.textContent).toContain("Audio permissions");
+    const button = Array.from(container!.querySelectorAll("button")).find(
+      (el) => el.textContent === "Open System Permissions"
+    );
+    expect(button).toBeDefined();
+    await act(async () => {
+      button?.click();
+    });
+    expect(window.location.hash).toContain("page=system-permissions");
+  });
+
+  test("Windows says recordings are video-only and hides the permissions jump", async () => {
+    // The Windows FFmpeg backend captures screen video only and logs a
+    // warning when either toggle is on (recording-service.ts) — the copy
+    // has to say so instead of implying audio that gets dropped.
+    await renderGeneral(
+      {
+        ...baseSettings,
+        recording: { ...baseSettings.recording, includeSystemAudio: true }
+      },
+      healthyStatus,
+      "win32"
+    );
+    expect(container?.textContent).toContain("Windows recordings are video-only for now");
+    expect(container?.textContent).not.toContain("Audio permissions");
+  });
+});
+
+describe("GeneralPage — editor annotation", () => {
+  // `editor.matchingText.enabled` was gated on a "Settings → Editor"
+  // page that settings-categories.ts never had, so the only way to turn
+  // the "+ Add label" chip off was hand-editing pwrsnap-settings.json.
+  test("matching-text toggle patches editor.matchingText.enabled", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+    const toggle = findSwitchIn("Offer a label after placing an arrow");
+    // Defaults ON.
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ editor: { matchingText: { enabled: false } } });
+  });
+
+  test("reflects a disabled affordance", async () => {
+    await renderGeneral(
+      {
+        ...baseSettings,
+        editor: { ...baseSettings.editor, matchingText: { enabled: false } }
+      },
+      healthyStatus
+    );
+    const toggle = findSwitchIn("Offer a label after placing an arrow");
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ editor: { matchingText: { enabled: true } } });
   });
 });
 

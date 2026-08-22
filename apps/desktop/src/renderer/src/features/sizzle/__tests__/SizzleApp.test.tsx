@@ -126,7 +126,12 @@ function installApi(
 } {
   const handlers = new Map<string, Set<Handler>>();
   const dispatch = vi.fn(async (name: string, req?: unknown) => {
-    if (name in overrides) return overrides[name];
+    if (name in overrides) {
+      const override = overrides[name];
+      // A function override runs per call (it can mutate the mock store,
+      // the way a real create/duplicate changes what sizzle:list returns).
+      return typeof override === "function" ? (override as (req: unknown) => unknown)(req) : override;
+    }
     if (name === "sizzle:list") return { ok: true, value: { projects } };
     if (name === "library:list") return { ok: true, value: { rows: [] } };
     if (name === "library:listByIds") return { ok: true, value: { rows: [] } };
@@ -1835,5 +1840,182 @@ describe("scene transition chip", () => {
     expect(select!.value).toBe("push-left");
     // Fade-like types light the chip in accent; a hard cut does not.
     expect(select!.closest(".szl__transition")?.classList.contains("szl__transition--fade")).toBe(true);
+  });
+});
+
+// ── Characterization tests for the shell surfaces the component extraction
+// moves (project rail + context menu, editor head, capture picker, render
+// footer, simple-scene card). Written against the pre-extraction DOM so the
+// refactor has something to keep green.
+describe("characterization — shell surfaces", () => {
+  /** Drain the microtasks an async click handler chains after its first
+   *  `await dispatch(...)` so the state it sets afterwards is rendered. */
+  const drain = async (): Promise<void> => {
+    await act(async () => {
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+  };
+
+  test("no projects: the empty pane renders and the rail invites creation", async () => {
+    const { el } = await renderApp([]);
+    expect(el.querySelector(".szl__empty-pane")?.textContent).toContain("Sizzle Reels");
+    expect(el.querySelector(".szl__list--projects")?.textContent).toContain("No projects yet");
+    expect(el.querySelector(".szl__editor")).toBeNull();
+  });
+
+  test("+ New Sizzle Reel creates, selects, and focuses the title of the new reel", async () => {
+    const fresh = project({ id: "sz_new", name: "Untitled Sizzle" });
+    const store = [project()];
+    const { el, dispatch } = await renderApp(store, {
+      // The create persists: the next sizzle:list (the shell reloads on
+      // selection change) must include the new reel, as it would on disk.
+      "sizzle:create": () => {
+        store.unshift(fresh);
+        return { ok: true, value: fresh };
+      }
+    });
+    await act(async () => {
+      findButton(el, "+ New Sizzle Reel").click();
+    });
+    await drain();
+    expect(dispatch).toHaveBeenCalledWith("sizzle:create", { name: "Untitled Sizzle" });
+    expect(titleValue(el)).toBe("Untitled Sizzle");
+    expect(document.activeElement).toBe(el.querySelector(".szl__editor-title"));
+  });
+
+  test("right-clicking a project row opens Open / Duplicate; Esc closes it; Duplicate dispatches", async () => {
+    const copy = project({ id: "sz_copy", name: "Demo Reel copy" });
+    const store = projects(2);
+    const { el, dispatch } = await renderApp(store, {
+      "sizzle:duplicate": () => {
+        store.unshift(copy);
+        return { ok: true, value: copy };
+      }
+    });
+    const row = el.querySelector<HTMLElement>(".szl__row-wrap");
+    expect(row).not.toBeNull();
+    await act(async () => {
+      row!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 60 }));
+    });
+    const menu = el.querySelector(".szl__context-menu");
+    expect(menu).not.toBeNull();
+    expect([...menu!.querySelectorAll("[role=menuitem]")].map((b) => b.textContent)).toEqual(["Open", "Duplicate"]);
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(el.querySelector(".szl__context-menu")).toBeNull();
+    await act(async () => {
+      row!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 60 }));
+    });
+    await act(async () => {
+      findButton(el, "Duplicate").click();
+    });
+    await drain();
+    expect(dispatch).toHaveBeenCalledWith("sizzle:duplicate", { id: "sz_1" });
+    // The copy becomes the active reel.
+    expect(titleValue(el)).toBe("Demo Reel copy");
+  });
+
+  test("the editor's Delete confirms, dispatches, and falls back to another reel", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockImplementation(() => true);
+    try {
+      const { el, dispatch } = await renderApp(projects(2), {
+        "sizzle:delete": { ok: true, value: undefined }
+      });
+      expect(titleValue(el)).toBe("Reel 1");
+      await act(async () => {
+        findButton(el, "Delete").click();
+      });
+      await drain();
+      expect(confirm).toHaveBeenCalled();
+      expect(dispatch).toHaveBeenCalledWith("sizzle:delete", { id: "sz_1" });
+      expect(titleValue(el)).toBe("Reel 2");
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  test("render progress events drive the Render button and footer; Reveal in Finder dispatches", async () => {
+    const { el, emit, dispatch } = await renderApp(
+      project({ outputPath: "/tmp/out.mp4", scenes: [scene({ scriptLine: "hi" })] })
+    );
+    const render = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-render"]')!;
+    expect(render.textContent?.startsWith("Render")).toBe(true);
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleRenderProgress, {
+        projectId: "sz_1",
+        phase: "tts",
+        message: "Synthesizing",
+        ratio: 0.4
+      });
+    });
+    expect(render.textContent).toBe("Rendering… 40%");
+    expect(render.disabled).toBe(true);
+    expect(el.querySelector(".szl__status-bar-fill")).not.toBeNull();
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleRenderProgress, {
+        projectId: "sz_1",
+        phase: "done",
+        message: "Done",
+        ratio: 1
+      });
+    });
+    expect(el.querySelector(".szl__status--ok")?.textContent).toBe("Render complete.");
+    await act(async () => {
+      findButton(el, "Reveal in Finder").click();
+    });
+    expect(dispatch).toHaveBeenCalledWith("sizzle:revealOutput", { id: "sz_1" });
+  });
+
+  test("+ Add scene opens the capture picker; picking a capture appends a sequence scene", async () => {
+    const { el, dispatch } = await renderApp(project({ scenes: [] }), {
+      "library:list": { ok: true, value: { rows: [videoCapture("cap_v")] } },
+      "codex:enrichment": { ok: true, value: null }
+    });
+    expect(el.querySelector(".szl__scene-empty")).not.toBeNull();
+    await act(async () => {
+      findButton(el, "+ Add scene").click();
+    });
+    const cell = el.querySelector<HTMLButtonElement>(".szl__modal .szl__picker-cell");
+    expect(cell).not.toBeNull();
+    await act(async () => {
+      cell!.click();
+    });
+    await drain();
+    expect(dispatch).toHaveBeenCalledWith("codex:enrichment", { captureId: "cap_v" });
+    expect(el.querySelector(".szl__modal")).toBeNull();
+    const cards = el.querySelectorAll(".szl__scene");
+    expect(cards.length).toBe(1);
+    expect(cards[0]!.classList.contains("szl__scene--sequence")).toBe(true);
+    expect(el.querySelector(".szl__sequence-beat-title")?.textContent).toBe("Video cap_v");
+  });
+
+  test("a legacy simple video scene shows trim + audio controls seeded from the capture", async () => {
+    const { el } = await renderApp(
+      project({ scenes: [scene({ captureId: "cap_v", scriptLine: "" })] }),
+      { "library:list": { ok: true, value: { rows: [videoCapture("cap_v", { start: 1, end: 4 })] } } }
+    );
+    const numbers = [...el.querySelectorAll<HTMLInputElement>(".szl__scene-dur input[type=number]")];
+    expect(numbers.map((n) => n.value)).toEqual(["1", "4"]);
+    const audio = el.querySelector<HTMLSelectElement>(".szl__scene-dur select");
+    expect([...audio!.options].map((o) => o.value)).toEqual(["auto", "native", "voiceover", "muted"]);
+    expect(audio!.options[0]!.textContent).toBe("Auto (native)");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+      setter.call(numbers[0], "2");
+      numbers[0]!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(el.querySelector<HTMLInputElement>(".szl__scene-dur input[type=number]")!.value).toBe("2");
+    expect(findButton(el, "Convert to clips")).toBeTruthy();
+  });
+
+  test("Hide chat removes the chat pane and flips the toggle label", async () => {
+    const { el } = await renderApp(project());
+    expect(el.querySelector(".szl__chat")).not.toBeNull();
+    await act(async () => {
+      findButton(el, "Hide chat").click();
+    });
+    expect(el.querySelector(".szl__chat")).toBeNull();
+    expect(findButton(el, "Chat with agent")).toBeTruthy();
   });
 });

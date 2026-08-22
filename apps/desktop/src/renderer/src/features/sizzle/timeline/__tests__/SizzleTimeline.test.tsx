@@ -250,3 +250,144 @@ describe("SizzleTimeline", () => {
     expect(pill.classList.contains("is-fade")).toBe(true);
   });
 });
+
+describe("SizzleTimeline — drag to move / retime (plan §4.4)", () => {
+  const grip = (el: HTMLElement, beatId: string): HTMLElement =>
+    el.querySelector<HTMLElement>(`[data-testid="sizzle-timeline-grip-${beatId}"]`)!;
+  const lanesOf = (el: HTMLElement): HTMLElement =>
+    el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-lanes"]')!;
+  const clipOf = (el: HTMLElement, beatId: string): HTMLElement =>
+    el.querySelector<HTMLElement>(`[data-testid="sizzle-timeline-clip-${beatId}"]`)!;
+  const pointer = async (target: Element, type: string, clientX: number, pointerId = 1): Promise<void> => {
+    await act(async () => {
+      target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerId, clientX }));
+    });
+  };
+
+  test("a boundary grip retimes the clip it leads into: live re-flow, the preview parks on the edge, ONE commit on release", async () => {
+    const onScrub = vi.fn();
+    const onDragCommit = vi.fn();
+    const el = await render({ model: resolvedModel(), onScrub, onDragCommit });
+    // 125 px/s. c starts at 6 s = 750 px; drag its boundary to 7 s.
+    await pointer(grip(el, "c"), "pointerdown", 750);
+    await pointer(lanesOf(el), "pointermove", 875);
+    expect(parseFloat(clipOf(el, "c").style.left)).toBeCloseTo(875, 0);
+    // b (anchored at 4 s) runs to the new boundary: 4–7 s = 375 px.
+    expect(parseFloat(clipOf(el, "b").style.width)).toBeCloseTo(374, 0);
+    expect(clipOf(el, "c").classList.contains("is-dragging")).toBe(true);
+    expect(el.querySelector('[data-testid="sizzle-timeline-drag-tip"]')?.textContent).toBe("0:07.0");
+    expect(onScrub).toHaveBeenLastCalledWith(7);
+    expect(onDragCommit).not.toHaveBeenCalled(); // nothing written while dragging
+    await pointer(lanesOf(el), "pointerup", 875);
+    expect(onDragCommit).toHaveBeenCalledTimes(1);
+    expect(onDragCommit).toHaveBeenCalledWith({
+      sceneId: "s1",
+      beatId: "c",
+      index: 2,
+      kind: "start",
+      sec: 7,
+      clipStartSec: 6,
+      clipEndSec: 8
+    });
+    // The drag-local view is gone; the lane draws the model again (the
+    // test never fed the commit back, so c is back where the model has it).
+    expect(parseFloat(clipOf(el, "c").style.left)).toBeCloseTo(750, 0);
+    expect(el.querySelector('[data-testid="sizzle-timeline-drag-tip"]')).toBeNull();
+  });
+
+  test("a drag is clamped so every clip keeps its minimum; the scrub that follows a drag's release is swallowed", async () => {
+    const onDragCommit = vi.fn();
+    const onSelectClip = vi.fn();
+    const el = await render({ model: resolvedModel(), onDragCommit, onSelectClip });
+    await pointer(grip(el, "c"), "pointerdown", 750);
+    await pointer(lanesOf(el), "pointermove", 1000); // 8 s — past the scene end
+    await pointer(lanesOf(el), "pointerup", 1000);
+    expect(onDragCommit).toHaveBeenCalledWith(expect.objectContaining({ beatId: "c", sec: 7.9 }));
+    // The click that the browser fires after that pointerup must not clear
+    // the selection (it is the tail of the drag, not a press on bare track).
+    await act(async () => {
+      lanesOf(el).click();
+    });
+    expect(onSelectClip).not.toHaveBeenCalled();
+    // …but the NEXT bare-track click does.
+    await act(async () => {
+      lanesOf(el).click();
+    });
+    expect(onSelectClip).toHaveBeenCalledWith(null);
+  });
+
+  test("a body press under the threshold is a click (selects, commits nothing); past it the clip follows the hand", async () => {
+    const onDragCommit = vi.fn();
+    const onSelectClip = vi.fn();
+    const onScrub = vi.fn();
+    const el = await render({ model: resolvedModel(), onDragCommit, onSelectClip, onScrub });
+    const b = clipOf(el, "b"); // 4–6 s = 500–750 px
+    expect(b.classList.contains("is-grab")).toBe(true);
+    await pointer(b, "pointerdown", 510);
+    await pointer(lanesOf(el), "pointermove", 512); // 2 px: not a drag yet
+    expect(onScrub).not.toHaveBeenCalled();
+    await pointer(lanesOf(el), "pointerup", 512);
+    expect(onDragCommit).not.toHaveBeenCalled();
+    await act(async () => {
+      b.click();
+    });
+    expect(onSelectClip).toHaveBeenCalledWith(expect.objectContaining({ beatId: "b" }));
+    // A real drag: +125 px = +1 s. The pointer's offset from the clip's
+    // start (10 px = 0.08 s) is kept, so b lands at exactly 5 s.
+    await pointer(b, "pointerdown", 510);
+    await pointer(lanesOf(el), "pointermove", 635);
+    expect(parseFloat(clipOf(el, "b").style.left)).toBeCloseTo(625, 0);
+    // c (auto) re-flows to the middle of [5, 8] = 6.5 s.
+    expect(parseFloat(clipOf(el, "c").style.left)).toBeCloseTo(812.5, 0);
+    await pointer(lanesOf(el), "pointerup", 635);
+    expect(onDragCommit).toHaveBeenCalledTimes(1);
+    expect(onDragCommit).toHaveBeenCalledWith(expect.objectContaining({ beatId: "b", index: 1, kind: "start", sec: 5 }));
+  });
+
+  test("Escape abandons a drag: the preview is dropped and nothing is committed", async () => {
+    const onDragCommit = vi.fn();
+    const el = await render({ model: resolvedModel(), onDragCommit });
+    await pointer(grip(el, "c"), "pointerdown", 750);
+    await pointer(lanesOf(el), "pointermove", 875);
+    expect(parseFloat(clipOf(el, "c").style.left)).toBeCloseTo(875, 0);
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(parseFloat(clipOf(el, "c").style.left)).toBeCloseTo(750, 0);
+    await pointer(lanesOf(el), "pointerup", 875);
+    expect(onDragCommit).not.toHaveBeenCalled();
+  });
+
+  test("lost pointer capture commits at the last observed position", async () => {
+    const onDragCommit = vi.fn();
+    const el = await render({ model: resolvedModel(), onDragCommit });
+    await pointer(grip(el, "c"), "pointerdown", 750);
+    await pointer(lanesOf(el), "pointermove", 812.5);
+    await act(async () => {
+      lanesOf(el).dispatchEvent(new PointerEvent("lostpointercapture", { bubbles: true, pointerId: 1 }));
+    });
+    expect(onDragCommit).toHaveBeenCalledWith(expect.objectContaining({ beatId: "c", sec: 6.5 }));
+  });
+
+  test("only the final clip's end has a grip, clip 0 has no start grip, and a read-only lane has none at all", async () => {
+    const onDragCommit = vi.fn();
+    const el = await render({ model: resolvedModel(), onDragCommit });
+    expect(el.querySelector('[data-testid="sizzle-timeline-grip-a"]')).toBeNull();
+    expect(el.querySelector('[data-testid="sizzle-timeline-grip-end-b"]')).toBeNull();
+    const endGrip = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-grip-end-c"]')!;
+    expect(endGrip).not.toBeNull();
+    expect(clipOf(el, "a").classList.contains("is-grab")).toBe(false);
+    // Drag the end from 8 s to 7.2 s.
+    await pointer(endGrip, "pointerdown", 1000);
+    await pointer(lanesOf(el), "pointermove", 900);
+    expect(parseFloat(clipOf(el, "c").style.width)).toBeCloseTo(149, 0);
+    await pointer(lanesOf(el), "pointerup", 900);
+    expect(onDragCommit).toHaveBeenCalledWith(
+      expect.objectContaining({ beatId: "c", index: 2, kind: "end", sec: 7.2, clipStartSec: 6, clipEndSec: 8 })
+    );
+    // Read-only (no onDragCommit): no grips, no grab cursor.
+    const ro = await render({ model: resolvedModel() });
+    expect(ro.querySelector('[data-testid^="sizzle-timeline-grip-"]')).toBeNull();
+    expect(clipOf(ro, "b").classList.contains("is-grab")).toBe(false);
+  });
+});

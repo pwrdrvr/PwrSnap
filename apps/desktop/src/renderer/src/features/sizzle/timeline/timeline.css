@@ -645,3 +645,70 @@
   outline: 2px solid var(--accent-border);
   outline-offset: 1px;
 }
+
+/* ── drag: grips on every boundary + the final end, body drag on the clip ──
+   Nothing here writes — the lane draws drag-local windows until release. */
+.szt__clip.is-grab {
+  cursor: grab;
+}
+.szt__clip.is-dragging {
+  cursor: grabbing;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--accent-soft);
+  z-index: 2;
+}
+.szt__grip {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 10px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+  z-index: 4;
+  touch-action: none;
+}
+.szt__grip::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+}
+/* The end grip sits INSIDE the final clip's right edge (not centered on
+   it): centered, 5 px would hang past the lanes and widen the scroll area
+   — a scrollbar on a reel that fits. Its bar hugs the edge. */
+.szt__grip--end {
+  transform: translateX(-100%);
+}
+.szt__grip--end::after {
+  left: auto;
+  right: 0;
+}
+.szt__grip:hover::after,
+.szt__grip.is-active::after {
+  background: var(--accent);
+}
+.szt__grip.is-active::after {
+  box-shadow: 0 0 0 1px var(--accent-soft);
+}
+.szt__lanes.is-dragging-clip,
+.szt__lanes.is-dragging-clip .szt__clip {
+  cursor: col-resize;
+}
+/* the timecode of the edge being dragged, riding on the clip lane's top */
+.szt__drag-tip {
+  position: absolute;
+  top: 46px;
+  transform: translateX(-50%);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+  font: 700 9px/1 var(--font-mono);
+  white-space: nowrap;
+  z-index: 7;
+  pointer-events: none;
+}

@@ -18,6 +18,7 @@ import {
 import { ReelSettings } from "./ReelSettings";
 import { SizzleTimeline } from "./timeline/SizzleTimeline";
 import { anchorTimingForWord } from "./timeline/anchor";
+import { applyClipStartDrag, applyFinalEndDrag, type TimelineDragCommit } from "./timeline/retime";
 import {
   buildTimelineModel,
   clipAt,
@@ -271,6 +272,31 @@ export function Editor(props: EditorProps): ReactElement {
   const onSynthesize = (sceneId: string): void => {
     void plan.onPreviewScene(sceneId);
   };
+  // A finished clip drag: ONE scenes patch, built by the pure retime math
+  // ("pin only what you touch", nearest word + residual, offset only when
+  // there is no transcript). One patch per gesture is what keeps the undo
+  // stack clean — the drag itself never wrote.
+  const onDragCommit = (commit: TimelineDragCommit): void => {
+    const scene = project.scenes.find((s) => s.id === commit.sceneId);
+    const region = timelineModel.scenes.find((s) => s.sceneId === commit.sceneId);
+    if (scene === undefined || region === undefined || scene.kind !== "sequence" || scene.beats === undefined) {
+      return;
+    }
+    const next =
+      commit.kind === "start"
+        ? applyClipStartDrag(scene.beats, commit.index, commit.sec, {
+            words: region.words,
+            clipEndSec: commit.clipEndSec
+          })
+        : applyFinalEndDrag(scene.beats, commit.sec, {
+            words: region.words,
+            clipStartSec: commit.clipStartSec,
+            durationSec: region.durationSec
+          });
+    if (next === scene.beats) return;
+    editScene(scene.id, { beats: next });
+    setSelectedClipId(commit.beatId);
+  };
   /** What a scene's own preview stage should show: its playback time while
    *  it plays / is loaded, else the project playhead if it sits in this
    *  scene (a scrub drives the stage even before the audio is loaded). */
@@ -341,6 +367,7 @@ export function Editor(props: EditorProps): ReactElement {
           onSelectClip={onSelectClip}
           onClickWord={onClickWord}
           onSynthesize={onSynthesize}
+          onDragCommit={onDragCommit}
         />
       ) : null}
 

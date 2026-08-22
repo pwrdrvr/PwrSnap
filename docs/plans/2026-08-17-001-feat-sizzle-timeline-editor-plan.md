@@ -549,6 +549,32 @@ ESTIMATED (§4.1).
 Clip move + boundary retime on `retime.ts`, `VideoTimeline`'s pointer-capture and
 `commit` contract, drag-local state so undo stays clean.
 
+*As built (2026-08-22):* `timeline/retime.ts` is the pure half —
+`clipStartDragBounds` / `finalEndDragBounds` (every clip, re-flowing autos
+included, keeps `MIN_RANGE_SEC`), `previewClipStarts` (the live re-flow,
+from `distributeSequenceBeatStarts` itself), `applyClipStartDrag` (nearest
+word + residual via `nearestWordAnchor` → `anchorTimingForWord`; `offset`
+only with no transcript; clip 0 immovable; a final clip's explicit end
+stays put) and `applyFinalEndDrag` (an auto final clip is pinned at its
+current start to carry the end; dragging back to the scene end clears it).
+One correction to §4.4's framing, not its rules: because a non-final clip
+runs to the next clip's start, "move clip N" and "drag the N−1/N boundary"
+are the SAME operation — pin N's start — so there is one op with two
+gestures (body drag past a 4 px threshold keeps the pointer's offset; a
+grip drags the edge itself), plus the end grip on the final clip only. The
+drag machine lives in `SizzleTimeline.tsx` on the lanes' pointer capture
+(the scrub's), drag-local state, one `onDragCommit` on release,
+`lostpointercapture` commits at the last observed position, Escape
+abandons, the click that trails a drag is swallowed, and the preview parks
+on the edge being dragged (`onScrub`). The editor turns the commit into
+ONE `editScene({ beats })` → one undo entry. Verified in the live app: a
+boundary drag on a cached-resolved reel re-flowed live, committed to the
+same position the shared planner re-derives, showed as `phrase` + word
+badge in the ribbon, and ⌘Z undid it in one step. Two fixes surfaced: the
+end grip sits inside the lanes' right edge (centered, it widened the
+scroll area), and jsdom-level tests drive the drags with `PointerEvent`
+on the grip / lanes exactly as `VideoTimeline.test.tsx` does.
+
 **PR 6 — `feat(desktop): sizzle clip inspector`**
 Right-rail drawer beside chat. Per-clip transition **type and duration** both
 editable here — closing §4.7 defect 3. Retire the form rows and the "Advanced"

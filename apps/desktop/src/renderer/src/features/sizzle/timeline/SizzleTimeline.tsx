@@ -1,12 +1,17 @@
 // The Sizzle timeline — composition root. One horizontal project time
-// axis: ruler · scene regions · clips · waveform, a playhead that spans
-// them, zoom (Fit · 1× · 2× · 4×, ⌘+ / ⌘−) with horizontal scroll past
-// fit, and pointer-capture scrubbing that drives the preview.
+// axis: ruler · scene regions · clips · waveform · word ribbon, a playhead
+// that spans them, zoom (Fit · 1× · 2× · 4×, ⌘+ / ⌘−) with horizontal
+// scroll past fit, pointer-capture scrubbing that drives the preview, and
+// clip drags (move / retime) that commit ONCE on release.
 //
 // Built as a sibling of the Library's `VideoTimeline`: the math layer is
-// the shared `video-range.ts` (px↔sec, ticks, timecodes) and the scrub is
-// the same pointer-capture contract. The model is pure and comes from
-// `timeline-model.ts`; nothing here decides exactness.
+// the shared `video-range.ts` (px↔sec, ticks, timecodes) and both the
+// scrub and the drags follow its pointer-capture contract — capture on
+// the lanes, drag-local state while the pointer is down, one commit on
+// release, `lostpointercapture` commits at the last observed position,
+// Escape abandons. The model is pure and comes from `timeline-model.ts`;
+// the drag math is pure and comes from `retime.ts`; nothing here decides
+// exactness or writes timings.
 
 import {
   useCallback,
@@ -21,13 +26,22 @@ import {
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { clampTime, formatTimecode, roundTime, tickMarks } from "../../shared/video-range";
 import { isTypingTarget } from "../sizzle-helpers";
-import { ClipLane } from "./ClipLane";
+import { ClipLane, type BeginClipDrag, type ClipDragView } from "./ClipLane";
 import { Playhead } from "./Playhead";
 import { SceneRegions } from "./SceneRegions";
 import { TimelineRuler } from "./TimelineRuler";
 import { WaveformLane } from "./WaveformLane";
 import { WordRibbon } from "./WordRibbon";
 import { pxPerSecFor, TIMELINE_ZOOMS, zoomIn, zoomOut, type TimelineZoom } from "./density";
+import {
+  clampToBounds,
+  clipStartDragBounds,
+  finalEndDragBounds,
+  previewClipStarts,
+  type DragBounds,
+  type DragKind,
+  type TimelineDragCommit
+} from "./retime";
 import type { TimelineClip, TimelineModel, TimelineSceneRegion, TimelineWord } from "./timeline-model";
 import "./timeline.css";
 
@@ -38,7 +52,9 @@ export type SizzleTimelineProps = {
   audioBlobs: Record<string, Blob>;
   /** Playhead position on the project axis. */
   playheadSec: number;
-  /** Scrub: called continuously while the pointer is down on the lanes. */
+  /** Scrub: called continuously while the pointer is down on the lanes —
+   *  and while a clip drags, with the edge being dragged (the preview parks
+   *  on the frame the user is placing). */
   onScrub: (sec: number) => void;
   selectedClipId: string | null;
   onSelectClip: (clip: TimelineClip | null) => void;
@@ -50,6 +66,9 @@ export type SizzleTimelineProps = {
   /** The estimated region's "Synthesize narration" affordance. Explicit
    *  click only — it spends TTS credits. */
   onSynthesize?: ((sceneId: string) => void) | undefined;
+  /** A finished clip drag (one per gesture). Absent = the lane is
+   *  read-only: no grips, no body drag. */
+  onDragCommit?: ((commit: TimelineDragCommit) => void) | undefined;
   /** Initial zoom (tests). Defaults to fit-to-width. */
   initialZoom?: TimelineZoom | undefined;
 };
@@ -57,6 +76,25 @@ export type SizzleTimelineProps = {
 /** Space past the end of the reel at zoom, so the last clip is not flush
  *  against the scroll edge. */
 const TAIL_PX = 40;
+/** A body press becomes a drag past this; under it, it is a click. */
+export const DRAG_THRESHOLD_PX = 4;
+
+type ClipDragState = {
+  pointerId: number;
+  scene: TimelineSceneRegion;
+  clip: TimelineClip;
+  kind: DragKind;
+  bounds: DragBounds;
+  originX: number;
+  /** Body drags keep the pointer's offset from the clip's start so the
+   *  clip follows the hand; grips drag the edge itself. */
+  grabOffsetSec: number;
+  /** Grips are live at once; a body press arms and activates past the
+   *  threshold (so a plain click still selects). */
+  active: boolean;
+  /** Last observed (clamped, scene-local) target. */
+  sec: number;
+};
 
 export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
   const {
@@ -71,6 +109,7 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
     onSelectScene,
     onClickWord,
     onSynthesize,
+    onDragCommit,
     initialZoom = "fit"
   } = props;
 
@@ -80,7 +119,12 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
   const [width, setWidth] = useState(0);
   const [zoom, setZoom] = useState<TimelineZoom>(initialZoom);
   const [scrubbing, setScrubbing] = useState(false);
-  const dragRef = useRef<number | null>(null);
+  const scrubRef = useRef<number | null>(null);
+  const clipDragRef = useRef<ClipDragState | null>(null);
+  const [dragView, setDragView] = useState<ClipDragView | null>(null);
+  // The click that follows a drag's pointerup (or an Escape-cancel) is not
+  // a click: it must neither select nor clear the selection.
+  const suppressClickRef = useRef(false);
 
   // Measure the SCROLL VIEWPORT (not the bordered canvas) so fit-to-width
   // fills it exactly — measuring the canvas made the lanes 2 px (the
@@ -143,30 +187,138 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
     [pxPerSec, totalSec]
   );
 
-  // Scrub: pointer capture on the lanes, like VideoTimeline's scrub mode.
-  // Clips and regions stop propagation on pointerdown so a click on them
-  // selects instead of scrubbing.
-  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+  // ── Clip drags (plan §4.4) ────────────────────────────────────────────
+  // Drag-local state in a ref + one view-state for the re-flow preview;
+  // nothing is written until `finishClipDrag(true)`.
+  const moveClipDrag = (clientX: number): void => {
+    const d = clipDragRef.current;
+    if (d === null) return;
+    if (!d.active) {
+      if (Math.abs(clientX - d.originX) < DRAG_THRESHOLD_PX) return;
+      d.active = true;
+    }
+    const sec = clampToBounds(secAt(clientX) - d.scene.startSec - d.grabOffsetSec, d.bounds);
+    d.sec = sec;
+    const starts =
+      d.kind === "start"
+        ? previewClipStarts(d.scene, d.clip.index, sec)
+        : d.scene.clips.map((c) => c.localStartSec);
+    const endSec = d.kind === "end" ? sec : (d.scene.clips.at(-1)?.localEndSec ?? d.scene.durationSec);
+    setDragView({ sceneId: d.scene.sceneId, index: d.clip.index, kind: d.kind, starts, endSec, sec });
+    // Park the preview on the edge being dragged — placing a cut you
+    // cannot see the frame for is guesswork.
+    onScrub(roundTime(d.scene.startSec + sec));
+  };
+  const finishClipDrag = (commit: boolean): void => {
+    const d = clipDragRef.current;
+    if (d === null) return;
+    clipDragRef.current = null;
+    setDragView(null);
+    if (d.active) {
+      suppressClickRef.current = true;
+      if (commit) {
+        onDragCommit?.({
+          sceneId: d.scene.sceneId,
+          beatId: d.clip.beatId,
+          index: d.clip.index,
+          kind: d.kind,
+          sec: d.sec,
+          clipStartSec: d.clip.localStartSec,
+          clipEndSec: d.clip.localEndSec
+        });
+      }
+    }
+    try {
+      lanesRef.current?.releasePointerCapture(d.pointerId);
+    } catch {
+      /* jsdom */
+    }
+  };
+  const beginClipDrag: BeginClipDrag = (clip, kind, event, grab): void => {
     if (event.button !== 0) return;
-    event.preventDefault();
+    event.stopPropagation(); // not a scrub
+    if (onDragCommit === undefined) return;
+    const scene = model.scenes.find((s) => s.sceneId === clip.sceneId);
     const el = lanesRef.current;
-    if (el === null) return;
+    if (scene === undefined || el === null) return;
+    event.preventDefault(); // no text selection / image drag under the gesture
     try {
       el.setPointerCapture(event.pointerId);
     } catch {
       /* jsdom */
     }
-    dragRef.current = event.pointerId;
+    suppressClickRef.current = false;
+    const bounds = kind === "start" ? clipStartDragBounds(scene, clip.index) : finalEndDragBounds(scene);
+    const edgeSec = kind === "start" ? clip.localStartSec : clip.localEndSec;
+    const pointerSec = secAt(event.clientX) - scene.startSec;
+    clipDragRef.current = {
+      pointerId: event.pointerId,
+      scene,
+      clip,
+      kind,
+      bounds,
+      originX: event.clientX,
+      grabOffsetSec: grab ? pointerSec - edgeSec : 0,
+      active: !grab,
+      sec: edgeSec
+    };
+    if (!grab) moveClipDrag(event.clientX); // a grip is live at once
+  };
+  // Escape abandons the drag — nothing was written, so nothing to restore
+  // beyond dropping the preview. Through a ref so the listener is bound once.
+  const cancelClipDragRef = useRef<() => void>(() => undefined);
+  cancelClipDragRef.current = () => finishClipDrag(false);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || clipDragRef.current === null) return;
+      event.preventDefault();
+      cancelClipDragRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // Unmount mid-drag: drop the hold without committing.
+  useEffect(
+    () => () => {
+      clipDragRef.current = null;
+    },
+    []
+  );
+
+  // ── Scrub: pointer capture on the lanes, like VideoTimeline's scrub mode.
+  // Clips, grips, and regions stop propagation on pointerdown so a press on
+  // them selects / drags instead of scrubbing.
+  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const el = lanesRef.current;
+    if (el === null) return;
+    suppressClickRef.current = false;
+    try {
+      el.setPointerCapture(event.pointerId);
+    } catch {
+      /* jsdom */
+    }
+    scrubRef.current = event.pointerId;
     setScrubbing(true);
     onScrub(roundTime(secAt(event.clientX)));
   };
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (dragRef.current !== event.pointerId) return;
+    if (clipDragRef.current?.pointerId === event.pointerId) {
+      moveClipDrag(event.clientX);
+      return;
+    }
+    if (scrubRef.current !== event.pointerId) return;
     onScrub(roundTime(secAt(event.clientX)));
   };
-  const endScrub = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (dragRef.current !== event.pointerId) return;
-    dragRef.current = null;
+  const endPointer = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (clipDragRef.current?.pointerId === event.pointerId) {
+      moveClipDrag(event.clientX); // a flick with no move events still counts
+      finishClipDrag(true);
+      return;
+    }
+    if (scrubRef.current !== event.pointerId) return;
+    scrubRef.current = null;
     setScrubbing(false);
     onScrub(roundTime(secAt(event.clientX)));
     try {
@@ -175,8 +327,15 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
       /* jsdom */
     }
   };
+  // Capture released without a pointerup (the OS took the gesture). A
+  // drag commits at its LAST OBSERVED position — `lostpointercapture`
+  // carries no usable coordinates (same reasoning as VideoTimeline).
   const onLostPointerCapture = (): void => {
-    dragRef.current = null;
+    if (clipDragRef.current !== null) {
+      finishClipDrag(true);
+      return;
+    }
+    scrubRef.current = null;
     setScrubbing(false);
   };
 
@@ -184,6 +343,8 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
   const warnings = model.scenes.flatMap((s) =>
     s.clips.filter((c) => c.unresolved || (c.tooShort && c.exact))
   );
+  const dragScene = dragView === null ? null : model.scenes.find((s) => s.sceneId === dragView.sceneId) ?? null;
+  const dragTipSec = dragView !== null && dragScene !== null ? dragScene.startSec + dragView.sec : null;
 
   return (
     <section className="szt" aria-label="Reel timeline" data-testid="sizzle-timeline">
@@ -219,7 +380,11 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
         <div className="szt__scroll" ref={scrollRef}>
           <div
             ref={lanesRef}
-            className={"szt__lanes" + (scrubbing ? " is-scrubbing" : "")}
+            className={
+              "szt__lanes" +
+              (scrubbing ? " is-scrubbing" : "") +
+              (dragView !== null ? " is-dragging-clip" : "")
+            }
             style={{ width: `${lanesWidth}px` }}
             role="slider"
             aria-label="Reel playhead"
@@ -230,10 +395,14 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
             tabIndex={-1}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
-            onPointerUp={endScrub}
-            onPointerCancel={endScrub}
+            onPointerUp={endPointer}
+            onPointerCancel={endPointer}
             onLostPointerCapture={onLostPointerCapture}
             onClick={(event) => {
+              if (suppressClickRef.current) {
+                suppressClickRef.current = false;
+                return;
+              }
               // A press on bare track (not a clip / region) clears the
               // selection — direct manipulation, not a form.
               if (event.target === event.currentTarget) onSelectClip(null);
@@ -262,7 +431,15 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
               x={x}
               captureMap={captureMap}
               selectedClipId={selectedClipId}
-              onSelectClip={onSelectClip}
+              onSelectClip={(clip) => {
+                if (suppressClickRef.current) {
+                  suppressClickRef.current = false;
+                  return;
+                }
+                onSelectClip(clip);
+              }}
+              drag={dragView}
+              onBeginDrag={onDragCommit !== undefined ? beginClipDrag : undefined}
             />
             <WaveformLane model={model} x={x} audioBlobs={audioBlobs} />
             <WordRibbon
@@ -274,6 +451,16 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
               onSynthesize={(sceneId) => onSynthesize?.(sceneId)}
             />
             <Playhead leftPx={x(playheadSec)} sec={playheadSec} widthPx={lanesWidth} />
+            {dragTipSec !== null ? (
+              <span
+                className="szt__drag-tip"
+                style={{ left: `${x(dragTipSec)}px` }}
+                aria-hidden="true"
+                data-testid="sizzle-timeline-drag-tip"
+              >
+                {formatTimecode(dragTipSec)}
+              </span>
+            ) : null}
           </div>
         </div>
       </div>

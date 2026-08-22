@@ -353,6 +353,61 @@ See
 [docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md](docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md)
 §"Shipping Status" for the rollout history.
 
+## Never block the main thread on a TCC-gated path
+
+**No synchronous filesystem read of anything under `getCapturesRoot()`,
+`getChatsRoot()`, or `getDurableCapturesRoots()` in the main process —
+not at startup, not on window open, not on a hot path.** Those roots
+default to `~/Documents/PwrSnap`, and macOS gates `~/Documents` behind
+the "Allow Documents access" consent prompt. `open()` / `opendir()` under
+it **park without bound** while that prompt is pending for the running
+binary's TCC identity (a fresh worktree's Electron, a new packaged
+build) and return `EPERM` once denied. A `readdirSync` there on the main
+thread froze the whole app at startup — beachball, "Application Not
+Responding", ~0% CPU, main thread in `readdirSync → opendir →
+open$NOCANCEL` — because the event loop, the IPC dispatcher, and the
+AppKit run loop share that thread and there is no UI left to answer the
+prompt from. `PWRSNAP_E2E=1` **together with** `PWRSNAP_USER_DATA`
+hides the whole class (that pair rebases `documents` into userData;
+neither does it alone — see the `isE2E` branch in
+[index.ts](apps/desktop/src/main/index.ts)), so E2E green proves nothing
+here. A local launch that sets only `PWRSNAP_E2E=1` still reads the real
+`~/Documents/PwrSnap` and can still hit the hang.
+
+- Use `node:fs/promises` and let the caller `await` — or, when the read
+  is a nicety rather than the source of truth, bound the wait and
+  proceed without it (the template is `ChatThreadStore.ensureImported()`
+  + `LEGACY_IMPORT_WAIT_MS` in
+  [chat-thread-store.ts](apps/desktop/src/main/ai/chat-thread-store.ts)).
+- **The threadpool is small — budget it.** A pending prompt parks the
+  libuv threadpool thread that took the async call, and the default pool
+  is **4 threads** shared by all of `fs/promises`, `dns.lookup`, `zlib`,
+  and `crypto.pbkdf2`. One parked read is fine: the window paints, menus
+  work, the dialog can be answered, everything drains. Four is not — it
+  starves every other async fs call in main and turns a diagnosable
+  beachball into an app that paints and silently completes nothing. So a
+  gated read must be shared per root, not issued once per object that
+  happens to want it (see `legacyImportFor()` and the module-level
+  `legacyImports` map, which exist for exactly this reason).
+- **Bound once, not per call.** Memoize the *bounded* promise, not the
+  raw one. Re-arming the deadline per call makes waits additive — one
+  "New chat" chaining four gated calls paid 4 × the bound.
+- Work that lands after the bound elapses must not clobber what the
+  caller did in the meantime. The legacy import skips threads deleted
+  while it was reading; anything similar needs the same guard.
+- Metadata calls (`stat` / `access` / `existsSync`) don't open the file
+  and have not been observed to prompt, but don't add new sync ones under
+  these roots either.
+- Finding the next one:
+  `grep -rn -E "readdirSync|readFileSync|openSync|opendirSync" apps/desktop/src/main --include='*.ts' | grep -v __tests__`
+  then check each path argument against the roots above. Most hits are
+  userData / app resources and fine.
+
+History + the `sample` recipe:
+[docs/solutions/2026-06-12-macos-tcc-captures-folder-denials.md](docs/solutions/2026-06-12-macos-tcc-captures-folder-denials.md)
+§"Addendum (2026-08-22)". Pinned by
+[chat-thread-store-documents-access.test.ts](apps/desktop/src/main/ai/__tests__/chat-thread-store-documents-access.test.ts).
+
 ## Bake render cache — orphans are tolerated, not swept
 
 Content-addressed cache; `BAKE_PIPELINE_VERSION` is in the hash, so a

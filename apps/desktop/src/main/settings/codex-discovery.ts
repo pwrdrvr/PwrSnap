@@ -35,8 +35,8 @@
 // explicit filesystem candidate above, or pinned in Settings → AI.
 
 import { execFile as execFileCallback } from "node:child_process";
-import { constants as fsConstants, readdirSync } from "node:fs";
-import { access } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -224,20 +224,56 @@ export async function assertCodexCliVersion(
 
 /** Every installed nvm node version's bin dir, newest first — an
  *  `npm i -g codex` under nvm lands there, which a GUI-launched app's
- *  sparse PATH misses. Pure readdir; no shell is ever spawned. */
-export function nvmNodeBinDirs(home: string = os.homedir()): string[] {
+ *  sparse PATH misses. Pure readdir; no shell is ever spawned. Async so
+ *  discovery never does a synchronous directory read on the main thread
+ *  (the call chain is already async). */
+export async function nvmNodeBinDirs(home: string = os.homedir()): Promise<string[]> {
   const base = path.join(home, ".nvm", "versions", "node");
   try {
-    return readdirSync(base)
-      .sort()
-      .reverse()
+    return (await readdir(base, { withFileTypes: true }))
+      // `!isFile()`, not `isDirectory()`: filesystems that leave `d_type`
+      // unset (SMB/NFS/exFAT — a network $HOME is not exotic) report every
+      // entry as UV_DIRENT_UNKNOWN, and `isDirectory()` would then drop all
+      // of them and erase every nvm bin dir. This still skips stray files.
+      .filter((entry) => !entry.isFile())
+      .map((entry) => entry.name)
+      .sort(compareNodeVersionsNewestFirst)
       .map((version) => path.join(base, version, "bin"));
   } catch {
     return [];
   }
 }
 
-function getCodexAppCandidatePaths(): string[] {
+/**
+ * Newest-first compare for nvm's `vMAJOR.MINOR.PATCH` directory names.
+ * Component-wise numeric, because a plain string sort gets this wrong in two
+ * layouts people really have: `v9.x` sorts above `v24.x`, and `v20.9.0`
+ * sorts above the newer `v20.10.0`. Picking the wrong dir first means
+ * probing a stale `codex` and possibly tripping MINIMUM_CODEX_CLI_VERSION.
+ */
+function compareNodeVersionsNewestFirst(a: string, b: string): number {
+  const left = parseNodeVersionParts(a);
+  const right = parseNodeVersionParts(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const delta = (right[i] ?? 0) - (left[i] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  // Identical numerics (or two unparseable names) — stable, newest-ish last
+  // resort so the order never depends on readdir's arbitrary sequence.
+  return b.localeCompare(a);
+}
+
+function parseNodeVersionParts(name: string): number[] {
+  return name
+    .replace(/^v/, "")
+    .split(".")
+    .map((part) => {
+      const parsed = Number.parseInt(part, 10);
+      return Number.isFinite(parsed) ? parsed : 0;
+    });
+}
+
+async function getCodexAppCandidatePaths(): Promise<string[]> {
   if (process.platform === "win32") {
     // OpenAI's Windows installer drops the Codex CLI/Desktop under
     // %LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe (per-user); also
@@ -257,7 +293,7 @@ function getCodexAppCandidatePaths(): string[] {
     path.join(os.homedir(), "Applications/Codex.app/Contents/Resources/codex"),
     "/opt/homebrew/bin/codex",
     "/usr/local/bin/codex",
-    ...nvmNodeBinDirs().map((dir) => path.join(dir, "codex"))
+    ...(await nvmNodeBinDirs()).map((dir) => path.join(dir, "codex"))
   ];
 }
 
@@ -368,7 +404,7 @@ async function resolveCommandFromPath(
 export async function buildCodexAutoCandidates(env: NodeJS.ProcessEnv): Promise<
   Array<{ command: string; source: DesktopCodexCandidateSource }>
 > {
-  const appPaths = getCodexAppCandidatePaths();
+  const appPaths = await getCodexAppCandidatePaths();
   const appPathSet = new Set(appPaths);
   const seen = new Set<string>();
   const out: Array<{ command: string; source: DesktopCodexCandidateSource }> = [];

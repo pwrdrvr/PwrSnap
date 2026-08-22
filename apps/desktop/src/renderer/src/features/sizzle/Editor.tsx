@@ -28,6 +28,9 @@ import {
   type TimelineWord
 } from "./timeline/timeline-model";
 import { RenderStatusBar, isRendering, type RenderStatus } from "./RenderStatusBar";
+import { createPortal } from "react-dom";
+import { ClipInspector } from "./ClipInspector";
+import { isTypingTarget } from "./sizzle-helpers";
 import { SceneTransitionChip, SequenceSceneCard, SimpleSceneCard } from "./SceneCard";
 import {
   convertSceneToSequence,
@@ -59,6 +62,13 @@ export type EditorProps = {
   onReveal: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  /** The selected clip (owned by the shell: the right rail shows the
+   *  inspector for it). */
+  selectedClipId: string | null;
+  onSelectClipId: (beatId: string | null) => void;
+  /** Where the clip inspector renders (a slot in the right rail); null
+   *  while the rail is not mounted. */
+  inspectorHost: HTMLElement | null;
 };
 
 export function Editor(props: EditorProps): ReactElement {
@@ -79,7 +89,10 @@ export function Editor(props: EditorProps): ReactElement {
     onRender,
     onReveal,
     onDuplicate,
-    onDelete
+    onDelete,
+    selectedClipId,
+    onSelectClipId,
+    inspectorHost
   } = props;
 
   const titleRef = useRef<HTMLInputElement | null>(null);
@@ -221,7 +234,19 @@ export function Editor(props: EditorProps): ReactElement {
   // Follows playback while a scene previews; a scrub sets it and seeks
   // the preview of the scene under the pointer.
   const [playhead, setPlayhead] = useState<{ sceneId: string; localSec: number } | null>(null);
-  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  // Selection is the shell's (the rail shows the inspector for it); the
+  // editor's word-click / drag / select paths all go through this setter.
+  const setSelectedClipId = onSelectClipId;
+  // Esc closes the inspector (deselects) — never stolen from a text field.
+  useEffect(() => {
+    if (selectedClipId === null) return;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || isTypingTarget(event.target)) return;
+      onSelectClipId(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedClipId, onSelectClipId]);
   const playingSceneId = plan.previewingSceneId;
   const playingTimeSec = plan.previewTimeSec;
   useEffect(() => {
@@ -371,6 +396,40 @@ export function Editor(props: EditorProps): ReactElement {
         />
       ) : null}
 
+      {/* The clip inspector, portaled into the right rail's slot (plan
+          §4.6: beside the chat). Its state + handlers are the timeline's
+          own — selection, model, the same edit ops — only its DOM lives
+          over there. */}
+      {inspectorHost !== null && selectedClipId !== null
+        ? (() => {
+            const region = timelineModel.scenes.find((s) => s.clips.some((c) => c.beatId === selectedClipId));
+            const clip = region?.clips.find((c) => c.beatId === selectedClipId);
+            const sceneRecord = region === undefined ? undefined : project.scenes.find((s) => s.id === region.sceneId);
+            const beat =
+              sceneRecord?.kind === "sequence" ? sceneRecord.beats?.find((b) => b.id === selectedClipId) : undefined;
+            if (region === undefined || clip === undefined || sceneRecord === undefined || beat === undefined) {
+              return null;
+            }
+            return createPortal(
+              <ClipInspector
+                clip={clip}
+                scene={region}
+                beat={beat}
+                capture={captureMap.get(clip.captureId) ?? null}
+                transcriptPhrases={plan.transcriptPhrasesForScene(sceneRecord)}
+                onEditBeat={(patch) => editSequenceBeat(region.sceneId, clip.beatId, patch)}
+                onReorder={(delta) => reorderSequenceBeat(region.sceneId, clip.index, clip.index + delta)}
+                onRemove={() => {
+                  removeSequenceBeat(region.sceneId, clip.beatId);
+                  onSelectClipId(null);
+                }}
+                onClose={() => onSelectClipId(null)}
+              />,
+              inspectorHost
+            );
+          })()
+        : null}
+
       <ul className="szl__scenes">
         {project.scenes.length === 0 ? (
           <li className="szl__scene-empty">
@@ -399,16 +458,12 @@ export function Editor(props: EditorProps): ReactElement {
                   idx={idx}
                   sceneCount={project.scenes.length}
                   captureMap={captureMap}
-                  transcriptPhrases={plan.transcriptPhrasesForScene(scene)}
                   plan={plan.planForScene(scene)}
                   audioBlob={plan.sequenceAudioBlobs[scene.id]}
                   currentTimeSec={sceneCurrentTimeSec(scene.id)}
                   playing={plan.previewingSceneId === scene.id}
                   loading={plan.previewLoadingSceneId === scene.id}
                   onEditScene={(patch) => editScene(scene.id, patch)}
-                  onEditBeat={(beatId, patch) => editSequenceBeat(scene.id, beatId, patch)}
-                  onReorderBeat={(from, to) => reorderSequenceBeat(scene.id, from, to)}
-                  onRemoveBeat={(beatId) => removeSequenceBeat(scene.id, beatId)}
                   onPickSequenceBeat={() => onPickSequenceBeat(scene.id)}
                   onSplitIntoScenes={() => splitIntoScenes(scene.id)}
                   onMoveScene={(delta) => moveScene(idx, delta)}

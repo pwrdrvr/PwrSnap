@@ -195,6 +195,21 @@ export function transitionFromType(type: SizzleTransitionType): SizzleTransition
   return { type, durationSec: type === "none" ? 0 : 0.18 };
 }
 
+/** Change a transition's TYPE while keeping a duration the user already
+ *  set: a fade-like → fade-like switch carries the current `durationSec`
+ *  over (object form), a switch to cut / none drops it, and a switch from
+ *  cut / none starts from the type's default (`transitionFromType`). The
+ *  inspector edits type and duration as two fields; this keeps them from
+ *  fighting. */
+export function transitionWithType(current: SizzleTransition, type: SizzleTransitionType): SizzleTransition {
+  if (type === "cut" || type === "none") return transitionFromType(type);
+  const currentType = transitionType(current);
+  const currentHard = currentType === "cut" || currentType === "none";
+  const currentSec = typeof current === "string" ? (current === "crossfade" ? SIZZLE_CROSSFADE_SEC : 0) : current.durationSec;
+  if (currentHard || !(currentSec > 0)) return transitionFromType(type);
+  return { type, durationSec: currentSec };
+}
+
 /** Scene→scene transitions default to the crossfade length (0.4 s): a
  *  scene boundary is a bigger beat than a clip cut, and 0.18 s at scene
  *  level reads as a cut even in the export (plan §4.7). The per-boundary

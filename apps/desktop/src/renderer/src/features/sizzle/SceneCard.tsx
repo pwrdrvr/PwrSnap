@@ -167,24 +167,32 @@ export function SequenceSceneCard(props: SequenceSceneCardProps): ReactElement {
             + Clip
           </button>
         </div>
-        <div className="szl__sequence-beats">
-          {beats.map((beat, beatIdx) => (
-            <SequenceBeatRow
-              key={beat.id}
-              beat={beat}
-              beatIdx={beatIdx}
-              beatCount={beats.length}
-              capture={captureMap.get(beat.captureId) ?? null}
-              transcriptPhrases={transcriptPhrases}
-              onEditBeat={(patch) => onEditBeat(beat.id, patch)}
-              onReorderBeat={onReorderBeat}
-              onRemoveBeat={() => onRemoveBeat(beat.id)}
-            />
-          ))}
-        </div>
-        <div className="szl__scene-hint">
-          One voiceover across {beats.length} clip{beats.length === 1 ? "" : "s"}. Clips cut at their anchors; auto clips share the time between anchored neighbours. Phrase anchors use timed transcript words from preview, which can differ from the written script.
-        </div>
+        {/* The pre-timeline clip rows. The timeline above is now the view
+            of the clips; these stay reachable under a disclosure until the
+            clip inspector (plan PR 6) takes over timing / fit / transition. */}
+        <details className="szl__advanced" data-testid={`sizzle-clip-rows-${scene.id}`}>
+          <summary className="szl__advanced-summary">
+            Clip rows <span className="szl__advanced-hint">timing · fit · transition · reorder</span>
+          </summary>
+          <div className="szl__sequence-beats">
+            {beats.map((beat, beatIdx) => (
+              <SequenceBeatRow
+                key={beat.id}
+                beat={beat}
+                beatIdx={beatIdx}
+                beatCount={beats.length}
+                capture={captureMap.get(beat.captureId) ?? null}
+                transcriptPhrases={transcriptPhrases}
+                onEditBeat={(patch) => onEditBeat(beat.id, patch)}
+                onReorderBeat={onReorderBeat}
+                onRemoveBeat={() => onRemoveBeat(beat.id)}
+              />
+            ))}
+          </div>
+          <div className="szl__scene-hint">
+            One voiceover across {beats.length} clip{beats.length === 1 ? "" : "s"}. Clips cut at their anchors; auto clips share the time between anchored neighbours. Phrase anchors use timed transcript words from preview, which can differ from the written script.
+          </div>
+        </details>
         <SequenceTimelinePreview
           scene={scene}
           captureMap={captureMap}

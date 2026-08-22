@@ -2024,3 +2024,113 @@ describe("characterization — shell surfaces", () => {
     expect(findButton(el, "Chat with agent")).toBeTruthy();
   });
 });
+
+describe("timeline word ribbon — click to anchor", () => {
+  const autoBeat = (id: string, captureId: string): NonNullable<SizzleScene["beats"]>[number] => ({
+    id,
+    captureId,
+    timing: { kind: "auto" },
+    mediaTrim: null,
+    transition: "cut",
+    videoFit: "smart-fit"
+  });
+  // 8 words over 4 s, resolved from the speech-timing cache on open.
+  const WORDS = ["Open", "the", "Library", "to", "find", "every", "capture", "fast"].map((word, index) => ({
+    index,
+    word,
+    normalized: word.toLowerCase(),
+    startSec: index * 0.5,
+    endSec: index * 0.5 + 0.4
+  }));
+  const cachedAudio = {
+    ok: true,
+    value: {
+      cached: true,
+      audioBase64: "AA==",
+      mimeType: "audio/mpeg",
+      transcriptPhrases: [],
+      durationSec: 4,
+      words: WORDS
+    }
+  };
+  const seq = (): SizzleScene =>
+    scene({
+      kind: "sequence",
+      scriptLine: "Open the Library to find every capture fast",
+      narration: "Open the Library to find every capture fast",
+      beats: [autoBeat("bt_a", "cap_a"), autoBeat("bt_b", "cap_b"), autoBeat("bt_c", "cap_c")]
+    });
+  const timingSelectOf = (el: HTMLElement, row: number): HTMLSelectElement =>
+    el.querySelectorAll(".szl__sequence-beat")[row]!.querySelector("select")!;
+
+  test("clicking a word anchors the clip covering that moment (not clip 0), and clicking it again un-anchors", async () => {
+    const { el } = await renderApp(project({ scenes: [seq()] }), {
+      "sizzle:loadSequenceSceneAudio": cachedAudio
+    });
+    // Wait for the cache-only load to land: the ribbon draws words.
+    for (let i = 0; i < 10 && el.querySelector('[data-testid="sizzle-timeline-word-0-4"]') === null; i += 1) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    const find = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-timeline-word-0-4"]');
+    expect(find).not.toBeNull();
+    expect(timingSelectOf(el, 1).value).toBe("auto");
+    // "find" is at 2.0 s — inside clip 2 (auto clips split 4 s three ways:
+    // 0–1.33, 1.33–2.67, 2.67–4).
+    await act(async () => {
+      find!.click();
+    });
+    expect(timingSelectOf(el, 1).value).toBe("phrase");
+    expect(el.querySelectorAll(".szl__sequence-beat")[1]!.querySelector(".szl__sequence-phrase-button")?.textContent).toContain("find");
+    // The anchored word now carries the clip's badge in the ribbon.
+    expect(el.querySelector('[data-testid="sizzle-timeline-word-0-4"] .szt__badge')?.textContent).toBe("2");
+    // Clicking the same word again releases the anchor — back to auto.
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-timeline-word-0-4"]')!.click();
+    });
+    expect(timingSelectOf(el, 1).value).toBe("auto");
+  });
+
+  test("with a clip selected, the click anchors THAT clip; clip 0 is never anchored", async () => {
+    const { el } = await renderApp(project({ scenes: [seq()] }), {
+      "sizzle:loadSequenceSceneAudio": cachedAudio
+    });
+    for (let i = 0; i < 10 && el.querySelector('[data-testid="sizzle-timeline-word-0-2"]') === null; i += 1) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    // Select clip 3, then click "Library" (1.0 s, which is inside clip 1).
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-timeline-clip-bt_c"]')!.click();
+    });
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-timeline-word-0-2"]')!.click();
+    });
+    expect(timingSelectOf(el, 2).value).toBe("phrase");
+    expect(timingSelectOf(el, 0).value).toBe("auto");
+    // Selecting clip 0 and clicking a word is a no-op: clip 0 is pinned to 0.
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-timeline-clip-bt_a"]')!.click();
+    });
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-timeline-word-0-0"]')!.click();
+    });
+    expect(timingSelectOf(el, 0).value).toBe("auto");
+  });
+
+  test("an unsynthesized scene shows the Synthesize affordance instead of words, and it previews the scene", async () => {
+    const { el, dispatch } = await renderApp(project({ scenes: [seq()] }));
+    expect(el.querySelector('[data-testid^="sizzle-timeline-word-"]')).toBeNull();
+    const cta = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-timeline-synthesize-0"]');
+    expect(cta).not.toBeNull();
+    await act(async () => {
+      cta!.click();
+    });
+    await act(async () => {
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+    expect(dispatch).toHaveBeenCalledWith("sizzle:previewSequenceScenePlan", { projectId: "sz_1", sceneId: "sc_a" });
+  });
+});

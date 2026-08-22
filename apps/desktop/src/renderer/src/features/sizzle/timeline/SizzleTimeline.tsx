@@ -26,8 +26,9 @@ import { Playhead } from "./Playhead";
 import { SceneRegions } from "./SceneRegions";
 import { TimelineRuler } from "./TimelineRuler";
 import { WaveformLane } from "./WaveformLane";
+import { WordRibbon } from "./WordRibbon";
 import { pxPerSecFor, TIMELINE_ZOOMS, zoomIn, zoomOut, type TimelineZoom } from "./density";
-import type { TimelineClip, TimelineModel } from "./timeline-model";
+import type { TimelineClip, TimelineModel, TimelineSceneRegion, TimelineWord } from "./timeline-model";
 import "./timeline.css";
 
 export type SizzleTimelineProps = {
@@ -43,6 +44,12 @@ export type SizzleTimelineProps = {
   onSelectClip: (clip: TimelineClip | null) => void;
   selectedSceneId?: string | null | undefined;
   onSelectScene?: ((sceneId: string) => void) | undefined;
+  /** Click a word in the ribbon: anchor the selected clip (or the clip
+   *  covering that moment) to it — or un-anchor if it already is. */
+  onClickWord?: ((scene: TimelineSceneRegion, word: TimelineWord) => void) | undefined;
+  /** The estimated region's "Synthesize narration" affordance. Explicit
+   *  click only — it spends TTS credits. */
+  onSynthesize?: ((sceneId: string) => void) | undefined;
   /** Initial zoom (tests). Defaults to fit-to-width. */
   initialZoom?: TimelineZoom | undefined;
 };
@@ -62,6 +69,8 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
     onSelectClip,
     selectedSceneId = null,
     onSelectScene,
+    onClickWord,
+    onSynthesize,
     initialZoom = "fit"
   } = props;
 
@@ -73,11 +82,14 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
   const [scrubbing, setScrubbing] = useState(false);
   const dragRef = useRef<number | null>(null);
 
-  // Measure the canvas so fit-to-width and px↔sec agree.
+  // Measure the SCROLL VIEWPORT (not the bordered canvas) so fit-to-width
+  // fills it exactly — measuring the canvas made the lanes 2 px (the
+  // border) wider than the viewport and put a horizontal scrollbar on a
+  // reel that fits.
   useLayoutEffect(() => {
-    const el = canvasRef.current;
+    const el = scrollRef.current;
     if (el === null) return;
-    const post = (): void => setWidth(Math.round(el.getBoundingClientRect().width));
+    const post = (): void => setWidth(Math.floor(el.getBoundingClientRect().width));
     post();
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(post);
@@ -253,7 +265,15 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
               onSelectClip={onSelectClip}
             />
             <WaveformLane model={model} x={x} audioBlobs={audioBlobs} />
-            <Playhead leftPx={x(playheadSec)} sec={playheadSec} />
+            <WordRibbon
+              model={model}
+              x={x}
+              pxPerSec={pxPerSec}
+              widthPx={lanesWidth}
+              onClickWord={(scene, word) => onClickWord?.(scene, word)}
+              onSynthesize={(sceneId) => onSynthesize?.(sceneId)}
+            />
+            <Playhead leftPx={x(playheadSec)} sec={playheadSec} widthPx={lanesWidth} />
           </div>
         </div>
       </div>

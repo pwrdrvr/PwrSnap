@@ -28,7 +28,7 @@ export function copyImagePreset(captureId: string, preset: ImageCopyPreset): voi
   void dispatch(IMAGE_PRESET_COPY_VERB, { captureId, preset });
 }
 
-/** Copy the POSIX path of the capture's rendered preset file as text
+/** Copy the platform-native absolute path of the rendered preset file as text
  *  (`clipboard:copy-path`) — the FILE chip's secondary affordance. Kept
  *  here so the path copy stays in lockstep across surfaces too. */
 export function copyImagePresetPath(captureId: string, preset: ImageCopyPreset): void {

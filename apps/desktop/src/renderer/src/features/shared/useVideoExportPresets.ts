@@ -13,16 +13,19 @@ import type {
 import { dispatch, startVideoDrag, subscribe } from "../../lib/pwrsnap";
 import { videoPresetKey, type VideoPresetKey } from "./useVideoPresetMetrics";
 
+export type VideoExportAction = "copy" | "path" | "drag";
+
 export type ExportButtonState =
   | { kind: "idle" }
   | {
       kind: "running";
+      action: VideoExportAction;
       runId: string;
       phase: VideoExportProgressPhase;
       ratio: number | null;
     }
-  | { kind: "done"; path: string }
-  | { kind: "error"; message: string };
+  | { kind: "done"; action: VideoExportAction; path: string }
+  | { kind: "error"; action: VideoExportAction; message: string };
 
 export type VideoExportPresetsState = Partial<Record<VideoPresetKey, ExportButtonState>>;
 
@@ -44,6 +47,7 @@ type Action =
   | { kind: "set"; key: VideoPresetKey; state: ExportButtonState };
 
 type ActiveRun = {
+  action: VideoExportAction;
   runId: string;
   captureId: string;
   format: "gif" | "mp4";
@@ -143,7 +147,7 @@ export function useVideoExportPresets(
     (key: VideoPresetKey, run: ActiveRun, message: string): void => {
       if (!isActive(key, run)) return;
       activeRunsRef.current.delete(key);
-      dispatchAction({ kind: "set", key, state: { kind: "error", message } });
+      dispatchAction({ kind: "set", key, state: { kind: "error", action: run.action, message } });
     },
     [isActive]
   );
@@ -159,24 +163,24 @@ export function useVideoExportPresets(
       dispatchAction(
         error.code === "video_export_cancelled"
           ? { kind: "clear", key }
-          : { kind: "set", key, state: { kind: "error", message: error.message } }
+          : { kind: "set", key, state: { kind: "error", action: run.action, message: error.message } }
       );
     },
     [isActive]
   );
 
   const startRun = useCallback(
-    (format: "gif" | "mp4", preset: VideoPreset): ActiveRun | null => {
+    (format: "gif" | "mp4", preset: VideoPreset, action: VideoExportAction): ActiveRun | null => {
       if (captureId === null) return null;
       const key = videoPresetKey(format, preset);
       const prior = activeRunsRef.current.get(key);
       if (prior !== undefined) cancelRun(prior.runId);
-      const run = { runId: newRunId(), captureId, format, preset } satisfies ActiveRun;
+      const run = { runId: newRunId(), captureId, format, preset, action } satisfies ActiveRun;
       activeRunsRef.current.set(key, run);
       dispatchAction({
         kind: "set",
         key,
-        state: { kind: "running", runId: run.runId, phase: "queued", ratio: null }
+        state: { kind: "running", action: run.action, runId: run.runId, phase: "queued", ratio: null }
       });
       return run;
     },
@@ -204,7 +208,7 @@ export function useVideoExportPresets(
           kind: "set",
           key,
           state: {
-            kind: "running",
+            kind: "running", action: run.action,
             runId: run.runId,
             phase: event.phase,
             ratio:
@@ -219,7 +223,7 @@ export function useVideoExportPresets(
         dispatchAction({
           kind: "set",
           key,
-          state: { kind: "error", message: event.error.message }
+          state: { kind: "error", action: run.action, message: event.error.message }
         });
       } else if (event.outcome === "cancelled") {
         activeRunsRef.current.delete(key);
@@ -231,7 +235,7 @@ export function useVideoExportPresets(
           kind: "set",
           key,
           state: {
-            kind: "running",
+            kind: "running", action: run.action,
             runId: run.runId,
             phase: "finalizing",
             ratio: null
@@ -257,7 +261,7 @@ export function useVideoExportPresets(
       format: "gif" | "mp4",
       preset: VideoPreset
     ): void => {
-      const run = startRun(format, preset);
+      const run = startRun(format, preset, command === "clipboard:copyVideoFile" ? "copy" : "path");
       if (run === null) return;
       const key = videoPresetKey(format, preset);
       void (async () => {
@@ -298,13 +302,13 @@ export function useVideoExportPresets(
           dispatchAction({
             kind: "set",
             key,
-            state: { kind: "done", path: copied.value.path }
+            state: { kind: "done", action: run.action, path: copied.value.path }
           });
         } else {
           dispatchAction({
             kind: "set",
             key,
-            state: { kind: "error", message: copied.error.message }
+            state: { kind: "error", action: run.action, message: copied.error.message }
           });
         }
       })();
@@ -328,7 +332,7 @@ export function useVideoExportPresets(
 
   const triggerDrag = useCallback(
     (format: "gif" | "mp4", preset: VideoPreset) => {
-      const run = startRun(format, preset);
+      const run = startRun(format, preset, "drag");
       if (run === null) return;
       const key = videoPresetKey(format, preset);
       // Encode through the run-scoped command first. Once it succeeds the
@@ -354,7 +358,7 @@ export function useVideoExportPresets(
             dispatchAction({
               kind: "set",
               key,
-              state: { kind: "done", path: result.value.path }
+              state: { kind: "done", action: run.action, path: result.value.path }
             });
           } else {
             finishWithCommandError(key, run, result.error);

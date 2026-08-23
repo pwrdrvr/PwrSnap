@@ -1,12 +1,9 @@
 // Regression tests for the video clipboard handlers.
 //
-// `clipboard:copyVideoFile` writes `public.file-url` only — NOT
-// also `writeText(path)`. The earlier v1 of this handler did both,
-// which was discovered to silently overwrite the file-url on macOS
-// because each Electron `clipboard.write*` call wraps a
-// `ScopedClipboardWriter` that calls `[pasteboard clearContents]`.
-// Result: iMessage / Slack paste landed the path text instead of
-// the file binary (commit `db71a078`). This file locks the fix.
+// `clipboard:copyVideoFile` routes the friendly export alias through the
+// platform file-clipboard abstraction (`public.file-url` on macOS, native
+// CF_HDROP on Windows) and never co-writes text. `clipboard:copyVideoPath`
+// remains the distinct plain-text-path action.
 //
 // `clipboard:copyVideoPath` writes `writeText(path)` only — same
 // behavior the image `clipboard:copy-path` handler ships.
@@ -21,6 +18,8 @@ type ClipboardCall =
   | { kind: "write"; data: unknown };
 
 const clipboardCalls: ClipboardCall[] = [];
+const fileClipboardCalls: string[] = [];
+let fileClipboardFailure: Error | null = null;
 
 vi.mock("electron", () => ({
   clipboard: {
@@ -67,8 +66,10 @@ const resolveResult = {
   }
 };
 
+const resolveVideoExportMock = vi.hoisted(() => vi.fn());
+
 vi.mock("../../recording/video-export-resolver", () => ({
-  resolveVideoExport: async () => resolveResult,
+  resolveVideoExport: resolveVideoExportMock,
   mapVideoResolveError: (_e: unknown, verb: string, captureId: string) => ({
     kind: "validation" as const,
     code: "not_found",
@@ -121,6 +122,13 @@ vi.mock("../../clipboard/named-image-pasteboard", () => ({
   writeNamedPngToPasteboard: async () => false
 }));
 
+vi.mock("../../clipboard/file-clipboard", () => ({
+  writeFileToClipboard: async (path: string) => {
+    fileClipboardCalls.push(path);
+    if (fileClipboardFailure !== null) throw fileClipboardFailure;
+  }
+}));
+
 vi.mock("../../clipboard-events", () => ({
   notifyClipboardChanged: () => undefined
 }));
@@ -128,17 +136,19 @@ vi.mock("../../clipboard-events", () => ({
 const { bus } = await import("../../command-bus");
 const { registerClipboardHandlers } = await import("../clipboard-handlers");
 
+resolveVideoExportMock.mockResolvedValue(resolveResult);
 registerClipboardHandlers();
 
 describe("clipboard:copyVideoFile", () => {
   beforeEach(() => {
     clipboardCalls.length = 0;
+    fileClipboardCalls.length = 0;
+    fileClipboardFailure = null;
+    resolveVideoExportMock.mockReset();
+    resolveVideoExportMock.mockResolvedValue(resolveResult);
   });
 
-  test("writes public.file-url ONCE and does NOT call writeText", async () => {
-    // Regression for db71a078 — `writeText` after `writeBuffer` on
-    // macOS wipes the file-url and iMessage pastes the text path
-    // instead of the file binary.
+  test("writes the native file flavor once and does NOT co-write text", async () => {
     const result = await bus.dispatch(
       "clipboard:copyVideoFile",
       { captureId: "cap_1", format: "mp4", preset: "med" },
@@ -146,15 +156,16 @@ describe("clipboard:copyVideoFile", () => {
     );
     expect(result.ok).toBe(true);
 
-    const buffers = clipboardCalls.filter((c) => c.kind === "writeBuffer");
     const texts = clipboardCalls.filter((c) => c.kind === "writeText");
 
-    expect(buffers).toHaveLength(1);
-    expect(buffers[0]?.format).toBe("public.file-url");
+    expect(fileClipboardCalls).toEqual([
+      "/cache/video/cap_1/clipboard/r0-10.med.silent/quarterly-roadmap-demo-med.mp4"
+    ]);
+    expect(clipboardCalls.filter((c) => c.kind === "writeBuffer")).toHaveLength(0);
     expect(texts).toHaveLength(0);
   });
 
-  test("file-url contains the enrichment-based alias path as a percent-encoded file:// URL", async () => {
+  test("copies the enrichment-based alias rather than the opaque cache filename", async () => {
     const result = await bus.dispatch(
       "clipboard:copyVideoFile",
       { captureId: "cap_1", format: "mp4", preset: "med" },
@@ -166,17 +177,43 @@ describe("clipboard:copyVideoFile", () => {
       "/cache/video/cap_1/clipboard/r0-10.med.silent/quarterly-roadmap-demo-med.mp4"
     );
 
-    const buffer = clipboardCalls.find((c) => c.kind === "writeBuffer");
-    if (buffer === undefined || buffer.kind !== "writeBuffer") {
-      throw new Error("expected a writeBuffer call");
-    }
-    const url = buffer.data.toString("utf8");
-    expect(url.startsWith("file://")).toBe(true);
-    expect(url.endsWith("/quarterly-roadmap-demo-med.mp4")).toBe(true);
-    expect(url).not.toContain("r0-10.med.silent.mp4");
-    // The URL should be parseable on every OS; pathToFileURL owns
-    // platform-specific drive-letter / separator handling.
-    expect(() => new URL(url)).not.toThrow();
+    expect(fileClipboardCalls).toEqual([result.value.path]);
+    expect(fileClipboardCalls[0]).not.toContain("r0-10.med.silent.mp4");
+  });
+
+  test("returns a visible clipboard error when the native write/readback fails", async () => {
+    fileClipboardFailure = new Error("CF_HDROP readback path mismatch");
+
+    const result = await bus.dispatch(
+      "clipboard:copyVideoFile",
+      { captureId: "cap_1", format: "mp4", preset: "med" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected clipboard failure");
+    expect(result.error.kind).toBe("clipboard");
+    expect(result.error.code).toBe("video_clipboard_failed");
+    expect(result.error.message).toContain("CF_HDROP readback");
+  });
+
+  test("maps a missing/failed transcoder to video_export_failed", async () => {
+    resolveVideoExportMock.mockRejectedValueOnce(
+      new Error("FFmpeg not found; packaged PwrSnapFFmpeg.exe is unavailable")
+    );
+
+    const result = await bus.dispatch(
+      "clipboard:copyVideoFile",
+      { captureId: "cap_1", format: "mp4", preset: "med" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected export failure");
+    expect(result.error.kind).toBe("render");
+    expect(result.error.code).toBe("video_export_failed");
+    expect(result.error.message).toContain("PwrSnapFFmpeg.exe");
+    expect(fileClipboardCalls).toHaveLength(0);
   });
 });
 
@@ -189,6 +226,9 @@ describe("clipboard:copyVideoFile", () => {
 describe("video clipboard verbs validate the caller-supplied range", () => {
   beforeEach(() => {
     clipboardCalls.length = 0;
+    fileClipboardCalls.length = 0;
+    resolveVideoExportMock.mockReset();
+    resolveVideoExportMock.mockResolvedValue(resolveResult);
   });
 
   for (const verb of ["clipboard:copyVideoFile", "clipboard:copyVideoPath"] as const) {
@@ -231,7 +271,7 @@ describe("video clipboard verbs validate the caller-supplied range", () => {
         { principal: "ipc" }
       );
       expect(result.ok).toBe(true);
-      expect(clipboardCalls.length).toBeGreaterThan(0);
+      expect(clipboardCalls.length + fileClipboardCalls.length).toBeGreaterThan(0);
     });
   }
 });
@@ -239,6 +279,9 @@ describe("video clipboard verbs validate the caller-supplied range", () => {
 describe("clipboard:copyVideoPath", () => {
   beforeEach(() => {
     clipboardCalls.length = 0;
+    fileClipboardCalls.length = 0;
+    resolveVideoExportMock.mockReset();
+    resolveVideoExportMock.mockResolvedValue(resolveResult);
   });
 
   test("writes writeText ONLY — no writeBuffer", async () => {
@@ -253,6 +296,7 @@ describe("clipboard:copyVideoPath", () => {
     const texts = clipboardCalls.filter((c) => c.kind === "writeText");
 
     expect(buffers).toHaveLength(0);
+    expect(fileClipboardCalls).toHaveLength(0);
     expect(texts).toHaveLength(1);
     expect(texts[0]?.text).toBe("/cache/video/cap_1/r0-10.med.silent.mp4");
   });

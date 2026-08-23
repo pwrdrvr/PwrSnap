@@ -70,6 +70,7 @@ type ClipboardCapture =
   | { kind: "writeBuffer"; uti: string; bytes: Buffer };
 
 const clipboardCaptured: ClipboardCapture[] = [];
+const fileClipboardCaptured: string[] = [];
 const namedPasteboardCalls: Array<{ pngPath: string; fileUrlPath: string; metaJson?: string }> =
   [];
 
@@ -146,6 +147,12 @@ vi.mock("../clipboard/named-image-pasteboard", () => ({
   )
 }));
 
+vi.mock("../clipboard/file-clipboard", () => ({
+  writeFileToClipboard: vi.fn(async (path: string) => {
+    fileClipboardCaptured.push(path);
+  })
+}));
+
 // ---------------------------------------------------------------------
 // Test fixture setup.
 // ---------------------------------------------------------------------
@@ -204,6 +211,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   clipboardCaptured.length = 0;
+  fileClipboardCaptured.length = 0;
   namedPasteboardCalls.length = 0;
 });
 
@@ -576,7 +584,7 @@ describe("capture:prepareDrag export filename", () => {
 });
 
 describe("clipboard:copy-file export filename", () => {
-  test("copies a file-url whose basename uses the enrichment filename stem", async () => {
+  test("copies a native file whose basename uses the enrichment filename stem", async () => {
     const captureId = "t_clipboard_file_filename";
     await seedV2Capture({ id: captureId, annotated: false });
     getDb()
@@ -602,14 +610,9 @@ describe("clipboard:copy-file export filename", () => {
     if (!result.ok) throw new Error(`copy-file failed: ${result.error.code}`);
     expect(basename(result.value.path)).toBe("library-sidebar-export-med.png");
 
-    const writeBuf = clipboardCaptured.find((c) => c.kind === "writeBuffer");
-    if (writeBuf === undefined || writeBuf.kind !== "writeBuffer") {
-      throw new Error(`expected writeBuffer on clipboard, got ${JSON.stringify(clipboardCaptured)}`);
-    }
-    expect(writeBuf.uti).toBe("public.file-url");
-    const fileUrl = writeBuf.bytes.toString("utf8");
-    expect(fileUrl.endsWith("/library-sidebar-export-med.png")).toBe(true);
-    expect(fileUrl).not.toContain("image.png");
+    expect(fileClipboardCaptured).toEqual([result.value.path]);
+    expect(basename(fileClipboardCaptured[0]!)).toBe("library-sidebar-export-med.png");
+    expect(clipboardCaptured.find((c) => c.kind === "writeBuffer")).toBeUndefined();
   });
 });
 

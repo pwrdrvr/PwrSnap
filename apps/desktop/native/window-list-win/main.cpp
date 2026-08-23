@@ -96,6 +96,19 @@
 //     and encodes it as PNG with Windows Imaging Component. This is the
 //     Windows counterpart to the Swift helper's NSWorkspace-backed command.
 //
+//   --write-file-clipboard <absolute-file-path>
+//     Writes one existing file to the Windows clipboard as the predefined
+//     numeric CF_HDROP format (DROPFILES + UTF-16 path list) plus the
+//     registered Preferred DropEffect=COPY format. Reads CF_HDROP back with
+//     DragQueryFileW before returning success, so the Electron caller never
+//     reports a copy that produced an empty/custom-format-only clipboard.
+//
+//   --read-file-clipboard
+//     Reads the predefined numeric CF_HDROP format and returns every
+//     fully-qualified UTF-16 file path as a JSON array. This is the Windows
+//     Explorer counterpart to the macOS public.file-url read path; callers
+//     decide whether the list cardinality/type is valid for their operation.
+//
 // Build: cl.exe /O2 /EHsc /std:c++17 main.cpp /Fe:window-list.exe
 //        user32.lib gdi32.lib dwmapi.lib shell32.lib ole32.lib
 //        windowscodecs.lib (compiled by
@@ -118,10 +131,12 @@
 #include <windows.h>
 #include <dwmapi.h>
 #include <psapi.h>
+#include <shellapi.h>
 #include <shobjidl.h>
 #include <wincodec.h>
 
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <cwchar>
 #include <string>
@@ -131,6 +146,11 @@
 #include <fcntl.h>
 
 namespace {
+
+// CF_HDROP is a predefined clipboard format, not a registered string format.
+// Pin the Windows SDK contract explicitly so this helper can never drift into
+// writing a custom format that only happens to be named "CF_HDROP".
+static_assert(CF_HDROP == 15, "Win32 CF_HDROP format id changed");
 
 struct WindowInfo {
   long long windowId;
@@ -292,6 +312,214 @@ int ExtractAppIcon(const std::wstring &exePath,
   return 0;
 }
 
+// GetFullPathNameW preserves drive-letter and UNC semantics while ensuring the
+// CF_HDROP path is fully qualified as required by the Shell clipboard
+// contract. The returned size includes the trailing NUL when the buffer is too
+// small, so retry until the path fits rather than imposing MAX_PATH.
+std::wstring FullyQualifiedPath(const std::wstring &input) {
+  DWORD capacity = GetFullPathNameW(input.c_str(), 0, nullptr, nullptr);
+  if (capacity == 0) {
+    return std::wstring();
+  }
+  std::vector<wchar_t> buffer(static_cast<size_t>(capacity));
+  for (;;) {
+    const DWORD copied = GetFullPathNameW(
+        input.c_str(), static_cast<DWORD>(buffer.size()), buffer.data(), nullptr);
+    if (copied == 0) {
+      return std::wstring();
+    }
+    if (copied < buffer.size()) {
+      return std::wstring(buffer.data(), static_cast<size_t>(copied));
+    }
+    buffer.resize(static_cast<size_t>(copied) + 1);
+  }
+}
+
+int WriteFileClipboard(const std::wstring &inputPath) {
+  if (inputPath.empty()) {
+    std::fputs("clipboard file path is empty\n", stderr);
+    return 2;
+  }
+
+  const std::wstring filePath = FullyQualifiedPath(inputPath);
+  if (filePath.empty()) {
+    std::fputs("clipboard file path could not be made absolute\n", stderr);
+    return 2;
+  }
+  const DWORD attrs = GetFileAttributesW(filePath.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES ||
+      (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    std::fputs("clipboard file is unavailable or is not a regular file\n",
+               stderr);
+    return 3;
+  }
+
+  // DROPFILES is followed immediately by one NUL-terminated path and an
+  // additional NUL terminator for the end of the list. GMEM_ZEROINIT supplies
+  // both terminators once the path bytes are copied.
+  const SIZE_T dropBytes =
+      sizeof(DROPFILES) + (filePath.size() + 2) * sizeof(wchar_t);
+  HGLOBAL dropMemory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, dropBytes);
+  if (dropMemory == nullptr) {
+    std::fputs("CF_HDROP allocation failed\n", stderr);
+    return 4;
+  }
+  void *dropRaw = GlobalLock(dropMemory);
+  if (dropRaw == nullptr) {
+    GlobalFree(dropMemory);
+    std::fputs("CF_HDROP lock failed\n", stderr);
+    return 4;
+  }
+  DROPFILES *drop = static_cast<DROPFILES *>(dropRaw);
+  drop->pFiles = sizeof(DROPFILES);
+  drop->pt.x = 0;
+  drop->pt.y = 0;
+  drop->fNC = FALSE;
+  drop->fWide = TRUE;
+  wchar_t *pathList = reinterpret_cast<wchar_t *>(
+      static_cast<unsigned char *>(dropRaw) + sizeof(DROPFILES));
+  std::memcpy(pathList, filePath.c_str(),
+              (filePath.size() + 1) * sizeof(wchar_t));
+  GlobalUnlock(dropMemory);
+
+  const UINT preferredDropEffectFormat =
+      RegisterClipboardFormatW(L"Preferred DropEffect");
+  if (preferredDropEffectFormat == 0) {
+    GlobalFree(dropMemory);
+    std::fputs("Preferred DropEffect registration failed\n", stderr);
+    return 4;
+  }
+  HGLOBAL effectMemory =
+      GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(DWORD));
+  if (effectMemory == nullptr) {
+    GlobalFree(dropMemory);
+    std::fputs("Preferred DropEffect allocation failed\n", stderr);
+    return 4;
+  }
+  DWORD *effect = static_cast<DWORD *>(GlobalLock(effectMemory));
+  if (effect == nullptr) {
+    GlobalFree(effectMemory);
+    GlobalFree(dropMemory);
+    std::fputs("Preferred DropEffect lock failed\n", stderr);
+    return 4;
+  }
+  *effect = DROPEFFECT_COPY;
+  GlobalUnlock(effectMemory);
+
+  // OpenClipboard(NULL) is unsafe here: after EmptyClipboard, Windows assigns
+  // a NULL owner and SetClipboardData can fail. A real hidden owner HWND keeps
+  // the ownership contract well-defined without surfacing any UI.
+  HWND owner = CreateWindowExW(0, L"STATIC", L"PwrSnap Clipboard Owner",
+                               WS_OVERLAPPED, 0, 0, 0, 0, nullptr, nullptr,
+                               GetModuleHandleW(nullptr), nullptr);
+  if (owner == nullptr) {
+    GlobalFree(effectMemory);
+    GlobalFree(dropMemory);
+    std::fputs("clipboard owner window creation failed\n", stderr);
+    return 5;
+  }
+
+  bool opened = false;
+  for (int attempt = 0; attempt < 20; ++attempt) {
+    if (OpenClipboard(owner) != 0) {
+      opened = true;
+      break;
+    }
+    Sleep(25);
+  }
+  if (!opened) {
+    DestroyWindow(owner);
+    GlobalFree(effectMemory);
+    GlobalFree(dropMemory);
+    std::fputs("clipboard is busy\n", stderr);
+    return 5;
+  }
+
+  bool dropTransferred = false;
+  bool effectTransferred = false;
+  auto failAfterOpen = [&](const char *message) -> int {
+    // Once any handle has transferred, EmptyClipboard lets the system free it
+    // and prevents a partial CF_HDROP-only clipboard from masquerading as a
+    // complete copy operation.
+    if (dropTransferred || effectTransferred) {
+      EmptyClipboard();
+    }
+    CloseClipboard();
+    DestroyWindow(owner);
+    if (!dropTransferred) {
+      GlobalFree(dropMemory);
+    }
+    if (!effectTransferred) {
+      GlobalFree(effectMemory);
+    }
+    std::fputs(message, stderr);
+    std::fputc('\n', stderr);
+    return 6;
+  };
+
+  if (EmptyClipboard() == 0) {
+    return failAfterOpen("clipboard clear failed");
+  }
+  if (SetClipboardData(CF_HDROP, dropMemory) == nullptr) {
+    return failAfterOpen("CF_HDROP write failed");
+  }
+  dropTransferred = true;
+  if (SetClipboardData(preferredDropEffectFormat, effectMemory) == nullptr) {
+    return failAfterOpen("Preferred DropEffect write failed");
+  }
+  effectTransferred = true;
+
+  // Verify the exact native formats while the clipboard is still open. This
+  // is deliberately stronger than an exit-code-only contract: a named custom
+  // format called "CF_HDROP" would fail IsClipboardFormatAvailable(15), and
+  // an invalid/empty DROPFILES buffer would fail DragQueryFileW.
+  if (IsClipboardFormatAvailable(CF_HDROP) == 0 ||
+      IsClipboardFormatAvailable(preferredDropEffectFormat) == 0) {
+    return failAfterOpen("clipboard formats were not retained");
+  }
+  HDROP writtenDrop = static_cast<HDROP>(GetClipboardData(CF_HDROP));
+  if (writtenDrop == nullptr ||
+      DragQueryFileW(writtenDrop, 0xFFFFFFFF, nullptr, 0) != 1) {
+    return failAfterOpen("CF_HDROP readback contained no single file");
+  }
+  const UINT pathLength = DragQueryFileW(writtenDrop, 0, nullptr, 0);
+  std::vector<wchar_t> readback(static_cast<size_t>(pathLength) + 1, L'\0');
+  if (pathLength == 0 ||
+      DragQueryFileW(writtenDrop, 0, readback.data(),
+                     static_cast<UINT>(readback.size())) != pathLength ||
+      std::wstring(readback.data(), static_cast<size_t>(pathLength)) !=
+          filePath) {
+    return failAfterOpen("CF_HDROP readback path mismatch");
+  }
+  HGLOBAL writtenEffect =
+      static_cast<HGLOBAL>(GetClipboardData(preferredDropEffectFormat));
+  const DWORD *readbackEffect = writtenEffect == nullptr
+                                    ? nullptr
+                                    : static_cast<const DWORD *>(
+                                          GlobalLock(writtenEffect));
+  const bool effectMatches =
+      readbackEffect != nullptr && *readbackEffect == DROPEFFECT_COPY;
+  if (readbackEffect != nullptr) {
+    GlobalUnlock(writtenEffect);
+  }
+  if (!effectMatches) {
+    return failAfterOpen("Preferred DropEffect readback mismatch");
+  }
+
+  if (CloseClipboard() == 0) {
+    DestroyWindow(owner);
+    std::fputs("clipboard close failed\n", stderr);
+    return 6;
+  }
+  DestroyWindow(owner);
+  std::fputs(
+      "{\"ok\":true,\"format\":\"CF_HDROP\",\"files\":1,"
+      "\"dropEffect\":\"copy\"}",
+      stdout);
+  std::fflush(stdout);
+  return 0;
+}
+
 // Escape a UTF-8 string for embedding inside a JSON string literal.
 // Handles the JSON-mandatory escapes (quote, backslash, control chars).
 // Backslashes are common on Windows (exe paths) — getting this right is
@@ -334,6 +562,118 @@ std::string JsonEscape(const std::string &s) {
     }
   }
   return out;
+}
+
+bool IsFullyQualifiedWindowsPath(const std::wstring &path) {
+  // Drive-rooted path: C:\foo (a drive-relative C:foo is intentionally false).
+  if (path.size() >= 3 &&
+      ((path[0] >= L'A' && path[0] <= L'Z') ||
+       (path[0] >= L'a' && path[0] <= L'z')) &&
+      path[1] == L':' && (path[2] == L'\\' || path[2] == L'/')) {
+    return true;
+  }
+  // UNC and extended-length paths both begin with two separators:
+  // \\server\share\file.png, \\?\C:\..., or \\?\UNC\server\share\...
+  return path.size() >= 2 &&
+         (path[0] == L'\\' || path[0] == L'/') &&
+         (path[1] == L'\\' || path[1] == L'/');
+}
+
+int ReadFileClipboard() {
+  bool opened = false;
+  for (int attempt = 0; attempt < 20; ++attempt) {
+    // A NULL owner is valid for read-only access. The non-NULL owner rule in
+    // WriteFileClipboard is specifically required before EmptyClipboard +
+    // SetClipboardData.
+    if (OpenClipboard(nullptr) != 0) {
+      opened = true;
+      break;
+    }
+    Sleep(25);
+  }
+  if (!opened) {
+    std::fputs("clipboard is busy\n", stderr);
+    return 5;
+  }
+
+  // No native file list is a normal outcome: return an empty list so the
+  // TypeScript caller can continue to macOS URL/text or bitmap fallbacks.
+  if (IsClipboardFormatAvailable(CF_HDROP) == 0) {
+    CloseClipboard();
+    std::fputs("{\"ok\":true,\"format\":\"CF_HDROP\",\"files\":[]}",
+               stdout);
+    std::fflush(stdout);
+    return 0;
+  }
+
+  HDROP drop = static_cast<HDROP>(GetClipboardData(CF_HDROP));
+  if (drop == nullptr) {
+    CloseClipboard();
+    std::fputs("CF_HDROP read failed\n", stderr);
+    return 6;
+  }
+  const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+  // An advertised CF_HDROP with no paths is malformed, not the same thing as
+  // an absent format. Keep files:[] reserved for the absence branch above so
+  // the TypeScript caller can distinguish "nothing to ingest" from corrupt
+  // native clipboard data.
+  if (count == 0) {
+    CloseClipboard();
+    std::fputs("CF_HDROP contains no files\n", stderr);
+    return 6;
+  }
+  // Bound an untrusted clipboard allocation before walking it. The capture
+  // paste contract accepts exactly one path, so a larger list is never useful;
+  // still return ordinary multi-file lists so the caller can give a precise
+  // cardinality error.
+  if (count > 256) {
+    CloseClipboard();
+    std::fputs("CF_HDROP contains too many files\n", stderr);
+    return 6;
+  }
+
+  std::vector<std::wstring> files;
+  files.reserve(static_cast<size_t>(count));
+  for (UINT index = 0; index < count; ++index) {
+    const UINT length = DragQueryFileW(drop, index, nullptr, 0);
+    if (length == 0 || length > 32767) {
+      CloseClipboard();
+      std::fputs("CF_HDROP contains an invalid path\n", stderr);
+      return 6;
+    }
+    std::vector<wchar_t> path(static_cast<size_t>(length) + 1, L'\0');
+    if (DragQueryFileW(drop, index, path.data(),
+                       static_cast<UINT>(path.size())) != length) {
+      CloseClipboard();
+      std::fputs("CF_HDROP path readback failed\n", stderr);
+      return 6;
+    }
+    std::wstring value(path.data(), static_cast<size_t>(length));
+    if (!IsFullyQualifiedWindowsPath(value)) {
+      CloseClipboard();
+      std::fputs("CF_HDROP path is not fully qualified\n", stderr);
+      return 6;
+    }
+    files.push_back(value);
+  }
+  if (CloseClipboard() == 0) {
+    std::fputs("clipboard close failed\n", stderr);
+    return 6;
+  }
+
+  std::string json = "{\"ok\":true,\"format\":\"CF_HDROP\",\"files\":[";
+  for (size_t index = 0; index < files.size(); ++index) {
+    if (index != 0) {
+      json += ',';
+    }
+    json += '"';
+    json += JsonEscape(ToUtf8(files[index]));
+    json += '"';
+  }
+  json += "]}";
+  std::fwrite(json.data(), 1, json.size(), stdout);
+  std::fflush(stdout);
+  return 0;
 }
 
 // Full path of the executable backing `pid`, e.g.
@@ -555,6 +895,23 @@ void AppendJsonStringOrNull(std::string *out, const std::wstring &value) {
 }  // namespace
 
 int wmain(int argc, wchar_t *argv[]) {
+  if (argc >= 2 && std::wstring(argv[1]) == L"--read-file-clipboard") {
+    if (argc != 2) {
+      std::fputs("usage: --read-file-clipboard\n", stderr);
+      return 2;
+    }
+    return ReadFileClipboard();
+  }
+
+  if (argc >= 2 && std::wstring(argv[1]) == L"--write-file-clipboard") {
+    if (argc != 3) {
+      std::fputs("usage: --write-file-clipboard <absolute-file-path>\n",
+                 stderr);
+      return 2;
+    }
+    return WriteFileClipboard(argv[2]);
+  }
+
   if (argc >= 2 && std::wstring(argv[1]) == L"--extract-app-icon") {
     if (argc != 5) {
       std::fputs(

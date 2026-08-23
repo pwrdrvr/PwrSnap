@@ -192,13 +192,15 @@ export class SizzleStore {
         this.cachedBlobNeedsPersist = false;
         return clone(this.cachedBlob);
       }
-      this.log.warn("sizzle-store: read failed, returning empty", {
+      // A transient permissions / I/O failure is NOT an empty project
+      // library. Do not cache DEFAULT here: doing so makes Retry read the
+      // fabricated empty snapshot and lets a later write overwrite the
+      // user's still-existing project file.
+      this.log.warn("sizzle-store: read failed", {
         path: this.filePath,
         message: cause instanceof Error ? cause.message : String(cause)
       });
-      this.cachedBlob = clone(DEFAULT_BLOB);
-      this.cachedBlobNeedsPersist = false;
-      return clone(this.cachedBlob);
+      throw cause;
     }
     if (raw.length === 0) {
       this.cachedBlob = clone(DEFAULT_BLOB);

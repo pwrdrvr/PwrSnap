@@ -14,6 +14,9 @@
 //     so the Library sidebar refreshes live.
 //   - Validation rejects empty / malformed input.
 
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { SizzleProject, SizzleScene } from "@pwrsnap/shared";
 import type { CommandContext } from "../../command-bus";
@@ -42,6 +45,7 @@ const mocks = vi.hoisted(() => ({
   findSizzleWindow: vi.fn(),
   positionSizzleWindowForSource: vi.fn(),
   send: vi.fn(),
+  showItemInFolder: vi.fn(),
   getValue: vi.fn(),
   dispatch: vi.fn(),
   synthesize: vi.fn(),
@@ -70,7 +74,7 @@ vi.mock("electron", () => ({
     ])
   },
   app: { getPath: vi.fn(() => "/tmp") },
-  shell: { openPath: vi.fn(), showItemInFolder: vi.fn() }
+  shell: { openPath: vi.fn(), showItemInFolder: mocks.showItemInFolder }
 }));
 
 vi.mock("../../command-bus", () => ({
@@ -204,14 +208,17 @@ beforeEach(() => {
   mocks.handlers.clear();
   mocks.store.get.mockReset();
   mocks.store.list.mockReset();
+  mocks.store.create.mockReset();
   mocks.store.update.mockReset();
   mocks.store.duplicate.mockReset();
+  mocks.store.delete.mockReset();
   mocks.cleanupProjectChats.mockReset();
   mocks.forkProjectChats.mockReset();
   mocks.createSizzleWindow.mockReset();
   mocks.findSizzleWindow.mockReset();
   mocks.positionSizzleWindowForSource.mockReset();
   mocks.send.mockReset();
+  mocks.showItemInFolder.mockReset();
   mocks.dispatch.mockReset();
   mocks.dispatch.mockImplementation(async (_name, req: { id?: string }) => ({
     ok: true,
@@ -312,6 +319,64 @@ describe("sizzle:open — source display placement", () => {
     expect(mocks.createSizzleWindow).not.toHaveBeenCalled();
     expect(fake.show).toHaveBeenCalledTimes(1);
     expect(fake.focus).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Sizzle persistence truthfulness", () => {
+  test("list returns a typed persistence error when the store read fails", async () => {
+    mocks.store.list.mockRejectedValue(new Error("disk unavailable"));
+
+    const handler = await loadHandler("sizzle:list");
+    const result = await handler({});
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: "persistence",
+        code: "sizzle_list_failed",
+        message: "disk unavailable"
+      }
+    });
+  });
+
+  test("reveal returns output_missing when the persisted output no longer exists", async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), "pwrsnap-sizzle-reveal-"));
+    const outputPath = join(outputDir, "missing-render.mp4");
+    mocks.store.get.mockResolvedValue(makeProject({ outputPath }));
+
+    try {
+      const handler = await loadHandler("sizzle:revealOutput");
+      const result = await handler({ id: "proj-1" });
+
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          kind: "persistence",
+          code: "output_missing",
+          message: "The rendered output is missing. Render the reel again, then reveal it."
+        }
+      });
+      expect(mocks.showItemInFolder).not.toHaveBeenCalled();
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  test("create remains successful when a renderer closes during the broadcast", async () => {
+    const project = makeProject({ name: "Recovery reel" });
+    mocks.store.create.mockResolvedValue(project);
+    mocks.store.list.mockResolvedValue([project]);
+    mocks.send.mockImplementation(() => {
+      throw new Error("renderer closed");
+    });
+
+    const handler = await loadHandler("sizzle:create");
+    const result = await handler({ name: "Recovery reel" });
+
+    expect(result).toEqual({ ok: true, value: project });
+    expect(mocks.store.create).toHaveBeenCalledOnce();
+    expect(mocks.store.create).toHaveBeenCalledWith("Recovery reel");
+    expect(mocks.send).toHaveBeenCalledOnce();
   });
 });
 

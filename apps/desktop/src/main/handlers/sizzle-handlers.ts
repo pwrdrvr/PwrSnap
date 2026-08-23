@@ -1,6 +1,6 @@
 import { BrowserWindow, app, shell } from "electron";
 import { join } from "node:path";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import {
   EVENT_CHANNELS,
@@ -114,7 +114,17 @@ function broadcastProjectsChanged(projects: SizzleProject[]): void {
     projects
   };
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(EVENT_CHANNELS.sizzleProjectsChanged, payload);
+    if (win.isDestroyed()) continue;
+    try {
+      win.webContents.send(EVENT_CHANNELS.sizzleProjectsChanged, payload);
+    } catch (cause) {
+      // Persistence already committed. A closing renderer must not turn a
+      // successful create/update/delete into an Err that invites the user
+      // to retry (and, for create, duplicate the project).
+      log.warn("sizzle projects-changed broadcast failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
   }
 }
 
@@ -156,6 +166,18 @@ function toError(cause: unknown, fallbackCode: string): PwrSnapError {
     return { kind: "unknown", code: fallbackCode, message: cause.message, cause };
   }
   return { kind: "unknown", code: fallbackCode, message: String(cause), cause };
+}
+
+function toPersistenceError(cause: unknown, fallbackCode: string): PwrSnapError {
+  if (cause instanceof SizzleProjectNotFoundError) {
+    return { kind: "validation", code: "not_found", message: cause.message };
+  }
+  return {
+    kind: "persistence",
+    code: fallbackCode,
+    message: cause instanceof Error ? cause.message : String(cause),
+    cause
+  };
 }
 
 function dispatchOptionsForContext(ctx?: CommandContext): CommandDispatchOptions {
@@ -423,8 +445,12 @@ export function registerSizzleHandlers(
   });
 
   bus.register("sizzle:list", async () => {
-    const projects = await store.list();
-    return ok({ projects });
+    try {
+      const projects = await store.list();
+      return ok({ projects });
+    } catch (cause) {
+      return err(toPersistenceError(cause, "sizzle_list_failed"));
+    }
   });
 
   // Helper: snapshot+broadcast. The store's in-memory cache makes
@@ -438,9 +464,13 @@ export function registerSizzleHandlers(
   bus.register("sizzle:create", async (req) => {
     const v = validateSizzleCreate(req);
     if (!v.ok) return err(v.error);
-    const project = await store.create(v.name);
-    await pushProjectsChanged();
-    return ok(project);
+    try {
+      const project = await store.create(v.name);
+      await pushProjectsChanged();
+      return ok(project);
+    } catch (cause) {
+      return err(toPersistenceError(cause, "sizzle_create_failed"));
+    }
   });
 
   bus.register("sizzle:duplicate", async (req) => {
@@ -460,7 +490,7 @@ export function registerSizzleHandlers(
       }
       return ok(project);
     } catch (cause) {
-      return err(toError(cause, "sizzle_duplicate_failed"));
+      return err(toPersistenceError(cause, "sizzle_duplicate_failed"));
     }
   });
 
@@ -476,25 +506,29 @@ export function registerSizzleHandlers(
       await pushProjectsChanged();
       return ok(project);
     } catch (cause) {
-      return err(toError(cause, "sizzle_update_failed"));
+      return err(toPersistenceError(cause, "sizzle_update_failed"));
     }
   });
 
   bus.register("sizzle:delete", async (req) => {
     const v = validateSizzleIdRequest(req);
     if (!v.ok) return err(v.error);
-    await store.delete(v.id);
-    // Cascade: remove the project's chat thread(s) + their on-disk dirs so
-    // deleting a reel leaves no orphan chat state (locked decision #6).
-    // Best-effort — a cleanup failure must not block the delete.
-    await cleanupProjectChats(v.id).catch((cause: unknown) => {
-      log.warn("sizzle:delete chat cleanup failed", {
-        projectId: v.id,
-        message: cause instanceof Error ? cause.message : String(cause)
+    try {
+      await store.delete(v.id);
+      // Cascade: remove the project's chat thread(s) + their on-disk dirs so
+      // deleting a reel leaves no orphan chat state (locked decision #6).
+      // Best-effort — a cleanup failure must not block the delete.
+      await cleanupProjectChats(v.id).catch((cause: unknown) => {
+        log.warn("sizzle:delete chat cleanup failed", {
+          projectId: v.id,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
       });
-    });
-    await pushProjectsChanged();
-    return ok(undefined);
+      await pushProjectsChanged();
+      return ok(undefined);
+    } catch (cause) {
+      return err(toPersistenceError(cause, "sizzle_delete_failed"));
+    }
   });
 
   bus.register("sizzle:toggleScene", async (req, ctx) => {
@@ -843,7 +877,12 @@ export function registerSizzleHandlers(
   bus.register("sizzle:revealOutput", async (req) => {
     const v = validateSizzleIdRequest(req);
     if (!v.ok) return err(v.error);
-    const project = await store.get(v.id);
+    let project: SizzleProject | null;
+    try {
+      project = await store.get(v.id);
+    } catch (cause) {
+      return err(toPersistenceError(cause, "sizzle_reveal_failed"));
+    }
     if (project === null || project.outputPath === null) {
       return err({
         kind: "validation",
@@ -851,8 +890,32 @@ export function registerSizzleHandlers(
         message: "Project has no rendered output yet"
       });
     }
-    shell.showItemInFolder(project.outputPath);
-    return ok(undefined);
+    try {
+      const output = await stat(project.outputPath);
+      if (!output.isFile()) {
+        return err({
+          kind: "persistence",
+          code: "output_missing",
+          message: "The rendered output is missing. Render the reel again, then reveal it."
+        });
+      }
+      shell.showItemInFolder(project.outputPath);
+      return ok(undefined);
+    } catch (cause) {
+      if (
+        typeof cause === "object" &&
+        cause !== null &&
+        "code" in cause &&
+        (cause as { code?: unknown }).code === "ENOENT"
+      ) {
+        return err({
+          kind: "persistence",
+          code: "output_missing",
+          message: "The rendered output is missing. Render the reel again, then reveal it."
+        });
+      }
+      return err(toPersistenceError(cause, "sizzle_reveal_failed"));
+    }
   });
 
   bus.register("sizzle:render", async (req, ctx): Promise<Result<{

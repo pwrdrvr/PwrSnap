@@ -50,11 +50,14 @@ import {
   splitSceneIntoScenes
 } from "./scene-ops";
 import { useSequencePlan } from "./useSequencePlan";
+import type { SizzleSaveState } from "./useSizzleProject";
 
 export type EditorProps = {
   project: SizzleProject;
   captures: CaptureRecord[];
   status: RenderStatus;
+  saveState: SizzleSaveState;
+  onRetrySave: () => void;
   autoFocusTitle: boolean;
   onTitleFocused: () => void;
   onRename: (name: string) => void;
@@ -62,7 +65,7 @@ export type EditorProps = {
   onProvider: (provider: "openai") => void;
   onResolution: (resolution: "1080p" | "720p") => void;
   onScenes: (scenes: SizzleScene[]) => void;
-  onFlushPending: () => Promise<void>;
+  onFlushPending: () => Promise<boolean>;
   onPickCapture: () => void;
   onPickSequenceBeat: (sceneId: string) => void;
   onRender: () => void;
@@ -87,6 +90,8 @@ export function Editor(props: EditorProps): ReactElement {
     project,
     captures,
     status,
+    saveState,
+    onRetrySave,
     autoFocusTitle,
     onTitleFocused,
     onRename,
@@ -478,6 +483,7 @@ export function Editor(props: EditorProps): ReactElement {
             ? ` · rendered ${new Date(project.lastRenderedAt).toLocaleString()}`
             : ""}
         </div>
+        <SaveStatus state={saveState} onRetry={onRetrySave} />
         <span className="szl__spacer" />
         <button className="szl__btn" onClick={onDuplicate} type="button">
           Duplicate
@@ -717,5 +723,45 @@ export function Editor(props: EditorProps): ReactElement {
         ) : null}
       </footer>
     </div>
+  );
+}
+
+function SaveStatus({
+  state,
+  onRetry
+}: {
+  state: SizzleSaveState;
+  onRetry: () => void;
+}): ReactElement {
+  if (state.phase === "error") {
+    return (
+      <span
+        className="szl__save-state szl__save-state--error"
+        data-testid="sizzle-save-state"
+        role="alert"
+        title={state.error.message}
+      >
+        <span className="szl__save-message">Save failed: {state.error.message}</span>
+        <button type="button" className="szl__save-retry" onClick={onRetry}>
+          Retry save
+        </button>
+      </span>
+    );
+  }
+  const label =
+    state.phase === "dirty"
+      ? "Unsaved changes"
+      : state.phase === "saving"
+        ? "Saving…"
+        : "Saved";
+  return (
+    <span
+      className={`szl__save-state szl__save-state--${state.phase}`}
+      data-testid="sizzle-save-state"
+      role="status"
+      aria-live="polite"
+    >
+      {label}
+    </span>
   );
 }

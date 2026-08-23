@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -424,6 +424,42 @@ describe("SizzleStore", () => {
     const store = makeStore();
     expect(await store.list()).toEqual([]);
     expect(await store.get("sz_anything")).toBeNull();
+  });
+
+  it("does not cache a transient non-ENOENT read failure as an empty library", async () => {
+    const store = makeStore();
+
+    await mkdir(filePath);
+    await expect(store.list()).rejects.toMatchObject({ code: "EISDIR" });
+
+    await rm(filePath, { recursive: true, force: true });
+    await writeFile(
+      filePath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        projects: [
+          {
+            id: "sz_recovered",
+            name: "Recovered project",
+            createdAt: "2026-08-23T10:00:00.000Z",
+            modifiedAt: "2026-08-23T10:00:00.000Z",
+            coverCaptureId: null,
+            scenes: [],
+            voice: "onyx",
+            ttsModel: "tts-1-hd",
+            ttsProvider: "openai",
+            resolution: "1080p",
+            outputPath: null,
+            lastRenderedAt: null
+          }
+        ]
+      })}\n`,
+      "utf8"
+    );
+
+    await expect(store.list()).resolves.toEqual([
+      expect.objectContaining({ id: "sz_recovered", name: "Recovered project" })
+    ]);
   });
 
   it("write does not include the .tmp sibling — atomic rename leaves only the final file", async () => {

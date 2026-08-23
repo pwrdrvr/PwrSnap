@@ -5,8 +5,9 @@
 // predefined format, so the bundled PwrSnapWindowList.exe helper reads it with
 // DragQueryFileW and emits a small verified JSON envelope. This module owns the
 // no-shell spawn, acknowledgement validation, and one fully-qualified image
-// selection contract consumed by capture:pasteFromClipboard. The shared paste
-// safety validator owns all on-disk checks immediately before the file read.
+// selection contract consumed by capture:pasteFromClipboard. This module does
+// not open, stat, canonicalize, or otherwise apply an on-disk safety policy to
+// the selected path; that boundary belongs to the capture handler.
 
 import {
   spawn,
@@ -49,8 +50,7 @@ export type WindowsClipboardImageErrorCode =
   | "clipboard_read_failed"
   | "multiple_files"
   | "invalid_file_path"
-  | "not_image_file"
-  | "clipboard_file_unavailable";
+  | "not_image_file";
 
 export type WindowsClipboardImageReadResult =
   | { ok: true; path: string | null }
@@ -81,7 +81,7 @@ class WindowsClipboardImageError extends Error {
   }
 }
 
-/** Path-only image check shared with the existing macOS file-URL fallback. */
+/** Path-only extension check for a native CF_HDROP candidate. */
 export function isSupportedClipboardImagePath(filePath: string): boolean {
   const extension = isFullyQualifiedWindowsPath(filePath)
     ? win32.extname(filePath)
@@ -268,11 +268,9 @@ function isFullyQualifiedWindowsPath(filePath: string): boolean {
 }
 
 /**
- * Enforce the Windows selection shape before the caller reaches the shared
- * on-disk safety gate. Existence, regular-file, symlink/junction, and
- * privileged-parent checks deliberately belong to `assertSafePastedFile`,
- * which is applied to Windows CF_HDROP and file-URL inputs together in the
- * capture handler.
+ * Enforce only the native clipboard selection shape. Existence, regular-file,
+ * canonicalization, symlink/junction, privileged-parent, and safe-open checks
+ * deliberately belong outside this candidate-path reader.
  */
 export async function validateWindowsClipboardImageFiles(
   files: readonly string[]

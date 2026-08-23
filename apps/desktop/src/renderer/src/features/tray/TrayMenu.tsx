@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { CaptureRecord } from "@pwrsnap/shared";
+import { desktopFileManagerName, type CaptureRecord } from "@pwrsnap/shared";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
@@ -164,7 +164,9 @@ export function TrayMenubar() {
   return (
     <div className="tray-menubar">
       <div className="tray-menubar__l">
-        <span style={{ color: "var(--text-primary)", fontWeight: 700 }}>Finder</span>
+        <span style={{ color: "var(--text-primary)", fontWeight: 700 }}>
+          {desktopFileManagerName(window.pwrsnapApi?.platform)}
+        </span>
         <span>File</span>
         <span>Edit</span>
         <span>View</span>

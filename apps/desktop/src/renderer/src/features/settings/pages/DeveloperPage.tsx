@@ -11,6 +11,7 @@ import type {
   HotCpuProfileStartDelayMs,
   HotCpuProfileTriggerMode
 } from "@pwrsnap/shared";
+import { desktopFileManagerName } from "@pwrsnap/shared";
 import { dispatch } from "../../../lib/pwrsnap";
 import { Card, Row, Switch } from "../components";
 import { useSettingsContext } from "../SettingsContext";
@@ -289,7 +290,7 @@ export function DeveloperPage(): ReactElement {
 
         <Row
           label="Diagnostics folder"
-          sub="Reveal captured CPU profiles, heap snapshots, and sidecar logs in Finder."
+          sub={`Reveal captured CPU profiles, heap snapshots, and sidecar logs in ${desktopFileManagerName(window.pwrsnapApi?.platform)}.`}
           tag="folder"
         >
           <div className="pss__update-channel">

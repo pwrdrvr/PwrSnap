@@ -29,9 +29,11 @@ import type {
 } from "@pwrsnap/shared";
 import {
   EVENT_CHANNELS,
+  capturesFolderDisplayPath,
   GRID_ZOOM_DEFAULT,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
+  revealInFileManagerLabel,
   resolveSizzleProjectCoverCaptureId,
   type SettingsChangedEvent,
   type SizzleProject
@@ -5208,9 +5210,11 @@ export function Library() {
                   <div>
                     <span>Capture folders</span>
                     <small>
-                      {sourceSnapCount} snaps · new → {capturesLocation === "home"
-                        ? "~/PwrSnap"
-                        : "~/Documents/PwrSnap"}
+                      {sourceSnapCount} snaps · new →{" "}
+                      {capturesFolderDisplayPath(
+                        window.pwrsnapApi?.platform,
+                        capturesLocation
+                      )}
                     </small>
                   </div>
                   <b>
@@ -5714,7 +5718,7 @@ function LibraryCaptureContextMenu({
             className="psl__context-menu-row"
             onClick={run(onReveal)}
           >
-            Reveal in Finder
+            {revealInFileManagerLabel(window.pwrsnapApi?.platform)}
           </button>
           <div className="psl__context-menu-sep" role="separator" />
           <button
@@ -5778,7 +5782,7 @@ function LibraryCaptureContextMenu({
             className="psl__context-menu-row"
             onClick={run(onReveal)}
           >
-            Reveal in Finder
+            {revealInFileManagerLabel(window.pwrsnapApi?.platform)}
           </button>
           <button
             type="button"

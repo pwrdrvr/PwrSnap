@@ -7,7 +7,13 @@ import type {
   Result,
   VideoRange
 } from "@pwrsnap/shared";
-import { normalizeTagLabel, resolveExportLadder, rungForPreset } from "@pwrsnap/shared";
+import {
+  normalizeTagLabel,
+  desktopFileManagerName,
+  capturesFolderDisplayPath,
+  resolveExportLadder,
+  rungForPreset
+} from "@pwrsnap/shared";
 import { PwrSnapMark } from "../shared/BrandMark";
 import {
   CopyButton,
@@ -1186,9 +1192,11 @@ export function FloatOver({
             </div>
           ) : (
             <div className="fo__dest-saved">
-              <FoIcon name="check" size={11} /> saved · {capturesLocation === "home"
-                ? "~/PwrSnap"
-                : "~/Documents/PwrSnap"}
+              <FoIcon name="check" size={11} /> saved ·{" "}
+              {capturesFolderDisplayPath(
+                window.pwrsnapApi?.platform,
+                capturesLocation
+              )}
             </div>
           )}
           <div className="fo__foot-actions">
@@ -1248,7 +1256,9 @@ export function FoDesktopFrame({
       <div className="fo-desktop">
         <div className="fo-menubar">
           <div className="fo-menubar__l">
-            <span className="fo-menubar__active">Finder</span>
+            <span className="fo-menubar__active">
+              {desktopFileManagerName(window.pwrsnapApi?.platform)}
+            </span>
             <span>File</span>
             <span>Edit</span>
             <span>View</span>

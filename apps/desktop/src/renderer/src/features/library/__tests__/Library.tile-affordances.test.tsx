@@ -187,6 +187,9 @@ let saveAsResult: { ok: true; value: { path: string | null } } | { ok: false; er
 };
 
 beforeEach(() => {
+  window.pwrsnapApi = {
+    platform: "darwin"
+  } as unknown as NonNullable<Window["pwrsnapApi"]>;
   cartState = emptyCart;
   saveAsResult = { ok: true, value: { path: null } };
   confirmMock.mockReset();

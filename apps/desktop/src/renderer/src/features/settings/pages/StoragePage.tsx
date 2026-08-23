@@ -1,5 +1,8 @@
 import type { ReactElement } from "react";
-import type { FilenameTimestampZone } from "@pwrsnap/shared";
+import {
+  capturesFolderDisplayPath,
+  type FilenameTimestampZone
+} from "@pwrsnap/shared";
 import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
 import { formatBytes } from "../../../lib/format-bytes";
 import { useStorageSnapshot } from "../../../lib/useStorageSnapshot";
@@ -35,7 +38,10 @@ export function StoragePage(): ReactElement {
   const ready = settings !== null;
   const confirmBeforeTrash = settings?.library.confirmBeforeTrash ?? true;
   const activeCapturesPath =
-    settings?.storage.capturesLocation === "home" ? "~/PwrSnap" : "~/Documents/PwrSnap";
+    capturesFolderDisplayPath(
+      window.pwrsnapApi?.platform,
+      settings?.storage.capturesLocation === "home" ? "home" : "documents"
+    );
 
   const onTimestampZoneChange = ready
     ? (next: FilenameTimestampZone): void => {
@@ -84,9 +90,15 @@ export function StoragePage(): ReactElement {
           detail={
             snapshot === null
               ? "—"
-              : `${formatBytes(snapshot.sourceCaptures.documentsBytes)} in ~/Documents/PwrSnap · ${formatBytes(
+              : `${formatBytes(snapshot.sourceCaptures.documentsBytes)} in ${capturesFolderDisplayPath(
+                  window.pwrsnapApi?.platform,
+                  "documents"
+                )} · ${formatBytes(
                   snapshot.sourceCaptures.homeBytes
-                )} in ~/PwrSnap · ${formatBytes(snapshot.sourceCaptures.appSupportBytes)} legacy`
+                )} in ${capturesFolderDisplayPath(
+                  window.pwrsnapApi?.platform,
+                  "home"
+                )} · ${formatBytes(snapshot.sourceCaptures.appSupportBytes)} legacy`
           }
         />
         <StorageRow

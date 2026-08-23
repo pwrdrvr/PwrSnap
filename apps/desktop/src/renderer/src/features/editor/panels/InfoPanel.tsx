@@ -30,6 +30,7 @@ import {
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { formatBytes } from "../../../lib/format-bytes";
+import { appIconUrl, isResolvableAppIdentifier } from "../../shared/AppIcons";
 
 export interface InfoPanelProps {
   captureId: string;
@@ -111,6 +112,9 @@ export function InfoPanel({ captureId }: InfoPanelProps): ReactElement {
   const { record, enrichment } = state;
   const sourceName = record.source_app_name ?? "Unknown app";
   const bundleId = record.source_app_bundle_id;
+  const appIdentifier = isResolvableAppIdentifier(bundleId ?? undefined)
+    ? bundleId
+    : null;
   const acceptedTags = enrichment?.acceptedTags ?? [];
   const description =
     enrichment?.acceptedDescription !== null &&
@@ -125,10 +129,10 @@ export function InfoPanel({ captureId }: InfoPanelProps): ReactElement {
 
       <InfoRow label="Source app">
         <span className="pse-info-app" data-testid="info-source-app">
-          {bundleId !== null ? (
+          {appIdentifier !== null ? (
             <img
               className="pse-info-app-icon"
-              src={`pwrsnap-app-icon://r/${bundleId}`}
+              src={appIconUrl(appIdentifier)}
               width={32}
               height={32}
               alt=""

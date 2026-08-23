@@ -774,25 +774,27 @@ describe("settings:read + settings:write round-trip (integration)", () => {
       filePath: path.join(dir, "secrets.bin")
     });
     __setSettingsServicesForTests({ service, secrets });
+    const pinnedPath =
+      process.platform === "win32" ? String.raw`C:\tools\codex.exe` : "/opt/codex";
 
     // BrowserWindow.getAllWindows() returns [] in our mock, so the
     // broadcast loop is a no-op — that's fine for asserting handler
     // behavior. We assert on the merged Settings the handler returned.
     const writeRes = await bus.dispatch(
       "settings:write",
-      { codex: { mode: "pinned", pinnedPath: "/opt/codex" } },
+      { codex: { mode: "pinned", pinnedPath } },
       { principal: "ipc" }
     );
     expect(writeRes.ok).toBe(true);
     if (!writeRes.ok) throw new Error("unreachable");
     expect(writeRes.value.codex.mode).toBe("pinned");
-    expect(writeRes.value.codex.pinnedPath).toBe("/opt/codex");
+    expect(writeRes.value.codex.pinnedPath).toBe(pinnedPath);
 
     const readRes = await bus.dispatch("settings:read", {}, { principal: "ipc" });
     expect(readRes.ok).toBe(true);
     if (!readRes.ok) throw new Error("unreachable");
     expect(readRes.value.codex.mode).toBe("pinned");
-    expect(readRes.value.codex.pinnedPath).toBe("/opt/codex");
+    expect(readRes.value.codex.pinnedPath).toBe(pinnedPath);
     // Unmentioned fields stay at defaults
     expect(readRes.value.ai.enabled).toBe(false);
 

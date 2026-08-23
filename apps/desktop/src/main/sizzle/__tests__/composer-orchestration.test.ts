@@ -122,6 +122,57 @@ describe("compose ffmpeg orchestration", () => {
     );
   });
 
+  test("compose redacts path-bearing stderr and bounds IPC-visible details", async () => {
+    const composing = compose(request()).then(
+      () => null,
+      (cause: unknown) => cause
+    );
+    const spawned = await waitForSpawn();
+    const privateInput = "C:\\Users\\Alice\\Secret Client\\input.png";
+    const privateOutput = "/Users/alice/Documents/Private Launch/reel.mp4";
+    const diagnostic = `[h264_mf @ 000001] Error while opening encoder for '${privateOutput}'`;
+    spawned.child.stderr.emit(
+      "data",
+      Buffer.from(
+        `Input #0 from '${privateInput}'\n${diagnostic}\n${"private-detail ".repeat(200)}\nError opening output file ${privateOutput}\n`
+      )
+    );
+    spawned.child.emit("close", 1, null);
+
+    const caught = await composing;
+    expect(caught).toBeInstanceOf(ComposeError);
+    const error = caught as InstanceType<typeof ComposeError>;
+    expect(error.message).toContain("Error while opening encoder");
+    expect(error.message).toContain("<home-path>");
+    expect(error.message).not.toContain("Alice");
+    expect(error.message).not.toContain("Private Launch");
+    expect(error.message.length).toBeLessThanOrEqual(512);
+    expect(error.details).toContain("<home-path>");
+    expect(error.details).not.toContain("Secret Client");
+    expect(error.details).not.toContain("Private Launch");
+    expect(error.details!.length).toBeLessThanOrEqual(1024);
+  });
+
+  test("compose does not promote an arbitrary last stderr line", async () => {
+    const composing = compose(request()).then(
+      () => null,
+      (cause: unknown) => cause
+    );
+    const spawned = await waitForSpawn();
+    spawned.child.stderr.emit(
+      "data",
+      Buffer.from("Error opening output file C:\\Users\\Alice\\Secret\\reel.mp4\n")
+    );
+    spawned.child.emit("close", 1, null);
+
+    const caught = await composing;
+    expect(caught).toBeInstanceOf(ComposeError);
+    const error = caught as InstanceType<typeof ComposeError>;
+    expect(error.message).toBe("ffmpeg exited with code 1");
+    expect(error.message).not.toContain("Alice");
+    expect(error.details).toContain("<home-path>");
+  });
+
   test("compose maps a child spawn error to ffmpeg_failed", async () => {
     const onProgress = vi.fn();
     const composing = compose({ ...request(), onProgress }).then(

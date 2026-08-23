@@ -13,6 +13,12 @@ import type { VideoFitRenderMode } from "./video-fit";
 
 const log = getMainLogger("pwrsnap:sizzle-composer");
 const SIZZLE_KEYFRAME_INTERVAL = 60;
+const FFMPEG_VISIBLE_ERROR_MAX_CHARS = 512;
+const FFMPEG_ENCODER_SUMMARY_MAX_CHARS = 256;
+const FFMPEG_ERROR_DETAILS_MAX_CHARS = 1024;
+const FFMPEG_ERROR_DETAIL_TAIL_LINES = 6;
+const FFMPEG_ENCODER_DIAGNOSTIC_RE =
+  /(?:unknown|not found|no .*found|failed|failure|error|could not|cannot|unable|unavailable|unsupported).*(?:encoder|h264(?:_mf)?|videotoolbox|media foundation|\bmft\b)|(?:encoder|h264(?:_mf)?|videotoolbox|media foundation|\bmft\b).*(?:unknown|not found|no .*found|failed|failure|error|could not|cannot|unable|unavailable|unsupported)/i;
 
 /**
  * Per-scene input descriptor. Discriminated by `kind`:
@@ -88,6 +94,8 @@ export type ComposeRequest = {
 };
 
 export class ComposeError extends Error {
+  public readonly details: string | undefined;
+
   constructor(
     public readonly code:
       | "ffmpeg_missing"
@@ -96,9 +104,21 @@ export class ComposeError extends Error {
       | "ffmpeg_failed"
       | "cancelled",
     message: string,
-    public readonly details?: string
+    details?: string
   ) {
-    super(message);
+    // ComposeError crosses the command bus via PwrSnapError. Keep every
+    // ffmpeg-provided string IPC-safe at construction so a future caller
+    // cannot accidentally forward absolute capture/render paths.
+    super(
+      code === "ffmpeg_failed"
+        ? sanitizeFfmpegText(message, FFMPEG_VISIBLE_ERROR_MAX_CHARS)
+        : message
+    );
+    this.details = details === undefined
+      ? undefined
+      : code === "ffmpeg_failed"
+        ? sanitizeFfmpegText(details, FFMPEG_ERROR_DETAILS_MAX_CHARS)
+        : details;
     this.name = "ComposeError";
   }
 }
@@ -603,11 +623,19 @@ function runFfmpeg(
       if (signal !== undefined) signal.removeEventListener("abort", onAbort);
       if (settled) return;
       settled = true;
-      const detail = cause instanceof Error ? cause.message : String(cause);
+      const rawDetail = cause instanceof Error ? cause.message : String(cause);
+      const detail = sanitizeFfmpegText(
+        rawDetail,
+        FFMPEG_ERROR_DETAILS_MAX_CHARS
+      );
+      const visibleDetail = sanitizeFfmpegText(
+        rawDetail,
+        FFMPEG_ENCODER_SUMMARY_MAX_CHARS
+      );
       reject(
         new ComposeError(
           "ffmpeg_failed",
-          `Could not start ffmpeg: ${detail}`,
+          `Could not start ffmpeg${visibleDetail.length === 0 ? "" : `: ${visibleDetail}`}`,
           detail
         )
       );
@@ -625,7 +653,7 @@ function runFfmpeg(
         resolve();
         return;
       }
-      const details = tail.trim().slice(-4096);
+      const details = ffmpegFailureDetails(tail);
       const summary = ffmpegFailureSummary(tail);
       const exit = closeSignal === null
         ? `code ${code ?? "unknown"}`
@@ -642,14 +670,84 @@ function runFfmpeg(
 }
 
 function ffmpegFailureSummary(stderr: string): string | null {
-  const lines = stderr
-    .replace(/\u001b\[[0-9;]*m/g, "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  const lines = ffmpegErrorLines(stderr);
   if (lines.length === 0) return null;
-  const diagnostic = [...lines].reverse().find((line) =>
-    /(?:unknown|not found|failed|error).*(?:encoder|h264)|(?:encoder|h264).*(?:unknown|not found|failed|error)/i.test(line)
+  const diagnostic = encoderDiagnostic(lines);
+  if (diagnostic === undefined) return null;
+  const safe = sanitizeFfmpegText(
+    diagnostic,
+    FFMPEG_ENCODER_SUMMARY_MAX_CHARS
   );
-  return (diagnostic ?? lines[lines.length - 1]!).slice(0, 512);
+  return safe.length === 0 ? null : safe;
+}
+
+function ffmpegFailureDetails(stderr: string): string | undefined {
+  const lines = ffmpegErrorLines(stderr);
+  if (lines.length === 0) return undefined;
+  const diagnostic = encoderDiagnostic(lines);
+  const tail = lines.slice(-FFMPEG_ERROR_DETAIL_TAIL_LINES);
+  const selected = diagnostic === undefined
+    ? tail
+    : [diagnostic, ...tail.filter((line) => line !== diagnostic)];
+  const safe = sanitizeFfmpegText(
+    selected.join("\n"),
+    FFMPEG_ERROR_DETAILS_MAX_CHARS
+  );
+  return safe.length === 0 ? undefined : safe;
+}
+
+function ffmpegErrorLines(stderr: string): string[] {
+  return stderr
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+        .trim()
+    )
+    .filter((line) => line.length > 0);
+}
+
+function encoderDiagnostic(lines: string[]): string | undefined {
+  return [...lines]
+    .reverse()
+    .find((line) => FFMPEG_ENCODER_DIAGNOSTIC_RE.test(line));
+}
+
+function sanitizeFfmpegText(text: string, maxChars: number): string {
+  return ffmpegErrorLines(text)
+    .map(redactFilesystemPaths)
+    .join("\n")
+    .slice(0, maxChars);
+}
+
+function redactFilesystemPaths(line: string): string {
+  // Quoted paths preserve any diagnostic text after the closing quote.
+  const quoted = line.replace(
+    /(["'])((?:[A-Za-z]:[\\/]|\\\\|\/)[^"'\r\n]+)\1/g,
+    (_match, quote: string, filePath: string) =>
+      `${quote}${pathPlaceholder(filePath)}${quote}`
+  );
+  // Unquoted ffmpeg paths generally run to the end of the line. Redacting the
+  // remainder is conservative: it avoids leaking space-bearing filenames.
+  const windows = quoted.replace(
+    /\b[A-Za-z]:[\\/][^"'<>\r\n]*/g,
+    (filePath) => pathPlaceholder(filePath)
+  );
+  const unc = windows.replace(
+    /\\\\[^"'<>\r\n]*/g,
+    (filePath) => pathPlaceholder(filePath)
+  );
+  return unc.replace(
+    /(^|[\s=(:,])(\/(?!\/)[^"'<>\r\n]*)/g,
+    (_match, prefix: string, filePath: string) =>
+      `${prefix}${pathPlaceholder(filePath)}`
+  );
+}
+
+function pathPlaceholder(filePath: string): "<home-path>" | "<path>" {
+  const normalized = filePath.replace(/\\/g, "/");
+  return /^(?:[A-Za-z]:)?\/Users\/[^/]+(?:\/|$)|^\/home\/[^/]+(?:\/|$)/i.test(normalized)
+    ? "<home-path>"
+    : "<path>";
 }

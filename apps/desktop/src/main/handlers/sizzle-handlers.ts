@@ -123,11 +123,13 @@ function toError(cause: unknown, fallbackCode: string): PwrSnapError {
     return { kind: "render", code: cause.code, message: cause.message };
   }
   if (cause instanceof ComposeError) {
+    // ComposeError path-neutralizes ffmpeg-provided text at construction.
+    // Clamp again at the IPC boundary so that invariant stays explicit here.
     return {
       kind: "render",
       code: cause.code,
-      message: cause.message,
-      cause: cause.details
+      message: cause.message.slice(0, 512),
+      cause: cause.details?.slice(0, 1024)
     };
   }
   if (cause instanceof AudioExtractError) {

@@ -14,12 +14,17 @@ const mocks = vi.hoisted(() => {
   return {
     spawnedChildren: [] as FakeChild[],
     spawnCalls: [] as Array<{ command: string; args: string[] }>,
+    nextSpawnError: null as Error | null,
     binaryPath: "/fake/PwrSnapRecorder",
     stateLog: [] as Array<{ phase: string }>,
     /** Full broadcast log including rect/displayId payloads — used
      *  by the multi-monitor translation test to verify the rect
      *  reaches the HUD in display-local coords. */
     stateLogFull: [] as Array<Record<string, unknown>>,
+    infoLogs: [] as Array<{
+      message: string;
+      context: Record<string, unknown> | undefined;
+    }>,
     pendingTimeouts: [] as Array<() => void>
   };
 });
@@ -53,6 +58,11 @@ class FakeChild extends EventEmitter {
 vi.mock("node:child_process", () => ({
   spawn: vi.fn((command: string, args: string[] = []) => {
     mocks.spawnCalls.push({ command, args });
+    if (mocks.nextSpawnError !== null) {
+      const error = mocks.nextSpawnError;
+      mocks.nextSpawnError = null;
+      throw error;
+    }
     const child = new FakeChild();
     mocks.spawnedChildren.push(child);
     return child;
@@ -175,7 +185,9 @@ vi.mock("../../persistence/video-filename-maintenance", () => ({
 vi.mock("../../log", () => ({
   getMainLogger: () => ({
     debug: () => undefined,
-    info: () => undefined,
+    info: (message: string, context?: Record<string, unknown>) => {
+      mocks.infoLogs.push({ message, context });
+    },
     warn: () => undefined,
     error: () => undefined
   })
@@ -192,8 +204,10 @@ beforeEach(() => {
   vi.resetModules();
   mocks.spawnedChildren.length = 0;
   mocks.spawnCalls.length = 0;
+  mocks.nextSpawnError = null;
   mocks.stateLog.length = 0;
   mocks.stateLogFull.length = 0;
+  mocks.infoLogs.length = 0;
   mocks.pendingTimeouts.length = 0;
   // resolveRecorderBinary() returns null off-darwin AND probes
   // `process.resourcesPath/PwrSnapRecorder` via path.join — neither
@@ -692,14 +706,201 @@ describe("Windows FFmpeg recorder", () => {
     return args[index + 1]!;
   }
 
-  test("spawns gdigrab and persists the stopped MP4", async () => {
+  async function loadWindowsService() {
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
     const { __setRecordingServiceForTests, getRecordingService } = await import(
       "../recording-service"
     );
     __setRecordingServiceForTests(null);
-    const service = getRecordingService();
+    return getRecordingService();
+  }
+
+  async function cancelAndExit(
+    service: import("../recording-service").RecordingService,
+    child: FakeChild
+  ): Promise<void> {
+    const cancelPromise = service.cancel();
+    child.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    await cancelPromise;
+  }
+
+  test.each([
+    { label: "explicit true", captureCursor: true, drawMouse: "1" },
+    { label: "explicit false", captureCursor: false, drawMouse: "0" },
+    { label: "omitted default", captureCursor: undefined, drawMouse: "1" }
+  ])("wires $label to gdigrab and logs the effective choice", async ({
+    captureCursor,
+    drawMouse
+  }) => {
+    const service = await loadWindowsService();
+
+    if (captureCursor === undefined) {
+      await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    } else {
+      await service.start({
+        subject: SUBJECT,
+        capabilities: CAPS,
+        captureCursor,
+        countdownSeconds: 0
+      });
+    }
+
+    const call = mocks.spawnCalls[0]!;
+    expect(argAfter(call.args, "-draw_mouse")).toBe(drawMouse);
+    const startLog = mocks.infoLogs.find(
+      ({ message }) => message === "starting Windows ffmpeg recorder"
+    );
+    expect(startLog?.context).toMatchObject({ captureCursor: drawMouse === "1" });
+    expect(startLog?.context).not.toHaveProperty("args");
+    expect(startLog?.context).not.toHaveProperty("subject");
+
+    await cancelAndExit(service, mocks.spawnedChildren[0]!);
+  });
+
+  test.each([
+    { label: "explicit cursor-on", captureCursor: true, drawMouse: "1" },
+    { label: "explicit cursor-off", captureCursor: false, drawMouse: "0" },
+    { label: "default cursor-on", captureCursor: undefined, drawMouse: "1" }
+  ])("restart preserves the $label choice", async ({ captureCursor, drawMouse }) => {
+    const service = await loadWindowsService();
+    if (captureCursor === undefined) {
+      await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    } else {
+      await service.start({
+        subject: SUBJECT,
+        capabilities: CAPS,
+        captureCursor,
+        countdownSeconds: 0
+      });
+    }
+
+    const firstChild = mocks.spawnedChildren[0]!;
+    const restartPromise = service.restart();
+    firstChild.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(3_100);
+    await restartPromise;
+
+    expect(mocks.spawnCalls).toHaveLength(2);
+    expect(argAfter(mocks.spawnCalls[1]!.args, "-draw_mouse")).toBe(drawMouse);
+
+    await cancelAndExit(service, mocks.spawnedChildren[1]!);
+  });
+
+  test("cancel clears cursor-off state before a new default session", async () => {
+    const service = await loadWindowsService();
+    await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      captureCursor: false,
+      countdownSeconds: 0
+    });
+    await cancelAndExit(service, mocks.spawnedChildren[0]!);
+    await expect(service.restart()).rejects.toThrow("not_recording");
+
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+
+    expect(mocks.spawnCalls).toHaveLength(2);
+    expect(argAfter(mocks.spawnCalls[1]!.args, "-draw_mouse")).toBe("1");
+
+    await cancelAndExit(service, mocks.spawnedChildren[1]!);
+  });
+
+  test("cancel during countdown clears cursor state before FFmpeg spawns", async () => {
+    const service = await loadWindowsService();
+    let startOutcome: Error | "ok" | null = null;
+    const firstStart = service
+      .start({
+        subject: SUBJECT,
+        capabilities: CAPS,
+        captureCursor: false,
+        countdownSeconds: 3
+      })
+      .then(() => (startOutcome = "ok"))
+      .catch((error: Error) => (startOutcome = error));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mocks.spawnCalls).toHaveLength(0);
+    await service.cancel();
+    await vi.advanceTimersByTimeAsync(1_100);
+    await firstStart;
+
+    expect(startOutcome).toBeInstanceOf(Error);
+    expect((startOutcome as unknown as Error).message).toBe("cancelled");
+    await expect(service.restart()).rejects.toThrow("not_recording");
+
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    expect(argAfter(mocks.spawnCalls[0]!.args, "-draw_mouse")).toBe("1");
+
+    await cancelAndExit(service, mocks.spawnedChildren[0]!);
+  });
+
+  test("a synchronous spawn failure does not leak cursor state into retry or restart", async () => {
+    const service = await loadWindowsService();
+    mocks.nextSpawnError = new Error("synthetic spawn failure");
+
+    await expect(
+      service.start({
+        subject: SUBJECT,
+        capabilities: CAPS,
+        captureCursor: false,
+        countdownSeconds: 0
+      })
+    ).rejects.toThrow("synthetic spawn failure");
+    expect(service.isActive()).toBe(false);
+    await expect(service.restart()).rejects.toThrow("not_recording");
+
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    expect(argAfter(mocks.spawnCalls[1]!.args, "-draw_mouse")).toBe("1");
+
+    await cancelAndExit(service, mocks.spawnedChildren[0]!);
+  });
+
+  test("an asynchronous spawn failure clears cursor state before a fresh session", async () => {
+    const service = await loadWindowsService();
+    await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      captureCursor: false,
+      countdownSeconds: 0
+    });
+
+    mocks.spawnedChildren[0]!.emit("error", new Error("synthetic async spawn failure"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(service.isActive()).toBe(false);
+    await expect(service.restart()).rejects.toThrow("not_recording");
+
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    expect(argAfter(mocks.spawnCalls[1]!.args, "-draw_mouse")).toBe("1");
+
+    await cancelAndExit(service, mocks.spawnedChildren[1]!);
+  });
+
+  test("successful stop clears cursor state before a new default session", async () => {
+    const service = await loadWindowsService();
+    await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      captureCursor: false,
+      countdownSeconds: 0
+    });
+
+    const firstChild = mocks.spawnedChildren[0]!;
+    const stopPromise = service.stop();
+    firstChild.emit("exit", 0, null);
+    await stopPromise;
+    await expect(service.restart()).rejects.toThrow("not_recording");
+
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    expect(argAfter(mocks.spawnCalls[1]!.args, "-draw_mouse")).toBe("1");
+
+    await cancelAndExit(service, mocks.spawnedChildren[1]!);
+  });
+
+  test("spawns gdigrab and persists the stopped MP4", async () => {
+    const service = await loadWindowsService();
 
     await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
 
@@ -728,13 +929,7 @@ describe("Windows FFmpeg recorder", () => {
   });
 
   test("converts selected DIP rects to physical pixels before gdigrab", async () => {
-    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
-    const { __setRecordingServiceForTests, getRecordingService } = await import(
-      "../recording-service"
-    );
-    __setRecordingServiceForTests(null);
-    const service = getRecordingService();
+    const service = await loadWindowsService();
 
     await service.start({
       subject: {
@@ -757,13 +952,7 @@ describe("Windows FFmpeg recorder", () => {
   });
 
   test("does not persist when ffmpeg only exits after stop timeout kill", async () => {
-    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
-    const { __setRecordingServiceForTests, getRecordingService } = await import(
-      "../recording-service"
-    );
-    __setRecordingServiceForTests(null);
-    const service = getRecordingService();
+    const service = await loadWindowsService();
 
     await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
     const child = mocks.spawnedChildren[0]!;

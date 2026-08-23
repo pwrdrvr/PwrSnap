@@ -459,6 +459,13 @@ BOOL CALLBACK EnumProc(HWND hwnd, LPARAM /*lparam*/) {
     return TRUE;
   }
 
+  // Minimized HWNDs can remain "visible" while their DWM bounds and
+  // desktopCapturer backing surface are stale/empty. They are not live
+  // capture targets; omit them so a fresh lookup reports unavailable.
+  if (IsIconic(hwnd)) {
+    return TRUE;
+  }
+
   const LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
   // Tool windows (WS_EX_TOOLWINDOW): floating palettes / toolbars that
   // never show in the taskbar or Alt-Tab. Closest analog to the macOS

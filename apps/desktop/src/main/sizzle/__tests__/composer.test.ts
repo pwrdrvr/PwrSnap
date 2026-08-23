@@ -542,7 +542,31 @@ describe("buildCompositionArgs — xfade transition chain", () => {
     );
     const graph = filterGraph(args);
     expect(graph).toContain("xfade=transition=fadeblack:duration=0.25");
-    expect(graph).toContain("xfade=transition=slideleft:duration=0.18");
+    expect(graph).toContain("xfade=transition=coverleft:duration=0.18");
+  });
+
+  it("push-left and slide-left are different ffmpeg transitions, not aliases", () => {
+    // Both used to map to `slideleft` — two menu entries, byte-identical
+    // output. Lock the distinction: a push COVERS the outgoing frame
+    // (`coverleft`), a slide moves both frames (`slideleft`).
+    const graphFor = (type: "push-left" | "slide-left"): string =>
+      filterGraph(
+        buildCompositionArgs({
+          scenes: [
+            imageScene(0, "cut"),
+            { ...imageScene(1, "cut"), transition: { type, durationSec: 0.3 } }
+          ],
+          outputPath: "/x/out.mp4",
+          width: 1280,
+          height: 720,
+          fps: 30
+        })
+      );
+    const push = graphFor("push-left");
+    const slide = graphFor("slide-left");
+    expect(push).toContain("xfade=transition=coverleft:duration=0.3");
+    expect(slide).toContain("xfade=transition=slideleft:duration=0.3");
+    expect(push).not.toBe(slide);
   });
 
   it("object cut/none transitions remain hard cuts", () => {

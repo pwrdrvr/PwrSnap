@@ -7,15 +7,15 @@
 // `public.file-url` UTI so paste in Slack/Mail drops the binary).
 // Click the FILE chip → `clipboard:copyVideoPath` (writes the POSIX
 // path as text).
-// Drag the FILE chip → `startVideoDrag` (main encodes + starts native
-// drag with a poster-frame icon).
+// Drag the FILE chip → run-scoped export preflight, then `startVideoDrag`
+// starts the native drag from the cached file with a poster-frame icon.
 //
 // The card disables itself while encoding (`Encoding…` subtitle
 // replaces the dim/bytes meta) so the user knows the click is
 // in-flight. Other cards stay clickable — each (format, preset) has
 // its own state machine.
 
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useEffect, useId, useRef, useState, type ReactElement } from "react";
 import type { VideoPreset } from "@pwrsnap/shared";
 import type { CopyButtonMetric } from "./CopyButton";
 import type { ExportButtonState } from "./useVideoExportPresets";
@@ -79,6 +79,7 @@ export function VideoExportCard({
   // the feedback timing is consistent across image and video cards.
   const [copiedPulse, setCopiedPulse] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
+  const progressId = useId();
   const cardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pathTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevStateKindRef = useRef<ExportButtonState["kind"]>(state.kind);
@@ -126,6 +127,20 @@ export function VideoExportCard({
 
   const isRunning = state.kind === "running";
   const isError = state.kind === "error";
+  const progressPercent =
+    state.kind === "running" && state.ratio !== null
+      ? Math.round(state.ratio * 100)
+      : null;
+  const progressLabel =
+    state.kind !== "running"
+      ? null
+      : state.phase === "queued"
+        ? "Queued"
+        : state.phase === "palette"
+          ? "Building palette"
+          : state.phase === "finalizing"
+            ? "Finalizing"
+            : "Encoding";
 
   const [dimLine1, dimLine2] = splitDimensionLabel(dim);
   const [bytesLine1, bytesLine2] = splitBytesLabel(bytes);
@@ -133,7 +148,9 @@ export function VideoExportCard({
   const formatTitle = format === "gif" ? "GIF" : "MP4";
   const cardTitle = isError
     ? `Failed: ${state.message}`
-    : `Encode + copy ${label} ${formatTitle} to clipboard${kbd === null ? "" : ` · ${kbd}`}`;
+    : isRunning
+      ? `${progressLabel}${progressPercent === null ? "…" : ` ${progressPercent}%`}`
+      : `Encode + copy ${label} ${formatTitle} to clipboard${kbd === null ? "" : ` · ${kbd}`}`;
 
   return (
     <div className="fo__copy-card">
@@ -148,7 +165,15 @@ export function VideoExportCard({
         onClick={handleCardClick}
         disabled={isRunning}
         title={cardTitle}
-        aria-label={`Copy ${label} ${formatTitle} to clipboard`}
+        aria-label={
+          isRunning
+            ? `${label} ${formatTitle}: ${progressLabel}${
+                progressPercent === null ? "" : ` ${progressPercent}%`
+              }`
+            : `Copy ${label} ${formatTitle} to clipboard`
+        }
+        aria-busy={isRunning}
+        aria-describedby={isRunning ? progressId : undefined}
       >
         <div className="fo__copy-btn-row1">
           <span className="fo__copy-label">{label}</span>
@@ -156,9 +181,26 @@ export function VideoExportCard({
         </div>
         <div className="fo__copy-meta">
           {isRunning ? (
-            <span className="fo__copy-dim">
-              <span>Encoding</span>
-              <span>…</span>
+            <span
+              className={
+                "fo__export-progress" + (progressPercent === null ? " is-indeterminate" : "")
+              }
+              aria-hidden="true"
+            >
+              <span className="fo__export-progress-label">
+                <span>{progressLabel}</span>
+                <span>{progressPercent === null ? "…" : `${progressPercent}%`}</span>
+              </span>
+              <span className="fo__export-progress-track" aria-hidden="true">
+                <span
+                  className="fo__export-progress-fill"
+                  style={
+                    progressPercent === null
+                      ? undefined
+                      : { width: `${progressPercent}%` }
+                  }
+                />
+              </span>
             </span>
           ) : isError ? (
             <span className="fo__copy-dim">
@@ -182,12 +224,32 @@ export function VideoExportCard({
           Copied
         </span>
       </button>
+      {isRunning ? (
+        <span
+          id={progressId}
+          className="sr-only"
+          role="progressbar"
+          aria-label={`${label} ${formatTitle} export`}
+          aria-busy="true"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          {...(progressPercent === null ? {} : { "aria-valuenow": progressPercent })}
+          aria-valuetext={
+            progressPercent === null
+              ? `${progressLabel}, progress unavailable`
+              : `${progressLabel}, ${progressPercent}%`
+          }
+        >
+          {progressPercent === null
+            ? `${progressLabel}, progress unavailable`
+            : `${progressLabel}, ${progressPercent}%`}
+        </span>
+      ) : null}
       <a
         className={"fo__copy-file" + (pathCopied ? " is-copied" : "")}
         // Drag becomes legal once we have a preset to drag — which is
-        // always, here. Main does the encode-on-demand inside its
-        // `video:prepareDrag` handler so we don't need to gate on
-        // cache state from the renderer.
+        // always, here. The hook preflights the encode before it asks
+        // main to begin the native file gesture.
         draggable
         href="#"
         title={`Click to copy ${label} ${formatTitle} file path · drag for the file itself`}

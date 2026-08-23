@@ -377,6 +377,50 @@
   gap: 6px;
   min-width: 0;
 }
+.fo__export-progress {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  font: 600 10px/1 var(--font-mono);
+}
+.fo__export-progress-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.fo__export-progress-track {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border-default);
+}
+.fo__export-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 180ms linear;
+}
+.fo__export-progress.is-indeterminate .fo__export-progress-fill {
+  width: 42%;
+  animation: fo-export-progress-indeterminate 1.1s ease-in-out infinite;
+}
+@keyframes fo-export-progress-indeterminate {
+  from { transform: translateX(-125%); }
+  to { transform: translateX(340%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fo__export-progress.is-indeterminate .fo__export-progress-fill {
+    animation: none;
+    transform: translateX(70%);
+  }
+}
 .fo__copy-dim {
   display: flex;
   flex-direction: column;

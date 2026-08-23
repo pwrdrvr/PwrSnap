@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { ok } from "@pwrsnap/shared";
 
@@ -20,6 +21,14 @@ const electronMock = vi.hoisted(() => ({
       isEmpty: () => true
     }))
   }
+}));
+
+const relayMock = vi.hoisted(() => ({
+  cancel: vi.fn()
+}));
+
+vi.mock("../process-split/event-relay", () => ({
+  relayCancellationToPeer: relayMock.cancel
 }));
 
 vi.mock("electron", () => ({
@@ -53,6 +62,7 @@ describe("IPC dispatcher", () => {
     disposeIpcDispatcher();
     bus.unregister("codex:enrich");
     bus.unregister("settings:open");
+    bus.unregister("video:export");
     vi.clearAllMocks();
   });
 
@@ -141,5 +151,39 @@ describe("IPC dispatcher", () => {
     );
 
     expect(captured.sourceDocumentId).toBeUndefined();
+  });
+
+  test("window teardown aborts a run-scoped video export locally and on the peer", async () => {
+    const sender = new EventEmitter();
+    const observed: { signal: AbortSignal | null } = { signal: null };
+    bus.register("video:export", async (_req, ctx) => {
+      observed.signal = ctx.signal;
+      await new Promise<void>((resolve) => {
+        if (ctx.signal.aborted) resolve();
+        else ctx.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return ok({
+        path: "/cache/export.mp4",
+        byteSize: 1,
+        durationSec: 1,
+        widthPx: 2,
+        heightPx: 2,
+        fromCache: false
+      });
+    });
+    registerIpcDispatcher();
+
+    const pending = electronMock.handler?.(
+      { sender },
+      "video:export",
+      { captureId: "cap_1", format: "mp4", preset: "low", runId: "run-window" }
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    sender.emit("destroyed");
+    await pending;
+
+    expect(observed.signal?.aborted).toBe(true);
+    expect(relayMock.cancel).toHaveBeenCalledWith("video-export:run-window");
+    expect(sender.listenerCount("destroyed")).toBe(0);
   });
 });

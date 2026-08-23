@@ -4,13 +4,15 @@
 // invariant: only this module writes captures/, only this module
 // (or its trash sweep) deletes from it.
 //
-// Soft-delete moves files atomically to <userData>/.trash/<id>.png on
-// the same volume — single rename, no copy, no TOCTOU window.
-// Hard-delete (boot-time GC) removes from .trash/ after 30d.
+// Soft-delete moves files to <userData>/.trash/<id>.png. Documents may be
+// redirected to another drive/UNC root, so this surface depends on the shared
+// durable cross-volume persistence-move helper. Hard-delete (boot-time GC)
+// removes from .trash/ after 30d.
 
 import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { nanoid } from "nanoid";
 import sharp from "sharp";
@@ -73,10 +75,9 @@ export async function putCaptureSource(tempPath: string): Promise<StoredSource> 
   await mkdir(dir, { recursive: true });
   const srcPath = join(dir, `${id}.png`);
 
-  // Same-volume rename — atomic on APFS when both paths are on the
-  // home volume (typical: /tmp ↔ ~/Documents both on /). If /tmp is
-  // on a different volume, fs/promises.rename falls back to a copy
-  // + unlink under the hood, still atomic from the consumer's POV.
+  // This raw rename intentionally continues to surface EXDEV until the shared
+  // durable persistence-move helper is wired here. Node does not fall back to
+  // copy+unlink, and Windows temp/Documents commonly live on different drives.
   await rename(tempPath, srcPath);
 
   // debug-level: this fires once per capture, including 100k× under
@@ -510,25 +511,26 @@ export async function sweepTrash(expiredCaptureIds: string[]): Promise<{ removed
 
 /**
  * Boot-time orphan-temp-file cleanup. The capture pipeline writes to
- * /tmp/pwrsnap-<uuid>.png and renames into captures/. If the process
- * crashes between write and rename, the file orphans. This sweep runs
- * at app boot to clear anything older than 1 hour.
+ * <os.tmpdir()>/pwrsnap-* and renames into captures/. If the process
+ * crashes between write and rename, a file or recorder directory can orphan.
+ * This sweep runs at app boot to clear owned entries older than 1 hour.
  */
-export async function sweepStaleTempFiles(): Promise<{ removedFiles: number }> {
-  const tmpDir = "/tmp";
-  if (!existsSync(tmpDir)) return { removedFiles: 0 };
+export async function sweepStaleTempFiles(
+  tempRoot: string = tmpdir()
+): Promise<{ removedFiles: number }> {
+  if (!existsSync(tempRoot)) return { removedFiles: 0 };
 
   const cutoffMs = Date.now() - 60 * 60 * 1000; // 1 hour
-  const entries = await readdir(tmpDir).catch(() => [] as string[]);
+  const entries = await readdir(tempRoot).catch(() => [] as string[]);
   let removed = 0;
 
   for (const name of entries) {
     if (!name.startsWith("pwrsnap-")) continue;
-    const filePath = join(tmpDir, name);
+    const filePath = join(tempRoot, name);
     try {
-      const stat = statSync(filePath);
-      if (stat.mtimeMs < cutoffMs) {
-        await rm(filePath, { force: true });
+      const entryStat = await lstat(filePath);
+      if (entryStat.mtimeMs < cutoffMs) {
+        await rm(filePath, { recursive: entryStat.isDirectory(), force: true });
         removed += 1;
       }
     } catch {

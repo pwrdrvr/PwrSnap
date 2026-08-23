@@ -2,6 +2,7 @@ import { BrowserWindow, shell } from "electron";
 import { readdir } from "node:fs/promises";
 import {
   EVENT_CHANNELS,
+  capturesFolderDisplayPath,
   err,
   ok,
   type CapturesLocationStatus
@@ -167,7 +168,10 @@ async function countHomeDirectoryEntries(root: string): Promise<number> {
   }
 }
 
-function moveBackBlockedMessage(status: CapturesLocationStatus): string {
+export function moveBackBlockedMessage(
+  status: CapturesLocationStatus,
+  platform: string = process.platform
+): string {
   if (status.overridden) {
     return "The captures root is controlled by PWRSNAP_DATA_ROOT and can't be changed here.";
   }
@@ -177,7 +181,10 @@ function moveBackBlockedMessage(status: CapturesLocationStatus): string {
   if (status.documentsAccess !== "confirmed") {
     return "Check Documents access successfully before moving new captures back.";
   }
-  return "~/PwrSnap still contains captures or database references. Remove or relocate them before switching roots.";
+  return `${capturesFolderDisplayPath(
+    platform,
+    "home"
+  )} still contains captures or database references. Move them into the active captures folder before switching roots.`;
 }
 
 function registerCaptureStorageEventBroadcast(): void {

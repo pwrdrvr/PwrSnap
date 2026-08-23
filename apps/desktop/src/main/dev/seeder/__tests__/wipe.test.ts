@@ -11,10 +11,14 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+const electronMocks = vi.hoisted(() => ({
+  userData: "/tmp/pwrsnap-test-userData"
+}));
+
 vi.mock("electron", () => ({
   app: {
     getPath: (name: string): string => {
-      if (name === "userData") return "/tmp/pwrsnap-test-userData";
+      if (name === "userData") return electronMocks.userData;
       if (name === "documents") return "/tmp/pwrsnap-test-documents";
       throw new Error(`unexpected app.getPath: ${name}`);
     }
@@ -28,11 +32,13 @@ let scratchDir = "";
 
 beforeEach(() => {
   delete process.env[ENV_KEY];
+  electronMocks.userData = "/tmp/pwrsnap-test-userData";
   scratchDir = mkdtempSync(join(tmpdir(), "pwrsnap-wipe-test-"));
   vi.resetModules();
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   if (originalEnv === undefined) delete process.env[ENV_KEY];
   else process.env[ENV_KEY] = originalEnv;
   try {
@@ -51,6 +57,15 @@ describe("assertCanWipe — primary guards", () => {
   test("refuses when PWRSNAP_DATA_ROOT equals userData", async () => {
     process.env[ENV_KEY] = "/tmp/pwrsnap-test-userData";
     const { assertCanWipe } = await import("../wipe");
+    expect(() => assertCanWipe()).toThrow(/equals app\.getPath/);
+  });
+
+  test("refuses a Windows case and trailing-separator alias of userData", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    electronMocks.userData = String.raw`C:\Users\Test\AppData\Roaming\PwrSnap`;
+    process.env[ENV_KEY] = "c:\\users\\test\\appdata\\roaming\\pwrsnap\\";
+    const { assertCanWipe } = await import("../wipe");
+
     expect(() => assertCanWipe()).toThrow(/equals app\.getPath/);
   });
 

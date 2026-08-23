@@ -8,6 +8,10 @@ import {
   getLegacyCapturesRoot,
   isOverriddenDataRoot
 } from "./paths";
+import {
+  capturePathReferencePredicate,
+  capturePathReferencePrefix
+} from "./capture-path-references";
 
 const log = getMainLogger("pwrsnap:capture-source-maintenance");
 
@@ -21,6 +25,8 @@ export type LegacyCaptureSourceMigrationResult = {
   movedFiles: number;
   updatedRows: number;
   skippedRows: number;
+  /** Rows that need the separately owned durable cross-volume move helper. */
+  deferredCrossVolumeRows: number;
 };
 
 /**
@@ -29,23 +35,57 @@ export type LegacyCaptureSourceMigrationResult = {
  * user can find them and app uninstall does not remove them. Move old
  * live rows into the current source root and update their DB paths.
  */
-export async function migrateLegacyCaptureSources(): Promise<LegacyCaptureSourceMigrationResult> {
-  if (isOverriddenDataRoot()) return { movedFiles: 0, updatedRows: 0, skippedRows: 0 };
+export async function migrateLegacyCaptureSources(
+  platform: string = process.platform
+): Promise<LegacyCaptureSourceMigrationResult> {
+  if (isOverriddenDataRoot()) {
+    return {
+      movedFiles: 0,
+      updatedRows: 0,
+      skippedRows: 0,
+      deferredCrossVolumeRows: 0
+    };
+  }
 
   const legacyRoot = getLegacyCapturesRoot();
   const currentRoot = getCapturesRoot();
-  if (legacyRoot === currentRoot) return { movedFiles: 0, updatedRows: 0, skippedRows: 0 };
+  if (legacyRoot === currentRoot) {
+    return {
+      movedFiles: 0,
+      updatedRows: 0,
+      skippedRows: 0,
+      deferredCrossVolumeRows: 0
+    };
+  }
 
   const db = getDb();
+  const legacyPathPredicate = capturePathReferencePredicate(
+    "legacy_src_path",
+    platform
+  );
   const rows = db
-    .prepare("SELECT id, legacy_src_path, deleted_at FROM captures WHERE legacy_src_path LIKE ?")
-    .all(`${legacyRoot}/%`) as LegacyCaptureRow[];
-  if (rows.length === 0) return { movedFiles: 0, updatedRows: 0, skippedRows: 0 };
+    .prepare(
+      `SELECT id, legacy_src_path, deleted_at
+       FROM captures
+       WHERE legacy_src_path IS NOT NULL AND ${legacyPathPredicate}`
+    )
+    .all({
+      prefix: capturePathReferencePrefix(legacyRoot, platform)
+    }) as LegacyCaptureRow[];
+  if (rows.length === 0) {
+    return {
+      movedFiles: 0,
+      updatedRows: 0,
+      skippedRows: 0,
+      deferredCrossVolumeRows: 0
+    };
+  }
 
   await mkdir(currentRoot, { recursive: true });
   let movedFiles = 0;
   let updatedRows = 0;
   let skippedRows = 0;
+  let deferredCrossVolumeRows = 0;
   const updatePath = db.prepare("UPDATE captures SET legacy_src_path = ? WHERE id = ?");
 
   for (const row of rows) {
@@ -89,6 +129,16 @@ export async function migrateLegacyCaptureSources(): Promise<LegacyCaptureSource
       updatedRows += 1;
     } catch (err) {
       skippedRows += 1;
+      if ((err as NodeJS.ErrnoException | null)?.code === "EXDEV") {
+        deferredCrossVolumeRows += 1;
+        log.error("legacy capture source migration deferred cross-volume row", {
+          captureId: row.id,
+          srcPath: row.legacy_src_path,
+          nextPath,
+          message: err instanceof Error ? err.message : String(err)
+        });
+        continue;
+      }
       log.warn("legacy capture source migration skipped row", {
         captureId: row.id,
         srcPath: row.legacy_src_path,
@@ -98,15 +148,16 @@ export async function migrateLegacyCaptureSources(): Promise<LegacyCaptureSource
     }
   }
 
-  if (movedFiles > 0 || updatedRows > 0) {
+  if (movedFiles > 0 || updatedRows > 0 || deferredCrossVolumeRows > 0) {
     log.info("legacy capture sources migrated", {
       movedFiles,
       updatedRows,
       skippedRows,
+      deferredCrossVolumeRows,
       from: legacyRoot,
       to: currentRoot
     });
   }
 
-  return { movedFiles, updatedRows, skippedRows };
+  return { movedFiles, updatedRows, skippedRows, deferredCrossVolumeRows };
 }

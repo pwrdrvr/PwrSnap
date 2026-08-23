@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { lstat, readdir, rename } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 
 import type { FilenameTimestampZone } from "@pwrsnap/shared";
@@ -10,6 +10,7 @@ import { buildCaptureBundleFilenameStem } from "./bundle-filename";
 import { readBundleFilenameTimestampZone } from "./bundle-filename-settings";
 import { updateCaptureLegacySourcePath } from "./captures-repo";
 import { getDb } from "./db";
+import { inspectRenameDestination, renameWithCaseSupport } from "./platform-path";
 
 const log = getMainLogger("pwrsnap:video-filename-maintenance");
 
@@ -139,7 +140,7 @@ async function renameVideoSourceRow(
   }
 
   await assertVideoSourceMatchesCapture(currentPath, row.sha256);
-  await rename(currentPath, desiredPath);
+  await renameWithCaseSupport(currentPath, desiredPath);
   updateCaptureLegacySourcePath(row.id, desiredPath);
 
   log.info("video source renamed", {
@@ -185,12 +186,18 @@ async function resolveAvailableTargetPath(
   sha256: string
 ): Promise<string> {
   const dir = dirname(currentPath);
-  const ext = extname(currentPath) || ".mp4";
+  const ext = extname(currentPath).toLowerCase() || ".mp4";
   for (let suffix = 0; suffix <= MAX_COLLISION_SUFFIX; suffix += 1) {
     const stem = suffix === 0 ? desiredStem : `${desiredStem}-${suffix + 1}`;
     const candidate = join(dir, `${stem}${ext}`);
-    if (candidate === currentPath) return candidate;
-    if (!existsSync(candidate)) return candidate;
+    const destination = await inspectRenameDestination(currentPath, candidate);
+    if (
+      destination.kind === "same-path" ||
+      destination.kind === "same-entry" ||
+      destination.kind === "absent"
+    ) {
+      return candidate;
+    }
     if ((await fileSha256(candidate)) === sha256) {
       throw new Error(`duplicate video source files exist for ${sha256.slice(0, 8)}`);
     }

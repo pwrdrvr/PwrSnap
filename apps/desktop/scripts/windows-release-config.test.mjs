@@ -92,6 +92,61 @@ describe("Windows release configuration", () => {
     expect(builder).toContain('join(buildRoot, "verified-file.exe")');
   });
 
+  test("the packaged native helper owns real CF_HDROP file copy and Explorer readback", () => {
+    const source = read("apps/desktop/native/window-list-win/main.cpp");
+    const fileClipboard = read("apps/desktop/src/main/clipboard/file-clipboard.ts");
+
+    // CF_HDROP is predefined numeric format 15. A named Electron custom
+    // format called "CF_HDROP" is not equivalent and must never replace this
+    // Win32 write/read path.
+    expect(source).toContain("--write-file-clipboard");
+    expect(source).toContain('static_assert(CF_HDROP == 15');
+    expect(source).toContain("SetClipboardData(CF_HDROP, dropMemory)");
+    expect(source).toContain("drop->fWide = TRUE");
+    expect(source).toContain("GMEM_MOVEABLE | GMEM_ZEROINIT");
+    expect(source).toContain('RegisterClipboardFormatW(L"Preferred DropEffect")');
+    expect(source).toContain("*effect = DROPEFFECT_COPY");
+    expect(source).toContain("OpenClipboard(owner)");
+    expect(source).toContain("DragQueryFileW(writtenDrop");
+
+    expect(source).toContain("--read-file-clipboard");
+    expect(source).toContain("GetClipboardData(CF_HDROP)");
+    expect(source).toContain("IsFullyQualifiedWindowsPath");
+    expect(source).toContain("CF_HDROP contains no files");
+
+    expect(fileClipboard).toContain('format: "CF_HDROP"');
+    expect(fileClipboard).toContain('["--write-file-clipboard", filePath]');
+    expect(fileClipboard).not.toContain('writeBuffer("CF_HDROP"');
+
+    // The same binary is already a required, packaged extraResource; the
+    // clipboard commands must not become a dev-only helper.
+    const config = read("apps/desktop/electron-builder.yml");
+    expect(config).toContain('to: "PwrSnapWindowList.exe"');
+
+    const ci = read(".github/workflows/ci.yml");
+    expect(ci).toContain('PWRSNAP_WINDOWS_NATIVE_CLIPBOARD_SMOKE: "1"');
+    expect(ci).toContain("windows-file-clipboard-native.test.ts");
+    expect(ci.indexOf("Build native Windows clipboard helper")).toBeLessThan(
+      ci.indexOf("Smoke-test native CF_HDROP round trip")
+    );
+  });
+
+  test("Windows media export and packaging agree on the controlled h264_mf artifact", () => {
+    const exporter = read("apps/desktop/src/main/recording/recording-exporter.ts");
+    const resolver = read("apps/desktop/src/main/recording/ffmpeg-resolver.ts");
+    const workflow = read(".github/workflows/release.yml");
+
+    expect(exporter).toContain('["-c:v", "h264_mf"]');
+    expect(exporter).toContain('platform === "win32"');
+    expect(resolver).toContain('"PwrSnapFFmpeg.exe"');
+    expect(workflow).toContain('foreach ($encoder in @("h264_mf", "aac"))');
+    expect(workflow).toContain("PWRSNAP_WINDOWS_FFMPEG_PATH=$ffmpeg");
+
+    const packager = read("apps/desktop/scripts/package-win.mjs");
+    expect(packager).toContain('to: "PwrSnapFFmpeg.exe"');
+    expect(packager).toContain("assertRequiredWindowsResources();");
+  });
+
   test("macOS release preparation always defers FFmpeg to the injected artifact", () => {
     const script = read("apps/desktop/scripts/release.mjs");
 
@@ -314,11 +369,10 @@ describe("Windows release configuration", () => {
   });
 
   test("every FFmpeg build pin agrees across workflows and docs", () => {
-    // The macOS release job, the Windows release job, and (once the preview
-    // build consumes the controlled artifact) the preview job each pin
-    // FFMPEG_BUILD_SHA independently. If they drift, macOS and Windows ship
-    // binaries built from different sources and preview DMGs diverge from
-    // release DMGs — which is exactly what hid the missing PNG decoder.
+    // The macOS + Windows release jobs and both preview jobs pin
+    // FFMPEG_BUILD_SHA independently. If they drift, platforms or preview
+    // installers ship binaries built from different sources — exactly the
+    // divergence that hid the missing PNG decoder.
     const found = [];
 
     const workflowDir = resolve(repoRoot, ".github/workflows");
@@ -445,9 +499,18 @@ describe("Windows release configuration", () => {
     // comparing the manifest shipped with the binary against the notice being
     // packaged alongside it.
     expect(workflow.match(/node scripts\/check-bundled-ffmpeg-notice\.mjs/g) ?? []).toHaveLength(2);
-    // The preview job is the only site that can fire before a tag exists; both
-    // docs advertise it, so assert it rather than letting it be deleted silently.
-    expect(preview).toContain("node scripts/check-bundled-ffmpeg-notice.mjs");
+    // Preview jobs are the only sites that can fire before a tag exists; both
+    // platforms must reconcile their artifact rather than relying on PATH.
+    expect(preview.match(/node scripts\/check-bundled-ffmpeg-notice\.mjs/g) ?? []).toHaveLength(2);
+    expect(preview).toContain("resources/PwrSnapFFmpeg.exe");
+    expect(preview).toContain('PWRSNAP_WINDOWS_FFMPEG_SMOKE: "1"');
+    expect(preview).toContain("windows-ffmpeg-export-smoke.test.ts");
+    expect(preview.indexOf("windows-ffmpeg-export-smoke.test.ts")).toBeGreaterThan(
+      preview.indexOf("Download controlled Windows FFmpeg artifact"),
+    );
+    expect(preview.indexOf("windows-ffmpeg-export-smoke.test.ts")).toBeLessThan(
+      preview.indexOf("Build preview installer (unsigned)"),
+    );
 
     // Both signing jobs check the STAGED notice — the bytes about to be packaged
     // — not the repo copy. Assert per job: a single toContain is satisfied by

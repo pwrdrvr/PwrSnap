@@ -148,6 +148,96 @@ jobs:
         with:
           node-version: "24.14.1"
 
+      # Preview installers must exercise the same controlled Windows FFmpeg
+      # artifact as tagged releases. Otherwise GIF happens to work while MP4
+      # silently depends on a runner/user PATH and the preview is not a valid
+      # test of what PwrSnap ships.
+      - name: Create Windows FFmpeg build repo token
+        id: windows-ffmpeg-builds-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.FFMPEG_BUILDS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.FFMPEG_BUILDS_APP_PRIVATE_KEY }}
+          owner: pwrdrvr
+          repositories: pwrsnap-ffmpeg-builds
+          permission-actions: read
+          permission-contents: read
+
+      - name: Download controlled Windows FFmpeg artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ steps.windows-ffmpeg-builds-token.outputs.token }}
+          FFMPEG_BUILD_REPO: pwrdrvr/pwrsnap-ffmpeg-builds
+          FFMPEG_BUILD_WORKFLOW: build.yml
+          # Keep in lockstep with release.yml and the macOS preview job.
+          FFMPEG_BUILD_SHA: 3d775403a83990a2ad9503d865f5d481d9c0316a
+          FFMPEG_ARTIFACT_NAME: ffmpeg-8.1.1-windows-x64
+        run: |
+          $ErrorActionPreference = "Stop"
+          $runsJson = gh run list `
+            --repo $env:FFMPEG_BUILD_REPO `
+            --workflow $env:FFMPEG_BUILD_WORKFLOW `
+            --commit $env:FFMPEG_BUILD_SHA `
+            --limit 20 `
+            --json databaseId,headSha,conclusion,status
+          $run = $runsJson |
+            ConvertFrom-Json |
+            Where-Object { $_.headSha -eq $env:FFMPEG_BUILD_SHA -and $_.conclusion -eq "success" } |
+            Select-Object -First 1
+          if ($null -eq $run) {
+            throw "No successful $env:FFMPEG_BUILD_WORKFLOW run found for $env:FFMPEG_BUILD_REPO@$env:FFMPEG_BUILD_SHA"
+          }
+
+          $dir = Join-Path $env:RUNNER_TEMP "pwrsnap-windows-ffmpeg-preview"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          gh run download $run.databaseId `
+            --repo $env:FFMPEG_BUILD_REPO `
+            --name $env:FFMPEG_ARTIFACT_NAME `
+            --dir $dir
+
+          $manifestPath = Join-Path $dir "manifest.json"
+          $ffmpeg = Join-Path $dir "ffmpeg.exe"
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf) -or
+              -not (Test-Path -LiteralPath $ffmpeg -PathType Leaf)) {
+            throw "Controlled Windows FFmpeg artifact is incomplete."
+          }
+          $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          if ($manifest.platform -ne "windows" -or $manifest.arch -ne "x64" -or
+              $manifest.binary -ne "ffmpeg.exe") {
+            throw "Windows FFmpeg artifact target mismatch: $($manifest.platform)/$($manifest.arch)/$($manifest.binary)"
+          }
+          $actual = (Get-FileHash -Algorithm SHA256 $ffmpeg).Hash.ToLowerInvariant()
+          if ($actual -ne ([string]$manifest.sha256).ToLowerInvariant()) {
+            throw "Windows FFmpeg artifact hash mismatch."
+          }
+          foreach ($encoder in @("h264_mf", "aac")) {
+            if ($manifest.requiredEncoders -notcontains $encoder) {
+              throw "Windows FFmpeg manifest is missing required encoder check: $encoder"
+            }
+          }
+
+          # Ask the downloaded executable itself, not only its manifest. This
+          # is a durable diagnostic for a corrupt/wrong binary before packaging.
+          $encoderHelp = (& $ffmpeg -hide_banner -h encoder=h264_mf 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $encoderHelp -notmatch "Encoder h264_mf") {
+            throw "Downloaded Windows FFmpeg cannot load encoder h264_mf."
+          }
+
+          node scripts/check-bundled-ffmpeg-notice.mjs `
+            --manifest $manifestPath `
+            --notice THIRD_PARTY_LICENSES
+          if ($LASTEXITCODE -ne 0) {
+            throw "Bundled FFmpeg notice check failed (exit code $LASTEXITCODE)."
+          }
+          "PWRSNAP_WINDOWS_FFMPEG_PATH=$ffmpeg" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Smoke controlled Windows FFmpeg media exports
+        env:
+          PWRSNAP_WINDOWS_FFMPEG_SMOKE: "1"
+        run: >-
+          pnpm exec vitest run --config vitest.workspace.ts
+          apps/desktop/src/main/recording/__tests__/windows-ffmpeg-export-smoke.test.ts
+
       # windows-latest defaults to pwsh; force bash for the version-stamp steps
       # so they stay identical to the macOS preview job above.
       - name: Compute preview version
@@ -232,7 +322,8 @@ jobs:
           $requiredArchivePaths = @(
             "PwrSnap.exe",
             "resources/elevate.exe",
-            "resources/PwrSnapWindowList.exe"
+            "resources/PwrSnapWindowList.exe",
+            "resources/PwrSnapFFmpeg.exe"
           )
           foreach ($path in $requiredArchivePaths) {
             if ($entryPaths -notcontains $path) {
@@ -270,7 +361,8 @@ jobs:
           $requiredFiles = @(
             (Join-Path $installDir "PwrSnap.exe"),
             (Join-Path $installDir "resources/app.asar"),
-            (Join-Path $installDir "resources/PwrSnapWindowList.exe")
+            (Join-Path $installDir "resources/PwrSnapWindowList.exe"),
+            (Join-Path $installDir "resources/PwrSnapFFmpeg.exe")
           )
           foreach ($file in $requiredFiles) {
             if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {

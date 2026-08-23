@@ -51,7 +51,16 @@ const mocks = vi.hoisted(() => ({
   mediaAccess: {
     screen: "granted",
     microphone: "granted"
-  } as Record<string, string>
+  } as Record<string, string>,
+  capture: null as unknown,
+  exportVideoRange: vi.fn(async (_input: unknown) => ({
+    path: "/cache/export.mp4",
+    byteSize: 10,
+    durationSec: 4,
+    widthPx: 720,
+    heightPx: 404,
+    fromCache: false
+  }))
 }));
 
 vi.mock("electron", (): Partial<typeof import("electron")> => ({
@@ -76,7 +85,7 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
 // never exercise those verbs in this file, but bus.register runs at
 // import time and the module-load chain has to resolve.
 vi.mock("../../persistence/captures-repo", () => ({
-  getCaptureById: () => null
+  getCaptureById: () => mocks.capture
 }));
 
 vi.mock("../../persistence/video-repo", () => ({
@@ -86,7 +95,7 @@ vi.mock("../../persistence/video-repo", () => ({
 }));
 
 vi.mock("../../recording/recording-exporter", () => ({
-  exportVideoRange: async () => undefined
+  exportVideoRange: mocks.exportVideoRange
 }));
 
 // Stub the recording service factory before recording-handlers imports
@@ -131,6 +140,8 @@ beforeEach(() => {
   mocks.ensureCapturesDirReady.mockResolvedValue(null);
   mocks.mediaAccess.screen = "granted";
   mocks.mediaAccess.microphone = "granted";
+  mocks.capture = null;
+  mocks.exportVideoRange.mockClear();
 });
 
 describe("recording:* command-bus surface", () => {
@@ -319,6 +330,34 @@ describe("recording:* command-bus surface", () => {
     expect(result.error.message).toBe("The video recorder couldn't start.");
     expect(JSON.stringify(result)).not.toContain("PwrSnapFFmpeg.exe");
     expect(JSON.stringify(result)).not.toContain("--token");
+  });
+
+  test("video:export defaults MP4 to the source audio tracks", async () => {
+    mocks.capture = {
+      id: "cap-audio",
+      kind: "video",
+      width_px: 1_280,
+      height_px: 720,
+      deleted_at: null,
+      video: {
+        durationSec: 8,
+        defaultRange: { start: 1, end: 5 },
+        hasSystemAudio: true,
+        hasMicrophoneAudio: true
+      }
+    };
+
+    const result = await bus.dispatch(
+      "video:export",
+      { captureId: "cap-audio", format: "mp4", preset: "med" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mocks.exportVideoRange).toHaveBeenCalledOnce();
+    expect(mocks.exportVideoRange.mock.calls[0]?.[0]).toMatchObject({
+      audio: { includeSystemAudio: true, includeMicrophone: true }
+    });
   });
 });
 

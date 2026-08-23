@@ -185,6 +185,7 @@ import {
   dispatchToRunningLibraryProcess,
   forwardCancellationToLibrary,
   forwardRendererEventToLibrary,
+  getLibraryProcessPid,
   stopLibraryProcess
 } from "./process-split/library-process-supervisor";
 import {
@@ -1804,7 +1805,10 @@ export function bootstrapApp(): void {
       // `capture:saveAs` is the one capture verb owned by the Library in
       // split mode, so its sheet can be attached to the invoking window.
       // Combined mode still registers everything locally.
-      registerCaptureHandlers({ includeSaveAs: role === "combined" });
+      registerCaptureHandlers({
+        includeSaveAs: role === "combined",
+        peerPwrSnapPid: getLibraryProcessPid
+      });
       registerClipboardHandlers();
       registerFloatOverHandlers();
       registerRecordingHandlers();

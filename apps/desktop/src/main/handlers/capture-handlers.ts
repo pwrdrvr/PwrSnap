@@ -29,9 +29,11 @@ import type {
   CaptureRecord,
   ExportStrategy,
   PwrSnapError,
+  QuickCaptureAction,
   Rect,
   RenderPreset,
-  Result
+  Result,
+  Settings
 } from "@pwrsnap/shared";
 import { bus, type CommandContext } from "../command-bus";
 import {
@@ -55,6 +57,11 @@ import {
   acquireInteractiveCaptureSession,
   releaseInteractiveCaptureSession
 } from "../capture/interactive-capture-session";
+import {
+  startRecordingFromSelection as defaultStartRecordingFromSelection,
+  type CommittedSelectorResult
+} from "../capture/record-selection";
+import { resolveQuickCaptureAction } from "../capture/quick-capture-action";
 import { type WindowInfo } from "../capture/window-list";
 import {
   resolveSelectionSourceApp,
@@ -225,7 +232,17 @@ export function registerCaptureSaveAsHandler(): void {
   });
 }
 
-export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): void {
+type StartRecordingFromSelection = (
+  selection: CommittedSelectorResult,
+  settings: Settings["recording"]
+) => Promise<Result<{ sessionId: string }, PwrSnapError>>;
+
+export function registerCaptureHandlers(options?: {
+  includeSaveAs?: boolean;
+  startRecordingFromSelection?: StartRecordingFromSelection;
+}): void {
+  const startRecordingFromSelection =
+    options?.startRecordingFromSelection ?? defaultStartRecordingFromSelection;
   bus.register("capture:region", async (req) => {
     // Headless/agent path — still trigger the OS prompt on a first-ever
     // attempt (it registers PwrSnap so captures can ever work), but don't
@@ -269,6 +286,10 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // the command-bus backstop for tray/IPC double dispatches; the hotkey has
     // its own leading-edge debounce one layer earlier.
     const handlerStartedAt = Date.now();
+    // Start the settings read immediately and overlap it with permission,
+    // storage, timed-delay, and cursor work. Only Quick Capture consumes the
+    // policy; explicit Region/Window/Timed remain fixed still flows.
+    const quickSettingsPromise = mode === "auto" ? readDesktopSettings() : null;
     try {
     // Gate BEFORE pickRegion: the selector freezes a screen snapshot on
     // show(), which is all-black on a Mac without Screen Recording. On a
@@ -370,6 +391,10 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // in the picker — there the user may well want to capture it.
     const protectWindowIds = librarySourceWindowIds(ctx);
 
+    const quickSettings = await quickSettingsPromise;
+    const quickCaptureAction: QuickCaptureAction =
+      quickSettings?.recording.quickCaptureAction ?? "snap";
+
     const pickRegionStartedAt = Date.now();
     log.info("capture:interactive calling pickRegion", {
       mode,
@@ -378,7 +403,18 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       protectWindowCount: protectWindowIds.length,
       durationFromHandlerReceivedMs: pickRegionStartedAt - handlerStartedAt
     });
-    const selection = await pickRegion({ mode: selectorMode, keepPwrSnapChrome, protectWindowIds });
+    const selection = await pickRegion({
+      mode: selectorMode,
+      keepPwrSnapChrome,
+      protectWindowIds,
+      ...(mode === "auto"
+        ? {
+            quickCaptureAction,
+            intent: quickCaptureAction === "record" ? ("video" as const) : ("snap" as const),
+            cursorDefault: quickSettings!.recording.videoCaptureCursor
+          }
+        : {})
+    });
     log.info("capture:interactive pickRegion returned", {
       mode,
       selectorMode,
@@ -444,6 +480,17 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         code: selection.reason,
         message: `region selector: ${selection.reason}`
       });
+    }
+
+    const terminalAction =
+      mode === "auto"
+        ? resolveQuickCaptureAction(quickCaptureAction, selection.action)
+        : "snap";
+    if (terminalAction === "record") {
+      const recording = await startRecordingFromSelection(selection, quickSettings!.recording);
+      return recording.ok
+        ? ok({ kind: "record" as const, sessionId: recording.value.sessionId })
+        : recording;
     }
 
     // COMMIT path. The user has selected AND committed — the selector has

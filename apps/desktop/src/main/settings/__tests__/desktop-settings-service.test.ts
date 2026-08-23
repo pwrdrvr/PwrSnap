@@ -118,6 +118,29 @@ describe("DesktopSettingsService.write", () => {
     expect(read.codex.pinnedPath).toBe("");
   });
 
+  test("Quick Capture action round-trips without replacing recording siblings", async () => {
+    const svc = makeService();
+    await svc.write({
+      recording: {
+        includeMicrophone: true,
+        imageCaptureCursor: false
+      }
+    });
+
+    const written = await svc.write({
+      recording: { quickCaptureAction: "record" }
+    });
+
+    expect(written.recording.quickCaptureAction).toBe("record");
+    expect(written.recording.includeMicrophone).toBe(true);
+    expect(written.recording.imageCaptureCursor).toBe(false);
+
+    const read = await svc.read();
+    expect(read.recording.quickCaptureAction).toBe("record");
+    expect(read.recording.includeMicrophone).toBe(true);
+    expect(read.recording.imageCaptureCursor).toBe(false);
+  });
+
   test("local-agent access is opt-in and round-trips independently", async () => {
     const svc = makeService();
     expect((await svc.read()).localAgents.enabled).toBe(false);
@@ -423,6 +446,57 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     const d = defaultSettings();
     expect(d.recording.videoCaptureCursor).toBe(true);
     expect(d.recording.imageCaptureCursor).toBe(true);
+  });
+
+  test("defaultSettings() asks after Quick Capture selection without a schema bump", () => {
+    const d = defaultSettings();
+    expect(d.schemaVersion).toBe(1);
+    expect(d.recording.quickCaptureAction).toBe("ask");
+  });
+
+  test.each(["ask", "snap", "record"] as const)(
+    "v1 recording block preserves quickCaptureAction=%s",
+    async (quickCaptureAction) => {
+      const filePath = join(workDir, `settings-quick-capture-${quickCaptureAction}.json`);
+      writeFileSync(
+        filePath,
+        JSON.stringify({
+          schemaVersion: 1,
+          recording: { quickCaptureAction }
+        }),
+        "utf8"
+      );
+
+      const settings = await new DesktopSettingsService({ filePath }).read();
+      expect(settings.recording.quickCaptureAction).toBe(quickCaptureAction);
+    }
+  );
+
+  test("v1 recording block defaults a missing or malformed Quick Capture action to ask", async () => {
+    const missingPath = join(workDir, "settings-quick-capture-missing.json");
+    writeFileSync(
+      missingPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        recording: { includeSystemAudio: true }
+      }),
+      "utf8"
+    );
+    const missing = await new DesktopSettingsService({ filePath: missingPath }).read();
+    expect(missing.recording.quickCaptureAction).toBe("ask");
+    expect(missing.recording.includeSystemAudio).toBe(true);
+
+    const malformedPath = join(workDir, "settings-quick-capture-malformed.json");
+    writeFileSync(
+      malformedPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        recording: { quickCaptureAction: "sometimes" }
+      }),
+      "utf8"
+    );
+    const malformed = await new DesktopSettingsService({ filePath: malformedPath }).read();
+    expect(malformed.recording.quickCaptureAction).toBe("ask");
   });
 
   test("v1 recording block missing the cursor flags gets ON defaults filled in", async () => {

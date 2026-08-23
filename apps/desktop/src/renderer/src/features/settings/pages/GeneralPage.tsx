@@ -17,12 +17,14 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
   EVENT_CHANNELS,
+  QUICK_CAPTURE_ACTION_DEFAULT,
   type AppearanceTheme,
   type AppUpdateCheckResult,
   type AppUpdateReleaseInfo,
   type AppUpdateReleaseVersions,
   type AppUpdateStatus,
   type LaunchAtLoginStatus,
+  type QuickCaptureAction,
   type UpdateChannel,
   type UpdateTrain
 } from "@pwrsnap/shared";
@@ -115,6 +117,8 @@ export function GeneralPage(): ReactElement {
     pendingSelection?.train ?? settings?.updates.train ?? "stable";
   const selectionRef = useRef({ channel, train });
   selectionRef.current = { channel, train };
+  const quickCaptureAction: QuickCaptureAction =
+    settings?.recording.quickCaptureAction ?? QUICK_CAPTURE_ACTION_DEFAULT;
   const videoCaptureCursor = settings?.recording.videoCaptureCursor ?? true;
   const imageCaptureCursor = settings?.recording.imageCaptureCursor ?? true;
   const platform = window.pwrsnapApi?.platform;
@@ -338,7 +342,7 @@ export function GeneralPage(): ReactElement {
         <div className="pss__main-hdr-l">
           <div className="pss__main-eyebrow">General</div>
           <h1 className="pss__main-title">General</h1>
-          <p className="pss__main-sub">Appearance, startup, and updates.</p>
+          <p className="pss__main-sub">Capture, appearance, startup, and updates.</p>
         </div>
       </div>
 
@@ -352,7 +356,30 @@ export function GeneralPage(): ReactElement {
         </Row>
       </Card>
 
-      <Card eyebrow="CAPTURE" title="Cursor capture">
+      <Card eyebrow="CAPTURE" title="Capture defaults">
+        <Row
+          label="After Quick Capture selection"
+          sub="Ask shows the Snap or Record chooser. Always Snap and Always Record skip it. The dedicated Video Capture shortcut still records immediately."
+          tag="quick capture"
+        >
+          <select
+            className="pss__select"
+            aria-label="Action after Quick Capture selection"
+            value={quickCaptureAction}
+            disabled={!ready}
+            onChange={(event) => {
+              void patch({
+                recording: {
+                  quickCaptureAction: event.target.value as QuickCaptureAction
+                }
+              });
+            }}
+          >
+            <option value="ask">Ask every time</option>
+            <option value="snap">Always Snap</option>
+            <option value="record">Always Record</option>
+          </select>
+        </Row>
         <Row
           label="Capture the cursor in screenshots"
           sub="Adds the mouse pointer to new screenshots as its own layer — select, move, or delete it in the editor like any annotation."

@@ -190,6 +190,7 @@ const pwrsnapApi = {
     /** Video-only: whether the recording bakes in the mouse cursor,
      *  from the selector's `C` toggle. Omitted for image captures. */
     captureCursor?: boolean;
+    action?: "snap" | "record";
   }): void {
     ipcRenderer.send(REGION_SELECTOR_RESULT_CHANNEL, payload);
   },
@@ -349,6 +350,7 @@ const pwrsnapApi = {
       intent?: "snap" | "video";
       /** Video-only seed for the cursor toggle. `undefined` = ON. */
       cursor?: boolean;
+      quickCaptureAction?: "ask" | "snap" | "record";
     }) => void
   ): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
@@ -359,6 +361,7 @@ const pwrsnapApi = {
           screenUrl?: string;
           intent?: "snap" | "video";
           cursor?: boolean;
+          quickCaptureAction?: "ask" | "snap" | "record";
         }
       );
     ipcRenderer.on(REGION_SELECTOR_MODE_CHANNEL, wrapped);

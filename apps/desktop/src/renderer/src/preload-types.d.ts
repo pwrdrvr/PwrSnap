@@ -52,6 +52,7 @@ declare global {
         snappedWindowId?: number;
         fullWindow?: boolean;
         captureCursor?: boolean;
+        action?: "snap" | "record";
       }): void;
       notifySelectorSnapshotPainted(payload: {
         screenUrl: string;
@@ -75,6 +76,7 @@ declare global {
           screenUrl?: string;
           intent?: "snap" | "video";
           cursor?: boolean;
+          quickCaptureAction?: "ask" | "snap" | "record";
         }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;

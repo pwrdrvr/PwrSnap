@@ -220,6 +220,54 @@ test("arrow keys nudge the adjustable rect by 1px (10 with shift)", async () => 
   }
 });
 
+test("Quick Capture ask shows an accessible chooser and forwarded R submits Record once", async () => {
+  // Pure selector DOM/IPC coverage: no pickRegion promise and no recording
+  // controller are involved, so this exercises the real sandboxed renderer
+  // without touching screen-capture or TCC paths.
+  const app = await launchPwrSnap();
+  try {
+    const selector = await showAndGetRegionSelector(app);
+    await installResultCapture(app);
+    await sendSelectorMode(app, {
+      mode: "auto",
+      intent: "snap",
+      quickCaptureAction: "ask"
+    });
+
+    const root = selector.locator(".region-root");
+    const box = await root.boundingBox();
+    if (box === null) throw new Error("region-root has no bounding box");
+    await selector.mouse.move(box.x + 160, box.y + 140);
+    await selector.mouse.down();
+    await selector.mouse.move(box.x + 440, box.y + 340, { steps: 5 });
+    await selector.mouse.up();
+    await expect(selector.locator("body")).toHaveAttribute(
+      "data-interaction",
+      "adjusting"
+    );
+
+    await selector.keyboard.press("Enter");
+    const dialog = selector.getByRole("dialog", { name: "Capture selection" });
+    await expect(dialog).toBeVisible();
+    expect(await readResults(app)).toHaveLength(0);
+
+    const enterLabel = process.platform === "darwin" ? "Return" : "Enter";
+    const snap = dialog.getByRole("button", { name: `Snap (${enterLabel})` });
+    await expect(snap).toBeFocused();
+    await expect(dialog.getByRole("button", { name: "Record (R)" })).toBeVisible();
+
+    await sendSelectorKey(app, "R");
+    await sendSelectorKey(app, "R");
+    await expect.poll(async () => (await readResults(app)).length).toBe(1);
+    expect((await readResults(app))[0]).toMatchObject({
+      ok: true,
+      action: "record"
+    });
+  } finally {
+    await app.close();
+  }
+});
+
 /** Capture submitRegion (region-selector:result) payloads on the main
  *  side — renderer-side stubbing doesn't survive the contextBridge
  *  freeze, so we prependListener on ipcMain (same pattern as
@@ -258,6 +306,23 @@ async function sendSelectorKey(
     if (w === undefined) throw new Error("no selector window");
     w.webContents.send("region-selector:key", { key });
   }, key);
+}
+
+async function sendSelectorMode(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>,
+  payload: {
+    mode: "auto" | "region" | "window";
+    intent?: "snap" | "video";
+    quickCaptureAction?: "ask" | "snap" | "record";
+  }
+): Promise<void> {
+  await app.electronApp.evaluate(({ BrowserWindow }, modePayload) => {
+    const w = BrowserWindow.getAllWindows().find(
+      (w) => !w.isDestroyed() && w.webContents.getURL().includes("stage=region")
+    );
+    if (w === undefined) throw new Error("no selector window");
+    w.webContents.send("region-selector:mode", modePayload);
+  }, payload);
 }
 
 function parseRectStyle(style: string | null): { left: number; top: number } {

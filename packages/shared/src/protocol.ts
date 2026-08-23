@@ -95,6 +95,14 @@ export type CaptureRecord = {
   video?: VideoCaptureMetadata | null;
 };
 
+/** Terminal outcome of the user-facing Quick Capture flow. The still arm
+ *  intentionally remains the historical bare `CaptureRecord` wire shape;
+ *  a recording only has a session id at this point because its Library
+ *  record is created when the user stops recording. */
+export type InteractiveCaptureResult =
+  | CaptureRecord
+  | { kind: "record"; sessionId: string };
+
 /**
  * Per-capture metadata for video rows. Mirrors the `video_captures`
  * table (see migration 0005). Stored alongside the source clip so the
@@ -2159,6 +2167,26 @@ export type LaunchAtLoginStatus = {
   blockedByOs: boolean;
 };
 
+/** What Quick Capture does after the user commits a selector region.
+ *  `ask` preserves the committed selection while an accessible chooser
+ *  offers Snap or Record; the other values route directly to that pipeline. */
+export type QuickCaptureAction = "ask" | "snap" | "record";
+
+export const QUICK_CAPTURE_ACTIONS = [
+  "ask",
+  "snap",
+  "record"
+] as const satisfies readonly QuickCaptureAction[];
+
+export const QUICK_CAPTURE_ACTION_DEFAULT: QuickCaptureAction = "ask";
+
+export function isQuickCaptureAction(value: unknown): value is QuickCaptureAction {
+  return (
+    typeof value === "string" &&
+    (QUICK_CAPTURE_ACTIONS as readonly string[]).includes(value)
+  );
+}
+
 export type Settings = {
   /** Bumped when the on-disk shape changes. Readers below the current
    *  version go through the legacy-shape catalog in the service before
@@ -2350,13 +2378,17 @@ export type Settings = {
     capturesLocation: CapturesLocation;
   };
   /**
-   * Per-user defaults the recording UI seeds from. Audio toggles
+   * Per-user capture and recording defaults. Audio toggles
    * default to OFF — recording the user's microphone or system audio
    * is a privacy-relevant action and must be an explicit opt-in each
    * time, but remembering the last choice cuts friction for the
    * common "I record with mic every time" pattern.
    */
   recording: {
+    /** Action taken after a Quick Capture selector commit. `ask` opens
+     *  the Snap-vs-Record chooser; the dedicated Video Capture shortcut
+     *  remains an immediate recording path regardless of this preference. */
+    quickCaptureAction: QuickCaptureAction;
     /** Default toggle for the system-audio MP4 export option. */
     includeSystemAudio: boolean;
     /** Default toggle for the microphone MP4 export option. */
@@ -3295,8 +3327,10 @@ export type Commands = {
   /** Headless region capture. Agents call this; humans go through `capture:interactive`. */
   "capture:region": { req: { rect: Rect; displayId: number }; res: CaptureRecord };
   /**
-   * Opens the region-selector window, awaits user confirm, returns the
-   * capture record.
+   * Opens the region-selector window and awaits a terminal action. A Snap
+   * preserves the existing bare CaptureRecord response; Record returns the
+   * newly-started recording session id (the Library record is created when
+   * recording stops).
    *
    * `mode` controls the selector's behavior:
    *   - `auto` (default) — snap-to-window highlight is live; click a
@@ -3318,7 +3352,7 @@ export type Commands = {
    */
   "capture:interactive": {
     req: { mode?: "auto" | "region" | "window" | "timed" };
-    res: CaptureRecord;
+    res: InteractiveCaptureResult;
   };
   /**
    * Fast Video Capture entry point for UI surfaces (the tray's Record

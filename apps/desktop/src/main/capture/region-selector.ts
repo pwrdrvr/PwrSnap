@@ -36,6 +36,7 @@ import {
 import { captureAndRegister, releaseSnapshot, type ScreenSnapshot } from "./screen-snapshot";
 import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
+import type { QuickCaptureAction } from "@pwrsnap/shared";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
@@ -266,6 +267,8 @@ export type SelectorResult =
        *  `settings.recording.videoCaptureCursor`). Undefined for image
        *  captures, which don't consume it yet (Phase 3). */
       captureCursor?: boolean;
+      /** Terminal route selected by the fixed policy or chooser. */
+      action: "snap" | "record";
     }
   | {
       ok: false;
@@ -704,6 +707,10 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
               h: selectedRect.h
             },
             displayId: lifecycle.targetDisplayId,
+            // Older/pre-warmed renderers omitted action and historically
+            // committed a still capture. Keep that safe fallback at the
+            // trusted main-process boundary.
+            action: payload.action ?? "snap",
             ...previousApp
           };
           if (snapshot !== null) result.screenSnapshotId = snapshot.id;
@@ -782,6 +789,9 @@ export async function pickRegion(
      *  the renderer in the mode signal; the committed value rides back
      *  on the result as `captureCursor`. */
     cursorDefault?: boolean;
+    /** Quick Capture's persisted post-selection policy. Undefined preserves
+     *  fixed historical behavior for non-Quick callers. */
+    quickCaptureAction?: QuickCaptureAction;
   } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
@@ -789,6 +799,7 @@ export async function pickRegion(
   const protectWindowIds = opts.protectWindowIds ?? [];
   const intent = opts.intent ?? "snap";
   const cursorDefault = opts.cursorDefault;
+  const quickCaptureAction = opts.quickCaptureAction;
   if (pickerInvocationActive || pendingResolver !== null) {
     log.info("capture selector invocation suppressed", {
       mode,
@@ -1213,7 +1224,8 @@ export async function pickRegion(
           ? { screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}` }
           : {}),
         intent,
-        cursor: cursorDefault
+        cursor: cursorDefault,
+        ...(quickCaptureAction !== undefined ? { quickCaptureAction } : {})
       };
       if (!win.isDestroyed()) {
         win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
@@ -1761,6 +1773,16 @@ function installSelectorGlobalShortcuts(win: BrowserWindow): void {
       win.webContents.send(SELECTOR_KEY_CHANNEL, { key: "Enter" });
     }
   });
+  globalShortcut.register("R", () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send(SELECTOR_KEY_CHANNEL, { key: "r" });
+    }
+  });
+  globalShortcut.register("C", () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send(SELECTOR_KEY_CHANNEL, { key: "c" });
+    }
+  });
   shortcutsInstalled = true;
 }
 
@@ -1768,6 +1790,8 @@ function uninstallSelectorGlobalShortcuts(): void {
   if (!shortcutsInstalled) return;
   globalShortcut.unregister("Escape");
   globalShortcut.unregister("Return");
+  globalShortcut.unregister("R");
+  globalShortcut.unregister("C");
   shortcutsInstalled = false;
 }
 
@@ -2247,6 +2271,7 @@ function isSelectorPayload(value: unknown): value is {
   snappedWindowId?: number;
   fullWindow?: boolean;
   captureCursor?: boolean;
+  action?: "snap" | "record";
 } {
   if (value === null || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -2277,6 +2302,9 @@ function isSelectorPayload(value: unknown): value is {
     return false;
   }
   if (v.captureCursor !== undefined && typeof v.captureCursor !== "boolean") {
+    return false;
+  }
+  if (v.action !== undefined && v.action !== "snap" && v.action !== "record") {
     return false;
   }
   return true;

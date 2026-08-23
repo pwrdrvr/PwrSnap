@@ -112,10 +112,10 @@
 .szt__lanes {
   position: relative;
   display: grid;
-  /* The ribbon row is deliberately tall: at 6 stagger rows a dense
-     narration can label most of its words instead of collapsing them into
-     unreadable ticks. */
-  grid-template-rows: 22px 20px 72px 28px 96px;
+  /* The ribbon row is `auto`: WordRibbon sizes its own lane to the stagger
+     rows the narration actually uses (up to its 6-row ceiling), so a
+     three-row ribbon does not leave three rows of dead band under it. */
+  grid-template-rows: 22px 20px 72px 28px auto;
   cursor: ew-resize;
   user-select: none;
   /* Structural defense, not decoration: `.szt__scroll` is `overflow-x: auto`,

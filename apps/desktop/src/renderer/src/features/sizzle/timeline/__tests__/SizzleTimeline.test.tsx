@@ -231,9 +231,10 @@ describe("SizzleTimeline", () => {
       ],
       sourceFor: () => ({ words: WORDS, context: { capture: null, narrationDurationSec: 8 } })
     });
-    // total = 8 + 8 − 0.5 = 15.5 s over 1000 px.
+    // total = 8 + 8 − 0.5 = 15.5 s over 1000 px. Pinned to fit: this test is
+    // about the playhead's geometry, and auto would pick 2x for the ribbon.
     const head = createPlayheadSource(7.75);
-    const el = await render({ model, head });
+    const el = await render({ model, head, initialZoom: "fit" });
     const line = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-playhead"]')!;
     expect(line.style.transform).toBe("translateX(500px)");
     expect(line.textContent).toBe("0:07.7");

@@ -3,7 +3,13 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { SizzleScene, SizzleSequenceBeat, SizzleWordTiming } from "@pwrsnap/shared";
-import { layoutRibbonWords, WordRibbon } from "../WordRibbon";
+import {
+  layoutRibbonWords,
+  legibleZoomForWords,
+  ribbonLaneHeightPx,
+  RIBBON_ROWS,
+  WordRibbon
+} from "../WordRibbon";
 import {
   buildTimelineModel,
   type TimelineModel,
@@ -137,6 +143,62 @@ describe("WordRibbon", () => {
     // At 125 px/s everything fits on the first row.
     const roomy = layoutRibbonWords(words, 125, new Set());
     expect(roomy.every((p) => !p.tick)).toBe(true);
+  });
+
+  test("the lane is sized to the rows the narration uses, not to the six it may use", async () => {
+    const model = buildTimelineModel({
+      scenes: [sequence("s1", SCRIPT, [beat("a")])],
+      sourceFor: () => ({ words: WORDS, context: { capture: null, narrationDurationSec: 8 } })
+    });
+    // Roomy: every word clears on row 0, so the lane is one row tall — but
+    // never below the floor the "Synthesize" button needs.
+    const laneHeight = (el: HTMLDivElement): number =>
+      Number.parseInt(el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-ribbon"]')!.style.height, 10);
+    const roomyPx = laneHeight(await render(model, 125));
+    expect(roomyPx).toBe(ribbonLaneHeightPx(1));
+    await act(async () => {
+      root?.unmount();
+    });
+    container?.remove();
+    // Cramped: the same words at 30 px/s stagger down several rows, and the
+    // lane grows to hold them.
+    const densePx = laneHeight(await render(model, 30));
+    expect(densePx).toBeGreaterThan(roomyPx);
+    expect(densePx).toBeLessThanOrEqual(ribbonLaneHeightPx(RIBBON_ROWS));
+  });
+
+  describe("legibleZoomForWords", () => {
+    const words = WORDS.map((w, pos) => ({ ...w, pos, absStartSec: w.startSec, absEndSec: w.endSec }));
+
+    test("a narration crammed into fit picks the coarsest density that still reads", () => {
+      // 8 s of words in a ~152 px column is 19 px/s — the density the
+      // operator was shown, where words 9.5 px apart cannot carry a label
+      // and the ribbon stacks to its ceiling.
+      expect(legibleZoomForWords(words, 19)).toBe(2);
+      // Denser fits are honoured too: the answer is a density, not a rung.
+      expect(legibleZoomForWords(words, 45)).toBe(2);
+    });
+
+    test("a reel that already reads at fit stays at fit — a rung would show empty track", () => {
+      // A short reel in a wide column: fit is 200 px/s, denser than 2x and
+      // 4x, so no rung is an improvement.
+      expect(legibleZoomForWords(words, 200)).toBe("fit");
+    });
+
+    test("nothing to lay out means no opinion", () => {
+      expect(legibleZoomForWords([], 19)).toBe("fit");
+      expect(legibleZoomForWords(words, 0)).toBe("fit"); // column not measured yet
+    });
+
+    test("the chosen density actually clears the ribbon in two rows", () => {
+      const zoom = legibleZoomForWords(words, 19);
+      const pxPerSec = zoom === "fit" ? 19 : 40 * zoom;
+      const placed = layoutRibbonWords(words, pxPerSec, new Set(), Number.POSITIVE_INFINITY, 2);
+      expect(placed.filter((p) => p.tick).length).toBe(0);
+      // And the density the operator was shown does not.
+      const atFit = layoutRibbonWords(words, 19, new Set(), Number.POSITIVE_INFINITY, 2);
+      expect(atFit.filter((p) => p.tick).length).toBeGreaterThan(0);
+    });
   });
 
   test("a label that would run past the lanes' right edge is a tick, so the ribbon never widens the scroll area", () => {

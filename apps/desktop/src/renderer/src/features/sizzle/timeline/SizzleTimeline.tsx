@@ -32,7 +32,7 @@ import { Playhead } from "./Playhead";
 import { SceneRegions } from "./SceneRegions";
 import { TimelineRuler } from "./TimelineRuler";
 import { WaveformLane } from "./WaveformLane";
-import { WordRibbon } from "./WordRibbon";
+import { legibleZoomForWords, WordRibbon } from "./WordRibbon";
 import { pxPerSecFor, TIMELINE_ZOOMS, zoomIn, zoomOut, type TimelineZoom } from "./density";
 import {
   clampToBounds,
@@ -72,7 +72,9 @@ export type SizzleTimelineProps = {
   /** A finished clip drag (one per gesture). Absent = the lane is
    *  read-only: no grips, no body drag. */
   onDragCommit?: ((commit: TimelineDragCommit) => void) | undefined;
-  /** Initial zoom (tests). Defaults to fit-to-width. */
+  /** Pin the zoom instead of letting the ribbon choose it (tests, and the
+   *  caller that wants a fixed density). Absent = auto: see
+   *  {@link legibleZoomForWords}. */
   initialZoom?: TimelineZoom | undefined;
 };
 
@@ -114,14 +116,18 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
     onClickWord,
     onSynthesize,
     onDragCommit,
-    initialZoom = "fit"
+    initialZoom
   } = props;
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const lanesRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(0);
-  const [zoom, setZoom] = useState<TimelineZoom>(initialZoom);
+  // `null` = nobody has chosen, so the ribbon chooses (see `zoom` below).
+  // Any click on the zoom group or ⌘± fills this in and auto never fires
+  // again for this mount — a zoom that moves under the operator after they
+  // set it is worse than a bad default.
+  const [pickedZoom, setPickedZoom] = useState<TimelineZoom | null>(initialZoom ?? null);
   const [scrubbing, setScrubbing] = useState(false);
   const scrubRef = useRef<number | null>(null);
   const clipDragRef = useRef<ClipDragState | null>(null);
@@ -147,6 +153,16 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
 
   const totalSec = model.totalSec;
   const fitPxPerSec = pxPerSecFor("fit", width, totalSec);
+  // Fit-to-width answers "show me the whole reel", which is right for the
+  // clips and wrong for the words — see `legibleZoomForWords`. The default
+  // is therefore the coarsest density the NARRATION still reads at, and it
+  // resolves to `fit` whenever there is no narration to read.
+  const ribbonWords = useMemo(() => model.scenes.flatMap((scene) => scene.words), [model]);
+  const autoZoom = useMemo(
+    () => legibleZoomForWords(ribbonWords, fitPxPerSec),
+    [ribbonWords, fitPxPerSec]
+  );
+  const zoom = pickedZoom ?? autoZoom;
   const pxPerSec = pxPerSecFor(zoom, width, totalSec);
   const contentWidth = Math.max(width, Math.round(totalSec * pxPerSec));
   const lanesWidth = zoom === "fit" ? contentWidth : contentWidth + TAIL_PX;
@@ -222,15 +238,15 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
       if (isTypingTarget(event.target)) return;
       if (event.key === "=" || event.key === "+") {
         event.preventDefault();
-        setZoom((z) => zoomIn(z, fitPxPerSec));
+        setPickedZoom(zoomIn(zoom, fitPxPerSec));
       } else if (event.key === "-" || event.key === "_") {
         event.preventDefault();
-        setZoom((z) => zoomOut(z, fitPxPerSec));
+        setPickedZoom(zoomOut(zoom, fitPxPerSec));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [fitPxPerSec]);
+  }, [fitPxPerSec, zoom]);
 
   const secAt = useCallback(
     (clientX: number): number => {
@@ -441,7 +457,7 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
               type="button"
               className={z === zoom ? "is-on" : ""}
               aria-pressed={z === zoom}
-              onClick={() => setZoom(z)}
+              onClick={() => setPickedZoom(z)}
               data-testid={`sizzle-timeline-zoom-${String(z)}`}
             >
               {z === "fit" ? "Fit" : `${z}×`}

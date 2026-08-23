@@ -14,8 +14,8 @@
 //   • recording:state idle on a fresh launch (default RecordingState)
 //   • recording:cancel always succeeds (unconditional reset contract)
 //   • recording:restart from idle returns validation/not_recording
-//   • permissions:readiness shape (status strings + 16-char hex fingerprint)
-//   • permissions:request rejects unknown permission names
+//   • permissions:readiness shape (status strings + explicit evidence + fingerprint)
+//   • permission actions reject unknown permission names
 //
 // Strategy mirrors editor-handlers.test.ts: vi.mock electron's
 // systemPreferences + the recording service so we don't touch macOS TCC
@@ -148,6 +148,10 @@ describe("permissions:* command-bus surface", () => {
     expect(validStatuses).toContain(r.screenRecording);
     expect(validStatuses).toContain(r.microphone);
     expect(validStatuses).toContain(r.systemAudio);
+    expect(["darwin", "win32", "other"]).toContain(r.permissionEvidence.platform);
+    expect(r.permissionEvidence).toHaveProperty("screen.kind");
+    expect(r.permissionEvidence).toHaveProperty("microphone.kind");
+    expect(r.permissionEvidence).toHaveProperty("systemAudio.kind");
     // Superset field over RecordingReadiness: whether PwrSnap has ever
     // triggered the screen prompt. Settings handlers aren't registered in
     // this file, so the gate's settings:read returns unknown_command and
@@ -165,6 +169,19 @@ describe("permissions:* command-bus surface", () => {
       // Bypass the type guard — a buggy renderer (or a future MCP / HTTP
       // RPC caller) could ship an arbitrary string. The validator at
       // the bus boundary closes that hole.
+      { permission: "bogus" } as never,
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected error");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("unknown_permission");
+  });
+
+  test("permissions:openSystemSettings rejects unknown permission names", async () => {
+    const result = await bus.dispatch(
+      "permissions:openSystemSettings",
       { permission: "bogus" } as never,
       { principal: "ipc" }
     );

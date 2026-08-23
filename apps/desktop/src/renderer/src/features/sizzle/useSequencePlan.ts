@@ -63,6 +63,10 @@ export type SequencePlanState = {
   /** Narration length read from the TTS cache on open, keyed like
    *  `measuredVoiceoverDurationSec`; survives plan-invalidating edits. */
   cachedNarrationDurationSec: (scene: SizzleScene) => number | undefined;
+  /** A pending "Re-fit anchors" offer (plan §4.2): the scene's resolved
+   *  narration length changed this session and it has offset anchors. */
+  refitOfferForScene: (scene: SizzleScene) => { fromSec: number; toSec: number } | null;
+  dismissRefitOffer: (sceneId: string) => void;
   /** Inputs the reel-length memo must re-run on. */
   durationDeps: readonly unknown[];
   onPreviewScene: (sceneId: string) => Promise<void>;
@@ -129,6 +133,35 @@ export function useSequencePlan(args: {
   const [cachedNarrationDurations, setCachedNarrationDurations] = useState<
     Record<string, MeasuredDuration>
   >({});
+  // Re-fit anchors (plan §4.2). Offsets are absolute seconds and never
+  // rescale on their own; when a scene's RESOLVED narration length changes
+  // in this session (a re-synthesis after a script / voice edit) and the
+  // scene has offset-anchored clips, an explicit offer to scale them by
+  // new/old is surfaced. `lastResolvedSecRef` remembers the last resolved
+  // length per scene — in-session only, by design (§4.2 requirement 3):
+  // after a relaunch there is no "previous" and no offer.
+  const lastResolvedSecRef = useRef<Map<string, number>>(new Map());
+  const [refitOffers, setRefitOffers] = useState<Record<string, { fromSec: number; toSec: number }>>({});
+  const noteResolvedDuration = (scene: SizzleScene, durationSec: number): void => {
+    if (!(durationSec > 0)) return;
+    const prev = lastResolvedSecRef.current.get(scene.id);
+    lastResolvedSecRef.current.set(scene.id, durationSec);
+    if (prev === undefined || Math.abs(prev - durationSec) < 0.05) return;
+    const hasOffsets =
+      scene.kind === "sequence" && (scene.beats ?? []).some((b) => b.timing.kind === "offset");
+    if (!hasOffsets) return;
+    setRefitOffers((cur) => ({ ...cur, [scene.id]: { fromSec: cur[scene.id]?.fromSec ?? prev, toSec: durationSec } }));
+  };
+  const refitOfferForScene = (scene: SizzleScene): { fromSec: number; toSec: number } | null =>
+    refitOffers[scene.id] ?? null;
+  const dismissRefitOffer = (sceneId: string): void => {
+    setRefitOffers((cur) => {
+      if (cur[sceneId] === undefined) return cur;
+      const next = { ...cur };
+      delete next[sceneId];
+      return next;
+    });
+  };
 
   // Per-scene preview-request generation counter. Each click of ▶
   // bumps it; the response only applies if it's still current.
@@ -246,6 +279,7 @@ export function useSequencePlan(args: {
         setPreviewError(planResult.error.message);
         return;
       }
+      noteResolvedDuration(scene, planResult.value.durationSec);
       setSequencePreviewPlans((prev) => ({
         ...prev,
         [sceneId]: {
@@ -441,6 +475,11 @@ export function useSequencePlan(args: {
           // scene in the reel total.
           const cachedDurationSec = res.value.durationSec;
           if (typeof cachedDurationSec === "number" && cachedDurationSec > 0) {
+            // The length this session first saw the scene at — the baseline a
+            // later re-synthesis is compared against. Never an offer by itself.
+            if (!lastResolvedSecRef.current.has(scene.id)) {
+              lastResolvedSecRef.current.set(scene.id, cachedDurationSec);
+            }
             setCachedNarrationDurations((prev) => ({
               ...prev,
               [scene.id]: {
@@ -524,6 +563,8 @@ export function useSequencePlan(args: {
     wordsForScene,
     measuredVoiceoverDurationSec,
     cachedNarrationDurationSec,
+    refitOfferForScene,
+    dismissRefitOffer,
     durationDeps: [sequencePreviewPlans, previewDurations, cachedNarrationDurations],
     onPreviewScene,
     seekPreview,

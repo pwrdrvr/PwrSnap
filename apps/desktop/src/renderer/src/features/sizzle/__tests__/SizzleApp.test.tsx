@@ -2445,3 +2445,241 @@ describe("clip inspector (right-rail drawer)", () => {
     }
   });
 });
+
+describe("scene inspector — multi-scene operations (plan PR 8)", () => {
+  // jsdom has no layout: give the timeline a 1000 px strip for this block.
+  const realRect = Element.prototype.getBoundingClientRect;
+  beforeAll(() => {
+    Element.prototype.getBoundingClientRect = function getBoundingClientRect(this: Element) {
+      const width =
+        this.classList.contains("szt__scroll") || this.classList.contains("szt__lanes") ? 1000 : 0;
+      return { x: 0, y: 0, left: 0, top: 0, right: width, bottom: 0, width, height: 0, toJSON: () => ({}) } as DOMRect;
+    };
+  });
+  afterAll(() => {
+    Element.prototype.getBoundingClientRect = realRect;
+  });
+  const autoBeat = (
+    id: string,
+    captureId: string,
+    patch: Partial<NonNullable<SizzleScene["beats"]>[number]> = {}
+  ): NonNullable<SizzleScene["beats"]>[number] => ({
+    id,
+    captureId,
+    timing: { kind: "auto" },
+    mediaTrim: null,
+    transition: "cut",
+    videoFit: "smart-fit",
+    ...patch
+  });
+  const WORDS = ["Open", "the", "Library", "to", "find", "every", "capture", "fast"].map((word, index) => ({
+    index,
+    word,
+    normalized: word.toLowerCase(),
+    startSec: index * 0.5,
+    endSec: index * 0.5 + 0.4
+  }));
+  const cachedAudio = {
+    ok: true,
+    value: { cached: true, audioBase64: "AA==", mimeType: "audio/mpeg", transcriptPhrases: [], durationSec: 4, words: WORDS }
+  };
+  const seqA = (): SizzleScene =>
+    scene({
+      id: "sc_a",
+      kind: "sequence",
+      scriptLine: "Open the Library to find every capture fast",
+      narration: "Open the Library to find every capture fast",
+      beats: [autoBeat("bt_a", "cap_a"), autoBeat("bt_b", "cap_b"), autoBeat("bt_c", "cap_c")]
+    });
+  const seqB = (): SizzleScene =>
+    scene({
+      id: "sc_b",
+      kind: "sequence",
+      scriptLine: "Then share it",
+      narration: "Then share it",
+      beats: [autoBeat("bt_d", "cap_d"), autoBeat("bt_e", "cap_e")],
+      transition: "crossfade"
+    });
+  const lastScenes = (dispatch: { mock: { calls: unknown[][] } }): SizzleScene[] => {
+    const updates = dispatch.mock.calls.filter(([name]) => name === "sizzle:update");
+    const payload = updates.at(-1)?.[1] as { patch?: { scenes?: SizzleScene[] } } | undefined;
+    return payload?.patch?.scenes ?? [];
+  };
+  const settle = async (): Promise<void> => {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+  };
+  const selectScene = async (el: HTMLElement, index: number): Promise<void> => {
+    const region = el.querySelector<HTMLButtonElement>(`[data-testid="sizzle-timeline-scene-${index}"]`);
+    if (region === null) throw new Error(`scene region ${index} not found`);
+    await act(async () => {
+      region.click();
+    });
+  };
+  const setSelect = async (select: HTMLSelectElement, value: string): Promise<void> => {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(select, value);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  };
+
+  test("a region (or its transition pill) opens the scene inspector; a clip swaps to the clip inspector; Esc closes", async () => {
+    const { el } = await renderApp(project({ scenes: [seqA(), seqB()] }));
+    await selectScene(el, 1);
+    const insp = el.querySelector<HTMLElement>('[data-testid="sizzle-scene-inspector"]');
+    expect(insp).not.toBeNull();
+    expect(insp!.textContent).toContain("Scene 2 of 2");
+    expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')).toBeNull();
+    // Selecting a clip replaces it with the clip inspector…
+    await selectClip(el, "bt_d");
+    expect(el.querySelector('[data-testid="sizzle-scene-inspector"]')).toBeNull();
+    expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')).not.toBeNull();
+    // …and the pill brings the scene back.
+    await act(async () => {
+      el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-transition-1"]')!.click();
+    });
+    expect(el.querySelector('[data-testid="sizzle-scene-inspector"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="sizzle-clip-inspector"]')).toBeNull();
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(el.querySelector('[data-testid="sizzle-scene-inspector"]')).toBeNull();
+  });
+
+  test("the transition INTO a scene is editable as type + duration (all eight types); the first scene has none", async () => {
+    const { el, dispatch } = await renderApp(project({ scenes: [seqA(), seqB()] }));
+    await selectScene(el, 0);
+    expect(el.querySelector('[data-testid="sizzle-scene-inspector-transition"]')).toBeNull();
+    await selectScene(el, 1);
+    const type = el.querySelector<HTMLSelectElement>('[data-testid="sizzle-scene-inspector-transition"]')!;
+    expect([...type.options].map((o) => o.value)).toEqual([
+      "none", "cut", "crossfade", "dip-black", "dip-white", "push-left", "slide-left", "zoom-cut"
+    ]);
+    expect(type.value).toBe("crossfade");
+    expect(el.querySelector<HTMLInputElement>('[data-testid="sizzle-scene-inspector-transition-duration"]')!.value).toBe("0.4");
+    await setSelect(type, "dip-white");
+    await settle();
+    expect(lastScenes(dispatch)[1]!.transition).toEqual({ type: "dip-white", durationSec: 0.4 }); // keeps the duration
+    // The timeline pill reflects it.
+    expect(el.querySelector('[data-testid="sizzle-timeline-transition-1"]')?.textContent).toContain("dip white");
+  });
+
+  test("move later reorders scenes; merge with previous joins narration + clips and selects the merged scene", async () => {
+    const { el, dispatch } = await renderApp(project({ scenes: [seqA(), seqB()] }));
+    await selectScene(el, 0);
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-scene-inspector-move-later"]')!.click();
+    });
+    await settle();
+    expect(lastScenes(dispatch).map((s) => s.id)).toEqual(["sc_b", "sc_a"]);
+    // Now sc_a is second: merge it into sc_b.
+    await selectScene(el, 1);
+    expect(el.querySelector<HTMLElement>('[data-testid="sizzle-scene-inspector"]')!.textContent).toContain("Scene 2 of 2");
+    const merge = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-scene-inspector-merge"]')!;
+    expect(merge.disabled).toBe(false);
+    await act(async () => {
+      merge.click();
+    });
+    await settle();
+    const scenes = lastScenes(dispatch);
+    expect(scenes).toHaveLength(1);
+    expect(scenes[0]!.id).toBe("sc_b");
+    expect(scenes[0]!.narration).toBe("Then share it Open the Library to find every capture fast");
+    expect(scenes[0]!.beats!.map((b) => b.id)).toEqual(["bt_d", "bt_e", "bt_a", "bt_b", "bt_c"]);
+    // The boundary clip is pinned to the merged-in narration's first word.
+    expect(scenes[0]!.beats![2]!.timing).toEqual({ kind: "phrase", phrase: "Open", occurrence: 1, offsetSec: 0, durationSec: null });
+    // The inspector follows the merged scene.
+    expect(el.querySelector<HTMLElement>('[data-testid="sizzle-scene-inspector"]')!.textContent).toContain("Scene 1 of 1");
+  });
+
+  test("split at playhead needs a resolved scene + the playhead inside; it divides the script at the spoken word", async () => {
+    const { el, dispatch } = await renderApp(project({ scenes: [seqA()] }), {
+      "sizzle:loadSequenceSceneAudio": cachedAudio
+    });
+    for (let i = 0; i < 10 && el.querySelector('[data-testid="sizzle-timeline-word-0-3"]') === null; i += 1) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    await selectScene(el, 0);
+    const split = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-scene-inspector-split-at-playhead"]')!;
+    expect(split.disabled).toBe(true); // no playhead in the scene yet
+    // Scrub to 2.2 s (250 px/s): between "find" (2.0) and "every" (2.5).
+    const lanes = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-lanes"]')!;
+    await act(async () => {
+      lanes.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerId: 7, clientX: 550 }));
+      lanes.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, pointerId: 7, clientX: 550 }));
+    });
+    // Scrubbing bare track clears the selection (direct manipulation); select the scene again.
+    await selectScene(el, 0);
+    const split2 = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-scene-inspector-split-at-playhead"]')!;
+    expect(split2.disabled).toBe(false);
+    await act(async () => {
+      split2.click();
+    });
+    await settle();
+    const scenes = lastScenes(dispatch);
+    expect(scenes).toHaveLength(2);
+    expect(scenes[0]!.narration).toBe("Open the Library to find");
+    expect(scenes[1]!.narration).toBe("every capture fast");
+    // Clips starting before 2.2 s stay (0, 1.333); the one at 2.667 moves.
+    expect(scenes[0]!.beats!.map((b) => b.id)).toEqual(["bt_a", "bt_b"]);
+    expect(scenes[1]!.beats!.map((b) => b.id)).toEqual(["bt_c"]);
+    expect(scenes[1]!.transition).toBe("cut");
+    expect(el.querySelectorAll('[data-testid^="sizzle-timeline-scene-"]').length).toBe(2);
+  });
+
+  test("a re-synthesis that changes the narration length offers Re-fit for offset anchors, and applying it scales them", async () => {
+    const withOffset = scene({
+      id: "sc_a",
+      kind: "sequence",
+      scriptLine: "Open the Library to find every capture fast",
+      narration: "Open the Library to find every capture fast",
+      beats: [autoBeat("bt_a", "cap_a"), autoBeat("bt_b", "cap_b", { timing: { kind: "offset", startSec: 2, endSec: null } })]
+    });
+    const { el, dispatch } = await renderApp(project({ scenes: [withOffset] }), {
+      "sizzle:loadSequenceSceneAudio": cachedAudio, // baseline: 4 s
+      "sizzle:previewSequenceScenePlan": {
+        ok: true,
+        value: {
+          audioBase64: "AA==",
+          mimeType: "audio/mpeg",
+          durationSec: 8, // the re-synthesis came back twice as long
+          timingQuality: "precise",
+          warnings: [],
+          transcriptPhrases: [],
+          words: WORDS.map((w) => ({ ...w, startSec: w.startSec * 2, endSec: w.endSec * 2 })),
+          beats: [
+            { beatId: "bt_a", captureId: "cap_a", startSec: 0, endSec: 2, timing: { kind: "auto" }, transition: "crossfade", videoFit: "smart-fit" },
+            { beatId: "bt_b", captureId: "cap_b", startSec: 2, endSec: 8, timing: { kind: "offset", startSec: 2, endSec: null }, transition: "cut", videoFit: "smart-fit" }
+          ]
+        }
+      }
+    });
+    for (let i = 0; i < 10 && el.querySelector('[data-testid="sizzle-timeline-word-0-3"]') === null; i += 1) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    await selectScene(el, 0);
+    expect(el.querySelector('[data-testid="sizzle-scene-inspector-refit"]')).toBeNull();
+    // Re-synthesize from the inspector (explicit click).
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-scene-inspector-synthesize"]')!.click();
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    });
+    expect(dispatch).toHaveBeenCalledWith("sizzle:previewSequenceScenePlan", { projectId: "sz_1", sceneId: "sc_a" });
+    const offer = el.querySelector<HTMLElement>('[data-testid="sizzle-scene-inspector-refit"]');
+    expect(offer).not.toBeNull();
+    expect(offer!.textContent).toContain("4 s");
+    expect(offer!.textContent).toContain("8 s");
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-scene-inspector-refit-apply"]')!.click();
+    });
+    await settle();
+    expect(lastScenes(dispatch)[0]!.beats![1]!.timing).toEqual({ kind: "offset", startSec: 4, endSec: null });
+    expect(el.querySelector('[data-testid="sizzle-scene-inspector-refit"]')).toBeNull();
+  });
+});

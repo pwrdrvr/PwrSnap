@@ -82,6 +82,9 @@ export function SizzleApp(): ReactElement {
   // because the right rail shows the clip inspector for it beside the
   // chat — the rail needs to know when there is one to show. Ephemeral.
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  // …or the selected SCENE (a region / transition pill on the timeline).
+  // Mutually exclusive with the clip selection; the Editor enforces it.
+  const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   // The inspector's DOM slot in the right rail; the Editor portals the
   // inspector into it so the inspector's state + handlers stay with the
   // timeline model that owns them.
@@ -159,6 +162,7 @@ export function SizzleApp(): ReactElement {
   const selectedReelId = active?.id ?? null;
   useEffect(() => {
     setSelectedClipId(null);
+    setSelectedSceneId(null);
   }, [selectedReelId]);
 
   const closeProjectContextMenu = useCallback((): void => {
@@ -281,9 +285,11 @@ export function SizzleApp(): ReactElement {
               status={status}
               selectedClipId={selectedClipId}
               onSelectClipId={setSelectedClipId}
+              selectedSceneId={selectedSceneId}
+              onSelectSceneId={setSelectedSceneId}
               inspectorHost={inspectorHost}
             />
-            {showChat || selectedClipId !== null ? (
+            {showChat || selectedClipId !== null || selectedSceneId !== null ? (
               // The right rail: chat above, the clip inspector as a bottom
               // drawer (plan §4.6) — beside the chat, never replacing it.
               // Below RAIL_NARROW_PX the two cannot share the rail, so the
@@ -293,7 +299,7 @@ export function SizzleApp(): ReactElement {
               <aside
                 className={
                   "szl__chat" +
-                  (selectedClipId !== null ? " has-inspector" : "") +
+                  (selectedClipId !== null || selectedSceneId !== null ? " has-inspector" : "") +
                   (chatWidth < RAIL_NARROW_PX ? " is-narrow" : "")
                 }
                 style={{ flexBasis: chatWidth }}
@@ -302,10 +308,16 @@ export function SizzleApp(): ReactElement {
                 <ChatResizer width={chatWidth} onResize={setChatWidth} />
                 {showChat ? (
                   <>
-                    {selectedClipId !== null && chatWidth < RAIL_NARROW_PX ? (
+                    {(selectedClipId !== null || selectedSceneId !== null) && chatWidth < RAIL_NARROW_PX ? (
                       <div className="szl__chat-folded" data-testid="sizzle-chat-folded">
                         <span>Chat folded while the inspector is open — widen the rail, or</span>
-                        <button type="button" onClick={() => setSelectedClipId(null)}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedClipId(null);
+                            setSelectedSceneId(null);
+                          }}
+                        >
                           close the inspector
                         </button>
                       </div>
@@ -313,7 +325,7 @@ export function SizzleApp(): ReactElement {
                     <div
                       className={
                         "szl__chat-pane" +
-                        (selectedClipId !== null && chatWidth < RAIL_NARROW_PX ? " is-folded" : "")
+                        ((selectedClipId !== null || selectedSceneId !== null) && chatWidth < RAIL_NARROW_PX ? " is-folded" : "")
                       }
                     >
                       <SizzleChatPanel key={active.id} projectId={active.id} />

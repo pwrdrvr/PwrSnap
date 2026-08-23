@@ -1913,3 +1913,33 @@
   outline: 2px solid var(--accent-border);
   outline-offset: 2px;
 }
+.szl__reel-mute {
+  flex: 0 0 auto;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 500 13px/1 var(--font-sans);
+  cursor: pointer;
+}
+.szl__reel-mute:hover {
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+}
+.szl__reel-mute.is-muted {
+  color: var(--warn-text);
+}
+.szl__reel-volume {
+  flex: 0 0 auto;
+  width: 84px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.szl__reel-silent {
+  font: 500 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--warn-text);
+  white-space: nowrap;
+}

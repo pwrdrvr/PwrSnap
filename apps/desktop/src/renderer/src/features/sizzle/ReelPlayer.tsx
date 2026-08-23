@@ -156,6 +156,37 @@ export function ReelPlayer({
             Scene {active.sceneIndex + 1} · clip {active.clip.index + 1}
           </span>
         ) : null}
+        <button
+          type="button"
+          className={"szl__reel-mute" + (playback.muted ? " is-muted" : "")}
+          onClick={playback.toggleMuted}
+          title={playback.muted ? "Unmute" : "Mute"}
+          aria-label={playback.muted ? "Unmute reel" : "Mute reel"}
+          aria-pressed={playback.muted}
+          data-testid="sizzle-reel-mute"
+        >
+          {playback.muted || playback.volume === 0 ? "\u{1F507}" : "\u{1F509}"}
+        </button>
+        <input
+          className="szl__reel-volume"
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={playback.muted ? 0 : playback.volume}
+          onChange={(event) => playback.setVolume(Number(event.target.value))}
+          title="Narration volume"
+          aria-label="Narration volume"
+          data-testid="sizzle-reel-volume"
+        />
+        {!playback.activeSceneHasAudio ? (
+          // Say WHY it is silent. Estimated scenes have no audio file in
+          // existence, and a clip-audio scene has none to preview — without
+          // this the player just looks broken.
+          <span className="szl__reel-silent" data-testid="sizzle-reel-silent">
+            no narration audio
+          </span>
+        ) : null}
         <span className="szl__spacer" />
         <button
           className="szl__btn-primary"

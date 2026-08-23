@@ -69,7 +69,12 @@ const CAPTURES = new Map<string, CaptureRecord>([
 function stubPlayback(over: Partial<ReelPlayback> = {}): ReelPlayback {
   return {
     playing: false,
-    activeSceneId: null,
+    activeSceneId: "s1",
+    activeSceneHasAudio: true,
+    volume: 1,
+    muted: false,
+    setVolume: () => undefined,
+    toggleMuted: () => undefined,
     play: () => undefined,
     pause: () => undefined,
     toggle: () => undefined,
@@ -167,5 +172,44 @@ describe("ReelPlayer", () => {
     expect(el.querySelector('[data-testid="sizzle-reel-play"]')?.textContent).toBe("■");
     const inc = el.querySelector<HTMLElement>('[data-testid="sizzle-reel-incoming"]')!;
     expect(inc.style.animationPlayState).toBe("running");
+  });
+
+  test("the transport carries a mute toggle and a volume slider, and says when a scene is silent", async () => {
+    const setVolume = vi.fn();
+    const toggleMuted = vi.fn();
+    const el = await render({
+      head: createPlayheadSource(0),
+      playback: stubPlayback({ setVolume, toggleMuted })
+    });
+    expect(el.querySelector('[data-testid="sizzle-reel-silent"]')).toBeNull();
+    const vol = el.querySelector<HTMLInputElement>('[data-testid="sizzle-reel-volume"]')!;
+    expect(vol.value).toBe("1");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+      setter.call(vol, "0.4");
+      vol.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(setVolume).toHaveBeenCalledWith(0.4);
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-reel-mute"]')!.click();
+    });
+    expect(toggleMuted).toHaveBeenCalledTimes(1);
+  });
+
+  test("a scene with no narration audio says so instead of looking broken", async () => {
+    const el = await render({
+      head: createPlayheadSource(0),
+      playback: stubPlayback({ activeSceneHasAudio: false })
+    });
+    expect(el.querySelector('[data-testid="sizzle-reel-silent"]')?.textContent).toBe("no narration audio");
+  });
+
+  test("muting drives the slider to zero without losing the stored level", async () => {
+    const el = await render({
+      head: createPlayheadSource(0),
+      playback: stubPlayback({ muted: true, volume: 0.8 })
+    });
+    expect(el.querySelector<HTMLInputElement>('[data-testid="sizzle-reel-volume"]')!.value).toBe("0");
+    expect(el.querySelector('[data-testid="sizzle-reel-mute"]')?.getAttribute("aria-pressed")).toBe("true");
   });
 });

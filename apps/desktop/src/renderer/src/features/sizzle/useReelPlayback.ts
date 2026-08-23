@@ -17,13 +17,14 @@
 //     DISCRETE facts: are we playing, and which scene is under the head.
 //
 //  2. The rAF clock is the master and audio is slaved to it. A reel mixes
-//     scenes that HAVE synthesized narration with scenes that do not
-//     (estimated scenes have no audio at all, and legacy one-capture
-//     scenes are never even offered any — the main-process verb rejects
-//     them with `not_sequence`). A single monotonic clock is the only
-//     thing that can run across both, so the picture always plays; sound
-//     joins wherever it exists. Drift is corrected against the clock the
-//     same way the preview stage corrects video.
+//     scenes that HAVE synthesized narration with scenes that do not — an
+//     estimated scene has no audio file in existence yet, and a scene whose
+//     audio the export takes from the clip itself has none to preview. A
+//     single monotonic clock is the only thing that can run across both, so
+//     the picture always plays and sound joins wherever it exists; the
+//     transport says which case you are in rather than looking broken.
+//     Drift is corrected against the clock the same way the stage corrects
+//     video.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PlayheadSource } from "../shared/playhead";
@@ -33,10 +34,30 @@ import type { TimelineModel } from "./timeline/timeline-model";
  *  than this. Matches the preview stage's video drift tolerance. */
 const AUDIO_DRIFT_TOLERANCE_SEC = 0.25;
 
+// Volume is module-scoped, like the chat pane's width: it survives a remount
+// within a session and resets on launch. It is a property of how the operator
+// is listening right now, not of the reel, so it does not belong in Settings.
+let savedVolume = 1;
+let savedMuted = false;
+
+/** Test-only: reset the session-scoped listening state between cases. */
+export function resetReelVolumeForTests(): void {
+  savedVolume = 1;
+  savedMuted = false;
+}
+
 export type ReelPlayback = {
   playing: boolean;
   /** Scene under the head. Discrete — changes at scene boundaries only. */
   activeSceneId: string | null;
+  /** False when the scene under the head has no narration to sound — an
+   *  estimated scene, or one whose audio the export takes from the clip. The
+   *  transport says so rather than looking broken. */
+  activeSceneHasAudio: boolean;
+  volume: number;
+  muted: boolean;
+  setVolume: (next: number) => void;
+  toggleMuted: () => void;
   play: () => void;
   pause: () => void;
   toggle: () => void;
@@ -58,6 +79,8 @@ export function useReelPlayback(args: {
   const { model, head, audioBlobs, audioRef, onTakeOver } = args;
   const [playing, setPlaying] = useState(false);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
+  const [volume, setVolumeState] = useState(savedVolume);
+  const [muted, setMutedState] = useState(savedMuted);
 
   // Master clock: wall time when playback started, and the head position
   // it started from. Playing position = startedFromSec + elapsed.
@@ -114,11 +137,43 @@ export function useReelPlayback(args: {
           /* not seekable yet */
         }
       }
+      el.volume = muted ? 0 : volume;
+      el.muted = muted;
       if (shouldPlay) void el.play().catch(() => undefined);
       else el.pause();
     },
-    [audioBlobs, audioRef, revokeUrl]
+    [audioBlobs, audioRef, muted, revokeUrl, volume]
   );
+
+  // Keep a sounding element in step with the controls even when the head is
+  // not moving (adjusting the slider while paused, or mid-scene).
+  useEffect(() => {
+    const el = audioRef.current;
+    if (el === null) return;
+    el.volume = muted ? 0 : volume;
+    el.muted = muted;
+  }, [audioRef, muted, volume]);
+
+  const setVolume = useCallback((next: number): void => {
+    const clamped = Math.min(1, Math.max(0, next));
+    savedVolume = clamped;
+    setVolumeState(clamped);
+    // Nudging the slider off zero is an unmute — otherwise the control lies.
+    if (clamped > 0 && savedMuted) {
+      savedMuted = false;
+      setMutedState(false);
+    }
+  }, []);
+
+  const toggleMuted = useCallback((): void => {
+    savedMuted = !savedMuted;
+    setMutedState(savedMuted);
+  }, []);
+
+  // The rAF loop below is created once per play() and would otherwise hold
+  // the applyPosition — and therefore the audioBlobs — from that render. A
+  // narration blob that finishes decoding mid-playback has to start sounding.
+  const applyPositionRef = useRef<(sec: number, shouldPlay: boolean) => void>(() => undefined);
 
   /** Publish `sec`, update the discrete scene, and keep audio in step. */
   const applyPosition = useCallback(
@@ -133,6 +188,9 @@ export function useReelPlayback(args: {
     },
     [head, syncAudio]
   );
+  useEffect(() => {
+    applyPositionRef.current = applyPosition;
+  }, [applyPosition]);
 
   const stopLoop = useCallback((): void => {
     if (rafRef.current !== null) {
@@ -177,13 +235,13 @@ export function useReelPlayback(args: {
       const sec = clock.fromSec + elapsed;
       const end = modelRef.current.totalSec;
       if (sec >= end) {
-        applyPosition(end, false);
+        applyPositionRef.current(end, false);
         stopLoop();
         setPlaying(false);
         audioRef.current?.pause();
         return;
       }
-      applyPosition(sec, true);
+      applyPositionRef.current(sec, true);
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
@@ -213,5 +271,19 @@ export function useReelPlayback(args: {
     [revokeUrl, stopLoop]
   );
 
-  return { playing, activeSceneId, play, pause, toggle, seek };
+  const activeSceneHasAudio = activeSceneId !== null && audioBlobs[activeSceneId] !== undefined;
+
+  return {
+    playing,
+    activeSceneId,
+    activeSceneHasAudio,
+    volume,
+    muted,
+    setVolume,
+    toggleMuted,
+    play,
+    pause,
+    toggle,
+    seek
+  };
 }

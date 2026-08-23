@@ -35,6 +35,15 @@ import { base64ToBlob, clampTime } from "./sizzle-helpers";
 
 export type MeasuredDuration = { key: string; durationSec: number };
 
+/** Scenes whose narration the editor may load from the TTS cache: any scene
+ *  with a script that is not explicitly rendering its own audio. Legacy
+ *  one-capture scenes qualify — their narration is cached under the same
+ *  tuple the render path uses, which is what lets the reel player sound a
+ *  pre-sequence reel. */
+function narratableScene(scene: SizzleScene): boolean {
+  return scene.audioSource !== "native" && scene.audioSource !== "muted";
+}
+
 export type SequencePlanState = {
   /** The single hidden `<audio>` that plays every scene's narration. */
   audioRef: RefObject<HTMLAudioElement | null>;
@@ -430,7 +439,7 @@ export function useSequencePlan(args: {
   const sequenceSceneIdsKey = useMemo(
     () =>
       project.scenes
-        .filter((s) => s.kind === "sequence")
+        .filter(narratableScene)
         .map((s) => `${s.id}:${project.ttsProvider}:${project.ttsModel}:${project.voice}:${sequenceTranscriptKey(s)}`)
         .join(","),
     [project.scenes, project.ttsModel, project.ttsProvider, project.voice]
@@ -441,7 +450,7 @@ export function useSequencePlan(args: {
       `${scene.id}:${project.ttsProvider}:${project.ttsModel}:${project.voice}:${sequenceTranscriptKey(scene)}`;
     const pending = project.scenes.filter(
       (s) =>
-        s.kind === "sequence" &&
+        narratableScene(s) &&
         (s.narration ?? s.scriptLine).trim().length > 0 &&
         sequenceAudioBlobs[s.id] === undefined &&
         !waveformAttemptRef.current.has(cacheAttemptKey(s))

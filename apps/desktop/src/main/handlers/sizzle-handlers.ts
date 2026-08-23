@@ -767,12 +767,21 @@ export function registerSizzleHandlers(): void {
     if (scene === undefined) {
       return err({ kind: "validation", code: "not_found", message: "Scene not found" });
     }
-    if (scene.kind !== "sequence") {
-      return err({
-        kind: "validation",
-        code: "not_sequence",
-        message: "Scene is not a sequence scene"
-      });
+    // Legacy one-capture scenes are served too. Their narration is cached
+    // under the SAME (provider, model, voice, text) tuple the render path
+    // synthesizes with, so a scene that has ever been rendered already has a
+    // file here — refusing it was the only reason the reel player had no
+    // sound on a pre-sequence reel. Still strictly cache-only.
+    //
+    // A scene that explicitly renders its OWN audio (or none) is skipped, so
+    // the editor can never sound narration the export will not use. `auto`
+    // falls through: it resolves to native only over a video, and in that
+    // case the render never synthesized anything, so the cache simply misses.
+    if (
+      scene.kind !== "sequence" &&
+      (scene.audioSource === "native" || scene.audioSource === "muted")
+    ) {
+      return ok({ cached: false as const });
     }
     const text = scene.scriptLine.trim();
     if (text.length === 0) {

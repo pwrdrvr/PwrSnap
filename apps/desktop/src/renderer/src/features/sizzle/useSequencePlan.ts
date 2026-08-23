@@ -17,7 +17,8 @@ import type {
   SizzleProject,
   SizzleScene,
   SizzleSequencePreviewPlan,
-  SizzleSequenceTranscriptPhrase
+  SizzleSequenceTranscriptPhrase,
+  SizzleWordTiming
 } from "@pwrsnap/shared";
 import { IterableQueueMapperSimple } from "@shutterstock/p-map-iterable";
 import { dispatch } from "../../lib/pwrsnap";
@@ -51,6 +52,11 @@ export type SequencePlanState = {
   /** The cached plan for `scene`, or undefined when none matches its key. */
   planForScene: (scene: SizzleScene) => SizzleSequencePreviewPlan | undefined;
   transcriptPhrasesForScene: (scene: SizzleScene) => SizzleSequenceTranscriptPhrase[];
+  /** The transcript's words at their spoken times, from a preview run
+   *  this session or the speech-timing cache on open; null until the
+   *  narration has been synthesized (the timeline's ESTIMATED state —
+   *  there is no transcript to position, so nothing is fabricated). */
+  wordsForScene: (scene: SizzleScene) => SizzleWordTiming[] | null;
   /** The measured voiceover duration for `scene`, or undefined when none
    *  was measured or the script has changed since it was. */
   measuredVoiceoverDurationSec: (scene: SizzleScene) => number | undefined;
@@ -105,6 +111,11 @@ export function useSequencePlan(args: {
   >({});
   const [sequenceTranscriptPhrases, setSequenceTranscriptPhrases] = useState<
     Record<string, CachedSequenceTranscriptPhrases>
+  >({});
+  // Per-scene word timings, keyed like the transcript phrases (the
+  // narration text) so a rewritten script drops the stale words.
+  const [sequenceWords, setSequenceWords] = useState<
+    Record<string, { key: string; words: SizzleWordTiming[] }>
   >({});
   // Per-sequence-scene narration audio, captured when a preview decodes
   // it, and handed to wavesurfer to draw the real waveform. Cleared when
@@ -162,6 +173,12 @@ export function useSequencePlan(args: {
     if (scene.kind !== "sequence") return [];
     const entry = sequenceTranscriptPhrases[scene.id];
     return entry?.key === sequenceTranscriptKey(scene) ? entry.phrases : [];
+  };
+
+  const wordsForScene = (scene: SizzleScene): SizzleWordTiming[] | null => {
+    if (scene.kind !== "sequence") return null;
+    const entry = sequenceWords[scene.id];
+    return entry?.key === sequenceTranscriptKey(scene) ? entry.words : null;
   };
 
   const onPreviewScene = async (sceneId: string): Promise<void> => {
@@ -242,6 +259,13 @@ export function useSequencePlan(args: {
         [sceneId]: {
           key: sequenceTranscriptKey(scene),
           phrases: planResult.value.transcriptPhrases
+        }
+      }));
+      setSequenceWords((prev) => ({
+        ...prev,
+        [sceneId]: {
+          key: sequenceTranscriptKey(scene),
+          words: planResult.value.words
         }
       }));
       previewAudio = planResult.value;
@@ -328,6 +352,12 @@ export function useSequencePlan(args: {
           delete next[scene.id];
           return next;
         });
+        setSequenceWords((prev) => {
+          if (prev[scene.id] === undefined) return prev;
+          const next = { ...prev };
+          delete next[scene.id];
+          return next;
+        });
         // The narration audio (and thus its waveform) is now stale.
         setSequenceAudioBlobs((prev) => {
           if (prev[scene.id] === undefined) return prev;
@@ -394,6 +424,15 @@ export function useSequencePlan(args: {
                 key: sequenceTranscriptKey(scene),
                 phrases: transcriptPhrases
               }
+            }));
+          }
+          // Words arrive with the cached timing (null = no sidecar, which
+          // leaves the scene in the estimated state with an empty ribbon).
+          const cachedWords = res.value.words;
+          if (cachedWords !== null) {
+            setSequenceWords((prev) => ({
+              ...prev,
+              [scene.id]: { key: sequenceTranscriptKey(scene), words: cachedWords }
             }));
           }
           // Positive-finite, not just non-null: the timing sidecar is
@@ -482,6 +521,7 @@ export function useSequencePlan(args: {
     sequenceAudioBlobs,
     planForScene,
     transcriptPhrasesForScene,
+    wordsForScene,
     measuredVoiceoverDurationSec,
     cachedNarrationDurationSec,
     durationDeps: [sequencePreviewPlans, previewDurations, cachedNarrationDurations],

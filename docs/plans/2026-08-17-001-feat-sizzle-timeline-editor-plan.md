@@ -79,15 +79,17 @@ and it exists in main — but the IPC surface only sends `transcriptPhrases`, wh
 feed, not a word list. The word ribbon needs the words.
 
 - Add `words: SizzleWordTiming[]` to `SizzleSequencePreviewPlan`.
-- Add `words` **and `durationSec`** to the `cached: true` arm of
-  `sizzle:loadSequenceSceneAudio` (`protocol.ts:4408`). It returns audio today
-  but *not* its duration, so the renderer must decode the blob to learn how long
-  the axis is. Both are free — they come off the `resolveCachedSpeechTiming`
-  result already loaded at `sizzle-handlers.ts:796` — and both are needed before
-  first paint. **Both are therefore nullable together**: when that call returns
-  `null` there is neither a duration nor words, which is exactly the `estimated`
-  state in §4.1. Do not add an ffprobe fallback to fill in duration alone; it
-  spawns a process per scene on reel open.
+- Add `words` to the `cached: true` arm of `sizzle:loadSequenceSceneAudio`.
+  **Correction (2026-08-22):** `durationSec` was already on that arm when this
+  work started — #422 (the `Render · 0:42` label) added it. PR 2 therefore
+  adds `words` only. Both come off the `resolveCachedSpeechTiming` result
+  already loaded in the handler, and **both are nullable together**: when that
+  call returns `null` there is neither a duration nor words, which is exactly
+  the `estimated` state in §4.1. Do not add an ffprobe fallback to fill in
+  duration alone; it spawns a process per scene on reel open.
+  **Shipped in PR 2** — `words: SizzleWordTiming[] | null` on the cached arm,
+  `words: SizzleWordTiming[]` on the preview plan; the renderer's
+  `useSequencePlan.wordsForScene(scene)` returns null until synthesis.
 - Note the silent 300-window cap: a >300-word script currently has unanchorable
   words past 300 with no indication. Sending `words` sidesteps it for the ribbon;
   raise or document the cap for the legacy picker.
@@ -101,16 +103,16 @@ spend the operator's OpenAI credits without being asked, and is a non-starter.
 
 ### 3.3 Genuinely new
 
-- `estimateNarrationDurationSec(text)` in `@pwrsnap/shared` — a duration estimate
-  for the not-yet-synthesized state. `approximateSpeechTiming`
-  (`speech-timing.ts:143`) already does `Math.max(1, trimmed.length / 14)`
-  internally as its own fallback; lift that into a shared, named, tested helper so
-  the editor and main agree. **It is 14 *characters* per second, not words** —
-  roughly 165 wpm at an average English word length, which is a sane narration
-  pace. Do not reinterpret the constant as a words-per-second rate; that would
-  produce durations ~5× too short. Today the renderer's fallback is
-  `scene.durationOverrideSec ?? beats.length` (`SizzleApp.tsx:541`) — i.e. **one
-  second per clip**, which is not an estimate of anything.
+- ~~`estimateNarrationDurationSec(text)` in `@pwrsnap/shared`~~ — **landed
+  before this plan was picked up** (#422, `packages/shared/src/sizzle-reel-duration.ts`).
+  It is a word-count estimate at `SIZZLE_ESTIMATED_NARRATION_WPM = 160`
+  (calibrated against an observed tts-1 reel, rounded down so the estimate
+  leans long), with a 1 s floor per scene; not the characters-per-second
+  constant this section originally proposed lifting from
+  `approximateSpeechTiming`. The renderer's idle strip already uses it
+  (`fallbackSequenceBeats` → `estimateSequenceTimelineDurationSec`), so the
+  one-second-per-clip fallback described below is gone. **Reuse it; do not
+  rewrite it.**
 - The timeline view model + retime math (§5.2).
 - `anchorTimingForWord(words, wordIndex)` — the click-a-word → `SizzleBeatTiming`
   rule, including phrase-extension for uniqueness (§4.3).
@@ -119,11 +121,13 @@ spend the operator's OpenAI credits without being asked, and is a non-starter.
 
 ### 3.4 Shared duration-summing helper — check before writing
 
-There is a **separate pending task** to put a `Render · 0:42` label on the Render
-button, which introduces a shared duration-summing helper. **It has not landed**
-— verified: no such label at `SizzleApp.tsx:3075–3088`, no matching commit in
-`origin/main`, no open PR (open PRs are #420, #260, #191). Whichever task lands
-first owns the helper; the other reuses it. Proposed home and shape:
+**Resolved (2026-08-22): it landed first, as #422.** The helper is
+`estimateSizzleReelDurationSec(scenes, contextFor)` in
+`packages/shared/src/sizzle-reel-duration.ts`, returning
+`{ totalSec, exact, sceneCount }` — `exact` is the resolved-vs-estimated signal
+§4.1 needs, and the Render button already renders `Render · ~0:42` off it. The
+timeline reuses it; nothing below is to be written. The original proposal,
+kept for the record:
 
 ```ts
 // packages/shared — used by the Render label, the timeline axis, and main's

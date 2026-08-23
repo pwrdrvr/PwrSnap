@@ -11,7 +11,7 @@
 // "it's" in the script matches "it is" in the transcript and vice versa,
 // via compacted per-token variants compared as a single string.
 
-import type { SizzleResolvedPhraseTiming, SizzleSpeechTiming } from "./protocol";
+import type { SizzleResolvedPhraseTiming, SizzleSpeechTiming, SizzleWordTiming } from "./protocol";
 
 export type SizzlePhraseQuery = {
   phrase: string;
@@ -47,7 +47,11 @@ export function tokenizeWords(text: string): SizzleWordToken[] {
  * not occur that many times — the planner then degrades the beat to auto.
  */
 export function resolvePhraseTiming(
-  timing: Pick<SizzleSpeechTiming, "words" | "quality" | "warnings">,
+  timing: {
+    words: ReadonlyArray<SizzleWordTiming>;
+    quality: SizzleSpeechTiming["quality"];
+    warnings: SizzleSpeechTiming["warnings"];
+  },
   args: SizzlePhraseQuery
 ): SizzleResolvedPhraseTiming | null {
   const phraseTokens = tokenizeWords(args.phrase);
@@ -90,31 +94,39 @@ export function resolvePhraseTiming(
 }
 
 /**
- * How many times `phrase` occurs in the words, under the same matching
- * rules `resolvePhraseTiming` uses. The word ribbon uses this to pick a
- * phrase long enough to be unique (plan §4.3) so an anchor never silently
- * binds to the wrong "the".
+ * Every word index at which `phrase` matches, under the same matching
+ * rules `resolvePhraseTiming` uses (so `occurrence` = position in this
+ * list + 1). The word ribbon uses this to pick a phrase long enough to be
+ * unique (plan §4.3) so an anchor never silently binds to the wrong "the".
  */
-export function countPhraseOccurrences(
-  words: SizzleSpeechTiming["words"],
+export function findPhraseOccurrences(
+  words: ReadonlyArray<SizzleWordTiming>,
   phrase: string
-): number {
+): number[] {
   const phraseTokens = tokenizeWords(phrase);
-  if (phraseTokens.length === 0) return 0;
+  if (phraseTokens.length === 0) return [];
   const phraseNormalized = phraseTokens.map((token) => token.normalized);
   const phraseCompacts = compactVariantsForTokens(phraseTokens);
   const maxPhraseCompactLength = Math.max(...Array.from(phraseCompacts).map((variant) => variant.length));
-  let count = 0;
+  const starts: number[] = [];
   for (let i = 0; i < words.length; i++) {
     if (matchPhraseAt({ words, startIndex: i, phraseNormalized, phraseCompacts, maxPhraseCompactLength }) > 0) {
-      count++;
+      starts.push(i);
     }
   }
-  return count;
+  return starts;
+}
+
+/** How many times `phrase` occurs in the words. */
+export function countPhraseOccurrences(
+  words: ReadonlyArray<SizzleWordTiming>,
+  phrase: string
+): number {
+  return findPhraseOccurrences(words, phrase).length;
 }
 
 function matchPhraseAt(args: {
-  words: SizzleSpeechTiming["words"];
+  words: ReadonlyArray<SizzleWordTiming>;
   startIndex: number;
   phraseNormalized: string[];
   phraseCompacts: Set<string>;

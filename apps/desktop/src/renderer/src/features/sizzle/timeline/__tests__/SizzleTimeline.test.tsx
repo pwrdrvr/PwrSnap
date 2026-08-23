@@ -16,9 +16,8 @@ const STRIP_PX = 1000;
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   Element.prototype.getBoundingClientRect = function getBoundingClientRect(this: Element) {
-    const width = this.classList.contains("szt__canvas") || this.classList.contains("szt__lanes")
-      ? STRIP_PX
-      : 0;
+    const width =
+      this.classList.contains("szt__scroll") || this.classList.contains("szt__lanes") ? STRIP_PX : 0;
     return { x: 0, y: 0, left: 0, top: 0, right: width, bottom: 0, width, height: 0, toJSON: () => ({}) } as DOMRect;
   };
 });
@@ -83,19 +82,23 @@ const imageCapture = (id: string): CaptureRecord =>
     deleted_at: null
   }) as unknown as CaptureRecord;
 
-async function render(props: Partial<SizzleTimelineProps> & { model: TimelineModel }): Promise<HTMLDivElement> {
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  root = createRoot(container);
-  const full: SizzleTimelineProps = {
+function baseProps(model: TimelineModel): SizzleTimelineProps {
+  return {
+    model,
     captureMap: new Map(),
     audioBlobs: {},
     playheadSec: 0,
     onScrub: () => undefined,
     selectedClipId: null,
-    onSelectClip: () => undefined,
-    ...props
+    onSelectClip: () => undefined
   };
+}
+
+async function render(props: Partial<SizzleTimelineProps> & { model: TimelineModel }): Promise<HTMLDivElement> {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  const full: SizzleTimelineProps = { ...baseProps(props.model), ...props };
   await act(async () => {
     root?.render(createElement(SizzleTimeline, full));
   });
@@ -232,6 +235,15 @@ describe("SizzleTimeline", () => {
     const head = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-playhead"]')!;
     expect(head.style.transform).toBe("translateX(500px)");
     expect(head.textContent).toBe("0:07.7");
+    expect(head.classList.contains("is-flip")).toBe(false);
+    // At the end of the reel the timecode tag flips to the left of the
+    // line so it cannot overflow the lanes (and widen the scroll area).
+    await act(async () => {
+      root?.render(createElement(SizzleTimeline, { ...baseProps(model), playheadSec: 15.5 }));
+    });
+    const headAtEnd = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-playhead"]')!;
+    expect(headAtEnd.style.transform).toBe("translateX(1000px)");
+    expect(headAtEnd.classList.contains("is-flip")).toBe(true);
     const pill = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-transition-1"]')!;
     expect(pill.textContent).toContain("dip black");
     expect(pill.textContent).toContain("0.5 s");

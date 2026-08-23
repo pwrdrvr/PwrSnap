@@ -108,11 +108,11 @@
   background: var(--border-strong);
   border-radius: 4px;
 }
-/* ruler · regions · clips · waveform */
+/* ruler · regions · clips · waveform · word ribbon (3 stagger rows) */
 .szt__lanes {
   position: relative;
   display: grid;
-  grid-template-rows: 22px 20px 72px 28px;
+  grid-template-rows: 22px 20px 72px 28px 44px;
   cursor: ew-resize;
   user-select: none;
 }
@@ -316,18 +316,35 @@
   opacity: 0.92;
 }
 /* Video clips carry no poster image (no `<video>` per clip — 80 media
-   elements at the cap is the regression this lane exists to avoid). */
+   elements at the cap is the regression this lane exists to avoid).
+   Flat fill + film-strip sprockets — NOT a diagonal hatch, which is the
+   ESTIMATED signal (plan §4.1) and must never appear on a resolved clip. */
 .szt__thumb--video {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: repeating-linear-gradient(
-    135deg,
-    var(--bg-panel-elevated) 0 6px,
-    color-mix(in srgb, var(--text-primary) 5%, transparent) 6px 7px
-  );
+  background: color-mix(in srgb, var(--text-primary) 6%, var(--bg-panel-elevated));
   color: var(--text-muted);
   font: 600 10px/1 var(--font-mono);
+}
+.szt__thumb--video::before,
+.szt__thumb--video::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0 3px,
+    color-mix(in srgb, var(--text-primary) 18%, transparent) 3px 6px
+  );
+}
+.szt__thumb--video::before {
+  top: 2px;
+}
+.szt__thumb--video::after {
+  bottom: 2px;
 }
 .szt__clip-label {
   padding: 6px 8px 5px;
@@ -507,6 +524,11 @@
   font: 700 9px/1 var(--font-mono);
   white-space: nowrap;
 }
+/* near the right edge the tag sits LEFT of the line, inside the lanes */
+.szt__playhead.is-flip .szt__playhead-time {
+  left: auto;
+  right: 9px;
+}
 
 /* warnings under the lanes, aligned to the clip */
 .szt__warns {
@@ -523,4 +545,103 @@
   color: var(--warn-text);
   font: 500 9px/1 var(--font-mono);
   white-space: nowrap;
+}
+
+/* ── word ribbon ── */
+.szt__word {
+  position: absolute;
+  top: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: 500 12px/1 var(--font-sans);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  z-index: 1;
+}
+.szt__word:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 3px;
+}
+.szt__word:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+/* anchored: underlined in accent, with the clip's index badge */
+.szt__word.is-anch {
+  color: var(--accent-bright);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+.szt__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  margin-left: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+  font: 700 8px/1 var(--font-mono);
+  vertical-align: 1px;
+}
+/* a word too crowded for its label */
+.szt__wtick {
+  position: absolute;
+  top: 18px;
+  width: 1px;
+  height: 8px;
+  padding: 0;
+  border: 0;
+  background: var(--text-subtle);
+  cursor: pointer;
+  z-index: 1;
+}
+.szt__wtick:hover {
+  background: var(--text-secondary);
+  width: 2px;
+}
+.szt__wtick.is-anch {
+  background: var(--accent);
+  width: 2px;
+  height: 10px;
+  top: 17px;
+}
+/* the honest pre-synthesis state */
+.szt__ribbon-empty {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  z-index: 1;
+}
+.szt__ribbon-hint {
+  color: var(--text-muted);
+}
+.szt__ribbon-cta {
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-tint);
+  color: var(--accent-bright);
+  font: 600 10px/1 var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.szt__ribbon-cta:hover {
+  background: var(--accent-soft);
+}
+.szt__ribbon-cta:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
 }

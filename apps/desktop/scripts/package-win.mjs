@@ -38,12 +38,14 @@ import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
+import { pruneSharpNativePackages } from "./sharp-platform-packages.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const desktopRoot = resolve(__dirname, "..");
 const repoRoot = resolve(desktopRoot, "..", "..");
 const stageDir = join(desktopRoot, "release-stage");
+const targetPlatform = "win32";
 const targetArch = "x64";
 
 const args = process.argv.slice(2);
@@ -272,7 +274,7 @@ function injectWin32PlatformPackages() {
 
   // sharp's win32-x64 package bundles libvips, so unlike darwin there is
   // no separate sharp-libvips-win32 slice to inject.
-  const targets = [["@img/sharp-win32-x64", "sharp"]];
+  const targets = [[`@img/sharp-${targetPlatform}-${targetArch}`, "sharp"]];
 
   for (const [pkgName, parent] of targets) {
     const parentManifest = readStagedPackageJson(parent);
@@ -370,6 +372,23 @@ if (!signStageOnly) {
   // 3b. Inject sharp's win32-x64 slice that `pnpm deploy` drops.
   step("inject win32 platform packages from workspace pnpm store");
   injectWin32PlatformPackages();
+
+  // 3c. The deploy intentionally starts from the workspace's all-release-target
+  // dependency graph so macOS universal packages remain available to the mac
+  // packager and license generator. This Windows stage needs only its selected
+  // native Sharp slice; keep platform-independent @img packages such as colour.
+  step(`prune foreign Sharp platform packages (keep ${targetPlatform}/${targetArch})`);
+  const sharpPrune = pruneSharpNativePackages({
+    nodeModulesDir: join(stageDir, "node_modules"),
+    platform: targetPlatform,
+    arch: targetArch
+  });
+  for (const packageName of sharpPrune.removed) {
+    console.log(`  - @img/${packageName}`);
+  }
+  console.log(
+    `  = retained native slice(s): ${sharpPrune.required.map((name) => `@img/${name}`).join(", ")}`
+  );
 
   // 4. Build the staged Electron-native better-sqlite3 sidecar for win32-x64.
   step("prepare staged better-sqlite3 Electron sidecar (win32-x64)");
@@ -486,7 +505,8 @@ runChecked(
   {
     env: {
       PWRSNAP_ASAR_MODULE_ROOT: stageDir,
-      PWRSNAP_REQUIRE_FFMPEG: releaseMode ? "1" : "0"
+      PWRSNAP_REQUIRE_FFMPEG: releaseMode ? "1" : "0",
+      PWRSNAP_TARGET_ARCH: targetArch
     }
   }
 );

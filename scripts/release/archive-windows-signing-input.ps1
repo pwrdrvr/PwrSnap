@@ -18,6 +18,7 @@ if (Test-Path -LiteralPath $workspaceLinkRoot) {
 $paths = @(
   "apps/desktop/release-stage",
   "apps/desktop/scripts/package-win.mjs",
+  "apps/desktop/scripts/sharp-platform-packages.mjs",
   "apps/desktop/scripts/verify-asar-contents.mjs",
   # The signing job has no checkout, so every check it runs must travel with the
   # stage it validates — including anything those checks import. This list is an

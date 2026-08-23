@@ -10,6 +10,11 @@ import { join, resolve } from "node:path";
 // NOTE: this path must stay in the signing tarball's file list in
 // .github/workflows/release.yml — that list is an allowlist, not a glob.
 import { isCliEntrypoint } from "../../../scripts/lib/cli-entrypoint.mjs";
+import {
+  inspectSharpNativePackages,
+  partitionSharpNativePackages,
+  sharpNativePackagesForTarget
+} from "./sharp-platform-packages.mjs";
 
 // @electron/asar is declared as a direct devDependency of @pwrsnap/desktop.
 // The protected Windows signing job receives a self-contained staged toolchain,
@@ -47,6 +52,21 @@ const windowsRequiredResources = [
   "PwrSnapWindowList.exe"
 ];
 
+const sharedSharpAsarRuntime = [
+  {
+    label: "sharp JavaScript runtime",
+    path: "/node_modules/sharp/dist/index.cjs"
+  },
+  {
+    label: "sharp license",
+    path: "/node_modules/sharp/LICENSE"
+  },
+  {
+    label: "@img/colour JavaScript runtime",
+    path: "/node_modules/@img/colour/index.cjs"
+  }
+];
+
 // Universal-build invariants for unpacked native dependencies.
 // Each entry: a glob-like path expectation under
 // `Contents/Resources/app.asar.unpacked/` that MUST exist for the
@@ -57,46 +77,80 @@ const windowsRequiredResources = [
 // metadata, not an optional check.
 //
 // `dir` checks the directory exists and contains at least one
-// file matching `mustContain` (a substring test against the file
-// names directly inside `dir`). Globs aren't used because the
+// file matching `filePattern` against the file names directly
+// inside `dir`. Globs aren't used because the
 // version-suffixed dylib name (`libvips-cpp.<ver>.dylib`) changes
-// across libvips upgrades, and a substring match decouples this
+// across libvips upgrades, and a pattern decouples this
 // from the exact version in pnpm-lock.yaml.
 const macRequiredUnpackedNative = [
   {
     label: "@img/sharp-darwin-arm64 native binding",
     dir: "app.asar.unpacked/node_modules/@img/sharp-darwin-arm64/lib",
-    mustContain: ".node"
+    filePattern: /\.node$/
   },
   {
     label: "@img/sharp-darwin-x64 native binding",
     dir: "app.asar.unpacked/node_modules/@img/sharp-darwin-x64/lib",
-    mustContain: ".node"
+    filePattern: /\.node$/
   },
   {
     label: "@img/sharp-libvips-darwin-arm64 dylib",
     dir: "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-arm64/lib",
-    mustContain: ".dylib"
+    filePattern: /\.dylib$/
   },
   {
     label: "@img/sharp-libvips-darwin-x64 dylib",
     dir: "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-x64/lib",
-    mustContain: ".dylib"
+    filePattern: /\.dylib$/
   },
 ];
 
-const windowsRequiredUnpackedNative = [
-  {
-    label: "@img/sharp-win32-x64 native binding",
-    dir: "app.asar.unpacked/node_modules/@img/sharp-win32-x64/lib",
-    mustContain: ".node"
-  },
-  {
-    label: "better-sqlite3 Electron sidecar",
-    dir: "app.asar.unpacked/node_modules/better-sqlite3/electron-native",
-    mustContain: "better_sqlite3.node"
-  }
-];
+function windowsRequiredUnpackedRuntime(arch) {
+  const packageName = sharpNativePackagesForTarget({ platform: "win32", arch })[0];
+  const packageDir = `app.asar.unpacked/node_modules/@img/${packageName}`;
+  return [
+    {
+      label: `@img/${packageName} JavaScript loader`,
+      dir: packageDir,
+      filePattern: /^index\.cjs$/
+    },
+    {
+      label: `@img/${packageName} manifest`,
+      dir: packageDir,
+      filePattern: /^package\.json$/
+    },
+    {
+      label: `@img/${packageName} license`,
+      dir: packageDir,
+      filePattern: /^LICENSE$/
+    },
+    {
+      label: `@img/${packageName} native binding`,
+      dir: `${packageDir}/lib`,
+      filePattern: new RegExp(`^sharp-win32-${arch}-.+\\.node$`)
+    },
+    {
+      label: `@img/${packageName} libvips runtime`,
+      dir: `${packageDir}/lib`,
+      filePattern: /^libvips-42\.dll$/
+    },
+    {
+      label: `@img/${packageName} libvips C++ runtime`,
+      dir: `${packageDir}/lib`,
+      filePattern: /^libvips-cpp-.+\.dll$/
+    },
+    {
+      label: "@img/colour JavaScript runtime",
+      dir: "app.asar.unpacked/node_modules/@img/colour",
+      filePattern: /^index\.cjs$/
+    },
+    {
+      label: "better-sqlite3 Electron sidecar",
+      dir: "app.asar.unpacked/node_modules/better-sqlite3/electron-native",
+      filePattern: /^better_sqlite3\.node$/
+    }
+  ];
+}
 
 function packagedPlatform(appPath) {
   return appPath.endsWith(".app") ? "darwin" : "win32";
@@ -118,10 +172,50 @@ function requiredResourcesFor(platform) {
   return required;
 }
 
-function requiredUnpackedNativeFor(platform) {
+function requiredUnpackedNativeFor(platform, arch = "x64") {
   return platform === "darwin"
     ? macRequiredUnpackedNative
-    : windowsRequiredUnpackedNative;
+    : windowsRequiredUnpackedRuntime(arch);
+}
+
+function normalizedAsarEntries(listing) {
+  return listing.map((entry) => entry.replaceAll("\\", "/"));
+}
+
+function windowsSharpAsarRuntime(arch) {
+  const packageName = sharpNativePackagesForTarget({ platform: "win32", arch })[0];
+  const root = `/node_modules/@img/${packageName}`;
+  return [
+    ...sharedSharpAsarRuntime,
+    { label: `@img/${packageName} JavaScript loader`, path: `${root}/index.cjs` },
+    { label: `@img/${packageName} manifest`, path: `${root}/package.json` },
+    { label: `@img/${packageName} license`, path: `${root}/LICENSE` }
+  ];
+}
+
+export function findMissingSharpAsarRuntime(listing, platform, arch = "x64") {
+  const entries = new Set(normalizedAsarEntries(listing));
+  const required = platform === "win32"
+    ? windowsSharpAsarRuntime(arch)
+    : sharedSharpAsarRuntime;
+  return required.filter(({ path }) => !entries.has(path));
+}
+
+function imgPackageNamesFromAsar(listing) {
+  const packages = new Set();
+  for (const entry of normalizedAsarEntries(listing)) {
+    const match = /(?:^|\/)node_modules\/@img\/([^/]+)(?:\/|$)/.exec(entry);
+    if (match) packages.add(match[1]);
+  }
+  return [...packages];
+}
+
+export function findForeignSharpAsarPackages(listing, platform, arch = "x64") {
+  if (platform !== "win32") return [];
+  return partitionSharpNativePackages(imgPackageNamesFromAsar(listing), {
+    platform,
+    arch
+  }).removed;
 }
 
 export function findForbiddenAsarEntries(listing) {
@@ -146,10 +240,14 @@ export function findMissingPackagedResources(appPath, platform = packagedPlatfor
   return requiredResourcesFor(platform).filter((file) => !existsSync(resolve(root, file)));
 }
 
-export function findMissingUnpackedNative(appPath, platform = packagedPlatform(appPath)) {
+export function findMissingUnpackedNative(
+  appPath,
+  platform = packagedPlatform(appPath),
+  arch = "x64"
+) {
   const root = resourcesPath(appPath, platform);
   const missing = [];
-  for (const { label, dir, mustContain } of requiredUnpackedNativeFor(platform)) {
+  for (const { label, dir, filePattern } of requiredUnpackedNativeFor(platform, arch)) {
     const absolute = resolve(root, dir);
     if (!existsSync(absolute)) {
       missing.push({ label, reason: `directory missing: ${dir}` });
@@ -165,14 +263,31 @@ export function findMissingUnpackedNative(appPath, platform = packagedPlatform(a
       });
       continue;
     }
-    if (!entries.some((name) => name.includes(mustContain))) {
+    if (!entries.some((name) => filePattern.test(name))) {
       missing.push({
         label,
-        reason: `${dir} contains no entry matching "${mustContain}" (saw: ${entries.join(", ") || "<empty>"})`
+        reason: `${dir} contains no entry matching ${String(filePattern)} (saw: ${entries.join(", ") || "<empty>"})`
       });
     }
   }
   return missing;
+}
+
+export function findForeignUnpackedNative(
+  appPath,
+  platform = packagedPlatform(appPath),
+  arch = "x64"
+) {
+  if (platform !== "win32") return [];
+  const nodeModulesDir = resolve(
+    resourcesPath(appPath, platform),
+    "app.asar.unpacked/node_modules"
+  );
+  return inspectSharpNativePackages({
+    nodeModulesDir,
+    platform,
+    arch
+  }).removed;
 }
 
 function formatForbiddenViolations(violations) {
@@ -198,6 +313,23 @@ export function verifyAsarListing(listing) {
   throw new Error(formatForbiddenViolations(violations));
 }
 
+export function verifySharpAsarRuntime(listing, platform, arch = "x64") {
+  const missing = findMissingSharpAsarRuntime(listing, platform, arch);
+  const foreign = findForeignSharpAsarPackages(listing, platform, arch);
+  if (missing.length === 0 && foreign.length === 0) return;
+
+  const lines = ["verify-asar-contents: Sharp runtime layout is invalid", ""];
+  for (const { label, path } of missing) {
+    lines.push(`  - missing ${label}: ${path}`);
+  }
+  if (foreign.length > 0) {
+    lines.push(
+      `  - foreign Sharp native slice(s): ${foreign.map((name) => `@img/${name}`).join(", ")}`
+    );
+  }
+  throw new Error(lines.join("\n"));
+}
+
 export function verifyPackagedResources(appPath, platform = packagedPlatform(appPath)) {
   const missingResources = findMissingPackagedResources(appPath, platform);
   if (missingResources.length === 0) return;
@@ -206,21 +338,33 @@ export function verifyPackagedResources(appPath, platform = packagedPlatform(app
   );
 }
 
-export function verifyUnpackedNative(appPath, platform = packagedPlatform(appPath)) {
-  const missing = findMissingUnpackedNative(appPath, platform);
-  if (missing.length === 0) return;
+export function verifyUnpackedNative(
+  appPath,
+  platform = packagedPlatform(appPath),
+  arch = "x64"
+) {
+  const missing = findMissingUnpackedNative(appPath, platform, arch);
+  const foreign = findForeignUnpackedNative(appPath, platform, arch);
+  if (missing.length === 0 && foreign.length === 0) return;
   const lines = [
-    `verify-asar-contents: ${missing.length} unpacked-native expectation(s) failed`,
+    `verify-asar-contents: ${missing.length + foreign.length} unpacked-runtime expectation(s) failed`,
     ""
   ];
   for (const { label, reason } of missing) {
     lines.push(`  - ${label}: ${reason}`);
   }
+  if (foreign.length > 0) {
+    lines.push(
+      `  - foreign Sharp native slice(s): ${foreign.map((name) => `@img/${name}`).join(", ")}`
+    );
+  }
   lines.push(
     "",
     "If sharp packages are missing: pnpm deploy is dropping platform-specific",
-    "optionalDependencies — see release.mjs step 5b for the workaround. If",
-    "the .dylib is missing despite the package being present, the asarUnpack",
+    "optionalDependencies — see the release packager's injection step. If",
+    "foreign Windows slices are present, the staged Sharp pruning step did",
+    "not run. If a native library is missing despite its package being present,",
+    "the asarUnpack",
     "rule for @img/** is gone from electron-builder.yml."
   );
   throw new Error(lines.join("\n"));
@@ -229,6 +373,9 @@ export function verifyUnpackedNative(appPath, platform = packagedPlatform(appPat
 export function runCli(args = process.argv.slice(2)) {
   const appPath = args[0] ?? resolve("release-stage/dist/mac-universal/PwrSnap.app");
   const platform = packagedPlatform(appPath);
+  const arch = platform === "win32"
+    ? process.env.PWRSNAP_TARGET_ARCH?.trim() || "x64"
+    : "x64";
   const asarPath = join(resourcesPath(appPath, platform), "app.asar");
   if (!existsSync(asarPath)) {
     console.error(`verify-asar-contents: app.asar not found at ${asarPath}`);
@@ -240,8 +387,9 @@ export function runCli(args = process.argv.slice(2)) {
 
   try {
     verifyAsarListing(listing);
+    verifySharpAsarRuntime(listing, platform, arch);
     verifyPackagedResources(appPath, platform);
-    verifyUnpackedNative(appPath, platform);
+    verifyUnpackedNative(appPath, platform, arch);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

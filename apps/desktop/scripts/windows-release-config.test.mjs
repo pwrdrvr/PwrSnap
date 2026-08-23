@@ -213,6 +213,8 @@ describe("Windows release configuration", () => {
     expect(rootReadme).toContain("Linux desktop support is not shipped");
     expect(rootReadme).toContain("Developer ID signed, hardened, and Apple-notarized");
     expect(rootReadme).toContain("Authenticode-signed");
+    expect(rootReadme).toMatch(/To install a\s+1\.1 prerelease/);
+    expect(rootReadme).toMatch(/Once 1\.1 is promoted\s+stable/);
 
     for (const docs of [rootReadme, windowsReadme]) {
       expect(docs).toContain("PwrSnap-<version>-windows-x64-setup.exe");
@@ -232,6 +234,10 @@ describe("Windows release configuration", () => {
     expect(windowsReadme).toContain("Windows video capture records the screen");
     expect(windowsReadme).toContain("Arm64 is not packaged");
     expect(windowsReadme).toContain("Help → Logs");
+    expect(windowsReadme).toMatch(/To install a\s+1\.1 prerelease/);
+    expect(windowsReadme).toMatch(/Once 1\.1 is promoted\s+stable/);
+    expect(windowsReadme).toContain("preserves the previous working binding");
+    expect(windowsReadme).toContain("Full-window capture on Windows depends on Electron");
     expect(wingetReadme).toContain("PwrSnap is not published there yet");
     expect(windowsReadme).toContain("not currently published in the Windows Package Manager");
 
@@ -242,6 +248,13 @@ describe("Windows release configuration", () => {
       "Settings → Experimental",
       "Captures land under `~/Library/Application Support/PwrSnap/`",
       "https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap-windows-x64-setup.exe",
+      "The 1.1 line is currently a prerelease",
+      "For the current 1.1 prerelease line",
+      "Windows video currently includes the pointer",
+      "Some in-app shortcut labels still render macOS key glyphs",
+      "shows the macOS Command glyph",
+      "the remaining fallback is macOS-only",
+      "Headed Windows smoke testing is not",
     ]) {
       expect(userFacingDocs).not.toContain(stale);
     }

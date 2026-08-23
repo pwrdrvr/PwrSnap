@@ -21,19 +21,16 @@ but PwrSnap does not distribute a Linux desktop package.
 
 1. For the current stable release, open
    [GitHub Releases — Latest](https://github.com/pwrdrvr/PwrSnap/releases/latest).
-   For the current 1.1 prerelease line, open the main
+   To install a 1.1 prerelease, open the main
    [Releases page](https://github.com/pwrdrvr/PwrSnap/releases); GitHub's
-   `latest` route intentionally excludes prereleases.
+   `latest` route intentionally excludes prereleases. Once 1.1 is promoted
+   stable, it appears under the Latest link instead.
 2. Download `PwrSnap-<version>-windows-x64-setup.exe`. The `.blockmap` and
    `latest.yml` assets are for the updater, not manual installation.
 3. Run the installer. It installs for the current user and lets you change the
    destination folder.
 4. Launch PwrSnap from the Start menu. The default quick-capture shortcut is
    `Ctrl+Shift+C`; change any global binding under **Settings → Hotkeys**.
-
-The currently published releases predate the workflow's version-free Windows
-alias, so do not construct a `releases/latest/download/PwrSnap-windows-x64-setup.exe`
-URL yet. Use the Releases page and the versioned filename above.
 
 To verify a downloaded installer before running it:
 
@@ -100,18 +97,14 @@ when the active root changes, so both roots may contain files from the same
 library. Do not manually move, rename, or delete capture bundles, the database,
 settings, or secrets as a troubleshooting step.
 
-## Current Windows limitations
+## Windows limitations
 
 - Windows releases are x64 only; Arm64 is not packaged.
 - Windows video capture records the screen at 30 fps without microphone or
   system audio. Audio controls are not wired to the Windows recorder yet.
-- Windows video currently includes the pointer even when the capture-cursor
-  setting is off.
 - Quick Look extensions and HEIC export are macOS-only.
-- Some in-app shortcut labels still render macOS key glyphs. On Windows,
-  `CommandOrControl` means `Ctrl` and `Alt` is the Windows Alt key.
-- A full-window capture depends on Electron returning the selected window. If
-  that path fails, use region capture; the remaining fallback is macOS-only.
+- Full-window capture on Windows depends on Electron returning the selected
+  window. If the window is unavailable, use region capture.
 - In a Remote Desktop session, Windows clipboard-redirection policy determines
   whether a copy made where PwrSnap is running reaches the other side of the
   session.
@@ -120,10 +113,10 @@ settings, or secrets as a troubleshooting step.
 
 ### A shortcut does nothing
 
-Open **Settings → Hotkeys** and rebind the command; another app may already own
-the global chord. PwrSnap's defaults use `Ctrl` on Windows even if a label still
-shows the macOS Command glyph. Check **Help → Logs** for `failed to register`
-when a binding still does not work.
+Open **Settings → Hotkeys** and try another chord if PwrSnap reports that the
+binding is unsupported, reserved, or already owned by another app. PwrSnap
+preserves the previous working binding until a replacement registers
+successfully. Check **Help → Logs** if registration still fails.
 
 ### Captures are missing or inaccessible
 
@@ -242,6 +235,5 @@ corepack pnpm release:check --tag "v$version"
 git diff --check
 ```
 
-Then install the produced `.exe`, make one still capture and one short video,
-and confirm both appear in the Library. Headed Windows smoke testing is not
-performed by the macOS/Linux CI build gate.
+Then, as manual release QA, install the produced `.exe`, make one still capture
+and one short video, and confirm both appear in the Library.

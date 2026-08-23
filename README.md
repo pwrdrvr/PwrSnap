@@ -89,11 +89,12 @@ processing; normal users do not need to install FFmpeg separately.
 3. Optionally connect Codex from **Settings → AI Providers**. Capture, editing,
    the Library, and export continue to work without an AI provider.
 
-The 1.1 line is currently a prerelease. GitHub's `releases/latest` route
-deliberately ignores prereleases, so install a 1.1 alpha from the main
+GitHub's `releases/latest` route deliberately ignores prereleases. To install a
+1.1 prerelease, use the main
 [Releases page](https://github.com/pwrdrvr/PwrSnap/releases) and choose the
-versioned artifact for your platform. Pull-request preview artifacts are not
-production-signed and expire after 14 days; the Windows preview is unsigned,
+versioned artifact for your platform. Once 1.1 is promoted stable, install it
+from the latest stable release linked above. Pull-request preview artifacts are
+not production-signed and expire after 14 days; the Windows preview is unsigned,
 and the macOS preview is not notarized. They are for development testing rather
 than normal installation.
 
@@ -149,7 +150,7 @@ A few load-bearing design rules:
 
 ## Roadmap
 
-macOS and Windows are shipping desktop targets. The 1.1 prerelease line ships
+macOS and Windows are shipping desktop targets. The 1.1 release line ships
 signed Windows and universal macOS artifacts through the same guarded release;
 Linux remains a build-only release gate with no supported installer. The active
 feature and platform work stays tracked in the

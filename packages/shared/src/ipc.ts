@@ -44,8 +44,9 @@ export const EVENT_CHANNELS = {
   /**
    * Main → every BrowserWindow: recording-service lifecycle update.
    * Payload type: `RecordingState`. Discriminated union over
-   * `phase: "idle" | "preflight" | "countdown" | "recording" |
-   *  "stopping" | "processing" | "ready" | "failed"`. Drives the
+   * `phase: "idle" | "permission" | "preflight" | "countdown" |
+   *  "starting" | "recording" | "stopping" | "processing" |
+   *  "ready" | "failed"`. Drives the
    * tray's Stop-Recording row, the selector's countdown overlay,
    * and the float-over's video-loaded transition. Renderers that
    * mount mid-flight call `recording:state` once for the snapshot,

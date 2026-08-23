@@ -116,7 +116,7 @@ describe("readRecordingReadiness", () => {
     expect(a.fingerprint).not.toBe(b.fingerprint);
   });
 
-  test("non-darwin returns granted for everything", async () => {
+  test("Linux returns granted for every current capability", async () => {
     Object.defineProperty(process, "platform", { value: "linux", configurable: true });
     const { readRecordingReadiness, needsAttention } = await import(
       "../recording-permissions"
@@ -127,9 +127,34 @@ describe("readRecordingReadiness", () => {
     expect(r.systemAudio).toBe("granted");
     expect(needsAttention(r)).toBe(false);
   });
+
+  test("Windows reports the current video-only recorder's audio as unavailable", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const { readRecordingReadiness, needsAttention } = await import(
+      "../recording-permissions"
+    );
+    const r = readRecordingReadiness();
+    expect(r.screenRecording).toBe("granted");
+    expect(r.microphone).toBe("unavailable");
+    expect(r.systemAudio).toBe("unavailable");
+    // There is no OS grant that can enable audio for gdigrab, so startup
+    // should not route Windows users to a dead-end permission page.
+    expect(needsAttention(r)).toBe(false);
+  });
 });
 
 describe("requestPermission", () => {
+  test("Windows audio request truthfully remains unavailable", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const { requestPermission } = await import("../recording-permissions");
+    await expect(requestPermission("microphone")).resolves.toEqual({
+      status: "unavailable"
+    });
+    await expect(requestPermission("systemAudio")).resolves.toEqual({
+      status: "unavailable"
+    });
+  });
+
   test("microphone routes through askForMediaAccess", async () => {
     electronMock.askResolved = true;
     const { requestPermission } = await import("../recording-permissions");

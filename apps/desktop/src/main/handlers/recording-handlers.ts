@@ -14,7 +14,9 @@ import { join } from "node:path";
 import { ok, err } from "@pwrsnap/shared";
 import type {
   PwrSnapError,
+  RecordingCapabilities,
   RecordingPermission,
+  RecordingPermissionAction,
   Result,
   VideoExportRequest,
   VideoPreset,
@@ -44,7 +46,16 @@ import {
   getRecordingService,
   type RecordingService
 } from "../recording/recording-service";
-import { getRecordingState } from "../recording/recording-state";
+import {
+  getRecordingState,
+  isRecordingActive
+} from "../recording/recording-state";
+import {
+  cancelRecordingPermissionPreflight,
+  getRecordingPermissionControllerWindowId,
+  getRecordingPermissionPreflightCoordinator
+} from "../recording/recording-permission-preflight";
+import { resizeRecordingPermissionController } from "../recording/recording-controller";
 import {
   computeOutputDimensions,
   exportVideoRange,
@@ -87,6 +98,33 @@ function validationError(code: string, message: string): PwrSnapError {
 
 function recordingError(code: string, message: string, cause?: unknown): PwrSnapError {
   return { kind: "capture", code, message, cause };
+}
+
+function isRecordingCapabilities(value: unknown): value is RecordingCapabilities {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<Record<keyof RecordingCapabilities, unknown>>;
+  return (
+    typeof candidate.microphone === "boolean" &&
+    typeof candidate.systemAudio === "boolean"
+  );
+}
+
+function isRecordingPermissionAction(value: unknown): value is RecordingPermissionAction {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as {
+    requestId?: unknown;
+    action?: unknown;
+    permission?: unknown;
+  };
+  if (typeof candidate.requestId !== "string") return false;
+  if (candidate.action === "recheck" || candidate.action === "cancel") {
+    return true;
+  }
+  return (
+    (candidate.action === "openSettings" ||
+      candidate.action === "continueWithout") &&
+    isKnownPermission(candidate.permission)
+  );
 }
 
 /** Filename of the extracted full-clip audio under the video asset dir.
@@ -153,6 +191,12 @@ function validateExportRequest(req: VideoExportRequest): Result<VideoExportReque
 }
 
 let serviceOverrideForTests: RecordingService | null = null;
+// Covers the async gap from an interactive permission read through native
+// service handoff. RecordingState intentionally does not call the permission
+// dialog "recording", so this explicit reservation prevents a second command
+// from clobbering the broker before a session exists.
+let recordingStartReserved = false;
+let recordingStartCancelRequested = false;
 
 export function __setRecordingServiceForTests(service: RecordingService | null): void {
   serviceOverrideForTests = service;
@@ -160,6 +204,38 @@ export function __setRecordingServiceForTests(service: RecordingService | null):
 
 function getService(): RecordingService {
   return serviceOverrideForTests ?? getRecordingService();
+}
+
+async function runInteractiveRecordingPreflight(
+  capabilities: RecordingCapabilities,
+  displayId: number
+): Promise<Result<RecordingCapabilities, PwrSnapError>> {
+  try {
+    const outcome = await getRecordingPermissionPreflightCoordinator().begin({
+      capabilities,
+      displayId
+    });
+    if (outcome.status === "cancelled") {
+      return err(
+        validationError(
+          "cancelled",
+          "Recording cancelled before capture started."
+        )
+      );
+    }
+    return ok(outcome.capabilities);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (message === "permission_preflight_in_progress") {
+      return err(
+        recordingError(
+          "already_recording",
+          "Another recording setup is already in progress."
+        )
+      );
+    }
+    return err(permissionError("permission_preflight_failed", message));
+  }
 }
 
 export function registerRecordingHandlers(): void {
@@ -228,50 +304,299 @@ export function registerRecordingHandlers(): void {
 
   // ---- recording lifecycle ----
 
-  bus.register("recording:start", async (req) => {
-    // Preflight permissions before the countdown so the user is
-    // never staring at "3, 2, 1, …" only to hit a permission wall.
-    // Screen Recording is required: the gate fires the macOS prompt on
-    // the first-ever attempt and routes to System Settings thereafter
-    // (see screen-permission-gate.ts). Missing audio is a degraded
-    // continuation that the selector dialog handled before calling us.
-    const blocked = await guardScreenCapture();
-    if (blocked) return blocked;
-    // Pre-warm the captures-folder (Documents) TCC grant before the
-    // countdown HUD so the "Allow Documents" dialog lands on a clean
-    // screen, not under recording chrome when the clip is saved.
-    const storageBlocked = await ensureCapturesDirReady();
-    if (storageBlocked) return storageBlocked;
-    const readiness = readRecordingReadiness();
-    if (
-      req.capabilities.microphone &&
-      readiness.microphone !== "granted"
-    ) {
+  bus.register("recording:preflight", async (req, ctx) => {
+    if (ctx.principal !== "ipc") {
       return err(
         permissionError(
-          "microphone_not_granted",
-          "Microphone permission is required for the selected recording options."
+          "interactive_preflight_required",
+          "Recording permission choices require the PwrSnap interface."
         )
       );
     }
     if (
-      req.capabilities.systemAudio &&
-      readiness.systemAudio !== "granted"
+      recordingStartReserved ||
+      getRecordingPermissionPreflightCoordinator().isInFlight ||
+      isRecordingActive()
     ) {
       return err(
-        permissionError(
-          "system_audio_not_granted",
-          "System Audio capture requires Screen Recording permission on macOS 13 or newer."
+        recordingError(
+          "already_recording",
+          "A recording is already in progress."
+        )
+      );
+    }
+    const rawReq = req as unknown;
+    if (typeof rawReq !== "object" || rawReq === null) {
+      return err(
+        validationError(
+          "invalid_recording_preflight",
+          "recording:preflight requires boolean audio capabilities and a valid display id."
+        )
+      );
+    }
+    const candidate = rawReq as {
+      capabilities?: unknown;
+      displayId?: unknown;
+    };
+    if (
+      !isRecordingCapabilities(candidate.capabilities) ||
+      (candidate.displayId !== undefined &&
+        !Number.isInteger(candidate.displayId))
+    ) {
+      return err(
+        validationError(
+          "invalid_recording_preflight",
+          "recording:preflight requires boolean audio capabilities and a valid display id."
         )
       );
     }
     try {
-      const session = await getService().start({
+      return ok(
+        await getRecordingPermissionPreflightCoordinator().begin({
+          capabilities: candidate.capabilities,
+          ...(candidate.displayId === undefined
+            ? {}
+            : { displayId: candidate.displayId as number })
+        })
+      );
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (message === "permission_preflight_in_progress") {
+        return err(
+          recordingError(
+            "already_recording",
+            "Another recording setup is already in progress."
+          )
+        );
+      }
+      return err(permissionError("permission_preflight_failed", message));
+    }
+  });
+
+  bus.register("recording:permissionAction", async (req, ctx) => {
+    if (!isRecordingPermissionAction(req)) {
+      return err(
+        validationError(
+          "invalid_permission_action",
+          "recording:permissionAction received an invalid action."
+        )
+      );
+    }
+    const controllerWindowId = getRecordingPermissionControllerWindowId();
+    if (
+      ctx.principal !== "ipc" ||
+      ctx.sourceWindowId === undefined ||
+      controllerWindowId === null ||
+      ctx.sourceWindowId !== controllerWindowId
+    ) {
+      return err(
+        permissionError(
+          "untrusted_permission_source",
+          "Recording permission choices require the active PwrSnap permission window."
+        )
+      );
+    }
+    return getRecordingPermissionPreflightCoordinator().act(req);
+  });
+
+  bus.register("recording:resizePermissionController", async (req, ctx) => {
+    const controllerWindowId = getRecordingPermissionControllerWindowId();
+    if (
+      ctx.principal !== "ipc" ||
+      ctx.sourceWindowId === undefined ||
+      controllerWindowId === null ||
+      ctx.sourceWindowId !== controllerWindowId
+    ) {
+      return err(
+        permissionError(
+          "untrusted_permission_source",
+          "Recording permission sizing requires the active PwrSnap permission window."
+        )
+      );
+    }
+    if (
+      typeof req.requestId !== "string" ||
+      !Number.isFinite(req.width) ||
+      !Number.isFinite(req.height) ||
+      req.width <= 0 ||
+      req.height <= 0
+    ) {
+      return err(
+        validationError(
+          "invalid_permission_size",
+          "Recording permission size must contain a request id and positive finite dimensions."
+        )
+      );
+    }
+    if (!resizeRecordingPermissionController(req)) {
+      return err(
+        validationError(
+          "stale_permission_preflight",
+          "This recording permission request is no longer active."
+        )
+      );
+    }
+    return ok(undefined);
+  });
+
+  bus.register("recording:start", async (req, ctx) => {
+    const coordinator = getRecordingPermissionPreflightCoordinator();
+    if (
+      recordingStartReserved ||
+      coordinator.isInFlight ||
+      isRecordingActive()
+    ) {
+      return err(
+        recordingError(
+          "already_recording",
+          "Another recording setup is already in progress."
+        )
+      );
+    }
+    recordingStartReserved = true;
+    recordingStartCancelRequested = false;
+    try {
+      let capabilities = { ...req.capabilities };
+
+      // IPC is a visible, trusted PwrSnap surface, so recording:start owns
+      // the optional-capability choice instead of preserving issue #74's
+      // hard-fail. RPC/MCP callers remain non-interactive and get typed
+      // errors rather than waiting on an invisible dialog.
+      if (ctx.principal === "ipc") {
+        const preflight = await runInteractiveRecordingPreflight(
+          capabilities,
+          req.subject.displayId
+        );
+        if (!preflight.ok) return preflight;
+        capabilities = preflight.value;
+      }
+      if (recordingStartCancelRequested) {
+        return err(
+          validationError(
+            "cancelled",
+            "Recording cancelled before capture started."
+          )
+        );
+      }
+
+      // Repeat the native screen probe immediately before countdown. If an
+      // interactive grant changed between the dialog and this check, re-enter
+      // the same explicit gate once; headless callers receive the Result.
+      let blocked = await guardScreenCapture({ routeToSettings: false });
+      if (blocked !== null && ctx.principal === "ipc") {
+        const raced = await runInteractiveRecordingPreflight(
+          capabilities,
+          req.subject.displayId
+        );
+        if (!raced.ok) return raced;
+        capabilities = raced.value;
+        blocked = await guardScreenCapture({ routeToSettings: false });
+      }
+      if (blocked !== null) return blocked;
+      if (recordingStartCancelRequested) {
+        return err(
+          validationError(
+            "cancelled",
+            "Recording cancelled before capture started."
+          )
+        );
+      }
+
+      // Pre-warm the captures-folder (Documents) TCC grant before the
+      // countdown HUD so the "Allow Documents" dialog lands on a clean
+      // screen, not under recording chrome when the clip is saved.
+      const storageBlocked = await ensureCapturesDirReady();
+      if (storageBlocked) return storageBlocked;
+      if (recordingStartCancelRequested) {
+        return err(
+          validationError(
+            "cancelled",
+            "Recording cancelled before capture started."
+          )
+        );
+      }
+
+      // A final optional-audio snapshot closes the small revocation race
+      // between the first report and native service handoff. Interactive
+      // callers re-enter the choice surface; headless callers hard-fail.
+      let readiness = readRecordingReadiness();
+      const audioMissing = (): boolean =>
+        (capabilities.microphone && readiness.microphone !== "granted") ||
+        (capabilities.systemAudio && readiness.systemAudio !== "granted");
+      if (ctx.principal === "ipc" && audioMissing()) {
+        const raced = await runInteractiveRecordingPreflight(
+          capabilities,
+          req.subject.displayId
+        );
+        if (!raced.ok) return raced;
+        capabilities = raced.value;
+        readiness = readRecordingReadiness();
+      }
+      if (capabilities.microphone && readiness.microphone !== "granted") {
+        return err(
+          permissionError(
+            readiness.microphone === "unavailable"
+              ? "microphone_unavailable"
+              : "microphone_not_granted",
+            readiness.microphone === "unavailable"
+              ? "Microphone capture is unavailable with the current recorder."
+              : "Microphone permission is not granted for the selected recording options."
+          )
+        );
+      }
+      if (capabilities.systemAudio && readiness.systemAudio !== "granted") {
+        return err(
+          permissionError(
+            readiness.systemAudio === "unavailable"
+              ? "system_audio_unavailable"
+              : "system_audio_not_granted",
+            readiness.systemAudio === "unavailable"
+              ? "System Audio capture is unavailable with the current recorder."
+              : "System Audio capture requires Screen Recording permission on macOS 13 or newer."
+          )
+        );
+      }
+
+      // No separate preflight may have acquired the coordinator while this
+      // start owned its reservation. Keep the assertion explicit at the
+      // irreversible boundary where the service creates temp/helper state.
+      if (coordinator.isInFlight) {
+        return err(
+          recordingError(
+            "already_recording",
+            "Another recording setup is already in progress."
+          )
+        );
+      }
+      if (recordingStartCancelRequested) {
+        return err(
+          validationError(
+            "cancelled",
+            "Recording cancelled before capture started."
+          )
+        );
+      }
+      const service = getService();
+      const session = await service.start({
         subject: req.subject,
-        capabilities: req.capabilities,
+        capabilities,
         captureCursor: req.captureCursor,
         countdownSeconds: req.countdownSeconds ?? 3
       });
+      if (recordingStartCancelRequested) {
+        // Cancel can land while start() is awaiting its first native/temp
+        // setup boundary, before the service has enough state for the
+        // command's first cancel() call to observe. Cancel again after the
+        // handoff so no helper/session survives that race, and never report a
+        // successful session the user already cancelled.
+        await service.cancel();
+        return err(
+          validationError(
+            "cancelled",
+            "Recording cancelled before capture started."
+          )
+        );
+      }
       return ok({ sessionId: session.sessionId });
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
@@ -291,6 +616,9 @@ export function registerRecordingHandlers(): void {
       }
       log.error("recording:start failed", { message });
       return err(recordingError("recording_start_failed", message, cause));
+    } finally {
+      recordingStartReserved = false;
+      recordingStartCancelRequested = false;
     }
   });
 
@@ -306,6 +634,10 @@ export function registerRecordingHandlers(): void {
   });
 
   bus.register("recording:cancel", async () => {
+    if (recordingStartReserved) recordingStartCancelRequested = true;
+    if (cancelRecordingPermissionPreflight()) {
+      return ok(undefined);
+    }
     try {
       await getService().cancel();
       return ok(undefined);

@@ -842,6 +842,12 @@ export function buildTrayContextMenuTemplate(
  */
 function applyRecordingStateToTray(activeTray: Tray, state: RecordingState): void {
   switch (state.phase) {
+    case "permission":
+      // Permission setup owns no recorder yet, so keep the idle icon and
+      // never imply that Stop is available from the context menu.
+      activeTray.setTitle("");
+      activeTray.setToolTip("PwrSnap — choose recording permissions");
+      return;
     case "countdown":
       activeTray.setTitle(`● ${state.secondsRemaining}`);
       activeTray.setToolTip(`PwrSnap — recording starts in ${state.secondsRemaining}…`);

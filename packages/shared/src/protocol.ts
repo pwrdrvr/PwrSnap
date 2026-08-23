@@ -155,6 +155,7 @@ export type VideoRange = {
  */
 export type RecordingState =
   | { phase: "idle" }
+  | { phase: "permission"; preflight: RecordingPermissionPreflight }
   | { phase: "preflight"; sessionId: string; rect: Rect; displayId: number }
   | {
       phase: "countdown";
@@ -274,6 +275,43 @@ export type PermissionReadinessReport = RecordingReadiness & {
 };
 
 export type RecordingPermission = "screen" | "microphone" | "systemAudio";
+
+/** One requested capability that is not currently usable. The main
+ * process computes this list from the live readiness snapshot so the
+ * recording-time dialog never nags about an audio source the user did
+ * not request for this take. */
+export type RecordingPermissionGap = {
+  permission: RecordingPermission;
+  status: RecordingPermissionStatus;
+};
+
+/** Renderer-safe snapshot for the in-context recording permission
+ * dialog. Screen capture is implicit and required for every take;
+ * `capabilities` contains the two optional per-take audio choices.
+ * Dropping one of those choices changes only this snapshot and the
+ * eventual `recording:start` request — it never writes Settings. */
+export type RecordingPermissionPreflight = {
+  requestId: string;
+  displayId: number;
+  capabilities: RecordingCapabilities;
+  missing: RecordingPermissionGap[];
+  /** True while an OS Settings surface owns focus. The controller stays
+   * visible but lowered and must not reclaim focus merely because
+   * `shell.openExternal()` returned. */
+  awaitingSettings?: boolean;
+};
+
+export type RecordingPermissionPreflightOutcome =
+  | { status: "ready"; capabilities: RecordingCapabilities }
+  | { status: "cancelled" };
+
+export type RecordingPermissionAction =
+  | { requestId: string; action: "recheck" | "cancel" }
+  | {
+      requestId: string;
+      action: "openSettings" | "continueWithout";
+      permission: RecordingPermission;
+    };
 
 /**
  * Quality tier for a video export. Mirrors the image `RenderPreset`
@@ -4079,13 +4117,45 @@ export type Commands = {
     res: void;
   };
   /**
+   * Run the user-facing recording permission gate before the selector.
+   * The interactive video path uses this for the required screen grant,
+   * because a denied screen snapshot would make the selector black.
+   * `recording:start` owns the post-selection gate for the requested
+   * per-take audio capabilities so direct IPC callers cannot bypass it.
+   */
+  "recording:preflight": {
+    req: {
+      capabilities: RecordingCapabilities;
+      displayId?: number | undefined;
+    };
+    res: RecordingPermissionPreflightOutcome;
+  };
+  /** Resolve one action from the in-context permission controller.
+   * Recheck is also dispatched when the controller regains focus after
+   * an OS-settings round trip. */
+  "recording:permissionAction": {
+    req: RecordingPermissionAction;
+    res: void;
+  };
+  /** Resize the in-context permission controller to its measured content.
+   * The main process accepts this only from the active controller renderer
+   * and clamps it to the target display's work area. */
+  "recording:resizePermissionController": {
+    req: {
+      requestId: string;
+      width: number;
+      height: number;
+    };
+    res: void;
+  };
+  /**
    * Begin a recording session against the given subject (fixed rect or
    * full display) with the requested audio capabilities. Returns the
    * session id; lifecycle updates land on `EVENT_CHANNELS.recordingState`.
    * Concurrent starts are rejected with `code: "already_recording"`.
    *
-   * The selector calls this after the user picks Video and the in-area
-   * 3-2-1 countdown completes. Headless callers (agents, hotkey) can
+   * The selector calls this after the user picks Video; this command starts
+   * the in-area 3-2-1 countdown. Headless callers (agents/RPC) can
    * pass `countdownSeconds: 0` to skip the countdown.
    */
   "recording:start": {

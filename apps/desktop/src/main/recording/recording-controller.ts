@@ -16,19 +16,51 @@ import { appWindowsOverlappingRect } from "../capture/rect-overlap";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { createRecordingControllerWindow } from "../window";
-import { subscribeToRecordingState } from "./recording-state";
+import { setRecordingPermissionControllerWindowId } from "./recording-permission-preflight";
+import {
+  getRecordingState,
+  subscribeToRecordingState
+} from "./recording-state";
 
 const log = getMainLogger("pwrsnap:recording-controller");
 
 let window: BrowserWindow | null = null;
 let installed = false;
 let escapeShortcutArmed = false;
+let activePermissionRequestId: string | null = null;
 
 function ensureWindow(): BrowserWindow {
   if (window !== null && !window.isDestroyed()) return window;
   window = createRecordingControllerWindow();
+  setRecordingPermissionControllerWindowId(window.id);
   window.on("closed", () => {
     window = null;
+    activePermissionRequestId = null;
+    setRecordingPermissionControllerWindowId(null);
+    // Permission setup happens before RecordingService owns a session.
+    // Closing this transient decision surface must resolve that broker,
+    // not leave the caller waiting forever.
+    if (getRecordingState().phase === "permission") {
+      void bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+    }
+  });
+  window.on("focus", () => {
+    const state = getRecordingState();
+    if (
+      window === null ||
+      window.isDestroyed() ||
+      state.phase !== "permission" ||
+      state.preflight.awaitingSettings !== true
+    ) {
+      return;
+    }
+    // This is a genuine OS/window focus return, not the completion of
+    // shell.openExternal(). Raising here keeps Settings in front for the
+    // whole round trip, then restores the decision panel when the user
+    // actually comes back to PwrSnap. The renderer's focus listener owns
+    // the corresponding readiness recheck.
+    window.setAlwaysOnTop(true, "floating");
+    window.moveTop();
   });
   return window;
 }
@@ -213,11 +245,58 @@ function disarmLeadInEscapeShortcut(): void {
  */
 export function applyRecordingStateToController(state: RecordingState): void {
   switch (state.phase) {
+    case "permission": {
+      const win = ensureWindow();
+      disarmLeadInEscapeShortcut();
+      const isNewRequest = activePermissionRequestId !== state.preflight.requestId;
+      activePermissionRequestId = state.preflight.requestId;
+      const awaitingSettings = state.preflight.awaitingSettings === true;
+      win.setFocusable(true);
+      win.setIgnoreMouseEvents(false);
+      // Start with a generous paint surface; the renderer immediately
+      // reports its natural outer-wrapper size through the trusted resize
+      // command. setMinimumSize(0, 0) in the window factory allows it to
+      // shrink, while main-side clamps keep long policy/error copy visible.
+      if (isNewRequest) {
+        const display =
+          screen.getAllDisplays().find(
+            (candidate) => candidate.id === state.preflight.displayId
+          ) ?? screen.getPrimaryDisplay();
+        win.setContentSize(
+          Math.max(1, Math.min(560, display.workArea.width - 32)),
+          Math.max(1, Math.min(640, display.workArea.height - 32)),
+          false
+        );
+      }
+      anchorTopCenter(win, state.preflight.displayId);
+
+      if (awaitingSettings) {
+        // Lower/blur before opening System Settings and never reclaim focus
+        // merely because openExternal returned. A real focus event above,
+        // or the user's explicit Check again action, restores topmost state.
+        win.setAlwaysOnTop(false);
+        if (!win.isVisible()) win.showInactive();
+        win.blur();
+      } else {
+        win.setAlwaysOnTop(true, "floating");
+        if (!win.isVisible()) {
+          win.show();
+        } else if (isNewRequest) {
+          win.moveTop();
+        }
+        // Permission-state republishes (recheck / a row disappearing) must
+        // not steal focus. Focus only the first active decision surface.
+        if (isNewRequest) win.focus();
+      }
+      break;
+    }
     case "preflight":
     case "countdown":
     case "starting": {
       const win = ensureWindow();
       armLeadInEscapeShortcut();
+      win.setAlwaysOnTop(true, "floating");
+      win.setFocusable(false);
       // Countdown overlay sits over the user's content; clicks
       // should fall through to the recorded surface so they don't
       // accidentally hit our window. setIgnoreMouseEvents enables
@@ -270,6 +349,8 @@ export function applyRecordingStateToController(state: RecordingState): void {
     case "processing": {
       const win = ensureWindow();
       disarmLeadInEscapeShortcut();
+      win.setAlwaysOnTop(true, "floating");
+      win.setFocusable(false);
       // Recording-phase pill is compact; tuck it top-center of the
       // recorded display. PID exclusion keeps it out of the captured
       // pixels. Width fits the three-button row (Stop / Restart /
@@ -299,8 +380,10 @@ export function applyRecordingStateToController(state: RecordingState): void {
     case "ready":
     case "failed": {
       disarmLeadInEscapeShortcut();
+      activePermissionRequestId = null;
       if (window !== null && !window.isDestroyed()) {
         window.hide();
+        setRecordingPermissionControllerWindowId(null);
         // Destroying releases the renderer process; the next session
         // gets a fresh React tree with a clean state machine.
         window.destroy();
@@ -310,6 +393,54 @@ export function applyRecordingStateToController(state: RecordingState): void {
     }
   }
   log.debug("recording controller transition", { phase: state.phase });
+}
+
+const PERMISSION_WIDTH_MIN = 420;
+const PERMISSION_WIDTH_MAX = 680;
+const PERMISSION_HEIGHT_MIN = 180;
+
+/** Apply a natural-content resize from the active permission renderer.
+ * The handler validates renderer identity; this layer validates request
+ * identity and clamps to the target display before touching the window. */
+export function resizeRecordingPermissionController(input: {
+  requestId: string;
+  width: number;
+  height: number;
+}): boolean {
+  const state = getRecordingState();
+  const win = window;
+  if (
+    state.phase !== "permission" ||
+    state.preflight.requestId !== input.requestId ||
+    win === null ||
+    win.isDestroyed() ||
+    !Number.isFinite(input.width) ||
+    !Number.isFinite(input.height)
+  ) {
+    return false;
+  }
+
+  const target =
+    screen.getAllDisplays().find(
+      (display) => display.id === state.preflight.displayId
+    ) ?? screen.getPrimaryDisplay();
+  const availableWidth = Math.max(1, target.workArea.width - 32);
+  const availableHeight = Math.max(1, target.workArea.height - 32);
+  const minWidth = Math.min(PERMISSION_WIDTH_MIN, availableWidth);
+  const maxWidth = Math.min(PERMISSION_WIDTH_MAX, availableWidth);
+  const minHeight = Math.min(PERMISSION_HEIGHT_MIN, availableHeight);
+  const maxHeight = availableHeight;
+  const width = Math.min(
+    maxWidth,
+    Math.max(minWidth, Math.ceil(input.width))
+  );
+  const height = Math.min(
+    maxHeight,
+    Math.max(minHeight, Math.ceil(input.height))
+  );
+  win.setContentSize(width, height, false);
+  anchorTopCenter(win, state.preflight.displayId);
+  return true;
 }
 
 /**

@@ -541,6 +541,10 @@ export function FloatOverHost(): React.ReactElement {
         onAcceptDescription={(description) => {
           void dispatch("codex:acceptDescription", { captureId: record.id, description });
         }}
+        onAddTag={(label) => dispatch("library:addTag", { captureId: record.id, label })}
+        onRemoveTag={(label) =>
+          dispatch("library:removeTag", { captureId: record.id, label })
+        }
         onAcceptTag={(tagId) => {
           void dispatch("codex:acceptTag", { captureId: record.id, tagId });
         }}

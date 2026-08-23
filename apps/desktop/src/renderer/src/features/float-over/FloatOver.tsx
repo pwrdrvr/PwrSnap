@@ -3,9 +3,11 @@ import type {
   CaptureEnrichment,
   CapturesLocation,
   ExportStrategy,
+  PwrSnapError,
+  Result,
   VideoRange
 } from "@pwrsnap/shared";
-import { resolveExportLadder, rungForPreset } from "@pwrsnap/shared";
+import { normalizeTagLabel, resolveExportLadder, rungForPreset } from "@pwrsnap/shared";
 import { PwrSnapMark } from "../shared/BrandMark";
 import {
   CopyButton,
@@ -66,13 +68,44 @@ function fmtDurationLabel(seconds: number): string {
   return `${mins}m ${secs}s`;
 }
 
+type TagMutationAction = "add" | "remove";
+
+type TagMutation = {
+  id: number;
+  action: TagMutationAction;
+  label: string;
+  normalizedLabel: string;
+};
+
+type TagMutationFailure = Pick<TagMutation, "action" | "label"> & {
+  message: string;
+};
+
+export type FloatOverTagMutationHandler = (
+  label: string
+) => Promise<Result<CaptureEnrichment, PwrSnapError>>;
+
+function tagsWithMutation(tags: readonly string[], mutation: TagMutation | null): string[] {
+  if (mutation === null) return [...tags];
+  if (mutation.action === "remove") {
+    return tags.filter((tag) => normalizeTagLabel(tag) !== mutation.normalizedLabel);
+  }
+  if (tags.some((tag) => normalizeTagLabel(tag) === mutation.normalizedLabel)) {
+    return [...tags];
+  }
+  return [...tags, mutation.label];
+}
+
 function FoTags({
   tags,
   onAdd,
   onRemove,
   suggestions = [],
   onAcceptSuggest,
-  onRejectSuggest
+  onRejectSuggest,
+  pendingMutation,
+  failure,
+  onRetry
 }: {
   tags: string[];
   onAdd: (t: string) => void;
@@ -80,14 +113,32 @@ function FoTags({
   suggestions?: Array<{ id: string; label: string }>;
   onAcceptSuggest: (suggestion: { id: string; label: string }) => void;
   onRejectSuggest: (suggestion: { id: string; label: string }) => void;
+  pendingMutation: TagMutation | null;
+  failure: TagMutationFailure | null;
+  onRetry: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  const busy = pendingMutation !== null;
   return (
-    <div className="fo__tags">
+    <div className="fo__tags" aria-busy={busy}>
       {tags.map((t) => (
-        <span key={t} className="fo__tag">
+        <span
+          key={t}
+          className={`fo__tag${
+            pendingMutation?.action === "add" &&
+            normalizeTagLabel(t) === pendingMutation.normalizedLabel
+              ? " is-pending"
+              : ""
+          }`}
+        >
           {t}
-          <button className="fo__tag-x" onClick={() => onRemove(t)} aria-label={`remove ${t}`}>
+          <button
+            type="button"
+            className="fo__tag-x"
+            onClick={() => onRemove(t)}
+            aria-label={`remove ${t}`}
+            disabled={busy}
+          >
             ×
           </button>
         </span>
@@ -102,6 +153,7 @@ function FoTags({
               className="fo__tag-suggest-label"
               onClick={() => onAcceptSuggest(s)}
               title={`Use ${s.label}`}
+              disabled={busy}
             >
               + {s.label}
             </button>
@@ -110,6 +162,7 @@ function FoTags({
               className="fo__tag-x"
               onClick={() => onRejectSuggest(s)}
               aria-label={`reject ${s.label}`}
+              disabled={busy}
             >
               ×
             </button>
@@ -119,7 +172,9 @@ function FoTags({
         className="fo__tag-input"
         placeholder={tags.length ? "" : "tag…"}
         value={draft}
+        maxLength={64}
         onChange={(e) => setDraft(e.target.value)}
+        disabled={busy}
         onKeyDown={(e) => {
           if (e.key === "Enter" && draft.trim()) {
             onAdd(draft.trim());
@@ -130,6 +185,22 @@ function FoTags({
           }
         }}
       />
+      {pendingMutation !== null ? (
+        <span className="fo__tag-status" role="status">
+          {pendingMutation.action === "add" ? "Adding" : "Removing"} “
+          {pendingMutation.label}”…
+        </span>
+      ) : null}
+      {failure !== null ? (
+        <span className="fo__tag-error" role="alert">
+          <span>
+            Couldn’t {failure.action} “{failure.label}”: {failure.message}
+          </span>
+          <button type="button" className="fo__tag-retry" onClick={onRetry}>
+            Retry
+          </button>
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -224,6 +295,8 @@ export function FloatOver({
   onSetAutoAccept,
   onAcceptTitle,
   onAcceptDescription,
+  onAddTag,
+  onRemoveTag,
   onAcceptTag,
   onRejectTag
 }: {
@@ -295,6 +368,13 @@ export function FloatOver({
   onSetAutoAccept?: (next: boolean) => void;
   onAcceptTitle?: (title: string) => void;
   onAcceptDescription?: (description: string) => void;
+  /** Persist a user-typed tag through `library:addTag`. The returned
+   *  enrichment is the authoritative tag snapshot used to reconcile
+   *  the optimistic chip. */
+  onAddTag?: FloatOverTagMutationHandler;
+  /** Persist removal through `library:removeTag`. Result failures roll
+   *  the optimistic removal back and remain visible with a Retry action. */
+  onRemoveTag?: FloatOverTagMutationHandler;
   onAcceptTag?: (tagId: string) => void;
   onRejectTag?: (tagId: string) => void;
 }) {
@@ -349,6 +429,15 @@ export function FloatOver({
     suggested: suggestedDescription
   });
   const [tags, setTags] = useState<string[]>(acceptedTags);
+  const tagsRef = useRef<string[]>(acceptedTags);
+  const confirmedTagsRef = useRef<string[]>(acceptedTags);
+  const pendingTagMutationRef = useRef<TagMutation | null>(null);
+  const nextTagMutationIdRef = useRef(0);
+  const tagMutationMountedRef = useRef(true);
+  const [pendingTagMutation, setPendingTagMutation] = useState<TagMutation | null>(null);
+  const [tagMutationFailure, setTagMutationFailure] = useState<TagMutationFailure | null>(
+    null
+  );
   const [hovering, setHovering] = useState(false);
   const [nativeDragging, setNativeDragging] = useState(false);
   // A trim-handle drag on the video strip takes pointer capture, so it
@@ -397,6 +486,102 @@ export function FloatOver({
   // auto-applies its suggestions). See bug vii.
   const userTagInteractionsRef = useRef(0);
   const [userTagInteractions, setUserTagInteractions] = useState(0);
+
+  const replaceVisibleTags = useCallback((next: readonly string[]): void => {
+    const copy = [...next];
+    tagsRef.current = copy;
+    setTags(copy);
+  }, []);
+
+  const runTagMutation = useCallback(
+    (action: TagMutationAction, rawLabel: string): void => {
+      const label = rawLabel.trim();
+      const normalizedLabel = normalizeTagLabel(label);
+      if (normalizedLabel.length === 0 || pendingTagMutationRef.current !== null) return;
+
+      const isPresent = tagsRef.current.some(
+        (tag) => normalizeTagLabel(tag) === normalizedLabel
+      );
+      // The persistence layer is idempotent too, but keeping duplicate
+      // requests out of IPC prevents full-enrichment responses from racing
+      // each other and briefly reverting another tag mutation.
+      if ((action === "add" && isPresent) || (action === "remove" && !isPresent)) {
+        setTagMutationFailure(null);
+        return;
+      }
+
+      const handler = action === "add" ? onAddTag : onRemoveTag;
+      if (handler === undefined) {
+        setTagMutationFailure({
+          action,
+          label,
+          message: "Tag saving is unavailable. Reopen the toast and try again."
+        });
+        return;
+      }
+
+      const mutation: TagMutation = {
+        id: ++nextTagMutationIdRef.current,
+        action,
+        label,
+        normalizedLabel
+      };
+      pendingTagMutationRef.current = mutation;
+      setPendingTagMutation(mutation);
+      setTagMutationFailure(null);
+      replaceVisibleTags(tagsWithMutation(tagsRef.current, mutation));
+
+      // Starting from a resolved Promise also turns a synchronous bridge
+      // exception into the same actionable failure path as an invoke rejection.
+      void Promise.resolve()
+        .then(() => handler(label))
+        .then((result) => {
+          if (
+            !tagMutationMountedRef.current ||
+            pendingTagMutationRef.current?.id !== mutation.id
+          ) {
+            return;
+          }
+          pendingTagMutationRef.current = null;
+          setPendingTagMutation(null);
+          if (result.ok) {
+            // The handler returns the complete accepted-tag snapshot in
+            // canonical DB order/casing. Use it directly; the matching
+            // aiRunUpdated broadcast remains the cross-window sync path.
+            confirmedTagsRef.current = [...result.value.acceptedTags];
+            replaceVisibleTags(result.value.acceptedTags);
+            return;
+          }
+          replaceVisibleTags(confirmedTagsRef.current);
+          setTagMutationFailure({ action, label, message: result.error.message });
+        })
+        .catch((cause: unknown) => {
+          if (
+            !tagMutationMountedRef.current ||
+            pendingTagMutationRef.current?.id !== mutation.id
+          ) {
+            return;
+          }
+          pendingTagMutationRef.current = null;
+          setPendingTagMutation(null);
+          replaceVisibleTags(confirmedTagsRef.current);
+          setTagMutationFailure({
+            action,
+            label,
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        });
+    },
+    [onAddTag, onRemoveTag, replaceVisibleTags]
+  );
+
+  useEffect(() => {
+    tagMutationMountedRef.current = true;
+    return () => {
+      tagMutationMountedRef.current = false;
+      pendingTagMutationRef.current = null;
+    };
+  }, []);
 
   // "Awaiting AI" covers the window between mount and the first
   // aiStatus broadcast — without this, the toast races the codex:enrich
@@ -460,12 +645,13 @@ export function FloatOver({
   }, [sourceLoaded, src, enhancedSrc]);
 
   // useFieldEditor owns the accepted/suggested sync for title +
-  // description. We still mirror `acceptedTags` into local state so the
-  // user can add typed tags on top without losing them on enrichment
-  // refresh.
+  // description. Tags mirror the latest authoritative enrichment, with
+  // any single in-flight manual mutation re-applied so an unrelated AI
+  // broadcast cannot erase the optimistic chip before its Result lands.
   useEffect(() => {
-    setTags(acceptedTags);
-  }, [acceptedTags.join("\0")]);
+    confirmedTagsRef.current = [...acceptedTags];
+    replaceVisibleTags(tagsWithMutation(acceptedTags, pendingTagMutationRef.current));
+  }, [acceptedTags.join("\0"), replaceVisibleTags]);
 
   useEffect(() => {
     if (!startCountdown || !cfg.autoMs) return;
@@ -846,7 +1032,7 @@ export function FloatOver({
           <FoTags
             tags={tags}
             onAdd={(t) => {
-              setTags([...tags, t]);
+              runTagMutation("add", t);
               // Bumping the user-interaction counter — not just
               // tags.length — is what keeps the countdown paused on
               // user-added tags WITHOUT being tricked into a permanent
@@ -856,19 +1042,26 @@ export function FloatOver({
               setUserTagInteractions(userTagInteractionsRef.current);
             }}
             onRemove={(t) => {
-              setTags(tags.filter((x) => x !== t));
+              runTagMutation("remove", t);
               userTagInteractionsRef.current += 1;
               setUserTagInteractions(userTagInteractionsRef.current);
             }}
             suggestions={aiSuggestions}
             onAcceptSuggest={(suggestion) => {
-              setTags([...tags, suggestion.label]);
+              replaceVisibleTags([...tags, suggestion.label]);
               userTagInteractionsRef.current += 1;
               setUserTagInteractions(userTagInteractionsRef.current);
               onAcceptTag?.(suggestion.id);
             }}
             onRejectSuggest={(suggestion) => {
               onRejectTag?.(suggestion.id);
+            }}
+            pendingMutation={pendingTagMutation}
+            failure={tagMutationFailure}
+            onRetry={() => {
+              if (tagMutationFailure !== null) {
+                runTagMutation(tagMutationFailure.action, tagMutationFailure.label);
+              }
             }}
           />
         </div>
@@ -913,6 +1106,7 @@ export function FloatOver({
                 ) : hasUnacceptedDrafts ? (
                   <button
                     className="fo__ai-accept"
+                    disabled={pendingTagMutation !== null}
                     onClick={() => {
                       if (suggestedTitle.length > 0) {
                         commitTitle(suggestedTitle, "accepted");
@@ -922,7 +1116,7 @@ export function FloatOver({
                         commitDescription(suggestedDescription, "accepted");
                         onAcceptDescription?.(suggestedDescription);
                       }
-                      setTags(
+                      replaceVisibleTags(
                         Array.from(
                           new Set([
                             ...tags,

@@ -498,6 +498,13 @@
   padding: 0;
 }
 .fo__tag-x:hover { background: color-mix(in srgb, var(--bg-app) 50%, transparent); }
+.fo__tag.is-pending { opacity: 0.68; }
+.fo__tag-x:disabled,
+.fo__tag-suggest-label:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+.fo__tag-x:disabled:hover { background: color-mix(in srgb, var(--bg-app) 25%, transparent); }
 .fo__tag.is-suggest {
   background: transparent;
   border-style: dashed;
@@ -529,6 +536,42 @@
   padding: 0 4px;
 }
 .fo__tag-input::placeholder { color: var(--text-subtle); }
+.fo__tag-input:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+.fo__ai-accept:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+.fo__tag-status,
+.fo__tag-error {
+  flex: 0 0 100%;
+  display: flex;
+  align-items: center;
+  min-height: 20px;
+  font: 500 10px/1.35 var(--font-sans);
+}
+.fo__tag-status { color: var(--text-secondary); }
+.fo__tag-error {
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 7px;
+  border: 1px solid color-mix(in srgb, var(--danger-text) 35%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger-text) 8%, transparent);
+  color: var(--danger-text);
+}
+.fo__tag-retry {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: 700 10px/1 var(--font-sans);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
 
 /* ----- AI suggestion strip (now via shared CodexStatusPill) ----- */
 .fo__ai-row {

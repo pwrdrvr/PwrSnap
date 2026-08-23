@@ -440,6 +440,22 @@ timeline/
 ClipInspector.tsx        right-rail drawer
 ```
 
+**As built (PR 1, 2026-08-22):** the extraction landed with this tree —
+`SizzleApp.tsx` (shell, 325 lines), `useSizzleProject.ts` (project list,
+active reel, captures, render status, debounced patch + undo/redo + live
+sync), `useSequencePlan.ts` (preview playback, cached plan / transcript /
+audio, narration durations, the bounded-concurrency waveform loader),
+`Editor.tsx` (head, settings, scene list, footer), `SceneCard.tsx`
+(`SequenceSceneCard` + `SimpleSceneCard` + `SceneTransitionChip` — the
+pre-timeline form rows, retired in PR 6), `PreviewStage.tsx`
+(`SequenceTimelinePreview`), `ProjectRail.tsx` (rail + row + context
+menu), `CapturePicker.tsx`, `ReelSettings.tsx`, `RenderStatusBar.tsx`,
+`ChatResizer.tsx`, `TranscriptPhrasePicker.tsx`, and three pure modules:
+`sizzle-helpers.ts` (formatting, transition shapes), `sequence-plan.ts`
+(cache keys, idle beat placement, video playback state) and
+`scene-ops.ts` (every scene-list edit as `SizzleScene[] → SizzleScene[]`,
+unit-tested). `timeline/` and `ClipInspector.tsx` arrive with PRs 3–6.
+
 ### 5.2 Pure logic — outside React, unit-tested
 
 Nothing below touches the DOM. This is the part that must not live in a

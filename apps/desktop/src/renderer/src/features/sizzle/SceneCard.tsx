@@ -1,30 +1,24 @@
 // The per-scene cards in the editor's scene list: the sequence scene
-// (narration textarea, clip rows, preview stage) and the legacy
-// one-capture "simple" scene, plus the transition chip between scenes.
-// Form rows here are the pre-timeline UI; plan PR 3 adds the horizontal
-// timeline above them and PR 6 retires them for the clip inspector.
+// (narration textarea, preview stage) and the legacy one-capture
+// "simple" scene, plus the transition chip between scenes. The clips
+// themselves are on the timeline; a selected clip's timing / transition /
+// fit live in the clip inspector (`ClipInspector.tsx`) — the pre-timeline
+// form rows that used to sit here were retired with it (plan PR 6).
 
 import type { ReactElement } from "react";
 import {
   SIZZLE_TRANSITIONS,
   type CaptureRecord,
   type SizzleAudioSource,
-  type SizzleBeatTiming,
   type SizzleScene,
-  type SizzleSequenceBeat,
   type SizzleSequencePreviewPlan,
-  type SizzleSequenceTranscriptPhrase,
-  type SizzleTransitionType,
-  type SizzleVideoFitPolicy
+  type SizzleTransitionType
 } from "@pwrsnap/shared";
 import { cacheUrl, captureSrcUrl } from "../../lib/pwrsnap";
 import { SequenceTimelinePreview } from "./PreviewStage";
-import { TranscriptPhrasePicker } from "./TranscriptPhrasePicker";
 import {
   formatDur,
-  occurrenceForTranscriptPhrase,
   sceneTransitionFromType,
-  transitionFromType,
   transitionType,
   TRANSITION_TYPE_LABELS
 } from "./sizzle-helpers";
@@ -86,16 +80,12 @@ export type SequenceSceneCardProps = {
   idx: number;
   sceneCount: number;
   captureMap: Map<string, CaptureRecord>;
-  transcriptPhrases: SizzleSequenceTranscriptPhrase[];
   plan: SizzleSequencePreviewPlan | undefined;
   audioBlob: Blob | undefined;
   currentTimeSec: number;
   playing: boolean;
   loading: boolean;
   onEditScene: (patch: Partial<SizzleScene>) => void;
-  onEditBeat: (beatId: string, patch: Partial<SizzleSequenceBeat>) => void;
-  onReorderBeat: (from: number, to: number) => void;
-  onRemoveBeat: (beatId: string) => void;
   onPickSequenceBeat: () => void;
   onSplitIntoScenes: () => void;
   onMoveScene: (delta: number) => void;
@@ -110,16 +100,12 @@ export function SequenceSceneCard(props: SequenceSceneCardProps): ReactElement {
     idx,
     sceneCount,
     captureMap,
-    transcriptPhrases,
     plan,
     audioBlob,
     currentTimeSec,
     playing,
     loading,
     onEditScene,
-    onEditBeat,
-    onReorderBeat,
-    onRemoveBeat,
     onPickSequenceBeat,
     onSplitIntoScenes,
     onMoveScene,
@@ -167,32 +153,9 @@ export function SequenceSceneCard(props: SequenceSceneCardProps): ReactElement {
             + Clip
           </button>
         </div>
-        {/* The pre-timeline clip rows. The timeline above is now the view
-            of the clips; these stay reachable under a disclosure until the
-            clip inspector (plan PR 6) takes over timing / fit / transition. */}
-        <details className="szl__advanced" data-testid={`sizzle-clip-rows-${scene.id}`}>
-          <summary className="szl__advanced-summary">
-            Clip rows <span className="szl__advanced-hint">timing · fit · transition · reorder</span>
-          </summary>
-          <div className="szl__sequence-beats">
-            {beats.map((beat, beatIdx) => (
-              <SequenceBeatRow
-                key={beat.id}
-                beat={beat}
-                beatIdx={beatIdx}
-                beatCount={beats.length}
-                capture={captureMap.get(beat.captureId) ?? null}
-                transcriptPhrases={transcriptPhrases}
-                onEditBeat={(patch) => onEditBeat(beat.id, patch)}
-                onReorderBeat={onReorderBeat}
-                onRemoveBeat={() => onRemoveBeat(beat.id)}
-              />
-            ))}
-          </div>
-          <div className="szl__scene-hint">
-            One voiceover across {beats.length} clip{beats.length === 1 ? "" : "s"}. Clips cut at their anchors; auto clips share the time between anchored neighbours. Phrase anchors use timed transcript words from preview, which can differ from the written script.
-          </div>
-        </details>
+        {/* The clips themselves live on the timeline above; a selected
+            clip's timing / transition / fit are in the clip inspector
+            (right rail). */}
         <SequenceTimelinePreview
           scene={scene}
           captureMap={captureMap}
@@ -213,263 +176,6 @@ export function SequenceSceneCard(props: SequenceSceneCardProps): ReactElement {
         </div>
       </div>
     </li>
-  );
-}
-
-function SequenceBeatRow({
-  beat,
-  beatIdx,
-  beatCount,
-  capture,
-  transcriptPhrases,
-  onEditBeat,
-  onReorderBeat,
-  onRemoveBeat
-}: {
-  beat: SizzleSequenceBeat;
-  beatIdx: number;
-  beatCount: number;
-  capture: CaptureRecord | null;
-  transcriptPhrases: SizzleSequenceTranscriptPhrase[];
-  onEditBeat: (patch: Partial<SizzleSequenceBeat>) => void;
-  onReorderBeat: (from: number, to: number) => void;
-  onRemoveBeat: () => void;
-}): ReactElement {
-  const beatThumb =
-    capture?.edits_version !== undefined
-      ? cacheUrl(beat.captureId, 320, "webp", capture.edits_version)
-      : cacheUrl(beat.captureId, 320, "webp");
-  const timingKind = beat.timing.kind;
-  const phraseText = beat.timing.kind === "phrase" ? beat.timing.phrase : "";
-  const isFirstBeat = beatIdx === 0;
-  const isFinalBeat = beatIdx === beatCount - 1;
-  return (
-    <div
-      className="szl__sequence-beat"
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        const from = Number.parseInt(
-          e.dataTransfer.getData("text/plain"),
-          10
-        );
-        if (Number.isInteger(from)) {
-          onReorderBeat(from, beatIdx);
-        }
-      }}
-    >
-      <span
-        className="szl__sequence-beat-grip"
-        draggable
-        onDragStart={(e) => {
-          e.dataTransfer.setData("text/plain", String(beatIdx));
-          e.dataTransfer.effectAllowed = "move";
-        }}
-        title="Drag to reorder clips (or use the ↑/↓ buttons)"
-        aria-hidden="true"
-      >
-        ⠿
-      </span>
-      <span className="szl__sequence-beat-num">{beatIdx + 1}</span>
-      <span className="szl__sequence-beat-thumb">
-        {capture !== null ? (
-          capture.kind === "video" ? (
-            <video src={captureSrcUrl(beat.captureId)} muted playsInline preload="metadata" />
-          ) : (
-            <img src={beatThumb} alt="" />
-          )
-        ) : (
-          <span>missing</span>
-        )}
-      </span>
-      <span className="szl__sequence-beat-title">
-        {capture?.source_app_name ?? beat.captureId}
-      </span>
-      <select
-        value={timingKind}
-        disabled={isFirstBeat}
-        onChange={(e) => {
-          const kind = e.target.value as SizzleBeatTiming["kind"];
-          onEditBeat({
-            timing:
-              kind === "offset"
-                ? { kind: "offset", startSec: 0, endSec: null }
-                : kind === "phrase"
-                  ? { kind: "phrase", phrase: "", occurrence: null, offsetSec: 0, durationSec: null }
-                  : { kind: "auto" }
-          });
-        }}
-        title={
-          isFirstBeat
-            ? "The first beat always starts at 0"
-            : "When this beat appears: Auto (evenly spaced between anchors), a timed transcript Phrase, or an explicit Offset"
-        }
-      >
-        <option value="auto">Auto</option>
-        <option value="offset">Offset</option>
-        <option value="phrase">Phrase</option>
-      </select>
-      {isFirstBeat ? (
-        // The first beat is always pinned to 0 by the
-        // planner; show that instead of its (inert)
-        // anchor inputs — its stored kind is parked.
-        <span className="szl__sequence-beat-pinned">starts at 0</span>
-      ) : beat.timing.kind === "offset" ? (
-        <>
-          <label className="szl__sequence-time-field">
-            <span>Start</span>
-            <input
-              className="szl__sequence-time"
-              type="number"
-              min={0}
-              step={0.1}
-              value={beat.timing.startSec}
-              disabled={isFirstBeat}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (!Number.isFinite(v)) return;
-                onEditBeat({
-                  timing: {
-                    kind: "offset",
-                    startSec: Math.max(0, v),
-                    endSec: beat.timing.kind === "offset" ? beat.timing.endSec : null
-                  }
-                });
-              }}
-              title={isFirstBeat ? "The first clip always starts at 0" : "Clip start seconds"}
-            />
-          </label>
-          <label className="szl__sequence-time-field">
-            <span>End</span>
-            <input
-              className="szl__sequence-time"
-              type="number"
-              min={0}
-              step={0.1}
-              placeholder="auto"
-              value={isFinalBeat ? beat.timing.endSec ?? "" : ""}
-              disabled={!isFinalBeat}
-              onChange={(e) => {
-                if (!isFinalBeat) return;
-                const raw = e.target.value.trim();
-                const v = raw === "" ? null : Number(raw);
-                if (v !== null && !Number.isFinite(v)) return;
-                onEditBeat({
-                  timing: {
-                    kind: "offset",
-                    startSec: beat.timing.kind === "offset" ? beat.timing.startSec : 0,
-                    endSec: v
-                  }
-                });
-              }}
-              title={isFinalBeat ? "Optional final clip end seconds" : "Non-final clips end automatically at the next clip’s anchor"}
-            />
-          </label>
-        </>
-      ) : beat.timing.kind === "phrase" ? (
-        <>
-          <TranscriptPhrasePicker
-            currentPhrase={phraseText}
-            phrases={transcriptPhrases}
-            onSelect={(phrase) =>
-              onEditBeat({
-                timing: {
-                  kind: "phrase",
-                  phrase: phrase.text,
-                  occurrence: occurrenceForTranscriptPhrase(phrase, transcriptPhrases),
-                  offsetSec: beat.timing.kind === "phrase" ? beat.timing.offsetSec : 0,
-                  durationSec: beat.timing.kind === "phrase" ? beat.timing.durationSec : null
-                }
-              })
-            }
-          />
-          <label className="szl__sequence-time-field">
-            <span>Offset</span>
-            <input
-              className="szl__sequence-time"
-              type="number"
-              step={0.1}
-              value={beat.timing.offsetSec}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (!Number.isFinite(v)) return;
-                onEditBeat({
-                  timing: {
-                    kind: "phrase",
-                    phrase: beat.timing.kind === "phrase" ? beat.timing.phrase : "",
-                    occurrence: beat.timing.kind === "phrase" ? beat.timing.occurrence : null,
-                    offsetSec: v,
-                    durationSec: beat.timing.kind === "phrase" ? beat.timing.durationSec : null
-                  }
-                });
-              }}
-              title="Seconds to shift from the matched phrase start. Negative starts before the phrase; positive starts after it."
-            />
-          </label>
-        </>
-      ) : null}
-      <select
-        value={beat.videoFit}
-        onChange={(e) =>
-          onEditBeat({
-            videoFit: e.target.value as SizzleVideoFitPolicy
-          })
-        }
-      >
-        <option value="smart-fit">Smart</option>
-        <option value="loop">Loop</option>
-        <option value="ping-pong">Ping-pong</option>
-        <option value="speed-to-fit">Speed</option>
-        <option value="freeze-end">Freeze</option>
-        <option value="trim">Trim</option>
-      </select>
-      <select
-        value={transitionType(beat.transition)}
-        onChange={(e) =>
-          onEditBeat({
-            transition: transitionFromType(e.target.value as SizzleTransitionType)
-          })
-        }
-      >
-        <option value="cut">Cut</option>
-        <option value="crossfade">Fade</option>
-        <option value="dip-black">Dip black</option>
-        <option value="dip-white">Dip white</option>
-        <option value="push-left">Push left</option>
-        <option value="slide-left">Slide left</option>
-        <option value="zoom-cut">Zoom</option>
-      </select>
-      <button
-        className="szl__scene-mini"
-        onClick={() => onReorderBeat(beatIdx, beatIdx - 1)}
-        disabled={beatIdx === 0}
-        type="button"
-        title="Move clip up"
-      >
-        ↑
-      </button>
-      <button
-        className="szl__scene-mini"
-        onClick={() => onReorderBeat(beatIdx, beatIdx + 1)}
-        disabled={beatIdx === beatCount - 1}
-        type="button"
-        title="Move clip down"
-      >
-        ↓
-      </button>
-      <button
-        className="szl__scene-mini szl__scene-mini--danger"
-        onClick={onRemoveBeat}
-        disabled={beatCount <= 1}
-        type="button"
-        title="Remove clip"
-      >
-        ✕
-      </button>
-    </div>
   );
 }
 

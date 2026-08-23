@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS, type CaptureRecord, type SizzleProject, type SizzleScene } from "@pwrsnap/shared";
 import {
   SizzleApp,
@@ -2132,5 +2132,108 @@ describe("timeline word ribbon — click to anchor", () => {
       for (let i = 0; i < 6; i += 1) await Promise.resolve();
     });
     expect(dispatch).toHaveBeenCalledWith("sizzle:previewSequenceScenePlan", { projectId: "sz_1", sceneId: "sc_a" });
+  });
+});
+
+describe("timeline drag — move / retime commits once", () => {
+  // jsdom has no layout: give the timeline a 1000 px strip for this block.
+  const realRect = Element.prototype.getBoundingClientRect;
+  beforeAll(() => {
+    Element.prototype.getBoundingClientRect = function getBoundingClientRect(this: Element) {
+      const width =
+        this.classList.contains("szt__scroll") || this.classList.contains("szt__lanes") ? 1000 : 0;
+      return { x: 0, y: 0, left: 0, top: 0, right: width, bottom: 0, width, height: 0, toJSON: () => ({}) } as DOMRect;
+    };
+  });
+  afterAll(() => {
+    Element.prototype.getBoundingClientRect = realRect;
+  });
+  const autoBeat = (id: string, captureId: string): NonNullable<SizzleScene["beats"]>[number] => ({
+    id,
+    captureId,
+    timing: { kind: "auto" },
+    mediaTrim: null,
+    transition: "cut",
+    videoFit: "smart-fit"
+  });
+  // 8 words over 4 s, resolved from the speech-timing cache on open.
+  const WORDS = ["Open", "the", "Library", "to", "find", "every", "capture", "fast"].map((word, index) => ({
+    index,
+    word,
+    normalized: word.toLowerCase(),
+    startSec: index * 0.5,
+    endSec: index * 0.5 + 0.4
+  }));
+  const cachedAudio = {
+    ok: true,
+    value: {
+      cached: true,
+      audioBase64: "AA==",
+      mimeType: "audio/mpeg",
+      transcriptPhrases: [],
+      durationSec: 4,
+      words: WORDS
+    }
+  };
+  const seq = (): SizzleScene =>
+    scene({
+      kind: "sequence",
+      scriptLine: "Open the Library to find every capture fast",
+      narration: "Open the Library to find every capture fast",
+      beats: [autoBeat("bt_a", "cap_a"), autoBeat("bt_b", "cap_b"), autoBeat("bt_c", "cap_c")]
+    });
+  const timingSelectOf = (el: HTMLElement, row: number): HTMLSelectElement =>
+    el.querySelectorAll(".szl__sequence-beat")[row]!.querySelector("select")!;
+  const pointer = async (target: Element, type: string, clientX: number): Promise<void> => {
+    await act(async () => {
+      target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerId: 1, clientX }));
+    });
+  };
+
+  test("dragging a boundary writes ONE scenes patch — a phrase anchor on the nearest word + residual — and ⌘Z undoes it in one step", async () => {
+    const { el, dispatch } = await renderApp(project({ scenes: [seq()] }), {
+      "sizzle:loadSequenceSceneAudio": cachedAudio
+    });
+    // Wait for the cache-only load: the lane is resolved and has grips.
+    for (let i = 0; i < 10 && el.querySelector('[data-testid="sizzle-timeline-grip-bt_b"]') === null; i += 1) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    const grip = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-grip-bt_b"]');
+    expect(grip).not.toBeNull();
+    const lanes = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-lanes"]')!;
+    // 4 s over 1000 px = 250 px/s. Auto clips split 4 s three ways, so clip
+    // 2 starts at 1.333 s (333 px). Drag its boundary to 2.0 s (500 px):
+    // "find" starts at exactly 2.0 s → phrase "find", no residual.
+    await pointer(grip!, "pointerdown", 333);
+    await pointer(lanes, "pointermove", 420);
+    await pointer(lanes, "pointermove", 500);
+    // Nothing written mid-drag.
+    expect(dispatch.mock.calls.filter(([name]) => name === "sizzle:update")).toHaveLength(0);
+    await pointer(lanes, "pointerup", 500);
+    expect(timingSelectOf(el, 1).value).toBe("phrase");
+    expect(el.querySelectorAll(".szl__sequence-beat")[1]!.querySelector(".szl__sequence-phrase-button")?.textContent).toContain("find");
+    // The lane re-lays out from the committed anchor through the SAME
+    // planner: clip 2 now starts at 2.0 s.
+    const clipB = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-clip-bt_b"]')!;
+    expect(parseFloat(clipB.style.left)).toBeCloseTo(500, 0);
+    expect(clipB.querySelector(".szt__pin")).not.toBeNull();
+    // One debounced write carrying the anchor, with the residual field present.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    const updates = dispatch.mock.calls.filter(([name]) => name === "sizzle:update");
+    expect(updates).toHaveLength(1);
+    const payload = updates[0]![1] as { patch?: { scenes?: SizzleScene[] } };
+    const beats = payload.patch?.scenes?.[0]?.beats ?? [];
+    expect(beats[1]!.timing).toEqual({ kind: "phrase", phrase: "find", occurrence: 1, offsetSec: 0, durationSec: null });
+    expect(beats[0]!.timing).toEqual({ kind: "auto" }); // pin only what you touch
+    expect(beats[2]!.timing).toEqual({ kind: "auto" });
+    // ⌘Z: one step back to auto — the drag did not litter the history.
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(timingSelectOf(el, 1).value).toBe("auto");
   });
 });

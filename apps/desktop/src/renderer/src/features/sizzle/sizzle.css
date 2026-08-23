@@ -1694,3 +1694,107 @@
   min-width: 0;
   max-width: none;
 }
+
+/* ── Preview stage layers (plan §4.7 / PR 7) ─────────────────────────────
+   Two stacked layers: the outgoing (active) beat and, during the last
+   `d` seconds before a fade-like beat, the incoming beat on top. The
+   blend is a CSS animation shaped like the export's xfade, seeked by a
+   negative delay and running only while the scene plays. Image media
+   carries the export's Ken Burns the same way. */
+.szl__sequence-preview-stage {
+  position: relative;
+}
+.szl__sequence-preview-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  will-change: transform, opacity;
+}
+.szl__sequence-preview-layer.is-outgoing {
+  z-index: 1;
+}
+.szl__sequence-preview-layer.is-incoming {
+  z-index: 2;
+}
+.szl__sequence-preview-layer img,
+.szl__sequence-preview-layer video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transform-origin: center center;
+}
+/* dips pass through a solid color: the layer IS the color, the media
+   arrives in its second half (see the keyframes below). The export dips
+   to literal black / white whatever the theme (ffmpeg fadeblack /
+   fadewhite), so these are not tokens. */
+.szl__sequence-preview-layer.is-incoming.is-dip-black {
+  background: black;
+}
+.szl__sequence-preview-layer.is-incoming.is-dip-white {
+  background: white;
+}
+.szl__sequence-preview-layer.is-incoming.is-dip-black > img,
+.szl__sequence-preview-layer.is-incoming.is-dip-black > video,
+.szl__sequence-preview-layer.is-incoming.is-dip-white > img,
+.szl__sequence-preview-layer.is-incoming.is-dip-white > video {
+  animation-name: szl-xf-dip-media !important;
+  animation-duration: inherit;
+  animation-delay: inherit;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+  animation-play-state: inherit;
+}
+
+/* Ken Burns — zoompan 1.0 ↔ 1.10, linear, centered */
+@keyframes szl-kb-in {
+  from { transform: scale(1); }
+  to { transform: scale(1.1); }
+}
+@keyframes szl-kb-out {
+  from { transform: scale(1.1); }
+  to { transform: scale(1); }
+}
+/* crossfade (xfade fade): the incoming fades in over the outgoing */
+@keyframes szl-xf-incoming-crossfade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* dip to black / white (fadeblack / fadewhite): the color layer fades in
+   over the first half, the media fades in over the second */
+@keyframes szl-xf-incoming-dip-black {
+  0% { opacity: 0; }
+  50%, 100% { opacity: 1; }
+}
+@keyframes szl-xf-incoming-dip-white {
+  0% { opacity: 0; }
+  50%, 100% { opacity: 1; }
+}
+@keyframes szl-xf-dip-media {
+  0%, 50% { opacity: 0; }
+  100% { opacity: 1; }
+}
+/* push-left (xfade coverleft): the incoming slides in from the right OVER
+   the outgoing, which stays put until covered */
+@keyframes szl-xf-incoming-push-left {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+/* slide-left (xfade slideleft): both frames move together */
+@keyframes szl-xf-incoming-slide-left {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+@keyframes szl-xf-outgoing-slide-left {
+  from { transform: translateX(0); }
+  to { transform: translateX(-100%); }
+}
+/* zoom-cut (xfade zoomin): the outgoing zooms away as the incoming appears */
+@keyframes szl-xf-outgoing-zoom-cut {
+  from { transform: scale(1); opacity: 1; }
+  to { transform: scale(1.3); opacity: 0; }
+}
+@keyframes szl-xf-incoming-zoom-cut {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

@@ -33,6 +33,7 @@ import {
 } from "../persistence/video-repo";
 import {
   openSystemSettingsFor,
+  readRecordingPermissionEvidence,
   readRecordingReadiness,
   requestPermission
 } from "../recording/recording-permissions";
@@ -250,8 +251,10 @@ export function registerRecordingHandlers(): void {
     // triggered the screen-capture prompt, so the System Permissions page
     // can distinguish "Not yet requested" from "Denied" (macOS can't —
     // see screen-permission-gate.ts).
+    const readiness = readRecordingReadiness();
     return ok({
-      ...readRecordingReadiness(),
+      ...readiness,
+      permissionEvidence: readRecordingPermissionEvidence(readiness),
       screenCapturePrompted: await readScreenCapturePrompted()
     });
   });

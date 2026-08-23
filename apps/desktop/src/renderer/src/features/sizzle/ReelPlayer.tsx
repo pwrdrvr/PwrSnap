@@ -18,18 +18,20 @@
 // measured reason, as features/shared/playhead.ts.
 
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import type { CaptureRecord } from "@pwrsnap/shared";
+import type { CaptureRecord, SizzleSequenceBeat } from "@pwrsnap/shared";
 import type { PlayheadSource } from "../shared/playhead";
 import { formatTimecode } from "../shared/video-range";
 import { StageLayer } from "./StageLayer";
 import { kenBurnsDirection } from "./preview-blend";
-import { flattenReelClips, reelClipProgress, reelFrameAt, type ReelFrame } from "./reel-frame";
+import { flattenReelClips, reelClipProgress, reelFrameAt, type ReelClip, type ReelFrame } from "./reel-frame";
+import { sequencePreviewVideoState } from "./sequence-plan";
 import type { ReelPlayback } from "./useReelPlayback";
 import type { TimelineModel } from "./timeline/timeline-model";
 
 export function ReelPlayer({
   model,
   captureMap,
+  beatById,
   head,
   playback,
   renderLabel,
@@ -39,6 +41,9 @@ export function ReelPlayer({
 }: {
   model: TimelineModel;
   captureMap: Map<string, CaptureRecord>;
+  /** Stored beats by id — a video clip's trim and fit policy live there,
+   *  and the stage needs them to play the right span at the right rate. */
+  beatById: Map<string, SizzleSequenceBeat>;
   head: PlayheadSource;
   playback: ReelPlayback;
   /** e.g. "Render · ~0:14"; null while the reel has no renderable length. */
@@ -71,10 +76,61 @@ export function ReelPlayer({
     [clips, head, playing]
   );
 
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const { frame, sec } = view;
   const active = frame.activeIndex >= 0 ? clips[frame.activeIndex] : undefined;
   const incoming = frame.blend === null ? undefined : clips[frame.blend.incomingIndex];
   const totalLabel = `${model.exact ? "" : "~"}${formatTimecode(model.totalSec)}`;
+
+  // A video clip on stage is a REAL player, honouring the same fit policy the
+  // export applies (loop / ping-pong / speed / freeze). Before the per-scene
+  // stage was retired this logic lived there; the reel player is its only
+  // home now, so a video clip would otherwise sit on one frozen frame.
+  const activeCapture = active === undefined ? null : captureMap.get(active.clip.captureId) ?? null;
+  const activeSceneBeat = active === undefined ? undefined : beatById.get(active.clip.beatId);
+  const videoState =
+    active !== undefined && activeCapture !== null && activeCapture.kind === "video" && activeSceneBeat !== undefined
+      ? sequencePreviewVideoState({
+          beat: {
+            beatId: active.clip.beatId,
+            captureId: active.clip.captureId,
+            startSec: active.clip.localStartSec,
+            endSec: active.clip.localEndSec,
+            timing: active.clip.timing,
+            transition: active.clip.transition,
+            videoFit: active.clip.videoFit
+          },
+          sceneBeat: activeSceneBeat,
+          capture: activeCapture,
+          // Scene-local time: `sequencePreviewVideoState` works on the scene
+          // axis the beat windows are expressed in.
+          timelineTimeSec: sec - (model.scenes[active.sceneIndex]?.startSec ?? 0)
+        })
+      : null;
+  const shouldPlayVideo = playing && (videoState?.shouldPlay ?? true);
+  const videoBeatId = videoState?.beatId ?? null;
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el === null) return;
+    if (!shouldPlayVideo) {
+      el.pause();
+      return;
+    }
+    void el.play().catch(() => undefined);
+    return () => el.pause();
+  }, [shouldPlayVideo, videoBeatId]);
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el === null || videoState === null) return;
+    try {
+      el.playbackRate = videoState.playbackRate;
+      if (!shouldPlayVideo || Math.abs(el.currentTime - videoState.sourceTimeSec) > 0.12) {
+        el.currentTime = videoState.sourceTimeSec;
+      }
+    } catch {
+      // Metadata not ready; the next tick re-seeks.
+    }
+  }, [videoState?.beatId, videoState?.playbackRate, videoState?.sourceTimeSec, shouldPlayVideo]);
 
   return (
     <section className="szl__reel" aria-label="Reel player" data-testid="sizzle-reel-player">
@@ -105,6 +161,7 @@ export function ReelPlayer({
                     }
               }
               playing={playing}
+              videoRef={videoRef}
               dataBeat={active.clip.beatId}
               testId="sizzle-reel-outgoing"
             />
@@ -121,6 +178,7 @@ export function ReelPlayer({
                 }
                 kenBurnsDurationSec={Math.max(0.05, incoming.endSec - incoming.startSec)}
                 kenBurnsElapsedSec={Math.max(0, sec - incoming.startSec)}
+                posterStartSec={posterStartSecFor(incoming, beatById)}
                 blend={{
                   type: frame.blend.type,
                   durationSec: frame.blend.durationSec,
@@ -216,6 +274,11 @@ function PlayheadClock({ head }: { head: PlayheadSource }): ReactElement {
     [head]
   );
   return <b ref={ref}>{formatTimecode(head.get())}</b>;
+}
+
+/** Where an incoming video's still should sit: the frame the export cuts to. */
+function posterStartSecFor(clip: ReelClip, beatById: Map<string, SizzleSequenceBeat>): number {
+  return beatById.get(clip.clip.beatId)?.mediaTrim?.startSec ?? 0;
 }
 
 function sameFrameIdentity(a: ReelFrame, b: ReelFrame): boolean {

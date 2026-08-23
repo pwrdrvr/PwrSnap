@@ -34,7 +34,7 @@ import { ReelPlayer } from "./ReelPlayer";
 import { useReelPlayback } from "./useReelPlayback";
 import { ClipInspector } from "./ClipInspector";
 import { SceneInspector } from "./SceneInspector";
-import { isTypingTarget } from "./sizzle-helpers";
+import { formatSequencePreviewWarnings, isTypingTarget } from "./sizzle-helpers";
 import { SceneTransitionChip, SequenceSceneCard, SimpleSceneCard } from "./SceneCard";
 import {
   convertSceneToSequence,
@@ -119,6 +119,12 @@ export function Editor(props: EditorProps): ReactElement {
   }, [autoFocusTitle, onTitleFocused]);
 
   const plan = useSequencePlan({ project, onFlushPending });
+
+  const beatById = useMemo(() => {
+    const m = new Map<string, SizzleSequenceBeat>();
+    for (const scene of project.scenes) for (const b of scene.beats ?? []) m.set(b.id, b);
+    return m;
+  }, [project.scenes]);
 
   const captureMap = useMemo(() => {
     const m = new Map<string, CaptureRecord>();
@@ -357,6 +363,14 @@ export function Editor(props: EditorProps): ReactElement {
       if (playingScene !== null) void plan.onPreviewScene(playingScene);
     }
   });
+  // The ONE player: a scene card's ▶ seeks the reel there and plays. There
+  // is no second transport to keep in sync any more.
+  const onPlayFrom = (sceneId: string): void => {
+    const region = timelineModel.scenes.find((s) => s.sceneId === sceneId);
+    if (region === undefined) return;
+    reel.seek(region.startSec);
+    reel.play();
+  };
   // A finished clip drag: ONE scenes patch, built by the pure retime math
   // ("pin only what you touch", nearest word + residual, offset only when
   // there is no transcript). One patch per gesture is what keeps the undo
@@ -492,6 +506,7 @@ export function Editor(props: EditorProps): ReactElement {
         <ReelPlayer
           model={timelineModel}
           captureMap={captureMap}
+          beatById={beatById}
           head={head}
           playback={reel}
           renderLabel={renderButtonLabel}
@@ -569,6 +584,11 @@ export function Editor(props: EditorProps): ReactElement {
                   prev !== undefined && prev.kind === "sequence" && sceneRecord.kind === "sequence"
                 }
                 refit={plan.refitOfferForScene(sceneRecord)}
+                timingQuality={plan.planForScene(sceneRecord)?.timingQuality ?? null}
+                warnings={formatSequencePreviewWarnings(
+                  plan.planForScene(sceneRecord)?.warnings ?? [],
+                  (plan.planForScene(sceneRecord)?.beats ?? []).map((b) => b.beatId)
+                )}
                 onEditScene={(patch) => editScene(sceneRecord.id, patch)}
                 onMoveScene={(delta) => moveScene(region.index, delta)}
                 onSplitAtPlayhead={() => onSplitAtPlayhead(region)}
@@ -616,18 +636,12 @@ export function Editor(props: EditorProps): ReactElement {
                   idx={idx}
                   sceneCount={project.scenes.length}
                   captureMap={captureMap}
-                  plan={plan.planForScene(scene)}
-                  audioBlob={plan.sequenceAudioBlobs[scene.id]}
-                  currentTimeSec={sceneCurrentTimeSec(scene.id)}
-                  playing={plan.previewingSceneId === scene.id}
-                  loading={plan.previewLoadingSceneId === scene.id}
                   onEditScene={(patch) => editScene(scene.id, patch)}
                   onPickSequenceBeat={() => onPickSequenceBeat(scene.id)}
+                  onPlayFrom={() => onPlayFrom(scene.id)}
                   onSplitIntoScenes={() => splitIntoScenes(scene.id)}
                   onMoveScene={(delta) => moveScene(idx, delta)}
                   onRemoveScene={() => removeScene(scene.id)}
-                  onPreviewScene={() => void plan.onPreviewScene(scene.id)}
-                  onSeekPreview={(timeSec) => plan.seekPreview(scene.id, timeSec)}
                 />
               );
               return elements;
@@ -645,19 +659,6 @@ export function Editor(props: EditorProps): ReactElement {
               capture?.kind ?? "image",
               scene.scriptLine
             );
-            const previewDisabled =
-              plan.previewLoadingSceneId === scene.id ||
-              effectiveAudio === "muted" ||
-              (effectiveAudio === "voiceover" && scene.scriptLine.trim().length === 0);
-            const previewTitle = previewDisabled
-              ? effectiveAudio === "muted"
-                ? "This scene is muted"
-                : "Write a script line to preview"
-              : plan.previewingSceneId === scene.id
-                ? "Stop preview"
-                : effectiveAudio === "native"
-                  ? "Preview native video audio"
-                  : "Preview voiceover";
             elements.push(
               <SimpleSceneCard
                 key={scene.id}
@@ -666,14 +667,10 @@ export function Editor(props: EditorProps): ReactElement {
                 sceneCount={project.scenes.length}
                 capture={capture}
                 effectiveAudio={effectiveAudio}
-                previewDisabled={previewDisabled}
-                previewTitle={previewTitle}
-                previewLoading={plan.previewLoadingSceneId === scene.id}
-                previewing={plan.previewingSceneId === scene.id}
                 measuredVoiceoverDurationSec={plan.measuredVoiceoverDurationSec(scene)}
                 onEditScene={(patch) => editScene(scene.id, patch)}
                 onConvertToSequence={() => convertToSequence(scene.id)}
-                onPreviewScene={() => void plan.onPreviewScene(scene.id)}
+                onPlayFrom={() => onPlayFrom(scene.id)}
                 onMoveScene={(delta) => moveScene(idx, delta)}
                 onRemoveScene={() => removeScene(scene.id)}
               />

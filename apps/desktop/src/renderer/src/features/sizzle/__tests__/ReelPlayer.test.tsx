@@ -97,6 +97,7 @@ async function render(args: {
       createElement(ReelPlayer, {
         model: model(),
         captureMap: CAPTURES,
+        beatById: new Map(),
         head: args.head,
         playback: args.playback ?? stubPlayback(),
         renderLabel: args.renderLabel ?? "Render · 0:15",

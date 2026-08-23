@@ -17,6 +17,7 @@ import {
   type SizzleTransitionType
 } from "@pwrsnap/shared";
 import { formatSpan, formatTimecode } from "../shared/video-range";
+import type { SequencePreviewDisplayWarning } from "./sizzle-helpers";
 import { TRANSITION_DURATION_MAX_SEC, TRANSITION_DURATION_MIN_SEC } from "./ClipInspector";
 import { sceneTransitionWithType, TRANSITION_TYPE_LABELS } from "./sizzle-helpers";
 import type { TimelineSceneRegion } from "./timeline/timeline-model";
@@ -31,6 +32,11 @@ export type SceneInspectorProps = {
   canMergeWithPrevious: boolean;
   /** A pending re-fit offer: the resolved narration went from → to. */
   refit: { fromSec: number; toSec: number } | null;
+  /** How exact this scene's word timing is, once synthesized. Lived on the
+   *  per-scene preview stage; that stage is gone, so it lives here. */
+  timingQuality: "precise" | "approximate" | null;
+  /** The scene's preview warnings — likewise rehomed from the stage. */
+  warnings: SequencePreviewDisplayWarning[];
   onEditScene: (patch: Partial<SizzleScene>) => void;
   onMoveScene: (delta: -1 | 1) => void;
   onSplitAtPlayhead: () => void;
@@ -55,6 +61,8 @@ export function SceneInspector(props: SceneInspectorProps): ReactElement {
     playheadLocalSec,
     canMergeWithPrevious,
     refit,
+    timingQuality,
+    warnings,
     onEditScene,
     onMoveScene,
     onSplitAtPlayhead,
@@ -142,11 +150,12 @@ export function SceneInspector(props: SceneInspectorProps): ReactElement {
           <div className="szl__insp-row">
             <span className="szl__insp-hint" data-testid="sizzle-scene-inspector-status">
               {region.exact
-                ? `Synthesized · ${formatTimecode(region.durationSec)}`
+                ? `Synthesized · ${formatTimecode(region.durationSec)}` +
+                  (timingQuality === null ? "" : timingQuality === "precise" ? " · word timing" : " · approx timing")
                 : `~${formatTimecode(region.durationSec)} estimated from ${wordCount} word${wordCount === 1 ? "" : "s"}`}
             </span>
             <span className="szl__spacer" />
-            {isSequence ? (
+            {narration.length > 0 ? (
               <button
                 type="button"
                 className="szl__scene-mini szl__insp-action"
@@ -164,6 +173,17 @@ export function SceneInspector(props: SceneInspectorProps): ReactElement {
             ) : null}
           </div>
         </div>
+
+        {warnings.length > 0 ? (
+          <div className="szl__insp-field" data-testid="sizzle-scene-inspector-warnings">
+            <span className="szl__insp-label">Warnings</span>
+            {warnings.slice(0, 3).map((warning) => (
+              <p key={warning.key} className="szl__insp-hint">
+                <strong>{warning.label}:</strong> {warning.message}
+              </p>
+            ))}
+          </div>
+        ) : null}
 
         {/* ── Transition into this scene ── */}
         <div className="szl__insp-field">

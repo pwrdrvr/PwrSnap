@@ -11,11 +11,9 @@ import {
   type CaptureRecord,
   type SizzleAudioSource,
   type SizzleScene,
-  type SizzleSequencePreviewPlan,
   type SizzleTransitionType
 } from "@pwrsnap/shared";
 import { cacheUrl, captureSrcUrl } from "../../lib/pwrsnap";
-import { SequenceTimelinePreview } from "./PreviewStage";
 import {
   formatDur,
   sceneTransitionWithType,
@@ -82,18 +80,15 @@ export type SequenceSceneCardProps = {
   idx: number;
   sceneCount: number;
   captureMap: Map<string, CaptureRecord>;
-  plan: SizzleSequencePreviewPlan | undefined;
-  audioBlob: Blob | undefined;
-  currentTimeSec: number;
-  playing: boolean;
-  loading: boolean;
   onEditScene: (patch: Partial<SizzleScene>) => void;
   onPickSequenceBeat: () => void;
+  /** Seek the ONE reel player to this scene and play. There is no
+   *  per-scene stage any more — the reel player and the timeline show
+   *  everything this card used to duplicate. */
+  onPlayFrom: () => void;
   onSplitIntoScenes: () => void;
   onMoveScene: (delta: number) => void;
   onRemoveScene: () => void;
-  onPreviewScene: () => void;
-  onSeekPreview: (timeSec: number) => void;
 };
 
 export function SequenceSceneCard(props: SequenceSceneCardProps): ReactElement {
@@ -102,18 +97,12 @@ export function SequenceSceneCard(props: SequenceSceneCardProps): ReactElement {
     idx,
     sceneCount,
     captureMap,
-    plan,
-    audioBlob,
-    currentTimeSec,
-    playing,
-    loading,
     onEditScene,
     onPickSequenceBeat,
+    onPlayFrom,
     onSplitIntoScenes,
     onMoveScene,
-    onRemoveScene,
-    onPreviewScene,
-    onSeekPreview
+    onRemoveScene
   } = props;
   const beats = scene.beats ?? [];
   return (
@@ -155,22 +144,19 @@ export function SequenceSceneCard(props: SequenceSceneCardProps): ReactElement {
             + Clip
           </button>
         </div>
-        {/* The clips themselves live on the timeline above; a selected
-            clip's timing / transition / fit are in the clip inspector
-            (right rail). */}
-        <SequenceTimelinePreview
-          scene={scene}
-          captureMap={captureMap}
-          plan={plan}
-          audioBlob={audioBlob}
-          currentTimeSec={currentTimeSec}
-          playing={playing}
-          loading={loading}
-          onPlay={onPreviewScene}
-          onSeek={onSeekPreview}
-        />
+        {/* No stage here: the reel player above is the ONE player, and the
+            timeline carries this scene's clips, waveform and words. */}
         <div className="szl__scene-row">
           <span className="szl__scene-app">sequence</span>
+          <button
+            className="szl__scene-mini szl__scene-mini--play"
+            onClick={onPlayFrom}
+            type="button"
+            title="Play the reel from this scene"
+            data-testid={`sizzle-play-from-${scene.id}`}
+          >
+            ▶
+          </button>
           <span className="szl__spacer" />
           <button className="szl__scene-mini" onClick={() => onMoveScene(-1)} disabled={idx === 0} type="button" title="Move up">↑</button>
           <button className="szl__scene-mini" onClick={() => onMoveScene(1)} disabled={idx === sceneCount - 1} type="button" title="Move down">↓</button>
@@ -189,15 +175,12 @@ export type SimpleSceneCardProps = {
   sceneCount: number;
   capture: CaptureRecord | null;
   effectiveAudio: Exclude<SizzleAudioSource, "auto">;
-  previewDisabled: boolean;
-  previewTitle: string;
-  previewLoading: boolean;
-  previewing: boolean;
   /** Measured voiceover length from a preview, if any, for the overrun hint. */
   measuredVoiceoverDurationSec: number | undefined;
   onEditScene: (patch: Partial<SizzleScene>) => void;
   onConvertToSequence: () => void;
-  onPreviewScene: () => void;
+  /** Seek the ONE reel player to this scene and play. */
+  onPlayFrom: () => void;
   onMoveScene: (delta: number) => void;
   onRemoveScene: () => void;
 };
@@ -209,14 +192,10 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
     sceneCount,
     capture,
     effectiveAudio,
-    previewDisabled,
-    previewTitle,
-    previewLoading,
-    previewing,
     measuredVoiceoverDurationSec,
     onEditScene,
     onConvertToSequence,
-    onPreviewScene,
+    onPlayFrom,
     onMoveScene,
     onRemoveScene
   } = props;
@@ -414,12 +393,12 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
           </button>
           <button
             className="szl__scene-mini szl__scene-mini--play"
-            onClick={onPreviewScene}
-            disabled={previewDisabled}
+            onClick={onPlayFrom}
             type="button"
-            title={previewTitle}
+            title="Play the reel from this scene"
+            data-testid={`sizzle-play-from-${scene.id}`}
           >
-            {previewLoading ? "…" : previewing ? "■" : "▶"}
+            ▶
           </button>
           <button
             className="szl__scene-mini"

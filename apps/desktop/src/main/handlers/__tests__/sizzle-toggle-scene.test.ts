@@ -525,7 +525,7 @@ describe("external Sizzle live-capture enforcement", () => {
       ok: true,
       value: { id: "cap-trashed", kind: "image", deleted_at: "2026-08-01T00:00:00.000Z" }
     });
-    const handler = await loadHandler("sizzle:render");
+    const handler = await loadHandler("sizzle:render", "win32");
 
     const result = await handler(
       { id: "proj-1", mode: "preview" },

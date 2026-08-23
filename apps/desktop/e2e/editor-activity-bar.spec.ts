@@ -135,14 +135,13 @@ test.skip("editor-activity-bar: accel+1/2/3 select panels", async () => {
     await expect(
       editorWindow.locator('[data-testid="chat-panel"]')
     ).toHaveCount(1);
-    // ChatPanel renders its title.
+    // Editor Chat reuses the real capture-scoped Library chat surface.
     await expect(
-      editorWindow.locator('[data-testid="chat-panel"] .pse-chat-title')
-    ).toContainText("Chat with Codex");
-    // And the context chip surfaces dims + layer count.
+      editorWindow.locator('[data-testid="chat-panel"] .ps-libchat-empty-title')
+    ).toContainText("PwrSnap chat");
     await expect(
-      editorWindow.locator('[data-testid="chat-context"]')
-    ).toContainText("capture");
+      editorWindow.locator('[data-testid="chat-panel"] [data-testid="composer-input"]')
+    ).toHaveCount(1);
 
     // ⌘3 — Tool Config.
     await editorWindow.keyboard.press(`${accel()}+3`);

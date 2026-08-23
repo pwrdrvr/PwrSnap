@@ -75,7 +75,7 @@ export function registerRenderHandlers(): void {
       });
     }
 
-    // Clamp the requested longest-edge into [1, HARD_MAX], default 720.
+    // Clamp the requested longest-edge into [1, HARD_MAX], default 1024.
     const requested =
       typeof req.maxEdgePx === "number" && Number.isFinite(req.maxEdgePx)
         ? Math.floor(req.maxEdgePx)

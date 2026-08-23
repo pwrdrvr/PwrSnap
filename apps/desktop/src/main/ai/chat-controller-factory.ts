@@ -20,7 +20,6 @@ import {
   AcpAgentClient,
   discoverLocalAcpAgentInstances,
   strategyByBackendId,
-  strategyById,
   type AcpMcpServerConfig,
   type DiscoveredAcpAgent,
   type DiscoveredAcpAgentGroup,
@@ -138,12 +137,12 @@ export type ChatSurfaceConfig = {
   /** Thread environments. `[]` disables exec-environment access. */
   threadEnvironments: unknown[];
   /** The surface's configured chat BACKEND selector
-   *  (`ai.defaults.<surface>.provider`). `"codex"` / `""` / `undefined` /
-   *  any unknown value → the Codex backend (`CodexThreadClient`).
-   *  `"acp:<id>"` → the matching discovered ACP agent
-   *  (`AcpAgentClient`), falling back to Codex when that agent isn't
-   *  installed. NOT a Codex `modelProvider` token — chat surfaces use the
-   *  provider value to pick the backend, not to set a Codex sub-provider. */
+   *  (`ai.defaults.<surface>.provider`). `"codex"` / `""` / `undefined` use
+   *  the Codex backend (`CodexThreadClient`). `"acp:<id>"` requires that exact
+   *  ACP agent to be enabled and locally available; unknown or unavailable
+   *  explicit selections fail rather than silently changing providers. NOT a
+   *  Codex `modelProvider` token — chat surfaces use the provider value to pick
+   *  the backend, not to set a Codex sub-provider. */
   provider?: string;
   /** Per-surface default model id for thread/start. Omit / undefined =
    *  use the Codex default (no `model` sent). Driven by Settings → AI's
@@ -298,10 +297,9 @@ async function defaultMakeAcpClient(input: {
 }
 
 /** Resolve the surface's `AgentBackend` from its configured provider.
- *  `codex` / `""` / `undefined` / unknown → Codex. `acp:<id>` → the matching
- *  discovered ACP agent, falling back to Codex with a warning when that agent
- *  isn't installed (so the surface never crashes on a stale/uninstalled
- *  selection). */
+ *  `codex` / `""` / `undefined` → Codex. An explicit `acp:<id>` selection is
+ *  fail-closed: disabled, undiscoverable, or missing agents remain truthfully
+ *  unavailable instead of silently sending the user's prompt to Codex. */
 type ResolvedChatBackend = {
   client: ChatBackend;
   /** Per-thread MCP servers (ACP shared client); absent for Codex. */
@@ -309,9 +307,9 @@ type ResolvedChatBackend = {
   /** True when `client` is a shared (pooled) ACP process — the controller skips
    *  single-handler registration to avoid clobbering a sibling surface. */
   shared: boolean;
-  /** True when the resolved backend is an ACP agent (not a Codex fallback).
-   *  Drives reasoning-effort normalization: ACP honors only Fast/Thinking, so
-   *  the per-surface effort is collapsed before it reaches the agent. */
+  /** True when the resolved backend is an ACP agent. Drives reasoning-effort
+   *  normalization: ACP honors only Fast/Thinking, so the per-surface effort
+   *  is collapsed before it reaches the agent. */
   isAcp: boolean;
 };
 
@@ -335,14 +333,21 @@ async function resolveChatBackend(
     return codex();
   }
   if (!provider.startsWith("acp:")) {
-    // Unknown / legacy free-text provider — treat as Codex (the chat surface
-    // never sends a non-`acp:` value as a Codex modelProvider anymore).
-    return codex();
+    throw new Error(
+      `Configured chat provider "${provider}" is not supported. ` +
+        "Choose Codex or a supported ACP provider in Settings → AI."
+    );
   }
 
-  const log = toAgentKitLogger(config.loggerScope);
   const discover = deps.discoverAcpAgentInstances ?? discoverLocalAcpAgentInstances;
-  const strategyId = provider.slice("acp:".length);
+  const strategy = strategyByBackendId(provider);
+  if (strategy === undefined) {
+    throw new Error(
+      `Configured chat provider "${provider}" is not supported. ` +
+        "Choose Codex or a supported ACP provider in Settings → AI."
+    );
+  }
+  const strategyId = strategy.id;
 
   // Honor the user's per-agent path choice (Settings → AI → ACP agents): a
   // manual override is fed into discovery so it's probed even outside PATH; the
@@ -352,30 +357,32 @@ async function resolveChatBackend(
   const pref = settings.ai.acp.agents?.[strategyId];
   const discoveryOptions = acpDiscoveryOptionsForEnabledAgent(settings, strategyId);
   if (discoveryOptions === null) {
-    log.warn("chat backend: ACP agent is disabled; falling back to Codex", {
-      provider
-    });
-    return codex();
+    throw new Error(
+      `Configured chat provider "${provider}" is unavailable because ` +
+        `${strategy.displayName} is disabled. Enable it in Settings → AI or choose another provider.`
+    );
   }
 
   let groups: DiscoveredAcpAgentGroup[];
   try {
     groups = await discover(discoveryOptions);
   } catch (cause) {
-    log.warn("chat backend: ACP discovery failed; falling back to Codex", {
-      provider,
-      message: cause instanceof Error ? cause.message : String(cause)
-    });
-    return codex();
+    const message = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(
+      `Configured chat provider "${provider}" is unavailable because ` +
+        `${strategy.displayName} discovery failed: ${message}. ` +
+        "Check its configuration in Settings → AI or choose another provider."
+    );
   }
   const group = groups.find(
     (g) => g.backendId === provider || g.strategyId === strategyId
   );
   if (group === undefined || group.instances.length === 0) {
-    log.warn("chat backend: ACP agent not installed; falling back to Codex", {
-      provider
-    });
-    return codex();
+    throw new Error(
+      `Configured chat provider "${provider}" is unavailable because ` +
+        `${strategy.displayName} is not installed or could not be found. ` +
+        "Install or configure it in Settings → AI, or choose another provider."
+    );
   }
   const active = resolveActiveAcpInstance(group.instances, pref);
   const agent: DiscoveredAcpAgent = {
@@ -568,8 +575,7 @@ export async function buildChatSurface(
     // ACP honors only Fast/Thinking, so for an ACP backend the effort is
     // collapsed: the "medium" default → Thinking (on), and any stale Codex
     // "medium" left on the surface never reaches the agent verbatim. A Codex
-    // backend (incl. an ACP-selected-but-uninstalled fallback) keeps graded
-    // low/medium/high.
+    // backend keeps graded low/medium/high.
     effort: resolved.isAcp
       ? acpReasoningEffort(config.effort ?? "medium")
       : config.effort ?? "medium",

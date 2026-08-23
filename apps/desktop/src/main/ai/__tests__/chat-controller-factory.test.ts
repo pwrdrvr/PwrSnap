@@ -325,7 +325,7 @@ describe("buildChatSurface — backend selection", () => {
     );
   });
 
-  test("does not discover or spawn a disabled acp provider", async () => {
+  test("rejects a disabled explicit ACP provider without falling back to Codex", async () => {
     const makeCodexClient = vi.fn(() => stubBackend());
     const makeAcpClient = vi.fn(() => stubAcpResult());
     const discoverAcpAgentInstances = vi.fn(async () => [discoveredGeminiGroup()]);
@@ -335,20 +335,28 @@ describe("buildChatSurface — backend selection", () => {
       discoverAcpAgentInstances
     };
 
-    await buildChatSurface(
-      baseConfig({
-        provider: "acp:gemini",
-        readSettings: settingsWithAcpPref("gemini", { overridePath: "/custom/gemini" }, false)
-      }),
-      deps
+    await expect(
+      buildChatSurface(
+        baseConfig({
+          provider: "acp:gemini",
+          readSettings: settingsWithAcpPref(
+            "gemini",
+            { overridePath: "/custom/gemini" },
+            false
+          )
+        }),
+        deps
+      )
+    ).rejects.toThrow(
+      'Configured chat provider "acp:gemini" is unavailable because Gemini CLI is disabled'
     );
 
     expect(discoverAcpAgentInstances).not.toHaveBeenCalled();
     expect(makeAcpClient).not.toHaveBeenCalled();
-    expect(makeCodexClient).toHaveBeenCalledTimes(1);
+    expect(makeCodexClient).not.toHaveBeenCalled();
   });
 
-  test("falls back to Codex when the ACP agent is not installed", async () => {
+  test("rejects a missing explicit ACP provider without falling back to Codex", async () => {
     const makeCodexClient = vi.fn(() => stubBackend());
     const makeAcpClient = vi.fn(() => stubAcpResult());
     const discoverAcpAgentInstances = vi.fn(async () => [] as DiscoveredAcpAgentGroup[]);
@@ -358,14 +366,18 @@ describe("buildChatSurface — backend selection", () => {
       discoverAcpAgentInstances
     };
 
-    await buildChatSurface(baseConfig({ provider: "acp:gemini" }), deps);
+    await expect(
+      buildChatSurface(baseConfig({ provider: "acp:gemini" }), deps)
+    ).rejects.toThrow(
+      'Configured chat provider "acp:gemini" is unavailable because Gemini CLI is not installed or could not be found'
+    );
 
     expect(discoverAcpAgentInstances).toHaveBeenCalledTimes(1);
     expect(makeAcpClient).not.toHaveBeenCalled();
-    expect(makeCodexClient).toHaveBeenCalledTimes(1);
+    expect(makeCodexClient).not.toHaveBeenCalled();
   });
 
-  test("falls back to Codex when ACP discovery throws", async () => {
+  test("rejects when explicit ACP discovery fails without falling back to Codex", async () => {
     const makeCodexClient = vi.fn(() => stubBackend());
     const makeAcpClient = vi.fn(() => stubAcpResult());
     const discoverAcpAgentInstances = vi.fn(async () => {
@@ -377,11 +389,38 @@ describe("buildChatSurface — backend selection", () => {
       discoverAcpAgentInstances
     };
 
-    await buildChatSurface(baseConfig({ provider: "acp:gemini" }), deps);
+    await expect(
+      buildChatSurface(baseConfig({ provider: "acp:gemini" }), deps)
+    ).rejects.toThrow(
+      'Configured chat provider "acp:gemini" is unavailable because Gemini CLI discovery failed: probe blew up'
+    );
 
     expect(makeAcpClient).not.toHaveBeenCalled();
-    expect(makeCodexClient).toHaveBeenCalledTimes(1);
+    expect(makeCodexClient).not.toHaveBeenCalled();
   });
+
+  test.each(["openai", "acp:not-a-real-agent"])(
+    'rejects unknown explicit provider "%s" without falling back to Codex',
+    async (provider) => {
+      const makeCodexClient = vi.fn(() => stubBackend());
+      const makeAcpClient = vi.fn(() => stubAcpResult());
+      const discoverAcpAgentInstances = vi.fn(
+        async () => [] as DiscoveredAcpAgentGroup[]
+      );
+
+      await expect(
+        buildChatSurface(baseConfig({ provider }), {
+          makeCodexClient,
+          makeAcpClient,
+          discoverAcpAgentInstances
+        })
+      ).rejects.toThrow(`Configured chat provider "${provider}" is not supported`);
+
+      expect(discoverAcpAgentInstances).not.toHaveBeenCalled();
+      expect(makeAcpClient).not.toHaveBeenCalled();
+      expect(makeCodexClient).not.toHaveBeenCalled();
+    }
+  );
 });
 
 // ---- chatControllerSignature — what triggers a controller rebuild --------

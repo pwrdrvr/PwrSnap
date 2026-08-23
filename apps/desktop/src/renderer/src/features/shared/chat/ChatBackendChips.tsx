@@ -7,7 +7,7 @@
 // Scope is deliberately just Provider / Model / Reasoning — never Access Mode,
 // Worktree, sandbox, etc.
 
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import {
   AI_REASONING_EFFORTS,
   CODEX_CAPTION_MODELS,
@@ -25,6 +25,16 @@ export type ChatBackendChoice = {
   model: string | null;
   /** Model-advertised reasoning effort, or null. Codex only. */
   reasoning: string | null;
+};
+
+/** Model discovery state for the selected backend. Parents can use this to
+ *  keep send disabled while discovery is loading/unavailable, render the
+ *  same exact failure copy elsewhere in the panel, and retry in place. */
+export type ChatBackendAvailability = {
+  provider: string;
+  status: "loading" | "available" | "unavailable";
+  message: string | null;
+  retry: () => void;
 };
 
 type ModelOption = {
@@ -55,6 +65,11 @@ function providerLabel(provider: string): string {
  *  so we don't offer it there (it would be silently ignored). */
 function providerSupportsReasoning(provider: string): boolean {
   return provider === "" || provider === "codex";
+}
+
+function unavailableMessage(provider: string, detail: string): string {
+  const suffix = detail.trim();
+  return `${providerLabel(provider)} is unavailable.${suffix.length > 0 ? ` ${suffix}` : " Model discovery failed."}`;
 }
 
 function toModelOptions(provider: string, raw: unknown): ModelOption[] {
@@ -129,56 +144,116 @@ export function NewChatConfigChips({
   /** Provider options for this surface: "codex" + the user's enabled ACP agents. */
   providers,
   value,
-  onChange
+  onChange,
+  onAvailabilityChange
 }: {
   providers: string[];
   value: ChatBackendChoice;
   onChange: (next: ChatBackendChoice) => void;
+  onAvailabilityChange?: (availability: ChatBackendAvailability) => void;
 }): ReactElement {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState<boolean>(true);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [fetchGeneration, setFetchGeneration] = useState(0);
   // Drop a stale model fetch if the provider changes again before it resolves.
   const fetchSeq = useRef(0);
+  const availabilityCallbackRef = useRef(onAvailabilityChange);
+  availabilityCallbackRef.current = onAvailabilityChange;
+  const retryModelDiscovery = useCallback((): void => {
+    setFetchGeneration((generation) => generation + 1);
+  }, []);
 
   useEffect(() => {
     const seq = ++fetchSeq.current;
-    setModelsLoading(true);
-    void (async () => {
-      const provider = value.provider === "" ? "codex" : value.provider;
-      const result =
-        provider === "codex"
-          ? await dispatch("codex:models", {})
-          : await dispatch("acp:models", { agentId: provider.slice("acp:".length) });
-      if (fetchSeq.current !== seq) return;
-      const opts = result.ok ? toModelOptions(provider, result.value) : [];
-      setModels(opts);
+    const provider = value.provider === "" ? "codex" : value.provider;
+    const reportAvailability = (
+      status: ChatBackendAvailability["status"],
+      message: string | null
+    ): void => {
+      availabilityCallbackRef.current?.({
+        provider,
+        status,
+        message,
+        retry: retryModelDiscovery
+      });
+    };
+    const failDiscovery = (message: string): void => {
+      setModels([]);
+      setModelsError(message);
       setModelsLoading(false);
-      // If the current model isn't valid for this provider, clear it so the
-      // user must pick one (required) rather than silently carrying a stale id.
-      if (value.model !== null && !opts.some((o) => o.id === value.model)) {
+      reportAvailability("unavailable", message);
+      if (value.model !== null) {
         onChange({ ...value, model: null, reasoning: null });
-        return;
       }
-      const defaultModel = opts.find((o) => o.isDefault === true);
-      if (value.model === null && defaultModel !== undefined) {
-        onChange({
-          ...value,
-          model: defaultModel.id,
-          reasoning: reasoningForModel(defaultModel, value.reasoning)
-        });
-        return;
-      }
-      const selectedModel = opts.find((option) => option.id === value.model);
-      const nextReasoning = reasoningForModel(selectedModel, value.reasoning);
-      if (nextReasoning !== value.reasoning) {
-        onChange({ ...value, reasoning: nextReasoning });
+    };
+
+    setModelsLoading(true);
+    setModelsError(null);
+    reportAvailability("loading", null);
+    void (async () => {
+      try {
+        const result =
+          provider === "codex"
+            ? await dispatch("codex:models", {})
+            : await dispatch("acp:models", { agentId: provider.slice("acp:".length) });
+        if (fetchSeq.current !== seq) return;
+        if (!result.ok) {
+          failDiscovery(unavailableMessage(provider, result.error.message));
+          return;
+        }
+
+        const opts = toModelOptions(provider, result.value);
+        if (opts.length === 0) {
+          failDiscovery(
+            unavailableMessage(
+              provider,
+              "No models were reported. Check the provider configuration and retry model discovery."
+            )
+          );
+          return;
+        }
+
+        setModels(opts);
+        setModelsError(null);
+        setModelsLoading(false);
+        reportAvailability("available", null);
+        // If the current model isn't valid for this provider, clear it so the
+        // user must pick one (required) rather than silently carrying a stale id.
+        if (value.model !== null && !opts.some((o) => o.id === value.model)) {
+          onChange({ ...value, model: null, reasoning: null });
+          return;
+        }
+        const defaultModel = opts.find((o) => o.isDefault === true);
+        if (value.model === null && defaultModel !== undefined) {
+          onChange({
+            ...value,
+            model: defaultModel.id,
+            reasoning: reasoningForModel(defaultModel, value.reasoning)
+          });
+          return;
+        }
+        const selectedModel = opts.find((option) => option.id === value.model);
+        const nextReasoning = reasoningForModel(selectedModel, value.reasoning);
+        if (nextReasoning !== value.reasoning) {
+          onChange({ ...value, reasoning: nextReasoning });
+        }
+      } catch (cause) {
+        if (fetchSeq.current !== seq) return;
+        failDiscovery(
+          unavailableMessage(provider, cause instanceof Error ? cause.message : String(cause))
+        );
       }
     })();
-    // Only refetch when the provider changes.
+    return (): void => {
+      if (fetchSeq.current === seq) fetchSeq.current += 1;
+    };
+    // Only refetch when the provider changes or the user explicitly retries.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value.provider]);
+  }, [value.provider, fetchGeneration]);
 
-  const showReasoning = providerSupportsReasoning(value.provider);
+  const showReasoning =
+    providerSupportsReasoning(value.provider) && !modelsLoading && modelsError === null;
   const selectedModel = models.find((model) => model.id === value.model);
   const reasoningEfforts = reasoningEffortsForModel(selectedModel);
   const selectedReasoning = reasoningForModel(selectedModel, value.reasoning);
@@ -211,11 +286,15 @@ export function NewChatConfigChips({
         <span className="ps-bchip-label">Model</span>
         <select
           className={
-            "ps-bchip-select" + (value.model === null && !modelsLoading ? " ps-bchip-select--required" : "")
+            "ps-bchip-select" +
+            (value.model === null && !modelsLoading && modelsError === null
+              ? " ps-bchip-select--required"
+              : "")
           }
           aria-label="New chat model"
-          disabled={modelsLoading}
-          value={value.model ?? ""}
+          aria-invalid={modelsError !== null}
+          disabled={modelsLoading || modelsError !== null}
+          value={modelsLoading || modelsError !== null ? "" : (value.model ?? "")}
           onChange={(e) => {
             const nextModelId = e.target.value === "" ? null : e.target.value;
             const nextModel = models.find((model) => model.id === nextModelId);
@@ -228,6 +307,8 @@ export function NewChatConfigChips({
         >
           {modelsLoading ? (
             <option value="">Loading…</option>
+          ) : modelsError !== null ? (
+            <option value="">Unavailable</option>
           ) : (
             <>
               <option value="" disabled>
@@ -242,6 +323,26 @@ export function NewChatConfigChips({
           )}
         </select>
       </label>
+
+      {modelsError !== null ? (
+        <>
+          <span
+            className="ps-bchip ps-bchip--muted"
+            role="alert"
+            data-testid="chat-backend-unavailable"
+          >
+            {modelsError}
+          </span>
+          <button
+            className="ps-bchip"
+            type="button"
+            onClick={retryModelDiscovery}
+            aria-label={`Retry ${providerLabel(value.provider)} model discovery`}
+          >
+            Retry model discovery
+          </button>
+        </>
+      ) : null}
 
       {showReasoning ? (
         <label className="ps-bchip-field">

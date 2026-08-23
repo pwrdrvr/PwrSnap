@@ -958,10 +958,6 @@ export function registerCodexHandlers(params?: {
       );
     });
   }
-
-  bus.register("codex:ask", async () => {
-    return validationError("not_implemented", "codex:ask lands after capture enrichment");
-  });
 }
 
 async function runCaptureEnrichment(params: {

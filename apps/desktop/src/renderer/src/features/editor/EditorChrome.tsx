@@ -57,9 +57,8 @@ interface ActivityButtonDef {
   id: EditorPanel;
   label: string;
   title: string;
-  /** "Available in Phase 7" disabled state for the Chat icon. The
-   *  panel itself still renders a placeholder; the icon is rendered
-   *  with `aria-disabled` so it isn't activatable. */
+  /** Reserved for panels that are intentionally unavailable. Disabled
+   *  buttons remain visible with `aria-disabled` but cannot be activated. */
   disabled: boolean;
   icon: ReactElement;
 }

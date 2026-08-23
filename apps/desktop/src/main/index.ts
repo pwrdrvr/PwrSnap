@@ -12,6 +12,7 @@ import {
   globalShortcut,
   Menu,
   nativeTheme,
+  screen,
   shell
 } from "electron";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
@@ -31,7 +32,6 @@ import {
   releaseInteractiveCaptureSession
 } from "./capture/interactive-capture-session";
 import { startRecordingFromSelection } from "./capture/record-selection";
-import { guardScreenCapture } from "./capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "./capture/capture-storage-gate";
 import { reconcileCapturesLocationOnBoot } from "./capture/capture-location-reconciliation";
 import { getAppIconPath } from "./app-icons/app-icon-cache";
@@ -95,6 +95,8 @@ import {
 } from "./handlers/library-handlers";
 import { registerRecordingHandlers } from "./handlers/recording-handlers";
 import { installRecordingController } from "./recording/recording-controller";
+import { cancelRecordingPermissionPreflight } from "./recording/recording-permission-preflight";
+import { createInteractiveRecordingSingleFlight } from "./recording/interactive-recording-single-flight";
 import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
 import { isRecordingActive } from "./recording/recording-state";
@@ -1099,10 +1101,14 @@ function runReshowLastFloatOver(): void {
  * this is the explicit "record" entry point used by the videoCapture
  * hotkey and the tray's Record button.
  */
-async function runInteractiveRecord(
-  protectWindowIds: readonly number[] = []
+async function runInteractiveRecordAttempt(
+  protectWindowIds: readonly number[]
 ): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
+  if (isRecordingActive()) {
+    log.info("recording setup ignored while a recording is already active");
+    return;
+  }
   const session = acquireInteractiveCaptureSession("video");
   if (session.status === "busy") {
     log.info("video picker invocation suppressed", {
@@ -1112,25 +1118,39 @@ async function runInteractiveRecord(
     return;
   }
   try {
-  // Gate BEFORE pickRegion, exactly like `capture:interactive`. The
+    // Gate BEFORE pickRegion, exactly like `capture:interactive`. The
   // selector freezes a screen snapshot on show(), which is all-black on
   // a Mac without Screen Recording permission — so on a first-ever (or
   // since-revoked) attempt we must fire the macOS prompt / route to
   // System Settings here, NOT paint an empty selector and only discover
   // the wall after the user has dragged a region and committed.
-  // `recording:start` re-checks (idempotent when granted); when blocked
-  // we bail before showing anything, so there's no selector to tear
-  // down and no focus to restore.
-  const blocked = await guardScreenCapture();
-  if (blocked !== null) return;
-  // macOS must resolve its Documents TCC prompt before the screen-saver
-  // selector covers it. Windows has no equivalent permission surface, so
-  // keep its cold mkdir/probe off the feedback path and perform it after the
-  // user has made a selection.
-  if (process.platform === "darwin") {
-    const storageBlocked = await ensureCapturesDirReady();
-    if (storageBlocked !== null) return;
-  }
+    // `recording:start` re-checks (idempotent when granted). Unlike image
+    // capture, video owns an explicit choice surface: screen recording can
+    // open Settings or cancel, but can never degrade.
+    const requiredPreflight = await bus.dispatch(
+      "recording:preflight",
+      {
+        capabilities: { microphone: false, systemAudio: false },
+        displayId: screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id
+      },
+      { principal: "ipc" }
+    );
+    if (!requiredPreflight.ok) {
+      log.warn("recording preflight failed", {
+        code: requiredPreflight.error.code,
+        message: requiredPreflight.error.message
+      });
+      return;
+    }
+    if (requiredPreflight.value.status === "cancelled") return;
+    // macOS must resolve its Documents TCC prompt before the screen-saver
+    // selector covers it. Windows has no equivalent permission surface, so
+    // keep its cold mkdir/probe off the feedback path and perform it after the
+    // user has made a selection in the shared continuation.
+    if (process.platform === "darwin") {
+      const storageBlocked = await ensureCapturesDirReady();
+      if (storageBlocked !== null) return;
+    }
 
   // Pick a rect / window via the existing region selector. We can't
   // route through capture:interactive (which persists an image on
@@ -1148,8 +1168,8 @@ async function runInteractiveRecord(
   // Read settings before the picker so the selector's cursor toggle
   // seeds from the persisted default. Reused below for audio
   // capabilities + the cursor value passed to `recording:start`.
-  const settings = cachedRecordingSettings;
-  const selection = await pickRegion({
+    const settings = cachedRecordingSettings;
+    const selection = await pickRegion({
     mode: "auto",
     keepPwrSnapChrome: false,
     intent: "video",
@@ -1205,6 +1225,15 @@ async function runInteractiveRecord(
     releaseInteractiveCaptureSession(session.token);
   }
 }
+
+const runInteractiveRecord = createInteractiveRecordingSingleFlight({
+  runAttempt: runInteractiveRecordAttempt,
+  onDuplicate: () => {
+    getMainLogger("pwrsnap:shortcut").info(
+      "recording setup already in progress; duplicate trigger ignored"
+    );
+  }
+});
 
 /**
  * Protocol resolver. captureSourcePath wired in Phase 1.3, cacheFile
@@ -2389,6 +2418,7 @@ export function bootstrapApp(): void {
   // after `app.quit()` is called from inside it.
   let quitTeardownInFlight = false;
   app.on("will-quit", (event) => {
+    cancelRecordingPermissionPreflight();
     // Fast Video Capture (issue #64): if a recording is active when
     // the user hits ⌘Q, cancel it cleanly BEFORE the rest of teardown
     // runs. Without this the Swift recorder is orphaned (parent dies,

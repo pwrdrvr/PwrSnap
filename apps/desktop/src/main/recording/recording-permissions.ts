@@ -41,7 +41,11 @@ const log = getMainLogger("pwrsnap:recording-permissions");
 /** Recorder backend identity feeds the fingerprint so a future
  *  backend swap (e.g. ScreenCaptureKit → CoreAudio Tap) re-routes
  *  the user once to confirm the new permission surface. */
-const RECORDER_BACKEND = "screencapturekit" as const;
+function recorderBackend(): string {
+  if (process.platform === "darwin") return "screencapturekit";
+  if (process.platform === "win32") return "ffmpeg-gdigrab-video-only";
+  return "desktop-capture";
+}
 
 /** Minimum macOS version that exposes ScreenCaptureKit's
  *  `SCStreamConfiguration.capturesAudio`. Below this we report
@@ -83,6 +87,10 @@ export function readScreenStatus(): RecordingPermissionStatus {
 }
 
 function readMicrophoneStatus(): RecordingPermissionStatus {
+  // The current Windows FFmpeg/gdigrab implementation explicitly emits
+  // video-only output (`-an`). Reporting `granted` here made a requested
+  // mic look usable even though RecordingService silently discarded it.
+  if (process.platform === "win32") return "unavailable";
   if (process.platform !== "darwin") return "granted";
   return fromElectronStatus(systemPreferences.getMediaAccessStatus("microphone"));
 }
@@ -92,6 +100,7 @@ function readMicrophoneStatus(): RecordingPermissionStatus {
  *  microphone path only and `systemAudio: "unavailable"` so the
  *  Settings UI can hide the toggle. */
 function readSystemAudioStatus(): RecordingPermissionStatus {
+  if (process.platform === "win32") return "unavailable";
   if (process.platform !== "darwin") return "granted";
   const release = process.getSystemVersion?.() ?? "";
   const majorStr = release.split(".")[0];
@@ -123,7 +132,7 @@ function fingerprintOf(
   mic: RecordingPermissionStatus,
   systemAudio: RecordingPermissionStatus
 ): string {
-  const material = `${screen}|${mic}|${systemAudio}|${RECORDER_BACKEND}`;
+  const material = `${screen}|${mic}|${systemAudio}|${recorderBackend()}`;
   return createHash("sha1").update(material).digest("hex").slice(0, 16);
 }
 
@@ -203,7 +212,15 @@ export async function requestPermission(
   permission: RecordingPermission
 ): Promise<{ status: RecordingPermissionStatus }> {
   if (process.platform !== "darwin") {
-    return { status: "granted" };
+    const readiness = readRecordingReadiness();
+    return {
+      status:
+        permission === "screen"
+          ? readiness.screenRecording
+          : permission === "microphone"
+          ? readiness.microphone
+          : readiness.systemAudio
+    };
   }
 
   switch (permission) {

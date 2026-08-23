@@ -3,6 +3,7 @@
 // in main/window.ts); subscribes to `events:recording:state` and
 // flips between two visuals:
 //
+//   permission phase →  required/optional capability choices
 //   countdown phase  →  "Starting in 3…"  (big number)
 //   recording phase  →  ●  00:00:00   [Stop]   [Cancel]
 //
@@ -14,6 +15,7 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { EVENT_CHANNELS, type RecordingState } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
+import { RecordingPermissionDialog } from "./RecordingPermissionDialog";
 
 function formatHMS(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds));
@@ -62,6 +64,10 @@ export function RecordingController(): ReactElement {
     const handle = setInterval(update, 500);
     return () => clearInterval(handle);
   }, [state]);
+
+  if (state.phase === "permission") {
+    return <RecordingPermissionDialog preflight={state.preflight} />;
+  }
 
   const isCountdown = state.phase === "countdown";
   const isPreCapture =

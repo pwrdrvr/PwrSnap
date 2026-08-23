@@ -63,10 +63,10 @@ export function setRecordingState(next: RecordingState): void {
   }
 }
 
-/** Convenience predicate — true when a session is mid-flight (any
- *  non-idle, non-terminal phase). Used by `recording:start` to reject
- *  overlapping starts and by the app-quit hook to decide whether to
- *  cancel before exit. */
+/** Convenience predicate — true when a native recording session is
+ * mid-flight. The permission phase is deliberately excluded: no helper,
+ * temp directory, or session exists yet, and the tray must not claim
+ * "Recording — Stop" while it is only asking the user for a decision. */
 export function isRecordingActive(): boolean {
   switch (state.phase) {
     case "preflight":
@@ -76,6 +76,7 @@ export function isRecordingActive(): boolean {
     case "stopping":
     case "processing":
       return true;
+    case "permission":
     case "idle":
     case "ready":
     case "failed":

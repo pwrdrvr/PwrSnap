@@ -33,6 +33,11 @@ const mocks = vi.hoisted(() => {
       windowId: number;
       pid: number;
       title: unknown;
+    }>,
+    removedRecordingDirs: [] as string[],
+    warningLogs: [] as Array<{
+      message: string;
+      fields: Record<string, unknown> | undefined;
     }>
   };
 });
@@ -82,7 +87,10 @@ vi.mock("node:fs", () => ({
 }));
 
 vi.mock("node:fs/promises", () => ({
-  mkdtemp: vi.fn(async () => "/tmp/pwrsnap-recording-fake")
+  mkdtemp: vi.fn(async () => "/tmp/pwrsnap-recording-fake"),
+  rm: vi.fn(async (path: string) => {
+    mocks.removedRecordingDirs.push(path);
+  })
 }));
 
 vi.mock("electron", () => ({
@@ -234,7 +242,9 @@ vi.mock("../../log", () => ({
     info: (message: string, context?: Record<string, unknown>) => {
       mocks.infoLogs.push({ message, context });
     },
-    warn: () => undefined,
+    warn: (message: string, fields?: Record<string, unknown>) => {
+      mocks.warningLogs.push({ message, fields });
+    },
     error: () => undefined
   })
 }));
@@ -259,6 +269,8 @@ beforeEach(() => {
   mocks.infoLogs.length = 0;
   mocks.pendingTimeouts.length = 0;
   mocks.liveWindows.length = 0;
+  mocks.removedRecordingDirs.length = 0;
+  mocks.warningLogs.length = 0;
   // resolveRecorderBinary() returns null off-darwin AND probes
   // `process.resourcesPath/PwrSnapRecorder` via path.join — neither
   // works in a plain Node test runner. Stub both so the binary-
@@ -772,6 +784,7 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     await stopPromise;
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
 
     // Pull the row that landed on insertCapture. The mock at
     // the top of this file returns a fixed record; we want the
@@ -1084,6 +1097,112 @@ describe.each(["darwin", "win32"])("window-title retries on %s", (platform) => {
   });
 });
 
+describe("RecordingService.stop recorder temp lifecycle", () => {
+  test("preserves native recorder output and clears lifecycle state when adoption fails", async () => {
+    const sourceStore = await import("../../persistence/source-store");
+    vi.mocked(sourceStore.adoptExistingFileAsSource).mockRejectedValueOnce(
+      new Error("native source adoption failed")
+    );
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const started = service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    child.emitLine({
+      event: "started",
+      physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+    });
+    await started;
+
+    const recoveryPath = "/tmp/pwrsnap-recording-fake/native-session.mp4";
+    const stopped = service.stop();
+    child.emitLine({
+      event: "stopped",
+      durationSec: 2.5,
+      containerFormat: "mp4",
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      outputPath: recoveryPath
+    });
+
+    await expect(stopped).rejects.toThrow("native source adoption failed");
+    expect(service.isActive()).toBe(false);
+    expect(mocks.stateLogFull.at(-1)).toEqual({
+      phase: "failed",
+      sessionId: expect.any(String),
+      code: "processing_failed",
+      canRetry: false,
+      displayId: 1
+    });
+    expect(mocks.removedRecordingDirs).toEqual([]);
+    expect(mocks.warningLogs).toContainEqual({
+      message: "recording adoption failed; recorder output preserved for recovery",
+      fields: {
+        outputPath: recoveryPath,
+        tempDir: "/tmp/pwrsnap-recording-fake",
+        message: "native source adoption failed"
+      }
+    });
+  });
+
+  test("clears native lifecycle without a recovery claim after adoption succeeds", async () => {
+    const sourceStore = await import("../../persistence/source-store");
+    vi.mocked(sourceStore.statSource).mockRejectedValueOnce(
+      new Error("post-adoption stat failed")
+    );
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const started = service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    child.emitLine({
+      event: "started",
+      physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+    });
+    await started;
+
+    const stopped = service.stop();
+    child.emitLine({
+      event: "stopped",
+      durationSec: 2.5,
+      containerFormat: "mp4",
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      outputPath: "/tmp/pwrsnap-recording-fake/native-session.mp4"
+    });
+
+    await expect(stopped).rejects.toThrow("post-adoption stat failed");
+    expect(service.isActive()).toBe(false);
+    expect(mocks.stateLogFull.at(-1)).toEqual({
+      phase: "failed",
+      sessionId: expect.any(String),
+      code: "processing_failed",
+      canRetry: false,
+      displayId: 1
+    });
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
+    expect(mocks.warningLogs.map(({ message }) => message)).not.toContain(
+      "recording adoption failed; recorder output preserved for recovery"
+    );
+  });
+});
+
 describe("RecordingService.start startedPromise timeout", () => {
   test("recorder that never acks `started` is killed after 15s and state goes to failed", async () => {
     const { __setRecordingServiceForTests, getRecordingService } = await import(
@@ -1112,6 +1231,7 @@ describe("RecordingService.start startedPromise timeout", () => {
     expect(child.killCalled).toBe(true);
     // State path includes a `failed` transition for the HUD/tray.
     expect(mocks.stateLog.map((s) => s.phase)).toContain("failed");
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
   });
 
   test("native recorder exit after start becomes a durable safe failure", async () => {
@@ -1423,6 +1543,7 @@ describe("Windows FFmpeg recorder", () => {
       .calls;
     const row = calls.at(-1)![0] as Record<string, unknown>;
     expect(row.source_window_title).toBeNull();
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
   });
 
   test("persists source_window_title for a window subject", async () => {
@@ -1468,6 +1589,76 @@ describe("Windows FFmpeg recorder", () => {
       .calls;
     const row = calls.at(-1)![0] as Record<string, unknown>;
     expect(row.source_window_title).toBe("项目状态 — Café 🚀");
+  });
+
+  test("preserves the complete recorder output when source adoption fails", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const sourceStore = await import("../../persistence/source-store");
+    vi.mocked(sourceStore.adoptExistingFileAsSource).mockRejectedValueOnce(
+      new Error("source adoption failed")
+    );
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    const child = mocks.spawnedChildren[0]!;
+    const stopPromise = service.stop();
+    child.emit("exit", 0, null);
+
+    await expect(stopPromise).rejects.toThrow("source adoption failed");
+    expect(service.isActive()).toBe(false);
+    expect(mocks.stateLogFull.at(-1)).toEqual({
+      phase: "failed",
+      sessionId: expect.any(String),
+      code: "processing_failed",
+      canRetry: false,
+      displayId: 1
+    });
+    expect(mocks.removedRecordingDirs).toEqual([]);
+    const preservationLog = mocks.warningLogs.find(
+      ({ message }) => message === "recording adoption failed; recorder output preserved for recovery"
+    );
+    expect(preservationLog?.fields?.tempDir).toBe("/tmp/pwrsnap-recording-fake");
+    expect(preservationLog?.fields?.outputPath).toMatch(
+      /^\/tmp\/pwrsnap-recording-fake\/.+\.mp4$/
+    );
+  });
+
+  test("cleans lifecycle without a false recovery claim after durable Windows adoption", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const sourceStore = await import("../../persistence/source-store");
+    vi.mocked(sourceStore.statSource).mockRejectedValueOnce(
+      new Error("post-adoption metadata failed")
+    );
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    const child = mocks.spawnedChildren[0]!;
+    const stopPromise = service.stop();
+    child.emit("exit", 0, null);
+
+    await expect(stopPromise).rejects.toThrow("post-adoption metadata failed");
+    expect(service.isActive()).toBe(false);
+    expect(mocks.stateLogFull.at(-1)).toEqual({
+      phase: "failed",
+      sessionId: expect.any(String),
+      code: "processing_failed",
+      canRetry: false,
+      displayId: 1
+    });
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
+    expect(mocks.warningLogs.map(({ message }) => message)).not.toContain(
+      "recording adoption failed; recorder output preserved for recovery"
+    );
   });
 
   test("converts selected DIP rects to physical pixels before gdigrab", async () => {
@@ -1519,5 +1710,6 @@ describe("Windows FFmpeg recorder", () => {
     expect(mocks.stateLog.map((s) => s.phase)).toContain("failed");
     expect(mocks.stateLog.map((s) => s.phase)).not.toContain("processing");
     expect(mocks.stateLog.map((s) => s.phase)).not.toContain("ready");
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
   });
 });

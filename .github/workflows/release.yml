@@ -13,7 +13,8 @@ on:
         type: string
   pull_request:
     # `labeled` starts the opt-in signing check. `synchronize` and `reopened`
-    # keep it current while ci:windows-signing remains on the PR.
+    # keep it current while ci:windows-signing or ci:windows-updater-smoke
+    # remains on the PR.
     types:
       - labeled
       - synchronize
@@ -325,10 +326,19 @@ jobs:
         || (
           github.event.pull_request.head.repo.full_name == github.repository
           && (
-            (github.event.action == 'labeled' && github.event.label.name == 'ci:windows-signing')
+            (
+              github.event.action == 'labeled'
+              && (
+                github.event.label.name == 'ci:windows-signing'
+                || github.event.label.name == 'ci:windows-updater-smoke'
+              )
+            )
             || (
               github.event.action != 'labeled'
-              && contains(github.event.pull_request.labels.*.name, 'ci:windows-signing')
+              && (
+                contains(github.event.pull_request.labels.*.name, 'ci:windows-signing')
+                || contains(github.event.pull_request.labels.*.name, 'ci:windows-updater-smoke')
+              )
             )
           )
         )
@@ -392,17 +402,26 @@ jobs:
         || (
           github.event.pull_request.head.repo.full_name == github.repository
           && (
-            (github.event.action == 'labeled' && github.event.label.name == 'ci:windows-signing')
+            (
+              github.event.action == 'labeled'
+              && (
+                github.event.label.name == 'ci:windows-signing'
+                || github.event.label.name == 'ci:windows-updater-smoke'
+              )
+            )
             || (
               github.event.action != 'labeled'
-              && contains(github.event.pull_request.labels.*.name, 'ci:windows-signing')
+              && (
+                contains(github.event.pull_request.labels.*.name, 'ci:windows-signing')
+                || contains(github.event.pull_request.labels.*.name, 'ci:windows-updater-smoke')
+              )
             )
           )
         )
       }}
     environment: windows-signing
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 90
     permissions:
       contents: read
       id-token: none
@@ -556,9 +575,85 @@ jobs:
         shell: pwsh -NoProfile -NonInteractive -File {0}
         run: ./scripts/release/install-trusted-signing.ps1
 
+      # The updater smoke packages two synthetic, same-source prereleases. The
+      # marker-gated packages never enter release-stage/dist and can never be
+      # selected by the publication globs below. Azure credentials are scoped
+      # to this packaging step; the installed app runs later, in a fresh job.
+      - name: Sign isolated Windows updater smoke pair
+        if: >-
+          ${{
+            github.event_name != 'pull_request'
+            || contains(github.event.pull_request.labels.*.name, 'ci:windows-updater-smoke')
+          }}
+        env:
+          WIN_AZURE_SIGN_PUBLISHER_NAME: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}
+          WIN_AZURE_SIGN_ENDPOINT: ${{ vars.WIN_AZURE_SIGN_ENDPOINT }}
+          WIN_AZURE_SIGN_ACCOUNT: ${{ vars.WIN_AZURE_SIGN_ACCOUNT }}
+          WIN_AZURE_SIGN_PROFILE: ${{ vars.WIN_AZURE_SIGN_PROFILE }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: >-
+          node apps/desktop/scripts/package-win-update-smoke.mjs
+          --sign-stage-only --require-signing
+
+      - name: Verify updater smoke installer signatures
+        if: >-
+          ${{
+            github.event_name != 'pull_request'
+            || contains(github.event.pull_request.labels.*.name, 'ci:windows-updater-smoke')
+          }}
+        shell: pwsh
+        env:
+          EXPECTED_PUBLISHER: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $input = "apps/desktop/release-stage/update-smoke-input"
+          $installers = @(Get-ChildItem $input -File -Filter "*-setup.exe" | Sort-Object Name)
+          if ($installers.Count -ne 2) {
+            throw "Expected exactly two updater-smoke installers under $input; found $($installers.Count)."
+          }
+          foreach ($target in $installers) {
+            $signature = Get-AuthenticodeSignature $target.FullName
+            if ($signature.Status -ne "Valid") {
+              throw "Authenticode signature is not valid for $($target.FullName): $($signature.Status)"
+            }
+            if ($signature.SignerCertificate.Subject -notlike "*CN=$env:EXPECTED_PUBLISHER*") {
+              throw "Unexpected Authenticode signer for $($target.FullName): $($signature.SignerCertificate.Subject)"
+            }
+          }
+
+      - name: Add credential-free updater smoke runner
+        if: >-
+          ${{
+            github.event_name != 'pull_request'
+            || contains(github.event.pull_request.labels.*.name, 'ci:windows-updater-smoke')
+          }}
+        shell: pwsh
+        run: |
+          $destination = "apps/desktop/release-stage/update-smoke-input/run-windows-update-smoke.mjs"
+          Copy-Item -LiteralPath "scripts/e2e/run-windows-update-smoke.mjs" -Destination $destination
+
+      - name: Upload isolated Windows updater smoke input
+        if: >-
+          ${{
+            github.event_name != 'pull_request'
+            || contains(github.event.pull_request.labels.*.name, 'ci:windows-updater-smoke')
+          }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-update-smoke-input
+          path: apps/desktop/release-stage/update-smoke-input
+          retention-days: 3
+
       # electron-builder signs the app executables, generated uninstaller, and
       # final NSIS installer, so the protected step must package as well as sign.
       - name: Sign and package Windows installer
+        if: >-
+          ${{
+            github.event_name != 'pull_request'
+            || contains(github.event.pull_request.labels.*.name, 'ci:windows-signing')
+          }}
         env:
           WIN_AZURE_SIGN_PUBLISHER_NAME: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}
           WIN_AZURE_SIGN_ENDPOINT: ${{ vars.WIN_AZURE_SIGN_ENDPOINT }}
@@ -572,6 +667,11 @@ jobs:
           --sign-stage-only --release --require-signing
 
       - name: Verify Authenticode signatures
+        if: >-
+          ${{
+            github.event_name != 'pull_request'
+            || contains(github.event.pull_request.labels.*.name, 'ci:windows-signing')
+          }}
         shell: pwsh
         env:
           EXPECTED_PUBLISHER: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}
@@ -593,6 +693,11 @@ jobs:
           }
 
       - name: Prepare stable-name Windows installer alias
+        if: >-
+          ${{
+            github.event_name != 'pull_request'
+            || contains(github.event.pull_request.labels.*.name, 'ci:windows-signing')
+          }}
         # PwrSnap-windows-x64-setup.exe is the canonical Windows download URL
         # for docs.pwrsnap.com and pwrsnap.com — it always points at the latest
         # promoted release, mirroring PwrSnap.dmg on macOS. Without it the
@@ -649,6 +754,11 @@ jobs:
           Write-Host "  alias: $aliasName ($expected)"
 
       - name: Upload Windows installer artifact
+        if: >-
+          ${{
+            github.event_name != 'pull_request'
+            || contains(github.event.pull_request.labels.*.name, 'ci:windows-signing')
+          }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ github.event_name == 'pull_request' && 'windows-signed-installer-pr' || 'windows-installer' }}
@@ -662,6 +772,58 @@ jobs:
             apps/desktop/release-stage/dist/SHA256SUMS
           retention-days: 7
 
+  windows-updater-smoke:
+    name: Exercise signed Windows packaged updater
+    # The application never runs in the credential-bearing signing job. This
+    # fresh runner downloads only the short-lived signed pair artifact: no
+    # checkout, protected environment, secrets, or dependency installation.
+    needs: windows-sign
+    if: >-
+      ${{
+        github.event_name != 'pull_request'
+        || (
+          github.event.pull_request.head.repo.full_name == github.repository
+          && contains(github.event.pull_request.labels.*.name, 'ci:windows-updater-smoke')
+        )
+      }}
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: none
+    steps:
+      - name: Download isolated signed updater smoke input
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-update-smoke-input
+          path: .update-smoke
+
+      - name: Run packaged baseline-to-target updater smoke
+        shell: pwsh
+        env:
+          # This public identity is deliberately pinned outside the protected
+          # environment because its scoped signing variables are unavailable
+          # on this credential-free runner.
+          EXPECTED_PUBLISHER: PwrDrvr LLC
+        run: |
+          $diagnostics = Join-Path $env:RUNNER_TEMP "windows-update-smoke-diagnostics"
+          node .update-smoke/run-windows-update-smoke.mjs `
+            --input-dir .update-smoke `
+            --diagnostics-dir $diagnostics `
+            --expected-publisher $env:EXPECTED_PUBLISHER
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged Windows updater smoke failed (exit code $LASTEXITCODE)."
+          }
+
+      - name: Upload packaged updater diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-update-smoke-diagnostics
+          path: ${{ runner.temp }}/windows-update-smoke-diagnostics
+          if-no-files-found: warn
+          retention-days: 7
+
   publish-release-assets:
     name: Create release and publish platform assets
     # PR signing smoke runs stop at the signed workflow artifact. Only tag or
@@ -672,6 +834,7 @@ jobs:
       - linux-build
       - sign
       - windows-sign
+      - windows-updater-smoke
     timeout-minutes: 15
     permissions:
       contents: write

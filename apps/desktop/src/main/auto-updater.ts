@@ -39,6 +39,11 @@ import {
   type AppUpdateInstallAttempt,
   type AppUpdateInstallAttemptStore
 } from "./update-install-attempt-store";
+import {
+  isExactWindowsUpdateSmokeFeedUrl,
+  isWindowsUpdateSmokeRequested,
+  type WindowsUpdateSmokeConfig
+} from "./windows-update-smoke";
 
 // Access `autoUpdater` lazily. electron-updater exposes it as a
 // property getter that constructs `MacUpdater` on first access,
@@ -89,6 +94,10 @@ function isUserInitiatedTrigger(trigger: AppUpdateCheckTrigger): boolean {
 type UpdateSelection = { channel: UpdateChannel; train: UpdateTrain };
 type UpdateSelectionKey = `${UpdateTrain}:${UpdateChannel}`;
 type SelectionResolver = () => UpdateSelection;
+const WINDOWS_UPDATE_SMOKE_SELECTION: UpdateSelection = {
+  channel: "prerelease",
+  train: "beta"
+};
 
 let resolveSelection: SelectionResolver = () => ({
   channel: "latest",
@@ -135,6 +144,10 @@ let releaseFetchInFlight: Promise<GitHubRelease[]> | undefined;
 /** Epoch ms at which GitHub said the anonymous quota refills. While set and
  *  unreached, no further request is issued. */
 let rateLimitResetAt: number | undefined;
+/** Validated once, before updater initialization, by the packaged bootstrap.
+ * An opt-in env without this object is a hard error — never a reason to fall
+ * through to GitHub discovery. */
+let configuredWindowsUpdateSmoke: WindowsUpdateSmokeConfig | null = null;
 const retryDownloadWaiters = new Set<{
   expectedVersion: string;
   resolve: (result: AppUpdateCheckResult) => void;
@@ -162,6 +175,20 @@ type GitHubReleaseAsset = {
  *  graph. Called by `initAutoUpdater` from main bootstrap. */
 export function setUpdateSelectionResolver(fn: SelectionResolver): void {
   resolveSelection = fn;
+}
+
+export function setWindowsUpdateSmokeConfig(config: WindowsUpdateSmokeConfig | null): void {
+  configuredWindowsUpdateSmoke = config;
+}
+
+function windowsUpdateSmokeConfig(): WindowsUpdateSmokeConfig | undefined {
+  if (!isWindowsUpdateSmokeRequested()) return undefined;
+  if (configuredWindowsUpdateSmoke === null) {
+    throw new Error(
+      "Windows updater smoke was requested but its build marker/configuration was not validated"
+    );
+  }
+  return configuredWindowsUpdateSmoke;
 }
 
 function setUpdateStatus(nextStatus: AppUpdateStatus): void {
@@ -336,6 +363,9 @@ function reconcilePendingInstallAttemptOnBoot(): boolean {
 }
 
 function currentUpdateSelection(): UpdateSelection {
+  if (windowsUpdateSmokeConfig() !== undefined) {
+    return WINDOWS_UPDATE_SMOKE_SELECTION;
+  }
   try {
     return resolveSelection();
   } catch (err) {
@@ -355,7 +385,9 @@ function currentUpdateSelectionKey(): UpdateSelectionKey {
 }
 
 function configureAutoUpdaterChannel(selection: UpdateSelection = currentUpdateSelection()): void {
-  autoUpdater().allowPrerelease = selection.train === "beta" || selection.channel === "prerelease";
+  const smoke = windowsUpdateSmokeConfig();
+  autoUpdater().allowPrerelease =
+    smoke !== undefined || selection.train === "beta" || selection.channel === "prerelease";
   // Every check starts from the forward-only posture. `allowDowngrade` is
   // opened for exactly one check, by `allowAutoUpdaterDowngrade`, once we
   // have decided the selected release is behind the running build.
@@ -364,7 +396,8 @@ function configureAutoUpdaterChannel(selection: UpdateSelection = currentUpdateS
     allowDowngrade: autoUpdater().allowDowngrade,
     allowPrerelease: autoUpdater().allowPrerelease,
     updateChannel: selection.channel,
-    updateTrain: selection.train
+    updateTrain: selection.train,
+    windowsUpdateSmoke: smoke !== undefined
   });
 }
 
@@ -385,6 +418,42 @@ function configureAutoUpdaterFeedForRelease(release: GitHubRelease): void {
     url: `https://github.com/pwrdrvr/PwrSnap/releases/download/${encodeURIComponent(tag)}/`
   });
   log.info("configured auto-update feed for GitHub release", { tag });
+}
+
+function configureAutoUpdaterFeedForWindowsUpdateSmoke(config: WindowsUpdateSmokeConfig): void {
+  if (!isExactWindowsUpdateSmokeFeedUrl(config.feedUrl)) {
+    throw new Error(
+      "Windows updater smoke feed failed the exact loopback-only runtime guard"
+    );
+  }
+  // readWindowsUpdateSmokeConfig already validated the exact loopback URL
+  // grammar. Keep the value opaque here so electron-updater cannot derive or
+  // fall back to the production GitHub provider.
+  autoUpdater().channel = "latest";
+  // electron-updater's channel setter silently opens allowDowngrade. This
+  // smoke is forward-only, so close it again after forcing latest.yml.
+  autoUpdater().allowDowngrade = false;
+  autoUpdater().requestHeaders = null;
+  autoUpdater().setFeedURL({ provider: "generic", url: config.feedUrl });
+  log.info("configured isolated Windows updater smoke feed", {
+    feedUrl: config.feedUrl,
+    runId: config.runId,
+    targetVersion: config.targetVersion
+  });
+}
+
+function acceptWindowsUpdateSmokeEventVersion(
+  event: string,
+  version: string | undefined
+): boolean {
+  const smoke = windowsUpdateSmokeConfig();
+  if (smoke === undefined || version === smoke.targetVersion) return true;
+  const message =
+    `Windows updater smoke ${event} reported ${version ?? "no version"}; ` +
+    `expected exact target ${smoke.targetVersion}`;
+  log.error(message, { event, runId: smoke.runId, version });
+  setUpdateStatus({ status: "error", message });
+  return false;
 }
 
 function productionUpdatesEnabled(): boolean {
@@ -455,6 +524,13 @@ function downloadedOrFailedMatchesSelection(
 }
 
 function syncAutoInstallOnAppQuit(updateSelection: UpdateSelectionKey): void {
+  if (windowsUpdateSmokeConfig() !== undefined) {
+    // The smoke installs only through the exact-target guarded
+    // installDownloadedAppUpdate call. A failure exit must never make
+    // electron-updater silently apply whatever happens to be cached.
+    autoUpdater().autoInstallOnAppQuit = false;
+    return;
+  }
   const matching = downloadedUpdateMatchesSelection(updateSelection);
   // Stepping the installed build BACKWARD is heavier than a forward update
   // and the user only ever asked to see what was available. Hold it for the
@@ -549,6 +625,36 @@ export async function checkForAppUpdatesNow(
         updateTrain: selection.train
       });
       configureAutoUpdaterChannel(selection);
+      const smoke = windowsUpdateSmokeConfig();
+      if (smoke !== undefined) {
+        const currentVersion = autoUpdater().currentVersion?.version ?? currentAppVersion();
+        configureAutoUpdaterFeedForWindowsUpdateSmoke(smoke);
+        if (currentVersion === smoke.targetVersion) {
+          const result = { status: "no-update", version: currentVersion } as const;
+          setUpdateStatusUnlessActionable(result);
+          log.info("Windows updater smoke target is already installed", {
+            currentVersion,
+            runId: smoke.runId
+          });
+          return result;
+        }
+        if (currentVersion !== smoke.baselineVersion) {
+          throw new Error(
+            `Windows updater smoke running version ${currentVersion} is not exact baseline ${smoke.baselineVersion}`
+          );
+        }
+        const result = await autoUpdater().checkForUpdates();
+        const selectedVersion = result?.updateInfo?.version;
+        if (selectedVersion !== smoke.targetVersion) {
+          throw new Error(
+            `Windows updater smoke feed selected ${selectedVersion ?? "no version"}; expected exact target ${smoke.targetVersion}`
+          );
+        }
+        recordPendingDownloadSelection(selectedVersion, updateSelection);
+        const matchingDownloadedResult = downloadedUpdateMatchesSelection(updateSelection);
+        if (matchingDownloadedResult) return matchingDownloadedResult;
+        return { status: "available", version: selectedVersion };
+      }
       const release = await readAppUpdateReleaseForSelection(
         selection,
         // A user-initiated check should not answer from a 15-minute-old
@@ -1176,7 +1282,7 @@ async function refreshGitHubReleases(): Promise<GitHubRelease[]> {
  *  network state. The block sits at the one function every read funnels
  *  through so no caller has to remember it. */
 function releaseReadsDisabled(): boolean {
-  return process.env.PWRSNAP_E2E === "1";
+  return process.env.PWRSNAP_E2E === "1" || isWindowsUpdateSmokeRequested();
 }
 
 /**
@@ -1271,6 +1377,13 @@ export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResu
         : "No downloaded update is ready to install."
     };
   }
+  const smoke = windowsUpdateSmokeConfig();
+  if (smoke !== undefined && version !== smoke.targetVersion) {
+    return {
+      status: "error",
+      message: `Windows updater smoke refuses to install ${version}; expected ${smoke.targetVersion}.`
+    };
+  }
   if (!productionUpdatesEnabled()) {
     // The only way to reach `downloaded` outside production is the
     // dev/QA fake (see `simulateDevUpdateCheck`): there's no real
@@ -1308,7 +1421,17 @@ export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResu
       version = refreshedResult.version;
     }
     log.info("installing downloaded update", { version });
-    recordInstallAttempt(version, retrySelection ?? currentSelection);
+    const recordedAttempt = recordInstallAttempt(
+      version,
+      retrySelection ?? currentSelection
+    );
+    if (smoke !== undefined && recordedAttempt === undefined) {
+      return {
+        status: "error",
+        message:
+          "Windows updater smoke could not persist its install-attempt marker; refusing to restart."
+      };
+    }
     autoUpdater().quitAndInstall();
     return { status: "restarting" };
   } catch (err) {
@@ -1334,7 +1457,7 @@ export function initAppUpdater(): void {
 
   autoUpdater().logger = log as unknown as Console;
   autoUpdater().autoDownload = true;
-  autoUpdater().autoInstallOnAppQuit = true;
+  autoUpdater().autoInstallOnAppQuit = windowsUpdateSmokeConfig() === undefined;
   configureAutoUpdaterChannel();
   const pendingInstallFailed = reconcilePendingInstallAttemptOnBoot();
   reconcileAppUpdateSelection();
@@ -1345,6 +1468,7 @@ export function initAppUpdater(): void {
   });
   autoUpdater().on("update-available", (info) => {
     log.info("update-available", { version: info.version });
+    if (!acceptWindowsUpdateSmokeEventVersion("update-available", info.version)) return;
     recordPendingDownloadSelection(info.version, updateCheckSelectionInFlight);
     const isDowngrade = downgradeCheckInFlight || pendingDowngradeVersions.has(info.version);
     // Re-key on what the event actually reported so `update-downloaded`,
@@ -1380,6 +1504,7 @@ export function initAppUpdater(): void {
   });
   autoUpdater().on("update-downloaded", (info) => {
     log.info("update-downloaded", { version: info.version });
+    if (!acceptWindowsUpdateSmokeEventVersion("update-downloaded", info.version)) return;
     const selection = info.version
       ? (pendingDownloadSelectionsByVersion.get(info.version) ?? currentUpdateSelectionKey())
       : undefined;
@@ -1402,7 +1527,9 @@ export function initAppUpdater(): void {
     setUpdateStatusUnlessActionable({ status: "error", message: err.message });
   });
 
-  startPeriodicUpdateChecks();
+  if (windowsUpdateSmokeConfig() === undefined) {
+    startPeriodicUpdateChecks();
+  }
   if (!pendingInstallFailed) {
     void checkForAppUpdatesNow("startup");
   }

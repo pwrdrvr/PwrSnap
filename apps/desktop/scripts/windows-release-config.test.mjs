@@ -148,6 +148,70 @@ describe("Windows release configuration", () => {
     expect(workflow).not.toContain("FFMPEG_BUILDS_PAT");
   });
 
+  test("signed packaged updater smoke is loopback-only and outside the signing boundary", () => {
+    const workflow = read(".github/workflows/release.yml");
+    const archive = read("scripts/release/archive-windows-signing-input.ps1");
+    const packager = read("apps/desktop/scripts/package-win.mjs");
+    const pair = read("apps/desktop/scripts/package-win-update-smoke.mjs");
+    const harness = read("scripts/e2e/run-windows-update-smoke.mjs");
+
+    expect(workflow).toContain("ci:windows-updater-smoke");
+    expect(workflow).toContain("windows-updater-smoke:");
+    expect(workflow).toContain("package-win-update-smoke.mjs");
+    expect(workflow).toContain("windows-update-smoke-input");
+    expect(workflow).toContain("windows-update-smoke-diagnostics");
+
+    const protectedWindowsJob = workflow
+      .split("\n  windows-sign:\n")[1]
+      ?.split("\n  windows-updater-smoke:\n")[0];
+    const updaterSmokeJob = workflow
+      .split("\n  windows-updater-smoke:\n")[1]
+      ?.split("\n  publish-release-assets:\n")[0];
+    const publishJob = workflow.split("\n  publish-release-assets:\n")[1];
+    expect(protectedWindowsJob, "the protected Windows job is missing").toBeDefined();
+    expect(updaterSmokeJob, "the credential-free updater job is missing").toBeDefined();
+    expect(publishJob, "the publication job is missing").toBeDefined();
+
+    // Signing credentials are scoped to packaging. The app is launched only
+    // after the signed input crosses to a fresh job with no checkout,
+    // protected environment, secret references, or dependency install.
+    expect(protectedWindowsJob).toContain("Sign isolated Windows updater smoke pair");
+    expect(protectedWindowsJob).toContain("--sign-stage-only --require-signing");
+    expect(protectedWindowsJob).toContain("Upload isolated Windows updater smoke input");
+    expect(protectedWindowsJob).not.toContain("node .update-smoke/run-windows-update-smoke.mjs");
+    expect(updaterSmokeJob).toContain("needs: windows-sign");
+    expect(updaterSmokeJob).toContain("runs-on: windows-2022");
+    expect(updaterSmokeJob).toContain("run-windows-update-smoke.mjs");
+    expect(updaterSmokeJob).toContain("if: ${{ always() }}");
+    expect(updaterSmokeJob).not.toContain("actions/checkout");
+    expect(updaterSmokeJob).not.toContain("environment:");
+    expect(updaterSmokeJob).not.toContain("secrets.");
+    expect(updaterSmokeJob).not.toContain("vars.WIN_AZURE_SIGN_PUBLISHER_NAME");
+    expect(updaterSmokeJob).not.toContain("configure-nodejs");
+    expect(updaterSmokeJob).not.toContain("pnpm");
+    expect(updaterSmokeJob).toContain("EXPECTED_PUBLISHER: PwrDrvr LLC");
+
+    // A tag cannot publish unless the installed baseline-to-target smoke
+    // passes, while PRs remain structurally unable to enter publication.
+    expect(publishJob).toContain("if: ${{ github.event_name != 'pull_request' }}");
+    expect(publishJob).toContain("- windows-updater-smoke");
+
+    // The protected archive is an explicit allowlist. Both scripts must cross
+    // it because windows-sign has no checkout; neither may be fetched later.
+    expect(archive).toContain("apps/desktop/scripts/package-win-update-smoke.mjs");
+    expect(archive).toContain("scripts/e2e/run-windows-update-smoke.mjs");
+
+    // Synthetic outputs are structurally segregated from release-stage/dist,
+    // and neither implementation has a release/tag mutation command or a real
+    // GitHub feed URL.
+    expect(packager).toContain('join(stageDir, "update-smoke-input", ".work")');
+    expect(pair).toContain('join(stageDir, "update-smoke-input")');
+    expect(pair).not.toContain("gh release");
+    expect(harness).not.toContain("gh release");
+    expect(harness).not.toContain("github.com");
+    expect(harness).toContain("127.0.0.1");
+  });
+
   test("the signed Windows installer also publishes under a stable alias", () => {
     const workflow = read(".github/workflows/release.yml");
 
@@ -160,7 +224,7 @@ describe("Windows release configuration", () => {
 
     const protectedWindowsJob = workflow
       .split("\n  windows-sign:\n")[1]
-      ?.split("\n  publish-release-assets:\n")[0];
+      ?.split("\n  windows-updater-smoke:\n")[0];
     expect(protectedWindowsJob, "the protected Windows job is missing").toBeDefined();
 
     // The alias has to be born inside the protected job, after packaging and

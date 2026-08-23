@@ -33,7 +33,7 @@ const GENERIC_BUNDLE_SEGMENTS = new Set<string>([
  * Take up-to-2-letter initials from a free-form string.
  *
  * Splits on EXPLICIT separators (whitespace, dots, dashes,
- * underscores, slashes) first. Only when the input is a single
+ * underscores, and either path separator) first. Only when the input is a single
  * mashed-together token without separators does it fall back to a
  * camelCase split — otherwise `"GitHub Desktop"` would over-split
  * into `["Git", "Hub", "Desktop"]` and yield `"GH"` instead of the
@@ -44,7 +44,7 @@ const GENERIC_BUNDLE_SEGMENTS = new Set<string>([
  * `"iCloudDrive"` → `"IC"` (single mashed token, camelCase split).
  */
 export function tokenInitials(s: string): string {
-  const explicit = s.split(/[\s._\-/]+/).filter((t) => t.length > 0);
+  const explicit = s.split(/[\s._\\/-]+/).filter((t) => t.length > 0);
   if (explicit.length === 0) return s.slice(0, 2).toUpperCase();
   if (explicit.length > 1) {
     return (explicit[0]![0]! + explicit[1]![0]!).toUpperCase();
@@ -55,6 +55,20 @@ export function tokenInitials(s: string): string {
     return (camel[0]![0]! + camel[1]![0]!).toUpperCase();
   }
   return explicit[0]!.slice(0, 2).toUpperCase();
+}
+
+/** Display fallback for reverse-DNS bundle ids and old Windows records. */
+export function appIdentifierDisplayLabel(identifier: string): string {
+  const pathParts = identifier.split(/[\\/]/);
+  const isExecutablePath = pathParts.length > 1 || /\.exe$/i.test(identifier);
+  const rawTail = isExecutablePath
+    ? pathParts.at(-1)?.replace(/\.exe$/i, "") ?? identifier
+    : identifier.split(".").pop() ?? identifier;
+  return rawTail
+    .split(/[._\s-]+/)
+    .filter((word) => word.length > 0)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
 }
 
 /**
@@ -77,6 +91,9 @@ export function initialsFor(name: string | undefined, fallback: string): string 
   const trimmed = name?.trim();
   if (trimmed !== undefined && trimmed.length > 0) {
     return tokenInitials(trimmed);
+  }
+  if (/[\\/]/.test(fallback) || /\.exe$/i.test(fallback)) {
+    return tokenInitials(appIdentifierDisplayLabel(fallback));
   }
   const segments = fallback
     .split(".")

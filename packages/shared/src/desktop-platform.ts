@@ -18,8 +18,10 @@ export type CapturesFolderLocation = "documents" | "home";
 
 export function capturesFolderDisplayPath(
   platform: string | undefined,
-  location: CapturesFolderLocation
+  location: CapturesFolderLocation,
+  rootOverridden: boolean = false
 ): string {
+  if (rootOverridden) return "your active captures folder";
   if (platform === "win32") {
     return location === "home"
       ? String.raw`%USERPROFILE%\PwrSnap`

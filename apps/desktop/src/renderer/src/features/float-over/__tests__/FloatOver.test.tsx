@@ -532,6 +532,22 @@ describe("FloatOver asset mode", () => {
     expect(el.querySelector(".fo__dest-saved")?.textContent).toContain("saved · ~/PwrSnap");
     expect(el.querySelector(".fo__dest-saved")?.textContent).not.toContain("Documents");
   });
+
+  test("does not invent a display path for a PWRSNAP_DATA_ROOT override", async () => {
+    const el = await renderFloatOver({
+      src: "pwrsnap-capture://r/img",
+      capturesLocation: "documents",
+      capturesRootOverridden: true,
+      startCountdown: false
+    });
+
+    expect(el.querySelector(".fo__dest-saved")?.textContent).toContain(
+      "saved · your active captures folder"
+    );
+    expect(el.querySelector(".fo__dest-saved")?.textContent).not.toContain(
+      "Documents"
+    );
+  });
 });
 
 describe("FloatOverHost", () => {

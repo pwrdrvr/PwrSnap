@@ -5,6 +5,7 @@ import {
 } from "@pwrsnap/shared";
 import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
 import { formatBytes } from "../../../lib/format-bytes";
+import { useCapturesLocationDisplayState } from "../../../lib/useCapturesLocationDisplayState";
 import { useStorageSnapshot } from "../../../lib/useStorageSnapshot";
 import { useSettingsContext } from "../SettingsContext";
 
@@ -37,10 +38,14 @@ export function StoragePage(): ReactElement {
     settings?.storage.filenameTimestampZone ?? "local";
   const ready = settings !== null;
   const confirmBeforeTrash = settings?.library.confirmBeforeTrash ?? true;
+  const capturesDisplay = useCapturesLocationDisplayState(
+    settings?.storage.capturesLocation ?? "documents"
+  );
   const activeCapturesPath =
     capturesFolderDisplayPath(
       window.pwrsnapApi?.platform,
-      settings?.storage.capturesLocation === "home" ? "home" : "documents"
+      capturesDisplay.location,
+      capturesDisplay.overridden
     );
 
   const onTimestampZoneChange = ready

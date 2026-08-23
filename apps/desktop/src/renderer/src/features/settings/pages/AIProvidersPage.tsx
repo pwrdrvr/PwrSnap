@@ -461,6 +461,7 @@ export function AIProvidersPage(): ReactElement {
             loading={snapshotLoading}
             onPin={async (path) => {
               await patch({ codex: { mode: "pinned", pinnedPath: path } });
+              await onRefresh();
             }}
           />
           {snapshot !== null && snapshot.resolvedPath !== null ? (

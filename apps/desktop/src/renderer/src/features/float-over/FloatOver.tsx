@@ -276,6 +276,7 @@ export function FloatOver({
   srcDpr = 2,
   exportStrategy = "legacy",
   capturesLocation = "documents",
+  capturesRootOverridden = false,
   copyMetrics,
   copyPulses,
   onDismiss,
@@ -328,6 +329,8 @@ export function FloatOver({
   exportStrategy?: ExportStrategy;
   /** Active durable captures root. */
   capturesLocation?: CapturesLocation;
+  /** PWRSNAP_DATA_ROOT controls the real path, which renderer cannot know. */
+  capturesRootOverridden?: boolean;
   copyMetrics?: PresetMetricMap | undefined;
   copyPulses?: Readonly<Record<CopyPreset, number>> | undefined;
   onDismiss?: () => void;
@@ -1195,7 +1198,8 @@ export function FloatOver({
               <FoIcon name="check" size={11} /> saved ·{" "}
               {capturesFolderDisplayPath(
                 window.pwrsnapApi?.platform,
-                capturesLocation
+                capturesLocation,
+                capturesRootOverridden
               )}
             </div>
           )}

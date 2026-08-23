@@ -26,6 +26,9 @@ describe("desktop platform copy", () => {
     expect(capturesFolderDisplayPath("win32", "documents")).toBe(
       String.raw`Documents\PwrSnap`
     );
+    expect(capturesFolderDisplayPath("win32", "documents", true)).toBe(
+      "your active captures folder"
+    );
     expect(chatsFolderDisplayPath("win32")).toBe(
       String.raw`Documents\PwrSnap\Chats`
     );
@@ -121,6 +124,9 @@ describe("desktop platform copy", () => {
     expect(capturesFolderDisplayPath("darwin", "home")).toBe("~/PwrSnap");
     expect(capturesFolderDisplayPath("darwin", "documents")).toBe(
       "~/Documents/PwrSnap"
+    );
+    expect(capturesFolderDisplayPath("darwin", "documents", true)).toBe(
+      "your active captures folder"
     );
     expect(chatsFolderDisplayPath("darwin")).toBe("~/Documents/PwrSnap/Chats");
     expect(chatsFolderDisplayPath("darwin", "home")).toBe("~/PwrSnap/Chats");

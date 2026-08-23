@@ -18,37 +18,27 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
   chatsFolderDisplayPath,
   chatStoragePlatformCopy,
-  type CapturesLocationStatus,
   type SensitiveDataPattern
 } from "@pwrsnap/shared";
 import { Card, Row } from "../components";
 import { useSettingsContext } from "../SettingsContext";
-import { dispatch } from "../../../lib/pwrsnap";
+import { useCapturesLocationDisplayState } from "../../../lib/useCapturesLocationDisplayState";
 
 const USER_GUIDANCE_MAX = 8192;
 
 export function ChatSettingsCard(): ReactElement | null {
   const { settings, patch } = useSettingsContext();
-  const [capturesStatus, setCapturesStatus] = useState<CapturesLocationStatus | null>(
-    null
+  const capturesDisplay = useCapturesLocationDisplayState(
+    settings?.storage.capturesLocation ?? "documents"
   );
-  useEffect(() => {
-    let cancelled = false;
-    void dispatch("storage:capturesLocationStatus", {}).then((result) => {
-      if (!cancelled && result.ok) setCapturesStatus(result.value);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [settings?.storage.capturesLocation]);
   if (settings === null) return null;
   return (
     <ChatSettingsCardBody
       key="chat-settings"
       patch={patch}
       chat={settings.ai.chat}
-      capturesLocation={capturesStatus?.location ?? settings.storage.capturesLocation}
-      capturesRootOverridden={capturesStatus?.overridden ?? true}
+      capturesLocation={capturesDisplay.location}
+      capturesRootOverridden={capturesDisplay.overridden}
     />
   );
 }

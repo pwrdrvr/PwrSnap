@@ -151,6 +151,11 @@ vi.mock("../settings-handlers", () => ({
 }));
 
 const { bus } = await import("../../command-bus");
+const {
+  acquireInteractiveCaptureSession,
+  releaseInteractiveCaptureSession,
+  resetInteractiveCaptureSessionForTests
+} = await import("../../capture/interactive-capture-session");
 const { registerCaptureHandlers } = await import("../capture-handlers");
 registerCaptureHandlers();
 
@@ -169,6 +174,7 @@ const successCrop = {
 };
 
 beforeEach(() => {
+  resetInteractiveCaptureSessionForTests();
   vi.clearAllMocks();
   mocks.guardScreenCapture.mockResolvedValue(null);
   mocks.ensureCapturesDirReady.mockResolvedValue(null);
@@ -196,13 +202,151 @@ beforeEach(() => {
 });
 
 describe("capture:interactive snapshot production wiring", () => {
+  test("Windows reveals/selects before storage, then gates before crop and persistence", async () => {
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    let resolvePick!: (value: {
+      ok: true;
+      rect: { x: number; y: number; w: number; h: number };
+      displayId: number;
+      screenSnapshotId: string;
+      previousAppPid: null;
+      previousAppOrigin: "unknown";
+    }) => void;
+    let resolveStorage!: (value: null) => void;
+    mocks.pickRegion.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolvePick = resolve;
+      })
+    );
+    mocks.ensureCapturesDirReady.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveStorage = resolve;
+      })
+    );
+
+    try {
+      const pending = bus.dispatch(
+        "capture:interactive",
+        { mode: "region" },
+        { principal: "ipc" }
+      );
+      await vi.waitFor(() => expect(mocks.pickRegion).toHaveBeenCalledTimes(1));
+      expect(mocks.ensureCapturesDirReady).not.toHaveBeenCalled();
+
+      resolvePick({
+        ok: true,
+        rect: { x: 10, y: 20, w: 300, h: 200 },
+        displayId: 9,
+        screenSnapshotId: "snapshot-memory",
+        previousAppPid: null,
+        previousAppOrigin: "unknown"
+      });
+      await vi.waitFor(() => expect(mocks.ensureCapturesDirReady).toHaveBeenCalledTimes(1));
+      expect(mocks.cropRegisteredSnapshot).not.toHaveBeenCalled();
+      expect(mocks.persistCaptureFromTempV2).not.toHaveBeenCalled();
+
+      resolveStorage(null);
+      await expect(pending).resolves.toMatchObject({ ok: true });
+      expect(mocks.pickRegion.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.ensureCapturesDirReady.mock.invocationCallOrder[0]!
+      );
+      expect(mocks.ensureCapturesDirReady.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.cropRegisteredSnapshot.mock.invocationCallOrder[0]!
+      );
+      expect(mocks.cropRegisteredSnapshot.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.persistCaptureFromTempV2.mock.invocationCallOrder[0]!
+      );
+    } finally {
+      platform.mockRestore();
+    }
+  });
+
+  test("a blocked Windows storage gate releases the transferred snapshot and hides once", async () => {
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const storageBlocked = {
+      ok: false as const,
+      error: {
+        kind: "capture" as const,
+        code: "storage",
+        message: "capture storage unavailable"
+      }
+    };
+    mocks.pickRegion.mockResolvedValue({
+      ok: true,
+      rect: { x: 10, y: 20, w: 300, h: 200 },
+      displayId: 9,
+      screenSnapshotId: "snapshot-memory",
+      previousAppPid: null,
+      previousAppOrigin: "unknown"
+    });
+    mocks.ensureCapturesDirReady.mockResolvedValueOnce(storageBlocked as never);
+
+    try {
+      const result = await bus.dispatch(
+        "capture:interactive",
+        { mode: "region" },
+        { principal: "ipc" }
+      );
+
+      expect(result).toEqual(storageBlocked);
+      expect(mocks.pickRegion.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.ensureCapturesDirReady.mock.invocationCallOrder[0]!
+      );
+      expect(mocks.hideSelector).toHaveBeenCalledTimes(1);
+      expect(mocks.releaseSnapshot).toHaveBeenCalledTimes(1);
+      expect(mocks.releaseSnapshot).toHaveBeenCalledWith("snapshot-memory");
+      expect(mocks.cropRegisteredSnapshot).not.toHaveBeenCalled();
+      expect(mocks.persistCaptureFromTempV2).not.toHaveBeenCalled();
+    } finally {
+      platform.mockRestore();
+    }
+  });
+
+  test("macOS keeps the Documents gate before the selector", async () => {
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    let resolveStorage!: (value: null) => void;
+    mocks.ensureCapturesDirReady.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveStorage = resolve;
+      })
+    );
+    mocks.pickRegion.mockResolvedValue({
+      ok: false,
+      reason: "cancelled",
+      previousAppPid: null,
+      previousAppOrigin: "external"
+    });
+
+    try {
+      const pending = bus.dispatch(
+        "capture:interactive",
+        { mode: "region" },
+        { principal: "ipc" }
+      );
+      await vi.waitFor(() => expect(mocks.ensureCapturesDirReady).toHaveBeenCalledTimes(1));
+      expect(mocks.pickRegion).not.toHaveBeenCalled();
+
+      resolveStorage(null);
+      await expect(pending).resolves.toMatchObject({
+        ok: false,
+        error: { code: "cancelled" }
+      });
+      expect(mocks.ensureCapturesDirReady.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.pickRegion.mock.invocationCallOrder[0]!
+      );
+    } finally {
+      platform.mockRestore();
+    }
+  });
+
   test("consumes a Windows memory snapshot and releases it exactly once", async () => {
     mocks.pickRegion.mockResolvedValue({
       ok: true,
       rect: { x: 10, y: 20, w: 300, h: 200 },
       displayId: 9,
       screenSnapshotId: "snapshot-memory",
-      previousAppPid: null
+      previousAppPid: null,
+      previousAppOrigin: "unknown"
     });
 
     const result = await bus.dispatch(
@@ -225,7 +369,31 @@ describe("capture:interactive snapshot production wiring", () => {
     expect(mocks.releaseSnapshot).toHaveBeenCalledWith("snapshot-memory");
   });
 
-  test("routes a registered file snapshot through the legacy sharp crop", async () => {
+  test("allows a pure full-window commit with no screen snapshot", async () => {
+    mocks.pickRegion.mockResolvedValue({
+      ok: true,
+      rect: { x: 100, y: 100, w: 800, h: 600 },
+      displayId: 9,
+      snappedWindowId: 4242,
+      fullWindow: true,
+      previousAppPid: null,
+      previousAppOrigin: "unknown"
+    });
+
+    const result = await bus.dispatch(
+      "capture:interactive",
+      { mode: "window" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mocks.captureWindow).toHaveBeenCalledWith(4242);
+    expect(mocks.getSnapshot).not.toHaveBeenCalled();
+    expect(mocks.cropRegisteredSnapshot).not.toHaveBeenCalled();
+    expect(mocks.releaseSnapshot).not.toHaveBeenCalled();
+  });
+
+  test("routes a registered file snapshot through the legacy sharp crop and releases once", async () => {
     mocks.getSnapshot.mockReturnValue({
       kind: "file",
       id: "snapshot-file",
@@ -238,7 +406,8 @@ describe("capture:interactive snapshot production wiring", () => {
       rect: { x: 10, y: 20, w: 300, h: 200 },
       displayId: 9,
       screenSnapshotId: "snapshot-file",
-      previousAppPid: null
+      previousAppPid: null,
+      previousAppOrigin: "unknown"
     });
 
     const result = await bus.dispatch(
@@ -254,15 +423,16 @@ describe("capture:interactive snapshot production wiring", () => {
     expect(mocks.releaseSnapshot).toHaveBeenCalledWith("snapshot-file");
   });
 
-  test("releases a full-window preview without trying to crop it", async () => {
+  test("releases a protected full-window preview without trying to crop it", async () => {
     mocks.pickRegion.mockResolvedValue({
       ok: true,
       rect: { x: 100, y: 100, w: 800, h: 600 },
       displayId: 9,
       snappedWindowId: 4242,
       fullWindow: true,
-      screenSnapshotId: "window-preview",
-      previousAppPid: null
+      screenSnapshotId: "protected-window-preview",
+      previousAppPid: null,
+      previousAppOrigin: "pwrsnap"
     });
 
     const result = await bus.dispatch(
@@ -276,7 +446,7 @@ describe("capture:interactive snapshot production wiring", () => {
     expect(mocks.getSnapshot).not.toHaveBeenCalled();
     expect(mocks.cropRegisteredSnapshot).not.toHaveBeenCalled();
     expect(mocks.releaseSnapshot).toHaveBeenCalledTimes(1);
-    expect(mocks.releaseSnapshot).toHaveBeenCalledWith("window-preview");
+    expect(mocks.releaseSnapshot).toHaveBeenCalledWith("protected-window-preview");
   });
 
   test("rejects a display-style renderer result for pure Window mode before crop", async () => {
@@ -313,7 +483,8 @@ describe("capture:interactive snapshot production wiring", () => {
       rect: { x: 10, y: 20, w: 300, h: 200 },
       displayId: 9,
       screenSnapshotId: "snapshot-memory",
-      previousAppPid: null
+      previousAppPid: null,
+      previousAppOrigin: "unknown"
     });
     mocks.cropRegisteredSnapshot.mockResolvedValue({
       ok: false,
@@ -332,11 +503,12 @@ describe("capture:interactive snapshot production wiring", () => {
     expect(mocks.persistCaptureFromTempV2).not.toHaveBeenCalled();
   });
 
-  test("leaves snapshot ownership with the selector on cancel", async () => {
+  test("does not release selector-owned state on cancel", async () => {
     mocks.pickRegion.mockResolvedValue({
       ok: false,
       reason: "cancelled",
-      previousAppPid: 5555
+      previousAppPid: null,
+      previousAppOrigin: "unknown"
     });
 
     const result = await bus.dispatch(
@@ -348,5 +520,97 @@ describe("capture:interactive snapshot production wiring", () => {
     expect(result).toMatchObject({ ok: false, error: { code: "cancelled" } });
     expect(mocks.releaseSnapshot).not.toHaveBeenCalled();
     expect(mocks.hideSelector).toHaveBeenCalledTimes(1);
+    expect(mocks.findMainLibraryWindow).not.toHaveBeenCalled();
+  });
+
+  test("restores Library on cancel only when enumeration identified PwrSnap as origin", async () => {
+    const library = {
+      isDestroyed: () => false,
+      isMinimized: () => false,
+      isVisible: () => true,
+      show: vi.fn(),
+      focus: vi.fn()
+    };
+    mocks.findMainLibraryWindow.mockReturnValue(library);
+    mocks.pickRegion.mockResolvedValue({
+      ok: false,
+      reason: "cancelled",
+      previousAppPid: null,
+      previousAppOrigin: "pwrsnap"
+    });
+
+    const result = await bus.dispatch(
+      "capture:interactive",
+      { mode: "window" },
+      { principal: "ipc" }
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "cancelled" } });
+    expect(library.focus).toHaveBeenCalledTimes(1);
+  });
+
+  test("suppresses a concurrent command dispatch before starting a second picker", async () => {
+    let resolvePick!: (value: {
+      ok: true;
+      rect: { x: number; y: number; w: number; h: number };
+      displayId: number;
+      screenSnapshotId: string;
+      previousAppPid: null;
+      previousAppOrigin: "unknown";
+    }) => void;
+    mocks.pickRegion.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolvePick = resolve;
+      })
+    );
+
+    const first = bus.dispatch(
+      "capture:interactive",
+      { mode: "region" },
+      { principal: "ipc" }
+    );
+    await vi.waitFor(() => expect(mocks.pickRegion).toHaveBeenCalledTimes(1));
+
+    const duplicate = await bus.dispatch(
+      "capture:interactive",
+      { mode: "region" },
+      { principal: "ipc" }
+    );
+    expect(duplicate).toMatchObject({
+      ok: false,
+      error: { code: "capture_in_progress" }
+    });
+    expect(mocks.pickRegion).toHaveBeenCalledTimes(1);
+    expect(mocks.hideSelector).not.toHaveBeenCalled();
+
+    resolvePick({
+      ok: true,
+      rect: { x: 10, y: 20, w: 300, h: 200 },
+      displayId: 9,
+      screenSnapshotId: "snapshot-memory",
+      previousAppPid: null,
+      previousAppOrigin: "unknown"
+    });
+    await expect(first).resolves.toMatchObject({ ok: true });
+    expect(mocks.releaseSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  test("an active video picker makes image capture busy without hiding or replacing it", async () => {
+    const video = acquireInteractiveCaptureSession("video");
+    if (video.status !== "accepted") throw new Error("expected video session");
+
+    const image = await bus.dispatch(
+      "capture:interactive",
+      { mode: "window" },
+      { principal: "ipc" }
+    );
+
+    expect(image).toMatchObject({
+      ok: false,
+      error: { code: "capture_in_progress" }
+    });
+    expect(mocks.pickRegion).not.toHaveBeenCalled();
+    expect(mocks.hideSelector).not.toHaveBeenCalled();
+    expect(releaseInteractiveCaptureSession(video.token)).toBe(true);
   });
 });

@@ -46,15 +46,21 @@ declare global {
       on(channel: string, handler: (payload: unknown) => void): () => void;
       submitRegion(payload: {
         ok: boolean;
+        invocationId: number;
         rect?: { x: number; y: number; w: number; h: number };
         displayId?: number;
         snappedWindowId?: number;
         fullWindow?: boolean;
         captureCursor?: boolean;
       }): void;
-      notifySelectorSnapshotPainted(screenUrl: string): void;
+      notifySelectorSnapshotPainted(payload: {
+        screenUrl: string;
+        invocationId: number;
+        status: "painted" | "error";
+      }): void;
       onWindowListSnapshot(
         handler: (payload: {
+          invocationId: number;
           status?: "ready" | "error";
           windows: WindowSnapEntry[];
           displayBounds: { width: number; height: number };
@@ -64,6 +70,7 @@ declare global {
       onSelectorKey(handler: (payload: { key: string }) => void): () => void;
       onSelectorMode(
         handler: (payload: {
+          invocationId: number;
           mode: "auto" | "region" | "window";
           screenUrl?: string;
           intent?: "snap" | "video";
@@ -93,6 +100,10 @@ declare global {
         devicePixelRatio: number;
         screenWidth: number;
         screenHeight: number;
+      }): void;
+      reportSelectorPerformance(payload: {
+        invocationId: number;
+        mark: "shell-painted" | "window-targets-painted";
       }): void;
       perfMark(payload: PerfMarkPayload): void;
     };

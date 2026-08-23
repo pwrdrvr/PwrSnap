@@ -95,6 +95,7 @@ const REGION_SELECTOR_MODE_CHANNEL = "region-selector:mode";
 // showing the (still-hidden) selector window, so it never appears as an
 // empty transparent overlay flashing the live screen behind it.
 const REGION_SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
+const REGION_SELECTOR_PERFORMANCE_CHANNEL = "region-selector:performance";
 
 // Tray content auto-sizes to fit. The renderer measures itself with a
 // ResizeObserver and asks main to setContentSize so the popover never
@@ -175,6 +176,7 @@ const pwrsnapApi = {
    */
   submitRegion(payload: {
     ok: boolean;
+    invocationId: number;
     rect?: { x: number; y: number; w: number; h: number };
     displayId?: number;
     /** Always set when the user committed straight from a window
@@ -198,8 +200,12 @@ const pwrsnapApi = {
    * painted. Carries `screenUrl` so a stale ack from a superseded
    * capture can't satisfy the current wait.
    */
-  notifySelectorSnapshotPainted(screenUrl: string): void {
-    ipcRenderer.send(REGION_SELECTOR_PAINTED_CHANNEL, { screenUrl });
+  notifySelectorSnapshotPainted(payload: {
+    screenUrl: string;
+    invocationId: number;
+    status: "painted" | "error";
+  }): void {
+    ipcRenderer.send(REGION_SELECTOR_PAINTED_CHANNEL, payload);
   },
   /**
    * Subscribe to the snap-to-window window-list snapshot main pushes
@@ -210,6 +216,7 @@ const pwrsnapApi = {
    */
   onWindowListSnapshot(
     handler: (payload: {
+      invocationId: number;
       status?: "ready" | "error";
       windows: WindowSnapEntry[];
       displayBounds: { width: number; height: number };
@@ -219,6 +226,7 @@ const pwrsnapApi = {
     const wrapped = (_event: unknown, payload: unknown) =>
       handler(
         payload as {
+          invocationId: number;
           status?: "ready" | "error";
           windows: WindowSnapEntry[];
           displayBounds: { width: number; height: number };
@@ -331,6 +339,7 @@ const pwrsnapApi = {
    */
   onSelectorMode(
     handler: (payload: {
+      invocationId: number;
       mode: "auto" | "region" | "window";
       screenUrl?: string;
       /** Visual intent: `"video"` triggers the "Recording video"
@@ -345,6 +354,7 @@ const pwrsnapApi = {
     const wrapped = (_event: unknown, payload: unknown) =>
       handler(
         payload as {
+          invocationId: number;
           mode: "auto" | "region" | "window";
           screenUrl?: string;
           intent?: "snap" | "video";
@@ -371,6 +381,13 @@ const pwrsnapApi = {
     screenHeight: number;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_DIAGNOSTICS_CHANNEL, payload);
+  },
+  /** Renderer paint marks used to order picker shell and target readiness. */
+  reportSelectorPerformance(payload: {
+    invocationId: number;
+    mark: "shell-painted" | "window-targets-painted";
+  }): void {
+    ipcRenderer.send(REGION_SELECTOR_PERFORMANCE_CHANNEL, payload);
   },
   /**
    * Renderer → main perf signal. Phase 5 of the perf-seeder plan —

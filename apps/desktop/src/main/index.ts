@@ -24,6 +24,15 @@ import {
   pickRegion,
   preWarmRegionSelector
 } from "./capture/region-selector";
+import {
+  CAPTURE_TRIGGER_DEBOUNCE_MS,
+  createCaptureTriggerGate
+} from "./capture/capture-trigger-gate";
+import {
+  acquireInteractiveCaptureSession,
+  releaseInteractiveCaptureSession
+} from "./capture/interactive-capture-session";
+import { withInteractiveSelectionCleanup } from "./capture/interactive-selection-cleanup";
 import { releaseSnapshot } from "./capture/screen-snapshot";
 import { activateApp, selfPidSet } from "./capture/window-list";
 import { appWindowsOverlappingRect } from "./capture/rect-overlap";
@@ -112,7 +121,10 @@ import { registerCaptureStorageHandlers } from "./handlers/capture-storage-handl
 import { registerSizzleHandlers } from "./handlers/sizzle-handlers";
 import { registerCartHandlers } from "./handlers/cart-handlers";
 import { getSizzleStore } from "./sizzle/sizzle-store";
-import { DesktopSettingsService } from "./settings/desktop-settings-service";
+import {
+  defaultSettings,
+  DesktopSettingsService
+} from "./settings/desktop-settings-service";
 import {
   checkForAppUpdatesNow,
   initAppUpdater,
@@ -679,27 +691,87 @@ async function runPasteFromClipboard(): Promise<void> {
  *  so we can unregister cleanly when a setting changes (the
  *  globalShortcut API doesn't track "who registered what"). */
 const registeredHotkeys = new Map<HotkeyKind, string>();
+const interactiveCaptureTriggerGate = createCaptureTriggerGate();
+// Hotkey registration already reads settings before it installs the live
+// accelerators. Keep the recording subset from that read so Fast Video does
+// not synchronously re-parse settings before it can show the shared picker.
+// Defaults cover the narrow startup window before the first read completes.
+let cachedRecordingSettings: Settings["recording"] = defaultSettings().recording;
+
+function triggerInteractiveCaptureFromHotkey(
+  mode: "auto" | "region" | "window" | "timed",
+  kind: HotkeyKind
+): void {
+  // Synchronous by design: claim the one interactive-capture slot before
+  // command dispatch (or any other awaited work) can yield to another
+  // globalShortcut callback.
+  const decision = interactiveCaptureTriggerGate.acquire();
+  const log = getMainLogger("pwrsnap:shortcut");
+  log.info("interactive capture trigger gate decision", {
+    kind,
+    mode,
+    decision: decision.status,
+    reason: decision.reason,
+    ageMs: decision.ageMs,
+    debounceMs: CAPTURE_TRIGGER_DEBOUNCE_MS
+  });
+  if (decision.status === "suppressed") return;
+
+  void runInteractiveCapture(mode, {
+    kind,
+    shortcutFiredAt: decision.acceptedAtMs
+  })
+    .finally(() => {
+      interactiveCaptureTriggerGate.release(decision.token);
+    })
+    .catch((cause: unknown) => {
+      log.error("interactive capture hotkey failed unexpectedly", {
+        kind,
+        mode,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
+}
+
+function triggerInteractiveRecordFromHotkey(kind: HotkeyKind): void {
+  const decision = interactiveCaptureTriggerGate.acquire();
+  const log = getMainLogger("pwrsnap:shortcut");
+  log.info("interactive capture trigger gate decision", {
+    kind,
+    mode: "video",
+    decision: decision.status,
+    reason: decision.reason,
+    ageMs: decision.ageMs,
+    debounceMs: CAPTURE_TRIGGER_DEBOUNCE_MS
+  });
+  if (decision.status === "suppressed") return;
+
+  void runInteractiveRecord()
+    .finally(() => {
+      interactiveCaptureTriggerGate.release(decision.token);
+    })
+    .catch((cause: unknown) => {
+      log.error("interactive video capture hotkey failed unexpectedly", {
+        kind,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
+}
 
 function handlerFor(kind: HotkeyKind): () => void {
   const log = getMainLogger("pwrsnap:shortcut");
   switch (kind) {
     case "quickCapture":
       return () => {
-        const shortcutFiredAt = Date.now();
-        log.info("global hotkey fired", { kind, mode: "auto" });
-        void runInteractiveCapture("auto", { kind, shortcutFiredAt });
+        triggerInteractiveCaptureFromHotkey("auto", kind);
       };
     case "region":
       return () => {
-        const shortcutFiredAt = Date.now();
-        log.info("global hotkey fired", { kind, mode: "region" });
-        void runInteractiveCapture("region", { kind, shortcutFiredAt });
+        triggerInteractiveCaptureFromHotkey("region", kind);
       };
     case "window":
       return () => {
-        const shortcutFiredAt = Date.now();
-        log.info("global hotkey fired", { kind, mode: "window" });
-        void runInteractiveCapture("window", { kind, shortcutFiredAt });
+        triggerInteractiveCaptureFromHotkey("window", kind);
       };
     case "fullScreen":
       // Capture the display under the cursor end-to-end (no selector).
@@ -720,9 +792,7 @@ function handlerFor(kind: HotkeyKind): () => void {
       // 5-second countdown, then the auto-mode selector. Routed through
       // `capture:interactive` (mode `"timed"`), same as the tray tile.
       return () => {
-        const shortcutFiredAt = Date.now();
-        log.info("global hotkey fired", { kind, mode: "timed" });
-        void runInteractiveCapture("timed", { kind, shortcutFiredAt });
+        triggerInteractiveCaptureFromHotkey("timed", kind);
       };
     case "videoCapture":
       // Fast Video Capture (issue #64). Opens the selector in auto
@@ -732,8 +802,7 @@ function handlerFor(kind: HotkeyKind): () => void {
       // the explicit "record video" entry point and the existing
       // ⌘⇧C remains the explicit "take a snap" entry point.
       return () => {
-        log.info("global hotkey fired", { kind, mode: "video" });
-        void runInteractiveRecord();
+        triggerInteractiveRecordFromHotkey(kind);
       };
     case "reshowFloatOver":
       // Re-pop the most recent capture's float-over toast (issue: the
@@ -792,6 +861,7 @@ async function wireHotkeyRegistrations(): Promise<void> {
   let currentTrain: Settings["updates"]["train"] = "stable";
   try {
     const settings = await service.read();
+    cachedRecordingSettings = settings.recording;
     setTrayHotkeys(settings.hotkeys);
     applyHotkeys(settings.hotkeys);
     // Pick up the persisted developer-mode flag and re-install the menu
@@ -812,6 +882,7 @@ async function wireHotkeyRegistrations(): Promise<void> {
     train: currentTrain
   }));
   onSettingsChanged((settings) => {
+    cachedRecordingSettings = settings.recording;
     setTrayHotkeys(settings.hotkeys);
     applyHotkeys(settings.hotkeys);
     if (settings.general.developerMode !== lastKnownDeveloperMode) {
@@ -1060,6 +1131,15 @@ async function runInteractiveRecord(
   protectWindowIds: readonly number[] = []
 ): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
+  const session = acquireInteractiveCaptureSession("video");
+  if (session.status === "busy") {
+    log.info("video picker invocation suppressed", {
+      reason: "interactive_capture_in_flight",
+      activeOwner: session.activeOwner
+    });
+    return;
+  }
+  try {
   // Gate BEFORE pickRegion, exactly like `capture:interactive`. The
   // selector freezes a screen snapshot on show(), which is all-black on
   // a Mac without Screen Recording permission — so on a first-ever (or
@@ -1071,8 +1151,14 @@ async function runInteractiveRecord(
   // down and no focus to restore.
   const blocked = await guardScreenCapture();
   if (blocked !== null) return;
-  const storageBlocked = await ensureCapturesDirReady();
-  if (storageBlocked !== null) return;
+  // macOS must resolve its Documents TCC prompt before the screen-saver
+  // selector covers it. Windows has no equivalent permission surface, so
+  // keep its cold mkdir/probe off the feedback path and perform it after the
+  // user has made a selection.
+  if (process.platform === "darwin") {
+    const storageBlocked = await ensureCapturesDirReady();
+    if (storageBlocked !== null) return;
+  }
 
   // Pick a rect / window via the existing region selector. We can't
   // route through capture:interactive (which persists an image on
@@ -1090,9 +1176,7 @@ async function runInteractiveRecord(
   // Read settings before the picker so the selector's cursor toggle
   // seeds from the persisted default. Reused below for audio
   // capabilities + the cursor value passed to `recording:start`.
-  const settings = await new DesktopSettingsService({
-    filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
-  }).read();
+  const settings = cachedRecordingSettings;
   const selection = await pickRegion({
     mode: "auto",
     keepPwrSnapChrome: false,
@@ -1105,9 +1189,15 @@ async function runInteractiveRecord(
     // Library as a valid target.
     protectWindowIds,
     // Seed the selector's cursor toggle from the persisted default.
-    cursorDefault: settings.recording.videoCaptureCursor
+    cursorDefault: settings.videoCaptureCursor
   });
   if (!selection.ok) {
+    if (selection.reason === "busy") {
+      getMainLogger("pwrsnap:recording").info("video picker invocation suppressed", {
+        reason: "interactive_capture_in_flight"
+      });
+      return;
+    }
     setFloatOverState({ kind: "cancel" });
     await new Promise((resolve) => setTimeout(resolve, 50));
     hideSelector();
@@ -1117,10 +1207,12 @@ async function runInteractiveRecord(
     // primary trigger for AppKit demoting PwrSnap to Accessory (Dock
     // flash + orphaned Library). Mirrors the image cancel path in
     // capture-handlers.ts. Only intervene when PwrSnap's OWN window was
-    // frontmost (previousAppPid null): there the selector-hide
+    // frontmost (previousAppOrigin === "pwrsnap"): there the selector-hide
     // key-window cascade would let the floating focus-sink steal key
     // from the Library, so restore it explicitly.
-    if (selection.previousAppPid === null || selection.previousAppPid === undefined) {
+    // An unknown origin means enumeration has not resolved (or failed), so it
+    // must not raise PwrSnap over whichever app is actually frontmost.
+    if (selection.previousAppOrigin === "pwrsnap") {
       const library = findMainLibraryWindow();
       if (library !== null && !library.isDestroyed()) {
         if (library.isMinimized()) library.restore();
@@ -1137,6 +1229,19 @@ async function runInteractiveRecord(
     return;
   }
   const { screenSnapshotId, previousAppPid } = selection;
+  await withInteractiveSelectionCleanup({
+    snapshotId: screenSnapshotId,
+    hideSelector,
+    releaseSnapshot,
+    run: async (selectionCleanup) => {
+  if (process.platform !== "darwin") {
+    const storageBlocked = await ensureCapturesDirReady();
+    if (storageBlocked !== null) {
+      setFloatOverState({ kind: "cancel" });
+      scheduleDockReclaim();
+      return;
+    }
+  }
   // CRITICAL: the selector is at screen-saver level and would
   // otherwise be in the captured pixels for the entire countdown +
   // first frames of the recording. Drop it BEFORE `recording:start`
@@ -1145,8 +1250,8 @@ async function runInteractiveRecord(
   // orange selector frame. The countdown HUD lives in its own
   // floating panel at top-center; the in-area overlay (when added)
   // is also outside the selector's lifecycle.
-  hideSelector();
-  void releaseSnapshot(screenSnapshotId);
+  selectionCleanup.hideSelector();
+  await selectionCleanup.releaseSnapshot();
 
   // Focus / z-order policy. Three cases:
   //
@@ -1226,8 +1331,8 @@ async function runInteractiveRecord(
   // recording dialog (a later enhancement) can override these.
   // `settings` is read once above (before the picker) and reused here.
   const capabilities = {
-    systemAudio: settings.recording.includeSystemAudio,
-    microphone: settings.recording.includeMicrophone
+    systemAudio: settings.includeSystemAudio,
+    microphone: settings.includeMicrophone
   };
   // Source-app attribution mirrors the image-capture path
   // (capture-handlers.ts) via the shared `resolveSelectionSourceApp`
@@ -1272,7 +1377,7 @@ async function runInteractiveRecord(
       capabilities,
       // The selector's `C` toggle wins; fall back to the persisted
       // default if the renderer didn't send a value.
-      captureCursor: selection.captureCursor ?? settings.recording.videoCaptureCursor,
+      captureCursor: selection.captureCursor ?? settings.videoCaptureCursor,
       countdownSeconds: 3
     },
     { principal: "ipc" }
@@ -1289,6 +1394,11 @@ async function runInteractiveRecord(
     } catch {
       /* notification support is best-effort */
     }
+  }
+    }
+  });
+  } finally {
+    releaseInteractiveCaptureSession(session.token);
   }
 }
 

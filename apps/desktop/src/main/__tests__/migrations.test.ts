@@ -51,6 +51,88 @@ describe("database migrations", () => {
     }
   });
 
+  test("0029 preserves existing capture and search data while adding a nullable window title", () => {
+    const db = new Database(":memory:");
+    try {
+      db.pragma("foreign_keys = ON");
+      for (const file of migrationFiles().filter((name) => Number(name.slice(0, 4)) <= 28)) {
+        const sql = readFileSync(join(migrationsDir, file), "utf8");
+        const needsFkOff = sql.startsWith("-- @no-foreign-keys");
+        if (needsFkOff) db.pragma("foreign_keys = OFF");
+        try {
+          db.exec(sql);
+        } finally {
+          if (needsFkOff) db.pragma("foreign_keys = ON");
+        }
+      }
+
+      db.prepare(
+        `INSERT INTO captures (
+           id, kind, captured_at, source_app_bundle_id, source_app_name,
+           legacy_src_path, width_px, height_px, device_pixel_ratio,
+           byte_size, sha256, edits_version, deleted_at, has_alpha
+         ) VALUES (
+           'upgrade-window-title', 'image', '2026-08-23T12:00:00.000Z',
+           'com.example.Editor', 'Editor', '/tmp/existing.png',
+           800, 600, 2, 4096, 'existing-sha', 0, NULL, 1
+         )`
+      ).run();
+      db.prepare(
+        `INSERT INTO capture_enrichments (
+           capture_id, latest_ai_run_id, ocr_text,
+           suggested_title, accepted_title, title_accepted_at,
+           suggested_description, accepted_description, description_accepted_at
+         ) VALUES (
+           'upgrade-window-title', NULL, 'release checklist',
+           'Existing title', 'Existing title', '2026-08-23T12:01:00.000Z',
+           'Existing description', 'Existing description', '2026-08-23T12:01:00.000Z'
+         )`
+      ).run();
+      db.prepare(
+        `INSERT INTO tags (id, label, normalized_label, kind)
+         VALUES ('upgrade-tag', 'Release blocker', 'release blocker', 'content')`
+      ).run();
+      db.prepare(
+        `INSERT INTO capture_tags (capture_id, tag_id, source, ai_run_id)
+         VALUES ('upgrade-window-title', 'upgrade-tag', 'user', NULL)`
+      ).run();
+
+      db.exec(
+        readFileSync(join(migrationsDir, "0029_capture_source_window_title.sql"), "utf8")
+      );
+
+      expect(
+        db.prepare(
+          `SELECT id, source_app_bundle_id, source_app_name, source_window_title,
+                  sha256, has_alpha
+             FROM captures WHERE id = 'upgrade-window-title'`
+        ).get()
+      ).toEqual({
+        id: "upgrade-window-title",
+        source_app_bundle_id: "com.example.Editor",
+        source_app_name: "Editor",
+        source_window_title: null,
+        sha256: "existing-sha",
+        has_alpha: 1
+      });
+      expect(
+        db.prepare(
+          `SELECT title, description, ocr_text, source_app_name,
+                  source_window_title, accepted_tags
+             FROM capture_search_fts WHERE capture_id = 'upgrade-window-title'`
+        ).get()
+      ).toEqual({
+        title: "Existing title",
+        description: "Existing description",
+        ocr_text: "release checklist",
+        source_app_name: "Editor",
+        source_window_title: null,
+        accepted_tags: "Release blocker"
+      });
+    } finally {
+      db.close();
+    }
+  });
 });
 
 // The `migrations: "verify"` open path (two-process split §D6): the

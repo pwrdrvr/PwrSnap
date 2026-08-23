@@ -180,6 +180,7 @@ function imageRecord(id: string, capturedAt: string): CaptureRecord {
     sha256: `sha_${id}`,
     source_app_bundle_id: "com.example.app",
     source_app_name: "Example",
+    source_window_title: null,
     edits_version: 0,
     has_alpha: false,
     deleted_at: null

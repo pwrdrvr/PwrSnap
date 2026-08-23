@@ -152,6 +152,17 @@ export function InfoPanel({ captureId }: InfoPanelProps): ReactElement {
         </span>
       </InfoRow>
 
+      {record.source_window_title !== null ? (
+        <InfoRow label="Window title">
+          <span
+            className="pse-info-window-title"
+            data-testid="info-window-title"
+          >
+            {record.source_window_title}
+          </span>
+        </InfoRow>
+      ) : null}
+
       <InfoRow label="Captured">
         <span data-testid="info-captured-at">
           {formatTimestamp(record.captured_at)}

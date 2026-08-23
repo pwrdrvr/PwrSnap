@@ -121,6 +121,7 @@ describe("parseHelperOutput", () => {
   // degrade gracefully, not crash. These tests lock that down.
 
   test("parses the current envelope shape", () => {
+    const unicodeTitle = "設計レビュー 👩🏽‍💻 — Café";
     const stdout = JSON.stringify({
       windows: [
         {
@@ -128,7 +129,7 @@ describe("parseHelperOutput", () => {
           pid: 1987,
           bundleId: "com.github.Electron",
           appName: "Electron",
-          title: "PwrSnap",
+          title: unicodeTitle,
           bounds: { x: 0, y: 29, width: 1440, height: 938 },
           layer: 0,
           alpha: 1,
@@ -141,6 +142,9 @@ describe("parseHelperOutput", () => {
     const result = parseHelperOutput(stdout);
     expect(result.windows).toHaveLength(1);
     expect(result.windows[0]!.pid).toBe(1987);
+    // Swift's JSONEncoder emits UTF-8. Preserve the exact Unicode title
+    // rather than narrowing it to ASCII or losing emoji/diacritics.
+    expect(result.windows[0]!.title).toBe(unicodeTitle);
     expect(result.frontmostPid).toBe(1987);
     expect(result.frontmostBundleId).toBe("com.github.Electron");
   });
@@ -255,7 +259,7 @@ describe("parseHelperOutput", () => {
       '{"windows":[' +
       '{"windowId":133048,"pid":7421,' +
       '"bundleId":"C:\\\\Program Files\\\\Slack\\\\slack.exe",' +
-      '"appName":"slack","title":"general - PwrDrvr",' +
+      '"appName":"slack","title":"项目状态 — Café 🚀",' +
       '"bounds":{"x":100,"y":100,"width":800,"height":600},' +
       '"layer":0,"alpha":1,"isFrontmostInApp":true},' +
       '{"windowId":65932,"pid":9001,' +
@@ -272,7 +276,9 @@ describe("parseHelperOutput", () => {
     expect(slack!.bundleId).toBe("C:\\Program Files\\Slack\\slack.exe");
     expect(slack!.appName).toBe("slack");
     expect(slack!.windowId).toBe(133048);
-    expect(slack!.title).toBe("general - PwrDrvr");
+    // The C++ helper converts GetWindowTextW UTF-16 output to UTF-8
+    // before JSON encoding; the shared parser must retain it verbatim.
+    expect(slack!.title).toBe("项目状态 — Café 🚀");
     expect(slack!.bounds).toEqual({ x: 100, y: 100, width: 800, height: 600 });
     expect(slack!.isFrontmostInApp).toBe(true);
     // null title + fractional layered alpha both parse cleanly.
@@ -299,4 +305,3 @@ describe("parseHelperOutput", () => {
     expect(result.frontmostBundleId).toBeNull();
   });
 });
-

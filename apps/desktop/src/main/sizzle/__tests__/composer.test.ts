@@ -181,7 +181,7 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
       const width = 640;
       const height = 360;
 
-      await compose({ scenes, outputPath, width, height, fps });
+      await compose({ scenes, outputPath, width, height, fps, platform: "darwin" });
 
       const probe = probeOutput(outputPath);
       // Expected: 4 × 1.5s = 6s at 30fps = 180 frames. Allow a small
@@ -217,7 +217,14 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
       );
     }
     const outputPath = join(tmpDir, "colors.mp4");
-    await compose({ scenes, outputPath, width: 320, height: 180, fps: 30 });
+    await compose({
+      scenes,
+      outputPath,
+      width: 320,
+      height: 180,
+      fps: 30,
+      platform: "darwin"
+    });
 
     // Sample each scene's middle: scene i is at t = i + 0.5 (1s per
     // scene). signalstats prints YUVAVG; for color=red we expect a
@@ -309,6 +316,7 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
         width: 320,
         height: 180,
         fps: 30,
+        platform: "darwin",
         signal: controller.signal
       });
     } catch (cause) {
@@ -331,7 +339,14 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
       })
     ];
     const outputPath = join(tmpDir, "cleanup.mp4");
-    await compose({ scenes, outputPath, width: 320, height: 180, fps: 30 });
+    await compose({
+      scenes,
+      outputPath,
+      width: 320,
+      height: 180,
+      fps: 30,
+      platform: "darwin"
+    });
     const { existsSync } = await import("node:fs");
     expect(existsSync(`${outputPath}.audio-list.txt`)).toBe(false);
   }, 30_000);
@@ -343,7 +358,7 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
 // regression guard) can't drift on Linux CI even though the
 // invoking tests above only run on macOS.
 describe("buildCompositionArgs (cross-platform args contract)", () => {
-  it("video codec is h264_videotoolbox (no GPL libx264 / libx265 / nonfree libfdk_aac)", () => {
+  it("uses VideoToolbox with software fallback on macOS", () => {
     // GPL compliance + cost: libx264 must never be invoked from this
     // path. The bundled ffmpeg is built without GPL/nonfree flags,
     // so this invocation contract must stay inside built-in codecs.
@@ -362,7 +377,8 @@ describe("buildCompositionArgs (cross-platform args contract)", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     const codecIdx = args.indexOf("-c:v");
@@ -389,6 +405,75 @@ describe("buildCompositionArgs (cross-platform args contract)", () => {
     expect(args).not.toContain("libfdk_aac");
   });
 
+  it("uses Media Foundation without VideoToolbox-only options on Windows", () => {
+    const args = buildCompositionArgs({
+      scenes: [
+        {
+          kind: "image",
+          imagePath: "C:\\captures\\a.png",
+          audioPath: "C:\\captures\\a.mp3",
+          durationSec: 1,
+          transition: "cut"
+        }
+      ],
+      outputPath: "C:\\renders\\out.mp4",
+      width: 1280,
+      height: 720,
+      fps: 30,
+      platform: "win32"
+    });
+
+    const codecIdx = args.indexOf("-c:v");
+    expect(args[codecIdx + 1]).toBe("h264_mf");
+    expect(args).not.toContain("h264_videotoolbox");
+    expect(args).not.toContain("-allow_sw");
+    // The bundled h264_mf path exercises bitrate + yuv420p today. Retain the
+    // generic two-second maximum GOP contract, but keep the not-yet-exercised
+    // minimum-keyframe option off the Windows path.
+    expect(args[args.indexOf("-b:v") + 1]).toMatch(/^\d+$/);
+    expect(args[args.indexOf("-g") + 1]).toBe("60");
+    expect(args).not.toContain("-keyint_min");
+    expect(args[args.indexOf("-pix_fmt") + 1]).toBe("yuv420p");
+    // Container/audio compatibility stays the same as macOS output.
+    expect(args[args.indexOf("-c:a") + 1]).toBe("aac");
+    expect(args[args.indexOf("-b:a") + 1]).toBe("192k");
+    expect(args).toContain("-shortest");
+    expect(args[args.indexOf("-movflags") + 1]).toBe("+faststart");
+    expect(args.at(-1)).toBe("C:\\renders\\out.mp4");
+    expect(args).not.toContain("libx264");
+    expect(args).not.toContain("libx265");
+    expect(args).not.toContain("libfdk_aac");
+  });
+
+  it("rejects Linux explicitly because no vetted H.264 artifact ships", () => {
+    let caught: unknown = null;
+    try {
+      buildCompositionArgs({
+        scenes: [
+          {
+            kind: "image",
+            imagePath: "/x/a.png",
+            audioPath: "/x/a.mp3",
+            durationSec: 1,
+            transition: "cut"
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30,
+        platform: "linux"
+      });
+    } catch (cause) {
+      caught = cause;
+    }
+    expect(caught).toBeInstanceOf(ComposeError);
+    expect(caught).toMatchObject({
+      code: "unsupported_platform",
+      message: expect.stringContaining("linux")
+    });
+  });
+
   it("image inputs are single-frame (no -loop, no -t, no -framerate)", () => {
     const args = buildCompositionArgs(
       {
@@ -411,7 +496,8 @@ describe("buildCompositionArgs (cross-platform args contract)", () => {
         outputPath: "/x/out.mp4",
         width: 1920,
         height: 1080,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     // Image inputs are bare `-i image` — anything else (especially
@@ -469,7 +555,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     const graph = filterGraph(args);
@@ -490,7 +577,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     const graph = filterGraph(args);
@@ -507,7 +595,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     const graph = filterGraph(args);
@@ -537,7 +626,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     const graph = filterGraph(args);
@@ -559,7 +649,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
           outputPath: "/x/out.mp4",
           width: 1280,
           height: 720,
-          fps: 30
+          fps: 30,
+          platform: "darwin"
         })
       );
     const push = graphFor("push-left");
@@ -582,7 +673,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     const graph = filterGraph(args);
@@ -604,7 +696,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     const graph = filterGraph(args);
@@ -623,7 +716,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     const graph = filterGraph(args);
@@ -643,7 +737,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     const graph = filterGraph(args);
@@ -685,7 +780,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     // -ss must come BEFORE -i for fast input-side seek (ffmpeg has
@@ -722,7 +818,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     const graph = filterGraph(args);
@@ -748,7 +845,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     const graph = filterGraph(args);
@@ -775,7 +873,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     expect(filterGraph(args)).not.toContain("tpad=");
@@ -797,7 +896,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     expect(filterGraph(args)).toContain("atrim=1.250:2.000");
@@ -820,7 +920,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     expect(filterGraph(args)).toContain("atrim=1.000:2.000");
@@ -844,7 +945,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     const graph = filterGraph(args);
@@ -870,7 +972,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     const graph = filterGraph(args);
@@ -896,7 +999,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
-        fps: 30
+        fps: 30,
+        platform: "darwin"
       }
     );
     const graph = filterGraph(args);

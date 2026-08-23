@@ -101,6 +101,7 @@ vi.mock("../../sizzle/speech-timing", () => ({
 
 vi.mock("../../sizzle/composer", () => ({
   compose: vi.fn(),
+  assertSizzleRenderPlatform: vi.fn(),
   ComposeError: class ComposeError extends Error {
     constructor(public readonly code: string, message: string, public readonly details?: string) {
       super(message);

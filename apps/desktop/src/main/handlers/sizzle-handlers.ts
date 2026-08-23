@@ -45,6 +45,7 @@ import {
   SequencePlannerError
 } from "../sizzle/sequence-planner";
 import {
+  assertSizzleRenderPlatform,
   compose,
   ComposeError,
   probeDurationSec,
@@ -366,8 +367,11 @@ async function prepareSceneInput(args: {
   };
 }
 
-export function registerSizzleHandlers(): void {
+export function registerSizzleHandlers(
+  runtime: { platform?: NodeJS.Platform } = {}
+): void {
   const store = getSizzleStore();
+  const renderPlatform = runtime.platform ?? process.platform;
 
   bus.register("sizzle:open", async (req, ctx) => {
     const v = validateSizzleOpenRequest(req);
@@ -877,6 +881,22 @@ export function registerSizzleHandlers(): void {
         message: "render mode must be preview or full"
       });
     }
+    try {
+      // Fail before capture loading, TTS, or audio extraction. Linux has no
+      // packaged/vetted H.264 artifact, so paying for scene preparation first
+      // would only delay the same deterministic refusal from compose().
+      assertSizzleRenderPlatform(renderPlatform);
+    } catch (cause) {
+      const e = toError(cause, "unsupported_platform");
+      broadcastRenderProgress({
+        projectId: project.id,
+        phase: "failed",
+        message: e.message,
+        ratio: 0,
+        error: { code: e.code, message: e.message }
+      });
+      return err(e);
+    }
     const renderMode = req.mode ?? "full";
     const dims =
       renderMode === "preview"
@@ -1144,6 +1164,11 @@ export function registerSizzleHandlers(): void {
         width: dims.w,
         height: dims.h,
         fps: 30,
+        // Pass the owning process's runtime platform explicitly so the
+        // composer selects the matching packaged PwrSnapFFmpeg encoder. On
+        // Windows this is the combined process; split macOS uses the Library
+        // child, which still reports the same host platform.
+        platform: renderPlatform,
         signal: ctx.signal,
         onProgress: (ratio) => {
           broadcastRenderProgress({

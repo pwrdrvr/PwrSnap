@@ -44,7 +44,20 @@ const mocks = vi.hoisted(() => ({
   send: vi.fn(),
   getValue: vi.fn(),
   dispatch: vi.fn(),
-  synthesize: vi.fn()
+  synthesize: vi.fn(),
+  compose: vi.fn(),
+  assertSizzleRenderPlatform: vi.fn(),
+  synthesizeSilence: vi.fn(),
+  resolveCacheFile: vi.fn(),
+  ComposeError: class ComposeError extends Error {
+    constructor(
+      public readonly code: string,
+      message: string,
+      public readonly details?: string
+    ) {
+      super(message);
+    }
+  }
 }));
 
 vi.mock("electron", () => ({
@@ -97,16 +110,9 @@ vi.mock("../../sizzle/tts", () => ({
 }));
 
 vi.mock("../../sizzle/composer", () => ({
-  compose: vi.fn(),
-  ComposeError: class ComposeError extends Error {
-    constructor(
-      public readonly code: string,
-      message: string,
-      public readonly details?: string
-    ) {
-      super(message);
-    }
-  },
+  compose: mocks.compose,
+  assertSizzleRenderPlatform: mocks.assertSizzleRenderPlatform,
+  ComposeError: mocks.ComposeError,
   probeDurationSec: vi.fn(),
   buildCompositionArgs: vi.fn()
 }));
@@ -122,7 +128,7 @@ vi.mock("../../sizzle/audio-extract", () => ({
     }
   },
   extractVideoAudio: vi.fn(),
-  synthesizeSilence: vi.fn()
+  synthesizeSilence: mocks.synthesizeSilence
 }));
 
 vi.mock("../../window", () => ({
@@ -147,6 +153,10 @@ vi.mock("../../settings/desktop-secret-store", () => ({
 
 vi.mock("../../bundle-cache/cache-fs", () => ({
   resolveCacheFile: vi.fn()
+}));
+
+vi.mock("../../render/coordinator", () => ({
+  resolveCacheFile: mocks.resolveCacheFile
 }));
 
 vi.mock("../../log", () => ({
@@ -208,6 +218,21 @@ beforeEach(() => {
     value: { id: req.id, kind: "image", deleted_at: null }
   }));
   mocks.synthesize.mockReset();
+  mocks.compose.mockReset();
+  mocks.compose.mockResolvedValue(undefined);
+  mocks.assertSizzleRenderPlatform.mockReset();
+  mocks.assertSizzleRenderPlatform.mockImplementation((platform: NodeJS.Platform) => {
+    if (platform !== "darwin" && platform !== "win32") {
+      throw new mocks.ComposeError(
+        "unsupported_platform",
+        `Sizzle rendering is not supported on ${platform}`
+      );
+    }
+  });
+  mocks.synthesizeSilence.mockReset();
+  mocks.synthesizeSilence.mockResolvedValue("/tmp/silence.m4a");
+  mocks.resolveCacheFile.mockReset();
+  mocks.resolveCacheFile.mockResolvedValue("/tmp/capture.png");
   // Default: store.list returns whatever store.update returned, in
   // an array. Most tests just need "some projects exist" — they can
   // override per-case.
@@ -215,10 +240,11 @@ beforeEach(() => {
 });
 
 async function loadHandler(
-  command: string = "sizzle:toggleScene"
+  command: string = "sizzle:toggleScene",
+  platform: NodeJS.Platform = process.platform
 ): Promise<MockHandler> {
   const { registerSizzleHandlers } = await import("../sizzle-handlers");
-  registerSizzleHandlers();
+  registerSizzleHandlers({ platform });
   const handler = mocks.handlers.get(command);
   expect(handler).toBeDefined();
   return handler!;
@@ -508,6 +534,71 @@ describe("external Sizzle live-capture enforcement", () => {
 
     expect(result).toMatchObject({ ok: false, error: { code: "capture_missing" } });
     expect(mocks.synthesize).not.toHaveBeenCalled();
+  });
+});
+
+describe("sizzle:render platform propagation", () => {
+  test("passes the owning process platform to the composer", async () => {
+    const project = makeProject({
+      scenes: [
+        makeScene({
+          captureId: "cap-image",
+          scriptLine: "",
+          audioSource: "muted",
+          transition: "cut"
+        })
+      ]
+    });
+    mocks.store.get.mockResolvedValue(project);
+    mocks.dispatch.mockResolvedValue({
+      ok: true,
+      value: { id: "cap-image", kind: "image", deleted_at: null }
+    });
+    const handler = await loadHandler("sizzle:render", "win32");
+
+    const result = await handler(
+      { id: "proj-1", mode: "preview" },
+      commandCtx()
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    expect(mocks.compose).toHaveBeenCalledWith(
+      expect.objectContaining({
+        platform: "win32",
+        width: 640,
+        height: 360,
+        fps: 30
+      })
+    );
+  });
+
+  test("rejects unsupported Linux before capture or audio preparation", async () => {
+    const project = makeProject({
+      scenes: [
+        makeScene({
+          captureId: "cap-image",
+          scriptLine: "Generate paid narration",
+          audioSource: "voiceover"
+        })
+      ]
+    });
+    mocks.store.get.mockResolvedValue(project);
+    const handler = await loadHandler("sizzle:render", "linux");
+
+    const result = await handler(
+      { id: "proj-1", mode: "preview" },
+      commandCtx()
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "unsupported_platform" }
+    });
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+    expect(mocks.synthesize).not.toHaveBeenCalled();
+    expect(mocks.synthesizeSilence).not.toHaveBeenCalled();
+    expect(mocks.resolveCacheFile).not.toHaveBeenCalled();
+    expect(mocks.compose).not.toHaveBeenCalled();
   });
 });
 

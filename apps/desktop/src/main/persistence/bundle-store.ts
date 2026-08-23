@@ -659,6 +659,8 @@ export async function readSourceForCapture(
 export type PersistCaptureFromTempArgs = {
   tempPath: string;
   sourceApp: { bundleId: string | null; appName: string | null } | null;
+  /** Exact selected-window title; omitted/null for every non-window capture. */
+  sourceWindowTitle?: string | null | undefined;
   /** Optional stable id for controlled imports and deterministic E2E fixtures. */
   captureId?: string | undefined;
   /** Optional capture timestamp for controlled imports and deterministic E2E fixtures. */
@@ -1142,6 +1144,7 @@ export async function persistCaptureFromTempV2(
     captured_at: now,
     source_app_bundle_id: args.sourceApp?.bundleId ?? null,
     source_app_name: args.sourceApp?.appName ?? null,
+    source_window_title: args.sourceWindowTitle ?? null,
     legacy_src_path: null,
     bundle_path: bundlePath,
     flat_png_path: null,

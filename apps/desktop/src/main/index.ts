@@ -25,12 +25,13 @@ import {
   preWarmRegionSelector
 } from "./capture/region-selector";
 import { releaseSnapshot } from "./capture/screen-snapshot";
-import { activateApp, selfPidSet } from "./capture/window-list";
+import { activateApp, listWindows, selfPidSet } from "./capture/window-list";
 import { appWindowsOverlappingRect } from "./capture/rect-overlap";
 import { guardScreenCapture } from "./capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "./capture/capture-storage-gate";
 import { reconcileCapturesLocationOnBoot } from "./capture/capture-location-reconciliation";
 import {
+  resolveSelectedWindowTitle,
   resolveSelectionSourceApp,
   shouldConsiderRaisingOurWindows
 } from "./capture/source-app";
@@ -1150,6 +1151,13 @@ async function runInteractiveRecord(
     return;
   }
   const { screenSnapshotId, previousAppPid } = selection;
+  const cachedSnapshot = getLastWindowListSnapshot();
+  // The cached selector list identifies the user's target, but cannot prove
+  // the window still exists. Enumerate live windows immediately after commit
+  // and later accept a title only for the same native id + pid. Run it in
+  // parallel with selector teardown/focus work to avoid adding picker latency.
+  const liveWindowsPromise =
+    selection.snappedWindowId === undefined ? null : listWindows();
   // CRITICAL: the selector is at screen-saver level and would
   // otherwise be in the captured pixels for the entire countdown +
   // first frames of the recording. Drop it BEFORE `recording:start`
@@ -1174,7 +1182,6 @@ async function runInteractiveRecord(
   //   • Snap to one of ours but the rect doesn't actually intersect
   //     any visible BrowserWindow (e.g. that window just closed) →
   //     fall through to the previous-app activation; nothing to raise.
-  const cachedSnapshot = getLastWindowListSnapshot();
   const shouldRaise = shouldConsiderRaisingOurWindows(
     selection.snappedWindowId,
     cachedSnapshot,
@@ -1248,14 +1255,22 @@ async function runInteractiveRecord(
   // null if neither resolves. This runs whether the user held ⇧ at
   // commit time or just clicked — both shapes attribute the same app
   // for the same selection. We also reuse the cached window-list
-  // snapshot rather than re-running `listWindows()`, so the lookup
-  // matches the list the user actually picked against (no drift if
-  // a window moved/closed in the ~50ms between hideSelector + here).
+  // snapshot so the lookup matches the list the user actually picked
+  // against. Window TITLE attribution is deliberately stricter below:
+  // it needs an exact live id + pid match and never uses the rect fallback.
   const sourceApp = resolveSelectionSourceApp(
     selection.rect,
     selection.snappedWindowId,
-    getLastWindowListSnapshot()
+    cachedSnapshot
   );
+  const sourceWindowTitle =
+    liveWindowsPromise === null
+      ? null
+      : resolveSelectedWindowTitle(
+          selection.snappedWindowId,
+          cachedSnapshot,
+          await liveWindowsPromise
+        );
   // A snapshot windowId in the selection means the user pointed at a
   // specific window (with or without ⇧). Persist that as a `window`
   // subject so the Library row shows the source app even when the
@@ -1269,7 +1284,8 @@ async function runInteractiveRecord(
       rect: selection.rect,
       displayId: selection.displayId,
       appName: sourceApp?.appName ?? null,
-      appBundleId: sourceApp?.bundleId ?? null
+      appBundleId: sourceApp?.bundleId ?? null,
+      windowTitle: sourceWindowTitle
     };
   } else {
     subject = {

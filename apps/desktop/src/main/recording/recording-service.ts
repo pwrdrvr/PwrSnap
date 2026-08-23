@@ -27,7 +27,11 @@ import { setFloatOverState } from "../float-over";
 import { broadcastCapturesChanged } from "../events";
 import { maybeEnqueueCaptureEnrichment } from "../handlers/codex-handlers";
 import { runWithCapturesDirFallback } from "../capture/capture-storage-gate";
-import { getCaptureById, insertCapture } from "../persistence/captures-repo";
+import {
+  getCaptureById,
+  insertCapture,
+  normalizeSourceWindowTitle
+} from "../persistence/captures-repo";
 import {
   adoptExistingFileAsSource,
   statSource
@@ -701,17 +705,31 @@ type PersistStoppedRecordingInput = {
   subject: RecordingSubject;
 };
 
+/** Keep the copy embedded in video metadata bounded just like the capture row. */
+function normalizeRecordingSubjectWindowTitle(
+  subject: RecordingSubject
+): RecordingSubject {
+  if (subject.kind !== "window") return subject;
+  return {
+    ...subject,
+    windowTitle: normalizeSourceWindowTitle(subject.windowTitle)
+  };
+}
+
 async function persistStoppedRecording(stopped: PersistStoppedRecordingInput): Promise<{ captureId: string }> {
   const stored = await runWithCapturesDirFallback((outputDir) =>
     adoptExistingFileAsSource(stopped.outputPath, outputDir)
   );
   const sizeInfo = await statSource(stored.srcPath);
-  const rect = subjectToPhysicalRect(stopped.subject);
+  const subject = normalizeRecordingSubjectWindowTitle(stopped.subject);
+  const rect = subjectToPhysicalRect(subject);
 
   const sourceAppBundleId =
-    stopped.subject.kind === "window" ? stopped.subject.appBundleId ?? null : null;
+    subject.kind === "window" ? subject.appBundleId ?? null : null;
   const sourceAppName =
-    stopped.subject.kind === "window" ? stopped.subject.appName ?? null : null;
+    subject.kind === "window" ? subject.appName ?? null : null;
+  const sourceWindowTitle =
+    subject.kind === "window" ? subject.windowTitle ?? null : null;
 
   const { record } = insertCapture({
     id: stored.id,
@@ -719,6 +737,7 @@ async function persistStoppedRecording(stopped: PersistStoppedRecordingInput): P
     captured_at: new Date().toISOString(),
     source_app_bundle_id: sourceAppBundleId,
     source_app_name: sourceAppName,
+    source_window_title: sourceWindowTitle,
     legacy_src_path: stored.srcPath,
     width_px: rect.w,
     height_px: rect.h,
@@ -732,7 +751,7 @@ async function persistStoppedRecording(stopped: PersistStoppedRecordingInput): P
     containerFormat: stopped.containerFormat,
     hasSystemAudio: stopped.hasSystemAudio,
     hasMicrophoneAudio: stopped.hasMicrophoneAudio,
-    subject: stopped.subject
+    subject
   });
   try {
     await renameVideoSourceToEffectiveFilename(record.id);

@@ -62,6 +62,12 @@ export type CaptureRecord = {
   source_app_bundle_id: string | null;
   source_app_name: string | null;
   /**
+   * Normalized title of the exact selected source window. Null for region,
+   * display, and clipboard captures, and when the selected window could not be
+   * resolved safely at capture time.
+   */
+  source_window_title: string | null;
+  /**
    * Monotonic counter, bumped in the same transaction as every
    * edit write (overlay insert for v1; layer insert for v2 — see
    * `insertOverlay` / `rejectOverlay` in persistence/overlays-repo.ts
@@ -244,6 +250,8 @@ export type RecordingSubject =
        */
       appName?: string | null;
       appBundleId?: string | null;
+      /** Exact selected-window title, when the start-time lookup succeeded. */
+      windowTitle?: string | null;
     }
   | { kind: "display"; displayId: number };
 
@@ -593,9 +601,9 @@ export type CaptureSearchDiscovery = {
  * searches default to newest-first.
  */
 export type CaptureSearchRequest = {
-  /** Free-text query against title / description / OCR / source app
-   *  name via the `capture_search_fts` FTS5 virtual table (migration
-   *  0017). When omitted, the search degenerates to a filter-only
+  /** Free-text query against title / description / OCR / source app name /
+   *  source window title via the `capture_search_fts` FTS5 virtual table
+   *  (migration 0029). When omitted, the search degenerates to a filter-only
    *  scan ordered by `captured_at DESC`. */
   query?: string;
   /** Internal precise source-app filter. PwrSnap's Library/Sizzle code can
@@ -3608,9 +3616,9 @@ export type Commands = {
    *
    * Every filter field is optional; they combine conjunctively. The
    * `query` arg searches an FTS5 virtual table (`capture_search_fts`,
-   * migration 0017) that mirrors `capture_enrichments` and `captures`
-   * — title, description, OCR text, source app name. The returned
-   * `matchSnippet` is the SQLite `snippet()` function output around
+   * migration 0029) that mirrors `capture_enrichments` and `captures`
+   * — title, description, OCR text, source app name, source window title.
+   * The returned `matchSnippet` is the SQLite `snippet()` function output around
    * the FTS hit; it's only non-null when `query` is set.
    *
    * Soft-deleted captures are always excluded.

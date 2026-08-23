@@ -167,6 +167,22 @@ describe("persistCaptureFromTempV2 — cursor layer", () => {
     expect(layers).toHaveLength(2);
     expect(layers.map((l) => l.kind).sort()).toEqual(["group", "raster"]);
   });
+
+  test("persists a normalized source window title on the v2 capture row", async () => {
+    const tempPath = await makeTempScreenshot();
+    const { record } = await persistCaptureFromTempV2({
+      tempPath,
+      sourceApp: {
+        bundleId: "com.example.Editor",
+        appName: "Editor"
+      },
+      sourceWindowTitle: "  設計レビュー\u0000\n東京 🚀  "
+    });
+
+    expect(record.bundle_format_version).toBe(2);
+    expect(record.source_window_title).toBe("設計レビュー 東京 🚀");
+    expect(listLayerTree(record.id)).toHaveLength(2);
+  });
 });
 
 // --- Thumbnail composite (replaces the per-capture repack) ------------

@@ -32,6 +32,7 @@ describe("local-agent search boundary", () => {
         sha256: "private-content-hash",
         source_app_bundle_id: "com.example.app",
         source_app_name: "Example",
+        source_window_title: null,
         edits_version: 4,
         deleted_at: null,
         has_alpha: false
@@ -104,6 +105,7 @@ describe("local-agent search boundary", () => {
         sha256: "private-content-hash",
         source_app_bundle_id: null,
         source_app_name: null,
+        source_window_title: null,
         edits_version: 4,
         deleted_at: null,
         has_alpha: false
@@ -183,6 +185,7 @@ describe("local-agent search boundary", () => {
         sha256: "private-content-hash",
         source_app_bundle_id: null,
         source_app_name: null,
+        source_window_title: null,
         edits_version: 0,
         deleted_at: null,
         has_alpha: false

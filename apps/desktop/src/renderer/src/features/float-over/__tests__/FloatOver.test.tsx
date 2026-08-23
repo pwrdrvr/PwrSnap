@@ -119,6 +119,7 @@ const imageRecord: CaptureRecord = {
   sha256: "sha_cap_1",
   source_app_bundle_id: "com.example.App",
   source_app_name: "Example",
+  source_window_title: null,
   edits_version: 0,
   has_alpha: false,
   deleted_at: null,

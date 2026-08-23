@@ -166,12 +166,29 @@ vi.mock("../../handlers/codex-handlers", () => ({
   maybeEnqueueCaptureEnrichment: vi.fn()
 }));
 
-vi.mock("../../persistence/captures-repo", () => ({
-  insertCapture: vi.fn(() => ({
-    record: { id: "cap-1", kind: "video" }
-  })),
-  getCaptureById: vi.fn(() => ({ id: "cap-1", kind: "video", video: {} }))
-}));
+vi.mock("../../persistence/captures-repo", () => {
+  const SOURCE_WINDOW_TITLE_MAX_CODE_POINTS = 512;
+  const normalizeSourceWindowTitle = (
+    value: string | null | undefined
+  ): string | null => {
+    if (value === null || value === undefined) return null;
+    const normalized = value.replace(/[\p{White_Space}\p{Cc}]+/gu, " ").trim();
+    if (normalized.length === 0) return null;
+    return [...normalized]
+      .slice(0, SOURCE_WINDOW_TITLE_MAX_CODE_POINTS)
+      .join("")
+      .trimEnd();
+  };
+
+  return {
+    SOURCE_WINDOW_TITLE_MAX_CODE_POINTS,
+    normalizeSourceWindowTitle,
+    insertCapture: vi.fn(() => ({
+      record: { id: "cap-1", kind: "video" }
+    })),
+    getCaptureById: vi.fn(() => ({ id: "cap-1", kind: "video", video: {} }))
+  };
+});
 
 vi.mock("../../persistence/source-store", () => ({
   adoptExistingFileAsSource: vi.fn(async () => ({
@@ -680,30 +697,49 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
     return calls.at(-1)![0] as Record<string, unknown>;
   }
 
-  test("window subject with appName + appBundleId lands both on the capture row", async () => {
+  test("window subject with app and title metadata lands all three on the capture row", async () => {
     const row = await runFullCapture({
       kind: "window",
       windowId: 12345,
       rect: { x: 0, y: 0, w: 100, h: 100 },
       displayId: 1,
       appName: "Microsoft Edge",
-      appBundleId: "com.microsoft.edgemac"
+      appBundleId: "com.microsoft.edgemac",
+      windowTitle: "設計レビュー — Edge 🚀"
     });
     expect(row.source_app_name).toBe("Microsoft Edge");
     expect(row.source_app_bundle_id).toBe("com.microsoft.edgemac");
+    expect(row.source_window_title).toBe("設計レビュー — Edge 🚀");
   });
 
-  test("window subject without optional app fields writes null (Library falls back to 'Unknown app')", async () => {
+  test("normalizes controls and bounds a very long window title before insert", async () => {
     const row = await runFullCapture({
       kind: "window",
       windowId: 12345,
       rect: { x: 0, y: 0, w: 100, h: 100 },
-      displayId: 1
-      // appName + appBundleId intentionally omitted — protocol
-      // marks them optional for callers that lack the helper.
+      displayId: 1,
+      windowTitle: `\u0000  Quarterly\tPlan\n${"🚀".repeat(600)}  \u0007`
+    });
+    const persistedTitle = row.source_window_title;
+    expect(typeof persistedTitle).toBe("string");
+    expect(persistedTitle).toMatch(/^Quarterly Plan 🚀/u);
+    expect(persistedTitle).not.toMatch(/[\p{White_Space}\p{Cc}]$/u);
+    expect([...(persistedTitle as string)]).toHaveLength(512);
+  });
+
+  test("window subject with no app fields and a control-only title writes null", async () => {
+    const row = await runFullCapture({
+      kind: "window",
+      windowId: 12345,
+      rect: { x: 0, y: 0, w: 100, h: 100 },
+      displayId: 1,
+      // App fields are omitted, and a title with no displayable content
+      // must collapse to NULL rather than leaking controls into SQLite.
+      windowTitle: "\u0000\t\n\u0007"
     });
     expect(row.source_app_name).toBeNull();
     expect(row.source_app_bundle_id).toBeNull();
+    expect(row.source_window_title).toBeNull();
   });
 
   test("region subject writes null app metadata (no single source app)", async () => {
@@ -714,6 +750,7 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
     });
     expect(row.source_app_name).toBeNull();
     expect(row.source_app_bundle_id).toBeNull();
+    expect(row.source_window_title).toBeNull();
   });
 });
 
@@ -1050,6 +1087,47 @@ describe("Windows FFmpeg recorder", () => {
     expect(stopped.captureId).toBe("cap-1");
     expect(mocks.stateLog.map((s) => s.phase)).toContain("processing");
     expect(mocks.stateLog.map((s) => s.phase)).toContain("ready");
+
+    const captures = await import("../../persistence/captures-repo");
+    const calls = (captures.insertCapture as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls;
+    const row = calls.at(-1)![0] as Record<string, unknown>;
+    expect(row.source_window_title).toBeNull();
+  });
+
+  test("persists source_window_title for a window subject", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    await service.start({
+      subject: {
+        kind: "window",
+        windowId: 133048,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1,
+        appName: "slack",
+        appBundleId: "C:\\Program Files\\Slack\\slack.exe",
+        windowTitle: "项目状态 — Café 🚀"
+      },
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+
+    const child = mocks.spawnedChildren[0]!;
+    const stopPromise = service.stop();
+    child.emit("exit", 0, null);
+    await stopPromise;
+
+    const captures = await import("../../persistence/captures-repo");
+    const calls = (captures.insertCapture as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls;
+    const row = calls.at(-1)![0] as Record<string, unknown>;
+    expect(row.source_window_title).toBe("项目状态 — Café 🚀");
   });
 
   test("converts selected DIP rects to physical pixels before gdigrab", async () => {

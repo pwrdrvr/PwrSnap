@@ -1506,6 +1506,17 @@ function DetailTab({
     <>
       <div className="psl__detail-meta">
         <div className="psl__detail-name">{sourceName} snap</div>
+        {record.source_window_title !== null ? (
+          <div className="psl__detail-window-row">
+            <span className="psl__detail-window-label">Window title</span>
+            <span
+              className="psl__detail-window-title"
+              data-testid="detail-window-title"
+            >
+              {record.source_window_title}
+            </span>
+          </div>
+        ) : null}
         <div className="psl__detail-row">
           <span>
             <b>

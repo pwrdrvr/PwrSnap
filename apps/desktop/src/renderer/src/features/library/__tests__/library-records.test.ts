@@ -20,6 +20,7 @@ function record(id: string, deletedAt: string | null = null): CaptureRecord {
     sha256: id.padEnd(64, "0").slice(0, 64),
     source_app_bundle_id: "com.test",
     source_app_name: "Test",
+    source_window_title: null,
     edits_version: 0,
     has_alpha: false,
     deleted_at: deletedAt

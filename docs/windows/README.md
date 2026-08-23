@@ -1,312 +1,233 @@
-# PwrSnap Windows Preview
+# PwrSnap on Windows
 
-This guide is for installing, testing, and building the Windows preview of
-PwrSnap. The easiest path is the prepared NSIS installer. The source-build path
-is here for developers and release operators.
+This guide covers the supported Windows release, where it stores data, current
+limitations, troubleshooting, and source builds. PwrSnap ships for Windows 10
+and Windows 11 on x64; there is no Windows Arm64 package yet.
 
-## Current Status
+## Release status
 
-- Windows app shell, still capture, window picker, library, and tray flows are
-  available in the preview installer.
-- Video recording on Windows uses bundled `PwrSnapFFmpeg.exe` when present.
-- If FFmpeg is not bundled, the app can still record when
-  `PWRSNAP_FFMPEG_PATH` points at a compatible `ffmpeg.exe`.
-- Audio capture is not wired in the Windows FFmpeg backend yet. Current Windows
-  recordings are screen video only.
-- The real public release still needs final Authenticode signing, update-feed
-  validation, and a legally vetted Windows FFmpeg binary source.
+| Item | Shipping behavior |
+| --- | --- |
+| Installer | Interactive, per-user NSIS installer named `PwrSnap-<version>-windows-x64-setup.exe` |
+| Default install folder | `%LOCALAPPDATA%\Programs\PwrSnap` |
+| Signing | Tagged release installers and the packaged app are Authenticode-signed by PwrDrvr LLC and verified before publication |
+| Updates | Packaged releases consume the `latest.yml` metadata published beside each Windows installer |
+| Video dependency | Tagged releases bundle the controlled `PwrSnapFFmpeg.exe`; users do not install FFmpeg separately |
 
-## Install With winget
+Linux builds gate the cross-platform TypeScript build in the release workflow,
+but PwrSnap does not distribute a Linux desktop package.
 
-Once the manifest is accepted into the Windows Package Manager community
-repository, the shipping installer is one command:
+## Install a signed release
 
-```powershell
-winget install PwrDrvr.PwrSnap
-```
+1. For the current stable release, open
+   [GitHub Releases — Latest](https://github.com/pwrdrvr/PwrSnap/releases/latest).
+   For the current 1.1 prerelease line, open the main
+   [Releases page](https://github.com/pwrdrvr/PwrSnap/releases); GitHub's
+   `latest` route intentionally excludes prereleases.
+2. Download `PwrSnap-<version>-windows-x64-setup.exe`. The `.blockmap` and
+   `latest.yml` assets are for the updater, not manual installation.
+3. Run the installer. It installs for the current user and lets you change the
+   destination folder.
+4. Launch PwrSnap from the Start menu. The default quick-capture shortcut is
+   `Ctrl+Shift+C`; change any global binding under **Settings → Hotkeys**.
 
-That is a per-user install to `%LOCALAPPDATA%\Programs\PwrSnap`, run silently,
-from the same Authenticode-signed installer attached to the GitHub release.
+The currently published releases predate the workflow's version-free Windows
+alias, so do not construct a `releases/latest/download/PwrSnap-windows-x64-setup.exe`
+URL yet. Use the Releases page and the versioned filename above.
 
-The three manifest files, the submission checklist, and the proposal for
-keeping the published version current live in
-[docs/windows/winget/](winget/README.md). The manifests there are the source of
-truth; the copies in `microsoft/winget-pkgs` are a downstream mirror.
-Submitting or updating that pull request is an operator action — nothing in
-this repository does it automatically.
-
-Schema-check the manifests before any submission, from the repository root, on
-any platform:
-
-```bash
-node docs/windows/winget/validate-manifests.mjs
-```
-
-`winget validate` and `Tools\SandboxTest.ps1` are the other two required gates,
-and both need a Windows machine.
-
-## Use The Prepared Installer
-
-From a local package build, the installer is written here:
+To verify a downloaded installer before running it:
 
 ```powershell
-.\apps\desktop\release-stage\dist\PwrSnap-1.0.0-beta.20-windows-x64-setup.exe
+$installer = ".\PwrSnap-<version>-windows-x64-setup.exe"
+Get-AuthenticodeSignature $installer |
+  Format-List Status,StatusMessage,SignerCertificate
+Get-FileHash $installer -Algorithm SHA256
 ```
 
-Install and launch:
+`Status` should be `Valid`, and the signer certificate should identify
+PwrDrvr LLC. Compare the hash with `PwrSnap-windows-SHA256SUMS` from the same
+release. Do not bypass an unknown-publisher warning for a file presented as a
+tagged PwrSnap release.
 
-```powershell
-Get-Process -Name PwrSnap -ErrorAction SilentlyContinue | Stop-Process -Force
+### Development previews
 
-$installer = ".\apps\desktop\release-stage\dist\PwrSnap-1.0.0-beta.20-windows-x64-setup.exe"
-Start-Process -FilePath $installer -Wait
+A maintainer can apply the `build-preview` label to a pull request to create a
+Windows Actions artifact for development testing. That artifact expires after
+14 days and is unsigned. It is not the same as the signed installer on a
+GitHub Release and should not be handed to end users.
 
-Start-Process "$env:LOCALAPPDATA\Programs\PwrSnap\PwrSnap.exe"
-```
+### winget status
 
-For unattended local QA, run the installer silently:
+PwrSnap is not currently published in the Windows Package Manager community
+repository, so `winget install PwrDrvr.PwrSnap` is not a supported install path
+yet. Prepared manifests and the operator submission checklist live in
+[winget/README.md](winget/README.md); the repository does not submit them
+automatically.
 
-```powershell
-Start-Process -FilePath $installer -ArgumentList "/S" -Wait -WindowStyle Hidden
-```
+## Updates
 
-Verify the installed build has bundled FFmpeg:
+Release builds check the selected GitHub release channel at startup and
+periodically while PwrSnap is running. Under **Settings → General → Updates**,
+choose a release train (Stable or Beta) and an update track (Latest or
+Prerelease). **Help → Check for Updates** starts the same check on demand, and
+**Restart to Update** installs a completed download.
 
-```powershell
-Test-Path "$env:LOCALAPPDATA\Programs\PwrSnap\resources\PwrSnapFFmpeg.exe"
-```
+The Windows updater requires `latest.yml`, the versioned installer, and its
+`.blockmap` to remain together on the selected release. `pnpm dev` does not run
+production auto-update.
 
-If that prints `True`, users do not need to set `PWRSNAP_FFMPEG_PATH` for this
-installer.
+## Where PwrSnap stores data
 
-## Smoke Test Recording
+PwrSnap deliberately separates durable captures from replaceable app state.
 
-1. Launch PwrSnap from Start Menu or:
+| Data | Default location |
+| --- | --- |
+| Image capture bundles, video files, and chat journals | The Windows Documents known folder under `PwrSnap`, normally `%USERPROFILE%\Documents\PwrSnap` |
+| SQLite library database | `%APPDATA%\PwrSnap\pwrsnap.db` |
+| Settings and encrypted secrets | `%APPDATA%\PwrSnap\pwrsnap-settings.json` and `%APPDATA%\PwrSnap\pwrsnap-secrets.bin` |
+| Regenerable render cache | `%APPDATA%\PwrSnap\render-cache` |
+| Main log | Open **Help → Logs** and choose **Reveal**; the normal path is `%APPDATA%\PwrSnap\logs\main.log` |
 
-   ```powershell
-   Start-Process "$env:LOCALAPPDATA\Programs\PwrSnap\PwrSnap.exe"
-   ```
+The Documents known folder may be redirected to OneDrive or another managed
+location, so the resolved path is more authoritative than the example above.
+Images are stored as `.pwrsnap` bundles, videos as `.mp4`, and chat files under
+the active capture root's `Chats` folder. The database indexes those files; it
+does not replace them.
 
-2. Start video capture from the configured hotkey or tray action.
-3. Select a small region, wait for the HUD, record for a few seconds, then click
-   Stop.
-4. Confirm the "Recording saved" float-over appears.
-5. Open the Library and confirm the new video capture appears.
+If Windows blocks the Documents folder, PwrSnap write-probes the location and
+can persist a fallback to `%USERPROFILE%\PwrSnap`. Existing data is not migrated
+when the active root changes, so both roots may contain files from the same
+library. Do not manually move, rename, or delete capture bundles, the database,
+settings, or secrets as a troubleshooting step.
 
-If the capture does not appear, inspect the log:
+## Current Windows limitations
 
-```powershell
-Select-String -Path "$env:APPDATA\PwrSnap\logs\main.log" `
-  -Pattern "recording|ffmpeg|Recording saved|native recorder|failed|error" `
-  -CaseSensitive:$false |
-  Select-Object -Last 120 |
-  ForEach-Object { $_.Line }
-```
+- Windows releases are x64 only; Arm64 is not packaged.
+- Windows video capture records the screen at 30 fps without microphone or
+  system audio. Audio controls are not wired to the Windows recorder yet.
+- Windows video currently includes the pointer even when the capture-cursor
+  setting is off.
+- Quick Look extensions and HEIC export are macOS-only.
+- Some in-app shortcut labels still render macOS key glyphs. On Windows,
+  `CommandOrControl` means `Ctrl` and `Alt` is the Windows Alt key.
+- A full-window capture depends on Electron returning the selected window. If
+  that path fails, use region capture; the remaining fallback is macOS-only.
+- In a Remote Desktop session, Windows clipboard-redirection policy determines
+  whether a copy made where PwrSnap is running reaches the other side of the
+  session.
 
-Useful meanings:
+## Troubleshooting
 
-- `starting Windows ffmpeg recorder` - the new Windows path is running.
-- `Recording saved` - persistence completed and the Library should show it.
-- `native recorder binary not available` - the old macOS-only build is still
-  installed. Reinstall the fresh Windows build.
-- `ffmpeg_not_available` - the app cannot find bundled FFmpeg or
-  `PWRSNAP_FFMPEG_PATH`.
-- `Unknown encoder 'h264_mf'` - the FFmpeg build is missing the encoder PwrSnap
-  currently uses.
-- `latest.yml` 404 - updater feed issue only; it is not a recording failure.
+### A shortcut does nothing
 
-## Build From Source
+Open **Settings → Hotkeys** and rebind the command; another app may already own
+the global chord. PwrSnap's defaults use `Ctrl` on Windows even if a label still
+shows the macOS Command glyph. Check **Help → Logs** for `failed to register`
+when a binding still does not work.
 
-Run from the repository root:
+### Captures are missing or inaccessible
 
-```powershell
-cd C:\path\to\PwrSnap
-```
+1. Read the capture-folder banner in the Library; it reports whether PwrSnap is
+   using Documents or the home-folder fallback.
+2. In **Windows Security → Virus & threat protection → Ransomware protection**,
+   check Controlled Folder Access. Allow PwrSnap if it is blocked, and check any
+   third-party antivirus rules as well.
+3. If Documents is redirected through OneDrive, make the PwrSnap folder locally
+   available and allow synchronization to finish.
+4. Relaunch PwrSnap and make a small region capture. On multi-monitor or Remote
+   Desktop setups, region capture is also the safest diagnostic if a full-window
+   capture selects the wrong source.
 
-Install prerequisites:
+Leave both `%USERPROFILE%\Documents\PwrSnap` and `%USERPROFILE%\PwrSnap` in
+place if the fallback was used. Moving files outside PwrSnap can leave database
+paths pointing at the old location.
 
-- Windows 10 or Windows 11.
+### Video capture reports that FFmpeg is unavailable
+
+A tagged Windows release includes `resources\PwrSnapFFmpeg.exe`; no PATH entry
+or separate FFmpeg install is required. Re-download the versioned installer
+from GitHub Releases, verify its Authenticode signature, reinstall, and retry.
+An external FFmpeg override is only for local-build diagnostics.
+
+For a recording failure, open **Help → Logs** and search for `recording`,
+`ffmpeg`, `h264_mf`, or `failed`. `latest.yml` errors concern the updater and do
+not explain a recording failure.
+
+### Launch at login does not start PwrSnap
+
+Turn on **Settings → General → Launch at login**, then confirm PwrSnap is
+enabled under **Task Manager → Startup apps**. Login launches are tray-only by
+design; the Library window does not open automatically.
+
+### Updates do not appear
+
+Confirm the desired Stable/Beta and Latest/Prerelease choices under
+**Settings → General → Updates**, then use **Help → Check for Updates**. The
+`pnpm dev` process simulates manual update UI but does not use the production
+feed; use a published release to test real updates.
+
+## Build from source
+
+Run these steps on Windows 10 or Windows 11 x64. Install:
+
 - Git.
-- Node.js `v24.14.1`.
-- `pnpm@10.33.0` through Corepack.
-- Visual Studio Build Tools 2022 with the "Desktop development with C++"
+- Node.js `v24.14.1` (the version pinned in `.nvmrc`).
+- `pnpm@10.33.0` (the version pinned in the root `package.json`).
+- Visual Studio Build Tools 2022 with the **Desktop development with C++**
   workload.
 
-Set up Node and dependencies:
+From the repository root:
 
 ```powershell
-nvm install 24.14.1
-nvm use 24.14.1
 corepack enable
 corepack prepare pnpm@10.33.0 --activate
 corepack pnpm install
-```
-
-Build the Windows native helper:
-
-```powershell
 corepack pnpm --filter @pwrsnap/desktop build:native
+corepack pnpm --filter @pwrsnap/desktop package:win
+Get-ChildItem .\apps\desktop\release-stage\dist\PwrSnap-*-windows-x64-setup.exe
 ```
 
-Package a preview installer without bundled FFmpeg:
+`package:win` creates an unsigned development installer. A plain local package
+may omit `PwrSnapFFmpeg.exe`; production release builds do not.
+
+### Optional FFmpeg injection for local packaging
+
+This is a developer-only path for testing Windows recording without the
+controlled release artifact. Use a compatible FFmpeg build that exposes the
+`gdigrab` input and `h264_mf` encoder:
 
 ```powershell
+$ffmpeg = (Get-Command ffmpeg).Source
+& $ffmpeg -hide_banner -devices | Select-String gdigrab
+& $ffmpeg -hide_banner -encoders | Select-String h264_mf
+$env:PWRSNAP_WINDOWS_FFMPEG_PATH = $ffmpeg
 corepack pnpm --filter @pwrsnap/desktop package:win
 ```
 
-Package a preview installer with bundled FFmpeg:
+The packaging-time `PWRSNAP_WINDOWS_FFMPEG_PATH` variable is not an end-user
+library or runtime configuration. Clear it after the local package test:
 
 ```powershell
-$env:PWRSNAP_WINDOWS_FFMPEG_PATH = "$env:USERPROFILE\scoop\apps\ffmpeg\current\bin\ffmpeg.exe"
-corepack pnpm --filter @pwrsnap/desktop package:win
+Remove-Item Env:PWRSNAP_WINDOWS_FFMPEG_PATH -ErrorAction SilentlyContinue
 ```
 
-The output lands in:
+## Release operators
 
-```powershell
-apps\desktop\release-stage\dist\PwrSnap-1.0.0-beta.20-windows-x64-setup.exe
-```
+The tagged release workflow in [`.github/workflows/release.yml`](../../.github/workflows/release.yml)
+stages a pinned controlled FFmpeg build, validates its manifest, checksum, and
+shipped license notice, fails closed when Windows signing is unavailable,
+verifies the resulting Authenticode signatures, and publishes Windows only
+after the macOS and Linux gates also pass.
 
-## Test FFmpeg Outside PwrSnap
+Authorized operators should use the
+[desktop release runbook](../desktop-release-runbook.md) and
+[Windows signing guide](../desktop-windows-signing.md). This user-facing guide
+intentionally does not duplicate protected environment, credential, or
+artifact-source details.
 
-Install FFmpeg with Scoop:
+## Validation checklist
 
-```powershell
-scoop install ffmpeg
-```
-
-Find the concrete path:
-
-```powershell
-Get-Command ffmpeg | Format-List Source,Path
-```
-
-For Scoop, the real binary is normally:
-
-```powershell
-$env:USERPROFILE\scoop\apps\ffmpeg\current\bin\ffmpeg.exe
-```
-
-Check the capabilities PwrSnap needs:
-
-```powershell
-$ff = "$env:USERPROFILE\scoop\apps\ffmpeg\current\bin\ffmpeg.exe"
-& $ff -hide_banner -devices | Select-String gdigrab
-& $ff -hide_banner -encoders | Select-String h264_mf
-```
-
-Both commands should print a matching line.
-
-Run a five-second screen recording outside the app:
-
-```powershell
-$ff = "$env:USERPROFILE\scoop\apps\ffmpeg\current\bin\ffmpeg.exe"
-$out = "$env:TEMP\pwrsnap-ffmpeg-test.mp4"
-
-& $ff -hide_banner -y `
-  -f gdigrab `
-  -framerate 30 `
-  -offset_x 0 `
-  -offset_y 0 `
-  -video_size 1280x720 `
-  -draw_mouse 1 `
-  -i desktop `
-  -t 5 `
-  -an `
-  -c:v h264_mf `
-  -b:v 8M `
-  -pix_fmt yuv420p `
-  -movflags +faststart `
-  $out
-
-Start-Process $out
-```
-
-Pass condition: the command creates a playable MP4 at
-`$env:TEMP\pwrsnap-ffmpeg-test.mp4`.
-
-## Set FFmpeg Manually
-
-Use this only when the installer does not bundle `PwrSnapFFmpeg.exe`.
-
-```powershell
-[Environment]::SetEnvironmentVariable(
-  "PWRSNAP_FFMPEG_PATH",
-  "$env:USERPROFILE\scoop\apps\ffmpeg\current\bin\ffmpeg.exe",
-  "User"
-)
-```
-
-Then fully quit PwrSnap and launch it again. Environment changes are only seen
-by newly started processes.
-
-Verify:
-
-```powershell
-$ff = [Environment]::GetEnvironmentVariable("PWRSNAP_FFMPEG_PATH", "User")
-$ff
-Test-Path $ff
-```
-
-Clear the override when testing a bundled installer:
-
-```powershell
-[Environment]::SetEnvironmentVariable("PWRSNAP_FFMPEG_PATH", $null, "User")
-```
-
-## Release-Quality Windows Build
-
-For a real signed Windows release, configure the protected GitHub
-`windows-signing` environment with:
-
-- Variables: `WIN_AZURE_SIGN_PUBLISHER_NAME`, `WIN_AZURE_SIGN_ENDPOINT`,
-  `WIN_AZURE_SIGN_ACCOUNT`, `WIN_AZURE_SIGN_PROFILE`, and
-  `FFMPEG_BUILDS_APP_CLIENT_ID`.
-- Secrets: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, and
-  `FFMPEG_BUILDS_APP_PRIVATE_KEY`.
-
-The Azure service principal needs the `Artifact Signing Certificate Profile
-Signer` role on the signing account. See
-[Windows Code Signing](../desktop-windows-signing.md) for the environment,
-protection-rule, and signed PR smoke-check details.
-
-The FFmpeg GitHub App must be installed on the private
-`pwrdrvr/pwrsnap-ffmpeg-builds` repository with read-only Actions and
-Contents permissions. The workflow mints a short-lived installation token
-inside the protected signing job and uses it only to download the pinned
-FFmpeg artifact.
-
-The release workflow downloads the pinned
-`ffmpeg-8.1.1-windows-x64` artifact from
-`pwrdrvr/pwrsnap-ffmpeg-builds`, verifies `manifest.json`, checks the
-binary SHA-256 from that manifest, and then stages `ffmpeg.exe` as
-`PwrSnapFFmpeg.exe`.
-
-Local release-mode packaging requires the Azure Artifact Signing configuration,
-service-principal credentials, and a vetted FFmpeg path:
-
-```powershell
-$env:WIN_AZURE_SIGN_PUBLISHER_NAME = "PwrDrvr LLC"
-$env:WIN_AZURE_SIGN_ENDPOINT = "https://eus.codesigning.azure.net/"
-$env:WIN_AZURE_SIGN_ACCOUNT = "pwrdrvrsigning"
-$env:WIN_AZURE_SIGN_PROFILE = "<profile-name>"
-$env:AZURE_TENANT_ID = "<tenant-id>"
-$env:AZURE_CLIENT_ID = "<client-id>"
-$env:AZURE_CLIENT_SECRET = "<client-secret>"
-$env:PWRSNAP_WINDOWS_FFMPEG_PATH = "C:\secure\ffmpeg.exe"
-
-corepack pnpm --filter @pwrsnap/desktop package:win:release
-```
-
-Tagged releases fail closed when signing is unavailable; there is no unsigned
-release mode. Use `package:win` locally or the `build-preview` PR workflow when
-an unsigned installer is appropriate for development testing.
-
-Publishing from CI is wired through `.github/workflows/release.yml`.
-
-## Verification Checklist
-
-Run these before handing the installer to testers:
+From the repository root:
 
 ```powershell
 corepack pnpm typecheck
@@ -315,39 +236,12 @@ corepack pnpm exec vitest run `
   apps/desktop/src/main/recording/__tests__/ffmpeg-resolver.test.ts `
   apps/desktop/scripts/windows-release-config.test.mjs
 corepack pnpm --filter @pwrsnap/desktop build:native
-$env:PWRSNAP_WINDOWS_FFMPEG_PATH = "$env:USERPROFILE\scoop\apps\ffmpeg\current\bin\ffmpeg.exe"
 corepack pnpm --filter @pwrsnap/desktop package:win
-corepack pnpm release:check --tag v1.0.0-beta.20
+$version = (Get-Content apps\desktop\package.json | ConvertFrom-Json).version
+corepack pnpm release:check --tag "v$version"
 git diff --check
 ```
 
-Then install the produced `.exe`, make one still capture, make one video
-recording, and confirm both appear in the Library.
-
-## Create A Patch File
-
-To hand the current Windows preview work to another developer as a Git patch:
-
-```powershell
-git diff --binary > pwrsnap-windows-preview.patch
-```
-
-If the patch must include new untracked files, stage them or add them with
-intent-to-add first:
-
-```powershell
-git add -N docs/windows/README.md `
-  apps/desktop/scripts/windows-release-config.test.mjs `
-  apps/desktop/src/main/recording/__tests__/ffmpeg-resolver.test.ts
-
-git diff --binary > pwrsnap-windows-preview.patch
-```
-
-Apply on another checkout:
-
-```powershell
-git apply pwrsnap-windows-preview.patch
-```
-
-The patch contains source and documentation changes only. The built installer
-is a generated artifact and should be shared separately.
+Then install the produced `.exe`, make one still capture and one short video,
+and confirm both appear in the Library. Headed Windows smoke testing is not
+performed by the macOS/Linux CI build gate.

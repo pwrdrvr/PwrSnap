@@ -3,7 +3,7 @@
 // edit wrappers (pure ops in scene-ops.ts → `onScenes`) and the preview
 // plumbing (useSequencePlan). The shell (SizzleApp) owns project state.
 
-import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   estimateSizzleReelDurationSec,
   formatSizzleDuration,
@@ -11,10 +11,13 @@ import {
   type CaptureRecord,
   type SizzleProject,
   type SizzleScene,
+  type SizzleSceneDurationContext,
   type SizzleSequenceBeat,
   type SizzleVoice
 } from "@pwrsnap/shared";
 import { ReelSettings } from "./ReelSettings";
+import { SizzleTimeline } from "./timeline/SizzleTimeline";
+import { buildTimelineModel, sceneAt, type TimelineClip } from "./timeline/timeline-model";
 import { RenderStatusBar, isRendering, type RenderStatus } from "./RenderStatusBar";
 import { SceneTransitionChip, SequenceSceneCard, SimpleSceneCard } from "./SceneCard";
 import {
@@ -150,33 +153,33 @@ export function Editor(props: EditorProps): ReactElement {
     0
   );
   const rendering = isRendering(status);
-  // Reel length for the Render button. Exact for scenes the user has
-  // previewed this session (their cached plan carries the real narration
-  // timeline); estimated for the rest, because a voiceover scene runs as
-  // long as its synthesized narration and nothing measures that short of
-  // doing the TTS. `estimated` drives the leading `~`.
-  const reelDuration = useMemo(
-    () =>
-      estimateSizzleReelDurationSec(project.scenes, (scene) => {
-        const capture = captureMap.get(scene.captureId) ?? null;
-        const planDurationSec = plan.planForScene(scene)?.durationSec;
-        // Narration length survives edits a PLAN doesn't: reordering or
-        // retrimming clips invalidates the plan key while the narration
-        // text — and so its measured length — is untouched.
-        const narrationDurationSec =
-          plan.cachedNarrationDurationSec(scene) ?? plan.measuredVoiceoverDurationSec(scene);
-        return {
-          capture: capture === null ? null : { kind: capture.kind, video: capture.video },
-          sequencePlanDurationSec: planDurationSec,
-          narrationDurationSec,
-          voiceoverDurationSec: plan.measuredVoiceoverDurationSec(scene)
-        };
-      }),
+  // What the shared duration estimator knows about a scene: exact for
+  // scenes previewed this session (their cached plan carries the real
+  // narration timeline) or whose narration length is in the TTS cache;
+  // estimated for the rest, because a voiceover scene runs as long as
+  // its synthesized narration and nothing measures that short of doing
+  // the TTS. The Render label AND the timeline read this one function,
+  // so they can never claim different lengths for a scene.
+  const durationContextFor = useCallback(
+    (scene: SizzleScene): SizzleSceneDurationContext => {
+      const capture = captureMap.get(scene.captureId) ?? null;
+      const planDurationSec = plan.planForScene(scene)?.durationSec;
+      // Narration length survives edits a PLAN doesn't: reordering or
+      // retrimming clips invalidates the plan key while the narration
+      // text — and so its measured length — is untouched.
+      const narrationDurationSec =
+        plan.cachedNarrationDurationSec(scene) ?? plan.measuredVoiceoverDurationSec(scene);
+      return {
+        capture: capture === null ? null : { kind: capture.kind, video: capture.video },
+        sequencePlanDurationSec: planDurationSec,
+        narrationDurationSec,
+        voiceoverDurationSec: plan.measuredVoiceoverDurationSec(scene)
+      };
+    },
     // The TTS tuple is part of every measurement's cache key, so a
     // voice / model / provider switch has to re-run this — otherwise
     // the label keeps a measurement the new settings invalidated.
     [
-      project.scenes,
       project.ttsProvider,
       project.ttsModel,
       project.voice,
@@ -184,6 +187,63 @@ export function Editor(props: EditorProps): ReactElement {
       ...plan.durationDeps
     ]
   );
+  // Reel length for the Render button. `exact` drives the leading `~`.
+  const reelDuration = useMemo(
+    () => estimateSizzleReelDurationSec(project.scenes, durationContextFor),
+    [project.scenes, durationContextFor]
+  );
+  // The timeline's view model: every scene a region on one project axis,
+  // every clip a window on it. Resolved scenes draw the planner's windows
+  // (a plan from this session, or the shared planner over cached words);
+  // estimated scenes draw the idle placement on the word-count estimate.
+  const timelineModel = useMemo(
+    () =>
+      buildTimelineModel({
+        scenes: project.scenes,
+        sourceFor: (scene) => ({
+          plan: plan.planForScene(scene),
+          words: plan.wordsForScene(scene),
+          context: durationContextFor(scene)
+        })
+      }),
+    [project.scenes, durationContextFor, ...plan.durationDeps]
+  );
+  // Playhead on the project axis, as (scene, seconds into that scene).
+  // Follows playback while a scene previews; a scrub sets it and seeks
+  // the preview of the scene under the pointer.
+  const [playhead, setPlayhead] = useState<{ sceneId: string; localSec: number } | null>(null);
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const playingSceneId = plan.previewingSceneId;
+  const playingTimeSec = plan.previewTimeSec;
+  useEffect(() => {
+    if (playingSceneId === null) return;
+    setPlayhead({ sceneId: playingSceneId, localSec: playingTimeSec });
+  }, [playingSceneId, playingTimeSec]);
+  const playheadRegion =
+    playhead === null ? null : timelineModel.scenes.find((s) => s.sceneId === playhead.sceneId) ?? null;
+  const playheadSec =
+    playheadRegion === null || playhead === null
+      ? 0
+      : Math.min(playheadRegion.endSec, playheadRegion.startSec + playhead.localSec);
+  const onScrub = (sec: number): void => {
+    const region = sceneAt(timelineModel, sec);
+    if (region === null) return;
+    const localSec = Math.max(0, Math.min(region.durationSec, sec - region.startSec));
+    setPlayhead({ sceneId: region.sceneId, localSec });
+    plan.seekPreview(region.sceneId, localSec);
+  };
+  const onSelectClip = (clip: TimelineClip | null): void => {
+    setSelectedClipId(clip === null ? null : clip.beatId);
+  };
+  /** What a scene's own preview stage should show: its playback time while
+   *  it plays / is loaded, else the project playhead if it sits in this
+   *  scene (a scrub drives the stage even before the audio is loaded). */
+  const sceneCurrentTimeSec = (sceneId: string): number => {
+    if (plan.previewingSceneId === sceneId || plan.previewLoadedSceneId === sceneId) {
+      return plan.previewTimeSec;
+    }
+    return playhead !== null && playhead.sceneId === sceneId ? playhead.localSec : 0;
+  };
   // Guard on the FORMATTED value, not the raw seconds: a sub-half-second
   // reel (a short trim, a small duration override) is > 0 but rounds to
   // "0:00", and `Render · 0:00` reads as broken.
@@ -234,6 +294,18 @@ export function Editor(props: EditorProps): ReactElement {
         </button>
       </div>
 
+      {project.scenes.length > 0 ? (
+        <SizzleTimeline
+          model={timelineModel}
+          captureMap={captureMap}
+          audioBlobs={plan.sequenceAudioBlobs}
+          playheadSec={playheadSec}
+          onScrub={onScrub}
+          selectedClipId={selectedClipId}
+          onSelectClip={onSelectClip}
+        />
+      ) : null}
+
       <ul className="szl__scenes">
         {project.scenes.length === 0 ? (
           <li className="szl__scene-empty">
@@ -265,11 +337,7 @@ export function Editor(props: EditorProps): ReactElement {
                   transcriptPhrases={plan.transcriptPhrasesForScene(scene)}
                   plan={plan.planForScene(scene)}
                   audioBlob={plan.sequenceAudioBlobs[scene.id]}
-                  currentTimeSec={
-                    plan.previewingSceneId === scene.id || plan.previewLoadedSceneId === scene.id
-                      ? plan.previewTimeSec
-                      : 0
-                  }
+                  currentTimeSec={sceneCurrentTimeSec(scene.id)}
                   playing={plan.previewingSceneId === scene.id}
                   loading={plan.previewLoadingSceneId === scene.id}
                   onEditScene={(patch) => editScene(scene.id, patch)}

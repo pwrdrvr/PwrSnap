@@ -22,5 +22,7 @@ export * from "./text-html-style";
 export * from "./sizzle-video-fit";
 export * from "./sizzle-media-trim";
 export * from "./sizzle-reel-duration";
+export * from "./sizzle-phrase-match";
+export * from "./sizzle-sequence-timeline";
 export * from "./export-ladder";
 export * from "./local-agent-policy";

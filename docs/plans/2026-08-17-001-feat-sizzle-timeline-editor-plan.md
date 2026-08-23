@@ -56,8 +56,8 @@ Everything below was read, not assumed. Line numbers are from that commit.
 | `SizzleBeatTiming` = `auto` \| `offset` \| `phrase` | `protocol.ts:1092` | `phrase` **is** the narration-anchor model. Click-a-word is a UI problem, not a schema one. |
 | `distributeSequenceBeatStarts` | `protocol.ts:1167` | Pure. Pins index 0 to 0, evenly divides auto runs between anchors, monotonic clamp. Shared by planner + renderer so they cannot disagree. |
 | `normalizeSizzleSequenceBeatContinuity` | `protocol.ts:1131` | Non-final beats run to the next anchor. |
-| `planSequenceTimeline` / `planSequenceScene` | `sequence-planner.ts:66,157` | Duration authority. Emits `beat_too_short`, `phrase_unresolved`, `media_trim_clamped` diagnostics we already surface. |
-| `resolvePhraseTiming` | `speech-timing.ts:183` | Text→time resolution with contraction-aware fuzzy matching. |
+| `planSequenceTimeline` / `planSequenceScene` | `sequence-planner.ts:66,157` | Duration authority. Emits `beat_too_short`, `phrase_unresolved`, `media_trim_clamped` diagnostics we already surface. **Moved (PR 3):** `planSequenceTimeline` now lives in `@pwrsnap/shared` (`sizzle-sequence-timeline.ts`) and the renderer's `timeline-model.ts` calls it for cached-timing scenes, so the editor draws the windows the export cuts. `planSequenceScene` (media half) stays in main. |
+| `resolvePhraseTiming` | `speech-timing.ts:183` | Text→time resolution with contraction-aware fuzzy matching. **Moved (PR 3)** to `@pwrsnap/shared` (`sizzle-phrase-match.ts`, plus `countPhraseOccurrences` for §4.3); main re-exports. |
 | **`video-range.ts`** | `features/shared/video-range.ts` | `pxToSec`, `secToPx`, `tickMarks`, `formatTimecode`, `formatSpan`, `clampTime`, `roundTime`, `MIN_RANGE_SEC`. Pure, unit-tested, zero React. **This is the timeline's math layer, already written.** |
 | **`VideoTimeline.tsx`** | `features/shared/VideoTimeline.tsx` | Pointer-capture drag with `scrub`/`in`/`out` modes, `commit=false` while dragging + `true` on release, timecode tooltip, tick row, dimming scrim, playhead. **The exact drag mechanics we need, already shipped and tested** (`VideoTimeline.test.tsx`). |
 | `SequenceWaveform` | `features/shared/SequenceWaveform.tsx` | wavesurfer, non-interactive by design, caller overlays its own playhead. Already used by both Sizzle and the Library video stage. |
@@ -507,6 +507,18 @@ exactness states. Poster images replace per-clip `<video>`. The old form rows
 survive underneath in a collapsed "Advanced" disclosure so nothing becomes
 unreachable mid-migration. **This is the PR where the operator's complaint
 dies** — the reel becomes visible.
+
+*As built (2026-08-22):* `features/sizzle/timeline/` — `timeline-model.ts`
+(`buildTimelineModel`: regions on one axis via the shared `layoutSizzleScenes`,
+clips via this session's plan → the shared `planSequenceTimeline` over cached
+words → the idle fallback; `exactness` decided here and nowhere else),
+`density.ts` (zoom presets, ⌘+/⌘− ladder, clip detail by rendered px),
+`SizzleTimeline.tsx` (root: measure, zoom, scroll, pointer-capture scrub,
+playhead-in-view), `TimelineRuler.tsx`, `SceneRegions.tsx`, `ClipLane.tsx`,
+`WaveformLane.tsx`, `Playhead.tsx`, `timeline.css`. Video clips carry a neutral
+poster placeholder — there is no image poster route for video captures and the
+plan forbids a `<video>` per clip; a `video:poster` (or `video:frames` with
+`frameCount: 1`) IPC is the follow-up. The word ribbon is PR 4.
 
 **PR 4 — `feat(desktop): anchor clips by clicking narration words`**
 Word ribbon, click-to-anchor via `anchorTimingForWord`, anchor pins and removal,

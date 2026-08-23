@@ -16,14 +16,13 @@
 // Track selection happens via ffmpeg's `-map` flags; the source
 // container places system audio on track 1, microphone on track 2
 // when both are present (the recorder writes them in that order).
-// The preset drives target width + VideoToolbox bitrate:
+// The preset drives target width + platform-encoder bitrate:
 //   LOW : 720p  · 2 Mbps · web-friendly
 //   MED : 1080p · 5 Mbps · visually-lossless
 //   HIGH: source resolution · 6 Mbps · compressed master
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type {
@@ -48,7 +47,8 @@ const log = getMainLogger("pwrsnap:recording-exporter");
 
 /** Per-(format, preset) encode profile. Source-resolution presets set
  *  `width: null` to signal "no downscale". MP4 presets all re-encode
- *  through VideoToolbox with a target bitrate and GOP interval.
+ *  through the platform H.264 encoder with a target bitrate and GOP
+ *  interval.
  *
  *  GIF tiers are picked to land in roughly log-spaced byte sizes for
  *  a typical PwrSnap recording — each tier ~2× the previous, with
@@ -80,6 +80,38 @@ export const MP4_PRESETS: Readonly<Record<VideoPreset, Mp4PresetSpec>> = {
   med: { width: 1080, bitrate: "5000k", keyframeInterval: 60 },
   high: { width: null, bitrate: "6000k", keyframeInterval: 60 }
 };
+
+/**
+ * Build the platform-owned H.264 encoder portion of an MP4 export.
+ * PwrSnap's controlled Windows FFmpeg exposes Media Foundation's
+ * `h264_mf`; `h264_videotoolbox` and its `-allow_sw` option exist only
+ * in the macOS build. Keep this pure so release-artifact codec drift is
+ * pinned without needing to spawn ffmpeg in a unit test.
+ *
+ * macOS is the other packaged target. Non-Windows developer/test hosts
+ * retain the historical VideoToolbox arm rather than pretending the
+ * controlled builds ship a third encoder contract.
+ */
+export function buildMp4VideoEncoderArgs(
+  platform: NodeJS.Platform,
+  spec: Mp4PresetSpec
+): string[] {
+  const args =
+    platform === "win32"
+      ? ["-c:v", "h264_mf"]
+      : ["-c:v", "h264_videotoolbox", "-allow_sw", "1"];
+  args.push(
+    "-b:v",
+    spec.bitrate,
+    "-g",
+    String(spec.keyframeInterval),
+    "-keyint_min",
+    String(spec.keyframeInterval),
+    "-pix_fmt",
+    "yuv420p"
+  );
+  return args;
+}
 
 const MP4_REENCODE_CACHE_TOKEN = "gop60";
 
@@ -444,9 +476,11 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
   });
   if (
     cached !== null &&
-    existsSync(cached.path) &&
     cacheEntryMatchesEncoder(input, cached.path)
   ) {
+    try {
+      const cachedInfo = await stat(cached.path);
+      if (cachedInfo.isFile() && cachedInfo.size > 0) {
     if (input.progress !== undefined) {
       emitProgressSafely(input.progress.emit, { phase: "queued", ratio: null });
       emitProgressSafely(input.progress.emit, { phase: "finalizing", ratio: 0.99 });
@@ -456,7 +490,11 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
         outcome: "succeeded"
       });
     }
-    return { ...cached, widthPx, heightPx };
+    return { ...cached, byteSize: cachedInfo.size, widthPx, heightPx };
+      }
+    } catch {
+      // Stale or missing cached files fall through to a fresh encode.
+    }
   }
 
   // In-flight de-dup: two callers for the same key share one ffmpeg,
@@ -546,16 +584,13 @@ async function encodeAndRecord(
   // disk grouping makes debugging cache hits / orphans trivial
   // (`ls -lh <captureId>/` shows all six format/preset combinations
   // for a given range).
-  const outputPath = join(
-    outputDir,
-    [
-      `r${input.range.start.toFixed(3)}-${input.range.end.toFixed(3)}`,
-      input.preset,
-      ...(encoderTag === null ? [] : [encoderTag]),
-      audioTag,
-      ext
-    ].join(".")
-  );
+  const outputStem = [
+    `r${input.range.start.toFixed(3)}-${input.range.end.toFixed(3)}`,
+    input.preset,
+    ...(encoderTag === null ? [] : [encoderTag]),
+    audioTag
+  ].join(".");
+  const outputPath = join(outputDir, `${outputStem}.${ext}`);
   // FFmpeg must never write directly to the cache pathname. A cancelled or
   // failed child can leave a non-empty, truncated artifact behind, and a
   // pre-existing cache row would then accept it on the next lookup. Keep the
@@ -619,6 +654,9 @@ async function encodeAndRecord(
     throwIfAborted(signal);
     onProgress({ phase: "finalizing", ratio: 0.99 });
     const sizeInfo = await stat(stagingPath);
+    if (!sizeInfo.isFile() || sizeInfo.size <= 0) {
+      throw new Error(`recording-exporter: ffmpeg produced an empty or invalid ${input.format.toUpperCase()} export`);
+    }
     throwIfAborted(signal);
     await publishCompletedExport(stagingPath, outputPath);
     if (signal.aborted) {
@@ -688,35 +726,8 @@ async function encodeGif(
   signal: AbortSignal,
   onProgress: (update: VideoExportProgressUpdate) => void
 ): Promise<void> {
-  // Two-pass palette pipeline through a single ffmpeg invocation
-  // using `split` + `palettegen` + `paletteuse`. The preset drives
-  // target width + fps:
-  //   LOW : 480p @ 15 fps  · social-friendly file sizes
-  //   MED : 720p @ 24 fps  · "film frame rate" smoothness
-  //   HIGH: source @ 30 fps · max-quality (`scale` omitted)
-  // `scale=W:-2:flags=lanczos` snaps height to an even value for
-  // codec compatibility; `flags=lanczos` is a high-quality kernel
-  // that costs negligible CPU vs the default bilinear.
-  const duration = (range.end - range.start).toFixed(3);
-  const scaleStep = spec.width === null ? "" : `scale=${spec.width}:-2:flags=lanczos,`;
-  const filterComplex =
-    `[0:v] fps=${spec.fps},${scaleStep}split [a][b];` +
-    `[a] palettegen=stats_mode=diff [p];` +
-    `[b][p] paletteuse=dither=bayer:bayer_scale=5`;
-  const args = [
-    "-y",
-    "-ss",
-    range.start.toFixed(3),
-    "-t",
-    duration,
-    "-i",
-    src,
-    "-filter_complex",
-    filterComplex,
-    outPath
-  ];
   const durationSec = range.end - range.start;
-  await runFfmpeg(ffmpeg, args, {
+  await runFfmpeg(ffmpeg, buildGifEncodeArgs(src, range, spec, outPath), {
     durationSec,
     signal,
     onProgress: (record) => {
@@ -732,6 +743,47 @@ async function encodeGif(
       });
     }
   });
+}
+
+/**
+ * Build the complete GIF export argv used by production. Keeping the palette
+ * pipeline behind one pure seam lets the controlled Windows artifact smoke
+ * execute the exact same filter graph instead of maintaining a CI-only copy.
+ */
+export function buildGifEncodeArgs(
+  src: string,
+  range: VideoRange,
+  spec: GifPresetSpec,
+  outPath: string
+): string[] {
+  // Two-pass palette pipeline through a single ffmpeg invocation
+  // using `split` + `palettegen` + `paletteuse`. The preset drives
+  // target width + fps:
+  //   LOW : 480p @ 15 fps  · social-friendly file sizes
+  //   MED : 720p @ 24 fps  · "film frame rate" smoothness
+  //   HIGH: source @ 30 fps · max-quality (`scale` omitted)
+  // `scale=W:-2:flags=lanczos` snaps height to an even value for
+  // codec compatibility; `flags=lanczos` is a high-quality kernel
+  // that costs negligible CPU vs the default bilinear.
+  const duration = (range.end - range.start).toFixed(3);
+  const scaleStep = spec.width === null ? "" : `scale=${spec.width}:-2:flags=lanczos,`;
+  const filterComplex =
+    `[0:v] fps=${spec.fps},${scaleStep}split [a][b];` +
+    `[a] palettegen=stats_mode=diff [p];` +
+    `[b][p] paletteuse=dither=bayer:bayer_scale=5`;
+  return [
+    "-y",
+    "-ss",
+    range.start.toFixed(3),
+    "-t",
+    duration,
+    "-i",
+    src,
+    "-filter_complex",
+    filterComplex,
+    outPath
+  ];
+
 }
 
 async function encodeMp4(
@@ -762,14 +814,14 @@ async function encodeMp4(
     src
   ];
 
-  // Video track. All MP4 presets re-encode via VideoToolbox with
-  // per-preset bitrate + GOP settings. HIGH keeps source resolution
-  // by omitting the scale filter.
+  // Video track. All MP4 presets re-encode through the controlled
+  // platform H.264 encoder with per-preset bitrate + GOP settings.
+  // HIGH keeps source resolution by omitting the scale filter.
   args.push("-map", "0:v:0");
   // Scale when the preset asks for a target width, then re-encode
-  // through Apple's VideoToolbox H.264 encoder. Do not use libx264;
-  // the bundled ffmpeg is an LGPL build and this path must stay
-  // GPL-clean.
+  // through VideoToolbox (macOS) or Media Foundation (Windows). Do
+  // not use libx264; the bundled ffmpeg is an LGPL build and this
+  // path must stay GPL-clean.
   if (
     dims.outputWidthPx !== dims.sourceWidthPx ||
     dims.outputHeightPx !== dims.sourceHeightPx
@@ -779,20 +831,7 @@ async function encodeMp4(
       `scale=${dims.outputWidthPx}:${dims.outputHeightPx}:flags=lanczos`
     );
   }
-  args.push(
-    "-c:v",
-    "h264_videotoolbox",
-    "-allow_sw",
-    "1",
-    "-b:v",
-    spec.bitrate,
-    "-g",
-    String(spec.keyframeInterval),
-    "-keyint_min",
-    String(spec.keyframeInterval),
-    "-pix_fmt",
-    "yuv420p"
-  );
+  args.push(...buildMp4VideoEncoderArgs(process.platform, spec));
 
   // Audio track mapping. The recorder writes system audio as the
   // first audio stream and microphone as the second when both are
@@ -911,6 +950,7 @@ function runFfmpeg(
       ...args
     ];
     const child = spawn(ffmpeg, progressArgs, {
+      shell: false,
       stdio: ["ignore", "pipe", "pipe"]
     });
     const parser = new FfmpegProgressParser(options.durationSec);

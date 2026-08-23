@@ -16,14 +16,14 @@
 // Track selection happens via ffmpeg's `-map` flags; the source
 // container places system audio on track 1, microphone on track 2
 // when both are present (the recorder writes them in that order).
-// The preset drives target width + VideoToolbox bitrate:
+// The preset drives target width + platform-encoder bitrate:
 //   LOW : 720p  · 2 Mbps · web-friendly
 //   MED : 1080p · 5 Mbps · visually-lossless
 //   HIGH: source resolution · 6 Mbps · compressed master
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   CaptureRecord,
@@ -46,7 +46,8 @@ const log = getMainLogger("pwrsnap:recording-exporter");
 
 /** Per-(format, preset) encode profile. Source-resolution presets set
  *  `width: null` to signal "no downscale". MP4 presets all re-encode
- *  through VideoToolbox with a target bitrate and GOP interval.
+ *  through the platform H.264 encoder with a target bitrate and GOP
+ *  interval.
  *
  *  GIF tiers are picked to land in roughly log-spaced byte sizes for
  *  a typical PwrSnap recording — each tier ~2× the previous, with
@@ -78,6 +79,38 @@ export const MP4_PRESETS: Readonly<Record<VideoPreset, Mp4PresetSpec>> = {
   med: { width: 1080, bitrate: "5000k", keyframeInterval: 60 },
   high: { width: null, bitrate: "6000k", keyframeInterval: 60 }
 };
+
+/**
+ * Build the platform-owned H.264 encoder portion of an MP4 export.
+ * PwrSnap's controlled Windows FFmpeg exposes Media Foundation's
+ * `h264_mf`; `h264_videotoolbox` and its `-allow_sw` option exist only
+ * in the macOS build. Keep this pure so release-artifact codec drift is
+ * pinned without needing to spawn ffmpeg in a unit test.
+ *
+ * macOS is the other packaged target. Non-Windows developer/test hosts
+ * retain the historical VideoToolbox arm rather than pretending the
+ * controlled builds ship a third encoder contract.
+ */
+export function buildMp4VideoEncoderArgs(
+  platform: NodeJS.Platform,
+  spec: Mp4PresetSpec
+): string[] {
+  const args =
+    platform === "win32"
+      ? ["-c:v", "h264_mf"]
+      : ["-c:v", "h264_videotoolbox", "-allow_sw", "1"];
+  args.push(
+    "-b:v",
+    spec.bitrate,
+    "-g",
+    String(spec.keyframeInterval),
+    "-keyint_min",
+    String(spec.keyframeInterval),
+    "-pix_fmt",
+    "yuv420p"
+  );
+  return args;
+}
 
 const MP4_REENCODE_CACHE_TOKEN = "gop60";
 
@@ -203,12 +236,16 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
     preset: input.preset,
     audio: input.audio
   });
-  if (
-    cached !== null &&
-    existsSync(cached.path) &&
-    cacheEntryMatchesEncoder(input, cached.path)
-  ) {
-    return { ...cached, widthPx, heightPx };
+  if (cached !== null && cacheEntryMatchesEncoder(input, cached.path)) {
+    try {
+      const cachedInfo = await stat(cached.path);
+      if (cachedInfo.isFile() && cachedInfo.size > 0) {
+        return { ...cached, byteSize: cachedInfo.size, widthPx, heightPx };
+      }
+    } catch {
+      // Missing/stale DB cache rows fall through to a fresh encode. The encode
+      // writes a sibling temp first, so an old zero-byte final is never served.
+    }
   }
 
   // In-flight de-dup: two callers for the same key share one ffmpeg.
@@ -260,15 +297,19 @@ async function encodeAndRecord(
   // disk grouping makes debugging cache hits / orphans trivial
   // (`ls -lh <captureId>/` shows all six format/preset combinations
   // for a given range).
-  const outputPath = join(
+  const outputStem = [
+    `r${input.range.start.toFixed(3)}-${input.range.end.toFixed(3)}`,
+    input.preset,
+    ...(encoderTag === null ? [] : [encoderTag]),
+    audioTag
+  ].join(".");
+  const outputPath = join(outputDir, `${outputStem}.${ext}`);
+  // FFmpeg infers the muxer from the extension, so the unique temp name
+  // keeps the real extension while living beside the final cache entry.
+  // Same-directory promotion cannot cross volumes and is atomic to readers.
+  const tempOutputPath = join(
     outputDir,
-    [
-      `r${input.range.start.toFixed(3)}-${input.range.end.toFixed(3)}`,
-      input.preset,
-      ...(encoderTag === null ? [] : [encoderTag]),
-      audioTag,
-      ext
-    ].join(".")
+    `.${outputStem}.tmp-${process.pid}-${Date.now()}-${randomUUID()}.${ext}`
   );
 
   // Video captures always carry a legacy_src_path (the recorded .mp4
@@ -282,39 +323,62 @@ async function encodeAndRecord(
     );
   }
 
-  await acquireEncodeSlot();
-  const startMs = Date.now();
+  let encodeStartedAtMs = 0;
+  let byteSize = 0;
   try {
-    if (input.format === "gif") {
-      await encodeGif(
-        ffmpeg,
-        input.record.legacy_src_path,
-        input.range,
-        GIF_PRESETS[input.preset],
-        outputPath
-      );
-    } else {
-      await encodeMp4(
-        ffmpeg,
-        input.record.legacy_src_path,
-        input.video,
-        input.range,
-        input.audio,
-        MP4_PRESETS[input.preset],
-        {
-          sourceWidthPx: input.record.width_px,
-          sourceHeightPx: input.record.height_px,
-          outputWidthPx: widthPx,
-          outputHeightPx: heightPx
-        },
-        outputPath
+    await acquireEncodeSlot();
+    // Queue wait is scheduler pressure, not encode work. Start the metric only
+    // after this request owns a slot so `encodeMs` remains useful for preset
+    // calibration when several cards were clicked at once.
+    encodeStartedAtMs = Date.now();
+    try {
+      if (input.format === "gif") {
+        await encodeGif(
+          ffmpeg,
+          input.record.legacy_src_path,
+          input.range,
+          GIF_PRESETS[input.preset],
+          tempOutputPath
+        );
+      } else {
+        await encodeMp4(
+          ffmpeg,
+          input.record.legacy_src_path,
+          input.video,
+          input.range,
+          input.audio,
+          MP4_PRESETS[input.preset],
+          {
+            sourceWidthPx: input.record.width_px,
+            sourceHeightPx: input.record.height_px,
+            outputWidthPx: widthPx,
+            outputHeightPx: heightPx
+          },
+          tempOutputPath
+        );
+      }
+    } finally {
+      releaseEncodeSlot();
+    }
+
+    const sizeInfo = await stat(tempOutputPath);
+    if (!sizeInfo.isFile() || sizeInfo.size <= 0) {
+      throw new Error(
+        `recording-exporter: ffmpeg produced an empty or invalid ${input.format.toUpperCase()} export`
       );
     }
-  } finally {
-    releaseEncodeSlot();
+    byteSize = sizeInfo.size;
+    await rename(tempOutputPath, outputPath);
+  } catch (cause) {
+    await rm(tempOutputPath, { force: true }).catch((cleanupCause) => {
+      log.warn("video export temp cleanup failed", {
+        path: tempOutputPath,
+        message: cleanupCause instanceof Error ? cleanupCause.message : String(cleanupCause)
+      });
+    });
+    throw cause;
   }
 
-  const sizeInfo = await stat(outputPath);
   recordExport({
     captureId: input.record.id,
     range: input.range,
@@ -322,7 +386,7 @@ async function encodeAndRecord(
     preset: input.preset,
     audio: input.audio,
     path: outputPath,
-    byteSize: sizeInfo.size
+    byteSize
   });
   // Capture actual encode duration + byte size for offline estimator
   // tuning. The renderer's pre-click size labels come from
@@ -335,13 +399,13 @@ async function encodeAndRecord(
     preset: input.preset,
     widthPx,
     heightPx,
-    byteSize: sizeInfo.size,
+    byteSize,
     durationSec: input.range.end - input.range.start,
-    encodeMs: Date.now() - startMs
+    encodeMs: Date.now() - encodeStartedAtMs
   });
   return {
     path: outputPath,
-    byteSize: sizeInfo.size,
+    byteSize,
     durationSec: input.range.end - input.range.start,
     widthPx,
     heightPx,
@@ -356,6 +420,20 @@ async function encodeGif(
   spec: GifPresetSpec,
   outPath: string
 ): Promise<void> {
+  await runFfmpeg(ffmpeg, buildGifEncodeArgs(src, range, spec, outPath));
+}
+
+/**
+ * Build the complete GIF export argv used by production. Keeping the palette
+ * pipeline behind one pure seam lets the controlled Windows artifact smoke
+ * execute the exact same filter graph instead of maintaining a CI-only copy.
+ */
+export function buildGifEncodeArgs(
+  src: string,
+  range: VideoRange,
+  spec: GifPresetSpec,
+  outPath: string
+): string[] {
   // Two-pass palette pipeline through a single ffmpeg invocation
   // using `split` + `palettegen` + `paletteuse`. The preset drives
   // target width + fps:
@@ -371,7 +449,7 @@ async function encodeGif(
     `[0:v] fps=${spec.fps},${scaleStep}split [a][b];` +
     `[a] palettegen=stats_mode=diff [p];` +
     `[b][p] paletteuse=dither=bayer:bayer_scale=5`;
-  const args = [
+  return [
     "-y",
     "-ss",
     range.start.toFixed(3),
@@ -383,7 +461,6 @@ async function encodeGif(
     filterComplex,
     outPath
   ];
-  await runFfmpeg(ffmpeg, args);
 }
 
 async function encodeMp4(
@@ -412,14 +489,14 @@ async function encodeMp4(
     src
   ];
 
-  // Video track. All MP4 presets re-encode via VideoToolbox with
-  // per-preset bitrate + GOP settings. HIGH keeps source resolution
-  // by omitting the scale filter.
+  // Video track. All MP4 presets re-encode through the controlled
+  // platform H.264 encoder with per-preset bitrate + GOP settings.
+  // HIGH keeps source resolution by omitting the scale filter.
   args.push("-map", "0:v:0");
   // Scale when the preset asks for a target width, then re-encode
-  // through Apple's VideoToolbox H.264 encoder. Do not use libx264;
-  // the bundled ffmpeg is an LGPL build and this path must stay
-  // GPL-clean.
+  // through VideoToolbox (macOS) or Media Foundation (Windows). Do
+  // not use libx264; the bundled ffmpeg is an LGPL build and this
+  // path must stay GPL-clean.
   if (
     dims.outputWidthPx !== dims.sourceWidthPx ||
     dims.outputHeightPx !== dims.sourceHeightPx
@@ -429,20 +506,7 @@ async function encodeMp4(
       `scale=${dims.outputWidthPx}:${dims.outputHeightPx}:flags=lanczos`
     );
   }
-  args.push(
-    "-c:v",
-    "h264_videotoolbox",
-    "-allow_sw",
-    "1",
-    "-b:v",
-    spec.bitrate,
-    "-g",
-    String(spec.keyframeInterval),
-    "-keyint_min",
-    String(spec.keyframeInterval),
-    "-pix_fmt",
-    "yuv420p"
-  );
+  args.push(...buildMp4VideoEncoderArgs(process.platform, spec));
 
   // Audio track mapping. The recorder writes system audio as the
   // first audio stream and microphone as the second when both are
@@ -489,7 +553,10 @@ function cacheEntryMatchesEncoder(input: ExportInput, path: string): boolean {
 
 function runFfmpeg(ffmpeg: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(ffmpeg, args, { stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(ffmpeg, args, {
+      shell: false,
+      stdio: ["ignore", "ignore", "pipe"]
+    });
     let stderr = "";
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");

@@ -731,11 +731,11 @@ export function registerRecordingHandlers(): void {
     // MCP), so the verb validates for itself too.
     const valid = validateVideoExportRequest(req, "video:prepareDrag");
     if (!valid.ok) return valid;
-    const resolved = await resolveVideoExport(req);
-    if (!resolved.ok) {
-      return err(mapVideoResolveError(resolved.error, "video:prepareDrag", req.captureId));
-    }
     try {
+      const resolved = await resolveVideoExport(req);
+      if (!resolved.ok) {
+        return err(mapVideoResolveError(resolved.error, "video:prepareDrag", req.captureId));
+      }
       const { result, record, video } = resolved.value;
       const displayName = buildPresetExportDisplayName({
         record,

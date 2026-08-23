@@ -22,7 +22,7 @@ import {
   type SizzleSequenceBeat,
   type SizzleWordTiming
 } from "@pwrsnap/shared";
-import { MIN_RANGE_SEC } from "../../shared/video-range";
+import { MIN_RANGE_SEC, roundTime } from "../../shared/video-range";
 import { anchorTimingForWord, nearestWordAnchor } from "./anchor";
 import type { TimelineSceneRegion } from "./timeline-model";
 
@@ -154,17 +154,14 @@ export function applyFinalEndDrag(
 /** Nearest word + residual when there is a transcript; an offset when not. */
 function pinTiming(words: readonly SizzleWordTiming[], sec: number): SizzleBeatTiming {
   const near = nearestWordAnchor(words, sec);
-  if (near === null) return { kind: "offset", startSec: round3(sec), endSec: null };
-  return anchorTimingForWord(words, near.wordIndex, round3(near.offsetSec));
+  if (near === null) return { kind: "offset", startSec: roundTime(sec), endSec: null };
+  return anchorTimingForWord(words, near.wordIndex, roundTime(near.offsetSec));
 }
 
 function withEnd(timing: SizzleBeatTiming, startSec: number, endSec: number): SizzleBeatTiming {
   const end = Math.max(startSec + MIN_RANGE_SEC, endSec);
-  if (timing.kind === "offset") return { ...timing, endSec: round3(end) };
-  if (timing.kind === "phrase") return { ...timing, durationSec: round3(end - startSec) };
+  if (timing.kind === "offset") return { ...timing, endSec: roundTime(end) };
+  if (timing.kind === "phrase") return { ...timing, durationSec: roundTime(end - startSec) };
   return timing;
 }
 
-function round3(value: number): number {
-  return Math.round(value * 1000) / 1000;
-}

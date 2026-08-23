@@ -30,9 +30,19 @@ import {
   type CachedSequencePreviewPlan,
   type CachedSequenceTranscriptPhrases
 } from "./sequence-plan";
+import { sceneHasOffsetAnchors } from "./scene-ops";
 import { base64ToBlob, clampTime } from "./sizzle-helpers";
 
 export type MeasuredDuration = { key: string; durationSec: number };
+
+/** Scenes whose narration the editor may load from the TTS cache: any scene
+ *  with a script that is not explicitly rendering its own audio. Legacy
+ *  one-capture scenes qualify — their narration is cached under the same
+ *  tuple the render path uses, which is what lets the reel player sound a
+ *  pre-sequence reel. */
+function narratableScene(scene: SizzleScene): boolean {
+  return scene.audioSource !== "native" && scene.audioSource !== "muted";
+}
 
 export type SequencePlanState = {
   /** The single hidden `<audio>` that plays every scene's narration. */
@@ -147,9 +157,7 @@ export function useSequencePlan(args: {
     const prev = lastResolvedSecRef.current.get(scene.id);
     lastResolvedSecRef.current.set(scene.id, durationSec);
     if (prev === undefined || Math.abs(prev - durationSec) < 0.05) return;
-    const hasOffsets =
-      scene.kind === "sequence" && (scene.beats ?? []).some((b) => b.timing.kind === "offset");
-    if (!hasOffsets) return;
+    if (!sceneHasOffsetAnchors(scene)) return;
     setRefitOffers((cur) => ({ ...cur, [scene.id]: { fromSec: cur[scene.id]?.fromSec ?? prev, toSec: durationSec } }));
   };
   const refitOfferForScene = (scene: SizzleScene): { fromSec: number; toSec: number } | null =>
@@ -399,6 +407,19 @@ export function useSequencePlan(args: {
           delete next[scene.id];
           return next;
         });
+        // …and so is anything derived from the OLD narration's length: the
+        // re-fit baseline and any offer standing against it. Structural ops
+        // (merge / split) rewrite `narration` wholesale while KEEPING the
+        // scene id and having already rebased the offsets themselves, so a
+        // surviving baseline would offer to rescale correct anchors a
+        // second time.
+        lastResolvedSecRef.current.delete(scene.id);
+        setRefitOffers((prev) => {
+          if (prev[scene.id] === undefined) return prev;
+          const next = { ...prev };
+          delete next[scene.id];
+          return next;
+        });
       }
       lastScriptByScene.current.set(scene.id, scene.scriptLine);
     }
@@ -418,7 +439,7 @@ export function useSequencePlan(args: {
   const sequenceSceneIdsKey = useMemo(
     () =>
       project.scenes
-        .filter((s) => s.kind === "sequence")
+        .filter(narratableScene)
         .map((s) => `${s.id}:${project.ttsProvider}:${project.ttsModel}:${project.voice}:${sequenceTranscriptKey(s)}`)
         .join(","),
     [project.scenes, project.ttsModel, project.ttsProvider, project.voice]
@@ -429,7 +450,7 @@ export function useSequencePlan(args: {
       `${scene.id}:${project.ttsProvider}:${project.ttsModel}:${project.voice}:${sequenceTranscriptKey(scene)}`;
     const pending = project.scenes.filter(
       (s) =>
-        s.kind === "sequence" &&
+        narratableScene(s) &&
         (s.narration ?? s.scriptLine).trim().length > 0 &&
         sequenceAudioBlobs[s.id] === undefined &&
         !waveformAttemptRef.current.has(cacheAttemptKey(s))
@@ -519,14 +540,18 @@ export function useSequencePlan(args: {
     const durationSec =
       cachedPlan?.durationSec ??
       previewDurations[sceneId]?.durationSec ??
-      0;
+      // No measurement for this scene: clamp to the request, not to 0.
+      // `clampTime(t, 0)` returns 0 for every input, which used to write a
+      // 0 into the SHARED previewTimeSec below — snapping a different,
+      // still-loaded scene's stage back to its first frame mid-scrub.
+      Math.max(0, timeSec);
     const clamped = clampTime(timeSec, durationSec);
-    setPreviewTimeSec(clamped);
-    if (
-      (previewingSceneId === sceneId || previewLoadedSceneId === sceneId) &&
-      audioRef.current !== null
-    ) {
-      audioRef.current.currentTime = clamped;
+    const isStageScene = previewingSceneId === sceneId || previewLoadedSceneId === sceneId;
+    // `previewTimeSec` has no scene identity, so only the scene actually on
+    // the stage may write it.
+    if (isStageScene) {
+      setPreviewTimeSec(clamped);
+      if (audioRef.current !== null) audioRef.current.currentTime = clamped;
     }
   };
 
@@ -565,7 +590,16 @@ export function useSequencePlan(args: {
     cachedNarrationDurationSec,
     refitOfferForScene,
     dismissRefitOffer,
-    durationDeps: [sequencePreviewPlans, previewDurations, cachedNarrationDurations],
+    // `buildTimelineModel`'s sourceFor reads words too, so a words-only
+    // cache fill (a sidecar with a zero/absent duration) must invalidate the
+    // memo — today it only did so by happening to batch with another dep.
+    durationDeps: [
+      sequencePreviewPlans,
+      previewDurations,
+      cachedNarrationDurations,
+      sequenceWords,
+      sequenceTranscriptPhrases
+    ],
     onPreviewScene,
     seekPreview,
     invalidateScenePreview

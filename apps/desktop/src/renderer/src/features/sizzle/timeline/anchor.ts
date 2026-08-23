@@ -18,6 +18,7 @@ import {
   type SizzleBeatTiming,
   type SizzleWordTiming
 } from "@pwrsnap/shared";
+import { roundTime } from "../../shared/video-range";
 
 export const MAX_ANCHOR_WORDS = 5;
 
@@ -56,7 +57,7 @@ export function anchorTimingForWord(
     kind: "phrase",
     phrase: chosen.phrase,
     occurrence: chosen.occurrence,
-    offsetSec: roundSec(offsetSec),
+    offsetSec: roundTime(offsetSec),
     durationSec: null
   };
 }
@@ -77,9 +78,6 @@ export function nearestWordAnchor(
       best = i;
     }
   });
-  return { wordIndex: best, offsetSec: roundSec(sec - words[best]!.startSec) };
+  return { wordIndex: best, offsetSec: roundTime(sec - words[best]!.startSec) };
 }
 
-function roundSec(value: number): number {
-  return Math.round(value * 1000) / 1000;
-}

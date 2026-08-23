@@ -12,9 +12,29 @@
 // the lane is empty except for the "Synthesize narration" affordance.
 
 import type { ReactElement } from "react";
+import { TIMELINE_PX_PER_SEC_1X, TIMELINE_ZOOMS, type TimelineZoom } from "./density";
 import type { TimelineModel, TimelineSceneRegion, TimelineWord } from "./timeline-model";
 
-export const RIBBON_ROWS = 3;
+/** Stagger rows available to labels. Six, not three: a 43 s narration is
+ *  ~120 words, and at three rows most of them collapsed into ticks that the
+ *  operator described — accurately — as unreadable. The lane is sized to
+ *  match in timeline.css. */
+export const RIBBON_ROWS = 6;
+/** Vertical pitch between stagger rows, in px. */
+export const RIBBON_ROW_PITCH_PX = 13;
+/** Room above the first row and below the last. */
+const RIBBON_LANE_PAD_PX = 18;
+/** The lane never collapses below this: an estimated scene shows a
+ *  "Synthesize narration" button here and it still has to fit. */
+const RIBBON_LANE_MIN_PX = 44;
+
+/** The lane is sized to the rows the narration ACTUALLY uses, not to the
+ *  six it may use. Six rows are the ceiling for a dense narration at a
+ *  coarse zoom; reserving all six unconditionally left ~50 px of dead
+ *  band under a ribbon that needed three. */
+export function ribbonLaneHeightPx(rowsUsed: number): number {
+  return Math.max(RIBBON_LANE_MIN_PX, rowsUsed * RIBBON_ROW_PITCH_PX + RIBBON_LANE_PAD_PX);
+}
 /** Rough Geist 12 px glyph advance; the real width is measured by layout,
  *  this only decides which labels are attempted. */
 const PX_PER_CHAR = 7.1;
@@ -33,16 +53,17 @@ export function layoutRibbonWords(
   words: readonly TimelineWord[],
   pxPerSec: number,
   anchored: ReadonlySet<number>,
-  maxPx: number = Number.POSITIVE_INFINITY
+  maxPx: number = Number.POSITIVE_INFINITY,
+  rows: number = RIBBON_ROWS
 ): PlacedWord[] {
-  const occupied: Array<Array<[number, number]>> = Array.from({ length: RIBBON_ROWS }, () => []);
+  const occupied: Array<Array<[number, number]>> = Array.from({ length: rows }, () => []);
   const fits = (row: number, x0: number, x1: number): boolean =>
     occupied[row]!.every(([a, b]) => x1 <= a || x0 >= b);
   const place = (word: TimelineWord): PlacedWord => {
     const x0 = word.absStartSec * pxPerSec;
     const x1 = x0 + PX_PER_CHAR * word.word.length + (anchored.has(word.index) ? BADGE_PX : 0) + LABEL_GAP_PX;
     if (x1 > maxPx) return { word, x: x0, tick: true };
-    for (let row = 0; row < RIBBON_ROWS; row += 1) {
+    for (let row = 0; row < rows; row += 1) {
       if (fits(row, x0, x1)) {
         occupied[row]!.push([x0, x1]);
         return { word, x: x0, row, tick: false };
@@ -60,11 +81,65 @@ export function layoutRibbonWords(
   return out;
 }
 
+/** Rows the AUTO zoom aims to fit the narration into. Two, not six: the
+ *  lane can stack six deep, but a word six rows off its neighbour reads as
+ *  a different moment than it is. Six rows are the overflow valve; two are
+ *  what "you can tell what is happening when" actually needs. */
+const LEGIBLE_ROWS = 2;
+/** Fraction of words allowed to fall to ticks at the chosen zoom. One
+ *  tight cluster in a 120-word narration should not force the whole reel
+ *  to 8x. */
+const LEGIBLE_TICK_TOLERANCE = 0.05;
+
+/** The coarsest zoom at which the narration reads: every word labelled,
+ *  within {@link LEGIBLE_ROWS} rows, give or take the tolerance.
+ *
+ *  This exists because fit-to-width is the wrong default for a REEL WITH
+ *  WORDS. Fit answers "how do I see the whole thing at once", which is the
+ *  right question for the clip lane and the wrong one for the ribbon: a
+ *  43 s narration fit into a ~1300 px column is 19 px/s, where a 5-letter
+ *  word needs 2.3x the room its 0.43 s gives it. The ribbon then stacks to
+ *  its six-row ceiling and the rest tick — technically all present, but
+ *  you cannot tell what is said when, which is the only reason the lane is
+ *  there.
+ *
+ *  Returns "fit" when there is nothing to lay out (no words yet, or the
+ *  column is not measured) so an empty or unmeasured timeline never jumps. */
+export function legibleZoomForWords(
+  words: readonly TimelineWord[],
+  fitPxPerSec: number
+): TimelineZoom {
+  if (words.length === 0 || fitPxPerSec <= 0) return "fit";
+  const budget = Math.floor(words.length * LEGIBLE_TICK_TOLERANCE);
+  // Fit is the floor, and only rungs DENSER than it are candidates —
+  // same guard `zoomIn`/`zoomOut` carry. A 4 s reel in a 1000 px column
+  // already fits at 250 px/s, so "stepping up" to 4x (160 px/s) would
+  // zoom OUT and leave empty track past the end of the reel.
+  const ladder = [
+    { zoom: "fit" as TimelineZoom, pxPerSec: fitPxPerSec },
+    ...TIMELINE_ZOOMS.flatMap((zoom) =>
+      zoom === "fit" || TIMELINE_PX_PER_SEC_1X * zoom <= fitPxPerSec + 0.5
+        ? []
+        : [{ zoom, pxPerSec: TIMELINE_PX_PER_SEC_1X * zoom }]
+    )
+    // Coarsest first, so the first rung that reads is the one that shows
+    // the most reel at once.
+  ].sort((a, b) => a.pxPerSec - b.pxPerSec);
+  for (const rung of ladder) {
+    const placed = layoutRibbonWords(words, rung.pxPerSec, EMPTY_ANCHORS, Number.POSITIVE_INFINITY, LEGIBLE_ROWS);
+    if (placed.filter((p) => p.tick).length <= budget) return rung.zoom;
+  }
+  return ladder[ladder.length - 1]!.zoom;
+}
+
+const EMPTY_ANCHORS: ReadonlySet<number> = new Set();
+
 export function WordRibbon({
   model,
   x,
   pxPerSec,
   widthPx,
+  visible,
   onClickWord,
   onSynthesize
 }: {
@@ -73,6 +148,11 @@ export function WordRibbon({
   pxPerSec: number;
   /** The lanes' width: no label is drawn past it. */
   widthPx: number;
+  /** Project-axis window currently on screen. Layout still runs over EVERY
+   *  word — otherwise rows would reshuffle as you scroll — but only the
+   *  words inside this window are mounted. A 45 s reel at 8x is ~14,000 px
+   *  and several hundred words; without this the DOM carries all of them. */
+  visible: { startSec: number; endSec: number };
   /** Click a word: anchor the selected clip (or the clip under that
    *  moment) to it. */
   onClickWord: (scene: TimelineSceneRegion, word: TimelineWord) => void;
@@ -80,12 +160,43 @@ export function WordRibbon({
    *  TTS credits, so it is ALWAYS an explicit click, never automatic. */
   onSynthesize: (sceneId: string) => void;
 }): ReactElement {
+  // Layout for EVERY scene runs before anything is drawn: the lane's height
+  // depends on the deepest row any scene reached, and a lane that resized
+  // itself per scene would shift the rows already drawn.
+  const laidOut = model.scenes.map((scene) => {
+    if (!scene.exact || scene.kind !== "sequence") return { scene, anchoredByWord: null, placedAll: [] };
+    const anchoredByWord = new Map<number, number>();
+    for (const clip of scene.clips) {
+      if (clip.anchored && clip.timing.kind === "phrase") {
+        const idx = anchorWordIndexFor(scene, clip.localStartSec, clip.timing.offsetSec);
+        if (idx !== null) anchoredByWord.set(idx, clip.index);
+      }
+    }
+    // Unmeasured (0) = no bound yet; the first measured layout applies it.
+    const placedAll = layoutRibbonWords(
+      scene.words,
+      pxPerSec,
+      new Set(anchoredByWord.keys()),
+      widthPx > 0 ? widthPx : Number.POSITIVE_INFINITY
+    );
+    return { scene, anchoredByWord, placedAll };
+  });
+  const rowsUsed = laidOut.reduce(
+    (deepest, { placedAll }) =>
+      placedAll.reduce((d, p) => (p.tick ? d : Math.max(d, p.row + 1)), deepest),
+    0
+  );
+
   return (
-    <div className="szt__lane szt__lane--ribbon" data-testid="sizzle-timeline-ribbon">
-      {model.scenes.map((scene) => {
+    <div
+      className="szt__lane szt__lane--ribbon"
+      style={{ height: `${ribbonLaneHeightPx(rowsUsed)}px` }}
+      data-testid="sizzle-timeline-ribbon"
+    >
+      {laidOut.map(({ scene, anchoredByWord, placedAll }) => {
         const left = x(scene.startSec);
         const width = Math.max(0, x(scene.endSec) - left);
-        if (!scene.exact || scene.kind !== "sequence") {
+        if (anchoredByWord === null) {
           if (scene.kind !== "sequence") return null;
           return (
             <div
@@ -111,19 +222,10 @@ export function WordRibbon({
             </div>
           );
         }
-        const anchoredByWord = new Map<number, number>();
-        for (const clip of scene.clips) {
-          if (clip.anchored && clip.timing.kind === "phrase") {
-            const idx = anchorWordIndexFor(scene, clip.localStartSec, clip.timing.offsetSec);
-            if (idx !== null) anchoredByWord.set(idx, clip.index);
-          }
-        }
-        // Unmeasured (0) = no bound yet; the first measured layout applies it.
-        const placed = layoutRibbonWords(
-          scene.words,
-          pxPerSec,
-          new Set(anchoredByWord.keys()),
-          widthPx > 0 ? widthPx : Number.POSITIVE_INFINITY
+        // Mount only what is on screen (the layout above already ran over
+        // the whole scene, so a word's row is stable while scrolling).
+        const placed = placedAll.filter(
+          (p) => p.word.absStartSec >= visible.startSec && p.word.absStartSec <= visible.endSec
         );
         return placed.map((p) => {
           const clipIndex = anchoredByWord.get(p.word.index);
@@ -152,7 +254,7 @@ export function WordRibbon({
               key={`${scene.sceneId}:${p.word.index}`}
               type="button"
               className={"szt__word" + (isAnchor ? " is-anch" : "")}
-              style={{ left: `${p.x}px`, top: `${5 + p.row * 13}px` }}
+              style={{ left: `${p.x}px`, top: `${4 + p.row * RIBBON_ROW_PITCH_PX}px` }}
               title={isAnchor ? `Clip ${clipIndex + 1} starts here` : `Anchor the selected clip to “${p.word.word}”`}
               onClick={(event) => {
                 event.stopPropagation();

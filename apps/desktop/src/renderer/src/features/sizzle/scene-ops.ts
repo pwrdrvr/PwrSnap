@@ -16,6 +16,7 @@ import {
   type SizzleSequenceBeat,
   type SizzleWordTiming
 } from "@pwrsnap/shared";
+import { roundTime } from "../shared/video-range";
 
 export function removeSceneById(scenes: SizzleScene[], id: string): SizzleScene[] {
   return scenes.filter((s) => s.id !== id);
@@ -199,8 +200,8 @@ function shiftTiming(timing: SizzleBeatTiming, bySec: number): SizzleBeatTiming 
   if (timing.kind !== "offset") return timing;
   return {
     kind: "offset",
-    startSec: round3(Math.max(0, timing.startSec + bySec)),
-    endSec: timing.endSec === null ? null : round3(Math.max(0, timing.endSec + bySec))
+    startSec: roundTime(Math.max(0, timing.startSec + bySec)),
+    endSec: timing.endSec === null ? null : roundTime(Math.max(0, timing.endSec + bySec))
   };
 }
 
@@ -240,7 +241,7 @@ export function mergeSceneIntoPrevious(
     let timing = bumpOccurrence(shiftTiming(beat.timing, shiftSec), occurrenceBump);
     if (i === 0) {
       // The boundary: where the merged-in narration begins.
-      timing = leadingPhraseAnchor(prevText, text) ?? { kind: "offset", startSec: round3(shiftSec), endSec: null };
+      timing = leadingPhraseAnchor(prevText, text) ?? { kind: "offset", startSec: roundTime(shiftSec), endSec: null };
     }
     return {
       ...beat,
@@ -287,10 +288,14 @@ export function splitSceneAtSec(
   const text = scene.narration ?? scene.scriptLine;
   const [textA, textB] = splitTextAtWord(text, wordAfter);
   const wordsBefore = ctx.words.slice(0, wordAfter);
+  // The new scene's narration starts at the first MOVED word, not at the
+  // playhead — scrubbing into a pause puts those seconds in neither scene.
+  // Rebasing by `splitSec` would shift every moved offset late by that gap.
+  const newZeroSec = ctx.words[wordAfter]?.startSec ?? splitSec;
   const rebased = move.map((beat, i): SizzleSequenceBeat => {
     if (i === 0) return { ...beat, timing: { kind: "auto" } }; // the new scene's clip 0 is pinned at 0
     const drop = beat.timing.kind === "phrase" ? countPhraseOccurrences(wordsBefore, beat.timing.phrase) : 0;
-    return { ...beat, timing: bumpOccurrence(shiftTiming(beat.timing, -splitSec), -drop) };
+    return { ...beat, timing: bumpOccurrence(shiftTiming(beat.timing, -newZeroSec), -drop) };
   });
   const first: SizzleScene = {
     ...scene,
@@ -347,8 +352,8 @@ export function refitSceneOffsets(
         ...beat,
         timing: {
           kind: "offset",
-          startSec: round3(beat.timing.startSec * ratio),
-          endSec: beat.timing.endSec === null ? null : round3(beat.timing.endSec * ratio)
+          startSec: roundTime(beat.timing.startSec * ratio),
+          endSec: beat.timing.endSec === null ? null : roundTime(beat.timing.endSec * ratio)
         }
       };
     });
@@ -362,6 +367,3 @@ export function sceneHasOffsetAnchors(scene: SizzleScene): boolean {
   return scene.kind === "sequence" && (scene.beats ?? []).some((b) => b.timing.kind === "offset");
 }
 
-function round3(value: number): number {
-  return Math.round(value * 1000) / 1000;
-}

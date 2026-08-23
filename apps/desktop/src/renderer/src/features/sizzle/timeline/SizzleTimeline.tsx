@@ -24,6 +24,7 @@ import {
   type ReactElement
 } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
+import type { PlayheadSource } from "../../shared/playhead";
 import { clampTime, formatTimecode, roundTime, tickMarks } from "../../shared/video-range";
 import { isTypingTarget } from "../sizzle-helpers";
 import { ClipLane, type BeginClipDrag, type ClipDragView } from "./ClipLane";
@@ -31,7 +32,7 @@ import { Playhead } from "./Playhead";
 import { SceneRegions } from "./SceneRegions";
 import { TimelineRuler } from "./TimelineRuler";
 import { WaveformLane } from "./WaveformLane";
-import { WordRibbon } from "./WordRibbon";
+import { legibleZoomForWords, WordRibbon } from "./WordRibbon";
 import { pxPerSecFor, TIMELINE_ZOOMS, zoomIn, zoomOut, type TimelineZoom } from "./density";
 import {
   clampToBounds,
@@ -50,8 +51,10 @@ export type SizzleTimelineProps = {
   captureMap: Map<string, CaptureRecord>;
   /** Decoded narration per scene id (wavesurfer draws it). */
   audioBlobs: Record<string, Blob>;
-  /** Playhead position on the project axis. */
-  playheadSec: number;
+  /** The project-axis playhead. A SOURCE, not a number: the head moves at
+   *  display refresh and this subtree holds every clip and word, so the
+   *  position must not travel through React state. */
+  head: PlayheadSource;
   /** Scrub: called continuously while the pointer is down on the lanes —
    *  and while a clip drags, with the edge being dragged (the preview parks
    *  on the frame the user is placing). */
@@ -69,7 +72,9 @@ export type SizzleTimelineProps = {
   /** A finished clip drag (one per gesture). Absent = the lane is
    *  read-only: no grips, no body drag. */
   onDragCommit?: ((commit: TimelineDragCommit) => void) | undefined;
-  /** Initial zoom (tests). Defaults to fit-to-width. */
+  /** Pin the zoom instead of letting the ribbon choose it (tests, and the
+   *  caller that wants a fixed density). Absent = auto: see
+   *  {@link legibleZoomForWords}. */
   initialZoom?: TimelineZoom | undefined;
 };
 
@@ -102,7 +107,7 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
     model,
     captureMap,
     audioBlobs,
-    playheadSec,
+    head,
     onScrub,
     selectedClipId,
     onSelectClip,
@@ -111,14 +116,18 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
     onClickWord,
     onSynthesize,
     onDragCommit,
-    initialZoom = "fit"
+    initialZoom
   } = props;
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const lanesRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(0);
-  const [zoom, setZoom] = useState<TimelineZoom>(initialZoom);
+  // `null` = nobody has chosen, so the ribbon chooses (see `zoom` below).
+  // Any click on the zoom group or ⌘± fills this in and auto never fires
+  // again for this mount — a zoom that moves under the operator after they
+  // set it is worse than a bad default.
+  const [pickedZoom, setPickedZoom] = useState<TimelineZoom | null>(initialZoom ?? null);
   const [scrubbing, setScrubbing] = useState(false);
   const scrubRef = useRef<number | null>(null);
   const clipDragRef = useRef<ClipDragState | null>(null);
@@ -144,22 +153,83 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
 
   const totalSec = model.totalSec;
   const fitPxPerSec = pxPerSecFor("fit", width, totalSec);
+  // Fit-to-width answers "show me the whole reel", which is right for the
+  // clips and wrong for the words — see `legibleZoomForWords`. The default
+  // is therefore the coarsest density the NARRATION still reads at, and it
+  // resolves to `fit` whenever there is no narration to read.
+  const ribbonWords = useMemo(() => model.scenes.flatMap((scene) => scene.words), [model]);
+  const autoZoom = useMemo(
+    () => legibleZoomForWords(ribbonWords, fitPxPerSec),
+    [ribbonWords, fitPxPerSec]
+  );
+  const zoom = pickedZoom ?? autoZoom;
   const pxPerSec = pxPerSecFor(zoom, width, totalSec);
   const contentWidth = Math.max(width, Math.round(totalSec * pxPerSec));
   const lanesWidth = zoom === "fit" ? contentWidth : contentWidth + TAIL_PX;
   const x = useCallback((sec: number): number => sec * pxPerSec, [pxPerSec]);
+
+  // ── Virtualization window ────────────────────────────────────────────
+  // At 8x a 45 s reel is ~14,000 px of lanes carrying 80 clips and several
+  // hundred word buttons. Only what is on screen (plus half a viewport of
+  // slack either side) is mounted; the LAYOUT still runs over everything,
+  // so nothing shifts as you scroll. Recomputed on a rAF and only when the
+  // window has actually moved, so scrolling does not re-render per pixel.
+  const [visible, setVisible] = useState<{ startSec: number; endSec: number }>({
+    startSec: 0,
+    endSec: Number.POSITIVE_INFINITY
+  });
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el === null || pxPerSec <= 0) return;
+    let frame = 0;
+    const update = (): void => {
+      frame = 0;
+      const view = el.clientWidth;
+      if (view <= 0) {
+        // Not laid out yet (or a zero-height host, e.g. jsdom). Render
+        // everything rather than nothing — an unmeasured viewport must not
+        // blank the lanes.
+        setVisible((prev) =>
+          prev.startSec === 0 && prev.endSec === Number.POSITIVE_INFINITY
+            ? prev
+            : { startSec: 0, endSec: Number.POSITIVE_INFINITY }
+        );
+        return;
+      }
+      const slack = view * 0.5;
+      const startSec = Math.max(0, (el.scrollLeft - slack) / pxPerSec);
+      const endSec = (el.scrollLeft + view + slack) / pxPerSec;
+      setVisible((prev) =>
+        Math.abs(prev.startSec - startSec) < 0.2 && Math.abs(prev.endSec - endSec) < 0.2
+          ? prev
+          : { startSec, endSec }
+      );
+    };
+    update();
+    const onScroll = (): void => {
+      if (frame === 0) frame = requestAnimationFrame(update);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (frame !== 0) cancelAnimationFrame(frame);
+    };
+  }, [pxPerSec, width]);
   const ticks = useMemo(() => tickMarks(totalSec, contentWidth), [totalSec, contentWidth]);
 
   // Keep the playhead in view while scrubbing / playing at zoom.
   useEffect(() => {
-    const el = scrollRef.current;
-    if (el === null || zoom === "fit") return;
-    const head = x(playheadSec);
-    const left = el.scrollLeft;
-    const view = el.clientWidth;
-    if (head < left + 24) el.scrollLeft = Math.max(0, head - view * 0.25);
-    else if (head > left + view - 24) el.scrollLeft = Math.max(0, head - view * 0.75);
-  }, [playheadSec, x, zoom]);
+    if (zoom === "fit") return;
+    return head.subscribe((sec) => {
+      const el = scrollRef.current;
+      if (el === null) return;
+      const at = sec * pxPerSec;
+      const left = el.scrollLeft;
+      const view = el.clientWidth;
+      if (at < left + 24) el.scrollLeft = Math.max(0, at - view * 0.25);
+      else if (at > left + view - 24) el.scrollLeft = Math.max(0, at - view * 0.75);
+    });
+  }, [head, pxPerSec, zoom]);
 
   // ⌘+ / ⌘− zoom, never stolen from a text field.
   useEffect(() => {
@@ -168,15 +238,15 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
       if (isTypingTarget(event.target)) return;
       if (event.key === "=" || event.key === "+") {
         event.preventDefault();
-        setZoom((z) => zoomIn(z, fitPxPerSec));
+        setPickedZoom(zoomIn(zoom, fitPxPerSec));
       } else if (event.key === "-" || event.key === "_") {
         event.preventDefault();
-        setZoom((z) => zoomOut(z, fitPxPerSec));
+        setPickedZoom(zoomOut(zoom, fitPxPerSec));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [fitPxPerSec]);
+  }, [fitPxPerSec, zoom]);
 
   const secAt = useCallback(
     (clientX: number): number => {
@@ -318,6 +388,18 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
     if (scrubRef.current !== event.pointerId) return;
     onScrub(roundTime(secAt(event.clientX)));
   };
+  // The OS took the gesture (notification, ⌘-Tab, trackpad takeover).
+  // A cancelled drag is ABANDONED, not committed at whatever coordinates
+  // the cancel carried — those need not reflect where the pointer is.
+  const cancelPointer = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (clipDragRef.current?.pointerId === event.pointerId) {
+      finishClipDrag(false);
+      return;
+    }
+    if (scrubRef.current !== event.pointerId) return;
+    scrubRef.current = null;
+    setScrubbing(false);
+  };
   const endPointer = (event: ReactPointerEvent<HTMLDivElement>): void => {
     if (clipDragRef.current?.pointerId === event.pointerId) {
       moveClipDrag(event.clientX); // a flick with no move events still counts
@@ -375,7 +457,7 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
               type="button"
               className={z === zoom ? "is-on" : ""}
               aria-pressed={z === zoom}
-              onClick={() => setZoom(z)}
+              onClick={() => setPickedZoom(z)}
               data-testid={`sizzle-timeline-zoom-${String(z)}`}
             >
               {z === "fit" ? "Fit" : `${z}×`}
@@ -397,13 +479,13 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
             aria-label="Reel playhead"
             aria-valuemin={0}
             aria-valuemax={totalSec}
-            aria-valuenow={playheadSec}
-            aria-valuetext={formatTimecode(playheadSec)}
+            aria-valuenow={head.get()}
+            aria-valuetext={formatTimecode(head.get())}
             tabIndex={-1}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={endPointer}
-            onPointerCancel={endPointer}
+            onPointerCancel={cancelPointer}
             onLostPointerCapture={onLostPointerCapture}
             onClick={(event) => {
               if (suppressClickRef.current) {
@@ -436,6 +518,7 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
             <ClipLane
               model={model}
               x={x}
+              visible={visible}
               captureMap={captureMap}
               selectedClipId={selectedClipId}
               onSelectClip={(clip) => {
@@ -454,10 +537,11 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
               x={x}
               pxPerSec={pxPerSec}
               widthPx={lanesWidth}
+              visible={visible}
               onClickWord={(scene, word) => onClickWord?.(scene, word)}
               onSynthesize={(sceneId) => onSynthesize?.(sceneId)}
             />
-            <Playhead leftPx={x(playheadSec)} sec={playheadSec} widthPx={lanesWidth} />
+            <Playhead head={head} pxPerSec={pxPerSec} widthPx={lanesWidth} />
             {dragTipSec !== null ? (
               <span
                 className="szt__drag-tip"
@@ -472,7 +556,15 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
         </div>
       </div>
       {warnings.length > 0 ? (
-        <div className="szt__warns" aria-label="Timeline warnings">
+        // Scrolls WITH the axis: these chips are positioned in content-space
+        // pixels, so painting them in a static strip put them off-screen at
+        // zoom and left them pointing at the wrong time after any scroll.
+        <div className="szt__warns-scroll">
+          <div
+            className="szt__warns"
+            style={{ width: `${lanesWidth}px` }}
+            aria-label="Timeline warnings"
+          >
           {warnings.map((c) => (
             <span
               key={c.beatId}
@@ -485,6 +577,7 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
                 : "too fast to read"}
             </span>
           ))}
+          </div>
         </div>
       ) : null}
     </section>

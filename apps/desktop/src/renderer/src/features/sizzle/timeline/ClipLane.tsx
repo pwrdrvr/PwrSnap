@@ -49,12 +49,17 @@ export function ClipLane({
   captureMap,
   selectedClipId,
   onSelectClip,
+  visible,
   drag = null,
   onBeginDrag
 }: {
   model: TimelineModel;
   x: (sec: number) => number;
   captureMap: Map<string, CaptureRecord>;
+  /** Project-axis window on screen; clips outside it are not mounted. Their
+   *  geometry is unchanged — this only decides what the DOM carries, which
+   *  matters at 80 clips and several screens of width. */
+  visible: { startSec: number; endSec: number };
   selectedClipId: string | null;
   onSelectClip: (clip: TimelineClip) => void;
   drag?: ClipDragView | null | undefined;
@@ -66,7 +71,10 @@ export function ClipLane({
       {model.scenes.flatMap((scene) => {
         const live = drag !== null && drag.sceneId === scene.sceneId ? drag : null;
         const last = scene.clips.length - 1;
-        return scene.clips.map((clip) => {
+        const onScreen = scene.clips.filter(
+          (clip) => clip.endSec >= visible.startSec && clip.startSec <= visible.endSec
+        );
+        return onScreen.map((clip) => {
           // Drag-local windows while this scene is being dragged; the
           // model's otherwise.
           const startSec =

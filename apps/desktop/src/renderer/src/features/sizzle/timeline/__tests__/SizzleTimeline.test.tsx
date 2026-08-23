@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, SizzleScene, SizzleSequenceBeat, SizzleWordTiming } from "@pwrsnap/shared";
+import { createPlayheadSource } from "../../../shared/playhead";
 import { SizzleTimeline, type SizzleTimelineProps } from "../SizzleTimeline";
 import { buildTimelineModel, type TimelineModel } from "../timeline-model";
 
@@ -87,7 +88,7 @@ function baseProps(model: TimelineModel): SizzleTimelineProps {
     model,
     captureMap: new Map(),
     audioBlobs: {},
-    playheadSec: 0,
+    head: createPlayheadSource(),
     onScrub: () => undefined,
     selectedClipId: null,
     onSelectClip: () => undefined
@@ -230,20 +231,23 @@ describe("SizzleTimeline", () => {
       ],
       sourceFor: () => ({ words: WORDS, context: { capture: null, narrationDurationSec: 8 } })
     });
-    // total = 8 + 8 − 0.5 = 15.5 s over 1000 px.
-    const el = await render({ model, playheadSec: 7.75 });
-    const head = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-playhead"]')!;
-    expect(head.style.transform).toBe("translateX(500px)");
-    expect(head.textContent).toBe("0:07.7");
-    expect(head.classList.contains("is-flip")).toBe(false);
-    // At the end of the reel the timecode tag flips to the left of the
-    // line so it cannot overflow the lanes (and widen the scroll area).
+    // total = 8 + 8 − 0.5 = 15.5 s over 1000 px. Pinned to fit: this test is
+    // about the playhead's geometry, and auto would pick 2x for the ribbon.
+    const head = createPlayheadSource(7.75);
+    const el = await render({ model, head, initialZoom: "fit" });
+    const line = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-playhead"]')!;
+    expect(line.style.transform).toBe("translateX(500px)");
+    expect(line.textContent).toBe("0:07.7");
+    expect(line.classList.contains("is-flip")).toBe(false);
+    // The head moves WITHOUT a re-render — the line subscribes and writes its
+    // own transform. At the end of the reel the timecode tag flips left so it
+    // cannot overflow the lanes.
     await act(async () => {
-      root?.render(createElement(SizzleTimeline, { ...baseProps(model), playheadSec: 15.5 }));
+      head.set(15.5);
     });
-    const headAtEnd = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-playhead"]')!;
-    expect(headAtEnd.style.transform).toBe("translateX(1000px)");
-    expect(headAtEnd.classList.contains("is-flip")).toBe(true);
+    expect(line.style.transform).toBe("translateX(1000px)");
+    expect(line.textContent).toBe("0:15.5");
+    expect(line.classList.contains("is-flip")).toBe(true);
     const pill = el.querySelector<HTMLElement>('[data-testid="sizzle-timeline-transition-1"]')!;
     expect(pill.textContent).toContain("dip black");
     expect(pill.textContent).toContain("0.5 s");

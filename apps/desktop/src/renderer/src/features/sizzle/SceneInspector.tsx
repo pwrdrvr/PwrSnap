@@ -17,8 +17,9 @@ import {
   type SizzleTransitionType
 } from "@pwrsnap/shared";
 import { formatSpan, formatTimecode } from "../shared/video-range";
+import type { SequencePreviewDisplayWarning } from "./sizzle-helpers";
 import { TRANSITION_DURATION_MAX_SEC, TRANSITION_DURATION_MIN_SEC } from "./ClipInspector";
-import { TRANSITION_TYPE_LABELS, transitionWithType } from "./sizzle-helpers";
+import { sceneTransitionWithType, TRANSITION_TYPE_LABELS } from "./sizzle-helpers";
 import type { TimelineSceneRegion } from "./timeline/timeline-model";
 
 export type SceneInspectorProps = {
@@ -31,6 +32,11 @@ export type SceneInspectorProps = {
   canMergeWithPrevious: boolean;
   /** A pending re-fit offer: the resolved narration went from → to. */
   refit: { fromSec: number; toSec: number } | null;
+  /** How exact this scene's word timing is, once synthesized. Lived on the
+   *  per-scene preview stage; that stage is gone, so it lives here. */
+  timingQuality: "precise" | "approximate" | null;
+  /** The scene's preview warnings — likewise rehomed from the stage. */
+  warnings: SequencePreviewDisplayWarning[];
   onEditScene: (patch: Partial<SizzleScene>) => void;
   onMoveScene: (delta: -1 | 1) => void;
   onSplitAtPlayhead: () => void;
@@ -55,6 +61,8 @@ export function SceneInspector(props: SceneInspectorProps): ReactElement {
     playheadLocalSec,
     canMergeWithPrevious,
     refit,
+    timingQuality,
+    warnings,
     onEditScene,
     onMoveScene,
     onSplitAtPlayhead,
@@ -78,13 +86,24 @@ export function SceneInspector(props: SceneInspectorProps): ReactElement {
   const transitionSec = sizzleTransitionDurationSec(scene.transition);
   const hardCut = transitionType === "cut" || transitionType === "none";
   const isSequence = scene.kind === "sequence";
+  // Mirror `splitSceneAtSec`'s own guards: it needs a spoken word at or
+  // after the split (so the SCRIPT can divide) and a clip on each side.
+  // Without these the button was enabled and the click was a silent no-op.
+  const splitAt = playheadLocalSec;
+  const hasWordAfter =
+    splitAt !== null && region.words.findIndex((w) => w.startSec >= splitAt) > 0;
+  const hasClipBefore = splitAt !== null && region.clips.some((c) => c.localStartSec < splitAt);
+  const hasClipAfter = splitAt !== null && region.clips.some((c) => c.localStartSec >= splitAt);
   const canSplitAtPlayhead =
     isSequence &&
     region.exact &&
     clipCount >= 2 &&
-    playheadLocalSec !== null &&
-    playheadLocalSec > 0 &&
-    playheadLocalSec < region.durationSec;
+    splitAt !== null &&
+    splitAt > 0 &&
+    splitAt < region.durationSec &&
+    hasWordAfter &&
+    hasClipBefore &&
+    hasClipAfter;
   const splitTitle = !isSequence
     ? "Convert the scene to clips first"
     : !region.exact
@@ -93,7 +112,11 @@ export function SceneInspector(props: SceneInspectorProps): ReactElement {
         ? "A scene needs two clips to split"
         : playheadLocalSec === null
           ? "Scrub the playhead into this scene to choose where to split"
-          : `Split the script and clips at ${formatTimecode(playheadLocalSec)} into this scene`;
+          : !hasWordAfter
+            ? "No spoken word at or after the playhead — nothing for the second scene's script"
+            : !hasClipBefore || !hasClipAfter
+              ? "Every clip is on one side of the playhead — move it between two clips"
+              : `Split the script and clips at ${formatTimecode(playheadLocalSec)} into this scene`;
 
   return (
     <section className="szl__insp" aria-label={`Scene ${index + 1} inspector`} data-testid="sizzle-scene-inspector">
@@ -127,11 +150,12 @@ export function SceneInspector(props: SceneInspectorProps): ReactElement {
           <div className="szl__insp-row">
             <span className="szl__insp-hint" data-testid="sizzle-scene-inspector-status">
               {region.exact
-                ? `Synthesized · ${formatTimecode(region.durationSec)}`
+                ? `Synthesized · ${formatTimecode(region.durationSec)}` +
+                  (timingQuality === null ? "" : timingQuality === "precise" ? " · word timing" : " · approx timing")
                 : `~${formatTimecode(region.durationSec)} estimated from ${wordCount} word${wordCount === 1 ? "" : "s"}`}
             </span>
             <span className="szl__spacer" />
-            {isSequence ? (
+            {narration.length > 0 ? (
               <button
                 type="button"
                 className="szl__scene-mini szl__insp-action"
@@ -150,6 +174,17 @@ export function SceneInspector(props: SceneInspectorProps): ReactElement {
           </div>
         </div>
 
+        {warnings.length > 0 ? (
+          <div className="szl__insp-field" data-testid="sizzle-scene-inspector-warnings">
+            <span className="szl__insp-label">Warnings</span>
+            {warnings.slice(0, 3).map((warning) => (
+              <p key={warning.key} className="szl__insp-hint">
+                <strong>{warning.label}:</strong> {warning.message}
+              </p>
+            ))}
+          </div>
+        ) : null}
+
         {/* ── Transition into this scene ── */}
         <div className="szl__insp-field">
           <span className="szl__insp-label">Transition into this scene</span>
@@ -161,7 +196,7 @@ export function SceneInspector(props: SceneInspectorProps): ReactElement {
                 value={transitionType}
                 onChange={(e) =>
                   onEditScene({
-                    transition: transitionWithType(scene.transition, e.target.value as SizzleTransitionType)
+                    transition: sceneTransitionWithType(scene.transition, e.target.value as SizzleTransitionType)
                   })
                 }
                 aria-label="Scene transition type"

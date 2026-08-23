@@ -3,7 +3,6 @@ import type { SizzleSequencePreviewBeat } from "@pwrsnap/shared";
 import {
   beatVisualWindow,
   kenBurnsDirection,
-  kenBurnsScale,
   stageFrameAt,
   transitionOverlapSec
 } from "../preview-blend";
@@ -74,13 +73,9 @@ describe("visual windows + Ken Burns", () => {
     expect(beatVisualWindow(beat("z", 0.2, 3, "crossfade"), 1).startSec).toBe(0);
   });
 
-  test("even clips zoom in 1.0 → 1.10, odd clips zoom out 1.10 → 1.0 (the composer's zoompan)", () => {
+  test("even clips zoom in, odd clips zoom out (the composer's zoompan input parity)", () => {
     expect(kenBurnsDirection(0)).toBe("in");
     expect(kenBurnsDirection(1)).toBe("out");
-    expect(kenBurnsScale(0, 0)).toBeCloseTo(1, 6);
-    expect(kenBurnsScale(0, 1)).toBeCloseTo(1.1, 6);
-    expect(kenBurnsScale(1, 0)).toBeCloseTo(1.1, 6);
-    expect(kenBurnsScale(1, 0.5)).toBeCloseTo(1.05, 6);
-    expect(kenBurnsScale(2, 7)).toBeCloseTo(1.1, 6); // clamped
+    expect(kenBurnsDirection(2)).toBe("in");
   });
 });

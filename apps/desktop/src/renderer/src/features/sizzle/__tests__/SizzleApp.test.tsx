@@ -293,6 +293,23 @@ function inspectorTiming(el: HTMLElement): "auto" | "phrase" | "offset" | "pinne
   return null;
 }
 
+/** Load/refresh a scene's narration plan. The per-scene ▶ that used to do
+ *  this is gone (one player now) — synthesis lives in the scene inspector. */
+async function synthesizeScene(el: HTMLElement, sceneIndex = 0): Promise<void> {
+  const region = el.querySelector<HTMLButtonElement>(`[data-testid="sizzle-timeline-scene-${sceneIndex}"]`);
+  if (region === null) throw new Error(`scene region ${sceneIndex} not found`);
+  await act(async () => {
+    region.click();
+  });
+  const button = el.querySelector<HTMLButtonElement>('[data-testid="sizzle-scene-inspector-synthesize"]');
+  if (button === null) throw new Error("scene inspector synthesize button not found");
+  await act(async () => {
+    button.click();
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 function findButton(el: HTMLElement, label: string): HTMLButtonElement {
   const button = Array.from(el.querySelectorAll<HTMLButtonElement>("button"))
     .find((candidate) => candidate.textContent?.trim() === label);
@@ -381,8 +398,10 @@ describe("SizzleApp sequence authoring", () => {
     // The clip lives on the timeline now (one clip); the form rows are gone.
     expect(el.querySelectorAll('[data-testid^="sizzle-timeline-clip-"]')).toHaveLength(1);
     expect(el.querySelector(".szl__sequence-beat")).toBeNull();
-    expect(el.querySelector(".szl__sequence-timeline")).not.toBeNull();
-    expect(el.textContent).toContain("unresolved");
+    expect(el.querySelector('[data-testid="sizzle-timeline"]')).not.toBeNull();
+    // Not synthesized yet: the timeline says so and offers the fix.
+    expect(el.querySelector('[data-testid="sizzle-timeline-estimated-0"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="sizzle-timeline-synthesize-0"]')).not.toBeNull();
   });
 
   test("Split into scenes gives every clip its own scene; the first keeps id + narration", async () => {
@@ -463,8 +482,9 @@ describe("SizzleApp sequence authoring", () => {
     });
 
     expect(dispatch).toHaveBeenCalledWith("library:listByIds", { ids: ["cap_old"] });
-    expect(el.textContent).toContain("Video cap_old");
-    expect(el.textContent).not.toContain("missing");
+    expect(
+      el.querySelector('[data-testid^="sizzle-timeline-clip-"]')?.getAttribute("aria-label")
+    ).toContain("Video cap_old");
   });
 
   test("loads a resolved sequence timeline when previewing", async () => {
@@ -494,15 +514,7 @@ describe("SizzleApp sequence authoring", () => {
     });
     const { el, dispatch } = await renderApp(project({ scenes: [sequence] }));
 
-    const play = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
-    if (play === null) throw new Error("sequence preview play button not found");
-
-    await act(async () => {
-      play.click();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await synthesizeScene(el);
 
     expect(dispatch).toHaveBeenCalledWith("sizzle:previewSequenceScenePlan", {
       projectId: "sz_1",
@@ -513,14 +525,12 @@ describe("SizzleApp sequence authoring", () => {
       sceneId: "sc_a"
     });
     expect(el.textContent).toContain("approx timing");
-    expect(el.textContent).toContain("4s");
     expect(el.querySelector("select.szl__sequence-phrase")).toBeNull();
     expect(el.querySelector("datalist")).toBeNull();
     // The phrase picker lives in the clip inspector: select the clip first.
     await selectClip(el, "bt_2");
     const phrasePicker = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
     expect(phrasePicker?.textContent).toContain("next");
-    expect(el.textContent).toContain("Phrase anchors use timed transcript words from preview");
 
     if (phrasePicker === null) throw new Error("sequence transcript phrase picker not found");
     await act(async () => {
@@ -610,14 +620,7 @@ describe("SizzleApp sequence authoring", () => {
         }
       }
     });
-    const play = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
-    if (play === null) throw new Error("sequence preview play button not found");
-    await act(async () => {
-      play.click();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await synthesizeScene(el);
 
     await selectClip(el, "bt_2");
     const phrasePicker = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
@@ -671,14 +674,7 @@ describe("SizzleApp sequence authoring", () => {
       ]
     });
     const { el } = await renderApp(project({ scenes: [sequence] }));
-    const play = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
-    if (play === null) throw new Error("sequence preview play button not found");
-    await act(async () => {
-      play.click();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await synthesizeScene(el);
 
     await selectClip(el, "bt_2");
     const phrasePicker = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
@@ -692,259 +688,6 @@ describe("SizzleApp sequence authoring", () => {
       document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     });
     expect(el.querySelector(".szl__sequence-phrase-popover")).toBeNull();
-  });
-
-  test("starts and stops the already-mounted first sequence video preview", async () => {
-    const sequence = scene({
-      kind: "sequence",
-      scriptLine: "show this then the next screen",
-      narration: "show this then the next screen",
-      audioSource: "voiceover",
-      beats: [
-        {
-          id: "bt_1",
-          captureId: "cap_a",
-          timing: { kind: "offset", startSec: 0, endSec: null },
-          mediaTrim: null,
-          transition: "cut",
-          videoFit: "smart-fit"
-        },
-        {
-          id: "bt_2",
-          captureId: "cap_b",
-          timing: { kind: "phrase", phrase: "next", occurrence: 1, offsetSec: 0, durationSec: null },
-          mediaTrim: null,
-          transition: "crossfade",
-          videoFit: "smart-fit"
-        }
-      ]
-    });
-    const { el } = await renderApp(project({ scenes: [sequence] }), {
-      "library:list": {
-        ok: true,
-        value: { rows: [videoCapture("cap_a"), videoCapture("cap_b")] }
-      }
-    });
-    const playButton = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
-    const firstVideo = el.querySelector<HTMLVideoElement>(".szl__sequence-preview-stage video");
-    if (playButton === null) throw new Error("sequence preview play button not found");
-    if (firstVideo === null) throw new Error("first sequence video not found");
-
-    const playMock = vi.mocked(HTMLMediaElement.prototype.play);
-    const pauseMock = vi.mocked(HTMLMediaElement.prototype.pause);
-    playMock.mockClear();
-    pauseMock.mockClear();
-
-    await act(async () => {
-      playButton.click();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(playMock.mock.contexts).toContain(firstVideo);
-
-    await act(async () => {
-      playButton.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(pauseMock.mock.contexts).toContain(firstVideo);
-  });
-
-  test("syncs the first sequence video preview to the beat trim and narration time", async () => {
-    const sequence = scene({
-      kind: "sequence",
-      scriptLine: "show this then the next screen",
-      narration: "show this then the next screen",
-      audioSource: "voiceover",
-      beats: [
-        {
-          id: "bt_1",
-          captureId: "cap_a",
-          timing: { kind: "offset", startSec: 0, endSec: null },
-          mediaTrim: { startSec: 2, endSec: 6 },
-          transition: "cut",
-          videoFit: "trim"
-        },
-        {
-          id: "bt_2",
-          captureId: "cap_b",
-          timing: { kind: "phrase", phrase: "next", occurrence: 1, offsetSec: 0, durationSec: null },
-          mediaTrim: null,
-          transition: "crossfade",
-          videoFit: "smart-fit"
-        }
-      ]
-    });
-    const { el } = await renderApp(project({ scenes: [sequence] }), {
-      "library:list": {
-        ok: true,
-        value: { rows: [videoCapture("cap_a"), videoCapture("cap_b")] }
-      }
-    });
-    const playButton = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
-    const firstVideo = el.querySelector<HTMLVideoElement>(".szl__sequence-preview-stage video");
-    const audio = el.querySelector<HTMLAudioElement>("audio");
-    if (playButton === null) throw new Error("sequence preview play button not found");
-    if (firstVideo === null) throw new Error("first sequence video not found");
-    if (audio === null) throw new Error("preview audio not found");
-
-    await act(async () => {
-      playButton.click();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(firstVideo.currentTime).toBe(2);
-
-    await act(async () => {
-      audio.currentTime = 1;
-      audio.dispatchEvent(new Event("timeupdate", { bubbles: true }));
-      await Promise.resolve();
-    });
-
-    expect(firstVideo.currentTime).toBe(3);
-  });
-
-  test("holds the last trimmed frame for freeze-end sequence video preview", async () => {
-    const sequence = scene({
-      kind: "sequence",
-      scriptLine: "show this then the next screen",
-      narration: "show this then the next screen",
-      audioSource: "voiceover",
-      beats: [
-        {
-          id: "bt_1",
-          captureId: "cap_a",
-          timing: { kind: "offset", startSec: 0, endSec: null },
-          mediaTrim: { startSec: 2, endSec: 3 },
-          transition: "cut",
-          videoFit: "freeze-end"
-        },
-        {
-          id: "bt_2",
-          captureId: "cap_b",
-          timing: { kind: "phrase", phrase: "next", occurrence: 1, offsetSec: 0, durationSec: null },
-          mediaTrim: null,
-          transition: "crossfade",
-          videoFit: "smart-fit"
-        }
-      ]
-    });
-    const { el } = await renderApp(project({ scenes: [sequence] }), {
-      "library:list": {
-        ok: true,
-        value: { rows: [videoCapture("cap_a"), videoCapture("cap_b")] }
-      }
-    });
-    const playButton = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
-    const firstVideo = el.querySelector<HTMLVideoElement>(".szl__sequence-preview-stage video");
-    const audio = el.querySelector<HTMLAudioElement>("audio");
-    if (playButton === null) throw new Error("sequence preview play button not found");
-    if (firstVideo === null) throw new Error("first sequence video not found");
-    if (audio === null) throw new Error("preview audio not found");
-
-    await act(async () => {
-      playButton.click();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    const pauseMock = vi.mocked(HTMLMediaElement.prototype.pause);
-    pauseMock.mockClear();
-    firstVideo.currentTime = 3.4;
-
-    await act(async () => {
-      audio.currentTime = 1.2;
-      audio.dispatchEvent(new Event("timeupdate", { bubbles: true }));
-      await Promise.resolve();
-    });
-
-    expect(firstVideo.currentTime).toBe(3);
-    expect(pauseMock.mock.contexts).toContain(firstVideo);
-  });
-
-  test("uses normalized preview trim and fit for sequence video playback", async () => {
-    const sequence = scene({
-      kind: "sequence",
-      scriptLine: "show this video for longer than the source",
-      narration: "show this video for longer than the source",
-      audioSource: "voiceover",
-      beats: [
-        {
-          id: "bt_1",
-          captureId: "cap_a",
-          timing: { kind: "offset", startSec: 0, endSec: null },
-          mediaTrim: { startSec: 0, endSec: 9.1 },
-          transition: "cut",
-          videoFit: "speed-to-fit"
-        }
-      ]
-    });
-    const { el } = await renderApp(project({ scenes: [sequence] }), {
-      "library:list": {
-        ok: true,
-        value: { rows: [videoCapture("cap_a", { start: 0, end: 8 })] }
-      },
-      "sizzle:previewSequenceScenePlan": {
-        ok: true,
-        value: {
-          audioBase64: "AA==",
-          mimeType: "audio/mpeg",
-          durationSec: 9.6,
-          timingQuality: "exact",
-          warnings: [],
-          transcriptPhrases: [],
-          beats: [
-            {
-              beatId: "bt_1",
-              captureId: "cap_a",
-              startSec: 0,
-              endSec: 9.6,
-              timing: { kind: "offset", startSec: 0, endSec: null },
-              transition: "crossfade",
-              videoFit: "speed-to-fit",
-              mediaTrim: { startSec: 0, endSec: 4.204 },
-              fit: {
-                renderMode: "freeze-end",
-                inputDurationSec: 4.204,
-                playbackRate: 1
-              }
-            }
-          ]
-        }
-      }
-    });
-    const playButton = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
-    const firstVideo = el.querySelector<HTMLVideoElement>(".szl__sequence-preview-stage video");
-    const audio = el.querySelector<HTMLAudioElement>("audio");
-    if (playButton === null) throw new Error("sequence preview play button not found");
-    if (firstVideo === null) throw new Error("first sequence video not found");
-    if (audio === null) throw new Error("preview audio not found");
-
-    await act(async () => {
-      playButton.click();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    const pauseMock = vi.mocked(HTMLMediaElement.prototype.pause);
-    pauseMock.mockClear();
-    firstVideo.currentTime = 5;
-
-    await act(async () => {
-      audio.currentTime = 5;
-      audio.dispatchEvent(new Event("timeupdate", { bubbles: true }));
-      await Promise.resolve();
-    });
-
-    expect(firstVideo.currentTime).toBeCloseTo(4.204, 3);
-    expect(pauseMock.mock.contexts).toContain(firstVideo);
   });
 
   test("invalidates a resolved sequence timeline when beat timing changes", async () => {
@@ -976,16 +719,12 @@ describe("SizzleApp sequence authoring", () => {
 
     await selectClip(el, "bt_2");
     expect(el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button")?.disabled).toBe(true);
-    const play = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
-    if (play === null) throw new Error("sequence preview play button not found");
-    await act(async () => {
-      play.click();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await synthesizeScene(el);
     expect(el.textContent).toContain("approx timing");
 
+    // Synthesis selects the SCENE (its inspector owns that button); the
+    // phrase picker belongs to the clip inspector, so re-select the clip.
+    await selectClip(el, "bt_2");
     const phrase = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
     if (phrase === null) throw new Error("sequence phrase picker not found");
     await act(async () => {
@@ -998,8 +737,16 @@ describe("SizzleApp sequence authoring", () => {
       option.click();
     });
 
-    expect(el.textContent).toContain("unresolved");
-    expect(el.textContent).not.toContain("approx timing");
+    // The plan is invalidated: the scene keeps its MEASURED narration length
+    // (the script did not change) but loses the plan's word-timing quality,
+    // which is what the readout reports.
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="sizzle-timeline-scene-0"]')!.click();
+    });
+    expect(
+      el.querySelector('[data-testid="sizzle-scene-inspector-status"]')?.textContent
+    ).not.toContain("approx timing");
+    await selectClip(el, "bt_2");
     const nextPhrase = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
     expect(nextPhrase?.textContent).toContain("the next screen");
     await act(async () => {
@@ -1295,14 +1042,7 @@ describe("render button reel length", () => {
     // Unmeasured: a one-word script doesn't overrun the 2s trim.
     expect(render?.textContent).toBe("Render · ~0:02");
 
-    const play = el.querySelector<HTMLButtonElement>(".szl__scene-mini--play");
-    if (play === null) throw new Error("scene preview play button not found");
-    await act(async () => {
-      play.click();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await synthesizeScene(el);
     // Measured at 4s → 4.35s with the tail pad, and now exact.
     expect(render?.textContent).toBe("Render · 0:04");
 
@@ -1611,8 +1351,8 @@ describe("sequence waveform", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(el.querySelector(".szl__sequence-wave--idle")).not.toBeNull();
-    expect(el.querySelector(".szl__sequence-wave-surfer")).toBeNull();
+    expect(el.querySelector('[data-testid="sizzle-timeline-wave-idle-0"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="sizzle-timeline-wave-0"]')).toBeNull();
   });
 
   test("loads the waveform on open from already-cached audio, no Play click", async () => {
@@ -1654,7 +1394,9 @@ describe("sequence waveform", () => {
               wordStartIndex: 3,
               wordEndIndex: 5
             }
-          ]
+          ],
+          durationSec: 4,
+          words: []
         }
       }
     });
@@ -1673,8 +1415,8 @@ describe("sequence waveform", () => {
       projectId: "sz_1",
       sceneId: "sc_a"
     });
-    expect(el.querySelector(".szl__sequence-wave-surfer")).not.toBeNull();
-    expect(el.querySelector(".szl__sequence-wave--idle")).toBeNull();
+    expect(el.querySelector('[data-testid="sizzle-timeline-wave-0"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="sizzle-timeline-wave-idle-0"]')).toBeNull();
     await selectClip(el, "bt_2");
     const phrasePicker = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
     expect(phrasePicker?.textContent).toContain("Choose transcript phrase");

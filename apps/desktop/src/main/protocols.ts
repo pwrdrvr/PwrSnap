@@ -42,8 +42,8 @@
 
 import { app, protocol } from "electron";
 import { getMainLogger } from "./log";
-import { getSnapshotPath } from "./capture/screen-snapshot";
 import { fileResponse } from "./protocol-file-response";
+import { screenSnapshotProtocolResponse } from "./screen-snapshot-protocol-response";
 import {
   parseAppIconBundleId,
   parseCacheUrl,
@@ -268,14 +268,13 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
       return new Response("invalid screen snapshot id", { status: 400 });
     }
     try {
-      const filePath = getSnapshotPath(id);
-      if (filePath === null) {
-        // Snapshot already released — selector dismissed mid-fetch
-        // is a normal race. Quiet log + 404.
+      const response = await screenSnapshotProtocolResponse(id, request);
+      if (response.status === 404) {
+        // Snapshot already released — selector dismissed mid-fetch is a
+        // normal race. Quiet log + 404.
         log.info("screen: not found", { id });
-        return new Response("not found", { status: 404 });
       }
-      return await fileResponse(filePath, request);
+      return response;
     } catch (cause) {
       log.error("screen handler threw", {
         id,

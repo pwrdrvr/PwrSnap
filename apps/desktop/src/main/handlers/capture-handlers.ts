@@ -46,7 +46,11 @@ import {
   ensureCapturesDirReady,
   runWithCapturesDirFallback
 } from "../capture/capture-storage-gate";
-import { releaseSnapshot } from "../capture/screen-snapshot";
+import {
+  cropRegisteredSnapshot,
+  getSnapshot,
+  releaseSnapshot
+} from "../capture/screen-snapshot";
 import { type WindowInfo } from "../capture/window-list";
 import {
   resolveSelectionSourceApp,
@@ -417,7 +421,13 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     //
     // We own the screen snapshot now and MUST release it; the try/finally
     // is a safety net (both teardown + release are idempotent).
-    const { screenSnapshotId, screenSnapshotPath } = selection;
+    const { screenSnapshotId } = selection;
+    let snapshotReleased = false;
+    const releaseOwnedSnapshot = async (): Promise<void> => {
+      if (snapshotReleased) return;
+      snapshotReleased = true;
+      await releaseSnapshot(screenSnapshotId);
+    };
     let teardownDone = false;
     const tearDownSelector = async (): Promise<void> => {
       if (teardownDone) return;
@@ -457,15 +467,15 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       const captureResult =
         selection.fullWindow === true && selection.snappedWindowId !== undefined
           ? await captureWindow(selection.snappedWindowId)
-          : await cropScreenSnapshot(
-              screenSnapshotPath,
+          : await cropSelectorSnapshot(
+              screenSnapshotId,
               selection.rect,
               selection.displayId
             );
       // Snapshot pixels are now in `captureResult.tempPath` — release the
-      // frozen snapshot immediately (idempotent; finally re-calls as a
-      // safety net).
-      void releaseSnapshot(screenSnapshotId);
+      // frozen snapshot immediately. The guarded finally below owns the
+      // unexpected-throw path without double-releasing the registry entry.
+      await releaseOwnedSnapshot();
       // Source-app resolution is the same on both capture branches —
       // the choice of pixel-fetch path (full-window vs. cropped
       // snapshot) doesn't change WHO owned the window. Single shared
@@ -554,7 +564,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       return persisted;
     } finally {
       // Safety net for an unexpected throw before the explicit teardown.
-      void releaseSnapshot(screenSnapshotId);
+      await releaseOwnedSnapshot();
       await tearDownSelector();
     }
   });
@@ -1090,6 +1100,45 @@ function fileUrlCandidateToPath(candidate: string): string | null {
 
 function looksLikeImageFile(filePath: string): boolean {
   return IMAGE_FILE_EXTENSIONS.has(extname(filePath).toLowerCase());
+}
+
+/** Consume the representation registered by pickRegion without guessing. */
+async function cropSelectorSnapshot(
+  snapshotId: string,
+  rect: Rect,
+  displayId: number
+): Promise<
+  | { ok: true; tempPath: string; displayId: number }
+  | { ok: false; reason: "validation" | "error"; message: string }
+> {
+  const snapshot = getSnapshot(snapshotId);
+  if (snapshot === null) {
+    return {
+      ok: false,
+      reason: "error",
+      message: "frozen screen snapshot was released before commit"
+    };
+  }
+  if (snapshot.displayId !== displayId) {
+    return {
+      ok: false,
+      reason: "validation",
+      message: `snapshot display mismatch: expected ${snapshot.displayId}, got ${displayId}`
+    };
+  }
+  if (snapshot.kind === "memory") {
+    const result = await cropRegisteredSnapshot(snapshotId, rect, displayId);
+    if (result.ok) {
+      log.info("picker latency stage", {
+        stage: "registered_snapshot_crop_completed",
+        snapshotId,
+        displayId,
+        ...result.timings
+      });
+    }
+    return result;
+  }
+  return cropScreenSnapshot(snapshot.filePath, rect, displayId);
 }
 
 /**

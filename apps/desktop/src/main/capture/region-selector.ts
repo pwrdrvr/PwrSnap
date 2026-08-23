@@ -82,9 +82,17 @@ function waitForSnapshotPainted(screenUrl: string, timeoutMs: number): Promise<v
  */
 function setSnapshotContentProtection(windowIds: readonly number[], on: boolean): void {
   for (const id of windowIds) {
-    const win = BrowserWindow.fromId(id);
-    if (win !== null && !win.isDestroyed()) {
-      win.setContentProtection(on);
+    try {
+      const win = BrowserWindow.fromId(id);
+      if (win !== null && !win.isDestroyed()) {
+        win.setContentProtection(on);
+      }
+    } catch (err) {
+      log.warn("capture window content-protection toggle failed", {
+        windowId: id,
+        on,
+        message: err instanceof Error ? err.message : String(err)
+      });
     }
   }
 }
@@ -144,11 +152,9 @@ export type SelectorResult =
       ok: true;
       rect: { x: number; y: number; w: number; h: number };
       displayId: number;
-      /** Path to the frozen-at-show screen snapshot. The capture
-       *  handler crops this file at `rect * scaleFactor` rather than
-       *  re-shooting the live screen. */
-      screenSnapshotPath: string;
-      /** Registry id matching the path. Capture-handlers MUST call
+      /** Registry id for the frozen-at-show screen snapshot. The
+       *  handler resolves its file or in-memory representation, crops
+       *  that trigger-time image, and MUST call
        *  `releaseSnapshot(id)` from screen-snapshot.ts after
        *  cropping — ownership transfers from the selector module to
        *  the consumer when this result is produced, so
@@ -303,7 +309,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         const display = screen.getAllDisplays().find((d) => d.id === payload.displayId);
         const offsetX = display?.bounds.x ?? 0;
         const offsetY = display?.bounds.y ?? 0;
-        // Snapshot path is REQUIRED for commit. If the snapshot
+        // A registered snapshot is REQUIRED for commit. If it
         // somehow vanished between show and result (e.g. release
         // raced ahead of the result event), fall back to a
         // cancelled outcome — the capture handler can't do its
@@ -335,7 +341,6 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
               h: payload.rect.h
             },
             displayId: payload.displayId,
-            screenSnapshotPath: snapshot.filePath,
             screenSnapshotId: snapshot.id,
             previousAppPid: prevPid
           };
@@ -605,13 +610,14 @@ export async function pickRegion(
     durationFromUserRequestMs: elapsedFromRequest()
   });
   try {
-    const screenSnapshot = await captureAndRegister(targetDisplay.id);
+    const screenSnapshot = await captureAndRegister(targetDisplay.id, { mode });
     activeScreenSnapshot = screenSnapshot;
     log.info("completed screen snapshot", {
       displayId: targetDisplay.id,
       durationMs: Date.now() - screenSnapshotRequestedAt,
       durationFromUserRequestMs: elapsedFromRequest(),
-      snapshotId: screenSnapshot.id
+      snapshotId: screenSnapshot.id,
+      capture: screenSnapshot.timing
     });
   } catch (err) {
     log.warn("screen snapshot failed; selector aborted", {
@@ -1334,7 +1340,9 @@ function createSelectorWindow(
       // Keep Chromium from throttling that hidden renderer load,
       // otherwise the first shortcut after launch can still wait on
       // the prewarm to finish.
-      ...(process.platform === "darwin" ? { backgroundThrottling: false } : {}),
+      ...(process.platform === "darwin" || process.platform === "win32"
+        ? { backgroundThrottling: false }
+        : {}),
       // The renderer needs the display id baked in so it can post the
       // right value back to main on commit. Pass via a query string.
       additionalArguments: [`--display-id=${display.id}`]

@@ -32,6 +32,7 @@ type WindowSpy = {
   setAlwaysOnTop: ReturnType<typeof vi.fn>;
   setVisibleOnAllWorkspaces: ReturnType<typeof vi.fn>;
   setSimpleFullScreen: ReturnType<typeof vi.fn>;
+  setFullScreen: ReturnType<typeof vi.fn>;
   isSimpleFullScreen: ReturnType<typeof vi.fn>;
   setContentBounds: ReturnType<typeof vi.fn>;
   setBounds: ReturnType<typeof vi.fn>;
@@ -67,6 +68,7 @@ const screenSnapshotMocks = vi.hoisted(() => ({
   captureAndRegister: vi.fn(),
   releaseSnapshot: vi.fn()
 }));
+const browserWindowFromId = vi.hoisted(() => vi.fn());
 
 function selectorLoadPromise(): Promise<void> {
   if (!deferSelectorLoads) return Promise.resolve();
@@ -81,6 +83,7 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
     setAlwaysOnTop: vi.fn(),
     setVisibleOnAllWorkspaces: vi.fn(),
     setSimpleFullScreen: vi.fn(),
+    setFullScreen: vi.fn(),
     isSimpleFullScreen: vi.fn().mockReturnValue(false),
     setContentBounds: vi.fn(),
     setBounds: vi.fn(),
@@ -123,6 +126,10 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
 
 vi.mock("electron", () => {
   class BrowserWindow {
+    static fromId(id: number) {
+      return browserWindowFromId(id);
+    }
+
     constructor(options: Record<string, unknown>) {
       const spy = makeWindowSpy(options);
       constructed.push(spy);
@@ -218,12 +225,15 @@ beforeEach(() => {
   deferredLoadResolvers.length = 0;
   deferSelectorLoads = false;
   suppressPaintAck = false;
+  browserWindowFromId.mockReset();
   screenSnapshotMocks.captureAndRegister.mockReset();
   screenSnapshotMocks.releaseSnapshot.mockReset();
   screenSnapshotMocks.captureAndRegister.mockResolvedValue({
+    kind: "file",
     id: "snapshot-1",
     filePath: "/tmp/snapshot.png",
-    displayId: 1
+    displayId: 1,
+    timing: null
   });
   vi.resetModules();
   // createSelectorWindow only sets the NSPanel (`type: 'panel'`) +
@@ -278,6 +288,47 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     expect(spy.options.webPreferences).toMatchObject({
       backgroundThrottling: false
     });
+  });
+
+  test("also disables background throttling for the hidden Windows prewarm", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const { preWarmRegionSelector } = await import("../capture/region-selector");
+    preWarmRegionSelector();
+
+    expect(constructed[0]?.options.webPreferences).toMatchObject({
+      backgroundThrottling: false
+    });
+  });
+
+  test("registers the mode-aware snapshot and transfers only its registry id", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ mode: "region", keepPwrSnapChrome: true });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.webContents.send).toHaveBeenCalledWith(
+        "region-selector:mode",
+        expect.objectContaining({
+          mode: "region",
+          screenUrl: "pwrsnap-screen://r/snapshot-1"
+        })
+      );
+    });
+    expect(screenSnapshotMocks.captureAndRegister).toHaveBeenCalledWith(1, {
+      mode: "region"
+    });
+
+    ipcListeners.get("region-selector:result")?.({}, {
+      ok: true,
+      rect: { x: 10, y: 20, w: 300, h: 200 },
+      displayId: 1
+    });
+    const result = await pick;
+    expect(result).toMatchObject({
+      ok: true,
+      screenSnapshotId: "snapshot-1"
+    });
+    expect(result).not.toHaveProperty("screenSnapshotPath");
   });
 
   test("setVisibleOnAllWorkspaces is called BEFORE the renderer loads — first paint must not flash on the wrong Space", async () => {
@@ -357,9 +408,11 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
 
   test("does not warm a standby selector until after the current screen snapshot completes", async () => {
     let resolveSnapshot!: (value: {
+      kind: "file";
       id: string;
       filePath: string;
       displayId: number;
+      timing: null;
     }) => void;
     screenSnapshotMocks.captureAndRegister.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -379,9 +432,11 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     expect(constructed[0]?.show).not.toHaveBeenCalled();
 
     resolveSnapshot({
+      kind: "file",
       id: "snapshot-1",
       filePath: "/tmp/snapshot.png",
-      displayId: 1
+      displayId: 1,
+      timing: null
     });
 
     await vi.waitFor(() => {
@@ -544,6 +599,45 @@ describe("region-selector — snapshot-paint gate before show()", () => {
     await vi.waitFor(() => {
       expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
     });
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+});
+
+describe("region-selector — content-protection isolation", () => {
+  test("one throwing window cannot abort later ON/OFF toggles or the capture", async () => {
+    const throwingWindow = {
+      isDestroyed: vi.fn().mockReturnValue(false),
+      setContentProtection: vi.fn(() => {
+        throw new Error("fixture toggle failure");
+      }),
+      getBounds: vi.fn().mockReturnValue({ x: 0, y: 0, width: 400, height: 300 })
+    };
+    const healthyWindow = {
+      isDestroyed: vi.fn().mockReturnValue(false),
+      setContentProtection: vi.fn(),
+      getBounds: vi.fn().mockReturnValue({ x: 500, y: 0, width: 400, height: 300 })
+    };
+    browserWindowFromId.mockImplementation((id: number) => {
+      if (id === 91) return throwingWindow;
+      if (id === 92) return healthyWindow;
+      return null;
+    });
+
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({
+      mode: "region",
+      keepPwrSnapChrome: true,
+      protectWindowIds: [91, 92]
+    });
+    await vi.waitFor(() => {
+      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screenSnapshotMocks.captureAndRegister).toHaveBeenCalledTimes(1);
+    expect(throwingWindow.setContentProtection.mock.calls).toEqual([[true], [false]]);
+    expect(healthyWindow.setContentProtection.mock.calls).toEqual([[true], [false]]);
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });

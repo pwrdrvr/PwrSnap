@@ -25,6 +25,7 @@ import {
   isEditorSidebarPanel,
   isGridCopyPaletteAnchor,
   isLibrarySidebarTab,
+  isQuickCaptureAction,
   isRedactionStyle,
   isSettingsPage,
   GRID_COPY_PALETTE_ANCHORS,
@@ -538,6 +539,18 @@ export function validateSettingsWrite(
       };
     }
     const recording = p.recording as Record<string, unknown>;
+    if (
+      !isUndefined(recording.quickCaptureAction) &&
+      !isQuickCaptureAction(recording.quickCaptureAction)
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_recording_quickCaptureAction",
+          'settings:write: recording.quickCaptureAction must be "ask", "snap", or "record"'
+        )
+      };
+    }
     for (const key of [
       "includeSystemAudio",
       "includeMicrophone",

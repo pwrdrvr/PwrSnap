@@ -31,7 +31,8 @@ import type {
   PwrSnapError,
   Rect,
   RenderPreset,
-  Result
+  Result,
+  Settings
 } from "@pwrsnap/shared";
 import { bus, type CommandContext } from "../command-bus";
 import {
@@ -85,6 +86,9 @@ import {
   UnsafePastedFileError
 } from "../security/assertSafePastedFile";
 import { validateSafeRgbaRasterDimensions } from "../image/safe-raster-decode";
+import type { CommittedSelectorResult } from "../capture/record-selection";
+import { tryAcquireInteractiveSelectorLease } from "../capture/interactive-selector-lease";
+import { resolveQuickCaptureAction } from "../capture/quick-capture-action";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
 
@@ -223,7 +227,15 @@ export function registerCaptureSaveAsHandler(): void {
   });
 }
 
-export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): void {
+export type StartRecordingFromSelection = (
+  selection: CommittedSelectorResult,
+  settings: Settings
+) => Promise<Result<{ sessionId: string }, PwrSnapError>>;
+
+export function registerCaptureHandlers(options?: {
+  includeSaveAs?: boolean;
+  startRecordingFromSelection?: StartRecordingFromSelection;
+}): void {
   bus.register("capture:region", async (req) => {
     // Headless/agent path — still trigger the OS prompt on a first-ever
     // attempt (it registers PwrSnap so captures can ever work), but don't
@@ -250,6 +262,15 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
   });
 
   bus.register("capture:interactive", async (req, ctx) => {
+    const lease = tryAcquireInteractiveSelectorLease();
+    if (lease === null) {
+      return err({
+        kind: "capture",
+        code: "selector_busy",
+        message: "another capture selector is already active"
+      });
+    }
+    try {
     // Gate BEFORE pickRegion: the selector freezes a screen snapshot on
     // show(), which is all-black on a Mac without Screen Recording. On a
     // first-ever attempt the gate fires the macOS prompt instead; on a
@@ -264,6 +285,11 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     if (storageBlocked) return storageBlocked;
     const handlerStartedAt = Date.now();
     const mode = req.mode ?? "auto";
+    // Conflict seam: the picker-latency branch also works near this read.
+    // Start it concurrently with cursor sampling and await only when the
+    // mode payload must be built; do not reorder snapshot/prepaint work.
+    const quickCaptureSettingsPromise =
+      mode === "auto" ? readDesktopSettings() : null;
     log.info("capture:interactive handler received", {
       mode,
       principal: ctx.principal
@@ -357,7 +383,24 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       protectWindowCount: protectWindowIds.length,
       durationFromHandlerReceivedMs: pickRegionStartedAt - handlerStartedAt
     });
-    const selection = await pickRegion({ mode: selectorMode, keepPwrSnapChrome, protectWindowIds });
+    const quickCaptureSettings =
+      quickCaptureSettingsPromise === null
+        ? null
+        : await quickCaptureSettingsPromise;
+    const quickCaptureAction =
+      quickCaptureSettings?.recording.quickCaptureAction ?? "snap";
+    const selection = await pickRegion({
+      mode: selectorMode,
+      keepPwrSnapChrome,
+      protectWindowIds,
+      quickCaptureAction,
+      // Always Record uses the existing video-selector presentation and
+      // cursor toggle. Ask stays neutral until the post-selection choice.
+      intent: quickCaptureAction === "record" ? "video" : "snap",
+      ...(quickCaptureSettings === null
+        ? {}
+        : { cursorDefault: quickCaptureSettings.recording.videoCaptureCursor })
+    });
     log.info("capture:interactive pickRegion returned", {
       mode,
       selectorMode,
@@ -413,6 +456,30 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         code: selection.reason,
         message: `region selector: ${selection.reason}`
       });
+    }
+
+    // Only the original Quick Capture request is allowed to branch to
+    // recording. Region, Window, and Timed remain explicit still commands
+    // even though Timed internally opens the auto-mode selector.
+    if (
+      mode === "auto" &&
+      resolveQuickCaptureAction(quickCaptureAction, selection.action) === "record"
+    ) {
+      const startRecording = options?.startRecordingFromSelection;
+      if (startRecording === undefined || quickCaptureSettings === null) {
+        setFloatOverState({ kind: "cancel" });
+        hideSelector();
+        void releaseSnapshot(selection.screenSnapshotId);
+        return err({
+          kind: "capture",
+          code: "recording_unavailable",
+          message: "Quick Capture recording is unavailable"
+        });
+      }
+      const recording = await startRecording(selection, quickCaptureSettings);
+      return recording.ok
+        ? ok({ kind: "record" as const, sessionId: recording.value.sessionId })
+        : recording;
     }
 
     // COMMIT path. The user has selected AND committed — the selector has
@@ -563,11 +630,16 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         // prompt). Park the idle toast rather than leaving it empty.
         setFloatOverState({ kind: "cancel" });
       }
+      // Preserve the established capture:interactive still response on the
+      // wire. The only additive success shape is the Record session arm.
       return persisted;
     } finally {
       // Safety net for an unexpected throw before the explicit teardown.
       void releaseSnapshot(screenSnapshotId);
       await tearDownSelector();
+    }
+    } finally {
+      lease.release();
     }
   });
 

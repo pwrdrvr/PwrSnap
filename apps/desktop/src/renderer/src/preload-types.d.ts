@@ -12,6 +12,7 @@ import type {
   Req,
   Res,
   PwrSnapError,
+  QuickCaptureAction,
   Result,
   VideoPreset
 } from "@pwrsnap/shared";
@@ -46,14 +47,18 @@ declare global {
         req: Req<C>
       ): Promise<Result<Res<C>, PwrSnapError>>;
       on(channel: string, handler: (payload: unknown) => void): () => void;
-      submitRegion(payload: {
-        ok: boolean;
-        rect?: { x: number; y: number; w: number; h: number };
-        displayId?: number;
-        snappedWindowId?: number;
-        fullWindow?: boolean;
-        captureCursor?: boolean;
-      }): void;
+      submitRegion(payload:
+        | { ok: false }
+        | {
+            ok: true;
+            rect: { x: number; y: number; w: number; h: number };
+            displayId: number;
+            action: Exclude<QuickCaptureAction, "ask">;
+            snappedWindowId?: number;
+            fullWindow?: boolean;
+            captureCursor?: boolean;
+          }
+      ): void;
       notifySelectorSnapshotPainted(screenUrl: string): void;
       onWindowListSnapshot(
         handler: (payload: {
@@ -69,6 +74,7 @@ declare global {
           screenUrl?: string;
           intent?: "snap" | "video";
           cursor?: boolean;
+          quickCaptureAction?: QuickCaptureAction;
         }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;

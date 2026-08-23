@@ -67,6 +67,10 @@ const screenSnapshotMocks = vi.hoisted(() => ({
   captureAndRegister: vi.fn(),
   releaseSnapshot: vi.fn()
 }));
+const selectorShortcutMocks = vi.hoisted(() => ({
+  register: vi.fn(),
+  unregister: vi.fn()
+}));
 
 function selectorLoadPromise(): Promise<void> {
   if (!deferSelectorLoads) return Promise.resolve();
@@ -162,8 +166,8 @@ vi.mock("electron", () => {
     },
     BrowserWindow,
     globalShortcut: {
-      register: vi.fn(),
-      unregister: vi.fn()
+      register: selectorShortcutMocks.register,
+      unregister: selectorShortcutMocks.unregister
     },
     ipcMain: {
       on: vi.fn((channel: string, listener: (event: unknown, payload: unknown) => void) => {
@@ -220,6 +224,8 @@ beforeEach(() => {
   suppressPaintAck = false;
   screenSnapshotMocks.captureAndRegister.mockReset();
   screenSnapshotMocks.releaseSnapshot.mockReset();
+  selectorShortcutMocks.register.mockReset();
+  selectorShortcutMocks.unregister.mockReset();
   screenSnapshotMocks.captureAndRegister.mockResolvedValue({
     id: "snapshot-1",
     filePath: "/tmp/snapshot.png",
@@ -547,6 +553,158 @@ describe("region-selector — snapshot-paint gate before show()", () => {
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+});
+
+describe("region-selector — chooser contract and terminal ownership", () => {
+  const committedPayload = {
+    ok: true,
+    rect: { x: 25, y: 30, w: 640, h: 480 },
+    displayId: 1
+  } as const;
+
+  test("forwards quickCaptureAction and holds the snapshot through cancel until hide", async () => {
+    const { hideSelector, pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({
+      keepPwrSnapChrome: true,
+      quickCaptureAction: "ask"
+    });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.webContents.send).toHaveBeenCalledWith(
+        "region-selector:mode",
+        expect.objectContaining({
+          mode: "auto",
+          screenUrl: "pwrsnap-screen://r/snapshot-1",
+          quickCaptureAction: "ask"
+        })
+      );
+      expect(selectorShortcutMocks.register).toHaveBeenCalledWith(
+        "R",
+        expect.any(Function)
+      );
+    });
+
+    // No terminal result yet: the chooser still owns the frozen snapshot.
+    expect(screenSnapshotMocks.releaseSnapshot).not.toHaveBeenCalled();
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+
+    // A renderer cancel resolves the picker, but caller-owned teardown is
+    // what releases the still-selector snapshot.
+    expect(screenSnapshotMocks.releaseSnapshot).not.toHaveBeenCalled();
+    expect(selectorShortcutMocks.unregister).toHaveBeenCalledWith("R");
+
+    hideSelector();
+    hideSelector();
+    expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledTimes(1);
+    expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledWith("snapshot-1");
+  });
+
+  test("round-trips Record, transfers snapshot ownership, and ignores a duplicate result", async () => {
+    const { disposeRegionSelector, hideSelector, pickRegion } = await import(
+      "../capture/region-selector"
+    );
+    const pick = pickRegion({ keepPwrSnapChrome: true, quickCaptureAction: "ask" });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+    });
+
+    const resultListener = ipcListeners.get("region-selector:result");
+    resultListener?.({}, { ...committedPayload, action: "record" });
+    // A second raw IPC delivery from direct + forwarded Return must not
+    // overwrite the first terminal action or transfer ownership twice.
+    resultListener?.({}, { ...committedPayload, action: "snap" });
+
+    const result = await pick;
+    expect(result).toMatchObject({
+      ok: true,
+      action: "record",
+      rect: committedPayload.rect,
+      displayId: 1,
+      screenSnapshotId: "snapshot-1",
+      screenSnapshotPath: "/tmp/snapshot.png"
+    });
+    expect(screenSnapshotMocks.releaseSnapshot).not.toHaveBeenCalled();
+
+    // A successful terminal result transfers cleanup to the selected
+    // pipeline; selector hide/dispose must not delete the consumer's file.
+    hideSelector();
+    disposeRegionSelector();
+    expect(screenSnapshotMocks.releaseSnapshot).not.toHaveBeenCalled();
+  });
+
+  test("defaults a legacy action-less success payload to Snap", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ keepPwrSnapChrome: true });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+    });
+    ipcListeners.get("region-selector:result")?.({}, committedPayload);
+
+    await expect(pick).resolves.toMatchObject({
+      ok: true,
+      action: "snap",
+      screenSnapshotId: "snapshot-1"
+    });
+    expect(screenSnapshotMocks.releaseSnapshot).not.toHaveBeenCalled();
+  });
+
+  test("dispose settles an active picker and releases selector-owned resources once", async () => {
+    const { disposeRegionSelector, pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ keepPwrSnapChrome: true, quickCaptureAction: "ask" });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+    });
+
+    disposeRegionSelector();
+    disposeRegionSelector();
+
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "destroyed" });
+    expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledTimes(1);
+    expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledWith("snapshot-1");
+    expect(selectorShortcutMocks.unregister).toHaveBeenCalledWith("R");
+  });
+
+  test("window close settles an active picker and releases its frozen snapshot", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ keepPwrSnapChrome: true, quickCaptureAction: "ask" });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+    });
+    const closed = constructed[0]?.on.mock.calls.find(([event]) => event === "closed")?.[1] as
+      | (() => void)
+      | undefined;
+    expect(closed).toBeTypeOf("function");
+    closed?.();
+
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "destroyed" });
+    expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledTimes(1);
+    expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledWith("snapshot-1");
+  });
+
+  test("renderer exit settles the picker, releases the snapshot, and destroys the unusable window", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ keepPwrSnapChrome: true, quickCaptureAction: "ask" });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
+    });
+    const renderProcessGone = constructed[0]?.webContents.on.mock.calls.find(
+      ([event]) => event === "render-process-gone"
+    )?.[1] as (() => void) | undefined;
+    expect(renderProcessGone).toBeTypeOf("function");
+    renderProcessGone?.();
+
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "destroyed" });
+    expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledTimes(1);
+    expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledWith("snapshot-1");
+    expect(constructed[0]?.destroy).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -16,6 +16,7 @@
 // `backdrop-filter` — single biggest cause of jank over Splashtop.
 
 import { app, BrowserWindow, globalShortcut, ipcMain, screen, type Display } from "electron";
+import type { QuickCaptureAction } from "@pwrsnap/shared";
 import { join } from "node:path";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
@@ -40,6 +41,7 @@ const selectorWindowLoads = new WeakMap<BrowserWindow, Promise<boolean>>();
 const standbyWarmScheduled = new Set<number>();
 const selectorDisplaysNeedingFreshPanel = new Set<number>();
 let pendingResolver: ((result: SelectorResult) => void) | null = null;
+let activeSelectorWindow: BrowserWindow | null = null;
 let resultListenerAttached = false;
 let displayListenersAttached = false;
 
@@ -47,6 +49,30 @@ let displayListenersAttached = false;
  *  selector is shown. Resolved by the SELECTOR_PAINTED_CHANNEL ack
  *  (matching screenUrl) or by its own timeout. */
 let pendingPaintWait: { screenUrl: string; resolve: () => void } | null = null;
+
+/** Settle a selector whose active renderer/window disappeared. The normal
+ *  commit/cancel path transfers snapshot ownership before this can run; every
+ *  other path remains selector-owned and is released here. */
+function settlePendingSelectorDestroyed(): void {
+  activeSelectorWindow = null;
+  if (pendingPaintWait !== null) {
+    const waiter = pendingPaintWait;
+    pendingPaintWait = null;
+    waiter.resolve();
+  }
+  uninstallSelectorGlobalShortcuts();
+  if (activeScreenSnapshot !== null) {
+    const stale = activeScreenSnapshot;
+    activeScreenSnapshot = null;
+    void releaseSnapshot(stale.id);
+  }
+  previousAppPid = null;
+  if (pendingResolver !== null) {
+    const resolver = pendingResolver;
+    pendingResolver = null;
+    resolver({ ok: false, reason: "destroyed" });
+  }
+}
 
 /**
  * Resolve once the renderer acks that the snapshot for `screenUrl` has
@@ -176,6 +202,8 @@ export type SelectorResult =
        *  `settings.recording.videoCaptureCursor`). Undefined for image
        *  captures, which don't consume it yet (Phase 3). */
       captureCursor?: boolean;
+      /** Terminal pipeline selected by the post-selection chooser. */
+      action: "snap" | "record";
     }
   | {
       ok: false;
@@ -337,7 +365,10 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
             displayId: payload.displayId,
             screenSnapshotPath: snapshot.filePath,
             screenSnapshotId: snapshot.id,
-            previousAppPid: prevPid
+            previousAppPid: prevPid,
+            // Older renderer/E2E payloads predate the chooser. Treat an
+            // omitted action as the historical still-capture behavior.
+            action: payload.action ?? "snap"
           };
           if (typeof payload.snappedWindowId === "number") {
             result.snappedWindowId = payload.snappedWindowId;
@@ -419,6 +450,10 @@ export async function pickRegion(
      *  the renderer in the mode signal; the committed value rides back
      *  on the result as `captureCursor`. */
     cursorDefault?: boolean;
+    /** Quick-Capture-only policy. Explicit region/window/timed callers
+     *  leave this at `snap`; the dedicated video path derives `record`
+     *  from `intent: "video"`. */
+    quickCaptureAction?: QuickCaptureAction;
   } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
@@ -426,6 +461,8 @@ export async function pickRegion(
   const protectWindowIds = opts.protectWindowIds ?? [];
   const intent = opts.intent ?? "snap";
   const cursorDefault = opts.cursorDefault;
+  const quickCaptureAction =
+    opts.quickCaptureAction ?? (intent === "video" ? "record" : "snap");
   const requestStartedAt = Date.now();
   const elapsedFromRequest = (): number => Date.now() - requestStartedAt;
   log.info("capture selector requested", {
@@ -470,6 +507,7 @@ export async function pickRegion(
   }
 
   const win = targetWindow;
+  activeSelectorWindow = win;
 
   // Capture the screen NOW, before we show the selector. This is the
   // SnagIt model: freeze the screen, paint the snapshot as a
@@ -622,6 +660,8 @@ export async function pickRegion(
     });
     acceptingWindowList = false;
     void windowListPromise;
+    if (activeSelectorWindow === win) activeSelectorWindow = null;
+    previousAppPid = null;
     return { ok: false, reason: "destroyed" };
   } finally {
     // Lift protection on EVERY snapshot exit path — success, throw, or
@@ -630,6 +670,21 @@ export async function pickRegion(
     // protected windows; holding protection any longer would leave them
     // stuck uncapturable. No-op when protectWindowIds is empty.
     setSnapshotContentProtection(protectWindowIds, false);
+  }
+
+  // The active window may have closed while the async snapshot helper was
+  // running. Do not arm a resolver that can never receive renderer IPC.
+  if (win.isDestroyed() || activeSelectorWindow !== win) {
+    acceptingWindowList = false;
+    void windowListPromise;
+    if (activeScreenSnapshot !== null) {
+      const stale = activeScreenSnapshot;
+      activeScreenSnapshot = null;
+      void releaseSnapshot(stale.id);
+    }
+    if (activeSelectorWindow === win) activeSelectorWindow = null;
+    previousAppPid = null;
+    return { ok: false, reason: "destroyed" };
   }
 
   // Arm Esc + Enter via globalShortcut for the duration of the
@@ -659,7 +714,8 @@ export async function pickRegion(
             mode,
             screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}`,
             intent,
-            cursor: cursorDefault
+            cursor: cursorDefault,
+            quickCaptureAction
           }
         : null;
     if (!win.isDestroyed() && modePayload !== null) {
@@ -754,6 +810,7 @@ export async function pickRegion(
   });
   acceptingWindowList = false;
   void windowListPromise;
+  if (activeSelectorWindow === win) activeSelectorWindow = null;
   uninstallSelectorGlobalShortcuts();
   log.info("capture selector selection finished", {
     displayId: targetDisplay.id,
@@ -1095,6 +1152,11 @@ function installSelectorGlobalShortcuts(win: BrowserWindow): void {
       win.webContents.send(SELECTOR_KEY_CHANNEL, { key: "Enter" });
     }
   });
+  globalShortcut.register("R", () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send(SELECTOR_KEY_CHANNEL, { key: "r" });
+    }
+  });
   shortcutsInstalled = true;
 }
 
@@ -1102,6 +1164,7 @@ function uninstallSelectorGlobalShortcuts(): void {
   if (!shortcutsInstalled) return;
   globalShortcut.unregister("Escape");
   globalShortcut.unregister("Return");
+  globalShortcut.unregister("R");
   shortcutsInstalled = false;
 }
 
@@ -1341,6 +1404,18 @@ function createSelectorWindow(
     }
   });
   window.setTitle(SELECTOR_WINDOW_TITLE);
+  window.on("closed", () => {
+    if (activeSelectorWindow === window) {
+      settlePendingSelectorDestroyed();
+    }
+  });
+  window.webContents.on("render-process-gone", () => {
+    if (activeSelectorWindow === window) {
+      settlePendingSelectorDestroyed();
+    }
+    // A renderer that exited cannot be reused by the next pre-warmed pick.
+    if (!window.isDestroyed()) window.destroy();
+  });
 
   // Highest-of-windows ordering — clears menu bar / other overlays.
   window.setAlwaysOnTop(true, "screen-saver");
@@ -1579,6 +1654,7 @@ function isSelectorPayload(value: unknown): value is {
   snappedWindowId?: number;
   fullWindow?: boolean;
   captureCursor?: boolean;
+  action?: "snap" | "record";
 } {
   if (value === null || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -1604,10 +1680,14 @@ function isSelectorPayload(value: unknown): value is {
   if (v.captureCursor !== undefined && typeof v.captureCursor !== "boolean") {
     return false;
   }
+  if (v.action !== undefined && v.action !== "snap" && v.action !== "record") {
+    return false;
+  }
   return true;
 }
 
 export function disposeRegionSelector(): void {
+  settlePendingSelectorDestroyed();
   for (const win of selectorWindows.values()) {
     if (!win.isDestroyed()) win.destroy();
   }

@@ -62,6 +62,7 @@ import {
   IPC_VIDEO_DRAG_START
 } from "@pwrsnap/shared/ipc";
 import type {
+  QuickCaptureAction,
   RenderPreset,
   VideoPreset
 } from "@pwrsnap/shared/protocol";
@@ -182,22 +183,28 @@ const pwrsnapApi = {
    * + displayId) or on cancel (with `ok: false`). Main re-validates
    * everything; this channel is just a transport.
    */
-  submitRegion(payload: {
-    ok: boolean;
-    rect?: { x: number; y: number; w: number; h: number };
-    displayId?: number;
-    /** Always set when the user committed straight from a window
-     *  snap (no drag, no resize). Used by main for source-app
-     *  metadata. */
-    snappedWindowId?: number;
-    /** True when the user opted into full-window capture by holding
-     *  ⇧ at commit time. Routes main to `screencapture -l <id>`
-     *  instead of `-R <rect>`. */
-    fullWindow?: boolean;
-    /** Video-only: whether the recording bakes in the mouse cursor,
-     *  from the selector's `C` toggle. Omitted for image captures. */
-    captureCursor?: boolean;
-  }): void {
+  submitRegion(payload:
+    | { ok: false }
+    | {
+        ok: true;
+        rect: { x: number; y: number; w: number; h: number };
+        displayId: number;
+        /** Terminal Quick Capture action. Dedicated video selection always
+         *  resolves to `record`; non-Quick still selectors resolve to `snap`. */
+        action: Exclude<QuickCaptureAction, "ask">;
+        /** Always set when the user committed straight from a window
+         *  snap (no drag, no resize). Used by main for source-app
+         *  metadata. */
+        snappedWindowId?: number;
+        /** True when the user opted into full-window capture by holding
+         *  ⇧ at commit time. Routes main to `screencapture -l <id>`
+         *  instead of `-R <rect>`. */
+        fullWindow?: boolean;
+        /** Video-only: whether the recording bakes in the mouse cursor,
+         *  from the selector's `C` toggle. Omitted for image captures. */
+        captureCursor?: boolean;
+      }
+  ): void {
     ipcRenderer.send(REGION_SELECTOR_RESULT_CHANNEL, payload);
   },
   /**
@@ -347,6 +354,9 @@ const pwrsnapApi = {
       intent?: "snap" | "video";
       /** Video-only seed for the cursor toggle. `undefined` = ON. */
       cursor?: boolean;
+      /** Quick Capture preference. Undefined keeps non-Quick still and
+       *  dedicated video selectors on their direct historical paths. */
+      quickCaptureAction?: QuickCaptureAction;
     }) => void
   ): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
@@ -356,6 +366,7 @@ const pwrsnapApi = {
           screenUrl?: string;
           intent?: "snap" | "video";
           cursor?: boolean;
+          quickCaptureAction?: QuickCaptureAction;
         }
       );
     ipcRenderer.on(REGION_SELECTOR_MODE_CHANNEL, wrapped);

@@ -14,6 +14,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 
+import type { QuickCaptureAction } from "@pwrsnap/shared";
 import type { WindowSnapEntry } from "../../../preload-types";
 import { RegionSelector } from "../RegionSelector";
 
@@ -26,6 +27,8 @@ type ModePayload = {
   mode: "auto" | "region" | "window";
   screenUrl?: string;
   intent?: "snap" | "video";
+  cursor?: boolean;
+  quickCaptureAction?: QuickCaptureAction;
 };
 type SnapshotPayload = {
   windows: WindowSnapEntry[];
@@ -98,7 +101,15 @@ afterEach(async () => {
   root = null;
   // Clear the body attributes the component stamps so state never
   // leaks across tests.
-  for (const k of ["interaction", "snap", "spaceHeld", "fullWindow", "mode", "discarding"]) {
+  for (const k of [
+    "interaction",
+    "snap",
+    "spaceHeld",
+    "fullWindow",
+    "mode",
+    "discarding",
+    "choosing"
+  ]) {
     delete document.body.dataset[k];
   }
 });
@@ -171,6 +182,7 @@ async function emitKey(key: string): Promise<void> {
 // disarm between a step-back and a deliberate second Escape. Kept just
 // above ESCAPE_DEDUPE_MS so the second press is honored.
 const ESC_GUARD_WAIT_MS = 70;
+const ENTER_GUARD_WAIT_MS = 70;
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -181,6 +193,47 @@ async function drawRect(): Promise<void> {
   await mouseDown(100, 100);
   await mouseMove(300, 300);
   await mouseUp(300, 300);
+}
+
+async function openAskChooser(): Promise<void> {
+  await emitMode({
+    mode: "auto",
+    intent: "snap",
+    quickCaptureAction: "ask"
+  });
+  await drawRect();
+  await keyDown("Enter");
+}
+
+function chooser(): HTMLElement {
+  const el = container?.querySelector('[data-testid="region-capture-chooser"]');
+  if (!(el instanceof HTMLElement)) throw new Error("capture chooser not found");
+  return el;
+}
+
+function choiceButton(action: "snap" | "record"): HTMLButtonElement {
+  const el = container?.querySelector(
+    `[data-testid="region-capture-choice-${action}"]`
+  );
+  if (!(el instanceof HTMLButtonElement)) {
+    throw new Error(`${action} choice button not found`);
+  }
+  return el;
+}
+
+async function clickChoice(action: "snap" | "record", times = 1): Promise<void> {
+  const button = choiceButton(action);
+  await act(async () => {
+    for (let i = 0; i < times; i += 1) {
+      button.dispatchEvent(
+        new MouseEvent("mousedown", { button: 0, bubbles: true, cancelable: true })
+      );
+      button.dispatchEvent(
+        new MouseEvent("mouseup", { button: 0, bubbles: true, cancelable: true })
+      );
+      button.click();
+    }
+  });
 }
 
 function regionHintText(): string {
@@ -458,5 +511,301 @@ describe("U4 — border move-band", () => {
     await mouseMove(500, 450);
     await mouseUp(500, 450);
     expect(rectStyle()).toEqual({ left: 200, top: 200, width: 300, height: 250 });
+  });
+});
+
+describe("U5 — Quick Capture Snap-vs-Record chooser", () => {
+  test.each([
+    ["snap", "snap"],
+    ["record", "record"]
+  ] as const)(
+    "%s preference bypasses the chooser and submits the configured action",
+    async (quickCaptureAction, expectedAction) => {
+      await mount();
+      await emitMode({ mode: "auto", intent: "snap", quickCaptureAction });
+      await drawRect();
+      await keyDown("Enter");
+
+      expect(container?.querySelector('[role="dialog"]')).toBeNull();
+      expect(submitRegion).toHaveBeenCalledTimes(1);
+      expect(submitRegion).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ok: true,
+          action: expectedAction,
+          rect: { x: 100, y: 100, w: 200, h: 200 }
+        })
+      );
+    }
+  );
+
+  test("a non-Quick still selector preserves the historical direct Snap path", async () => {
+    await mount();
+    await emitMode({ mode: "auto", intent: "snap" });
+    await drawRect();
+    await keyDown("Enter");
+
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({ ok: true, action: "snap" })
+    );
+    expect(container?.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  test("dedicated video intent always submits Record, even if Quick Capture says ask", async () => {
+    await mount();
+    await emitMode({
+      mode: "auto",
+      intent: "video",
+      cursor: false,
+      quickCaptureAction: "ask"
+    });
+    await drawRect();
+    await keyDown("Enter");
+
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: true,
+        action: "record",
+        captureCursor: false
+      })
+    );
+    expect(container?.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  test("ask freezes the selection, opens an anchored named dialog, and focuses Snap", async () => {
+    await mount();
+    await openAskChooser();
+
+    const dialog = chooser();
+    expect(submitRegion).not.toHaveBeenCalled();
+    expect(dialog.getAttribute("role")).toBe("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    const labelledBy = dialog.getAttribute("aria-labelledby");
+    const describedBy = dialog.getAttribute("aria-describedby");
+    expect(labelledBy).toBe("region-capture-chooser-title");
+    expect(describedBy).toBe("region-capture-chooser-description");
+    expect(document.getElementById(labelledBy ?? "")?.textContent).toBe(
+      "Capture selection"
+    );
+    expect(document.getElementById(describedBy ?? "")?.textContent).toContain(
+      "Escape cancels"
+    );
+    expect(
+      dialog.querySelector('[role="group"]')?.getAttribute("aria-label")
+    ).toBe("Capture action");
+    expect(document.activeElement).toBe(choiceButton("snap"));
+    // Selection (100,100)-(300,300): 280px chooser centers at x=200 and
+    // sits 10px below the committed rect.
+    expect(dialog.style.left).toBe("60px");
+    expect(dialog.style.top).toBe("310px");
+    expect(document.body.dataset.choosing).toBe("true");
+    expect(container?.querySelectorAll(".region-handle").length).toBe(0);
+  });
+
+  test.each([
+    ["darwin", "Return"],
+    ["win32", "Enter"]
+  ] as const)("%s exposes the platform-correct Snap key label", async (platform, label) => {
+    if (window.pwrsnapApi === undefined) throw new Error("selector API missing");
+    window.pwrsnapApi.platform = platform;
+    await mount();
+    await openAskChooser();
+
+    const snap = choiceButton("snap");
+    expect(snap.getAttribute("aria-label")).toBe(`Snap (${label})`);
+    expect(snap.querySelector("kbd")?.textContent).toBe(label);
+    expect(snap.querySelector("kbd")?.getAttribute("aria-hidden")).toBe("true");
+    expect(choiceButton("record").getAttribute("aria-label")).toBe("Record (R)");
+  });
+
+  test("Return chooses Snap after the chooser is armed", async () => {
+    await mount();
+    await openAskChooser();
+    await delay(ENTER_GUARD_WAIT_MS);
+    await keyDown("Return");
+
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({ ok: true, action: "snap" })
+    );
+  });
+
+  test("direct plus forwarded Enter opens without instant acceptance, then a deliberate Enter snaps once", async () => {
+    await mount();
+    await emitMode({
+      mode: "auto",
+      intent: "snap",
+      quickCaptureAction: "ask"
+    });
+    await drawRect();
+
+    await keyDown("Enter");
+    expect(container?.querySelector('[role="dialog"]')).not.toBeNull();
+    await emitKey("Enter");
+    expect(submitRegion).not.toHaveBeenCalled();
+
+    await delay(ENTER_GUARD_WAIT_MS);
+    await emitKey("Enter");
+    await emitKey("Enter");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({ ok: true, action: "snap" })
+    );
+  });
+
+  test("R and forwarded R choose Record exactly once", async () => {
+    await mount();
+    await openAskChooser();
+    await keyDown("r");
+    await emitKey("R");
+
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({ ok: true, action: "record" })
+    );
+  });
+
+  test.each(["snap", "record"] as const)(
+    "mouse %s button settles the matching action exactly once",
+    async (action) => {
+      await mount();
+      await openAskChooser();
+      await clickChoice(action, 2);
+
+      expect(submitRegion).toHaveBeenCalledTimes(1);
+      expect(submitRegion).toHaveBeenCalledWith(
+        expect.objectContaining({ ok: true, action })
+      );
+    }
+  );
+
+  test("Escape from the chooser is terminal cancel and duplicate forwarding is inert", async () => {
+    await mount();
+    await openAskChooser();
+    await keyDown("Escape");
+    await emitKey("Escape");
+
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith({ ok: false });
+    expect(document.body.dataset.interaction).toBe("snap");
+    expect(container?.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  test("geometry remains immutable while choosing and the frozen payload is submitted", async () => {
+    await mount();
+    await openAskChooser();
+    const before = rectStyle();
+    const beforeChooserPosition = {
+      left: chooser().style.left,
+      top: chooser().style.top
+    };
+
+    await mouseMove(700, 650);
+    await mouseDown(700, 650);
+    await mouseMove(900, 700);
+    await mouseUp(900, 700);
+    await keyDown("ArrowRight", { shiftKey: true });
+    await keyDown(" ");
+
+    expect(rectStyle()).toEqual(before);
+    expect({ left: chooser().style.left, top: chooser().style.top }).toEqual(
+      beforeChooserPosition
+    );
+    await clickChoice("record");
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: true,
+        action: "record",
+        rect: { x: 100, y: 100, w: 200, h: 200 }
+      })
+    );
+  });
+
+  test("a late window-list snapshot cannot replace live-snap geometry after the chooser opens", async () => {
+    await mount();
+    await emitMode({
+      mode: "auto",
+      intent: "snap",
+      quickCaptureAction: "ask"
+    });
+    await emitSnapshot({
+      windows: [WIN],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight },
+      cursor: {
+        x: WIN.rect.x + WIN.rect.w / 2,
+        y: WIN.rect.y + WIN.rect.h / 2
+      }
+    });
+
+    expect(rectStyle()).toEqual({
+      left: WIN.rect.x,
+      top: WIN.rect.y,
+      width: WIN.rect.w,
+      height: WIN.rect.h
+    });
+    await keyDown("Enter");
+    const committedGeometry = rectStyle();
+    const committedChooserPosition = {
+      left: chooser().style.left,
+      top: chooser().style.top
+    };
+
+    // Main deliberately repeats the initial snapshot shortly after reveal.
+    // Model a stale delivery whose cursor/window data would otherwise return
+    // the still-`snap` interaction to a full-display selection.
+    await emitSnapshot({
+      windows: [],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight },
+      cursor: { x: 10, y: 10 }
+    });
+
+    expect(rectStyle()).toEqual(committedGeometry);
+    expect({ left: chooser().style.left, top: chooser().style.top }).toEqual(
+      committedChooserPosition
+    );
+    expect(submitRegion).not.toHaveBeenCalled();
+
+    await clickChoice("record");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith({
+      ok: true,
+      action: "record",
+      rect: {
+        x: WIN.rect.x,
+        y: WIN.rect.y,
+        w: WIN.rect.w,
+        h: WIN.rect.h
+      },
+      displayId: 0,
+      snappedWindowId: WIN.windowId
+    });
+  });
+
+  test("a new mode event clears the chooser and resets the terminal latch", async () => {
+    await mount();
+    await emitMode({
+      mode: "auto",
+      intent: "snap",
+      quickCaptureAction: "snap"
+    });
+    await drawRect();
+    await keyDown("Enter");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+
+    await emitMode({
+      mode: "auto",
+      intent: "snap",
+      quickCaptureAction: "ask"
+    });
+    await drawRect();
+    await keyDown("Enter");
+    expect(container?.querySelector('[role="dialog"]')).not.toBeNull();
+    await clickChoice("record");
+
+    expect(submitRegion).toHaveBeenCalledTimes(2);
+    expect(submitRegion.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({ ok: true, action: "record" })
+    );
   });
 });

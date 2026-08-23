@@ -211,6 +211,68 @@ describe("useEditMenuBridge — keyboard path", () => {
     expect(redo).toHaveBeenCalledTimes(1);
   });
 
+  test("Ctrl+Y delegates to capture redo when no editor is mounted", () => {
+    const fallbackRedo = vi.fn();
+    registerSpyFallback({
+      undo: vi.fn(),
+      redo: fallbackRedo,
+      canUndo: () => false,
+      canRedo: () => true
+    });
+    mount();
+
+    const event = pressKey({ key: "y", ctrlKey: true });
+
+    expect(fallbackRedo).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  test("Ctrl+Y delegates to capture redo once the editor redo stack is empty", () => {
+    const editorRedo = vi.fn();
+    const fallbackRedo = vi.fn();
+    registerSpyEditor({
+      undo: vi.fn(),
+      redo: editorRedo,
+      canUndo: () => false,
+      canRedo: () => false
+    });
+    registerSpyFallback({
+      undo: vi.fn(),
+      redo: fallbackRedo,
+      canUndo: () => false,
+      canRedo: () => true
+    });
+    mount();
+
+    pressKey({ key: "y", ctrlKey: true });
+
+    expect(editorRedo).not.toHaveBeenCalled();
+    expect(fallbackRedo).toHaveBeenCalledTimes(1);
+  });
+
+  test("Ctrl+Y preserves editor precedence while editor redo is available", () => {
+    const editorRedo = vi.fn();
+    const fallbackRedo = vi.fn();
+    registerSpyEditor({
+      undo: vi.fn(),
+      redo: editorRedo,
+      canUndo: () => false,
+      canRedo: () => true
+    });
+    registerSpyFallback({
+      undo: vi.fn(),
+      redo: fallbackRedo,
+      canUndo: () => false,
+      canRedo: () => true
+    });
+    mount();
+
+    pressKey({ key: "y", ctrlKey: true });
+
+    expect(editorRedo).toHaveBeenCalledTimes(1);
+    expect(fallbackRedo).not.toHaveBeenCalled();
+  });
+
   test("Ctrl+Y in a text field is left to native handling — no editor redo, no preventDefault", () => {
     const redo = vi.fn();
     registerSpyEditor({ undo: vi.fn(), redo });

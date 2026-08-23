@@ -119,9 +119,15 @@ export type DetailRailProps = {
   readonly onActiveTabChange?: (next: LibrarySidebarTab) => void;
   /** Soft-delete handler. Library routes this through its delete
    *  coordinator (advance-to-next in Focus, arm the Undo toast + ⌘Z
-   *  restore). When omitted, the rail falls back to a bare `library:delete`
-   *  dispatch so it stays usable in isolation. */
+   *  restore). When omitted, the rail falls back to a bare dispatch so it
+   *  stays usable in isolation. */
   readonly onTrash?: (id: string) => void;
+  /** Restore handler. Library supplies its Result-aware coordinator so the
+   *  rail cannot silently bypass retry/error state. */
+  readonly onRestore?: (id: string) => void;
+  /** Permanent-delete handler, including confirmation. Library supplies its
+   *  Result-aware coordinator for the same reason as `onRestore`. */
+  readonly onPurge?: (id: string) => void;
   /** When false, the Move-to-Trash button skips its confirm popover and
    *  deletes immediately (still recoverable via Undo). Defaults to true. */
   readonly confirmBeforeTrash?: boolean;
@@ -158,6 +164,8 @@ export function DetailRail({
   activeTab: activeTabProp,
   onActiveTabChange,
   onTrash,
+  onRestore,
+  onPurge,
   confirmBeforeTrash = true,
   onDontAskAgainTrash,
   onCartJumpTo,
@@ -964,7 +972,8 @@ export function DetailRail({
                 type="button"
                 title="Restore from Trash"
                 onClick={() => {
-                  void dispatch("library:restore", { id: record.id });
+                  if (onRestore !== undefined) onRestore(record.id);
+                  else void dispatch("library:restore", { id: record.id });
                 }}
               >
                 <svg
@@ -985,6 +994,10 @@ export function DetailRail({
                 className="is-danger"
                 title="Delete permanently"
                 onClick={() => {
+                  if (onPurge !== undefined) {
+                    onPurge(record.id);
+                    return;
+                  }
                   const ok = window.confirm(
                     "Permanently delete this capture? This cannot be undone."
                   );

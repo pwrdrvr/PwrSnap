@@ -112,7 +112,10 @@
 .szt__lanes {
   position: relative;
   display: grid;
-  grid-template-rows: 22px 20px 72px 28px 44px;
+  /* The ribbon row is deliberately tall: at 6 stagger rows a dense
+     narration can label most of its words instead of collapsing them into
+     unreadable ticks. */
+  grid-template-rows: 22px 20px 72px 28px 96px;
   cursor: ew-resize;
   user-select: none;
   /* Structural defense, not decoration: `.szt__scroll` is `overflow-x: auto`,
@@ -604,9 +607,11 @@
   vertical-align: 1px;
 }
 /* a word too crowded for its label */
+/* Ticks live UNDER the label rows, not among them — with six rows in play
+   they used to collide with the words they stand in for. */
 .szt__wtick {
   position: absolute;
-  top: 18px;
+  bottom: 3px;
   width: 1px;
   height: 8px;
   padding: 0;
@@ -622,8 +627,8 @@
 .szt__wtick.is-anch {
   background: var(--accent);
   width: 2px;
-  height: 10px;
-  top: 17px;
+  height: 12px;
+  bottom: 3px;
 }
 /* the honest pre-synthesis state */
 .szt__ribbon-empty {

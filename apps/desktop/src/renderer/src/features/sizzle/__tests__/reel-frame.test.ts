@@ -1,7 +1,13 @@
 import { describe, expect, test } from "vitest";
 import type { SizzleScene, SizzleSequenceBeat, SizzleWordTiming } from "@pwrsnap/shared";
 import { buildTimelineModel } from "../timeline/timeline-model";
-import { flattenReelClips, reelClipProgress, reelFrameAt } from "../reel-frame";
+import {
+  flattenReelClips,
+  reelAudioAt,
+  reelAudioTimeline,
+  reelClipProgress,
+  reelFrameAt
+} from "../reel-frame";
 
 const beat = (id: string, patch: Partial<SizzleSequenceBeat> = {}): SizzleSequenceBeat => ({
   id,
@@ -130,5 +136,29 @@ describe("reel-frame — one axis across scenes", () => {
     expect(reelClipProgress(first, first.startSec)).toBe(0);
     expect(reelClipProgress(first, (first.startSec + first.endSec) / 2)).toBeCloseTo(0.5, 6);
     expect(reelClipProgress(first, first.endSec + 10)).toBe(1);
+  });
+
+  test("narration runs on its OWN sequential timeline, so a crossfade never eats the next scene's first word", () => {
+    // Two 8 s scenes with a 0.4 s crossfade: the PICTURE overlaps, so scene 2
+    // starts at 7.6 on the video axis. The composer concatenates audio, so
+    // scene 2's narration starts at 8.0 and plays from its first sample.
+    const model = resolved([
+      sequence("s1", [beat("a")]),
+      sequence("s2", [beat("b")], { transition: "crossfade" })
+    ]);
+    expect(model.scenes[1]!.startSec).toBeCloseTo(7.6, 6); // video axis
+    const slots = reelAudioTimeline(model);
+    expect(slots.map((s) => [s.sceneId, s.startSec, s.endSec])).toEqual([
+      ["s1", 0, 8],
+      ["s2", 8, 16]
+    ]);
+    // At 7.8 the picture is already dissolving into scene 2, but scene 1 is
+    // still SPEAKING — the old code seeked 0.2 s into scene 2 here and cut
+    // its opening word.
+    expect(reelAudioAt(slots, 7.8)).toEqual({ sceneId: "s1", localSec: 7.8 });
+    // Scene 2's narration starts at its first sample, not mid-word.
+    expect(reelAudioAt(slots, 8)).toEqual({ sceneId: "s2", localSec: 0 });
+    expect(reelAudioAt(slots, 8.25)!.localSec).toBeCloseTo(0.25, 6);
+    expect(reelAudioAt([], 1)).toBeNull();
   });
 });

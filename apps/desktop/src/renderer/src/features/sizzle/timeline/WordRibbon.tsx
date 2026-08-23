@@ -14,7 +14,13 @@
 import type { ReactElement } from "react";
 import type { TimelineModel, TimelineSceneRegion, TimelineWord } from "./timeline-model";
 
-export const RIBBON_ROWS = 3;
+/** Stagger rows available to labels. Six, not three: a 43 s narration is
+ *  ~120 words, and at three rows most of them collapsed into ticks that the
+ *  operator described — accurately — as unreadable. The lane is sized to
+ *  match in timeline.css. */
+export const RIBBON_ROWS = 6;
+/** Vertical pitch between stagger rows, in px. */
+export const RIBBON_ROW_PITCH_PX = 13;
 /** Rough Geist 12 px glyph advance; the real width is measured by layout,
  *  this only decides which labels are attempted. */
 const PX_PER_CHAR = 7.1;
@@ -65,6 +71,7 @@ export function WordRibbon({
   x,
   pxPerSec,
   widthPx,
+  visible,
   onClickWord,
   onSynthesize
 }: {
@@ -73,6 +80,11 @@ export function WordRibbon({
   pxPerSec: number;
   /** The lanes' width: no label is drawn past it. */
   widthPx: number;
+  /** Project-axis window currently on screen. Layout still runs over EVERY
+   *  word — otherwise rows would reshuffle as you scroll — but only the
+   *  words inside this window are mounted. A 45 s reel at 8x is ~14,000 px
+   *  and several hundred words; without this the DOM carries all of them. */
+  visible: { startSec: number; endSec: number };
   /** Click a word: anchor the selected clip (or the clip under that
    *  moment) to it. */
   onClickWord: (scene: TimelineSceneRegion, word: TimelineWord) => void;
@@ -119,11 +131,16 @@ export function WordRibbon({
           }
         }
         // Unmeasured (0) = no bound yet; the first measured layout applies it.
-        const placed = layoutRibbonWords(
+        const placedAll = layoutRibbonWords(
           scene.words,
           pxPerSec,
           new Set(anchoredByWord.keys()),
           widthPx > 0 ? widthPx : Number.POSITIVE_INFINITY
+        );
+        // Mount only what is on screen (the layout above already ran over
+        // the whole scene, so a word's row is stable while scrolling).
+        const placed = placedAll.filter(
+          (p) => p.word.absStartSec >= visible.startSec && p.word.absStartSec <= visible.endSec
         );
         return placed.map((p) => {
           const clipIndex = anchoredByWord.get(p.word.index);
@@ -152,7 +169,7 @@ export function WordRibbon({
               key={`${scene.sceneId}:${p.word.index}`}
               type="button"
               className={"szt__word" + (isAnchor ? " is-anch" : "")}
-              style={{ left: `${p.x}px`, top: `${5 + p.row * 13}px` }}
+              style={{ left: `${p.x}px`, top: `${4 + p.row * RIBBON_ROW_PITCH_PX}px` }}
               title={isAnchor ? `Clip ${clipIndex + 1} starts here` : `Anchor the selected clip to “${p.word.word}”`}
               onClick={(event) => {
                 event.stopPropagation();

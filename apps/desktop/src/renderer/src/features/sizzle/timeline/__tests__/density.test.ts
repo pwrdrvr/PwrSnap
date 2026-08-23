@@ -35,7 +35,10 @@ describe("density ladder", () => {
     // A short reel fits at 55 px/s — denser than 1× (40), so ⌘+ goes to 2×.
     expect(zoomIn("fit", 55)).toBe(2);
     expect(zoomIn(2, 55)).toBe(4);
-    expect(zoomIn(4, 55)).toBe(4);
+    // 8× is the densest rung — a word-dense reel needs several screens of
+    // width to label its narration.
+    expect(zoomIn(4, 55)).toBe(8);
+    expect(zoomIn(8, 55)).toBe(8);
     // ⌘− from 2× would land on 1× (40 px/s), which is LESS dense than fit
     // (55) — that would leave empty track past the reel, so it jumps to fit.
     expect(zoomOut(2, 55)).toBe("fit");
@@ -44,15 +47,19 @@ describe("density ladder", () => {
     expect(zoomIn("fit", 15)).toBe(1);
     expect(zoomOut(1, 15)).toBe("fit");
     expect(zoomOut(4, 15)).toBe(2);
+    expect(zoomOut(8, 15)).toBe(4);
   });
 });
 
 describe("zoomIn never zooms out", () => {
   test("a reel already denser at fit than 4x stays at fit", () => {
-    // A 4 s reel in a 1000 px column fits at 250 px/s; 4x is only 160, so
-    // stepping there would SHRINK the clips and leave empty track.
-    expect(zoomIn("fit", 250)).toBe("fit");
-    expect(zoomIn("fit", 161)).toBe("fit");
+    // A 3 s reel in a 1000 px column fits at ~330 px/s — denser than every
+    // rung including 8× (320), so stepping would SHRINK the clips and leave
+    // empty track past the reel.
+    expect(zoomIn("fit", 330)).toBe("fit");
+    expect(zoomIn("fit", 321)).toBe("fit");
+    // Denser than 4× but not than 8×: 8× is a real zoom IN.
+    expect(zoomIn("fit", 250)).toBe(8);
     // Below the ladder it still steps up as usual.
     expect(zoomIn("fit", 30)).toBe(1);
     expect(zoomIn("fit", 55)).toBe(2);

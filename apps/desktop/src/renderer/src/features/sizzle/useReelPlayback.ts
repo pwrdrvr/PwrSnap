@@ -26,8 +26,9 @@
 //     Drift is corrected against the clock the same way the stage corrects
 //     video.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PlayheadSource } from "../shared/playhead";
+import { reelAudioAt, reelAudioTimeline, type ReelAudioSlot } from "./reel-frame";
 import type { TimelineModel } from "./timeline/timeline-model";
 
 /** Re-seek the narration when it drifts from the master clock by more
@@ -79,6 +80,7 @@ export function useReelPlayback(args: {
   const { model, head, audioBlobs, audioRef, onTakeOver } = args;
   const [playing, setPlaying] = useState(false);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
+  const [audioSceneId, setAudioSceneId] = useState<string | null>(null);
   const [volume, setVolumeState] = useState(savedVolume);
   const [muted, setMutedState] = useState(savedMuted);
 
@@ -93,6 +95,11 @@ export function useReelPlayback(args: {
   // through a ref so a re-render never restarts playback mid-frame.
   const modelRef = useRef(model);
   modelRef.current = model;
+  const audioSlots = useMemo(() => reelAudioTimeline(model), [model]);
+  const audioSlotsRef = useRef<ReelAudioSlot[]>(audioSlots);
+  useEffect(() => {
+    audioSlotsRef.current = audioSlots;
+  }, [audioSlots]);
 
   const revokeUrl = useCallback((): void => {
     if (objectUrlRef.current !== null) {
@@ -180,11 +187,19 @@ export function useReelPlayback(args: {
     (sec: number, shouldPlay: boolean): void => {
       const current = modelRef.current;
       head.set(sec);
+      // The PICTURE's scene — what the stage and the "Scene N · clip M"
+      // readout follow. Overlapping scenes both contain the instant; the
+      // first match is the one still on screen.
       const region =
         current.scenes.find((s) => sec >= s.startSec && sec < s.endSec) ?? current.scenes.at(-1) ?? null;
       const sceneId = region?.sceneId ?? null;
       setActiveSceneId((prev) => (prev === sceneId ? prev : sceneId));
-      syncAudio(sceneId, region === null ? 0 : Math.max(0, sec - region.startSec), shouldPlay);
+      // The NARRATION's scene, on its own sequential timeline — see
+      // `reelAudioTimeline`. Using the video axis here dropped the first
+      // word of every scene that followed a crossfade.
+      const audio = reelAudioAt(audioSlotsRef.current, sec);
+      setAudioSceneId((prev) => (prev === (audio?.sceneId ?? null) ? prev : audio?.sceneId ?? null));
+      syncAudio(audio?.sceneId ?? null, audio?.localSec ?? 0, shouldPlay);
     },
     [head, syncAudio]
   );
@@ -271,7 +286,9 @@ export function useReelPlayback(args: {
     [revokeUrl, stopLoop]
   );
 
-  const activeSceneHasAudio = activeSceneId !== null && audioBlobs[activeSceneId] !== undefined;
+  // Keyed on the NARRATION's scene, not the picture's — near a boundary
+  // they differ, and the transport is describing sound.
+  const activeSceneHasAudio = audioSceneId !== null && audioBlobs[audioSceneId] !== undefined;
 
   return {
     playing,

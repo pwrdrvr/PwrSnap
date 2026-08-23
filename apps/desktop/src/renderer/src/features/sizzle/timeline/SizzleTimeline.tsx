@@ -151,6 +151,54 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
   const contentWidth = Math.max(width, Math.round(totalSec * pxPerSec));
   const lanesWidth = zoom === "fit" ? contentWidth : contentWidth + TAIL_PX;
   const x = useCallback((sec: number): number => sec * pxPerSec, [pxPerSec]);
+
+  // ── Virtualization window ────────────────────────────────────────────
+  // At 8x a 45 s reel is ~14,000 px of lanes carrying 80 clips and several
+  // hundred word buttons. Only what is on screen (plus half a viewport of
+  // slack either side) is mounted; the LAYOUT still runs over everything,
+  // so nothing shifts as you scroll. Recomputed on a rAF and only when the
+  // window has actually moved, so scrolling does not re-render per pixel.
+  const [visible, setVisible] = useState<{ startSec: number; endSec: number }>({
+    startSec: 0,
+    endSec: Number.POSITIVE_INFINITY
+  });
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el === null || pxPerSec <= 0) return;
+    let frame = 0;
+    const update = (): void => {
+      frame = 0;
+      const view = el.clientWidth;
+      if (view <= 0) {
+        // Not laid out yet (or a zero-height host, e.g. jsdom). Render
+        // everything rather than nothing — an unmeasured viewport must not
+        // blank the lanes.
+        setVisible((prev) =>
+          prev.startSec === 0 && prev.endSec === Number.POSITIVE_INFINITY
+            ? prev
+            : { startSec: 0, endSec: Number.POSITIVE_INFINITY }
+        );
+        return;
+      }
+      const slack = view * 0.5;
+      const startSec = Math.max(0, (el.scrollLeft - slack) / pxPerSec);
+      const endSec = (el.scrollLeft + view + slack) / pxPerSec;
+      setVisible((prev) =>
+        Math.abs(prev.startSec - startSec) < 0.2 && Math.abs(prev.endSec - endSec) < 0.2
+          ? prev
+          : { startSec, endSec }
+      );
+    };
+    update();
+    const onScroll = (): void => {
+      if (frame === 0) frame = requestAnimationFrame(update);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (frame !== 0) cancelAnimationFrame(frame);
+    };
+  }, [pxPerSec, width]);
   const ticks = useMemo(() => tickMarks(totalSec, contentWidth), [totalSec, contentWidth]);
 
   // Keep the playhead in view while scrubbing / playing at zoom.
@@ -454,6 +502,7 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
             <ClipLane
               model={model}
               x={x}
+              visible={visible}
               captureMap={captureMap}
               selectedClipId={selectedClipId}
               onSelectClip={(clip) => {
@@ -472,6 +521,7 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
               x={x}
               pxPerSec={pxPerSec}
               widthPx={lanesWidth}
+              visible={visible}
               onClickWord={(scene, word) => onClickWord?.(scene, word)}
               onSynthesize={(sceneId) => onSynthesize?.(sceneId)}
             />

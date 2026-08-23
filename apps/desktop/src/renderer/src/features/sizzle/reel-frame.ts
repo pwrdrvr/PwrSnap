@@ -156,3 +156,45 @@ export function reelClipProgress(clip: ReelClip, sec: number): number {
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
+
+/** One scene's slot on the AUDIO timeline. */
+export type ReelAudioSlot = { sceneId: string; startSec: number; endSec: number };
+
+/**
+ * Where each scene's narration sits in time.
+ *
+ * This is NOT the video axis. `layoutSizzleScenes` pulls a scene back by its
+ * transition overlap because the composer cross-fades the PICTURE; the
+ * composer's audio side (`buildAudioConcat`) does no such thing — it trims
+ * each narration to its own length and concatenates. So narration runs
+ * strictly sequentially while the picture overlaps.
+ *
+ * Positioning audio on the video axis is what made a scene's first word
+ * disappear: at a 0.45 s crossfade the head enters scene N at
+ * `prevEnd − 0.45`, so `sec − scene.startSec` seeked 0.45 s INTO that
+ * scene's narration and ate the opening word.
+ *
+ * Consequence worth knowing: with scene transitions the picture runs ahead
+ * of the narration by the accumulated overlap, exactly as the export does
+ * today (and why `-shortest` clips the tail there). Fixing the planner's
+ * scene-boundary head extension collapses the two axes back together and
+ * this drift disappears on its own.
+ */
+export function reelAudioTimeline(model: TimelineModel): ReelAudioSlot[] {
+  let offsetSec = 0;
+  return model.scenes.map((scene) => {
+    const slot = { sceneId: scene.sceneId, startSec: offsetSec, endSec: offsetSec + scene.durationSec };
+    offsetSec = slot.endSec;
+    return slot;
+  });
+}
+
+/** The narration slot playing at `sec`, with the offset into it. */
+export function reelAudioAt(
+  slots: readonly ReelAudioSlot[],
+  sec: number
+): { sceneId: string; localSec: number } | null {
+  if (slots.length === 0) return null;
+  const slot = slots.find((s) => sec >= s.startSec && sec < s.endSec) ?? slots.at(-1)!;
+  return { sceneId: slot.sceneId, localSec: Math.max(0, Math.min(slot.endSec - slot.startSec, sec - slot.startSec)) };
+}

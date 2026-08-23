@@ -10,7 +10,8 @@
 // per-cell render metrics for image fallback). The two surfaces
 // here just want the cards — pass a captureId and you get the same
 // behavior: click-to-copy a re-encoded file to clipboard, click FILE
-// chip to copy the POSIX path, drag FILE chip for native drag-out.
+// chip to copy the platform-native absolute path, drag FILE chip for
+// native drag-out.
 //
 // `captureId === null` renders an idle grid with no metric IPC fired
 // — same shape as `useVideoExportPresets` accepting a null input, so

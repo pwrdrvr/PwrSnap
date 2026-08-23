@@ -19,7 +19,7 @@
 
 import { mkdtemp, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { extname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clipboard, screen } from "electron";
 import sharp from "sharp";
@@ -59,6 +59,13 @@ import {
   writeFirstDecodableClipboardBufferToPng,
   type RawClipboardDecodeFailure
 } from "../clipboard-image-buffer";
+import {
+  isSupportedClipboardImagePath,
+  readWindowsClipboardImageFile,
+  windowsClipboardFormatsMayContainFiles,
+  type WindowsClipboardImageErrorCode,
+  type WindowsClipboardImageReadResult
+} from "../clipboard/windows-file-clipboard-reader";
 import { broadcastCapturesChanged } from "../events";
 import { setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
@@ -99,27 +106,17 @@ const CLIPBOARD_FILE_URL_FORMATS = [
   "public.url",
   "NSURLPboardType"
 ] as const;
-const IMAGE_FILE_EXTENSIONS = new Set([
-  ".avif",
-  ".bmp",
-  ".gif",
-  ".heic",
-  ".heif",
-  ".jpeg",
-  ".jpg",
-  ".png",
-  ".tif",
-  ".tiff",
-  ".webp"
-]);
-
 type CaptureSource = Pick<WindowInfo, "bundleId" | "appName"> | null;
 
 export function clipboardHasPasteableImage(): boolean {
   if (!clipboard.readImage().isEmpty()) return true;
-  if (clipboardImageBufferFormats(clipboard.availableFormats()).length > 0) return true;
-  const filePath = clipboardImageFilePath();
-  return filePath !== null && looksLikeImageFile(filePath);
+  const formats = clipboard.availableFormats();
+  if (clipboardImageBufferFormats(formats).length > 0) return true;
+  const filePath = clipboardImageFileUrlPath();
+  if (filePath !== null && isSupportedClipboardImagePath(filePath)) return true;
+  // Menu enablement must remain synchronous. This is only a format hint; the
+  // command itself asks the native helper to parse predefined CF_HDROP.
+  return windowsClipboardFormatsMayContainFiles(formats);
 }
 
 /**
@@ -1010,7 +1007,11 @@ async function writeClipboardImageToTempPng(): Promise<
   | { ok: true; tempPath: string; devicePixelRatio: number }
   | {
       ok: false;
-      code: "no_image" | "unsupported_image" | "clipboard_file_unavailable";
+      code:
+        | "no_image"
+        | "unsupported_image"
+        | "clipboard_file_unavailable"
+        | WindowsClipboardImageErrorCode;
       message: string;
       cause?: unknown;
     }
@@ -1034,13 +1035,26 @@ async function writeClipboardImageToTempPng(): Promise<
   }
   decodeFailures.push(...decodedBuffer.failures);
 
-  // A file URL on the clipboard (e.g. a PNG copied in Finder) — ingest the
-  // file directly so a PNG is preserved verbatim and its density is read.
-  const filePath = clipboardImageFilePath();
-  if (filePath !== null && looksLikeImageFile(filePath)) {
+  // Explorer CF_HDROP and Finder/file:// URLs are candidate-discovery
+  // mechanisms only. Both cross the same verified-file boundary, which opens
+  // once, bounds the read, and returns a stable byte snapshot. Never reopen a
+  // validated pathname here: doing so would restore a TOCTOU window.
+  const fileResult = await clipboardImageFilePath();
+  let fileReadFailure: Exclude<WindowsClipboardImageReadResult, { ok: true }> | null = null;
+  if (!fileResult.ok) {
+    if (fileResult.error.terminal) {
+      return {
+        ok: false,
+        code: fileResult.error.code,
+        message: fileResult.error.message,
+        ...(fileResult.error.cause !== undefined ? { cause: fileResult.error.cause } : {})
+      };
+    }
+    fileReadFailure = fileResult;
+  } else if (fileResult.path !== null) {
     let fileBytes: Buffer;
     try {
-      fileBytes = await readSafePastedFile(filePath, {
+      fileBytes = await readSafePastedFile(fileResult.path, {
         maxBytes: PASTE_IMAGE_MAX_BYTES
       });
     } catch (cause) {
@@ -1051,7 +1065,7 @@ async function writeClipboardImageToTempPng(): Promise<
               code: "read_failed",
               message: "The clipboard image file is unavailable."
             };
-      log.warn("clipboard file URL unavailable", { code: refusal.code });
+      log.warn("clipboard image file unavailable", { code: refusal.code });
       return {
         ok: false,
         code: "clipboard_file_unavailable",
@@ -1063,11 +1077,11 @@ async function writeClipboardImageToTempPng(): Promise<
       const ingested = await ingestImageBufferToTempPng(fileBytes, makeClipboardTempPngPath);
       return { ok: true, ...ingested };
     } catch {
-      // The clipboard URL's absolute path is private. Do not retain the
+      // The clipboard file's absolute path is private. Do not retain the
       // decoder's error object: mocks and platform decoders can include
       // their source label in the message. A stable label/code gives the
       // renderer enough context without smuggling the path through `cause`.
-      log.warn("clipboard file URL image decode failed", { code: "decode_failed" });
+      log.warn("clipboard image file decode failed", { code: "decode_failed" });
       decodeFailures.push({
         source: "clipboard file",
         cause: { code: "decode_failed" }
@@ -1095,10 +1109,20 @@ async function writeClipboardImageToTempPng(): Promise<
   if (decodeFailures.length > 0) {
     return unsupportedClipboardImage(decodeFailures);
   }
+  if (fileReadFailure !== null) {
+    return {
+      ok: false,
+      code: fileReadFailure.error.code,
+      message: fileReadFailure.error.message,
+      ...(fileReadFailure.error.cause !== undefined
+        ? { cause: fileReadFailure.error.cause }
+        : {})
+    };
+  }
   return {
     ok: false,
     code: "no_image",
-    message: "The clipboard does not currently contain an image or image file URL."
+    message: "The clipboard does not currently contain an image or image file."
   };
 }
 
@@ -1127,7 +1151,7 @@ async function makeClipboardTempPngPath(): Promise<string> {
   return join(dir, `${Date.now()}.png`);
 }
 
-function clipboardImageFilePath(): string | null {
+function clipboardImageFileUrlPath(): string | null {
   const candidates: string[] = [];
   try {
     const bookmark = clipboard.readBookmark();
@@ -1156,6 +1180,23 @@ function clipboardImageFilePath(): string | null {
   return null;
 }
 
+/**
+ * Resolve one clipboard image-file candidate without asking Electron to
+ * interpret CF_HDROP. Native discovery returns a pathname only; verified,
+ * bounded reading remains exclusively owned by readSafePastedFile above.
+ */
+async function clipboardImageFilePath(): Promise<WindowsClipboardImageReadResult> {
+  const windowsResult = await readWindowsClipboardImageFile();
+  if (windowsResult.ok && windowsResult.path !== null) return windowsResult;
+  if (!windowsResult.ok && windowsResult.error.terminal) return windowsResult;
+
+  const fileUrlPath = clipboardImageFileUrlPath();
+  if (fileUrlPath !== null && isSupportedClipboardImagePath(fileUrlPath)) {
+    return { ok: true, path: fileUrlPath };
+  }
+  return windowsResult;
+}
+
 function fileUrlCandidateToPath(candidate: string): string | null {
   const first = candidate
     .replaceAll("\0", "")
@@ -1168,10 +1209,6 @@ function fileUrlCandidateToPath(candidate: string): string | null {
   } catch {
     return null;
   }
-}
-
-function looksLikeImageFile(filePath: string): boolean {
-  return IMAGE_FILE_EXTENSIONS.has(extname(filePath).toLowerCase());
 }
 
 /**

@@ -3,10 +3,10 @@
 // bytes + click-to-copy overlay + FILE chip — but talks to the
 // video-aware bus verbs instead of the image clipboard ones.
 //
-// Click the card body → encode + `clipboard:copyVideoFile` (writes
-// `public.file-url` UTI so paste in Slack/Mail drops the binary).
-// Click the FILE chip → `clipboard:copyVideoPath` (writes the POSIX
-// path as text).
+// Click the card body → encode + `clipboard:copyVideoFile` (places
+// the media file on the platform clipboard).
+// Click the FILE chip → `clipboard:copyVideoPath` (writes the
+// platform-native path as text).
 // Drag the FILE chip → `startVideoDrag` (main encodes + starts native
 // drag with a poster-frame icon).
 //
@@ -75,27 +75,57 @@ export function VideoExportCard({
   onCopyPath,
   onDrag
 }: VideoExportCardProps): ReactElement {
-  // Local "Copied" overlay timer for the card body — fires when the
-  // user clicks and the dispatch resolves successfully (state
-  // transitions to "done"). Same 1.2s duration as `<CopyButton>` so
-  // the feedback timing is consistent across image and video cards.
+  // Local success timers. All three actions share one state cell, so
+  // the action tag is load-bearing: only a successful media clipboard
+  // write may pulse the card-body "Copied" overlay, and only a
+  // successful path clipboard write may mark the FILE chip "Copied".
+  // A completed drag prepared a file, but changed no clipboard state.
   const [copiedPulse, setCopiedPulse] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
   const cardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pathTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const prevStateKindRef = useRef<ExportButtonState["kind"]>(state.kind);
+  const prevStateRef = useRef<ExportButtonState>(state);
 
   useEffect(() => {
-    if (prevStateKindRef.current !== "done" && state.kind === "done") {
+    const previous = prevStateRef.current;
+    // A new request, error, or scope reset must not inherit the prior
+    // capture/action's short-lived success badge. This matters when a user
+    // retries inside the 1.2 s pulse or changes capture/range immediately.
+    if (state.kind !== "done") {
+      setCopiedPulse(false);
+      setPathCopied(false);
+      if (cardTimerRef.current !== null) {
+        clearTimeout(cardTimerRef.current);
+        cardTimerRef.current = null;
+      }
+      if (pathTimerRef.current !== null) {
+        clearTimeout(pathTimerRef.current);
+        pathTimerRef.current = null;
+      }
+    }
+    const completedCurrentAction =
+      state.kind === "done" &&
+      (previous.kind !== "done" ||
+        previous.action !== state.action ||
+        previous.path !== state.path);
+
+    if (completedCurrentAction && state.action === "copy") {
       setCopiedPulse(true);
       if (cardTimerRef.current !== null) clearTimeout(cardTimerRef.current);
       cardTimerRef.current = setTimeout(() => {
         setCopiedPulse(false);
         cardTimerRef.current = null;
       }, COPIED_VISIBLE_MS);
+    } else if (completedCurrentAction && state.action === "path") {
+      setPathCopied(true);
+      if (pathTimerRef.current !== null) clearTimeout(pathTimerRef.current);
+      pathTimerRef.current = setTimeout(() => {
+        setPathCopied(false);
+        pathTimerRef.current = null;
+      }, COPIED_VISIBLE_MS);
     }
-    prevStateKindRef.current = state.kind;
-  }, [state.kind]);
+    prevStateRef.current = state;
+  }, [state]);
 
   useEffect(() => {
     return () => {
@@ -113,29 +143,31 @@ export function VideoExportCard({
     event.preventDefault();
     if (state.kind === "running") return;
     onCopyPath();
-    setPathCopied(true);
-    if (pathTimerRef.current !== null) clearTimeout(pathTimerRef.current);
-    pathTimerRef.current = setTimeout(() => {
-      setPathCopied(false);
-      pathTimerRef.current = null;
-    }, COPIED_VISIBLE_MS);
   };
 
   const handleDragStart = (event: React.DragEvent<HTMLAnchorElement>): void => {
     event.preventDefault();
+    if (state.kind === "running") return;
     onDrag();
   };
 
   const isRunning = state.kind === "running";
-  const isError = state.kind === "error";
+  const isCopyError = state.kind === "error" && state.action === "copy";
+  const isFileError = state.kind === "error" && state.action !== "copy";
 
   const [dimLine1, dimLine2] = splitDimensionLabel(dim);
   const [bytesLine1, bytesLine2] = splitBytesLabel(bytes);
 
   const formatTitle = format === "gif" ? "GIF" : "MP4";
-  const cardTitle = isError
+  const cardTitle = isCopyError
     ? `Failed: ${state.message}`
     : `Encode + copy ${label} ${formatTitle} to clipboard · ${kbd}`;
+  const fileTitle = isFileError
+    ? `${state.action === "path" ? "Copy path" : "File export"} failed: ${state.message}`
+    : `Click to copy ${label} ${formatTitle} file path · drag for the file itself`;
+  const fileAriaLabel = isFileError
+    ? `${state.action === "path" ? "Copy path" : "File export"} failed: ${state.message}`
+    : `Copy ${label} ${formatTitle} file path to clipboard, or drag for the file`;
 
   return (
     <div className="fo__copy-card">
@@ -145,7 +177,7 @@ export function VideoExportCard({
           "fo__copy-btn" +
           (copiedPulse ? " is-copied" : "") +
           (isRunning ? " is-running" : "") +
-          (isError ? " is-error" : "")
+          (isCopyError ? " is-error" : "")
         }
         onClick={handleCardClick}
         disabled={isRunning}
@@ -162,7 +194,7 @@ export function VideoExportCard({
               <span>Encoding</span>
               <span>…</span>
             </span>
-          ) : isError ? (
+          ) : isCopyError ? (
             <span className="fo__copy-dim">
               <span>Failed</span>
               <span>retry?</span>
@@ -185,15 +217,20 @@ export function VideoExportCard({
         </span>
       </button>
       <a
-        className={"fo__copy-file" + (pathCopied ? " is-copied" : "")}
+        className={
+          "fo__copy-file" +
+          (pathCopied ? " is-copied" : "") +
+          (isFileError ? " is-error" : "")
+        }
         // Drag becomes legal once we have a preset to drag — which is
         // always, here. Main does the encode-on-demand inside its
         // `video:prepareDrag` handler so we don't need to gate on
         // cache state from the renderer.
-        draggable
+        draggable={!isRunning}
+        aria-disabled={isRunning}
         href="#"
-        title={`Click to copy ${label} ${formatTitle} file path · drag for the file itself`}
-        aria-label={`Copy ${label} ${formatTitle} file path to clipboard, or drag for the file`}
+        title={fileTitle}
+        aria-label={fileAriaLabel}
         role="button"
         onClick={handleFileClick}
         onDragStart={handleDragStart}
@@ -201,7 +238,7 @@ export function VideoExportCard({
         data-preset={preset}
       >
         <FoIcon name="hand" size={10} />
-        {pathCopied ? "Copied" : "File"}
+        {pathCopied ? "Copied" : isFileError ? "Failed" : "File"}
       </a>
     </div>
   );

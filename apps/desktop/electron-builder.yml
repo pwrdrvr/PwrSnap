@@ -325,10 +325,10 @@ win:
     - target: nsis
       arch: [x64]
   # window-list C++ helper (native/window-list-win/main.cpp → built by
-  # scripts/build-native.mjs into build/native/window-list.exe). Same role as
-  # PwrSnapWindowList on macOS: drives snap-to-window in the region selector +
-  # source-app metadata. Resolved at runtime via process.resourcesPath as
-  # PwrSnapWindowList.exe in src/main/capture/window-list.ts.
+  # scripts/build-native.mjs into build/native/window-list.exe). Drives
+  # snap-to-window/source-app metadata and owns the native CF_HDROP file-copy
+  # subcommand (Electron cannot address numeric clipboard format 15).
+  # Resolved at runtime via process.resourcesPath as PwrSnapWindowList.exe.
   extraResources:
     - from: "build/native/window-list.exe"
       to: "PwrSnapWindowList.exe"

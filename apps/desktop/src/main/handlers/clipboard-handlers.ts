@@ -14,8 +14,9 @@
 //     does not write a plain-text URL flavor.
 //
 //   • clipboard:copy-file — v2 image export: renders the capture at a
-//     preset width, creates a friendly filename alias, and writes only
-//     `public.file-url` so chat/file consumers receive the named PNG.
+//     preset width, creates a friendly filename alias, and writes the native
+//     existing-file clipboard flavor (`public.file-url` on macOS, verified
+//     CF_HDROP on Windows) so chat/file consumers receive the named PNG.
 //
 //   • clipboard:copyLayerFragment — v2 only: serializes selected
 //     layers + referenced sources into the private UTI
@@ -54,7 +55,6 @@
 import { clipboard, nativeImage } from "electron";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
 import sharp, { type Sharp } from "sharp";
 import { nanoid } from "nanoid";
 import {
@@ -93,6 +93,7 @@ import {
 } from "../render/export-filename";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 import { writeNamedPngToPasteboard } from "../clipboard/named-image-pasteboard";
+import { writeFileToClipboard } from "../clipboard/file-clipboard";
 
 const log = getMainLogger("pwrsnap:clipboard");
 
@@ -308,7 +309,7 @@ export function registerClipboardHandlers(): void {
     }
   });
 
-  // ── clipboard:copy-file (image only): copy named PNG file URL ──────
+  // ── clipboard:copy-file (image only): copy named PNG as a file ────
   bus.register("clipboard:copy-file", async (req) => {
     const record = getCaptureById(req.captureId);
     if (record === null || record.deleted_at !== null) {
@@ -329,6 +330,9 @@ export function registerClipboardHandlers(): void {
     const strategy = await getActiveExportStrategy();
     const targetWidth = targetWidthForImagePreset(req.preset, record, strategy);
 
+    let aliasPath: string;
+    let fromCache: boolean;
+    let sourceReused: boolean;
     try {
       const result = await resolveImagePresetFile(record, req.preset, strategy);
       const displayName = buildPresetExportDisplayName({
@@ -337,16 +341,32 @@ export function registerClipboardHandlers(): void {
         preset: req.preset,
         ext: "png"
       });
-      const aliasPath = await prepareRenderedFileAlias(result.path, displayName);
-      const fileUrl = pathToFileURL(aliasPath).toString();
-      clipboard.writeBuffer("public.file-url", Buffer.from(fileUrl, "utf8"));
+      aliasPath = await prepareRenderedFileAlias(result.path, displayName);
+      fromCache = result.fromCache;
+      sourceReused = result.sourceReused;
+    } catch (cause) {
+      log.error("clipboard copy-file render failed", {
+        captureId: record.id,
+        preset: req.preset,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "render",
+        code: "render_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
+
+    try {
+      await writeFileToClipboard(aliasPath);
       notifyClipboardChanged();
       log.info("copied image file to clipboard", {
         captureId: record.id,
         preset: req.preset,
         targetWidth,
-        fromCache: result.fromCache,
-        sourceReused: result.sourceReused,
+        fromCache,
+        sourceReused,
         path: aliasPath
       });
       return ok({ path: aliasPath });
@@ -358,14 +378,14 @@ export function registerClipboardHandlers(): void {
       });
       return err({
         kind: "clipboard",
-        code: "render_failed",
+        code: "file_clipboard_failed",
         message: cause instanceof Error ? cause.message : String(cause),
         cause
       });
     }
   });
 
-  // ── clipboard:copy-path (v1 + v2): copy cache file POSIX path ─────
+  // ── clipboard:copy-path: copy the platform-native absolute path ───
   bus.register("clipboard:copy-path", async (req) => {
     const record = getCaptureById(req.captureId);
     if (record === null || record.deleted_at !== null) {
@@ -408,10 +428,10 @@ export function registerClipboardHandlers(): void {
   // ── clipboard:copyVideoFile (video only) ──────────────────────────
   //
   // Encode (cache-hit if already done) and copy the resulting GIF /
-  // MP4 to the system clipboard as a file promise. On macOS this
-  // writes the `public.file-url` UTI to NSPasteboard via
-  // `clipboard.writeBuffer` — paste in Slack / Mail / iMessage /
-  // Finder drops the binary, exactly like Finder's "Copy" + paste.
+  // MP4 to the system clipboard using the platform's native existing-file
+  // contract: `public.file-url` on macOS and CF_HDROP + Preferred DropEffect
+  // on Windows. The shared writer verifies the resulting clipboard before
+  // this command reports success.
   //
   // First version tried to ALSO co-write `clipboard.writeText(path)`
   // as a fallback for terminal/editor pastes. Doesn't work: each
@@ -432,7 +452,19 @@ export function registerClipboardHandlers(): void {
     // is a clamp, not a sanitizer (NaN survives it).
     const valid = validateVideoExportRequest(req, "clipboard:copyVideoFile");
     if (!valid.ok) return valid;
-    const resolved = await resolveVideoExport(req);
+    let resolved: Awaited<ReturnType<typeof resolveVideoExport>>;
+    try {
+      resolved = await resolveVideoExport(req);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      log.error("clipboard:copyVideoFile export failed", {
+        captureId: req.captureId,
+        format: req.format,
+        preset: req.preset,
+        message
+      });
+      return err({ kind: "render", code: "video_export_failed", message, cause });
+    }
     if (!resolved.ok) {
       return err(mapVideoResolveError(resolved.error, "clipboard:copyVideoFile", req.captureId));
     }
@@ -445,10 +477,8 @@ export function registerClipboardHandlers(): void {
         ext: req.format
       });
       const aliasPath = await prepareRenderedFileAlias(filePath, displayName);
-      // `file://` URL — encode any non-ASCII in the path so the
-      // pasteboard payload round-trips cleanly through NSURL parsers.
-      const fileUrl = pathToFileURL(aliasPath).toString();
-      clipboard.writeBuffer("public.file-url", Buffer.from(fileUrl, "utf8"));
+      await writeFileToClipboard(aliasPath);
+      notifyClipboardChanged();
       log.info("copied video file to clipboard", {
         captureId: req.captureId,
         format: req.format,
@@ -476,14 +506,26 @@ export function registerClipboardHandlers(): void {
   // ── clipboard:copyVideoPath (video only) ──────────────────────────
   //
   // Sibling of `clipboard:copy-path` for video: encode, write the
-  // resulting POSIX path to the clipboard as text only. Used by the
+  // resulting platform-native absolute path to the clipboard as text only. Used by the
   // FILE chip click on the new 6-card grid — keyboardless-mouse
   // equivalent of dragging the file, for pasting paths into a
   // terminal or editor.
   bus.register("clipboard:copyVideoPath", async (req) => {
     const valid = validateVideoExportRequest(req, "clipboard:copyVideoPath");
     if (!valid.ok) return valid;
-    const resolved = await resolveVideoExport(req);
+    let resolved: Awaited<ReturnType<typeof resolveVideoExport>>;
+    try {
+      resolved = await resolveVideoExport(req);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      log.error("clipboard:copyVideoPath export failed", {
+        captureId: req.captureId,
+        format: req.format,
+        preset: req.preset,
+        message
+      });
+      return err({ kind: "render", code: "video_export_failed", message, cause });
+    }
     if (!resolved.ok) {
       return err(mapVideoResolveError(resolved.error, "clipboard:copyVideoPath", req.captureId));
     }

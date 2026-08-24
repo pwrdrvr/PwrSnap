@@ -10,6 +10,7 @@ import type {
 import type {
   AiSurfaceDefault,
   ChatApprovalRequest,
+  ChatThreadSidecar,
   LibraryChatThreadView,
   Settings
 } from "@pwrsnap/shared";
@@ -20,7 +21,8 @@ import {
   type ChatBackendDeps,
   type ChatSurfaceConfig
 } from "../chat-controller-factory";
-import type { ChatApprovalBroker, ChatApprovalResolver } from "../chat-approval-broker";
+import { ChatApprovalBroker, type ChatApprovalResolver } from "../chat-approval-broker";
+import { ChatThreadAccess } from "../chat-thread-access";
 import { ThreadStoreAdapter } from "../thread-store-adapter";
 
 describe("chatSurfaceDefaultsFromSettings", () => {
@@ -628,6 +630,65 @@ describe("buildChatSurface — dispose", () => {
       expect(
         send.mock.calls.some(([channel]) => channel === "x:f")
       ).toBe(false);
+    } finally {
+      await surface.dispose();
+      storeGet.mockRestore();
+    }
+  });
+
+  test("safe-denies an MCP-owned approval before broker pending state or human IPC", async () => {
+    const threadId = "mcp-owned-thread";
+    const sidecar: ChatThreadSidecar = {
+      schemaVersion: 1,
+      threadId,
+      name: "MCP chat",
+      createdAt: "2026-08-23T00:00:00.000Z",
+      modifiedAt: "2026-08-23T00:00:00.000Z",
+      anchorCaptureId: "cap-mcp",
+      focusHistory: [],
+      archived: false,
+      pinned: false,
+      provider: "codex",
+      model: null,
+      reasoning: null,
+      ownerClientId: "local-client-a"
+    };
+    const access = new ChatThreadAccess({
+      surface: "library",
+      store: () => ({}) as never,
+      loggerScope: "test:mcp-approval-access"
+    });
+    access.onThreadCreated(sidecar);
+    const broker = new ChatApprovalBroker({
+      surface: "library",
+      loggerScope: "test:mcp-approval-broker",
+      emitResolved: vi.fn(),
+      emitSuperseded: vi.fn()
+    });
+    const register = vi.spyOn(broker, "register");
+    const storeGet = vi.spyOn(ThreadStoreAdapter.prototype, "get").mockResolvedValue(null);
+    const controlled = controllableBackend();
+    const send = vi.fn();
+    const surface = await buildChatSurface(
+      baseConfig({
+        provider: "codex",
+        approvalBroker: broker,
+        threadAccess: access,
+        send: send as unknown as ChatSurfaceConfig["send"]
+      }),
+      { makeCodexClient: () => controlled.backend }
+    );
+
+    try {
+      const backendDecision = controlled.requestApproval(
+        "item/commandExecution/requestApproval",
+        { threadId, turnId: "mcp-turn", command: "pwd" }
+      );
+
+      await expect(backendDecision).resolves.toBe("denied");
+      expect(register).not.toHaveBeenCalled();
+      expect(broker.pendingForThread(threadId)).toBeNull();
+      expect(send.mock.calls.some(([channel]) => channel === "x:f")).toBe(false);
     } finally {
       await surface.dispose();
       storeGet.mockRestore();

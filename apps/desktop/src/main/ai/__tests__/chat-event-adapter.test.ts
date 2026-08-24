@@ -385,15 +385,13 @@ describe("makeChatBroadcast", () => {
     });
   });
 
-  it("registers a sanitized approval before filtering an MCP-owned thread", () => {
+  it("denies an MCP-owned approval before broker registration or human IPC", () => {
     const send = vi.fn();
-    const registered: ChatApprovalRequest[] = [];
-    const onApprovalRequested = vi.fn((request: ChatApprovalRequest) => {
-      registered.push(request);
-      return true;
-    });
+    const onApprovalRequested = vi.fn((_request: ChatApprovalRequest) => true);
+    const onUnattendedApprovalRequested = vi.fn();
     const broadcast = makeChatBroadcast(LIBRARY_CHANNELS, send, {
       onApprovalRequested,
+      onUnattendedApprovalRequested,
       shouldSend: () => false
     });
 
@@ -414,16 +412,12 @@ describe("makeChatBroadcast", () => {
       }
     });
 
-    expect(registered).toEqual([
-      {
-        threadId: "mcp-thread",
-        turnId: "turn-secret",
-        approvalId: "ap-secret",
-        summary: "Run a command",
-        detail: "Visible by the existing chat policy"
-      }
-    ]);
-    expect(registered[0]).not.toHaveProperty("params");
+    expect(onUnattendedApprovalRequested).toHaveBeenCalledWith({
+      threadId: "mcp-thread",
+      turnId: "turn-secret",
+      approvalId: "ap-secret"
+    });
+    expect(onApprovalRequested).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -510,9 +504,11 @@ describe("makeChatBroadcast", () => {
   it("suppresses every renderer event arm when owner routing denies the thread", () => {
     const send = vi.fn();
     const onApprovalRequested = vi.fn(() => true);
+    const onUnattendedApprovalRequested = vi.fn();
     const broadcast = makeChatBroadcast(LIBRARY_CHANNELS, send, {
       shouldSend: () => false,
-      onApprovalRequested
+      onApprovalRequested,
+      onUnattendedApprovalRequested
     });
     const events: ChatControllerEvent[] = [
       {
@@ -570,6 +566,7 @@ describe("makeChatBroadcast", () => {
     for (const event of events) broadcast(event);
 
     expect(send).not.toHaveBeenCalled();
-    expect(onApprovalRequested).toHaveBeenCalledTimes(1);
+    expect(onApprovalRequested).not.toHaveBeenCalled();
+    expect(onUnattendedApprovalRequested).toHaveBeenCalledTimes(1);
   });
 });

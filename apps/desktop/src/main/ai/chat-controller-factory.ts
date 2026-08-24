@@ -420,6 +420,23 @@ export async function buildChatSurface(
   };
   const approvalOwner = {};
   let controller: ChatThreadController<Settings>;
+  const denyOriginatingApproval = (identity: {
+    threadId: string;
+    turnId: string;
+    approvalId: string;
+  }): void => {
+    void controller.resolveApproval({
+      threadId: identity.threadId,
+      turnId: identity.turnId,
+      approvalId: identity.approvalId,
+      decision: "denied"
+    }).catch(() => {
+      // Never log backend-controlled IDs or payload text.
+      toAgentKitLogger(config.loggerScope).warn?.(
+        "failed to deny unattended or malformed chat approval request"
+      );
+    });
+  };
   const broadcast = makeChatBroadcast(config.channels, guardedSend, {
     fixedThreadConfig: {
       provider: config.provider ?? null,
@@ -446,19 +463,8 @@ export async function buildChatSurface(
                 decision: toKitApprovalDecision(decision)
               });
             }) ?? false,
-          onInvalidApprovalRequested: (identity) => {
-            void controller.resolveApproval({
-              threadId: identity.threadId,
-              turnId: identity.turnId,
-              approvalId: identity.approvalId,
-              decision: "denied"
-            }).catch(() => {
-              // Never log the backend-controlled IDs or payload text.
-              toAgentKitLogger(config.loggerScope).warn?.(
-                "failed to deny malformed chat approval request"
-              );
-            });
-          },
+          onInvalidApprovalRequested: denyOriginatingApproval,
+          onUnattendedApprovalRequested: denyOriginatingApproval,
           // ChatThreadController emits this only after journalAppend resolves.
           // Closing from the earlier raw terminal event made MCP wait observe
           // sticky idle before the final assistant output was readable.

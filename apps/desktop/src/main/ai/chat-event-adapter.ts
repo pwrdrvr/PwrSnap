@@ -88,6 +88,14 @@ export type ChatEventAdapterOptions = {
     turnId: string;
     approvalId: string;
   }) => void;
+  /** A valid request belongs to an unattended/non-human thread. Deny it on
+   *  the originating controller before broker registration; local-agent wait
+   *  has no approval UI or identity with which to answer it. */
+  onUnattendedApprovalRequested?: (identity: {
+    threadId: string;
+    turnId: string;
+    approvalId: string;
+  }) => void;
   /** Runs only after the controller has committed an assistant message to its
    *  journal. Approval cleanup may make the thread idle, so it must never run
    *  from the earlier raw backend terminal event. */
@@ -254,8 +262,15 @@ export function makeChatBroadcast(
           });
           return;
         }
+        if (options.shouldSend?.(request.threadId) === false) {
+          options.onUnattendedApprovalRequested?.({
+            threadId: request.threadId,
+            turnId: request.turnId,
+            approvalId: request.approvalId
+          });
+          return;
+        }
         if (options.onApprovalRequested?.(request) === false) return;
-        if (options.shouldSend?.(event.threadId) === false) return;
         send(channels.approvalRequested, request);
         return;
       }

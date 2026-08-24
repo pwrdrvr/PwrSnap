@@ -136,7 +136,7 @@ describe("in-memory Windows screen snapshots", () => {
     expect(fullImage.crop).toHaveBeenCalledWith({ x: 200, y: 100, width: 600, height: 400 });
     expect(cropped.toPNG).toHaveBeenCalledTimes(1);
     expect(mocks.writeFile).toHaveBeenCalledWith(
-      expect.stringMatching(/^\/tmp\/pwrsnap-owned\/\d+\.png$/),
+      expect.stringMatching(/^[/\\]tmp[/\\]pwrsnap-owned[/\\]\d+\.png$/),
       png
     );
     expect(result.timings).toMatchObject({

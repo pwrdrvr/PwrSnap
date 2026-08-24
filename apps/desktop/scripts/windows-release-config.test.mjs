@@ -179,6 +179,8 @@ describe("Windows release configuration", () => {
       .split("\n  windows-sign:\n")[1]
       ?.split("\n  windows-installed-smoke:\n")[0];
     expect(protectedWindowsJob, "the protected Windows job is missing").toBeDefined();
+    expect(protectedWindowsJob).toContain("timeout-minutes: 90");
+    expect(protectedWindowsJob).not.toContain("timeout-minutes: 55");
     const releaseOrder = (needle) => protectedWindowsJob.indexOf(needle);
     expect(releaseOrder("Verify Authenticode signatures")).toBeLessThan(
       releaseOrder("Prepare stable-name Windows installer alias"),

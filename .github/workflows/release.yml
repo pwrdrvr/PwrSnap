@@ -404,8 +404,9 @@ jobs:
       }}
     environment: windows-signing
     runs-on: windows-2022
-    # Leave enough budget for protected signing and packaging.
-    timeout-minutes: 55
+    # Merge invariant with the updater lane: protected signing may package a
+    # baseline + target pair before the two credential-free smoke jobs run.
+    timeout-minutes: 90
     permissions:
       contents: read
       id-token: none

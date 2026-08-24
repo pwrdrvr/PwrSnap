@@ -202,6 +202,11 @@ The release workflow separates preparation, signing, and publication:
    controller. It does not check out source, install dependencies, or launch
    PR-controlled application code. See
    [desktop-windows-signing.md](desktop-windows-signing.md).
+   Its 90-minute timeout is a shared launch/updater merge invariant: the
+   updater lane may package a baseline and target before either credential-free
+   smoke runs. Keep updater-only synthetic installers outside
+   `release-stage/dist`, so the launch lane's exact-one versioned setup glob
+   continues to select only the publication artifact.
 6. **`windows-installed-smoke`** is credential-free and downloads those exact
    artifacts. It installs and launches the signed application with isolated
    profile/data roots; acquires the production first-instance lock, installs

@@ -94,6 +94,12 @@ function workerErrorToBusError(code: PasteWorkerErrorCode, message: string): {
         code: "image_decode_failed",
         message: "Image failed to decode"
       };
+    case "unsupported_format":
+      return {
+        kind: "validation",
+        code: "image_unsupported_format",
+        message: "Unsupported image format"
+      };
     case "read_failed":
       return {
         kind: "validation",

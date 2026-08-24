@@ -121,19 +121,20 @@ test("editor-file-drop: Electron-backed files import sequentially and report the
       "Imported 2 images"
     );
 
-    let pastedZIndexes: number[] = [];
+    let pastedLayers: Array<{ zIndex: number; transform: number[] }> = [];
     await expect
       .poll(async () => {
         const result = await app.dispatch("layers:list", { captureId });
         if (!result.ok) return -1;
-        pastedZIndexes = result.value
+        pastedLayers = result.value
           .filter((layer) => layer.kind === "raster" && layer.name === "Pasted Image")
-          .map((layer) => layer.z_index);
+          .map((layer) => ({ zIndex: layer.z_index, transform: layer.transform }));
         return result.value.length;
       })
       .toBe(4);
-    expect(pastedZIndexes).toHaveLength(2);
-    expect(pastedZIndexes[0]).toBeLessThan(pastedZIndexes[1] ?? -1);
+    expect(pastedLayers).toHaveLength(2);
+    expect(pastedLayers[0]?.zIndex).toBeLessThan(pastedLayers[1]?.zIndex ?? -1);
+    expect(pastedLayers[0]?.transform).not.toEqual(pastedLayers[1]?.transform);
   } finally {
     await app.close();
   }

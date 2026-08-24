@@ -318,6 +318,26 @@ describe("editor:pasteImageAsLayer", () => {
     expect(result.error.code).toBe("image_decode_failed");
   });
 
+  test("worker rejects non-raster decoder → image_unsupported_format", async () => {
+    seedV2Capture("cap_format", "/tmp/cap_format.pwrsnap");
+    setClipboardImage(Buffer.from([0x89, 0x50]));
+    workerResponse = {
+      ok: false,
+      code: "unsupported_format",
+      message: "decoded format svg is not allowed"
+    };
+    const result = await bus.dispatch(
+      "editor:pasteImageAsLayer",
+      { captureId: "cap_format" },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected error");
+    expect(result.error.code).toBe("image_unsupported_format");
+    expect(result.error.message).toBe("Unsupported image format");
+    expect(result.error.message).not.toContain("svg");
+  });
+
   test("happy path → layer inserted, layerId returned, repack scheduled", async () => {
     seedV2Capture("cap_d", "/tmp/cap_d.pwrsnap");
     setClipboardImage(Buffer.from([0x89, 0x50]));

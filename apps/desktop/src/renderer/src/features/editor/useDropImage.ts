@@ -23,7 +23,7 @@
 // preload bridge calls renderer-process `webUtils.getPathForFile(file)`;
 // the renderer never receives the Electron/webUtils object itself.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PwrSnapError } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 
@@ -39,6 +39,14 @@ export interface UseDropImageArgs {
   onCompleted?: (summary: DropImageSummary) => void;
 }
 
+export interface DropImageFailure {
+  /** Zero-based position in the OS-supplied FileList. */
+  fileIndex: number;
+  /** Display-only basename from the browser File; never an absolute path. */
+  fileName: string;
+  error: PwrSnapError;
+}
+
 export interface DropImageSummary {
   /** Files the OS supplied in this one drop gesture. */
   requestedCount: number;
@@ -46,7 +54,18 @@ export interface DropImageSummary {
   attemptedCount: number;
   /** One id per successfully inserted raster, in drop/z-order. */
   importedLayerIds: string[];
+  /** One structured, path-free Result error per attempted failure. */
+  failures: DropImageFailure[];
   /** Files not attempted because the gesture exceeded the hard cap. */
+  truncatedCount: number;
+}
+
+export interface DropImageProgress {
+  requestedCount: number;
+  attemptedCount: number;
+  processedCount: number;
+  importedCount: number;
+  failedCount: number;
   truncatedCount: number;
 }
 
@@ -63,10 +82,18 @@ export interface UseDropImageReturn {
   /** True while a drag is hovering over the canvas. Editor renders a
    *  visual outline / cue when this is true. */
   isDragOver: boolean;
+  /** True for the whole bounded gesture, including renderer validation. */
+  isImporting: boolean;
+  /** Exact live counts for the active sequential gesture. */
+  progress: DropImageProgress | null;
 }
 
 /** Maximum files one gesture may decode/insert. Work stays sequential. */
 export const DROP_IMAGE_MAX_FILES = 16;
+
+/** Four columns × four rows covers the complete gesture cap. */
+const DROP_IMAGE_CASCADE_COLUMNS = 4;
+const DROP_IMAGE_CASCADE_STEP_N = 0.04;
 
 /**
  * Windows Explorer commonly leaves File.type empty. Keep this list bounded
@@ -110,6 +137,32 @@ function getFilePath(file: File): string | null {
   return null;
 }
 
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+/**
+ * Keep successful batch inserts visually distinct. The cascade heads inward
+ * from the drop point, so clamping at a canvas edge cannot collapse every
+ * image onto the same transform. Failed files do not consume a slot.
+ */
+export function cascadedDropPosition(
+  positionXn: number | undefined,
+  positionYn: number | undefined,
+  successfulIndex: number
+): { positionXn: number; positionYn: number } {
+  const baseX = positionXn ?? 0.5;
+  const baseY = positionYn ?? 0.5;
+  const column = successfulIndex % DROP_IMAGE_CASCADE_COLUMNS;
+  const row = Math.floor(successfulIndex / DROP_IMAGE_CASCADE_COLUMNS);
+  const directionX = baseX > 0.5 ? -1 : 1;
+  const directionY = baseY > 0.5 ? -1 : 1;
+  return {
+    positionXn: clamp01(baseX + directionX * column * DROP_IMAGE_CASCADE_STEP_N),
+    positionYn: clamp01(baseY + directionY * row * DROP_IMAGE_CASCADE_STEP_N)
+  };
+}
+
 export function useDropImage(args: UseDropImageArgs): UseDropImageReturn {
   const {
     captureId,
@@ -120,6 +173,37 @@ export function useDropImage(args: UseDropImageArgs): UseDropImageReturn {
     onCompleted
   } = args;
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
+  const [progress, setProgress] = useState<DropImageProgress | null>(null);
+  const generationRef = useRef(0);
+  const mountedRef = useRef(false);
+  const activeDropRef = useRef<{
+    generation: number;
+    controller: AbortController;
+  } | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // A capture is the lifetime boundary for a drop job. Cleanup aborts an
+  // active loop before the next record mounts, and the generation guard keeps
+  // an already-in-flight IPC response from scheduling another old-capture
+  // mutation or firing callbacks into the replacement editor.
+  useEffect(() => {
+    generationRef.current += 1;
+    if (activeDropRef.current === null) setProgress(null);
+    setIsDragOver(false);
+    return () => {
+      generationRef.current += 1;
+      activeDropRef.current?.controller.abort();
+      // Keep the aborted job installed until its in-flight command settles.
+      // A replacement capture therefore cannot start another command loop in
+      // parallel; the old job's finally block releases the single-flight.
+    };
+  }, [captureId]);
 
   const onDragOver = useCallback((e: React.DragEvent<HTMLElement>): void => {
     // Filter to drags that include at least one file. dataTransfer.types
@@ -130,8 +214,9 @@ export function useDropImage(args: UseDropImageArgs): UseDropImageReturn {
       return;
     }
     e.preventDefault();
-    e.dataTransfer.dropEffect = "copy";
-    setIsDragOver(true);
+    const accepting = activeDropRef.current === null;
+    e.dataTransfer.dropEffect = accepting ? "copy" : "none";
+    setIsDragOver(accepting);
   }, []);
 
   const onDragLeave = useCallback((): void => {
@@ -142,6 +227,10 @@ export function useDropImage(args: UseDropImageArgs): UseDropImageReturn {
     async (e: React.DragEvent<HTMLElement>): Promise<void> => {
       e.preventDefault();
       setIsDragOver(false);
+      // Ref-backed rather than state-backed so two gestures in the same React
+      // turn cannot both enter the async loop. The visible progress from the
+      // first gesture explains why the second gesture is blocked.
+      if (activeDropRef.current !== null) return;
       if (bundleFormatVersion < 2) {
         onError?.({
           kind: "validation",
@@ -174,61 +263,115 @@ export function useDropImage(args: UseDropImageArgs): UseDropImageReturn {
       }
       const attempted = files.slice(0, DROP_IMAGE_MAX_FILES);
       const importedLayerIds: string[] = [];
-      let firstError: PwrSnapError | null = null;
+      const failures: DropImageFailure[] = [];
+      const generation = generationRef.current;
+      const controller = new AbortController();
+      const activeDrop = { generation, controller };
+      activeDropRef.current = activeDrop;
+      const isCurrent = (): boolean =>
+        !controller.signal.aborted &&
+        generationRef.current === activeDrop.generation &&
+        activeDropRef.current === activeDrop;
+      const publishProgress = (processedCount: number): void => {
+        if (!isCurrent()) return;
+        setProgress({
+          requestedCount: files.length,
+          attemptedCount: attempted.length,
+          processedCount,
+          importedCount: importedLayerIds.length,
+          failedCount: failures.length,
+          truncatedCount: files.length - attempted.length
+        });
+      };
+      publishProgress(0);
 
       // Deliberately sequential: main computes each new layer's z-index from
       // the already-committed tree, so input order becomes visual z-order and
       // only one bounded decode worker is live at a time.
-      for (const file of attempted) {
-        if (!isPotentialDroppedImage(file)) {
-          firstError ??= {
-            kind: "validation",
-            code: "drop_not_image",
-            message: "Only image files supported"
-          };
-          continue;
+      try {
+        for (const [fileIndex, file] of attempted.entries()) {
+          if (!isCurrent()) return;
+          let fileError: PwrSnapError | null = null;
+          if (!isPotentialDroppedImage(file)) {
+            fileError = {
+              kind: "validation",
+              code: "drop_not_image",
+              message: "Only image files supported"
+            };
+          } else {
+            const filePath = getFilePath(file);
+            if (filePath === null) {
+              fileError = {
+                kind: "validation",
+                code: "drop_path_unavailable",
+                message: "Dropped file path unavailable"
+              };
+            } else {
+              const req: {
+                captureId: string;
+                filePath: string;
+                positionXn?: number;
+                positionYn?: number;
+              } = { captureId, filePath };
+              if (attempted.length > 1) {
+                const placement = cascadedDropPosition(
+                  positionXn,
+                  positionYn,
+                  importedLayerIds.length
+                );
+                req.positionXn = placement.positionXn;
+                req.positionYn = placement.positionYn;
+              } else {
+                if (positionXn !== undefined) req.positionXn = positionXn;
+                if (positionYn !== undefined) req.positionYn = positionYn;
+              }
+              const result = await dispatch("editor:dropImageAsLayer", req);
+              if (!isCurrent()) return;
+              if (!result.ok) {
+                fileError = result.error;
+              } else {
+                importedLayerIds.push(result.value.layerId);
+                onDropped?.(result.value.layerId);
+              }
+            }
+          }
+          if (fileError !== null) {
+            failures.push({ fileIndex, fileName: file.name, error: fileError });
+          }
+          publishProgress(fileIndex + 1);
         }
-        const filePath = getFilePath(file);
-        if (filePath === null) {
-          firstError ??= {
-            kind: "validation",
-            code: "drop_path_unavailable",
-            message: "Dropped file path unavailable"
-          };
-          continue;
-        }
-        const req: {
-          captureId: string;
-          filePath: string;
-          positionXn?: number;
-          positionYn?: number;
-        } = { captureId, filePath };
-        if (positionXn !== undefined) req.positionXn = positionXn;
-        if (positionYn !== undefined) req.positionYn = positionYn;
-        const result = await dispatch("editor:dropImageAsLayer", req);
-        if (!result.ok) {
-          firstError ??= result.error;
-          continue;
-        }
-        importedLayerIds.push(result.value.layerId);
-        onDropped?.(result.value.layerId);
-      }
 
-      // A single-file failure keeps the detailed structured Result error.
-      // Multi-file gestures get one aggregate completion callback so the UI
-      // cannot imply that every file landed when only a subset did.
-      if (files.length === 1 && importedLayerIds.length === 0 && firstError !== null) {
-        onError?.(firstError);
+        if (!isCurrent()) return;
+        // A single-file failure keeps the detailed structured Result error.
+        // Multi-file gestures carry every path-free failure in their summary
+        // so the UI can report exact counts and grouped causes.
+        const firstFailure = failures[0];
+        if (files.length === 1 && firstFailure !== undefined) {
+          onError?.(firstFailure.error);
+        }
+        onCompleted?.({
+          requestedCount: files.length,
+          attemptedCount: attempted.length,
+          importedLayerIds,
+          failures,
+          truncatedCount: files.length - attempted.length
+        });
+      } finally {
+        if (activeDropRef.current === activeDrop) {
+          activeDropRef.current = null;
+          if (mountedRef.current) setProgress(null);
+        }
       }
-      onCompleted?.({
-        requestedCount: files.length,
-        attemptedCount: attempted.length,
-        importedLayerIds,
-        truncatedCount: files.length - attempted.length
-      });
     },
     [captureId, bundleFormatVersion, canvasEl, onError, onDropped, onCompleted]
   );
 
-  return { onDragOver, onDragLeave, onDrop, isDragOver };
+  return {
+    onDragOver,
+    onDragLeave,
+    onDrop,
+    isDragOver,
+    isImporting: progress !== null,
+    progress
+  };
 }

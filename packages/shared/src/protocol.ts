@@ -3812,10 +3812,11 @@ export type Commands = {
     res: { layerId: string };
   };
   /** Phase 5: Finder drag-drop equivalent of `editor:pasteImageAsLayer`.
-   *  Caller hands a filesystem path; the handler runs `assertSafePastedFile`
-   *  (symlink + privileged-dir reject) and then the same worker-backed
-   *  decode + sha256 pipeline. Path strings never leak back to the renderer
-   *  on rejection — sanitized error codes only. */
+   *  Caller hands a filesystem path; the handler securely opens and reads
+   *  bounded bytes while rejecting symlinks and privileged locations, then
+   *  passes only those bytes to the worker-backed decode + sha256 pipeline.
+   *  The worker never reopens the pathname, and path strings never leak back
+   *  to the renderer on rejection — sanitized error codes only. */
   "editor:dropImageAsLayer": {
     req: {
       captureId: string;

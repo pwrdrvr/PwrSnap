@@ -1,171 +1,286 @@
-// Phase 5 multi-image paste/drop — security gate for Finder-dropped
-// files.
-//
-// The renderer hands main an absolute filesystem path on drag-drop.
-// That path is attacker-controllable (any process can spoof a drag
-// payload) so we refuse anything that could be used to read off-path:
-//
-//   1. Symlink → could redirect us at any file the user has TCC for
-//      (Keychain, SSH keys, AWS creds, Mail). lstat (NOT stat) so we
-//      see the link itself, not the target.
-//   2. Non-regular file (directory, fifo, socket, block dev) → not
-//      somethink we can ingest as image bytes; the only legitimate
-//      input is a plain file.
-//   3. Privileged-dir prefix → refuse paths inside dirs that hold
-//      secrets even if they're regular files. Closes the "user drags
-//      ~/.ssh/id_rsa thinking it's a key.png" mistake AND the trojan
-//      where an attacker convinces the user to drag a "wallpaper" they
-//      placed inside the user's secret stash.
-//
-// Mirrors `assertSafeBundleFile` semantics from bundle-store.ts:123.
-// Throws on rejection; callers catch and translate to a sanitized
-// command-bus error. The error message includes the offending path so
-// main-side logs can debug, but handlers MUST sanitize before returning
-// to the renderer.
+import { realpath } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import {
+  posix,
+  win32,
+  type PlatformPath
+} from "node:path";
+import { PASTE_IMAGE_MAX_BYTES } from "@pwrsnap/shared";
+import {
+  readVerifiedFileSnapshot,
+  VerifiedFileError,
+  type VerifiedFileErrorCode
+} from "./verified-file";
 
-import { lstat } from "node:fs/promises";
-import { homedir } from "node:os";
-import { resolve, sep } from "node:path";
+type PrivilegedPathPlatform = "darwin" | "win32" | "linux";
+type Environment = Readonly<Record<string, string | undefined>>;
 
-/**
- * Path prefixes we refuse to read from, regardless of user intent.
- * Computed at module-load time from `homedir()` so per-user dirs
- * resolve to the running user's actual paths.
- *
- * The list is intentionally narrow: directories that hold secrets the
- * user almost certainly didn't mean to share. We don't try to be a
- * general access-control system — the OS TCC layer is the source of
- * truth there. This is a "don't accidentally ingest a credential"
- * belt-and-suspenders gate.
- */
-function buildPrivilegedPrefixes(): readonly string[] {
-  const home = homedir();
-  return [
-    // System dirs — never legitimate user content.
-    "/private/etc",
-    "/private/var",
-    "/System",
-    "/Volumes/.timemachine.local",
-    // Per-user secret stores.
-    resolve(home, "Library/Keychains"),
-    resolve(home, ".ssh"),
-    resolve(home, ".aws"),
-    resolve(home, ".gnupg"),
-    resolve(home, ".config/gh") // GitHub CLI tokens
+export type PrivilegedPrefixBuildOptions = {
+  platform: PrivilegedPathPlatform;
+  homeDir: string;
+  env?: Environment;
+};
+
+function pathApiFor(platform: PrivilegedPathPlatform): PlatformPath {
+  return platform === "win32" ? win32 : posix;
+}
+
+function envValue(
+  env: Environment,
+  ...names: readonly string[]
+): string | undefined {
+  const wanted = new Set(names.map((name) => name.toLowerCase()));
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined && value !== "" && wanted.has(key.toLowerCase())) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function uniqueNormalized(
+  values: readonly string[],
+  platform: PrivilegedPathPlatform
+): readonly string[] {
+  const pathApi = pathApiFor(platform);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = pathApi.resolve(value);
+    const key = platform === "win32" ? normalized.toLowerCase() : normalized;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized);
+  }
+  return result;
+}
+
+/** Pure cross-platform builder, exported so Windows policy is testable on CI. */
+export function __buildPrivilegedPrefixesForTest(
+  options: PrivilegedPrefixBuildOptions
+): readonly string[] {
+  const { platform, homeDir } = options;
+  const env = options.env ?? {};
+  const pathApi = pathApiFor(platform);
+  const roots: string[] = [
+    pathApi.resolve(homeDir, ".ssh"),
+    pathApi.resolve(homeDir, ".aws"),
+    pathApi.resolve(homeDir, ".gnupg"),
+    pathApi.resolve(homeDir, ".config", "gh")
   ];
+
+  if (platform === "darwin") {
+    roots.push(
+      "/private/etc",
+      "/private/var",
+      "/System",
+      "/Library/Keychains",
+      "/Volumes/.timemachine.local",
+      pathApi.resolve(homeDir, "Library", "Keychains")
+    );
+  }
+
+  if (platform === "win32") {
+    const homeVolumeRoot = pathApi.parse(homeDir).root;
+    const appData =
+      envValue(env, "APPDATA") ??
+      pathApi.resolve(homeDir, "AppData", "Roaming");
+    const localAppData =
+      envValue(env, "LOCALAPPDATA") ??
+      pathApi.resolve(homeDir, "AppData", "Local");
+    const systemRoot =
+      envValue(env, "SystemRoot", "WINDIR") ??
+      pathApi.resolve(homeVolumeRoot, "Windows");
+    const systemVolumeRoot = pathApi.parse(systemRoot).root || homeVolumeRoot;
+    const programData =
+      envValue(env, "ProgramData", "ALLUSERSPROFILE") ??
+      pathApi.resolve(systemVolumeRoot, "ProgramData");
+
+    roots.push(
+      pathApi.resolve(appData, "GitHub CLI"),
+      pathApi.resolve(appData, "gnupg"),
+      systemRoot,
+      programData,
+      pathApi.resolve(systemVolumeRoot, "Recovery"),
+      pathApi.resolve(systemVolumeRoot, "System Volume Information")
+    );
+    for (const dataRoot of [appData, localAppData]) {
+      roots.push(
+        pathApi.resolve(dataRoot, "Microsoft", "Credentials"),
+        pathApi.resolve(dataRoot, "Microsoft", "Protect"),
+        pathApi.resolve(dataRoot, "Microsoft", "Vault")
+      );
+    }
+
+    for (const value of [
+      envValue(env, "ProgramFiles"),
+      envValue(env, "ProgramFiles(x86)"),
+      envValue(env, "ProgramW6432")
+    ]) {
+      if (value !== undefined) roots.push(value);
+    }
+  }
+
+  return uniqueNormalized(roots, platform);
 }
 
-const PRIVILEGED_PREFIXES = buildPrivilegedPrefixes();
-
-/**
- * Fold a path for the privileged-prefix comparison on case-insensitive
- * filesystems (Windows always; macOS/APFS by default). `resolve()` preserves
- * input case and `startsWith` is case-sensitive, so without this a differently-
- * cased path (`c:\users\…` vs `C:\Users\…`, `~/.SSH` vs `~/.ssh`) slips past the
- * guard on those platforms. Linux is case-sensitive — folding there would
- * wrongly conflate distinct paths, so it's a no-op. Comparison only: the
- * original-case path is what we lstat and return.
- */
-const CASE_INSENSITIVE_FS = process.platform === "win32" || process.platform === "darwin";
-function foldForCompare(path: string): string {
-  return CASE_INSENSITIVE_FS ? path.toLowerCase() : path;
+function isWithin(
+  candidatePath: string,
+  rootPath: string,
+  platform: PrivilegedPathPlatform
+): boolean {
+  const pathApi = pathApiFor(platform);
+  let candidate = pathApi.resolve(candidatePath);
+  let root = pathApi.resolve(rootPath);
+  if (platform === "win32" || platform === "darwin") {
+    candidate = candidate.toLowerCase();
+    root = root.toLowerCase();
+  }
+  if (candidate === root) return true;
+  const prefix = root.endsWith(pathApi.sep) ? root : root + pathApi.sep;
+  return candidate.startsWith(prefix);
 }
 
-/**
- * Test-only override hook. Lets unit tests inject a temp-dir prefix
- * so the privileged-dir branch is exercisable without writing to the
- * real ~/.ssh.
- */
+export type PrivilegedPathCheckOptions = {
+  platform: PrivilegedPathPlatform;
+  prefixes: readonly string[];
+  canonicalTempDir?: string | null;
+};
+
+/** Pure containment check, including the narrowly scoped macOS temp carveout. */
+export function __isPrivilegedPathForTest(
+  candidatePath: string,
+  options: PrivilegedPathCheckOptions
+): boolean {
+  const { platform, prefixes } = options;
+  const canonicalTempDir = options.canonicalTempDir ?? null;
+  for (const prefix of prefixes) {
+    // macOS resolves /var/folders/... into /private/var/folders/.... Pasted
+    // files created in this process's canonical per-user tmpdir are legitimate;
+    // no other descendant of the otherwise-privileged /private/var is allowed.
+    if (
+      platform === "darwin" &&
+      posix.resolve(prefix) === "/private/var" &&
+      canonicalTempDir !== null &&
+      isWithin(candidatePath, canonicalTempDir, platform)
+    ) {
+      continue;
+    }
+    if (isWithin(candidatePath, prefix, platform)) return true;
+  }
+  return false;
+}
+
+function runtimePlatform(): PrivilegedPathPlatform {
+  if (process.platform === "win32") return "win32";
+  if (process.platform === "darwin") return "darwin";
+  return "linux";
+}
+
+function defaultPrefixes(): readonly string[] {
+  return __buildPrivilegedPrefixesForTest({
+    platform: runtimePlatform(),
+    homeDir: homedir(),
+    env: process.env
+  });
+}
+
 let testPrefixOverride: readonly string[] | null = null;
+
+/** Test-only override. An empty array intentionally disables prefix checks. */
 export function __setPrivilegedPrefixesForTest(
   prefixes: readonly string[] | null
 ): void {
   testPrefixOverride = prefixes;
 }
 
+async function canonicalizeIfPresent(rootPath: string): Promise<string | null> {
+  try {
+    return await realpath(rootPath);
+  } catch {
+    return null;
+  }
+}
+
+async function buildPolicy(
+  prefixes: readonly string[]
+): Promise<PrivilegedPathCheckOptions> {
+  const platform = runtimePlatform();
+  const canonical = await Promise.all(prefixes.map(canonicalizeIfPresent));
+  const roots = uniqueNormalized(
+    [
+      ...prefixes,
+      ...canonical.filter((value): value is string => value !== null)
+    ],
+    platform
+  );
+  const canonicalTempDir =
+    platform === "darwin" ? await canonicalizeIfPresent(tmpdir()) : null;
+  return { platform, prefixes: roots, canonicalTempDir };
+}
+
+async function effectivePolicy(): Promise<PrivilegedPathCheckOptions> {
+  // Re-canonicalize on every read. A privileged root can itself be a symlink;
+  // retaining its prior target would make a later retarget stale the policy.
+  return await buildPolicy(testPrefixOverride ?? defaultPrefixes());
+}
+
+export type UnsafePastedFileErrorCode =
+  | "privileged_path"
+  | VerifiedFileErrorCode;
+
 export class UnsafePastedFileError extends Error {
-  readonly code:
-    | "symlink"
-    | "not_regular_file"
-    | "privileged_path"
-    | "stat_failed";
-  /** Sanitized — never includes the offending path. Use for renderer
-   *  / bus error messages. */
+  readonly code: UnsafePastedFileErrorCode;
+  /** Safe for renderer/bus responses; never contains an absolute path. */
   readonly sanitizedMessage: string;
 
-  constructor(
-    code: UnsafePastedFileError["code"],
-    sanitizedMessage: string,
-    message: string
-  ) {
-    super(message);
+  constructor(code: UnsafePastedFileErrorCode, sanitizedMessage: string) {
+    super(sanitizedMessage);
     this.name = "UnsafePastedFileError";
     this.code = code;
     this.sanitizedMessage = sanitizedMessage;
   }
 }
 
-/**
- * Refuse to read a pasted/dropped file whose on-disk shape would let
- * an attacker redirect us off-path. Throws `UnsafePastedFileError` on
- * rejection — callers catch and translate to a Result error using the
- * sanitized message (NEVER the raw error message, which contains the
- * offending absolute path).
- *
- * Returns the resolved absolute path on success. Use the returned path
- * for subsequent reads — the input might be a relative or
- * tilde-expanded form.
- */
-export async function assertSafePastedFile(filePath: string): Promise<string> {
-  // Resolve to an absolute path with all `..` segments collapsed so
-  // the prefix check below can't be bypassed via
-  // `/Users/me/foo/../../private/etc/passwd`.
-  const abs = resolve(filePath);
+function unsafeMessage(code: UnsafePastedFileErrorCode): string {
+  return code === "size_cap_exceeded" ? "Image is too large" : "Invalid file";
+}
 
-  // Privileged-dir check FIRST — we want to refuse before even lstat'ing,
-  // so we never touch the filesystem inside a secret dir (which could
-  // trigger TCC prompts on macOS).
-  const prefixes = testPrefixOverride ?? PRIVILEGED_PREFIXES;
-  const foldedAbs = foldForCompare(abs);
-  for (const prefix of prefixes) {
-    // `sep` (not a hardcoded "/") so the containment check works on Windows,
-    // where `resolve()` yields `\`-separated paths. Folded comparison so a
-    // differently-cased path can't slip past on case-insensitive filesystems
-    // (see foldForCompare). Without both, the per-user secret-dir protection is
-    // silently bypassed on Windows / macOS.
-    const foldedPrefix = foldForCompare(prefix);
-    if (foldedAbs === foldedPrefix || foldedAbs.startsWith(foldedPrefix + sep)) {
-      throw new UnsafePastedFileError(
-        "privileged_path",
-        "Invalid file",
-        `refusing pasted file inside privileged dir: ${abs}`
-      );
+function translateVerifiedError(cause: unknown): never {
+  if (cause instanceof UnsafePastedFileError) throw cause;
+  if (cause instanceof VerifiedFileError) {
+    throw new UnsafePastedFileError(cause.code, unsafeMessage(cause.code));
+  }
+  throw new UnsafePastedFileError("read_failed", "Invalid file");
+}
+
+function pastedPathValidator(): (candidatePath: string) => Promise<void> {
+  return async (candidatePath: string): Promise<void> => {
+    // The privileged root can itself be a symlink. Rebuild at every
+    // pre/post-open validation boundary so a mid-verification retarget cannot
+    // leave the canonical policy pointing at its former destination.
+    const policy = await effectivePolicy();
+    if (__isPrivilegedPathForTest(candidatePath, policy)) {
+      throw new UnsafePastedFileError("privileged_path", "Invalid file");
     }
-  }
+  };
+}
 
-  let stat;
+/**
+ * Read pasted/dropped bytes through the same securely opened handle that was
+ * validated. The allocation and read are bounded by the opened file size.
+ */
+export async function readSafePastedFile(
+  filePath: string,
+  options: { maxBytes?: number } = {}
+): Promise<Buffer> {
+  const validatePath = pastedPathValidator();
   try {
-    stat = await lstat(abs);
+    return await readVerifiedFileSnapshot(filePath, {
+      maxBytes: options.maxBytes ?? PASTE_IMAGE_MAX_BYTES,
+      validatePath
+    });
   } catch (cause) {
-    throw new UnsafePastedFileError(
-      "stat_failed",
-      "Invalid file",
-      `lstat failed for ${abs}: ${cause instanceof Error ? cause.message : String(cause)}`
-    );
+    translateVerifiedError(cause);
   }
-  if (stat.isSymbolicLink()) {
-    throw new UnsafePastedFileError(
-      "symlink",
-      "Invalid file",
-      `refusing to follow symlink at ${abs}`
-    );
-  }
-  if (!stat.isFile()) {
-    throw new UnsafePastedFileError(
-      "not_regular_file",
-      "Invalid file",
-      `${abs} is not a regular file`
-    );
-  }
-  return abs;
 }

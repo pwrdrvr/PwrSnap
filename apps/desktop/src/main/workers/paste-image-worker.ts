@@ -9,7 +9,6 @@
 // Protocol (parent → worker on construction via workerData):
 //
 //   { kind: "decode-buffer"; bytes: Uint8Array }
-//   { kind: "decode-path"; path: string }
 //
 // On success the worker postMessage's:
 //
@@ -25,14 +24,11 @@
 // path — it sees only the bytes/buffer; the parent sanitizes.
 
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { parentPort, workerData } from "node:worker_threads";
 import sharp from "sharp";
 import { MAX_IMAGE_DIM_PX, PASTE_IMAGE_MAX_BYTES } from "@pwrsnap/shared";
 
-export type PasteWorkerInput =
-  | { kind: "decode-buffer"; bytes: Uint8Array }
-  | { kind: "decode-path"; path: string };
+export type PasteWorkerInput = { kind: "decode-buffer"; bytes: Uint8Array };
 
 export type PasteWorkerErrorCode =
   | "size_cap_exceeded"
@@ -72,19 +68,7 @@ function fail(
 export async function processImageInput(
   input: PasteWorkerInput
 ): Promise<PasteWorkerResult> {
-  let inputBytes: Buffer;
-  try {
-    if (input.kind === "decode-buffer") {
-      inputBytes = Buffer.from(input.bytes);
-    } else {
-      inputBytes = await readFile(input.path);
-    }
-  } catch (cause) {
-    return fail(
-      "read_failed",
-      cause instanceof Error ? cause.message : String(cause)
-    );
-  }
+  const inputBytes = Buffer.from(input.bytes);
 
   if (inputBytes.byteLength === 0) {
     return fail("read_failed", "input was empty");

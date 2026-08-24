@@ -17,13 +17,13 @@
 // Phase 1.5 wires the float-over to actually fire after a successful
 // capture. Phase 1.6 adds clipboard at this seam.
 
-import { mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clipboard, screen } from "electron";
 import sharp from "sharp";
-import { ok, err } from "@pwrsnap/shared";
+import { ok, err, PASTE_IMAGE_MAX_BYTES } from "@pwrsnap/shared";
 import type {
   CapturePresetMetric,
   CaptureRecord,
@@ -79,6 +79,10 @@ import { buildPresetExportDisplayName } from "../render/export-filename";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
 import { getActiveExportStrategy, readDesktopSettings } from "./settings-handlers";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
+import {
+  readSafePastedFile,
+  UnsafePastedFileError
+} from "../security/assertSafePastedFile";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
 
@@ -574,24 +578,33 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       const persisted = await persistAndBroadcast(clipboardPng.tempPath, CLIPBOARD_SOURCE, {
         devicePixelRatio: clipboardPng.devicePixelRatio
       });
-      if (persisted.ok) {
-        log.info("clipboard image pasted into library", {
-          captureId: persisted.value.id,
-          widthPx: persisted.value.width_px,
-          heightPx: persisted.value.height_px,
-          devicePixelRatio: clipboardPng.devicePixelRatio
+      if (!persisted.ok) {
+        // persistAndBroadcast's general capture Result can retain the raw fs
+        // cause for internal callers. The clipboard boundary must not forward
+        // it because it can name the private source or temporary path.
+        log.error("clipboard paste failed", { code: persisted.error.code });
+        return err({
+          kind: "clipboard",
+          code: "paste_failed",
+          message: "Unable to paste the clipboard image"
         });
       }
-      return persisted;
-    } catch (cause) {
-      log.error("clipboard paste failed", {
-        message: cause instanceof Error ? cause.message : String(cause)
+      log.info("clipboard image pasted into library", {
+        captureId: persisted.value.id,
+        widthPx: persisted.value.width_px,
+        heightPx: persisted.value.height_px,
+        devicePixelRatio: clipboardPng.devicePixelRatio
       });
+      return persisted;
+    } catch {
+      // Clipboard decoders and persistence errors can embed absolute temp or
+      // source paths. Keep both the log and Result on a stable, path-free
+      // code/message contract.
+      log.error("clipboard paste failed", { code: "paste_failed" });
       return err({
         kind: "clipboard",
         code: "paste_failed",
-        message: cause instanceof Error ? cause.message : String(cause),
-        cause
+        message: "Unable to paste the clipboard image"
       });
     }
   });
@@ -969,7 +982,12 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
 
 async function writeClipboardImageToTempPng(): Promise<
   | { ok: true; tempPath: string; devicePixelRatio: number }
-  | { ok: false; code: "no_image" | "unsupported_image"; message: string; cause?: unknown }
+  | {
+      ok: false;
+      code: "no_image" | "unsupported_image" | "clipboard_file_unavailable";
+      message: string;
+      cause?: unknown;
+    }
 > {
   const decodeFailures: RawClipboardDecodeFailure[] = [];
 
@@ -994,14 +1012,40 @@ async function writeClipboardImageToTempPng(): Promise<
   // file directly so a PNG is preserved verbatim and its density is read.
   const filePath = clipboardImageFilePath();
   if (filePath !== null && looksLikeImageFile(filePath)) {
+    let fileBytes: Buffer;
     try {
-      const ingested = await ingestImageBufferToTempPng(
-        await readFile(filePath),
-        makeClipboardTempPngPath
-      );
-      return { ok: true, ...ingested };
+      fileBytes = await readSafePastedFile(filePath, {
+        maxBytes: PASTE_IMAGE_MAX_BYTES
+      });
     } catch (cause) {
-      decodeFailures.push({ source: filePath, cause });
+      const refusal =
+        cause instanceof UnsafePastedFileError
+          ? { code: cause.code, message: cause.sanitizedMessage }
+          : {
+              code: "read_failed",
+              message: "The clipboard image file is unavailable."
+            };
+      log.warn("clipboard file URL unavailable", { code: refusal.code });
+      return {
+        ok: false,
+        code: "clipboard_file_unavailable",
+        message: refusal.message
+      };
+    }
+
+    try {
+      const ingested = await ingestImageBufferToTempPng(fileBytes, makeClipboardTempPngPath);
+      return { ok: true, ...ingested };
+    } catch {
+      // The clipboard URL's absolute path is private. Do not retain the
+      // decoder's error object: mocks and platform decoders can include
+      // their source label in the message. A stable label/code gives the
+      // renderer enough context without smuggling the path through `cause`.
+      log.warn("clipboard file URL image decode failed", { code: "decode_failed" });
+      decodeFailures.push({
+        source: "clipboard file",
+        cause: { code: "decode_failed" }
+      });
     }
   }
 
@@ -1030,13 +1074,17 @@ function unsupportedClipboardImage(failures: RawClipboardDecodeFailure[]): {
   message: string;
   cause: unknown;
 } {
+  const sanitizedFailures = failures.map((failure) => ({
+    source: failure.source,
+    cause: { code: "decode_failed" }
+  }));
   return {
     ok: false,
     code: "unsupported_image",
-    message: `Could not decode clipboard image formats: ${failures
+    message: `Could not decode clipboard image formats: ${sanitizedFailures
       .map((failure) => failure.source)
       .join(", ")}`,
-    cause: failures
+    cause: sanitizedFailures
   };
 }
 
@@ -1290,8 +1338,11 @@ async function persistAndBroadcast(
   } catch (cause) {
     const fallbackError =
       cause instanceof CapturesLocationFallbackError ? cause.pwrSnapError : null;
+    // Filesystem failures commonly embed absolute source/destination paths.
+    // Keep disk logs on stable codes; callers that can safely surface a
+    // domain-specific fallback error still receive it below.
     log.error("capture persist failed", {
-      message: cause instanceof Error ? cause.message : String(cause)
+      code: fallbackError?.code ?? "persist_failed"
     });
     return err(
       fallbackError ?? {

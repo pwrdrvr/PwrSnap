@@ -13,23 +13,10 @@
 // sharp is loaded at module-eval time inside the worker; tests use a
 // real sharp install so the decode probe is exercised end-to-end.
 
-import { writeFile, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import sharp from "sharp";
 import { processImageInput } from "../paste-image-worker";
-
-let tmp: string;
-
-beforeAll(async () => {
-  tmp = await mkdtemp(join(tmpdir(), "pwrsnap-paste-worker-test-"));
-});
-
-afterAll(async () => {
-  await rm(tmp, { recursive: true, force: true });
-});
 
 async function makePng(widthPx: number, heightPx: number): Promise<Buffer> {
   return await sharp({
@@ -65,17 +52,6 @@ describe("paste-image-worker: processImageInput", () => {
     expect(result.sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  test("happy path: decode-path reads from disk", async () => {
-    const png = await makePng(50, 50);
-    const path = join(tmp, "decode-path.png");
-    await writeFile(path, png);
-    const result = await processImageInput({ kind: "decode-path", path });
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("expected ok");
-    expect(result.widthPx).toBe(50);
-    expect(result.heightPx).toBe(50);
-  });
-
   test("rejects empty input (read_failed)", async () => {
     const result = await processImageInput({
       kind: "decode-buffer",
@@ -109,15 +85,5 @@ describe("paste-image-worker: processImageInput", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected error");
     expect(result.code).toBe("size_cap_exceeded");
-  });
-
-  test("rejects missing path (read_failed)", async () => {
-    const result = await processImageInput({
-      kind: "decode-path",
-      path: join(tmp, "does-not-exist.png")
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected error");
-    expect(result.code).toBe("read_failed");
   });
 });

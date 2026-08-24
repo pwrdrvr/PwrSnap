@@ -130,7 +130,12 @@ export function useChatApprovalSession(
   useEffect(() => {
     const onRequested = (payload: unknown): void => {
       const request = payload as ChatApprovalRequest;
-      terminalIdentityKeysRef.current.delete(identityKey(request));
+      // Registration publishes the replayable pending thread view before the
+      // one-shot requested event. Another window can resolve that replay in
+      // between, so the requested event may arrive after the exact identity is
+      // already terminal. Broker identities are never reused: retain the
+      // tombstone and ignore the late event instead of resurrecting its modal.
+      if (terminalIdentityKeysRef.current.has(identityKey(request))) return;
       if (request.threadId !== activeThreadRef.current) return;
       setState((current) =>
         sameApproval(current.request, request)

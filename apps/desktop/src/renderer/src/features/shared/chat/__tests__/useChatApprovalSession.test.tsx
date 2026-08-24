@@ -288,6 +288,42 @@ describe("useChatApprovalSession", () => {
     expect(text("window-b-request")).toBe("none");
   });
 
+  test("a late requested broadcast cannot resurrect a request resolved from replay in another window", async () => {
+    const submitA = vi.fn<Submit>().mockResolvedValue({ ok: true, value: undefined });
+    const submitB = vi.fn<Submit>().mockResolvedValue({ ok: true, value: undefined });
+    await mount(
+      <>
+        <WindowHarness id="window-a" submit={submitA} />
+        <WindowHarness id="window-b" submit={submitB} />
+      </>
+    );
+
+    // Both windows hydrated the broker's pending view before the adapter's
+    // one-shot approvalRequested broadcast. Window A resolves that replay.
+    await act(async () => {
+      click("window-a-approve");
+      await Promise.resolve();
+      emit(EVENT_CHANNELS.libraryChatApprovalResolved, {
+        threadId: REQUEST_A.threadId,
+        turnId: REQUEST_A.turnId,
+        approvalId: REQUEST_A.approvalId,
+        decision: "approve"
+      });
+    });
+    expect(text("window-a-request")).toBe("none");
+    expect(text("window-b-request")).toBe("none");
+
+    // The delayed adapter event for the same immutable broker identity must
+    // not clear the terminal tombstone or reopen either modal.
+    await act(async () => {
+      emit(EVENT_CHANNELS.libraryChatApprovalRequested, REQUEST_A);
+    });
+    expect(text("window-a-request")).toBe("none");
+    expect(text("window-b-request")).toBe("none");
+    expect(submitA).toHaveBeenCalledTimes(1);
+    expect(submitB).not.toHaveBeenCalled();
+  });
+
   test("keeps a Result failure visible with sanitized retry and can safely deny", async () => {
     const submit = vi
       .fn<Submit>()

@@ -41,6 +41,7 @@ import {
   SegmentedControl,
   type SegmentOption
 } from "../components";
+import { AiConsentDialog } from "../../shared/AiConsentDialog";
 import { useSettingsContext } from "../SettingsContext";
 import { ChatSettingsCard } from "./ChatSettingsCard";
 
@@ -81,6 +82,7 @@ export function AIProvidersPage(): ReactElement {
   const [acpDiscovery, setAcpDiscovery] = useState<AcpAgentDiscovery | null>(null);
   const [acpDiscoveryLoading, setAcpDiscoveryLoading] = useState<boolean>(true);
   const [acpDiscoveryError, setAcpDiscoveryError] = useState<string | null>(null);
+  const [aiConsentDialogOpen, setAiConsentDialogOpen] = useState<boolean>(false);
 
   const refreshAcpDiscovery = useCallback(async (): Promise<void> => {
     setAcpDiscoveryLoading(true);
@@ -102,6 +104,20 @@ export function AIProvidersPage(): ReactElement {
     const result = await dispatch("codex:budgetStatus", {});
     if (result.ok) setBudgetStatus(result.value);
   }, []);
+
+  const setAiEnrichmentEnabled = useCallback(
+    async (enabled: boolean, consentAcceptedAt?: string): Promise<void> => {
+      await patch({
+        ai: {
+          enabled,
+          budgetSafetyDisabledAt: null,
+          ...(consentAcceptedAt !== undefined ? { consentAcceptedAt } : {})
+        }
+      });
+      await refreshBudgetStatus();
+    },
+    [patch, refreshBudgetStatus]
+  );
 
   const refreshUsage = useCallback(async (): Promise<void> => {
     const [summaryResult, runsResult] = await Promise.all([
@@ -347,18 +363,11 @@ export function AIProvidersPage(): ReactElement {
                 type="button"
                 onClick={() => {
                   const enabled = !(settings?.ai.enabled ?? false);
-                  void (async () => {
-                    await patch({
-                      ai: {
-                        enabled,
-                        budgetSafetyDisabledAt: null,
-                        ...(enabled && settings?.ai.consentAcceptedAt === null
-                          ? { consentAcceptedAt: new Date().toISOString() }
-                          : {})
-                      }
-                    });
-                    await refreshBudgetStatus();
-                  })();
+                  if (enabled && settings?.ai.consentAcceptedAt === null) {
+                    setAiConsentDialogOpen(true);
+                    return;
+                  }
+                  void setAiEnrichmentEnabled(enabled);
                 }}
               >
                 {settings?.ai.enabled ? "Disable" : "Enable"}
@@ -565,6 +574,15 @@ export function AIProvidersPage(): ReactElement {
           />
         </Row>
       </Card>
+      {aiConsentDialogOpen ? (
+        <AiConsentDialog
+          onCancel={() => setAiConsentDialogOpen(false)}
+          onAccept={() => {
+            setAiConsentDialogOpen(false);
+            void setAiEnrichmentEnabled(true, new Date().toISOString());
+          }}
+        />
+      ) : null}
     </>
   );
 }

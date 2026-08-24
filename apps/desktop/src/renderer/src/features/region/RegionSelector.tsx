@@ -68,8 +68,9 @@ const ESCAPE_DEDUPE_MS = 50;
 // activate the focused Snap button. Route both sources through one short
 // guard, matching the existing Escape de-dupe posture.
 const ENTER_DEDUPE_MS = 50;
+const CURSOR_TOGGLE_DEDUPE_MS = 50;
 const CHOOSER_WIDTH_PX = 280;
-const CHOOSER_ESTIMATED_HEIGHT_PX = 116;
+const CHOOSER_ESTIMATED_HEIGHT_PX = 164;
 const CHOOSER_MARGIN_PX = 12;
 const CHOOSER_GAP_PX = 10;
 
@@ -230,6 +231,8 @@ export function RegionSelector() {
   const escapeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const enterGuardRef = useRef(false);
   const enterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cursorToggleGuardRef = useRef(false);
+  const cursorToggleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // True while an interior mousedown is staging a discard of the
   // committed pick. The branch leaves rect + snapTarget untouched, so a
   // click-without-drag "keep" just stays put (no re-derivation); a drag
@@ -317,6 +320,11 @@ export function RegionSelector() {
       if (enterTimerRef.current !== null) {
         clearTimeout(enterTimerRef.current);
         enterTimerRef.current = null;
+      }
+      cursorToggleGuardRef.current = false;
+      if (cursorToggleTimerRef.current !== null) {
+        clearTimeout(cursorToggleTimerRef.current);
+        cursorToggleTimerRef.current = null;
       }
       modeRef.current = payload.mode;
       intentRef.current = payload.intent ?? "snap";
@@ -525,8 +533,34 @@ export function RegionSelector() {
     terminalSubmittedRef.current = true;
     pendingChoiceRef.current = null;
     setPendingChoice(null);
-    window.pwrsnapApi?.submitRegion({ ...payload, action });
+    window.pwrsnapApi?.submitRegion({
+      ...payload,
+      action,
+      // Ask mode begins with neutral Snap presentation, but Record still
+      // honors the persisted cursor default and any chooser-local C toggle.
+      // Snap remains free of recording-only metadata.
+      ...(action === "record"
+        ? { captureCursor: captureCursorRef.current }
+        : {})
+    });
     resetToSnap();
+  }
+
+  function handleCaptureCursorToggle(): void {
+    if (cursorToggleGuardRef.current) return;
+    cursorToggleGuardRef.current = true;
+    if (cursorToggleTimerRef.current !== null) {
+      clearTimeout(cursorToggleTimerRef.current);
+    }
+    cursorToggleTimerRef.current = setTimeout(() => {
+      cursorToggleGuardRef.current = false;
+      cursorToggleTimerRef.current = null;
+    }, CURSOR_TOGGLE_DEDUPE_MS);
+    // Update the ref synchronously so C immediately followed by R/click in
+    // the same event turn submits the new per-recording value.
+    const next = !captureCursorRef.current;
+    captureCursorRef.current = next;
+    setCaptureCursor(next);
   }
 
   function chooseCaptureAction(action: CaptureAction): void {
@@ -695,7 +729,10 @@ export function RegionSelector() {
         return;
       }
       if (pendingChoiceRef.current !== null) {
-        if (event.key === "r" || event.key === "R") {
+        if (event.key === "c" || event.key === "C") {
+          event.preventDefault();
+          handleCaptureCursorToggle();
+        } else if (event.key === "r" || event.key === "R") {
           event.preventDefault();
           chooseCaptureAction("record");
         }
@@ -732,7 +769,7 @@ export function RegionSelector() {
         // cursor. The hint bar reflects the current state; the value
         // rides the commit payload to `recording:start`.
         event.preventDefault();
-        setCaptureCursor((prev) => !prev);
+        handleCaptureCursorToggle();
         return;
       }
       if (event.key === "Tab" && interactionRef.current.kind === "snap") {
@@ -1072,7 +1109,7 @@ export function RegionSelector() {
     // Globally-forwarded keystrokes (main → renderer over IPC).
     // macOS sometimes withholds keyboard events from a freshly-shown
     // window until the user clicks to "engage" it. main arms a
-    // globalShortcut on Esc + ↵ for the duration of the selector
+    // globalShortcut on Esc + ↵ + R + C for the duration of the selector
     // and forwards them here, so cancel / commit work on first
     // keypress regardless of whether the renderer has caught
     // keyboard focus yet.
@@ -1086,6 +1123,11 @@ export function RegionSelector() {
         pendingChoiceRef.current !== null
       ) {
         chooseCaptureAction("record");
+      } else if (
+        (payload.key === "C" || payload.key === "c") &&
+        (pendingChoiceRef.current !== null || intentRef.current === "video")
+      ) {
+        handleCaptureCursorToggle();
       }
     });
     return () => {
@@ -1097,6 +1139,9 @@ export function RegionSelector() {
       unsubKey?.();
       if (escapeTimerRef.current !== null) clearTimeout(escapeTimerRef.current);
       if (enterTimerRef.current !== null) clearTimeout(enterTimerRef.current);
+      if (cursorToggleTimerRef.current !== null) {
+        clearTimeout(cursorToggleTimerRef.current);
+      }
     };
     // commit/cancel close over refs only; safe to leave deps empty.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1389,7 +1434,8 @@ export function RegionSelector() {
         >
           <h2 id="region-capture-chooser-title">Capture selection</h2>
           <p id="region-capture-chooser-description">
-            Choose a snap or start recording. Escape cancels.
+            Choose a snap or start recording. Use C to include or hide the
+            cursor in recordings. Escape cancels.
           </p>
           <div
             className="region-capture-chooser__actions"
@@ -1432,6 +1478,27 @@ export function RegionSelector() {
               <kbd aria-hidden="true">R</kbd>
             </button>
           </div>
+          <button
+            type="button"
+            className="region-capture-chooser__cursor"
+            data-testid="region-capture-cursor-toggle"
+            aria-label={`Record cursor: ${captureCursor ? "on" : "off"} (C)`}
+            aria-pressed={captureCursor}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              handleCaptureCursorToggle();
+            }}
+          >
+            <span>Record cursor</span>
+            <span className="region-capture-chooser__cursor-state">
+              {captureCursor ? "On" : "Off"}
+            </span>
+            <kbd aria-hidden="true">C</kbd>
+          </button>
         </div>
       )}
 

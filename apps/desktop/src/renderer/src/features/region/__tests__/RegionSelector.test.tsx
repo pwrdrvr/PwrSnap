@@ -195,14 +195,36 @@ async function drawRect(): Promise<void> {
   await mouseUp(300, 300);
 }
 
-async function openAskChooser(): Promise<void> {
+async function openAskChooser(cursor = true): Promise<void> {
   await emitMode({
     mode: "auto",
     intent: "snap",
+    cursor,
     quickCaptureAction: "ask"
   });
   await drawRect();
   await keyDown("Enter");
+}
+
+function cursorToggleButton(): HTMLButtonElement {
+  const el = container?.querySelector('[data-testid="region-capture-cursor-toggle"]');
+  if (!(el instanceof HTMLButtonElement)) {
+    throw new Error("record cursor toggle not found");
+  }
+  return el;
+}
+
+async function clickCursorToggle(): Promise<void> {
+  const button = cursorToggleButton();
+  await act(async () => {
+    button.dispatchEvent(
+      new MouseEvent("mousedown", { button: 0, bubbles: true, cancelable: true })
+    );
+    button.dispatchEvent(
+      new MouseEvent("mouseup", { button: 0, bubbles: true, cancelable: true })
+    );
+    button.click();
+  });
 }
 
 function chooser(): HTMLElement {
@@ -594,6 +616,10 @@ describe("U5 — Quick Capture Snap-vs-Record chooser", () => {
     expect(
       dialog.querySelector('[role="group"]')?.getAttribute("aria-label")
     ).toBe("Capture action");
+    expect(cursorToggleButton().getAttribute("aria-label")).toBe(
+      "Record cursor: on (C)"
+    );
+    expect(cursorToggleButton().getAttribute("aria-pressed")).toBe("true");
     expect(document.activeElement).toBe(choiceButton("snap"));
     // Selection (100,100)-(300,300): 280px chooser centers at x=200 and
     // sits 10px below the committed rect.
@@ -662,7 +688,56 @@ describe("U5 — Quick Capture Snap-vs-Record chooser", () => {
 
     expect(submitRegion).toHaveBeenCalledTimes(1);
     expect(submitRegion).toHaveBeenCalledWith(
-      expect.objectContaining({ ok: true, action: "record" })
+      expect.objectContaining({ ok: true, action: "record", captureCursor: true })
+    );
+  });
+
+  test("Ask Record starts from the persisted cursor default and C toggles it off", async () => {
+    await mount();
+    await openAskChooser(true);
+
+    const toggle = cursorToggleButton();
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expect(toggle.textContent).toContain("On");
+
+    await keyDown("c");
+    // A single physical C may arrive directly and through the main-process
+    // global shortcut relay; the second delivery must not toggle back on.
+    await emitKey("C");
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(toggle.getAttribute("aria-label")).toBe("Record cursor: off (C)");
+    expect(toggle.textContent).toContain("Off");
+    await keyDown("r");
+
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: true,
+        action: "record",
+        captureCursor: false
+      })
+    );
+  });
+
+  test("Ask Record exposes a mouse cursor toggle from Off to On", async () => {
+    await mount();
+    await openAskChooser(false);
+
+    expect(cursorToggleButton().getAttribute("aria-pressed")).toBe("false");
+    await clickCursorToggle();
+    expect(cursorToggleButton().getAttribute("aria-pressed")).toBe("true");
+    expect(cursorToggleButton().getAttribute("aria-label")).toBe(
+      "Record cursor: on (C)"
+    );
+    await clickChoice("record");
+
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: true,
+        action: "record",
+        captureCursor: true
+      })
     );
   });
 
@@ -778,7 +853,8 @@ describe("U5 — Quick Capture Snap-vs-Record chooser", () => {
         h: WIN.rect.h
       },
       displayId: 0,
-      snappedWindowId: WIN.windowId
+      snappedWindowId: WIN.windowId,
+      captureCursor: true
     });
   });
 

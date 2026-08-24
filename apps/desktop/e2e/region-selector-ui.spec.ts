@@ -220,7 +220,7 @@ test("arrow keys nudge the adjustable rect by 1px (10 with shift)", async () => 
   }
 });
 
-test("Quick Capture ask shows an accessible chooser and forwarded R submits Record once", async () => {
+test("Quick Capture ask exposes cursor state and forwarded R submits Record once", async () => {
   // Pure selector DOM/IPC coverage: no pickRegion promise and no recording
   // controller are involved, so this exercises the real sandboxed renderer
   // without touching screen-capture or TCC paths.
@@ -231,6 +231,7 @@ test("Quick Capture ask shows an accessible chooser and forwarded R submits Reco
     await sendSelectorMode(app, {
       mode: "auto",
       intent: "snap",
+      cursor: true,
       quickCaptureAction: "ask"
     });
 
@@ -255,13 +256,20 @@ test("Quick Capture ask shows an accessible chooser and forwarded R submits Reco
     const snap = dialog.getByRole("button", { name: `Snap (${enterLabel})` });
     await expect(snap).toBeFocused();
     await expect(dialog.getByRole("button", { name: "Record (R)" })).toBeVisible();
+    const cursor = dialog.getByRole("button", { name: "Record cursor: on (C)" });
+    await expect(cursor).toHaveAttribute("aria-pressed", "true");
+    await selector.keyboard.press("c");
+    await expect(
+      dialog.getByRole("button", { name: "Record cursor: off (C)" })
+    ).toHaveAttribute("aria-pressed", "false");
 
     await sendSelectorKey(app, "R");
     await sendSelectorKey(app, "R");
     await expect.poll(async () => (await readResults(app)).length).toBe(1);
     expect((await readResults(app))[0]).toMatchObject({
       ok: true,
-      action: "record"
+      action: "record",
+      captureCursor: false
     });
   } finally {
     await app.close();
@@ -313,6 +321,7 @@ async function sendSelectorMode(
   payload: {
     mode: "auto" | "region" | "window";
     intent?: "snap" | "video";
+    cursor?: boolean;
     quickCaptureAction?: "ask" | "snap" | "record";
   }
 ): Promise<void> {

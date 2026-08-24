@@ -1,6 +1,7 @@
 import { app, Notification, type BrowserWindow } from "electron";
 import type { PwrSnapError, RecordingSubject, Result, Settings } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
+import { setFloatOverState } from "../float-over";
 import { getMainLogger } from "../log";
 import {
   findMainLibraryWindow,
@@ -36,9 +37,15 @@ export async function startRecordingFromSelection(
   settings: Settings
 ): Promise<Result<{ sessionId: string }, PwrSnapError>> {
   const log = getMainLogger("pwrsnap:shortcut");
+  let floatOverParked = false;
   let selectorHidden = false;
   let snapshotReleased = false;
 
+  const parkFloatOver = (): void => {
+    if (floatOverParked) return;
+    setFloatOverState({ kind: "cancel" });
+    floatOverParked = true;
+  };
   const hideCommittedSelector = (): void => {
     if (selectorHidden) return;
     hideSelector();
@@ -51,6 +58,13 @@ export async function startRecordingFromSelection(
   };
 
   try {
+    // pickRegion pre-shows the idle Float-Over under its screen-saver-level
+    // selector. Recording uses the separate HUD, so park that idle window
+    // before lowering the selector on every success/error/cancel handoff.
+    // Give WindowServer one compositor turn so no empty click-blocking panel
+    // can flash through as the selector disappears.
+    parkFloatOver();
+    await new Promise((resolve) => setTimeout(resolve, 50));
     // The selector is at screen-saver level and would otherwise be in
     // captured pixels for the countdown and first recording frames.
     hideCommittedSelector();
@@ -150,13 +164,17 @@ export async function startRecordingFromSelection(
     }
     return result;
   } finally {
-    // Both operations are guarded because a close/error can race the normal
-    // path. releaseSnapshot itself is idempotent too, but this keeps the
-    // ownership handoff observable as exactly once in focused tests.
+    // All three operations are guarded because a close/error can race the
+    // normal path. releaseSnapshot itself is idempotent too, but these guards
+    // keep the ownership handoff observable as exactly once in focused tests.
     try {
-      hideCommittedSelector();
+      parkFloatOver();
     } finally {
-      releaseCommittedSnapshot();
+      try {
+        hideCommittedSelector();
+      } finally {
+        releaseCommittedSnapshot();
+      }
     }
   }
 }

@@ -687,7 +687,7 @@ export async function pickRegion(
     return { ok: false, reason: "destroyed" };
   }
 
-  // Arm Esc + Enter via globalShortcut for the duration of the
+  // Arm chooser keys via globalShortcut for the duration of the
   // selector. macOS sometimes withholds keyboard events from a
   // newly-shown window until the user clicks to "engage" it — the
   // renderer's keydown listener exists but the event never reaches
@@ -1157,6 +1157,11 @@ function installSelectorGlobalShortcuts(win: BrowserWindow): void {
       win.webContents.send(SELECTOR_KEY_CHANNEL, { key: "r" });
     }
   });
+  globalShortcut.register("C", () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send(SELECTOR_KEY_CHANNEL, { key: "c" });
+    }
+  });
   shortcutsInstalled = true;
 }
 
@@ -1165,6 +1170,7 @@ function uninstallSelectorGlobalShortcuts(): void {
   globalShortcut.unregister("Escape");
   globalShortcut.unregister("Return");
   globalShortcut.unregister("R");
+  globalShortcut.unregister("C");
   shortcutsInstalled = false;
 }
 

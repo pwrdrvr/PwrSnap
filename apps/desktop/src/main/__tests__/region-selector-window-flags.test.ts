@@ -583,7 +583,19 @@ describe("region-selector — chooser contract and terminal ownership", () => {
         "R",
         expect.any(Function)
       );
+      expect(selectorShortcutMocks.register).toHaveBeenCalledWith(
+        "C",
+        expect.any(Function)
+      );
     });
+    const cursorShortcut = selectorShortcutMocks.register.mock.calls.find(
+      ([accelerator]) => accelerator === "C"
+    )?.[1] as (() => void) | undefined;
+    cursorShortcut?.();
+    expect(constructed[0]?.webContents.send).toHaveBeenCalledWith(
+      "region-selector:key",
+      { key: "c" }
+    );
 
     // No terminal result yet: the chooser still owns the frozen snapshot.
     expect(screenSnapshotMocks.releaseSnapshot).not.toHaveBeenCalled();
@@ -595,6 +607,7 @@ describe("region-selector — chooser contract and terminal ownership", () => {
     // what releases the still-selector snapshot.
     expect(screenSnapshotMocks.releaseSnapshot).not.toHaveBeenCalled();
     expect(selectorShortcutMocks.unregister).toHaveBeenCalledWith("R");
+    expect(selectorShortcutMocks.unregister).toHaveBeenCalledWith("C");
 
     hideSelector();
     hideSelector();
@@ -613,7 +626,11 @@ describe("region-selector — chooser contract and terminal ownership", () => {
     });
 
     const resultListener = ipcListeners.get("region-selector:result");
-    resultListener?.({}, { ...committedPayload, action: "record" });
+    resultListener?.({}, {
+      ...committedPayload,
+      action: "record",
+      captureCursor: false
+    });
     // A second raw IPC delivery from direct + forwarded Return must not
     // overwrite the first terminal action or transfer ownership twice.
     resultListener?.({}, { ...committedPayload, action: "snap" });
@@ -622,6 +639,7 @@ describe("region-selector — chooser contract and terminal ownership", () => {
     expect(result).toMatchObject({
       ok: true,
       action: "record",
+      captureCursor: false,
       rect: committedPayload.rect,
       displayId: 1,
       screenSnapshotId: "snapshot-1",
@@ -668,6 +686,7 @@ describe("region-selector — chooser contract and terminal ownership", () => {
     expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledTimes(1);
     expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledWith("snapshot-1");
     expect(selectorShortcutMocks.unregister).toHaveBeenCalledWith("R");
+    expect(selectorShortcutMocks.unregister).toHaveBeenCalledWith("C");
   });
 
   test("window close settles an active picker and releases its frozen snapshot", async () => {

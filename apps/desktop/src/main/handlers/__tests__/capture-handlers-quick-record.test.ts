@@ -19,7 +19,8 @@ const selection = {
   displayId: 7,
   screenSnapshotPath: "/tmp/frozen.png",
   screenSnapshotId: "snapshot-7",
-  previousAppPid: 42
+  previousAppPid: 42,
+  captureCursor: false
 };
 
 vi.mock("electron", () => ({

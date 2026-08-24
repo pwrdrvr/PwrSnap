@@ -88,6 +88,10 @@ export type ChatEventAdapterOptions = {
     turnId: string;
     approvalId: string;
   }) => void;
+  /** Runs only after the controller has committed an assistant message to its
+   *  journal. Approval cleanup may make the thread idle, so it must never run
+   *  from the earlier raw backend terminal event. */
+  onAssistantCommitted?: (threadId: string) => void;
   /** #471 can inject its backend terminal tracker here; the adapter remains
    *  producer-truthful and never requires a renderer-only status merge. */
   messageStatusFor?: (event: MessageCommittedEvent) => ChatMessage["status"];
@@ -204,13 +208,24 @@ export function makeChatBroadcast(
           summary: event.toolCall.label
         });
         return;
-      case "message_committed":
-        if (options.shouldSend?.(event.threadId) === false) return;
-        send(channels.messageCommitted, {
-          threadId: event.threadId,
-          message: toChatMessage(event.message, options.messageStatusFor?.(event) ?? "complete")
-        });
+      case "message_committed": {
+        try {
+          if (options.shouldSend?.(event.threadId) !== false) {
+            send(channels.messageCommitted, {
+              threadId: event.threadId,
+              message: toChatMessage(
+                event.message,
+                options.messageStatusFor?.(event) ?? "complete"
+              )
+            });
+          }
+        } finally {
+          if (event.message.role === "assistant") {
+            options.onAssistantCommitted?.(event.threadId);
+          }
+        }
         return;
+      }
       case "turn_interrupted":
         if (options.shouldSend?.(event.threadId) === false) return;
         // The only path that interrupts a turn in PwrSnap is the user verb

@@ -285,6 +285,30 @@ describe("makeChatBroadcast", () => {
     });
   });
 
+  it("runs post-journal assistant cleanup even when owner routing suppresses renderer IPC", () => {
+    const send = vi.fn();
+    const onAssistantCommitted = vi.fn();
+    const broadcast = makeChatBroadcast(LIBRARY_CHANNELS, send, {
+      shouldSend: () => false,
+      onAssistantCommitted
+    });
+
+    broadcast({
+      type: "message_committed",
+      threadId: "mcp-thread",
+      message: { id: "assistant-final", role: "assistant", text: "done", createdAt: 1 }
+    });
+    broadcast({
+      type: "message_committed",
+      threadId: "mcp-thread",
+      message: { id: "user-message", role: "user", text: "question", createdAt: 2 }
+    });
+
+    expect(send).not.toHaveBeenCalled();
+    expect(onAssistantCommitted).toHaveBeenCalledTimes(1);
+    expect(onAssistantCommitted).toHaveBeenCalledWith("mcp-thread");
+  });
+
   it("uses the producer-side terminal message-status lookup", () => {
     const send = vi.fn();
     const messageStatusFor = vi.fn(() => "failed" as const);

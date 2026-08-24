@@ -135,6 +135,17 @@ function controllableBackend(): {
   };
 }
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function approvalBrokerDouble(overrides: {
   register?: (
     request: ChatApprovalRequest,
@@ -142,11 +153,15 @@ function approvalBrokerDouble(overrides: {
     resolve: ChatApprovalResolver
   ) => boolean;
   closeOwner?: (owner: object) => Promise<void>;
+  closeThread?: (threadId: string) => Promise<void>;
+  openThread?: (threadId: string) => void;
 } = {}): ChatApprovalBroker {
   return {
     register: overrides.register ?? (() => true),
     decorateThread: (view: LibraryChatThreadView) => view,
-    closeOwner: overrides.closeOwner ?? (async () => undefined)
+    closeOwner: overrides.closeOwner ?? (async () => undefined),
+    closeThread: overrides.closeThread ?? (async () => undefined),
+    openThread: overrides.openThread ?? (() => undefined)
   } as unknown as ChatApprovalBroker;
 }
 
@@ -458,6 +473,79 @@ describe("chatControllerSignature", () => {
 });
 
 describe("buildChatSurface — dispose", () => {
+  test("does not make approval cleanup idle until delayed final journal commit finishes", async () => {
+    const threadId = "thread-delayed-journal";
+    const turnId = "turn-delayed-journal";
+    const record = {
+      threadId,
+      name: "Delayed journal",
+      createdAt: "2026-08-23T00:00:00.000Z",
+      modifiedAt: "2026-08-23T00:00:00.000Z",
+      anchorId: null,
+      anchorHistory: [],
+      archived: false,
+      pinned: false
+    };
+    const journal: unknown[] = [];
+    const assistantAppendStarted = deferred<void>();
+    const assistantAppendGate = deferred<void>();
+    const storeGet = vi
+      .spyOn(ThreadStoreAdapter.prototype, "get")
+      .mockResolvedValue(record);
+    const journalAppend = vi
+      .spyOn(ThreadStoreAdapter.prototype, "journalAppend")
+      .mockImplementation(async (_id, entry) => {
+        const role = (entry as { message?: { role?: unknown } }).message?.role;
+        if (role === "assistant") {
+          assistantAppendStarted.resolve(undefined);
+          await assistantAppendGate.promise;
+        }
+        journal.push(entry);
+      });
+    const controlled = controllableBackend();
+    vi.mocked(controlled.backend.startTurn).mockResolvedValue({ turnId });
+    const closeThread = vi.fn(async () => {
+      expect(
+        journal.some(
+          (entry) =>
+            (entry as { message?: { role?: unknown; text?: unknown } }).message?.role ===
+              "assistant" &&
+            (entry as { message?: { text?: unknown } }).message?.text === "final answer"
+        )
+      ).toBe(true);
+    });
+    const surface = await buildChatSurface(
+      baseConfig({
+        provider: "codex",
+        approvalBroker: approvalBrokerDouble({ closeThread })
+      }),
+      { makeCodexClient: () => controlled.backend }
+    );
+
+    try {
+      await surface.controller.sendMessage({ threadId, text: "question" });
+      controlled.emit({
+        kind: "agent_message_delta",
+        threadId,
+        turnId,
+        itemId: "assistant-item",
+        delta: "final answer"
+      });
+      controlled.emit({ kind: "turn_completed", threadId, turnId, status: "completed" });
+
+      await assistantAppendStarted.promise;
+      expect(closeThread).not.toHaveBeenCalled();
+
+      assistantAppendGate.resolve(undefined);
+      await vi.waitFor(() => expect(closeThread).toHaveBeenCalledWith(threadId));
+      expect(journalAppend).toHaveBeenCalledTimes(2);
+    } finally {
+      await surface.dispose();
+      journalAppend.mockRestore();
+      storeGet.mockRestore();
+    }
+  });
+
   test("registers an approval resolver bound to the exact originating controller", async () => {
     // The kit publishes awaiting/idle thread status around its private approval
     // promise. This factory-level test has no app database, so keep that

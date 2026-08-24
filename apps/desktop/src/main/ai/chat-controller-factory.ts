@@ -404,16 +404,8 @@ export async function buildChatSurface(
         serviceTier: event.settings.serviceTier ?? null
       });
     }
-    if (config.approvalBroker !== undefined) {
-      if (event.kind === "turn_started") {
-        config.approvalBroker.openThread(event.threadId);
-      } else if (event.kind === "turn_completed") {
-        // A backend-terminal turn must not leave an orphan approval promise.
-        // closeThread is exact/idempotent and only ever responds with deny.
-        void config.approvalBroker.closeThread(event.threadId);
-      } else if (event.kind === "error" && event.threadId !== undefined && event.willRetry !== true) {
-        void config.approvalBroker.closeThread(event.threadId);
-      }
+    if (config.approvalBroker !== undefined && event.kind === "turn_started") {
+      config.approvalBroker.openThread(event.threadId);
     }
   });
 
@@ -466,6 +458,12 @@ export async function buildChatSurface(
                 "failed to deny malformed chat approval request"
               );
             });
+          },
+          // ChatThreadController emits this only after journalAppend resolves.
+          // Closing from the earlier raw terminal event made MCP wait observe
+          // sticky idle before the final assistant output was readable.
+          onAssistantCommitted: (threadId) => {
+            void config.approvalBroker?.closeThread(threadId);
           }
         }
       : {}),

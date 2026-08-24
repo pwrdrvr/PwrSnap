@@ -84,4 +84,15 @@ describe("recording foreground restoration", () => {
     expect(source).toContain("ShowWindowAsync(context.window, SW_RESTORE)");
     expect(source).toContain("SetForegroundWindow(context.window)");
   });
+
+  test("production restores required-preflight focus before opening the selector", async () => {
+    const source = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
+    const preflight = source.indexOf(
+      "const requiredPreflight = await withRecordingForegroundRestored(() =>"
+    );
+    const selector = source.indexOf("const selection = await pickRegion({", preflight);
+
+    expect(preflight).toBeGreaterThan(-1);
+    expect(selector).toBeGreaterThan(preflight);
+  });
 });

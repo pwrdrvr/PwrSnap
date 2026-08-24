@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("electron", () => ({
@@ -80,7 +81,7 @@ describe("native file clipboard contracts", () => {
 
     expect(api.availableFormats()).toEqual(["public.file-url"]);
     expect(api.readBuffer("public.file-url").toString("utf8")).toBe(
-      "file:///tmp/PwrSnap%20roadmap%20&%20notes.gif"
+      pathToFileURL("/tmp/PwrSnap roadmap & notes.gif").toString()
     );
   });
 

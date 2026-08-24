@@ -6,6 +6,7 @@
 // any platform without TCC or ScreenCaptureKit.
 
 import { EventEmitter } from "node:events";
+import { dirname, extname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 // Hoisted mock state so every imported module sees the same
@@ -1205,9 +1206,12 @@ describe("Windows FFmpeg recorder", () => {
       ({ message }) => message === "recording adoption failed; recorder output preserved for recovery"
     );
     expect(preservationLog?.fields?.tempDir).toBe("/tmp/pwrsnap-recording-fake");
-    expect(preservationLog?.fields?.outputPath).toMatch(
-      /^\/tmp\/pwrsnap-recording-fake\/.+\.mp4$/
+    const recoveryOutputPath = preservationLog?.fields?.outputPath;
+    expect(typeof recoveryOutputPath).toBe("string");
+    expect(dirname(recoveryOutputPath as string)).toBe(
+      join("/tmp", "pwrsnap-recording-fake")
     );
+    expect(extname(recoveryOutputPath as string)).toBe(".mp4");
   });
 
   test("cleans lifecycle without a false recovery claim after durable Windows adoption", async () => {

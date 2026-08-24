@@ -1,5 +1,5 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -239,7 +239,9 @@ describe("resolveFfmpegPath", () => {
     setPlatform("darwin");
     const resources = makeTempRoot();
     setResourcesPath(resources);
-    const packaged = join(resources, "PwrSnapFFmpeg");
+    // The resolver deliberately selects POSIX path semantics from the mocked
+    // target platform, even when this test itself is running on Windows.
+    const packaged = posix.join(resources, "PwrSnapFFmpeg");
     writeFileSync(packaged, "stub");
 
     const { resolveFfmpegPath } = await importFreshResolver();

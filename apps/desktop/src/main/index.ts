@@ -49,7 +49,6 @@ import {
 } from "./runtime-identity";
 import { installTerminalSignalShutdown } from "./terminal-signal-shutdown";
 import { installTransientWindowTeardown } from "./transient-window-teardown";
-import { installProductionQuitTeardown } from "./production-quit-teardown";
 // (showFloatOverForCapture is no longer called from the bootstrap;
 // the capture-handlers `capture:interactive` now drives the entire
 // float-over lifecycle. Kept as an export from float-over.ts for the
@@ -1570,52 +1569,6 @@ export function bootstrapApp(): void {
     { shouldDisposeOnBeforeQuit: () => !isSizzleQuitDeferred() }
   );
 
-  // Install the complete production graceful-quit path before app.whenReady()
-  // and the packaged-smoke handshake. The smoke therefore proves this same
-  // teardown, not merely a clean Electron process exit.
-  installProductionQuitTeardown(
-    {
-      onWillQuit: (listener) => {
-        app.on("will-quit", listener);
-      },
-      quit: () => app.quit()
-    },
-    {
-      isRecordingActive,
-      cancelRecording: () => getRecordingService().cancel(),
-      warnRecordingCancelFailure: (cause) => {
-        getMainLogger("pwrsnap:bootstrap").warn("cancel-on-quit failed", {
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
-      },
-      unregisterGlobalShortcuts: () => globalShortcut.unregisterAll(),
-      stopLibraryProcess,
-      disposeCodexProfileHandlers,
-      disposeTransientWindows,
-      disposeIpcDispatcher,
-      stopToolRpcServer: () => getToolRpcServer().stop(),
-      closeAcpAgentPool,
-      closeCodexAgentPool,
-      disposeLocalAgentMcpSettingsListener: () => {
-        disposeLocalAgentMcpSettingsListener?.();
-        disposeLocalAgentMcpSettingsListener = null;
-      },
-      disableLocalAgentMcpLifecycle: () => {
-        if (localAgentMcpLifecycle !== null) {
-          void localAgentMcpLifecycle.setEnabled(false);
-          localAgentMcpLifecycle = null;
-        }
-      },
-      denyLocalAgentConsent: () => {
-        localAgentConsentBroker?.denyAll();
-        localAgentConsentBroker = null;
-      },
-      shutdownCompositeThumbnailWorker,
-      cancelScheduledRepacks,
-      closeDatabase
-    }
-  );
-
   const role = resolveProcessRole({
     argv: process.argv,
     env: process.env,
@@ -2628,6 +2581,73 @@ export function bootstrapApp(): void {
     }
   });
 
+  // Track whether we've already initiated the recording-cancel
+  // teardown so we don't loop on the will-quit handler firing again
+  // after `app.quit()` is called from inside it.
+  let quitTeardownInFlight = false;
+  app.on("will-quit", (event) => {
+    // Fast Video Capture (issue #64): if a recording is active when
+    // the user hits ⌘Q, cancel it cleanly BEFORE the rest of teardown
+    // runs. Without this the Swift recorder is orphaned (parent dies,
+    // launchd reparents it) and the user's clip is lost AND a stray
+    // PwrSnapRecorder process sits in their process list until it
+    // hits its own write error or the parent-death watchdog reaps it.
+    if (isRecordingActive() && !quitTeardownInFlight) {
+      quitTeardownInFlight = true;
+      event.preventDefault();
+      void getRecordingService()
+        .cancel()
+        .catch((cause) => {
+          getMainLogger("pwrsnap:bootstrap").warn("cancel-on-quit failed", {
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        })
+        .finally(() => {
+          // Retry the quit — the second time around the recording
+          // state is idle so this branch falls through to the
+          // ordinary teardown below.
+          app.quit();
+        });
+      return;
+    }
+    globalShortcut.unregisterAll();
+    // Take the supervised library child down with the agent. No-op in
+    // combined/library roles (nothing was ever spawned).
+    stopLibraryProcess();
+    disposeCodexProfileHandlers();
+    disposeTransientWindows();
+    disposeIpcDispatcher();
+    // Close the ACP chat MCP tool-RPC server + remove its socket file. No-op
+    // when the bridge never started (no ACP chat used this run).
+    void getToolRpcServer()
+      .stop()
+      .catch(() => undefined);
+    // Close every pooled ACP agent process (warmed at startup / acquired by a
+    // chat surface). No-op when no agent was ever pooled.
+    void closeAcpAgentPool().catch(() => undefined);
+    // Close the shared Codex App Server process owner. No-op when Codex was
+    // never used this run.
+    void closeCodexAgentPool().catch(() => undefined);
+    disposeLocalAgentMcpSettingsListener?.();
+    disposeLocalAgentMcpSettingsListener = null;
+    if (localAgentMcpLifecycle !== null) {
+      void localAgentMcpLifecycle.setEnabled(false);
+      localAgentMcpLifecycle = null;
+    }
+    localAgentConsentBroker?.denyAll();
+    localAgentConsentBroker = null;
+    // Tear down the shared composite-thumbnail worker eagerly so an
+    // in-flight encode (e.g. a deferred v1→v2 sweep still running) is
+    // rejected and the worker terminated on our terms, rather than the
+    // thread being reaped mid-event when the process exits.
+    shutdownCompositeThumbnailWorker();
+    // Cancel pending debounced re-packs BEFORE the DB closes — a
+    // repack timer firing post-close throws uncaught from
+    // getCaptureById. Next boot's edits_version check re-packs
+    // whatever this drops.
+    cancelScheduledRepacks();
+    closeDatabase();
+  });
 }
 
 bootstrapApp();

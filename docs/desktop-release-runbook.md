@@ -204,7 +204,9 @@ The release workflow separates preparation, signing, and publication:
    [desktop-windows-signing.md](desktop-windows-signing.md).
 6. **`windows-installed-smoke`** is credential-free and downloads those exact
    artifacts. It installs and launches the signed application with isolated
-   profile/data roots; proves main, React, preload/IPC, better-sqlite3, and
+   profile/data roots; acquires the production first-instance lock, installs
+   the packaged tray icon and prewarms the tray renderer; proves main, React,
+   preload/IPC, better-sqlite3, and
    Sharp/libvips readiness; directly executes the installed window-list helper
    against PwrSnap's visible window; verifies sidecar paths, hashes, and signed
    lane Authenticode; and runs bundled FFmpeg capability enumeration plus an
@@ -254,8 +256,11 @@ approve the protected job, and remove the rule after the
 validation (including better-sqlite3, Sharp/libvips, React, preload, and IPC).
 This is the same `release.yml` Windows prepare/sign path used by tags;
 `publish-release-assets` is disabled for PR events, so it never creates a tag
-or GitHub Release. Because the launch is hermetic E2E mode, it deliberately
-does not initialize `electron-updater`; feed retrieval, blockmaps, download,
+or GitHub Release. The launch uses E2E only for isolated paths and test
+readiness plumbing: the first-instance lock and packaged tray/icon/prewarm path
+still execute. Global hotkeys, launch-at-login mutation, the startup Codex
+probe, local-agent lifecycle, and `electron-updater` stay explicitly disabled;
+feed retrieval, blockmaps, download,
 signature selection, `quitAndInstall`, and prerelease-to-prerelease transition
 remain the separate updater lane/clean-VM release coverage; this launch lane
 does not add feed behavior.

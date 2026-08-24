@@ -164,6 +164,20 @@ function makeDependencies(
       capturesRoot: layout.capturesRoot,
       mainLogPath: layout.mainLogPath
     }),
+    getStartupEvidence: () => ({
+      singleInstanceLockAcquired: true,
+      tray: {
+        installed: true,
+        iconPath: join(layout.resourcesPath, "tray-icon.png"),
+        iconLoaded: true,
+        popoverPrewarmed: true
+      },
+      globalHotkeysSkipped: true,
+      launchAtLoginSyncSkipped: true,
+      appUpdaterSkipped: true,
+      localAgentLifecycleSkipped: true,
+      startupCodexProbeSkipped: true
+    }),
     getNativeModuleProvenance: () => ({
       resourcesPath: layout.resourcesPath,
       betterSqlite3PackagePath: join(
@@ -585,7 +599,23 @@ describe("packaged Windows smoke", () => {
         platform: "win32",
         arch: "x64"
       },
-      main: { bootstrapComplete: true },
+      main: {
+        bootstrapComplete: true,
+        startup: {
+          singleInstanceLockAcquired: true,
+          tray: {
+            installed: true,
+            iconPath: join(layout.resourcesPath, "tray-icon.png"),
+            iconLoaded: true,
+            popoverPrewarmed: true
+          },
+          globalHotkeysSkipped: true,
+          launchAtLoginSyncSkipped: true,
+          appUpdaterSkipped: true,
+          localAgentLifecycleSkipped: true,
+          startupCodexProbeSkipped: true
+        }
+      },
       renderer: {
         readyState: "complete",
         stage: "library",
@@ -689,6 +719,50 @@ describe("packaged Windows smoke", () => {
     });
     expect(dependencies.probeBundledWindowList).toHaveBeenCalledTimes(1);
     expect(probeBundledFfmpeg).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    {
+      label: "single-instance lock",
+      mutate: (evidence: ReturnType<PackagedWindowsSmokeDependencies["getStartupEvidence"]>) => {
+        evidence.singleInstanceLockAcquired = false;
+      },
+      message: /single-instance lock/
+    },
+    {
+      label: "packaged tray icon",
+      mutate: (evidence: ReturnType<PackagedWindowsSmokeDependencies["getStartupEvidence"]>) => {
+        evidence.tray.iconLoaded = false;
+      },
+      message: /install the tray/
+    },
+    {
+      label: "host safety suppressions",
+      mutate: (evidence: ReturnType<PackagedWindowsSmokeDependencies["getStartupEvidence"]>) => {
+        evidence.appUpdaterSkipped = false;
+      },
+      message: /host\/network safety/
+    }
+  ])("fails readiness when $label evidence is missing", async ({ mutate, message }) => {
+    const baseline = makeDependencies(layout);
+    const evidence = baseline.getStartupEvidence();
+    mutate(evidence);
+    const dependencies = makeDependencies(layout, {
+      getStartupEvidence: () => evidence
+    });
+
+    await expect(runPackagedWindowsSmokeIfRequested(dependencies)).resolves.toBe(true);
+
+    const report = JSON.parse(await readFile(layout.reportPath, "utf8")) as {
+      status: string;
+      phase: string;
+      error: { message: string };
+    };
+    expect(report.status).toBe("failed");
+    expect(report.phase).toBe("main:startup-policy");
+    expect(report.error.message).toMatch(message);
+    expect(dependencies.probeSharp).not.toHaveBeenCalled();
+    expect(dependencies.app.quit).toHaveBeenCalledTimes(1);
   });
 
   test("records a causal bundled-helper failure phase", async () => {

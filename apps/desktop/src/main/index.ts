@@ -126,11 +126,13 @@ import {
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogFilePath, getMainLogger, initializeMainLogger } from "./log";
 import {
+  PACKAGED_WINDOWS_SMOKE_ENV,
   preflightPackagedWindowsSmokeRequest,
   resolvePackagedNativeModuleProvenance,
   resolvePackagedWindowsSmokeConfig,
   runPackagedWindowsSmokeIfRequested
 } from "./packaged-windows-smoke";
+import { resolveStartupAutomationPolicy } from "./startup-automation-policy";
 import {
   LOCAL_AGENT_MCP_PORT,
   LocalAgentMcpServer
@@ -213,6 +215,7 @@ import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
 import {
   disposeTray,
+  getTrayInstallationEvidence,
   hideTrayPopoverForE2E,
   installTray,
   measureTrayFirstPaintForE2E,
@@ -304,7 +307,7 @@ const HOTKEY_KINDS: readonly HotkeyKind[] = [
 const isMac = process.platform === "darwin";
 
 /**
- * E2E mode. When `PWRSNAP_E2E=1`, the bootstrap skips:
+ * E2E mode. When `PWRSNAP_E2E=1`, ordinary dev E2E bootstrap skips:
  *   - The global ⌘⇧P shortcut (Playwright drives capture through the
  *     command bus directly via `electronApp.evaluate(...)`; a real
  *     global shortcut would race with the host machine's keymap).
@@ -317,11 +320,22 @@ const isMac = process.platform === "darwin";
  *     `app:update:*` bus verbs, which stay registered and would
  *     otherwise spend the runner's shared anonymous GitHub quota on
  *     each spinup that opens Settings.
+ * The installed Windows smoke selectively restores the first-instance lock
+ * and real packaged tray/icon/prewarm path because its controller first
+ * refuses any existing PwrSnap process or install. It keeps global hotkeys,
+ * launch-at-login mutation, updater/network activity, the startup Codex probe,
+ * and local-agent lifecycle explicitly disabled through the startup policy.
  * Everything else — DB, command bus, IPC dispatcher, region selector
  * pre-warm, main window — runs unchanged so the assertions exercise
  * the same code paths a real user hits.
  */
 const isE2E = process.env.PWRSNAP_E2E === "1";
+const isPackagedWindowsSmoke = process.env[PACKAGED_WINDOWS_SMOKE_ENV] === "1";
+const startupAutomationPolicy = resolveStartupAutomationPolicy({
+  isE2E,
+  isPackagedWindowsSmoke
+});
+let packagedSmokeSingleInstanceLockAcquired = false;
 let pasteFromClipboardMenuItem: Electron.MenuItem | null = null;
 let localAgentMcpLifecycle: LocalAgentMcpLifecycle | null = null;
 let disposeLocalAgentMcpSettingsListener: (() => void) | null = null;
@@ -332,7 +346,7 @@ let localAgentConsentBroker: LocalAgentConsentBroker | null = null;
  * host's real MCP port. */
 async function wireLocalAgentMcpLifecycle(): Promise<void> {
   if (
-    isE2E ||
+    !startupAutomationPolicy.startLocalAgentLifecycle ||
     process.env.PWRSNAP_DISABLE_LOCAL_AGENT_MCP === "1" ||
     localAgentMcpLifecycle !== null
   ) {
@@ -1674,7 +1688,7 @@ export function bootstrapApp(): void {
   //
   // The library role never takes the lock: it's a supervised child of
   // the agent (which holds it), not a user-launched instance.
-  if (!isE2E && role !== "library") {
+  if (startupAutomationPolicy.acquireSingleInstanceLock && role !== "library") {
     const gotLock = app.requestSingleInstanceLock(singleInstanceOpenFileHandoffData());
     if (!gotLock) {
       // Finder may deliver macOS's open-file event just after the
@@ -1690,6 +1704,7 @@ export function bootstrapApp(): void {
       }, 350);
       return;
     }
+    if (isPackagedWindowsSmoke) packagedSmokeSingleInstanceLockAcquired = true;
     app.on("second-instance", (_event, argv, _workingDirectory, additionalData) => {
       // Another `pnpm dev` (or another launch of the .app) tried to
       // start. Raise (or recreate) the library singleton so the user
@@ -1994,7 +2009,7 @@ export function bootstrapApp(): void {
             }
           });
       };
-      if (!isE2E) {
+      if (startupAutomationPolicy.runStartupCodexProbe) {
         setTimeout(dispatchStartupCodexProbe, STARTUP_CODEX_PROBE_DELAY_MS).unref();
       }
     }
@@ -2084,7 +2099,7 @@ export function bootstrapApp(): void {
       });
     }
     installCodexCompatibilityEventBridge();
-    if (!isE2E && role !== "library") {
+    if (startupAutomationPolicy.installTray && role !== "library") {
       installTray();
       markStartup("main: tray installed");
     }
@@ -2105,7 +2120,11 @@ export function bootstrapApp(): void {
     if (process.platform !== "darwin" && role !== "library" && shouldPreWarmRegionSelector()) {
       preWarmRegionSelector();
     }
-    if (!isE2E && role !== "library" && !startupProfilingEnabled()) {
+    if (
+      startupAutomationPolicy.registerGlobalHotkeys &&
+      role !== "library" &&
+      !startupProfilingEnabled()
+    ) {
       // Capture/region/window/video are dynamically registered from
       // settings + rebind on change.
       //
@@ -2123,6 +2142,12 @@ export function bootstrapApp(): void {
       // self-skips there as defense in depth. Profiling runs skip it
       // for the same reason as the hotkey guard above — a profiling
       // instance must not mutate the host's real OS login items.
+    }
+    if (
+      startupAutomationPolicy.syncLaunchAtLogin &&
+      role !== "library" &&
+      !startupProfilingEnabled()
+    ) {
       void installLaunchAtLoginSync();
     } else if (startupProfilingEnabled()) {
       markStartup("main: global hotkeys SKIPPED (profiling run)");
@@ -2196,7 +2221,7 @@ export function bootstrapApp(): void {
         });
       processQueuedOpenFiles();
     }
-    if (!isE2E && role !== "library") {
+    if (startupAutomationPolicy.initializeAppUpdater && role !== "library") {
       // Auto-update needs the channel resolver wired
       // (wireHotkeyRegistrations sets it). In production, kicks off
       // an initial check after the main window has mounted so the
@@ -2238,6 +2263,23 @@ export function bootstrapApp(): void {
         capturesRoot: getCapturesRoot(),
         mainLogPath: getMainLogFilePath()
       }),
+      getStartupEvidence: () => {
+        const trayEvidence = getTrayInstallationEvidence();
+        return {
+          singleInstanceLockAcquired: packagedSmokeSingleInstanceLockAcquired,
+          tray: {
+            installed: trayEvidence !== null,
+            iconPath: trayEvidence?.iconPath ?? "",
+            iconLoaded: trayEvidence?.iconLoaded ?? false,
+            popoverPrewarmed: trayEvidence?.popoverPrewarmed ?? false
+          },
+          globalHotkeysSkipped: !startupAutomationPolicy.registerGlobalHotkeys,
+          launchAtLoginSyncSkipped: !startupAutomationPolicy.syncLaunchAtLogin,
+          appUpdaterSkipped: !startupAutomationPolicy.initializeAppUpdater,
+          localAgentLifecycleSkipped: !startupAutomationPolicy.startLocalAgentLifecycle,
+          startupCodexProbeSkipped: !startupAutomationPolicy.runStartupCodexProbe
+        };
+      },
       getNativeModuleProvenance: () =>
         resolvePackagedNativeModuleProvenance(process.resourcesPath, getNativeBinding()),
       logger: getMainLogger("pwrsnap:packaged-windows-smoke")
@@ -2399,8 +2441,8 @@ export function bootstrapApp(): void {
         clearClipboard: () => {
           clipboard.clear();
         },
-        // Tray-sizing test surface. `installTray()` is skipped in E2E
-        // mode (no NSStatusItem in tests), so these helpers stand in
+        // Tray-sizing test surface. `installTray()` is skipped in ordinary
+        // E2E mode (the packaged Windows smoke restores it), so these helpers stand in
         // for the user clicking the tray icon. They drive the same
         // BrowserWindow + resize-channel plumbing the production
         // path uses; only the icon is bypassed.
@@ -2418,7 +2460,7 @@ export function bootstrapApp(): void {
         ) => measureTrayFirstPaintForE2E(opts ?? {}),
         // E2E only: opt in to the prewarm-at-boot optimization. In
         // production this is done unconditionally from installTray()
-        // — but E2E skips installTray(), so the bridge has to drive it.
+        // — but ordinary E2E skips installTray(), so the bridge has to drive it.
         // Spec calls this before measure() to test the optimized path,
         // skips it to test the cold path.
         prewarmTrayPopover: () => {

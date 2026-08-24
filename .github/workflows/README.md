@@ -7,7 +7,7 @@ with `ci:` when they start, skip, or narrow CI work.
 |---|---|---|
 | `build-preview` | `preview-build.yml` | Builds unsigned macOS DMG and Windows NSIS preview artifacts. Windows installs and launches the exact artifact with isolated data to prove runtime/native readiness and clean uninstall. |
 | `ci:check-performance` | `check-performance.yml` | Runs paired TypeScript 6/7 checks, file-inventory comparison and injected-error probes in one GitHub-hosted `macos-26` job. Remove after collecting the comparison. |
-| `ci:windows-signing` | `release.yml` | Runs the release workflow's Windows prepare/sign jobs for a same-repository PR, verifies Authenticode, and uploads `windows-signed-installer-pr`. The protected job receives the staged archive without checking out source or installing project dependencies. PR events cannot run `publish-release-assets`. Add the label only for a reviewed signing change, temporarily allow `refs/pull/<number>/merge` in the environment, and remove that rule after validation. |
+| `ci:windows-signing` | `release.yml` | Runs the release workflow's Windows prepare/sign jobs for a same-repository PR, verifies Authenticode, and uploads `windows-signed-installer-pr` plus the hashed smoke controller. A separate credential-free job installs and launches that signed NSIS, proving renderer/native/helper readiness without Azure credentials. Tagged publication depends on this job independently from the updater smoke. PR events cannot run `publish-release-assets`. Add the label only for a reviewed signing change, temporarily allow `refs/pull/<number>/merge` in the environment, and remove that rule after validation. |
 
 If another label changes workflow behavior, document it here in the same change.
 

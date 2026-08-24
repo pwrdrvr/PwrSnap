@@ -8,6 +8,7 @@ import { CartProvider } from "./features/library/CartContext";
 import { HotCpuProfileBanner } from "./features/library/HotCpuProfileBanner";
 import { FloatOverHost } from "./features/float-over/FloatOverHost";
 import { RecordingController } from "./features/recording/RecordingController";
+import { PreCaptureHud } from "./features/pre-capture-hud/PreCaptureHud";
 import { RegionSelector } from "./features/region/RegionSelector";
 import { SettingsApp } from "./features/settings/SettingsApp";
 import { SizzleApp } from "./features/sizzle/SizzleApp";
@@ -28,7 +29,8 @@ type Stage =
   | "sizzle"
   | "document"
   | "local-agent-consent"
-  | "recording-controller";
+  | "recording-controller"
+  | "pre-capture-hud";
 type AppDocumentKind = "changelog" | "third-party-licenses";
 
 function readStage(): Stage {
@@ -44,7 +46,8 @@ function readStage(): Stage {
     v === "sizzle" ||
     v === "document" ||
     v === "local-agent-consent" ||
-    v === "recording-controller"
+    v === "recording-controller" ||
+    v === "pre-capture-hud"
   ) {
     return v;
   }
@@ -84,6 +87,7 @@ const TITLE_BY_STAGE: Record<Stage, string> = {
   sizzle: "PwrSnap Sizzle Reels",
   "local-agent-consent": "Authorize Local Agent - PwrSnap",
   "recording-controller": "PwrSnap Recording",
+  "pre-capture-hud": "PwrSnap Capture Status",
   document:
     DOCUMENT_KIND === "third-party-licenses"
       ? "PwrSnap Third-party Licenses"
@@ -140,6 +144,9 @@ export function App() {
     }
     if (STAGE === "recording-controller") {
       return <RecordingController />;
+    }
+    if (STAGE === "pre-capture-hud") {
+      return <PreCaptureHud />;
     }
     if (STAGE === "local-agent-consent") {
       return <LocalAgentConsent />;

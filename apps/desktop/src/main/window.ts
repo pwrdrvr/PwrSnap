@@ -180,6 +180,7 @@ type RendererStage =
   | "document"
   | "sizzle"
   | "recording-controller"
+  | "pre-capture-hud"
   | "local-agent-consent";
 type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: string; hash?: string };
 
@@ -1427,6 +1428,50 @@ export function createFloatOverWindow(): BrowserWindow {
   // `loadURL` calls don't re-fire it). The window is constructed
   // hidden; `showFloatOverForCapture` anchors + shows it.
 
+  return window;
+}
+
+/** Status-only pre-capture HUD. It is deliberately a separate window from
+ * the recording controller: this surface ends before pickRegion() begins,
+ * while the selector and recording controller retain their existing,
+ * serialized ownership after that boundary. */
+export function createPreCaptureHudWindow(): BrowserWindow {
+  const window = new BrowserWindow({
+    ...(process.platform === "darwin" ? { type: "panel" as const } : {}),
+    width: 400,
+    height: 88,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    focusable: false,
+    hasShadow: true,
+    webPreferences: {
+      ...themedWebPreferences(),
+      // The window is prewarmed hidden so its renderer handshake and state
+      // subscription are ready before the first capture trigger.
+      backgroundThrottling: false
+    }
+  });
+  // Required for every content-sized BrowserWindow. The renderer's outer
+  // inline-block measurer drives setContentSize at runtime.
+  window.setMinimumSize(0, 0);
+  window.excludedFromShownWindowsMenu = true;
+  window.setMenuBarVisibility(false);
+  window.setIgnoreMouseEvents(true);
+  if (process.platform === "darwin") {
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  }
+  // Apply before renderer load/first show. The pre-capture status must not
+  // become part of the frozen selector snapshot on either platform.
+  window.setContentProtection(true);
+  loadRenderer(window, rendererTarget("pre-capture-hud"));
+  window.webContents.setVisualZoomLevelLimits(1, 1);
   return window;
 }
 

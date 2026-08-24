@@ -56,6 +56,8 @@ try {
 // pwrsnapApi never reach the renderer.
 import {
   EVENT_CHANNELS,
+  IPC_PRE_CAPTURE_HUD_READY,
+  IPC_PRE_CAPTURE_HUD_RESIZE,
   IPC_CAPTURE_DRAG_START,
   IPC_CART_ZIP_DRAG_START,
   IPC_CMD,
@@ -291,6 +293,15 @@ const pwrsnapApi = {
    * CSS pixels through the inherited page zoom before resizing the window. */
   requestRecordingControllerResize(payload: { height: number }): void {
     ipcRenderer.send(RECORDING_CONTROLLER_RESIZE_CHANNEL, payload);
+  },
+  /** Pre-capture HUD renderer → main lifecycle handshake. Main buffers the
+   * latest phase until this fires so a cold renderer cannot miss status. */
+  notifyPreCaptureHudReady(): void {
+    ipcRenderer.send(IPC_PRE_CAPTURE_HUD_READY);
+  },
+  /** Pre-capture HUD content-sized BrowserWindow bridge. */
+  requestPreCaptureHudResize(payload: { width: number; height: number }): void {
+    ipcRenderer.send(IPC_PRE_CAPTURE_HUD_RESIZE, payload);
   },
   /**
    * Windows custom menu bar → main: fetch the current top-level application

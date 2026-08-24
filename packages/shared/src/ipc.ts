@@ -31,6 +31,33 @@ export const IPC_VIDEO_DRAG_START = "video:drag-start" as const;
  *  `(captureIds, preset, suggestedName?)` to zip-and-drag. */
 export const IPC_CART_ZIP_DRAG_START = "cart:zip-drag-start" as const;
 
+/** Pre-capture HUD renderer lifecycle bridges. These stay outside the
+ * command bus because they are trusted BrowserWindow-local presentation
+ * signals: the renderer announces readiness and reports its measured size. */
+export const IPC_PRE_CAPTURE_HUD_READY = "pre-capture-hud:ready" as const;
+export const IPC_PRE_CAPTURE_HUD_RESIZE = "pre-capture-hud:resize" as const;
+
+export type PreCaptureHudIntent = "snap" | "video";
+
+/** Truthful, status-only phases shown before selector ownership begins. */
+export type PreCaptureHudState =
+  | { runId: number; intent: PreCaptureHudIntent; phase: "preparing" }
+  | { runId: number; intent: PreCaptureHudIntent; phase: "permission" }
+  | { runId: number; intent: PreCaptureHudIntent; phase: "storage" }
+  | {
+      runId: number;
+      intent: PreCaptureHudIntent;
+      phase: "countdown";
+      secondsRemaining: number;
+    }
+  | { runId: number; intent: PreCaptureHudIntent; phase: "selector-handoff" }
+  | {
+      runId: number;
+      intent: PreCaptureHudIntent;
+      phase: "blocked";
+      reason: "permission" | "storage" | "unexpected";
+    };
+
 export const EVENT_CHANNELS = {
   /** Main → local renderers: one formatted current-session log line. */
   logEntry: "events:logs:entry",
@@ -52,6 +79,10 @@ export const EVENT_CHANNELS = {
    * then subscribe for subsequent transitions.
    */
   recordingState: "events:recording:state",
+  /** Main → the dedicated pre-capture HUD renderer. The HUD owns only
+   * preparation through selector handoff; picker and recorder lifecycle
+   * state remain on their existing channels. */
+  preCaptureHudState: "events:pre-capture-hud:state",
   settingsChanged: "events:settings:changed",
   /**
    * Main → every BrowserWindow: latest auto-updater status. Drives the
@@ -498,6 +529,7 @@ export type EventPayloads = {
     | import("./protocol").CodexCliCompatibilityAlert
     | null;
   [EVENT_CHANNELS.aiUsageUpdated]: AiUsageUpdatedEvent;
+  [EVENT_CHANNELS.preCaptureHudState]: PreCaptureHudState;
   [EVENT_CHANNELS.capturesAccessChanged]: import("./protocol").CapturesAccessHealth;
   [EVENT_CHANNELS.sizzleProjectsChanged]: { projects: SizzleProject[] };
   [EVENT_CHANNELS.sizzleRenderProgress]: SizzleRenderProgressEvent;

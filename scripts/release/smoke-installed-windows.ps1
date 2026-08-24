@@ -65,6 +65,8 @@ $stderrPath = Join-Path $smokeRoot "stderr.log"
 $reportPath = Join-Path $userData "packaged-windows-smoke.json"
 $installedExe = Join-Path $installDir "PwrSnap.exe"
 $installedResources = Join-Path $installDir "resources"
+$installedWindowListExe = Join-Path $installedResources "PwrSnapWindowList.exe"
+$installedFfmpegExe = Join-Path $installedResources "PwrSnapFFmpeg.exe"
 $pwrSnapProductCode = "c8b3bdba-25e5-5dbd-b016-8e6ce14b4982"
 $pwrSnapFileClass = "PwrSnap Capture Bundle"
 $installerSha256 = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -332,7 +334,8 @@ function Write-FailureDiagnostics {
 function Assert-ValidSignature {
   param(
     [string]$Path,
-    [string]$Publisher
+    [string]$Publisher,
+    [string]$Label = "Windows executable"
   )
 
   if ([string]::IsNullOrWhiteSpace($Publisher)) {
@@ -340,11 +343,27 @@ function Assert-ValidSignature {
   }
   $signature = Get-AuthenticodeSignature -LiteralPath $Path
   if ($signature.Status -ne "Valid") {
-    throw "Installed PwrSnap.exe Authenticode status is $($signature.Status)."
+    throw "$Label Authenticode status is $($signature.Status)."
   }
   $publisherPattern = "(^|,\s*)CN=$([Regex]::Escape($Publisher))(,|$)"
   if ($signature.SignerCertificate.Subject -notmatch $publisherPattern) {
-    throw "Installed PwrSnap.exe has unexpected signer: $($signature.SignerCertificate.Subject)."
+    throw "$Label has unexpected signer: $($signature.SignerCertificate.Subject)."
+  }
+}
+
+function Assert-ReportedSha256 {
+  param(
+    [string]$Path,
+    [string]$ReportedSha256,
+    [string]$Label
+  )
+
+  if ($ReportedSha256 -notmatch '^[0-9a-f]{64}$') {
+    throw "$Label report has an invalid SHA-256 value."
+  }
+  $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($actual -ne $ReportedSha256) {
+    throw "$Label report SHA-256 does not match installed bytes."
   }
 }
 
@@ -476,6 +495,7 @@ function Assert-ReadyReport {
   }
 
   if (
+    $Report.bundledHelpers.windowList.invocation -ne "direct" -or
     $Report.bundledHelpers.windowList.jsonEnvelope -ne $true -or
     $Report.bundledHelpers.windowList.ownWindowDetected -ne $true -or
     $Report.bundledHelpers.windowList.windowCount -lt 1
@@ -490,12 +510,17 @@ function Assert-ReadyReport {
     -Actual $Report.bundledHelpers.windowList.executablePath `
     -Expected (Join-Path $installedResources "PwrSnapWindowList.exe") `
     -Label "executed window-list helper"
+  Assert-ReportedSha256 `
+    -Path $Report.bundledHelpers.windowList.executablePath `
+    -ReportedSha256 $Report.bundledHelpers.windowList.executableSha256 `
+    -Label "executed window-list helper"
 
   if ($RequireBundledFfmpeg) {
     if (
       $Report.bundledHelpers.ffmpeg.required -ne $true -or
+      $Report.bundledHelpers.ffmpeg.present -ne $true -or
       $Report.bundledHelpers.ffmpeg.executed -ne $true -or
-      $Report.bundledHelpers.ffmpeg.pngDecode -ne $true -or
+      $Report.bundledHelpers.ffmpeg.invocation -ne "direct" -or
       $Report.bundledHelpers.ffmpeg.versionLine -notmatch '^ffmpeg version '
     ) {
       throw "Bundled FFmpeg execution evidence is incomplete."
@@ -508,11 +533,29 @@ function Assert-ReadyReport {
       -Actual $Report.bundledHelpers.ffmpeg.executablePath `
       -Expected (Join-Path $installedResources "PwrSnapFFmpeg.exe") `
       -Label "executed FFmpeg helper"
+    Assert-ReportedSha256 `
+      -Path $Report.bundledHelpers.ffmpeg.executablePath `
+      -ReportedSha256 $Report.bundledHelpers.ffmpeg.executableSha256 `
+      -Label "executed FFmpeg helper"
+    if (
+      (@($Report.bundledHelpers.ffmpeg.capabilities.encoders) -join ",") -ne "png,h264_mf,aac" -or
+      (@($Report.bundledHelpers.ffmpeg.capabilities.decoders) -join ",") -ne "png" -or
+      (@($Report.bundledHelpers.ffmpeg.capabilities.inputDevices) -join ",") -ne "gdigrab" -or
+      $Report.bundledHelpers.ffmpeg.roundTrip.encodedFormat -ne "png" -or
+      $Report.bundledHelpers.ffmpeg.roundTrip.pixelFormat -ne "rgba" -or
+      $Report.bundledHelpers.ffmpeg.roundTrip.width -ne 2 -or
+      $Report.bundledHelpers.ffmpeg.roundTrip.height -ne 2 -or
+      $Report.bundledHelpers.ffmpeg.roundTrip.exactPixels -ne $true
+    ) {
+      throw "Bundled FFmpeg capability/encode/decode evidence is incomplete."
+    }
   } elseif (
     $Report.bundledHelpers.ffmpeg.required -ne $false -or
-    $Report.bundledHelpers.ffmpeg.executed -ne $false
+    $Report.bundledHelpers.ffmpeg.present -ne $false -or
+    $Report.bundledHelpers.ffmpeg.executed -ne $false -or
+    (Test-Path -LiteralPath $installedFfmpegExe)
   ) {
-    throw "Preview smoke unexpectedly reported bundled FFmpeg execution."
+    throw "Preview smoke did not explicitly report bundled FFmpeg absent."
   }
 }
 
@@ -569,7 +612,26 @@ try {
   if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf)) {
     throw "Installed NSIS payload is missing $installedExe."
   }
-  Assert-ValidSignature -Path $installedExe -Publisher $ExpectedPublisher
+  Assert-ValidSignature `
+    -Path $installedExe `
+    -Publisher $ExpectedPublisher `
+    -Label "installed PwrSnap.exe"
+  if (-not (Test-Path -LiteralPath $installedWindowListExe -PathType Leaf)) {
+    throw "Installed NSIS payload is missing $installedWindowListExe."
+  }
+  Assert-ValidSignature `
+    -Path $installedWindowListExe `
+    -Publisher $ExpectedPublisher `
+    -Label "installed PwrSnapWindowList.exe"
+  if ($RequireBundledFfmpeg -and -not (Test-Path -LiteralPath $installedFfmpegExe -PathType Leaf)) {
+    throw "Signed release NSIS payload is missing $installedFfmpegExe."
+  }
+  if (Test-Path -LiteralPath $installedFfmpegExe -PathType Leaf) {
+    Assert-ValidSignature `
+      -Path $installedFfmpegExe `
+      -Publisher $ExpectedPublisher `
+      -Label "installed PwrSnapFFmpeg.exe"
+  }
 
   [Environment]::SetEnvironmentVariable("APPDATA", $appData, "Process")
   [Environment]::SetEnvironmentVariable("LOCALAPPDATA", $localAppData, "Process")

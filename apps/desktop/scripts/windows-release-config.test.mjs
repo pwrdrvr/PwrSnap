@@ -231,7 +231,13 @@ describe("Windows release configuration", () => {
       "sharp.vipsVersion",
       "sharp.libvipsDllPaths",
       "bundledHelpers.windowList.ownWindowDetected",
-      "bundledHelpers.ffmpeg.pngDecode",
+      "bundledHelpers.windowList.executableSha256",
+      "bundledHelpers.ffmpeg.roundTrip.exactPixels",
+      "bundledHelpers.ffmpeg.capabilities.inputDevices",
+      "Assert-ReportedSha256",
+      "installed PwrSnapWindowList.exe",
+      "installed PwrSnapFFmpeg.exe",
+      "explicitly report bundled FFmpeg absent",
       "PWRSNAP_PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG",
       "RequireBundledFfmpeg",
       "Uninstall*.exe",
@@ -259,6 +265,11 @@ describe("Windows release configuration", () => {
     expect(publicationNeeds).toContain("- windows-installed-smoke");
     expect(smokeScript).not.toContain("latest.yml");
     expect(smokeScript).not.toContain("electron-updater");
+    const authenticodeStep = protectedWindowsJob
+      .split("- name: Verify Authenticode signatures")[1]
+      .split("\n      - name:")[0];
+    expect(authenticodeStep).toContain('Filter "PwrSnapWindowList.exe"');
+    expect(authenticodeStep).toContain('Filter "PwrSnapFFmpeg.exe"');
   });
 
   test("ordinary Windows CI parses the shared controller without executing it", () => {

@@ -587,8 +587,13 @@ jobs:
           }
           $installer = $installers[0]
           $app = Get-ChildItem $dist -Recurse -File -Filter "PwrSnap.exe" | Select-Object -First 1
+          $windowList = @(Get-ChildItem $dist -Recurse -File -Filter "PwrSnapWindowList.exe")
+          $ffmpeg = @(Get-ChildItem $dist -Recurse -File -Filter "PwrSnapFFmpeg.exe")
+          if ($windowList.Count -ne 1 -or $ffmpeg.Count -ne 1) {
+            throw "Expected one signed window-list and FFmpeg sidecar; found window-list=$($windowList.Count), ffmpeg=$($ffmpeg.Count)."
+          }
           $publisherPattern = "(^|,\s*)CN=$([Regex]::Escape($env:EXPECTED_PUBLISHER))(,|$)"
-          foreach ($target in @($installer, $app)) {
+          foreach ($target in @($installer, $app, $windowList[0], $ffmpeg[0])) {
             if ($null -eq $target) {
               throw "Expected signed Windows executable is missing."
             }

@@ -205,9 +205,10 @@ The release workflow separates preparation, signing, and publication:
 6. **`windows-installed-smoke`** is credential-free and downloads those exact
    artifacts. It installs and launches the signed application with isolated
    profile/data roots; proves main, React, preload/IPC, better-sqlite3, and
-   Sharp/libvips readiness; executes the installed window-list helper against
-   PwrSnap's visible window and the bundled FFmpeg against a real PNG; then
-   requires clean `app.quit()` and silent uninstall.
+   Sharp/libvips readiness; directly executes the installed window-list helper
+   against PwrSnap's visible window; verifies sidecar paths, hashes, and signed
+   lane Authenticode; and runs bundled FFmpeg capability enumeration plus an
+   exact RGBA/PNG encode/decode round trip before clean quit/uninstall.
 7. **`publish-release-assets`** depends on successful Linux, macOS, Windows
    signing, and installed-launch smoke jobs. The updater lane is a separate
    sibling dependency; merge resolution must preserve both gates. Only this job

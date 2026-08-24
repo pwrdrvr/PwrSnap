@@ -56,6 +56,26 @@ const cancelledDropImportOperations = new Set<string>();
 
 class DropImageImportCancelledError extends Error {}
 
+const IMAGE_LAYER_PERSISTENCE_ERROR = {
+  kind: "persistence" as const,
+  code: "insert_failed",
+  message: "Unable to add image layer"
+};
+
+function persistenceFailureResult(
+  operation: "pasteImageAsLayer" | "dropImageAsLayer",
+  captureId: string
+) {
+  // Filesystem errors commonly include the app-owned pending-source temp or
+  // final path. Neither the renderer Result nor durable logs need that path;
+  // the stable code identifies the failed boundary without disclosing it.
+  log.error(`editor:${operation} persistence failed`, {
+    captureId,
+    code: IMAGE_LAYER_PERSISTENCE_ERROR.code
+  });
+  return err(IMAGE_LAYER_PERSISTENCE_ERROR);
+}
+
 /**
  * Translate the worker's error code into a bus-shaped PwrSnapError.
  * Mirrors the discipline in clipboard-handlers — sanitized strings,
@@ -97,12 +117,6 @@ function workerErrorToBusError(code: PasteWorkerErrorCode, message: string): {
         kind: "render",
         code: "image_decode_failed",
         message: "Image failed to decode"
-      };
-    case "unsupported_format":
-      return {
-        kind: "validation",
-        code: "image_unsupported_format",
-        message: "Unsupported image format"
       };
     case "read_failed":
       return {
@@ -388,16 +402,8 @@ export function registerEditorHandlers(): void {
         byteSize: result.pngBytes.byteLength
       });
       return ok({ layerId });
-    } catch (cause) {
-      log.error("editor:pasteImageAsLayer persistence failed", {
-        captureId: req.captureId,
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
-      return err({
-        kind: "persistence",
-        code: "insert_failed",
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
+    } catch {
+      return persistenceFailureResult("pasteImageAsLayer", req.captureId);
     }
   });
 
@@ -515,15 +521,7 @@ export function registerEditorHandlers(): void {
         if (cause instanceof DropImageImportCancelledError) {
           return cancelledResult();
         }
-        log.error("editor:dropImageAsLayer persistence failed", {
-          captureId: req.captureId,
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
-        return err({
-          kind: "persistence",
-          code: "insert_failed",
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
+        return persistenceFailureResult("dropImageAsLayer", req.captureId);
       }
     } finally {
       activeDropImportOperations.delete(req.operationId);

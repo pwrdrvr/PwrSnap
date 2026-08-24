@@ -95,19 +95,6 @@ describe("paste-image-worker: processImageInput", () => {
     expect(result.code).toBe("decode_failed");
   });
 
-  test("rejects decoded SVG even though Sharp can rasterize it", async () => {
-    const svg = Buffer.from(
-      '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="24"><rect width="32" height="24" fill="red"/></svg>'
-    );
-    const result = await processImageInput({
-      kind: "decode-buffer",
-      bytes: new Uint8Array(svg)
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected error");
-    expect(result.code).toBe("unsupported_format");
-  });
-
   test("rejects oversize input (size_cap_exceeded)", async () => {
     // Fabricate a buffer past the 32 MiB cap without actually
     // allocating 32 MiB of PNG. The check fires before any decode.

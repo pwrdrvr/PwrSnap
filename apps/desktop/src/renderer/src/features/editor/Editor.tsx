@@ -6337,6 +6337,7 @@ function EditorLoaded({
       >
         <div
           ref={canvasRef}
+          data-testid="editor-canvas"
           className={
             "editor-canvas" +
             // Until useZoomPan's layout effect measures the wrap and

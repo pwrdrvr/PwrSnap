@@ -43,6 +43,13 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 let testDb: Database.Database;
 let tmpDataRoot: string;
 
+const mocks = vi.hoisted(() => ({
+  persistenceFailure: null as Error | null,
+  logError: vi.fn(),
+  logInfo: vi.fn(),
+  logWarn: vi.fn()
+}));
+
 vi.mock("../../persistence/db", () => ({
   getDb: () => testDb
 }));
@@ -60,6 +67,30 @@ vi.mock("electron", () => ({
     })
   }
 }));
+
+vi.mock("../../log", () => ({
+  getMainLogger: () => ({
+    error: mocks.logError,
+    info: mocks.logInfo,
+    warn: mocks.logWarn
+  })
+}));
+
+vi.mock("../../persistence/pending-source-store", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../persistence/pending-source-store")>();
+  return {
+    ...actual,
+    materializePendingSourceForCapture: async (
+      captureId: string,
+      sha: string,
+      bytes: Buffer
+    ): Promise<void> => {
+      if (mocks.persistenceFailure !== null) throw mocks.persistenceFailure;
+      await actual.materializePendingSourceForCapture(captureId, sha, bytes);
+    }
+  };
+});
 
 const repackCalls: string[] = [];
 vi.mock("../../persistence/bundle-store", () => ({
@@ -212,6 +243,10 @@ beforeEach(() => {
   workerInputs.length = 0;
   beforeWorker = null;
   workerWait = null;
+  mocks.persistenceFailure = null;
+  mocks.logError.mockReset();
+  mocks.logInfo.mockReset();
+  mocks.logWarn.mockReset();
   tmpDataRoot = mkdtempSync(
     join(realpathSync(tmpdir()), "pwrsnap-editor-test-")
   );
@@ -337,7 +372,7 @@ describe("editor:pasteImageAsLayer", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected error");
     expect(result.error.code).toBe("image_unsupported_format");
-    expect(result.error.message).toBe("Unsupported image format");
+    expect(result.error.message).toBe("Image format is not supported");
     expect(result.error.message).not.toContain("svg");
   });
 
@@ -372,6 +407,37 @@ describe("editor:pasteImageAsLayer", () => {
     expect(
       readFileSync(join(tmpDataRoot, "pending-sources", "cap_d", `${WORKER_PNG_SHA}.png`))
     ).toEqual(WORKER_PNG_BYTES);
+  });
+
+  test("persistence failure is path-free in both Result and logs", async () => {
+    seedV2Capture("cap_pf", "/tmp/cap_pf.pwrsnap");
+    setClipboardImage(Buffer.from([0x89, 0x50]));
+    const privatePath = join(tmpDataRoot, "pending-sources", "private.png");
+    mocks.persistenceFailure = Object.assign(
+      new Error(`ENOSPC: no space left on device, open '${privatePath}'`),
+      { code: "ENOSPC" }
+    );
+
+    const result = await bus.dispatch(
+      "editor:pasteImageAsLayer",
+      { captureId: "cap_pf" },
+      { principal: "ipc" }
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: "persistence",
+        code: "insert_failed",
+        message: "Unable to add image layer"
+      }
+    });
+    expect(JSON.stringify(mocks.logError.mock.calls)).not.toContain(privatePath);
+    expect(mocks.logError).toHaveBeenCalledWith(
+      "editor:pasteImageAsLayer persistence failed",
+      { captureId: "cap_pf", code: "insert_failed" }
+    );
+    expect(repackCalls).not.toContain("cap_pf");
   });
 });
 
@@ -468,6 +534,42 @@ describe("editor:dropImageAsLayer", () => {
     expect(Buffer.from(wi.bytes)).toEqual(sourceBytes);
     expect(wi).not.toHaveProperty("path");
     expect(repackCalls).toContain("cap_g");
+  });
+
+  test("persistence failure is path-free in both Result and logs", async () => {
+    seedV2Capture("cap_df", "/tmp/cap_df.pwrsnap");
+    const inputPath = join(tmpDataRoot, "drop.png");
+    writeFileSync(inputPath, Buffer.from([0x89, 0x50, 0x11, 0x22]));
+    const privatePath = join(tmpDataRoot, "pending-sources", "private.png");
+    mocks.persistenceFailure = Object.assign(
+      new Error(`EACCES: permission denied, rename '${privatePath}.tmp' -> '${privatePath}'`),
+      { code: "EACCES" }
+    );
+
+    const result = await bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_df",
+        filePath: inputPath,
+        operationId: "op_drop_fail"
+      },
+      { principal: "ipc" }
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: "persistence",
+        code: "insert_failed",
+        message: "Unable to add image layer"
+      }
+    });
+    expect(JSON.stringify(mocks.logError.mock.calls)).not.toContain(privatePath);
+    expect(mocks.logError).toHaveBeenCalledWith(
+      "editor:dropImageAsLayer persistence failed",
+      { captureId: "cap_df", code: "insert_failed" }
+    );
+    expect(repackCalls).not.toContain("cap_df");
   });
 
   test("cancel during decode prevents insertion into the old capture", async () => {

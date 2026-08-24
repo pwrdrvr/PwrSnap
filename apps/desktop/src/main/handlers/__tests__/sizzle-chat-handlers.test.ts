@@ -295,7 +295,7 @@ describe("codex:sizzleChat verbs", () => {
     expect(controller.resolveApproval).not.toHaveBeenCalled();
   });
 
-  test("archive failure preserves a live pending approval", async () => {
+  test("archive store failure leaves the visible thread quiesced and approval terminal", async () => {
     const request = {
       threadId: "th1",
       turnId: "turn-archive-failure",
@@ -305,6 +305,7 @@ describe("codex:sizzleChat verbs", () => {
     const resolver = vi.fn(async () => undefined);
     approvalBroker.openThread(request.threadId);
     approvalBroker.register(request, {}, resolver);
+    controller.interrupt.mockClear();
     controller.archive.mockRejectedValueOnce(new Error("archive store failed"));
 
     try {
@@ -315,6 +316,80 @@ describe("codex:sizzleChat verbs", () => {
       );
 
       expect(result.ok).toBe(false);
+      expect(controller.interrupt).toHaveBeenCalledWith(request.threadId);
+      expect(approvalBroker.pendingForThread(request.threadId)).toBeNull();
+      expect(resolver).toHaveBeenCalledWith("deny");
+    } finally {
+      approvalBroker.openThread(request.threadId);
+    }
+  });
+
+  test("awaiting-approval archive interrupts before denial and permits no hidden tool continuation", async () => {
+    const request = {
+      threadId: "th1",
+      turnId: "turn-archive-quiesce",
+      approvalId: "approval-archive-quiesce",
+      summary: "Run tool"
+    };
+    const order: string[] = [];
+    let interrupted = false;
+    let archived = false;
+    const postArchiveTool = vi.fn();
+    controller.interrupt.mockImplementationOnce(async () => {
+      order.push("interrupt");
+      interrupted = true;
+    });
+    controller.archive.mockImplementationOnce(async (_threadId, nextArchived) => {
+      order.push("archive");
+      archived = nextArchived;
+      return { ...kitView, archived: nextArchived };
+    });
+    const resolver = vi.fn(async (decision: string) => {
+      order.push(`resolve:${decision}`);
+      if (!interrupted || archived) postArchiveTool();
+    });
+    approvalBroker.openThread(request.threadId);
+    approvalBroker.register(request, {}, resolver);
+
+    try {
+      const result = await bus.dispatch(
+        "codex:sizzleChat:archive",
+        { threadId: request.threadId, archived: true },
+        { principal: "ipc" }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(order).toEqual(["interrupt", "resolve:deny", "archive"]);
+      expect(postArchiveTool).not.toHaveBeenCalled();
+      expect(approvalBroker.pendingForThread(request.threadId)).toBeNull();
+      if (result.ok) expect(result.value.archived).toBe(true);
+    } finally {
+      approvalBroker.openThread(request.threadId);
+    }
+  });
+
+  test("archive aborts before metadata or denial when quiescing interrupt fails", async () => {
+    const request = {
+      threadId: "th1",
+      turnId: "turn-archive-interrupt-failure",
+      approvalId: "approval-archive-interrupt-failure",
+      summary: "Run tool"
+    };
+    const resolver = vi.fn(async () => undefined);
+    approvalBroker.openThread(request.threadId);
+    approvalBroker.register(request, {}, resolver);
+    controller.archive.mockClear();
+    controller.interrupt.mockRejectedValueOnce(new Error("backend cancellation failed"));
+
+    try {
+      const result = await bus.dispatch(
+        "codex:sizzleChat:archive",
+        { threadId: request.threadId, archived: true },
+        { principal: "ipc" }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(controller.archive).not.toHaveBeenCalled();
       expect(approvalBroker.pendingForThread(request.threadId)).toEqual(request);
       expect(resolver).not.toHaveBeenCalled();
     } finally {

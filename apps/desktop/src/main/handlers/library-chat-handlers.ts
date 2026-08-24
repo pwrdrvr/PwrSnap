@@ -458,13 +458,16 @@ export function registerLibraryChatHandlers(params?: {
       if (!authorized.ok) return authorized;
       const config = configForSidecar(authorized.value);
       const c = await controllerFor(config);
+      if (req.archived) {
+        // Archiving is a quiescing lifecycle operation, not just metadata.
+        // Truthful interrupt (owned by #488's session controller) must
+        // acknowledge backend cancellation before broker denial can resume an
+        // awaiting model. Only then may the thread become hidden.
+        await c.interrupt(req.threadId);
+        await approvalBroker.closeThread(req.threadId);
+      }
       const view = await c.archive(req.threadId, req.archived);
-      // Controller/store state is authoritative. Only commit the broker's
-      // destructive lifecycle after archive succeeds; a failed archive must
-      // leave a live approval actionable, and a failed unarchive must leave
-      // the archived thread closed.
-      if (req.archived) await approvalBroker.closeThread(req.threadId);
-      else approvalBroker.openThread(req.threadId);
+      if (!req.archived) approvalBroker.openThread(req.threadId);
       return ok(approvalBroker.decorateThread(toLibraryThreadView(view, config)));
     } catch (cause) {
       return codexUnreachable(cause);

@@ -418,12 +418,12 @@ export function registerSizzleChatHandlers(params?: {
       if (!authorized.ok) return authorized;
       const config = configForSizzleSidecar(authorized.value);
       const c = await sizzleControllerFor(config);
+      if (req.archived) {
+        await c.interrupt(req.threadId);
+        await getSizzleApprovalBroker().closeThread(req.threadId);
+      }
       const view = await c.archive(req.threadId, req.archived);
-      // Commit broker lifecycle only after the controller/store transition is
-      // acknowledged, preserving live approvals on archive failure and the
-      // closed state on unarchive failure.
-      if (req.archived) await getSizzleApprovalBroker().closeThread(req.threadId);
-      else getSizzleApprovalBroker().openThread(req.threadId);
+      if (!req.archived) getSizzleApprovalBroker().openThread(req.threadId);
       return ok(getSizzleApprovalBroker().decorateThread(toLibraryThreadView(view, config)));
     } catch (cause) {
       return codexUnreachable(cause);

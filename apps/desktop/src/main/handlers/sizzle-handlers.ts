@@ -45,6 +45,7 @@ import {
   SequencePlannerError
 } from "../sizzle/sequence-planner";
 import {
+  assertSizzleRenderPlatform,
   compose,
   ComposeError,
   probeDurationSec,
@@ -122,11 +123,13 @@ function toError(cause: unknown, fallbackCode: string): PwrSnapError {
     return { kind: "render", code: cause.code, message: cause.message };
   }
   if (cause instanceof ComposeError) {
+    // ComposeError path-neutralizes ffmpeg-provided text at construction.
+    // Clamp again at the IPC boundary so that invariant stays explicit here.
     return {
       kind: "render",
       code: cause.code,
-      message: cause.message,
-      cause: cause.details
+      message: cause.message.slice(0, 512),
+      cause: cause.details?.slice(0, 1024)
     };
   }
   if (cause instanceof AudioExtractError) {
@@ -366,8 +369,11 @@ async function prepareSceneInput(args: {
   };
 }
 
-export function registerSizzleHandlers(): void {
+export function registerSizzleHandlers(
+  runtime: { platform?: NodeJS.Platform } = {}
+): void {
   const store = getSizzleStore();
+  const renderPlatform = runtime.platform ?? process.platform;
 
   bus.register("sizzle:open", async (req, ctx) => {
     const v = validateSizzleOpenRequest(req);
@@ -877,6 +883,22 @@ export function registerSizzleHandlers(): void {
         message: "render mode must be preview or full"
       });
     }
+    try {
+      // Fail before capture loading, TTS, or audio extraction. Linux has no
+      // packaged/vetted H.264 artifact, so paying for scene preparation first
+      // would only delay the same deterministic refusal from compose().
+      assertSizzleRenderPlatform(renderPlatform);
+    } catch (cause) {
+      const e = toError(cause, "unsupported_platform");
+      broadcastRenderProgress({
+        projectId: project.id,
+        phase: "failed",
+        message: e.message,
+        ratio: 0,
+        error: { code: e.code, message: e.message }
+      });
+      return err(e);
+    }
     const renderMode = req.mode ?? "full";
     const dims =
       renderMode === "preview"
@@ -1144,6 +1166,11 @@ export function registerSizzleHandlers(): void {
         width: dims.w,
         height: dims.h,
         fps: 30,
+        // Pass the owning process's runtime platform explicitly so the
+        // composer selects the matching packaged PwrSnapFFmpeg encoder. On
+        // Windows this is the combined process; split macOS uses the Library
+        // child, which still reports the same host platform.
+        platform: renderPlatform,
         signal: ctx.signal,
         onProgress: (ratio) => {
           broadcastRenderProgress({

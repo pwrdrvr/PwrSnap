@@ -13,6 +13,12 @@ import type { VideoFitRenderMode } from "./video-fit";
 
 const log = getMainLogger("pwrsnap:sizzle-composer");
 const SIZZLE_KEYFRAME_INTERVAL = 60;
+const FFMPEG_VISIBLE_ERROR_MAX_CHARS = 512;
+const FFMPEG_ENCODER_SUMMARY_MAX_CHARS = 256;
+const FFMPEG_ERROR_DETAILS_MAX_CHARS = 1024;
+const FFMPEG_ERROR_DETAIL_TAIL_LINES = 6;
+const FFMPEG_ENCODER_DIAGNOSTIC_RE =
+  /(?:unknown|not found|no .*found|failed|failure|error|could not|cannot|unable|unavailable|unsupported).*(?:encoder|h264(?:_mf)?|videotoolbox|media foundation|\bmft\b)|(?:encoder|h264(?:_mf)?|videotoolbox|media foundation|\bmft\b).*(?:unknown|not found|no .*found|failed|failure|error|could not|cannot|unable|unavailable|unsupported)/i;
 
 /**
  * Per-scene input descriptor. Discriminated by `kind`:
@@ -76,6 +82,10 @@ export type ComposeRequest = {
   width: number;
   height: number;
   fps: number;
+  /** Runtime platform of the process that owns the ffmpeg child. Kept
+   *  explicit so codec selection is deterministic and does not silently
+   *  inherit the test runner's host platform. */
+  platform: NodeJS.Platform;
   onProgress?: (ratio: number) => void;
   /** AbortSignal threaded from the bus's per-dispatch controller. On
    *  abort, the in-flight ffmpeg child gets SIGKILL and the compose
@@ -84,16 +94,31 @@ export type ComposeRequest = {
 };
 
 export class ComposeError extends Error {
+  public readonly details: string | undefined;
+
   constructor(
     public readonly code:
       | "ffmpeg_missing"
       | "no_scenes"
+      | "unsupported_platform"
       | "ffmpeg_failed"
       | "cancelled",
     message: string,
-    public readonly details?: string
+    details?: string
   ) {
-    super(message);
+    // ComposeError crosses the command bus via PwrSnapError. Keep every
+    // ffmpeg-provided string IPC-safe at construction so a future caller
+    // cannot accidentally forward absolute capture/render paths.
+    super(
+      code === "ffmpeg_failed"
+        ? sanitizeFfmpegText(message, FFMPEG_VISIBLE_ERROR_MAX_CHARS)
+        : message
+    );
+    this.details = details === undefined
+      ? undefined
+      : code === "ffmpeg_failed"
+        ? sanitizeFfmpegText(details, FFMPEG_ERROR_DETAILS_MAX_CHARS)
+        : details;
     this.name = "ComposeError";
   }
 }
@@ -182,6 +207,7 @@ export async function probeDurationSec(audioPath: string): Promise<number> {
  *   (`measured + 0.35s` tail) so the trim is small.
  */
 export function buildCompositionArgs(req: ComposeRequest): string[] {
+  const encoder = videoEncoderForPlatform(req.platform);
   const args: string[] = ["-y", "-hide_banner"];
   for (const scene of req.scenes) {
     if (scene.kind === "image") {
@@ -282,21 +308,21 @@ export function buildCompositionArgs(req: ComposeRequest): string[] {
     `[${finalLabel}]`,
     "-map",
     `[${finalAudioLabel}]`,
-    // h264_videotoolbox: macOS-native hardware H.264 encoder. NOT
-    // libx264; the bundled ffmpeg is built without GPL/nonfree flags.
+    // Platform-vetted, LGPL-clean H.264 encoder. The controlled bundled
+    // ffmpeg exposes VideoToolbox on macOS and Media Foundation on Windows;
+    // neither artifact contains GPL libx264/libx265.
     "-c:v",
-    "h264_videotoolbox",
-    // GitHub-hosted macOS runners sometimes cannot allocate a hardware
-    // VideoToolbox compression session. Allow VideoToolbox to fall back to
-    // Apple's software encoder instead of failing the render.
-    "-allow_sw",
-    "1",
+    encoder.codec,
+    ...encoder.codecOptions,
     "-b:v",
     videoBitrate(req.width, req.height, req.fps),
     "-g",
     String(SIZZLE_KEYFRAME_INTERVAL),
-    "-keyint_min",
-    String(SIZZLE_KEYFRAME_INTERVAL),
+    ...(
+      encoder.setMinimumKeyframeInterval
+        ? ["-keyint_min", String(SIZZLE_KEYFRAME_INTERVAL)]
+        : []
+    ),
     "-pix_fmt",
     "yuv420p",
     // ffmpeg's native AAC (LGPL), NOT nonfree libfdk_aac.
@@ -365,6 +391,49 @@ function videoBitrate(width: number, height: number, fps: number): string {
     Math.round(width * height * fps * bitsPerPixelFrame)
   );
   return `${bitrate}`;
+}
+
+type VideoEncoderPlan = {
+  codec: "h264_videotoolbox" | "h264_mf";
+  codecOptions: string[];
+  setMinimumKeyframeInterval: boolean;
+};
+
+function videoEncoderForPlatform(platform: NodeJS.Platform): VideoEncoderPlan {
+  if (platform === "darwin") {
+    return {
+      codec: "h264_videotoolbox",
+      // GitHub-hosted macOS runners sometimes cannot allocate a hardware
+      // VideoToolbox compression session. Let VideoToolbox fall back to
+      // Apple's software encoder instead of failing the render.
+      codecOptions: ["-allow_sw", "1"],
+      setMinimumKeyframeInterval: true
+    };
+  }
+  if (platform === "win32") {
+    return {
+      codec: "h264_mf",
+      // h264_mf delegates to the OS Media Foundation transform and has no
+      // vetted -allow_sw analogue. Do not invent a codec-private fallback
+      // flag; keep the shared MP4 output options below platform-neutral.
+      codecOptions: [],
+      // This generic option is known-good on the existing macOS path but has
+      // not been exercised by PwrSnap's Windows Media Foundation path. -g
+      // still preserves the two-second maximum GOP interval.
+      setMinimumKeyframeInterval: false
+    };
+  }
+  throw new ComposeError(
+    "unsupported_platform",
+    `Sizzle rendering is not supported on ${platform}: PwrSnap ships vetted H.264 encoders only for macOS and Windows`
+  );
+}
+
+/** Fail before scene preparation when this runtime has no packaged,
+ *  license-approved H.264 encoder. `compose()` repeats the assertion at the
+ *  process boundary so callers cannot bypass it. */
+export function assertSizzleRenderPlatform(platform: NodeJS.Platform): void {
+  videoEncoderForPlatform(platform);
 }
 
 /**
@@ -485,19 +554,23 @@ function buildAudioConcat(scenes: SceneInput[], filters: string[]): string {
 }
 
 export async function compose(req: ComposeRequest): Promise<void> {
-  const ffmpeg = resolveFfmpegPath();
-  if (ffmpeg === null) {
-    throw new ComposeError("ffmpeg_missing", "ffmpeg not found: bundled PwrSnapFFmpeg is missing and no ffmpeg was found on PATH");
-  }
   if (req.scenes.length === 0) {
     throw new ComposeError("no_scenes", "Sizzle reel must have at least one scene");
   }
 
+  const encoder = videoEncoderForPlatform(req.platform);
+  const args = buildCompositionArgs(req);
+  const ffmpeg = resolveFfmpegPath();
+  if (ffmpeg === null) {
+    throw new ComposeError("ffmpeg_missing", "ffmpeg not found: bundled PwrSnapFFmpeg is missing and no ffmpeg was found on PATH");
+  }
+
   await mkdir(dirname(req.outputPath), { recursive: true });
 
-  const args = buildCompositionArgs(req);
   log.info("ffmpeg compose", {
     ffmpegPath: ffmpeg,
+    platform: req.platform,
+    videoEncoder: encoder.codec,
     scenes: req.scenes.length,
     kinds: req.scenes.map((s) => s.kind),
     transitions: req.scenes.slice(1).map((s) => s.transition),
@@ -525,6 +598,7 @@ function runFfmpeg(
     const proc = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
     let tail = "";
     let aborted = false;
+    let settled = false;
     const onAbort = (): void => {
       aborted = true;
       proc.kill("SIGKILL");
@@ -547,10 +621,29 @@ function runFfmpeg(
     });
     proc.on("error", (cause) => {
       if (signal !== undefined) signal.removeEventListener("abort", onAbort);
-      reject(cause);
+      if (settled) return;
+      settled = true;
+      const rawDetail = cause instanceof Error ? cause.message : String(cause);
+      const detail = sanitizeFfmpegText(
+        rawDetail,
+        FFMPEG_ERROR_DETAILS_MAX_CHARS
+      );
+      const visibleDetail = sanitizeFfmpegText(
+        rawDetail,
+        FFMPEG_ENCODER_SUMMARY_MAX_CHARS
+      );
+      reject(
+        new ComposeError(
+          "ffmpeg_failed",
+          `Could not start ffmpeg${visibleDetail.length === 0 ? "" : `: ${visibleDetail}`}`,
+          detail
+        )
+      );
     });
-    proc.on("close", (code) => {
+    proc.on("close", (code, closeSignal) => {
       if (signal !== undefined) signal.removeEventListener("abort", onAbort);
+      if (settled) return;
+      settled = true;
       if (aborted) {
         reject(new ComposeError("cancelled", "Render was cancelled"));
         return;
@@ -560,13 +653,101 @@ function runFfmpeg(
         resolve();
         return;
       }
+      const details = ffmpegFailureDetails(tail);
+      const summary = ffmpegFailureSummary(tail);
+      const exit = closeSignal === null
+        ? `code ${code ?? "unknown"}`
+        : `signal ${closeSignal}${code === null ? "" : ` (code ${code})`}`;
       reject(
         new ComposeError(
           "ffmpeg_failed",
-          `ffmpeg exited with code ${code}`,
-          tail.slice(-1024)
+          `ffmpeg exited with ${exit}${summary === null ? "" : `: ${summary}`}`,
+          details
         )
       );
     });
   });
+}
+
+function ffmpegFailureSummary(stderr: string): string | null {
+  const lines = ffmpegErrorLines(stderr);
+  if (lines.length === 0) return null;
+  const diagnostic = encoderDiagnostic(lines);
+  if (diagnostic === undefined) return null;
+  const safe = sanitizeFfmpegText(
+    diagnostic,
+    FFMPEG_ENCODER_SUMMARY_MAX_CHARS
+  );
+  return safe.length === 0 ? null : safe;
+}
+
+function ffmpegFailureDetails(stderr: string): string | undefined {
+  const lines = ffmpegErrorLines(stderr);
+  if (lines.length === 0) return undefined;
+  const diagnostic = encoderDiagnostic(lines);
+  const tail = lines.slice(-FFMPEG_ERROR_DETAIL_TAIL_LINES);
+  const selected = diagnostic === undefined
+    ? tail
+    : [diagnostic, ...tail.filter((line) => line !== diagnostic)];
+  const safe = sanitizeFfmpegText(
+    selected.join("\n"),
+    FFMPEG_ERROR_DETAILS_MAX_CHARS
+  );
+  return safe.length === 0 ? undefined : safe;
+}
+
+function ffmpegErrorLines(stderr: string): string[] {
+  return stderr
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+        .trim()
+    )
+    .filter((line) => line.length > 0);
+}
+
+function encoderDiagnostic(lines: string[]): string | undefined {
+  return [...lines]
+    .reverse()
+    .find((line) => FFMPEG_ENCODER_DIAGNOSTIC_RE.test(line));
+}
+
+function sanitizeFfmpegText(text: string, maxChars: number): string {
+  return ffmpegErrorLines(text)
+    .map(redactFilesystemPaths)
+    .join("\n")
+    .slice(0, maxChars);
+}
+
+function redactFilesystemPaths(line: string): string {
+  // Quoted paths preserve any diagnostic text after the closing quote.
+  const quoted = line.replace(
+    /(["'])((?:[A-Za-z]:[\\/]|\\\\|\/)[^"'\r\n]+)\1/g,
+    (_match, quote: string, filePath: string) =>
+      `${quote}${pathPlaceholder(filePath)}${quote}`
+  );
+  // Unquoted ffmpeg paths generally run to the end of the line. Redacting the
+  // remainder is conservative: it avoids leaking space-bearing filenames.
+  const windows = quoted.replace(
+    /\b[A-Za-z]:[\\/][^"'<>\r\n]*/g,
+    (filePath) => pathPlaceholder(filePath)
+  );
+  const unc = windows.replace(
+    /\\\\[^"'<>\r\n]*/g,
+    (filePath) => pathPlaceholder(filePath)
+  );
+  return unc.replace(
+    /(^|[\s=(:,])(\/(?!\/)[^"'<>\r\n]*)/g,
+    (_match, prefix: string, filePath: string) =>
+      `${prefix}${pathPlaceholder(filePath)}`
+  );
+}
+
+function pathPlaceholder(filePath: string): "<home-path>" | "<path>" {
+  const normalized = filePath.replace(/\\/g, "/");
+  return /^(?:[A-Za-z]:)?\/Users\/[^/]+(?:\/|$)|^\/home\/[^/]+(?:\/|$)/i.test(normalized)
+    ? "<home-path>"
+    : "<path>";
 }

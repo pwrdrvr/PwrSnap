@@ -207,6 +207,10 @@ The release workflow separates preparation, signing, and publication:
    smoke runs. Keep updater-only synthetic installers outside
    `release-stage/dist`, so the launch lane's exact-one versioned setup glob
    continues to select only the publication artifact.
+   NSIS must keep `deleteAppDataOnUninstall: false`. The installed-app
+   controller keeps all profile/app-data variables isolated through uninstall
+   and verifies its default-app-data, userData, data-root, and SQLite sentinels
+   before deleting the controller-owned temporary tree.
 6. **`windows-installed-smoke`** is credential-free and downloads those exact
    artifacts. It installs and launches the signed application with isolated
    profile/data roots; acquires the production first-instance lock, installs

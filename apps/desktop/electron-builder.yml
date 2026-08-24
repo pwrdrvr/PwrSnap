@@ -339,6 +339,10 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
+  # User captures/settings are never installer-owned cleanup. Pin this instead
+  # of inheriting electron-builder defaults so an upgrade cannot turn a future
+  # default/config drift into deletion of %APPDATA%/PwrSnap on uninstall.
+  deleteAppDataOnUninstall: false
   shortcutName: PwrSnap
   # Without this, electron-builder defaults uninstallDisplayName to
   # "${productName} ${version}", so Add or Remove Programs shows

@@ -47,6 +47,9 @@ describe("Windows release configuration", () => {
     expect(config).toMatch(
       /^nsis:\r?\n(?: {2}.*\r?\n)*? {2}uninstallDisplayName: PwrSnap\r?$/m
     );
+    expect(config).toMatch(
+      /^nsis:\r?\n(?: {2}.*\r?\n)*? {2}deleteAppDataOnUninstall: false\r?$/m
+    );
   });
 
   test("Windows packager isolates preparation and fails closed on Azure signing", () => {
@@ -258,9 +261,25 @@ describe("Windows release configuration", () => {
       "NODE_PATH",
       "NSIS uninstall left production-identity residue",
       "Installed-app smoke modified the source installer bytes",
+      "default-app-data-uninstall-sentinel",
+      "user-data-uninstall-sentinel",
+      "data-root-uninstall-sentinel",
+      "Uninstall changed or deleted the isolated smoke database",
     ]) {
       expect(smokeScript).toContain(expected);
     }
+    const uninstallIndex = smokeScript.indexOf('-Label "NSIS uninstall"');
+    const sentinelVerificationIndex = smokeScript.lastIndexOf(
+      "Assert-UninstallPreservedIsolatedData"
+    );
+    const controllerCleanupIndex = smokeScript.indexOf(
+      "Remove-Item -LiteralPath $smokeRoot -Recurse -Force"
+    );
+    const environmentRestoreIndex = smokeScript.lastIndexOf("Restore-ProcessEnvironment");
+    expect(uninstallIndex).toBeGreaterThan(-1);
+    expect(sentinelVerificationIndex).toBeGreaterThan(uninstallIndex);
+    expect(controllerCleanupIndex).toBeGreaterThan(sentinelVerificationIndex);
+    expect(environmentRestoreIndex).toBeGreaterThan(controllerCleanupIndex);
     expect(smokeScript).toContain("[int]$MaxLines = 200");
     expect(smokeScript).toContain("[int]$MaxChars = 65536");
     expect(smokeScript).toContain("Select-Object -First 8");

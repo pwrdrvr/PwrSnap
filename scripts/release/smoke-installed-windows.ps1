@@ -67,6 +67,12 @@ $installedExe = Join-Path $installDir "PwrSnap.exe"
 $installedResources = Join-Path $installDir "resources"
 $installedWindowListExe = Join-Path $installedResources "PwrSnapWindowList.exe"
 $installedFfmpegExe = Join-Path $installedResources "PwrSnapFFmpeg.exe"
+$databasePath = Join-Path $dataRoot "pwrsnap.db"
+$defaultAppDataRoot = Join-Path $appData "PwrSnap"
+$defaultAppDataSentinelPath = Join-Path $defaultAppDataRoot "default-app-data-uninstall-sentinel"
+$userDataSentinelPath = Join-Path $userData "user-data-uninstall-sentinel"
+$dataRootSentinelPath = Join-Path $dataRoot "data-root-uninstall-sentinel"
+$uninstallSentinelPayload = "pwrsnap-windows-smoke-$smokeId"
 $pwrSnapProductCode = "c8b3bdba-25e5-5dbd-b016-8e6ce14b4982"
 $pwrSnapFileClass = "PwrSnap Capture Bundle"
 $installerSha256 = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -101,6 +107,34 @@ foreach ($name in $environmentNames) {
 function Restore-ProcessEnvironment {
   foreach ($name in $environmentNames) {
     [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], "Process")
+  }
+}
+
+function Assert-UninstallPreservedIsolatedData {
+  param([string]$DatabaseSha256BeforeUninstall)
+
+  foreach ($sentinelPath in @(
+    $defaultAppDataSentinelPath,
+    $userDataSentinelPath,
+    $dataRootSentinelPath
+  )) {
+    if (-not (Test-Path -LiteralPath $sentinelPath -PathType Leaf)) {
+      throw "NSIS uninstall deleted isolated app data sentinel: $sentinelPath."
+    }
+    $sentinelValue = Get-Content -LiteralPath $sentinelPath -Raw -ErrorAction Stop
+    if ($sentinelValue -ne $uninstallSentinelPayload) {
+      throw "NSIS uninstall changed isolated app data sentinel: $sentinelPath."
+    }
+  }
+
+  if (-not (Test-Path -LiteralPath $databasePath -PathType Leaf)) {
+    throw "Uninstall changed or deleted the isolated smoke database: $databasePath."
+  }
+  $databaseSha256AfterUninstall = (
+    Get-FileHash -LiteralPath $databasePath -Algorithm SHA256
+  ).Hash.ToLowerInvariant()
+  if ($databaseSha256AfterUninstall -ne $DatabaseSha256BeforeUninstall) {
+    throw "Uninstall changed or deleted the isolated smoke database: $databasePath."
   }
 }
 
@@ -618,6 +652,8 @@ $appProcess = $null
 $installAttempted = $false
 $installCompleted = $false
 $uninstallVerified = $false
+$runtimeHandshakePassed = $false
+$databaseSha256BeforeUninstall = $null
 
 try {
   Write-Host "Installing $installer into isolated path $installDir"
@@ -732,6 +768,27 @@ try {
     throw "A PwrSnap process appeared outside the isolated install; it was not touched."
   }
 
+  if (-not (Test-Path -LiteralPath $databasePath -PathType Leaf)) {
+    throw "Installed PwrSnap did not leave its isolated database at $databasePath."
+  }
+  New-Item -ItemType Directory -Path (Split-Path $defaultAppDataSentinelPath -Parent) -Force |
+    Out-Null
+  foreach ($sentinelPath in @(
+    $defaultAppDataSentinelPath,
+    $userDataSentinelPath,
+    $dataRootSentinelPath
+  )) {
+    Set-Content `
+      -LiteralPath $sentinelPath `
+      -Value $uninstallSentinelPayload `
+      -NoNewline `
+      -Encoding utf8
+  }
+  $databaseSha256BeforeUninstall = (
+    Get-FileHash -LiteralPath $databasePath -Algorithm SHA256
+  ).Hash.ToLowerInvariant()
+  $runtimeHandshakePassed = $true
+
   Write-Host "Installed PwrSnap runtime handshake passed; verifying NSIS uninstall cleanup."
 } catch {
   $failureMessage = $_.Exception.Message
@@ -742,11 +799,6 @@ try {
       $failureMessage = "Installed PwrSnap was still running during smoke cleanup."
     }
   }
-
-  # The installer and uninstaller must observe the runner's real per-user NSIS
-  # registry/shortcut locations. Only the launched app inherits the isolated
-  # profile variables above.
-  Restore-ProcessEnvironment
 
   try {
     $uninstallers = if (Test-Path -LiteralPath $installDir -PathType Container) {
@@ -776,6 +828,7 @@ try {
     }
 
     if ($installAttempted) {
+      $nsisCleanupVerified = $false
       $uninstallDeadline = [DateTime]::UtcNow.AddSeconds(20)
       do {
         $registryResidue = @(Get-PwrSnapRegistryResidue)
@@ -786,19 +839,24 @@ try {
           $shortcutResidue.Count -eq 0 -and
           -not $installDirectoryRemains
         ) {
-          $uninstallVerified = $true
+          $nsisCleanupVerified = $true
           break
         }
         Start-Sleep -Milliseconds 250
       } while ([DateTime]::UtcNow -lt $uninstallDeadline)
 
-      if (-not $uninstallVerified) {
+      if (-not $nsisCleanupVerified) {
         throw (
           "NSIS uninstall left production-identity residue " +
           "(installDir=$installDirectoryRemains, registry=$($registryResidue.Count), " +
           "shortcuts=$($shortcutResidue.Count))."
         )
       }
+      if ($runtimeHandshakePassed) {
+        Assert-UninstallPreservedIsolatedData `
+          -DatabaseSha256BeforeUninstall $databaseSha256BeforeUninstall
+      }
+      $uninstallVerified = $true
     } else {
       $uninstallVerified = $true
     }
@@ -846,6 +904,12 @@ try {
       }
     }
   }
+
+  # Keep APPDATA/LOCALAPPDATA/USERPROFILE/HOME/TEMP/TMP isolated until after
+  # the uninstaller, sentinel verification, diagnostics, and controller-owned
+  # cleanup. A future NSIS config/default drift must never aim cleanup at the
+  # operator or self-hosted runner's real profile.
+  Restore-ProcessEnvironment
 }
 
 if ($null -ne $failureMessage) {

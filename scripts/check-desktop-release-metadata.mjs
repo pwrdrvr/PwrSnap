@@ -117,6 +117,9 @@ const electronBuilder = readFileSync(electronBuilderPath, "utf8");
 if (!/^\s*releaseType:\s*prerelease\s*$/m.test(electronBuilder)) {
   fail("apps/desktop/electron-builder.yml publish.releaseType must be prerelease");
 }
+if (!/^ {2}deleteAppDataOnUninstall:\s*false\s*$/m.test(electronBuilder)) {
+  fail("apps/desktop/electron-builder.yml must pin nsis.deleteAppDataOnUninstall=false");
+}
 
 const ciWorkflow = readFileSync(ciWorkflowPath, "utf8");
 if (!ciWorkflow.includes("releases/**")) {
@@ -295,6 +298,26 @@ for (const expected of [
     fail(`apps/desktop/scripts/package-win.mjs must contain ${JSON.stringify(expected)}`);
   }
 }
+const windowsUninstallIndex = windowsInstalledSmokeScript.indexOf('-Label "NSIS uninstall"');
+const windowsSentinelIndex = windowsInstalledSmokeScript.lastIndexOf(
+  "Assert-UninstallPreservedIsolatedData",
+);
+const windowsControllerCleanupIndex = windowsInstalledSmokeScript.indexOf(
+  "Remove-Item -LiteralPath $smokeRoot -Recurse -Force",
+);
+const windowsEnvironmentRestoreIndex = windowsInstalledSmokeScript.lastIndexOf(
+  "Restore-ProcessEnvironment",
+);
+if (
+  windowsUninstallIndex < 0 ||
+  windowsSentinelIndex <= windowsUninstallIndex ||
+  windowsControllerCleanupIndex <= windowsSentinelIndex ||
+  windowsEnvironmentRestoreIndex <= windowsControllerCleanupIndex
+) {
+  fail(
+    "installed Windows smoke must uninstall under isolated profile vars, verify data sentinels, clean its root, then restore the caller environment",
+  );
+}
 for (const expected of [
   "apps/desktop/release-stage/node_modules/.pnpm/node_modules",
   "apps/desktop/release-stage",
@@ -360,6 +383,10 @@ for (const expected of [
   "RequireBundledFfmpeg",
   "NSIS uninstall left production-identity residue",
   "Installed-app smoke modified the source installer bytes",
+  "default-app-data-uninstall-sentinel",
+  "user-data-uninstall-sentinel",
+  "data-root-uninstall-sentinel",
+  "Uninstall changed or deleted the isolated smoke database",
   "Uninstall*.exe",
 ]) {
   if (!windowsInstalledSmokeScript.includes(expected)) {

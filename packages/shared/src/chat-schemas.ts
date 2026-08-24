@@ -226,7 +226,11 @@ export type ChatApprovalSupersededEvent = {
   threadId: string;
   turnId: string;
   approvalId: string;
-  reason: "request_replaced" | "thread_closed" | "controller_disposed";
+  reason:
+    | "request_replaced"
+    | "request_stale"
+    | "thread_closed"
+    | "controller_disposed";
 };
 
 // Drawing shapes are modeled as one tool PER primitive (draw_arrow,

@@ -239,6 +239,94 @@ describe("codex:libraryChat handlers", () => {
     expect(controller.resolveApproval).not.toHaveBeenCalled();
   });
 
+  test("archive failure preserves a live pending approval", async () => {
+    const request = {
+      threadId: "th1",
+      turnId: "turn-archive-failure",
+      approvalId: "approval-archive-failure",
+      summary: "Run tool"
+    };
+    const resolver = vi.fn(async () => undefined);
+    approvalBroker.openThread(request.threadId);
+    approvalBroker.register(request, {}, resolver);
+    controller.archive.mockRejectedValueOnce(new Error("archive store failed"));
+
+    try {
+      const result = await bus.dispatch(
+        "codex:libraryChat:archive",
+        { threadId: request.threadId, archived: true },
+        { principal: "ipc" }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(approvalBroker.pendingForThread(request.threadId)).toEqual(request);
+      expect(resolver).not.toHaveBeenCalled();
+    } finally {
+      await approvalBroker.closeThread(request.threadId);
+      approvalBroker.openThread(request.threadId);
+    }
+  });
+
+  test("unarchive failure preserves the broker's closed state", async () => {
+    const threadId = "th1";
+    await approvalBroker.closeThread(threadId);
+    controller.archive.mockRejectedValueOnce(new Error("unarchive store failed"));
+
+    try {
+      const result = await bus.dispatch(
+        "codex:libraryChat:archive",
+        { threadId, archived: false },
+        { principal: "ipc" }
+      );
+      expect(result.ok).toBe(false);
+
+      const resolver = vi.fn(async () => undefined);
+      expect(
+        approvalBroker.register(
+          {
+            threadId,
+            turnId: "turn-after-unarchive-failure",
+            approvalId: "approval-after-unarchive-failure",
+            summary: "Run tool"
+          },
+          {},
+          resolver
+        )
+      ).toBe(false);
+      await vi.waitFor(() => expect(resolver).toHaveBeenCalledWith("deny"));
+    } finally {
+      approvalBroker.openThread(threadId);
+    }
+  });
+
+  test("interrupt failure preserves a live pending approval", async () => {
+    const request = {
+      threadId: "th1",
+      turnId: "turn-interrupt-failure",
+      approvalId: "approval-interrupt-failure",
+      summary: "Run tool"
+    };
+    const resolver = vi.fn(async () => undefined);
+    approvalBroker.openThread(request.threadId);
+    approvalBroker.register(request, {}, resolver);
+    controller.interrupt.mockRejectedValueOnce(new Error("interrupt failed"));
+
+    try {
+      const result = await bus.dispatch(
+        "codex:libraryChat:interrupt",
+        { threadId: request.threadId },
+        { principal: "ipc" }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(approvalBroker.pendingForThread(request.threadId)).toEqual(request);
+      expect(resolver).not.toHaveBeenCalled();
+    } finally {
+      await approvalBroker.closeThread(request.threadId);
+      approvalBroker.openThread(request.threadId);
+    }
+  });
+
   test("create binds the exact IPC-null or MCP-client owner", async () => {
     const ownersSeen: Array<string | null> = [];
     controller.createThread

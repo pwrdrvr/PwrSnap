@@ -458,9 +458,13 @@ export function registerLibraryChatHandlers(params?: {
       if (!authorized.ok) return authorized;
       const config = configForSidecar(authorized.value);
       const c = await controllerFor(config);
+      const view = await c.archive(req.threadId, req.archived);
+      // Controller/store state is authoritative. Only commit the broker's
+      // destructive lifecycle after archive succeeds; a failed archive must
+      // leave a live approval actionable, and a failed unarchive must leave
+      // the archived thread closed.
       if (req.archived) await approvalBroker.closeThread(req.threadId);
       else approvalBroker.openThread(req.threadId);
-      const view = await c.archive(req.threadId, req.archived);
       return ok(approvalBroker.decorateThread(toLibraryThreadView(view, config)));
     } catch (cause) {
       return codexUnreachable(cause);
@@ -472,8 +476,10 @@ export function registerLibraryChatHandlers(params?: {
       const authorized = await access.require(req.threadId, ctx);
       if (!authorized.ok) return authorized;
       const c = await controllerFor(configForSidecar(authorized.value));
-      await approvalBroker.closeThread(req.threadId);
       await c.interrupt(req.threadId);
+      // Do not deny or terminalize the pending approval unless interruption
+      // was acknowledged by the controller.
+      await approvalBroker.closeThread(req.threadId);
       return ok(undefined);
     } catch (cause) {
       return codexUnreachable(cause);

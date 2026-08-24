@@ -215,6 +215,46 @@ describe("ChatApprovalBroker", () => {
     expect(resolved.every((event) => event.decision === "approve")).toBe(true);
   });
 
+  it("emits terminal authority when a stale renderer outlives bounded tombstone retention", async () => {
+    const { broker, superseded } = harness();
+    const requests = Array.from({ length: 257 }, (_, index) =>
+      approval({
+        threadId: `thread-retention-${index}`,
+        turnId: `turn-retention-${index}`,
+        approvalId: `approval-retention-${index}`
+      })
+    );
+
+    for (const request of requests) {
+      expect(broker.register(request, {}, async () => undefined)).toBe(true);
+      await expect(
+        broker.resolve({ ...request, decision: "approve" })
+      ).resolves.toEqual({ ok: true, value: undefined });
+    }
+
+    const evicted = requests[0]!;
+    const stale = await broker.resolve({ ...evicted, decision: "approve" });
+
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.error.code).toBe("approval_stale");
+    expect(superseded.at(-1)).toEqual({
+      threadId: evicted.threadId,
+      turnId: evicted.turnId,
+      approvalId: evicted.approvalId,
+      reason: "request_stale"
+    });
+
+    // Once terminalized again, a repeated stale click replays the same exact
+    // clearing event instead of becoming an uncloseable retry loop.
+    const repeated = await broker.resolve({ ...evicted, decision: "deny" });
+    expect(repeated.ok).toBe(false);
+    if (!repeated.ok) expect(repeated.error.code).toBe("approval_stale");
+    expect(superseded.at(-1)).toMatchObject({
+      approvalId: evicted.approvalId,
+      reason: "request_stale"
+    });
+  });
+
   it("supersedes an older exact request without clearing the newer request", async () => {
     const { broker, resolved, superseded } = harness();
     const oldRequest = approval();

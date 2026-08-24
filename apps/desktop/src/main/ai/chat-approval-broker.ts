@@ -240,6 +240,18 @@ export class ChatApprovalBroker {
 
     const entry = this.pending.get(key);
     if (entry === undefined || !sameRequest(entry.request, input)) {
+      // Tombstones are bounded. A renderer can outlive that retention window
+      // and submit an exact modal which main no longer recognizes. Result
+      // errors are retryable by design, so the Result alone cannot clear it:
+      // restore terminal authority with an exact superseded event.
+      this.addTombstone(key, { kind: "superseded", reason: "request_stale" });
+      this.emitSuperseded({
+        threadId: input.threadId,
+        turnId: input.turnId,
+        approvalId: input.approvalId,
+        reason: "request_stale"
+      });
+      this.notifyPendingChanged(input.threadId);
       return Promise.resolve(this.staleResult("This approval request is no longer active."));
     }
     if (entry.submission !== null) {

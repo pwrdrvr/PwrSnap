@@ -1,9 +1,12 @@
+import { execFile } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export const PACKAGED_WINDOWS_SMOKE_ENV = "PWRSNAP_PACKAGED_WINDOWS_SMOKE";
+export const PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV =
+  "PWRSNAP_PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG";
 export const PACKAGED_WINDOWS_SMOKE_REPORT_NAME = "packaged-windows-smoke.json";
 
 const DEFAULT_RENDERER_TIMEOUT_MS = 45_000;
@@ -63,6 +66,21 @@ export type SharpSmokeEvidence = {
   vipsVersion: string;
 };
 
+export type BundledFfmpegSmokeEvidence = {
+  executablePath: string;
+  versionLine: string;
+  pngDecode: true;
+};
+
+export type BundledWindowListSmokeEvidence = {
+  executablePath: string;
+  jsonEnvelope: true;
+  ownWindowDetected: true;
+  windowCount: number;
+  frontmostPid: number | null;
+  frontmostBundleId: string | null;
+};
+
 type SmokePaths = {
   dataRoot: string;
   databasePath: string;
@@ -93,6 +111,8 @@ export type PackagedWindowsSmokeDependencies = {
   getNativeModuleProvenance(): NativeModuleProvenance;
   logger: SmokeLogger;
   probeSharp?: () => Promise<SharpSmokeEvidence>;
+  probeBundledFfmpeg?: () => Promise<BundledFfmpegSmokeEvidence>;
+  probeBundledWindowList?: () => Promise<BundledWindowListSmokeEvidence>;
   rendererTimeoutMs?: number;
   rendererExecuteTimeoutMs?: number;
   rendererPollIntervalMs?: number;
@@ -112,6 +132,7 @@ export type PackagedWindowsSmokePreflight = {
   expectedUserData: string;
   expectedDataRoot: string;
   profileEnvironment: ProfileEnvironment;
+  requireBundledFfmpeg: boolean;
 };
 
 export type PackagedWindowsSmokeConfig = {
@@ -130,6 +151,7 @@ export type PackagedWindowsSmokeConfig = {
   mainLogPath: string;
   reportPath: string;
   profileEnvironment: ProfileEnvironment;
+  requireBundledFfmpeg: boolean;
 };
 
 export type RendererSmokeEvidence = {
@@ -203,6 +225,12 @@ export type PackagedWindowsSmokeReport = {
       libvipsDllPaths: string[];
     };
   };
+  bundledHelpers: {
+    windowList: BundledWindowListSmokeEvidence;
+    ffmpeg:
+      | ({ required: true; executed: true } & BundledFfmpegSmokeEvidence)
+      | { required: false; executed: false };
+  };
 };
 
 type FailedSmokeReport = {
@@ -272,6 +300,12 @@ export function preflightPackagedWindowsSmokeRequest(
   if (env.ELECTRON_RENDERER_URL !== undefined && env.ELECTRON_RENDERER_URL.length > 0) {
     throw new Error("packaged Windows smoke refuses a development renderer URL");
   }
+  const requireFfmpegValue = env[PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV];
+  if (requireFfmpegValue !== undefined && requireFfmpegValue !== "1") {
+    throw new Error(
+      `${PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV} must be unset or exactly 1`
+    );
+  }
 
   const smokeRoot = requireAbsolutePath(env.PWRSNAP_PACKAGED_WINDOWS_SMOKE_ROOT, "smoke root");
   const expectedUserData = requireAbsolutePath(env.PWRSNAP_USER_DATA, "PWRSNAP_USER_DATA");
@@ -290,7 +324,13 @@ export function preflightPackagedWindowsSmokeRequest(
     })
   ) as ProfileEnvironment;
 
-  return { smokeRoot, expectedUserData, expectedDataRoot, profileEnvironment };
+  return {
+    smokeRoot,
+    expectedUserData,
+    expectedDataRoot,
+    profileEnvironment,
+    requireBundledFfmpeg: requireFfmpegValue === "1"
+  };
 }
 
 export function resolvePackagedWindowsSmokeConfig(
@@ -303,7 +343,13 @@ export function resolvePackagedWindowsSmokeConfig(
   const preflight = preflightPackagedWindowsSmokeRequest(dependencies);
   if (preflight === null) return null;
 
-  const { smokeRoot, expectedUserData, expectedDataRoot, profileEnvironment } = preflight;
+  const {
+    smokeRoot,
+    expectedUserData,
+    expectedDataRoot,
+    profileEnvironment,
+    requireBundledFfmpeg
+  } = preflight;
   const userData = resolve(app.getPath("userData"));
   const home = resolve(app.getPath("home"));
   const documents = resolve(app.getPath("documents"));
@@ -359,7 +405,8 @@ export function resolvePackagedWindowsSmokeConfig(
     capturesRoot: resolvedCapturesRoot,
     mainLogPath: resolvedMainLogPath,
     reportPath,
-    profileEnvironment
+    profileEnvironment,
+    requireBundledFfmpeg
   };
 }
 
@@ -703,6 +750,170 @@ export async function probeSharpNativeModule(): Promise<SharpSmokeEvidence> {
   };
 }
 
+function runBoundedHelper(
+  executablePath: string,
+  args: string[],
+  label: string,
+  timeoutMs: number,
+  maxBuffer: number
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolveRun, rejectRun) => {
+    execFile(
+      executablePath,
+      args,
+      { encoding: "utf8", timeout: timeoutMs, maxBuffer, windowsHide: true },
+      (error, stdout, stderr) => {
+        const stdoutText = String(stdout ?? "");
+        const stderrText = String(stderr ?? "");
+        if (error !== null) {
+          const detail = (stderrText || stdoutText || error.message).slice(-FAILURE_MESSAGE_LIMIT);
+          rejectRun(new Error(`${label} failed: ${detail}`));
+          return;
+        }
+        resolveRun({ stdout: stdoutText, stderr: stderrText });
+      }
+    );
+  });
+}
+
+export async function probeBundledWindowListHelper(
+  resourcesPath: string,
+  expectedExecPath: string,
+  expectedPid = process.pid
+): Promise<BundledWindowListSmokeEvidence> {
+  const executablePath = requireInstalledResource(
+    resolve(resourcesPath),
+    join(resourcesPath, "PwrSnapWindowList.exe"),
+    "bundled Windows window-list helper"
+  );
+  const { stdout } = await runBoundedHelper(
+    executablePath,
+    [],
+    "bundled Windows window-list helper",
+    5_000,
+    4 * 1024 * 1024
+  );
+  return {
+    executablePath,
+    ...parseBundledWindowListEvidence(stdout, expectedExecPath, expectedPid)
+  };
+}
+
+export function parseBundledWindowListEvidence(
+  stdout: string,
+  expectedExecPath: string,
+  expectedPid: number
+): Omit<BundledWindowListSmokeEvidence, "executablePath"> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error("bundled Windows window-list helper returned malformed JSON");
+  }
+  if (parsed === null || typeof parsed !== "object" || !("windows" in parsed)) {
+    throw new Error("bundled Windows window-list helper did not return its JSON envelope");
+  }
+  const envelope = parsed as {
+    windows?: unknown;
+    frontmostPid?: unknown;
+    frontmostBundleId?: unknown;
+  };
+  if (!Array.isArray(envelope.windows)) {
+    throw new Error("bundled Windows window-list helper returned a non-array windows field");
+  }
+  const ownWindowDetected = envelope.windows.some((entry) => {
+    if (entry === null || typeof entry !== "object") return false;
+    const window = entry as { pid?: unknown; bundleId?: unknown };
+    return (
+      window.pid === expectedPid &&
+      typeof window.bundleId === "string" &&
+      samePath(window.bundleId, expectedExecPath)
+    );
+  });
+  if (!ownWindowDetected) {
+    throw new Error(
+      "bundled Windows window-list helper did not enumerate the installed PwrSnap window"
+    );
+  }
+  const frontmostPid =
+    typeof envelope.frontmostPid === "number" ? envelope.frontmostPid : null;
+  const frontmostBundleId =
+    typeof envelope.frontmostBundleId === "string" ? envelope.frontmostBundleId : null;
+  return {
+    jsonEnvelope: true,
+    ownWindowDetected: true,
+    windowCount: envelope.windows.length,
+    frontmostPid,
+    frontmostBundleId
+  };
+}
+
+export async function probeBundledFfmpegHelper(
+  resourcesPath: string,
+  scratchDirectory: string
+): Promise<BundledFfmpegSmokeEvidence> {
+  const executablePath = requireInstalledResource(
+    resolve(resourcesPath),
+    join(resourcesPath, "PwrSnapFFmpeg.exe"),
+    "bundled Windows FFmpeg helper"
+  );
+  const versionResult = await runBoundedHelper(
+    executablePath,
+    ["-hide_banner", "-version"],
+    "bundled Windows FFmpeg version probe",
+    10_000,
+    256 * 1024
+  );
+  const versionLine = `${versionResult.stdout}\n${versionResult.stderr}`
+    .split(/\r?\n/)
+    .find((line) => line.startsWith("ffmpeg version "));
+  if (versionLine === undefined || versionLine.length > 512) {
+    throw new Error("bundled Windows FFmpeg did not report a bounded version line");
+  }
+
+  await mkdir(scratchDirectory, { recursive: true });
+  const inputPath = join(
+    scratchDirectory,
+    `packaged-windows-smoke-ffmpeg-${process.pid}-${Date.now()}.png`
+  );
+  const { default: sharp } = await import("sharp");
+  const png = await sharp({
+    create: {
+      width: 2,
+      height: 2,
+      channels: 4,
+      background: { r: 255, g: 138, b: 31, alpha: 1 }
+    }
+  })
+    .png()
+    .toBuffer();
+  await writeFile(inputPath, png);
+  try {
+    await runBoundedHelper(
+      executablePath,
+      [
+        "-hide_banner",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-i",
+        inputPath,
+        "-frames:v",
+        "1",
+        "-f",
+        "null",
+        "-"
+      ],
+      "bundled Windows FFmpeg PNG decode",
+      15_000,
+      256 * 1024
+    );
+  } finally {
+    await unlink(inputPath).catch(() => undefined);
+  }
+  return { executablePath, versionLine, pngDecode: true };
+}
+
 async function writeSmokeReport(
   reportPath: string,
   report: PackagedWindowsSmokeReport | FailedSmokeReport
@@ -760,6 +971,30 @@ export async function runPackagedWindowsSmokeIfRequested(
         : {})
     });
 
+    phase = "helper:window-list";
+    const windowList = await (
+      dependencies.probeBundledWindowList ??
+      (() =>
+        probeBundledWindowListHelper(
+          provenance.resourcesPath,
+          dependencies.execPath
+        ))
+    )();
+
+    let ffmpeg: PackagedWindowsSmokeReport["bundledHelpers"]["ffmpeg"] = {
+      required: false,
+      executed: false
+    };
+    if (config.requireBundledFfmpeg) {
+      phase = "helper:ffmpeg";
+      const smokeTemp = config.temp;
+      const ffmpegEvidence = await (
+        dependencies.probeBundledFfmpeg ??
+        (() => probeBundledFfmpegHelper(provenance.resourcesPath, smokeTemp))
+      )();
+      ffmpeg = { required: true, executed: true, ...ffmpegEvidence };
+    }
+
     phase = "report";
     const report: PackagedWindowsSmokeReport = {
       schemaVersion: 1,
@@ -796,6 +1031,10 @@ export async function runPackagedWindowsSmokeIfRequested(
           bindingPath: provenance.sharpBindingPath,
           libvipsDllPaths: provenance.sharpLibvipsDllPaths
         }
+      },
+      bundledHelpers: {
+        windowList,
+        ffmpeg
       }
     };
     await writeSmokeReport(config.reportPath, report);

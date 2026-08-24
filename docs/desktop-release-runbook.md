@@ -197,16 +197,21 @@ The release workflow separates preparation, signing, and publication:
    signing credentials. It archives the stage and records its SHA-256.
 5. **`windows-sign`** runs inside `windows-signing`, verifies the archive,
    injects the pinned Windows FFmpeg artifact, installs `TrustedSigning`, and
-   packages via `--sign-stage-only --release --require-signing`. After
-   Authenticode verification it installs that exact signed NSIS artifact into
-   a runner-temporary directory, launches the installed application with
-   isolated profile/userData/data roots, proves main + visible React renderer +
-   preload/IPC readiness, executes better-sqlite3 and a Sharp/libvips PNG round
-   trip, then requires clean `app.quit()` and silent uninstall. It does not
-   check out source or install dependencies. See
+   packages via `--sign-stage-only --release --require-signing`, verifies
+   Authenticode, and uploads the signed payload plus the archived smoke
+   controller. It does not check out source, install dependencies, or launch
+   PR-controlled application code. See
    [desktop-windows-signing.md](desktop-windows-signing.md).
-6. **`publish-release-assets`** depends on successful Linux, macOS, and Windows
-   jobs. Only this job creates the GitHub Pre-release, with changelog notes,
+6. **`windows-installed-smoke`** is credential-free and downloads those exact
+   artifacts. It installs and launches the signed application with isolated
+   profile/data roots; proves main, React, preload/IPC, better-sqlite3, and
+   Sharp/libvips readiness; executes the installed window-list helper against
+   PwrSnap's visible window and the bundled FFmpeg against a real PNG; then
+   requires clean `app.quit()` and silent uninstall.
+7. **`publish-release-assets`** depends on successful Linux, macOS, Windows
+   signing, and installed-launch smoke jobs. The updater lane is a separate
+   sibling dependency; merge resolution must preserve both gates. Only this job
+   creates the GitHub Pre-release, with changelog notes,
    macOS DMG/ZIP/updater metadata, the stable `PwrSnap.dmg` alias, the signed
    Windows installer/updater metadata, the stable
    `PwrSnap-windows-x64-setup.exe` alias, and checksums.
@@ -244,14 +249,15 @@ For a non-publishing Windows signing smoke check, apply `ci:windows-signing` to
 a same-repository PR after reviewing its head SHA. Temporarily allow that exact
 PR merge ref (`refs/pull/<number>/merge`) in the `windows-signing` environment,
 approve the protected job, and remove the rule after the
-`windows-signed-installer-pr` artifact passes Authenticode and launch
+`windows-signed-installer-pr` artifact passes Authenticode and the separate launch
 validation (including better-sqlite3, Sharp/libvips, React, preload, and IPC).
 This is the same `release.yml` Windows prepare/sign path used by tags;
 `publish-release-assets` is disabled for PR events, so it never creates a tag
 or GitHub Release. Because the launch is hermetic E2E mode, it deliberately
 does not initialize `electron-updater`; feed retrieval, blockmaps, download,
 signature selection, `quitAndInstall`, and prerelease-to-prerelease transition
-remain clean-VM release smoke coverage.
+remain the separate updater lane/clean-VM release coverage; this launch lane
+does not add feed behavior.
 
 Do not approve either signing environment unless the tag, commit, and release
 metadata are intended. Approval exposes that environment's credentials to its

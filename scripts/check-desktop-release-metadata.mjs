@@ -153,6 +153,7 @@ for (const expected of [
   "  linux-build:",
   "  windows-prepare:",
   "  windows-sign:",
+  "  windows-installed-smoke:",
   "  publish-release-assets:",
   "environment: windows-signing",
   "windows-release-signing-input",
@@ -168,14 +169,16 @@ for (const expected of [
   "- linux-build",
   "- sign",
   "- windows-sign",
+  "- windows-installed-smoke",
   "gh release create",
   "--verify-tag",
   "pull_request:",
   "ci:windows-signing",
   "github.event.pull_request.head.repo.full_name == github.repository",
   "Get-AuthenticodeSignature",
-  "Smoke signed installed Windows application",
-  "Re-verify signed installer after installed-app smoke",
+  "Launch signed installed Windows application",
+  "windows-installed-smoke-controller",
+  "-RequireBundledFfmpeg",
   "scripts/release/smoke-installed-windows.ps1",
   "windows-signed-installer-pr",
   "if: ${{ github.event_name != 'pull_request' }}",
@@ -203,7 +206,7 @@ if (releaseWorkflow.includes("mac-dist/*")) {
 }
 const protectedWindowsJob = releaseWorkflow
   .split("\n  windows-sign:\n")[1]
-  ?.split("\n  publish-release-assets:\n")[0];
+  ?.split("\n  windows-installed-smoke:\n")[0];
 if (!protectedWindowsJob) {
   fail(".github/workflows/release.yml protected Windows job is missing");
 } else {
@@ -215,22 +218,50 @@ if (!protectedWindowsJob) {
     }
   }
   const signatureIndex = protectedWindowsJob.indexOf("Verify Authenticode signatures");
-  const smokeIndex = protectedWindowsJob.indexOf("Smoke signed installed Windows application");
-  const reverificationIndex = protectedWindowsJob.indexOf(
-    "Re-verify signed installer after installed-app smoke",
-  );
   const aliasIndex = protectedWindowsJob.indexOf("Prepare stable-name Windows installer alias");
   const uploadIndex = protectedWindowsJob.indexOf("Upload Windows installer artifact");
+  const controllerIndex = protectedWindowsJob.indexOf("Upload installed-app smoke controller");
   if (
     signatureIndex < 0 ||
-    smokeIndex <= signatureIndex ||
-    reverificationIndex <= smokeIndex ||
-    aliasIndex <= reverificationIndex ||
-    uploadIndex <= smokeIndex
+    aliasIndex <= signatureIndex ||
+    uploadIndex <= aliasIndex ||
+    controllerIndex <= uploadIndex
   ) {
     fail(
-      ".github/workflows/release.yml must order Authenticode -> installed smoke -> re-verification -> alias/upload",
+      ".github/workflows/release.yml must order Authenticode -> alias -> installer/controller upload",
     );
+  }
+  if (protectedWindowsJob.includes("Start-Process")) {
+    fail(".github/workflows/release.yml protected Windows job must not launch PR-controlled code");
+  }
+}
+const installedWindowsSmokeJob = releaseWorkflow
+  .split("\n  windows-installed-smoke:\n")[1]
+  ?.split("\n  publish-release-assets:\n")[0];
+if (!installedWindowsSmokeJob) {
+  fail(".github/workflows/release.yml credential-free installed Windows smoke job is missing");
+} else {
+  for (const expected of [
+    "needs: windows-sign",
+    "windows-installed-smoke-controller",
+    "Launch signed installed Windows application",
+    "-ExpectedPublisher $env:EXPECTED_PUBLISHER",
+    "-RequireBundledFfmpeg",
+    "Upload signed installed-app smoke diagnostics",
+  ]) {
+    if (!installedWindowsSmokeJob.includes(expected)) {
+      fail(`installed Windows smoke job must contain ${JSON.stringify(expected)}`);
+    }
+  }
+  for (const unexpected of [
+    "environment: windows-signing",
+    "actions/checkout",
+    "pnpm install",
+    "AZURE_CLIENT_SECRET",
+  ]) {
+    if (installedWindowsSmokeJob.includes(unexpected)) {
+      fail(`installed Windows smoke job must not contain ${JSON.stringify(unexpected)}`);
+    }
   }
 }
 for (const unexpected of [
@@ -300,6 +331,10 @@ for (const expected of [
   "betterSqlite3.bindingPath",
   "sharp.vipsVersion",
   "sharp.libvipsDllPaths",
+  "bundledHelpers.windowList.ownWindowDetected",
+  "bundledHelpers.ffmpeg.pngDecode",
+  "PWRSNAP_PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG",
+  "RequireBundledFfmpeg",
   "NSIS uninstall left production-identity residue",
   "Installed-app smoke modified the source installer bytes",
   "Uninstall*.exe",

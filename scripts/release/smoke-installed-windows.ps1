@@ -21,6 +21,10 @@ Exact NSIS setup executable to install and launch.
 Optional certificate Common Name. When set, the installed PwrSnap.exe must
 have a valid Authenticode signature from this publisher before launch.
 
+.PARAMETER RequireBundledFfmpeg
+Require the signed-release-only PwrSnapFFmpeg.exe payload to execute a real
+PNG decode. Preview installers omit controlled FFmpeg and leave this unset.
+
 .PARAMETER LaunchTimeoutSeconds
 Combined bound for packaged readiness plus graceful application exit.
 #>
@@ -30,6 +34,8 @@ param(
   [string]$InstallerPath,
 
   [string]$ExpectedPublisher = "",
+
+  [switch]$RequireBundledFfmpeg,
 
   [ValidateRange(15, 180)]
   [int]$LaunchTimeoutSeconds = 90
@@ -77,6 +83,7 @@ $environmentNames = @(
   "PWRSNAP_DATA_ROOT",
   "PWRSNAP_PACKAGED_WINDOWS_SMOKE",
   "PWRSNAP_PACKAGED_WINDOWS_SMOKE_ROOT",
+  "PWRSNAP_PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG",
   "ELECTRON_RENDERER_URL",
   "ELECTRON_RUN_AS_NODE",
   "ELECTRON_OVERRIDE_DIST_PATH",
@@ -467,6 +474,46 @@ function Assert-ReadyReport {
   foreach ($dllPath in $libvipsDllPaths) {
     Assert-InstalledResource -Path $dllPath -Label "Sharp libvips DLL" -RequireLeaf
   }
+
+  if (
+    $Report.bundledHelpers.windowList.jsonEnvelope -ne $true -or
+    $Report.bundledHelpers.windowList.ownWindowDetected -ne $true -or
+    $Report.bundledHelpers.windowList.windowCount -lt 1
+  ) {
+    throw "Bundled window-list execution did not enumerate the installed PwrSnap window."
+  }
+  Assert-InstalledResource `
+    -Path $Report.bundledHelpers.windowList.executablePath `
+    -Label "executed window-list helper" `
+    -RequireLeaf
+  Assert-SamePath `
+    -Actual $Report.bundledHelpers.windowList.executablePath `
+    -Expected (Join-Path $installedResources "PwrSnapWindowList.exe") `
+    -Label "executed window-list helper"
+
+  if ($RequireBundledFfmpeg) {
+    if (
+      $Report.bundledHelpers.ffmpeg.required -ne $true -or
+      $Report.bundledHelpers.ffmpeg.executed -ne $true -or
+      $Report.bundledHelpers.ffmpeg.pngDecode -ne $true -or
+      $Report.bundledHelpers.ffmpeg.versionLine -notmatch '^ffmpeg version '
+    ) {
+      throw "Bundled FFmpeg execution evidence is incomplete."
+    }
+    Assert-InstalledResource `
+      -Path $Report.bundledHelpers.ffmpeg.executablePath `
+      -Label "executed FFmpeg helper" `
+      -RequireLeaf
+    Assert-SamePath `
+      -Actual $Report.bundledHelpers.ffmpeg.executablePath `
+      -Expected (Join-Path $installedResources "PwrSnapFFmpeg.exe") `
+      -Label "executed FFmpeg helper"
+  } elseif (
+    $Report.bundledHelpers.ffmpeg.required -ne $false -or
+    $Report.bundledHelpers.ffmpeg.executed -ne $false
+  ) {
+    throw "Preview smoke unexpectedly reported bundled FFmpeg execution."
+  }
 }
 
 function Get-InstalledPwrSnapProcesses {
@@ -539,6 +586,11 @@ try {
   [Environment]::SetEnvironmentVariable(
     "PWRSNAP_PACKAGED_WINDOWS_SMOKE_ROOT",
     $smokeRoot,
+    "Process"
+  )
+  [Environment]::SetEnvironmentVariable(
+    "PWRSNAP_PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG",
+    $(if ($RequireBundledFfmpeg) { "1" } else { $null }),
     "Process"
   )
   foreach ($name in @(
@@ -713,4 +765,5 @@ if ($null -ne $failureMessage) {
   throw $failureMessage
 }
 
-Write-Host "Installed PwrSnap readiness smoke passed: main + renderer + better-sqlite3 + Sharp/libvips + clean uninstall."
+$ffmpegSummary = if ($RequireBundledFfmpeg) { " + bundled FFmpeg" } else { "" }
+Write-Host "Installed PwrSnap readiness smoke passed: main + renderer + better-sqlite3 + Sharp/libvips + bundled window-list$ffmpegSummary + clean uninstall."

@@ -104,7 +104,7 @@ describe("Windows release configuration", () => {
     expect(existsSync(resolve(repoRoot, "apps/desktop/scripts/build-ffmpeg.mjs"))).toBe(false);
   });
 
-  test("tagged release workflow gates publication on Linux, macOS, and Azure-signed Windows", () => {
+  test("tagged release workflow gates publication on signed and installed Windows", () => {
     const workflow = read(".github/workflows/release.yml");
 
     expect(workflow).toContain("apple-signing");
@@ -115,6 +115,7 @@ describe("Windows release configuration", () => {
     expect(workflow).toContain("steps.ffmpeg-builds-token.outputs.token");
     expect(workflow).toContain("windows-prepare:");
     expect(workflow).toContain("windows-sign:");
+    expect(workflow).toContain("windows-installed-smoke:");
     expect(workflow).toContain("linux-build:");
     expect(workflow).toContain("publish-release-assets:");
     expect(workflow).toContain("environment: windows-signing");
@@ -140,6 +141,7 @@ describe("Windows release configuration", () => {
     expect(workflow).toContain("- linux-build");
     expect(workflow).toContain("- sign");
     expect(workflow).toContain("- windows-sign");
+    expect(workflow).toContain("- windows-installed-smoke");
     expect(workflow).toContain("gh release create");
     expect(workflow).toContain("--verify-tag");
     expect(workflow).toContain("--json isPrerelease");
@@ -148,18 +150,18 @@ describe("Windows release configuration", () => {
     expect(workflow).not.toContain("FFMPEG_BUILDS_PAT");
   });
 
-  test("preview and signed release launch the installed artifact before upload", () => {
+  test("preview and signed release causally exercise installed artifacts", () => {
     const preview = read(".github/workflows/preview-build.yml");
     const workflow = read(".github/workflows/release.yml");
     const archiveScript = read("scripts/release/archive-windows-signing-input.ps1");
     const smokeScript = read("scripts/release/smoke-installed-windows.ps1");
     const smokePath = "scripts/release/smoke-installed-windows.ps1";
 
-    // Both lanes use one controller. Preview exercises the unsigned package;
-    // the protected job exercises the signed package without a checkout, so
-    // the controller itself must cross the hashed preparation boundary.
+    // Both lanes use one controller. The protected job only uploads its hashed
+    // copy; a credential-free sibling job exercises the signed package.
     expect(preview.match(/smoke-installed-windows\.ps1/g) ?? []).toHaveLength(1);
-    expect(workflow.match(/smoke-installed-windows\.ps1/g) ?? []).toHaveLength(1);
+    // One archive-upload path and one downloaded-controller path.
+    expect(workflow.match(/smoke-installed-windows\.ps1/g) ?? []).toHaveLength(2);
     expect(archiveScript).toContain(`"${smokePath}"`);
 
     const previewWindowsJob = preview.split("\n  preview-windows:\n")[1];
@@ -175,28 +177,38 @@ describe("Windows release configuration", () => {
 
     const protectedWindowsJob = workflow
       .split("\n  windows-sign:\n")[1]
-      ?.split("\n  publish-release-assets:\n")[0];
+      ?.split("\n  windows-installed-smoke:\n")[0];
     expect(protectedWindowsJob, "the protected Windows job is missing").toBeDefined();
     const releaseOrder = (needle) => protectedWindowsJob.indexOf(needle);
     expect(releaseOrder("Verify Authenticode signatures")).toBeLessThan(
-      releaseOrder("Smoke signed installed Windows application"),
-    );
-    expect(releaseOrder("Smoke signed installed Windows application")).toBeLessThan(
-      releaseOrder("Re-verify signed installer after installed-app smoke"),
-    );
-    expect(releaseOrder("Re-verify signed installer after installed-app smoke")).toBeLessThan(
       releaseOrder("Prepare stable-name Windows installer alias"),
     );
-    expect(releaseOrder("Smoke signed installed Windows application")).toBeLessThan(
-      releaseOrder("Upload Windows installer artifact"),
+    expect(releaseOrder("Upload Windows installer artifact")).toBeLessThan(
+      releaseOrder("Upload installed-app smoke controller"),
     );
+    expect(protectedWindowsJob).not.toContain("Start-Process");
 
-    const signedSmokeStep = protectedWindowsJob
-      .split("- name: Smoke signed installed Windows application")[1]
+    const installedSmokeJob = workflow
+      .split("\n  windows-installed-smoke:\n")[1]
+      ?.split("\n  publish-release-assets:\n")[0];
+    expect(installedSmokeJob, "the signed installed-app job is missing").toBeDefined();
+    expect(installedSmokeJob).toContain("needs: windows-sign");
+    expect(installedSmokeJob).toContain("windows-installed-smoke-controller");
+    expect(installedSmokeJob).toContain("Launch signed installed Windows application");
+    const signedSmokeStep = installedSmokeJob
+      .split("- name: Launch signed installed Windows application")[1]
       .split("\n      - name:")[0];
     expect(signedSmokeStep).toContain("-ExpectedPublisher $env:EXPECTED_PUBLISHER");
+    expect(signedSmokeStep).toContain("-RequireBundledFfmpeg");
     expect(signedSmokeStep).not.toContain("AZURE_CLIENT_SECRET");
     expect(signedSmokeStep).not.toContain("WIN_AZURE_SIGN_ENDPOINT");
+    for (const unexpected of [
+      "environment: windows-signing",
+      "actions/checkout",
+      "pnpm install",
+    ]) {
+      expect(installedSmokeJob).not.toContain(unexpected);
+    }
 
     // The controller must launch the installed EXE and validate causal runtime
     // evidence; checking only file/DLL/.node presence repeats the old gap.
@@ -218,6 +230,10 @@ describe("Windows release configuration", () => {
       "betterSqlite3.bindingPath",
       "sharp.vipsVersion",
       "sharp.libvipsDllPaths",
+      "bundledHelpers.windowList.ownWindowDetected",
+      "bundledHelpers.ffmpeg.pngDecode",
+      "PWRSNAP_PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG",
+      "RequireBundledFfmpeg",
       "Uninstall*.exe",
       "Assert-NoExistingPwrSnapInstallation",
       "Get-PwrSnapRegistryResidue",
@@ -237,8 +253,10 @@ describe("Windows release configuration", () => {
     expect(workflow).toMatch(
       /Upload signed installed-app smoke diagnostics\r?\n\s+if: failure\(\)/,
     );
-    expect(workflow).toContain("steps.windows-authenticode.outputs.installer_sha256");
-    expect(workflow).toContain("Re-verify signed installer after installed-app smoke");
+    const publicationNeeds = workflow
+      .split("\n  publish-release-assets:\n")[1]
+      ?.split("\n    timeout-minutes:")[0];
+    expect(publicationNeeds).toContain("- windows-installed-smoke");
     expect(smokeScript).not.toContain("latest.yml");
     expect(smokeScript).not.toContain("electron-updater");
   });
@@ -287,7 +305,7 @@ describe("Windows release configuration", () => {
 
     const protectedWindowsJob = workflow
       .split("\n  windows-sign:\n")[1]
-      ?.split("\n  publish-release-assets:\n")[0];
+      ?.split("\n  windows-installed-smoke:\n")[0];
     expect(protectedWindowsJob, "the protected Windows job is missing").toBeDefined();
 
     // The alias has to be born inside the protected job, after packaging and

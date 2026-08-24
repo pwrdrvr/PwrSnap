@@ -384,7 +384,9 @@ jobs:
   windows-sign:
     name: Sign and package Windows installer
     # Only this job can access the Azure service-principal credentials. It does
-    # not check out source or install project dependencies/lifecycle scripts.
+    # not check out source, install project dependencies/lifecycle scripts, or
+    # launch the PR-controlled application. Runtime smoke runs in the separate
+    # credential-free windows-installed-smoke job below.
     needs: windows-prepare
     if: >-
       ${{
@@ -402,8 +404,7 @@ jobs:
       }}
     environment: windows-signing
     runs-on: windows-2022
-    # Leave enough budget for protected packaging plus bounded install,
-    # launch/readiness, graceful exit, and NSIS uninstall cleanup.
+    # Leave enough budget for protected signing and packaging.
     timeout-minutes: 55
     permissions:
       contents: read
@@ -574,7 +575,6 @@ jobs:
           --sign-stage-only --release --require-signing
 
       - name: Verify Authenticode signatures
-        id: windows-authenticode
         shell: pwsh
         env:
           EXPECTED_PUBLISHER: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}
@@ -600,63 +600,6 @@ jobs:
               throw "Unexpected Authenticode signer for $($target.FullName): $($signature.SignerCertificate.Subject)"
             }
           }
-          $installerSha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          "installer_sha256=$installerSha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-
-      # Launch the application installed from the exact signed NSIS artifact.
-      # The shared smoke re-checks the installed executable's signer, isolates
-      # every app/profile path, proves main + renderer + native-module runtime
-      # readiness, and requires a clean app.quit() before publication can move.
-      - name: Smoke signed installed Windows application
-        shell: pwsh
-        env:
-          EXPECTED_PUBLISHER: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $dist = Resolve-Path "apps/desktop/release-stage/dist"
-          $installers = @(Get-ChildItem -Path $dist -Filter "*-setup.exe" -File)
-          if ($installers.Count -ne 1) {
-            throw "Expected exactly one signed NSIS installer in $dist; found $($installers.Count)."
-          }
-          & ./scripts/release/smoke-installed-windows.ps1 `
-            -InstallerPath $installers[0].FullName `
-            -ExpectedPublisher $env:EXPECTED_PUBLISHER
-
-      - name: Upload signed installed-app smoke diagnostics
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: windows-signed-smoke-diagnostics
-          path: ${{ runner.temp }}/pwrsnap-windows-smoke-diagnostics-*
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Re-verify signed installer after installed-app smoke
-        shell: pwsh
-        env:
-          EXPECTED_PUBLISHER: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}
-          EXPECTED_SHA256: ${{ steps.windows-authenticode.outputs.installer_sha256 }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $dist = "apps/desktop/release-stage/dist"
-          $installers = @(Get-ChildItem $dist -File -Filter "*-setup.exe")
-          if ($installers.Count -ne 1) {
-            throw "Expected exactly one signed Windows installer after smoke; found $($installers.Count)."
-          }
-          $installer = $installers[0]
-          $actualSha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualSha256 -ne $env:EXPECTED_SHA256) {
-            throw "Installed-app smoke changed the signed installer: expected $env:EXPECTED_SHA256, got $actualSha256."
-          }
-          $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
-          if ($signature.Status -ne "Valid") {
-            throw "Post-smoke Authenticode status is not valid: $($signature.Status)"
-          }
-          $publisherPattern = "(^|,\s*)CN=$([Regex]::Escape($env:EXPECTED_PUBLISHER))(,|$)"
-          if ($signature.SignerCertificate.Subject -notmatch $publisherPattern) {
-            throw "Post-smoke installer has unexpected signer: $($signature.SignerCertificate.Subject)"
-          }
-
       - name: Prepare stable-name Windows installer alias
         # PwrSnap-windows-x64-setup.exe is the canonical Windows download URL
         # for docs.pwrsnap.com and pwrsnap.com — it always points at the latest
@@ -727,6 +670,82 @@ jobs:
             apps/desktop/release-stage/dist/SHA256SUMS
           retention-days: 7
 
+      # The controller is part of the verified signing-input archive. Uploading
+      # that exact copy lets the next job launch the signed installer without a
+      # checkout or any access to signing credentials.
+      - name: Upload installed-app smoke controller
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-installed-smoke-controller
+          path: scripts/release/smoke-installed-windows.ps1
+          retention-days: 7
+
+  windows-installed-smoke:
+    name: Exercise signed installed Windows application
+    # Keep this causal runtime gate independent from both protected signing and
+    # the updater smoke. Tagged publication must depend on both sibling jobs.
+    needs: windows-sign
+    if: >-
+      ${{
+        github.event_name != 'pull_request'
+        || (
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+            (github.event.action == 'labeled' && github.event.label.name == 'ci:windows-signing')
+            || (
+              github.event.action != 'labeled'
+              && contains(github.event.pull_request.labels.*.name, 'ci:windows-signing')
+            )
+          )
+        )
+      }}
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: none
+    steps:
+      - name: Download signed Windows installer
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ github.event_name == 'pull_request' && 'windows-signed-installer-pr' || 'windows-installer' }}
+          path: .installed-smoke/installer
+
+      - name: Download installed-app smoke controller
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-installed-smoke-controller
+          path: .installed-smoke/controller
+
+      - name: Launch signed installed Windows application
+        shell: pwsh
+        env:
+          EXPECTED_PUBLISHER: PwrDrvr LLC
+        run: |
+          $ErrorActionPreference = "Stop"
+          $aliasName = "PwrSnap-windows-x64-setup.exe"
+          $installers = @(
+            Get-ChildItem -Path .installed-smoke/installer -Recurse -File -Filter "*-setup.exe" |
+              Where-Object { $_.Name -ne $aliasName }
+          )
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one versioned signed NSIS installer; found $($installers.Count)."
+          }
+          $controller = Resolve-Path ".installed-smoke/controller/smoke-installed-windows.ps1"
+          & $controller `
+            -InstallerPath $installers[0].FullName `
+            -ExpectedPublisher $env:EXPECTED_PUBLISHER `
+            -RequireBundledFfmpeg
+
+      - name: Upload signed installed-app smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-signed-smoke-diagnostics
+          path: ${{ runner.temp }}/pwrsnap-windows-smoke-diagnostics-*
+          if-no-files-found: ignore
+          retention-days: 7
+
   publish-release-assets:
     name: Create release and publish platform assets
     # PR signing smoke runs stop at the signed workflow artifact. Only tag or
@@ -737,6 +756,7 @@ jobs:
       - linux-build
       - sign
       - windows-sign
+      - windows-installed-smoke
     timeout-minutes: 15
     permissions:
       contents: write

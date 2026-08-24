@@ -7,7 +7,13 @@
 // neutral status → discriminated LibraryChatThreadStatus) are correct.
 
 import { describe, expect, it, vi } from "vitest";
-import { EVENT_CHANNELS, type ChatApprovalRequest } from "@pwrsnap/shared";
+import {
+  CHAT_APPROVAL_DETAIL_MAX_BYTES,
+  CHAT_APPROVAL_DETAIL_MAX_LINES,
+  CHAT_APPROVAL_SUMMARY_MAX_BYTES,
+  EVENT_CHANNELS,
+  type ChatApprovalRequest
+} from "@pwrsnap/shared";
 import type { ChatControllerEvent } from "@pwrdrvr/agent-client";
 import {
   makeChatBroadcast,
@@ -394,6 +400,86 @@ describe("makeChatBroadcast", () => {
       }
     ]);
     expect(registered[0]).not.toHaveProperty("params");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("strips controls and bidi while byte/line bounding huge approval text before broker and IPC", () => {
+    const send = vi.fn();
+    const onApprovalRequested = vi.fn((_request: ChatApprovalRequest) => true);
+    const broadcast = makeChatBroadcast(LIBRARY_CHANNELS, send, {
+      onApprovalRequested
+    });
+
+    broadcast({
+      type: "approval_requested",
+      threadId: "thread-hostile",
+      turnId: "turn-hostile",
+      approval: {
+        id: "approval-hostile",
+        method: "item/commandExecution/requestApproval",
+        kind: "exec",
+        summary: `Run\u0000\u202e${"🙂".repeat(1_000)}`,
+        params: {
+          detail: Array.from(
+            { length: CHAT_APPROVAL_DETAIL_MAX_LINES + 20 },
+            (_, index) => `line-${index}\u0007\u2066${"x".repeat(300)}`
+          ).join("\n"),
+          command: "never-forward-this-field"
+        }
+      }
+    });
+
+    expect(onApprovalRequested).toHaveBeenCalledTimes(1);
+    const request = onApprovalRequested.mock.calls[0]![0] as ChatApprovalRequest;
+    expect(Buffer.byteLength(request.summary, "utf8")).toBeLessThanOrEqual(
+      CHAT_APPROVAL_SUMMARY_MAX_BYTES
+    );
+    expect(Buffer.byteLength(request.detail ?? "", "utf8")).toBeLessThanOrEqual(
+      CHAT_APPROVAL_DETAIL_MAX_BYTES
+    );
+    expect((request.detail ?? "").split("\n").length).toBeLessThanOrEqual(
+      CHAT_APPROVAL_DETAIL_MAX_LINES
+    );
+    expect(`${request.summary}${request.detail ?? ""}`).not.toMatch(
+      /[\u0000\u0007\u202e\u2066]/u
+    );
+    expect(request).not.toHaveProperty("params");
+    expect(send).toHaveBeenCalledWith(
+      EVENT_CHANNELS.libraryChatApprovalRequested,
+      request
+    );
+  });
+
+  it("rejects hostile exact IDs before broker registration or renderer broadcast", () => {
+    const send = vi.fn();
+    const onApprovalRequested = vi.fn(() => true);
+    const onInvalidApprovalRequested = vi.fn();
+    const broadcast = makeChatBroadcast(LIBRARY_CHANNELS, send, {
+      onApprovalRequested,
+      onInvalidApprovalRequested
+    });
+
+    for (const [threadId, turnId, approvalId] of [
+      ["thread\u202espoofed", "turn-safe", "approval-safe"],
+      ["thread-safe", "turn\u0000control", "approval-safe"],
+      ["thread-safe", "turn-safe", "a".repeat(257)]
+    ]) {
+      broadcast({
+        type: "approval_requested",
+        threadId,
+        turnId,
+        approval: {
+          id: approvalId,
+          method: "item/fileChange/requestApproval",
+          kind: "patch",
+          summary: "Approve?",
+          params: null
+        }
+      });
+    }
+
+    expect(onInvalidApprovalRequested).toHaveBeenCalledTimes(3);
+    expect(onApprovalRequested).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
   });
 

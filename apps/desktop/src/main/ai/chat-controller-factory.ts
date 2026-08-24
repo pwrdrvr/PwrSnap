@@ -453,7 +453,20 @@ export async function buildChatSurface(
                 approvalId: request.approvalId,
                 decision: toKitApprovalDecision(decision)
               });
-            }) ?? false
+            }) ?? false,
+          onInvalidApprovalRequested: (identity) => {
+            void controller.resolveApproval({
+              threadId: identity.threadId,
+              turnId: identity.turnId,
+              approvalId: identity.approvalId,
+              decision: "denied"
+            }).catch(() => {
+              // Never log the backend-controlled IDs or payload text.
+              toAgentKitLogger(config.loggerScope).warn?.(
+                "failed to deny malformed chat approval request"
+              );
+            });
+          }
         }
       : {}),
     ...(config.messageStatusFor !== undefined ? { messageStatusFor: config.messageStatusFor } : {})

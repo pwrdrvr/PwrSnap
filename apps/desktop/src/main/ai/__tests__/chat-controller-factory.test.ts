@@ -511,6 +511,41 @@ describe("buildChatSurface — dispose", () => {
     storeGet.mockRestore();
   });
 
+  test("safe-denies an invalid backend approval identity without broker or renderer exposure", async () => {
+    const storeGet = vi.spyOn(ThreadStoreAdapter.prototype, "get").mockResolvedValue(null);
+    const controlled = controllableBackend();
+    const register = vi.fn(() => true);
+    const send = vi.fn();
+    const surface = await buildChatSurface(
+      baseConfig({
+        provider: "codex",
+        approvalBroker: approvalBrokerDouble({ register }),
+        send: send as unknown as ChatSurfaceConfig["send"]
+      }),
+      { makeCodexClient: () => controlled.backend }
+    );
+
+    try {
+      const backendDecision = controlled.requestApproval(
+        "item/commandExecution/requestApproval",
+        {
+          threadId: "thread\u202espoofed",
+          turnId: "turn-invalid",
+          command: "never expose"
+        }
+      );
+
+      await expect(backendDecision).resolves.toBe("denied");
+      expect(register).not.toHaveBeenCalled();
+      expect(
+        send.mock.calls.some(([channel]) => channel === "x:f")
+      ).toBe(false);
+    } finally {
+      await surface.dispose();
+      storeGet.mockRestore();
+    }
+  });
+
   test("closes broker ownership before closing the exclusive backend", async () => {
     const order: string[] = [];
     const controlled = controllableBackend();

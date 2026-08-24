@@ -26,7 +26,7 @@ import type {
   LibraryChatThreadView,
   TypedEventChannel
 } from "@pwrsnap/shared";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, parseChatApprovalRequest } from "@pwrsnap/shared";
 
 /** Typed broadcast — accepts any typed event channel. Default impl sends to
  *  every live BrowserWindow. */
@@ -80,6 +80,14 @@ export type ChatEventAdapterOptions = {
   /** Register the exact sanitized request with its originating controller.
    *  False means duplicate/terminal and suppresses another requested event. */
   onApprovalRequested?: (request: ChatApprovalRequest) => boolean;
+  /** Fail closed on a malformed/unsafe request without letting that raw
+   *  payload enter the broker or any renderer. The controller-bound callback
+   *  can deny its original backend resolver by exact raw identity. */
+  onInvalidApprovalRequested?: (identity: {
+    threadId: string;
+    turnId: string;
+    approvalId: string;
+  }) => void;
   /** #471 can inject its backend terminal tracker here; the adapter remains
    *  producer-truthful and never requires a renderer-only status merge. */
   messageStatusFor?: (event: MessageCommittedEvent) => ChatMessage["status"];
@@ -214,7 +222,7 @@ export function makeChatBroadcast(
         });
         return;
       case "approval_requested": {
-        const request: ChatApprovalRequest = {
+        const request = parseChatApprovalRequest({
           threadId: event.threadId,
           turnId: event.turnId,
           approvalId: event.approval.id,
@@ -222,7 +230,15 @@ export function makeChatBroadcast(
           ...(typeof (event.approval.params as { detail?: unknown } | null)?.detail === "string"
             ? { detail: (event.approval.params as { detail: string }).detail }
             : {})
-        };
+        });
+        if (request === null) {
+          options.onInvalidApprovalRequested?.({
+            threadId: event.threadId,
+            turnId: event.turnId,
+            approvalId: event.approval.id
+          });
+          return;
+        }
         if (options.onApprovalRequested?.(request) === false) return;
         if (options.shouldSend?.(event.threadId) === false) return;
         send(channels.approvalRequested, request);

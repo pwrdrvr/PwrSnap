@@ -128,7 +128,10 @@ const { openDatabase, closeDatabase, getDb } = await import("../../persistence/d
 const { packBundleV2, buildCompositeThumbnail } = await import(
   "../../persistence/bundle-store"
 );
-const { materializePendingSourceForCapture } = await import(
+const {
+  materializePendingSourceForCapture,
+  readPendingSourceForCapture
+} = await import(
   "../../persistence/pending-source-store"
 );
 const { insertLayerTreeForCapture, listLayerTree } = await import(
@@ -310,6 +313,59 @@ function editedShape(): Overlay {
   };
 }
 
+async function replaceCopiedFragmentSource(
+  captureId: string,
+  sourceBytes: Buffer
+): Promise<string> {
+  const copyResult = await bus.dispatch(
+    "clipboard:copyLayerFragment",
+    { captureId, layerIds: ["ras_clipchg_xxxx"] },
+    { principal: "ipc" }
+  );
+  if (!copyResult.ok) throw new Error("expected fragment copy to succeed");
+
+  const fragment = JSON.parse(
+    clipboard.readBuffer(CLIPBOARD_LAYER_FRAGMENT_UTI).toString("utf8")
+  ) as {
+    source_refs: Array<{ sha256: string; png_base64: string }>;
+    layers: BundleLayerNode[];
+  };
+  const original = fragment.source_refs[0];
+  if (original === undefined) throw new Error("expected copied source_ref");
+  const hostileSha = createHash("sha256").update(sourceBytes).digest("hex");
+  original.sha256 = hostileSha;
+  original.png_base64 = sourceBytes.toString("base64");
+  fragment.layers = fragment.layers.map((node) =>
+    node.kind === "raster"
+      ? {
+          ...node,
+          source_ref: { ...node.source_ref, sha256: hostileSha }
+        }
+      : node
+  );
+  fakeClipboard.pasteboard.set(
+    CLIPBOARD_LAYER_FRAGMENT_UTI,
+    Buffer.from(JSON.stringify(fragment), "utf8")
+  );
+  return hostileSha;
+}
+
+async function makeAnimatedFragmentGif(): Promise<Buffer> {
+  const width = 2;
+  const pageHeight = 2;
+  const channels = 3;
+  const height = pageHeight * 2;
+  const frameBytes = width * pageHeight * channels;
+  const raw = Buffer.alloc(width * height * channels);
+  raw.fill(0xff, 0, frameBytes);
+  raw.fill(0x20, frameBytes);
+  return await sharp(raw, {
+    raw: { width, height, channels, pageHeight }
+  })
+    .gif({ delay: [50, 50], loop: 0 })
+    .toBuffer();
+}
+
 describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => {
   test("a successful clipboard:copy emits exactly one 'changed' event", async () => {
     const captureId = await seedSimpleV2Capture();
@@ -468,6 +524,145 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     // real layer landed and we did NOT fall back to the flattened PNG.
     expect(pasteRes.value.insertedLayerIds.length).toBeGreaterThan(0);
     expect(pasteRes.value.fallbackUsedPng).toBe(false);
+  });
+
+  test("paste rejects a huge-pixel compressed fragment raster before persistence", async () => {
+    const captureId = await seedSimpleV2Capture();
+    const beforeIds = listLayerTree(captureId).map((layer) => layer.id);
+    const hugePng = await sharp({
+      create: {
+        width: 6_000,
+        height: 6_000,
+        channels: 3,
+        background: { r: 1, g: 2, b: 3 }
+      }
+    })
+      .png()
+      .toBuffer();
+    await replaceCopiedFragmentSource(captureId, hugePng);
+
+    const result = await bus.dispatch(
+      "clipboard:pasteLayerFragment",
+      { captureId },
+      { principal: "ipc" }
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "source_raster_rejected",
+        message: "clipboard source image is not safe to import"
+      }
+    });
+    expect(listLayerTree(captureId).map((layer) => layer.id)).toEqual(beforeIds);
+  });
+
+  test("paste rejects animated fragment sources instead of flattening frame one", async () => {
+    const captureId = await seedSimpleV2Capture();
+    await replaceCopiedFragmentSource(captureId, await makeAnimatedFragmentGif());
+
+    const result = await bus.dispatch(
+      "clipboard:pasteLayerFragment",
+      { captureId },
+      { principal: "ipc" }
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "source_raster_rejected" }
+    });
+  });
+
+  test("paste rejects fragment sources outside the approved raster allowlist", async () => {
+    const captureId = await seedSimpleV2Capture();
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2"/></svg>'
+    );
+    await replaceCopiedFragmentSource(captureId, svg);
+
+    const result = await bus.dispatch(
+      "clipboard:pasteLayerFragment",
+      { captureId },
+      { principal: "ipc" }
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "source_raster_rejected" }
+    });
+  });
+
+  test("paste rejects a truncated PNG that passes metadata probing", async () => {
+    const captureId = await seedSimpleV2Capture();
+    const png = await sharp({
+      create: {
+        width: 64,
+        height: 64,
+        channels: 4,
+        background: { r: 40, g: 80, b: 120, alpha: 1 }
+      }
+    })
+      .png()
+      .toBuffer();
+    const truncated = png.subarray(0, png.byteLength - 20);
+    await expect(sharp(truncated).metadata()).resolves.toMatchObject({
+      format: "png",
+      width: 64,
+      height: 64
+    });
+    await replaceCopiedFragmentSource(captureId, truncated);
+
+    const result = await bus.dispatch(
+      "clipboard:pasteLayerFragment",
+      { captureId },
+      { principal: "ipc" }
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "source_raster_rejected" }
+    });
+  });
+
+  test("paste canonicalizes an approved fragment raster to PNG and rewrites its hash", async () => {
+    const captureId = await seedSimpleV2Capture();
+    const beforeIds = new Set(listLayerTree(captureId).map((layer) => layer.id));
+    const jpeg = await sharp({
+      create: {
+        width: CANVAS_W,
+        height: CANVAS_H,
+        channels: 3,
+        background: { r: 20, g: 80, b: 140 }
+      }
+    })
+      .jpeg()
+      .toBuffer();
+    const inputSha = await replaceCopiedFragmentSource(captureId, jpeg);
+
+    const result = await bus.dispatch(
+      "clipboard:pasteLayerFragment",
+      { captureId },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    const pastedRaster = listLayerTree(captureId).find(
+      (layer) => !beforeIds.has(layer.id) && layer.kind === "raster"
+    );
+    if (pastedRaster === undefined || pastedRaster.kind !== "raster") {
+      throw new Error("expected pasted raster");
+    }
+    const canonicalSha = pastedRaster.source_ref.sha256;
+    expect(canonicalSha).not.toBe(inputSha);
+    const canonicalBytes = await readPendingSourceForCapture(
+      captureId,
+      canonicalSha
+    );
+    const canonicalMetadata = await sharp(canonicalBytes).metadata();
+    expect(canonicalMetadata).toMatchObject({
+      format: "png",
+      width: CANVAS_W,
+      height: CANVAS_H
+    });
+    expect(canonicalMetadata.pages ?? 1).toBe(1);
+    expect(createHash("sha256").update(canonicalBytes).digest("hex")).toBe(
+      canonicalSha
+    );
   });
 
   test("paste stacks the pasted block above the target's layers and de-names a carried 'Source' raster", async () => {

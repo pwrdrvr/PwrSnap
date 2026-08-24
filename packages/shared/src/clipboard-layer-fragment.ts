@@ -20,11 +20,11 @@
 //   3. zod schema validation
 //   4. sha256(pngBytes) verification — closes the trojan vector where
 //      an attacker claims a known-good sha but ships different bytes
-//   5. sharp decode-probe — the bytes must actually decode as PNG and
-//      have sane dimensions
+//   5. shared raster sanitizer — approved still format, one page/frame,
+//      bounded pixels/channels/raw bytes, full decode, canonical PNG output
 //
 // Defense (1) lives at the IPC handler boundary; (2)+(3) here in the
-// zod schema; (4)+(5) at the paste handler before any layer is
+// zod schema; (4)+(5) at the paste handler before any source is
 // inserted.
 
 import { z } from "zod";
@@ -87,9 +87,9 @@ const Base64Png = z
 
 export const ClipboardSourceRef = z.object({
   sha256: Sha256Hex,
-  /** Base64-encoded PNG bytes. Receiver verifies sha256(decoded) === sha256
-   *  AND that sharp can decode the bytes as PNG before accepting the
-   *  payload. */
+  /** Base64-encoded raster bytes. Receiver verifies sha256(decoded) ===
+   *  sha256, passes them through the shared still-raster boundary, then
+   *  rewrites the layer reference to the canonical PNG content hash. */
   png_base64: Base64Png
 });
 export type ClipboardSourceRef = z.infer<typeof ClipboardSourceRef>;

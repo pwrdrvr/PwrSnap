@@ -74,6 +74,15 @@ the primary compressed-input decode boundary, while Electron `NativeImage`
 clipboard paths preflight width/height/raw RGBA size before their synchronous
 `toPNG()` call and re-enter the same sanitizer afterward.
 
+The private layer-fragment paste path uses the same boundary for every embedded
+source before writing pending storage. It verifies the sender's input hash,
+canonicalizes approved still rasters to PNG, recomputes the canonical hash, and
+rewrites pasted raster references to those bytes. Hostile fragments therefore
+cannot use the private UTI to bypass page, format, pixel, decoded-memory, or
+output limits. When callers request `preservePng`, the sanitizer performs a
+complete bounded raw decode first; metadata-only success is not enough to
+persist a truncated original PNG.
+
 The generic verifier explicitly rejects a leaf symlink or redirecting reparse
 point, requires a regular file, and compares the initial, opened-handle, and
 post-open `dev`/`ino` identities. POSIX opens add `O_NOFOLLOW | O_NONBLOCK`:

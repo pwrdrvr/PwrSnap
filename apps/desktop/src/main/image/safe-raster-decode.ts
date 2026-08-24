@@ -236,6 +236,31 @@ async function readBoundedPngOutput(
   return Buffer.concat(chunks, totalBytes);
 }
 
+async function fullyDecodeSafeRaster(
+  inputBytes: Buffer,
+  metadata: SafeRasterMetadata
+): Promise<void> {
+  const pipeline = sharp(inputBytes, {
+    ...SHARP_INPUT_OPTIONS,
+    pages: PASTE_IMAGE_MAX_PAGES
+  }).raw();
+  let totalBytes = 0;
+  try {
+    for await (const chunk of pipeline) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += bytes.byteLength;
+      if (totalBytes > metadata.decodedBytes) {
+        throw new SafeRasterError("decoded_size_cap_exceeded");
+      }
+    }
+  } catch (cause) {
+    if (cause instanceof SafeRasterError) throw cause;
+    throw new SafeRasterError("decode_failed");
+  } finally {
+    pipeline.destroy();
+  }
+}
+
 /**
  * Validate an encoded still image, then return a bounded PNG. The PNG stream
  * is accumulated only up to the configured cap; raw decode is independently
@@ -259,6 +284,10 @@ export async function canonicalizeSafeRasterToPng(
     if (inputBytes.byteLength > maxOutputBytes) {
       throw new SafeRasterError("output_size_cap_exceeded");
     }
+    // metadata() validates only enough structure to identify the image. A
+    // truncated PNG can pass that probe, so force a complete bounded pixel
+    // decode before preserving its original bytes/DPI chunks verbatim.
+    await fullyDecodeSafeRaster(inputBytes, metadata);
     return { pngBytes: inputBytes, metadata };
   }
 

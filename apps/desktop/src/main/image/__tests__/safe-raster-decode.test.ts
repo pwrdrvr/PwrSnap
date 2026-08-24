@@ -136,4 +136,31 @@ describe("safe raster decode boundary", () => {
     expect(caught).toBeInstanceOf(SafeRasterError);
     expect(caught).toMatchObject({ code: "output_size_cap_exceeded" });
   });
+
+  test("fully decodes a preserved PNG before returning original bytes", async () => {
+    const png = await sharp({
+      create: {
+        width: 64,
+        height: 64,
+        channels: 4,
+        background: { r: 40, g: 80, b: 120, alpha: 1 }
+      }
+    })
+      .png()
+      .toBuffer();
+    const truncated = png.subarray(0, png.byteLength - 20);
+
+    // This is the exact gap: the header-only metadata probe succeeds.
+    await expect(sharp(truncated).metadata()).resolves.toMatchObject({
+      width: 64,
+      height: 64,
+      format: "png"
+    });
+    await expect(
+      canonicalizeSafeRasterToPng(truncated, { preservePng: true })
+    ).rejects.toMatchObject({
+      name: "SafeRasterError",
+      code: "decode_failed"
+    });
+  });
 });

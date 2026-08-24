@@ -9,19 +9,19 @@
 // Defenses live on both sides:
 //
 //   • Renderer-side: filter `dataTransfer.types` for `Files` only —
-//     dragging arbitrary text or URLs is a no-op. Filter
-//     `dataTransfer.files` by MIME type, refusing anything not image/*.
-//     Single-file paste only — multi-image batch drop is deferred.
+//     dragging arbitrary text or URLs is a no-op. MIME-empty Files from
+//     Windows Explorer are admitted only through a bounded image-extension
+//     allowlist, then main's real decoder remains authoritative.
+//     Multi-file drops run sequentially with a hard count cap, preserving
+//     insert/z-order while bounding worker and memory pressure.
 //   • Main-side: a bounded verified-handle read (symlink + privileged-dir
 //     reject) feeds bytes, never a pathname, into the same worker pipeline as
 //     paste. Even if a renderer compromise supplies a hostile path, main
 //     refuses it or snapshots the already-opened file.
 //
-// File paths from `dataTransfer.files[i].path` are an Electron-specific
-// extension to the standard File API — in pure-web contexts the path is
-// not exposed for sandbox reasons. Electron's contextIsolation does not
-// strip this extension; the renderer is allowed to see the path because
-// the user already authorized read by dragging it onto our window.
+// Electron 32 removed the non-standard `File.path` extension. The narrow
+// preload bridge calls renderer-process `webUtils.getPathForFile(file)`;
+// the renderer never receives the Electron/webUtils object itself.
 
 import { useCallback, useState } from "react";
 import type { PwrSnapError } from "@pwrsnap/shared";
@@ -36,6 +36,18 @@ export interface UseDropImageArgs {
   canvasEl?: HTMLElement | null;
   onError?: (error: PwrSnapError) => void;
   onDropped?: (layerId: string) => void;
+  onCompleted?: (summary: DropImageSummary) => void;
+}
+
+export interface DropImageSummary {
+  /** Files the OS supplied in this one drop gesture. */
+  requestedCount: number;
+  /** Files examined within DROP_IMAGE_MAX_FILES. */
+  attemptedCount: number;
+  /** One id per successfully inserted raster, in drop/z-order. */
+  importedLayerIds: string[];
+  /** Files not attempted because the gesture exceeded the hard cap. */
+  truncatedCount: number;
 }
 
 export interface UseDropImageReturn {
@@ -53,28 +65,44 @@ export interface UseDropImageReturn {
   isDragOver: boolean;
 }
 
-/**
- * Some Electron renderers expose `File.path` synchronously on
- * dataTransfer; some require `webUtils.getPathForFile(file)` since
- * Electron 32. Type the extension here so the rest of the hook can
- * treat the renderer agnostically.
- */
-type ElectronFile = File & { path?: string };
+/** Maximum files one gesture may decode/insert. Work stays sequential. */
+export const DROP_IMAGE_MAX_FILES = 16;
 
-function getFilePath(file: ElectronFile): string | null {
-  // The path extension is the original; the webUtils API is what
-  // Electron ≥ 32 exposes. We prefer the path extension when present
-  // and fall back to webUtils (if exposed via preload).
-  if (typeof file.path === "string" && file.path.length > 0) {
-    return file.path;
+/**
+ * Windows Explorer commonly leaves File.type empty. Keep this list bounded
+ * to formats Sharp/libvips is expected to decode in PwrSnap; main still
+ * decode-probes every byte and may reject a build-specific unsupported codec.
+ */
+const EMPTY_MIME_IMAGE_EXTENSIONS = new Set([
+  ".avif",
+  ".bmp",
+  ".gif",
+  ".heic",
+  ".heif",
+  ".jpeg",
+  ".jpg",
+  ".png",
+  ".tif",
+  ".tiff",
+  ".webp"
+]);
+
+export function isPotentialDroppedImage(file: File): boolean {
+  if (file.type.toLowerCase().startsWith("image/")) return true;
+  if (file.type !== "" && file.type.toLowerCase() !== "application/octet-stream") {
+    return false;
   }
-  const electron = (
-    window as unknown as { electron?: { webUtils?: { getPathForFile?: (f: File) => string } } }
-  ).electron;
-  const fn = electron?.webUtils?.getPathForFile;
+  const dot = file.name.lastIndexOf(".");
+  if (dot < 0) return false;
+  return EMPTY_MIME_IMAGE_EXTENSIONS.has(file.name.slice(dot).toLowerCase());
+}
+
+function getFilePath(file: File): string | null {
+  const fn = window.pwrsnapApi?.getPathForFile;
   if (typeof fn === "function") {
     try {
-      return fn(file);
+      const value = fn(file);
+      return value.length > 0 ? value : null;
     } catch {
       return null;
     }
@@ -83,8 +111,14 @@ function getFilePath(file: ElectronFile): string | null {
 }
 
 export function useDropImage(args: UseDropImageArgs): UseDropImageReturn {
-  const { captureId, bundleFormatVersion, canvasEl, onError, onDropped } =
-    args;
+  const {
+    captureId,
+    bundleFormatVersion,
+    canvasEl,
+    onError,
+    onDropped,
+    onCompleted
+  } = args;
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
 
   const onDragOver = useCallback((e: React.DragEvent<HTMLElement>): void => {
@@ -116,30 +150,8 @@ export function useDropImage(args: UseDropImageArgs): UseDropImageReturn {
         });
         return;
       }
-      const files = Array.from(e.dataTransfer.files) as ElectronFile[];
+      const files = Array.from(e.dataTransfer.files);
       if (files.length === 0) return;
-      // Single-file drop only — multi-file batch deferred. Take the
-      // first file; warn (via no-op) on others rather than failing the
-      // whole drop.
-      const first = files[0];
-      if (first === undefined) return;
-      if (!first.type.startsWith("image/")) {
-        onError?.({
-          kind: "validation",
-          code: "drop_not_image",
-          message: "Only image files supported"
-        });
-        return;
-      }
-      const filePath = getFilePath(first);
-      if (filePath === null) {
-        onError?.({
-          kind: "validation",
-          code: "drop_path_unavailable",
-          message: "Dropped file path unavailable"
-        });
-        return;
-      }
       // Translate clientX/Y → normalized canvas coords. If we don't
       // have the canvas el, anchor at center (positionXn = positionYn
       // = 0.5 is the handler's default when omitted).
@@ -160,22 +172,62 @@ export function useDropImage(args: UseDropImageArgs): UseDropImageReturn {
           if (positionYn > 1) positionYn = 1;
         }
       }
-      const req: {
-        captureId: string;
-        filePath: string;
-        positionXn?: number;
-        positionYn?: number;
-      } = { captureId, filePath };
-      if (positionXn !== undefined) req.positionXn = positionXn;
-      if (positionYn !== undefined) req.positionYn = positionYn;
-      const result = await dispatch("editor:dropImageAsLayer", req);
-      if (!result.ok) {
-        onError?.(result.error);
-        return;
+      const attempted = files.slice(0, DROP_IMAGE_MAX_FILES);
+      const importedLayerIds: string[] = [];
+      let firstError: PwrSnapError | null = null;
+
+      // Deliberately sequential: main computes each new layer's z-index from
+      // the already-committed tree, so input order becomes visual z-order and
+      // only one bounded decode worker is live at a time.
+      for (const file of attempted) {
+        if (!isPotentialDroppedImage(file)) {
+          firstError ??= {
+            kind: "validation",
+            code: "drop_not_image",
+            message: "Only image files supported"
+          };
+          continue;
+        }
+        const filePath = getFilePath(file);
+        if (filePath === null) {
+          firstError ??= {
+            kind: "validation",
+            code: "drop_path_unavailable",
+            message: "Dropped file path unavailable"
+          };
+          continue;
+        }
+        const req: {
+          captureId: string;
+          filePath: string;
+          positionXn?: number;
+          positionYn?: number;
+        } = { captureId, filePath };
+        if (positionXn !== undefined) req.positionXn = positionXn;
+        if (positionYn !== undefined) req.positionYn = positionYn;
+        const result = await dispatch("editor:dropImageAsLayer", req);
+        if (!result.ok) {
+          firstError ??= result.error;
+          continue;
+        }
+        importedLayerIds.push(result.value.layerId);
+        onDropped?.(result.value.layerId);
       }
-      onDropped?.(result.value.layerId);
+
+      // A single-file failure keeps the detailed structured Result error.
+      // Multi-file gestures get one aggregate completion callback so the UI
+      // cannot imply that every file landed when only a subset did.
+      if (files.length === 1 && importedLayerIds.length === 0 && firstError !== null) {
+        onError?.(firstError);
+      }
+      onCompleted?.({
+        requestedCount: files.length,
+        attemptedCount: attempted.length,
+        importedLayerIds,
+        truncatedCount: files.length - attempted.length
+      });
     },
-    [captureId, bundleFormatVersion, canvasEl, onError, onDropped]
+    [captureId, bundleFormatVersion, canvasEl, onError, onDropped, onCompleted]
   );
 
   return { onDragOver, onDragLeave, onDrop, isDragOver };

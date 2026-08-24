@@ -35,7 +35,7 @@ import {
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getCaptureById } from "../persistence/captures-repo";
-import { insertLayerTreeForCapture, listLayerTree } from "../persistence/layers-repo";
+import { insertLayer, listLayerTree } from "../persistence/layers-repo";
 import { scheduleRepack } from "../persistence/bundle-store";
 import { materializePendingSourceForCapture } from "../persistence/pending-source-store";
 import { getMainLogger } from "../log";
@@ -235,7 +235,15 @@ async function persistRasterFromBytes(args: {
     superseded_by: null,
     created_at: now
   };
-  insertLayerTreeForCapture(args.captureId, [rasterLayer]);
+  // Fresh dropped/pasted rasters belong above the existing document. The
+  // repository resolves MAX(z_index)+gap inside the insert transaction;
+  // sequential multi-file drops therefore preserve input order as visual
+  // z-order instead of tying every raster at z=0.
+  insertLayer({
+    captureId: args.captureId,
+    node: rasterLayer,
+    bumpZIndexToMax: true
+  });
   return rasterId;
 }
 

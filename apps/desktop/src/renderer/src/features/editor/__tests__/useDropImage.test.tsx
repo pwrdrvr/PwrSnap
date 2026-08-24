@@ -4,6 +4,7 @@
 //   • onDragOver sets dropEffect + isDragOver when dataTransfer has Files
 //   • onDragOver no-ops when no files (text drag)
 //   • onDrop ignores non-image files (drop_not_image error)
+//   • Windows MIME-empty HEIC/AVIF-style files reach main's decoder
 //   • onDrop ignores missing file paths (drop_path_unavailable error)
 //   • v1 capture refuses without dispatching (v1_capture_use_v2)
 //   • v2 capture: dispatches editor:dropImageAsLayer with normalized
@@ -20,10 +21,12 @@ vi.mock("../../../lib/pwrsnap", () => ({
   dispatch: (...args: unknown[]) => dispatchMock(...args)
 }));
 
-const { useDropImage } = await import("../useDropImage");
+const { DROP_IMAGE_MAX_FILES, useDropImage } = await import("../useDropImage");
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
+const filePaths = new WeakMap<File, string>();
+const getPathForFileMock = vi.fn((file: File) => filePaths.get(file) ?? "");
 
 beforeEach(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -32,6 +35,10 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   dispatchMock.mockReset();
+  getPathForFileMock.mockClear();
+  window.pwrsnapApi = {
+    getPathForFile: getPathForFileMock
+  } as unknown as NonNullable<Window["pwrsnapApi"]>;
 });
 
 afterEach(() => {
@@ -41,6 +48,7 @@ afterEach(() => {
   container?.remove();
   container = null;
   root = null;
+  delete window.pwrsnapApi;
 });
 
 interface HookHandle {
@@ -58,6 +66,12 @@ const HookHost = forwardRef<
     canvasEl?: HTMLElement | null;
     onError?: (e: { kind: string; code: string; message: string }) => void;
     onDropped?: (id: string) => void;
+    onCompleted?: (summary: {
+      requestedCount: number;
+      attemptedCount: number;
+      importedLayerIds: string[];
+      truncatedCount: number;
+    }) => void;
   }
 >(function HookHost(props, ref) {
   const hook = useDropImage(props);
@@ -91,7 +105,7 @@ async function mountHook(
 function makeFile(name: string, type: string, path: string | null): File {
   const f = new File([new Uint8Array([0x89])], name, { type });
   if (path !== null) {
-    Object.defineProperty(f, "path", { value: path });
+    filePaths.set(f, path);
   }
   return f;
 }
@@ -178,6 +192,25 @@ describe("useDropImage", () => {
     expect(dispatchMock).not.toHaveBeenCalled();
   });
 
+  test("Windows empty-MIME image extension defers to main decoder", async () => {
+    dispatchMock.mockResolvedValue({ ok: true, value: { layerId: "heic_id" } });
+    const hook = await mountHook({
+      captureId: "cap_v2",
+      bundleFormatVersion: 2
+    });
+    const event = makeDragEvent(
+      ["Files"],
+      [makeFile("phone.HEIC", "", "C:\\Users\\tester\\phone.HEIC")]
+    );
+
+    await hook.onDrop(event);
+
+    expect(dispatchMock).toHaveBeenCalledWith("editor:dropImageAsLayer", {
+      captureId: "cap_v2",
+      filePath: "C:\\Users\\tester\\phone.HEIC"
+    });
+  });
+
   test("drop rejects missing file path (drop_path_unavailable)", async () => {
     const errors: { code: string }[] = [];
     const hook = await mountHook({
@@ -191,6 +224,7 @@ describe("useDropImage", () => {
     );
     await hook.onDrop(event);
     expect(errors).toEqual([{ code: "drop_path_unavailable" }]);
+    expect(getPathForFileMock).toHaveBeenCalledWith(event.dataTransfer.files[0]);
   });
 
   test("v2 happy path: dispatches with normalized position from canvas rect", async () => {
@@ -231,6 +265,105 @@ describe("useDropImage", () => {
       positionYn: 0.5
     });
     expect(dropped).toEqual(["dropped_id"]);
+  });
+
+  test("multi-file drop imports sequentially and reports exact completion", async () => {
+    let activeDispatches = 0;
+    let maxActiveDispatches = 0;
+    dispatchMock.mockImplementation(async (_name: string, req: { filePath: string }) => {
+      activeDispatches += 1;
+      maxActiveDispatches = Math.max(maxActiveDispatches, activeDispatches);
+      await Promise.resolve();
+      activeDispatches -= 1;
+      return { ok: true, value: { layerId: req.filePath.endsWith("a.png") ? "a" : "b" } };
+    });
+    const completed: unknown[] = [];
+    const dropped: string[] = [];
+    const hook = await mountHook({
+      captureId: "cap_v2",
+      bundleFormatVersion: 2,
+      onDropped: (id) => dropped.push(id),
+      onCompleted: (summary) => completed.push(summary)
+    });
+    const event = makeDragEvent(
+      ["Files"],
+      [
+        makeFile("a.png", "image/png", "/tmp/a.png"),
+        makeFile("b.png", "image/png", "/tmp/b.png")
+      ]
+    );
+
+    await hook.onDrop(event);
+
+    expect(maxActiveDispatches).toBe(1);
+    expect(dropped).toEqual(["a", "b"]);
+    expect(completed).toEqual([
+      {
+        requestedCount: 2,
+        attemptedCount: 2,
+        importedLayerIds: ["a", "b"],
+        truncatedCount: 0
+      }
+    ]);
+  });
+
+  test("multi-file partial result never implies every file landed", async () => {
+    dispatchMock.mockResolvedValue({ ok: true, value: { layerId: "image" } });
+    const errors: string[] = [];
+    const completed: Array<{ requestedCount: number; importedLayerIds: string[] }> = [];
+    const hook = await mountHook({
+      captureId: "cap_v2",
+      bundleFormatVersion: 2,
+      onError: (error) => errors.push(error.code),
+      onCompleted: (summary) => completed.push(summary)
+    });
+    const event = makeDragEvent(
+      ["Files"],
+      [
+        makeFile("notes.txt", "text/plain", "/tmp/notes.txt"),
+        makeFile("image.avif", "", "/tmp/image.avif")
+      ]
+    );
+
+    await hook.onDrop(event);
+
+    expect(errors).toEqual([]);
+    expect(completed).toEqual([
+      {
+        requestedCount: 2,
+        attemptedCount: 2,
+        importedLayerIds: ["image"],
+        truncatedCount: 0
+      }
+    ]);
+  });
+
+  test("multi-file drop caps attempted files and reports truncation", async () => {
+    dispatchMock.mockResolvedValue({ ok: true, value: { layerId: "layer" } });
+    const completed: Array<{
+      requestedCount: number;
+      attemptedCount: number;
+      importedLayerIds: string[];
+      truncatedCount: number;
+    }> = [];
+    const hook = await mountHook({
+      captureId: "cap_v2",
+      bundleFormatVersion: 2,
+      onCompleted: (summary) => completed.push(summary)
+    });
+    const files = Array.from({ length: DROP_IMAGE_MAX_FILES + 3 }, (_, index) =>
+      makeFile(`image-${index}.png`, "image/png", `/tmp/image-${index}.png`)
+    );
+
+    await hook.onDrop(makeDragEvent(["Files"], files));
+
+    expect(dispatchMock).toHaveBeenCalledTimes(DROP_IMAGE_MAX_FILES);
+    expect(completed[0]).toMatchObject({
+      requestedCount: DROP_IMAGE_MAX_FILES + 3,
+      attemptedCount: DROP_IMAGE_MAX_FILES,
+      truncatedCount: 3
+    });
+    expect(completed[0]?.importedLayerIds).toHaveLength(DROP_IMAGE_MAX_FILES);
   });
 
   test("v2: dispatch error surfaces via onError", async () => {

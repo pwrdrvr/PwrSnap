@@ -441,6 +441,38 @@ describe("editor:dropImageAsLayer", () => {
     expect(repackCalls).toContain("cap_g");
   });
 
+  test("sequential drops preserve input order as increasing visual z-order", async () => {
+    seedV2Capture("cap_batch", "/tmp/cap_batch.pwrsnap");
+    const firstPath = join(tmpDataRoot, "first.png");
+    const secondPath = join(tmpDataRoot, "second.png");
+    writeFileSync(firstPath, Buffer.from([0x89, 0x50, 0x01]));
+    writeFileSync(secondPath, Buffer.from([0x89, 0x50, 0x02]));
+
+    const first = await bus.dispatch(
+      "editor:dropImageAsLayer",
+      { captureId: "cap_batch", filePath: firstPath },
+      { principal: "ipc" }
+    );
+    const second = await bus.dispatch(
+      "editor:dropImageAsLayer",
+      { captureId: "cap_batch", filePath: secondPath },
+      { principal: "ipc" }
+    );
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) throw new Error("expected both drops to succeed");
+    const rows = testDb
+      .prepare<[string, string], { id: string; z_index: number }>(
+        `SELECT id, z_index FROM layers WHERE id IN (?, ?)`
+      )
+      .all(first.value.layerId, second.value.layerId);
+    const zById = new Map(rows.map((row) => [row.id, row.z_index]));
+    expect(zById.get(first.value.layerId)).toBeLessThan(
+      zById.get(second.value.layerId) ?? -1
+    );
+  });
+
   test("replacing the leaf after secure read cannot change worker input", async () => {
     seedV2Capture("cap_swap", "/tmp/cap_swap.pwrsnap");
     const path = join(tmpDataRoot, "replace-after-open.png");

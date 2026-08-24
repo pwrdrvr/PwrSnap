@@ -6097,6 +6097,20 @@ function EditorLoaded({
     canvasEl: canvasRef.current,
     onError: (error) => {
       setPasteNotice({ text: formatPasteError(error), tone: "error" });
+    },
+    onCompleted: (summary) => {
+      // Single-file success needs no toast; failures already route through
+      // onError. Batch drops always report the exact landed/requested count,
+      // including files beyond the hard gesture cap.
+      if (summary.requestedCount <= 1) return;
+      const importedCount = summary.importedLayerIds.length;
+      setPasteNotice({
+        text:
+          importedCount === summary.requestedCount
+            ? `Imported ${importedCount} images`
+            : `Imported ${importedCount} of ${summary.requestedCount} images`,
+        tone: importedCount === summary.requestedCount ? "info" : "error"
+      });
     }
   });
 

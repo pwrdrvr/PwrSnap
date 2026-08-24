@@ -39,6 +39,8 @@ declare global {
     pwrsnapApi?: {
       platform: string;
       versions: { chrome: string; electron: string; node: string };
+      /** Electron 32+ replacement for the removed File.path extension. */
+      getPathForFile(file: File): string;
       dispatch<C extends CommandName>(
         name: C,
         req: Req<C>

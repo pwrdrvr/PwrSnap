@@ -97,7 +97,11 @@ const controller = {
   sendMessage: vi.fn(async () => ({ turnId: "turn1" })),
   getHistory: vi.fn(async () => []),
   rename: vi.fn(async () => kitView),
-  archive: vi.fn(async () => kitView),
+  archive: vi.fn(async (threadId: string, archived: boolean) => ({
+    ...kitView,
+    threadId,
+    archived,
+  })),
   interrupt: vi.fn(async () => undefined),
   resolveApproval: vi.fn(async () => undefined)
 };

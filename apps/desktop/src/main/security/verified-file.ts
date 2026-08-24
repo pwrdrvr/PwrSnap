@@ -67,6 +67,13 @@ export type VerifiedFileOptions = {
   /** Refuse the file before consumption when its opened size exceeds this. */
   maxBytes?: number;
   /**
+   * Internal accounting hook invoked with a raw filesystem failure before it
+   * is replaced by a path-free VerifiedFileError. Callers must not surface or
+   * persist the raw error; this exists so trusted-path health accounting can
+   * recognize platform errno values such as macOS TCC's EPERM.
+   */
+  onFileSystemError?: (cause: unknown) => void;
+  /**
    * Called for both the lexically resolved path and its canonical real path.
    * Domain-specific validators may throw their own path-free typed error.
    */
@@ -100,11 +107,23 @@ function isErrno(cause: unknown, code: string): boolean {
   );
 }
 
-async function inspectLeaf(filePath: string): Promise<BigIntStats> {
+function reportFileSystemError(options: VerifiedFileOptions, cause: unknown): void {
+  try {
+    options.onFileSystemError?.(cause);
+  } catch {
+    // Observability must never replace the verifier's path-free typed error.
+  }
+}
+
+async function inspectLeaf(
+  filePath: string,
+  options: VerifiedFileOptions
+): Promise<BigIntStats> {
   let inspected: BigIntStats;
   try {
     inspected = await lstat(filePath, { bigint: true });
-  } catch {
+  } catch (cause) {
+    reportFileSystemError(options, cause);
     throw new VerifiedFileError("stat_failed");
   }
   if (inspected.isSymbolicLink()) {
@@ -119,19 +138,27 @@ async function inspectLeaf(filePath: string): Promise<BigIntStats> {
   return inspected;
 }
 
-async function canonicalize(filePath: string): Promise<string> {
+async function canonicalize(
+  filePath: string,
+  options: VerifiedFileOptions
+): Promise<string> {
   try {
     return await realpath(filePath);
-  } catch {
+  } catch (cause) {
+    reportFileSystemError(options, cause);
     throw new VerifiedFileError("canonicalize_failed");
   }
 }
 
-async function inspectFollowing(filePath: string): Promise<BigIntStats> {
+async function inspectFollowing(
+  filePath: string,
+  options: VerifiedFileOptions
+): Promise<BigIntStats> {
   let inspected: BigIntStats;
   try {
     inspected = await stat(filePath, { bigint: true });
-  } catch {
+  } catch (cause) {
+    reportFileSystemError(options, cause);
     throw new VerifiedFileError("stat_failed");
   }
   if (!inspected.isFile()) {
@@ -140,11 +167,15 @@ async function inspectFollowing(filePath: string): Promise<BigIntStats> {
   return inspected;
 }
 
-async function inspectHandle(handle: FileHandle): Promise<BigIntStats> {
+async function inspectHandle(
+  handle: FileHandle,
+  options: VerifiedFileOptions
+): Promise<BigIntStats> {
   let inspected: BigIntStats;
   try {
     inspected = await handle.stat({ bigint: true });
-  } catch {
+  } catch (cause) {
+    reportFileSystemError(options, cause);
     throw new VerifiedFileError("stat_failed");
   }
   if (!inspected.isFile()) {
@@ -227,7 +258,7 @@ export async function withVerifiedFileHandle<T>(
     if (normalizeWindowsPathForPolicy(resolvedPath) === null) {
       throw new VerifiedFileError("open_failed");
     }
-    const initialRawStat = await inspectLeaf(resolvedPath);
+    const initialRawStat = await inspectLeaf(resolvedPath, options);
     return await withWindowsVerifiedFileHandle(
       resolvedPath,
       initialRawStat,
@@ -237,8 +268,8 @@ export async function withVerifiedFileHandle<T>(
     );
   }
 
-  const initialRawStat = await inspectLeaf(resolvedPath);
-  const canonicalPath = await canonicalize(resolvedPath);
+  const initialRawStat = await inspectLeaf(resolvedPath, options);
+  const canonicalPath = await canonicalize(resolvedPath, options);
   await options.validatePath?.(canonicalPath);
 
   await beforeOpenHookForTest?.();
@@ -253,6 +284,7 @@ export async function withVerifiedFileHandle<T>(
   try {
     handle = await open(canonicalPath, openFlags);
   } catch (cause) {
+    reportFileSystemError(options, cause);
     if (isErrno(cause, "ELOOP")) {
       throw new VerifiedFileError("symlink");
     }
@@ -261,18 +293,18 @@ export async function withVerifiedFileHandle<T>(
 
   let completed = false;
   try {
-    const openedStat = await inspectHandle(handle);
+    const openedStat = await inspectHandle(handle, options);
     if (maxBytes !== null && openedStat.size > maxBytes) {
       throw new VerifiedFileError("size_cap_exceeded");
     }
 
     // Re-check the caller's raw path after the canonical path is open. This
     // catches both a replaced leaf and a retargeted parent link/junction.
-    const postRawLstat = await inspectLeaf(resolvedPath);
+    const postRawLstat = await inspectLeaf(resolvedPath, options);
     await options.validatePath?.(resolvedPath);
-    const postCanonicalPath = await canonicalize(resolvedPath);
+    const postCanonicalPath = await canonicalize(resolvedPath, options);
     await options.validatePath?.(postCanonicalPath);
-    const postRawStat = await inspectFollowing(resolvedPath);
+    const postRawStat = await inspectFollowing(resolvedPath, options);
 
     if (
       !sameCanonicalPath(canonicalPath, postCanonicalPath) ||
@@ -284,7 +316,7 @@ export async function withVerifiedFileHandle<T>(
     }
 
     const value = await consume(handle, openedStat);
-    const finalHandleStat = await inspectHandle(handle);
+    const finalHandleStat = await inspectHandle(handle, options);
     if (!sameStableSnapshot(openedStat, finalHandleStat)) {
       throw new VerifiedFileError("file_changed");
     }
@@ -340,11 +372,12 @@ async function withWindowsVerifiedFileHandle<T>(
     await options.validatePath?.(lease.finalPath);
     try {
       handle = await open(lease.finalPath, constants.O_RDONLY);
-    } catch {
+    } catch (cause) {
+      reportFileSystemError(options, cause);
       throw new VerifiedFileError("open_failed");
     }
 
-    const openedStat = await inspectHandle(handle);
+    const openedStat = await inspectHandle(handle, options);
     if (
       !sameLeaseIdentity(lease, openedStat) ||
       !sameIdentity(initialRawStat, openedStat) ||
@@ -358,11 +391,11 @@ async function withWindowsVerifiedFileHandle<T>(
 
     // The native lease makes replacement of the opened leaf fail while these
     // raw-path checks prove that a parent junction still names that leaf.
-    const postRawLstat = await inspectLeaf(resolvedPath);
+    const postRawLstat = await inspectLeaf(resolvedPath, options);
     await options.validatePath?.(resolvedPath);
-    const postCanonicalPath = await canonicalize(resolvedPath);
+    const postCanonicalPath = await canonicalize(resolvedPath, options);
     await options.validatePath?.(postCanonicalPath);
-    const postRawStat = await inspectFollowing(resolvedPath);
+    const postRawStat = await inspectFollowing(resolvedPath, options);
     if (
       !sameCanonicalPath(lease.finalPath, postCanonicalPath) ||
       !sameIdentity(postRawLstat, openedStat) ||
@@ -372,7 +405,7 @@ async function withWindowsVerifiedFileHandle<T>(
     }
 
     const value = await consume(handle, openedStat);
-    const finalHandleStat = await inspectHandle(handle);
+    const finalHandleStat = await inspectHandle(handle, options);
     if (!sameStableSnapshot(openedStat, finalHandleStat)) {
       throw new VerifiedFileError("file_changed");
     }

@@ -67,8 +67,7 @@ export type ValidatedImageAsset = {
   hasAlphaChannel: boolean;
 };
 
-export type ValidatedPwrsnapBundle = {
-  sourceBytes: Buffer;
+type ValidatedPwrsnapContents = {
   manifest: BundleManifest;
   document: BundleDocument;
   sources: Map<string, Buffer>;
@@ -79,6 +78,10 @@ export type ValidatedPwrsnapBundle = {
   baseSourceSha256: string;
   contentDigest: string;
   portableMetadata: PortableBundleMetadata;
+};
+
+export type ValidatedPwrsnapBundle = ValidatedPwrsnapContents & {
+  sourceBytes: Buffer;
   openedFileIdentity: {
     dev: string;
     ino: string;
@@ -86,6 +89,8 @@ export type ValidatedPwrsnapBundle = {
     size: string;
   } | null;
 };
+
+export type ValidatedInstalledPwrsnapBundle = ValidatedPwrsnapContents;
 
 /**
  * Open and validate one path through the shared verified-file boundary. ZIP
@@ -104,10 +109,14 @@ export async function readAndValidatePwrsnapBundle(
           throw corrupt("archive_size_invalid", "The PwrSnap bundle is empty.");
         }
         const sourceBytes = await readExactHandleSnapshot(handle, openedStat);
-        const openedZip = await openBoundedZipFromFd(handle.fd);
-        const validated = await validateOpenedPwrsnapBundle(sourceBytes, openedZip);
+        const openedZip = await openBoundedZipFromFd(handle.fd, MAX_EXPANDED_BYTES);
+        const validated = await validateOpenedPwrsnapBundle(
+          openedZip,
+          MAX_EXPANDED_BYTES
+        );
         return {
           ...validated,
+          sourceBytes,
           openedFileIdentity: {
             dev: openedStat.dev.toString(),
             ino: openedStat.ino.toString(),
@@ -118,14 +127,46 @@ export async function readAndValidatePwrsnapBundle(
       }
     );
   } catch (cause) {
-    if (cause instanceof PwrsnapImportError) throw cause;
-    if (cause instanceof VerifiedFileError) throw verifiedFileImportError(cause);
-    throw new PwrsnapImportError(
-      "storage",
-      "source_read_failed",
-      "The selected PwrSnap file could not be read safely.",
-      { cause }
+    throw normalizeBundleReadError(cause);
+  }
+}
+
+/**
+ * Validate an already-installed bundle through the same single verified
+ * descriptor lease as external import, but without the external carrier's
+ * aggregate archive/expanded-byte ceilings. Local capture and edit paths can
+ * legitimately produce more than 128 MiB across many individually valid
+ * assets. Schema, entry-count, compression-ratio, graph, hash, image-decode,
+ * JSON, and portable-metadata bounds remain enforced.
+ *
+ * The raw filesystem hook runs before VerifiedFileError sanitization so the
+ * owning bundle store can maintain captures-folder permission health without
+ * weakening the path-free public error contract.
+ */
+export async function readAndValidateInstalledPwrsnapBundle(
+  sourcePath: string,
+  options: {
+    onFileSystemError?: (cause: unknown) => void;
+    onFileSystemSuccess?: () => void;
+  } = {}
+): Promise<ValidatedInstalledPwrsnapBundle> {
+  try {
+    return await withVerifiedFileHandle(
+      sourcePath,
+      options.onFileSystemError === undefined
+        ? {}
+        : { onFileSystemError: options.onFileSystemError },
+      async (handle, openedStat) => {
+        options.onFileSystemSuccess?.();
+        if (openedStat.size === 0n) {
+          throw corrupt("archive_size_invalid", "The PwrSnap bundle is empty.");
+        }
+        const openedZip = await openBoundedZipFromFd(handle.fd, null);
+        return await validateOpenedPwrsnapBundle(openedZip, null);
+      }
     );
+  } catch (cause) {
+    throw normalizeBundleReadError(cause);
   }
 }
 
@@ -136,17 +177,21 @@ export async function validatePwrsnapBundleBytes(
     throw corrupt("archive_size_invalid", "The PwrSnap bundle has an invalid size.");
   }
 
-  const openedZip = await openBoundedZipFromBuffer(sourceBytes);
+  const openedZip = await openBoundedZipFromBuffer(
+    sourceBytes,
+    MAX_EXPANDED_BYTES
+  );
   return {
-    ...(await validateOpenedPwrsnapBundle(sourceBytes, openedZip)),
+    ...(await validateOpenedPwrsnapBundle(openedZip, MAX_EXPANDED_BYTES)),
+    sourceBytes,
     openedFileIdentity: null
   };
 }
 
 async function validateOpenedPwrsnapBundle(
-  sourceBytes: Buffer,
-  openedZip: OpenedBoundedZip
-): Promise<ValidatedPwrsnapBundle> {
+  openedZip: OpenedBoundedZip,
+  maxAssetBytes: number | null
+): Promise<ValidatedPwrsnapContents> {
   const { zipFile, entries, names, closeWhenDone } = openedZip;
   try {
     const manifestEntry = entries.get("manifest.json");
@@ -230,7 +275,7 @@ async function validateOpenedPwrsnapBundle(
       }
       throw cause;
     }
-    validateLayerGraph(document.layers);
+    validatePwrsnapLayerGraph(document.layers);
     validateAiRunIds(document);
 
     const sources = new Map<string, Buffer>();
@@ -242,7 +287,7 @@ async function validateOpenedPwrsnapBundle(
     for (const [name, entry] of entries) {
       if (name.startsWith("sources/")) {
         const sha = name.slice("sources/".length, -".png".length);
-        const bytes = await readEntryToBuffer(zipFile, entry, MAX_EXPANDED_BYTES);
+        const bytes = await readEntryToBuffer(zipFile, entry, maxAssetBytes);
         const actualSha = sha256(bytes);
         if (actualSha !== sha) {
           throw corrupt("source_hash_mismatch", "A bundle source failed its integrity check.");
@@ -251,14 +296,14 @@ async function validateOpenedPwrsnapBundle(
         sourceInfo.set(sha, await inspectImage(bytes, "png"));
       } else if (name.startsWith("layers/")) {
         const id = name.slice("layers/".length, -".png".length);
-        const bytes = await readEntryToBuffer(zipFile, entry, MAX_EXPANDED_BYTES);
+        const bytes = await readEntryToBuffer(zipFile, entry, maxAssetBytes);
         await inspectImage(bytes, "png");
         layerBytes.set(id, bytes);
       } else if (name === "composite_thumbnail.jpg") {
-        thumbnailJpg = await readEntryToBuffer(zipFile, entry, MAX_EXPANDED_BYTES);
+        thumbnailJpg = await readEntryToBuffer(zipFile, entry, maxAssetBytes);
         await inspectImage(thumbnailJpg, "jpeg");
       } else if (name === "composite.png") {
-        legacyCompositePng = await readEntryToBuffer(zipFile, entry, MAX_EXPANDED_BYTES);
+        legacyCompositePng = await readEntryToBuffer(zipFile, entry, maxAssetBytes);
         const composite = await inspectImage(legacyCompositePng, "png");
         if (
           composite.widthPx !== manifest.canvas_dimensions.width_px ||
@@ -283,7 +328,6 @@ async function validateOpenedPwrsnapBundle(
     });
 
     return {
-      sourceBytes,
       manifest,
       document,
       sources,
@@ -293,8 +337,7 @@ async function validateOpenedPwrsnapBundle(
       legacyCompositePng,
       baseSourceSha256,
       contentDigest,
-      portableMetadata,
-      openedFileIdentity: null
+      portableMetadata
     };
   } finally {
     if (closeWhenDone) zipFile.close();
@@ -315,7 +358,10 @@ const ZIP_OPEN_OPTIONS = {
   validateEntrySizes: true
 } as const;
 
-async function openBoundedZipFromBuffer(sourceBytes: Buffer): Promise<OpenedBoundedZip> {
+async function openBoundedZipFromBuffer(
+  sourceBytes: Buffer,
+  maxExpandedBytes: number | null
+): Promise<OpenedBoundedZip> {
   const zipFile = await new Promise<yauzl.ZipFile>((resolve, reject) => {
     yauzl.fromBuffer(
       sourceBytes,
@@ -330,10 +376,13 @@ async function openBoundedZipFromBuffer(sourceBytes: Buffer): Promise<OpenedBoun
     throw corrupt("zip_open_failed", "The file is not a readable PwrSnap ZIP bundle.", cause);
   });
 
-  return collectBoundedZip(zipFile, true);
+  return collectBoundedZip(zipFile, true, maxExpandedBytes);
 }
 
-async function openBoundedZipFromFd(fd: number): Promise<OpenedBoundedZip> {
+async function openBoundedZipFromFd(
+  fd: number,
+  maxExpandedBytes: number | null
+): Promise<OpenedBoundedZip> {
   const zipFile = await new Promise<yauzl.ZipFile>((resolve, reject) => {
     yauzl.fromFd(fd, ZIP_OPEN_OPTIONS, (error, opened) => {
       if (error !== null) return reject(error);
@@ -348,12 +397,13 @@ async function openBoundedZipFromFd(fd: number): Promise<OpenedBoundedZip> {
   // autoClose is false. The shared verifier owns this handle, so retain the
   // root reader ref and let withVerifiedFileHandle close it after its final
   // identity check. Entry streams still finish before this callback returns.
-  return collectBoundedZip(zipFile, false);
+  return collectBoundedZip(zipFile, false, maxExpandedBytes);
 }
 
 async function collectBoundedZip(
   zipFile: yauzl.ZipFile,
-  closeWhenDone: boolean
+  closeWhenDone: boolean,
+  maxExpandedBytes: number | null
 ): Promise<OpenedBoundedZip> {
   return await new Promise((resolve, reject) => {
     const entries = new Map<string, yauzl.Entry>();
@@ -408,9 +458,11 @@ async function collectBoundedZip(
           );
         }
         assertZipEntryIsRegular(entry);
-        expandedBytes += entry.uncompressedSize;
-        if (expandedBytes > MAX_EXPANDED_BYTES) {
-          throw corrupt("zip_expanded_limit", "The expanded bundle exceeds the size limit.");
+        if (maxExpandedBytes !== null) {
+          expandedBytes += entry.uncompressedSize;
+          if (expandedBytes > maxExpandedBytes) {
+            throw corrupt("zip_expanded_limit", "The expanded bundle exceeds the size limit.");
+          }
         }
         entries.set(entry.fileName, entry);
         zipFile.readEntry();
@@ -484,9 +536,9 @@ async function readJsonEntry(
 function readEntryToBuffer(
   zipFile: yauzl.ZipFile,
   entry: yauzl.Entry,
-  limit: number
+  limit: number | null
 ): Promise<Buffer> {
-  if (entry.uncompressedSize > limit) {
+  if (limit !== null && entry.uncompressedSize > limit) {
     throw corrupt("zip_entry_too_large", "A bundle entry exceeds its size limit.");
   }
   return new Promise((resolve, reject) => {
@@ -505,7 +557,7 @@ function readEntryToBuffer(
       let total = 0;
       stream.on("data", (chunk: Buffer) => {
         total += chunk.length;
-        if (total > limit) {
+        if (limit !== null && total > limit) {
           stream.destroy(corrupt("zip_entry_too_large", "A bundle entry exceeds its size limit."));
           return;
         }
@@ -544,7 +596,7 @@ function validatePortableManifest(manifest: BundleManifest): void {
   }
 }
 
-function validateLayerGraph(layers: readonly BundleLayerNode[]): void {
+export function validatePwrsnapLayerGraph(layers: readonly BundleLayerNode[]): void {
   const byId = new Map<string, BundleLayerNode>();
   for (const layer of layers) {
     if (byId.has(layer.id)) {
@@ -903,6 +955,17 @@ async function readExactHandleSnapshot(
       { cause }
     );
   }
+}
+
+function normalizeBundleReadError(cause: unknown): PwrsnapImportError {
+  if (cause instanceof PwrsnapImportError) return cause;
+  if (cause instanceof VerifiedFileError) return verifiedFileImportError(cause);
+  return new PwrsnapImportError(
+    "storage",
+    "source_read_failed",
+    "The selected PwrSnap file could not be read safely.",
+    { cause }
+  );
 }
 
 function verifiedFileImportError(cause: VerifiedFileError): PwrsnapImportError {

@@ -12,6 +12,7 @@ import type { PortableBundleMetadata } from "../../persistence/portable-bundle-m
 import { packBundleV2 } from "../../persistence/bundle-store";
 import { __setVerifiedFileBeforeOpenHookForTest } from "../../security/verified-file";
 import {
+  readAndValidateInstalledPwrsnapBundle,
   readAndValidatePwrsnapBundle,
   validatePwrsnapBundleBytes
 } from "../pwrsnap-import-reader";
@@ -39,6 +40,28 @@ async function png(width: number, height: number, color: string): Promise<Buffer
 
 function sha(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function writeSparseOversizeZip(filePath: string, bytes: Buffer): Promise<void> {
+  const eocdSignature = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
+  const eocdOffset = bytes.lastIndexOf(eocdSignature);
+  if (eocdOffset < 0) throw new Error("test ZIP has no end-of-central-directory record");
+  const centralDirectoryOffset = bytes.readUInt32LE(eocdOffset + 16);
+  const sparseGapBytes = 128 * 1024 * 1024 + 1;
+  const suffix = Buffer.from(bytes.subarray(centralDirectoryOffset));
+  suffix.writeUInt32LE(
+    centralDirectoryOffset + sparseGapBytes,
+    eocdOffset - centralDirectoryOffset + 16
+  );
+
+  const handle = await fs.open(filePath, "w");
+  try {
+    const prefix = bytes.subarray(0, centralDirectoryOffset);
+    await handle.write(prefix, 0, prefix.length, 0);
+    await handle.write(suffix, 0, suffix.length, centralDirectoryOffset + sparseGapBytes);
+  } finally {
+    await handle.close();
+  }
 }
 
 async function validBundle(overrides: {
@@ -680,5 +703,20 @@ describe("readAndValidatePwrsnapBundle", () => {
       kind: "unsafe",
       code: "verified_file_file_changed"
     });
+  });
+
+  test("keeps installed bundle reads outside the external archive-size ceiling", async () => {
+    const fixture = await validBundle();
+    const source = join(workDir, "installed-large-carrier.pwrsnap");
+    await writeSparseOversizeZip(source, fixture.bytes);
+
+    await expect(readAndValidatePwrsnapBundle(source)).rejects.toMatchObject({
+      code: "archive_size_invalid"
+    });
+    const installed = await readAndValidateInstalledPwrsnapBundle(source);
+    expect(installed.manifest).toEqual(fixture.manifest);
+    expect(installed.document).toEqual(fixture.document);
+    expect(installed.sources.get(fixture.sourceASha)).toEqual(fixture.sourceA);
+    expect("sourceBytes" in installed).toBe(false);
   });
 });

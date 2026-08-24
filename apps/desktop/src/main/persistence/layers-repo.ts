@@ -191,13 +191,19 @@ export function listAllLayersForBundle(captureId: string): BundleLayerNode[] {
               rejected_at, superseded_by, created_at
          FROM layers
         WHERE capture_id = ?
-        ORDER BY created_at ASC, id ASC`
+        ORDER BY created_at ASC, rowid ASC`
     )
     .all(captureId);
   const nodes: BundleLayerNode[] = [];
   for (const row of rows) {
     const node = tryRowToNode(row, captureId);
-    if (node !== null) nodes.push(node);
+    if (node === null) {
+      throw new Error(
+        "layers-repo: refusing to repack because the durable layer history " +
+          "contains a row this build cannot parse"
+      );
+    }
+    nodes.push(node);
   }
   assertTreeDepthBounded(nodes);
   return nodes;

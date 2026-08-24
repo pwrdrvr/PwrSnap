@@ -2108,7 +2108,7 @@ export function bootstrapApp(): void {
           if (recoveredIds.length > 0) broadcastCapturesChanged(recoveredIds);
         })
         .catch((cause) => {
-          log.error("bundle import recovery failed", {
+          log.error("bundle-import recovery failed", {
             message: cause instanceof Error ? cause.message : String(cause)
           });
         });

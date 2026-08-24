@@ -160,7 +160,7 @@ async function importPwrsnapBundleExclusive(
         // watcher replaced the path, retain the durable intent so startup can
         // reconcile without deleting bytes PwrSnap no longer owns.
         const removed = await removeImportArtifact(published).catch((cleanupCause) => {
-          log.error("bundle import: retained recovery intent after DB rollback cleanup failed", {
+          log.error("bundle-import: retained recovery intent after DB rollback cleanup failed", {
             intentId: intent.id,
             message:
               cleanupCause instanceof Error ? cleanupCause.message : String(cleanupCause)
@@ -203,14 +203,14 @@ async function importPwrsnapBundleExclusive(
       if (stage !== null) {
         if (!stageClosed) {
           await closeImportArtifact(stage).catch((cause) => {
-            log.warn("bundle import: staged descriptor cleanup failed", {
+            log.warn("bundle-import: staged descriptor cleanup failed", {
               message: cause instanceof Error ? cause.message : String(cause)
             });
           });
           stageClosed = true;
         }
         await removeImportArtifact(stage).catch((cause) => {
-          log.warn("bundle import: staged artifact cleanup failed", {
+          log.warn("bundle-import: staged artifact cleanup failed", {
             intentId,
             message: cause instanceof Error ? cause.message : String(cause)
           });
@@ -246,13 +246,13 @@ async function reconcilePendingPwrsnapImportsExclusive(): Promise<string[]> {
           });
           deletePwrsnapImportIntent(intent.id);
         } catch (cause) {
-          log.warn("bundle import recovery: retained intent after stage cleanup failed", {
+          log.warn("bundle-import recovery: retained intent after stage cleanup failed", {
             intentId: intent.id,
             message: cause instanceof Error ? cause.message : String(cause)
           });
         }
       } else {
-        log.error("bundle import recovery: capture id is occupied by different content", {
+        log.error("bundle-import recovery: capture id is occupied by different content", {
           intentId: intent.id,
           captureId: intent.captureId
         });
@@ -273,7 +273,7 @@ async function reconcilePendingPwrsnapImportsExclusive(): Promise<string[]> {
           });
           deletePwrsnapImportIntent(intent.id);
         } catch (cleanupCause) {
-          log.warn("bundle import recovery: retained pre-publish intent", {
+          log.warn("bundle-import recovery: retained pre-publish intent", {
             intentId: intent.id,
             message:
               cleanupCause instanceof Error ? cleanupCause.message : String(cleanupCause)
@@ -281,7 +281,7 @@ async function reconcilePendingPwrsnapImportsExclusive(): Promise<string[]> {
         }
         continue;
       }
-      log.warn("bundle import recovery: could not inspect intended destination", {
+      log.warn("bundle-import recovery: could not inspect intended destination", {
         intentId: intent.id,
         message: cause instanceof Error ? cause.message : String(cause)
       });
@@ -343,13 +343,16 @@ async function reconcilePendingPwrsnapImportsExclusive(): Promise<string[]> {
         intentId: intent.id
       });
       recoveredCaptureIds.push(record.id);
-      log.info("bundle import recovery: completed pending import", {
+      // Do not end a bundled string literal with the token `import`: electron-
+      // vite 5's ESM shim scanner can mistake prose `import"` for a side-effect
+      // import and inject its shim into the following string literal.
+      log.info("bundle-import recovery: pending operation completed", {
         intentId: intent.id,
         captureId: record.id
       });
     } catch (cause) {
       // Keep the intent: it is the durable ownership marker for the final path.
-      log.error("bundle import recovery: retained unresolved import intent", {
+      log.error("bundle-import recovery: retained unresolved import intent", {
         intentId: intent.id,
         captureId: intent.captureId,
         message: cause instanceof Error ? cause.message : String(cause)
@@ -398,7 +401,7 @@ async function sweepImportTempDirectory(
     entries = await readdir(directory, { withFileTypes: true });
   } catch (cause) {
     if (isErrno(cause, "ENOENT")) return;
-    log.warn("bundle import sweep: directory could not be inspected", {
+    log.warn("bundle-import sweep: directory could not be inspected", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
     return;
@@ -415,7 +418,7 @@ async function sweepImportTempDirectory(
         identity: importIdentityFromStat(stat)
       });
     } catch (cause) {
-      log.warn("bundle import sweep: temp cleanup deferred", {
+      log.warn("bundle-import sweep: temp cleanup deferred", {
         message: cause instanceof Error ? cause.message : String(cause)
       });
     }
@@ -499,7 +502,7 @@ async function recordMatchesContent(record: CaptureRecord, expectedDigest: strin
       local.contentDigest === expectedDigest
     );
   } catch (cause) {
-    log.warn("bundle import: local collision candidate could not be verified", {
+    log.warn("bundle-import: local collision candidate could not be verified", {
       captureId: record.id,
       message: cause instanceof Error ? cause.message : String(cause)
     });

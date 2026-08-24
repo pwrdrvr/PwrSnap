@@ -8,7 +8,6 @@ import { createRoot, type Root } from "react-dom/client";
 import {
   afterEach,
   beforeAll,
-  beforeEach,
   describe,
   expect,
   test,
@@ -57,6 +56,7 @@ interface RenderParams {
   footer?: ((id: TabId) => ReactElement | null) | undefined;
   /** `pinnedWidthPx="fill"` instead of the default 320px. */
   fill?: boolean;
+  keyboardEnabled?: boolean;
 }
 
 interface RenderResult {
@@ -80,7 +80,8 @@ async function renderBar(params: RenderParams = {}): Promise<RenderResult> {
     badges: params.badges ?? {},
     badgeLabels: params.badgeLabels ?? {},
     footer: params.footer,
-    fill: params.fill ?? false
+    fill: params.fill ?? false,
+    keyboardEnabled: params.keyboardEnabled ?? true
   };
 
   function paint(next: Required<RenderParams>): ReactElement {
@@ -108,7 +109,9 @@ async function renderBar(params: RenderParams = {}): Promise<RenderResult> {
         void rerender();
       },
       renderPanel,
-      testIdPrefix: "rab-test"
+      testIdPrefix: "rab-test",
+      shortcutPlatform: "darwin",
+      keyboardEnabled: next.keyboardEnabled
     });
   }
 
@@ -221,10 +224,6 @@ describe("RightActivityBar", () => {
   });
 
   test("Cmd+\\ toggles the pin state", async () => {
-    Object.defineProperty(navigator, "platform", {
-      value: "MacIntel",
-      configurable: true
-    });
     const { onPinChange } = await renderBar({ pinned: true });
     await act(async () => {
       window.dispatchEvent(
@@ -236,10 +235,6 @@ describe("RightActivityBar", () => {
   });
 
   test("Cmd+2 picks the second tab in render order", async () => {
-    Object.defineProperty(navigator, "platform", {
-      value: "MacIntel",
-      configurable: true
-    });
     const { onTabChange } = await renderBar({ active: "info" });
     await act(async () => {
       window.dispatchEvent(
@@ -250,11 +245,22 @@ describe("RightActivityBar", () => {
     expect(onTabChange).toHaveBeenLastCalledWith("ocr");
   });
 
-  test("Cmd+N ignores numbers outside the tab range", async () => {
-    Object.defineProperty(navigator, "platform", {
-      value: "MacIntel",
-      configurable: true
+  test("a parent surface can disable numbered activity-bar chords", async () => {
+    const { onTabChange, onPinChange } = await renderBar({
+      active: "info",
+      keyboardEnabled: false
     });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "2", metaKey: true }));
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "\\", metaKey: true }));
+      await Promise.resolve();
+    });
+
+    expect(onTabChange).not.toHaveBeenCalled();
+    expect(onPinChange).not.toHaveBeenCalled();
+  });
+
+  test("Cmd+N ignores numbers outside the tab range", async () => {
     const { onTabChange } = await renderBar({ active: "info" });
     await act(async () => {
       window.dispatchEvent(
@@ -282,10 +288,6 @@ describe("RightActivityBar", () => {
   });
 
   test("typing in an input does not consume Cmd+N shortcut handler's number key (only modifier-less editable check)", async () => {
-    Object.defineProperty(navigator, "platform", {
-      value: "MacIntel",
-      configurable: true
-    });
     const { onTabChange } = await renderBar({ active: "info" });
     const input = document.createElement("input");
     document.body.appendChild(input);

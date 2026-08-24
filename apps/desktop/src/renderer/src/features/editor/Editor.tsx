@@ -48,6 +48,7 @@ import type {
   OverlayRow,
   PwrSnapError,
   Result,
+  ShortcutPlatform,
   ShapeKind,
   ShapeToolStyle,
   TextToolStyle,
@@ -55,6 +56,7 @@ import type {
   ToolSizePreset
 } from "@pwrsnap/shared";
 import {
+  acceleratorToDisplayText,
   CURRENT_ARROW_STYLE_VERSION,
   DEFAULT_BLUR_STYLE,
   defaultEditorToolStyles,
@@ -74,6 +76,8 @@ import {
 } from "@pwrsnap/shared";
 import { nanoid } from "nanoid";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
+import { editorZoomShortcut } from "./editor-zoom-shortcut";
 import { selectBaseRaster } from "./base-raster";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 import { RasterLayers } from "./RasterLayers";
@@ -4875,6 +4879,9 @@ function EditorLoaded({
   >;
   formatPasteError: (error: { code: string; message: string }) => string;
 }) {
+  const shortcutPlatform = rendererShortcutPlatform();
+  const shortcutText = (accelerator: string): string =>
+    acceleratorToDisplayText(accelerator, shortcutPlatform);
   // Live ref to the editor's source `<img>` element. BlurOverlays'
   // pixelate preview reads pixels off this image via canvas drawImage
   // to produce a real coarse-grid mosaic (issue #137); the bake's
@@ -6251,10 +6258,10 @@ function EditorLoaded({
     [selectedOverlayForHandles, updateOverlayStyleField]
   );
 
-  // ⌘0 / ⌘1 / ⌘+ / ⌘- keyboard shortcuts for zoom.
+  // Primary+0 / +/- keyboard shortcuts for zoom. Primary+1 belongs to the
+  // first EditorChrome panel; Actual Size remains available in the zoom menu.
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
-      if (!(e.metaKey || e.ctrlKey)) return;
       const target = e.target as HTMLElement | null;
       if (
         target?.tagName === "INPUT" ||
@@ -6263,23 +6270,21 @@ function EditorLoaded({
       ) {
         return;
       }
-      if (e.key === "0") {
+      const shortcut = editorZoomShortcut(e, shortcutPlatform);
+      if (shortcut === "fit") {
         e.preventDefault();
         zoom.resetToFit();
-      } else if (e.key === "1") {
-        e.preventDefault();
-        zoom.actualSize();
-      } else if (e.key === "=" || e.key === "+") {
+      } else if (shortcut === "in") {
         e.preventDefault();
         zoom.zoomBy(1.25);
-      } else if (e.key === "-" || e.key === "_") {
+      } else if (shortcut === "out") {
         e.preventDefault();
         zoom.zoomBy(1 / 1.25);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [zoom]);
+  }, [shortcutPlatform, zoom]);
 
   // Attach the non-passive wheel listener at the WINDOW level with
   // CAPTURE phase. Two reasons:
@@ -7047,6 +7052,7 @@ function EditorLoaded({
             })()}
           {tool === "crop" && (
             <CropTool
+              shortcutPlatform={shortcutPlatform}
               captureId={record.id}
               sourceWidth={record.width_px}
               sourceHeight={record.height_px}
@@ -7104,10 +7110,13 @@ function EditorLoaded({
             torn down on close. */}
         {contextMenuState !== null && (
           <LayerContextMenu
-            items={buildLayerContextMenuItems({
-              selectedLayerIds,
-              overlays
-            })}
+            items={buildLayerContextMenuItems(
+              {
+                selectedLayerIds,
+                overlays
+              },
+              shortcutPlatform
+            )}
             anchorPx={contextMenuState.anchorPx}
             onClose={() => setContextMenuState(null)}
             onItemClick={(id) => {
@@ -7124,6 +7133,7 @@ function EditorLoaded({
 
       {chrome !== "chromeless" && (
         <EditorToolbar
+          shortcutPlatform={shortcutPlatform}
           tool={tool}
           onChange={(next, options) => {
             // Toolbar click: also clear the double-tap shortcut latch
@@ -7331,9 +7341,12 @@ function EditorLoaded({
         help: (
           <div className="pse-panel-stub" data-testid="panel-help-stub">
             <p>
-              Editor shortcuts: V/A/S/H/B/T/C — tools · ⌘Z — undo · ⌘⇧Z — redo ·
-              ⌘\ — toggle sidebar · ⌘1/⌘2/⌘3 — panels · ⌘+ / ⌘− — zoom · ⌘0 —
-              fit · ⌘1 — actual size · Esc — cancel · ↵ — commit text/crop
+              Editor shortcuts: V/A/S/H/B/T/C — tools · {shortcutText("CommandOrControl+Z")} — undo ·{" "}
+              {shortcutText("CommandOrControl+Shift+Z")} — redo · {shortcutText("CommandOrControl+\\")} — toggle sidebar ·{" "}
+              {shortcutText("CommandOrControl+1")}/{shortcutText("CommandOrControl+2")}/{shortcutText("CommandOrControl+3")} — panels ·{" "}
+              {shortcutText("CommandOrControl+Plus")} / {shortcutText("CommandOrControl+-")} — zoom ·{" "}
+              {shortcutText("CommandOrControl+0")} — fit · Esc — cancel ·{" "}
+              {shortcutText("Return")} — commit text/crop
             </p>
             <p>
               Tip: press a tool&apos;s shortcut twice in a row to open its
@@ -7363,6 +7376,7 @@ function EditorLoaded({
 // the parent <button> the single focusable target; the click handler
 // catches the caret event via target inspection.
 function EditorToolbar({
+  shortcutPlatform,
   tool,
   onChange,
   appliedCount,
@@ -7377,6 +7391,7 @@ function EditorToolbar({
   popoverAnchorRef,
   disabled = false
 }: {
+  shortcutPlatform: ShortcutPlatform;
   tool: Tool;
   onChange: (t: Tool, options?: { singleShot?: boolean }) => void;
   appliedCount: number;
@@ -7395,6 +7410,8 @@ function EditorToolbar({
    *  enabled — they're navigation / debugging, not edits. */
   disabled?: boolean;
 }) {
+  const shortcutText = (accelerator: string): string =>
+    acceleratorToDisplayText(accelerator, shortcutPlatform);
   return (
     <div
       className={
@@ -7490,7 +7507,7 @@ function EditorToolbar({
           data-testid="editor-undo"
           disabled={disabled || !canUndo}
           onClick={onUndo}
-          title="Undo (⌘Z)"
+          title={`Undo (${shortcutText("CommandOrControl+Z")})`}
         >
           ↶ Undo
         </button>
@@ -7499,11 +7516,11 @@ function EditorToolbar({
           data-testid="editor-redo"
           disabled={disabled || !canRedo}
           onClick={onRedo}
-          title="Redo (⌘⇧Z)"
+          title={`Redo (${shortcutText("CommandOrControl+Shift+Z")})`}
         >
           ↷ Redo
         </button>
-        <ZoomMenu zoom={zoom} />
+        <ZoomMenu zoom={zoom} shortcutPlatform={shortcutPlatform} />
         <button
           type="button"
           onClick={onReveal}

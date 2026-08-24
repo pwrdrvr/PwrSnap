@@ -1,5 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { desktopFileManagerName, type CaptureRecord } from "@pwrsnap/shared";
+import {
+  desktopFileManagerName,
+  type CaptureRecord,
+  type HotkeyRegistrationStatusSnapshot,
+  type HotkeySettingKey
+} from "@pwrsnap/shared";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
@@ -7,10 +12,15 @@ import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { Kbd } from "../shared/Primitives";
 import { useHotkeys } from "../shared/useHotkeys";
 import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
-import { acceleratorToDisplayKeys } from "../../lib/format-hotkey";
+import { useSurfaceCopyShortcuts } from "../shared/useSurfaceCopyShortcuts";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { useLibrary } from "../../lib/useLibrary";
+import {
+  activeTrayHotkeyKeys,
+  TRAY_MODE_HOTKEY
+} from "./tray-hotkey-presentation";
 
 function fmtTrayDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
@@ -28,17 +38,11 @@ type ModeKind = "auto" | "region" | "window" | "full" | "all" | "timed";
  *  placeholder (a disabled "Scrolling" tile we never shipped) was
  *  replaced by promoting Video to a headline action.
  *
- *  Chord glyphs for `region` / `window` come from the live settings
- *  snapshot (Settings → Hotkeys is editable). When the binding is
- *  unbound (empty string in settings — the default for those two now
- *  that Quick Capture covers both), the chip is omitted entirely. The
- *  preview modes (full / all / timed) still carry static placeholder
- *  glyphs because they aren't bound to anything in code. */
+ *  Chord glyphs come from the live settings and registration-status
+ *  snapshots. Unbound, suspended, and boot-conflicted chords are omitted. */
 const MODES: Array<{
   id: Exclude<ModeKind, "auto">;
   name: string;
-  /** Static fallback for preview modes that aren't wired to settings. */
-  hk: string[];
   available: boolean;
   /** Span both grid columns — used for the lone trailing tile so the
    *  odd-count grid reads as intentional rather than a clipped gap. */
@@ -48,17 +52,12 @@ const MODES: Array<{
   // common modes below. Region top-left because once Quick Capture
   // moves to the prominent button, Region is the highest-frequency
   // explicit-mode choice.
-  { id: "region", name: "Region", hk: [], available: true },
-  { id: "window", name: "Window", hk: [], available: true },
-  { id: "full", name: "Full Screen", hk: [], available: true },
-  { id: "all", name: "All Screens", hk: [], available: true },
-  // Timed (5s) is wired to the tray button only; no global chord yet,
-  // so the kbd glyphs stay empty to match the Region / Window pattern
-  // ("no chord shown when nothing is bound"). The hotkeys settings
-  // page still lists ⌘⇧T as a "preview" placeholder for when a
-  // bindable accelerator lands. It's the odd fifth tile, so it spans
-  // the full width to close the bottom row cleanly.
-  { id: "timed", name: "Timed (5s)", hk: [], available: true, span2: true }
+  { id: "region", name: "Region", available: true },
+  { id: "window", name: "Window", available: true },
+  { id: "full", name: "Full Screen", available: true },
+  { id: "all", name: "All Screens", available: true },
+  // The odd fifth tile spans the full width to close the bottom row cleanly.
+  { id: "timed", name: "Timed (5s)", available: true, span2: true }
 ];
 
 /** Three preset widths matching the float-over Low/Med/High buttons,
@@ -203,8 +202,12 @@ function relativeTime(iso: string): string {
 // by presetMetrics there; not exported separately).
 
 export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
+  const shortcutPlatform = rendererShortcutPlatform();
   const { rows } = useLibrary();
   const hotkeys = useHotkeys();
+  const [registrationStatus, setRegistrationStatus] =
+    useState<HotkeyRegistrationStatusSnapshot | null>(null);
+  const [registrationStatusRefresh, setRegistrationStatusRefresh] = useState(0);
   const lastSnap: CaptureRecord | undefined = rows[0];
   const lastSnapIsVideo = lastSnap?.kind === "video";
   // Skip the image render-metrics IPC for video captures — the
@@ -238,25 +241,40 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     return () => { cancelled = true; };
   }, []);
 
-  // Pull live chord glyphs for the two wired explicit-mode hotkeys.
-  // Empty array = unbound (default for both today) → the chip is
-  // omitted from the mode tile. The preview modes carry their static
-  // placeholder glyphs from MODES, looked up by id (not by positional
-  // index) so reordering or adding tiles can't silently mis-map them.
-  const staticHk = (id: Exclude<ModeKind, "auto">): string[] =>
-    MODES.find((m) => m.id === id)?.hk ?? [];
+  const hotkeyFingerprint = Object.values(hotkeys).join("\u0000");
+  useEffect(() => {
+    let cancelled = false;
+    void dispatch("settings:hotkeyStatus", {}).then((result) => {
+      if (!cancelled && result.ok) setRegistrationStatus(result.value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [hotkeyFingerprint, registrationStatusRefresh]);
+
+  // A retry can change registration state without changing persisted settings.
+  // The tray BrowserWindow is reused, so refresh whenever it becomes visible.
+  useEffect(() => {
+    const refreshWhenVisible = (): void => {
+      if (document.visibilityState === "visible") {
+        setRegistrationStatusRefresh((value) => value + 1);
+      }
+    };
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => document.removeEventListener("visibilitychange", refreshWhenVisible);
+  }, []);
+
+  const activeHk = (key: HotkeySettingKey): string[] =>
+    activeTrayHotkeyKeys(hotkeys, registrationStatus, key, shortcutPlatform);
   const liveHkFor: Record<Exclude<ModeKind, "auto">, string[]> = {
-    region: acceleratorToDisplayKeys(hotkeys.region),
-    window: acceleratorToDisplayKeys(hotkeys.window),
-    full: staticHk("full"),
-    all: staticHk("all"),
-    timed: staticHk("timed")
+    region: activeHk(TRAY_MODE_HOTKEY.region),
+    window: activeHk(TRAY_MODE_HOTKEY.window),
+    full: activeHk(TRAY_MODE_HOTKEY.full),
+    all: activeHk(TRAY_MODE_HOTKEY.all),
+    timed: activeHk(TRAY_MODE_HOTKEY.timed)
   };
-  const quickHk = acceleratorToDisplayKeys(hotkeys.quickCapture);
-  // Record Video is bound by default (⌘⌥C) and editable in Settings →
-  // Hotkeys, so its chip reads live from settings — same treatment as
-  // Quick Capture, not a static placeholder.
-  const videoHk = acceleratorToDisplayKeys(hotkeys.videoCapture);
+  const quickHk = activeHk("quickCapture");
+  const videoHk = activeHk("videoCapture");
 
   // Measure the popover's natural content height and tell main to
   // setContentSize the BrowserWindow to match. Mirrors the float-
@@ -377,6 +395,25 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     if (lastSnap === undefined) return;
     copyImagePreset(lastSnap.id, preset);
   };
+  useSurfaceCopyShortcuts({
+    assetKind: lastSnap?.kind ?? null,
+    enabled: lastSnap !== undefined,
+    platform: shortcutPlatform,
+    onShortcut: (shortcut) => {
+      if (lastSnap === undefined) return;
+      if (shortcut.kind === "image") {
+        if (lastSnap.kind !== "image") return;
+        copyImagePreset(lastSnap.id, shortcut.preset);
+        return;
+      }
+      if (lastSnap.kind !== "video") return;
+      void dispatch("clipboard:copyVideoFile", {
+        captureId: lastSnap.id,
+        format: shortcut.format,
+        preset: shortcut.preset
+      });
+    }
+  });
 
   return (
     <div ref={containerRef} style={{ display: "inline-block", width: "100%" }}>
@@ -392,7 +429,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
           <button
             className="ps-tray__hdr-btn"
             type="button"
-            title="Open Library  (⌘⇧L)"
+            title="Open Library"
             onClick={() => { void dispatch("library:focus", {}); }}
           >
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -637,7 +674,10 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
                  library.css and is loaded by app.css for every
                  stage. */
               <div className="ps-tray__last-export">
-                <VideoExportPresetsPanel captureId={lastSnap.id} />
+                <VideoExportPresetsPanel
+                  captureId={lastSnap.id}
+                  shortcutPlatform={shortcutPlatform}
+                />
               </div>
             ) : (
               <div className="ps-tray__last-copy">
@@ -653,6 +693,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
                       dim={m.dim}
                       bytes={m.bytes}
                       onCopy={onCopyLastSnap}
+                      shortcutPlatform={shortcutPlatform}
                       onCopyPath={(preset) => copyImagePresetPath(lastSnap.id, preset)}
                       onDrag={(preset) => startCaptureDrag(lastSnap.id, preset)}
                     />

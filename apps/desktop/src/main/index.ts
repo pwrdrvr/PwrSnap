@@ -781,7 +781,7 @@ async function wireHotkeyRegistrations(): Promise<void> {
   try {
     const settings = await service.read();
     hotkeyRegistrationManager.initialize(settings.hotkeys);
-    setTrayHotkeys(settings.hotkeys);
+    setTrayHotkeys(settings.hotkeys, () => hotkeyRegistrationManager.statusSnapshot());
     // Pick up the persisted developer-mode flag and re-install the menu
     // so the View submenu matches the user's choice from the start of
     // this session (the early bootstrap call hit the false default).
@@ -800,7 +800,7 @@ async function wireHotkeyRegistrations(): Promise<void> {
     train: currentTrain
   }));
   onSettingsChanged((settings) => {
-    setTrayHotkeys(settings.hotkeys);
+    setTrayHotkeys(settings.hotkeys, () => hotkeyRegistrationManager.statusSnapshot());
     if (settings.general.developerMode !== lastKnownDeveloperMode) {
       installApplicationMenu(settings.general.developerMode);
     }

@@ -11,7 +11,12 @@
 // twitch when you click.
 
 import { useEffect, useRef, useState } from "react";
-import type { ExportRung } from "@pwrsnap/shared";
+import {
+  acceleratorToDisplayText,
+  type ExportRung,
+  type ShortcutPlatform
+} from "@pwrsnap/shared";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { FoIcon } from "../float-over/FoIcons";
 
 export type CopyPreset = "low" | "med" | "high";
@@ -156,6 +161,10 @@ export type CopyButtonProps = {
   onCopyPath?: (preset: CopyPreset) => void;
   /** Incremented by parent-owned shortcuts to run the same visual feedback as click. */
   copyPulse?: number;
+  /** Explicit override for deterministic platform-presentation tests. */
+  shortcutPlatform?: ShortcutPlatform;
+  /** Hide the chord when the embedding surface delegates these keys elsewhere. */
+  showShortcutHint?: boolean;
 };
 
 const KBD_DIGIT: Record<CopyPreset, string> = { low: "1", med: "2", high: "3" };
@@ -187,7 +196,9 @@ export function CopyButton({
   onCopy,
   onDrag,
   onCopyPath,
-  copyPulse = 0
+  copyPulse = 0,
+  shortcutPlatform = rendererShortcutPlatform(),
+  showShortcutHint = true
 }: CopyButtonProps) {
   const [copied, setCopied] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
@@ -254,6 +265,10 @@ export function CopyButton({
 
   const [dimLine1, dimLine2] = splitDimensionLabel(dim);
   const [bytesLine1, bytesLine2] = splitBytesLabel(bytes);
+  const copyChord = acceleratorToDisplayText(
+    `CommandOrControl+${KBD_DIGIT[preset]}`,
+    shortcutPlatform
+  );
 
   return (
     <div className={"fo__copy-card" + (disabled ? " is-disabled" : "")}>
@@ -265,9 +280,9 @@ export function CopyButton({
       >
         <div className="fo__copy-btn-row1">
           <span className="fo__copy-label">{label}</span>
-          <span className="fo__copy-kbd">
-            {disabled ? "—" : `⌘${KBD_DIGIT[preset]}`}
-          </span>
+          {disabled || showShortcutHint ? (
+            <span className="fo__copy-kbd">{disabled ? "—" : copyChord}</span>
+          ) : null}
         </div>
         <div className="fo__copy-meta">
           <span className="fo__copy-dim">

@@ -36,8 +36,13 @@ import {
   type ReactElement,
   type ReactNode
 } from "react";
-import type { EditorSidebarPanel, Settings } from "@pwrsnap/shared";
+import type {
+  EditorSidebarPanel,
+  Settings,
+  ShortcutPlatform
+} from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { isPrimaryAccel } from "../shared/keyboard";
 
 export type EditorPanel = EditorSidebarPanel;
@@ -51,6 +56,8 @@ export interface EditorChromeProps {
   panels: Record<EditorPanel, ReactNode>;
   /** Optional className passthrough for the outermost wrapper. */
   className?: string;
+  /** Explicit override for deterministic primary-modifier tests. */
+  shortcutPlatform?: ShortcutPlatform;
 }
 
 interface ActivityButtonDef {
@@ -225,7 +232,8 @@ function isHeadingTowardPanel(
 export function EditorChrome({
   children,
   panels,
-  className
+  className,
+  shortcutPlatform = rendererShortcutPlatform()
 }: EditorChromeProps): ReactElement {
   // --- Settings ingestion (read-ONCE on mount) -------------------
   // Per spec: the per-window component reads settings once and treats
@@ -412,7 +420,7 @@ export function EditorChrome({
         return;
       }
       if (inEditable) return;
-      if (!isPrimaryAccel(event)) return;
+      if (!isPrimaryAccel(event, shortcutPlatform)) return;
 
       // ⌘\ toggles the sidebar entirely.
       if (event.key === "\\") {
@@ -452,7 +460,7 @@ export function EditorChrome({
     return () => {
       window.removeEventListener("keydown", handler);
     };
-  }, [hoverPanel, pinned, selected, writePinned, writeSelected]);
+  }, [hoverPanel, pinned, selected, shortcutPlatform, writePinned, writeSelected]);
 
   // --- Render ----------------------------------------------------
   const reducedMotion = useMemo(() => prefersReducedMotion(), []);

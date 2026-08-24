@@ -44,6 +44,7 @@ import type {
   CaptureRecord,
   ExportStrategy,
   LibrarySidebarTab,
+  ShortcutPlatform,
   SettingsChangedEvent,
   Settings,
   SuggestedTag,
@@ -81,6 +82,7 @@ import { useCart } from "./CartContext";
 import { CartPanel } from "./CartPanel";
 import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryView } from "./library-view";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 
 const COPY_PRESETS = ["low", "med", "high"] as const;
 const COPY_LABELS: Record<(typeof COPY_PRESETS)[number], string> = {
@@ -153,6 +155,7 @@ export type DetailRailProps = {
    *  is non-null AND the capture is an image (i.e. an editor is
    *  mounted). Omitted/null in isolation (e.g. tests) → no Layers tab. */
   readonly layersApi?: LayersPanelApi | null;
+  readonly shortcutPlatform?: ShortcutPlatform;
 };
 
 export function DetailRail({
@@ -174,7 +177,8 @@ export function DetailRail({
   gridActiveTab: gridActiveTabProp,
   onGridActiveTabChange,
   selectedLayerIds = [],
-  layersApi = null
+  layersApi = null,
+  shortcutPlatform = rendererShortcutPlatform()
 }: DetailRailProps): ReactElement | null {
   // Skip the image render-metrics IPC for video captures — the
   // sharp-based preset pipeline is image-only and the video branch
@@ -675,6 +679,7 @@ export function DetailRail({
             )}
             testIdPrefix="psl-right"
             pinnedWidthPx="fill"
+            keyboardEnabled={false}
           />
         </div>
       </aside>
@@ -710,6 +715,7 @@ export function DetailRail({
             )}
             testIdPrefix="psl-right"
             pinnedWidthPx={320}
+            keyboardEnabled={false}
           />
         </div>
       </aside>
@@ -908,6 +914,8 @@ export function DetailRail({
                 onCopy={triggerVideoCopy}
                 onCopyPath={triggerVideoCopyPath}
                 onDrag={triggerVideoDrag}
+                shortcutPlatform={shortcutPlatform}
+                showShortcutHints={isGrid}
               />
             </div>
           ) : (
@@ -955,6 +963,8 @@ export function DetailRail({
                       // surface stays in lockstep (see clipboard-copy.ts —
                       // PR #232 drifted this card body to a file URL).
                       onCopy={(preset) => copyImagePreset(record.id, preset)}
+                      shortcutPlatform={shortcutPlatform}
+                      showShortcutHint={isGrid}
                       onCopyPath={(preset) => copyImagePresetPath(record.id, preset)}
                       onDrag={(preset) => startCaptureDrag(record.id, preset)}
                       copyPulse={copyPulses?.[p] ?? 0}
@@ -1136,6 +1146,8 @@ export function DetailRail({
           // rail's slack track a 1–2px gutter beside that separator,
           // which reads as a double rule.
           pinnedWidthPx="fill"
+          shortcutPlatform={shortcutPlatform}
+          keyboardEnabled={!isGrid}
         />
       </div>
     </aside>

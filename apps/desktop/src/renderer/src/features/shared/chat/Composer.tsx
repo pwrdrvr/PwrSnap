@@ -53,6 +53,8 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement
 } from "react";
+import type { ShortcutPlatform } from "@pwrsnap/shared";
+import { rendererShortcutPlatform } from "../../../lib/shortcut-platform";
 import { isPrimaryAccel } from "../keyboard";
 import "./Composer.css";
 
@@ -104,6 +106,8 @@ export interface ComposerProps {
   readonly placeholder?: string;
   /** Test-id prefix. Defaults to "composer". */
   readonly testIdPrefix?: string;
+  /** Explicit override for deterministic primary-modifier tests. */
+  readonly shortcutPlatform?: ShortcutPlatform;
 }
 
 type SendState = "idle" | "sending";
@@ -133,7 +137,8 @@ export function Composer(props: ComposerProps): ReactElement {
     onDraftClear,
     attachmentsEnabled = true,
     placeholder = "Message AI…",
-    testIdPrefix = "composer"
+    testIdPrefix = "composer",
+    shortcutPlatform = rendererShortcutPlatform()
   } = props;
 
   const [text, setText] = useState<string>(() => initialText);
@@ -215,7 +220,10 @@ export function Composer(props: ComposerProps): ReactElement {
       }
       // ⌘N (new) / ⌘F (find) — shadow only while the user has a
       // draft in flight so the window chords don't fire mid-typing.
-      if (isPrimaryAccel(event) && (event.key === "n" || event.key === "f")) {
+      if (
+        isPrimaryAccel(event, shortcutPlatform) &&
+        (event.key === "n" || event.key === "f")
+      ) {
         if (hasText) event.stopPropagation();
       }
     };
@@ -223,7 +231,7 @@ export function Composer(props: ComposerProps): ReactElement {
     return () => {
       el.removeEventListener("keydown", handler);
     };
-  }, []);
+  }, [shortcutPlatform]);
 
   // ---- attachment lifecycle ---------------------------------------
   const addFiles = useCallback(

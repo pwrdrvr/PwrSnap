@@ -9,7 +9,12 @@ import {
   test,
   vi
 } from "vitest";
-import type { AppRuntimeIdentity, CaptureRecord, Settings } from "@pwrsnap/shared";
+import type {
+  AppRuntimeIdentity,
+  CaptureRecord,
+  Settings,
+  ShortcutPlatform
+} from "@pwrsnap/shared";
 
 const dispatchMock = vi.fn();
 const subscribeMock = vi.fn((_channel: string, _handler: (payload: unknown) => void) => {
@@ -254,29 +259,96 @@ afterEach(() => {
 });
 
 describe("Library keyboard shortcuts", () => {
-  test("copies image shortcut presets as image bytes (clipboard:copy), matching the card body", async () => {
+  test.each<{
+    platform: ShortcutPlatform;
+    primary: "metaKey" | "ctrlKey";
+    wrongPrimary: "metaKey" | "ctrlKey";
+  }>([
+    { platform: "darwin", primary: "metaKey", wrongPrimary: "ctrlKey" },
+    { platform: "win32", primary: "ctrlKey", wrongPrimary: "metaKey" }
+  ])(
+    "$platform copies with its primary modifier and ignores the other platform's modifier",
+    async ({ platform, primary, wrongPrimary }) => {
+      await act(async () => {
+        root?.render(createElement(Library, { shortcutPlatform: platform }));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const cell = container?.querySelector<HTMLElement>('[data-cell-id="cap_image"]');
+      expect(cell).not.toBeNull();
+
+      // Grid is the one Library mode whose copy palette advertises numbered
+      // copy chords. Focus/Reel delegate those digits to editor chrome.
+      expect(container?.querySelector('[data-testid="library-stage"]')).toBeNull();
+
+      dispatchMock.mockClear();
+      await act(async () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "2",
+            [wrongPrimary]: true,
+            bubbles: true,
+            cancelable: true
+          })
+        );
+        await Promise.resolve();
+      });
+      expect(dispatchMock.mock.calls.some(([name]) => name === "clipboard:copy")).toBe(false);
+
+      await act(async () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "2",
+            metaKey: true,
+            ctrlKey: true,
+            bubbles: true,
+            cancelable: true
+          })
+        );
+        await Promise.resolve();
+      });
+      expect(dispatchMock.mock.calls.some(([name]) => name === "clipboard:copy")).toBe(false);
+
+      await act(async () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "2",
+            [primary]: true,
+            bubbles: true,
+            cancelable: true
+          })
+        );
+        await Promise.resolve();
+      });
+
+      expect(dispatchMock).toHaveBeenCalledWith("clipboard:copy", {
+        captureId: "cap_image",
+        preset: "med"
+      });
+      expect(dispatchMock.mock.calls.some(([name]) => name === "clipboard:copy-file")).toBe(false);
+    }
+  );
+
+  test("focus mode leaves primary+digits to editor chrome without also copying", async () => {
     await act(async () => {
-      root?.render(createElement(Library));
+      root?.render(createElement(Library, { shortcutPlatform: "darwin" }));
       await Promise.resolve();
       await Promise.resolve();
     });
-
     const cell = container?.querySelector<HTMLElement>('[data-cell-id="cap_image"]');
-    expect(cell).not.toBeNull();
-
-    // Double-click to open the editor (single-click now only selects), so
-    // the ⌘1/2/3 copy shortcuts — gated to focus/reel — are live.
     await act(async () => {
       cell?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
-
     expect(container?.querySelector('[data-testid="library-stage"]')).not.toBeNull();
+    expect(container?.querySelector(".psl__right-footer .fo__copy-kbd")).toBeNull();
 
+    dispatchMock.mockClear();
     await act(async () => {
       window.dispatchEvent(
         new KeyboardEvent("keydown", {
-          key: "2",
+          key: "1",
           metaKey: true,
           bubbles: true,
           cancelable: true
@@ -285,11 +357,7 @@ describe("Library keyboard shortcuts", () => {
       await Promise.resolve();
     });
 
-    expect(dispatchMock).toHaveBeenCalledWith("clipboard:copy", {
-      captureId: "cap_image",
-      preset: "med"
-    });
-    expect(dispatchMock.mock.calls.some(([name]) => name === "clipboard:copy-file")).toBe(false);
+    expect(dispatchMock.mock.calls.some(([name]) => name === "clipboard:copy")).toBe(false);
   });
 });
 
@@ -493,7 +561,7 @@ describe("Library grid selection does not reflow the inspector column", () => {
       return ok(undefined);
     });
     await act(async () => {
-      root?.render(createElement(Library));
+      root?.render(createElement(Library, { shortcutPlatform: "darwin" }));
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();

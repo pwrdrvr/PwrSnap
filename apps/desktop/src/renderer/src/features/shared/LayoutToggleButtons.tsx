@@ -23,6 +23,8 @@
 // (Library top bar today; potentially the Editor's titlebar tomorrow).
 
 import { useEffect, type ReactElement } from "react";
+import { acceleratorToDisplayText, type ShortcutPlatform } from "@pwrsnap/shared";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { isEditableTarget, isPrimaryAccel } from "./keyboard";
 
 export interface LayoutToggleButtonsProps {
@@ -47,6 +49,8 @@ export interface LayoutToggleButtonsProps {
    *  working). Used when the primary bar can't be shown in the current
    *  mode (e.g. the editor takeover hides the left nav). */
   readonly primaryDisabled?: boolean;
+  /** Explicit override for deterministic platform-presentation tests. */
+  readonly shortcutPlatform?: ShortcutPlatform;
 }
 
 export function LayoutToggleButtons({
@@ -57,13 +61,14 @@ export function LayoutToggleButtons({
   className,
   testIdPrefix = "layout-toggle",
   disableHotkeys = false,
-  primaryDisabled = false
+  primaryDisabled = false,
+  shortcutPlatform = rendererShortcutPlatform()
 }: LayoutToggleButtonsProps): ReactElement {
   useEffect(() => {
     if (disableHotkeys) return;
     const handler = (event: KeyboardEvent): void => {
       if (isEditableTarget(event)) return;
-      if (!isPrimaryAccel(event)) return;
+      if (!isPrimaryAccel(event, shortcutPlatform)) return;
       // Both shortcuts use `b` (case-insensitive); the modifier
       // distinguishes which bar.
       if (event.key !== "b" && event.key !== "B") return;
@@ -81,7 +86,13 @@ export function LayoutToggleButtons({
     return () => {
       window.removeEventListener("keydown", handler);
     };
-  }, [disableHotkeys, onTogglePrimary, onToggleSecondary, primaryDisabled]);
+  }, [
+    disableHotkeys,
+    onTogglePrimary,
+    onToggleSecondary,
+    primaryDisabled,
+    shortcutPlatform
+  ]);
 
   const rootClass =
     "lyt-toggle" +
@@ -95,12 +106,14 @@ export function LayoutToggleButtons({
         onClick={onTogglePrimary}
         disabled={primaryDisabled}
         testId={`${testIdPrefix}-primary`}
+        shortcutPlatform={shortcutPlatform}
       />
       <LayoutChip
         kind="secondary"
         open={secondaryOpen}
         onClick={onToggleSecondary}
         testId={`${testIdPrefix}-secondary`}
+        shortcutPlatform={shortcutPlatform}
       />
     </div>
   );
@@ -112,9 +125,17 @@ interface LayoutChipProps {
   onClick: () => void;
   testId: string;
   disabled?: boolean;
+  shortcutPlatform: ShortcutPlatform;
 }
 
-function LayoutChip({ kind, open, onClick, testId, disabled = false }: LayoutChipProps): ReactElement {
+function LayoutChip({
+  kind,
+  open,
+  onClick,
+  testId,
+  disabled = false,
+  shortcutPlatform
+}: LayoutChipProps): ReactElement {
   const label =
     kind === "primary"
       ? open
@@ -124,7 +145,10 @@ function LayoutChip({ kind, open, onClick, testId, disabled = false }: LayoutChi
         ? "Hide secondary side bar"
         : "Show secondary side bar";
   // VS Code uses the modifier in tooltips; we match.
-  const chord = kind === "primary" ? "⌘B" : "⌘⌥B";
+  const chord = acceleratorToDisplayText(
+    kind === "primary" ? "CommandOrControl+B" : "CommandOrControl+Alt+B",
+    shortcutPlatform
+  );
   return (
     <button
       type="button"

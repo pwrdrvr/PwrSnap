@@ -1,5 +1,5 @@
 // Per-(format, preset) export card. Renders the same shape as
-// `<CopyButton>` (image L/M/H) — preset label + ⌘N kbd hint + dim +
+// `<CopyButton>` (image L/M/H) — preset label + dim +
 // bytes + click-to-copy overlay + FILE chip — but talks to the
 // video-aware bus verbs instead of the image clipboard ones.
 //
@@ -27,10 +27,8 @@ export type VideoExportCardProps = {
   /** Display label — "Low" / "Med" / "High" (the format prefix
    *  lives elsewhere; this is just the preset tier). */
   readonly label: string;
-  /** Keyboard hint shown in the top-right corner. The card itself
-   *  doesn't bind the chord — that's the parent grid's job — but
-   *  the visual cue lives here. */
-  readonly kbd: string;
+  /** Keyboard hint owned by the active parent surface (never this card). */
+  readonly kbd: string | null;
   /** Output dimensions string from `useVideoPresetMetrics`. May be
    *  estimated (no cache row yet) or exact (post-encode). */
   readonly dim: string;
@@ -135,7 +133,7 @@ export function VideoExportCard({
   const formatTitle = format === "gif" ? "GIF" : "MP4";
   const cardTitle = isError
     ? `Failed: ${state.message}`
-    : `Encode + copy ${label} ${formatTitle} to clipboard · ${kbd}`;
+    : `Encode + copy ${label} ${formatTitle} to clipboard${kbd === null ? "" : ` · ${kbd}`}`;
 
   return (
     <div className="fo__copy-card">
@@ -154,7 +152,7 @@ export function VideoExportCard({
       >
         <div className="fo__copy-btn-row1">
           <span className="fo__copy-label">{label}</span>
-          <span className="fo__copy-kbd">{kbd}</span>
+          {kbd === null ? null : <span className="fo__copy-kbd">{kbd}</span>}
         </div>
         <div className="fo__copy-meta">
           {isRunning ? (

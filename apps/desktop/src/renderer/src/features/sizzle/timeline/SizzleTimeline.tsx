@@ -23,8 +23,14 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactElement
 } from "react";
-import type { CaptureRecord } from "@pwrsnap/shared";
+import {
+  acceleratorToDisplayText,
+  type CaptureRecord,
+  type ShortcutPlatform
+} from "@pwrsnap/shared";
+import { rendererShortcutPlatform } from "../../../lib/shortcut-platform";
 import type { PlayheadSource } from "../../shared/playhead";
+import { isPrimaryAccel } from "../../shared/keyboard";
 import { clampTime, formatTimecode, roundTime, tickMarks } from "../../shared/video-range";
 import { isTypingTarget } from "../sizzle-helpers";
 import { ClipLane, type BeginClipDrag, type ClipDragView } from "./ClipLane";
@@ -76,6 +82,7 @@ export type SizzleTimelineProps = {
    *  caller that wants a fixed density). Absent = auto: see
    *  {@link legibleZoomForWords}. */
   initialZoom?: TimelineZoom | undefined;
+  shortcutPlatform?: ShortcutPlatform;
 };
 
 /** Space past the end of the reel at zoom, so the last clip is not flush
@@ -103,6 +110,7 @@ type ClipDragState = {
 };
 
 export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
+  const shortcutPlatform = props.shortcutPlatform ?? rendererShortcutPlatform();
   const {
     model,
     captureMap,
@@ -234,7 +242,7 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
   // ⌘+ / ⌘− zoom, never stolen from a text field.
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
-      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      if (!isPrimaryAccel(event, shortcutPlatform) || event.altKey) return;
       if (isTypingTarget(event.target)) return;
       if (event.key === "=" || event.key === "+") {
         event.preventDefault();
@@ -246,7 +254,7 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [fitPxPerSec, zoom]);
+  }, [fitPxPerSec, shortcutPlatform, zoom]);
 
   const secAt = useCallback(
     (clientX: number): number => {
@@ -447,8 +455,8 @@ export function SizzleTimeline(props: SizzleTimelineProps): ReactElement {
         </span>
         <span className="szt__spacer" />
         <span className="szt__kbd" aria-hidden="true">
-          <i>⌘−</i>
-          <i>⌘+</i>
+          <i>{acceleratorToDisplayText("CommandOrControl+-", shortcutPlatform)}</i>
+          <i>{acceleratorToDisplayText("CommandOrControl+Plus", shortcutPlatform)}</i>
         </span>
         <div className="szt__zoom" role="group" aria-label="Timeline zoom">
           {TIMELINE_ZOOMS.map((z) => (

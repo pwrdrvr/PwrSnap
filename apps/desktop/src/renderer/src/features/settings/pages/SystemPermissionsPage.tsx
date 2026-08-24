@@ -721,7 +721,7 @@ export function SystemPermissionsPage(): ReactElement {
         <Card eyebrow="DIAGNOSTICS" title="Permission fingerprint">
           <Row
             label="Fingerprint"
-            sub="Stable hash of (screen, microphone, system audio, recorder backend, app version). PwrSnap uses this to remember which permission state it last routed you here from."
+            sub="Stable hash of (screen, microphone, system audio, recorder backend). PwrSnap uses this to remember which permission state it last routed you here from."
             tag="fingerprint"
           >
             <code

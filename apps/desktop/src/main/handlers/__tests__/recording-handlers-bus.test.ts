@@ -87,6 +87,7 @@ vi.mock("../../recording/recording-service", () => ({
 
 const { bus } = await import("../../command-bus");
 const { registerRecordingHandlers } = await import("../recording-handlers");
+const originalPlatform = process.platform;
 
 registerRecordingHandlers();
 
@@ -177,6 +178,29 @@ describe("permissions:* command-bus surface", () => {
     if (result.ok) throw new Error("expected error");
     expect(result.error.kind).toBe("validation");
     expect(result.error.code).toBe("unknown_permission");
+  });
+
+  test("permissions:request reports unknown without prompting off Darwin", async () => {
+    Object.defineProperty(process, "platform", {
+      value: "win32",
+      configurable: true
+    });
+    try {
+      const result = await bus.dispatch(
+        "permissions:request",
+        { permission: "microphone" },
+        { principal: "ipc" }
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected ok");
+      expect(result.value).toEqual({ status: "unknown" });
+    } finally {
+      Object.defineProperty(process, "platform", {
+        value: originalPlatform,
+        configurable: true
+      });
+    }
   });
 
   test("permissions:openSystemSettings rejects unknown permission names", async () => {

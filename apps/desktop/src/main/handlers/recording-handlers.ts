@@ -196,8 +196,8 @@ export function registerRecordingHandlers(): void {
       // We just drove the macOS screen-capture prompt (which also
       // registers PwrSnap in the Privacy pane). Remember it so the UI
       // switches to the "Open System Settings" path next time — macOS
-      // won't prompt twice. darwin-only: off-darwin `requestPermission`
-      // is a no-op that never prompts, so there's nothing to remember.
+      // won't prompt twice. Off Darwin, `requestPermission` is unsupported
+      // and returns `unknown`, so there is no prompt attempt to remember.
       await markScreenCapturePrompted();
     }
     return ok(result);

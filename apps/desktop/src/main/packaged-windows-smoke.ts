@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
-import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { createReadStream, existsSync, readdirSync } from "node:fs";
+import { readFile, mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -68,12 +69,27 @@ export type SharpSmokeEvidence = {
 
 export type BundledFfmpegSmokeEvidence = {
   executablePath: string;
+  executableSha256: string;
+  invocation: "direct";
   versionLine: string;
-  pngDecode: true;
+  capabilities: {
+    encoders: ["png", "h264_mf", "aac"];
+    decoders: ["png"];
+    inputDevices: ["gdigrab"];
+  };
+  roundTrip: {
+    encodedFormat: "png";
+    pixelFormat: "rgba";
+    width: 2;
+    height: 2;
+    exactPixels: true;
+  };
 };
 
 export type BundledWindowListSmokeEvidence = {
   executablePath: string;
+  executableSha256: string;
+  invocation: "direct";
   jsonEnvelope: true;
   ownWindowDetected: true;
   windowCount: number;
@@ -113,6 +129,7 @@ export type PackagedWindowsSmokeDependencies = {
   probeSharp?: () => Promise<SharpSmokeEvidence>;
   probeBundledFfmpeg?: () => Promise<BundledFfmpegSmokeEvidence>;
   probeBundledWindowList?: () => Promise<BundledWindowListSmokeEvidence>;
+  hasBundledFfmpeg?: () => boolean;
   rendererTimeoutMs?: number;
   rendererExecuteTimeoutMs?: number;
   rendererPollIntervalMs?: number;
@@ -228,8 +245,8 @@ export type PackagedWindowsSmokeReport = {
   bundledHelpers: {
     windowList: BundledWindowListSmokeEvidence;
     ffmpeg:
-      | ({ required: true; executed: true } & BundledFfmpegSmokeEvidence)
-      | { required: false; executed: false };
+      | ({ required: boolean; present: true; executed: true } & BundledFfmpegSmokeEvidence)
+      | { required: false; present: false; executed: false };
   };
 };
 
@@ -776,6 +793,16 @@ function runBoundedHelper(
   });
 }
 
+function sha256File(filePath: string): Promise<string> {
+  return new Promise((resolveHash, rejectHash) => {
+    const hash = createHash("sha256");
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", rejectHash);
+    stream.on("end", () => resolveHash(hash.digest("hex")));
+  });
+}
+
 export async function probeBundledWindowListHelper(
   resourcesPath: string,
   expectedExecPath: string,
@@ -795,6 +822,8 @@ export async function probeBundledWindowListHelper(
   );
   return {
     executablePath,
+    executableSha256: await sha256File(executablePath),
+    invocation: "direct",
     ...parseBundledWindowListEvidence(stdout, expectedExecPath, expectedPid)
   };
 }
@@ -803,7 +832,10 @@ export function parseBundledWindowListEvidence(
   stdout: string,
   expectedExecPath: string,
   expectedPid: number
-): Omit<BundledWindowListSmokeEvidence, "executablePath"> {
+): Omit<
+  BundledWindowListSmokeEvidence,
+  "executablePath" | "executableSha256" | "invocation"
+> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
@@ -848,6 +880,47 @@ export function parseBundledWindowListEvidence(
   };
 }
 
+function capabilityIsListed(output: string, name: string): boolean {
+  return output.split(/\r?\n/).some((line) => {
+    const columns = line.trim().split(/\s+/);
+    return (
+      columns.length >= 2 &&
+      /^[A-Z.]{1,8}$/.test(columns[0] ?? "") &&
+      columns[1] === name
+    );
+  });
+}
+
+export function parseBundledFfmpegCapabilities(
+  encodersOutput: string,
+  decodersOutput: string,
+  devicesOutput: string
+): BundledFfmpegSmokeEvidence["capabilities"] {
+  const encoders = ["png", "h264_mf", "aac"] as const;
+  const decoders = ["png"] as const;
+  const inputDevices = ["gdigrab"] as const;
+  for (const encoder of encoders) {
+    if (!capabilityIsListed(encodersOutput, encoder)) {
+      throw new Error(`bundled Windows FFmpeg is missing required encoder ${encoder}`);
+    }
+  }
+  for (const decoder of decoders) {
+    if (!capabilityIsListed(decodersOutput, decoder)) {
+      throw new Error(`bundled Windows FFmpeg is missing required decoder ${decoder}`);
+    }
+  }
+  for (const device of inputDevices) {
+    if (!capabilityIsListed(devicesOutput, device)) {
+      throw new Error(`bundled Windows FFmpeg is missing required input device ${device}`);
+    }
+  }
+  return {
+    encoders: [...encoders],
+    decoders: [...decoders],
+    inputDevices: [...inputDevices]
+  };
+}
+
 export async function probeBundledFfmpegHelper(
   resourcesPath: string,
   scratchDirectory: string
@@ -871,23 +944,47 @@ export async function probeBundledFfmpegHelper(
     throw new Error("bundled Windows FFmpeg did not report a bounded version line");
   }
 
-  await mkdir(scratchDirectory, { recursive: true });
-  const inputPath = join(
-    scratchDirectory,
-    `packaged-windows-smoke-ffmpeg-${process.pid}-${Date.now()}.png`
+  const [encodersResult, decodersResult, devicesResult] = await Promise.all([
+    runBoundedHelper(
+      executablePath,
+      ["-hide_banner", "-encoders"],
+      "bundled Windows FFmpeg encoder capability probe",
+      10_000,
+      1024 * 1024
+    ),
+    runBoundedHelper(
+      executablePath,
+      ["-hide_banner", "-decoders"],
+      "bundled Windows FFmpeg decoder capability probe",
+      10_000,
+      1024 * 1024
+    ),
+    runBoundedHelper(
+      executablePath,
+      ["-hide_banner", "-devices"],
+      "bundled Windows FFmpeg device capability probe",
+      10_000,
+      1024 * 1024
+    )
+  ]);
+  const capabilities = parseBundledFfmpegCapabilities(
+    `${encodersResult.stdout}\n${encodersResult.stderr}`,
+    `${decodersResult.stdout}\n${decodersResult.stderr}`,
+    `${devicesResult.stdout}\n${devicesResult.stderr}`
   );
-  const { default: sharp } = await import("sharp");
-  const png = await sharp({
-    create: {
-      width: 2,
-      height: 2,
-      channels: 4,
-      background: { r: 255, g: 138, b: 31, alpha: 1 }
-    }
-  })
-    .png()
-    .toBuffer();
-  await writeFile(inputPath, png);
+
+  await mkdir(scratchDirectory, { recursive: true });
+  const stem = join(
+    scratchDirectory,
+    `packaged-windows-smoke-ffmpeg-${process.pid}-${Date.now()}`
+  );
+  const rawInputPath = `${stem}-input.rgba`;
+  const encodedPath = `${stem}.png`;
+  const rawOutputPath = `${stem}-output.rgba`;
+  const exactPixels = Buffer.from([
+    255, 138, 31, 255, 0, 0, 0, 255, 255, 255, 255, 255, 31, 138, 255, 255
+  ]);
+  await writeFile(rawInputPath, exactPixels);
   try {
     await runBoundedHelper(
       executablePath,
@@ -896,22 +993,72 @@ export async function probeBundledFfmpegHelper(
         "-nostdin",
         "-loglevel",
         "error",
+        "-f",
+        "rawvideo",
+        "-pixel_format",
+        "rgba",
+        "-video_size",
+        "2x2",
         "-i",
-        inputPath,
+        rawInputPath,
         "-frames:v",
         "1",
-        "-f",
-        "null",
-        "-"
+        "-c:v",
+        "png",
+        "-y",
+        encodedPath
       ],
-      "bundled Windows FFmpeg PNG decode",
+      "bundled Windows FFmpeg PNG encode",
       15_000,
       256 * 1024
     );
+    await runBoundedHelper(
+      executablePath,
+      [
+        "-hide_banner",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-i",
+        encodedPath,
+        "-frames:v",
+        "1",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgba",
+        "-y",
+        rawOutputPath
+      ],
+      "bundled Windows FFmpeg PNG decode to RGBA",
+      15_000,
+      256 * 1024
+    );
+    const decodedPixels = await readFile(rawOutputPath);
+    if (!decodedPixels.equals(exactPixels)) {
+      throw new Error("bundled Windows FFmpeg PNG round trip changed the exact RGBA pixels");
+    }
   } finally {
-    await unlink(inputPath).catch(() => undefined);
+    await Promise.all(
+      [rawInputPath, encodedPath, rawOutputPath].map((path) =>
+        unlink(path).catch(() => undefined)
+      )
+    );
   }
-  return { executablePath, versionLine, pngDecode: true };
+  return {
+    executablePath,
+    executableSha256: await sha256File(executablePath),
+    invocation: "direct",
+    versionLine,
+    capabilities,
+    roundTrip: {
+      encodedFormat: "png",
+      pixelFormat: "rgba",
+      width: 2,
+      height: 2,
+      exactPixels: true
+    }
+  };
 }
 
 async function writeSmokeReport(
@@ -983,16 +1130,25 @@ export async function runPackagedWindowsSmokeIfRequested(
 
     let ffmpeg: PackagedWindowsSmokeReport["bundledHelpers"]["ffmpeg"] = {
       required: false,
+      present: false,
       executed: false
     };
-    if (config.requireBundledFfmpeg) {
+    const bundledFfmpegPresent =
+      dependencies.hasBundledFfmpeg?.() ??
+      existsSync(join(provenance.resourcesPath, "PwrSnapFFmpeg.exe"));
+    if (config.requireBundledFfmpeg || bundledFfmpegPresent) {
       phase = "helper:ffmpeg";
       const smokeTemp = config.temp;
       const ffmpegEvidence = await (
         dependencies.probeBundledFfmpeg ??
         (() => probeBundledFfmpegHelper(provenance.resourcesPath, smokeTemp))
       )();
-      ffmpeg = { required: true, executed: true, ...ffmpegEvidence };
+      ffmpeg = {
+        required: config.requireBundledFfmpeg,
+        present: true,
+        executed: true,
+        ...ffmpegEvidence
+      };
     }
 
     phase = "report";

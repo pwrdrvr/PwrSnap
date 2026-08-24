@@ -71,16 +71,18 @@ The release workflow has three Windows jobs:
 2. `windows-sign` downloads and verifies that exact archive, downloads and
    verifies the pinned FFmpeg artifact, installs `TrustedSigning`, then runs
    `package-win.mjs --sign-stage-only --release --require-signing`, verifies
-   Authenticode, and uploads the signed payload plus the smoke controller from
+   Authenticode for the installer, app, window-list, and FFmpeg executables,
+   and uploads the signed payload plus the smoke controller from
    the verified input archive. The protected job does not check out source,
    run pnpm/npm lifecycle scripts, or launch PR-controlled application code.
 3. `windows-installed-smoke` downloads those artifacts with no signing
    environment or credentials. It silently installs the signed NSIS, launches
    it with isolated roots, proves the migrated better-sqlite3 connection, real
    Sharp/libvips encoding, visible React Library, preload/IPC command round
-   trip, installed window-list enumeration, and a bundled FFmpeg PNG decode,
-   then requires clean `app.quit()` and uninstall. Every reported executable
-   and native binding must stay under the installed `resources` tree.
+   trip, direct installed window-list enumeration, and a bundled FFmpeg
+   capability plus exact RGBA/PNG encode/decode chain, then requires clean
+   `app.quit()` and uninstall. Every helper reports an installed path and
+   SHA-256; every reported executable/native binding stays under resources.
 
 Windows packaging cannot sign only the final installer after the fact:
 electron-builder signs multiple application and NSIS payloads while it builds

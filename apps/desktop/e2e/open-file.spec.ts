@@ -1,9 +1,9 @@
 // open-file spec — verifies that PwrSnap, launched with a
 // `.pwrsnap` path in argv (the `open foo.pwrsnap` / cold-start
 // double-click code path), routes through
-// `wireOpenFileHandler` → `readBundleManifest` →
-// `getCaptureById` → `library:openInLibrary` and ends up showing
-// the capture in the Library Focus editor.
+// `wireOpenFileHandler` → strict v2 validation/import →
+// `library:openInLibrary` and ends up showing the capture in the
+// Library Focus editor.
 //
 // macOS GUI double-click uses Apple's `app.on('open-file')` event
 // (not argv), but the runtime path inside open-file.ts is the
@@ -17,14 +17,11 @@
 //      Focus mode for that capture.
 //   2. A losing second instance forwards a queued `.pwrsnap` path
 //      through Electron's single-instance additionalData handoff.
-//   3. Capture not in the library (cross-device file, never
-//      imported) — open-file falls back to opening the library
-//      window with a notification. We assert a standalone editor
-//      window did NOT spawn for an unknown captureId, and the library
-//      is the front-most user-facing surface.
+//   3. Capture not in the library (cross-device file) — open-file
+//      imports an app-owned copy and opens it in Focus mode.
 
 import { createHash } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFileSync } from "node:fs";
@@ -51,7 +48,7 @@ async function makeFixturePng(): Promise<Buffer> {
 async function packFixtureBundle(opts: {
   captureId: string;
   outputDir: string;
-}): Promise<string> {
+}): Promise<{ bundlePath: string; sourceSha: string }> {
   const sourcePng = await makeFixturePng();
   const sourceSha = createHash("sha256").update(sourcePng).digest("hex");
   const bundlePath = join(opts.outputDir, `${opts.captureId}.pwrsnap`);
@@ -127,7 +124,7 @@ async function packFixtureBundle(opts: {
     zip.outputStream.on("error", reject);
     zip.end();
   });
-  return bundlePath;
+  return { bundlePath, sourceSha };
 }
 
 /**
@@ -139,7 +136,7 @@ async function packFixtureBundle(opts: {
  */
 async function seedCaptureRow(
   app: Awaited<ReturnType<typeof launchPwrSnap>>,
-  opts: { captureId: string; bundlePath: string }
+  opts: { captureId: string; bundlePath: string; sourceSha: string }
 ): Promise<void> {
   await app.electronApp.evaluate((_ctx, payload) => {
     const bridge = (
@@ -165,8 +162,10 @@ async function seedCaptureRow(
       height_px: 100,
       device_pixel_ratio: 1,
       byte_size: 1000,
-      sha256: payload.captureId.padEnd(64, "0"),
-      bundle_path: payload.bundlePath
+      sha256: payload.sourceSha,
+      bundle_path: payload.bundlePath,
+      bundle_format_version: 2,
+      bundle_edits_version: 0
     });
   }, opts);
 }
@@ -210,9 +209,11 @@ test.describe("open-file handler", () => {
   test.skip(!isMac, "open-file event + macOS double-click semantics are macOS-only");
 
   test("argv-passed .pwrsnap opens Library Focus when the capture exists", async () => {
-    const fixturesDir = await mkdtemp(join(tmpdir(), "pwrsnap-openfile-fixtures-"));
+    const fixturesDir = await realpath(
+      await mkdtemp(join(tmpdir(), "pwrsnap-openfile-fixtures-"))
+    );
     const captureId = "openfile-known";
-    const bundlePath = await packFixtureBundle({
+    const { bundlePath, sourceSha } = await packFixtureBundle({
       captureId,
       outputDir: fixturesDir
     });
@@ -224,7 +225,7 @@ test.describe("open-file handler", () => {
     // whenReady before we can seed.
     const app = await launchPwrSnap();
     try {
-      await seedCaptureRow(app, { captureId, bundlePath });
+      await seedCaptureRow(app, { captureId, bundlePath, sourceSha });
 
       // Drive the open-file pipeline through the test bridge. Same
       // code path as `app.on('open-file')` event delivery — both
@@ -240,16 +241,18 @@ test.describe("open-file handler", () => {
   });
 
   test("single-instance handoff .pwrsnap opens Library Focus when the capture exists", async () => {
-    const fixturesDir = await mkdtemp(join(tmpdir(), "pwrsnap-openfile-fixtures-"));
+    const fixturesDir = await realpath(
+      await mkdtemp(join(tmpdir(), "pwrsnap-openfile-fixtures-"))
+    );
     const captureId = "openfile-handoff";
-    const bundlePath = await packFixtureBundle({
+    const { bundlePath, sourceSha } = await packFixtureBundle({
       captureId,
       outputDir: fixturesDir
     });
 
     const app = await launchPwrSnap();
     try {
-      await seedCaptureRow(app, { captureId, bundlePath });
+      await seedCaptureRow(app, { captureId, bundlePath, sourceSha });
 
       await triggerOpenFileHandoff(app, bundlePath);
 
@@ -261,37 +264,48 @@ test.describe("open-file handler", () => {
     }
   });
 
-  test("argv-passed .pwrsnap for an unknown capture does not spawn an editor", async () => {
-    const fixturesDir = await mkdtemp(join(tmpdir(), "pwrsnap-openfile-fixtures-"));
+  test("argv-passed foreign .pwrsnap imports and opens Library Focus", async () => {
+    const fixturesDir = await realpath(
+      await mkdtemp(join(tmpdir(), "pwrsnap-openfile-fixtures-"))
+    );
     const captureId = "openfile-unknown";
-    const bundlePath = await packFixtureBundle({
+    const { bundlePath } = await packFixtureBundle({
       captureId,
       outputDir: fixturesDir
     });
+    const sourceBefore = await readFile(bundlePath);
 
     const app = await launchPwrSnap();
     try {
-      // Deliberately do NOT seedCaptureRow — capture exists on
-      // disk but no DB row. open-file should hit the "not in
-      // library" branch.
+      // Deliberately do NOT seedCaptureRow: this is a cross-device
+      // bundle with no local DB relationship.
       await triggerOpenFile(app, bundlePath);
 
-      // Give the open-file pipeline a moment to run, then assert
-      // no editor window was created. We give it a generous 500ms
-      // because the bundle manifest read + SQL lookup is async.
-      await new Promise((res) => setTimeout(res, 500));
+      await expect(
+        app.window.locator(`.psl__focus[data-capture-id="${captureId}"]`)
+      ).toBeVisible();
 
-      const hasEditor = await app.electronApp.evaluate(
-        ({ BrowserWindow }, target) => {
-          return BrowserWindow.getAllWindows().some((win) => {
-            if (win.isDestroyed()) return false;
-            const url = win.webContents.getURL();
-            return url.includes(`captureId=${encodeURIComponent(target.captureId)}`);
-          });
-        },
-        { captureId }
-      );
-      expect(hasEditor).toBe(false);
+      const importedPath = await app.electronApp.evaluate(async (_ctx, id) => {
+        const bridge = (
+          globalThis as unknown as {
+            __PWRSNAP_TEST__?: {
+              dispatch: (
+                name: string,
+                req: unknown
+              ) => Promise<{
+                ok: boolean;
+                value?: { bundle_path: string | null } | null;
+              }>;
+            };
+          }
+        ).__PWRSNAP_TEST__;
+        if (bridge === undefined) return null;
+        const result = await bridge.dispatch("library:byId", { id });
+        return result.ok ? (result.value?.bundle_path ?? null) : null;
+      }, captureId);
+      expect(importedPath).not.toBeNull();
+      expect(importedPath).not.toBe(bundlePath);
+      await expect(readFile(bundlePath)).resolves.toEqual(sourceBefore);
     } finally {
       await app.close();
     }

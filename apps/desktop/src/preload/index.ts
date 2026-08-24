@@ -257,9 +257,9 @@ const pwrsnapApi = {
   requestFloatOverResize(payload: { width: number; height: number }): void {
     ipcRenderer.send(FLOAT_OVER_RESIZE_CHANNEL, payload);
   },
-  /** Failed recording HUD renderer → main content measurement. Main converts
-   * CSS pixels through the inherited page zoom before resizing the window. */
-  requestRecordingControllerResize(payload: { height: number }): void {
+  /** Recording HUD renderer → main: fit the BrowserWindow to the measured
+   * outer wrapper so status, confirmations, and failure actions cannot be clipped. */
+  requestRecordingControllerResize(payload: { width?: number; height: number }): void {
     ipcRenderer.send(RECORDING_CONTROLLER_RESIZE_CHANNEL, payload);
   },
   /**

@@ -373,4 +373,49 @@ describe("recording-controller lead-in Escape shortcut", () => {
 
     expect(win.setPosition).not.toHaveBeenCalled();
   });
+
+  test("recording window close cannot bypass destructive confirmation", async () => {
+    const { applyRecordingStateToController } = await import("../recording-controller");
+    const recording = {
+      phase: "recording" as const,
+      sessionId: "rec-close",
+      startedAt: new Date(0).toISOString(),
+      rect: { x: 10, y: 20, w: 800, h: 600 },
+      displayId: 1
+    };
+    mocks.currentState = recording;
+    applyRecordingStateToController(recording);
+    const win = mocks.createdWindows[0]!;
+    const closeEvent = { preventDefault: vi.fn() };
+
+    win.listeners.get("close")?.(closeEvent);
+
+    expect(closeEvent.preventDefault).toHaveBeenCalledTimes(1);
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+  });
+
+  test("normal HUD resize converts CSS pixels through zoom and scales its CSS ceiling", async () => {
+    const { applyRecordingStateToController, installRecordingController } = await import(
+      "../recording-controller"
+    );
+    installRecordingController();
+    const recording = {
+      phase: "recording" as const,
+      sessionId: "rec-zoom",
+      startedAt: new Date(0).toISOString(),
+      rect: { x: 10, y: 20, w: 800, h: 600 },
+      displayId: 1
+    };
+    mocks.currentState = recording;
+    applyRecordingStateToController(recording);
+    const win = mocks.createdWindows[0]!;
+    win.webContents.zoomFactor = 2;
+    win.setContentSize.mockClear();
+
+    const resize = mocks.ipcListeners.get("recording-controller:resize")!;
+    resize({ sender: win.webContents }, { width: 560, height: 100 });
+
+    expect(win.setMinimumSize).toHaveBeenCalledWith(0, 0);
+    expect(win.setContentSize).toHaveBeenCalledWith(1120, 200, false);
+  });
 });

@@ -2,7 +2,11 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS, type CaptureEnrichment, type CaptureRecord, type Settings } from "@pwrsnap/shared";
-import { FloatOver, type FloatOverAsset } from "../FloatOver";
+import {
+  FloatOver,
+  recordingSourcesLabel,
+  type FloatOverAsset
+} from "../FloatOver";
 import { FloatOverHost } from "../FloatOverHost";
 
 beforeAll(() => {
@@ -547,6 +551,20 @@ describe("FloatOver asset mode", () => {
     expect(el.querySelector(".fo__dest-saved")?.textContent).not.toContain(
       "Documents"
     );
+  });
+});
+
+describe("post-recording source summary", () => {
+  test.each([
+    [{ hasSystemAudio: false, hasMicrophoneAudio: false }, "screen only"],
+    [{ hasSystemAudio: true, hasMicrophoneAudio: false }, "screen + system audio"],
+    [{ hasSystemAudio: false, hasMicrophoneAudio: true }, "screen + microphone"],
+    [
+      { hasSystemAudio: true, hasMicrophoneAudio: true },
+      "screen + system audio + microphone"
+    ]
+  ] as const)("reports persisted sources as $1", (asset, expected) => {
+    expect(recordingSourcesLabel(asset)).toBe(expected);
   });
 });
 

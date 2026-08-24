@@ -31,6 +31,10 @@ const RECORDING_CONTROLLER_RESIZE_CHANNEL = "recording-controller:resize";
 const FAILED_WIDTH_DIP = 480;
 const FAILED_INITIAL_HEIGHT_CSS = 176;
 const FAILED_RECREATE_DELAYS_MS = [100, 500] as const;
+const RECORDING_CONTROLLER_WIDTH_MIN_CSS_PX = 320;
+const RECORDING_CONTROLLER_WIDTH_MAX_CSS_PX = 560;
+const RECORDING_CONTROLLER_HEIGHT_MIN_CSS_PX = 64;
+const RECORDING_CONTROLLER_HEIGHT_MAX_CSS_PX = 260;
 
 let window: BrowserWindow | null = null;
 let installed = false;
@@ -44,11 +48,20 @@ let failedWindowCrashCount = 0;
 let failedRendererDisabledSessionId: string | null = null;
 let failedFallbackInFlight = false;
 let resizeChannelWired = false;
+let closeCancelPending = false;
+let normalWindowRecreateTimer: ReturnType<typeof setTimeout> | null = null;
+let lastRecordingDisplayId: number | null = null;
 
 function clearFailedWindowRecreateTimer(): void {
   if (failedWindowRecreateTimer === null) return;
   clearTimeout(failedWindowRecreateTimer);
   failedWindowRecreateTimer = null;
+}
+
+function clearNormalWindowRecreateTimer(): void {
+  if (normalWindowRecreateTimer === null) return;
+  clearTimeout(normalWindowRecreateTimer);
+  normalWindowRecreateTimer = null;
 }
 
 function resetFailedWindowRecovery(): void {
@@ -170,19 +183,58 @@ function ensureWindow(): BrowserWindow {
   window = createRecordingControllerWindow();
   const createdWindow = window;
   window.on("close", (event) => {
-    if (!disposing && !replacingFailedWindow && getRecordingState().phase === "failed") {
-      event.preventDefault();
+    if (disposing || replacingFailedWindow) return;
+    const state = getRecordingState();
+    if (state.phase === "idle" || state.phase === "ready") return;
+    event.preventDefault();
+    if (state.phase === "failed") {
       window?.show();
       window?.focus();
+      return;
     }
+    if (
+      state.phase === "preflight" ||
+      state.phase === "countdown" ||
+      state.phase === "starting"
+    ) {
+      if (closeCancelPending) return;
+      closeCancelPending = true;
+      void bus
+        .dispatch("recording:cancel", {}, { principal: "ipc" })
+        .finally(() => {
+          closeCancelPending = false;
+        });
+    }
+    // Recording close cannot bypass the renderer's two-click destructive
+    // Cancel confirmation. Stopping/processing must finish persistence.
   });
   window.on("closed", () => {
     if (window === createdWindow) window = null;
   });
   window.webContents.on("render-process-gone", () => {
-    scheduleFailedWindowRecreate(createdWindow);
+    const state = getRecordingState();
+    if (state.phase === "failed") {
+      scheduleFailedWindowRecreate(createdWindow);
+      return;
+    }
+    if (disposing || window !== createdWindow || !isControllerPhase(state)) return;
+    if (window === createdWindow) window = null;
+    if (!createdWindow.isDestroyed()) createdWindow.destroy();
+    clearNormalWindowRecreateTimer();
+    normalWindowRecreateTimer = setTimeout(() => {
+      normalWindowRecreateTimer = null;
+      if (disposing) return;
+      const live = getRecordingState();
+      if (isControllerPhase(live)) applyRecordingStateToController(live);
+    }, 100);
   });
   return window;
+}
+
+function isControllerPhase(
+  state: RecordingState
+): state is Exclude<RecordingState, { phase: "idle" | "ready" | "failed" }> {
+  return state.phase !== "idle" && state.phase !== "ready" && state.phase !== "failed";
 }
 
 function resizeFailedWindow(
@@ -210,12 +262,38 @@ function resizeFailedWindow(
 function onRecordingControllerResize(event: IpcMainEvent, payload: unknown): void {
   if (window === null || window.isDestroyed() || event.sender !== window.webContents) return;
   const state = getRecordingState();
-  if (state.phase !== "failed" || payload === null || typeof payload !== "object") return;
-  const { height } = payload as { height?: unknown };
+  if (payload === null || typeof payload !== "object") return;
+  const { width, height } = payload as { width?: unknown; height?: unknown };
   if (typeof height !== "number" || !Number.isFinite(height) || height <= 0) {
     return;
   }
-  resizeFailedWindow(window, height, state.displayId);
+  if (state.phase === "failed") {
+    resizeFailedWindow(window, height, state.displayId);
+    return;
+  }
+  if (
+    (state.phase !== "recording" && state.phase !== "stopping" && state.phase !== "processing") ||
+    typeof width !== "number" ||
+    !Number.isFinite(width) ||
+    width <= 0
+  ) {
+    return;
+  }
+  const [contentWidth, contentHeight] = normalControllerContentSize(
+    window,
+    width,
+    height,
+    state.phase === "recording" ? state.displayId : lastRecordingDisplayId ?? undefined
+  );
+  window.setMinimumSize(0, 0);
+  window.setContentSize(contentWidth, contentHeight, false);
+  if (state.phase === "recording") {
+    if (process.platform === "win32") {
+      anchorAwayFromRecordedRect(window, state.rect, state.displayId);
+    } else {
+      anchorTopCenter(window, state.displayId);
+    }
+  }
 }
 
 function wireRecordingControllerResizeChannel(): void {
@@ -384,6 +462,37 @@ function fillRect(
   win.setPosition(x, y, false);
 }
 
+/** Convert measured CSS pixels to BrowserWindow DIPs. Clamp the content
+ * measurement in CSS space first so the ceiling scales with page zoom, then
+ * cap the converted window against the target display work area. */
+function normalControllerContentSize(
+  win: BrowserWindow,
+  requestedWidthCss: number,
+  requestedHeightCss: number,
+  displayId?: number
+): [number, number] {
+  const zoomFactor = win.webContents.zoomFactor;
+  const zoom = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
+  const target =
+    (displayId !== undefined
+      ? screen.getAllDisplays().find((display) => display.id === displayId)
+      : undefined) ?? screen.getPrimaryDisplay();
+  const availableWidth = Math.max(1, target.workArea.width - 32);
+  const availableHeight = Math.max(1, target.workArea.height - 32);
+  const widthCss = Math.min(
+    RECORDING_CONTROLLER_WIDTH_MAX_CSS_PX,
+    Math.max(RECORDING_CONTROLLER_WIDTH_MIN_CSS_PX, Math.ceil(requestedWidthCss))
+  );
+  const heightCss = Math.min(
+    RECORDING_CONTROLLER_HEIGHT_MAX_CSS_PX,
+    Math.max(RECORDING_CONTROLLER_HEIGHT_MIN_CSS_PX, Math.ceil(requestedHeightCss))
+  );
+  return [
+    Math.min(availableWidth, Math.ceil(widthCss * zoom)),
+    Math.min(availableHeight, Math.ceil(heightCss * zoom))
+  ];
+}
+
 function armLeadInEscapeShortcut(): void {
   if (escapeShortcutArmed) return;
   // The lead-in HUD is focusable:false and shown inactive, so a
@@ -465,15 +574,18 @@ export function applyRecordingStateToController(state: RecordingState): void {
     }
     case "recording": {
       const win = ensureWindow();
+      lastRecordingDisplayId = state.displayId;
       disarmLeadInEscapeShortcut();
       // Recording-phase pill is compact; tuck it top-center of the
       // recorded display. PID exclusion keeps it out of the captured
       // pixels. Width fits the three-button row (Stop / Restart /
       // Cancel); height accommodates the "not visible in recording"
       // reassurance caption underneath.
-      win.setFocusable(false);
+      win.setFocusable(true);
       win.setIgnoreMouseEvents(false);
-      win.setContentSize(420, 80, false);
+      const [width, height] = normalControllerContentSize(win, 420, 80, state.displayId);
+      win.setMinimumSize(0, 0);
+      win.setContentSize(width, height, false);
       if (process.platform === "win32") {
         anchorAwayFromRecordedRect(win, state.rect, state.displayId);
       } else {
@@ -492,7 +604,14 @@ export function applyRecordingStateToController(state: RecordingState): void {
       disarmLeadInEscapeShortcut();
       win.setFocusable(false);
       win.setIgnoreMouseEvents(false);
-      win.setContentSize(420, 80, false);
+      const [width, height] = normalControllerContentSize(
+        win,
+        420,
+        80,
+        lastRecordingDisplayId ?? undefined
+      );
+      win.setMinimumSize(0, 0);
+      win.setContentSize(width, height, false);
       // Preserve the recording-phase position. On Windows the HUD may be
       // outside the captured rect; moving it while FFmpeg is still exiting
       // can paint it into the final frames.
@@ -520,8 +639,10 @@ export function applyRecordingStateToController(state: RecordingState): void {
     case "idle":
     case "ready": {
       clearFailedWindowRecreateTimer();
+      clearNormalWindowRecreateTimer();
       resetFailedWindowRecovery();
       disarmLeadInEscapeShortcut();
+      lastRecordingDisplayId = null;
       if (window !== null && !window.isDestroyed()) {
         window.hide();
         // Destroying releases the renderer process; the next session
@@ -553,6 +674,8 @@ export function disposeRecordingController(): void {
   installed = false;
   unwireRecordingControllerResizeChannel();
   clearFailedWindowRecreateTimer();
+  clearNormalWindowRecreateTimer();
+  lastRecordingDisplayId = null;
   resetFailedWindowRecovery();
   disarmLeadInEscapeShortcut();
   disposing = true;

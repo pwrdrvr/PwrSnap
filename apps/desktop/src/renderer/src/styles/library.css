@@ -298,6 +298,15 @@
   border-color: var(--accent);
 }
 .ps-tray__quick--video:active { transform: translateY(1px); }
+.ps-tray__quick--video:disabled,
+.ps-tray__quick--video:disabled:hover,
+.ps-tray__quick--video:disabled:active {
+  background: var(--bg-panel-elevated);
+  border-color: var(--accent-border);
+  cursor: default;
+  opacity: 0.45;
+  transform: none;
+}
 /* The orange Quick Capture button reads as focused via its always-on
    accent ring; the video variant drops that ring (outline: none above),
    so it needs an explicit keyboard-focus indicator of its own. Mouse

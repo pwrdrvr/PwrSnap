@@ -252,6 +252,10 @@ export type FloatOverAsset =
        *  AND drives the short-clip warning banner (clips under 1.5s
        *  are usually an accidental Stop press right after Start). */
       durationSec: number;
+      /** What the recorder actually persisted, not merely what the user
+       * requested before capture. Drives the post-recording confirmation. */
+      hasSystemAudio?: boolean;
+      hasMicrophoneAudio?: boolean;
       /** Source pixel size — sizes the mini-trim filmstrip cells. */
       widthPx: number;
       heightPx: number;
@@ -812,7 +816,9 @@ export function FloatOver({
           </div>
           <div className="fo__hdr-sub">
             {dimText(srcW, srcH)}
-            {asset?.kind === "video" ? ` · ${fmtDurationLabel(asset.durationSec)}` : " · just now"}
+            {asset?.kind === "video"
+              ? ` · ${fmtDurationLabel(asset.durationSec)} · ${recordingSourcesLabel(asset)}`
+              : " · just now"}
           </div>
         </div>
         <div className="fo__hdr-actions">
@@ -1246,6 +1252,17 @@ export function FloatOver({
       )}
     </div>
   );
+}
+
+export function recordingSourcesLabel(
+  asset: Pick<Extract<FloatOverAsset, { kind: "video" }>, "hasSystemAudio" | "hasMicrophoneAudio">
+): string {
+  const sources = [
+    "screen",
+    asset.hasSystemAudio === true ? "system audio" : null,
+    asset.hasMicrophoneAudio === true ? "microphone" : null
+  ].filter((source): source is string => source !== null);
+  return sources.length === 1 ? "screen only" : sources.join(" + ");
 }
 
 export function FoDesktopFrame({

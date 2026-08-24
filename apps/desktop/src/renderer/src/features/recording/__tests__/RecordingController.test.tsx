@@ -3,7 +3,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import type { RecordingState } from "@pwrsnap/shared";
+import type { RecordingBackendCapabilities, RecordingState } from "@pwrsnap/shared";
 
 const mocks = vi.hoisted(() => ({
   dispatch: vi.fn(),
@@ -40,6 +40,31 @@ const failure: Extract<RecordingState, { phase: "failed" }> = {
   displayId: 1
 };
 
+const macCapabilities: RecordingBackendCapabilities = {
+  backend: "macos-native",
+  controls: { stop: true, cancel: true, restart: true, pauseResume: false },
+  sources: {
+    screen: true,
+    systemAudio: true,
+    microphone: true,
+    webcam: false,
+    liveAudioLevels: false,
+    liveDisconnectDetection: false,
+    midRecordingToggles: false
+  },
+  controllerExcludedFromCapture: true
+};
+
+function recordingState(rect = { x: 10, y: 20, w: 800, h: 600 }): RecordingState {
+  return {
+    phase: "recording",
+    sessionId: "rec-1",
+    startedAt: new Date(Date.now() - 65_000).toISOString(),
+    rect,
+    displayId: 1
+  };
+}
+
 beforeEach(() => {
   mocks.dispatch.mockReset();
   mocks.requestResize.mockReset();
@@ -57,6 +82,7 @@ beforeEach(() => {
   });
   mocks.dispatch.mockImplementation(async (name: string) => {
     if (name === "recording:state") return { ok: true, value: failure };
+    if (name === "recording:capabilities") return { ok: true, value: macCapabilities };
     return { ok: true, value: undefined };
   });
   Object.defineProperty(window, "pwrsnapApi", {
@@ -78,6 +104,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 async function renderController(): Promise<void> {
@@ -92,6 +119,115 @@ async function click(action: string): Promise<void> {
   expect(button).not.toBeNull();
   await act(async () => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 }
+
+describe("RecordingController normal controls", () => {
+  test("renders capability-backed timing/actions and omits unsupported pause", async () => {
+    mocks.dispatch.mockImplementation(async (name: string) => {
+      if (name === "recording:state") return { ok: true, value: recordingState() };
+      if (name === "recording:capabilities") return { ok: true, value: macCapabilities };
+      return { ok: true, value: undefined };
+    });
+    await renderController();
+
+    expect(container.querySelector('[role="timer"]')?.textContent).toMatch(/^01:0[45]$/);
+    expect(container.querySelector('[data-recording-action="stop"]')).not.toBeNull();
+    expect(container.querySelector('[data-recording-action="restart"]')).not.toBeNull();
+    expect(container.querySelector('[data-recording-action="cancel"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Pause");
+    expect(container.querySelector("[data-recording-caption]")?.textContent).toContain(
+      "not visible"
+    );
+  });
+
+  test.each(["restart", "cancel"] as const)(
+    "requires an in-HUD second click before %s",
+    async (name) => {
+      mocks.dispatch.mockImplementation(async (command: string) => {
+        if (command === "recording:state") return { ok: true, value: recordingState() };
+        if (command === "recording:capabilities") {
+          return { ok: true, value: macCapabilities };
+        }
+        return { ok: true, value: undefined };
+      });
+      await renderController();
+
+      await click(name);
+      expect(container.textContent).toContain(
+        name === "restart" ? "Restart discards this take" : "Cancel discards this take"
+      );
+      expect(mocks.dispatch).not.toHaveBeenCalledWith(`recording:${name}`, {});
+
+      await click(name);
+      expect(mocks.dispatch).toHaveBeenCalledWith(`recording:${name}`, {});
+    }
+  );
+
+  test("reposts an unchanged CSS measurement when shared page zoom changes", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      top: 0,
+      right: 420,
+      bottom: 80,
+      left: 0,
+      width: 420,
+      height: 80,
+      toJSON: () => ({})
+    });
+    let dprListener: ((event: MediaQueryListEvent) => void) | null = null;
+    const matchMedia = vi.fn(
+      () =>
+        ({
+          matches: true,
+          media: `(resolution: ${window.devicePixelRatio}dppx)`,
+          onchange: null,
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+          addEventListener: vi.fn(
+            (_type: string, listener: (event: MediaQueryListEvent) => void) => {
+              dprListener = listener;
+            }
+          ),
+          removeEventListener: vi.fn(),
+          dispatchEvent: vi.fn(() => true)
+        }) as unknown as MediaQueryList
+    );
+    vi.stubGlobal("matchMedia", matchMedia);
+    mocks.dispatch.mockImplementation(async (name: string) => {
+      if (name === "recording:state") return { ok: true, value: recordingState() };
+      if (name === "recording:capabilities") return { ok: true, value: macCapabilities };
+      return { ok: true, value: undefined };
+    });
+    await renderController();
+    const callsBeforeZoom = mocks.requestResize.mock.calls.length;
+
+    await act(async () => dprListener?.({} as MediaQueryListEvent));
+
+    expect(matchMedia).toHaveBeenCalledTimes(2);
+    expect(mocks.requestResize).toHaveBeenCalledTimes(callsBeforeZoom + 1);
+    expect(mocks.requestResize).toHaveBeenLastCalledWith({ width: 420, height: 80 });
+  });
+
+  test("hides every normal control for an unsupported backend", async () => {
+    mocks.dispatch.mockImplementation(async (name: string) => {
+      if (name === "recording:state") return { ok: true, value: recordingState() };
+      if (name === "recording:capabilities") {
+        return {
+          ok: true,
+          value: {
+            ...macCapabilities,
+            backend: "unsupported",
+            controls: { stop: false, cancel: false, restart: false, pauseResume: false }
+          }
+        };
+      }
+      return { ok: true, value: undefined };
+    });
+    await renderController();
+
+    expect(container.querySelector("button")).toBeNull();
+  });
+});
 
 describe("RecordingController failed state", () => {
   test("renders fixed safe copy and only failure recovery actions", async () => {

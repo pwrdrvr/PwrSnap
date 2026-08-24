@@ -14,9 +14,10 @@
 // — registration, protect-id resolution, and the fire-and-forget ack —
 // with plain spies.
 
-import { ok } from "@pwrsnap/shared";
+import { canStartRecordingAttempt, ok } from "@pwrsnap/shared";
 import { bus, type CommandContext } from "../command-bus";
 import { getMainLogger } from "../log";
+import { getRecordingState } from "../recording/recording-state";
 
 /** Opens the selector and records what the user picks. Returns once the
  *  recording lifecycle is handed off; rejection is logged, not thrown. */
@@ -31,9 +32,16 @@ export type ResolveProtectWindowIds = (ctx: CommandContext) => readonly number[]
 
 export function registerCaptureVideoHandler(
   runInteractiveRecord: RunInteractiveRecord,
-  resolveProtectWindowIds: ResolveProtectWindowIds
+  resolveProtectWindowIds: ResolveProtectWindowIds,
+  canStart: () => boolean = () => canStartRecordingAttempt(getRecordingState())
 ): void {
   bus.register("capture:videoInteractive", async (_req, ctx) => {
+    // Renderer state can be stale and non-hotkey callers do not pass through
+    // the hotkey policy. Fail closed for the whole attempt—including setup,
+    // finalization, and durable failure—before opening another selector.
+    if (!canStart()) {
+      return ok(undefined);
+    }
     // Fire-and-forget: the selector, countdown, and recording lifecycle
     // surface on the `events:recording:*` broadcasts, so we ack
     // immediately rather than awaiting the whole pick→countdown→record

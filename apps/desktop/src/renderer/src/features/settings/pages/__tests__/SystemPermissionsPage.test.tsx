@@ -39,6 +39,7 @@ type FakeApiOpts = {
   documentsAccess?: "unknown" | "confirmed" | "denied";
   homeCaptureReferences?: number;
   homeDirectoryEntryCount?: number;
+  overridden?: boolean;
 };
 
 function installFakeApi(
@@ -62,11 +63,12 @@ function installFakeApi(
     homeCaptureReferences: opts.homeCaptureReferences ?? 0,
     homeDirectoryEntryCount: opts.homeDirectoryEntryCount ?? 0,
     canMoveToDocuments:
+      opts.overridden !== true &&
       opts.capturesLocation === "home" &&
       opts.documentsAccess === "confirmed" &&
       (opts.homeCaptureReferences ?? 0) === 0 &&
       (opts.homeDirectoryEntryCount ?? 0) === 0,
-    overridden: false
+    overridden: opts.overridden ?? false
   } as const;
   Object.defineProperty(window, "pwrsnapApi", {
     configurable: true,
@@ -164,12 +166,13 @@ const baseReport: PermissionReadinessReport = {
 function windowsReport(
   microphone: RecordingPermissionStatus = "granted"
 ): PermissionReadinessReport {
-  // Operational readiness remains permissive on Windows so capture can try
-  // the real backend. The separate evidence is what the page may present.
+  // Operational screen readiness remains attemptable, while the current
+  // gdigrab backend truthfully marks audio unavailable. The separate evidence
+  // is the only OS-status model the page may present.
   return {
     screenRecording: "granted",
-    microphone: "granted",
-    systemAudio: "granted",
+    microphone: "unavailable",
+    systemAudio: "unavailable",
     fingerprint: "fedcba9876543210",
     screenCapturePrompted: false,
     permissionEvidence: {
@@ -329,6 +332,34 @@ describe("SystemPermissionsPage — screen permission disambiguation", () => {
       "storage:moveCapturesToDocuments"
     );
   });
+
+  test("PWRSNAP_DATA_ROOT is presented as a custom override without Documents recovery claims", async () => {
+    const { calls } = await render(baseReport, {
+      capturesDenied: true,
+      capturesLocation: "documents",
+      documentsAccess: "denied",
+      overridden: true
+    });
+    const row = rowByTag("custom");
+    const text = row.textContent ?? "";
+
+    expect(text).toContain("Captures Folder (Custom)");
+    expect(text).toContain("PWRSNAP_DATA_ROOT override");
+    expect(text).not.toContain("Documents");
+    expect(text).not.toContain("Home fallback");
+    expect(text).not.toContain("Open System Settings");
+    expect(text).not.toContain("Use Documents for new captures");
+
+    const check = Array.from(row.querySelectorAll("button")).find(
+      (button) => button.textContent === "Check custom folder access"
+    );
+    await act(async () => {
+      check?.click();
+    });
+    expect(calls.map((call) => call.name)).toContain(
+      "storage:checkCapturesAccess"
+    );
+  });
 });
 
 describe("SystemPermissionsPage — Windows permission evidence", () => {
@@ -337,7 +368,11 @@ describe("SystemPermissionsPage — Windows permission evidence", () => {
 
     const screen = rowByTag("screen");
     expect(screen.textContent).toContain("Not reported");
-    expect(screen.textContent).toContain("cannot verify a separate per-app setting");
+    expect(screen.textContent).toContain("gdigrab recorder");
+    expect(screen.textContent).toContain(
+      "Windows Graphics Capture privacy controls do not prove gdigrab access"
+    );
+    expect(screen.querySelector("button")).toBeNull();
     expect(screen.querySelector("[data-permission-status]")?.textContent).toBe(
       "Not reported"
     );
@@ -375,25 +410,17 @@ describe("SystemPermissionsPage — Windows permission evidence", () => {
     expect(rowByTag("microphone").textContent).toContain("Allowed by Windows");
   });
 
-  test("Windows privacy actions use only the guarded settings command", async () => {
+  test("Windows offers only the guarded global microphone settings action", async () => {
     const { calls } = await render(windowsReport("denied"), { platform: "win32" });
-    const screenButton = Array.from(rowByTag("screen").querySelectorAll("button")).find(
-      (button) => button.textContent === "Review capture privacy"
-    );
     const microphoneButton = Array.from(
       rowByTag("microphone").querySelectorAll("button")
     ).find((button) => button.textContent === "Open microphone privacy");
 
     await act(async () => {
-      screenButton?.click();
       microphoneButton?.click();
     });
 
     const permissionCalls = calls.filter((call) => call.name.startsWith("permissions:"));
-    expect(permissionCalls).toContainEqual({
-      name: "permissions:openSystemSettings",
-      req: { permission: "screen" }
-    });
     expect(permissionCalls).toContainEqual({
       name: "permissions:openSystemSettings",
       req: { permission: "microphone" }
@@ -401,6 +428,10 @@ describe("SystemPermissionsPage — Windows permission evidence", () => {
     expect(permissionCalls.map((call) => call.name)).not.toContain(
       "permissions:request"
     );
+    expect(permissionCalls).not.toContainEqual({
+      name: "permissions:openSystemSettings",
+      req: { permission: "screen" }
+    });
   });
 
   test("unknown Windows folder access is Not checked until a real write probe", async () => {

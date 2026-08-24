@@ -215,4 +215,31 @@ describe("permissions:* command-bus surface", () => {
     expect(result.error.kind).toBe("validation");
     expect(result.error.code).toBe("unknown_permission");
   });
+
+  test("permissions:openSystemSettings returns typed unsupported for Windows system audio", async () => {
+    Object.defineProperty(process, "platform", {
+      value: "win32",
+      configurable: true
+    });
+    try {
+      const result = await bus.dispatch(
+        "permissions:openSystemSettings",
+        { permission: "systemAudio" },
+        { principal: "ipc" }
+      );
+
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected error");
+      expect(result.error).toMatchObject({
+        kind: "permission",
+        code: "permission_settings_unsupported"
+      });
+      expect(result.error.message).toContain("video-only");
+    } finally {
+      Object.defineProperty(process, "platform", {
+        value: originalPlatform,
+        configurable: true
+      });
+    }
+  });
 });

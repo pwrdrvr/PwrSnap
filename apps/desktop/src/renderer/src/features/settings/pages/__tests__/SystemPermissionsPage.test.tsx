@@ -395,6 +395,25 @@ describe("SystemPermissionsPage — Windows permission evidence", () => {
     expect(microphone.textContent).toContain("screen-only");
   });
 
+  test.each(["restricted", "unavailable"] as const)(
+    "does not offer microphone privacy for %s managed/unavailable evidence",
+    async (status) => {
+      const { calls } = await render(windowsReport(status), {
+        platform: "win32"
+      });
+
+      const microphone = rowByTag("microphone");
+      expect(microphone.textContent).toContain(
+        status === "restricted" ? "Restricted by policy" : "Unavailable"
+      );
+      expect(microphone.querySelector("button")).toBeNull();
+      expect(calls).not.toContainEqual({
+        name: "permissions:openSystemSettings",
+        req: { permission: "microphone" }
+      });
+    }
+  );
+
   test("refreshes the Windows microphone status when PwrSnap regains focus", async () => {
     await render(windowsReport("denied"), {
       platform: "win32",

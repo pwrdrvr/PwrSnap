@@ -292,6 +292,14 @@ export function registerRecordingHandlers(): void {
         )
       );
     }
+    if (process.platform === "win32" && req.permission === "systemAudio") {
+      return err(
+        permissionError(
+          "permission_settings_unsupported",
+          "System Audio settings are unavailable on Windows because the current recorder is video-only."
+        )
+      );
+    }
     try {
       await openSystemSettingsFor(req.permission);
       return ok(undefined);

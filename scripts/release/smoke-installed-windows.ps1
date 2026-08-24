@@ -429,6 +429,31 @@ function Assert-ReadyReport {
     throw "Main-process bootstrap did not complete."
   }
   if (
+    $Report.main.startup.singleInstanceLockAcquired -ne $true -or
+    $Report.main.startup.tray.installed -ne $true -or
+    $Report.main.startup.tray.iconLoaded -ne $true -or
+    $Report.main.startup.tray.popoverPrewarmed -ne $true
+  ) {
+    throw "Packaged startup did not exercise the first-instance lock and tray/icon/prewarm path."
+  }
+  Assert-SamePath `
+    -Actual $Report.main.startup.tray.iconPath `
+    -Expected (Join-Path $installedResources "tray-icon.png") `
+    -Label "loaded tray icon"
+  Assert-InstalledResource `
+    -Path $Report.main.startup.tray.iconPath `
+    -Label "loaded tray icon" `
+    -RequireLeaf
+  if (
+    $Report.main.startup.globalHotkeysSkipped -ne $true -or
+    $Report.main.startup.launchAtLoginSyncSkipped -ne $true -or
+    $Report.main.startup.appUpdaterSkipped -ne $true -or
+    $Report.main.startup.localAgentLifecycleSkipped -ne $true -or
+    $Report.main.startup.startupCodexProbeSkipped -ne $true
+  ) {
+    throw "Packaged startup did not preserve the required host/network safety suppressions."
+  }
+  if (
     $Report.renderer.readyState -ne "complete" -or
     $Report.renderer.stage -ne "library" -or
     $Report.renderer.title -ne "PwrSnap" -or

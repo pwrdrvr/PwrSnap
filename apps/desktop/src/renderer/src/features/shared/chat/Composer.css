@@ -140,6 +140,14 @@
 .ps-composer__send:hover:not(:disabled) {
   background: var(--accent-strong);
 }
+.ps-composer__send--stop {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+.ps-composer__send--stop:hover:not(:disabled) {
+  background: var(--bg-panel-elevated);
+}
 .ps-composer__send:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;

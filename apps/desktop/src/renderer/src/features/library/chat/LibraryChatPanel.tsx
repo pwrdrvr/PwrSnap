@@ -15,6 +15,7 @@ import type {
   LibraryChatStreamDeltaEvent,
   LibraryChatMessageCommittedEvent,
   LibraryChatToolCallEvent,
+  LibraryChatTurnInterruptedEvent,
   LibraryChatThreadView
 } from "@pwrsnap/shared";
 import { acpAgentIdFromThreadId, EVENT_CHANNELS } from "@pwrsnap/shared";
@@ -45,6 +46,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [codexError, setCodexError] = useState<ChatPanelError | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   // New-chat backend draft (editable chips until the first message locks it).
   const [providers, setProviders] = useState<string[]>(["codex"]);
@@ -65,6 +67,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   //     text streams). Rendered as the trailing group + "Thinking…", then
   //     flushed into activityByMsg once the message id is known.
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
+  const [stoppingTurnId, setStoppingTurnId] = useState<string | null>(null);
   const [activityByMsg, setActivityByMsg] = useState<Record<string, ChatActivityChip[]>>({});
   const [pendingChips, setPendingChips] = useState<ChatActivityChip[]>([]);
 
@@ -74,12 +77,16 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   activeThreadRef.current = activeThreadId;
   const activeTurnRef = useRef<string | null>(null);
   activeTurnRef.current = activeTurnId;
+  const stoppingTurnRef = useRef<string | null>(null);
+  stoppingTurnRef.current = stoppingTurnId;
+  const stopInFlightRef = useRef<string | null>(null);
   const pendingChipsRef = useRef<ChatActivityChip[]>(pendingChips);
   pendingChipsRef.current = pendingChips;
   // turnId → the assistant message id that turn produced, learned from the
   // first stream delta (or the commit for tool-only turns). Lets a tool
   // chip attach to the right bubble in the transcript.
   const turnMsgRef = useRef<Map<string, string>>(new Map());
+  const terminalStatusRef = useRef<Map<string, ChatMessage["status"]>>(new Map());
   const streamState = useRef<Map<string, StreamEntry>>(new Map());
 
   const submitApproval = useCallback(
@@ -103,6 +110,40 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     supersededChannel: EVENT_CHANNELS.libraryChatApprovalSuperseded,
     submit: submitApproval
   });
+
+  const updatePendingChips = useCallback(
+    (
+      update:
+        | ChatActivityChip[]
+        | ((previous: ChatActivityChip[]) => ChatActivityChip[])
+    ): void => {
+      setPendingChips((previous) => {
+        const next = typeof update === "function" ? update(previous) : update;
+        pendingChipsRef.current = next;
+        return next;
+      });
+    },
+    []
+  );
+
+  const updateActiveTurn = useCallback((turnId: string | null): void => {
+    activeTurnRef.current = turnId;
+    setActiveTurnId(turnId);
+  }, []);
+
+  const updateStoppingTurn = useCallback((turnId: string | null): void => {
+    stoppingTurnRef.current = turnId;
+    setStoppingTurnId(turnId);
+  }, []);
+
+  const clearTurnTracking = useCallback((): void => {
+    updateActiveTurn(null);
+    updateStoppingTurn(null);
+    stopInFlightRef.current = null;
+    turnMsgRef.current.clear();
+    terminalStatusRef.current.clear();
+    streamState.current.clear();
+  }, [updateActiveTurn, updateStoppingTurn]);
 
   /** Append a chip to a message's activity (dedup by callId). */
   const appendActivity = useCallback(
@@ -128,8 +169,8 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       }
       return { ...prev, [messageId]: merged };
     });
-    setPendingChips([]);
-  }, []);
+    updatePendingChips([]);
+  }, [updatePendingChips]);
 
   // Provider options + the new-chat draft defaults come from Settings → AI.
   useEffect(() => {
@@ -159,10 +200,11 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     let cancelled = false;
     setActiveThreadId(null);
     setMessages([]);
-    setActiveTurnId(null);
+    clearTurnTracking();
     setActivityByMsg({});
-    setPendingChips([]);
-    turnMsgRef.current.clear();
+    updatePendingChips([]);
+    setStreamingMessageId(null);
+    setActionError(null);
     setLoading(true);
     void (async () => {
       const result = await dispatch("codex:libraryChat:list", { anchorCaptureId });
@@ -184,17 +226,26 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     return () => {
       cancelled = true;
     };
-  }, [anchorCaptureId]);
+  }, [anchorCaptureId, clearTurnTracking, updatePendingChips]);
 
   // Load history when the active thread changes. Switching threads is a
   // fresh view: drop the prior thread's in-memory activity + turn state
   // (it isn't journaled, so it doesn't reload — that's fine).
   useEffect(() => {
+    setMessages([]);
     setActivityByMsg({});
-    setPendingChips([]);
-    setActiveTurnId(null);
+    updatePendingChips([]);
+    updateStoppingTurn(null);
+    stopInFlightRef.current = null;
     setStreamingMessageId(null);
     turnMsgRef.current.clear();
+    terminalStatusRef.current.clear();
+    streamState.current.clear();
+    setActionError(null);
+    const selected = threadsRef.current.find((thread) => thread.threadId === activeThreadId);
+    updateActiveTurn(
+      selected?.status.kind === "streaming" ? selected.status.turnId : null
+    );
     if (activeThreadId === null) {
       setMessages([]);
       return;
@@ -203,12 +254,29 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     void (async () => {
       const result = await dispatch("codex:libraryChat:history", { threadId: activeThreadId });
       if (cancelled || !result.ok) return;
-      setMessages(result.value.messages);
+      for (const message of result.value.messages) {
+        if (message.status === "streaming") continue;
+        const matchingTurn = [...turnMsgRef.current].find(
+          ([, messageId]) => messageId === message.id
+        )?.[0];
+        if (matchingTurn === undefined) continue;
+        streamState.current.delete(message.id);
+        setStreamingMessageId((current) => current === message.id ? null : current);
+        terminalStatusRef.current.set(matchingTurn, message.status);
+        if (activeTurnRef.current === matchingTurn) updateActiveTurn(null);
+        if (
+          stoppingTurnRef.current === matchingTurn &&
+          stopInFlightRef.current !== matchingTurn
+        ) {
+          updateStoppingTurn(null);
+        }
+      }
+      setMessages((current) => mergeHistoryWithLive(result.value.messages, current));
     })();
     return () => {
       cancelled = true;
     };
-  }, [activeThreadId]);
+  }, [activeThreadId, updateActiveTurn, updatePendingChips, updateStoppingTurn]);
 
   // Subscribe to the chat event stream.
   useEffect(() => {
@@ -217,6 +285,19 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     unsubs.push(
       subscribe(EVENT_CHANNELS.libraryChatThreadUpdated, (payload) => {
         const { thread } = payload as { thread: LibraryChatThreadView };
+        if (
+          anchorCaptureId !== null &&
+          thread.anchorCaptureId !== anchorCaptureId
+        ) {
+          return;
+        }
+        if (
+          thread.threadId === activeThreadRef.current &&
+          thread.status.kind === "streaming" &&
+          terminalStatusRef.current.has(thread.status.turnId)
+        ) {
+          return;
+        }
         setThreads((prev) => {
           if (thread.archived) return prev.filter((t) => t.threadId !== thread.threadId);
           const idx = prev.findIndex((t) => t.threadId === thread.threadId);
@@ -225,6 +306,12 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
           next[idx] = thread;
           return sortChatThreads(next);
         });
+        if (
+          thread.threadId === activeThreadRef.current &&
+          thread.status.kind === "streaming"
+        ) {
+          updateActiveTurn(thread.status.turnId);
+        }
       })
     );
 
@@ -232,6 +319,8 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       subscribe(EVENT_CHANNELS.libraryChatStreamDelta, (payload) => {
         const e = payload as LibraryChatStreamDeltaEvent;
         if (e.threadId !== activeThreadRef.current) return;
+        if (terminalStatusRef.current.has(e.turnId)) return;
+        if (activeTurnRef.current === null) updateActiveTurn(e.turnId);
         // First delta tells us which assistant message this turn produced
         // → attach any chips that arrived before the text started.
         if (turnMsgRef.current.get(e.turnId) !== e.messageId) {
@@ -267,18 +356,19 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       subscribe(EVENT_CHANNELS.libraryChatToolCall, (payload) => {
         const e = payload as LibraryChatToolCallEvent;
         if (e.threadId !== activeThreadRef.current) return;
+        const terminal = terminalStatusRef.current.has(e.turnId);
         // A tool fired → the agent is working. Adopt the turn id if we
         // didn't capture it from the send result.
-        if (activeTurnRef.current === null) setActiveTurnId(e.turnId);
+        if (!terminal && activeTurnRef.current === null) updateActiveTurn(e.turnId);
         const chip: ChatActivityChip = { callId: e.callId, summary: e.summary, ok: e.ok };
         const msgId = turnMsgRef.current.get(e.turnId);
         if (msgId !== undefined) {
           // The turn's assistant message already exists → attach inline
           // above it.
           appendActivity(msgId, chip);
-        } else {
+        } else if (!terminal) {
           // Message not known yet → hold in the trailing (pending) group.
-          setPendingChips((prev) =>
+          updatePendingChips((prev) =>
             prev.some((c) => c.callId === chip.callId) ? prev : [...prev, chip]
           );
         }
@@ -289,15 +379,34 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       subscribe(EVENT_CHANNELS.libraryChatMessageCommitted, (payload) => {
         const e = payload as LibraryChatMessageCommittedEvent;
         if (e.threadId !== activeThreadRef.current) return;
-        if (streamingMessageIdMatches(e.message.id, streamState)) {
-          streamState.current.delete(e.message.id);
+        let turnId: string | null = e.turnId ?? null;
+        if (turnId === null) {
+          for (const [candidateTurnId, messageId] of turnMsgRef.current) {
+            if (messageId === e.message.id) {
+              turnId = candidateTurnId;
+              break;
+            }
+          }
         }
+        if (e.message.role === "assistant" && turnId === null) {
+          const unassigned = [...terminalStatusRef.current.keys()]
+            .reverse()
+            .find((candidate) => !turnMsgRef.current.has(candidate));
+          turnId = unassigned ?? activeTurnRef.current;
+        }
+        if (e.message.role === "assistant" && turnId !== null) {
+          turnMsgRef.current.set(turnId, e.message.id);
+        }
+        const override = turnId !== null ? terminalStatusRef.current.get(turnId) : undefined;
+        const committed =
+          override === "interrupted" ? { ...e.message, status: "interrupted" as const } : e.message;
+        streamState.current.delete(e.message.id);
         setStreamingMessageId((cur) => (cur === e.message.id ? null : cur));
         setMessages((prev) => {
           const idx = prev.findIndex((m) => m.id === e.message.id);
-          if (idx === -1) return [...prev, e.message];
+          if (idx === -1) return [...prev, committed];
           const next = [...prev];
-          next[idx] = e.message;
+          next[idx] = committed;
           return next;
         });
         // Assistant turn finished. Attach any still-pending chips to this
@@ -305,29 +414,82 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         // text never learned its message id until now), then stop the
         // "Thinking…" indicator. The chips STAY in the transcript — they
         // are not cleared on turn end.
-        if (e.message.role === "assistant" && e.message.status !== "streaming") {
-          flushPendingTo(e.message.id);
-          setActiveTurnId(null);
+        if (committed.role === "assistant" && committed.status !== "streaming") {
+          setActionError(null);
+          if (turnId !== null && activeTurnRef.current === turnId) {
+            flushPendingTo(committed.id);
+          }
+          if (turnId !== null) terminalStatusRef.current.set(turnId, committed.status);
+          if (turnId !== null && activeTurnRef.current === turnId) {
+            updateActiveTurn(null);
+          }
+          if (turnId !== null && stoppingTurnRef.current === turnId) {
+            if (stopInFlightRef.current !== turnId) updateStoppingTurn(null);
+          }
         }
       })
     );
 
     unsubs.push(
       subscribe(EVENT_CHANNELS.libraryChatTurnInterrupted, (payload) => {
-        const e = payload as { threadId: string };
+        const e = payload as LibraryChatTurnInterruptedEvent;
         if (e.threadId !== activeThreadRef.current) return;
-        setStreamingMessageId(null);
-        setActiveTurnId(null);
+        const currentTurn = activeTurnRef.current;
+        if (currentTurn !== null && currentTurn !== e.turnId) return;
+        const existingTerminal = terminalStatusRef.current.get(e.turnId);
+        if (
+          currentTurn === null &&
+          (existingTerminal === "complete" || existingTerminal === "failed") &&
+          stoppingTurnRef.current !== e.turnId &&
+          stopInFlightRef.current !== e.turnId
+        ) {
+          return;
+        }
+
+        terminalStatusRef.current.set(e.turnId, "interrupted");
+        setActionError(null);
+        const messageId = turnMsgRef.current.get(e.turnId);
+        if (messageId !== undefined) {
+          const partial = streamState.current.get(messageId)?.full ?? "";
+          setMessages((prev) =>
+            prev.map((message) => {
+              if (message.id !== messageId) return message;
+              const hasText = message.content.some(
+                (block) => block.kind === "text" && block.text.length > 0
+              );
+              return {
+                ...message,
+                content:
+                  !hasText && partial.length > 0
+                    ? [{ kind: "text" as const, text: partial }]
+                    : message.content,
+                status: "interrupted"
+              };
+            })
+          );
+          streamState.current.delete(messageId);
+          setStreamingMessageId((cur) => cur === messageId ? null : cur);
+        }
+        if (currentTurn === e.turnId) updateActiveTurn(null);
+        if (
+          stoppingTurnRef.current === e.turnId &&
+          stopInFlightRef.current !== e.turnId
+        ) {
+          updateStoppingTurn(null);
+        }
         // Drop the in-flight pending chips, but keep whatever already
         // attached to committed messages.
-        setPendingChips([]);
+        updatePendingChips([]);
       })
     );
 
     return () => {
       for (const u of unsubs) u();
+      streamState.current.clear();
+      turnMsgRef.current.clear();
+      terminalStatusRef.current.clear();
     };
-  }, []);
+  }, [anchorCaptureId, appendActivity, flushPendingTo, updateActiveTurn, updatePendingChips, updateStoppingTurn]);
 
   const subscribeToStream = useCallback(
     (messageId: string, onDelta: (fullText: string) => void): (() => void) => {
@@ -349,16 +511,23 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   // backend chips stay editable (and the provider isn't locked) until the turn
   // starts. Dropping to activeThreadId=null shows the draft greeting + chips.
   const onNewChat = useCallback(() => {
+    activeThreadRef.current = null;
     setActiveThreadId(null);
     setMessages([]);
     setActivityByMsg({});
-    setPendingChips([]);
+    updatePendingChips([]);
     setDraftHint(null);
-    turnMsgRef.current.clear();
-  }, []);
+    setActionError(null);
+    setStreamingMessageId(null);
+    clearTurnTracking();
+  }, [clearTurnTracking, updatePendingChips]);
 
   const onSubmit = useCallback(
     async (text: string, _attachments: readonly ComposerAttachment[]): Promise<void> => {
+      if (activeTurnRef.current !== null || stoppingTurnRef.current !== null) {
+        throw new Error("A response is already in progress.");
+      }
+      setActionError(null);
       let threadId = activeThreadRef.current;
       if (threadId === null) {
         // First message of a new chat: lock in the chosen backend config. A
@@ -366,7 +535,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         const cfg = draftConfigRef.current;
         if (cfg.model === null || cfg.model === "") {
           setDraftHint("Choose a model to start this chat.");
-          return;
+          throw new Error("Choose a model to start this chat.");
         }
         setDraftHint(null);
         const created = await dispatch("codex:libraryChat:create", {
@@ -376,8 +545,8 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
           ...(cfg.reasoning !== null && cfg.reasoning !== "" ? { reasoning: cfg.reasoning } : {})
         });
         if (!created.ok) {
-          setCodexError(errorFor(created.error));
-          return;
+          setActionError(`Message not sent: ${errorFor(created.error).message}`);
+          throw new Error(created.error.message);
         }
         threadId = created.value.threadId;
         // Dedup: the controller also broadcasts threadUpdated for this new
@@ -389,24 +558,67 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
             ...prev.filter((t) => t.threadId !== created.value.threadId)
           ])
         );
+        activeThreadRef.current = threadId;
         setActiveThreadId(threadId);
       }
       // Fresh turn: clear only the pending (in-flight) chips. Prior
       // turns' chips stay attached to their messages in the transcript.
-      setPendingChips([]);
+      updatePendingChips([]);
       const result = await dispatch("codex:libraryChat:send", {
         threadId,
         text,
         anchorCaptureId
       });
       if (!result.ok) {
-        setCodexError(errorFor(result.error));
-        return;
+        setActionError(`Message not sent: ${errorFor(result.error).message}`);
+        throw new Error(result.error.message);
       }
-      setActiveTurnId(result.value.turnId);
+      if (
+        activeThreadRef.current === threadId &&
+        !terminalStatusRef.current.has(result.value.turnId)
+      ) {
+        updateActiveTurn(result.value.turnId);
+      }
     },
-    [anchorCaptureId]
+    [anchorCaptureId, updateActiveTurn, updatePendingChips]
   );
+
+  const onStop = useCallback(async (): Promise<void> => {
+    const threadId = activeThreadRef.current;
+    const turnId = activeTurnRef.current;
+    if (threadId === null || turnId === null) return;
+    if (stopInFlightRef.current !== null) return;
+
+    stopInFlightRef.current = turnId;
+    updateStoppingTurn(turnId);
+    setActionError(null);
+    try {
+      const result = await dispatch("codex:libraryChat:interrupt", { threadId });
+      if (!result.ok) {
+        if (activeTurnRef.current === turnId) {
+          updateStoppingTurn(null);
+          setActionError(`Couldn’t stop the response: ${result.error.message}`);
+        }
+      }
+    } catch (cause) {
+      if (activeTurnRef.current === turnId) {
+        updateStoppingTurn(null);
+        setActionError(
+          `Couldn’t stop the response: ${cause instanceof Error ? cause.message : String(cause)}`
+        );
+      }
+    } finally {
+      if (stopInFlightRef.current === turnId) {
+        stopInFlightRef.current = null;
+        if (
+          stoppingTurnRef.current === turnId &&
+          activeTurnRef.current !== turnId
+        ) {
+          updateStoppingTurn(null);
+        }
+      }
+    }
+  }, [updateStoppingTurn]);
 
   const onCloseThread = useCallback(async (threadId: string): Promise<void> => {
     const result = await dispatch("codex:libraryChat:archive", { threadId, archived: true });
@@ -554,7 +766,23 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
             />
           </>
         )}
-        <Composer onSubmit={onSubmit} placeholder="Ask PwrSnap to edit, redact, or find…" />
+        {actionError !== null ? (
+          <div className="ps-libchat-action-error" role="alert">
+            {actionError}
+          </div>
+        ) : null}
+        <Composer
+          onSubmit={onSubmit}
+          onStop={onStop}
+          turnState={
+            stoppingTurnId !== null
+              ? "stopping"
+              : activeTurnId !== null
+                ? "active"
+                : "idle"
+          }
+          placeholder="Ask PwrSnap to edit, redact, or find…"
+        />
       </div>
 
       {approvalSession.request !== null ? (
@@ -570,13 +798,6 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   );
 }
 
-function streamingMessageIdMatches(
-  messageId: string,
-  streamState: React.MutableRefObject<Map<string, StreamEntry>>
-): boolean {
-  return streamState.current.has(messageId);
-}
-
 function errorFor(error: { code?: string; message: string }): ChatPanelError {
   const staleThread =
     error.code === "thread_not_found" ||
@@ -588,6 +809,26 @@ function errorFor(error: { code?: string; message: string }): ChatPanelError {
       : error.message,
     showSettingsHint: !staleThread
   };
+}
+
+/** A delayed history read must never erase messages that arrived live while
+ * it was in flight. Live copies also carry the freshest terminal status. */
+function mergeHistoryWithLive(
+  history: ChatMessage[],
+  live: ChatMessage[]
+): ChatMessage[] {
+  const liveById = new Map(live.map((message) => [message.id, message]));
+  const historyIds = new Set(history.map((message) => message.id));
+  return [
+    ...history.map((message) => {
+      const liveMessage = liveById.get(message.id);
+      if (liveMessage === undefined) return message;
+      return liveMessage.status === "streaming" && message.status !== "streaming"
+        ? message
+        : liveMessage;
+    }),
+    ...live.filter((message) => !historyIds.has(message.id))
+  ];
 }
 
 function sortChatThreads(threads: LibraryChatThreadView[]): LibraryChatThreadView[] {

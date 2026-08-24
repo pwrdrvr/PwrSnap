@@ -13,9 +13,13 @@
 //   • Double-submit guard (plan §F10 T11): a `submitInFlight` ref +
 //     a two-state machine ("idle" | "sending"). A second ⏎ while a
 //     submit is in flight is a no-op and does NOT clear the textarea —
-//     the user's draft survives a slow / failed send. The textarea is
-//     cleared and the machine returns to "idle" in a `.finally()` so
-//     it recovers on BOTH the resolve and reject branches.
+//     the user's draft survives a slow / failed send. Success clears only
+//     the submitted snapshot; rejection and a newer draft stay intact.
+//
+//   • While an assistant turn is active, the send action becomes an
+//     accessible Stop action. The textarea remains editable for the next
+//     draft, but Enter cannot start a duplicate turn. Optional initialText /
+//     onDraftChange props let an unmounting panel retain that draft.
 //
 //   • Keyboard-chord shadowing (plan §F10 T7): the Library window
 //     installs window-level keydown handlers (the activity bar's ⌘\ /
@@ -70,8 +74,8 @@ export interface ComposerAttachment {
 export interface ComposerProps {
   /** Called when the user submits. Returns a promise; while pending
    *  the composer is in the SENDING state and further submits are
-   *  no-ops. Resolve OR reject both return the composer to idle and
-   *  clear the textarea + attachments. */
+   *  no-ops. A successful submit clears the textarea + attachments;
+   *  rejection preserves the draft for retry. */
   readonly onSubmit: (
     text: string,
     attachments: readonly ComposerAttachment[]
@@ -79,6 +83,15 @@ export interface ComposerProps {
   /** Disabled (e.g. no AI provider configured). Disables the textarea AND
    *  the send button. */
   readonly disabled?: boolean;
+  /** Lifecycle of the assistant turn for this chat. While active/stopping,
+   *  Enter cannot submit a duplicate turn and the action becomes Stop. */
+  readonly turnState?: "idle" | "active" | "stopping";
+  /** Cancel the active assistant turn. The parent owns success/error state. */
+  readonly onStop?: () => void | Promise<void>;
+  /** Optional one-time draft hydration for panels that unmount while hidden. */
+  readonly initialText?: string;
+  /** Reports draft edits and the successful-submit clear to an external store. */
+  readonly onDraftChange?: (text: string) => void;
   readonly placeholder?: string;
   /** Test-id prefix. Defaults to "composer". */
   readonly testIdPrefix?: string;
@@ -103,11 +116,15 @@ export function Composer(props: ComposerProps): ReactElement {
   const {
     onSubmit,
     disabled = false,
+    turnState = "idle",
+    onStop,
+    initialText = "",
+    onDraftChange,
     placeholder = "Message AI…",
     testIdPrefix = "composer"
   } = props;
 
-  const [text, setText] = useState<string>("");
+  const [text, setText] = useState<string>(() => initialText);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [sendState, setSendState] = useState<SendState>("idle");
 
@@ -116,6 +133,9 @@ export function Composer(props: ComposerProps): ReactElement {
   // sees `true` before React re-renders the state). `sendState` is the
   // render-time mirror used for disabled styling.
   const submitInFlight = useRef<boolean>(false);
+  const stopInFlight = useRef<boolean>(false);
+  const stopCycle = useRef<number>(0);
+  const draftRevision = useRef<number>(0);
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const dropzoneRef = useRef<HTMLDivElement | null>(null);
@@ -128,6 +148,17 @@ export function Composer(props: ComposerProps): ReactElement {
   textRef.current = text;
   const disabledRef = useRef<boolean>(disabled);
   disabledRef.current = disabled;
+  const turnStateRef = useRef<"idle" | "active" | "stopping">(turnState);
+  turnStateRef.current = turnState;
+
+  // A mounted Composer can move from thread A's stopping turn directly to
+  // thread B's active turn. Reset the local same-tick guard for that new
+  // active cycle; the parent still owns the authoritative per-turn guard.
+  useEffect(() => {
+    if (turnState !== "active") return;
+    stopCycle.current += 1;
+    stopInFlight.current = false;
+  }, [turnState]);
 
   // Track objectURLs so we revoke them on unmount even if the chip was
   // never explicitly removed (e.g. submit cleared them, or the window
@@ -220,13 +251,17 @@ export function Composer(props: ComposerProps): ReactElement {
 
   // ---- submit ------------------------------------------------------
   const canSubmit =
-    !disabled && sendState === "idle" && text.trim().length > 0;
+    !disabled &&
+    turnState === "idle" &&
+    sendState === "idle" &&
+    text.trim().length > 0;
 
   const doSubmit = useCallback((): void => {
     // Synchronous guard: a second ⏎ in the same tick reads the ref,
     // not the (not-yet-committed) state.
     if (submitInFlight.current) return;
     if (disabledRef.current) return;
+    if (turnStateRef.current !== "idle") return;
     const trimmed = textRef.current.trim();
     if (trimmed.length === 0) return;
 
@@ -236,16 +271,27 @@ export function Composer(props: ComposerProps): ReactElement {
     // Snapshot what we're sending so the .finally() can clear only on
     // success terms while the draft survives if onSubmit rejects.
     const sending = textRef.current;
+    const sendingRevision = draftRevision.current;
     const sendingAttachments = attachments;
 
-    void Promise.resolve(onSubmit(sending, sendingAttachments))
+    // Start from a resolved promise so a synchronous throw from an otherwise
+    // valid callback follows the rejection path and releases the send latch.
+    void Promise.resolve()
+      .then(() => onSubmit(sending, sendingAttachments))
       .then(() => {
         // Success: clear the draft + attachments, revoke previews.
         for (const a of sendingAttachments) {
           URL.revokeObjectURL(a.previewUrl);
           liveUrls.current.delete(a.previewUrl);
         }
-        setText("");
+        // If the user already started typing the next message while the IPC
+        // send was settling, preserve that newer draft (and its external
+        // store value) instead of clearing it with the submitted snapshot.
+        if (draftRevision.current === sendingRevision) {
+          textRef.current = "";
+          setText("");
+          onDraftChange?.("");
+        }
         setAttachments((prev) =>
           prev.filter((a) => !sendingAttachments.some((s) => s.id === a.id))
         );
@@ -258,7 +304,21 @@ export function Composer(props: ComposerProps): ReactElement {
         submitInFlight.current = false;
         setSendState("idle");
       });
-  }, [attachments, onSubmit]);
+  }, [attachments, onDraftChange, onSubmit]);
+
+  const doStop = useCallback((): void => {
+    if (onStop === undefined) return;
+    if (turnStateRef.current !== "active") return;
+    if (stopInFlight.current) return;
+    stopInFlight.current = true;
+    const cycle = stopCycle.current;
+    void Promise.resolve()
+      .then(() => onStop())
+      .catch(() => undefined)
+      .finally(() => {
+        if (stopCycle.current === cycle) stopInFlight.current = false;
+      });
+  }, [onStop]);
 
   const handleKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLTextAreaElement>): void => {
@@ -280,8 +340,10 @@ export function Composer(props: ComposerProps): ReactElement {
   const handleChange = useCallback(
     (event: ChangeEvent<HTMLTextAreaElement>): void => {
       setText(event.target.value);
+      draftRevision.current += 1;
+      onDraftChange?.(event.target.value);
     },
-    []
+    [onDraftChange]
   );
 
   // ---- paste -------------------------------------------------------
@@ -356,6 +418,7 @@ export function Composer(props: ComposerProps): ReactElement {
       className="ps-composer ps-composer-dropzone"
       data-testid={`${testIdPrefix}-root`}
       data-state={sendState}
+      data-turn-state={turnState}
       // Capture phase: claim image drops before the window's global
       // handler sees them.
       onDropCapture={handleDrop}
@@ -405,17 +468,32 @@ export function Composer(props: ComposerProps): ReactElement {
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
         />
-        <button
-          type="button"
-          className="ps-composer__send"
-          disabled={!canSubmit}
-          aria-label="Send"
-          title="Send"
-          data-testid={`${testIdPrefix}-send`}
-          onClick={doSubmit}
-        >
-          {isSending ? <SpinnerGlyph /> : <SendGlyph />}
-        </button>
+        {turnState === "idle" || onStop === undefined ? (
+          <button
+            type="button"
+            className="ps-composer__send"
+            disabled={!canSubmit}
+            aria-label="Send"
+            title="Send"
+            data-testid={`${testIdPrefix}-send`}
+            onClick={doSubmit}
+          >
+            {isSending ? <SpinnerGlyph /> : <SendGlyph />}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="ps-composer__send ps-composer__send--stop"
+            disabled={turnState === "stopping"}
+            aria-label="Stop response"
+            aria-busy={turnState === "stopping"}
+            title="Stop response"
+            data-testid={`${testIdPrefix}-stop`}
+            onClick={doStop}
+          >
+            {turnState === "stopping" ? <SpinnerGlyph /> : <StopGlyph />}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -462,6 +540,14 @@ function SpinnerGlyph(): ReactElement {
         strokeWidth="1.6"
         strokeLinecap="round"
       />
+    </svg>
+  );
+}
+
+function StopGlyph(): ReactElement {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <rect x="4" y="4" width="8" height="8" rx="1" fill="currentColor" />
     </svg>
   );
 }

@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import type { ChatApprovalRequest, LibraryChatThreadView } from "@pwrsnap/shared";
+import type { ChatApprovalRequest, ChatMessage, LibraryChatThreadView } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { SizzleChatPanel } from "../SizzleChatPanel";
 
@@ -19,7 +19,8 @@ type Handler = (payload: unknown) => void;
 function makeThread(
   threadId: string,
   name: string,
-  modifiedAt = "2026-05-30T10:00:00.000Z"
+  modifiedAt = "2026-05-30T10:00:00.000Z",
+  status: LibraryChatThreadView["status"] = { kind: "idle" }
 ): LibraryChatThreadView {
   return {
     threadId,
@@ -30,7 +31,7 @@ function makeThread(
     archived: false,
     pinned: false,
     lastMessagePreview: "",
-    status: { kind: "idle" },
+    status,
     pendingApproval: null,
     provider: null,
     model: null,
@@ -38,9 +39,16 @@ function makeThread(
   };
 }
 
-function installApi(seedThreads: LibraryChatThreadView[] = []): {
+type ApiOptions = {
+  interrupt?: () => Promise<unknown>;
+  send?: () => Promise<unknown>;
+  history?: () => Promise<unknown>;
+};
+
+function installApi(seedThreads: LibraryChatThreadView[] = [], options: ApiOptions = {}): {
   dispatch: ReturnType<typeof vi.fn>;
   emit: (channel: string, payload: unknown) => void;
+  handlerCount: () => number;
 } {
   const handlers = new Map<string, Set<Handler>>();
   const dispatch = vi.fn(async (name: string) => {
@@ -65,8 +73,15 @@ function installApi(seedThreads: LibraryChatThreadView[] = []): {
         }
       };
     }
-    if (name === "codex:sizzleChat:send") return { ok: true, value: { turnId: "turn1" } };
-    if (name === "codex:sizzleChat:history") return { ok: true, value: { messages: [] } };
+    if (name === "codex:sizzleChat:send") {
+      return options.send?.() ?? { ok: true, value: { turnId: "turn1" } };
+    }
+    if (name === "codex:sizzleChat:interrupt") {
+      return options.interrupt?.() ?? { ok: true, value: undefined };
+    }
+    if (name === "codex:sizzleChat:history") {
+      return options.history?.() ?? { ok: true, value: { messages: [] } };
+    }
     return { ok: true, value: undefined };
   });
   const on = (channel: string, handler: Handler): (() => void) => {
@@ -83,15 +98,24 @@ function installApi(seedThreads: LibraryChatThreadView[] = []): {
     on,
     startCaptureDrag: () => undefined
   } as unknown as NonNullable<Window["pwrsnapApi"]>;
-  return { dispatch, emit };
+  return {
+    dispatch,
+    emit,
+    handlerCount: () =>
+      [...handlers.values()].reduce((count, handlersForChannel) => count + handlersForChannel.size, 0)
+  };
 }
 
-async function renderPanel(seedThreads: LibraryChatThreadView[] = []): Promise<{
+async function renderPanel(
+  seedThreads: LibraryChatThreadView[] = [],
+  options: ApiOptions = {}
+): Promise<{
   el: HTMLDivElement;
   dispatch: ReturnType<typeof vi.fn>;
   emit: (channel: string, payload: unknown) => void;
+  handlerCount: () => number;
 }> {
-  const { dispatch, emit } = installApi(seedThreads);
+  const api = installApi(seedThreads, options);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -102,7 +126,30 @@ async function renderPanel(seedThreads: LibraryChatThreadView[] = []): Promise<{
     await Promise.resolve();
     await Promise.resolve();
   });
-  return { el: container, dispatch, emit };
+  return { el: container, ...api };
+}
+
+async function typeInto(textarea: HTMLTextAreaElement, value: string): Promise<void> {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLTextAreaElement.prototype,
+    "value"
+  )?.set;
+  await act(async () => {
+    setter?.call(textarea, value);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await Promise.resolve();
+  });
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 afterEach(async () => {
@@ -268,5 +315,416 @@ describe("SizzleChatPanel", () => {
       });
     });
     expect(el.querySelector('[data-testid="ps-approval"]')).toBeNull();
+  });
+
+  test("a streaming reel chat exposes Stop and dispatches the Sizzle interrupt once", async () => {
+    const thread = makeThread(
+      "t1",
+      "Active reel",
+      "2026-05-30T10:00:00.000Z",
+      { kind: "streaming", turnId: "turn1" }
+    );
+    const { el, dispatch } = await renderPanel([thread]);
+    const textarea = el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!;
+    await typeInto(textarea, "next reel instruction");
+
+    await act(async () => {
+      const stop = el.querySelector<HTMLButtonElement>('[data-testid="composer-stop"]')!;
+      expect(stop.getAttribute("aria-label")).toBe("Stop response");
+      stop.click();
+      stop.click();
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(
+      dispatch.mock.calls.filter(([command]) => command === "codex:sizzleChat:interrupt")
+    ).toEqual([["codex:sizzleChat:interrupt", { threadId: "t1" }]]);
+    expect(
+      dispatch.mock.calls.filter(([command]) => command === "codex:sizzleChat:send")
+    ).toHaveLength(0);
+    expect(textarea.value).toBe("next reel instruction");
+  });
+
+  test("switching threads gives the new active turn its own Stop guard", async () => {
+    const firstStop = deferred<unknown>();
+    let stopCalls = 0;
+    const older = makeThread(
+      "t2",
+      "Second reel chat",
+      "2026-05-30T10:00:00.000Z",
+      { kind: "streaming", turnId: "turn2" }
+    );
+    const newer = makeThread(
+      "t1",
+      "First reel chat",
+      "2026-05-30T11:00:00.000Z",
+      { kind: "streaming", turnId: "turn1" }
+    );
+    const { el, dispatch } = await renderPanel([older, newer], {
+      interrupt: () => {
+        stopCalls += 1;
+        return stopCalls === 1
+          ? firstStop.promise
+          : Promise.resolve({ ok: true, value: undefined });
+      }
+    });
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="composer-stop"]')!.click();
+      await Promise.resolve();
+      const secondShell = Array.from(el.querySelectorAll(".ps-libchat-thread-shell")).find(
+        (shell) => shell.querySelector(".ps-libchat-thread-name")?.textContent === "Second reel chat"
+      )!;
+      secondShell.querySelector<HTMLButtonElement>(".ps-libchat-thread")!.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="composer-stop"]')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      dispatch.mock.calls.filter(([command]) => command === "codex:sizzleChat:interrupt")
+    ).toEqual([
+      ["codex:sizzleChat:interrupt", { threadId: "t1" }],
+      ["codex:sizzleChat:interrupt", { threadId: "t2" }]
+    ]);
+
+    await act(async () => {
+      firstStop.resolve({ ok: true, value: undefined });
+      await firstStop.promise;
+    });
+  });
+
+  test("Stop retains streamed reel output and marks the partial bubble interrupted", async () => {
+    const { el, emit } = await renderPanel([makeThread("t1", "Reel chat")]);
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleChatStreamDelta, {
+        threadId: "t1",
+        turnId: "turn1",
+        messageId: "m1",
+        delta: "three-scene draft"
+      });
+    });
+    const textarea = el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!;
+    await typeInto(textarea, "keep this next draft");
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="composer-stop"]')!.click();
+      await Promise.resolve();
+      emit(EVENT_CHANNELS.sizzleChatMessageCommitted, {
+        threadId: "t1",
+        turnId: "turn1",
+        message: {
+          id: "m1",
+          role: "assistant",
+          content: [{ kind: "text", text: "three-scene draft" }],
+          status: "interrupted",
+          createdAt: "2026-08-23T00:00:00.000Z"
+        }
+      });
+      emit(EVENT_CHANNELS.sizzleChatTurnInterrupted, {
+        threadId: "t1",
+        turnId: "turn1",
+        reason: "user_interrupted"
+      });
+      await Promise.resolve();
+    });
+
+    expect(el.textContent).toContain("three-scene draft");
+    expect(el.querySelector('[data-testid="message-list-msg-m1"]')?.getAttribute("data-status"))
+      .toBe("interrupted");
+    expect(el.querySelector('[data-testid="message-list-interrupted-m1"]')).not.toBeNull();
+    expect(textarea.value).toBe("keep this next draft");
+  });
+
+  test("keeps Sizzle sends blocked until the interrupt command settles", async () => {
+    const cancellation = deferred<unknown>();
+    const thread = makeThread(
+      "t1",
+      "Reel chat",
+      "2026-05-30T10:00:00.000Z",
+      { kind: "streaming", turnId: "turn1" }
+    );
+    const { el, emit, dispatch } = await renderPanel([thread], {
+      interrupt: () => cancellation.promise
+    });
+    const textarea = el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!;
+    await typeInto(textarea, "next reel draft");
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="composer-stop"]')!.click();
+      await Promise.resolve();
+      emit(EVENT_CHANNELS.sizzleChatMessageCommitted, {
+        threadId: "t1",
+        turnId: "turn1",
+        message: {
+          id: "m1",
+          role: "assistant",
+          content: [{ kind: "text", text: "partial reel" }],
+          status: "interrupted",
+          createdAt: "2026-08-23T00:00:00.000Z"
+        }
+      });
+      emit(EVENT_CHANNELS.sizzleChatTurnInterrupted, {
+        threadId: "t1",
+        turnId: "turn1",
+        reason: "user_interrupted"
+      });
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="composer-stop"]')?.disabled).toBe(true);
+    expect(
+      dispatch.mock.calls.filter(([command]) => command === "codex:sizzleChat:send")
+    ).toHaveLength(0);
+    expect(textarea.value).toBe("next reel draft");
+
+    await act(async () => {
+      cancellation.resolve({ ok: true, value: undefined });
+      await cancellation.promise;
+      await Promise.resolve();
+    });
+    expect(el.querySelector('[data-testid="composer-stop"]')).toBeNull();
+    expect(el.querySelector('[data-testid="composer-send"]')).not.toBeNull();
+  });
+
+  test("Sizzle Stop failure leaves the turn active and retryable", async () => {
+    const { el, emit, dispatch } = await renderPanel([makeThread("t1", "Reel chat")], {
+      interrupt: async () => ({
+        ok: false,
+        error: { kind: "ai", code: "codex_unreachable", message: "session cancel failed" }
+      })
+    });
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleChatStreamDelta, {
+        threadId: "t1",
+        turnId: "turn1",
+        messageId: "m1",
+        delta: "partial reel"
+      });
+    });
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="composer-stop"]')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(el.querySelector('[role="alert"]')?.textContent).toContain("session cancel failed");
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="composer-stop"]')?.disabled).toBe(false);
+    expect(el.querySelector('[data-testid="message-list-msg-m1"]')?.getAttribute("data-status"))
+      .toBe("streaming");
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="composer-stop"]')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(
+      dispatch.mock.calls.filter(([command]) => command === "codex:sizzleChat:interrupt")
+    ).toHaveLength(2);
+  });
+
+  test("a stale reel interruption cannot clear a newer active turn", async () => {
+    const { el, emit } = await renderPanel([makeThread("t1", "Reel chat")]);
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleChatStreamDelta, {
+        threadId: "t1",
+        turnId: "turn1",
+        messageId: "m1",
+        delta: "finished reel plan"
+      });
+      emit(EVENT_CHANNELS.sizzleChatMessageCommitted, {
+        threadId: "t1",
+        turnId: "turn1",
+        message: {
+          id: "m1",
+          role: "assistant",
+          content: [{ kind: "text", text: "finished reel plan" }],
+          status: "complete",
+          createdAt: "2026-08-23T00:00:00.000Z"
+        }
+      });
+      emit(EVENT_CHANNELS.sizzleChatThreadUpdated, {
+        thread: makeThread("t1", "Reel chat", "2026-05-30T10:00:00.000Z", {
+          kind: "streaming",
+          turnId: "turn2"
+        })
+      });
+      emit(EVENT_CHANNELS.sizzleChatTurnInterrupted, {
+        threadId: "t1",
+        turnId: "turn1",
+        reason: "user_interrupted"
+      });
+    });
+
+    expect(el.querySelector('[data-testid="message-list-msg-m1"]')?.getAttribute("data-status"))
+      .toBe("complete");
+    expect(el.querySelector('[data-testid="composer-stop"]')).not.toBeNull();
+  });
+
+  test("natural completion wins a late Sizzle interruption", async () => {
+    const { el, emit } = await renderPanel([makeThread("t1", "Reel chat")]);
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleChatStreamDelta, {
+        threadId: "t1",
+        turnId: "turn1",
+        messageId: "m1",
+        delta: "finished reel"
+      });
+      emit(EVENT_CHANNELS.sizzleChatMessageCommitted, {
+        threadId: "t1",
+        turnId: "turn1",
+        message: {
+          id: "m1",
+          role: "assistant",
+          content: [{ kind: "text", text: "finished reel" }],
+          status: "complete",
+          createdAt: "2026-08-23T00:00:00.000Z"
+        }
+      });
+      emit(EVENT_CHANNELS.sizzleChatTurnInterrupted, {
+        threadId: "t1",
+        turnId: "turn1",
+        reason: "user_interrupted"
+      });
+    });
+
+    expect(el.querySelector('[data-testid="message-list-msg-m1"]')?.getAttribute("data-status"))
+      .toBe("complete");
+  });
+
+  test("late Sizzle events cannot reactivate an interrupted turn", async () => {
+    const { el, emit } = await renderPanel([makeThread("t1", "Reel chat")]);
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleChatStreamDelta, {
+        threadId: "t1",
+        turnId: "turn1",
+        messageId: "m1",
+        delta: "kept reel partial"
+      });
+      emit(EVENT_CHANNELS.sizzleChatTurnInterrupted, {
+        threadId: "t1",
+        turnId: "turn1",
+        reason: "user_interrupted"
+      });
+      emit(EVENT_CHANNELS.sizzleChatStreamDelta, {
+        threadId: "t1",
+        turnId: "turn1",
+        messageId: "m-late",
+        delta: "late reel replacement"
+      });
+      emit(EVENT_CHANNELS.sizzleChatToolCall, {
+        threadId: "t1",
+        turnId: "turn1",
+        callId: "late-tool",
+        tool: "sizzle_edit",
+        ok: true,
+        summary: "Late edit"
+      });
+      emit(EVENT_CHANNELS.sizzleChatThreadUpdated, {
+        thread: makeThread("t1", "Reel chat", "2026-05-30T10:00:00.000Z", {
+          kind: "streaming",
+          turnId: "turn1"
+        })
+      });
+    });
+
+    expect(el.textContent).toContain("kept reel partial");
+    expect(el.textContent).not.toContain("late reel replacement");
+    expect(el.querySelector('[data-testid="composer-stop"]')).toBeNull();
+  });
+
+  test("a correlated late Sizzle commit cannot settle a newer turn", async () => {
+    const { el, emit } = await renderPanel([makeThread("t1", "Reel chat")]);
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleChatThreadUpdated, {
+        thread: makeThread("t1", "Reel chat", "2026-05-30T10:00:00.000Z", {
+          kind: "streaming",
+          turnId: "turn1"
+        })
+      });
+      emit(EVENT_CHANNELS.sizzleChatTurnInterrupted, {
+        threadId: "t1",
+        turnId: "turn1",
+        reason: "user_interrupted"
+      });
+      emit(EVENT_CHANNELS.sizzleChatThreadUpdated, {
+        thread: makeThread("t1", "Reel chat", "2026-05-30T10:00:01.000Z", {
+          kind: "streaming",
+          turnId: "turn2"
+        })
+      });
+      emit(EVENT_CHANNELS.sizzleChatMessageCommitted, {
+        threadId: "t1",
+        turnId: "turn1",
+        message: {
+          id: "m-late",
+          role: "assistant",
+          content: [{ kind: "text", text: "turn one reel" }],
+          status: "interrupted",
+          createdAt: "2026-08-23T00:00:00.000Z"
+        }
+      });
+    });
+
+    expect(el.querySelector('[data-testid="message-list-msg-m-late"]')?.getAttribute("data-status"))
+      .toBe("interrupted");
+    expect(el.querySelector('[data-testid="composer-stop"]')).not.toBeNull();
+  });
+
+  test("delayed Sizzle history cannot erase a live interrupted partial", async () => {
+    const history = deferred<unknown>();
+    const { el, emit } = await renderPanel([makeThread("t1", "Reel chat")], {
+      history: () => history.promise
+    });
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleChatStreamDelta, {
+        threadId: "t1",
+        turnId: "turn1",
+        messageId: "m-live",
+        delta: "live reel partial"
+      });
+      emit(EVENT_CHANNELS.sizzleChatTurnInterrupted, {
+        threadId: "t1",
+        turnId: "turn1",
+        reason: "user_interrupted"
+      });
+      history.resolve({
+        ok: true,
+        value: {
+          messages: [
+            {
+              id: "m-old",
+              role: "assistant",
+              content: [{ kind: "text", text: "older reel history" }],
+              status: "complete",
+              createdAt: "2026-08-22T00:00:00.000Z"
+            } satisfies ChatMessage
+          ]
+        }
+      });
+      await history.promise;
+      await Promise.resolve();
+    });
+
+    expect(el.textContent).toContain("older reel history");
+    expect(el.textContent).toContain("live reel partial");
+    expect(el.querySelector('[data-testid="message-list-msg-m-live"]')?.getAttribute("data-status"))
+      .toBe("interrupted");
+  });
+
+  test("unmount removes every Sizzle chat event subscription", async () => {
+    const { handlerCount } = await renderPanel([makeThread("t1", "Reel chat")]);
+    expect(handlerCount()).toBeGreaterThan(0);
+    await act(async () => {
+      root?.unmount();
+    });
+    root = null;
+    expect(handlerCount()).toBe(0);
   });
 });

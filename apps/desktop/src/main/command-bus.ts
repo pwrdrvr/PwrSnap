@@ -48,6 +48,8 @@ export type CommandContext = {
   principal: CommandPrincipal;
   /** BrowserWindow id for renderer-originated commands, when known. */
   sourceWindowId?: number;
+  /** Opaque preload epoch admitted for the current renderer main document. */
+  sourceDocumentId?: string;
   /** Screen-space bounds for non-window UI affordances, such as the tray icon. */
   sourceBounds?: CommandSourceBounds;
   localAgent?: {
@@ -68,6 +70,7 @@ export type CommandDispatchOptions = {
   principal: CommandPrincipal;
   cancellationKey?: string | undefined;
   sourceWindowId?: number | undefined;
+  sourceDocumentId?: string | undefined;
   sourceBounds?: CommandSourceBounds | undefined;
   localAgent?: CommandContext["localAgent"];
 };
@@ -223,6 +226,9 @@ class CommandBus {
       };
       if (options.sourceWindowId !== undefined) {
         ctx.sourceWindowId = options.sourceWindowId;
+      }
+      if (options.sourceDocumentId !== undefined) {
+        ctx.sourceDocumentId = options.sourceDocumentId;
       }
       if (options.sourceBounds !== undefined) {
         ctx.sourceBounds = options.sourceBounds;

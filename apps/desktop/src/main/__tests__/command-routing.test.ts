@@ -25,8 +25,12 @@ describe("commandOwner", () => {
   test("settings substrate is agent-owned except the window verb", () => {
     expect(commandOwner("settings:read")).toBe("agent");
     expect(commandOwner("settings:write")).toBe("agent");
+    expect(commandOwner("settings:hotkeyStatus")).toBe("agent");
+    expect(commandOwner("settings:retryHotkey")).toBe("agent");
     expect(commandOwner("settings:replaceSecret")).toBe("agent");
     expect(commandOwner("settings:open")).toBe("library");
+    expect(peerOwnsCommand("library", "settings:hotkeyStatus")).toBe(true);
+    expect(peerOwnsCommand("library", "settings:retryHotkey")).toBe(true);
   });
 
   test("capture-root storage commands stay with capture persistence", () => {
@@ -103,6 +107,8 @@ describe("peerOwnsCommand", () => {
 
   test("combined never forwards", () => {
     expect(peerOwnsCommand("combined", "settings:read")).toBe(false);
+    expect(peerOwnsCommand("combined", "settings:hotkeyStatus")).toBe(false);
+    expect(peerOwnsCommand("combined", "settings:retryHotkey")).toBe(false);
     expect(peerOwnsCommand("combined", "library:list")).toBe(false);
   });
 });

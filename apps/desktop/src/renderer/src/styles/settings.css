@@ -719,6 +719,214 @@
   font: 500 11px/1 var(--font-sans);
 }
 
+.pss__hotkey-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+.pss__hotkey-registration-error,
+.pss__hotkey-status-error {
+  color: var(--danger-text);
+  font: 550 11px/1.4 var(--font-sans);
+}
+.pss__hotkey-registration-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 9px;
+  max-width: 440px;
+  text-align: left;
+}
+.pss__hotkey-retry {
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--danger-border);
+  border-radius: 6px;
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  font: 650 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.pss__hotkey-retry:hover { border-color: var(--danger-text); }
+.pss__hotkey-retry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.pss__hotkey-retry:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+.pss__hotkey-status-error {
+  margin: -4px 0 16px;
+  padding: 9px 11px;
+  border: 1px solid var(--danger-border);
+  border-radius: 7px;
+  background: var(--danger-soft);
+}
+
+/* Hotkey recorder — one compact, focusable chord surface per row. The
+   recording state stays deliberately small: an instruction, animated example
+   (or live held keys), Cancel, and an inline error. */
+.pss__hk-capture {
+  display: inline-flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  position: relative;
+}
+.pss__hk-capture-trigger {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.pss__hk-capture-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.pss__hk-capture-trigger:disabled,
+.pss__hk-capture-clear:disabled,
+.pss__hk-capture-cancel:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+.pss__hk-capture-clear,
+.pss__hk-capture-cancel {
+  appearance: none;
+  border: 1px solid var(--border-default);
+  background: var(--bg-input);
+  color: var(--text-muted);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.pss__hk-capture-clear {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  font-size: 17px;
+}
+.pss__hk-capture-clear:hover,
+.pss__hk-capture-cancel:hover {
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+.pss__hk-capture-clear:focus-visible,
+.pss__hk-capture-cancel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.pss__hk-capture.is-recording {
+  width: min(100%, 440px);
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 11px 10px 13px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-input));
+  border: 1px solid var(--accent-border);
+  border-radius: 9px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.pss__hk-capture-prompt {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+}
+.pss__hk-capture-hint {
+  font: 650 11px/1.2 var(--font-sans);
+  color: var(--accent-bright);
+  letter-spacing: 0.01em;
+}
+.pss__hk-capture-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 20px;
+}
+.pss__hk-capture-key-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.pss__hk-capture-plus {
+  color: var(--text-muted);
+  font: 600 10px/1 var(--font-mono);
+}
+.pss__hk-capture-keys .ps-kbd {
+  min-width: 24px;
+  height: 22px;
+  padding-inline: 6px;
+  color: var(--text-primary);
+  border-color: var(--accent-border);
+  background: var(--bg-panel-elevated);
+}
+.pss__hk-capture-keys.is-live .ps-kbd {
+  color: var(--accent-bright);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.pss__hk-capture-keys.is-example .ps-kbd {
+  animation: pss-hotkey-example 1.55s ease-in-out infinite;
+}
+.pss__hk-capture-keys.is-example .pss__hk-capture-key-part:nth-child(2) .ps-kbd {
+  animation-delay: 120ms;
+}
+.pss__hk-capture-keys.is-example .pss__hk-capture-key-part:nth-child(3) .ps-kbd {
+  animation-delay: 240ms;
+}
+@keyframes pss-hotkey-example {
+  0%, 55%, 100% {
+    border-color: var(--border-default);
+    color: var(--text-secondary);
+    transform: translateY(0);
+  }
+  22% {
+    border-color: var(--accent);
+    color: var(--accent-bright);
+    transform: translateY(-1px);
+  }
+}
+.pss__hk-capture-cancel {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+}
+.pss__hk-capture-error {
+  max-width: 440px;
+  color: var(--danger-text);
+  font: 550 11px/1.35 var(--font-sans);
+  text-align: left;
+}
+.pss__hk-capture:not(.is-recording) > .pss__hk-capture-error {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  width: max-content;
+  z-index: 2;
+  padding: 7px 9px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--danger-border);
+  border-radius: 6px;
+  box-shadow: var(--shadow-lg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .pss__hk-capture-keys.is-example .ps-kbd {
+    animation: none;
+    border-color: var(--accent-border);
+  }
+}
+
 /* text input */
 .pss__input {
   height: 30px;
@@ -1494,6 +1702,15 @@
   min-height: 0;
   overflow: auto;
   padding: 12px 14px;
+}
+.pss__modal-error {
+  margin: 10px 2px 0;
+  padding: 8px 10px;
+  color: var(--danger-text);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+  border-radius: 6px;
+  font: 550 11px/1.4 var(--font-sans);
 }
 .pss__modal-footer {
   display: flex;

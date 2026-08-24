@@ -1,0 +1,122 @@
+name: Publish pwrsnap npm helper
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact packages/pwrsnap version to publish (for #500: 0.0.1)"
+        required: true
+        type: string
+      confirmation:
+        description: "Type publish pwrsnap@<version>"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish and verify public package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm-publishing
+    env:
+      PUBLISH_OWNER: huntharo
+      REQUESTED_VERSION: ${{ inputs.version }}
+      PUBLISH_CONFIRMATION: ${{ inputs.confirmation }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Install Node.js and dependencies
+        uses: pwrdrvr/configure-nodejs@e1bd1cc1494a20f0ee91dae622b0d2523b6fb53c # v1.4.0
+        with:
+          node-version: "24.14.1"
+
+      - name: Enforce publication owner and version gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_ACTOR" != "$PUBLISH_OWNER" ]; then
+            echo "::error::Only @$PUBLISH_OWNER owns publication of the pwrsnap npm helper." >&2
+            exit 1
+          fi
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::The pwrsnap npm helper may only be published from main." >&2
+            exit 1
+          fi
+          package_version="$(node -p "require('./packages/pwrsnap/package.json').version")"
+          if [ "$REQUESTED_VERSION" != "$package_version" ]; then
+            echo "::error::Requested $REQUESTED_VERSION but packages/pwrsnap is $package_version." >&2
+            exit 1
+          fi
+          expected_confirmation="publish pwrsnap@$package_version"
+          if [ "$PUBLISH_CONFIRMATION" != "$expected_confirmation" ]; then
+            echo "::error::Confirmation must be exactly: $expected_confirmation" >&2
+            exit 1
+          fi
+          if npm view "pwrsnap@$package_version" version >/dev/null 2>&1; then
+            echo "::error::pwrsnap@$package_version already exists; npm versions are immutable." >&2
+            exit 1
+          fi
+
+      - name: Test helper contract
+        run: >-
+          pnpm exec vitest run --config vitest.workspace.ts --project desktop-main
+          packages/pwrsnap/__tests__/pwrsnap.test.mjs
+
+      - name: Inspect publish contents
+        working-directory: packages/pwrsnap
+        run: npm pack --dry-run --json
+
+      - name: Publish with npm provenance
+        working-directory: packages/pwrsnap
+        run: npm publish --access public --provenance
+
+      - name: Verify the public registry package
+        shell: bash
+        run: |
+          set -euo pipefail
+          published=""
+          for attempt in $(seq 1 12); do
+            published="$(npm view "pwrsnap@$REQUESTED_VERSION" version 2>/dev/null || true)"
+            if [ "$published" = "$REQUESTED_VERSION" ]; then
+              break
+            fi
+            echo "Registry has not exposed pwrsnap@$REQUESTED_VERSION yet (attempt $attempt/12)."
+            sleep 10
+          done
+          if [ "$published" != "$REQUESTED_VERSION" ]; then
+            echo "::error::npm did not expose pwrsnap@$REQUESTED_VERSION after publication." >&2
+            exit 1
+          fi
+
+          verify_dir="$(mktemp -d "$RUNNER_TEMP/pwrsnap-npm-verify.XXXXXX")"
+          version_output="$(cd "$verify_dir" && npm exec --yes --package "pwrsnap@$REQUESTED_VERSION" -- pwrsnap --version)"
+          if [[ "$version_output" != *"pwrsnap npm helper $REQUESTED_VERSION"* ]] ||
+             [[ "$version_output" != *"not the PwrSnap desktop app version"* ]]; then
+            echo "::error::Public --version output does not identify the npm helper correctly." >&2
+            exit 1
+          fi
+
+          link_output="$(cd "$verify_dir" && npm exec --yes --package "pwrsnap@$REQUESTED_VERSION" -- pwrsnap)"
+          if [[ "$link_output" != *"https://github.com/pwrdrvr/PwrSnap/releases/latest"* ]]; then
+            echo "::error::Public helper does not print the official release URL." >&2
+            exit 1
+          fi
+
+          set +e
+          unsupported_output="$(cd "$verify_dir" && npm exec --yes --package "pwrsnap@$REQUESTED_VERSION" -- pwrsnap install 2>&1)"
+          unsupported_status=$?
+          set -e
+          if [ "$unsupported_status" -ne 2 ] || [[ "$unsupported_output" != *"unsupported argument: install"* ]]; then
+            echo "::error::Public helper did not reject the unsupported install action." >&2
+            exit 1
+          fi
+
+          echo "Verified public pwrsnap@$REQUESTED_VERSION from the npm registry."

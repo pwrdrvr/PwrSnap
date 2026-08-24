@@ -17,7 +17,7 @@
 // Phase 1.5 wires the float-over to actually fire after a successful
 // capture. Phase 1.6 adds clipboard at this seam.
 
-import { mkdtemp, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,6 +83,7 @@ import {
   readSafePastedFile,
   UnsafePastedFileError
 } from "../security/assertSafePastedFile";
+import { validateSafeRgbaRasterDimensions } from "../image/safe-raster-decode";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
 
@@ -1066,9 +1067,17 @@ async function writeClipboardImageToTempPng(): Promise<
   // can't recover the source DPI, so the scale defaults to 1×.
   const image = clipboard.readImage();
   if (!image.isEmpty()) {
-    const tempPath = await makeClipboardTempPngPath();
-    await writeFile(tempPath, image.toPNG());
-    return { ok: true, tempPath, devicePixelRatio: 1 };
+    const size = image.getSize();
+    validateSafeRgbaRasterDimensions(size.width, size.height);
+    const pngBytes = image.toPNG();
+    if (pngBytes.byteLength > PASTE_IMAGE_MAX_BYTES) {
+      throw new Error("clipboard image exceeds encoded size cap");
+    }
+    const ingested = await ingestImageBufferToTempPng(
+      pngBytes,
+      makeClipboardTempPngPath
+    );
+    return { ok: true, ...ingested };
   }
 
   if (decodeFailures.length > 0) {

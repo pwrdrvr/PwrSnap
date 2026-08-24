@@ -39,6 +39,28 @@ unclassified errors reject the ingest with a path-free
 present" would silently remove a configured security boundary precisely when
 the operating system could not prove its target.
 
+## Raster decode boundary
+
+An encoded-byte cap and per-axis dimensions are not memory limits. A tiny,
+solid-colour PNG can declare tens of millions of pixels, and a GIF/TIFF can
+hide many frames/pages behind one small input. Every pasted, dropped, or raw
+clipboard raster therefore passes through
+`apps/desktop/src/main/image/safe-raster-decode.ts` before canonical PNG
+conversion. The boundary enforces:
+
+- at most 32 MiB encoded input and 64 MiB canonical PNG output;
+- at most 32 Mi pixels, four channels, and 128 MiB estimated decoded samples
+  (`width × height × channels × bytes-per-sample`);
+- exactly one page/frame, rejecting animations and multipage documents rather
+  than silently flattening frame one;
+- the existing 32768 per-axis cap and strict sharp decoder warnings.
+
+Canonical PNG output is consumed as a stream and accumulated only through the
+64 MiB cap; it does not use an unbounded `png().toBuffer()`. The worker remains
+the primary compressed-input decode boundary, while Electron `NativeImage`
+clipboard paths preflight width/height/raw RGBA size before their synchronous
+`toPNG()` call and re-enter the same sanitizer afterward.
+
 The generic verifier explicitly rejects a leaf symlink or redirecting reparse
 point, requires a regular file, and compares the initial, opened-handle, and
 post-open `dev`/`ino` identities. POSIX opens add `O_NOFOLLOW | O_NONBLOCK`:

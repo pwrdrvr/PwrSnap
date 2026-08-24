@@ -45,6 +45,10 @@ import {
 } from "../security/assertSafePastedFile";
 import { runPasteImageWorker } from "../workers/paste-image-worker-client";
 import type { PasteWorkerErrorCode } from "../workers/paste-image-worker";
+import {
+  SafeRasterError,
+  validateSafeRgbaRasterDimensions
+} from "../image/safe-raster-decode";
 
 const log = getMainLogger("pwrsnap:editor");
 
@@ -60,6 +64,7 @@ function workerErrorToBusError(code: PasteWorkerErrorCode, message: string): {
 } {
   switch (code) {
     case "size_cap_exceeded":
+    case "raster_limit_exceeded":
       return {
         kind: "validation",
         code: "image_too_large",
@@ -70,6 +75,12 @@ function workerErrorToBusError(code: PasteWorkerErrorCode, message: string): {
         kind: "validation",
         code: "image_invalid_dimensions",
         message: "Image dimensions invalid or exceed cap"
+      };
+    case "unsupported_multi_page":
+      return {
+        kind: "validation",
+        code: "image_unsupported_multi_page",
+        message: "Animated and multi-page images are not supported"
       };
     case "decode_failed":
       return {
@@ -263,12 +274,46 @@ export function registerEditorHandlers(): void {
         message: "Clipboard does not contain an image"
       });
     }
-    const inputBytes = image.toPNG();
+    try {
+      const size = image.getSize();
+      validateSafeRgbaRasterDimensions(size.width, size.height);
+    } catch (cause) {
+      const invalidDimensions =
+        cause instanceof SafeRasterError &&
+        cause.code === "invalid_dimensions";
+      return err({
+        kind: "validation",
+        code: invalidDimensions
+          ? "image_invalid_dimensions"
+          : "image_too_large",
+        message: invalidDimensions
+          ? "Image dimensions invalid or exceed cap"
+          : "Decoded image exceeds resource limits"
+      });
+    }
+
+    let inputBytes: Buffer;
+    try {
+      inputBytes = image.toPNG();
+    } catch {
+      return err({
+        kind: "render",
+        code: "image_decode_failed",
+        message: "Image failed to decode"
+      });
+    }
     if (inputBytes.length === 0) {
       return err({
         kind: "clipboard",
         code: "no_image",
         message: "Clipboard image was empty"
+      });
+    }
+    if (inputBytes.length > PASTE_IMAGE_MAX_BYTES) {
+      return err({
+        kind: "validation",
+        code: "image_too_large",
+        message: "Image exceeds size cap"
       });
     }
 

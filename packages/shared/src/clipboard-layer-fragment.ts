@@ -52,6 +52,21 @@ export const CLIPBOARD_FRAGMENT_MAX_BYTES = 64 * 1024 * 1024;
  */
 export const PASTE_IMAGE_MAX_BYTES = 32 * 1024 * 1024;
 
+/** Maximum pixels decoded for one pasted/dropped raster (~8K landscape). */
+export const PASTE_IMAGE_MAX_PIXELS = 32 * 1024 * 1024;
+
+/** RGB/RGBA/greyscale inputs only; extra spectral/spot channels are refused. */
+export const PASTE_IMAGE_MAX_CHANNELS = 4;
+
+/** Maximum estimated uncompressed raster allocation (128 MiB). */
+export const PASTE_IMAGE_MAX_DECODED_BYTES = 128 * 1024 * 1024;
+
+/** Maximum canonical PNG emitted by the sanitizer (64 MiB). */
+export const PASTE_IMAGE_MAX_PNG_BYTES = 64 * 1024 * 1024;
+
+/** Paste/drop is a still-image boundary, never an animation/document import. */
+export const PASTE_IMAGE_MAX_PAGES = 1;
+
 /**
  * Hard upper bound on layer count per paste. Mirrors the bundle
  * document's 4096 cap (BundleDocumentV2.layers). A malicious payload

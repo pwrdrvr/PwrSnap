@@ -55,6 +55,7 @@ vi.mock("electron", () => ({
     // Per-test, the test overrides this via the helper below.
     readImage: () => ({
       isEmpty: () => true,
+      getSize: () => ({ width: 0, height: 0 }),
       toPNG: () => Buffer.alloc(0)
     })
   }
@@ -190,9 +191,13 @@ function seedV1Capture(id: string): void {
     .run({ id, sha: `sha_${id}` });
 }
 
-function setClipboardImage(pngBytes: Buffer | null): void {
+function setClipboardImage(
+  pngBytes: Buffer | null,
+  size: { width: number; height: number } = { width: 1, height: 1 }
+): void {
   (clipboard.readImage as unknown as () => unknown) = () => ({
     isEmpty: () => pngBytes === null || pngBytes.length === 0,
+    getSize: () => size,
     toPNG: () => (pngBytes === null ? Buffer.alloc(0) : pngBytes)
   });
 }
@@ -278,6 +283,25 @@ describe("editor:pasteImageAsLayer", () => {
     expect(result.error.code).toBe("image_too_large");
     // Sanitized: never leak the worker's raw message.
     expect(result.error.message).not.toContain("internal");
+  });
+
+  test("preflights NativeImage pixels before synchronous PNG encoding", async () => {
+    seedV2Capture("cap_bomb001", "/tmp/cap_native_bomb.pwrsnap");
+    setClipboardImage(Buffer.from([0x89, 0x50]), {
+      width: 6_000,
+      height: 6_000
+    });
+
+    const result = await bus.dispatch(
+      "editor:pasteImageAsLayer",
+      { captureId: "cap_bomb001" },
+      { principal: "ipc" }
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "image_too_large" }
+    });
+    expect(workerInputs).toHaveLength(0);
   });
 
   test("worker rejects with decode_failed → image_decode_failed", async () => {

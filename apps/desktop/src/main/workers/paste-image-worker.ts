@@ -25,8 +25,11 @@
 
 import { createHash } from "node:crypto";
 import { parentPort, workerData } from "node:worker_threads";
-import sharp from "sharp";
-import { MAX_IMAGE_DIM_PX, PASTE_IMAGE_MAX_BYTES } from "@pwrsnap/shared";
+import { PASTE_IMAGE_MAX_BYTES } from "@pwrsnap/shared";
+import {
+  canonicalizeSafeRasterToPng,
+  SafeRasterError
+} from "../image/safe-raster-decode";
 
 export type PasteWorkerInput = { kind: "decode-buffer"; bytes: Uint8Array };
 
@@ -34,7 +37,9 @@ export type PasteWorkerErrorCode =
   | "size_cap_exceeded"
   | "read_failed"
   | "decode_failed"
-  | "invalid_dimensions";
+  | "invalid_dimensions"
+  | "raster_limit_exceeded"
+  | "unsupported_multi_page";
 
 export type PasteWorkerResult =
   | {
@@ -80,51 +85,56 @@ export async function processImageInput(
     );
   }
 
-  // Decode-probe + re-encode to PNG in one pass. sharp throws on
-  // malformed input; metadata() alone would catch corruption but
-  // doesn't guarantee the bytes are encodable as PNG (some sharp
-  // input parsers tolerate broken streams that fail re-encode).
-  let pngBytes: Buffer;
-  let widthPx: number;
-  let heightPx: number;
+  // Probe metadata before decoding, enforce pixel/channel/raw-byte/page caps,
+  // then stream the canonical PNG through a separate encoded-output cap.
   try {
-    const pipeline = sharp(inputBytes);
-    const meta = await pipeline.metadata();
-    const w = meta.width ?? 0;
-    const h = meta.height ?? 0;
-    if (w === 0 || h === 0 || w > MAX_IMAGE_DIM_PX || h > MAX_IMAGE_DIM_PX) {
-      return fail(
-        "invalid_dimensions",
-        `dimensions ${w}x${h} invalid or exceed ${MAX_IMAGE_DIM_PX}`
-      );
-    }
-    pngBytes = await pipeline.png().toBuffer();
-    widthPx = w;
-    heightPx = h;
+    const { pngBytes, metadata } = await canonicalizeSafeRasterToPng(inputBytes);
+
+    // sha256 of the canonical PNG bytes — what we'll store at
+    // sources/<sha>.png.
+    const hash = createHash("sha256");
+    hash.update(pngBytes);
+    const sha256 = hash.digest("hex");
+
+    return {
+      ok: true,
+      sha256,
+      widthPx: metadata.widthPx,
+      heightPx: metadata.heightPx,
+      pngBytes
+    };
   } catch (cause) {
+    if (cause instanceof SafeRasterError) {
+      switch (cause.code) {
+        case "input_size_cap_exceeded":
+          return fail("size_cap_exceeded", cause.message);
+        case "invalid_dimensions":
+          return fail("invalid_dimensions", cause.message);
+        case "unsupported_multi_page":
+          return fail("unsupported_multi_page", cause.message);
+        case "pixel_cap_exceeded":
+        case "channel_cap_exceeded":
+        case "decoded_size_cap_exceeded":
+        case "output_size_cap_exceeded":
+          return fail("raster_limit_exceeded", cause.message);
+        case "decode_failed":
+          return fail("decode_failed", cause.message);
+      }
+    }
     return fail(
       "decode_failed",
       cause instanceof Error ? cause.message : String(cause)
     );
   }
-
-  // sha256 of the canonical PNG bytes — what we'll store at
-  // sources/<sha>.png. Streaming-style update for symmetry with the
-  // bundle reader's verify path even though the buffer's already
-  // resident; the cost is negligible vs the decode above.
-  const hash = createHash("sha256");
-  hash.update(pngBytes);
-  const sha256 = hash.digest("hex");
-
-  return { ok: true, sha256, widthPx, heightPx, pngBytes };
 }
 
 // Worker entrypoint. The parent constructs us with `workerData` set
 // to the PasteWorkerInput; we run once and postMessage the result.
 //
 // We post a plain message (no transfer list). Node's structured-clone
-// boundary copies the pngBytes ArrayBuffer — at the 32 MiB cap this
-// costs ~5-10ms on a modern Mac, which is comfortably inside the
+// boundary copies the pngBytes ArrayBuffer — bounded independently by the
+// canonical PNG output cap. Typical screenshot payloads cost ~5-10ms on a
+// modern Mac, which is comfortably inside the
 // 300ms budget. Skipping the transferList keeps the typing clean
 // (DOM lib's `Transferable` type doesn't include SharedArrayBuffer-
 // shaped ArrayBufferLikes that Node's Buffer.buffer is typed as).

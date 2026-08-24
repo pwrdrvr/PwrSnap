@@ -26,6 +26,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   isEmpty: vi.fn(() => true),
   toPNG: vi.fn(() => Buffer.alloc(0)),
+  getSize: vi.fn(() => ({ width: 1, height: 1 })),
   availableFormats: vi.fn((): string[] => []),
   readBookmark: vi.fn(() => ({ title: "", url: "" })),
   readBuffer: vi.fn(() => Buffer.alloc(0)),
@@ -60,6 +61,7 @@ vi.mock("electron", () => ({
   clipboard: {
     readImage: () => ({
       isEmpty: mocks.isEmpty,
+      getSize: mocks.getSize,
       toPNG: mocks.toPNG
     }),
     availableFormats: mocks.availableFormats,
@@ -232,6 +234,7 @@ const persistedRecord = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.isEmpty.mockReturnValue(true);
+  mocks.getSize.mockReturnValue({ width: 1, height: 1 });
   mocks.toPNG.mockReturnValue(Buffer.alloc(0));
   mocks.availableFormats.mockReturnValue([]);
   mocks.readBookmark.mockReturnValue({ title: "", url: "" });
@@ -268,6 +271,28 @@ describe("capture:pasteFromClipboard", () => {
     expect(result.error.kind).toBe("clipboard");
     expect(result.error.code).toBe("no_image");
     expect(result.error.message).toMatch(/clipboard/i);
+  });
+
+  test("refuses huge decoded NativeImage dimensions before toPNG", async () => {
+    mocks.isEmpty.mockReturnValue(false);
+    mocks.getSize.mockReturnValue({ width: 6_000, height: 6_000 });
+
+    const result = await bus.dispatch(
+      "capture:pasteFromClipboard",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: "clipboard",
+        code: "paste_failed",
+        message: "Unable to paste the clipboard image"
+      }
+    });
+    expect(mocks.toPNG).not.toHaveBeenCalled();
+    expect(mocks.persistCaptureFromTempV2).not.toHaveBeenCalled();
   });
 
   test("routes a percent-encoded file URL through the bounded secure reader", async () => {

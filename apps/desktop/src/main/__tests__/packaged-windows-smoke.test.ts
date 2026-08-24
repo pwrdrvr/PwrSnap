@@ -8,6 +8,7 @@ import {
   PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV,
   PACKAGED_WINDOWS_SMOKE_REPORT_NAME,
   parseBundledWindowListEvidence,
+  parseBundledFfmpegCapabilities,
   packagedRendererProbeSource,
   preflightPackagedWindowsSmokeRequest,
   probeSharpNativeModule,
@@ -223,6 +224,8 @@ function makeDependencies(
     probeSharp: vi.fn(async () => sharpEvidence),
     probeBundledWindowList: vi.fn(async () => ({
       executablePath: join(layout.resourcesPath, "PwrSnapWindowList.exe"),
+      executableSha256: "a".repeat(64),
+      invocation: "direct" as const,
       jsonEnvelope: true as const,
       ownWindowDetected: true as const,
       windowCount: 1,
@@ -231,9 +234,23 @@ function makeDependencies(
     })),
     probeBundledFfmpeg: vi.fn(async () => ({
       executablePath: join(layout.resourcesPath, "PwrSnapFFmpeg.exe"),
+      executableSha256: "b".repeat(64),
+      invocation: "direct" as const,
       versionLine: "ffmpeg version 8.1.1-pwrsnap",
-      pngDecode: true as const
+      capabilities: {
+        encoders: ["png", "h264_mf", "aac"] as ["png", "h264_mf", "aac"],
+        decoders: ["png"] as ["png"],
+        inputDevices: ["gdigrab"] as ["gdigrab"]
+      },
+      roundTrip: {
+        encodedFormat: "png" as const,
+        pixelFormat: "rgba" as const,
+        width: 2 as const,
+        height: 2 as const,
+        exactPixels: true as const
+      }
     })),
+    hasBundledFfmpeg: () => true,
     rendererTimeoutMs: 100,
     rendererExecuteTimeoutMs: 50,
     rendererPollIntervalMs: 1,
@@ -498,6 +515,47 @@ describe("packaged Windows smoke", () => {
     );
   });
 
+  test("requires the release FFmpeg capability contract", () => {
+    const encoders = `
+      V....D png                  PNG image
+      V..... h264_mf              H.264 MediaFoundation
+      A..... aac                  AAC
+    `;
+    const decoders = " V....D png PNG image";
+    const devices = " D  gdigrab GDI API Windows frame grabber";
+
+    expect(parseBundledFfmpegCapabilities(encoders, decoders, devices)).toEqual({
+      encoders: ["png", "h264_mf", "aac"],
+      decoders: ["png"],
+      inputDevices: ["gdigrab"]
+    });
+    expect(() => parseBundledFfmpegCapabilities(encoders, decoders, "")).toThrow(
+      /missing required input device gdigrab/
+    );
+  });
+
+  test("pins direct sidecar provenance and FFmpeg-owned lossless round trip", async () => {
+    const source = await readFile(
+      join(import.meta.dirname, "..", "packaged-windows-smoke.ts"),
+      "utf8"
+    );
+    for (const token of [
+      'join(resourcesPath, "PwrSnapWindowList.exe")',
+      'join(resourcesPath, "PwrSnapFFmpeg.exe")',
+      'invocation: "direct"',
+      'createHash("sha256")',
+      '["-hide_banner", "-version"]',
+      '["-hide_banner", "-encoders"]',
+      '["-hide_banner", "-decoders"]',
+      '["-hide_banner", "-devices"]',
+      '"-c:v",',
+      '"png",',
+      "decodedPixels.equals(exactPixels)"
+    ]) {
+      expect(source).toContain(token);
+    }
+  });
+
   test("resolves Sharp's optional Windows slice from Sharp's package context", async () => {
     const source = await readFile(join(import.meta.dirname, "..", "packaged-windows-smoke.ts"), "utf8");
     expect(source).toContain("const sharpRequire = createRequire(sharpEntryPath)");
@@ -556,16 +614,32 @@ describe("packaged Windows smoke", () => {
       bundledHelpers: {
         windowList: {
           executablePath: join(layout.resourcesPath, "PwrSnapWindowList.exe"),
+          executableSha256: "a".repeat(64),
+          invocation: "direct",
           jsonEnvelope: true,
           ownWindowDetected: true,
           windowCount: 1
         },
         ffmpeg: {
           required: true,
+          present: true,
           executed: true,
           executablePath: join(layout.resourcesPath, "PwrSnapFFmpeg.exe"),
+          executableSha256: "b".repeat(64),
+          invocation: "direct",
           versionLine: "ffmpeg version 8.1.1-pwrsnap",
-          pngDecode: true
+          capabilities: {
+            encoders: ["png", "h264_mf", "aac"],
+            decoders: ["png"],
+            inputDevices: ["gdigrab"]
+          },
+          roundTrip: {
+            encodedFormat: "png",
+            pixelFormat: "rgba",
+            width: 2,
+            height: 2,
+            exactPixels: true
+          }
         }
       }
     });
@@ -599,7 +673,8 @@ describe("packaged Windows smoke", () => {
         ...layout.env,
         [PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV]: undefined
       },
-      probeBundledFfmpeg
+      probeBundledFfmpeg,
+      hasBundledFfmpeg: () => false
     });
 
     await expect(runPackagedWindowsSmokeIfRequested(dependencies)).resolves.toBe(true);
@@ -607,7 +682,11 @@ describe("packaged Windows smoke", () => {
     const report = JSON.parse(
       await readFile(layout.reportPath, "utf8")
     ) as PackagedWindowsSmokeReport;
-    expect(report.bundledHelpers.ffmpeg).toEqual({ required: false, executed: false });
+    expect(report.bundledHelpers.ffmpeg).toEqual({
+      required: false,
+      present: false,
+      executed: false
+    });
     expect(dependencies.probeBundledWindowList).toHaveBeenCalledTimes(1);
     expect(probeBundledFfmpeg).not.toHaveBeenCalled();
   });

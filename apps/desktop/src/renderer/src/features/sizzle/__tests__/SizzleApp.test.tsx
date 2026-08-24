@@ -2,7 +2,13 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import { EVENT_CHANNELS, type CaptureRecord, type SizzleProject, type SizzleScene } from "@pwrsnap/shared";
+import {
+  EVENT_CHANNELS,
+  type CaptureRecord,
+  type ShortcutPlatform,
+  type SizzleProject,
+  type SizzleScene
+} from "@pwrsnap/shared";
 import {
   SizzleApp,
   formatSequencePreviewWarnings,
@@ -217,7 +223,8 @@ function installApi(
 
 async function renderApp(
   initial: SizzleProject | SizzleProject[],
-  overrides: Record<string, unknown> = {}
+  overrides: Record<string, unknown> = {},
+  shortcutPlatform: ShortcutPlatform = "darwin"
 ): Promise<{
   el: HTMLDivElement;
   emit: (channel: string, payload: unknown) => void;
@@ -231,7 +238,7 @@ async function renderApp(
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => {
-    root?.render(createElement(SizzleApp));
+    root?.render(createElement(SizzleApp, { shortcutPlatform }));
   });
   // Drain the mount-time sizzle:list / library:list dispatches.
   await act(async () => {
@@ -1243,6 +1250,37 @@ describe("SizzleApp shell layout", () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
     expect(shell.classList.contains("is-rail-open")).toBe(false);
+  });
+
+  test("win32 uses Ctrl+Shift+L and ignores Command+Shift+L", async () => {
+    const { el } = await renderApp(project(), {}, "win32");
+    const shell = el.querySelector(".szl")!;
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "L", metaKey: true, shiftKey: true, bubbles: true })
+      );
+    });
+    expect(shell.classList.contains("is-rail-open")).toBe(false);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "L",
+          metaKey: true,
+          ctrlKey: true,
+          shiftKey: true,
+          bubbles: true
+        })
+      );
+    });
+    expect(shell.classList.contains("is-rail-open")).toBe(false);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "L", ctrlKey: true, shiftKey: true, bubbles: true })
+      );
+    });
+    expect(shell.classList.contains("is-rail-open")).toBe(true);
   });
 
   test("the chat pane resizes by dragging its divider (left widens), clamped, and double-click resets", async () => {

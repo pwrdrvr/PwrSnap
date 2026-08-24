@@ -26,6 +26,7 @@ import type {
 } from "@pwrsnap/shared";
 import {
   AI_REASONING_EFFORTS,
+  acceleratorToDisplayText,
   builtInAcpAgentDisplayName,
   CODEX_CAPTION_MODELS,
   DEFAULT_CODEX_CAPTION_MODEL,
@@ -33,6 +34,7 @@ import {
   EVENT_CHANNELS,
   isAiReasoningEffort
 } from "@pwrsnap/shared";
+import { rendererShortcutPlatform } from "../../../lib/shortcut-platform";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import {
   Card,
@@ -58,6 +60,10 @@ function modelLabel(model: CodexModelOption): string {
 }
 
 export function AIProvidersPage(): ReactElement {
+  const searchChord = acceleratorToDisplayText(
+    "CommandOrControl+K",
+    rendererShortcutPlatform()
+  );
   const {
     settings,
     secrets,
@@ -296,7 +302,7 @@ export function AIProvidersPage(): ReactElement {
         />
         <JobRoutingRow
           name="Semantic search vectorization"
-          sub="Will embed capture metadata + OCR text for ⌘K search"
+          sub={`Will embed capture metadata + OCR text for ${searchChord} search`}
           provider="—"
           model="Coming soon"
           dim

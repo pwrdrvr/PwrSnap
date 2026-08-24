@@ -1,48 +1,64 @@
-// Pure-function tests for the accelerator → glyph translator. Lives
-// in `lib/` alongside the helper itself; multiple surfaces (the
-// library top-bar, the settings hotkey rows, the reset confirmation
-// modal) all render through this same function.
-
 import { describe, expect, test } from "vitest";
-import { acceleratorToDisplayKeys } from "../format-hotkey";
+import {
+  acceleratorToAccessibleText,
+  acceleratorToDisplayKeys,
+  acceleratorToDisplayText
+} from "../format-hotkey";
 
-describe("acceleratorToDisplayKeys", () => {
-  test("translates the Electron-canonical accelerator forms", () => {
-    expect(acceleratorToDisplayKeys("CommandOrControl+Shift+P")).toEqual([
+describe("renderer shortcut formatting", () => {
+  test("renders portable accelerators for macOS", () => {
+    expect(acceleratorToDisplayKeys("CommandOrControl+Shift+P", "darwin")).toEqual([
       "⌘",
       "⇧",
       "P"
     ]);
-    expect(acceleratorToDisplayKeys("Cmd+Shift+R")).toEqual(["⌘", "⇧", "R"]);
-    expect(acceleratorToDisplayKeys("Command+Shift+W")).toEqual([
-      "⌘",
-      "⇧",
-      "W"
+    expect(acceleratorToDisplayKeys("Cmd+Shift+R", "darwin")).toEqual(["⌘", "⇧", "R"]);
+    expect(acceleratorToDisplayKeys("Alt+Backspace", "darwin")).toEqual(["⌥", "⌫"]);
+    expect(acceleratorToDisplayKeys("Control+Tab", "darwin")).toEqual(["⌃", "Tab"]);
+  });
+
+  test("renders portable accelerators for Windows", () => {
+    expect(acceleratorToDisplayKeys("CommandOrControl+Shift+P", "win32")).toEqual([
+      "Ctrl",
+      "Shift",
+      "P"
     ]);
+    expect(acceleratorToDisplayText("Control+Super+Alt+C", "win32")).toBe(
+      "Ctrl+Win+Alt+C"
+    );
+    expect(acceleratorToAccessibleText("Control+Super+Alt+C", "win32")).toBe(
+      "Control plus Windows plus Alt plus C"
+    );
   });
 
-  test("translates the Option / Alt and Control glyphs", () => {
-    expect(acceleratorToDisplayKeys("Alt+Backspace")).toEqual(["⌥", "⌫"]);
-    expect(acceleratorToDisplayKeys("Option+Return")).toEqual(["⌥", "⏎"]);
-    expect(acceleratorToDisplayKeys("Control+Tab")).toEqual(["⌃", "Tab"]);
-    expect(acceleratorToDisplayKeys("Ctrl+Space")).toEqual(["⌃", "Space"]);
+  test("returns an empty presentation for an unbound shortcut", () => {
+    expect(acceleratorToDisplayKeys("", "darwin")).toEqual([]);
+    expect(acceleratorToDisplayText("", "win32")).toBe("");
   });
 
-  test("returns an empty array for the empty string", () => {
-    expect(acceleratorToDisplayKeys("")).toEqual([]);
+  test("normalizes letter case and named keys", () => {
+    expect(acceleratorToDisplayKeys("Cmd+a", "darwin")).toEqual(["⌘", "A"]);
+    expect(acceleratorToDisplayKeys("Cmd+Left", "darwin")).toEqual(["⌘", "←"]);
+    expect(acceleratorToDisplayKeys("Control+F12", "win32")).toEqual(["Ctrl", "F12"]);
+    expect(acceleratorToDisplayKeys("Control+Return", "win32")).toEqual(["Ctrl", "Enter"]);
   });
 
-  test("uppercases bare letter keys for visual parity with macOS menus", () => {
-    expect(acceleratorToDisplayKeys("Cmd+a")).toEqual(["⌘", "A"]);
-    expect(acceleratorToDisplayKeys("Cmd+,")).toEqual(["⌘", ","]);
-  });
-
-  test("preserves arrow keys + escape", () => {
-    expect(acceleratorToDisplayKeys("Cmd+Left")).toEqual(["⌘", "←"]);
-    expect(acceleratorToDisplayKeys("Escape")).toEqual(["Esc"]);
-  });
-
-  test("falls through to raw text for unknown multi-char tokens", () => {
-    expect(acceleratorToDisplayKeys("Cmd+F12")).toEqual(["⌘", "F12"]);
+  test("win32 output never contains Cmd or the Command glyph", () => {
+    const accelerators = [
+      "CommandOrControl+Shift+C",
+      "CmdOrCtrl+Alt+R",
+      "Cmd+P",
+      "Super+Shift+C",
+      "Meta+Delete"
+    ];
+    const output = accelerators
+      .flatMap((accelerator) => [
+        ...acceleratorToDisplayKeys(accelerator, "win32"),
+        acceleratorToDisplayText(accelerator, "win32"),
+        acceleratorToAccessibleText(accelerator, "win32")
+      ])
+      .join(" ");
+    expect(output).not.toContain("Cmd");
+    expect(output).not.toContain("⌘");
   });
 });

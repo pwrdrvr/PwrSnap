@@ -61,6 +61,8 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactElement
 } from "react";
+import { acceleratorToDisplayText, type ShortcutPlatform } from "@pwrsnap/shared";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 
 // editor.css is loaded once by Editor.tsx at the editor-window root
 // (`./editor.css` at the top of that file). CropTool consumes those
@@ -83,6 +85,7 @@ export interface CropToolProps {
   onCommit(rect: { x: number; y: number; w: number; h: number }): void;
   /** Cancel (Esc, or click outside the canvas + not on a handle). */
   onCancel(): void;
+  shortcutPlatform?: ShortcutPlatform;
 }
 
 type Rect = { x: number; y: number; w: number; h: number };
@@ -226,6 +229,7 @@ type DragState =
 // ----------------------------------------------------------------- component
 
 export function CropTool(props: CropToolProps): ReactElement | null {
+  const shortcutPlatform = props.shortcutPlatform ?? rendererShortcutPlatform();
   const { sourceWidth, sourceHeight, canvasRect, onCommit, onCancel } = props;
 
   // Initial rect — centered 60% of source. Recomputed when source
@@ -680,7 +684,7 @@ export function CropTool(props: CropToolProps): ReactElement | null {
         >
           <span className="pse-crop-action-label">Apply Crop</span>
           <span className="pse-crop-action-kbd" aria-hidden="true">
-            {"⌘↵"}
+            {acceleratorToDisplayText("Return", shortcutPlatform)}
           </span>
         </button>
       </div>

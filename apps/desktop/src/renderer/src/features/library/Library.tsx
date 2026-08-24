@@ -24,6 +24,7 @@ import type {
   Result,
   ScrollProbeRequest,
   Settings,
+  ShortcutPlatform,
   AcpAgentDiscovery,
   DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
@@ -118,7 +119,13 @@ import { useVideoTrimRange } from "../shared/useVideoTrimRange";
 import { AppMenuBar } from "../shared/AppMenuBar";
 import { LayoutToggleButtons } from "../shared/LayoutToggleButtons";
 import "../shared/LayoutToggleButtons.css";
-import { acceleratorToDisplayKeys } from "../../lib/format-hotkey";
+import {
+  acceleratorToDisplayKeys,
+  acceleratorToDisplayText
+} from "../../lib/format-hotkey";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
+import { isPrimaryAccel } from "../shared/keyboard";
+import { useSurfaceCopyShortcuts } from "../shared/useSurfaceCopyShortcuts";
 import { AiConsentDialog } from "../shared/AiConsentDialog";
 import { enrichmentBackendLabel } from "../shared/CodexStatusPill";
 import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-availability";
@@ -149,13 +156,6 @@ function codexAvailableInSnapshot(snapshot: DesktopCodexDiscoverySnapshot): bool
   return snapshot.candidates.some(
     (candidate) => candidate.available && candidate.path === snapshot.resolvedPath
   );
-}
-
-function copyPresetForShortcutKey(key: string): CopyPreset | null {
-  if (key === "1") return "low";
-  if (key === "2") return "med";
-  if (key === "3") return "high";
-  return null;
 }
 
 /** Preset order + labels for the capture tile's context menu. Same
@@ -673,7 +673,17 @@ function appendHistoryLocation(
   return [...stack, location].slice(-50);
 }
 
-export function Library() {
+export type LibraryProps = {
+  /** Explicit host semantics keep shortcut behavior deterministic in tests. */
+  readonly shortcutPlatform?: ShortcutPlatform;
+};
+
+export function Library({ shortcutPlatform = rendererShortcutPlatform() }: LibraryProps) {
+  const primaryModifierLabel =
+    acceleratorToDisplayKeys("CommandOrControl", shortcutPlatform)[0] ?? "Ctrl";
+  const altModifierLabel = acceleratorToDisplayKeys("Alt", shortcutPlatform)[0] ?? "Alt";
+  const reelBackChord = acceleratorToDisplayText("CommandOrControl+[", shortcutPlatform);
+  const reelForwardChord = acceleratorToDisplayText("CommandOrControl+]", shortcutPlatform);
   // Composable sidebar filter — scope (radio) + types (include-set) +
   // source apps (include/exclude facet). See library-filters.ts for
   // the model and the gesture table. Types used to live in their own
@@ -1345,15 +1355,15 @@ export function Library() {
   // identically when the user explicitly unbinds the chord.
   const hotkeys = useHotkeys();
   const quickCaptureChord = useMemo(
-    () => acceleratorToDisplayKeys(hotkeys.quickCapture).join(""),
-    [hotkeys.quickCapture]
+    () => acceleratorToDisplayText(hotkeys.quickCapture, shortcutPlatform),
+    [hotkeys.quickCapture, shortcutPlatform]
   );
   // Record Video shares the same live-chord treatment (default ⌘⌥C,
   // editable in Settings → Hotkeys). Sits left of Quick Capture as the
   // app's second headline verb so the header advertises both.
   const videoCaptureChord = useMemo(
-    () => acceleratorToDisplayKeys(hotkeys.videoCapture).join(""),
-    [hotkeys.videoCapture]
+    () => acceleratorToDisplayText(hotkeys.videoCapture, shortcutPlatform),
+    [hotkeys.videoCapture, shortcutPlatform]
   );
 
   // Responsive toolbar. The right cluster (search + sidebar toggles +
@@ -2242,6 +2252,8 @@ export function Library() {
     durationSec: selectedVideo?.durationSec ?? 0,
     persistedRange: selectedVideo?.defaultRange ?? null
   });
+  const videoTrimRangeRef = useRef(videoTrim.range);
+  videoTrimRangeRef.current = videoTrim.range;
   // Auto-collapse the grid right rail to its hover-pop activity bar when the
   // window is narrow, so the grid keeps its width (the cart/inspector becomes
   // "on mouse over only"). Focus/reel normally keep the rail at the user's
@@ -2870,6 +2882,31 @@ export function Library() {
   useEffect(() => {
     selectedRecordRef.current = selectedRecord;
   }, [selectedRecord]);
+  useSurfaceCopyShortcuts({
+    assetKind: selectedRecord?.kind ?? null,
+    enabled: view.kind === "grid" && selectedRecord !== null,
+    platform: shortcutPlatform,
+    onShortcut: (shortcut) => {
+      const record = selectedRecordRef.current;
+      if (record === null) return;
+      if (shortcut.kind === "image") {
+        if (record.kind !== "image") return;
+        copyImagePreset(record.id, shortcut.preset);
+        setCopyPulses((current) => ({
+          ...current,
+          [shortcut.preset]: current[shortcut.preset] + 1
+        }));
+        return;
+      }
+      if (record.kind !== "video") return;
+      void dispatch("clipboard:copyVideoFile", {
+        captureId: record.id,
+        format: shortcut.format,
+        preset: shortcut.preset,
+        range: videoTrimRangeRef.current
+      });
+    }
+  });
   useEffect(() => {
     // Map the rendered day groups → record ids per day (dropping any
     // fixture-only cells, which aren't selectable). This is the exact
@@ -2940,12 +2977,17 @@ export function Library() {
   }, [view, records]);
   useEffect(() => {
     function onKey(event: KeyboardEvent): void {
-      // ⌘F — focus the library search input. Runs BEFORE the
+      // Primary+F — focus the library search input. Runs BEFORE the
       // text-field bail so the chord works even when focus is
       // already inside an input (matches every browser's Find).
       // Disabled in Trash view because the input is too (the bus
       // surface only returns live captures).
-      if (event.metaKey && !event.ctrlKey && !event.altKey && event.key === "f") {
+      if (
+        isPrimaryAccel(event, shortcutPlatform) &&
+        !event.shiftKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === "f"
+      ) {
         const input = searchInputRef.current;
         if (input !== null && !input.disabled) {
           event.preventDefault();
@@ -2962,38 +3004,14 @@ export function Library() {
       if (target?.isContentEditable) return;
 
       const kind = viewRef.current.kind;
-      const usingMeta = event.metaKey;
-      const usingOtherMod = event.ctrlKey || event.altKey;
+      const usingPrimary = isPrimaryAccel(event, shortcutPlatform);
 
-      // ⌘1 / ⌘2 / ⌘3 — copy Low / Med / High for the selected capture.
-      // Same helper the DetailRail footer + Grid copy palette use, so
-      // the shortcut always puts image bytes on the clipboard. Live in
-      // Focus/Reel (inspector footer) and Grid (palette or footer).
-      if (
-        usingMeta &&
-        !event.shiftKey &&
-        !usingOtherMod &&
-        (kind === "focus" || kind === "reel" || kind === "grid")
-      ) {
-        const preset = copyPresetForShortcutKey(event.key);
-        const record = selectedRecordRef.current;
-        if (preset !== null && record !== null && record.kind === "image") {
-          event.preventDefault();
-          // Image BYTES via the shared helper — ⌘1/2/3 mirrors the DetailRail
-          // card body, so they must put the SAME thing on the clipboard
-          // (see clipboard-copy.ts; PR #232 drifted both to a file URL).
-          copyImagePreset(record.id, preset);
-          setCopyPulses((current) => ({ ...current, [preset]: current[preset] + 1 }));
-          return;
-        }
-      }
-
-      // ⌘[ / ⌘] — Reel-mode scrub aliases for ←/→. Same dispatch,
-      // just a second binding so the on-screen "scrub ⌘[ / ⌘]"
-      // hint is honest. Skip in Focus (Focus uses ←/→ only;
-      // ⌘[/⌘] is "navigate window history" elsewhere in macOS,
+      // Primary+[ / +] — Reel-mode scrub aliases for ←/→. Same dispatch,
+      // just a second binding so the on-screen scrub hint is honest.
+      // Skip in Focus (Focus uses ←/→ only;
+      // Command+[ / +] is "navigate window history" elsewhere in macOS,
       // and we don't want to override it outside Reel).
-      if (usingMeta && !usingOtherMod && kind === "reel") {
+      if (usingPrimary && !event.shiftKey && !event.altKey && kind === "reel") {
         if (event.key === "[") {
           const id = prevRecordIdRef.current;
           if (id !== null) {
@@ -3013,7 +3031,7 @@ export function Library() {
       }
 
       // Single-key shortcuts must not have any modifier set.
-      if (usingMeta || usingOtherMod) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
 
       if (event.key === "Escape" && kind === "focus") {
         event.preventDefault();
@@ -3116,7 +3134,7 @@ export function Library() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [viewDispatch, toggleRightPinned]);
+  }, [shortcutPlatform, viewDispatch, toggleRightPinned]);
 
   /**
    * Grid-cell interaction handler. The grid-first select/edit split routes
@@ -3987,7 +4005,7 @@ export function Library() {
               }}
               title={
                 excluded
-                  ? `${label} is excluded · ⌥-click to clear the exclusion`
+                  ? `${label} is excluded · ${altModifierLabel}-click to clear the exclusion`
                   : selected
                     ? isSoleType
                       ? `Click to clear the ${label.toLowerCase()} filter`
@@ -4115,15 +4133,15 @@ export function Library() {
               }}
               title={
                 rowState === "excluded"
-                  ? `${name} is excluded · ⌥-click to stop excluding it`
+                  ? `${name} is excluded · ${altModifierLabel}-click to stop excluding it`
                   : isSoleInclude
-                    ? `Click to clear the ${name} filter · ⌘-click to add another app`
+                    ? `Click to clear the ${name} filter · ${primaryModifierLabel}-click to add another app`
                     : excludeModeActive
                       ? // ⌘-click keeps the facet's polarity, so while the
                         // facet is excluding it ADDS to the exclusion —
                         // promising "⌘-click to add" here would be a lie.
-                        `Show only ${name} · ⌥-click to also exclude it`
-                      : `Show only ${name} · ⌘-click to add · ⌥-click to exclude`
+                        `Show only ${name} · ${altModifierLabel}-click to also exclude it`
+                      : `Show only ${name} · ${primaryModifierLabel}-click to add · ${altModifierLabel}-click to exclude`
               }
             >
               <span className="psl__nav-icon">
@@ -4332,6 +4350,7 @@ export function Library() {
             record={selectedRecord}
             copyPulses={copyPulses}
             onLocate={revealCapture}
+            shortcutPlatform={shortcutPlatform}
           />
         ) : null}
         {error !== null && (
@@ -4432,7 +4451,7 @@ export function Library() {
                         Timeline · {summarizeLibraryFilter(activeFilter, resolveAppLabel)}
                       </span>
                       <span className="psl__reel-hint" aria-hidden="true">
-                        scrub <b>⌘[ / ⌘]</b>
+                        scrub <b>{reelBackChord} / {reelForwardChord}</b>
                       </span>
                     </div>
                     <div className="psl__reel" ref={reelScrollerRef}>
@@ -4589,6 +4608,7 @@ export function Library() {
           onGridActiveTabChange={setGridActiveTab}
           selectedLayerIds={selectedLayerIds}
           layersApi={layersApi}
+          shortcutPlatform={shortcutPlatform}
         />
       ) : null}
 

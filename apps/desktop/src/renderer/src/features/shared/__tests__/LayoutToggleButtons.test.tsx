@@ -20,6 +20,7 @@ import {
   vi
 } from "vitest";
 import { LayoutToggleButtons } from "../LayoutToggleButtons";
+import type { ShortcutPlatform } from "@pwrsnap/shared";
 
 beforeAll(() => {
   (
@@ -44,6 +45,7 @@ interface RenderArgs {
   secondaryOpen?: boolean;
   disableHotkeys?: boolean;
   primaryDisabled?: boolean;
+  shortcutPlatform?: ShortcutPlatform;
 }
 
 async function renderToggles(args: RenderArgs = {}): Promise<{
@@ -64,7 +66,8 @@ async function renderToggles(args: RenderArgs = {}): Promise<{
         onTogglePrimary,
         onToggleSecondary,
         disableHotkeys: args.disableHotkeys ?? false,
-        primaryDisabled: args.primaryDisabled ?? false
+        primaryDisabled: args.primaryDisabled ?? false,
+        shortcutPlatform: args.shortcutPlatform ?? "darwin"
       })
     );
     await Promise.resolve();
@@ -130,10 +133,6 @@ describe("LayoutToggleButtons", () => {
   });
 
   test("primaryDisabled greys out the primary chip + swallows ⌘B (⌘⌥B still works)", async () => {
-    Object.defineProperty(navigator, "platform", {
-      value: "MacIntel",
-      configurable: true
-    });
     const { el, onTogglePrimary, onToggleSecondary } = await renderToggles({
       primaryDisabled: true
     });
@@ -167,10 +166,6 @@ describe("LayoutToggleButtons", () => {
   });
 
   test("⌘B (Mac) fires onTogglePrimary", async () => {
-    Object.defineProperty(navigator, "platform", {
-      value: "MacIntel",
-      configurable: true
-    });
     const { onTogglePrimary, onToggleSecondary } = await renderToggles();
     await act(async () => {
       window.dispatchEvent(
@@ -183,10 +178,6 @@ describe("LayoutToggleButtons", () => {
   });
 
   test("⌘⌥B (Mac) fires onToggleSecondary", async () => {
-    Object.defineProperty(navigator, "platform", {
-      value: "MacIntel",
-      configurable: true
-    });
     const { onTogglePrimary, onToggleSecondary } = await renderToggles();
     await act(async () => {
       window.dispatchEvent(
@@ -203,11 +194,7 @@ describe("LayoutToggleButtons", () => {
   });
 
   test("Ctrl+B (non-Mac) fires onTogglePrimary", async () => {
-    Object.defineProperty(navigator, "platform", {
-      value: "Linux x86_64",
-      configurable: true
-    });
-    const { onTogglePrimary } = await renderToggles();
+    const { onTogglePrimary } = await renderToggles({ shortcutPlatform: "win32" });
     await act(async () => {
       window.dispatchEvent(
         new KeyboardEvent("keydown", { key: "b", ctrlKey: true })
@@ -217,11 +204,28 @@ describe("LayoutToggleButtons", () => {
     expect(onTogglePrimary).toHaveBeenCalledTimes(1);
   });
 
+  test.each(["darwin", "win32"] as const)(
+    "%s rejects mixed Ctrl+Meta instead of conflating the modifiers",
+    async (shortcutPlatform) => {
+      const { onTogglePrimary, onToggleSecondary } = await renderToggles({
+        shortcutPlatform
+      });
+      await act(async () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "b",
+            ctrlKey: true,
+            metaKey: true
+          })
+        );
+        await Promise.resolve();
+      });
+      expect(onTogglePrimary).not.toHaveBeenCalled();
+      expect(onToggleSecondary).not.toHaveBeenCalled();
+    }
+  );
+
   test("typing 'b' into an input does not fire the chord", async () => {
-    Object.defineProperty(navigator, "platform", {
-      value: "MacIntel",
-      configurable: true
-    });
     const { onTogglePrimary } = await renderToggles();
     const input = document.createElement("input");
     document.body.appendChild(input);
@@ -241,10 +245,6 @@ describe("LayoutToggleButtons", () => {
   });
 
   test("disableHotkeys=true skips the window listener entirely", async () => {
-    Object.defineProperty(navigator, "platform", {
-      value: "MacIntel",
-      configurable: true
-    });
     const { onTogglePrimary, onToggleSecondary } = await renderToggles({
       disableHotkeys: true
     });
@@ -266,10 +266,6 @@ describe("LayoutToggleButtons", () => {
   });
 
   test("modifier-less 'b' keypress does not toggle (must include ⌘ or Ctrl)", async () => {
-    Object.defineProperty(navigator, "platform", {
-      value: "MacIntel",
-      configurable: true
-    });
     const { onTogglePrimary, onToggleSecondary } = await renderToggles();
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "b" }));
@@ -297,6 +293,17 @@ describe("LayoutToggleButtons", () => {
     expect(secondary?.getAttribute("aria-label")).toBe(
       "Show secondary side bar"
     );
+  });
+
+  test("win32 tooltips use Ctrl/Alt and contain no Cmd or Command glyph", async () => {
+    const { el } = await renderToggles({ shortcutPlatform: "win32" });
+    const primaryTitle =
+      el.querySelector<HTMLButtonElement>('[data-testid="layout-toggle-primary"]')?.title ?? "";
+    const secondaryTitle =
+      el.querySelector<HTMLButtonElement>('[data-testid="layout-toggle-secondary"]')?.title ?? "";
+    expect(primaryTitle).toContain("Ctrl+B");
+    expect(secondaryTitle).toContain("Ctrl+Alt+B");
+    expect(`${primaryTitle} ${secondaryTitle}`).not.toMatch(/Cmd|⌘/);
   });
 
   test("Glyph fills the appropriate column based on the chip's kind", async () => {

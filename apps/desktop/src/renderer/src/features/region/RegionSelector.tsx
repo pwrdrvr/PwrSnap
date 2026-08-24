@@ -36,7 +36,9 @@
 // global virtual coords + display id before screencapture.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { acceleratorToDisplayKeys } from "@pwrsnap/shared";
 import type { WindowSnapEntry } from "../../preload-types";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import {
   ALL_HANDLES,
   applyResize,
@@ -100,6 +102,8 @@ function displaySnapRect(): Rect {
 }
 
 export function RegionSelector() {
+  const shiftKey =
+    acceleratorToDisplayKeys("Shift", rendererShortcutPlatform())[0] ?? "Shift";
   const displayIdParam = parseHashParam(HASH_PARAM_DISPLAY_ID);
   const displayId = displayIdParam !== null ? Number.parseInt(displayIdParam, 10) : 0;
 
@@ -995,7 +999,7 @@ export function RegionSelector() {
             <>
               <span className="region-hint-sep">·</span>
               <span>
-                <kbd>⇧</kbd>full window
+                <kbd>{shiftKey}</kbd>full window
               </span>
             </>
           )}
@@ -1026,7 +1030,7 @@ export function RegionSelector() {
           </span>
           <span className="region-hint-sep">·</span>
           <span>
-            <kbd>arrows</kbd>nudge (<kbd>⇧</kbd>×10)
+            <kbd>arrows</kbd>nudge (<kbd>{shiftKey}</kbd>×10)
           </span>
           <span className="region-hint-sep">·</span>
           <span>

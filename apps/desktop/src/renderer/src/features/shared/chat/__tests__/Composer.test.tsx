@@ -33,10 +33,6 @@ beforeAll(() => {
   (
     globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
   ).IS_REACT_ACT_ENVIRONMENT = true;
-  Object.defineProperty(navigator, "platform", {
-    value: "MacIntel",
-    configurable: true
-  });
   // jsdom doesn't implement objectURL; stub so attachment paths don't throw.
   if (typeof URL.createObjectURL !== "function") {
     (URL as unknown as { createObjectURL: () => string }).createObjectURL =
@@ -71,7 +67,12 @@ async function renderComposer(
   props: Partial<ComposerProps> & Pick<ComposerProps, "onSubmit">
 ): Promise<HTMLDivElement> {
   await act(async () => {
-    root?.render(createElement(Composer, props));
+    root?.render(
+      createElement(Composer, {
+        shortcutPlatform: "darwin",
+        ...props
+      })
+    );
     await Promise.resolve();
   });
   if (container === null) throw new Error("no container");

@@ -179,6 +179,39 @@ describe("SizzleTimeline", () => {
     expect(el.querySelector('[data-testid="sizzle-timeline-meta"]')?.textContent).toContain("160 px/s");
   });
 
+  test.each([
+    { platform: "darwin" as const, primary: "metaKey" as const, wrong: "ctrlKey" as const },
+    { platform: "win32" as const, primary: "ctrlKey" as const, wrong: "metaKey" as const }
+  ])("$platform timeline zoom uses only its exact primary modifier", async ({
+    platform,
+    primary,
+    wrong
+  }) => {
+    const el = await render({
+      model: resolvedModel(),
+      initialZoom: "fit",
+      shortcutPlatform: platform
+    });
+    const selectedZoom = (): string | undefined =>
+      el
+        .querySelector<HTMLElement>('[data-testid^="sizzle-timeline-zoom-"][aria-pressed="true"]')
+        ?.getAttribute("data-testid") ?? undefined;
+    expect(selectedZoom()).toBe("sizzle-timeline-zoom-fit");
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "+", [wrong]: true }));
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "+", metaKey: true, ctrlKey: true })
+      );
+    });
+    expect(selectedZoom()).toBe("sizzle-timeline-zoom-fit");
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "+", [primary]: true }));
+    });
+    expect(selectedZoom()).not.toBe("sizzle-timeline-zoom-fit");
+  });
+
   test("pressing on the track scrubs: onScrub gets the time under the pointer, then follows the drag", async () => {
     const onScrub = vi.fn();
     const el = await render({ model: resolvedModel(), onScrub });

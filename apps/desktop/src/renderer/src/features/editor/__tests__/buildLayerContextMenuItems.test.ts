@@ -14,10 +14,17 @@
 import { describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
 import {
-  buildLayerContextMenuItems,
+  buildLayerContextMenuItems as buildLayerContextMenuItemsForPlatform,
+  type BuildLayerContextMenuItemsArgs,
   type LayerContextMenuItem,
   type LayerContextMenuItemId
 } from "../buildLayerContextMenuItems";
+
+function buildLayerContextMenuItems(
+  args: BuildLayerContextMenuItemsArgs
+): LayerContextMenuItem[] {
+  return buildLayerContextMenuItemsForPlatform(args, "darwin");
+}
 
 function row(id: string, data: OverlayRow["data"]): OverlayRow {
   return {
@@ -212,6 +219,18 @@ describe("buildLayerContextMenuItems — accelerator labels present on every act
     expect(findItem(items, "delete").accel).toBe("⌫");
     expect(findItem(items, "bring-to-front").accel).toBe("⌘⇧]");
     expect(findItem(items, "send-to-back").accel).toBe("⌘⇧[");
+  });
+
+  test("win32 labels use Ctrl/Shift and contain no Cmd or Command glyph", () => {
+    const windowsItems = buildLayerContextMenuItemsForPlatform(
+      { selectedLayerIds: ["t1"], overlays },
+      "win32"
+    );
+    expect(findItem(windowsItems, "copy").accel).toBe("Ctrl+C");
+    expect(findItem(windowsItems, "bring-to-front").accel).toBe("Ctrl+Shift+]");
+    const output = windowsItems.map((item) => item.accel).join(" ");
+    expect(output).not.toContain("Cmd");
+    expect(output).not.toContain("⌘");
   });
 });
 

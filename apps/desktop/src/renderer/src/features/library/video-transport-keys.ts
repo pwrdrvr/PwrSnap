@@ -21,6 +21,8 @@
 // filmstrip between captures until the user clicks into the video).
 // See `VideoStage.tsx`'s focus effect.
 
+import { acceleratorToDisplayKeys, type ShortcutPlatform } from "@pwrsnap/shared";
+
 export type TransportIntent =
   | { type: "togglePlay" }
   | { type: "pause" }
@@ -107,11 +109,14 @@ export function nextShuttleRate(
 }
 
 /** Hover hints for the transport buttons' `title`s. */
-export const KEY_HINTS = {
-  play: "Play / pause (space) · J shuttle back · K pause · L shuttle forward",
-  step: "← / → step one frame · ⇧← / ⇧→ step one second · Home / End",
-  trim: "I set in · O set out at the playhead",
-  loop: "Loop playback inside the trim range",
-  mute: "Mute / unmute",
-  fullscreen: "Fullscreen"
-} as const;
+export function videoTransportKeyHints(platform: ShortcutPlatform) {
+  const shift = acceleratorToDisplayKeys("Shift", platform)[0] ?? "Shift";
+  return {
+    play: "Play / pause (space) · J shuttle back · K pause · L shuttle forward",
+    step: `← / → step one frame · ${shift}← / ${shift}→ step one second · Home / End`,
+    trim: "I set in · O set out at the playhead",
+    loop: "Loop playback inside the trim range",
+    mute: "Mute / unmute",
+    fullscreen: "Fullscreen"
+  } as const;
+}

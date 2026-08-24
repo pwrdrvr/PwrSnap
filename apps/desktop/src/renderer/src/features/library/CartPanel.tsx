@@ -6,7 +6,11 @@ import {
   useState,
   type ReactElement
 } from "react";
-import { EVENT_CHANNELS, sizzleProjectCaptureIds } from "@pwrsnap/shared";
+import {
+  acceleratorToDisplayText,
+  EVENT_CHANNELS,
+  sizzleProjectCaptureIds
+} from "@pwrsnap/shared";
 import type {
   CaptureRecord,
   CaptureEnrichment,
@@ -25,6 +29,7 @@ import { useCart } from "./CartContext";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
 import { FoIcon } from "../float-over/FoIcons";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 
 const ZIP_PRESETS: readonly RenderPreset[] = ["low", "med", "high"];
 const ZIP_PRESET_LABELS: Record<RenderPreset, string> = {
@@ -101,6 +106,10 @@ function previewText(row: CartRow): string {
 }
 
 export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactElement {
+  const undoChord = acceleratorToDisplayText(
+    "CommandOrControl+Z",
+    rendererShortcutPlatform()
+  );
   const cart = useCart();
   const { projects } = useSizzleProjects();
   // Hydrated capture metadata for the cart's ids, keyed by captureId.
@@ -432,7 +441,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
             message={`Move ${cart.captureIds.length} ${
               cart.captureIds.length === 1 ? "capture" : "captures"
             } to Trash?`}
-            detail="Recoverable from the Trash filter, the toast, or ⌘Z."
+            detail={`Recoverable from the Trash filter, the toast, or ${undoChord}.`}
             confirmLabel="Move to Trash"
             placement="top"
             onConfirm={() => onTrashAll(cart.captureIds)}

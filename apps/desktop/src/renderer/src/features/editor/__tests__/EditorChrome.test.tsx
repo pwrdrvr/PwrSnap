@@ -13,7 +13,6 @@ import { createRoot, type Root } from "react-dom/client";
 import {
   afterEach,
   beforeAll,
-  beforeEach,
   describe,
   expect,
   test,
@@ -155,6 +154,7 @@ async function renderChrome(props?: { className?: string }): Promise<HTMLDivElem
         EditorChrome,
         {
           panels,
+          shortcutPlatform: "darwin",
           children: createElement(
             "div",
             { "data-testid": "viewport" },
@@ -249,19 +249,6 @@ async function keyDown(opts: {
     );
   });
 }
-
-// Force the navigator.platform to "MacIntel" so isPrimaryAccel uses
-// metaKey — keeps the shortcuts deterministic across CI shapes.
-function pinNavigatorAsMac(): void {
-  Object.defineProperty(navigator, "platform", {
-    value: "MacIntel",
-    configurable: true
-  });
-}
-
-beforeEach(() => {
-  pinNavigatorAsMac();
-});
 
 afterEach(async () => {
   await unmount();

@@ -17,7 +17,7 @@
 // the panel is safe to mount even before a video selection lands.
 
 import type { ReactElement } from "react";
-import type { VideoRange } from "@pwrsnap/shared";
+import type { ShortcutPlatform, VideoRange } from "@pwrsnap/shared";
 import { useVideoExportPresets } from "./useVideoExportPresets";
 import { useVideoPresetMetrics } from "./useVideoPresetMetrics";
 import { VideoExportPresetGrid } from "./VideoExportPresetGrid";
@@ -28,11 +28,15 @@ export type VideoExportPresetsPanelProps = {
    *  export call and re-keys the metrics). Omitted → main falls back
    *  to the record's persisted `defaultRange`. */
   readonly range?: VideoRange | undefined;
+  readonly shortcutPlatform?: ShortcutPlatform;
+  readonly showShortcutHints?: boolean;
 };
 
 export function VideoExportPresetsPanel({
   captureId,
-  range
+  range,
+  shortcutPlatform,
+  showShortcutHints
 }: VideoExportPresetsPanelProps): ReactElement {
   const { states, triggerCopy, triggerCopyPath, triggerDrag } =
     useVideoExportPresets(captureId === null ? null : { captureId, range });
@@ -44,6 +48,8 @@ export function VideoExportPresetsPanel({
       onCopy={triggerCopy}
       onCopyPath={triggerCopyPath}
       onDrag={triggerDrag}
+      {...(shortcutPlatform === undefined ? {} : { shortcutPlatform })}
+      {...(showShortcutHints === undefined ? {} : { showShortcutHints })}
     />
   );
 }

@@ -1,9 +1,13 @@
 import type { ReactElement } from "react";
-import type { FilenameTimestampZone } from "@pwrsnap/shared";
+import {
+  acceleratorToDisplayText,
+  type FilenameTimestampZone
+} from "@pwrsnap/shared";
 import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
 import { formatBytes } from "../../../lib/format-bytes";
 import { useStorageSnapshot } from "../../../lib/useStorageSnapshot";
 import { useSettingsContext } from "../SettingsContext";
+import { rendererShortcutPlatform } from "../../../lib/shortcut-platform";
 
 const FILENAME_TIMESTAMP_ZONE_OPTIONS: readonly SegmentOption<FilenameTimestampZone>[] = [
   { id: "local", label: "Local" },
@@ -11,6 +15,10 @@ const FILENAME_TIMESTAMP_ZONE_OPTIONS: readonly SegmentOption<FilenameTimestampZ
 ];
 
 export function StoragePage(): ReactElement {
+  const undoChord = acceleratorToDisplayText(
+    "CommandOrControl+Z",
+    rendererShortcutPlatform()
+  );
   const { settings, patch } = useSettingsContext();
   const {
     summary,
@@ -191,7 +199,7 @@ export function StoragePage(): ReactElement {
       <Card eyebrow="DELETING" title="Move to Trash">
         <Row
           label="Confirm before moving to Trash"
-          sub="Show a quick confirmation next to the delete button. Turn off (or untick “Don’t ask again” in the popover) to delete in one click — moves are still recoverable from the Undo toast, ⌘Z, and the Trash view."
+          sub={`Show a quick confirmation next to the delete button. Turn off (or untick “Don’t ask again” in the popover) to delete in one click — moves are still recoverable from the Undo toast, ${undoChord}, and the Trash view.`}
           tag={confirmBeforeTrash ? "on" : "off"}
         >
           <Switch on={confirmBeforeTrash} onChange={onConfirmBeforeTrashChange} />

@@ -35,11 +35,13 @@ import {
   type ReactElement
 } from "react";
 import {
+  acceleratorToDisplayText,
   EVENT_CHANNELS,
   type CaptureEnrichment,
   type CaptureRecord
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
+import { rendererShortcutPlatform } from "../../../lib/shortcut-platform";
 
 export interface ChatPanelProps {
   captureId: string;
@@ -85,6 +87,9 @@ const WELCOME_BODY =
 const MODEL_PLACEHOLDER = "pending";
 
 export function ChatPanel({ captureId }: ChatPanelProps): ReactElement {
+  const shortcutPlatform = rendererShortcutPlatform();
+  const sendKey = acceleratorToDisplayText("Return", shortcutPlatform);
+  const newlineChord = acceleratorToDisplayText("Shift+Return", shortcutPlatform);
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState<string>("");
@@ -262,7 +267,7 @@ export function ChatPanel({ captureId }: ChatPanelProps): ReactElement {
         />
         <div className="pse-chat-composer-row">
           <span className="pse-chat-composer-meta" aria-hidden="true">
-            ⏎ send · ⇧⏎ newline
+            {sendKey} send · {newlineChord} newline
           </span>
           <button
             type="button"

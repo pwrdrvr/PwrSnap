@@ -12,7 +12,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { app, Notification, screen } from "electron";
@@ -46,6 +46,20 @@ import { planWindowsFfmpegCapture } from "./windows-ffmpeg-capture";
 
 const log = getMainLogger("pwrsnap:recording-service");
 
+async function removeRecorderOwnedTempDir(tempDir: string | null): Promise<void> {
+  if (tempDir === null) return;
+  try {
+    // The target is the exact directory returned by this service's mkdtemp;
+    // never derive a recursive-delete target from recorder stdout/stderr.
+    await rm(tempDir, { recursive: true, force: true });
+  } catch (cause) {
+    log.warn("recording temp directory cleanup failed", {
+      tempDir,
+      message: failureDetail(cause)
+    });
+  }
+}
+
 export type StartOptions = {
   subject: RecordingSubject;
   capabilities: RecordingCapabilities;
@@ -68,8 +82,15 @@ export type RecordingService = {
    *  one with the same subject + capabilities. Throws
    *  `not_recording` if no session is active. */
   restart(): Promise<{ sessionId: string }>;
-  /** Retry a matching terminal failure with the original request snapshot. */
-  retry(sessionId: string): Promise<{ sessionId: string }>;
+  /** Atomically reserve a matching terminal failure and return its immutable
+   * start snapshot so the command layer can run the normal preflight/storage
+   * pipeline before native state is created. */
+  claimRetry(sessionId: string): StartOptions;
+  /** Release a retry reservation that did not reach the native service. */
+  releaseRetry(sessionId: string): void;
+  /** Start a claimed retry after authoritative preflight, using any degraded
+   * capability choices returned by that pipeline. */
+  retry(sessionId: string, opts?: StartOptions): Promise<{ sessionId: string }>;
   /** Dismiss a matching terminal failure without touching a newer session. */
   dismissFailure(sessionId: string): Promise<void>;
   /** True when this service has an active session. Used by the
@@ -305,6 +326,7 @@ class NativeRecorderService implements RecordingService {
    *  preserve the cursor choice across the cancel→start round-trip.
    *  `undefined` lets the recorder apply its own default. */
   private captureCursor: boolean | undefined = undefined;
+  private tempDir: string | null = null;
   private outputPath: string | null = null;
   private startedPromise: Promise<void> | null = null;
   private stoppedPromise: Promise<RecorderStoppedEvent> | null = null;
@@ -315,6 +337,7 @@ class NativeRecorderService implements RecordingService {
   private inboundBuffer = "";
   private stopRequested = false;
   private retryOptions: StartOptions | null = null;
+  private retryClaimedSessionId: string | null = null;
   private readonly startingSessions = new Set<string>();
   private readonly pendingFailures = new Map<string, PendingSessionFailure>();
   private readonly cancellingSessions = new Set<string>();
@@ -337,6 +360,12 @@ class NativeRecorderService implements RecordingService {
     retryingFailedSessionId: string | null
   ): Promise<{ sessionId: string }> {
     const current = getRecordingState();
+    if (
+      this.retryClaimedSessionId !== null &&
+      retryingFailedSessionId !== this.retryClaimedSessionId
+    ) {
+      throw new Error("already_recording");
+    }
     if (
       current.phase === "failed" &&
       current.sessionId !== retryingFailedSessionId
@@ -414,6 +443,11 @@ class NativeRecorderService implements RecordingService {
         );
         throw cause;
       }
+      if (!this.isSessionCurrent(sessionId)) {
+        await removeRecorderOwnedTempDir(tmpDir);
+        await this.assertSessionRunnable(sessionId);
+      }
+      this.tempDir = tmpDir;
       await this.assertSessionRunnable(sessionId);
       const outputPath = join(tmpDir, `${sessionId}.mp4`);
       this.outputPath = outputPath;
@@ -657,24 +691,34 @@ class NativeRecorderService implements RecordingService {
     try {
       stored = await persistStoppedRecording(
         { ...stopped, subject },
-        () => this.assertSessionRunnable(sessionId)
+        () => this.assertSessionRunnable(sessionId),
+        () => this.cleanupTempDir(sessionId)
       );
     } catch (cause) {
       if (!this.isSessionRunnable(sessionId)) {
         await this.assertSessionRunnable(sessionId);
+      }
+      const preserveTempDir = this.tempDir !== null;
+      if (preserveTempDir) {
+        log.warn("recording adoption failed; recorder output preserved for recovery", {
+          outputPath: stopped.outputPath,
+          tempDir: this.tempDir,
+          message: failureDetail(cause)
+        });
       }
       await this.publishSessionFailure(
         sessionId,
         "processing_failed",
         cause,
         displayId,
-        false
+        false,
+        preserveTempDir
       );
       throw cause;
     }
     await this.assertSessionRunnable(sessionId);
     setRecordingState({ phase: "ready", sessionId, captureId: stored.captureId });
-    this.clearSession(sessionId);
+    await this.clearSession(sessionId);
     return stored;
   }
 
@@ -698,16 +742,43 @@ class NativeRecorderService implements RecordingService {
     return this.start({ subject, capabilities, captureCursor, countdownSeconds: 3 });
   }
 
-  async retry(sessionId: string): Promise<{ sessionId: string }> {
-    if (!matchingRetryableFailedSession(sessionId) || this.retryOptions === null) {
+  claimRetry(sessionId: string): StartOptions {
+    if (
+      this.retryClaimedSessionId !== null ||
+      !matchingRetryableFailedSession(sessionId) ||
+      this.retryOptions === null
+    ) {
       throw new Error("failure_not_retryable");
     }
-    const options = snapshotStartOptions(this.retryOptions);
-    return this.startSession(options, sessionId);
+    this.retryClaimedSessionId = sessionId;
+    return snapshotStartOptions(this.retryOptions);
+  }
+
+  releaseRetry(sessionId: string): void {
+    if (this.retryClaimedSessionId === sessionId) {
+      this.retryClaimedSessionId = null;
+    }
+  }
+
+  async retry(
+    sessionId: string,
+    opts?: StartOptions
+  ): Promise<{ sessionId: string }> {
+    if (this.retryClaimedSessionId === null) this.claimRetry(sessionId);
+    if (this.retryClaimedSessionId !== sessionId || this.retryOptions === null) {
+      throw new Error("failure_not_retryable");
+    }
+    const options = snapshotStartOptions(opts ?? this.retryOptions);
+    const task = this.startSession(options, sessionId);
+    this.retryClaimedSessionId = null;
+    return await task;
   }
 
   async dismissFailure(sessionId: string): Promise<void> {
-    if (!matchingFailedSession(sessionId)) {
+    if (
+      this.retryClaimedSessionId === sessionId ||
+      !matchingFailedSession(sessionId)
+    ) {
       throw new Error("stale_failure");
     }
     // A normal failure has already crossed its process-exit barrier. If the
@@ -717,7 +788,7 @@ class NativeRecorderService implements RecordingService {
     if (this.sessionId === sessionId) {
       const exited = await terminateRecorderProcess(this.child);
       if (!exited) throw new Error("recorder_cleanup_failed");
-      this.clearSession(sessionId);
+      await this.clearSession(sessionId);
     }
     this.retryOptions = null;
     if (recordingStateBelongsTo(sessionId)) setRecordingState({ phase: "idle" });
@@ -758,6 +829,7 @@ class NativeRecorderService implements RecordingService {
       // session-scoped recording:dismissFailure command may do so.
       if (getRecordingState().phase === "failed") return;
       this.retryOptions = null;
+      this.retryClaimedSessionId = null;
       setRecordingState({ phase: "idle" });
       return;
     }
@@ -785,7 +857,7 @@ class NativeRecorderService implements RecordingService {
         }
         throw new Error("recorder_cleanup_failed");
       }
-      if (this.sessionId === sessionId) this.clearSession(sessionId);
+      if (this.sessionId === sessionId) await this.clearSession(sessionId);
       if (recordingStateBelongsTo(sessionId)) setRecordingState({ phase: "idle" });
       log.info("recording cancelled", { sessionId });
     } finally {
@@ -886,9 +958,17 @@ class NativeRecorderService implements RecordingService {
     code: RecordingFailureCode,
     cause: unknown,
     displayId: number,
-    canRetry = true
+    canRetry = true,
+    preserveTempDir = false
   ): Promise<void> {
-    await this.failActiveSession(sessionId, code, cause, displayId, canRetry);
+    await this.failActiveSession(
+      sessionId,
+      code,
+      cause,
+      displayId,
+      canRetry,
+      preserveTempDir
+    );
     if (!matchingFailedSession(sessionId)) throw new Error("cancelled");
   }
 
@@ -897,7 +977,8 @@ class NativeRecorderService implements RecordingService {
     code: RecordingFailureCode,
     cause: unknown,
     displayId: number,
-    canRetry = true
+    canRetry = true,
+    preserveTempDir = false
   ): Promise<void> {
     const existing = this.pendingFailures.get(sessionId);
     if (existing !== undefined) return existing.completion;
@@ -935,7 +1016,10 @@ class NativeRecorderService implements RecordingService {
         }
         return;
       }
-      this.clearSession(sessionId, { preserveRetry: true });
+      await this.clearSession(sessionId, {
+        preserveRetry: true,
+        preserveTempDir
+      });
       if (!recordingStateBelongsTo(sessionId)) return;
       publishRecordingFailure({ sessionId, code, displayId, cause, canRetry });
     })().finally(() => {
@@ -946,12 +1030,21 @@ class NativeRecorderService implements RecordingService {
     return failure.completion;
   }
 
-  private clearSession(
+  private async cleanupTempDir(sessionId: string): Promise<void> {
+    if (this.sessionId !== sessionId) return;
+    const tempDir = this.tempDir;
+    this.tempDir = null;
+    await removeRecorderOwnedTempDir(tempDir);
+  }
+
+  private async clearSession(
     sessionId: string,
-    options: { preserveRetry?: boolean } = {}
-  ): boolean {
+    options: { preserveRetry?: boolean; preserveTempDir?: boolean } = {}
+  ): Promise<boolean> {
     if (this.sessionId !== sessionId) return false;
     this.cancelCountdownDelay(sessionId);
+    const tempDir = this.tempDir;
+    this.tempDir = null;
     this.child = null;
     this.sessionId = null;
     this.subject = null;
@@ -967,6 +1060,10 @@ class NativeRecorderService implements RecordingService {
     this.inboundBuffer = "";
     this.stopRequested = false;
     if (options.preserveRetry !== true) this.retryOptions = null;
+    if (options.preserveRetry !== true) this.retryClaimedSessionId = null;
+    if (options.preserveTempDir !== true) {
+      await removeRecorderOwnedTempDir(tempDir);
+    }
     return true;
   }
 
@@ -1005,11 +1102,16 @@ type PersistStoppedRecordingInput = {
 
 async function persistStoppedRecording(
   stopped: PersistStoppedRecordingInput,
-  assertSessionRunnable: () => Promise<void>
+  assertSessionRunnable: () => Promise<void>,
+  onSourceAdopted: () => Promise<void>
 ): Promise<{ captureId: string }> {
   const stored = await runWithCapturesDirFallback((outputDir) =>
     adoptExistingFileAsSource(stopped.outputPath, outputDir)
   );
+  // Adoption moved the only recorder output into the durable source store.
+  // The service-owned temp container is now empty and safe to remove; later
+  // metadata failures must never target stored.srcPath.
+  await onSourceAdopted();
   await assertSessionRunnable();
   const sizeInfo = await statSource(stored.srcPath);
   await assertSessionRunnable();
@@ -1077,12 +1179,14 @@ class WindowsFfmpegRecorderService implements RecordingService {
   /** Raw request snapshot. `undefined` intentionally preserves the default-on
    * cursor behavior across Restart, while Retry uses retryOptions below. */
   private captureCursor: boolean | undefined = undefined;
+  private tempDir: string | null = null;
   private outputPath: string | null = null;
   private startedAtMs = 0;
   private stopRequested = false;
   private exitPromise: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | null = null;
   private stderrTail: string[] = [];
   private retryOptions: StartOptions | null = null;
+  private retryClaimedSessionId: string | null = null;
   private readonly startingSessions = new Set<string>();
   private readonly pendingFailures = new Map<string, PendingSessionFailure>();
   private readonly cancellingSessions = new Set<string>();
@@ -1102,6 +1206,12 @@ class WindowsFfmpegRecorderService implements RecordingService {
     retryingFailedSessionId: string | null
   ): Promise<{ sessionId: string }> {
     const current = getRecordingState();
+    if (
+      this.retryClaimedSessionId !== null &&
+      retryingFailedSessionId !== this.retryClaimedSessionId
+    ) {
+      throw new Error("already_recording");
+    }
     if (
       current.phase === "failed" &&
       current.sessionId !== retryingFailedSessionId
@@ -1165,6 +1275,11 @@ class WindowsFfmpegRecorderService implements RecordingService {
         );
         throw cause;
       }
+      if (!this.isSessionCurrent(sessionId)) {
+        await removeRecorderOwnedTempDir(tmpDir);
+        await this.assertSessionRunnable(sessionId);
+      }
+      this.tempDir = tmpDir;
       await this.assertSessionRunnable(sessionId);
       const outputPath = join(tmpDir, `${sessionId}.mp4`);
       this.outputPath = outputPath;
@@ -1338,24 +1453,34 @@ class WindowsFfmpegRecorderService implements RecordingService {
           hasMicrophoneAudio: false,
           subject
         },
-        () => this.assertSessionRunnable(sessionId)
+        () => this.assertSessionRunnable(sessionId),
+        () => this.cleanupTempDir(sessionId)
       );
     } catch (cause) {
       if (!this.isSessionRunnable(sessionId)) {
         await this.assertSessionRunnable(sessionId);
+      }
+      const preserveTempDir = this.tempDir !== null;
+      if (preserveTempDir) {
+        log.warn("recording adoption failed; recorder output preserved for recovery", {
+          outputPath,
+          tempDir: this.tempDir,
+          message: failureDetail(cause)
+        });
       }
       await this.publishSessionFailure(
         sessionId,
         "processing_failed",
         cause,
         displayId,
-        false
+        false,
+        preserveTempDir
       );
       throw cause;
     }
     await this.assertSessionRunnable(sessionId);
     setRecordingState({ phase: "ready", sessionId, captureId: stored.captureId });
-    this.clearSession(sessionId);
+    await this.clearSession(sessionId);
     return stored;
   }
 
@@ -1375,22 +1500,49 @@ class WindowsFfmpegRecorderService implements RecordingService {
     });
   }
 
-  async retry(sessionId: string): Promise<{ sessionId: string }> {
-    if (!matchingRetryableFailedSession(sessionId) || this.retryOptions === null) {
+  claimRetry(sessionId: string): StartOptions {
+    if (
+      this.retryClaimedSessionId !== null ||
+      !matchingRetryableFailedSession(sessionId) ||
+      this.retryOptions === null
+    ) {
       throw new Error("failure_not_retryable");
     }
-    const options = snapshotStartOptions(this.retryOptions);
-    return this.startSession(options, sessionId);
+    this.retryClaimedSessionId = sessionId;
+    return snapshotStartOptions(this.retryOptions);
+  }
+
+  releaseRetry(sessionId: string): void {
+    if (this.retryClaimedSessionId === sessionId) {
+      this.retryClaimedSessionId = null;
+    }
+  }
+
+  async retry(
+    sessionId: string,
+    opts?: StartOptions
+  ): Promise<{ sessionId: string }> {
+    if (this.retryClaimedSessionId === null) this.claimRetry(sessionId);
+    if (this.retryClaimedSessionId !== sessionId || this.retryOptions === null) {
+      throw new Error("failure_not_retryable");
+    }
+    const options = snapshotStartOptions(opts ?? this.retryOptions);
+    const task = this.startSession(options, sessionId);
+    this.retryClaimedSessionId = null;
+    return await task;
   }
 
   async dismissFailure(sessionId: string): Promise<void> {
-    if (!matchingFailedSession(sessionId)) {
+    if (
+      this.retryClaimedSessionId === sessionId ||
+      !matchingFailedSession(sessionId)
+    ) {
       throw new Error("stale_failure");
     }
     if (this.sessionId === sessionId) {
       const exited = await terminateRecorderProcess(this.child);
       if (!exited) throw new Error("recorder_cleanup_failed");
-      this.clearSession(sessionId);
+      await this.clearSession(sessionId);
     }
     this.retryOptions = null;
     if (recordingStateBelongsTo(sessionId)) setRecordingState({ phase: "idle" });
@@ -1420,6 +1572,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     if (sessionId === null) {
       if (getRecordingState().phase === "failed") return;
       this.retryOptions = null;
+      this.retryClaimedSessionId = null;
       setRecordingState({ phase: "idle" });
       return;
     }
@@ -1445,7 +1598,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
         }
         throw new Error("recorder_cleanup_failed");
       }
-      if (this.sessionId === sessionId) this.clearSession(sessionId);
+      if (this.sessionId === sessionId) await this.clearSession(sessionId);
       if (recordingStateBelongsTo(sessionId)) setRecordingState({ phase: "idle" });
       log.info("recording cancelled", { sessionId });
     } finally {
@@ -1494,9 +1647,17 @@ class WindowsFfmpegRecorderService implements RecordingService {
     code: RecordingFailureCode,
     cause: unknown,
     displayId: number,
-    canRetry = true
+    canRetry = true,
+    preserveTempDir = false
   ): Promise<void> {
-    await this.failActiveSession(sessionId, code, cause, displayId, canRetry);
+    await this.failActiveSession(
+      sessionId,
+      code,
+      cause,
+      displayId,
+      canRetry,
+      preserveTempDir
+    );
     if (!matchingFailedSession(sessionId)) throw new Error("cancelled");
   }
 
@@ -1505,7 +1666,8 @@ class WindowsFfmpegRecorderService implements RecordingService {
     code: RecordingFailureCode,
     cause: unknown,
     displayId: number,
-    canRetry = true
+    canRetry = true,
+    preserveTempDir = false
   ): Promise<void> {
     const existing = this.pendingFailures.get(sessionId);
     if (existing !== undefined) return existing.completion;
@@ -1540,7 +1702,10 @@ class WindowsFfmpegRecorderService implements RecordingService {
         }
         return;
       }
-      this.clearSession(sessionId, { preserveRetry: true });
+      await this.clearSession(sessionId, {
+        preserveRetry: true,
+        preserveTempDir
+      });
       if (!recordingStateBelongsTo(sessionId)) return;
       publishRecordingFailure({ sessionId, code, displayId, cause, canRetry });
     })().finally(() => {
@@ -1551,12 +1716,21 @@ class WindowsFfmpegRecorderService implements RecordingService {
     return failure.completion;
   }
 
-  private clearSession(
+  private async cleanupTempDir(sessionId: string): Promise<void> {
+    if (this.sessionId !== sessionId) return;
+    const tempDir = this.tempDir;
+    this.tempDir = null;
+    await removeRecorderOwnedTempDir(tempDir);
+  }
+
+  private async clearSession(
     sessionId: string,
-    options: { preserveRetry?: boolean } = {}
-  ): boolean {
+    options: { preserveRetry?: boolean; preserveTempDir?: boolean } = {}
+  ): Promise<boolean> {
     if (this.sessionId !== sessionId) return false;
     this.cancelCountdownDelay(sessionId);
+    const tempDir = this.tempDir;
+    this.tempDir = null;
     this.child = null;
     this.sessionId = null;
     this.subject = null;
@@ -1567,6 +1741,10 @@ class WindowsFfmpegRecorderService implements RecordingService {
     this.exitPromise = null;
     this.stderrTail = [];
     if (options.preserveRetry !== true) this.retryOptions = null;
+    if (options.preserveRetry !== true) this.retryClaimedSessionId = null;
+    if (options.preserveTempDir !== true) {
+      await removeRecorderOwnedTempDir(tempDir);
+    }
     return true;
   }
 

@@ -97,6 +97,7 @@ import { createInteractiveRecordingSingleFlight } from "./recording/interactive-
 import { withRecordingForegroundRestored } from "./recording/recording-foreground";
 import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
+import { isRecordingActive } from "./recording/recording-state";
 import { videoAssetDir } from "./recording/video-frames";
 import {
   getDesktopSettingsServices,

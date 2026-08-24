@@ -13,7 +13,14 @@
 // Recording phase shows a live duration timer driven from
 // state.startedAt.
 
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode
+} from "react";
 import {
   EVENT_CHANNELS,
   recordingFailureSummary,
@@ -102,7 +109,11 @@ export function RecordingController(): ReactElement {
   const isStopping = state.phase === "stopping" || state.phase === "processing";
 
   if (state.phase === "failed") {
-    return <RecordingFailureCard key={state.sessionId} state={state} />;
+    return (
+      <MeasuredRecordingSurface key={state.sessionId}>
+        <RecordingFailureCard state={state} />
+      </MeasuredRecordingSurface>
+    );
   }
 
   if (state.phase === "idle" || state.phase === "ready") {
@@ -282,6 +293,35 @@ export function RecordingController(): ReactElement {
   );
 }
 
+function MeasuredRecordingSurface({ children }: { children: ReactNode }): ReactElement {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (el === null) return;
+    let posted = "";
+    const post = (): void => {
+      const rect = el.getBoundingClientRect();
+      const width = Math.ceil(rect.width);
+      const height = Math.ceil(rect.height);
+      const next = `${width}x${height}`;
+      if (next === posted) return;
+      posted = next;
+      window.pwrsnapApi?.requestRecordingControllerResize?.({ width, height });
+    };
+    post();
+    const observer = new ResizeObserver(post);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div ref={containerRef} style={{ display: "inline-block", width: 480 }}>
+      {children}
+    </div>
+  );
+}
+
 function RecordingFailureCard({ state }: { state: FailedRecordingState }): ReactElement {
   const [pending, setPending] = useState<FailureAction | null>(null);
   const [actionFailed, setActionFailed] = useState(false);
@@ -338,7 +378,7 @@ function RecordingFailureCard({ state }: { state: FailedRecordingState }): React
       style={{
         boxSizing: "border-box",
         width: "100%",
-        height: "100%",
+        minHeight: 176,
         padding: "16px 18px",
         borderRadius: 12,
         border: "1px solid rgba(255, 138, 31, 0.55)",
@@ -368,6 +408,7 @@ function RecordingFailureCard({ state }: { state: FailedRecordingState }): React
         style={{
           display: "flex",
           alignItems: "center",
+          flexWrap: "wrap",
           gap: 7,
           WebkitAppRegion: "no-drag"
         } as React.CSSProperties}

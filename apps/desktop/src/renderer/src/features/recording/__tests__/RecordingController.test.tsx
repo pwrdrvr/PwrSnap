@@ -4,8 +4,18 @@ import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS, recordingFailureSummary, type RecordingState } from "@pwrsnap/shared";
 import { RecordingController } from "../RecordingController";
 
+let resizeObserverCallbacks: ResizeObserverCallback[] = [];
+
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  globalThis.ResizeObserver = class ResizeObserver {
+    constructor(callback: ResizeObserverCallback) {
+      resizeObserverCallbacks.push(callback);
+    }
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  };
 });
 
 type DispatchResult =
@@ -33,6 +43,7 @@ function installFakeApi(input: {
   results?: Partial<Record<string, DispatchResult>>;
 } = {}): {
   dispatch: ReturnType<typeof vi.fn>;
+  requestResize: ReturnType<typeof vi.fn>;
   emitRecordingState: (state: RecordingState) => void;
 } {
   const listeners = new Map<string, (payload: unknown) => void>();
@@ -43,10 +54,12 @@ function installFakeApi(input: {
     }
     return input.results?.[name] ?? { ok: true, value: undefined };
   });
+  const requestResize = vi.fn();
   Object.defineProperty(window, "pwrsnapApi", {
     configurable: true,
     value: {
       dispatch,
+      requestRecordingControllerResize: requestResize,
       on: (channel: string, handler: (payload: unknown) => void) => {
         listeners.set(channel, handler);
         return () => listeners.delete(channel);
@@ -55,6 +68,7 @@ function installFakeApi(input: {
   });
   return {
     dispatch,
+    requestResize,
     emitRecordingState: (state) => listeners.get(EVENT_CHANNELS.recordingState)?.(state)
   };
 }
@@ -78,6 +92,7 @@ afterEach(async () => {
   container?.remove();
   container = null;
   root = null;
+  resizeObserverCallbacks = [];
   Reflect.deleteProperty(window, "pwrsnapApi");
   vi.restoreAllMocks();
 });
@@ -197,6 +212,49 @@ describe("RecordingController failed state", () => {
     );
     expect(container?.textContent).not.toContain(rawDetail);
     expect(action("retry")?.disabled).toBe(false);
+  });
+
+  test("measures expanded action failure copy instead of clipping the buttons", async () => {
+    let measuredHeight = 176;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      () =>
+        ({
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 480,
+          bottom: measuredHeight,
+          width: 480,
+          height: measuredHeight,
+          toJSON: () => ({})
+        }) as DOMRect
+    );
+    const api = installFakeApi({
+      results: {
+        "recording:retry": {
+          ok: false,
+          error: { kind: "capture", code: "failed", message: "raw backend detail" }
+        }
+      }
+    });
+    await renderController();
+    expect(api.requestResize).toHaveBeenCalledWith({ width: 480, height: 176 });
+
+    await act(async () => {
+      action("retry")?.click();
+      await Promise.resolve();
+    });
+    measuredHeight = 248;
+    await act(async () => {
+      for (const callback of resizeObserverCallbacks) {
+        callback([], {} as ResizeObserver);
+      }
+    });
+
+    expect(container?.querySelector("[data-recording-action-error]")).not.toBeNull();
+    expect(api.requestResize).toHaveBeenLastCalledWith({ width: 480, height: 248 });
+    expect(action("dismiss")).not.toBeNull();
   });
 
   test("dismisses only the matching failure and clears when idle is broadcast", async () => {

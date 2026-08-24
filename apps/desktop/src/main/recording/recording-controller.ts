@@ -11,7 +11,14 @@
 // and binds to `events:recording:state` directly for its visuals.
 // This module is the BrowserWindow-side glue.
 
-import { BrowserWindow, globalShortcut, screen } from "electron";
+import {
+  app,
+  BrowserWindow,
+  globalShortcut,
+  ipcMain,
+  screen,
+  type IpcMainEvent
+} from "electron";
 import type { RecordingState } from "@pwrsnap/shared";
 import { appWindowsOverlappingRect } from "../capture/rect-overlap";
 import { bus } from "../command-bus";
@@ -27,19 +34,73 @@ const log = getMainLogger("pwrsnap:recording-controller");
 
 const FAILURE_CARD_WIDTH_CSS_PX = 480;
 const FAILURE_CARD_HEIGHT_CSS_PX = 176;
+const FAILURE_CARD_MAX_WIDTH_CSS_PX = 640;
+const FAILURE_CARD_MAX_HEIGHT_CSS_PX = 440;
+const RECORDING_CONTROLLER_RESIZE_CHANNEL = "recording-controller:resize";
 
 let window: BrowserWindow | null = null;
 let installed = false;
 let escapeShortcutArmed = false;
 let activePermissionRequestId: string | null = null;
 let unsubscribeRecordingState: (() => void) | null = null;
+let appQuitting = false;
+let disposed = false;
+let closeCancelPending = false;
+let crashRecreateTimer: ReturnType<typeof setTimeout> | null = null;
+const internallyClosingWindows = new WeakSet<BrowserWindow>();
+
+function clearCrashRecreateTimer(): void {
+  if (crashRecreateTimer === null) return;
+  clearTimeout(crashRecreateTimer);
+  crashRecreateTimer = null;
+}
+
+function shouldHaveController(state: RecordingState): boolean {
+  return state.phase !== "idle" && state.phase !== "ready";
+}
+
+function requestCancelFromWindowClose(): void {
+  if (closeCancelPending) return;
+  closeCancelPending = true;
+  void bus.dispatch("recording:cancel", {}, { principal: "ipc" }).finally(() => {
+    closeCancelPending = false;
+  });
+}
+
+function destroyControllerWindow(): void {
+  if (window === null || window.isDestroyed()) {
+    window = null;
+    return;
+  }
+  const closing = window;
+  internallyClosingWindows.add(closing);
+  closing.hide();
+  closing.destroy();
+  if (window === closing) window = null;
+}
+
+function scheduleControllerRecreate(): void {
+  if (crashRecreateTimer !== null || appQuitting || disposed || !installed) return;
+  crashRecreateTimer = setTimeout(() => {
+    crashRecreateTimer = null;
+    if (appQuitting || disposed || !installed) return;
+    const liveState = getRecordingState();
+    if (shouldHaveController(liveState)) {
+      applyRecordingStateToController(liveState);
+    }
+  }, 0);
+}
+
+function handleAppBeforeQuit(): void {
+  appQuitting = true;
+  clearCrashRecreateTimer();
+}
 
 function ensureWindow(): BrowserWindow {
   if (window !== null && !window.isDestroyed()) return window;
-  window = createRecordingControllerWindow();
-  const created = window;
+  const created = createRecordingControllerWindow();
+  window = created;
   let permissionCancellationDispatched = false;
-  let permissionSurfaceTerminated = false;
   const cancelPermissionSurfaceOnce = (): void => {
     if (
       permissionCancellationDispatched ||
@@ -52,28 +113,57 @@ function ensureWindow(): BrowserWindow {
     setRecordingPermissionControllerWindowId(null);
     void bus.dispatch("recording:cancel", {}, { principal: "ipc" });
   };
-  const failPermissionSurface = (): void => {
-    if (permissionSurfaceTerminated) return;
-    permissionSurfaceTerminated = true;
-    cancelPermissionSurfaceOnce();
-    if (!created.isDestroyed()) created.destroy();
-  };
 
   setRecordingPermissionControllerWindowId(created.id);
-  created.webContents.on("render-process-gone", failPermissionSurface);
+  created.on("close", (event) => {
+    if (internallyClosingWindows.has(created) || appQuitting || disposed) return;
+    const liveState = getRecordingState();
+    switch (liveState.phase) {
+      case "idle":
+      case "ready":
+        return;
+      case "failed":
+      case "stopping":
+      case "processing":
+        event.preventDefault();
+        return;
+      default:
+        event.preventDefault();
+        requestCancelFromWindowClose();
+    }
+  });
+  created.on("closed", () => {
+    const closedInternally = internallyClosingWindows.delete(created);
+    const liveState = getRecordingState();
+    if (window === created) window = null;
+    activePermissionRequestId = null;
+    setRecordingPermissionControllerWindowId(null);
+    if (closedInternally) return;
+    if (liveState.phase === "permission") {
+      cancelPermissionSurfaceOnce();
+      return;
+    }
+    scheduleControllerRecreate();
+  });
+  const handleRendererFailure = (): void => {
+    if (window !== created || appQuitting || disposed) return;
+    if (getRecordingState().phase === "permission") {
+      cancelPermissionSurfaceOnce();
+      destroyControllerWindow();
+      return;
+    }
+    log.warn("recording controller renderer exited; scheduling HUD recreation");
+    destroyControllerWindow();
+    scheduleControllerRecreate();
+  };
+  created.webContents.on("render-process-gone", handleRendererFailure);
   created.webContents.on(
     "did-fail-load",
     (_event, _errorCode, _errorDescription, _validatedUrl, isMainFrame) => {
       if (isMainFrame === false) return;
-      failPermissionSurface();
+      handleRendererFailure();
     }
   );
-  created.on("closed", () => {
-    cancelPermissionSurfaceOnce();
-    window = null;
-    activePermissionRequestId = null;
-    setRecordingPermissionControllerWindowId(null);
-  });
   created.on("focus", () => {
     const state = getRecordingState();
     if (
@@ -447,14 +537,10 @@ export function applyRecordingStateToController(state: RecordingState): void {
     case "ready": {
       disarmLeadInEscapeShortcut();
       activePermissionRequestId = null;
-      if (window !== null && !window.isDestroyed()) {
-        window.hide();
-        setRecordingPermissionControllerWindowId(null);
-        // Destroying releases the renderer process; the next session
-        // gets a fresh React tree with a clean state machine.
-        window.destroy();
-        window = null;
-      }
+      setRecordingPermissionControllerWindowId(null);
+      // Destroying releases the renderer process; the next session gets a
+      // fresh React tree with a clean state machine.
+      destroyControllerWindow();
       break;
     }
   }
@@ -509,6 +595,57 @@ export function resizeRecordingPermissionController(input: {
   return true;
 }
 
+function handleRecordingControllerResize(
+  event: IpcMainEvent,
+  payload: unknown
+): void {
+  const win = window;
+  const state = getRecordingState();
+  if (
+    state.phase !== "failed" ||
+    win === null ||
+    win.isDestroyed() ||
+    event.sender.id !== win.webContents.id ||
+    typeof payload !== "object" ||
+    payload === null
+  ) {
+    return;
+  }
+  const candidate = payload as { width?: unknown; height?: unknown };
+  if (
+    typeof candidate.width !== "number" ||
+    typeof candidate.height !== "number" ||
+    !Number.isFinite(candidate.width) ||
+    !Number.isFinite(candidate.height) ||
+    candidate.width <= 0 ||
+    candidate.height <= 0
+  ) {
+    return;
+  }
+
+  const zoomFactor = win.webContents.zoomFactor;
+  const zoom = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
+  const display =
+    screen.getAllDisplays().find((candidateDisplay) => candidateDisplay.id === state.displayId) ??
+    screen.getPrimaryDisplay();
+  const availableWidth = Math.max(1, display.workArea.width - 32);
+  const availableHeight = Math.max(1, display.workArea.height - 32);
+  const widthCss = Math.min(
+    FAILURE_CARD_MAX_WIDTH_CSS_PX,
+    Math.max(FAILURE_CARD_WIDTH_CSS_PX, Math.ceil(candidate.width))
+  );
+  const heightCss = Math.min(
+    FAILURE_CARD_MAX_HEIGHT_CSS_PX,
+    Math.max(FAILURE_CARD_HEIGHT_CSS_PX, Math.ceil(candidate.height))
+  );
+  win.setContentSize(
+    Math.min(availableWidth, Math.ceil(widthCss * zoom)),
+    Math.min(availableHeight, Math.ceil(heightCss * zoom)),
+    false
+  );
+  anchorTopCenter(win, state.displayId);
+}
+
 /**
  * Install a one-time hook so every `setRecordingState` call also
  * drives the HUD. Called from `main/index.ts` during boot — the
@@ -517,18 +654,25 @@ export function resizeRecordingPermissionController(input: {
 export function installRecordingController(): void {
   if (installed) return;
   installed = true;
+  disposed = false;
+  appQuitting = false;
+  app.on("before-quit", handleAppBeforeQuit);
+  ipcMain.on(RECORDING_CONTROLLER_RESIZE_CHANNEL, handleRecordingControllerResize);
   unsubscribeRecordingState = subscribeToRecordingState(applyRecordingStateToController);
 }
 
 /** Release the durable HUD and its state subscription during app shutdown. */
 export function disposeRecordingController(): void {
+  disposed = true;
+  clearCrashRecreateTimer();
   disarmLeadInEscapeShortcut();
+  app.off("before-quit", handleAppBeforeQuit);
+  ipcMain.removeListener(
+    RECORDING_CONTROLLER_RESIZE_CHANNEL,
+    handleRecordingControllerResize
+  );
   unsubscribeRecordingState?.();
   unsubscribeRecordingState = null;
   installed = false;
-  if (window !== null && !window.isDestroyed()) {
-    window.hide();
-    window.destroy();
-  }
-  window = null;
+  destroyControllerWindow();
 }

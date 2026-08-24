@@ -3,7 +3,7 @@
 // the video lead-in is bridged through Electron's globalShortcut and
 // then routed through the normal recording:cancel command.
 
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { RecordingState } from "@pwrsnap/shared";
 
 type ShortcutCallback = () => void;
@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   recordingState: { phase: "idle" } as RecordingState,
   unsubscribeRecordingState: vi.fn(),
   subscribeToRecordingState: vi.fn(() => mocks.unsubscribeRecordingState),
+  appHandlers: new Map<string, () => void>(),
+  ipcHandlers: new Map<string, (...args: unknown[]) => void>(),
   recordingZoomFactor: 1,
   overlappingWindows: [] as WindowSpy[],
   createdWindows: [] as WindowSpy[]
@@ -31,9 +33,11 @@ const originalPlatform = process.platform;
 type WindowSpy = {
   id: number;
   webContents: {
+    id: number;
     zoomFactor: number;
     on: ReturnType<typeof vi.fn>;
     getOSProcessId: ReturnType<typeof vi.fn>;
+    emit: (event: string, ...args: unknown[]) => void;
   };
   isDestroyed: ReturnType<typeof vi.fn>;
   setAlwaysOnTop: ReturnType<typeof vi.fn>;
@@ -51,18 +55,27 @@ type WindowSpy = {
   hide: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
-  emit: (event: string) => void;
+  emit: (event: string, ...args: unknown[]) => void;
 };
 
 function makeWindowSpy(): WindowSpy {
   const size: [number, number] = [420, 80];
-  const listeners = new Map<string, Array<() => void>>();
+  const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+  const webContentsListeners = new Map<string, Array<(...args: unknown[]) => void>>();
   return {
     id: 71,
     webContents: {
+      id: 710,
       zoomFactor: mocks.recordingZoomFactor,
-      on: vi.fn(),
-      getOSProcessId: vi.fn(() => 7100)
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        const registered = webContentsListeners.get(event) ?? [];
+        registered.push(listener);
+        webContentsListeners.set(event, registered);
+      }),
+      getOSProcessId: vi.fn(() => 7100),
+      emit: (event: string, ...args: unknown[]) => {
+        for (const listener of webContentsListeners.get(event) ?? []) listener(...args);
+      }
     },
     isDestroyed: vi.fn(() => false),
     setAlwaysOnTop: vi.fn(),
@@ -82,22 +95,36 @@ function makeWindowSpy(): WindowSpy {
     blur: vi.fn(),
     hide: vi.fn(),
     destroy: vi.fn(),
-    on: vi.fn((event: string, listener: () => void) => {
+    on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
       const registered = listeners.get(event) ?? [];
       registered.push(listener);
       listeners.set(event, registered);
     }),
-    emit: (event: string) => {
-      for (const listener of listeners.get(event) ?? []) listener();
+    emit: (event: string, ...args: unknown[]) => {
+      for (const listener of listeners.get(event) ?? []) listener(...args);
     }
   };
 }
 
 vi.mock("electron", () => ({
+  app: {
+    on: (event: string, listener: () => void) => mocks.appHandlers.set(event, listener),
+    off: (event: string, listener: () => void) => {
+      if (mocks.appHandlers.get(event) === listener) mocks.appHandlers.delete(event);
+    }
+  },
   BrowserWindow: {},
   globalShortcut: {
     register: mocks.registerShortcut,
     unregister: mocks.unregisterShortcut
+  },
+  ipcMain: {
+    on: (channel: string, listener: (...args: unknown[]) => void) => {
+      mocks.ipcHandlers.set(channel, listener);
+    },
+    removeListener: (channel: string, listener: (...args: unknown[]) => void) => {
+      if (mocks.ipcHandlers.get(channel) === listener) mocks.ipcHandlers.delete(channel);
+    }
   },
   screen: {
     getAllDisplays: () => [
@@ -161,10 +188,16 @@ beforeEach(() => {
   mocks.setPermissionWindowId.mockClear();
   mocks.unsubscribeRecordingState.mockClear();
   mocks.subscribeToRecordingState.mockClear();
+  mocks.appHandlers.clear();
+  mocks.ipcHandlers.clear();
   mocks.recordingZoomFactor = 1;
   mocks.overlappingWindows.length = 0;
   mocks.createdWindows.length = 0;
   mocks.recordingState = { phase: "idle" };
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("recording-controller lead-in Escape shortcut", () => {
@@ -469,10 +502,95 @@ describe("recording-controller lead-in Escape shortcut", () => {
       phase: "processing",
       sessionId: "rec-finalize"
     });
+    mocks.recordingState = {
+      phase: "processing",
+      sessionId: "rec-finalize"
+    };
 
     expect(win.setPosition).toHaveBeenCalledTimes(placementCalls);
-    win.emit("closed");
+    const preventDefault = vi.fn();
+    win.emit("close", { preventDefault });
+    expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(mocks.dispatch).not.toHaveBeenCalled();
+  });
+
+  test("Alt+F4 cannot dismiss a failed session and a forced close recreates it", async () => {
+    vi.useFakeTimers();
+    const controller = await import("../recording-controller");
+    controller.installRecordingController();
+    const failed: RecordingState = {
+      phase: "failed",
+      sessionId: "failed-close",
+      code: "recorder_exited",
+      canRetry: true,
+      displayId: 1
+    };
+    mocks.recordingState = failed;
+    controller.applyRecordingStateToController(failed);
+    const first = mocks.createdWindows[0]!;
+    const preventDefault = vi.fn();
+
+    first.emit("close", { preventDefault });
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+    expect(first.destroy).not.toHaveBeenCalled();
+
+    first.emit("closed");
+    await vi.runAllTimersAsync();
+    expect(mocks.createdWindows).toHaveLength(2);
+    expect(mocks.createdWindows[1]?.show).toHaveBeenCalledTimes(1);
+    expect(mocks.createdWindows[1]?.focus).toHaveBeenCalledTimes(1);
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+  });
+
+  test("renderer crash recreates the live failed card and stops on quit", async () => {
+    vi.useFakeTimers();
+    const controller = await import("../recording-controller");
+    controller.installRecordingController();
+    const failed: RecordingState = {
+      phase: "failed",
+      sessionId: "failed-crash",
+      code: "recorder_spawn_failed",
+      canRetry: true,
+      displayId: 1
+    };
+    mocks.recordingState = failed;
+    controller.applyRecordingStateToController(failed);
+
+    mocks.createdWindows[0]?.webContents.emit("render-process-gone");
+    await vi.runAllTimersAsync();
+    expect(mocks.createdWindows).toHaveLength(2);
+    expect(mocks.createdWindows[1]?.show).toHaveBeenCalledTimes(1);
+
+    mocks.createdWindows[1]?.webContents.emit("render-process-gone");
+    mocks.appHandlers.get("before-quit")?.();
+    await vi.runAllTimersAsync();
+    expect(mocks.createdWindows).toHaveLength(2);
+  });
+
+  test("failed content resize is sender-validated and zoom-aware", async () => {
+    const controller = await import("../recording-controller");
+    mocks.recordingZoomFactor = 1.25;
+    controller.installRecordingController();
+    const failed: RecordingState = {
+      phase: "failed",
+      sessionId: "failed-size",
+      code: "recorder_start_failed",
+      canRetry: true,
+      displayId: 1
+    };
+    mocks.recordingState = failed;
+    controller.applyRecordingStateToController(failed);
+    const win = mocks.createdWindows[0]!;
+    win.setContentSize.mockClear();
+    const resize = mocks.ipcHandlers.get("recording-controller:resize");
+
+    resize?.({ sender: { id: -1 } }, { width: 480, height: 300 });
+    expect(win.setContentSize).not.toHaveBeenCalled();
+    resize?.({ sender: win.webContents }, { width: 480, height: 300 });
+
+    expect(win.setContentSize).toHaveBeenCalledWith(600, 375, false);
+    expect(win.setPosition).toHaveBeenLastCalledWith(420, 16, false);
   });
 
   test("a failed recording keeps a readable interactive HUD instead of destroying it", async () => {

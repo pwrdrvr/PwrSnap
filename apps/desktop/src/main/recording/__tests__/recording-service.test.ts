@@ -22,7 +22,8 @@ const mocks = vi.hoisted(() => {
     stateLogFull: [] as Array<Record<string, unknown>>,
     currentState: { phase: "idle" } as Record<string, unknown>,
     mkdtempQueue: [] as Array<Promise<string>>,
-    pendingTimeouts: [] as Array<() => void>
+    pendingTimeouts: [] as Array<() => void>,
+    removedRecordingDirs: [] as string[]
   };
 });
 
@@ -87,6 +88,9 @@ vi.mock("node:fs/promises", () => ({
     return deferred === undefined
       ? "/tmp/pwrsnap-recording-fake"
       : await deferred;
+  }),
+  rm: vi.fn(async (path: string) => {
+    mocks.removedRecordingDirs.push(path);
   })
 }));
 
@@ -227,6 +231,7 @@ beforeEach(() => {
   mocks.currentState = { phase: "idle" };
   mocks.mkdtempQueue.length = 0;
   mocks.pendingTimeouts.length = 0;
+  mocks.removedRecordingDirs.length = 0;
   // resolveRecorderBinary() returns null off-darwin AND probes
   // `process.resourcesPath/PwrSnapRecorder` via path.join — neither
   // works in a plain Node test runner. Stub both so the binary-
@@ -706,6 +711,8 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     await stopPromise;
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
+    expect(mocks.removedRecordingDirs).not.toContain("/fake/captures/src-1.mp4");
 
     // Pull the row that landed on insertCapture. The mock at
     // the top of this file returns a fixed record; we want the
@@ -843,6 +850,7 @@ describe("Native recorder post-start failure", () => {
     );
     expect(child.killSignals).toEqual(["SIGTERM"]);
     expect(service.isActive()).toBe(false);
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
   });
 
   test("cancel suppresses an in-flight pre-start failure instead of publishing it later", async () => {
@@ -968,6 +976,37 @@ describe("Native recorder post-start failure", () => {
 
     await vi.advanceTimersByTimeAsync(60_000);
     expect(mocks.currentState).toEqual(failed);
+  });
+
+  test("post-adoption persistence failure removes only the recorder temp container", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const captures = await import("../../persistence/captures-repo");
+    vi.mocked(captures.insertCapture).mockImplementationOnce(() => {
+      throw new Error("database insert failed after durable adoption");
+    });
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    const started = await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    const child = mocks.spawnedChildren[0]!;
+    const stopPromise = service.stop();
+    child.emit("exit", 0, null);
+
+    await expect(stopPromise).rejects.toThrow("database insert failed");
+    expectSafeFailureState(latestFailureState(), {
+      sessionId: started.sessionId,
+      code: "processing_failed",
+      canRetry: false
+    });
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
+    expect(mocks.removedRecordingDirs).not.toContain("/fake/captures/src-1.mp4");
   });
 });
 
@@ -1123,6 +1162,9 @@ describe("Windows FFmpeg recorder", () => {
     expect(mocks.stateLog.map((state) => state.phase)).toContain("processing");
     expect(mocks.stateLog.map((state) => state.phase)).not.toContain("ready");
     expect(service.isActive()).toBe(false);
+    // Adoption never moved the only complete clip, so the recorder-owned
+    // directory is intentionally detached for manual recovery.
+    expect(mocks.removedRecordingDirs).toEqual([]);
 
     await vi.advanceTimersByTimeAsync(60_000);
     expect(mocks.currentState).toEqual(failed);
@@ -1461,6 +1503,79 @@ describe("Windows FFmpeg recorder", () => {
     });
   });
 
+  test.each(["insertCapture", "insertVideoMetadata", "pre-broadcast"] as const)(
+    "joins shutdown triggered at the %s finalization boundary",
+    async (boundary) => {
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+      (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+      const captures = await import("../../persistence/captures-repo");
+      const videos = await import("../../persistence/video-repo");
+      const events = await import("../../events");
+      const { __setRecordingServiceForTests, getRecordingService } = await import(
+        "../recording-service"
+      );
+      __setRecordingServiceForTests(null);
+      const service = getRecordingService();
+      let shutdownPromise: Promise<void> | null = null;
+      let shutdownSettled = false;
+      let shutdownWasPendingAtBoundary = false;
+      let cancelOutcome: Promise<string> | null = null;
+      const triggerShutdown = (): void => {
+        shutdownPromise = service.shutdown().then(() => {
+          shutdownSettled = true;
+        });
+        cancelOutcome = service.cancel().then(
+          () => "unexpected_success",
+          (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
+        );
+        shutdownWasPendingAtBoundary = !shutdownSettled;
+      };
+
+      if (boundary === "insertCapture") {
+        vi.mocked(captures.insertCapture).mockImplementationOnce(() => {
+          triggerShutdown();
+          return { record: { id: "cap-1", kind: "video" } } as never;
+        });
+      } else if (boundary === "insertVideoMetadata") {
+        vi.mocked(videos.insertVideoMetadata).mockImplementationOnce(() => {
+          triggerShutdown();
+        });
+      } else {
+        vi.mocked(captures.getCaptureById).mockImplementationOnce(() => {
+          triggerShutdown();
+          return { id: "cap-1", kind: "video", video: {} } as never;
+        });
+      }
+
+      const started = await service.start({
+        subject: SUBJECT,
+        capabilities: CAPS,
+        countdownSeconds: 0
+      });
+      const child = mocks.spawnedChildren[0]!;
+      const stopPromise = service.stop();
+      child.emit("exit", 0, null);
+      await expect(stopPromise).resolves.toEqual({ captureId: "cap-1" });
+
+      expect(shutdownPromise).not.toBeNull();
+      expect(shutdownWasPendingAtBoundary).toBe(true);
+      await expect(cancelOutcome).resolves.toBe("finalization_in_progress");
+      await shutdownPromise;
+      expect(shutdownSettled).toBe(true);
+      expect(captures.insertCapture).toHaveBeenCalledTimes(1);
+      expect(videos.insertVideoMetadata).toHaveBeenCalledTimes(1);
+      expect(events.broadcastCapturesChanged).toHaveBeenCalledTimes(1);
+      expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
+      expect(mocks.removedRecordingDirs).not.toContain("/fake/captures/src-1.mp4");
+      expect(child.killCalled).toBe(false);
+      expect(mocks.currentState).toMatchObject({
+        phase: "ready",
+        sessionId: started.sessionId,
+        captureId: "cap-1"
+      });
+    }
+  );
+
   test("retry starts a fresh session and a stale dismiss cannot cancel it", async () => {
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
@@ -1507,6 +1622,10 @@ describe("Windows FFmpeg recorder", () => {
     await cancelPromise;
     await vi.advanceTimersByTimeAsync(0);
     expect(mocks.currentState).toEqual({ phase: "idle" });
+    expect(mocks.removedRecordingDirs).toEqual([
+      "/tmp/pwrsnap-recording-fake",
+      "/tmp/pwrsnap-recording-fake"
+    ]);
   });
 
   test("normal Windows Restart preserves the cursor snapshot", async () => {

@@ -18,12 +18,13 @@ import type {
   RecordingFailureCode,
   RecordingPermission,
   RecordingPermissionAction,
+  Req,
   Result,
   VideoExportRequest,
   VideoPreset,
   VideoPresetMetric
 } from "@pwrsnap/shared";
-import { bus } from "../command-bus";
+import { bus, type CommandContext } from "../command-bus";
 import { getMainLogger } from "../log";
 import { getCaptureById } from "../persistence/captures-repo";
 import {
@@ -121,6 +122,25 @@ function failedSessionIdFromRequest(req: unknown): string | null {
   }
   const sessionId = (req as { sessionId?: unknown }).sessionId;
   return validSessionId(sessionId) ? sessionId : null;
+}
+
+function normalRecordingControlUnavailable(
+  action: "cancel" | "restart"
+): PwrSnapError | null {
+  const state = getRecordingState();
+  if (state.phase === "failed") {
+    return validationError(
+      "control_unavailable",
+      `${action === "restart" ? "Restart" : "Cancel"} is unavailable after a recording failure. Use the failure card's session-scoped recovery actions.`
+    );
+  }
+  if (state.phase === "stopping" || state.phase === "processing") {
+    return validationError(
+      "control_unavailable",
+      `${action === "restart" ? "Restart" : "Cancel"} is unavailable while the recording is being finalized.`
+    );
+  }
+  return null;
 }
 
 function isRecordingCapabilities(value: unknown): value is RecordingCapabilities {
@@ -472,7 +492,12 @@ export function registerRecordingHandlers(): void {
     return ok(undefined);
   });
 
-  bus.register("recording:start", async (req, ctx) => {
+  const runRecordingStartAttempt = async (
+    req: Req<"recording:start">,
+    ctx: CommandContext,
+    errorContext: "recording:start" | "recording:retry" = "recording:start",
+    retrySessionId: string | null = null
+  ): Promise<Result<{ sessionId: string }, PwrSnapError>> => {
     const coordinator = getRecordingPermissionPreflightCoordinator();
     if (
       recordingStartReserved ||
@@ -619,12 +644,16 @@ export function registerRecordingHandlers(): void {
       // pixels the user committed in the selector.
       await foreground?.restore();
       const service = getService();
-      const session = await service.start({
+      const options = {
         subject: req.subject,
         capabilities,
         captureCursor: req.captureCursor,
         countdownSeconds: req.countdownSeconds ?? 3
-      });
+      };
+      const session =
+        retrySessionId === null
+          ? await service.start(options)
+          : await service.retry(retrySessionId, options);
       if (recordingStartCancelRequested) {
         // Cancel can land while start() is awaiting its first native/temp
         // setup boundary, before the service has enough state for the
@@ -656,10 +685,12 @@ export function registerRecordingHandlers(): void {
           message: "Recording cancelled before capture started."
         });
       }
-      log.error("recording:start failed", { message });
+      log.error(`${errorContext} failed`, { message });
       return err(
         recordingError(
-          "recording_start_failed",
+          errorContext === "recording:retry"
+            ? "recording_retry_failed"
+            : "recording_start_failed",
           safeRecordingFailureMessage("recorder_start_failed")
         )
       );
@@ -673,6 +704,17 @@ export function registerRecordingHandlers(): void {
         recordingStartCancelRequested = false;
       }
     }
+  };
+  bus.register("recording:start", async (req, ctx) => {
+    if (getRecordingState().phase === "failed") {
+      return err(
+        validationError(
+          "failure_action_required",
+          "Use Retry or Dismiss on the current recording failure before starting another recording."
+        )
+      );
+    }
+    return runRecordingStartAttempt(req, ctx);
   });
 
   bus.register("recording:stop", async () => {
@@ -693,11 +735,24 @@ export function registerRecordingHandlers(): void {
     if (cancelRecordingPermissionPreflight()) {
       return ok(undefined);
     }
+    const unavailable = normalRecordingControlUnavailable("cancel");
+    if (unavailable !== null) return err(unavailable);
     try {
       await getService().cancel();
       return ok(undefined);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
+      if (
+        message === "failure_action_required" ||
+        message === "finalization_in_progress"
+      ) {
+        return err(
+          validationError(
+            "control_unavailable",
+            "Cancel is unavailable after failure or while the recording is being finalized."
+          )
+        );
+      }
       log.error("recording:cancel failed", { message });
       return err(
         recordingError(
@@ -709,6 +764,8 @@ export function registerRecordingHandlers(): void {
   });
 
   bus.register("recording:restart", async () => {
+    const unavailable = normalRecordingControlUnavailable("restart");
+    if (unavailable !== null) return err(unavailable);
     try {
       const { sessionId } = await getService().restart();
       return ok({ sessionId });
@@ -717,6 +774,17 @@ export function registerRecordingHandlers(): void {
       if (message === "not_recording") {
         return err(
           validationError("not_recording", "No active recording to restart.")
+        );
+      }
+      if (
+        message === "failure_action_required" ||
+        message === "finalization_in_progress"
+      ) {
+        return err(
+          validationError(
+            "control_unavailable",
+            "Restart is unavailable after failure or while the recording is being finalized."
+          )
         );
       }
       log.error("recording:restart failed", { message });
@@ -729,7 +797,7 @@ export function registerRecordingHandlers(): void {
     }
   });
 
-  bus.register("recording:retry", async (req) => {
+  bus.register("recording:retry", async (req, ctx) => {
     const failedSessionId = failedSessionIdFromRequest(req);
     if (failedSessionId === null) {
       return err(
@@ -739,9 +807,15 @@ export function registerRecordingHandlers(): void {
         )
       );
     }
+    const service = getService();
     try {
-      const { sessionId } = await getService().retry(failedSessionId);
-      return ok({ sessionId });
+      const options = service.claimRetry(failedSessionId);
+      return await runRecordingStartAttempt(
+        options,
+        ctx,
+        "recording:retry",
+        failedSessionId
+      );
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       if (message === "failure_not_retryable" || message === "stale_failure") {
@@ -759,6 +833,8 @@ export function registerRecordingHandlers(): void {
           safeRecordingFailureMessage("recorder_start_failed")
         )
       );
+    } finally {
+      service.releaseRetry(failedSessionId);
     }
   });
 

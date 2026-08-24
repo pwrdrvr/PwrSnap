@@ -37,6 +37,12 @@ const mocks = vi.hoisted(() => ({
     throw new Error("not_recording");
   }),
   retry: vi.fn(async (sessionId: string) => ({ sessionId: `retry-${sessionId}` })),
+  claimRetry: vi.fn(() => ({
+    subject: { kind: "display" as const, displayId: 1 },
+    capabilities: { microphone: false, systemAudio: false },
+    countdownSeconds: 0
+  })),
+  releaseRetry: vi.fn(),
   dismissFailure: vi.fn(async (_sessionId: string) => undefined),
   start: vi.fn(),
   stop: vi.fn(),
@@ -99,6 +105,12 @@ vi.mock("../../recording/recording-service", () => ({
   getRecordingService: () => mocks
 }));
 
+vi.mock("../../recording/recording-foreground", () => ({
+  snapshotRecordingForeground: vi.fn(async () => ({
+    restore: vi.fn(async () => undefined)
+  }))
+}));
+
 vi.mock("../../log", () => ({
   getMainLogger: () => ({
     debug: vi.fn(),
@@ -110,11 +122,15 @@ vi.mock("../../log", () => ({
 
 const { bus } = await import("../../command-bus");
 const { registerRecordingHandlers } = await import("../recording-handlers");
+const screenGate = await import("../../capture/screen-permission-gate");
+const storageGate = await import("../../capture/capture-storage-gate");
+const { setRecordingState } = await import("../../recording/recording-state");
 const originalPlatform = process.platform;
 
 registerRecordingHandlers();
 
 beforeEach(() => {
+  setRecordingState({ phase: "idle" });
   mocks.start.mockReset();
   mocks.stop.mockReset();
   mocks.cancel.mockReset();
@@ -127,9 +143,15 @@ beforeEach(() => {
   mocks.retry.mockImplementation(async (sessionId: string) => ({
     sessionId: `retry-${sessionId}`
   }));
+  mocks.claimRetry.mockClear();
+  mocks.releaseRetry.mockClear();
   mocks.dismissFailure.mockReset();
   mocks.dismissFailure.mockImplementation(async (_sessionId: string) => undefined);
   mocks.logError.mockReset();
+  vi.mocked(screenGate.guardScreenCapture).mockClear();
+  vi.mocked(screenGate.guardScreenCapture).mockResolvedValue(null);
+  vi.mocked(storageGate.ensureCapturesDirReady).mockClear();
+  vi.mocked(storageGate.ensureCapturesDirReady).mockResolvedValue(null);
 });
 
 const RAW_PROCESS_FAILURE =
@@ -177,6 +199,64 @@ describe("recording:* command-bus surface", () => {
     expect(result.ok).toBe(true);
     expect(mocks.cancel).toHaveBeenCalledTimes(1);
   });
+
+  test("failed state rejects generic Start, Restart, and Cancel", async () => {
+    setRecordingState({
+      phase: "failed",
+      sessionId: "failed-owned",
+      code: "recorder_exited",
+      canRetry: true,
+      displayId: 1
+    });
+
+    const started = await bus.dispatch(
+      "recording:start",
+      {
+        subject: { kind: "display", displayId: 1 },
+        capabilities: { microphone: false, systemAudio: false },
+        countdownSeconds: 0
+      },
+      { principal: "ipc" }
+    );
+    const restarted = await bus.dispatch("recording:restart", {}, { principal: "ipc" });
+    const cancelled = await bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+
+    expect(started).toMatchObject({
+      ok: false,
+      error: { kind: "validation", code: "failure_action_required" }
+    });
+    expect(restarted).toMatchObject({
+      ok: false,
+      error: { kind: "validation", code: "control_unavailable" }
+    });
+    expect(cancelled).toMatchObject({
+      ok: false,
+      error: { kind: "validation", code: "control_unavailable" }
+    });
+    expect(mocks.start).not.toHaveBeenCalled();
+    expect(mocks.restart).not.toHaveBeenCalled();
+    expect(mocks.cancel).not.toHaveBeenCalled();
+  });
+
+  test.each(["stopping", "processing"] as const)(
+    "rejects normal Restart and Cancel during %s",
+    async (phase) => {
+      setRecordingState({ phase, sessionId: "finalizing-1" });
+      const restarted = await bus.dispatch("recording:restart", {}, { principal: "ipc" });
+      const cancelled = await bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+
+      expect(restarted).toMatchObject({
+        ok: false,
+        error: { kind: "validation", code: "control_unavailable" }
+      });
+      expect(cancelled).toMatchObject({
+        ok: false,
+        error: { kind: "validation", code: "control_unavailable" }
+      });
+      expect(mocks.restart).not.toHaveBeenCalled();
+      expect(mocks.cancel).not.toHaveBeenCalled();
+    }
+  );
 
   test("recording:restart from idle returns validation/not_recording", async () => {
     // RecordingService.restart() throws Error("not_recording") when
@@ -277,7 +357,45 @@ describe("recording:* command-bus surface", () => {
       { principal: "ipc" }
     );
     expect(result).toEqual({ ok: true, value: { sessionId: "retry-failed-1" } });
-    expect(mocks.retry).toHaveBeenCalledWith("failed-1");
+    expect(mocks.claimRetry).toHaveBeenCalledWith("failed-1");
+    expect(mocks.retry).toHaveBeenCalledWith(
+      "failed-1",
+      expect.objectContaining({
+        subject: { kind: "display", displayId: 1 },
+        capabilities: { microphone: false, systemAudio: false }
+      })
+    );
+    expect(mocks.releaseRetry).toHaveBeenCalledWith("failed-1");
+    expect(screenGate.guardScreenCapture).toHaveBeenCalledWith({
+      routeToSettings: false
+    });
+    expect(storageGate.ensureCapturesDirReady).toHaveBeenCalledTimes(1);
+  });
+
+  test("recording:retry releases its claim when authoritative preflight blocks", async () => {
+    vi.mocked(screenGate.guardScreenCapture).mockResolvedValueOnce({
+      ok: false,
+      error: {
+        kind: "permission",
+        code: "screen_recording_not_granted",
+        message: "Screen Recording permission is required."
+      }
+    });
+
+    const result = await bus.dispatch(
+      "recording:retry",
+      { sessionId: "failed-permission" },
+      { principal: "rpc" }
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: "permission", code: "screen_recording_not_granted" }
+    });
+    expect(mocks.claimRetry).toHaveBeenCalledWith("failed-permission");
+    expect(mocks.retry).not.toHaveBeenCalled();
+    expect(mocks.releaseRetry).toHaveBeenCalledWith("failed-permission");
+    expect(storageGate.ensureCapturesDirReady).not.toHaveBeenCalled();
   });
 
   test("recording:retry rejects malformed runtime requests without handler_threw", async () => {
@@ -301,7 +419,9 @@ describe("recording:* command-bus surface", () => {
   });
 
   test("recording:retry maps stale failures without exposing backend detail", async () => {
-    mocks.retry.mockRejectedValueOnce(new Error("stale_failure"));
+    mocks.claimRetry.mockImplementationOnce(() => {
+      throw new Error("stale_failure");
+    });
 
     const result = await bus.dispatch(
       "recording:retry",

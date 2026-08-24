@@ -92,6 +92,9 @@ export interface ComposerProps {
   readonly initialText?: string;
   /** Reports draft edits and the successful-submit clear to an external store. */
   readonly onDraftChange?: (text: string) => void;
+  /** Whether this surface has a real attachment transport. When false, image
+   *  paste/drop stays unclaimed and no attachment chips can be created. */
+  readonly attachmentsEnabled?: boolean;
   readonly placeholder?: string;
   /** Test-id prefix. Defaults to "composer". */
   readonly testIdPrefix?: string;
@@ -120,6 +123,7 @@ export function Composer(props: ComposerProps): ReactElement {
     onStop,
     initialText = "",
     onDraftChange,
+    attachmentsEnabled = true,
     placeholder = "Message AI…",
     testIdPrefix = "composer"
   } = props;
@@ -213,21 +217,25 @@ export function Composer(props: ComposerProps): ReactElement {
   }, []);
 
   // ---- attachment lifecycle ---------------------------------------
-  const addFiles = useCallback((files: readonly File[]): void => {
-    const images = files.filter((f) => f.type.startsWith("image/"));
-    if (images.length === 0) return;
-    const created = images.map((file): ComposerAttachment => {
-      const previewUrl = URL.createObjectURL(file);
-      liveUrls.current.add(previewUrl);
-      return {
-        id: nextAttachmentId(),
-        name: file.name === "" ? "pasted-image" : file.name,
-        previewUrl,
-        file
-      };
-    });
-    setAttachments((prev) => [...prev, ...created]);
-  }, []);
+  const addFiles = useCallback(
+    (files: readonly File[]): void => {
+      if (!attachmentsEnabled) return;
+      const images = files.filter((f) => f.type.startsWith("image/"));
+      if (images.length === 0) return;
+      const created = images.map((file): ComposerAttachment => {
+        const previewUrl = URL.createObjectURL(file);
+        liveUrls.current.add(previewUrl);
+        return {
+          id: nextAttachmentId(),
+          name: file.name === "" ? "pasted-image" : file.name,
+          previewUrl,
+          file
+        };
+      });
+      setAttachments((prev) => [...prev, ...created]);
+    },
+    [attachmentsEnabled]
+  );
 
   const removeAttachment = useCallback((id: string): void => {
     setAttachments((prev) => {
@@ -248,6 +256,20 @@ export function Composer(props: ComposerProps): ReactElement {
       urls.clear();
     };
   }, []);
+
+  // A surface can withdraw attachment support while this component remains
+  // mounted (for example, when switching chat modes). Never retain chips that
+  // the newly selected transport cannot send.
+  useEffect(() => {
+    if (attachmentsEnabled) return;
+    setAttachments((prev) => {
+      for (const attachment of prev) {
+        URL.revokeObjectURL(attachment.previewUrl);
+        liveUrls.current.delete(attachment.previewUrl);
+      }
+      return [];
+    });
+  }, [attachmentsEnabled]);
 
   // ---- submit ------------------------------------------------------
   const canSubmit =
@@ -415,14 +437,14 @@ export function Composer(props: ComposerProps): ReactElement {
   return (
     <div
       ref={dropzoneRef}
-      className="ps-composer ps-composer-dropzone"
+      className={`ps-composer${attachmentsEnabled ? " ps-composer-dropzone" : ""}`}
       data-testid={`${testIdPrefix}-root`}
       data-state={sendState}
       data-turn-state={turnState}
       // Capture phase: claim image drops before the window's global
       // handler sees them.
-      onDropCapture={handleDrop}
-      onDragOver={handleDragOver}
+      onDropCapture={attachmentsEnabled ? handleDrop : undefined}
+      onDragOver={attachmentsEnabled ? handleDragOver : undefined}
     >
       {attachments.length > 0 && (
         <div
@@ -466,7 +488,7 @@ export function Composer(props: ComposerProps): ReactElement {
           data-testid={`${testIdPrefix}-input`}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
+          onPaste={attachmentsEnabled ? handlePaste : undefined}
         />
         {turnState === "idle" || onStop === undefined ? (
           <button

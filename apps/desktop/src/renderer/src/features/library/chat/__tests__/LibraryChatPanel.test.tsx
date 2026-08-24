@@ -245,6 +245,46 @@ describe("LibraryChatPanel", () => {
       .toBe("survives close");
   });
 
+  test("does not advertise or silently discard image attachments", async () => {
+    const { el, dispatch } = await renderPanel([makeThread("t1", "Chat")]);
+    const composer = el.querySelector<HTMLElement>('[data-testid="composer-root"]')!;
+    const textarea = el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!;
+    const image = new File(["image"], "capture.png", { type: "image/png" });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        items: [
+          {
+            kind: "file",
+            type: image.type,
+            getAsFile: () => image
+          }
+        ]
+      }
+    });
+
+    await act(async () => {
+      textarea.dispatchEvent(paste);
+      await Promise.resolve();
+    });
+
+    expect(paste.defaultPrevented).toBe(false);
+    expect(composer.classList.contains("ps-composer-dropzone")).toBe(false);
+    expect(el.querySelector('[data-testid="composer-chips"]')).toBeNull();
+
+    await typeInto(textarea, "text only");
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(dispatch).toHaveBeenCalledWith("codex:libraryChat:send", {
+      threadId: "t1",
+      text: "text only",
+      anchorCaptureId: "cap-1"
+    });
+  });
+
   test("orders thread chips in creation order (oldest to newest), resumes most recent", async () => {
     const older = makeThread("t1", "Older chat", "2026-05-30T10:00:00.000Z");
     const newer = makeThread("t2", "Newer chat", "2026-05-30T11:00:00.000Z");

@@ -21,7 +21,7 @@ import type {
 import { acpAgentIdFromThreadId, EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { MessageList, type ChatActivityChip } from "../../shared/chat/MessageList";
-import { Composer, type ComposerAttachment } from "../../shared/chat/Composer";
+import { Composer } from "../../shared/chat/Composer";
 import {
   chatDraftKey,
   clearChatDraftAtRevision,
@@ -531,7 +531,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   }, [clearTurnTracking, updatePendingChips]);
 
   const onSubmit = useCallback(
-    async (text: string, _attachments: readonly ComposerAttachment[]): Promise<void> => {
+    async (text: string): Promise<void> => {
       if (activeTurnRef.current !== null || stoppingTurnRef.current !== null) {
         throw new Error("A response is already in progress.");
       }
@@ -797,6 +797,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         ) : null}
         <Composer
           key={`${composerDraftKey}:${draftResetVersion}`}
+          attachmentsEnabled={false}
           initialText={readChatDraft(composerDraftKey)}
           onDraftChange={(text) => writeChatDraft(composerDraftKey, text)}
           onSubmit={onSubmit}

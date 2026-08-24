@@ -118,6 +118,11 @@ test("Escape steps back from adjusting to snap; a second Escape exits", async ()
   try {
     const selector = await showAndGetRegionSelector(app);
     await installResultCapture(app);
+    await sendSelectorMode(app, { invocationId: 91_002, mode: "auto" });
+    await expect(selector.locator("body")).toHaveAttribute(
+      "data-window-list-state",
+      "loading"
+    );
     const root = selector.locator(".region-root");
     const box = await root.boundingBox();
     if (box === null) throw new Error("region-root has no bounding box");
@@ -155,6 +160,11 @@ test("forwarded Escape (region-selector:key) drives the same two-step", async ()
   try {
     const selector = await showAndGetRegionSelector(app);
     await installResultCapture(app);
+    await sendSelectorMode(app, { invocationId: 91_003, mode: "auto" });
+    await expect(selector.locator("body")).toHaveAttribute(
+      "data-window-list-state",
+      "loading"
+    );
     const root = selector.locator(".region-root");
     const box = await root.boundingBox();
     if (box === null) throw new Error("region-root has no bounding box");

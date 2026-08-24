@@ -24,6 +24,8 @@
 import { type Page } from "@playwright/test";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
+const TEST_INVOCATION_ID = 90_001;
+
 const SYNTHETIC_WINDOW = {
   windowId: 4242,
   pid: 99999,
@@ -565,8 +567,19 @@ async function hydrateWindowList(
   }));
   const payload =
     cursor === undefined
-      ? { windows: [...windows], displayBounds: innerSize }
-      : { windows: [...windows], displayBounds: innerSize, cursor };
+      ? {
+          invocationId: TEST_INVOCATION_ID,
+          status: "ready" as const,
+          windows: [...windows],
+          displayBounds: innerSize
+        }
+      : {
+          invocationId: TEST_INVOCATION_ID,
+          status: "ready" as const,
+          windows: [...windows],
+          displayBounds: innerSize,
+          cursor
+        };
   await app.electronApp.evaluate(
     ({ BrowserWindow }, payload) => {
       const w = BrowserWindow.getAllWindows().find(
@@ -630,7 +643,25 @@ async function showAndGetSelector(
   }
   for (let i = 0; i < 30; i++) {
     const found = app.electronApp.windows().find((w) => w.url().includes("stage=region"));
-    if (found !== undefined) return found;
+    if (found !== undefined) {
+      await app.electronApp.evaluate(
+        ({ BrowserWindow }, payload) => {
+          const w = BrowserWindow.getAllWindows().find(
+            (candidate) =>
+              !candidate.isDestroyed() &&
+              candidate.webContents.getURL().includes("stage=region")
+          );
+          if (w === undefined) throw new Error("no selector window");
+          w.webContents.send("region-selector:mode", payload);
+        },
+        { invocationId: TEST_INVOCATION_ID, mode: "auto" as const }
+      );
+      await expect(found.locator("body")).toHaveAttribute(
+        "data-window-list-state",
+        "loading"
+      );
+      return found;
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
   throw new Error("region-selector page never appeared");

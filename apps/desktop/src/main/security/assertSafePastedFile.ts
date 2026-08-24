@@ -90,6 +90,52 @@ function uniqueNormalized(
   return result;
 }
 
+function normalizedPolicyKey(
+  value: string,
+  platform: PrivilegedPathPlatform
+): string | null {
+  const normalized =
+    platform === "win32"
+      ? normalizeWindowsPathForPolicy(value)
+      : pathApiFor(platform).resolve(value);
+  if (normalized === null) return null;
+  return platform === "win32" || platform === "darwin"
+    ? normalized.toLowerCase()
+    : normalized;
+}
+
+function windowsSystemVolumeRoot(
+  homeDir: string,
+  env: Environment
+): string {
+  const homeVolumeRoot = win32.parse(homeDir).root;
+  const systemRoot =
+    envValue(env, "SystemRoot", "WINDIR") ??
+    win32.resolve(homeVolumeRoot, "Windows");
+  return win32.parse(systemRoot).root || homeVolumeRoot;
+}
+
+/**
+ * Windows protects these well-known deny locations from traversal even by
+ * ordinary users. Keep them as lexical/candidate-canonical deny roots, but do
+ * not realpath the roots themselves during policy construction: access denial
+ * is their expected posture and must not disable every unrelated paste.
+ */
+export function __buildLexicalOnlyPrivilegedPrefixesForTest(
+  options: PrivilegedPrefixBuildOptions
+): readonly string[] {
+  if (options.platform !== "win32") return [];
+  const env = options.env ?? {};
+  const volumeRoot = windowsSystemVolumeRoot(options.homeDir, env);
+  return uniqueNormalized(
+    [
+      win32.resolve(volumeRoot, "Recovery"),
+      win32.resolve(volumeRoot, "System Volume Information")
+    ],
+    "win32"
+  );
+}
+
 /** Pure cross-platform builder, exported so Windows policy is testable on CI. */
 export function __buildPrivilegedPrefixesForTest(
   options: PrivilegedPrefixBuildOptions
@@ -123,7 +169,7 @@ export function __buildPrivilegedPrefixesForTest(
     const systemRoot =
       envValue(env, "SystemRoot", "WINDIR") ??
       pathApi.resolve(homeVolumeRoot, "Windows");
-    const systemVolumeRoot = pathApi.parse(systemRoot).root || homeVolumeRoot;
+    const systemVolumeRoot = windowsSystemVolumeRoot(homeDir, env);
     const programData =
       envValue(env, "ProgramData", "ALLUSERSPROFILE") ??
       pathApi.resolve(systemVolumeRoot, "ProgramData");
@@ -347,11 +393,25 @@ export async function __canonicalDarwinTempDirForTest(
 }
 
 async function buildPolicy(
-  prefixes: readonly string[]
+  prefixes: readonly string[],
+  options: {
+    platform?: PrivilegedPathPlatform;
+    lexicalOnlyPrefixes?: readonly string[];
+  } = {}
 ): Promise<PrivilegedPathCheckOptions> {
-  const platform = runtimePlatform();
+  const platform = options.platform ?? runtimePlatform();
+  const lexicalOnlyKeys = new Set(
+    (options.lexicalOnlyPrefixes ?? [])
+      .map((prefix) => normalizedPolicyKey(prefix, platform))
+      .filter((key): key is string => key !== null)
+  );
   const canonical = await Promise.all(
-    prefixes.map(canonicalizePrivilegedRoot)
+    prefixes.map(async (prefix) => {
+      const key = normalizedPolicyKey(prefix, platform);
+      return key !== null && lexicalOnlyKeys.has(key)
+        ? null
+        : await canonicalizePrivilegedRoot(prefix);
+    })
   );
   const roots = uniqueNormalized(
     [
@@ -367,10 +427,33 @@ async function buildPolicy(
   return { platform, prefixes: roots, canonicalTempDir };
 }
 
+/** Async test seam for policy construction with non-host path semantics. */
+export async function __buildPrivilegedPolicyForTest(
+  prefixes: readonly string[],
+  options: {
+    platform: PrivilegedPathPlatform;
+    lexicalOnlyPrefixes?: readonly string[];
+  }
+): Promise<PrivilegedPathCheckOptions> {
+  return await buildPolicy(prefixes, options);
+}
+
 async function effectivePolicy(): Promise<PrivilegedPathCheckOptions> {
   // Re-canonicalize on every read. A privileged root can itself be a symlink;
   // retaining its prior target would make a later retarget stale the policy.
-  return await buildPolicy(testPrefixOverride ?? defaultPrefixes());
+  if (testPrefixOverride !== null) {
+    return await buildPolicy(testPrefixOverride);
+  }
+  const options: PrivilegedPrefixBuildOptions = {
+    platform: runtimePlatform(),
+    homeDir: homedir(),
+    env: process.env
+  };
+  return await buildPolicy(defaultPrefixes(), {
+    platform: options.platform,
+    lexicalOnlyPrefixes:
+      __buildLexicalOnlyPrivilegedPrefixesForTest(options)
+  });
 }
 
 export type UnsafePastedFileErrorCode =

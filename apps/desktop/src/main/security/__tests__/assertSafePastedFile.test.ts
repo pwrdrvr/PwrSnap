@@ -11,6 +11,8 @@ import { join, win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   __buildPrivilegedPrefixesForTest,
+  __buildLexicalOnlyPrivilegedPrefixesForTest,
+  __buildPrivilegedPolicyForTest,
   __canonicalDarwinTempDirForTest,
   __isExpectedDarwinTempDirForTest,
   __isPrivilegedPathForTest,
@@ -319,6 +321,70 @@ describe("cross-platform privileged roots", () => {
         "D:\\System Volume Information"
       ])
     );
+  });
+
+  test("Windows inaccessible protected defaults remain lexical deny roots without inspection", async () => {
+    const options = {
+      platform: "win32" as const,
+      homeDir: "C:\\Users\\Alice",
+      env: {
+        SystemRoot: "C:\\Windows"
+      }
+    };
+    const lexicalOnly = __buildLexicalOnlyPrivilegedPrefixesForTest(options);
+    expect(lexicalOnly).toEqual([
+      "C:\\Recovery",
+      "C:\\System Volume Information"
+    ]);
+
+    const ordinaryCanonicalRoot = "C:\\Users\\Alice\\.ssh";
+    const inspected: string[] = [];
+    __setPrivilegedRootRealpathForTest(async (root) => {
+      inspected.push(win32.normalize(root));
+      if (lexicalOnly.includes(win32.normalize(root))) {
+        throw Object.assign(new Error("protected by Windows"), {
+          code: "EACCES"
+        });
+      }
+      return win32.normalize(root);
+    });
+
+    const policy = await __buildPrivilegedPolicyForTest(
+      [ordinaryCanonicalRoot, ...lexicalOnly],
+      { platform: "win32", lexicalOnlyPrefixes: lexicalOnly }
+    );
+
+    expect(inspected).toEqual([ordinaryCanonicalRoot]);
+    expect(policy.prefixes).toEqual(
+      expect.arrayContaining([ordinaryCanonicalRoot, ...lexicalOnly])
+    );
+    expect(
+      __isPrivilegedPathForTest(
+        "C:\\System Volume Information\\tracking.log",
+        policy
+      )
+    ).toBe(true);
+    expect(
+      __isPrivilegedPathForTest("C:\\Users\\Alice\\Pictures\\safe.png", policy)
+    ).toBe(false);
+  });
+
+  test("Windows policy still fails closed when a canonicalized deny root cannot be inspected", async () => {
+    const protectedRoot = "C:\\Users\\Alice\\.ssh";
+    __setPrivilegedRootRealpathForTest(async () => {
+      throw Object.assign(new Error("unexpected inspection failure"), {
+        code: "EACCES"
+      });
+    });
+
+    await expect(
+      __buildPrivilegedPolicyForTest([protectedRoot], {
+        platform: "win32",
+        lexicalOnlyPrefixes: []
+      })
+    ).rejects.toMatchObject({
+      name: "PrivilegedPolicyInspectionError"
+    });
   });
 
   test("Windows containment is separator-aware and case-insensitive", () => {

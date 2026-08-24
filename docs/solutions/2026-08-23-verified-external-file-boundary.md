@@ -39,6 +39,14 @@ unclassified errors reject the ingest with a path-free
 present" would silently remove a configured security boundary precisely when
 the operating system could not prove its target.
 
+Windows' `Recovery` and `System Volume Information` are the deliberate
+exception to root canonicalization. They are well-known system-volume deny
+locations whose normal ACL posture prevents an ordinary process from
+realpathing the root. They remain lexical roots, and every candidate is still
+canonicalized and checked against them before and after open. Other configured
+or common deny roots retain fail-closed canonical inspection; an access or I/O
+error there cannot silently remove their symlink target from policy.
+
 ## Raster decode boundary
 
 An encoded-byte cap and per-axis dimensions are not memory limits. A tiny,

@@ -266,8 +266,7 @@ export function AIProvidersPage(): ReactElement {
           <p className="pss__main-sub">
             PwrSnap delegates AI work to your local Codex install or an enabled
             ACP agent. Captions, tag suggestions, and OCR all ride on a single
-            enrichment turn per capture. Semantic search vectorization is
-            planned.
+            enrichment turn per capture.
           </p>
         </div>
       </div>
@@ -293,13 +292,6 @@ export function AIProvidersPage(): ReactElement {
           onChange={(p) => {
             void patch({ ai: { defaults: { enrichment: p } } });
           }}
-        />
-        <JobRoutingRow
-          name="Semantic search vectorization"
-          sub="Will embed capture metadata + OCR text for ⌘K search"
-          provider="—"
-          model="Coming soon"
-          dim
         />
         <AiSurfaceDefaultControl
           surface="libraryChat"
@@ -1588,55 +1580,6 @@ export function SecretKeyControl({
         )}
       </div>
     </>
-  );
-}
-
-type JobRoutingRowProps = {
-  name: string;
-  sub: string;
-  provider: string;
-  /** Static model label rendered to the right of the provider name.
-   *  Mutually exclusive with `children` — pass `model` for read-only
-   *  rows (OCR, Coming-soon), pass `children` to drop in a real
-   *  control (dropdown, button, etc.). */
-  model?: string;
-  /** Custom right-edge slot. When set, replaces the provider chip's
-   *  "model" sub-label so the row can host a real `<select>` or any
-   *  other input. */
-  children?: ReactElement;
-  dim?: boolean;
-};
-
-function JobRoutingRow({
-  name,
-  sub,
-  provider,
-  model,
-  children,
-  dim
-}: JobRoutingRowProps): ReactElement {
-  return (
-    <div className="pss__role" style={dim === true ? { opacity: 0.6 } : undefined}>
-      <span className="pss__role-icon" aria-hidden="true">
-        ◆
-      </span>
-      <div className="pss__role-l">
-        <span className="pss__role-name">{name}</span>
-        <span className="pss__role-sub">{sub}</span>
-      </div>
-      <span className="pss__role-arrow">→</span>
-      {children !== undefined ? (
-        <div className="pss__role-control">
-          <b>{provider}</b>
-          {children}
-        </div>
-      ) : (
-        <span className="pss__role-provider" aria-disabled="true">
-          <b>{provider}</b>
-          <span className="pss__role-model">{model ?? ""}</span>
-        </span>
-      )}
-    </div>
   );
 }
 

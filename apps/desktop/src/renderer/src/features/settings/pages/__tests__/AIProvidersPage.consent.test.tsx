@@ -121,6 +121,14 @@ afterEach(async () => {
 });
 
 describe("AIProvidersPage — enrichment consent", () => {
+  test("does not advertise unavailable semantic search routing", async () => {
+    const page = await renderPage(null);
+
+    expect(page.textContent).toContain("Capture captions, tags & OCR");
+    expect(page.textContent).not.toContain("Semantic search vectorization");
+    expect(page.textContent).not.toContain("Coming soon");
+  });
+
   test("shows the disclosure before first-time enable and Cancel writes nothing", async () => {
     const page = await renderPage(null);
 

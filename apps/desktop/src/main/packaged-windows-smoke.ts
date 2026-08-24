@@ -114,6 +114,21 @@ export type NativeModuleProvenance = {
   sharpLibvipsDllPaths: string[];
 };
 
+export type PackagedWindowsStartupEvidence = {
+  singleInstanceLockAcquired: boolean;
+  tray: {
+    installed: boolean;
+    iconPath: string;
+    iconLoaded: boolean;
+    popoverPrewarmed: boolean;
+  };
+  globalHotkeysSkipped: boolean;
+  launchAtLoginSyncSkipped: boolean;
+  appUpdaterSkipped: boolean;
+  localAgentLifecycleSkipped: boolean;
+  startupCodexProbeSkipped: boolean;
+};
+
 export type PackagedWindowsSmokeDependencies = {
   app: SmokeApp;
   env: NodeJS.ProcessEnv;
@@ -124,6 +139,7 @@ export type PackagedWindowsSmokeDependencies = {
   findMainLibraryWindow(): SmokeWindow | null;
   getDatabase(): SmokeDatabase;
   getPaths(): SmokePaths;
+  getStartupEvidence(): PackagedWindowsStartupEvidence;
   getNativeModuleProvenance(): NativeModuleProvenance;
   logger: SmokeLogger;
   probeSharp?: () => Promise<SharpSmokeEvidence>;
@@ -224,6 +240,20 @@ export type PackagedWindowsSmokeReport = {
   };
   main: {
     bootstrapComplete: true;
+    startup: {
+      singleInstanceLockAcquired: true;
+      tray: {
+        installed: true;
+        iconPath: string;
+        iconLoaded: true;
+        popoverPrewarmed: true;
+      };
+      globalHotkeysSkipped: true;
+      launchAtLoginSyncSkipped: true;
+      appUpdaterSkipped: true;
+      localAgentLifecycleSkipped: true;
+      startupCodexProbeSkipped: true;
+    };
   };
   renderer: RendererSmokeEvidence;
   nativeModules: {
@@ -1076,6 +1106,45 @@ function failureMessage(cause: unknown): string {
   return raw.slice(0, FAILURE_MESSAGE_LIMIT);
 }
 
+function requirePackagedStartupEvidence(
+  evidence: PackagedWindowsStartupEvidence
+): PackagedWindowsSmokeReport["main"]["startup"] {
+  if (!evidence.singleInstanceLockAcquired) {
+    throw new Error("packaged smoke did not acquire the production single-instance lock");
+  }
+  if (
+    !evidence.tray.installed ||
+    evidence.tray.iconPath.trim().length === 0 ||
+    !evidence.tray.iconLoaded ||
+    !evidence.tray.popoverPrewarmed
+  ) {
+    throw new Error("packaged smoke did not install the tray with its icon and prewarmed popover");
+  }
+  if (
+    !evidence.globalHotkeysSkipped ||
+    !evidence.launchAtLoginSyncSkipped ||
+    !evidence.appUpdaterSkipped ||
+    !evidence.localAgentLifecycleSkipped ||
+    !evidence.startupCodexProbeSkipped
+  ) {
+    throw new Error("packaged smoke did not preserve its host/network safety suppressions");
+  }
+  return {
+    singleInstanceLockAcquired: true,
+    tray: {
+      installed: true,
+      iconPath: evidence.tray.iconPath,
+      iconLoaded: true,
+      popoverPrewarmed: true
+    },
+    globalHotkeysSkipped: true,
+    launchAtLoginSyncSkipped: true,
+    appUpdaterSkipped: true,
+    localAgentLifecycleSkipped: true,
+    startupCodexProbeSkipped: true
+  };
+}
+
 /**
  * Run the opt-in readiness handshake after normal bootstrap has completed.
  * Returns true when smoke mode owned the process lifecycle (success or failure).
@@ -1090,6 +1159,9 @@ export async function runPackagedWindowsSmokeIfRequested(
   try {
     config = resolvePackagedWindowsSmokeConfig(dependencies);
     if (config === null) return false;
+
+    phase = "main:startup-policy";
+    const startup = requirePackagedStartupEvidence(dependencies.getStartupEvidence());
 
     phase = "native:provenance";
     const provenance = dependencies.getNativeModuleProvenance();
@@ -1170,7 +1242,8 @@ export async function runPackagedWindowsSmokeIfRequested(
         regionPrewarmSkipped: true
       },
       main: {
-        bootstrapComplete: true
+        bootstrapComplete: true,
+        startup
       },
       renderer,
       nativeModules: {

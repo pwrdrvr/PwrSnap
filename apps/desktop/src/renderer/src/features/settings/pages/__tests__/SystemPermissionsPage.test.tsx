@@ -208,6 +208,15 @@ describe("SystemPermissionsPage — screen permission disambiguation", () => {
     expect(row.querySelector("button")).toBeNull();
   });
 
+  test("fingerprint diagnostics name the actual four inputs", async () => {
+    await render(baseReport);
+    const row = rowByTag("fingerprint");
+    expect(row.textContent).toContain(
+      "screen, microphone, system audio, recorder backend"
+    );
+    expect(row.textContent).not.toContain("app version");
+  });
+
   test("Request access (first ask) probes but does NOT open System Settings", async () => {
     const { calls } = await render({ ...baseReport, screenCapturePrompted: false });
     const button = rowByTag("screen").querySelector("button");

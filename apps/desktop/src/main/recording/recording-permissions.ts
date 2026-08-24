@@ -29,7 +29,7 @@
 // unsupported system audio). Never present the readiness fallback as a grant.
 //
 // The fingerprint is a stable SHA-1 of `(screen, mic, systemAudio,
-// backend, appVersion)`. Settings persists the last fingerprint that
+// backend)`. Settings persists the last fingerprint that
 // triggered routing to System Permissions; startup routes only when
 // the current fingerprint differs AND any permission needs attention.
 
@@ -262,7 +262,10 @@ export async function requestPermission(
   permission: RecordingPermission
 ): Promise<{ status: RecordingPermissionStatus }> {
   if (process.platform !== "darwin") {
-    return { status: "granted" };
+    // Electron exposes no cross-platform prompt API here. Returning a
+    // synthetic grant would falsely imply that this command inspected or
+    // changed an OS permission, so unsupported platforms report no evidence.
+    return { status: "unknown" };
   }
 
   switch (permission) {

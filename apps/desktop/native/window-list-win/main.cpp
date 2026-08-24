@@ -132,6 +132,7 @@
 #include <dwmapi.h>
 #include <psapi.h>
 #include <shellapi.h>
+#include <shlobj.h>  // DROPFILES (declared by shlobj_core.h)
 #include <shobjidl.h>
 #include <wincodec.h>
 

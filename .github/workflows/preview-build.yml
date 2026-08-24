@@ -30,68 +30,6 @@ jobs:
         with:
           node-version: "24.14.1"
 
-      # Preview DMGs use the SAME controlled ffmpeg as releases. They used to
-      # build one locally from an in-repo script whose flags had drifted, so a
-      # preview DMG and the release DMG from the same commit shipped different
-      # codec sets — that divergence hid a missing PNG decoder in released
-      # builds. See docs/ffmpeg-build-reference.md.
-      - name: Create FFmpeg build repo token
-        id: ffmpeg-builds-token
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ vars.FFMPEG_BUILDS_APP_CLIENT_ID }}
-          private-key: ${{ secrets.FFMPEG_BUILDS_APP_PRIVATE_KEY }}
-          owner: pwrdrvr
-          repositories: pwrsnap-ffmpeg-builds
-          permission-actions: read
-          permission-contents: read
-
-      - name: Download controlled macOS FFmpeg artifact
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.ffmpeg-builds-token.outputs.token }}
-          FFMPEG_BUILD_REPO: pwrdrvr/pwrsnap-ffmpeg-builds
-          FFMPEG_BUILD_WORKFLOW: build.yml
-          # Keep in lockstep with the two FFMPEG_BUILD_SHA pins in release.yml.
-          FFMPEG_BUILD_SHA: 3d775403a83990a2ad9503d865f5d481d9c0316a
-          FFMPEG_ARTIFACT_NAME: ffmpeg-8.1.1-macos-universal
-        run: |
-          set -euo pipefail
-          run_id="$(
-            gh run list \
-              --repo "$FFMPEG_BUILD_REPO" \
-              --workflow "$FFMPEG_BUILD_WORKFLOW" \
-              --branch main \
-              --limit 100 \
-              --json databaseId,headSha,conclusion \
-              --jq ".[] | select(.headSha == \"$FFMPEG_BUILD_SHA\" and .conclusion == \"success\") | .databaseId" \
-              | head -n 1
-          )"
-          if [ -z "$run_id" ]; then
-            echo "::error::No successful $FFMPEG_BUILD_WORKFLOW run found for $FFMPEG_BUILD_REPO@$FFMPEG_BUILD_SHA" >&2
-            exit 1
-          fi
-          dir="$RUNNER_TEMP/pwrsnap-ffmpeg-artifact"
-          rm -rf "$dir" && mkdir -p "$dir"
-          gh run download "$run_id" --repo "$FFMPEG_BUILD_REPO" --name "$FFMPEG_ARTIFACT_NAME" --dir "$dir"
-          mkdir -p apps/desktop/build/ffmpeg apps/desktop/build/ffmpeg-source
-          cp "$dir/ffmpeg" apps/desktop/build/ffmpeg/ffmpeg
-          chmod 755 apps/desktop/build/ffmpeg/ffmpeg
-          cp "$dir"/source/ffmpeg-*.tar.xz apps/desktop/build/ffmpeg-source/
-          cp "$dir"/source/ffmpeg-*.tar.xz.sha256 apps/desktop/build/ffmpeg-source/
-          cp "$dir/manifest.json" apps/desktop/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-manifest.json
-          cp "$dir/SOURCE-OFFER.txt" apps/desktop/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-SOURCE-OFFER.txt
-          cp "$dir/LGPL-NOTICE.txt" apps/desktop/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-LGPL-NOTICE.txt
-
-          # Preview DMGs bundle the same THIRD_PARTY_LICENSES the release does,
-          # so run the same artifact-vs-notice reconciliation the signing jobs
-          # run. A PR that repins the build repo to a new FFmpeg version fails
-          # here, rather than at tag time.
-          node scripts/check-bundled-ffmpeg-notice.mjs \
-            --manifest "$dir/manifest.json" \
-            --notice THIRD_PARTY_LICENSES \
-            --source-dir "$dir/source"
-
       - name: Compute preview version
         id: version
         run: |
@@ -111,11 +49,98 @@ jobs:
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
 
-      - name: Build native helpers
-        run: pnpm --filter @pwrsnap/desktop build:native
+      # release.mjs deliberately removes FFmpeg from a newly prepared stage so
+      # a stale workspace binary can never slip into a package. Prepare first,
+      # then inject the public, hash-pinned release payload below.
+      - name: Prepare preview package stage
+        run: node apps/desktop/scripts/release.mjs --prepare-only
+
+      # Pull-request workflows must not enter signing environments or receive
+      # the private build-repo GitHub App credentials. v1.1.0-alpha.4 publicly
+      # shipped the exact vetted FFmpeg 8.1.1 build; pinning both the release ZIP
+      # and its extracted signed helper makes asset replacement fail closed.
+      - name: Stage controlled macOS FFmpeg from public release
+        shell: bash
+        env:
+          FFMPEG_RELEASE_BASE_URL: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.0-alpha.4
+          FFMPEG_RELEASE_PAYLOAD: PwrSnap-1.1.0-alpha.4-universal-mac.zip
+          FFMPEG_RELEASE_PAYLOAD_SHA256: 607c1ac88e2740d805780e5c3d69d5a31c675ee12f1ca5b9bc0f7ad85f5b9d15
+          FFMPEG_SIGNED_BINARY_SHA256: e058fa321d48b686e586bc337b1e9876f3b9cbfc34ad6ac623a6938de4e9a868
+          FFMPEG_MANIFEST_ASSET: ffmpeg-8.1.1-macos-universal-manifest.json
+          FFMPEG_MANIFEST_ASSET_SHA256: fd7fe3f07c9c66b344d293f9a8fd3a48b9b30cf5bc5e441d59eb0f967e4db18d
+          FFMPEG_SOURCE_ASSET: ffmpeg-8.1.1.tar.xz
+          FFMPEG_SOURCE_ASSET_SHA256: b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3
+          FFMPEG_SOURCE_SUM_ASSET: ffmpeg-8.1.1.tar.xz.sha256
+          FFMPEG_SOURCE_SUM_ASSET_SHA256: 7cb9f14272b77f0536fef34c1e3cd39be63760aa706c813d90c58b54e084ca93
+          FFMPEG_SOURCE_OFFER_ASSET: ffmpeg-8.1.1-macos-universal-SOURCE-OFFER.txt
+          FFMPEG_SOURCE_OFFER_ASSET_SHA256: 8e10bc94b7788ca035da88bff30b39fe86c3683d660ffdf2ff46bc99bb1403ed
+          FFMPEG_LGPL_NOTICE_ASSET: ffmpeg-8.1.1-macos-universal-LGPL-NOTICE.txt
+          FFMPEG_LGPL_NOTICE_ASSET_SHA256: 9f0c03003dfcce4ecf42a33053f551adef029986dd7315914e0f1d70143ccc29
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/pwrsnap-ffmpeg-public-release"
+          stage="apps/desktop/release-stage"
+          mkdir -p "$dir" "$stage/build/ffmpeg" "$stage/build/ffmpeg-source"
+
+          download_and_verify() {
+            local name="$1"
+            local expected="$2"
+            local target="$dir/$name"
+            curl --fail --location --retry 3 --retry-all-errors \
+              --output "$target" "$FFMPEG_RELEASE_BASE_URL/$name"
+            local actual
+            actual="$(shasum -a 256 "$target" | awk '{print $1}')"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::$name SHA-256 mismatch: expected $expected, got $actual" >&2
+              exit 1
+            fi
+          }
+
+          download_and_verify "$FFMPEG_RELEASE_PAYLOAD" "$FFMPEG_RELEASE_PAYLOAD_SHA256"
+          download_and_verify "$FFMPEG_MANIFEST_ASSET" "$FFMPEG_MANIFEST_ASSET_SHA256"
+          download_and_verify "$FFMPEG_SOURCE_ASSET" "$FFMPEG_SOURCE_ASSET_SHA256"
+          download_and_verify "$FFMPEG_SOURCE_SUM_ASSET" "$FFMPEG_SOURCE_SUM_ASSET_SHA256"
+          download_and_verify "$FFMPEG_SOURCE_OFFER_ASSET" "$FFMPEG_SOURCE_OFFER_ASSET_SHA256"
+          download_and_verify "$FFMPEG_LGPL_NOTICE_ASSET" "$FFMPEG_LGPL_NOTICE_ASSET_SHA256"
+
+          ffmpeg_entry="PwrSnap.app/Contents/Resources/PwrSnapFFmpeg"
+          if ! unzip -Z1 "$dir/$FFMPEG_RELEASE_PAYLOAD" | grep -Fxq "$ffmpeg_entry"; then
+            echo "::error::$FFMPEG_RELEASE_PAYLOAD is missing $ffmpeg_entry" >&2
+            exit 1
+          fi
+          unzip -p "$dir/$FFMPEG_RELEASE_PAYLOAD" "$ffmpeg_entry" \
+            > "$stage/build/ffmpeg/ffmpeg"
+          chmod 755 "$stage/build/ffmpeg/ffmpeg"
+          signed_binary_sha="$(shasum -a 256 "$stage/build/ffmpeg/ffmpeg" | awk '{print $1}')"
+          if [ "$signed_binary_sha" != "$FFMPEG_SIGNED_BINARY_SHA256" ]; then
+            echo "::error::Extracted signed FFmpeg SHA-256 mismatch." >&2
+            exit 1
+          fi
+          codesign --verify --strict --verbose=2 "$stage/build/ffmpeg/ffmpeg"
+          lipo "$stage/build/ffmpeg/ffmpeg" -verify_arch x86_64 arm64
+
+          cp "$dir/$FFMPEG_MANIFEST_ASSET" "$stage/build/ffmpeg-source/"
+          cp "$dir/$FFMPEG_SOURCE_ASSET" "$stage/build/ffmpeg-source/"
+          cp "$dir/$FFMPEG_SOURCE_SUM_ASSET" "$stage/build/ffmpeg-source/"
+          cp "$dir/$FFMPEG_SOURCE_OFFER_ASSET" "$stage/build/ffmpeg-source/"
+          cp "$dir/$FFMPEG_LGPL_NOTICE_ASSET" "$stage/build/ffmpeg-source/"
+          (cd "$stage/build/ffmpeg-source" && shasum -a 256 -c "$FFMPEG_SOURCE_SUM_ASSET")
+
+          encoder_help="$("$stage/build/ffmpeg/ffmpeg" -hide_banner -h encoder=h264_videotoolbox 2>&1)"
+          if [[ "$encoder_help" != *"Encoder h264_videotoolbox"* ]]; then
+            echo "::error::Public-release FFmpeg cannot load encoder h264_videotoolbox." >&2
+            exit 1
+          fi
+
+          # Preview DMGs bundle the same THIRD_PARTY_LICENSES and source offer
+          # as releases. Reconcile the public manifest against those bytes.
+          node scripts/check-bundled-ffmpeg-notice.mjs \
+            --manifest "$stage/build/ffmpeg-source/$FFMPEG_MANIFEST_ASSET" \
+            --notice THIRD_PARTY_LICENSES \
+            --source-dir "$stage/build/ffmpeg-source"
 
       - name: Build preview package (unsigned)
-        run: pnpm --filter @pwrsnap/desktop package:dryrun
+        run: node apps/desktop/scripts/release.mjs --sign-stage-only --dryrun
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v7
@@ -123,7 +148,7 @@ jobs:
           name: PwrSnap-${{ steps.version.outputs.version }}-preview
           path: |
             apps/desktop/release-stage/dist/*.dmg
-            apps/desktop/build/ffmpeg-source/*
+            apps/desktop/release-stage/build/ffmpeg-source/*
           retention-days: 14
 
   preview-windows:
@@ -148,79 +173,73 @@ jobs:
         with:
           node-version: "24.14.1"
 
-      # Preview installers must exercise the same controlled Windows FFmpeg
-      # artifact as tagged releases. Otherwise GIF happens to work while MP4
-      # silently depends on a runner/user PATH and the preview is not a valid
-      # test of what PwrSnap ships.
-      - name: Create Windows FFmpeg build repo token
-        id: windows-ffmpeg-builds-token
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ vars.FFMPEG_BUILDS_APP_CLIENT_ID }}
-          private-key: ${{ secrets.FFMPEG_BUILDS_APP_PRIVATE_KEY }}
-          owner: pwrdrvr
-          repositories: pwrsnap-ffmpeg-builds
-          permission-actions: read
-          permission-contents: read
-
-      - name: Download controlled Windows FFmpeg artifact
+      # Pull-request code receives no build-repo or signing secrets. Instead,
+      # extract the exact FFmpeg binary already shipped inside the public,
+      # signed v1.1.0-alpha.4 installer and pin the whole installer by SHA-256.
+      - name: Stage controlled Windows FFmpeg from public release
         shell: pwsh
         env:
-          GH_TOKEN: ${{ steps.windows-ffmpeg-builds-token.outputs.token }}
-          FFMPEG_BUILD_REPO: pwrdrvr/pwrsnap-ffmpeg-builds
-          FFMPEG_BUILD_WORKFLOW: build.yml
-          # Keep in lockstep with release.yml and the macOS preview job.
-          FFMPEG_BUILD_SHA: 3d775403a83990a2ad9503d865f5d481d9c0316a
-          FFMPEG_ARTIFACT_NAME: ffmpeg-8.1.1-windows-x64
+          FFMPEG_RELEASE_BASE_URL: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.0-alpha.4
+          FFMPEG_RELEASE_PAYLOAD: PwrSnap-1.1.0-alpha.4-windows-x64-setup.exe
+          FFMPEG_RELEASE_PAYLOAD_SHA256: 88b821460701a3012a72f63225f4ed788024995f51c5b8017c89fe46f5962246
+          FFMPEG_MANIFEST_ASSET: ffmpeg-8.1.1-macos-universal-manifest.json
+          FFMPEG_MANIFEST_ASSET_SHA256: fd7fe3f07c9c66b344d293f9a8fd3a48b9b30cf5bc5e441d59eb0f967e4db18d
         run: |
           $ErrorActionPreference = "Stop"
-          $runsJson = gh run list `
-            --repo $env:FFMPEG_BUILD_REPO `
-            --workflow $env:FFMPEG_BUILD_WORKFLOW `
-            --commit $env:FFMPEG_BUILD_SHA `
-            --limit 20 `
-            --json databaseId,headSha,conclusion,status
-          $run = $runsJson |
-            ConvertFrom-Json |
-            Where-Object { $_.headSha -eq $env:FFMPEG_BUILD_SHA -and $_.conclusion -eq "success" } |
-            Select-Object -First 1
-          if ($null -eq $run) {
-            throw "No successful $env:FFMPEG_BUILD_WORKFLOW run found for $env:FFMPEG_BUILD_REPO@$env:FFMPEG_BUILD_SHA"
-          }
-
+          $ProgressPreference = "SilentlyContinue"
           $dir = Join-Path $env:RUNNER_TEMP "pwrsnap-windows-ffmpeg-preview"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          gh run download $run.databaseId `
-            --repo $env:FFMPEG_BUILD_REPO `
-            --name $env:FFMPEG_ARTIFACT_NAME `
-            --dir $dir
 
-          $manifestPath = Join-Path $dir "manifest.json"
-          $ffmpeg = Join-Path $dir "ffmpeg.exe"
-          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf) -or
-              -not (Test-Path -LiteralPath $ffmpeg -PathType Leaf)) {
-            throw "Controlled Windows FFmpeg artifact is incomplete."
-          }
-          $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
-          if ($manifest.platform -ne "windows" -or $manifest.arch -ne "x64" -or
-              $manifest.binary -ne "ffmpeg.exe") {
-            throw "Windows FFmpeg artifact target mismatch: $($manifest.platform)/$($manifest.arch)/$($manifest.binary)"
-          }
-          $actual = (Get-FileHash -Algorithm SHA256 $ffmpeg).Hash.ToLowerInvariant()
-          if ($actual -ne ([string]$manifest.sha256).ToLowerInvariant()) {
-            throw "Windows FFmpeg artifact hash mismatch."
-          }
-          foreach ($encoder in @("h264_mf", "aac")) {
-            if ($manifest.requiredEncoders -notcontains $encoder) {
-              throw "Windows FFmpeg manifest is missing required encoder check: $encoder"
+          function Get-VerifiedReleaseAsset([string]$Name, [string]$ExpectedSha256) {
+            $target = Join-Path $dir $Name
+            Invoke-WebRequest `
+              -Uri "$env:FFMPEG_RELEASE_BASE_URL/$Name" `
+              -OutFile $target `
+              -MaximumRetryCount 3
+            $actual = (Get-FileHash -Algorithm SHA256 $target).Hash.ToLowerInvariant()
+            if ($actual -ne $ExpectedSha256.ToLowerInvariant()) {
+              throw "$Name SHA-256 mismatch: expected $ExpectedSha256, got $actual"
             }
+            return $target
           }
 
-          # Ask the downloaded executable itself, not only its manifest. This
-          # is a durable diagnostic for a corrupt/wrong binary before packaging.
+          $installer = Get-VerifiedReleaseAsset `
+            $env:FFMPEG_RELEASE_PAYLOAD `
+            $env:FFMPEG_RELEASE_PAYLOAD_SHA256
+          $manifestPath = Get-VerifiedReleaseAsset `
+            $env:FFMPEG_MANIFEST_ASSET `
+            $env:FFMPEG_MANIFEST_ASSET_SHA256
+
+          $sevenZip = (Get-Command "7z").Source
+          $installerDir = Join-Path $dir "installer"
+          New-Item -ItemType Directory -Force -Path $installerDir | Out-Null
+          & $sevenZip x -y "-o$installerDir" $installer
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract the pinned public Windows installer."
+          }
+
+          $embeddedArchive = Join-Path $installerDir '$PLUGINSDIR/app-64.7z'
+          if (-not (Test-Path -LiteralPath $embeddedArchive -PathType Leaf)) {
+            throw "Pinned public Windows installer is missing its embedded app-64.7z payload."
+          }
+          $appDir = Join-Path $dir "app"
+          New-Item -ItemType Directory -Force -Path $appDir | Out-Null
+          & $sevenZip x -y "-o$appDir" $embeddedArchive "resources/PwrSnapFFmpeg.exe"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract PwrSnapFFmpeg.exe from the pinned public installer."
+          }
+
+          $ffmpeg = Join-Path $appDir "resources/PwrSnapFFmpeg.exe"
+          if (-not (Test-Path -LiteralPath $ffmpeg -PathType Leaf)) {
+            throw "Pinned public Windows installer contains no resources/PwrSnapFFmpeg.exe."
+          }
+
+          # Ask the extracted executable itself, then run the production-args
+          # encode/decode smoke below. The release manifest is separately
+          # hash-pinned for notice/version reconciliation.
           $encoderHelp = (& $ffmpeg -hide_banner -h encoder=h264_mf 2>&1 | Out-String)
           if ($LASTEXITCODE -ne 0 -or $encoderHelp -notmatch "Encoder h264_mf") {
-            throw "Downloaded Windows FFmpeg cannot load encoder h264_mf."
+            throw "Public-release Windows FFmpeg cannot load encoder h264_mf."
           }
 
           node scripts/check-bundled-ffmpeg-notice.mjs `

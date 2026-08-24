@@ -100,6 +100,7 @@ describe("Windows release configuration", () => {
     // format called "CF_HDROP" is not equivalent and must never replace this
     // Win32 write/read path.
     expect(source).toContain("--write-file-clipboard");
+    expect(source).toContain("#include <shlobj.h>");
     expect(source).toContain('static_assert(CF_HDROP == 15');
     expect(source).toContain("SetClipboardData(CF_HDROP, dropMemory)");
     expect(source).toContain("drop->fWide = TRUE");
@@ -201,6 +202,64 @@ describe("Windows release configuration", () => {
     expect(workflow).not.toContain("WINDOWS_UNSIGNED_RELEASE");
     expect(workflow).not.toContain("WIN_CSC_LINK");
     expect(workflow).not.toContain("FFMPEG_BUILDS_PAT");
+  });
+
+  test("pull-request previews use hash-pinned public FFmpeg release payloads without secrets", () => {
+    const preview = read(".github/workflows/preview-build.yml");
+
+    // PR-authored workflow code must never receive the private build-repo App
+    // credentials or enter a signing environment. The tagged release workflow
+    // retains that protected path; previews consume only already-public bytes.
+    expect(preview).not.toContain("actions/create-github-app-token");
+    expect(preview).not.toContain("FFMPEG_BUILDS_APP_CLIENT_ID");
+    expect(preview).not.toContain("FFMPEG_BUILDS_APP_PRIVATE_KEY");
+    expect(preview).not.toContain("pwrsnap-ffmpeg-builds");
+    expect(preview).not.toContain("gh run download");
+    expect(preview).not.toMatch(/\$\{\{\s*(?:secrets|vars)\./);
+
+    expect(
+      preview.match(
+        /FFMPEG_RELEASE_BASE_URL:\s*https:\/\/github\.com\/pwrdrvr\/PwrSnap\/releases\/download\/v1\.1\.0-alpha\.4/g,
+      ) ?? [],
+    ).toHaveLength(2);
+    expect(preview).toContain("PwrSnap-1.1.0-alpha.4-universal-mac.zip");
+    expect(preview).toContain(
+      "607c1ac88e2740d805780e5c3d69d5a31c675ee12f1ca5b9bc0f7ad85f5b9d15",
+    );
+    expect(preview).toContain(
+      "e058fa321d48b686e586bc337b1e9876f3b9cbfc34ad6ac623a6938de4e9a868",
+    );
+    expect(preview).toContain("PwrSnap-1.1.0-alpha.4-windows-x64-setup.exe");
+    expect(preview).toContain(
+      "88b821460701a3012a72f63225f4ed788024995f51c5b8017c89fe46f5962246",
+    );
+    expect(preview.match(/FFMPEG_RELEASE_PAYLOAD_SHA256:\s*[0-9a-f]{64}/g) ?? []).toHaveLength(2);
+    expect(preview).toContain("shasum -a 256");
+    expect(preview).toContain("Get-FileHash -Algorithm SHA256");
+
+    // release.mjs removes stale FFmpeg while preparing the stage. Injection
+    // must therefore happen between prepare and the actual ad-hoc package,
+    // never before a one-shot package:dryrun invocation that would delete it.
+    expect(preview.indexOf("Prepare preview package stage")).toBeLessThan(
+      preview.indexOf("Stage controlled macOS FFmpeg from public release"),
+    );
+    expect(preview.indexOf("Stage controlled macOS FFmpeg from public release")).toBeLessThan(
+      preview.indexOf("Build preview package (unsigned)"),
+    );
+    expect(preview).toContain("release.mjs --prepare-only");
+    expect(preview).toContain("release.mjs --sign-stage-only --dryrun");
+    expect(preview).not.toContain("package:dryrun");
+
+    // Keep both expensive product checks: real installers are still built and
+    // the extracted Windows binary still performs production-args encodes.
+    expect(preview).toContain("Build preview installer (unsigned)");
+    expect(preview).toContain("windows-ffmpeg-export-smoke.test.ts");
+    expect(preview.indexOf("Stage controlled Windows FFmpeg from public release")).toBeLessThan(
+      preview.indexOf("windows-ffmpeg-export-smoke.test.ts"),
+    );
+    expect(preview.indexOf("windows-ffmpeg-export-smoke.test.ts")).toBeLessThan(
+      preview.indexOf("Build preview installer (unsigned)"),
+    );
   });
 
   test("the signed Windows installer also publishes under a stable alias", () => {
@@ -369,10 +428,10 @@ describe("Windows release configuration", () => {
   });
 
   test("every FFmpeg build pin agrees across workflows and docs", () => {
-    // The macOS + Windows release jobs and both preview jobs pin
-    // FFMPEG_BUILD_SHA independently. If they drift, platforms or preview
-    // installers ship binaries built from different sources — exactly the
-    // divergence that hid the missing PNG decoder.
+    // The protected macOS + Windows release jobs and the reference doc pin the
+    // private build-repo commit independently. PR previews intentionally use
+    // no private-repo credential; the public-release digest contract above
+    // pins their exact derived payloads instead.
     const found = [];
 
     const workflowDir = resolve(repoRoot, ".github/workflows");
@@ -488,7 +547,7 @@ describe("Windows release configuration", () => {
     expect(linuxSection).not.toMatch(/ffmpeg-[0-9][0-9A-Za-z.+-]*-linux/);
   });
 
-  test("all three signing/preview jobs reconcile the artifact against the shipped notice", () => {
+  test("release signing and public preview jobs reconcile artifacts against the shipped notice", () => {
     const workflow = read(".github/workflows/release.yml");
     const preview = read(".github/workflows/preview-build.yml");
     const archiveScript = read("scripts/release/archive-windows-signing-input.ps1");
@@ -506,7 +565,7 @@ describe("Windows release configuration", () => {
     expect(preview).toContain('PWRSNAP_WINDOWS_FFMPEG_SMOKE: "1"');
     expect(preview).toContain("windows-ffmpeg-export-smoke.test.ts");
     expect(preview.indexOf("windows-ffmpeg-export-smoke.test.ts")).toBeGreaterThan(
-      preview.indexOf("Download controlled Windows FFmpeg artifact"),
+      preview.indexOf("Stage controlled Windows FFmpeg from public release"),
     );
     expect(preview.indexOf("windows-ffmpeg-export-smoke.test.ts")).toBeLessThan(
       preview.indexOf("Build preview installer (unsigned)"),

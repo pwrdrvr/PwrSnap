@@ -11,7 +11,6 @@ import { join, win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   __buildPrivilegedPrefixesForTest,
-  __buildLexicalOnlyPrivilegedPrefixesForTest,
   __buildPrivilegedPolicyForTest,
   __canonicalDarwinTempDirForTest,
   __isExpectedDarwinTempDirForTest,
@@ -44,6 +43,22 @@ describe("safe pasted files", () => {
     await writeFile(file, expected);
     await expect(readSafePastedFile(file)).resolves.toEqual(expected);
   });
+
+  test.runIf(process.platform === "win32")(
+    "normal file succeeds when Windows denies inspection of every built-in root",
+    async () => {
+      const file = join(dir, "ordinary.png");
+      const expected = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+      await writeFile(file, expected);
+      __setPrivilegedRootRealpathForTest(async () => {
+        throw Object.assign(new Error("protected by Windows"), {
+          code: "EACCES"
+        });
+      });
+
+      await expect(readSafePastedFile(file)).resolves.toEqual(expected);
+    }
+  );
 
   test("refuses an explicit leaf symlink", async () => {
     const target = join(dir, "target.png");
@@ -323,7 +338,7 @@ describe("cross-platform privileged roots", () => {
     );
   });
 
-  test("Windows inaccessible protected defaults remain lexical deny roots without inspection", async () => {
+  test("Windows inaccessible built-in defaults retain lexical coverage without disabling safe input", async () => {
     const options = {
       platform: "win32" as const,
       homeDir: "C:\\Users\\Alice",
@@ -331,17 +346,19 @@ describe("cross-platform privileged roots", () => {
         SystemRoot: "C:\\Windows"
       }
     };
-    const lexicalOnly = __buildLexicalOnlyPrivilegedPrefixesForTest(options);
-    expect(lexicalOnly).toEqual([
+    const defaults = __buildPrivilegedPrefixesForTest(options);
+    const inaccessible = [
       "C:\\Recovery",
-      "C:\\System Volume Information"
-    ]);
+      "C:\\System Volume Information",
+      "C:\\Users\\Alice\\AppData\\Roaming\\Microsoft\\Credentials",
+      "C:\\Users\\Alice\\AppData\\Local\\Microsoft\\Vault"
+    ];
+    expect(defaults).toEqual(expect.arrayContaining(inaccessible));
 
-    const ordinaryCanonicalRoot = "C:\\Users\\Alice\\.ssh";
     const inspected: string[] = [];
     __setPrivilegedRootRealpathForTest(async (root) => {
       inspected.push(win32.normalize(root));
-      if (lexicalOnly.includes(win32.normalize(root))) {
+      if (inaccessible.includes(win32.normalize(root))) {
         throw Object.assign(new Error("protected by Windows"), {
           code: "EACCES"
         });
@@ -349,15 +366,13 @@ describe("cross-platform privileged roots", () => {
       return win32.normalize(root);
     });
 
-    const policy = await __buildPrivilegedPolicyForTest(
-      [ordinaryCanonicalRoot, ...lexicalOnly],
-      { platform: "win32", lexicalOnlyPrefixes: lexicalOnly }
-    );
+    const policy = await __buildPrivilegedPolicyForTest(defaults, {
+      platform: "win32",
+      retainLexicalOnInspectionFailurePrefixes: defaults
+    });
 
-    expect(inspected).toEqual([ordinaryCanonicalRoot]);
-    expect(policy.prefixes).toEqual(
-      expect.arrayContaining([ordinaryCanonicalRoot, ...lexicalOnly])
-    );
+    expect(inspected).toEqual(expect.arrayContaining(inaccessible));
+    expect(policy.prefixes).toEqual(expect.arrayContaining(inaccessible));
     expect(
       __isPrivilegedPathForTest(
         "C:\\System Volume Information\\tracking.log",
@@ -380,7 +395,7 @@ describe("cross-platform privileged roots", () => {
     await expect(
       __buildPrivilegedPolicyForTest([protectedRoot], {
         platform: "win32",
-        lexicalOnlyPrefixes: []
+        retainLexicalOnInspectionFailurePrefixes: []
       })
     ).rejects.toMatchObject({
       name: "PrivilegedPolicyInspectionError"

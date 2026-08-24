@@ -104,36 +104,12 @@ function normalizedPolicyKey(
     : normalized;
 }
 
-function windowsSystemVolumeRoot(
-  homeDir: string,
-  env: Environment
-): string {
+function windowsSystemVolumeRoot(homeDir: string, env: Environment): string {
   const homeVolumeRoot = win32.parse(homeDir).root;
   const systemRoot =
     envValue(env, "SystemRoot", "WINDIR") ??
     win32.resolve(homeVolumeRoot, "Windows");
   return win32.parse(systemRoot).root || homeVolumeRoot;
-}
-
-/**
- * Windows protects these well-known deny locations from traversal even by
- * ordinary users. Keep them as lexical/candidate-canonical deny roots, but do
- * not realpath the roots themselves during policy construction: access denial
- * is their expected posture and must not disable every unrelated paste.
- */
-export function __buildLexicalOnlyPrivilegedPrefixesForTest(
-  options: PrivilegedPrefixBuildOptions
-): readonly string[] {
-  if (options.platform !== "win32") return [];
-  const env = options.env ?? {};
-  const volumeRoot = windowsSystemVolumeRoot(options.homeDir, env);
-  return uniqueNormalized(
-    [
-      win32.resolve(volumeRoot, "Recovery"),
-      win32.resolve(volumeRoot, "System Volume Information")
-    ],
-    "win32"
-  );
 }
 
 /** Pure cross-platform builder, exported so Windows policy is testable on CI. */
@@ -325,15 +301,20 @@ function isAbsentPathError(cause: unknown): boolean {
 }
 
 async function canonicalizePrivilegedRoot(
-  rootPath: string
+  rootPath: string,
+  retainLexicalOnInspectionFailure: boolean
 ): Promise<string | null> {
   try {
     return await privilegedRootRealpath(rootPath);
   } catch (cause) {
-    // A configured/common root may legitimately not exist on this machine.
-    // Every other failure means the policy could not prove where the root
-    // points, so omitting it would fail open.
-    if (isAbsentPathError(cause)) return null;
+    // Every root remains in the lexical policy. Built-in roots are also
+    // canonicalized when possible, but Windows commonly denies inspection of
+    // its own credential/system stores. Retaining the lexical root is the
+    // safely verified fallback for those defaults; a configured/test root has
+    // no such provenance and remains strict on non-absence errors.
+    if (isAbsentPathError(cause) || retainLexicalOnInspectionFailure) {
+      return null;
+    }
     throw new PrivilegedPolicyInspectionError();
   }
 }
@@ -396,21 +377,22 @@ async function buildPolicy(
   prefixes: readonly string[],
   options: {
     platform?: PrivilegedPathPlatform;
-    lexicalOnlyPrefixes?: readonly string[];
+    retainLexicalOnInspectionFailurePrefixes?: readonly string[];
   } = {}
 ): Promise<PrivilegedPathCheckOptions> {
   const platform = options.platform ?? runtimePlatform();
-  const lexicalOnlyKeys = new Set(
-    (options.lexicalOnlyPrefixes ?? [])
+  const retainLexicalKeys = new Set(
+    (options.retainLexicalOnInspectionFailurePrefixes ?? [])
       .map((prefix) => normalizedPolicyKey(prefix, platform))
       .filter((key): key is string => key !== null)
   );
   const canonical = await Promise.all(
     prefixes.map(async (prefix) => {
       const key = normalizedPolicyKey(prefix, platform);
-      return key !== null && lexicalOnlyKeys.has(key)
-        ? null
-        : await canonicalizePrivilegedRoot(prefix);
+      return await canonicalizePrivilegedRoot(
+        prefix,
+        key !== null && retainLexicalKeys.has(key)
+      );
     })
   );
   const roots = uniqueNormalized(
@@ -432,7 +414,7 @@ export async function __buildPrivilegedPolicyForTest(
   prefixes: readonly string[],
   options: {
     platform: PrivilegedPathPlatform;
-    lexicalOnlyPrefixes?: readonly string[];
+    retainLexicalOnInspectionFailurePrefixes?: readonly string[];
   }
 ): Promise<PrivilegedPathCheckOptions> {
   return await buildPolicy(prefixes, options);
@@ -449,10 +431,14 @@ async function effectivePolicy(): Promise<PrivilegedPathCheckOptions> {
     homeDir: homedir(),
     env: process.env
   };
-  return await buildPolicy(defaultPrefixes(), {
+  const prefixes = defaultPrefixes();
+  return await buildPolicy(prefixes, {
     platform: options.platform,
-    lexicalOnlyPrefixes:
-      __buildLexicalOnlyPrivilegedPrefixesForTest(options)
+    // Built-ins have stable lexical meaning even when their target cannot be
+    // inspected. Candidate canonicalization remains strict and runs at every
+    // verified-file boundary.
+    retainLexicalOnInspectionFailurePrefixes:
+      options.platform === "win32" ? prefixes : []
   });
 }
 

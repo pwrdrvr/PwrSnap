@@ -39,13 +39,15 @@ unclassified errors reject the ingest with a path-free
 present" would silently remove a configured security boundary precisely when
 the operating system could not prove its target.
 
-Windows' `Recovery` and `System Volume Information` are the deliberate
-exception to root canonicalization. They are well-known system-volume deny
-locations whose normal ACL posture prevents an ordinary process from
-realpathing the root. They remain lexical roots, and every candidate is still
-canonicalized and checked against them before and after open. Other configured
-or common deny roots retain fail-closed canonical inspection; an access or I/O
-error there cannot silently remove their symlink target from policy.
+Built-in deny roots always retain their normalized lexical coverage and are
+canonicalized when the OS permits it. Windows commonly denies ordinary
+processes from inspecting `Recovery`, `System Volume Information`, and several
+credential-vault roots; those expected root-inspection failures keep the
+lexical policy instead of globally disabling unrelated paste/drop. Candidate
+paths are still canonicalized and checked before and after open, so an
+uninspectable candidate or ambiguous parent alias fails closed. Explicit
+test/configured roots do not inherit the built-in provenance: their non-absence
+inspection errors still fail with `policy_inspection_failed`.
 
 ## Raster decode boundary
 

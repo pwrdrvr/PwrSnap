@@ -46,13 +46,26 @@ describe("Windows release configuration", () => {
     expect(script).toContain("--config.win.azureSignOptions.publisherName");
     expect(script).toContain("--config.node-linker=hoisted");
     expect(script).toContain("PWRSNAP_ASAR_MODULE_ROOT");
+    expect(script).toContain("PWRSNAP_TARGET_ARCH: targetArch");
     expect(script).toContain("writeWindowsChecksums");
     expect(script).toContain("assertRequiredWindowsResources();");
     expect(script).toContain("build/native/window-list.exe");
     expect(script).toContain("PWRSNAP_WINDOWS_FFMPEG_PATH");
     expect(script).toContain('to: "PwrSnapFFmpeg.exe"');
+    expect(script).toContain('from "./sharp-platform-packages.mjs"');
     expect(script).not.toContain("WIN_CSC_LINK");
     expect(script).not.toContain("--unsigned-release");
+
+    const injection = script.indexOf("injectWin32PlatformPackages();");
+    const pruning = script.indexOf("pruneSharpNativePackages({", injection);
+    const nativeRebuild = script.indexOf("prepare staged better-sqlite3", pruning);
+    const prepareOnlyExit = script.indexOf("if (prepareOnly) {", pruning);
+    const electronBuilder = script.indexOf("const builderCli = resolveElectronBuilderCli();", pruning);
+    expect(injection).toBeGreaterThan(-1);
+    expect(pruning).toBeGreaterThan(injection);
+    expect(nativeRebuild).toBeGreaterThan(pruning);
+    expect(prepareOnlyExit).toBeGreaterThan(pruning);
+    expect(electronBuilder).toBeGreaterThan(pruning);
   });
 
   test("macOS release preparation always defers FFmpeg to the injected artifact", () => {
@@ -340,6 +353,9 @@ describe("Windows release configuration", () => {
     const tarList = workflow.split("tar -czf")[1].split("sha256=")[0];
     expect(tarList, "macOS signing input must pack the checker").toContain(
       "scripts/check-bundled-ffmpeg-notice.mjs",
+    );
+    expect(tarList, "macOS signing input must pack Sharp layout helpers").toContain(
+      "apps/desktop/scripts/sharp-platform-packages.mjs",
     );
     expect(archiveScript).toContain("scripts/check-bundled-ffmpeg-notice.mjs");
   });

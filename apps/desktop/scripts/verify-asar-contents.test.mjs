@@ -1,13 +1,19 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   findForbiddenAsarEntries,
+  findForeignSharpAsarPackages,
+  findForeignUnpackedNative,
   findMissingPackagedResources,
+  findMissingSharpAsarRuntime,
   findMissingUnpackedNative,
+  sharpEsmRuntimePaths,
   verifyAsarListing,
   verifyPackagedResources,
+  verifySharpAsarRuntime,
   verifyUnpackedNative,
 } from "./verify-asar-contents.mjs";
 
@@ -61,7 +67,65 @@ function writeUnpackedNativeFixtures(resources, fixtures = allUnpackedNativeFixt
   }
 }
 
+function windowsUnpackedRuntimeFixtures(arch) {
+  const packageRoot = `app.asar.unpacked/node_modules/@img/sharp-win32-${arch}`;
+  return [
+    `${packageRoot}/index.cjs`,
+    `${packageRoot}/package.json`,
+    `${packageRoot}/LICENSE`,
+    `${packageRoot}/lib/sharp-win32-${arch}-0.35.3.node`,
+    `${packageRoot}/lib/libvips-42.dll`,
+    `${packageRoot}/lib/libvips-cpp-8.18.3.dll`,
+    "app.asar.unpacked/node_modules/@img/colour/index.cjs",
+    "app.asar.unpacked/node_modules/better-sqlite3/electron-native/better_sqlite3.node"
+  ];
+}
+
+function windowsSharpAsarListing(arch) {
+  const packageRoot = `/node_modules/@img/sharp-win32-${arch}`;
+  return [
+    ...sharpEsmRuntimePaths.map((runtimePath) => `/node_modules/sharp/${runtimePath}`),
+    "/node_modules/sharp/package.json",
+    "/node_modules/sharp/LICENSE",
+    "/node_modules/@img/colour/package.json",
+    "/node_modules/@img/colour/index.cjs",
+    "/node_modules/@img/colour/color.cjs",
+    `${packageRoot}/index.cjs`,
+    `${packageRoot}/package.json`,
+    `${packageRoot}/LICENSE`,
+    `${packageRoot}/lib/sharp-win32-${arch}-0.35.3.node`
+  ];
+}
+
 describe("verify-asar-contents", () => {
+  test("pins the ESM export and every relative Sharp runtime module it reaches", () => {
+    const resolvedEntrypoint = fileURLToPath(import.meta.resolve("sharp"));
+    const sharpRoot = dirname(dirname(resolvedEntrypoint));
+    const manifestPath = join(sharpRoot, "package.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const importEntrypoint = manifest.exports?.["."]?.import?.default;
+    expect(importEntrypoint).toBe("./dist/index.mjs");
+    expect(resolvedEntrypoint).toBe(resolve(sharpRoot, importEntrypoint));
+
+    const reachable = new Set();
+    const visit = (modulePath) => {
+      const runtimePath = relative(sharpRoot, modulePath).split(sep).join("/");
+      if (reachable.has(runtimePath)) return;
+      reachable.add(runtimePath);
+      const source = readFileSync(modulePath, "utf8");
+      const relativeImport =
+        /\b(?:import|export)\s+(?:[^'"]*?\sfrom\s+)?["'](\.[^"']+)["']/g;
+      for (const match of source.matchAll(relativeImport)) {
+        const specifier = match[1];
+        if (!specifier.endsWith(".mjs")) continue;
+        visit(resolve(dirname(modulePath), specifier));
+      }
+    };
+    visit(resolvedEntrypoint);
+
+    expect([...reachable].sort()).toEqual([...sharpEsmRuntimePaths].sort());
+  });
+
   test("flags forbidden ASAR entries", () => {
     expect(
       findForbiddenAsarEntries([
@@ -128,15 +192,138 @@ describe("verify-asar-contents", () => {
     for (const name of ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "PwrSnapWindowList.exe"]) {
       writeResource(resources, name);
     }
-    writeUnpackedNativeFixtures(resources, [
-      "app.asar.unpacked/node_modules/@img/sharp-win32-x64/lib/sharp-win32-x64.node",
-      "app.asar.unpacked/node_modules/better-sqlite3/electron-native/better_sqlite3.node"
-    ]);
+    writeUnpackedNativeFixtures(resources, windowsUnpackedRuntimeFixtures("x64"));
 
     expect(findMissingPackagedResources(appPath, "win32")).toEqual([]);
     expect(findMissingUnpackedNative(appPath, "win32")).toEqual([]);
     expect(() => verifyPackagedResources(appPath, "win32")).not.toThrow();
     expect(() => verifyUnpackedNative(appPath, "win32")).not.toThrow();
+  });
+
+  test.each(["x64", "arm64"])(
+    "selects and verifies the win32-%s Sharp runtime",
+    (arch) => {
+      const { appPath, resources } = fakeWindowsApp();
+      writeUnpackedNativeFixtures(resources, windowsUnpackedRuntimeFixtures(arch));
+      const listing = windowsSharpAsarListing(arch);
+
+      expect(findMissingSharpAsarRuntime(listing, "win32", arch)).toEqual([]);
+      expect(findForeignSharpAsarPackages(listing, "win32", arch)).toEqual([]);
+      expect(findMissingUnpackedNative(appPath, "win32", arch)).toEqual([]);
+      expect(findForeignUnpackedNative(appPath, "win32", arch)).toEqual([]);
+      expect(() => verifySharpAsarRuntime(listing, "win32", arch)).not.toThrow();
+      expect(() => verifyUnpackedNative(appPath, "win32", arch)).not.toThrow();
+    }
+  );
+
+  test("rejects foreign Sharp native slices in both ASAR metadata and unpacked payload", () => {
+    const { appPath, resources } = fakeWindowsApp();
+    writeUnpackedNativeFixtures(resources, [
+      ...windowsUnpackedRuntimeFixtures("x64"),
+      "app.asar.unpacked/node_modules/@img/sharp-win32-arm64/lib/sharp-win32-arm64.node",
+      "app.asar.unpacked/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node"
+    ]);
+    const listing = [
+      ...windowsSharpAsarListing("x64"),
+      "/node_modules/@img/sharp-win32-arm64/index.cjs",
+      "/node_modules/@img/sharp-darwin-arm64/index.cjs"
+    ];
+
+    expect(findForeignSharpAsarPackages(listing, "win32", "x64")).toEqual([
+      "sharp-darwin-arm64",
+      "sharp-win32-arm64"
+    ]);
+    expect(findForeignUnpackedNative(appPath, "win32", "x64")).toEqual([
+      "sharp-darwin-arm64",
+      "sharp-win32-arm64"
+    ]);
+    expect(() => verifySharpAsarRuntime(listing, "win32", "x64")).toThrow(
+      /foreign Sharp native slice\(s\).*@img\/sharp-darwin-arm64.*@img\/sharp-win32-arm64/s
+    );
+    expect(() => verifyUnpackedNative(appPath, "win32", "x64")).toThrow(
+      /foreign Sharp native slice\(s\).*@img\/sharp-darwin-arm64.*@img\/sharp-win32-arm64/s
+    );
+  });
+
+  test("fails arm64 verification when the staged target slice is x64", () => {
+    const { appPath, resources } = fakeWindowsApp();
+    writeUnpackedNativeFixtures(resources, windowsUnpackedRuntimeFixtures("x64"));
+    const listing = windowsSharpAsarListing("x64");
+
+    expect(findMissingSharpAsarRuntime(listing, "win32", "arm64")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "/node_modules/@img/sharp-win32-arm64/index.cjs"
+        })
+      ])
+    );
+    expect(findMissingUnpackedNative(appPath, "win32", "arm64")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: "@img/sharp-win32-arm64 JavaScript loader",
+          reason: expect.stringContaining("directory missing")
+        })
+      ])
+    );
+    expect(() => verifySharpAsarRuntime(listing, "win32", "arm64")).toThrow(
+      /missing @img\/sharp-win32-arm64 JavaScript loader/
+    );
+    expect(() => verifyUnpackedNative(appPath, "win32", "arm64")).toThrow(
+      /@img\/sharp-win32-arm64 JavaScript loader.*directory missing/s
+    );
+  });
+
+  test("requires Sharp's ESM runtime graph, package glue, and licenses", () => {
+    const listing = windowsSharpAsarListing("x64").filter(
+      (entry) =>
+        ![
+          "/node_modules/sharp/dist/index.mjs",
+          "/node_modules/sharp/dist/sharp.mjs",
+          "/node_modules/sharp/package.json",
+          "/node_modules/sharp/LICENSE",
+          "/node_modules/@img/colour/package.json",
+          "/node_modules/@img/colour/index.cjs",
+          "/node_modules/@img/colour/color.cjs",
+          "/node_modules/@img/sharp-win32-x64/LICENSE"
+        ].includes(entry)
+    );
+
+    expect(findMissingSharpAsarRuntime(listing, "win32", "x64")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "sharp ESM runtime module dist/index.mjs" }),
+        expect.objectContaining({ label: "sharp ESM runtime module dist/sharp.mjs" }),
+        expect.objectContaining({ label: "sharp package manifest" }),
+        expect.objectContaining({ label: "sharp license" }),
+        expect.objectContaining({ label: "@img/colour package manifest" }),
+        expect.objectContaining({ label: "@img/colour JavaScript loader" }),
+        expect.objectContaining({ label: "@img/colour JavaScript implementation" }),
+        expect.objectContaining({ label: "@img/sharp-win32-x64 license" })
+      ])
+    );
+    expect(() => verifySharpAsarRuntime(listing, "win32", "x64")).toThrow(
+      /missing sharp ESM runtime module dist\/index\.mjs.*missing sharp ESM runtime module dist\/sharp\.mjs.*missing sharp package manifest.*missing sharp license.*missing @img\/colour package manifest.*missing @img\/colour JavaScript loader.*missing @img\/colour JavaScript implementation.*missing @img\/sharp-win32-x64 license/s
+    );
+  });
+
+  test("rejects lookalike files in place of Windows native libraries", () => {
+    const { appPath, resources } = fakeWindowsApp();
+    writeUnpackedNativeFixtures(resources, [
+      ...windowsUnpackedRuntimeFixtures("x64").filter((path) => !path.includes("/lib/")),
+      "app.asar.unpacked/node_modules/@img/sharp-win32-x64/lib/sharp-win32-x64-fake.node.txt",
+      "app.asar.unpacked/node_modules/@img/sharp-win32-x64/lib/libvips-42.dll.bak",
+      "app.asar.unpacked/node_modules/@img/sharp-win32-x64/lib/libvips-cpp-fake.dll.txt"
+    ]);
+
+    expect(findMissingUnpackedNative(appPath, "win32", "x64")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "@img/sharp-win32-x64 native binding" }),
+        expect.objectContaining({ label: "@img/sharp-win32-x64 libvips runtime" }),
+        expect.objectContaining({ label: "@img/sharp-win32-x64 libvips C++ runtime" })
+      ])
+    );
+    expect(() => verifyUnpackedNative(appPath, "win32", "x64")).toThrow(
+      /native binding.*libvips runtime.*libvips C\+\+ runtime/s
+    );
   });
 
   test("requires the bundled Windows FFmpeg resource for release verification", () => {
@@ -214,7 +401,7 @@ describe("verify-asar-contents", () => {
     expect(missing).toHaveLength(1);
     expect(missing[0]).toMatchObject({
       label: "@img/sharp-libvips-darwin-x64 dylib",
-      reason: expect.stringContaining('no entry matching ".dylib"')
+      reason: expect.stringContaining("no entry matching /\\.dylib$/")
     });
     expect(() => verifyUnpackedNative(appPath)).toThrow(
       /@img\/sharp-libvips-darwin-x64 dylib.*no entry matching/s

@@ -28,6 +28,7 @@ type ModePayload = {
   intent?: "snap" | "video";
 };
 type SnapshotPayload = {
+  status?: "ready" | "error";
   windows: WindowSnapEntry[];
   displayBounds: { width: number; height: number };
   cursor?: { x: number; y: number };
@@ -98,7 +99,16 @@ afterEach(async () => {
   root = null;
   // Clear the body attributes the component stamps so state never
   // leaks across tests.
-  for (const k of ["interaction", "snap", "spaceHeld", "fullWindow", "mode", "discarding"]) {
+  for (const k of [
+    "interaction",
+    "snap",
+    "spaceHeld",
+    "fullWindow",
+    "mode",
+    "discarding",
+    "windowListState",
+    "windowListCount"
+  ]) {
     delete document.body.dataset[k];
   }
 });
@@ -458,5 +468,92 @@ describe("U4 — border move-band", () => {
     await mouseMove(500, 450);
     await mouseUp(500, 450);
     expect(rectStyle()).toEqual({ left: 200, top: 200, width: 300, height: 250 });
+  });
+});
+
+describe("U5 — pure window readiness contract", () => {
+  test("blocks Enter and background click while window enumeration is loading", async () => {
+    await mount();
+    await emitMode({ mode: "window" });
+
+    expect(document.body.dataset.windowListState).toBe("loading");
+    expect(container?.querySelector('[data-testid="region-window-status"]')?.textContent).toContain(
+      "Finding open windows"
+    );
+    await keyDown("Enter");
+    await mouseDown(10, 10);
+    await mouseUp(10, 10);
+    await keyDown("Enter");
+
+    expect(document.body.dataset.interaction).toBe("snap");
+    expect(submitRegion).not.toHaveBeenCalled();
+  });
+
+  test("a new window invocation clears a prior candidate before Enter", async () => {
+    await mount();
+    await emitMode({ mode: "window" });
+    await emitSnapshot({
+      status: "ready",
+      windows: [WIN],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight },
+      cursor: { x: 300, y: 250 }
+    });
+    expect(document.body.dataset.snap).toBe("window");
+
+    await emitMode({ mode: "window" });
+    await keyDown("Enter");
+
+    expect(document.body.dataset.windowListState).toBe("loading");
+    expect(document.body.dataset.snap).toBe("display");
+    expect(submitRegion).not.toHaveBeenCalled();
+  });
+
+  test("empty and error states remain cancellable by mouse", async () => {
+    await mount();
+    await emitMode({ mode: "window" });
+    await emitSnapshot({
+      status: "ready",
+      windows: [],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight }
+    });
+    expect(document.body.dataset.windowListState).toBe("empty");
+    const emptyDismiss = container?.querySelector(".region-window-dismiss");
+    if (!(emptyDismiss instanceof HTMLButtonElement)) throw new Error("empty dismiss not found");
+    await act(async () => emptyDismiss.click());
+    expect(submitRegion).toHaveBeenLastCalledWith({ ok: false });
+
+    submitRegion.mockClear();
+    await emitMode({ mode: "window" });
+    await emitSnapshot({
+      status: "error",
+      windows: [],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight }
+    });
+    expect(document.body.dataset.windowListState).toBe("error");
+    const errorDismiss = container?.querySelector(".region-window-dismiss");
+    if (!(errorDismiss instanceof HTMLButtonElement)) throw new Error("error dismiss not found");
+    await act(async () => errorDismiss.click());
+    expect(submitRegion).toHaveBeenLastCalledWith({ ok: false });
+  });
+
+  test("a ready current window candidate submits the full-window handler contract", async () => {
+    await mount();
+    await emitMode({ mode: "window" });
+    await emitSnapshot({
+      status: "ready",
+      windows: [WIN],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight },
+      cursor: { x: 300, y: 250 }
+    });
+
+    await keyDown("Enter");
+
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: true,
+        snappedWindowId: WIN.windowId,
+        fullWindow: true
+      })
+    );
   });
 });

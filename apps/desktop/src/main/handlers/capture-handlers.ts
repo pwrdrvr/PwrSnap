@@ -446,6 +446,31 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       scheduleDockReclaim();
     };
     try {
+      // Defense in depth for the renderer/main boundary: pure Window mode has
+      // no full-display memory snapshot to crop on Windows. A successful
+      // selector result therefore must identify a real full-window target.
+      // The renderer blocks loading/empty/display commits; this check ensures
+      // a stale or malformed result still cannot fall through to the crop path.
+      if (
+        selectorMode === "window" &&
+        (selection.fullWindow !== true || typeof selection.snappedWindowId !== "number")
+      ) {
+        log.warn("capture:interactive rejected invalid window selection", {
+          mode,
+          selectorMode,
+          fullWindow: selection.fullWindow === true,
+          hasWindowId: typeof selection.snappedWindowId === "number"
+        });
+        setFloatOverState({ kind: "cancel" });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await tearDownSelector();
+        return err({
+          kind: "capture",
+          code: "invalid_window_selection",
+          message: "Window capture requires a selected window."
+        });
+      }
+
       // Two capture paths:
       //   • Full-window mode (user held ⇧ at commit time, or `mode`
       //     was 'window') → desktopCapturer / `screencapture -l

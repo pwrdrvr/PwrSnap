@@ -279,6 +279,34 @@ describe("capture:interactive snapshot production wiring", () => {
     expect(mocks.releaseSnapshot).toHaveBeenCalledWith("window-preview");
   });
 
+  test("rejects a display-style renderer result for pure Window mode before crop", async () => {
+    mocks.pickRegion.mockResolvedValue({
+      ok: true,
+      rect: { x: 0, y: 0, w: 1920, h: 1080 },
+      displayId: 9,
+      screenSnapshotId: "window-preview",
+      previousAppPid: null
+    });
+
+    const result = await bus.dispatch(
+      "capture:interactive",
+      { mode: "window" },
+      { principal: "ipc" }
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "invalid_window_selection" }
+    });
+    expect(mocks.captureWindow).not.toHaveBeenCalled();
+    expect(mocks.getSnapshot).not.toHaveBeenCalled();
+    expect(mocks.cropRegisteredSnapshot).not.toHaveBeenCalled();
+    expect(mocks.persistCaptureFromTempV2).not.toHaveBeenCalled();
+    expect(mocks.releaseSnapshot).toHaveBeenCalledTimes(1);
+    expect(mocks.releaseSnapshot).toHaveBeenCalledWith("window-preview");
+    expect(mocks.hideSelector).toHaveBeenCalledTimes(1);
+  });
+
   test("releases a transferred memory snapshot once when crop fails", async () => {
     mocks.pickRegion.mockResolvedValue({
       ok: true,

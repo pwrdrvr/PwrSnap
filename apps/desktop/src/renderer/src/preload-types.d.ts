@@ -55,6 +55,7 @@ declare global {
       notifySelectorSnapshotPainted(screenUrl: string): void;
       onWindowListSnapshot(
         handler: (payload: {
+          status?: "ready" | "error";
           windows: WindowSnapEntry[];
           displayBounds: { width: number; height: number };
           cursor?: { x: number; y: number };

@@ -210,6 +210,7 @@ const pwrsnapApi = {
    */
   onWindowListSnapshot(
     handler: (payload: {
+      status?: "ready" | "error";
       windows: WindowSnapEntry[];
       displayBounds: { width: number; height: number };
       cursor?: { x: number; y: number };
@@ -218,6 +219,7 @@ const pwrsnapApi = {
     const wrapped = (_event: unknown, payload: unknown) =>
       handler(
         payload as {
+          status?: "ready" | "error";
           windows: WindowSnapEntry[];
           displayBounds: { width: number; height: number };
           cursor?: { x: number; y: number };

@@ -132,6 +132,7 @@ let activeScreenSnapshot: ScreenSnapshot | null = null;
 let previousAppPid: number | null = null;
 
 type SelectorWindowListPayload = {
+  status: "ready" | "error";
   windows: {
     windowId: number;
     pid: number;
@@ -602,6 +603,17 @@ export async function pickRegion(
         durationFromUserRequestMs: elapsedFromRequest(),
         message: err instanceof Error ? err.message : String(err)
       });
+      const failedPayload: SelectorWindowListPayload = {
+        status: "error",
+        windows: [],
+        displayBounds: {
+          width: displayBounds.width,
+          height: displayBounds.height
+        },
+        cursor: displayCursor
+      };
+      windowListPayload = failedPayload;
+      deliverWindowListPayload(failedPayload);
     });
 
   const screenSnapshotRequestedAt = Date.now();
@@ -1058,6 +1070,7 @@ export function prepareWindowListPayload(args: {
     snapshot,
     previousAppPid,
     payload: {
+      status: "ready",
       windows: localized,
       displayBounds: {
         width: displayBounds.width,

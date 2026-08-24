@@ -67,6 +67,7 @@ type SnapTarget =
   | { kind: "display" };
 
 type SelectorMode = "auto" | "region" | "window";
+type WindowListState = "idle" | "loading" | "ready" | "empty" | "error";
 
 type Interaction =
   | { kind: "snap" } // live-snap; rect tracks cursor
@@ -120,6 +121,7 @@ export function RegionSelector() {
   //                window with fullWindow=true; drag-to-region is
   //                suppressed
   const [mode, setMode] = useState<SelectorMode>("auto");
+  const [windowListState, setWindowListState] = useState<WindowListState>("idle");
   // SnagIt-style frozen-screen background. Main captures the screen
   // before show() and ships a `pwrsnap-screen://r/<id>` URL via the
   // mode signal. We render it as a full-window <img> behind the dim
@@ -153,6 +155,7 @@ export function RegionSelector() {
   const spaceRef = useRef(false);
   const snapTargetRef = useRef<SnapTarget>(snapTarget);
   const windowsRef = useRef<readonly WindowSnapEntry[]>([]);
+  const windowListStateRef = useRef<WindowListState>("idle");
   // Coord-space scale: how many CSS pixels equal one display-logical
   // pixel. On macOS "scaled" display modes (fractional
   // devicePixelRatio, e.g. 2.629), `window.innerWidth` is NOT equal
@@ -221,6 +224,7 @@ export function RegionSelector() {
   modeRef.current = mode;
   intentRef.current = intent;
   captureCursorRef.current = captureCursor;
+  windowListStateRef.current = windowListState;
 
   // Surface state to CSS for cursor switching + snap visualization.
   useLayoutEffect(() => {
@@ -235,7 +239,8 @@ export function RegionSelector() {
         ? "true"
         : "false";
     document.body.dataset.mode = mode;
-  }, [interaction.kind, spaceHeld, snapTarget, shiftHeld, mode]);
+    document.body.dataset.windowListState = windowListState;
+  }, [interaction.kind, spaceHeld, snapTarget, shiftHeld, mode, windowListState]);
 
   // Subscribe to per-show mode signal from main. The selector windows
   // are pre-warmed once at boot so we can't pass mode in the URL hash;
@@ -246,21 +251,39 @@ export function RegionSelector() {
   // snapshot subscription above.
   useLayoutEffect(() => {
     const unsub = window.pwrsnapApi?.onSelectorMode((payload) => {
+      const nextListState: WindowListState =
+        payload.mode === "window" ? "loading" : "idle";
+      const nextRect = displaySnapRect();
+
+      // Windows reuses this pre-warmed renderer. Clear every candidate and
+      // selection ref synchronously at the mode boundary so Enter or a click
+      // cannot submit the previous invocation's HWND/full-display seed while
+      // the current native enumeration is still pending.
+      windowsRef.current = [];
+      lastMouseRef.current = null;
+      windowListStateRef.current = nextListState;
+      cssToLogicalRef.current = 1;
+      modeRef.current = payload.mode;
+      snapTargetRef.current = { kind: "display" };
+      interactionRef.current = { kind: "snap" };
+      rectRef.current = nextRect;
+      document.body.dataset.windowListCount = "0";
+
       setMode(payload.mode);
+      setWindowListState(nextListState);
       setScreenUrl(payload.screenUrl ?? null);
       setIntent(payload.intent ?? "snap");
+      setInteraction({ kind: "snap" });
+      setSnapTarget({ kind: "display" });
+      setRect(nextRect);
+      setShiftHeld(false);
+      setSpaceHeld(false);
+      discardingRef.current = false;
+      document.body.dataset.discarding = "false";
       // Re-seed the cursor toggle from the persisted default each show
       // (defaults ON when unset) so a prior capture's choice can't bleed
       // into this one through the reused, pre-warmed selector window.
       setCaptureCursor(payload.cursor ?? true);
-      // When switching INTO 'region' mode, drop any existing window
-      // snap target back to display — otherwise the user sees a stale
-      // window-snap rect from the previous session before they move
-      // the cursor.
-      if (payload.mode === "region") {
-        setSnapTarget({ kind: "display" });
-        setRect(displaySnapRect());
-      }
     });
     return () => {
       unsub?.();
@@ -283,6 +306,18 @@ export function RegionSelector() {
   // delivery against a synthetic mouse move.
   useLayoutEffect(() => {
     const unsubscribe = window.pwrsnapApi?.onWindowListSnapshot((payload) => {
+      if (payload.status === "error") {
+        windowsRef.current = [];
+        windowListStateRef.current = "error";
+        snapTargetRef.current = { kind: "display" };
+        rectRef.current = displaySnapRect();
+        setWindowListState("error");
+        setSnapTarget({ kind: "display" });
+        setRect(displaySnapRect());
+        document.body.dataset.windowListCount = "0";
+        return;
+      }
+
       // Compute the renderer-vs-main coord-space scale. On scaled-
       // mode Retina displays this is < 1 (e.g. 1460/1920 ≈ 0.76).
       // On standard 2× Retina or non-Retina it's 1.
@@ -310,6 +345,10 @@ export function RegionSelector() {
         }
       }));
       windowsRef.current = scaledWindows;
+      const nextListState: WindowListState =
+        scaledWindows.length === 0 ? "empty" : "ready";
+      windowListStateRef.current = nextListState;
+      setWindowListState(nextListState);
       if (payload.cursor !== undefined && interactionRef.current.kind === "snap") {
         const cursor = {
           x: payload.cursor.x * scale,
@@ -318,8 +357,11 @@ export function RegionSelector() {
         lastMouseRef.current = cursor;
         positionCrosshair(cursor.x, cursor.y);
         const next = snapAt(cursor.x, cursor.y);
+        snapTargetRef.current = next;
         setSnapTarget(next);
-        setRect(rectForSnap(next));
+        const nextRect = rectForSnap(next);
+        rectRef.current = nextRect;
+        setRect(nextRect);
       }
       document.body.dataset.windowListCount = String(payload.windows.length);
     });
@@ -389,6 +431,17 @@ export function RegionSelector() {
   }
 
   function commit(): void {
+    const snap = snapTargetRef.current;
+    // Pure window mode has no display/region fallback. Windows intentionally
+    // retains no full-frame pixels for this mode, so submitting the seeded
+    // display rect while HWND enumeration is loading/empty/failed would hand
+    // main an impossible crop. Only a current, ready window target may commit.
+    if (
+      modeRef.current === "window" &&
+      (windowListStateRef.current !== "ready" || snap.kind !== "window")
+    ) {
+      return;
+    }
     const r = rectRef.current;
     // Refuse to submit only when the rect has truly zero usable area
     // (no real drag happened). A long thin strip — e.g. 200×1 to grab
@@ -397,7 +450,6 @@ export function RegionSelector() {
       cancel();
       return;
     }
-    const snap = snapTargetRef.current;
     // The renderer's rect is in CSS pixels. Main + screencapture
     // expect display-logical pixels. Scale back via the inverse of
     // the snapshot's css-to-logical factor. On standard displays
@@ -665,6 +717,15 @@ export function RegionSelector() {
       event.preventDefault();
       const handle = getHandleFromTarget(event.target);
       const i = interactionRef.current;
+
+      // Do not let a background press in pure window mode stage an
+      // adjusting/display selection while candidates are unavailable.
+      if (
+        modeRef.current === "window" &&
+        (windowListStateRef.current !== "ready" || snapTargetRef.current.kind !== "window")
+      ) {
+        return;
+      }
 
       // Adjusting → handle drag = resize.
       if (handle !== null && i.kind === "adjusting") {
@@ -963,10 +1024,16 @@ export function RegionSelector() {
       // Window mode: click commits the highlighted window. No drag,
       // no ⇧ (full-window is implied).
       if (mode === "window") {
+        if (windowListState !== "ready") {
+          return <span>Please wait…</span>;
+        }
         const what =
           snapTarget.kind === "window"
             ? snapTarget.entry.appName ?? "window"
-            : "—";
+            : null;
+        if (what === null) {
+          return <span>Move over a window</span>;
+        }
         return (
           <>
             <span>
@@ -1084,6 +1151,37 @@ export function RegionSelector() {
             userSelect: "none"
           }}
         />
+      )}
+      {mode === "window" && windowListState !== "ready" && (
+        <div
+          className={`region-window-status region-window-status--${windowListState}`}
+          role={windowListState === "error" ? "alert" : "status"}
+          aria-live={windowListState === "error" ? "assertive" : "polite"}
+          data-testid="region-window-status"
+        >
+          <strong>
+            {windowListState === "loading"
+              ? "Finding open windows…"
+              : windowListState === "empty"
+                ? "No capturable windows found"
+                : "Couldn’t inspect open windows"}
+          </strong>
+          <span>
+            {windowListState === "loading"
+              ? "PwrSnap is checking the current desktop."
+              : windowListState === "empty"
+                ? "Open a window, then cancel and try again."
+                : "Cancel and try again."}
+          </span>
+          <button
+            type="button"
+            className="region-window-dismiss"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={cancel}
+          >
+            {windowListState === "loading" ? "Cancel" : "Dismiss"}
+          </button>
+        </div>
       )}
       {/* Four-quadrant dim mask. Always rendered — the rect is always
           present (snap rect at boot, drawn / committed rect later). */}

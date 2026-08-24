@@ -42,8 +42,15 @@ import type {
 } from "@pwrsnap/shared";
 import { ChatThreadStore } from "./chat-thread-store";
 import { ThreadStoreAdapter } from "./thread-store-adapter";
-import { makeChatBroadcast, type ChatBroadcast, type ChatChannelSet } from "./chat-event-adapter";
+import {
+  makeChatBroadcast,
+  type ChatBroadcast,
+  type ChatChannelSet,
+  type ChatEventAdapterOptions
+} from "./chat-event-adapter";
 import { toAgentKitLogger, PWRSNAP_SERVICE_NAME } from "./agent-kit-bindings";
+import type { ChatApprovalBroker } from "./chat-approval-broker";
+import type { ChatThreadAccess } from "./chat-thread-access";
 
 /** PwrSnap's approval decision union → the kit's neutral decision. PwrSnap
  *  distinguishes "reject-layer" / "reject-run" at the renderer for the layer-
@@ -67,6 +74,13 @@ export type ChatSurfaceConfig = {
   channels: ChatChannelSet;
   /** Typed broadcast to live renderers. */
   send: ChatBroadcast;
+  /** Main-process approval authority. Chat-only; enrichment never supplies or
+   *  imports this broker. */
+  approvalBroker?: ChatApprovalBroker;
+  /** Central owner/surface authorization and fail-closed event router. */
+  threadAccess?: ChatThreadAccess;
+  /** Optional producer-side terminal status seam consumed by Editor #471. */
+  messageStatusFor?: ChatEventAdapterOptions["messageStatusFor"];
   /** Usage-accounting surface. */
   usageSurface: AiUsageThreadSurface;
   /** L1 + L2 system prompt builder. */
@@ -360,7 +374,23 @@ export async function buildChatSurface(
   deps: ChatBackendDeps = {}
 ): Promise<ChatSurface> {
   const store = new ChatThreadStore({ chatsDir: config.chatsDir });
-  const adapter = new ThreadStoreAdapter({ store, usageSurface: config.usageSurface });
+  const adapter = new ThreadStoreAdapter({
+    store,
+    usageSurface: config.usageSurface,
+    threadConfig: {
+      provider: config.provider ?? null,
+      model: config.model ?? null,
+      reasoning: config.effort ?? null
+    },
+    ...(config.threadAccess !== undefined
+      ? {
+          createContext: {
+            ownerClientId: () => config.threadAccess?.ownerClientIdForCreate() ?? null,
+            onCreated: (sidecar) => config.threadAccess?.onThreadCreated(sidecar)
+          }
+        }
+      : {})
+  });
   const resolved = await resolveChatBackend(config, deps);
   const client: AgentBackend = resolved.client;
 
@@ -374,6 +404,17 @@ export async function buildChatSurface(
         serviceTier: event.settings.serviceTier ?? null
       });
     }
+    if (config.approvalBroker !== undefined) {
+      if (event.kind === "turn_started") {
+        config.approvalBroker.openThread(event.threadId);
+      } else if (event.kind === "turn_completed") {
+        // A backend-terminal turn must not leave an orphan approval promise.
+        // closeThread is exact/idempotent and only ever responds with deny.
+        void config.approvalBroker.closeThread(event.threadId);
+      } else if (event.kind === "error" && event.threadId !== undefined && event.willRetry !== true) {
+        void config.approvalBroker.closeThread(event.threadId);
+      }
+    }
   });
 
   // Guard the send so a disposed (replaced) controller goes silent the
@@ -385,9 +426,40 @@ export async function buildChatSurface(
   const guardedSend: ChatBroadcast = (channel, payload) => {
     if (live) config.send(channel, payload);
   };
-  const broadcast = makeChatBroadcast(config.channels, guardedSend);
+  const approvalOwner = {};
+  let controller: ChatThreadController<Settings>;
+  const broadcast = makeChatBroadcast(config.channels, guardedSend, {
+    fixedThreadConfig: {
+      provider: config.provider ?? null,
+      model: config.model ?? null,
+      reasoning: config.effort ?? null
+    },
+    ...(config.threadAccess !== undefined
+      ? {
+          decorateThread: (view) => config.approvalBroker?.decorateThread(view) ?? view,
+          observeThread: (view) => config.threadAccess?.observeThreadView(view),
+          shouldSend: (threadId) => config.threadAccess?.shouldBroadcastToHuman(threadId) ?? false
+        }
+      : config.approvalBroker !== undefined
+        ? { decorateThread: (view) => config.approvalBroker?.decorateThread(view) ?? view }
+        : {}),
+    ...(config.approvalBroker !== undefined
+      ? {
+          onApprovalRequested: (request) =>
+            config.approvalBroker?.register(request, approvalOwner, async (decision) => {
+              await controller.resolveApproval({
+                threadId: request.threadId,
+                turnId: request.turnId,
+                approvalId: request.approvalId,
+                decision: toKitApprovalDecision(decision)
+              });
+            }) ?? false
+        }
+      : {}),
+    ...(config.messageStatusFor !== undefined ? { messageStatusFor: config.messageStatusFor } : {})
+  });
 
-  const controller = new ChatThreadController<Settings>({
+  controller = new ChatThreadController<Settings>({
     client,
     store: adapter,
     readSettings: config.readSettings,
@@ -440,6 +512,20 @@ export async function buildChatSurface(
   controller.wire();
 
   const dispose = async (): Promise<void> => {
+    // Resolve against the ORIGINAL controller while it and its backend request
+    // handler are still live. A replacement controller cannot acknowledge the
+    // old private pending entry.
+    if (config.approvalBroker !== undefined) {
+      try {
+        await config.approvalBroker.closeOwner(approvalOwner);
+      } catch (cause) {
+        // Teardown must still silence the stale controller and close its
+        // backend even if a lifecycle observer misbehaves.
+        toAgentKitLogger(config.loggerScope).warn?.("approval cleanup failed during chat disposal", {
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
+    }
     live = false;
     if (!resolved.shared) {
       // Codex backend views release their surface registration here while the

@@ -261,6 +261,10 @@ export class ChatThreadStore {
     provider?: string | null;
     model?: string | null;
     reasoning?: string | null;
+    /** Authenticated local-agent owner. NULL is a human-owned thread. This is
+     *  part of the initial INSERT so no live/list observer can see an MCP
+     *  thread in a transient unowned state. */
+    ownerClientId?: string | null;
   }): Promise<ChatThreadSidecar> {
     // No `ensureImported()` here: this INSERTs a caller-supplied fresh
     // threadId and reads back that same row, so a legacy-imported row cannot
@@ -272,8 +276,8 @@ export class ChatThreadStore {
     this.db()
       .prepare(
         `INSERT INTO chat_threads
-           (thread_id, dir_name, name, anchor_capture_id, archived, pinned, focus_history, created_at, modified_at, schema_version, provider, model, reasoning)
-         VALUES (?, ?, ?, ?, 0, 0, '[]', ?, ?, 1, ?, ?, ?)`
+           (thread_id, dir_name, name, anchor_capture_id, archived, pinned, focus_history, created_at, modified_at, schema_version, provider, model, reasoning, owner_client_id)
+         VALUES (?, ?, ?, ?, 0, 0, '[]', ?, ?, 1, ?, ?, ?, ?)`
       )
       .run(
         opts.threadId,
@@ -284,7 +288,8 @@ export class ChatThreadStore {
         now,
         opts.provider ?? null,
         opts.model ?? null,
-        opts.reasoning ?? null
+        opts.reasoning ?? null,
+        opts.ownerClientId ?? null
       );
     return rowToSidecar(this.selectRowOrThrow(opts.threadId));
   }

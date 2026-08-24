@@ -2,6 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import type { ChatApprovalRequest, LibraryChatThreadView } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { SizzleChatPanel } from "../SizzleChatPanel";
 
@@ -19,7 +20,7 @@ function makeThread(
   threadId: string,
   name: string,
   modifiedAt = "2026-05-30T10:00:00.000Z"
-): unknown {
+): LibraryChatThreadView {
   return {
     threadId,
     name,
@@ -29,11 +30,15 @@ function makeThread(
     archived: false,
     pinned: false,
     lastMessagePreview: "",
-    status: { kind: "idle" }
+    status: { kind: "idle" },
+    pendingApproval: null,
+    provider: null,
+    model: null,
+    reasoning: null
   };
 }
 
-function installApi(seedThreads: unknown[] = []): {
+function installApi(seedThreads: LibraryChatThreadView[] = []): {
   dispatch: ReturnType<typeof vi.fn>;
   emit: (channel: string, payload: unknown) => void;
 } {
@@ -52,7 +57,11 @@ function installApi(seedThreads: unknown[] = []): {
           archived: false,
           pinned: false,
           lastMessagePreview: "",
-          status: { kind: "idle" }
+          status: { kind: "idle" },
+          pendingApproval: null,
+          provider: null,
+          model: null,
+          reasoning: null
         }
       };
     }
@@ -77,7 +86,7 @@ function installApi(seedThreads: unknown[] = []): {
   return { dispatch, emit };
 }
 
-async function renderPanel(seedThreads: unknown[] = []): Promise<{
+async function renderPanel(seedThreads: LibraryChatThreadView[] = []): Promise<{
   el: HTMLDivElement;
   dispatch: ReturnType<typeof vi.fn>;
   emit: (channel: string, payload: unknown) => void;
@@ -182,10 +191,82 @@ describe("SizzleChatPanel", () => {
           archived: false,
           pinned: false,
           lastMessagePreview: "",
-          status: { kind: "idle" }
+          status: { kind: "idle" },
+          pendingApproval: null,
+          provider: null,
+          model: null,
+          reasoning: null
         }
       });
     });
     expect(el.textContent).toContain("My reel chat");
+  });
+
+  test("ignores thread updates belonging to another Sizzle project", async () => {
+    const { el, emit } = await renderPanel();
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleChatThreadUpdated, {
+        thread: {
+          ...makeThread("other-thread", "Other project chat"),
+          anchorCaptureId: "sz_other"
+        }
+      });
+    });
+    expect(el.textContent).not.toContain("Other project chat");
+    expect(el.querySelectorAll(".ps-libchat-thread")).toHaveLength(0);
+  });
+
+  test("keeps the project approval retryable after a Result error until its resolved event", async () => {
+    const pendingApproval: ChatApprovalRequest = {
+      threadId: "t1",
+      turnId: "turn-1",
+      approvalId: "approval-1",
+      summary: "Run the render helper?"
+    };
+    const thread: LibraryChatThreadView = {
+      ...makeThread("t1", "Pending reel chat"),
+      status: { kind: "awaiting_approval", approvalId: "approval-1" },
+      pendingApproval
+    };
+    const { el, dispatch, emit } = await renderPanel([thread]);
+    expect(el.textContent).toContain("Run the render helper?");
+
+    dispatch.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        kind: "ai",
+        code: "approval_transport_failed",
+        message: "private raw failure"
+      }
+    });
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="ps-approval-approve"]')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(el.querySelector('[data-testid="ps-approval-retry"]')).not.toBeNull();
+    expect(el.textContent).not.toContain("private raw failure");
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="ps-approval-retry"]')?.click();
+      await Promise.resolve();
+    });
+    expect(dispatch).toHaveBeenLastCalledWith("codex:sizzleChat:approval", {
+      threadId: "t1",
+      turnId: "turn-1",
+      approvalId: "approval-1",
+      decision: "approve"
+    });
+    expect(el.querySelector('[data-testid="ps-approval"]')).not.toBeNull();
+
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleChatApprovalResolved, {
+        threadId: "t1",
+        turnId: "turn-1",
+        approvalId: "approval-1",
+        decision: "approve"
+      });
+    });
+    expect(el.querySelector('[data-testid="ps-approval"]')).toBeNull();
   });
 });

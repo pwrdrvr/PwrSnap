@@ -281,6 +281,12 @@ export const EVENT_CHANNELS = {
    * `codex:libraryChat:approval`. Payload: `ChatApprovalRequest`.
    */
   libraryChatApprovalRequested: "events:libraryChat:approval:requested",
+  /** Main → every eligible human renderer: an exact approval response was
+   *  accepted by the originating controller. */
+  libraryChatApprovalResolved: "events:libraryChat:approval:resolved",
+  /** Main → every eligible human renderer: an exact approval request became
+   *  stale because it was replaced or its owning session closed. */
+  libraryChatApprovalSuperseded: "events:libraryChat:approval:superseded",
   /**
    * Main → renderer: the user just added a sensitive-data pattern in
    * Settings. The open chat panel shows a one-shot toast nudging
@@ -297,7 +303,9 @@ export const EVENT_CHANNELS = {
   sizzleChatToolCall: "events:sizzleChat:tool:call",
   sizzleChatMessageCommitted: "events:sizzleChat:message:committed",
   sizzleChatTurnInterrupted: "events:sizzleChat:turn:interrupted",
-  sizzleChatApprovalRequested: "events:sizzleChat:approval:requested"
+  sizzleChatApprovalRequested: "events:sizzleChat:approval:requested",
+  sizzleChatApprovalResolved: "events:sizzleChat:approval:resolved",
+  sizzleChatApprovalSuperseded: "events:sizzleChat:approval:superseded"
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -424,7 +432,9 @@ import type {
   SizzleRenderProgressEvent
 } from "./protocol";
 import type {
+  ChatApprovalResolvedEvent,
   ChatApprovalRequest,
+  ChatApprovalSupersededEvent,
   ChatMessage,
   LibraryChatThreadView
 } from "./chat-schemas";
@@ -493,6 +503,8 @@ export type EventPayloads = {
   [EVENT_CHANNELS.libraryChatMessageCommitted]: LibraryChatMessageCommittedEvent;
   [EVENT_CHANNELS.libraryChatTurnInterrupted]: LibraryChatTurnInterruptedEvent;
   [EVENT_CHANNELS.libraryChatApprovalRequested]: ChatApprovalRequest;
+  [EVENT_CHANNELS.libraryChatApprovalResolved]: ChatApprovalResolvedEvent;
+  [EVENT_CHANNELS.libraryChatApprovalSuperseded]: ChatApprovalSupersededEvent;
   [EVENT_CHANNELS.libraryChatPatternLearned]: { name: string };
   // Sizzle composer chat — identical payloads to the libraryChat
   // channels (shared controller, different surface scope).
@@ -502,6 +514,8 @@ export type EventPayloads = {
   [EVENT_CHANNELS.sizzleChatMessageCommitted]: LibraryChatMessageCommittedEvent;
   [EVENT_CHANNELS.sizzleChatTurnInterrupted]: LibraryChatTurnInterruptedEvent;
   [EVENT_CHANNELS.sizzleChatApprovalRequested]: ChatApprovalRequest;
+  [EVENT_CHANNELS.sizzleChatApprovalResolved]: ChatApprovalResolvedEvent;
+  [EVENT_CHANNELS.sizzleChatApprovalSuperseded]: ChatApprovalSupersededEvent;
 };
 
 /** Channel constants that carry a typed payload entry in

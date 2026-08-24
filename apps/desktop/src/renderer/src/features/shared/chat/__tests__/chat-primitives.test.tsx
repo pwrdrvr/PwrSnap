@@ -121,6 +121,56 @@ describe("ChatApprovalModal", () => {
     expect(onResolve).toHaveBeenCalledWith("approve");
   });
 
+  test("re-arms the click guard after a failed resolution so the user can retry", async () => {
+    const onResolve = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("transport failed"))
+      .mockResolvedValue(undefined);
+    const el = await mount(createElement(ChatApprovalModal, { request: REQUEST, onResolve }));
+
+    await act(async () => {
+      query(el, '[data-testid="ps-approval-approve"]').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      query(el, '[data-testid="ps-approval-approve"]').click();
+      await Promise.resolve();
+    });
+
+    expect(onResolve).toHaveBeenCalledTimes(2);
+  });
+
+  test("renders sanitized failure copy and retries the failed decision", async () => {
+    const onResolve = vi.fn(() => Promise.resolve());
+    const el = await mount(
+      createElement(ChatApprovalModal, {
+        request: REQUEST,
+        onResolve,
+        errorMessage: "The request is still pending. Try again, or send Deny instead.",
+        retryDecision: "approve"
+      })
+    );
+    expect(query(el, '[data-testid="ps-approval-error"]').getAttribute("role")).toBe("alert");
+
+    await act(async () => {
+      query(el, '[data-testid="ps-approval-retry"]').click();
+      await Promise.resolve();
+    });
+    expect(onResolve).toHaveBeenCalledWith("approve");
+    expect(el.querySelector('[data-testid="ps-approval-approve"]')).toBeNull();
+  });
+
+  test("controlled submitting remains busy after the local callback settles", async () => {
+    const onResolve = vi.fn(() => Promise.resolve());
+    const el = await mount(
+      createElement(ChatApprovalModal, { request: REQUEST, onResolve, submitting: true })
+    );
+    expect(query<HTMLButtonElement>(el, '[data-testid="ps-approval-approve"]').disabled).toBe(true);
+    expect(query<HTMLButtonElement>(el, '[data-testid="ps-approval-deny"]').disabled).toBe(true);
+    expect(el.querySelector('[data-testid="ps-approval-spinner"]')).not.toBeNull();
+  });
+
   test("Escape resolves with 'deny'", async () => {
     const onResolve = vi.fn(() => Promise.resolve());
     await mount(

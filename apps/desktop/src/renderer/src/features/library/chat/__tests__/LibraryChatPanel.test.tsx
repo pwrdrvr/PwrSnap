@@ -2,7 +2,8 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import type { LibraryChatThreadView } from "@pwrsnap/shared";
+import type { ChatApprovalRequest, LibraryChatThreadView } from "@pwrsnap/shared";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { LibraryChatPanel } from "../LibraryChatPanel";
 
 beforeAll(() => {
@@ -30,13 +31,17 @@ function makeThread(
     pinned: false,
     lastMessagePreview: "",
     status: { kind: "idle" },
+    pendingApproval: null,
     provider: null,
     model: null,
     reasoning: null
   };
 }
 
-function installApi(seedThreads: LibraryChatThreadView[] = []): ReturnType<typeof vi.fn> {
+function installApi(seedThreads: LibraryChatThreadView[] = []): {
+  dispatch: ReturnType<typeof vi.fn>;
+  emit: (channel: string, payload: unknown) => void;
+} {
   const handlers = new Map<string, Set<Handler>>();
   const dispatch = vi.fn(async (name: string, req?: { threadId?: string }) => {
     if (name === "codex:libraryChat:list") return { ok: true, value: { threads: seedThreads } };
@@ -53,19 +58,23 @@ function installApi(seedThreads: LibraryChatThreadView[] = []): ReturnType<typeo
     handlers.set(channel, set);
     return () => set.delete(handler);
   };
+  const emit = (channel: string, payload: unknown): void => {
+    for (const handler of handlers.get(channel) ?? []) handler(payload);
+  };
   (globalThis as unknown as { window: Window }).window.pwrsnapApi = {
     dispatch,
     on,
     startCaptureDrag: () => undefined
   } as unknown as NonNullable<Window["pwrsnapApi"]>;
-  return dispatch;
+  return { dispatch, emit };
 }
 
 async function renderPanel(seedThreads: LibraryChatThreadView[] = []): Promise<{
   el: HTMLDivElement;
   dispatch: ReturnType<typeof vi.fn>;
+  emit: (channel: string, payload: unknown) => void;
 }> {
-  const dispatch = installApi(seedThreads);
+  const { dispatch, emit } = installApi(seedThreads);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -76,7 +85,7 @@ async function renderPanel(seedThreads: LibraryChatThreadView[] = []): Promise<{
     await Promise.resolve();
     await Promise.resolve();
   });
-  return { el: container, dispatch };
+  return { el: container, dispatch, emit };
 }
 
 afterEach(async () => {
@@ -137,5 +146,54 @@ describe("LibraryChatPanel", () => {
     });
     expect(el.textContent).not.toContain("Old chat");
     expect(el.textContent).toContain("Keep chat");
+  });
+
+  test("rehydrates a pending approval, keeps it on Result failure, and clears on resolved event", async () => {
+    const pendingApproval: ChatApprovalRequest = {
+      threadId: "t1",
+      turnId: "turn-1",
+      approvalId: "approval-1",
+      summary: "Run the requested command?"
+    };
+    const thread = {
+      ...makeThread("t1", "Pending chat"),
+      status: { kind: "awaiting_approval" as const, approvalId: "approval-1" },
+      pendingApproval
+    };
+    const { el, dispatch, emit } = await renderPanel([thread]);
+    expect(el.textContent).toContain("Run the requested command?");
+
+    dispatch.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        kind: "ai",
+        code: "approval_transport_failed",
+        message: "raw transport error that must stay hidden"
+      }
+    });
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="ps-approval-approve"]')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(el.querySelector('[data-testid="ps-approval"]')).not.toBeNull();
+    expect(el.textContent).toContain("request is still pending");
+    expect(el.textContent).not.toContain("raw transport error");
+    expect(dispatch).toHaveBeenCalledWith("codex:libraryChat:approval", {
+      threadId: "t1",
+      turnId: "turn-1",
+      approvalId: "approval-1",
+      decision: "approve"
+    });
+
+    await act(async () => {
+      emit(EVENT_CHANNELS.libraryChatApprovalResolved, {
+        threadId: "t1",
+        turnId: "turn-1",
+        approvalId: "approval-1",
+        decision: "approve"
+      });
+    });
+    expect(el.querySelector('[data-testid="ps-approval"]')).toBeNull();
   });
 });

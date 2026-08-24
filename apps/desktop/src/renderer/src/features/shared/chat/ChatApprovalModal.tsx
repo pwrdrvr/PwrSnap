@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import type { ChatApprovalDecision, ChatApprovalRequest } from "@pwrsnap/shared";
+import "./chat-primitives.css";
 
 export interface ChatApprovalModalProps {
   /** The approval the agent is waiting on. */
@@ -26,17 +27,34 @@ export interface ChatApprovalModalProps {
   /** Resolve the approval with the user's decision. May be async — the
    *  modal stays in its busy state until the returned promise settles. */
   readonly onResolve: (decision: ChatApprovalDecision) => void | Promise<void>;
+  /** Main's broker is processing this exact request. Kept controlled so a
+   *  successful IPC acknowledgement stays disabled until the cross-window
+   *  resolved/superseded event arrives. */
+  readonly submitting?: boolean;
+  /** Sanitized renderer-owned copy. Never pass a raw transport or tool error. */
+  readonly errorMessage?: string | null;
+  /** The failed choice retried by the explicit Retry action. */
+  readonly retryDecision?: ChatApprovalDecision | null;
 }
 
 type Phase = "idle" | "resolving";
 
 export function ChatApprovalModal(props: ChatApprovalModalProps): ReactElement {
-  const { request, onResolve } = props;
+  const {
+    request,
+    onResolve,
+    submitting = false,
+    errorMessage = null,
+    retryDecision = null
+  } = props;
 
   const [phase, setPhase] = useState<Phase>("idle");
+  const [localDecision, setLocalDecision] = useState<ChatApprovalDecision | null>(null);
   // Ref guard so the first click wins even if a second click lands in
   // the same tick (React state updates are async; the ref is not).
   const resolvingRef = useRef<boolean>(false);
+  const requestKey = `${request.threadId}\u0000${request.turnId}\u0000${request.approvalId}`;
+  const requestKeyRef = useRef<string>(requestKey);
   // Avoid a state update after unmount when `onResolve` settles late.
   const mountedRef = useRef<boolean>(true);
   useEffect(() => {
@@ -46,22 +64,46 @@ export function ChatApprovalModal(props: ChatApprovalModalProps): ReactElement {
     };
   }, []);
 
+  // A newer exact request may replace the modal without unmounting it. Its
+  // controls must not inherit the prior request's local click latch.
+  useEffect(() => {
+    requestKeyRef.current = requestKey;
+    resolvingRef.current = false;
+    setPhase("idle");
+    setLocalDecision(null);
+  }, [requestKey]);
+
   const resolve = useCallback(
     (decision: ChatApprovalDecision): void => {
-      if (resolvingRef.current) return;
+      if (resolvingRef.current || submitting) return;
+      const resolvingRequestKey = requestKey;
       resolvingRef.current = true;
+      setLocalDecision(decision);
       setPhase("resolving");
-      void Promise.resolve(onResolve(decision)).finally(() => {
-        // Leave the ref latched — once an approval is resolved it does
-        // not re-arm; the parent unmounts the modal on the next render.
-        if (mountedRef.current) setPhase("idle");
-      });
+      void Promise.resolve()
+        .then(() => onResolve(decision))
+        // The approval session presents its own sanitized error. Swallowing a
+        // rejection here prevents an unhandled promise while still re-arming
+        // the buttons for retry.
+        .catch(() => undefined)
+        .finally(() => {
+          if (requestKeyRef.current !== resolvingRequestKey) return;
+          resolvingRef.current = false;
+          if (mountedRef.current) {
+            setPhase("idle");
+            setLocalDecision(null);
+          }
+        });
     },
-    [onResolve]
+    [onResolve, requestKey, submitting]
   );
 
   const onApprove = useCallback((): void => resolve("approve"), [resolve]);
   const onDeny = useCallback((): void => resolve("deny"), [resolve]);
+  const onRetry = useCallback(
+    (): void => resolve(retryDecision ?? "deny"),
+    [resolve, retryDecision]
+  );
 
   // Escape = Deny. Window-level so the modal catches it regardless of
   // which child holds focus.
@@ -77,7 +119,8 @@ export function ChatApprovalModal(props: ChatApprovalModalProps): ReactElement {
     };
   }, [resolve]);
 
-  const busy = phase === "resolving";
+  const busy = submitting || phase === "resolving";
+  const activeDecision = submitting ? retryDecision : localDecision;
   const titleId = `ps-approval-title-${request.approvalId}`;
 
   return (
@@ -99,6 +142,15 @@ export function ChatApprovalModal(props: ChatApprovalModalProps): ReactElement {
             {request.detail}
           </pre>
         ) : null}
+        {errorMessage !== null ? (
+          <p
+            className="ps-approval__error"
+            role="alert"
+            data-testid="ps-approval-error"
+          >
+            {errorMessage}
+          </p>
+        ) : null}
         <div className="ps-approval__actions">
           <button
             type="button"
@@ -107,24 +159,39 @@ export function ChatApprovalModal(props: ChatApprovalModalProps): ReactElement {
             disabled={busy}
             data-testid="ps-approval-deny"
           >
-            Deny
+            {busy && activeDecision === "deny" ? (
+              <>
+                <span
+                  className="ps-approval__spinner"
+                  role="status"
+                  aria-label="Denying"
+                  data-testid="ps-approval-spinner"
+                />
+                Denying…
+              </>
+            ) : (
+              "Deny"
+            )}
           </button>
           <button
             type="button"
             className="ps-approval__btn ps-approval__btn--approve"
-            onClick={onApprove}
+            onClick={errorMessage === null ? onApprove : onRetry}
             disabled={busy}
-            data-testid="ps-approval-approve"
+            data-testid={errorMessage === null ? "ps-approval-approve" : "ps-approval-retry"}
           >
-            {busy ? (
-              <span
-                className="ps-approval__spinner"
-                role="status"
-                aria-label="Resolving"
-                data-testid="ps-approval-spinner"
-              />
+            {busy && activeDecision !== "deny" ? (
+              <>
+                <span
+                  className="ps-approval__spinner"
+                  role="status"
+                  aria-label="Approving"
+                  data-testid="ps-approval-spinner"
+                />
+                Approving…
+              </>
             ) : (
-              "Approve"
+              errorMessage === null ? "Approve" : "Retry"
             )}
           </button>
         </div>

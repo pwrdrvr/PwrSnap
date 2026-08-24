@@ -129,6 +129,25 @@ describe("ChatThreadStore.create / get", () => {
     });
   });
 
+  it("writes an MCP owner in the initial insert", async () => {
+    const store = makeStore();
+    const created = await store.create({
+      threadId: "owned-from-create",
+      name: "External edit",
+      anchorCaptureId: "cap-123",
+      ownerClientId: "lag_client_a"
+    });
+
+    expect(created).toMatchObject({
+      threadId: "owned-from-create",
+      anchorCaptureId: "cap-123",
+      ownerClientId: "lag_client_a"
+    });
+    expect(await store.get("owned-from-create")).toMatchObject({
+      ownerClientId: "lag_client_a"
+    });
+  });
+
   it("writes the anchor in the SAME insert (one write, no follow-up update)", async () => {
     const store = makeStore();
     const created = await store.create({

@@ -7,7 +7,7 @@
 // neutral status → discriminated LibraryChatThreadStatus) are correct.
 
 import { describe, expect, it, vi } from "vitest";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, type ChatApprovalRequest } from "@pwrsnap/shared";
 import type { ChatControllerEvent } from "@pwrdrvr/agent-client";
 import {
   makeChatBroadcast,
@@ -22,7 +22,9 @@ const LIBRARY_CHANNELS: ChatChannelSet = {
   toolCall: EVENT_CHANNELS.libraryChatToolCall,
   messageCommitted: EVENT_CHANNELS.libraryChatMessageCommitted,
   turnInterrupted: EVENT_CHANNELS.libraryChatTurnInterrupted,
-  approvalRequested: EVENT_CHANNELS.libraryChatApprovalRequested
+  approvalRequested: EVENT_CHANNELS.libraryChatApprovalRequested,
+  approvalResolved: EVENT_CHANNELS.libraryChatApprovalResolved,
+  approvalSuperseded: EVENT_CHANNELS.libraryChatApprovalSuperseded
 };
 
 describe("toLibraryThreadView", () => {
@@ -51,7 +53,8 @@ describe("toLibraryThreadView", () => {
       status: { kind: "streaming", turnId: "turn_1" },
       provider: null,
       model: null,
-      reasoning: null
+      reasoning: null,
+      pendingApproval: null
     });
   });
 
@@ -123,6 +126,80 @@ describe("makeChatBroadcast", () => {
     expect(send).toHaveBeenCalledWith(EVENT_CHANNELS.libraryChatThreadUpdated, {
       thread: expect.objectContaining({ anchorCaptureId: "cap_1", status: { kind: "idle" } })
     });
+  });
+
+  it("puts the controller's fixed backend identity on every thread_updated", () => {
+    const send = vi.fn();
+    const broadcast = makeChatBroadcast(LIBRARY_CHANNELS, send, {
+      fixedThreadConfig: {
+        provider: "acp:gemini",
+        model: "gemini-2.5-pro",
+        reasoning: "high"
+      }
+    });
+
+    broadcast({
+      type: "thread_updated",
+      thread: {
+        threadId: "t-fixed",
+        name: "Fixed",
+        createdAt: "a",
+        modifiedAt: "b",
+        anchorId: null,
+        archived: false,
+        pinned: false,
+        lastMessagePreview: "",
+        status: { kind: "idle" }
+      }
+    });
+
+    expect(send).toHaveBeenCalledWith(EVENT_CHANNELS.libraryChatThreadUpdated, {
+      thread: expect.objectContaining({
+        provider: "acp:gemini",
+        model: "gemini-2.5-pro",
+        reasoning: "high"
+      })
+    });
+  });
+
+  it("decorates and observes a thread before owner routing filters its IPC", () => {
+    const order: string[] = [];
+    const send = vi.fn();
+    const decorateThread = vi.fn((thread) => {
+      order.push("decorate");
+      return { ...thread, name: "decorated" };
+    });
+    const observeThread = vi.fn((thread) => {
+      order.push("observe");
+      expect(thread.name).toBe("decorated");
+    });
+    const shouldSend = vi.fn(() => {
+      order.push("filter");
+      return false;
+    });
+    const broadcast = makeChatBroadcast(LIBRARY_CHANNELS, send, {
+      decorateThread,
+      observeThread,
+      shouldSend
+    });
+
+    broadcast({
+      type: "thread_updated",
+      thread: {
+        threadId: "mcp-thread",
+        name: "raw",
+        createdAt: "a",
+        modifiedAt: "b",
+        anchorId: null,
+        archived: false,
+        pinned: false,
+        lastMessagePreview: "",
+        status: { kind: "idle" }
+      }
+    });
+
+    expect(order).toEqual(["decorate", "observe", "filter"]);
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("stream_delta → streamDelta verbatim", () => {
@@ -202,6 +279,25 @@ describe("makeChatBroadcast", () => {
     });
   });
 
+  it("uses the producer-side terminal message-status lookup", () => {
+    const send = vi.fn();
+    const messageStatusFor = vi.fn(() => "failed" as const);
+    const broadcast = makeChatBroadcast(LIBRARY_CHANNELS, send, { messageStatusFor });
+    const event: ChatControllerEvent = {
+      type: "message_committed",
+      threadId: "t1",
+      message: { id: "m-failed", role: "assistant", text: "partial", createdAt: 1 }
+    };
+
+    broadcast(event);
+
+    expect(messageStatusFor).toHaveBeenCalledWith(event);
+    expect(send).toHaveBeenCalledWith(EVENT_CHANNELS.libraryChatMessageCommitted, {
+      threadId: "t1",
+      message: expect.objectContaining({ id: "m-failed", status: "failed" })
+    });
+  });
+
   it("turn_interrupted → turnInterrupted with the user_interrupted reason", () => {
     const { send, broadcast } = capture();
     broadcast({ type: "turn_interrupted", threadId: "t1", turnId: "turn_1" });
@@ -257,5 +353,113 @@ describe("makeChatBroadcast", () => {
       approvalId: "ap_2",
       summary: "Approve: item/fileChange/requestApproval"
     });
+  });
+
+  it("registers a sanitized approval before filtering an MCP-owned thread", () => {
+    const send = vi.fn();
+    const registered: ChatApprovalRequest[] = [];
+    const onApprovalRequested = vi.fn((request: ChatApprovalRequest) => {
+      registered.push(request);
+      return true;
+    });
+    const broadcast = makeChatBroadcast(LIBRARY_CHANNELS, send, {
+      onApprovalRequested,
+      shouldSend: () => false
+    });
+
+    broadcast({
+      type: "approval_requested",
+      threadId: "mcp-thread",
+      turnId: "turn-secret",
+      approval: {
+        id: "ap-secret",
+        method: "item/commandExecution/requestApproval",
+        kind: "exec",
+        summary: "Run a command",
+        params: {
+          detail: "Visible by the existing chat policy",
+          command: "never-forward-this-field",
+          arguments: { token: "never-forward-this-value" }
+        }
+      }
+    });
+
+    expect(registered).toEqual([
+      {
+        threadId: "mcp-thread",
+        turnId: "turn-secret",
+        approvalId: "ap-secret",
+        summary: "Run a command",
+        detail: "Visible by the existing chat policy"
+      }
+    ]);
+    expect(registered[0]).not.toHaveProperty("params");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("suppresses every renderer event arm when owner routing denies the thread", () => {
+    const send = vi.fn();
+    const onApprovalRequested = vi.fn(() => true);
+    const broadcast = makeChatBroadcast(LIBRARY_CHANNELS, send, {
+      shouldSend: () => false,
+      onApprovalRequested
+    });
+    const events: ChatControllerEvent[] = [
+      {
+        type: "thread_updated",
+        thread: {
+          threadId: "mcp-thread",
+          name: "Hidden",
+          createdAt: "a",
+          modifiedAt: "b",
+          anchorId: null,
+          archived: false,
+          pinned: false,
+          lastMessagePreview: "",
+          status: { kind: "idle" }
+        }
+      },
+      {
+        type: "stream_delta",
+        threadId: "mcp-thread",
+        turnId: "turn-1",
+        messageId: "message-1",
+        delta: "hidden"
+      },
+      {
+        type: "tool_call",
+        threadId: "mcp-thread",
+        turnId: "turn-1",
+        toolCall: {
+          id: "call-1",
+          name: "library_search",
+          kind: "search",
+          label: "Hidden",
+          status: "completed"
+        }
+      },
+      {
+        type: "message_committed",
+        threadId: "mcp-thread",
+        message: { id: "message-1", role: "assistant", text: "hidden" }
+      },
+      { type: "turn_interrupted", threadId: "mcp-thread", turnId: "turn-1" },
+      {
+        type: "approval_requested",
+        threadId: "mcp-thread",
+        turnId: "turn-1",
+        approval: {
+          id: "approval-1",
+          method: "item/fileChange/requestApproval",
+          kind: "patch",
+          params: null
+        }
+      }
+    ];
+
+    for (const event of events) broadcast(event);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(onApprovalRequested).toHaveBeenCalledTimes(1);
   });
 });

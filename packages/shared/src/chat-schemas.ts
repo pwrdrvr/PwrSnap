@@ -167,6 +167,10 @@ export type LibraryChatThreadView = {
   provider: string | null;
   model: string | null;
   reasoning: string | null;
+  /** Transient, main-process-owned approval awaiting this thread. This is
+   *  replayed from memory when a panel/window remounts; it is deliberately
+   *  never persisted because the backend resolver cannot survive app restart. */
+  pendingApproval: ChatApprovalRequest | null;
 };
 
 // ---- Approval flow -----------------------------------------------------
@@ -186,6 +190,17 @@ export const chatApprovalDecisionSchema = z.enum([
 ]);
 export type ChatApprovalDecision = z.infer<typeof chatApprovalDecisionSchema>;
 
+/** Strict renderer/MCP → main response envelope. Runtime validation matters:
+ *  an unknown decision must never fall through the protocol mapper as deny,
+ *  and empty/mistyped ids must never enter the exact-request broker. */
+export const chatApprovalResponseSchema = z.object({
+  threadId: z.string().min(1),
+  turnId: z.string().min(1),
+  approvalId: z.string().min(1),
+  decision: chatApprovalDecisionSchema
+}).strict();
+export type ChatApprovalResponse = z.infer<typeof chatApprovalResponseSchema>;
+
 export type ChatApprovalRequest = {
   threadId: string;
   turnId: string;
@@ -194,6 +209,24 @@ export type ChatApprovalRequest = {
   summary: string;
   /** Optional longer detail (command text, file path, layer count). */
   detail?: string;
+};
+
+/** Main acknowledged an exact approval response. Every eligible window sees
+ *  this terminal event so a response in one surface clears the others. */
+export type ChatApprovalResolvedEvent = {
+  threadId: string;
+  turnId: string;
+  approvalId: string;
+  decision: ChatApprovalDecision;
+};
+
+/** An exact pending request can no longer be answered. No response from a
+ *  stale renderer may be applied to a later turn/request. */
+export type ChatApprovalSupersededEvent = {
+  threadId: string;
+  turnId: string;
+  approvalId: string;
+  reason: "request_replaced" | "thread_closed" | "controller_disposed";
 };
 
 // Drawing shapes are modeled as one tool PER primitive (draw_arrow,

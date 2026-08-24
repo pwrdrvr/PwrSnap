@@ -57,7 +57,7 @@ export function localAgentCommandRequirement(
     case "codex:libraryChat:rename":
     case "codex:libraryChat:archive":
     case "codex:libraryChat:interrupt":
-    case "codex:libraryChat:approve":
+    case "codex:libraryChat:approval":
       return { all: ["capture.edit"] };
 
     case "layers:list":
@@ -84,7 +84,7 @@ export function localAgentCommandRequirement(
     case "codex:sizzleChat:rename":
     case "codex:sizzleChat:archive":
     case "codex:sizzleChat:interrupt":
-    case "codex:sizzleChat:approve":
+    case "codex:sizzleChat:approval":
       return { all: ["sizzle.compose"] };
 
     case "sizzle:list":

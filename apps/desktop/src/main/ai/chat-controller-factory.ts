@@ -119,6 +119,8 @@ export type ChatSurfaceConfig = {
   threadAccess?: ChatThreadAccess;
   /** Optional producer-side terminal status seam consumed by Editor #471. */
   messageStatusFor?: ChatEventAdapterOptions["messageStatusFor"];
+  /** Release exact per-turn host state after the backend settles that turn. */
+  onTurnTerminal?: (threadId: string, turnId: string) => void;
   /** Usage-accounting surface. */
   usageSurface: AiUsageThreadSurface;
   /** L1 + L2 system prompt builder. */
@@ -442,6 +444,16 @@ export async function buildChatSurface(
         serviceTier: event.settings.serviceTier ?? null
       });
     }
+    if (event.kind === "turn_completed") {
+      config.onTurnTerminal?.(event.threadId, event.turnId);
+    } else if (
+      event.kind === "error" &&
+      event.threadId !== undefined &&
+      event.turnId !== undefined &&
+      event.willRetry !== true
+    ) {
+      config.onTurnTerminal?.(event.threadId, event.turnId);
+    }
     if (config.approvalBroker !== undefined && event.kind === "turn_started") {
       config.approvalBroker.openThread(event.threadId);
     }
@@ -580,7 +592,7 @@ export async function buildChatSurface(
     // old private pending entry.
     if (config.approvalBroker !== undefined) {
       try {
-        await config.approvalBroker.closeOwner(approvalOwner);
+        config.approvalBroker.closeOwner(approvalOwner);
       } catch (cause) {
         // Teardown must still silence the stale controller and close its
         // backend even if a lifecycle observer misbehaves.

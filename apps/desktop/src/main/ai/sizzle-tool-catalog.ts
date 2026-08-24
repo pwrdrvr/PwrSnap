@@ -13,6 +13,7 @@ import type {
 import { dispatchLibraryToolCall } from "./library-tool-catalog";
 import { buildSizzleToolAllowlist, type SizzleToolDeps } from "./sizzle-tool-allowlist";
 import type { CommandDispatchOptions } from "../command-bus";
+import { missingChatToolContext } from "./chat-turn-tool-context";
 
 /** Friendly present-tense labels for Sizzle tool activity chips. */
 export const SIZZLE_TOOL_LABELS: Record<string, string> = {
@@ -39,9 +40,10 @@ export const SIZZLE_TOOL_LABELS: Record<string, string> = {
  *  calling thread's project and no other (locked decision #4). */
 export function makeSizzleChatTools(
   deps: SizzleToolDeps,
-  commandContextForThread: (threadId: string) => CommandDispatchOptions = () => ({
-    principal: "ipc"
-  })
+  commandContextForTurn: (
+    threadId: string,
+    turnId: string
+  ) => CommandDispatchOptions | undefined = () => ({ principal: "ipc" })
 ): {
   catalog: DynamicToolSpec[];
   dispatch: (params: DynamicToolCallParams) => Promise<DynamicToolCallResponse>;
@@ -49,7 +51,11 @@ export function makeSizzleChatTools(
   const allowlist = buildSizzleToolAllowlist(deps);
   return {
     catalog: buildToolCatalog(allowlist),
-    dispatch: (params) =>
-      dispatchLibraryToolCall(params, allowlist, commandContextForThread(params.threadId))
+    dispatch: (params) => {
+      const context = commandContextForTurn(params.threadId, params.turnId);
+      return context === undefined
+        ? Promise.resolve(missingChatToolContext())
+        : dispatchLibraryToolCall(params, allowlist, context);
+    }
   };
 }

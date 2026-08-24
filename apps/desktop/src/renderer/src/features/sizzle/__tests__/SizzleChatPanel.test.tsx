@@ -5,6 +5,7 @@ import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { ChatApprovalRequest, ChatMessage, LibraryChatThreadView } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { SizzleChatPanel } from "../SizzleChatPanel";
+import { clearChatDraftsForTests } from "../../shared/chat/chat-draft-store";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -159,6 +160,7 @@ afterEach(async () => {
   container?.remove();
   container = null;
   root = null;
+  clearChatDraftsForTests();
 });
 
 describe("SizzleChatPanel", () => {
@@ -177,6 +179,50 @@ describe("SizzleChatPanel", () => {
     expect(dispatch).toHaveBeenCalledWith("codex:sizzleChat:history", { threadId: "t1" });
     expect(el.textContent).not.toContain("Describe the video you want");
     expect(el.textContent).toContain("Earlier chat");
+  });
+
+  test("keeps Sizzle drafts scoped across thread switches", async () => {
+    const first = makeThread("t1", "First reel", "2026-05-30T10:00:00.000Z");
+    const second = makeThread("t2", "Second reel", "2026-05-30T11:00:00.000Z");
+    const { el } = await renderPanel([first, second]);
+    await typeInto(
+      el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!,
+      "second reel draft"
+    );
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('button[title="First reel"]')!.click();
+      await Promise.resolve();
+    });
+    expect(el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value).toBe("");
+    await typeInto(
+      el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!,
+      "first reel draft"
+    );
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('button[title="Second reel"]')!.click();
+      await Promise.resolve();
+    });
+    expect(el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value)
+      .toBe("second reel draft");
+  });
+
+  test("restores a Sizzle draft after Hide-style panel unmount", async () => {
+    const thread = makeThread("t1", "Reel chat");
+    const first = await renderPanel([thread]);
+    await typeInto(
+      first.el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!,
+      "survives hide"
+    );
+    await act(async () => root?.unmount());
+    root = null;
+    container?.remove();
+    container = null;
+
+    const reopened = await renderPanel([thread]);
+    expect(reopened.el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value)
+      .toBe("survives hide");
   });
 
   test("orders thread chips in creation order (oldest to newest), resumes most recent", async () => {

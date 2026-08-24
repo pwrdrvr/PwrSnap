@@ -21,6 +21,13 @@ import { acpAgentIdFromThreadId, EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../lib/pwrsnap";
 import { MessageList, type ChatActivityChip } from "../shared/chat/MessageList";
 import { Composer, type ComposerAttachment } from "../shared/chat/Composer";
+import {
+  chatDraftKey,
+  clearChatDraftAtRevision,
+  moveChatDraft,
+  readChatDraft,
+  writeChatDraft
+} from "../shared/chat/chat-draft-store";
 import { ChatApprovalModal } from "../shared/chat/ChatApprovalModal";
 import { useChatApprovalSession } from "../shared/chat/useChatApprovalSession";
 import {
@@ -46,6 +53,7 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [codexError, setCodexError] = useState<ChatPanelError | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [draftResetVersion, setDraftResetVersion] = useState(0);
   const [loading, setLoading] = useState<boolean>(true);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [stoppingTurnId, setStoppingTurnId] = useState<string | null>(null);
@@ -486,6 +494,7 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
       }
       setActionError(null);
       let threadId = activeThreadRef.current;
+      let migratedDraft: { key: string; revision: number } | null = null;
       if (threadId === null) {
         const cfg = draftConfigRef.current;
         if (cfg.model === null || cfg.model === "") {
@@ -504,6 +513,15 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
           throw new Error(created.error.message);
         }
         threadId = created.value.threadId;
+        const targetDraftKey = chatDraftKey("sizzle", projectId, threadId);
+        migratedDraft = {
+          key: targetDraftKey,
+          revision: moveChatDraft(
+            chatDraftKey("sizzle", projectId, null),
+            targetDraftKey,
+            text
+          )
+        };
         // Dedup: the controller also broadcasts threadUpdated for this new
         // thread, which can land before this optimistic add — without the
         // filter the same thread shows as two tiles.
@@ -525,6 +543,11 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
       if (!result.ok) {
         setActionError(`Message not sent: ${errorFor(result.error).message}`);
         throw new Error(result.error.message);
+      }
+      if (migratedDraft !== null) {
+        if (clearChatDraftAtRevision(migratedDraft.key, migratedDraft.revision)) {
+          setDraftResetVersion((version) => version + 1);
+        }
       }
       if (
         activeThreadRef.current === threadId &&
@@ -625,6 +648,7 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
   }
 
   const showGreeting = activeThreadId === null;
+  const composerDraftKey = chatDraftKey("sizzle", projectId, activeThreadId);
   const activeThread =
     activeThreadId !== null ? (threads.find((t) => t.threadId === activeThreadId) ?? null) : null;
   const lockedChoice: ChatBackendChoice | null =
@@ -723,6 +747,9 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
           </div>
         ) : null}
         <Composer
+          key={`${composerDraftKey}:${draftResetVersion}`}
+          initialText={readChatDraft(composerDraftKey)}
+          onDraftChange={(text) => writeChatDraft(composerDraftKey, text)}
           onSubmit={onSubmit}
           onStop={onStop}
           turnState={

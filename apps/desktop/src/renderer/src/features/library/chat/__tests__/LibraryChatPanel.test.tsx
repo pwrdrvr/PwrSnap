@@ -5,6 +5,7 @@ import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { ChatApprovalRequest, ChatMessage, LibraryChatThreadView } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { LibraryChatPanel } from "../LibraryChatPanel";
+import { clearChatDraftsForTests } from "../../../shared/chat/chat-draft-store";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -146,6 +147,7 @@ afterEach(async () => {
   container?.remove();
   container = null;
   root = null;
+  clearChatDraftsForTests();
 });
 
 describe("LibraryChatPanel", () => {
@@ -173,6 +175,74 @@ describe("LibraryChatPanel", () => {
     const { el } = await renderPanel([makeThread("t1", "Chat", "2026-05-30T10:00:00.000Z")]);
     expect(el.querySelector('[data-testid="chat-backend-chips-locked"]')).not.toBeNull();
     expect(el.querySelector('[data-testid="chat-backend-chips-draft"]')).toBeNull();
+  });
+
+  test("keeps Library drafts scoped to each thread and the new-chat draft", async () => {
+    const first = makeThread("t1", "First chat", "2026-05-30T10:00:00.000Z");
+    const second = makeThread("t2", "Second chat", "2026-05-30T11:00:00.000Z");
+    const { el } = await renderPanel([first, second]);
+
+    await typeInto(
+      el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!,
+      "second draft"
+    );
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('button[title="First chat"]')!.click();
+      await Promise.resolve();
+    });
+    expect(el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value).toBe("");
+
+    await typeInto(
+      el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!,
+      "first draft"
+    );
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>(".ps-libchat-newchat")!.click();
+      await Promise.resolve();
+    });
+    expect(el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value).toBe("");
+
+    await typeInto(
+      el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!,
+      "new draft"
+    );
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('button[title="Second chat"]')!.click();
+      await Promise.resolve();
+    });
+    expect(el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value)
+      .toBe("second draft");
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('button[title="First chat"]')!.click();
+      await Promise.resolve();
+    });
+    expect(el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value)
+      .toBe("first draft");
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>(".ps-libchat-newchat")!.click();
+      await Promise.resolve();
+    });
+    expect(el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value)
+      .toBe("new draft");
+  });
+
+  test("restores a Library thread draft after the panel unmounts", async () => {
+    const thread = makeThread("t1", "Chat");
+    const first = await renderPanel([thread]);
+    await typeInto(
+      first.el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!,
+      "survives close"
+    );
+    await act(async () => root?.unmount());
+    root = null;
+    container?.remove();
+    container = null;
+
+    const reopened = await renderPanel([thread]);
+    expect(reopened.el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!.value)
+      .toBe("survives close");
   });
 
   test("orders thread chips in creation order (oldest to newest), resumes most recent", async () => {

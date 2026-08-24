@@ -22,6 +22,13 @@ import { acpAgentIdFromThreadId, EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { MessageList, type ChatActivityChip } from "../../shared/chat/MessageList";
 import { Composer, type ComposerAttachment } from "../../shared/chat/Composer";
+import {
+  chatDraftKey,
+  clearChatDraftAtRevision,
+  moveChatDraft,
+  readChatDraft,
+  writeChatDraft
+} from "../../shared/chat/chat-draft-store";
 import { ChatApprovalModal } from "../../shared/chat/ChatApprovalModal";
 import { useChatApprovalSession } from "../../shared/chat/useChatApprovalSession";
 import {
@@ -47,6 +54,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [codexError, setCodexError] = useState<ChatPanelError | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [draftResetVersion, setDraftResetVersion] = useState(0);
   const [loading, setLoading] = useState<boolean>(true);
   // New-chat backend draft (editable chips until the first message locks it).
   const [providers, setProviders] = useState<string[]>(["codex"]);
@@ -529,6 +537,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       }
       setActionError(null);
       let threadId = activeThreadRef.current;
+      let migratedDraft: { key: string; revision: number } | null = null;
       if (threadId === null) {
         // First message of a new chat: lock in the chosen backend config. A
         // model is required.
@@ -549,6 +558,15 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
           throw new Error(created.error.message);
         }
         threadId = created.value.threadId;
+        const targetDraftKey = chatDraftKey("library", anchorCaptureId, threadId);
+        migratedDraft = {
+          key: targetDraftKey,
+          revision: moveChatDraft(
+            chatDraftKey("library", anchorCaptureId, null),
+            targetDraftKey,
+            text
+          )
+        };
         // Dedup: the controller also broadcasts threadUpdated for this new
         // thread, which can land before this optimistic add — without the
         // filter the same thread shows as two tiles.
@@ -572,6 +590,11 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       if (!result.ok) {
         setActionError(`Message not sent: ${errorFor(result.error).message}`);
         throw new Error(result.error.message);
+      }
+      if (migratedDraft !== null) {
+        if (clearChatDraftAtRevision(migratedDraft.key, migratedDraft.revision)) {
+          setDraftResetVersion((version) => version + 1);
+        }
       }
       if (
         activeThreadRef.current === threadId &&
@@ -672,6 +695,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   }
 
   const showGreeting = activeThreadId === null;
+  const composerDraftKey = chatDraftKey("library", anchorCaptureId, activeThreadId);
   const activeThread =
     activeThreadId !== null ? (threads.find((t) => t.threadId === activeThreadId) ?? null) : null;
   // The active thread's locked config, falling back to the provider baked into
@@ -772,6 +796,9 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
           </div>
         ) : null}
         <Composer
+          key={`${composerDraftKey}:${draftResetVersion}`}
+          initialText={readChatDraft(composerDraftKey)}
+          onDraftChange={(text) => writeChatDraft(composerDraftKey, text)}
           onSubmit={onSubmit}
           onStop={onStop}
           turnState={

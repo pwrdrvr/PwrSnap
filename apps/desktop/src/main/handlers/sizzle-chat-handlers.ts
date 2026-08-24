@@ -47,10 +47,11 @@ import { makeSizzleChatTools, SIZZLE_TOOL_LABELS } from "../ai/sizzle-tool-catal
 import { getChatsRoot } from "../persistence/paths";
 import { ChatApprovalBroker } from "../ai/chat-approval-broker";
 import { ChatThreadAccess } from "../ai/chat-thread-access";
+import { ChatTurnToolContextStore } from "../ai/chat-turn-tool-context";
 
 const log = getMainLogger("pwrsnap:sizzle-chat-handlers");
-// Tool callbacks outlive sendMessage(), so retain the latest turn origin.
-const activeSizzleToolContexts = new Map<string, CommandDispatchOptions>();
+// Tool callbacks outlive sendMessage(), so retain exact successful-turn origin.
+let activeSizzleToolContexts = new ChatTurnToolContextStore();
 
 /** The Sizzle surface's broadcast channels (controller is parameterized). */
 const SIZZLE_CHAT_CHANNELS: ChatChannelSet = {
@@ -186,7 +187,8 @@ function getSizzleCache(): KeyedChatControllerCache<ChatThreadController<Setting
       const tools = makeSizzleChatTools({
         resolveProjectId: async (threadId) =>
           (await projectStore.get(threadId))?.anchorCaptureId ?? null
-      }, (threadId) => activeSizzleToolContexts.get(threadId) ?? { principal: "ipc" });
+      }, (threadId, turnId) =>
+        activeSizzleToolContexts.forToolCall({ threadId, turnId }));
       const command = codexCommandForSettings(settings);
       const env = codexEnvForProfile(settings.codex.profile);
       const surface = await buildChatSurface({
@@ -205,6 +207,8 @@ function getSizzleCache(): KeyedChatControllerCache<ChatThreadController<Setting
         toolLabels: SIZZLE_TOOL_LABELS,
         catalog: tools.catalog,
         dispatchToolCall: tools.dispatch,
+        onTurnTerminal: (threadId, turnId) =>
+          activeSizzleToolContexts.clearTurn(threadId, turnId),
         threadConfig: resolveCodexThreadConfigForCommand(command, env),
         threadEnvironments: SIZZLE_CHAT_THREAD_ENVIRONMENTS,
         // The THREAD's chosen config (null → backend default).
@@ -279,6 +283,8 @@ export function registerSizzleChatHandlers(params?: {
   store?: ChatThreadStore;
   access?: ChatThreadAccess;
   approvalBroker?: ChatApprovalBroker;
+  /** Unit-test seam for exact turn-origin assertions. */
+  toolContexts?: ChatTurnToolContextStore;
 }): void {
   sizzleSettingsReader = params?.settingsReader ?? defaultSettingsReader;
   injectedSizzleController = params?.controller ?? null;
@@ -288,6 +294,7 @@ export function registerSizzleChatHandlers(params?: {
   sizzleStore = params?.store !== undefined ? () => params.store as ChatThreadStore : null;
   sizzleAccess = params?.access ?? null;
   sizzleApprovalBroker = params?.approvalBroker ?? null;
+  activeSizzleToolContexts = params?.toolContexts ?? new ChatTurnToolContextStore();
   app?.once?.("before-quit", () => {
     if (sizzleCache !== null) void sizzleCache.reset();
   });
@@ -377,12 +384,12 @@ export function registerSizzleChatHandlers(params?: {
         ...(ctx.sourceWindowId !== undefined ? { sourceWindowId: ctx.sourceWindowId } : {}),
         ...(ctx.sourceBounds !== undefined ? { sourceBounds: ctx.sourceBounds } : {})
       };
-      activeSizzleToolContexts.set(req.threadId, commandContext);
       const result = await c.sendMessage({
         threadId: req.threadId,
         text: req.text,
         ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
+      activeSizzleToolContexts.commit(req.threadId, result.turnId, commandContext);
       return ok(result);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
@@ -430,7 +437,11 @@ export function registerSizzleChatHandlers(params?: {
         await getSizzleApprovalBroker().closeThread(req.threadId);
       }
       const view = await c.archive(req.threadId, req.archived);
-      if (!req.archived) getSizzleApprovalBroker().openThread(req.threadId);
+      if (req.archived) {
+        activeSizzleToolContexts.clearThread(req.threadId);
+      } else {
+        getSizzleApprovalBroker().openThread(req.threadId);
+      }
       return ok(getSizzleApprovalBroker().decorateThread(toLibraryThreadView(view, config)));
     } catch (cause) {
       return codexUnreachable(cause);
@@ -448,6 +459,7 @@ export function registerSizzleChatHandlers(params?: {
         await c.interrupt(req.threadId);
       }
       await getSizzleApprovalBroker().closeThread(req.threadId);
+      activeSizzleToolContexts.clearThread(req.threadId);
       return ok(undefined);
     } catch (cause) {
       return codexUnreachable(cause);
@@ -519,6 +531,7 @@ export async function cleanupProjectChats(
     if (broker !== null) {
       await broker.closeThread(t.threadId);
     }
+    activeSizzleToolContexts.clearThread(t.threadId);
     await store.delete(t.threadId);
     access?.forget(t.threadId);
   }

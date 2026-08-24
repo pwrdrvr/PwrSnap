@@ -63,6 +63,7 @@ describe("Windows release configuration", () => {
     expect(script).toContain("writeWindowsChecksums");
     expect(script).toContain("assertRequiredWindowsResources();");
     expect(script).toContain("build/native/window-list.exe");
+    expect(script).toContain('"native", "verified-file.exe"');
     expect(script).toContain("PWRSNAP_WINDOWS_FFMPEG_PATH");
     expect(script).toContain('to: "PwrSnapFFmpeg.exe"');
     expect(script).toContain('from "./sharp-platform-packages.mjs"');
@@ -79,6 +80,16 @@ describe("Windows release configuration", () => {
     expect(nativeRebuild).toBeGreaterThan(pruning);
     expect(prepareOnlyExit).toBeGreaterThan(pruning);
     expect(electronBuilder).toBeGreaterThan(pruning);
+  });
+
+  test("Windows packages the atomic verified-file helper", () => {
+    const config = read("apps/desktop/electron-builder.yml");
+    const builder = read("apps/desktop/scripts/build-native.mjs");
+
+    expect(config).toContain('from: "build/native/verified-file.exe"');
+    expect(config).toContain('to: "PwrSnapVerifiedFile.exe"');
+    expect(builder).toContain('join(nativeRoot, "verified-file-win", "main.cpp")');
+    expect(builder).toContain('join(buildRoot, "verified-file.exe")');
   });
 
   test("macOS release preparation always defers FFmpeg to the injected artifact", () => {

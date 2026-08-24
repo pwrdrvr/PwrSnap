@@ -7,6 +7,12 @@ import {
   type FileHandle
 } from "node:fs/promises";
 import { normalize, resolve } from "node:path";
+import { normalizeWindowsPathForPolicy } from "./windows-path";
+import {
+  acquireWindowsVerifiedFileLease,
+  WindowsVerifiedFileLeaseError,
+  type WindowsVerifiedFileLease
+} from "./windows-verified-file-lease";
 
 export type VerifiedFileErrorCode =
   | "invalid_size_limit"
@@ -18,7 +24,9 @@ export type VerifiedFileErrorCode =
   | "file_changed"
   | "size_cap_exceeded"
   | "read_failed"
-  | "close_failed";
+  | "close_failed"
+  | "native_verifier_unavailable"
+  | "native_verifier_failed";
 
 const ERROR_MESSAGES: Readonly<Record<VerifiedFileErrorCode, string>> = {
   invalid_size_limit: "Invalid file size limit",
@@ -30,7 +38,9 @@ const ERROR_MESSAGES: Readonly<Record<VerifiedFileErrorCode, string>> = {
   file_changed: "File changed while it was being opened",
   size_cap_exceeded: "File is too large",
   read_failed: "Unable to read file",
-  close_failed: "Unable to close file"
+  close_failed: "Unable to close file",
+  native_verifier_unavailable: "Native file verifier is unavailable",
+  native_verifier_failed: "Native file verifier failed"
 };
 
 /**
@@ -63,6 +73,10 @@ export type VerifiedFileOptions = {
   validatePath?: VerifiedPathValidator;
 };
 
+/**
+ * Read-only staging callback. It may build private temporary/staged output,
+ * but the caller must not publish that output until the wrapper resolves.
+ */
 export type VerifiedFileConsumer<T> = (
   handle: FileHandle,
   openedStat: BigIntStats
@@ -157,12 +171,23 @@ function sameStableSnapshot(left: BigIntStats, right: BigIntStats): boolean {
 }
 
 function sameCanonicalPath(left: string, right: string): boolean {
-  const normalizedLeft = normalize(left);
-  const normalizedRight = normalize(right);
   if (process.platform === "win32") {
-    return normalizedLeft.toLowerCase() === normalizedRight.toLowerCase();
+    const normalizedLeft = normalizeWindowsPathForPolicy(left);
+    const normalizedRight = normalizeWindowsPathForPolicy(right);
+    return (
+      normalizedLeft !== null &&
+      normalizedRight !== null &&
+      normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    );
   }
-  return normalizedLeft === normalizedRight;
+  return normalize(left) === normalize(right);
+}
+
+function sameLeaseIdentity(
+  lease: WindowsVerifiedFileLease,
+  openedStat: BigIntStats
+): boolean {
+  return lease.dev === openedStat.dev && lease.ino === openedStat.ino;
 }
 
 function checkedMaxBytes(maxBytes: number | undefined): bigint | null {
@@ -179,8 +204,15 @@ function checkedMaxBytes(maxBytes: number | undefined): bigint | null {
  *
  * Opening the canonical path prevents a parent symlink/junction from being
  * retargeted between validation and open. The post-open raw-path checks detect
- * leaf or parent replacement. Consumers must read from `handle`, never reopen
- * a pathname; a final fstat rejects in-place mutation during consumption.
+ * leaf or parent replacement. On Windows, a narrow native helper atomically
+ * opens the leaf without following a reparse point and holds a no-write,
+ * no-delete lease through the final fstat.
+ *
+ * The consumer is a staging callback, not a commit callback: it must read only
+ * from `handle`, must not reopen the pathname or close the handle, and must not
+ * publish externally visible side effects. It may return privately staged
+ * data. The caller commits that data only after this wrapper resolves, because
+ * resolution occurs after the final stability check and handle/lease cleanup.
  */
 export async function withVerifiedFileHandle<T>(
   filePath: string,
@@ -191,19 +223,31 @@ export async function withVerifiedFileHandle<T>(
   const resolvedPath = resolve(filePath);
   await options.validatePath?.(resolvedPath);
 
+  if (process.platform === "win32") {
+    if (normalizeWindowsPathForPolicy(resolvedPath) === null) {
+      throw new VerifiedFileError("open_failed");
+    }
+    const initialRawStat = await inspectLeaf(resolvedPath);
+    return await withWindowsVerifiedFileHandle(
+      resolvedPath,
+      initialRawStat,
+      maxBytes,
+      options,
+      consume
+    );
+  }
+
   const initialRawStat = await inspectLeaf(resolvedPath);
   const canonicalPath = await canonicalize(resolvedPath);
   await options.validatePath?.(canonicalPath);
 
   await beforeOpenHookForTest?.();
 
-  // O_NOFOLLOW closes the final-component link race on POSIX. Windows does
-  // not implement this flag; the explicit lstat plus identity checks below
-  // provide the cross-platform defense there.
+  // O_NOFOLLOW closes the final-component link race on POSIX. O_NONBLOCK is
+  // load-bearing too: a raced regular-file-to-FIFO replacement must fail at
+  // fstat instead of parking the worker at open while it waits for a writer.
   const openFlags =
-    process.platform === "win32"
-      ? constants.O_RDONLY
-      : constants.O_RDONLY | constants.O_NOFOLLOW;
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 
   let handle: FileHandle;
   try {
@@ -253,6 +297,103 @@ export async function withVerifiedFileHandle<T>(
       // Preserve a more useful callback/verification failure. If all prior
       // work succeeded, surface a typed, path-free close failure.
       if (completed) throw new VerifiedFileError("close_failed");
+    }
+  }
+}
+
+function translateWindowsLeaseError(cause: unknown): VerifiedFileError {
+  if (!(cause instanceof WindowsVerifiedFileLeaseError)) {
+    return new VerifiedFileError("native_verifier_failed");
+  }
+  switch (cause.code) {
+    case "native_verifier_unavailable":
+    case "native_verifier_failed":
+    case "stat_failed":
+    case "canonicalize_failed":
+    case "symlink":
+    case "not_regular_file":
+    case "open_failed":
+      return new VerifiedFileError(cause.code);
+    case "invalid_path":
+      return new VerifiedFileError("open_failed");
+  }
+}
+
+async function withWindowsVerifiedFileHandle<T>(
+  resolvedPath: string,
+  initialRawStat: BigIntStats,
+  maxBytes: bigint | null,
+  options: VerifiedFileOptions,
+  consume: VerifiedFileConsumer<T>
+): Promise<T> {
+  await beforeOpenHookForTest?.();
+
+  let lease: WindowsVerifiedFileLease;
+  try {
+    lease = await acquireWindowsVerifiedFileLease(resolvedPath);
+  } catch (cause) {
+    throw translateWindowsLeaseError(cause);
+  }
+  let handle: FileHandle | null = null;
+  let completed = false;
+  try {
+    await options.validatePath?.(lease.finalPath);
+    try {
+      handle = await open(lease.finalPath, constants.O_RDONLY);
+    } catch {
+      throw new VerifiedFileError("open_failed");
+    }
+
+    const openedStat = await inspectHandle(handle);
+    if (
+      !sameLeaseIdentity(lease, openedStat) ||
+      !sameIdentity(initialRawStat, openedStat) ||
+      lease.size !== openedStat.size
+    ) {
+      throw new VerifiedFileError("file_changed");
+    }
+    if (maxBytes !== null && openedStat.size > maxBytes) {
+      throw new VerifiedFileError("size_cap_exceeded");
+    }
+
+    // The native lease makes replacement of the opened leaf fail while these
+    // raw-path checks prove that a parent junction still names that leaf.
+    const postRawLstat = await inspectLeaf(resolvedPath);
+    await options.validatePath?.(resolvedPath);
+    const postCanonicalPath = await canonicalize(resolvedPath);
+    await options.validatePath?.(postCanonicalPath);
+    const postRawStat = await inspectFollowing(resolvedPath);
+    if (
+      !sameCanonicalPath(lease.finalPath, postCanonicalPath) ||
+      !sameIdentity(postRawLstat, openedStat) ||
+      !sameIdentity(postRawStat, openedStat)
+    ) {
+      throw new VerifiedFileError("file_changed");
+    }
+
+    const value = await consume(handle, openedStat);
+    const finalHandleStat = await inspectHandle(handle);
+    if (!sameStableSnapshot(openedStat, finalHandleStat)) {
+      throw new VerifiedFileError("file_changed");
+    }
+    completed = true;
+    return value;
+  } finally {
+    let cleanupFailed = false;
+    if (handle !== null) {
+      try {
+        await handle.close();
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+    try {
+      await lease.release();
+    } catch {
+      cleanupFailed = true;
+    }
+    if (completed && cleanupFailed) {
+      throw new VerifiedFileError("close_failed");
     }
   }
 }

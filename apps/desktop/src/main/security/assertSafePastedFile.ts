@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import {
   posix,
@@ -11,6 +11,7 @@ import {
   VerifiedFileError,
   type VerifiedFileErrorCode
 } from "./verified-file";
+import { normalizeWindowsPathForPolicy } from "./windows-path";
 
 type PrivilegedPathPlatform = "darwin" | "win32" | "linux";
 type Environment = Readonly<Record<string, string | undefined>>;
@@ -46,7 +47,11 @@ function uniqueNormalized(
   const seen = new Set<string>();
   const result: string[] = [];
   for (const value of values) {
-    const normalized = pathApi.resolve(value);
+    const normalized =
+      platform === "win32"
+        ? normalizeWindowsPathForPolicy(value)
+        : pathApi.resolve(value);
+    if (normalized === null) continue;
     const key = platform === "win32" ? normalized.toLowerCase() : normalized;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -153,6 +158,13 @@ export function __isPrivilegedPathForTest(
   options: PrivilegedPathCheckOptions
 ): boolean {
   const { platform, prefixes } = options;
+  const normalizedCandidate =
+    platform === "win32"
+      ? normalizeWindowsPathForPolicy(candidatePath)
+      : candidatePath;
+  // Device/object-manager namespaces and administrative shares are not
+  // ordinary user-content paths. Treat them as privileged/fail-closed.
+  if (normalizedCandidate === null) return true;
   const canonicalTempDir = options.canonicalTempDir ?? null;
   for (const prefix of prefixes) {
     // macOS resolves /var/folders/... into /private/var/folders/.... Pasted
@@ -162,11 +174,11 @@ export function __isPrivilegedPathForTest(
       platform === "darwin" &&
       posix.resolve(prefix) === "/private/var" &&
       canonicalTempDir !== null &&
-      isWithin(candidatePath, canonicalTempDir, platform)
+      isWithin(normalizedCandidate, canonicalTempDir, platform)
     ) {
       continue;
     }
-    if (isWithin(candidatePath, prefix, platform)) return true;
+    if (isWithin(normalizedCandidate, prefix, platform)) return true;
   }
   return false;
 }
@@ -202,6 +214,47 @@ async function canonicalizeIfPresent(rootPath: string): Promise<string | null> {
   }
 }
 
+export type DarwinTempDirInspection = {
+  isDirectory: boolean;
+  ownerUid: number;
+  currentUid: number;
+  mode: number;
+};
+
+/** Pure test seam for the narrow macOS per-user temporary-root exception. */
+export function __isExpectedDarwinTempDirForTest(
+  canonicalPath: string,
+  inspection: DarwinTempDirInspection
+): boolean {
+  return (
+    /^\/private\/var\/folders\/[^/]+\/[^/]+\/T$/.test(canonicalPath) &&
+    inspection.isDirectory &&
+    inspection.ownerUid === inspection.currentUid &&
+    (inspection.mode & 0o077) === 0
+  );
+}
+
+/** Testable resolver: hostile TMPDIR overrides must not create an exception. */
+export async function __canonicalDarwinTempDirForTest(
+  candidatePath: string
+): Promise<string | null> {
+  const canonicalPath = await canonicalizeIfPresent(candidatePath);
+  if (canonicalPath === null || process.getuid === undefined) return null;
+  try {
+    const inspected = await stat(canonicalPath);
+    return __isExpectedDarwinTempDirForTest(canonicalPath, {
+      isDirectory: inspected.isDirectory(),
+      ownerUid: inspected.uid,
+      currentUid: process.getuid(),
+      mode: inspected.mode
+    })
+      ? canonicalPath
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 async function buildPolicy(
   prefixes: readonly string[]
 ): Promise<PrivilegedPathCheckOptions> {
@@ -215,7 +268,9 @@ async function buildPolicy(
     platform
   );
   const canonicalTempDir =
-    platform === "darwin" ? await canonicalizeIfPresent(tmpdir()) : null;
+    platform === "darwin"
+      ? await __canonicalDarwinTempDirForTest(tmpdir())
+      : null;
   return { platform, prefixes: roots, canonicalTempDir };
 }
 

@@ -11,12 +11,15 @@ import { join, win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   __buildPrivilegedPrefixesForTest,
+  __canonicalDarwinTempDirForTest,
+  __isExpectedDarwinTempDirForTest,
   __isPrivilegedPathForTest,
   __setPrivilegedPrefixesForTest,
   readSafePastedFile,
   UnsafePastedFileError
 } from "../assertSafePastedFile";
 import { __setVerifiedFileBeforeOpenHookForTest } from "../verified-file";
+import { normalizeWindowsPathForPolicy } from "../windows-path";
 
 let dir: string;
 
@@ -277,6 +280,49 @@ describe("cross-platform privileged roots", () => {
     ).toBe(false);
   });
 
+  test("Windows normalizes equivalent drive and UNC namespaces", () => {
+    expect(
+      normalizeWindowsPathForPolicy("\\\\?\\C:\\Users\\Alice\\.ssh\\id_ed25519")
+    ).toBe("C:\\Users\\Alice\\.ssh\\id_ed25519");
+    expect(
+      normalizeWindowsPathForPolicy("\\\\?\\UNC\\server\\images\\photo.png")
+    ).toBe("\\\\server\\images\\photo.png");
+
+    const options = {
+      platform: "win32" as const,
+      prefixes: ["C:\\Users\\Alice\\.ssh"]
+    };
+    expect(
+      __isPrivilegedPathForTest(
+        "\\\\?\\C:\\Users\\Alice\\.ssh\\id_ed25519",
+        options
+      )
+    ).toBe(true);
+    expect(
+      __isPrivilegedPathForTest("\\??\\C:\\Users\\Alice\\.ssh\\config", options)
+    ).toBe(true);
+  });
+
+  test("Windows fails closed for device namespaces and admin-share aliases", () => {
+    const options = {
+      platform: "win32" as const,
+      prefixes: ["C:\\Users\\Alice\\.ssh"]
+    };
+    for (const candidate of [
+      "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\secret",
+      "\\\\.\\PhysicalDrive0",
+      "C:\\Users\\Alice\\safe.png\nC:\\Users\\Alice\\.ssh\\config",
+      "\\\\localhost\\C$\\Users\\Alice\\.ssh\\id_ed25519",
+      "\\\\?\\UNC\\localhost\\C$\\Users\\Alice\\.ssh\\id_ed25519"
+    ]) {
+      expect(normalizeWindowsPathForPolicy(candidate)).toBeNull();
+      expect(__isPrivilegedPathForTest(candidate, options)).toBe(true);
+    }
+    expect(
+      __isPrivilegedPathForTest("\\\\server\\images\\photo.png", options)
+    ).toBe(false);
+  });
+
   test("macOS protects system and user keychains plus dot credential stores", () => {
     const roots = __buildPrivilegedPrefixesForTest({
       platform: "darwin",
@@ -313,5 +359,40 @@ describe("cross-platform privileged roots", () => {
         options
       )
     ).toBe(true);
+  });
+
+  test("macOS temp carveout requires the owned private per-user T shape", async () => {
+    const expected = "/private/var/folders/ab/user-token/T";
+    expect(
+      __isExpectedDarwinTempDirForTest(expected, {
+        isDirectory: true,
+        ownerUid: 501,
+        currentUid: 501,
+        mode: 0o40700
+      })
+    ).toBe(true);
+    for (const [path, override] of [
+      ["/private/var/tmp/hostile", {}],
+      [`${expected}/nested`, {}],
+      [expected, { ownerUid: 502 }],
+      [expected, { mode: 0o40777 }],
+      [expected, { isDirectory: false }]
+    ] as const) {
+      expect(
+        __isExpectedDarwinTempDirForTest(path, {
+          isDirectory: true,
+          ownerUid: 501,
+          currentUid: 501,
+          mode: 0o40700,
+          ...override
+        })
+      ).toBe(false);
+    }
+
+    const hostileTmpDir = join(dir, "hostile-tmpdir");
+    await mkdir(hostileTmpDir, { mode: 0o700 });
+    await expect(
+      __canonicalDarwinTempDirForTest(hostileTmpDir)
+    ).resolves.toBeNull();
   });
 });

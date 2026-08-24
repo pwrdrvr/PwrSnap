@@ -564,7 +564,20 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
   });
 
   bus.register("capture:pasteFromClipboard", async () => {
-    const clipboardPng = await writeClipboardImageToTempPng();
+    let clipboardPng: Awaited<ReturnType<typeof writeClipboardImageToTempPng>>;
+    try {
+      // The decode path can throw before it returns its Result-shaped union:
+      // clipboard format reads, sharp metadata, and temp creation/writes all
+      // sit below this call. Keep that entire boundary inside the sanitizer.
+      clipboardPng = await writeClipboardImageToTempPng();
+    } catch {
+      log.error("clipboard paste decode failed", { code: "decode_failed" });
+      return err({
+        kind: "clipboard",
+        code: "paste_failed",
+        message: "Unable to paste the clipboard image"
+      });
+    }
     if (!clipboardPng.ok) {
       return err({
         kind: "clipboard",

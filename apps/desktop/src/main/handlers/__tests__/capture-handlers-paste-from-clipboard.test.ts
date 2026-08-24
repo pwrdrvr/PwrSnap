@@ -409,4 +409,33 @@ describe("capture:pasteFromClipboard", () => {
     });
     expect(JSON.stringify(mocks.logError.mock.calls)).not.toContain(privatePath);
   });
+
+  test("sanitizes a decoder/temp failure thrown before persistence", async () => {
+    const privatePath = join(tmpdir(), "private source", "clipboard.png");
+    mocks.writeFirstDecodableClipboardBufferToPng.mockRejectedValue(
+      new Error(`temp write failed for ${privatePath}`)
+    );
+
+    const result = await bus.dispatch(
+      "capture:pasteFromClipboard",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: "clipboard",
+        code: "paste_failed",
+        message: "Unable to paste the clipboard image"
+      }
+    });
+    expect(mocks.persistCaptureFromTempV2).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain(privatePath);
+    expect(mocks.logError).toHaveBeenCalledWith(
+      "clipboard paste decode failed",
+      { code: "decode_failed" }
+    );
+    expect(JSON.stringify(mocks.logError.mock.calls)).not.toContain(privatePath);
+  });
 });

@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   findForbiddenAsarEntries,
@@ -9,6 +10,7 @@ import {
   findMissingPackagedResources,
   findMissingSharpAsarRuntime,
   findMissingUnpackedNative,
+  sharpEsmRuntimePaths,
   verifyAsarListing,
   verifyPackagedResources,
   verifySharpAsarRuntime,
@@ -82,9 +84,12 @@ function windowsUnpackedRuntimeFixtures(arch) {
 function windowsSharpAsarListing(arch) {
   const packageRoot = `/node_modules/@img/sharp-win32-${arch}`;
   return [
-    "/node_modules/sharp/dist/index.cjs",
+    ...sharpEsmRuntimePaths.map((runtimePath) => `/node_modules/sharp/${runtimePath}`),
+    "/node_modules/sharp/package.json",
     "/node_modules/sharp/LICENSE",
+    "/node_modules/@img/colour/package.json",
     "/node_modules/@img/colour/index.cjs",
+    "/node_modules/@img/colour/color.cjs",
     `${packageRoot}/index.cjs`,
     `${packageRoot}/package.json`,
     `${packageRoot}/LICENSE`,
@@ -93,6 +98,34 @@ function windowsSharpAsarListing(arch) {
 }
 
 describe("verify-asar-contents", () => {
+  test("pins the ESM export and every relative Sharp runtime module it reaches", () => {
+    const resolvedEntrypoint = fileURLToPath(import.meta.resolve("sharp"));
+    const sharpRoot = dirname(dirname(resolvedEntrypoint));
+    const manifestPath = join(sharpRoot, "package.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const importEntrypoint = manifest.exports?.["."]?.import?.default;
+    expect(importEntrypoint).toBe("./dist/index.mjs");
+    expect(resolvedEntrypoint).toBe(resolve(sharpRoot, importEntrypoint));
+
+    const reachable = new Set();
+    const visit = (modulePath) => {
+      const runtimePath = relative(sharpRoot, modulePath).split(sep).join("/");
+      if (reachable.has(runtimePath)) return;
+      reachable.add(runtimePath);
+      const source = readFileSync(modulePath, "utf8");
+      const relativeImport =
+        /\b(?:import|export)\s+(?:[^'"]*?\sfrom\s+)?["'](\.[^"']+)["']/g;
+      for (const match of source.matchAll(relativeImport)) {
+        const specifier = match[1];
+        if (!specifier.endsWith(".mjs")) continue;
+        visit(resolve(dirname(modulePath), specifier));
+      }
+    };
+    visit(resolvedEntrypoint);
+
+    expect([...reachable].sort()).toEqual([...sharpEsmRuntimePaths].sort());
+  });
+
   test("flags forbidden ASAR entries", () => {
     expect(
       findForbiddenAsarEntries([
@@ -240,27 +273,35 @@ describe("verify-asar-contents", () => {
     );
   });
 
-  test("requires Sharp JS glue and licenses at their exact ASAR paths", () => {
+  test("requires Sharp's ESM runtime graph, package glue, and licenses", () => {
     const listing = windowsSharpAsarListing("x64").filter(
       (entry) =>
         ![
-          "/node_modules/sharp/dist/index.cjs",
+          "/node_modules/sharp/dist/index.mjs",
+          "/node_modules/sharp/dist/sharp.mjs",
+          "/node_modules/sharp/package.json",
           "/node_modules/sharp/LICENSE",
+          "/node_modules/@img/colour/package.json",
           "/node_modules/@img/colour/index.cjs",
+          "/node_modules/@img/colour/color.cjs",
           "/node_modules/@img/sharp-win32-x64/LICENSE"
         ].includes(entry)
     );
 
     expect(findMissingSharpAsarRuntime(listing, "win32", "x64")).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ label: "sharp JavaScript runtime" }),
+        expect.objectContaining({ label: "sharp ESM runtime module dist/index.mjs" }),
+        expect.objectContaining({ label: "sharp ESM runtime module dist/sharp.mjs" }),
+        expect.objectContaining({ label: "sharp package manifest" }),
         expect.objectContaining({ label: "sharp license" }),
-        expect.objectContaining({ label: "@img/colour JavaScript runtime" }),
+        expect.objectContaining({ label: "@img/colour package manifest" }),
+        expect.objectContaining({ label: "@img/colour JavaScript loader" }),
+        expect.objectContaining({ label: "@img/colour JavaScript implementation" }),
         expect.objectContaining({ label: "@img/sharp-win32-x64 license" })
       ])
     );
     expect(() => verifySharpAsarRuntime(listing, "win32", "x64")).toThrow(
-      /missing sharp JavaScript runtime.*missing sharp license.*missing @img\/colour JavaScript runtime.*missing @img\/sharp-win32-x64 license/s
+      /missing sharp ESM runtime module dist\/index\.mjs.*missing sharp ESM runtime module dist\/sharp\.mjs.*missing sharp package manifest.*missing sharp license.*missing @img\/colour package manifest.*missing @img\/colour JavaScript loader.*missing @img\/colour JavaScript implementation.*missing @img\/sharp-win32-x64 license/s
     );
   });
 

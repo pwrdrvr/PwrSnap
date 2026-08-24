@@ -91,7 +91,9 @@ describe("Sharp platform package pruning", () => {
   test("removes foreign native slices without touching Sharp glue, licenses, or notices", () => {
     const { root, nodeModulesDir } = tempStage();
     const preserved = new Map([
-      ["node_modules/sharp/dist/index.cjs", "sharp-js-glue"],
+      ["node_modules/sharp/dist/index.mjs", "sharp-esm-entry"],
+      ["node_modules/sharp/dist/sharp.mjs", "sharp-esm-native-loader"],
+      ["node_modules/sharp/package.json", "sharp-manifest"],
       ["node_modules/sharp/LICENSE", "sharp-license"],
       ["node_modules/@img/colour/index.cjs", "colour-js-glue"],
       ["node_modules/@img/colour/LICENSE.md", "colour-license"],

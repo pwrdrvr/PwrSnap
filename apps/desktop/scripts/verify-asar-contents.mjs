@@ -52,18 +52,50 @@ const windowsRequiredResources = [
   "PwrSnapWindowList.exe"
 ];
 
+// electron-vite emits ESM for the main process and workers while leaving Sharp
+// external. Node therefore follows Sharp's `import` export to dist/index.mjs.
+// Pin every relative ESM module reachable from that entrypoint in Sharp 0.35.3;
+// a Sharp upgrade must deliberately review this runtime contract.
+export const sharpEsmRuntimePaths = [
+  "dist/index.mjs",
+  "dist/constructor.mjs",
+  "dist/input.mjs",
+  "dist/resize.mjs",
+  "dist/composite.mjs",
+  "dist/operation.mjs",
+  "dist/colour.mjs",
+  "dist/channel.mjs",
+  "dist/output.mjs",
+  "dist/utility.mjs",
+  "dist/is.mjs",
+  "dist/sharp.mjs",
+  "dist/libvips.mjs"
+];
+
 const sharedSharpAsarRuntime = [
+  ...sharpEsmRuntimePaths.map((runtimePath) => ({
+    label: `sharp ESM runtime module ${runtimePath}`,
+    path: `/node_modules/sharp/${runtimePath}`
+  })),
   {
-    label: "sharp JavaScript runtime",
-    path: "/node_modules/sharp/dist/index.cjs"
+    label: "sharp package manifest",
+    path: "/node_modules/sharp/package.json"
   },
   {
     label: "sharp license",
     path: "/node_modules/sharp/LICENSE"
   },
   {
-    label: "@img/colour JavaScript runtime",
+    label: "@img/colour package manifest",
+    path: "/node_modules/@img/colour/package.json"
+  },
+  {
+    label: "@img/colour JavaScript loader",
     path: "/node_modules/@img/colour/index.cjs"
+  },
+  {
+    label: "@img/colour JavaScript implementation",
+    path: "/node_modules/@img/colour/color.cjs"
   }
 ];
 

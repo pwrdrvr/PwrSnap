@@ -57,6 +57,10 @@ import {
 } from "../recording/recording-permission-preflight";
 import { resizeRecordingPermissionController } from "../recording/recording-controller";
 import {
+  snapshotRecordingForeground,
+  type RecordingForegroundRestorer
+} from "../recording/recording-foreground";
+import {
   computeOutputDimensions,
   exportVideoRange,
   GIF_PRESETS,
@@ -455,7 +459,11 @@ export function registerRecordingHandlers(): void {
     }
     recordingStartReserved = true;
     recordingStartCancelRequested = false;
+    let foreground: RecordingForegroundRestorer | null = null;
     try {
+      if (ctx.principal === "ipc") {
+        foreground = await snapshotRecordingForeground();
+      }
       let capabilities = { ...req.capabilities };
 
       // IPC is a visible, trusted PwrSnap surface, so recording:start owns
@@ -576,6 +584,11 @@ export function registerRecordingHandlers(): void {
           )
         );
       }
+      // The permission window is focused so its actions are reachable. Put
+      // back the app that was foreground when recording:start arrived before
+      // the service creates its countdown/helper state; this is the app whose
+      // pixels the user committed in the selector.
+      await foreground?.restore();
       const service = getService();
       const session = await service.start({
         subject: req.subject,
@@ -617,8 +630,14 @@ export function registerRecordingHandlers(): void {
       log.error("recording:start failed", { message });
       return err(recordingError("recording_start_failed", message, cause));
     } finally {
-      recordingStartReserved = false;
-      recordingStartCancelRequested = false;
+      try {
+        // Cancel/error paths can return before the service boundary. Restore
+        // there too, while the restorer's idempotence keeps success at once.
+        await foreground?.restore();
+      } finally {
+        recordingStartReserved = false;
+        recordingStartCancelRequested = false;
+      }
     }
   });
 

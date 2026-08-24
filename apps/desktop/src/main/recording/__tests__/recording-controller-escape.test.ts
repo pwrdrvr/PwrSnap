@@ -27,6 +27,10 @@ const originalPlatform = process.platform;
 
 type WindowSpy = {
   id: number;
+  webContents: {
+    on: ReturnType<typeof vi.fn>;
+    getOSProcessId: ReturnType<typeof vi.fn>;
+  };
   isDestroyed: ReturnType<typeof vi.fn>;
   setAlwaysOnTop: ReturnType<typeof vi.fn>;
   setFocusable: ReturnType<typeof vi.fn>;
@@ -48,6 +52,10 @@ type WindowSpy = {
 function makeWindowSpy(): WindowSpy {
   return {
     id: 71,
+    webContents: {
+      on: vi.fn(),
+      getOSProcessId: vi.fn(() => 7100)
+    },
     isDestroyed: vi.fn(() => false),
     setAlwaysOnTop: vi.fn(),
     setFocusable: vi.fn(),
@@ -237,6 +245,84 @@ describe("recording-controller lead-in Escape shortcut", () => {
     expect(win?.hide).toHaveBeenCalledTimes(1);
     expect(win?.destroy).toHaveBeenCalledTimes(1);
     expect(mocks.setPermissionWindowId).toHaveBeenLastCalledWith(null);
+  });
+
+  test("renderer failure cancels the permission broker and start reservation once", async () => {
+    const { applyRecordingStateToController } = await import("../recording-controller");
+    const state: RecordingState = {
+      phase: "permission",
+      preflight: {
+        requestId: "request-crash",
+        displayId: 1,
+        capabilities: { microphone: true, systemAudio: false },
+        missing: [{ permission: "microphone", status: "denied" }]
+      }
+    };
+    mocks.recordingState = state;
+    applyRecordingStateToController(state);
+    const win = mocks.createdWindows[0];
+    const gone = win?.webContents.on.mock.calls.find(
+      ([event]) => event === "render-process-gone"
+    )?.[1] as (() => void) | undefined;
+    const failed = win?.webContents.on.mock.calls.find(
+      ([event]) => event === "did-fail-load"
+    )?.[1] as
+      | ((
+          event: unknown,
+          code: number,
+          description: string,
+          url: string,
+          isMainFrame: boolean
+        ) => void)
+      | undefined;
+    const closed = win?.on.mock.calls.find(([event]) => event === "closed")?.[1] as
+      | (() => void)
+      | undefined;
+
+    gone?.();
+    failed?.(undefined, -3, "aborted", "file://controller", true);
+    closed?.();
+
+    expect(mocks.dispatch).toHaveBeenCalledTimes(1);
+    expect(mocks.dispatch).toHaveBeenCalledWith(
+      "recording:cancel",
+      {},
+      { principal: "ipc" }
+    );
+    expect(win?.destroy).toHaveBeenCalledTimes(1);
+    expect(mocks.setPermissionWindowId).toHaveBeenLastCalledWith(null);
+  });
+
+  test("subframe load failures do not cancel the permission surface", async () => {
+    const { applyRecordingStateToController } = await import("../recording-controller");
+    const state: RecordingState = {
+      phase: "permission",
+      preflight: {
+        requestId: "request-subframe",
+        displayId: 1,
+        capabilities: { microphone: false, systemAudio: false },
+        missing: [{ permission: "screen", status: "denied" }]
+      }
+    };
+    mocks.recordingState = state;
+    applyRecordingStateToController(state);
+    const win = mocks.createdWindows[0];
+    const failed = win?.webContents.on.mock.calls.find(
+      ([event]) => event === "did-fail-load"
+    )?.[1] as
+      | ((
+          event: unknown,
+          code: number,
+          description: string,
+          url: string,
+          isMainFrame: boolean
+        ) => void)
+      | undefined;
+
+    failed?.(undefined, -3, "aborted", "file://subframe", false);
+
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+    expect(win?.destroy).not.toHaveBeenCalled();
   });
 
   test("permission content resize is request-bound and clamped to the display", async () => {

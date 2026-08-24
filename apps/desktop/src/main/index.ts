@@ -97,6 +97,7 @@ import { registerRecordingHandlers } from "./handlers/recording-handlers";
 import { installRecordingController } from "./recording/recording-controller";
 import { cancelRecordingPermissionPreflight } from "./recording/recording-permission-preflight";
 import { createInteractiveRecordingSingleFlight } from "./recording/interactive-recording-single-flight";
+import { withRecordingForegroundRestored } from "./recording/recording-foreground";
 import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
 import { isRecordingActive } from "./recording/recording-state";
@@ -1127,13 +1128,15 @@ async function runInteractiveRecordAttempt(
     // `recording:start` re-checks (idempotent when granted). Unlike image
     // capture, video owns an explicit choice surface: screen recording can
     // open Settings or cancel, but can never degrade.
-    const requiredPreflight = await bus.dispatch(
-      "recording:preflight",
-      {
-        capabilities: { microphone: false, systemAudio: false },
-        displayId: screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id
-      },
-      { principal: "ipc" }
+    const requiredPreflight = await withRecordingForegroundRestored(() =>
+      bus.dispatch(
+        "recording:preflight",
+        {
+          capabilities: { microphone: false, systemAudio: false },
+          displayId: screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id
+        },
+        { principal: "ipc" }
+      )
     );
     if (!requiredPreflight.ok) {
       log.warn("recording preflight failed", {

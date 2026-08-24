@@ -186,6 +186,12 @@ function deferred<T>(): {
   return { promise, resolve };
 }
 
+function dropDispatchCalls(): unknown[][] {
+  return dispatchMock.mock.calls.filter(
+    ([command]) => command === "editor:dropImageAsLayer"
+  );
+}
+
 describe("useDropImage", () => {
   test("all 16 cascade slots stay clamped and visually distinct at an edge", () => {
     const positions = Array.from({ length: DROP_IMAGE_MAX_FILES }, (_, index) =>
@@ -275,7 +281,8 @@ describe("useDropImage", () => {
 
     expect(dispatchMock).toHaveBeenCalledWith("editor:dropImageAsLayer", {
       captureId: "cap_v2",
-      filePath: "C:\\Users\\tester\\phone.HEIC"
+      filePath: "C:\\Users\\tester\\phone.HEIC",
+      operationId: expect.any(String)
     });
   });
 
@@ -329,6 +336,7 @@ describe("useDropImage", () => {
     expect(dispatchMock).toHaveBeenCalledWith("editor:dropImageAsLayer", {
       captureId: "cap_v2",
       filePath: "/tmp/x.png",
+      operationId: expect.any(String),
       positionXn: 0.5,
       positionYn: 0.5
     });
@@ -413,7 +421,7 @@ describe("useDropImage", () => {
     await act(async () => await Promise.resolve());
     expect(hook.isImporting).toBe(true);
     await hook.onDrop(blockedGesture);
-    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    expect(dropDispatchCalls()).toHaveLength(1);
 
     firstResult.resolve({ ok: true, value: { layerId: "first-from-first" } });
     await act(async () => await firstDrop);
@@ -534,7 +542,9 @@ describe("useDropImage", () => {
       );
     });
     await act(async () => await Promise.resolve());
-    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    expect(dropDispatchCalls()).toHaveLength(1);
+    const oldOperationId = (dropDispatchCalls()[0]?.[1] as { operationId: string })
+      .operationId;
 
     await renderHook({
       captureId: "cap_new",
@@ -542,6 +552,9 @@ describe("useDropImage", () => {
       ...callbacks
     });
     expect(hook.isImporting).toBe(true);
+    expect(dispatchMock).toHaveBeenCalledWith("editor:cancelDropImageImport", {
+      operationId: oldOperationId
+    });
     // The replacement record stays blocked until the already-issued command
     // settles; it cannot create a second concurrent loop.
     await hook.onDrop(
@@ -550,12 +563,12 @@ describe("useDropImage", () => {
         [makeFile("new-blocked.png", "image/png", "/tmp/new-blocked.png")]
       )
     );
-    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    expect(dropDispatchCalls()).toHaveLength(1);
 
     oldResult.resolve({ ok: true, value: { layerId: "old-result" } });
     await act(async () => await oldDrop);
     expect(hook.isImporting).toBe(false);
-    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    expect(dropDispatchCalls()).toHaveLength(1);
     expect(dropped).toEqual([]);
     expect(completed).toEqual([]);
 
@@ -568,7 +581,8 @@ describe("useDropImage", () => {
     );
     expect(dispatchMock).toHaveBeenLastCalledWith("editor:dropImageAsLayer", {
       captureId: "cap_new",
-      filePath: "/tmp/new.png"
+      filePath: "/tmp/new.png",
+      operationId: expect.any(String)
     });
   });
 
@@ -596,12 +610,17 @@ describe("useDropImage", () => {
       );
     });
     await act(async () => await Promise.resolve());
+    const operationId = (dropDispatchCalls()[0]?.[1] as { operationId: string })
+      .operationId;
     act(() => root!.unmount());
     root = null;
+    expect(dispatchMock).toHaveBeenCalledWith("editor:cancelDropImageImport", {
+      operationId
+    });
     pending.resolve({ ok: true, value: { layerId: "late" } });
     await dropPromise;
 
-    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    expect(dropDispatchCalls()).toHaveLength(1);
     expect(dropped).toEqual([]);
     expect(completed).toEqual([]);
   });

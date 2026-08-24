@@ -71,6 +71,7 @@ vi.mock("../../persistence/bundle-store", () => ({
 // Stub the worker client so we don't spawn worker_threads in tests.
 const workerInputs: unknown[] = [];
 let beforeWorker: (() => void) | null = null;
+let workerWait: Promise<void> | null = null;
 let workerResponse: {
   ok: boolean;
   code?: string;
@@ -84,6 +85,7 @@ vi.mock("../../workers/paste-image-worker-client", () => ({
   runPasteImageWorker: async (input: unknown) => {
     beforeWorker?.();
     workerInputs.push(input);
+    if (workerWait !== null) await workerWait;
     return workerResponse;
   }
 }));
@@ -209,6 +211,7 @@ beforeEach(() => {
   repackCalls.length = 0;
   workerInputs.length = 0;
   beforeWorker = null;
+  workerWait = null;
   tmpDataRoot = mkdtempSync(
     join(realpathSync(tmpdir()), "pwrsnap-editor-test-")
   );
@@ -379,7 +382,7 @@ describe("editor:dropImageAsLayer", () => {
     writeFileSync(path, Buffer.from([0x89, 0x50]));
     const result = await bus.dispatch(
       "editor:dropImageAsLayer",
-      { captureId: "cap_v1", filePath: path },
+      { captureId: "cap_v1", filePath: path, operationId: "op_v1" },
       { principal: "ipc" }
     );
     expect(result.ok).toBe(false);
@@ -395,7 +398,7 @@ describe("editor:dropImageAsLayer", () => {
     symlinkSync(target, link);
     const result = await bus.dispatch(
       "editor:dropImageAsLayer",
-      { captureId: "cap_e", filePath: link },
+      { captureId: "cap_e", filePath: link, operationId: "op_symlink" },
       { principal: "ipc" }
     );
     expect(result.ok).toBe(false);
@@ -413,7 +416,7 @@ describe("editor:dropImageAsLayer", () => {
     const missing = join(tmpDataRoot, "nope.png");
     const result = await bus.dispatch(
       "editor:dropImageAsLayer",
-      { captureId: "cap_f", filePath: missing },
+      { captureId: "cap_f", filePath: missing, operationId: "op_missing" },
       { principal: "ipc" }
     );
     expect(result.ok).toBe(false);
@@ -429,7 +432,7 @@ describe("editor:dropImageAsLayer", () => {
     truncateSync(path, PASTE_IMAGE_MAX_BYTES + 1);
     const result = await bus.dispatch(
       "editor:dropImageAsLayer",
-      { captureId: "cap_size", filePath: path },
+      { captureId: "cap_size", filePath: path, operationId: "op_size" },
       { principal: "ipc" }
     );
     expect(result.ok).toBe(false);
@@ -447,7 +450,13 @@ describe("editor:dropImageAsLayer", () => {
     writeFileSync(path, sourceBytes);
     const result = await bus.dispatch(
       "editor:dropImageAsLayer",
-      { captureId: "cap_g", filePath: path, positionXn: 0.5, positionYn: 0.5 },
+      {
+        captureId: "cap_g",
+        filePath: path,
+        operationId: "op_happy",
+        positionXn: 0.5,
+        positionYn: 0.5
+      },
       { principal: "ipc" }
     );
     expect(result.ok).toBe(true);
@@ -461,6 +470,47 @@ describe("editor:dropImageAsLayer", () => {
     expect(repackCalls).toContain("cap_g");
   });
 
+  test("cancel during decode prevents insertion into the old capture", async () => {
+    seedV2Capture("cap_cancel", "/tmp/cap_cancel.pwrsnap");
+    const path = join(tmpDataRoot, "cancel.png");
+    writeFileSync(path, Buffer.from([0x89, 0x50, 0x11, 0x22]));
+    let releaseWorker!: () => void;
+    workerWait = new Promise<void>((resolve) => {
+      releaseWorker = resolve;
+    });
+
+    const dropPromise = bus.dispatch(
+      "editor:dropImageAsLayer",
+      {
+        captureId: "cap_cancel",
+        filePath: path,
+        operationId: "op_cancel"
+      },
+      { principal: "ipc" }
+    );
+    await vi.waitFor(() => expect(workerInputs).toHaveLength(1));
+    const cancelled = await bus.dispatch(
+      "editor:cancelDropImageImport",
+      { operationId: "op_cancel" },
+      { principal: "ipc" }
+    );
+    expect(cancelled).toEqual({ ok: true, value: { cancelled: true } });
+    releaseWorker();
+
+    const result = await dropPromise;
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected cancellation");
+    expect(result.error.code).toBe("drop_cancelled");
+    expect(
+      testDb
+        .prepare<[string], { count: number }>(
+          `SELECT COUNT(*) AS count FROM layers WHERE capture_id = ? AND kind = 'raster'`
+        )
+        .get("cap_cancel")?.count
+    ).toBe(0);
+    expect(repackCalls).not.toContain("cap_cancel");
+  });
+
   test("sequential drops preserve input order as increasing visual z-order", async () => {
     seedV2Capture("cap_batch", "/tmp/cap_batch.pwrsnap");
     const firstPath = join(tmpDataRoot, "first.png");
@@ -470,12 +520,12 @@ describe("editor:dropImageAsLayer", () => {
 
     const first = await bus.dispatch(
       "editor:dropImageAsLayer",
-      { captureId: "cap_batch", filePath: firstPath },
+      { captureId: "cap_batch", filePath: firstPath, operationId: "op_batch" },
       { principal: "ipc" }
     );
     const second = await bus.dispatch(
       "editor:dropImageAsLayer",
-      { captureId: "cap_batch", filePath: secondPath },
+      { captureId: "cap_batch", filePath: secondPath, operationId: "op_batch" },
       { principal: "ipc" }
     );
 
@@ -508,7 +558,7 @@ describe("editor:dropImageAsLayer", () => {
 
     const result = await bus.dispatch(
       "editor:dropImageAsLayer",
-      { captureId: "cap_swap", filePath: path },
+      { captureId: "cap_swap", filePath: path, operationId: "op_swap" },
       { principal: "ipc" }
     );
 

@@ -179,6 +179,7 @@ export function useDropImage(args: UseDropImageArgs): UseDropImageReturn {
   const activeDropRef = useRef<{
     generation: number;
     controller: AbortController;
+    operationId: string;
   } | null>(null);
 
   useEffect(() => {
@@ -198,7 +199,13 @@ export function useDropImage(args: UseDropImageArgs): UseDropImageReturn {
     setIsDragOver(false);
     return () => {
       generationRef.current += 1;
-      activeDropRef.current?.controller.abort();
+      const activeDrop = activeDropRef.current;
+      activeDrop?.controller.abort();
+      if (activeDrop !== null) {
+        void dispatch("editor:cancelDropImageImport", {
+          operationId: activeDrop.operationId
+        });
+      }
       // Keep the aborted job installed until its in-flight command settles.
       // A replacement capture therefore cannot start another command loop in
       // parallel; the old job's finally block releases the single-flight.
@@ -266,7 +273,11 @@ export function useDropImage(args: UseDropImageArgs): UseDropImageReturn {
       const failures: DropImageFailure[] = [];
       const generation = generationRef.current;
       const controller = new AbortController();
-      const activeDrop = { generation, controller };
+      const activeDrop = {
+        generation,
+        controller,
+        operationId: crypto.randomUUID()
+      };
       activeDropRef.current = activeDrop;
       const isCurrent = (): boolean =>
         !controller.signal.aborted &&
@@ -310,9 +321,10 @@ export function useDropImage(args: UseDropImageArgs): UseDropImageReturn {
               const req: {
                 captureId: string;
                 filePath: string;
+                operationId: string;
                 positionXn?: number;
                 positionYn?: number;
-              } = { captureId, filePath };
+              } = { captureId, filePath, operationId: activeDrop.operationId };
               if (attempted.length > 1) {
                 const placement = cascadedDropPosition(
                   positionXn,

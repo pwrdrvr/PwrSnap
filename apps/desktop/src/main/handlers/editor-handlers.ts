@@ -51,6 +51,10 @@ import {
 } from "../image/safe-raster-decode";
 
 const log = getMainLogger("pwrsnap:editor");
+const activeDropImportOperations = new Set<string>();
+const cancelledDropImportOperations = new Set<string>();
+
+class DropImageImportCancelledError extends Error {}
 
 /**
  * Translate the worker's error code into a bus-shaped PwrSnapError.
@@ -202,8 +206,12 @@ async function persistRasterFromBytes(args: {
   widthPx: number;
   heightPx: number;
   parentId: string | null;
+  beforeInsert?: () => boolean;
 }): Promise<string> {
   await materializePendingSourceForCapture(args.captureId, args.sha256, args.pngBytes);
+  if (args.beforeInsert !== undefined && !args.beforeInsert()) {
+    throw new DropImageImportCancelledError();
+  }
 
   const now = new Date().toISOString();
   const rasterId = nanoid(16);
@@ -394,99 +402,132 @@ export function registerEditorHandlers(): void {
   });
 
   // ── editor:dropImageAsLayer ───────────────────────────────────────
+  bus.register("editor:cancelDropImageImport", async (req) => {
+    const cancelled = activeDropImportOperations.has(req.operationId);
+    if (cancelled) cancelledDropImportOperations.add(req.operationId);
+    return ok({ cancelled });
+  });
+
   bus.register("editor:dropImageAsLayer", async (req) => {
-    const refusal = refuseIfV1Capture(req.captureId);
-    if ("kind" in refusal) return err(refusal);
-    const record = refusal.record;
-    if (record.bundle_path === null) {
+    if (activeDropImportOperations.has(req.operationId)) {
       return err({
         kind: "validation",
-        code: "v1_capture_use_v2",
-        message: `editor drop requires a v2 bundle path`
+        code: "drop_in_progress",
+        message: "Image import already in progress"
       });
     }
-
-    // Security gate and read are one trusted boundary. The returned bytes
-    // come from the securely opened handle and are capped before allocation;
-    // no later stage reopens the attacker-controlled pathname. Sanitized
-    // errors never leak that path to the renderer or logs.
-    let inputBytes: Buffer;
-    try {
-      inputBytes = await readSafePastedFile(req.filePath, {
-        maxBytes: PASTE_IMAGE_MAX_BYTES
+    activeDropImportOperations.add(req.operationId);
+    const isCancelled = (): boolean =>
+      cancelledDropImportOperations.has(req.operationId);
+    const cancelledResult = () =>
+      err({
+        kind: "validation" as const,
+        code: "drop_cancelled",
+        message: "Image import cancelled"
       });
-    } catch (cause) {
-      if (cause instanceof UnsafePastedFileError) {
-        log.warn("editor:dropImageAsLayer refused unsafe file", {
-          captureId: req.captureId,
-          code: cause.code
-          // path intentionally omitted from log — could include a
-          // privileged dir we don't want in disk logs
-        });
-        if (cause.code === "size_cap_exceeded") {
-          return err({
-            kind: "validation",
-            code: "image_too_large",
-            message: "Image exceeds size cap"
-          });
-        }
+    try {
+      const refusal = refuseIfV1Capture(req.captureId);
+      if ("kind" in refusal) return err(refusal);
+      const record = refusal.record;
+      if (record.bundle_path === null) {
         return err({
           kind: "validation",
-          code: `unsafe_${cause.code}`,
-          message: cause.sanitizedMessage
+          code: "v1_capture_use_v2",
+          message: `editor drop requires a v2 bundle path`
         });
       }
-      throw cause;
-    }
 
-    // Off-main-thread decode + sha256 + dimension probe. Only the bytes from
-    // the securely opened handle cross this boundary; the worker has no path
-    // variant and therefore cannot race a replacement of req.filePath.
-    const result = await runPasteImageWorker({
-      kind: "decode-buffer",
-      bytes: inputBytes
-    });
-    if (!result.ok) {
-      log.warn("editor:dropImageAsLayer worker rejected input", {
-        captureId: req.captureId,
-        code: result.code
-      });
-      return err(workerErrorToBusError(result.code, result.message));
-    }
+      // Security gate and read are one trusted boundary. The returned bytes
+      // come from the securely opened handle and are capped before allocation;
+      // no later stage reopens the attacker-controlled pathname. Sanitized
+      // errors never leak that path to the renderer or logs.
+      let inputBytes: Buffer;
+      try {
+        inputBytes = await readSafePastedFile(req.filePath, {
+          maxBytes: PASTE_IMAGE_MAX_BYTES
+        });
+      } catch (cause) {
+        if (cause instanceof UnsafePastedFileError) {
+          log.warn("editor:dropImageAsLayer refused unsafe file", {
+            captureId: req.captureId,
+            code: cause.code
+            // path intentionally omitted from log — could include a
+            // privileged dir we don't want in disk logs
+          });
+          if (cause.code === "size_cap_exceeded") {
+            return err({
+              kind: "validation",
+              code: "image_too_large",
+              message: "Image exceeds size cap"
+            });
+          }
+          return err({
+            kind: "validation",
+            code: `unsafe_${cause.code}`,
+            message: cause.sanitizedMessage
+          });
+        }
+        throw cause;
+      }
+      if (isCancelled()) return cancelledResult();
 
-    try {
-      const parentId = findRootGroupParent(req.captureId);
-      const layerId = await persistRasterFromBytes({
-        captureId: req.captureId,
-        canvasWidthPx: record.width_px,
-        canvasHeightPx: record.height_px,
-        positionXn: req.positionXn,
-        positionYn: req.positionYn,
-        sha256: result.sha256,
-        pngBytes: Buffer.from(result.pngBytes),
-        widthPx: result.widthPx,
-        heightPx: result.heightPx,
-        parentId
+      // Off-main-thread decode + sha256 + dimension probe. Only the bytes from
+      // the securely opened handle cross this boundary; the worker has no path
+      // variant and therefore cannot race a replacement of req.filePath.
+      const result = await runPasteImageWorker({
+        kind: "decode-buffer",
+        bytes: inputBytes
       });
-      scheduleRepack(req.captureId);
-      broadcastLayersChanged(req.captureId);
-      log.info("editor: dropped image as raster layer", {
-        captureId: req.captureId,
-        layerId,
-        widthPx: result.widthPx,
-        heightPx: result.heightPx
-      });
-      return ok({ layerId });
-    } catch (cause) {
-      log.error("editor:dropImageAsLayer persistence failed", {
-        captureId: req.captureId,
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
-      return err({
-        kind: "persistence",
-        code: "insert_failed",
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
+      if (isCancelled()) return cancelledResult();
+      if (!result.ok) {
+        log.warn("editor:dropImageAsLayer worker rejected input", {
+          captureId: req.captureId,
+          code: result.code
+        });
+        return err(workerErrorToBusError(result.code, result.message));
+      }
+
+      try {
+        const parentId = findRootGroupParent(req.captureId);
+        const layerId = await persistRasterFromBytes({
+          captureId: req.captureId,
+          canvasWidthPx: record.width_px,
+          canvasHeightPx: record.height_px,
+          positionXn: req.positionXn,
+          positionYn: req.positionYn,
+          sha256: result.sha256,
+          pngBytes: Buffer.from(result.pngBytes),
+          widthPx: result.widthPx,
+          heightPx: result.heightPx,
+          parentId,
+          beforeInsert: () => !isCancelled()
+        });
+        scheduleRepack(req.captureId);
+        broadcastLayersChanged(req.captureId);
+        log.info("editor: dropped image as raster layer", {
+          captureId: req.captureId,
+          layerId,
+          widthPx: result.widthPx,
+          heightPx: result.heightPx
+        });
+        return ok({ layerId });
+      } catch (cause) {
+        if (cause instanceof DropImageImportCancelledError) {
+          return cancelledResult();
+        }
+        log.error("editor:dropImageAsLayer persistence failed", {
+          captureId: req.captureId,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+        return err({
+          kind: "persistence",
+          code: "insert_failed",
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
+    } finally {
+      activeDropImportOperations.delete(req.operationId);
+      cancelledDropImportOperations.delete(req.operationId);
     }
   });
 }

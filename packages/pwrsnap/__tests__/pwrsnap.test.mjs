@@ -101,8 +101,11 @@ describe("pwrsnap package surface", () => {
     expect(workflow).toContain("pwrsnap install");
     expect(runbook).toContain("Merging #500 does **not** update npm");
     expect(runbook).toContain("Publication owner: **@huntharo**");
+    expect(runbook).toContain("GitHub gate: **provisioned 2026-08-23**");
+    expect(runbook).toContain("npm gate: **not yet configured or verified**");
+    expect(runbook).toContain("Do not dispatch the publication workflow");
     expect(runbook).toContain("do not publish npm `0.0.1` merely");
-    expect(runbook).toContain("stable PwrSnap 1.1 is GitHub `latest`");
+    expect(runbook).toMatch(/stable PwrSnap 1\.1 is\s+GitHub `latest`/);
   });
 
   it("accepts a stable PwrSnap 1.1 latest release", () => {

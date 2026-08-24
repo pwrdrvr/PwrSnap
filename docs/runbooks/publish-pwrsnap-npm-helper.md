@@ -3,12 +3,28 @@
 ## Owner and approval gate
 
 - Publication owner: **@huntharo**, acting for **PwrDrvr LLC**.
-- GitHub gate: the `npm-publishing` environment must require approval from
-  @huntharo and restrict deployments to `main` before the first run.
-- npm gate: configure npm Trusted Publishing for repository
+- GitHub gate: **provisioned 2026-08-23**. The `npm-publishing` environment
+  requires approval from @huntharo and its custom deployment branch policy
+  allows only `main`.
+- npm gate: **not yet configured or verified**. Configure npm Trusted
+  Publishing for repository
   `pwrdrvr/PwrSnap`, workflow `publish-npm-helper.yml`, environment
   `npm-publishing`. The workflow uses short-lived OIDC credentials and does not
   accept a long-lived npm token.
+
+Do not dispatch the publication workflow until the npm Trusted Publisher is
+configured in the existing `pwrsnap` package settings and the publication owner
+has verified that its repository, workflow filename, and environment fields
+exactly match the values above. GitHub environment setup does not configure npm.
+
+The GitHub gate can be audited without dispatching anything:
+
+```bash
+gh api repos/pwrdrvr/PwrSnap/environments/npm-publishing \
+  --jq '{name, protection_rules, deployment_branch_policy}'
+gh api repos/pwrdrvr/PwrSnap/environments/npm-publishing/deployment-branch-policies \
+  --jq '.branch_policies[] | {name, type}'
+```
 
 The workflow also rejects any dispatch whose actor is not @huntharo, whose ref
 is not `main`, whose requested version differs from
@@ -39,7 +55,8 @@ The expected result is a stable `v1.1.x` tag with both booleans set to `false`.
 ## Publish `0.0.1` after #500 merges and stable 1.1 is latest
 
 Merging #500 does **not** update npm. Only after #500 is on `main`, CI is green,
-and stable PwrSnap 1.1 is GitHub `latest`, the publication owner runs:
+the npm Trusted Publisher is configured and verified, and stable PwrSnap 1.1 is
+GitHub `latest`, the publication owner runs:
 
 ```bash
 gh workflow run publish-npm-helper.yml \

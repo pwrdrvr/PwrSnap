@@ -73,6 +73,12 @@ export type ValidatedPwrsnapBundle = {
   legacyCompositePng: Buffer | null;
   baseSourceSha256: string;
   contentDigest: string;
+  openedFileIdentity: {
+    dev: string;
+    ino: string;
+    birthtimeNs: string;
+    size: string;
+  } | null;
 };
 
 /**
@@ -93,7 +99,16 @@ export async function readAndValidatePwrsnapBundle(
         }
         const sourceBytes = await readExactHandleSnapshot(handle, openedStat);
         const openedZip = await openBoundedZipFromFd(handle.fd);
-        return validateOpenedPwrsnapBundle(sourceBytes, openedZip);
+        const validated = await validateOpenedPwrsnapBundle(sourceBytes, openedZip);
+        return {
+          ...validated,
+          openedFileIdentity: {
+            dev: openedStat.dev.toString(),
+            ino: openedStat.ino.toString(),
+            birthtimeNs: openedStat.birthtimeNs.toString(),
+            size: openedStat.size.toString()
+          }
+        };
       }
     );
   } catch (cause) {
@@ -116,7 +131,10 @@ export async function validatePwrsnapBundleBytes(
   }
 
   const openedZip = await openBoundedZipFromBuffer(sourceBytes);
-  return validateOpenedPwrsnapBundle(sourceBytes, openedZip);
+  return {
+    ...(await validateOpenedPwrsnapBundle(sourceBytes, openedZip)),
+    openedFileIdentity: null
+  };
 }
 
 async function validateOpenedPwrsnapBundle(
@@ -249,7 +267,8 @@ async function validateOpenedPwrsnapBundle(
       thumbnailJpg,
       legacyCompositePng,
       baseSourceSha256,
-      contentDigest
+      contentDigest,
+      openedFileIdentity: null
     };
   } finally {
     if (closeWhenDone) zipFile.close();

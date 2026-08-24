@@ -14,6 +14,10 @@ import type {
   VerifiedFileConsumer,
   VerifiedFileOptions
 } from "../../security/verified-file";
+import type {
+  ImportStageArtifact,
+  PublishedImportArtifact
+} from "../pwrsnap-import-install";
 
 const mocks = vi.hoisted(() => ({
   db: null as Database.Database | null,
@@ -21,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   capturesRoot: "",
   fallbackCapturesRoot: "",
   publishFailure: "none" as "none" | "io" | "permission",
+  cleanupFailure: "none" as "none" | "io" | "replace",
   verifiedBarrier: null as null | {
     consumeReturned(): void;
     waitForRelease: Promise<void>;
@@ -101,9 +106,9 @@ vi.mock("../pwrsnap-import-install", async (importOriginal) => {
   return {
     ...actual,
     publishStagedImport: async (
-      stagePath: string,
+      stage: ImportStageArtifact,
       destinationPath: string
-    ): Promise<"renamed" | "copied_cross_volume"> => {
+    ): Promise<PublishedImportArtifact> => {
       if (mocks.publishFailure === "io") {
         throw Object.assign(new Error("injected publish failure"), {
           code: "EIO",
@@ -119,7 +124,21 @@ vi.mock("../pwrsnap-import-install", async (importOriginal) => {
           path: destinationPath
         });
       }
-      return actual.publishStagedImport(stagePath, destinationPath);
+      return actual.publishStagedImport(stage, destinationPath);
+    },
+    removeImportArtifact: async (
+      artifact: Parameters<typeof actual.removeImportArtifact>[0]
+    ): ReturnType<typeof actual.removeImportArtifact> => {
+      if (artifact !== null && "installMode" in artifact) {
+        if (mocks.cleanupFailure === "io") {
+          throw Object.assign(new Error("injected cleanup failure"), { code: "EIO" });
+        }
+        if (mocks.cleanupFailure === "replace") {
+          await fs.unlink(artifact.path);
+          await fs.writeFile(artifact.path, "raced replacement");
+        }
+      }
+      return actual.removeImportArtifact(artifact);
     }
   };
 });
@@ -144,6 +163,7 @@ beforeEach(async () => {
   mocks.capturesRoot = join(workDir, "captures");
   mocks.fallbackCapturesRoot = "";
   mocks.publishFailure = "none";
+  mocks.cleanupFailure = "none";
   mocks.verifiedBarrier = null;
   mocks.db = new Database(":memory:");
   mocks.db.pragma("foreign_keys = ON");
@@ -445,6 +465,16 @@ describe("importPwrsnapBundle", () => {
       db.prepare("SELECT accepted_description FROM capture_enrichments WHERE capture_id = ?").get(outcome.record.id)
     ).toEqual({ accepted_description: fullDescription.slice(0, 2_000) });
     expect(
+      db.prepare(
+        `SELECT full_description, projected_description, ai_runs_json
+           FROM capture_bundle_carriers WHERE capture_id = ?`
+      ).get(outcome.record.id)
+    ).toEqual({
+      full_description: fullDescription,
+      projected_description: fullDescription.slice(0, 2_000),
+      ai_runs_json: JSON.stringify(fixture.document.ai_runs)
+    });
+    expect(
       (db.prepare("SELECT COUNT(*) AS count FROM ai_runs WHERE capture_id = ?").get(outcome.record.id) as { count: number }).count
     ).toBe(0);
     expect(
@@ -651,6 +681,144 @@ describe("importPwrsnapBundle", () => {
     );
     expect(copied.manifest.paired_png_filename).toBe(
       `${ownedName.slice(0, -".pwrsnap".length)}.png`
+    );
+  });
+
+  test("reconciles a power loss after final publication without duplicating the capture", async () => {
+    const captureId = "crashrecover0001";
+    const fixture = await makeBundle({
+      captureId,
+      filename: "crash-recover.png",
+      color: "#224466ff",
+      description: "Crash durable"
+    });
+    const sourcePath = await writeExternal("crash-recover.pwrsnap", fixture.bytes);
+    const { validatePwrsnapBundleBytes } = await import("../pwrsnap-import-reader");
+    const validated = await validatePwrsnapBundleBytes(fixture.bytes);
+    const {
+      closeImportArtifact,
+      publishStagedImport,
+      removeImportArtifact,
+      writeImportStage
+    } = await import("../pwrsnap-import-install");
+    const {
+      createPwrsnapImportIntent,
+      markPwrsnapImportPublished
+    } = await import("../pwrsnap-import-intent");
+    const destination = join(mocks.capturesRoot, "crash-recover.pwrsnap");
+    const stage = await writeImportStage(mocks.dataRoot, fixture.bytes);
+    const intent = createPwrsnapImportIntent({
+      captureId,
+      bundlePath: destination,
+      stage,
+      contentDigest: validated.contentDigest,
+      captureIdChanged: false,
+      remappedLayerCount: 0
+    });
+    const published = await publishStagedImport(stage, destination);
+    markPwrsnapImportPublished(intent.id, published.identity);
+    await closeImportArtifact(stage);
+    await removeImportArtifact(stage);
+
+    expect(
+      (mocks.db!.prepare("SELECT COUNT(*) AS count FROM captures").get() as { count: number }).count
+    ).toBe(0);
+    expect(
+      (mocks.db!.prepare("SELECT COUNT(*) AS count FROM pwrsnap_import_intents").get() as { count: number }).count
+    ).toBe(1);
+
+    const { importPwrsnapBundle, reconcilePendingPwrsnapImports } = await import(
+      "../pwrsnap-import-service"
+    );
+    await expect(reconcilePendingPwrsnapImports()).resolves.toEqual([
+      captureId
+    ]);
+    expect(
+      (mocks.db!.prepare("SELECT COUNT(*) AS count FROM pwrsnap_import_intents").get() as { count: number }).count
+    ).toBe(0);
+    await expect(importPwrsnapBundle(sourcePath)).resolves.toMatchObject({
+      status: "duplicate",
+      record: { id: captureId }
+    });
+    expect((await fs.readdir(mocks.capturesRoot)).filter((name) => name.endsWith(".pwrsnap"))).toEqual([
+      "crash-recover.pwrsnap"
+    ]);
+  });
+
+  test("retains the durable intent when rollback cleanup fails, then recovers", async () => {
+    const captureId = "cleanuprecover01";
+    const fixture = await makeBundle({
+      captureId,
+      filename: "cleanup-recover.png",
+      color: "#335577ff",
+      description: "Recover cleanup"
+    });
+    const sourcePath = await writeExternal("cleanup-recover.pwrsnap", fixture.bytes);
+    mocks.db!.exec(`CREATE TRIGGER fail_cleanup_recovery_layer
+      BEFORE INSERT ON layers
+      WHEN NEW.capture_id = 'cleanuprecover01'
+      BEGIN SELECT RAISE(ABORT, 'injected layer failure'); END`);
+    mocks.cleanupFailure = "io";
+    const { importPwrsnapBundle, reconcilePendingPwrsnapImports } = await import(
+      "../pwrsnap-import-service"
+    );
+
+    await expect(importPwrsnapBundle(sourcePath)).rejects.toMatchObject({
+      code: "database_import_failed"
+    });
+    expect(
+      (mocks.db!.prepare("SELECT COUNT(*) AS count FROM pwrsnap_import_intents").get() as { count: number }).count
+    ).toBe(1);
+    mocks.db!.exec("DROP TRIGGER fail_cleanup_recovery_layer");
+    mocks.cleanupFailure = "none";
+
+    await expect(reconcilePendingPwrsnapImports()).resolves.toEqual([
+      captureId
+    ]);
+    expect(
+      (mocks.db!.prepare("SELECT COUNT(*) AS count FROM captures").get() as { count: number }).count
+    ).toBe(1);
+    expect(
+      (mocks.db!.prepare("SELECT COUNT(*) AS count FROM pwrsnap_import_intents").get() as { count: number }).count
+    ).toBe(0);
+  });
+
+  test("does not unlink or adopt a raced replacement during DB rollback", async () => {
+    const fixture = await makeBundle({
+      captureId: "rollbackrace001",
+      filename: "rollback-race.png",
+      color: "#446688ff",
+      description: "Rollback race"
+    });
+    const sourcePath = await writeExternal("rollback-race.pwrsnap", fixture.bytes);
+    mocks.db!.exec(`CREATE TRIGGER fail_rollback_race_layer
+      BEFORE INSERT ON layers
+      WHEN NEW.capture_id = 'rollbackrace001'
+      BEGIN SELECT RAISE(ABORT, 'injected layer failure'); END`);
+    mocks.cleanupFailure = "replace";
+    const { importPwrsnapBundle, reconcilePendingPwrsnapImports } = await import(
+      "../pwrsnap-import-service"
+    );
+
+    await expect(importPwrsnapBundle(sourcePath)).rejects.toMatchObject({
+      code: "database_import_failed"
+    });
+    const intent = mocks.db!
+      .prepare("SELECT bundle_path FROM pwrsnap_import_intents")
+      .get() as { bundle_path: string };
+    await expect(fs.readFile(intent.bundle_path, "utf8")).resolves.toBe(
+      "raced replacement"
+    );
+    mocks.cleanupFailure = "none";
+    await expect(reconcilePendingPwrsnapImports()).resolves.toEqual([]);
+    expect(
+      (mocks.db!.prepare("SELECT COUNT(*) AS count FROM captures").get() as { count: number }).count
+    ).toBe(0);
+    expect(
+      (mocks.db!.prepare("SELECT COUNT(*) AS count FROM pwrsnap_import_intents").get() as { count: number }).count
+    ).toBe(1);
+    await expect(fs.readFile(intent.bundle_path, "utf8")).resolves.toBe(
+      "raced replacement"
     );
   });
 

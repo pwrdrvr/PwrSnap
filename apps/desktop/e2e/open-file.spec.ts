@@ -5,11 +5,11 @@
 // `library:openInLibrary` and ends up showing the capture in the
 // Library Focus editor.
 //
-// macOS GUI double-click uses Apple's `app.on('open-file')` event
-// (not argv), but the runtime path inside open-file.ts is the
-// same — both branches feed into `enqueueOrOpen` → drain. Argv
-// is the only one we can simulate from a Playwright spec because
-// Playwright's Electron driver doesn't dispatch GUI events.
+// macOS GUI double-click uses Apple's `app.on('open-file')` event, while
+// Windows Explorer and Linux pass argv through the single-instance path. The
+// Playwright bridge deliberately drives the shared argv/handoff pipeline on
+// every platform; only a future test that dispatches a real NSAppleEvent should
+// carry a macOS-only guard.
 //
 // Two scenarios:
 //
@@ -29,8 +29,6 @@ import sharp from "sharp";
 import yazl from "yazl";
 
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
-
-const isMac = process.platform === "darwin";
 
 async function makeFixturePng(): Promise<Buffer> {
   return sharp({
@@ -206,8 +204,6 @@ async function triggerOpenFileHandoff(
 }
 
 test.describe("open-file handler", () => {
-  test.skip(!isMac, "open-file event + macOS double-click semantics are macOS-only");
-
   test("argv-passed .pwrsnap opens Library Focus when the capture exists", async () => {
     const fixturesDir = await realpath(
       await mkdtemp(join(tmpdir(), "pwrsnap-openfile-fixtures-"))

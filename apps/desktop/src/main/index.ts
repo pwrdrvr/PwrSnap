@@ -224,6 +224,8 @@ import {
   singleInstanceOpenFileHandoffData,
   wireOpenFileHandler
 } from "./open-file";
+import { reconcilePendingPwrsnapImports } from "./import/pwrsnap-import-service";
+import { broadcastCapturesChanged } from "./events";
 
 const APP_NAME = "PwrSnap";
 const APP_COPYRIGHT = "Copyright © 2026 PwrDrvr LLC. All rights reserved.";
@@ -2098,6 +2100,18 @@ export function bootstrapApp(): void {
     // The supervised library child never receives OS open-file events;
     // the agent does, and its dispatches forward over the bridge.
     if (role !== "library") {
+      // Filesystem publication and SQLite cannot share one transaction. Resume
+      // any durable cross-device import intent asynchronously; import service
+      // serialization makes queued OS opens wait behind this recovery pass.
+      void reconcilePendingPwrsnapImports()
+        .then((recoveredIds) => {
+          if (recoveredIds.length > 0) broadcastCapturesChanged(recoveredIds);
+        })
+        .catch((cause) => {
+          log.error("bundle import recovery failed", {
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        });
       processQueuedOpenFiles();
     }
     if (!isE2E && role !== "library") {

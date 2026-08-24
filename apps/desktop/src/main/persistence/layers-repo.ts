@@ -176,6 +176,33 @@ export function listLayerTree(captureId: string): BundleLayerNode[] {
   return nodes;
 }
 
+/**
+ * Return the complete durable document projection, including rejected and
+ * superseded history. Repack uses this rather than the compositor's live-tree
+ * view so an ordinary edit cannot erase portable history imported from another
+ * device.
+ */
+export function listAllLayersForBundle(captureId: string): BundleLayerNode[] {
+  const rows = getDb()
+    .prepare<[string], DbLayerRow>(
+      `SELECT id, capture_id, parent_id, kind, z_index, name, visible,
+              locked, opacity, blend_mode, transform_json, data,
+              schema_version, source, ai_run_id, applied_at,
+              rejected_at, superseded_by, created_at
+         FROM layers
+        WHERE capture_id = ?
+        ORDER BY created_at ASC, id ASC`
+    )
+    .all(captureId);
+  const nodes: BundleLayerNode[] = [];
+  for (const row of rows) {
+    const node = tryRowToNode(row, captureId);
+    if (node !== null) nodes.push(node);
+  }
+  assertTreeDepthBounded(nodes);
+  return nodes;
+}
+
 function assertTreeDepthBounded(nodes: readonly BundleLayerNode[]): void {
   const byId = new Map<string, BundleLayerNode>();
   for (const node of nodes) byId.set(node.id, node);

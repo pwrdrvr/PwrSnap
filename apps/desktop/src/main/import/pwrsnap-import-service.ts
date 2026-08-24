@@ -14,10 +14,24 @@ import { insertImportedLayerTreeForCapture } from "../persistence/layers-repo";
 import { getDataRoot } from "../persistence/paths";
 import { sourceBufferHasAlpha } from "../persistence/source-alpha";
 import {
+  projectPortableDescription,
+  writePortableBundleCarrier
+} from "../persistence/bundle-carrier-repo";
+import {
+  closeImportArtifact,
+  type ImportStageArtifact,
+  type PublishedImportArtifact,
   publishStagedImport,
   removeImportArtifact,
   writeImportStage
 } from "./pwrsnap-import-install";
+import {
+  createPwrsnapImportIntent,
+  deletePwrsnapImportIntent,
+  deletePwrsnapImportIntentInCurrentTransaction,
+  listPwrsnapImportIntents,
+  markPwrsnapImportPublished,
+} from "./pwrsnap-import-intent";
 import {
   PwrsnapImportError,
   readAndValidatePwrsnapBundle
@@ -25,8 +39,8 @@ import {
 import type { ValidatedPwrsnapBundle } from "./pwrsnap-import-reader";
 
 const log = getMainLogger("pwrsnap:bundle-import");
-const DESCRIPTION_DB_LIMIT = 2_000;
 const MAX_ID_PROBES = 10_000;
+let importQueue: Promise<void> = Promise.resolve();
 
 export type PwrsnapImportOutcome =
   | {
@@ -42,6 +56,13 @@ export type PwrsnapImportOutcome =
     };
 
 export async function importPwrsnapBundle(sourcePath: string): Promise<PwrsnapImportOutcome> {
+  return serializeImportOperation(() => importPwrsnapBundleExclusive(sourcePath));
+}
+
+async function importPwrsnapBundleExclusive(
+  sourcePath: string
+): Promise<PwrsnapImportOutcome> {
+  await reconcilePendingPwrsnapImportsExclusive();
   const bundle = await readAndValidatePwrsnapBundle(sourcePath);
 
   return runWithCapturesDirFallback(async (capturesRoot) => {
@@ -99,12 +120,23 @@ export async function importPwrsnapBundle(sourcePath: string): Promise<PwrsnapIm
     }
     const hasAlpha = await sourceBufferHasAlpha(baseSource.bytes);
 
-    let stagePath: string | null = null;
-    let publishedPath: string | null = null;
+    let stage: ImportStageArtifact | null = null;
+    let stageClosed = false;
+    let published: PublishedImportArtifact | null = null;
+    let intentId: string | null = null;
     try {
-      stagePath = await writeImportStage(getDataRoot(), copiedBytes);
-      const installMode = await publishStagedImport(stagePath, destinationPath);
-      publishedPath = destinationPath;
+      stage = await writeImportStage(getDataRoot(), copiedBytes);
+      const intent = createPwrsnapImportIntent({
+        captureId,
+        bundlePath: destinationPath,
+        stage,
+        contentDigest: bundle.contentDigest,
+        captureIdChanged,
+        remappedLayerCount: remapped.remappedCount
+      });
+      intentId = intent.id;
+      published = await publishStagedImport(stage, destinationPath);
+      markPwrsnapImportPublished(intent.id, published.identity);
 
       let record: CaptureRecord;
       try {
@@ -118,16 +150,26 @@ export async function importPwrsnapBundle(sourcePath: string): Promise<PwrsnapIm
           baseSourceSha256: bundle.baseSourceSha256,
           baseSourceByteSize: baseSource.bytes.length,
           hasAlpha,
-          capturedAt: copiedManifest.created_at
+          capturedAt: copiedManifest.created_at,
+          intentId: intent.id
         });
       } catch (cause) {
-        await removeImportArtifact(publishedPath).catch((cleanupCause) => {
-          log.error("bundle import: failed to remove artifact after DB rollback", {
+        // Roll back only the exact inode we published. If cleanup fails or a
+        // watcher replaced the path, retain the durable intent so startup can
+        // reconcile without deleting bytes PwrSnap no longer owns.
+        const removed = await removeImportArtifact(published).catch((cleanupCause) => {
+          log.error("bundle import: retained recovery intent after DB rollback cleanup failed", {
+            intentId: intent.id,
             message:
               cleanupCause instanceof Error ? cleanupCause.message : String(cleanupCause)
           });
+          return null;
         });
-        publishedPath = null;
+        if (removed !== null) {
+          deletePwrsnapImportIntent(intent.id);
+          intentId = null;
+          published = null;
+        }
         throw new PwrsnapImportError(
           "database",
           "database_import_failed",
@@ -141,18 +183,178 @@ export async function importPwrsnapBundle(sourcePath: string): Promise<PwrsnapIm
         record,
         captureIdChanged,
         remappedLayerCount: remapped.remappedCount,
-        installMode
+        installMode: published.installMode
       };
+    } catch (cause) {
+      if (intentId !== null && published === null) {
+        try {
+          await lstat(destinationPath);
+        } catch (statCause) {
+          if (isErrno(statCause, "ENOENT")) {
+            deletePwrsnapImportIntent(intentId);
+            intentId = null;
+          }
+        }
+      }
+      throw cause;
     } finally {
-      if (stagePath !== null) {
-        await removeImportArtifact(stagePath).catch((cause) => {
+      if (stage !== null) {
+        if (!stageClosed) {
+          await closeImportArtifact(stage).catch((cause) => {
+            log.warn("bundle import: staged descriptor cleanup failed", {
+              message: cause instanceof Error ? cause.message : String(cause)
+            });
+          });
+          stageClosed = true;
+        }
+        await removeImportArtifact(stage).catch((cause) => {
           log.warn("bundle import: staged artifact cleanup failed", {
+            intentId,
             message: cause instanceof Error ? cause.message : String(cause)
           });
         });
       }
     }
   });
+}
+
+export async function reconcilePendingPwrsnapImports(): Promise<string[]> {
+  return serializeImportOperation(reconcilePendingPwrsnapImportsExclusive);
+}
+
+async function reconcilePendingPwrsnapImportsExclusive(): Promise<string[]> {
+  const recoveredCaptureIds: string[] = [];
+  for (const intent of listPwrsnapImportIntents()) {
+    const existing = getCaptureById(intent.captureId);
+    if (existing !== null) {
+      if (await recordMatchesContent(existing, intent.contentDigest)) {
+        try {
+          await removeImportArtifact({
+            path: intent.stagePath,
+            identity: intent.stageIdentity
+          });
+          deletePwrsnapImportIntent(intent.id);
+        } catch (cause) {
+          log.warn("bundle import recovery: retained intent after stage cleanup failed", {
+            intentId: intent.id,
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        }
+      } else {
+        log.error("bundle import recovery: capture id is occupied by different content", {
+          intentId: intent.id,
+          captureId: intent.captureId
+        });
+      }
+      continue;
+    }
+
+    try {
+      await lstat(intent.bundlePath);
+    } catch (cause) {
+      if (isErrno(cause, "ENOENT")) {
+        // Publication never happened. Remove only the persisted stage identity,
+        // then clear the intent so the external file can be imported again.
+        try {
+          await removeImportArtifact({
+            path: intent.stagePath,
+            identity: intent.stageIdentity
+          });
+          deletePwrsnapImportIntent(intent.id);
+        } catch (cleanupCause) {
+          log.warn("bundle import recovery: retained pre-publish intent", {
+            intentId: intent.id,
+            message:
+              cleanupCause instanceof Error ? cleanupCause.message : String(cleanupCause)
+          });
+        }
+        continue;
+      }
+      log.warn("bundle import recovery: could not inspect intended destination", {
+        intentId: intent.id,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      continue;
+    }
+
+    try {
+      const bundle = await readAndValidatePwrsnapBundle(intent.bundlePath);
+      const archiveSha256 = createHash("sha256").update(bundle.sourceBytes).digest("hex");
+      if (
+        bundle.openedFileIdentity === null ||
+        (intent.publishedIdentity !== null &&
+          !sameImportIdentity(bundle.openedFileIdentity, intent.publishedIdentity)) ||
+        bundle.manifest.capture_id !== intent.captureId ||
+        bundle.sourceBytes.length !== intent.archiveSize ||
+        archiveSha256 !== intent.archiveSha256 ||
+        bundle.contentDigest !== intent.contentDigest
+      ) {
+        throw new PwrsnapImportError(
+          "unsafe",
+          "recovery_identity_mismatch",
+          "A pending imported bundle changed before recovery could complete."
+        );
+      }
+      const currentStat = await lstat(intent.bundlePath, { bigint: true });
+      if (
+        !sameImportIdentity(bundle.openedFileIdentity, {
+          dev: currentStat.dev.toString(),
+          ino: currentStat.ino.toString(),
+          birthtimeNs: currentStat.birthtimeNs.toString(),
+          size: currentStat.size.toString()
+        })
+      ) {
+        throw new PwrsnapImportError(
+          "unsafe",
+          "recovery_path_changed",
+          "A pending imported bundle changed before recovery could complete."
+        );
+      }
+      const baseSource = bundle.sourceInfo.get(bundle.baseSourceSha256);
+      if (baseSource === undefined) {
+        throw new PwrsnapImportError(
+          "corrupt",
+          "base_source_missing",
+          "The pending imported bundle is missing its base image."
+        );
+      }
+      const record = persistImportedBundle({
+        captureId: intent.captureId,
+        bundlePath: intent.bundlePath,
+        bundleModifiedAt: bundle.manifest.bundle_modified_at,
+        document: bundle.document,
+        widthPx: bundle.manifest.canvas_dimensions.width_px,
+        heightPx: bundle.manifest.canvas_dimensions.height_px,
+        baseSourceSha256: bundle.baseSourceSha256,
+        baseSourceByteSize: baseSource.bytes.length,
+        hasAlpha: await sourceBufferHasAlpha(baseSource.bytes),
+        capturedAt: bundle.manifest.created_at,
+        intentId: intent.id
+      });
+      recoveredCaptureIds.push(record.id);
+      log.info("bundle import recovery: completed pending import", {
+        intentId: intent.id,
+        captureId: record.id
+      });
+    } catch (cause) {
+      // Keep the intent: it is the durable ownership marker for the final path.
+      log.error("bundle import recovery: retained unresolved import intent", {
+        intentId: intent.id,
+        captureId: intent.captureId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  }
+  return recoveredCaptureIds;
+}
+
+function serializeImportOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = importQueue.catch(() => undefined).then(operation);
+  importQueue = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
 }
 
 async function chooseCaptureIdentity(bundle: ValidatedPwrsnapBundle): Promise<{
@@ -241,6 +443,7 @@ function persistImportedBundle(input: {
   baseSourceByteSize: number;
   hasAlpha: boolean;
   capturedAt: string;
+  intentId: string;
 }): CaptureRecord {
   const db = getDb();
   return db.transaction(() => {
@@ -268,10 +471,11 @@ function persistImportedBundle(input: {
     for (const tag of input.document.tags) {
       addUserTag(input.captureId, tag);
     }
-    const description = input.document.description?.trim() ?? "";
-    if (description.length > 0) {
-      acceptDescription(input.captureId, description.slice(0, DESCRIPTION_DB_LIMIT));
+    const projectedDescription = projectPortableDescription(input.document.description);
+    if (projectedDescription !== null) {
+      acceptDescription(input.captureId, projectedDescription);
     }
+    writePortableBundleCarrier(input.captureId, input.document);
 
     db.prepare(
       `UPDATE captures
@@ -283,6 +487,7 @@ function persistImportedBundle(input: {
     if (record === null) {
       throw new Error("Imported capture disappeared before transaction commit.");
     }
+    deletePwrsnapImportIntentInCurrentTransaction(input.intentId);
     return record;
   })();
 }
@@ -419,5 +624,17 @@ function isErrno(cause: unknown, code: string): boolean {
     cause !== null &&
     "code" in cause &&
     (cause as NodeJS.ErrnoException).code === code
+  );
+}
+
+function sameImportIdentity(
+  left: { dev: string; ino: string; birthtimeNs: string; size: string },
+  right: { dev: string; ino: string; birthtimeNs: string; size: string }
+): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.birthtimeNs === right.birthtimeNs &&
+    left.size === right.size
   );
 }

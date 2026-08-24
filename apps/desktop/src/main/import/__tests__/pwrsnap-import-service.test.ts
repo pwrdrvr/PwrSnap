@@ -2,19 +2,29 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import * as fs from "node:fs/promises";
 import { readFileSync, readdirSync } from "node:fs";
+import type { BigIntStats } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { BundleDocumentV2, BundleManifestV2 } from "@pwrsnap/shared";
+import type {
+  VerifiedFileConsumer,
+  VerifiedFileOptions
+} from "../../security/verified-file";
 
 const mocks = vi.hoisted(() => ({
   db: null as Database.Database | null,
   dataRoot: "",
   capturesRoot: "",
   fallbackCapturesRoot: "",
-  publishFailure: "none" as "none" | "io" | "permission"
+  publishFailure: "none" as "none" | "io" | "permission",
+  verifiedBarrier: null as null | {
+    consumeReturned(): void;
+    waitForRelease: Promise<void>;
+  }
 }));
 
 vi.mock("../../persistence/db", () => ({
@@ -50,6 +60,39 @@ vi.mock("../../capture/capture-storage-gate", () => ({
     }
   }
 }));
+
+vi.mock("../../security/verified-file", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("../../security/verified-file")
+  >();
+  return {
+    ...actual,
+    withVerifiedFileHandle: async <T>(
+      filePath: string,
+      options: VerifiedFileOptions,
+      consume: VerifiedFileConsumer<T>
+    ): Promise<T> => {
+      const barrier = mocks.verifiedBarrier;
+      if (barrier === null) {
+        return actual.withVerifiedFileHandle(filePath, options, consume);
+      }
+
+      // Model the security wrapper boundary at its most important moment for
+      // import: consume() has returned, but the wrapper has not completed its
+      // final stability check or resolved to the caller yet.
+      const handle: FileHandle = await fs.open(filePath, "r");
+      try {
+        const openedStat: BigIntStats = await handle.stat({ bigint: true });
+        const value = await consume(handle, openedStat);
+        barrier.consumeReturned();
+        await barrier.waitForRelease;
+        return value;
+      } finally {
+        await handle.close();
+      }
+    }
+  };
+});
 
 vi.mock("../pwrsnap-import-install", async (importOriginal) => {
   const actual = await importOriginal<
@@ -101,6 +144,7 @@ beforeEach(async () => {
   mocks.capturesRoot = join(workDir, "captures");
   mocks.fallbackCapturesRoot = "";
   mocks.publishFailure = "none";
+  mocks.verifiedBarrier = null;
   mocks.db = new Database(":memory:");
   mocks.db.pragma("foreign_keys = ON");
   applyMigrations(mocks.db);
@@ -316,6 +360,49 @@ async function writeExternal(name: string, bytes: Buffer): Promise<string> {
 }
 
 describe("importPwrsnapBundle", () => {
+  test("does not stage, publish, or write SQLite until verified-file resolves", async () => {
+    const fixture = await makeBundle({
+      captureId: "verifiedwait0001",
+      filename: "verified-wait.png",
+      color: "#112233ff",
+      description: "Wait for the final stability check"
+    });
+    const sourcePath = await writeExternal("verified-wait.pwrsnap", fixture.bytes);
+    let markConsumeReturned!: () => void;
+    let releaseWrapper!: () => void;
+    const consumeReturned = new Promise<void>((resolve) => {
+      markConsumeReturned = resolve;
+    });
+    const waitForRelease = new Promise<void>((resolve) => {
+      releaseWrapper = resolve;
+    });
+    mocks.verifiedBarrier = {
+      consumeReturned: markConsumeReturned,
+      waitForRelease
+    };
+    const { importPwrsnapBundle } = await import("../pwrsnap-import-service");
+
+    const pendingImport = importPwrsnapBundle(sourcePath);
+    await consumeReturned;
+    try {
+      expect(
+        (mocks.db!.prepare("SELECT COUNT(*) AS count FROM captures").get() as {
+          count: number;
+        }).count
+      ).toBe(0);
+      await expect(
+        fs.lstat(join(mocks.dataRoot, "import-staging"))
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.lstat(mocks.capturesRoot)).rejects.toMatchObject({
+        code: "ENOENT"
+      });
+    } finally {
+      releaseWrapper();
+    }
+
+    await expect(pendingImport).resolves.toMatchObject({ status: "imported" });
+  }, 15_000);
+
   test("imports a foreign multi-source tree and metadata transactionally", async () => {
     const fullDescription = `Imported ${"description ".repeat(220)}`.slice(0, 2_500);
     const fixture = await makeBundle({

@@ -22,7 +22,7 @@ describe("createHotkeyRecorderInputScope", () => {
     expect(setIgnoreMenuShortcuts.mock.calls).toEqual([[true], [false]]);
   });
 
-  test("does not touch a missing, destroyed, or renderer-gone window", () => {
+  test("fails closed when the Settings owner disappears before suspension", () => {
     const setIgnoreMenuShortcuts = vi.fn();
     const windows = new Map<number, ReturnType<Parameters<typeof createHotkeyRecorderInputScope>[0]>>();
     windows.set(1, {
@@ -35,8 +35,11 @@ describe("createHotkeyRecorderInputScope", () => {
     });
     const scope = createHotkeyRecorderInputScope((windowId) => windows.get(windowId) ?? null);
 
-    scope.suspend(1);
-    scope.suspend(2);
+    expect(() => scope.suspend(1)).toThrow("Settings window is no longer available");
+    expect(() => scope.suspend(2)).toThrow("Settings window is no longer available");
+    expect(() => scope.suspend(3)).toThrow("Settings window is no longer available");
+    scope.restore(1);
+    scope.restore(2);
     scope.restore(3);
 
     expect(setIgnoreMenuShortcuts).not.toHaveBeenCalled();

@@ -293,4 +293,25 @@ describe("HotkeyRecorderSuspension", () => {
     expect(h.live.size).toBe(2);
     expect(h.manager.statusSnapshot().quickCapture.state).toBe("active");
   });
+
+  test("menu-bypass acquisition failure restores every prior native binding", async () => {
+    const h = makeNativeHarness();
+    h.suspension.configureInputScope({
+      suspend: () => {
+        throw new Error("Settings window disappeared");
+      },
+      restore: vi.fn()
+    });
+
+    await expect(
+      h.suspension.begin("missing_settings", 1, 41, DOCUMENT_A)
+    ).rejects.toThrow("Settings window disappeared");
+
+    expect(h.suspension.isSuspended()).toBe(false);
+    expect([...h.live.keys()].sort()).toEqual([
+      "Control+Alt+R",
+      "Control+Shift+C"
+    ]);
+    expect(h.manager.statusSnapshot().quickCapture.state).toBe("active");
+  });
 });

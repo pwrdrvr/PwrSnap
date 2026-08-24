@@ -17,20 +17,39 @@ type RecorderWindow = {
 export function createHotkeyRecorderInputScope(
   windowFromId: (windowId: number) => RecorderWindow | null
 ): HotkeyRecorderInputScope {
-  const setIgnored = (windowId: number, ignore: boolean): void => {
+  const liveWindow = (windowId: number): RecorderWindow | null => {
     const window = windowFromId(windowId);
     if (
       window === null ||
       window.isDestroyed() ||
       window.webContents.isDestroyed()
     ) {
-      return;
+      return null;
     }
-    window.webContents.setIgnoreMenuShortcuts(ignore);
+    return window;
+  };
+
+  const suspend = (windowId: number): void => {
+    const window = liveWindow(windowId);
+    if (window === null) {
+      // Failing closed matters: accepting a lease without bypassing native
+      // application-menu accelerators makes Ctrl+Z/C/V/A/zoom impossible to
+      // record, while the manager-owned globals are already released.
+      throw new Error("hotkey recorder Settings window is no longer available");
+    }
+    window.webContents.setIgnoreMenuShortcuts(true);
+  };
+
+  const restore = (windowId: number): void => {
+    const window = liveWindow(windowId);
+    // Window destruction is itself a complete restoration of its menu input
+    // state, so lifecycle cleanup must remain best-effort and non-throwing.
+    if (window === null) return;
+    window.webContents.setIgnoreMenuShortcuts(false);
   };
 
   return {
-    suspend: (ownerWindowId) => setIgnored(ownerWindowId, true),
-    restore: (ownerWindowId) => setIgnored(ownerWindowId, false)
+    suspend,
+    restore
   };
 }

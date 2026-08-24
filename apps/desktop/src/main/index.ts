@@ -130,7 +130,7 @@ import {
 } from "./hotkeys/hotkey-registration-manager";
 import { hotkeyRecorderSuspension } from "./hotkeys/hotkey-recorder-suspension-instance";
 import { createHotkeyRecorderInputScope } from "./hotkeys/hotkey-recorder-input-scope";
-import { isLiveHotkeyRecorderDocument } from "./hotkeys/hotkey-recorder-document";
+import { isLiveSettingsHotkeyRecorderOwner } from "./hotkeys/hotkey-recorder-owner";
 import { registerHotkeyRecorderSuspensionHandlers } from "./handlers/hotkey-recorder-handlers";
 import {
   checkForAppUpdatesNow,
@@ -1877,12 +1877,10 @@ export function bootstrapApp(): void {
               : null
         },
         (windowId, documentId) => {
-          const settings = findSettingsWindow();
-          return (
-            settings !== null &&
-            settings.id === windowId &&
-            !settings.webContents.isDestroyed() &&
-            isLiveHotkeyRecorderDocument(settings.webContents.id, documentId)
+          return isLiveSettingsHotkeyRecorderOwner(
+            findSettingsWindow(),
+            windowId,
+            documentId
           );
         }
       );

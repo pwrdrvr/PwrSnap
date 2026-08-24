@@ -15,10 +15,31 @@ is not `main`, whose requested version differs from
 `packages/pwrsnap/package.json`, whose confirmation text is not exact, or whose
 version already exists on npm.
 
-## Publish `0.0.1` after #500 merges
+## Release-order gate: stable PwrSnap 1.1 comes first
 
-Merging #500 does **not** update npm. After it is on `main` and CI is green,
-the publication owner runs:
+The helper sends users to GitHub's `/releases/latest` URL. At the time this gate
+was added, that URL resolved to `v1.0.3`. Publishing the helper in that state
+would create a new 1.0 download funnel, so **do not publish npm `0.0.1` merely
+because #500 has merged**.
+
+The workflow queries GitHub's latest-release API immediately before testing or
+publishing. It proceeds only when the response is a non-draft, non-prerelease
+tag matching `v1.1.x`. A dispatch while `v1.0.3`, a 1.1 prerelease, or any other
+version is latest fails before `npm publish`.
+
+The publication owner should independently verify the release order:
+
+```bash
+gh api repos/pwrdrvr/PwrSnap/releases/latest \
+  --jq '{tag_name, draft, prerelease, html_url}'
+```
+
+The expected result is a stable `v1.1.x` tag with both booleans set to `false`.
+
+## Publish `0.0.1` after #500 merges and stable 1.1 is latest
+
+Merging #500 does **not** update npm. Only after #500 is on `main`, CI is green,
+and stable PwrSnap 1.1 is GitHub `latest`, the publication owner runs:
 
 ```bash
 gh workflow run publish-npm-helper.yml \

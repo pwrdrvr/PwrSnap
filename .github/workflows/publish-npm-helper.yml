@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Exact packages/pwrsnap version to publish (for #500: 0.0.1)"
+        description: "Exact helper version to publish after stable PwrSnap 1.1 is GitHub latest"
         required: true
         type: string
       confirmation:
@@ -26,6 +26,7 @@ jobs:
       PUBLISH_OWNER: huntharo
       REQUESTED_VERSION: ${{ inputs.version }}
       PUBLISH_CONFIRMATION: ${{ inputs.confirmation }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout main
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -64,6 +65,24 @@ jobs:
             echo "::error::pwrsnap@$package_version already exists; npm versions are immutable." >&2
             exit 1
           fi
+
+      - name: Require stable PwrSnap 1.1 as GitHub latest
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest_release="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest")"
+          latest_tag="$(jq -r '.tag_name // empty' <<<"$latest_release")"
+          latest_draft="$(jq -r '.draft // empty' <<<"$latest_release")"
+          latest_prerelease="$(jq -r '.prerelease // empty' <<<"$latest_release")"
+
+          if [[ ! "$latest_tag" =~ ^v1\.1\.[0-9]+$ ]] ||
+             [ "$latest_draft" != "false" ] ||
+             [ "$latest_prerelease" != "false" ]; then
+            echo "::error::Refusing to publish pwrsnap@$REQUESTED_VERSION while GitHub latest is '$latest_tag'. A stable v1.1.x release must be GitHub latest first." >&2
+            exit 1
+          fi
+
+          echo "GitHub latest is stable PwrSnap $latest_tag; npm helper publication may proceed."
 
       - name: Test helper contract
         run: >-

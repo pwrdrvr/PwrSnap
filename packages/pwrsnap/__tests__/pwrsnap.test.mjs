@@ -70,7 +70,7 @@ describe("pwrsnap package surface", () => {
     expect(`${packageJson.description}\n${readme}`).not.toMatch(/coming soon|placeholder/i);
   });
 
-  it("keeps publication owner-gated and verifies the public package", () => {
+  it("keeps publication owner- and stable-1.1-gated, then verifies the public package", () => {
     const workflow = readFileSync(
       resolve(repoDir, ".github/workflows/publish-npm-helper.yml"),
       "utf8"
@@ -82,10 +82,18 @@ describe("pwrsnap package surface", () => {
 
     expect(workflow).toContain("PUBLISH_OWNER: huntharo");
     expect(workflow).toContain("environment: npm-publishing");
+    expect(workflow).toContain("Require stable PwrSnap 1.1 as GitHub latest");
+    expect(workflow).toContain('gh api "repos/$GITHUB_REPOSITORY/releases/latest"');
+    expect(workflow).toContain('^v1\\.1\\.[0-9]+$');
+    expect(workflow.indexOf("Require stable PwrSnap 1.1 as GitHub latest")).toBeLessThan(
+      workflow.indexOf("npm publish --access public --provenance")
+    );
     expect(workflow).toContain("npm publish --access public --provenance");
     expect(workflow).toContain("Verify the public registry package");
     expect(workflow).toContain("pwrsnap install");
     expect(runbook).toContain("Merging #500 does **not** update npm");
     expect(runbook).toContain("Publication owner: **@huntharo**");
+    expect(runbook).toContain("do not publish npm `0.0.1` merely");
+    expect(runbook).toContain("stable PwrSnap 1.1 is GitHub `latest`");
   });
 });

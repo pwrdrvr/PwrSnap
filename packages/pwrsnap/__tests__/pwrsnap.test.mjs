@@ -8,11 +8,19 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = resolve(testDir, "..");
 const repoDir = resolve(packageDir, "../..");
 const cliPath = resolve(packageDir, "bin/pwrsnap.mjs");
+const releaseGatePath = resolve(repoDir, "scripts/assert-npm-helper-release-order.mjs");
 const releaseUrl = "https://github.com/pwrdrvr/PwrSnap/releases/latest";
 const packageJson = JSON.parse(readFileSync(resolve(packageDir, "package.json"), "utf8"));
 
 function runCli(...args) {
   return spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8" });
+}
+
+function runReleaseGate(release) {
+  return spawnSync(process.execPath, [releaseGatePath], {
+    encoding: "utf8",
+    input: JSON.stringify(release)
+  });
 }
 
 describe("pwrsnap package surface", () => {
@@ -84,7 +92,7 @@ describe("pwrsnap package surface", () => {
     expect(workflow).toContain("environment: npm-publishing");
     expect(workflow).toContain("Require stable PwrSnap 1.1 as GitHub latest");
     expect(workflow).toContain('gh api "repos/$GITHUB_REPOSITORY/releases/latest"');
-    expect(workflow).toContain('^v1\\.1\\.[0-9]+$');
+    expect(workflow).toContain("node scripts/assert-npm-helper-release-order.mjs");
     expect(workflow.indexOf("Require stable PwrSnap 1.1 as GitHub latest")).toBeLessThan(
       workflow.indexOf("npm publish --access public --provenance")
     );
@@ -95,5 +103,25 @@ describe("pwrsnap package surface", () => {
     expect(runbook).toContain("Publication owner: **@huntharo**");
     expect(runbook).toContain("do not publish npm `0.0.1` merely");
     expect(runbook).toContain("stable PwrSnap 1.1 is GitHub `latest`");
+  });
+
+  it("accepts a stable PwrSnap 1.1 latest release", () => {
+    const result = runReleaseGate({ tag_name: "v1.1.0", draft: false, prerelease: false });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("GitHub latest is stable PwrSnap v1.1.0");
+  });
+
+  it.each([
+    ["the current 1.0 release", { tag_name: "v1.0.3", draft: false, prerelease: false }],
+    ["a 1.1 prerelease", { tag_name: "v1.1.0", draft: false, prerelease: true }],
+    ["a draft 1.1 release", { tag_name: "v1.1.0", draft: true, prerelease: false }]
+  ])("rejects %s at the npm publication gate", (_label, release) => {
+    const result = runReleaseGate(release);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("Refusing npm helper publication");
   });
 });

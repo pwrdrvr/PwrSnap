@@ -70,19 +70,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          latest_release="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest")"
-          latest_tag="$(jq -r '.tag_name // empty' <<<"$latest_release")"
-          latest_draft="$(jq -r '.draft // empty' <<<"$latest_release")"
-          latest_prerelease="$(jq -r '.prerelease // empty' <<<"$latest_release")"
-
-          if [[ ! "$latest_tag" =~ ^v1\.1\.[0-9]+$ ]] ||
-             [ "$latest_draft" != "false" ] ||
-             [ "$latest_prerelease" != "false" ]; then
-            echo "::error::Refusing to publish pwrsnap@$REQUESTED_VERSION while GitHub latest is '$latest_tag'. A stable v1.1.x release must be GitHub latest first." >&2
-            exit 1
-          fi
-
-          echo "GitHub latest is stable PwrSnap $latest_tag; npm helper publication may proceed."
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" \
+            | node scripts/assert-npm-helper-release-order.mjs
 
       - name: Test helper contract
         run: >-

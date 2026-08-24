@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Settings } from "@pwrsnap/shared";
 
 type ClosedListener = () => void;
 
 const mocks = vi.hoisted(() => {
   const windows: Array<ReturnType<typeof createWindow>> = [];
+  const appListeners = new Map<string, Set<() => void>>();
+  let focusedWindow: object | null = null;
 
   function createWindow(id: number) {
     let destroyed = false;
@@ -49,23 +52,40 @@ const mocks = vi.hoisted(() => {
       return window;
     }),
     globalShortcut: {
-      register: vi.fn(() => true),
+      register: vi.fn((_accelerator: string, _callback: () => void) => true),
       unregister: vi.fn()
+    },
+    dispatch: vi.fn(),
+    app: {
+      emit(event: string): void {
+        for (const listener of appListeners.get(event) ?? []) listener();
+      },
+      on: vi.fn((event: string, listener: () => void) => {
+        const listeners = appListeners.get(event) ?? new Set<() => void>();
+        listeners.add(listener);
+        appListeners.set(event, listeners);
+      }),
+      removeListener: vi.fn((event: string, listener: () => void) => {
+        appListeners.get(event)?.delete(listener);
+      })
+    },
+    browserWindow: Object.assign(vi.fn(), {
+      getFocusedWindow: vi.fn(() => focusedWindow)
+    }),
+    setFocusedWindow(window: object | null): void {
+      focusedWindow = window;
     },
     ipcMain: {
       on: vi.fn(),
       removeAllListeners: vi.fn()
     },
-    windows,
-    recorderParticipant: null as {
-      suspend(): void;
-      restore(): void;
-    } | null
+    windows
   };
 });
 
 vi.mock("electron", () => ({
-  BrowserWindow: vi.fn(),
+  app: mocks.app,
+  BrowserWindow: mocks.browserWindow,
   globalShortcut: mocks.globalShortcut,
   ipcMain: mocks.ipcMain,
   screen: {
@@ -83,23 +103,11 @@ vi.mock("../window", () => ({
 }));
 
 vi.mock("../command-bus", () => ({
-  bus: { dispatch: vi.fn() }
+  bus: { dispatch: mocks.dispatch }
 }));
 
 vi.mock("../log", () => ({
-  getMainLogger: () => ({ info: vi.fn() })
-}));
-
-vi.mock("../hotkeys/hotkey-recorder-suspension-instance", () => ({
-  hotkeyRecorderSuspension: {
-    registerParticipant: vi.fn((participant: {
-      suspend(): void;
-      restore(): void;
-    }) => {
-      mocks.recorderParticipant = participant;
-      return vi.fn();
-    })
-  }
+  getMainLogger: () => ({ info: vi.fn(), warn: vi.fn() })
 }));
 
 import {
@@ -108,26 +116,49 @@ import {
   getFloatOverState,
   setFloatOverState
 } from "../float-over";
+import { hotkeyRecorderSuspension } from "../hotkeys/hotkey-recorder-suspension-instance";
 
 describe("disposeFloatOver", () => {
-  beforeEach(() => {
+  async function flushShortcutLookup(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  beforeEach(async () => {
     vi.useFakeTimers();
     disposeFloatOver();
     mocks.createFloatOverWindow.mockClear();
-    mocks.globalShortcut.register.mockClear();
+    mocks.globalShortcut.register.mockReset();
+    mocks.globalShortcut.register.mockReturnValue(true);
     mocks.globalShortcut.unregister.mockClear();
+    mocks.dispatch.mockReset();
+    mocks.dispatch.mockImplementation(async (name: string, request: { id?: string }) => {
+      if (name === "library:byId") {
+        return { ok: true, value: { id: request.id, kind: "image" } };
+      }
+      return { ok: true, value: undefined };
+    });
+    await hotkeyRecorderSuspension.dispose();
+    hotkeyRecorderSuspension.configureOwnership({
+      registrationManager: null,
+      withSerializedSettings: async <T,>(operation: (settings: Settings) => T | Promise<T>) =>
+        operation({} as Settings)
+    });
+    mocks.setFocusedWindow(null);
     mocks.ipcMain.on.mockClear();
     mocks.ipcMain.removeAllListeners.mockClear();
     mocks.windows.length = 0;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     disposeFloatOver();
+    await hotkeyRecorderSuspension.dispose();
     vi.useRealTimers();
   });
 
-  it("disarms shortcuts, destroys the singleton, clears delayed work, and resets state", () => {
+  it("disarms shortcuts, destroys the singleton, clears delayed work, and resets state", async () => {
     setFloatOverState({ kind: "show-loaded", captureId: "cap_1" });
+    await flushShortcutLookup();
     const window = mocks.windows[0]!;
 
     expect(getFloatOverState()).toEqual({ kind: "loaded", captureId: "cap_1" });
@@ -167,14 +198,125 @@ describe("disposeFloatOver", () => {
     expect(getFloatOverWindowIdForE2E()).toBe(2);
   });
 
-  it("releases Float-Over copy ownership for recording and restores the loaded toast", () => {
-    setFloatOverState({ kind: "show-loaded", captureId: "cap_lease" });
+  it("unregisters only copy shortcuts this float-over successfully owns", async () => {
+    mocks.globalShortcut.register.mockImplementation((accelerator: string) =>
+      accelerator !== "CommandOrControl+1"
+    );
+
+    setFloatOverState({ kind: "show-loaded", captureId: "cap_collision" });
+    await flushShortcutLookup();
+    disposeFloatOver();
+
+    // Ctrl/Cmd+1 may already be a persistent user binding. A failed
+    // transient register must never unregister that other owner on dismiss.
+    expect(mocks.globalShortcut.unregister.mock.calls.map(([accelerator]) => accelerator)).toEqual([
+      "CommandOrControl+2",
+      "CommandOrControl+3"
+    ]);
+  });
+
+  it("releases and restores transient copy shortcuts around recording", async () => {
+    setFloatOverState({ kind: "show-loaded", captureId: "cap_guarded" });
+    await flushShortcutLookup();
+    const lowCallback = mocks.globalShortcut.register.mock.calls.find(
+      ([accelerator]) => accelerator === "CommandOrControl+1"
+    )?.[1] as (() => void) | undefined;
+    expect(lowCallback).toBeTypeOf("function");
+    mocks.dispatch.mockClear();
+    mocks.globalShortcut.register.mockClear();
+    mocks.globalShortcut.unregister.mockClear();
+
+    await hotkeyRecorderSuspension.begin(
+      "settings_recorder",
+      1,
+      41,
+      "documentepoch0001"
+    );
+    expect(mocks.globalShortcut.unregister).toHaveBeenCalledTimes(3);
+    expect(mocks.globalShortcut.register).not.toHaveBeenCalled();
+    lowCallback?.();
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+
+    await hotkeyRecorderSuspension.end(
+      "settings_recorder",
+      1,
+      41,
+      "documentepoch0001"
+    );
+    await flushShortcutLookup();
+    expect(mocks.globalShortcut.register).toHaveBeenCalledTimes(3);
+    const restoredLowCallback = mocks.globalShortcut.register.mock.calls.find(
+      ([accelerator]) => accelerator === "CommandOrControl+1"
+    )?.[1] as (() => void) | undefined;
+    restoredLowCallback?.();
+    expect(mocks.dispatch).toHaveBeenCalledWith(
+      "clipboard:copy",
+      { captureId: "cap_guarded", preset: "low" },
+      { principal: "ipc" }
+    );
+  });
+
+  it("registers one video shortcut owner and dispatches the matching video export once", async () => {
+    mocks.dispatch.mockImplementation(async (name: string, request: { id?: string }) => {
+      if (name === "library:byId") {
+        return { ok: true, value: { id: request.id, kind: "video" } };
+      }
+      return { ok: true, value: undefined };
+    });
+
+    setFloatOverState({ kind: "show-loaded", captureId: "cap_video" });
+    await flushShortcutLookup();
+
+    expect(mocks.globalShortcut.register).toHaveBeenCalledTimes(6);
+    const mediumMp4Callback = mocks.globalShortcut.register.mock.calls.find(
+      ([accelerator]) => accelerator === "CommandOrControl+5"
+    )?.[1] as (() => void) | undefined;
+    expect(mediumMp4Callback).toBeTypeOf("function");
+
+    mocks.dispatch.mockClear();
+    mediumMp4Callback?.();
+
+    expect(mocks.dispatch).toHaveBeenCalledTimes(1);
+    expect(mocks.dispatch).toHaveBeenCalledWith(
+      "clipboard:copyVideoFile",
+      { captureId: "cap_video", format: "mp4", preset: "med" },
+      { principal: "ipc" }
+    );
+    expect(mocks.dispatch.mock.calls.some(([name]) => name === "clipboard:copy")).toBe(false);
+  });
+
+  it("yields numbered chords to a focused PwrSnap surface and restores on app blur", async () => {
+    setFloatOverState({ kind: "show-loaded", captureId: "cap_focus" });
+    await flushShortcutLookup();
     expect(mocks.globalShortcut.register).toHaveBeenCalledTimes(3);
 
-    mocks.recorderParticipant?.suspend();
+    mocks.globalShortcut.register.mockClear();
+    mocks.globalShortcut.unregister.mockClear();
+    mocks.setFocusedWindow({ id: 99 });
+    mocks.app.emit("browser-window-focus");
     expect(mocks.globalShortcut.unregister).toHaveBeenCalledTimes(3);
 
-    mocks.recorderParticipant?.restore();
-    expect(mocks.globalShortcut.register).toHaveBeenCalledTimes(6);
+    mocks.setFocusedWindow(null);
+    mocks.app.emit("browser-window-blur");
+    await vi.advanceTimersByTimeAsync(0);
+    await flushShortcutLookup();
+    expect(mocks.globalShortcut.register).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not register shortcuts when a capture lookup resolves after dismissal", async () => {
+    let resolveLookup: ((value: unknown) => void) | undefined;
+    mocks.dispatch.mockImplementation((name: string) => {
+      if (name !== "library:byId") return Promise.resolve({ ok: true, value: undefined });
+      return new Promise((resolve) => {
+        resolveLookup = resolve;
+      });
+    });
+
+    setFloatOverState({ kind: "show-loaded", captureId: "cap_stale" });
+    setFloatOverState({ kind: "dismiss" });
+    resolveLookup?.({ ok: true, value: { id: "cap_stale", kind: "video" } });
+    await flushShortcutLookup();
+
+    expect(mocks.globalShortcut.register).not.toHaveBeenCalled();
   });
 });

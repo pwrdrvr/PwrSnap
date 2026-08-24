@@ -22,6 +22,7 @@ import {
 import { recordingFailureSummary, type RecordingState } from "@pwrsnap/shared";
 import { appWindowsOverlappingRect } from "../capture/rect-overlap";
 import { bus } from "../command-bus";
+import { hotkeyRecorderSuspension } from "../hotkeys/hotkey-recorder-suspension-instance";
 import { getMainLogger } from "../log";
 import { createRecordingControllerWindow } from "../window";
 import { getRecordingState, subscribeToRecordingState } from "./recording-state";
@@ -35,6 +36,8 @@ const FAILED_RECREATE_DELAYS_MS = [100, 500] as const;
 let window: BrowserWindow | null = null;
 let installed = false;
 let escapeShortcutArmed = false;
+let escapeShortcutDesired = false;
+let escapeShortcutSuspended = false;
 let unsubscribe: (() => void) | null = null;
 let disposing = false;
 let replacingFailedWindow = false;
@@ -384,25 +387,66 @@ function fillRect(
   win.setPosition(x, y, false);
 }
 
-function armLeadInEscapeShortcut(): void {
-  if (escapeShortcutArmed) return;
-  // The lead-in HUD is focusable:false and shown inactive, so a
-  // renderer keydown listener would miss Esc in the common case.
-  const registered = globalShortcut.register("Escape", () => {
-    void bus.dispatch("recording:cancel", {}, { principal: "ipc" });
-  });
-  if (!registered) {
-    log.warn("recording lead-in Escape shortcut unavailable");
+function registerDesiredLeadInEscapeShortcut(): void {
+  if (
+    !escapeShortcutDesired ||
+    escapeShortcutSuspended ||
+    escapeShortcutArmed
+  ) {
     return;
   }
-  escapeShortcutArmed = true;
+  // The lead-in HUD is focusable:false and shown inactive, so a
+  // renderer keydown listener would miss Esc in the common case.
+  try {
+    const registered = globalShortcut.register("Escape", () => {
+      if (escapeShortcutSuspended || !escapeShortcutDesired) return;
+      void bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+    });
+    if (!registered) {
+      log.warn("recording lead-in Escape shortcut unavailable");
+      return;
+    }
+    escapeShortcutArmed = true;
+  } catch (cause) {
+    log.warn("recording lead-in Escape shortcut registration threw", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
+}
+
+function releaseOwnedLeadInEscapeShortcut(): void {
+  if (!escapeShortcutArmed) return;
+  try {
+    globalShortcut.unregister("Escape");
+  } catch (cause) {
+    log.warn("recording lead-in Escape shortcut unregister threw", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
+  escapeShortcutArmed = false;
+}
+
+function armLeadInEscapeShortcut(): void {
+  escapeShortcutDesired = true;
+  registerDesiredLeadInEscapeShortcut();
 }
 
 function disarmLeadInEscapeShortcut(): void {
-  if (!escapeShortcutArmed) return;
-  globalShortcut.unregister("Escape");
-  escapeShortcutArmed = false;
+  escapeShortcutDesired = false;
+  releaseOwnedLeadInEscapeShortcut();
 }
+
+hotkeyRecorderSuspension.registerParticipant({
+  id: "recording-controller-escape",
+  suspend(): void {
+    escapeShortcutSuspended = true;
+    releaseOwnedLeadInEscapeShortcut();
+  },
+  restore(): void {
+    escapeShortcutSuspended = false;
+    registerDesiredLeadInEscapeShortcut();
+  }
+});
 
 /**
  * React to a recording-state transition. Idempotent — called from

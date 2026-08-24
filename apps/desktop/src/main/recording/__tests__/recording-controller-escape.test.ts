@@ -209,6 +209,78 @@ describe("recording-controller lead-in Escape shortcut", () => {
     expect(mocks.shortcutCallbacks.has("Escape")).toBe(false);
   });
 
+  test("the Settings recorder lease releases and restores an active lead-in Escape owner", async () => {
+    const [{ applyRecordingStateToController }, { hotkeyRecorderSuspension }] =
+      await Promise.all([
+        import("../recording-controller"),
+        import("../../hotkeys/hotkey-recorder-suspension-instance")
+      ]);
+    hotkeyRecorderSuspension.configureOwnership({
+      registrationManager: null,
+      withSerializedSettings: async (operation) => operation({} as never)
+    });
+
+    applyRecordingStateToController({
+      phase: "countdown",
+      sessionId: "rec-1",
+      secondsRemaining: 3,
+      rect: { x: 10, y: 20, w: 800, h: 600 },
+      displayId: 1
+    });
+    const originalCallback = mocks.shortcutCallbacks.get("Escape");
+    expect(originalCallback).toBeTypeOf("function");
+
+    const lease = await hotkeyRecorderSuspension.begin(
+      "settings_session_1",
+      1,
+      41,
+      "documentepoch0001"
+    );
+    expect(lease.accepted).toBe(true);
+    expect(mocks.unregisterShortcut).toHaveBeenCalledWith("Escape");
+    expect(mocks.shortcutCallbacks.has("Escape")).toBe(false);
+    originalCallback?.();
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+
+    await expect(
+      hotkeyRecorderSuspension.end(
+        "settings_session_1",
+        1,
+        41,
+        "documentepoch0001"
+      )
+    ).resolves.toBe(true);
+    expect(mocks.shortcutCallbacks.get("Escape")).toBeTypeOf("function");
+    mocks.shortcutCallbacks.get("Escape")?.();
+    expect(mocks.dispatch).toHaveBeenCalledWith(
+      "recording:cancel",
+      {},
+      { principal: "ipc" }
+    );
+  });
+
+  test("does not unregister Escape when Electron never granted ownership", async () => {
+    mocks.registerShortcut.mockReturnValueOnce(false);
+    const { applyRecordingStateToController } = await import("../recording-controller");
+
+    applyRecordingStateToController({
+      phase: "countdown",
+      sessionId: "rec-1",
+      secondsRemaining: 1,
+      rect: { x: 10, y: 20, w: 800, h: 600 },
+      displayId: 1
+    });
+    applyRecordingStateToController({
+      phase: "recording",
+      sessionId: "rec-1",
+      startedAt: new Date(0).toISOString(),
+      rect: { x: 10, y: 20, w: 800, h: 600 },
+      displayId: 1
+    });
+
+    expect(mocks.unregisterShortcut).not.toHaveBeenCalled();
+  });
+
   test("full-display Windows recordings keep the HUD at the normal tray-stop position", async () => {
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     const { applyRecordingStateToController } = await import("../recording-controller");

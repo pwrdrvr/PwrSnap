@@ -352,14 +352,26 @@ bump PRs; its success is not publication. Repeat channel follow-up after the
 operator manually promotes the release, retaining ownership through submission
 acceptance and refreshed-client verification.
 
+The same installed-application controller runs for the unsigned Windows
+`build-preview` artifact. Static archive/DLL/`.node` checks remain useful for
+payload structure, but they are not treated as launch readiness: only the
+installed process can produce the causal JSON evidence, and only after its
+renderer has completed a real `library:list` round trip against the fresh
+isolated database. Failure diagnostics are bounded tails of stdout, stderr,
+the result, and isolated app logs.
+
 For a non-publishing Windows signing smoke check, apply `ci:windows-signing` to
 a same-repository PR after reviewing its head SHA. Temporarily allow that exact
 PR merge ref (`refs/pull/<number>/merge`) in the `windows-signing` environment,
 approve the protected job, and remove the rule after the
 `windows-signed-installer-pr` artifact passes Authenticode and launch
-validation. This is the same `release.yml` Windows prepare/sign path used by
-tags; `publish-release-assets` is disabled for PR events, so it never creates a
-tag or GitHub Release.
+validation (including better-sqlite3, Sharp/libvips, React, preload, and IPC).
+This is the same `release.yml` Windows prepare/sign path used by tags;
+`publish-release-assets` is disabled for PR events, so it never creates a tag
+or GitHub Release. Because the launch is hermetic E2E mode, it deliberately
+does not initialize `electron-updater`; feed retrieval, blockmaps, download,
+signature selection, `quitAndInstall`, and prerelease-to-prerelease transition
+remain clean-VM release smoke coverage.
 
 Do not approve either signing environment unless the tag, commit, and release
 metadata are intended. Approval exposes that environment's credentials to its

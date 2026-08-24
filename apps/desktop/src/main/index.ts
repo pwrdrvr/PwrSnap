@@ -116,7 +116,12 @@ import {
 } from "./recording/recording-frame";
 import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
-import { getRecordingState, isRecordingActive } from "./recording/recording-state";
+import {
+  getRecordingState,
+  isRecordingActive,
+  subscribeToRecordingState
+} from "./recording/recording-state";
+import { videoHotkeyAction } from "./recording/recording-capabilities";
 import { videoAssetDir } from "./recording/video-frames";
 import {
   getDesktopSettingsServices,
@@ -751,8 +756,22 @@ function triggerInteractiveCaptureFromHotkey(
 function triggerInteractiveRecordFromHotkey(kind: "videoCapture"): void {
   const log = getMainLogger("pwrsnap:shortcut");
   const decision = interactiveCaptureHotkeyGate.tryStart(async () => {
-    log.info("global hotkey fired", { kind, mode: "video" });
-    await runInteractiveRecord();
+    // The video hotkey is a toggle: while a take is live it stops or cancels
+    // rather than starting a second one. `videoHotkeyAction` is the single
+    // authority on which of those the current lifecycle phase allows.
+    const action = videoHotkeyAction(getRecordingState());
+    log.info("global hotkey fired", { kind, mode: "video", action });
+    if (action === "stop") {
+      await bus.dispatch("recording:stop", {}, { principal: "ipc" });
+      return;
+    }
+    if (action === "cancel") {
+      await bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+      return;
+    }
+    if (action === "start") {
+      await runInteractiveRecord();
+    }
   });
   log.info("interactive capture hotkey gate decision", {
     kind,
@@ -2463,19 +2482,38 @@ export function bootstrapApp(): void {
   // after `app.quit()` is called from inside it.
   let quitTeardownInFlight = false;
   app.on("will-quit", (event) => {
-    // Fast Video Capture (issue #64): if a recording is active when
-    // the user hits ⌘Q, cancel it cleanly BEFORE the rest of teardown
-    // runs. Without this the Swift recorder is orphaned (parent dies,
-    // launchd reparents it) and the user's clip is lost AND a stray
-    // PwrSnapRecorder process sits in their process list until it
-    // hits its own write error or the parent-death watchdog reaps it.
+    // If the user quits with a recording attempt alive, let the recording
+    // service own the transition before ordinary teardown. Lead-in and active
+    // capture are cancelled cleanly. Once Stop has begun, wait for the
+    // authoritative ready/failed transition so quitting cannot discard a clip
+    // while recorder exit or persistence is still in flight.
     if (isRecordingActive() && !quitTeardownInFlight) {
       quitTeardownInFlight = true;
       event.preventDefault();
-      void getRecordingService()
-        .cancel()
+      const phase = getRecordingState().phase;
+      const finish =
+        phase === "stopping" || phase === "processing"
+          ? new Promise<void>((resolve) => {
+              let settled = false;
+              let unsubscribe = (): void => undefined;
+              const onState = (state: ReturnType<typeof getRecordingState>): void => {
+                if (state.phase !== "ready" && state.phase !== "failed" && state.phase !== "idle") {
+                  return;
+                }
+                settled = true;
+                unsubscribe();
+                resolve();
+              };
+              unsubscribe = subscribeToRecordingState(onState);
+              // subscribeToRecordingState emits synchronously. If finalization
+              // won the race before registration returned, remove the newly
+              // installed listener after its handle becomes available.
+              if (settled) unsubscribe();
+            })
+          : getRecordingService().cancel();
+      void finish
         .catch((cause) => {
-          getMainLogger("pwrsnap:bootstrap").warn("cancel-on-quit failed", {
+          getMainLogger("pwrsnap:bootstrap").warn("recording quit barrier failed", {
             message: cause instanceof Error ? cause.message : String(cause)
           });
         })

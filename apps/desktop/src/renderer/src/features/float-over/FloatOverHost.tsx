@@ -471,6 +471,8 @@ export function FloatOverHost({
           src: previewSrc,
           captureId: record.id,
           durationSec: record.video!.durationSec,
+          hasSystemAudio: record.video!.hasSystemAudio,
+          hasMicrophoneAudio: record.video!.hasMicrophoneAudio,
           widthPx: record.width_px,
           heightPx: record.height_px,
           defaultRange: record.video!.defaultRange,

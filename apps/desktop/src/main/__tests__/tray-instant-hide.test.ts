@@ -193,6 +193,7 @@ vi.mock("../log", () => ({
 }));
 
 vi.mock("../recording/recording-state", () => ({
+  getRecordingState: vi.fn(() => ({ phase: "idle" })),
   isRecordingActive: vi.fn(() => false),
   subscribeToRecordingState: vi.fn()
 }));

@@ -16,6 +16,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   app,
+  dialog,
   ipcMain,
   Menu,
   type MenuItemConstructorOptions,
@@ -39,14 +40,39 @@ import { dispatchInteractiveCapture } from "./capture/capture-trigger";
 import { getMainLogger } from "./log";
 import { getRuntimeProcessRole } from "./process-role";
 import {
-  isRecordingActive,
+  getRecordingState,
   subscribeToRecordingState
 } from "./recording/recording-state";
+import {
+  canStartRecordingAttempt,
+  canRunRecordingControl,
+  recordingBackendCapabilities
+} from "./recording/recording-capabilities";
 import { createTrayWindow, positionTrayWindow } from "./window";
 
 const log = getMainLogger("pwrsnap:tray");
 
 const BLUR_DISMISS_DEBOUNCE_MS = 120;
+
+async function confirmDiscardRecording(action: "restart" | "cancel"): Promise<void> {
+  const restart = action === "restart";
+  const { response } = await dialog.showMessageBox({
+    type: "warning",
+    title: restart ? "Restart recording?" : "Cancel recording?",
+    message: restart
+      ? "Restarting discards the current take."
+      : "Cancelling discards the current take.",
+    detail: restart
+      ? "Choose Restart to discard this clip and begin a new countdown."
+      : "Choose Stop and Save instead if you want to keep this clip.",
+    buttons: [restart ? "Restart" : "Cancel Recording", "Keep Recording"],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true
+  });
+  if (response !== 0) return;
+  await bus.dispatch(`recording:${action}`, {}, { principal: "ipc" });
+}
 
 /**
  * Extra menu items appended to the right-click menu (after a
@@ -113,7 +139,7 @@ export function setTrayHotkeys(
 ): void {
   currentTrayHotkeys = { ...hotkeys };
   resolveTrayHotkeyStatus = resolveStatus;
-  if (tray !== null && !isRecordingActive()) {
+  if (tray !== null && canStartRecordingAttempt(getRecordingState())) {
     tray.setToolTip(idleTrayTooltip());
   }
 }
@@ -884,27 +910,94 @@ export function buildTrayContextMenuTemplate(
   const quickCaptureAccelerator = activeTrayAccelerator("quickCapture", platform);
   const videoCaptureAccelerator = activeTrayAccelerator("videoCapture", platform);
   const openLibraryAccelerator = activeTrayAccelerator("openLibrary", platform);
-  // Top of menu changes while recording — the user almost certainly
-  // came here to stop, so make Stop the first item and demote the
-  // Capture row. Cancel sits next to Stop so a botched recording
-  // can be aborted without persisting a Library row.
-  const recordingItems: MenuItemConstructorOptions[] = isRecordingActive()
-    ? [
+  const recordingState = getRecordingState();
+  const recordingCapabilities = recordingBackendCapabilities();
+  // Controls are phase- and backend-aware. In particular, Stop is not shown
+  // during the Windows countdown (FFmpeg has not spawned yet), and no action
+  // is offered while finalization already owns the backend transition.
+  const recordingItems: MenuItemConstructorOptions[] = (() => {
+    if (
+      recordingState.phase === "recording" &&
+      canRunRecordingControl(recordingState, recordingCapabilities, "stop")
+    ) {
+      const elapsedSec = Math.max(
+        0,
+        Math.floor(
+          (Date.now() - new Date(recordingState.startedAt).getTime()) / 1_000
+        )
+      );
+      const elapsed = `${Math.floor(elapsedSec / 60).toString().padStart(2, "0")}:${(
+        elapsedSec % 60
+      )
+        .toString()
+        .padStart(2, "0")}`;
+      // Top of menu changes while recording — the user almost certainly
+      // came here to stop, so make Stop the first item and demote the
+      // Capture row. Cancel sits next to Stop so a botched recording
+      // can be aborted without persisting a Library row.
+      return [
         {
-          label: "● Recording — Stop",
+          label: `● Recording ${elapsed} — Stop and Save`,
           click: () => {
             void bus.dispatch("recording:stop", {}, { principal: "ipc" });
           }
         },
+        ...(canRunRecordingControl(recordingState, recordingCapabilities, "restart")
+          ? [
+              {
+                label: "Restart Recording",
+                click: () => {
+                  void confirmDiscardRecording("restart");
+                }
+              } satisfies MenuItemConstructorOptions
+            ]
+          : []),
+        ...(canRunRecordingControl(recordingState, recordingCapabilities, "cancel")
+          ? [
+              {
+                label: "Cancel Recording",
+                click: () => {
+                  void confirmDiscardRecording("cancel");
+                }
+              } satisfies MenuItemConstructorOptions
+            ]
+          : []),
+        { type: "separator" }
+      ];
+    }
+    if (
+      (recordingState.phase === "preflight" ||
+        recordingState.phase === "countdown" ||
+        recordingState.phase === "starting") &&
+      canRunRecordingControl(recordingState, recordingCapabilities, "cancel")
+    ) {
+      return [
         {
-          label: "Cancel Recording",
+          label:
+            recordingState.phase === "countdown"
+              ? `Cancel recording start (${recordingState.secondsRemaining})`
+              : "Cancel recording start",
           click: () => {
             void bus.dispatch("recording:cancel", {}, { principal: "ipc" });
           }
         },
         { type: "separator" }
-      ]
-    : [];
+      ];
+    }
+    if (recordingState.phase === "stopping" || recordingState.phase === "processing") {
+      return [
+        {
+          label:
+            recordingState.phase === "stopping"
+              ? "Finalizing recording…"
+              : "Processing recording…",
+          enabled: false
+        },
+        { type: "separator" }
+      ];
+    }
+    return [];
+  })();
   const baseTemplate: MenuItemConstructorOptions[] = [
     {
       label: "Quick Capture…",
@@ -928,6 +1021,9 @@ export function buildTrayContextMenuTemplate(
       // tray popover + Library header. No sourceWindowId on a tray
       // dispatch, so the record leaves the Library as a valid target.
       label: "Record Video…",
+      // Setup, lead-in, live capture, finalization, and durable failure all
+      // belong to the existing attempt. Only idle/ready may open a selector.
+      enabled: canStartRecordingAttempt(recordingState),
       ...(videoCaptureAccelerator !== null
         ? {
             accelerator: videoCaptureAccelerator,

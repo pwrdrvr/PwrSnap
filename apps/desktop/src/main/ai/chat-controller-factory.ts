@@ -10,8 +10,11 @@
 // in exactly one place. The controller's neutral decision type differs from
 // PwrSnap's; `toKitApprovalDecision` maps between them at the verb boundary.
 
-import { ChatThreadController } from "@pwrdrvr/agent-client";
-import type { ChatBackend, ChatThreadControllerDeps } from "@pwrdrvr/agent-client";
+import type {
+  ChatBackend,
+  ChatThreadController,
+  ChatThreadControllerDeps
+} from "@pwrdrvr/agent-client";
 import type { AgentBackend, NormalizedApprovalDecision } from "@pwrdrvr/agent-core";
 import {
   AcpAgentClient,
@@ -51,6 +54,7 @@ import {
 import { toAgentKitLogger, PWRSNAP_SERVICE_NAME } from "./agent-kit-bindings";
 import type { ChatApprovalBroker } from "./chat-approval-broker";
 import type { ChatThreadAccess } from "./chat-thread-access";
+import { PwrSnapChatSessionController } from "./chat-session-controller";
 
 type InterruptAcknowledgement = (threadId: string) => Promise<void>;
 
@@ -84,36 +88,6 @@ export async function interruptChatThreadAcknowledged(
     throw new Error("Chat controller does not expose acknowledged interruption.");
   }
   await injected.interruptAcknowledged(threadId);
-}
-
-function acknowledgedInterruptBackend(client: AgentBackend): {
-  backend: AgentBackend;
-  acknowledge: InterruptAcknowledgement;
-  clear: (threadId: string) => void;
-} {
-  const acknowledged = new Set<string>();
-  const backend = new Proxy(client, {
-    get(target, property, receiver) {
-      if (property === "interruptTurn") {
-        return async (threadId: string): Promise<void> => {
-          if (acknowledged.delete(threadId)) return;
-          await target.interruptTurn(threadId);
-        };
-      }
-      const value = Reflect.get(target, property, receiver) as unknown;
-      return typeof value === "function" ? value.bind(target) : value;
-    }
-  }) as AgentBackend;
-  return {
-    backend,
-    acknowledge: async (threadId) => {
-      await client.interruptTurn(threadId);
-      acknowledged.add(threadId);
-    },
-    clear: (threadId) => {
-      acknowledged.delete(threadId);
-    }
-  };
 }
 
 /** PwrSnap's approval decision union → the kit's neutral decision. PwrSnap
@@ -457,7 +431,6 @@ export async function buildChatSurface(
   });
   const resolved = await resolveChatBackend(config, deps);
   const client: AgentBackend = resolved.client;
-  const controllerBackend = acknowledgedInterruptBackend(client);
 
   // The kit controller swallows `thread_settings` into a private map and only
   // forwards `model` on recordUsage. Tee the backend's settings events into
@@ -541,8 +514,8 @@ export async function buildChatSurface(
     ...(config.messageStatusFor !== undefined ? { messageStatusFor: config.messageStatusFor } : {})
   });
 
-  controller = new ChatThreadController<Settings>({
-    client: controllerBackend.backend,
+  const sessionController = new PwrSnapChatSessionController<Settings>({
+    client,
     store: adapter,
     readSettings: config.readSettings,
     broadcast,
@@ -591,17 +564,14 @@ export async function buildChatSurface(
     ...(config.model !== undefined ? { model: config.model } : {}),
     logger: toAgentKitLogger(config.loggerScope)
   });
-  acknowledgedInterrupts.set(controller, async (threadId) => {
-    // First call the original backend directly so its rejection propagates.
-    // Then let the kit perform its local finalization while its otherwise
-    // duplicate backend call consumes the one-shot acknowledgement above.
-    await controllerBackend.acknowledge(threadId);
-    try {
-      await controller.interrupt(threadId);
-    } finally {
-      controllerBackend.clear(threadId);
-    }
-  });
+  controller = sessionController;
+  // The PwrSnap controller already waits for and propagates backend
+  // cancellation acknowledgement before finalizing the partial assistant
+  // message. Reuse that truthful operation for #489's archive/approval
+  // quiescence seam instead of wrapping the backend a second time.
+  acknowledgedInterrupts.set(controller, (threadId) =>
+    sessionController.interruptAcknowledged(threadId)
+  );
   controller.wire();
 
   const dispose = async (): Promise<void> => {

@@ -270,12 +270,27 @@ describe("makeChatBroadcast", () => {
   it("message_committed → messageCommitted with a converted ChatMessage", () => {
     const { send, broadcast } = capture();
     broadcast({
+      type: "thread_updated",
+      thread: {
+        threadId: "t1",
+        name: "Chat",
+        createdAt: "a",
+        modifiedAt: "b",
+        anchorId: null,
+        archived: false,
+        pinned: false,
+        lastMessagePreview: "",
+        status: { kind: "streaming", turnId: "turn_1" }
+      }
+    });
+    broadcast({
       type: "message_committed",
       threadId: "t1",
       message: { id: "m1", role: "assistant", text: "done", createdAt: 1 }
     });
     expect(send).toHaveBeenCalledWith(EVENT_CHANNELS.libraryChatMessageCommitted, {
       threadId: "t1",
+      turnId: "turn_1",
       message: expect.objectContaining({
         id: "m1",
         role: "assistant",
@@ -325,6 +340,69 @@ describe("makeChatBroadcast", () => {
     expect(send).toHaveBeenCalledWith(EVENT_CHANNELS.libraryChatMessageCommitted, {
       threadId: "t1",
       message: expect.objectContaining({ id: "m-failed", status: "failed" })
+    });
+  });
+
+  it("does not attach a turn id to user or unassociated commits", () => {
+    const { send, broadcast } = capture();
+    broadcast({
+      type: "message_committed",
+      threadId: "t1",
+      message: { id: "m-user", role: "user", text: "hello" }
+    });
+    broadcast({
+      type: "message_committed",
+      threadId: "t2",
+      message: { id: "m-assistant", role: "assistant", text: "failed to start" }
+    });
+    expect(send).toHaveBeenNthCalledWith(1, EVENT_CHANNELS.libraryChatMessageCommitted, {
+      threadId: "t1",
+      message: expect.objectContaining({ id: "m-user" })
+    });
+    expect(send).toHaveBeenNthCalledWith(2, EVENT_CHANNELS.libraryChatMessageCommitted, {
+      threadId: "t2",
+      message: expect.objectContaining({ id: "m-assistant" })
+    });
+  });
+
+  it("a late tool event cannot replace the current commit turn association", () => {
+    const { send, broadcast } = capture();
+    broadcast({
+      type: "thread_updated",
+      thread: {
+        threadId: "t1",
+        name: "Chat",
+        createdAt: "a",
+        modifiedAt: "b",
+        anchorId: null,
+        archived: false,
+        pinned: false,
+        lastMessagePreview: "",
+        status: { kind: "streaming", turnId: "turn-new" }
+      }
+    });
+    broadcast({
+      type: "tool_call",
+      threadId: "t1",
+      turnId: "turn-old",
+      toolCall: {
+        id: "late-tool",
+        name: "library_search",
+        kind: "search",
+        label: "Late search",
+        status: "completed"
+      }
+    });
+    broadcast({
+      type: "message_committed",
+      threadId: "t1",
+      message: { id: "m-new", role: "assistant", text: "new answer" }
+    });
+
+    expect(send).toHaveBeenLastCalledWith(EVENT_CHANNELS.libraryChatMessageCommitted, {
+      threadId: "t1",
+      turnId: "turn-new",
+      message: expect.objectContaining({ id: "m-new" })
     });
   });
 

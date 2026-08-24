@@ -150,10 +150,9 @@ export function toLibraryThreadView(
  *  but no per-message lifecycle `status` and no PwrSnap content-block union.
  *  PwrSnap's renderer narrows on `content[]` blocks + `status`. We:
  *   • wrap the message's flat `text` in a single `{ kind: "text" }` block,
- *   • default `status` to "complete" — the kit no longer threads a
- *     failed/interrupted status onto the persisted assistant message (live
- *     turn state is conveyed by the `thread_updated` status + the
- *     `turn_interrupted` event, which the renderer already reacts to),
+ *   • default `status` to "complete" — the shared terminal-lifecycle adapter
+ *     widens this mapping when authoritative failed/interrupted status is
+ *     available,
  *   • stamp `createdAt` from the kit's epoch-ms field (or now() as a floor).
  *
  *  Tool-call / tool-result content blocks were only ever produced by
@@ -186,9 +185,20 @@ export function makeChatBroadcast(
   send: ChatBroadcast,
   options: ChatEventAdapterOptions = {}
 ): KitChatBroadcast {
+  // `message_committed` in agent-client 0.8.2 omits turnId. Retain only the
+  // current association so panels can correlate a zero-delta assistant
+  // commit with the Stop/terminal event that produced it. This is an
+  // interrupt-specific compatibility seam; lifecycle status is annotated by
+  // the shared terminal-status work.
+  const activeTurnByThread = new Map<string, string>();
   return (event: ChatControllerEvent): void => {
     switch (event.type) {
       case "thread_updated": {
+        if (event.thread.status.kind === "streaming") {
+          activeTurnByThread.set(event.thread.threadId, event.thread.status.turnId);
+        } else if (event.thread.status.kind === "idle") {
+          activeTurnByThread.delete(event.thread.threadId);
+        }
         const base = toLibraryThreadView(event.thread, options.fixedThreadConfig);
         const thread = options.decorateThread?.(base) ?? base;
         options.observeThread?.(thread);
@@ -197,6 +207,7 @@ export function makeChatBroadcast(
         return;
       }
       case "stream_delta":
+        activeTurnByThread.set(event.threadId, event.turnId);
         if (options.shouldSend?.(event.threadId) === false) return;
         send(channels.streamDelta, {
           threadId: event.threadId,
@@ -217,10 +228,15 @@ export function makeChatBroadcast(
         });
         return;
       case "message_committed": {
+        const turnId =
+          event.message.role === "assistant"
+            ? activeTurnByThread.get(event.threadId)
+            : undefined;
         try {
           if (options.shouldSend?.(event.threadId) !== false) {
             send(channels.messageCommitted, {
               threadId: event.threadId,
+              ...(turnId !== undefined ? { turnId } : {}),
               message: toChatMessage(
                 event.message,
                 options.messageStatusFor?.(event) ?? "complete"
@@ -235,6 +251,9 @@ export function makeChatBroadcast(
         return;
       }
       case "turn_interrupted":
+        if (activeTurnByThread.get(event.threadId) === event.turnId) {
+          activeTurnByThread.delete(event.threadId);
+        }
         if (options.shouldSend?.(event.threadId) === false) return;
         // The only path that interrupts a turn in PwrSnap is the user verb
         // (`codex:*Chat:interrupt`), so the reason is always user-initiated.

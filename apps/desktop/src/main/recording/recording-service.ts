@@ -42,6 +42,7 @@ import {
   setRecordingState
 } from "./recording-state";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
+import { planWindowsFfmpegCapture } from "./windows-ffmpeg-capture";
 
 const log = getMainLogger("pwrsnap:recording-service");
 
@@ -119,6 +120,14 @@ function publishRecordingFailure(input: {
 function matchingFailedSession(sessionId: string): boolean {
   const state = getRecordingState();
   return state.phase === "failed" && state.sessionId === sessionId;
+}
+
+function assertNormalRecordingMutationAllowed(): void {
+  const state = getRecordingState();
+  if (state.phase === "failed") throw new Error("failure_action_required");
+  if (state.phase === "stopping" || state.phase === "processing") {
+    throw new Error("finalization_in_progress");
+  }
 }
 
 function matchingRetryableFailedSession(sessionId: string): boolean {
@@ -311,8 +320,8 @@ class NativeRecorderService implements RecordingService {
   private readonly cancellingSessions = new Set<string>();
   private countdownDelay: CountdownDelay | null = null;
   /** Resolves after stopping/processing reaches ready or failed. App shutdown
-   * and stale close/cancel actions join this instead of invalidating durable
-   * source adoption or metadata persistence. */
+   * joins this instead of invalidating durable source adoption or metadata
+   * persistence; normal Cancel/Restart are rejected while it is present. */
   private finalizationSettled: Promise<void> | null = null;
 
   isActive(): boolean {
@@ -320,6 +329,20 @@ class NativeRecorderService implements RecordingService {
   }
 
   async start(opts: StartOptions): Promise<{ sessionId: string }> {
+    return this.startSession(opts, null);
+  }
+
+  private async startSession(
+    opts: StartOptions,
+    retryingFailedSessionId: string | null
+  ): Promise<{ sessionId: string }> {
+    const current = getRecordingState();
+    if (
+      current.phase === "failed" &&
+      current.sessionId !== retryingFailedSessionId
+    ) {
+      throw new Error("failure_action_required");
+    }
     if (isRecordingActive() || this.sessionId !== null || this.child !== null) {
       throw new Error("already_recording");
     }
@@ -664,6 +687,7 @@ class NativeRecorderService implements RecordingService {
    * of cleanup.
    */
   async restart(): Promise<{ sessionId: string }> {
+    assertNormalRecordingMutationAllowed();
     if (this.subject === null || this.capabilities === null) {
       throw new Error("not_recording");
     }
@@ -679,7 +703,7 @@ class NativeRecorderService implements RecordingService {
       throw new Error("failure_not_retryable");
     }
     const options = snapshotStartOptions(this.retryOptions);
-    return this.start(options);
+    return this.startSession(options, sessionId);
   }
 
   async dismissFailure(sessionId: string): Promise<void> {
@@ -700,6 +724,7 @@ class NativeRecorderService implements RecordingService {
   }
 
   async cancel(): Promise<void> {
+    assertNormalRecordingMutationAllowed();
     return this.cancelSession(false);
   }
 
@@ -710,9 +735,10 @@ class NativeRecorderService implements RecordingService {
   private async cancelSession(cleanupFailedSession: boolean): Promise<void> {
     const finalizationSettled = this.finalizationSettled;
     if (finalizationSettled !== null) {
-      // Once Stop has begun, the recorder output is being finalized. Cancel,
-      // controller close, and app shutdown must wait for that durable outcome;
-      // clearing the session would make persistence fail its generation guard.
+      // Once Stop has begun, clearing the session would make persistence fail
+      // its generation guard. Normal Cancel/Restart reject; app shutdown joins
+      // the durable outcome before Electron continues quitting.
+      if (!cleanupFailedSession) throw new Error("finalization_in_progress");
       await finalizationSettled;
       return;
     }
@@ -723,7 +749,7 @@ class NativeRecorderService implements RecordingService {
     const sessionId = this.sessionId;
     const child = this.child;
     if (getRecordingState().phase === "failed" && !cleanupFailedSession) {
-      return;
+      throw new Error("failure_action_required");
     }
     if (sessionId === null) {
       // A terminal failure whose process already exited deliberately clears
@@ -1048,6 +1074,9 @@ class WindowsFfmpegRecorderService implements RecordingService {
   private child: ChildProcessWithoutNullStreams | null = null;
   private sessionId: string | null = null;
   private subject: RecordingSubject | null = null;
+  /** Raw request snapshot. `undefined` intentionally preserves the default-on
+   * cursor behavior across Restart, while Retry uses retryOptions below. */
+  private captureCursor: boolean | undefined = undefined;
   private outputPath: string | null = null;
   private startedAtMs = 0;
   private stopRequested = false;
@@ -1065,6 +1094,20 @@ class WindowsFfmpegRecorderService implements RecordingService {
   }
 
   async start(opts: StartOptions): Promise<{ sessionId: string }> {
+    return this.startSession(opts, null);
+  }
+
+  private async startSession(
+    opts: StartOptions,
+    retryingFailedSessionId: string | null
+  ): Promise<{ sessionId: string }> {
+    const current = getRecordingState();
+    if (
+      current.phase === "failed" &&
+      current.sessionId !== retryingFailedSessionId
+    ) {
+      throw new Error("failure_action_required");
+    }
     if (isRecordingActive() || this.sessionId !== null || this.child !== null) {
       throw new Error("already_recording");
     }
@@ -1079,6 +1122,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     this.retryOptions = options;
     this.sessionId = sessionId;
     this.subject = options.subject;
+    this.captureCursor = options.captureCursor;
     this.outputPath = null;
     this.child = null;
     this.exitPromise = null;
@@ -1143,11 +1187,20 @@ class WindowsFfmpegRecorderService implements RecordingService {
       await this.assertSessionRunnable(sessionId);
       setRecordingState({ phase: "starting", sessionId, rect: hudRect, displayId });
 
-      const args = windowsFfmpegCaptureArgs(captureRect, outputPath);
-      log.info("starting Windows ffmpeg recorder", { ffmpeg, captureRect, outputPath });
+      const capturePlan = planWindowsFfmpegCapture({
+        rect: captureRect,
+        outputPath,
+        captureCursor: options.captureCursor
+      });
+      log.info("starting Windows ffmpeg recorder", {
+        ffmpeg,
+        captureRect,
+        outputPath,
+        captureCursor: capturePlan.effectiveCaptureCursor
+      });
       let child: ChildProcessWithoutNullStreams;
       try {
-        child = spawn(ffmpeg, args, {
+        child = spawn(ffmpeg, capturePlan.args, {
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true
         });
@@ -1307,14 +1360,17 @@ class WindowsFfmpegRecorderService implements RecordingService {
   }
 
   async restart(): Promise<{ sessionId: string }> {
+    assertNormalRecordingMutationAllowed();
     if (this.subject === null) {
       throw new Error("not_recording");
     }
     const subject = this.subject;
+    const captureCursor = this.captureCursor;
     await this.cancel();
     return this.start({
       subject,
       capabilities: { systemAudio: false, microphone: false },
+      captureCursor,
       countdownSeconds: 3
     });
   }
@@ -1324,7 +1380,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
       throw new Error("failure_not_retryable");
     }
     const options = snapshotStartOptions(this.retryOptions);
-    return this.start(options);
+    return this.startSession(options, sessionId);
   }
 
   async dismissFailure(sessionId: string): Promise<void> {
@@ -1341,6 +1397,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
   }
 
   async cancel(): Promise<void> {
+    assertNormalRecordingMutationAllowed();
     return this.cancelSession(false);
   }
 
@@ -1351,13 +1408,14 @@ class WindowsFfmpegRecorderService implements RecordingService {
   private async cancelSession(cleanupFailedSession: boolean): Promise<void> {
     const finalizationSettled = this.finalizationSettled;
     if (finalizationSettled !== null) {
+      if (!cleanupFailedSession) throw new Error("finalization_in_progress");
       await finalizationSettled;
       return;
     }
     const sessionId = this.sessionId;
     const child = this.child;
     if (getRecordingState().phase === "failed" && !cleanupFailedSession) {
-      return;
+      throw new Error("failure_action_required");
     }
     if (sessionId === null) {
       if (getRecordingState().phase === "failed") return;
@@ -1502,6 +1560,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     this.child = null;
     this.sessionId = null;
     this.subject = null;
+    this.captureCursor = undefined;
     this.outputPath = null;
     this.startedAtMs = 0;
     this.stopRequested = false;
@@ -1541,42 +1600,6 @@ async function waitForWindowsFfmpegExit(
   return await waitWithTimeout<
     { code: number | null; signal: NodeJS.Signals | null } | null
   >(exitPromise, timeoutMs, () => null);
-}
-
-function windowsFfmpegCaptureArgs(
-  rect: { x: number; y: number; w: number; h: number },
-  outputPath: string
-): string[] {
-  return [
-    "-hide_banner",
-    "-loglevel",
-    "warning",
-    "-y",
-    "-f",
-    "gdigrab",
-    "-framerate",
-    "30",
-    "-offset_x",
-    String(rect.x),
-    "-offset_y",
-    String(rect.y),
-    "-video_size",
-    `${rect.w}x${rect.h}`,
-    "-draw_mouse",
-    "1",
-    "-i",
-    "desktop",
-    "-an",
-    "-c:v",
-    "h264_mf",
-    "-b:v",
-    "8M",
-    "-pix_fmt",
-    "yuv420p",
-    "-movflags",
-    "+faststart",
-    outputPath
-  ];
 }
 
 function windowsFfmpegFailureMessage(

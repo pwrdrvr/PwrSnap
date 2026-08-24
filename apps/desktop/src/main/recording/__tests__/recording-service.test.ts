@@ -958,6 +958,14 @@ describe("Native recorder post-start failure", () => {
     expect(child.killCalled).toBe(false);
     expect(service.isActive()).toBe(false);
 
+    await expect(
+      service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 })
+    ).rejects.toThrow("failure_action_required");
+    await expect(service.cancel()).rejects.toThrow("failure_action_required");
+    await expect(service.restart()).rejects.toThrow("failure_action_required");
+    expect(mocks.spawnedChildren).toHaveLength(1);
+    expect(mocks.currentState).toEqual(failed);
+
     await vi.advanceTimersByTimeAsync(60_000);
     expect(mocks.currentState).toEqual(failed);
   });
@@ -1289,10 +1297,11 @@ describe("Windows FFmpeg recorder", () => {
     await expect(service.stop()).rejects.toThrow("no_active_recording");
     expect(mocks.currentState.phase).toBe("failed");
 
-    // A queued normal Cancel from the old HUD cannot erase the durable
-    // failure. App shutdown uses its distinct cleanup path and retries the
-    // bounded process barrier without exposing a replacement recording.
-    await service.cancel();
+    // A queued normal Cancel from the old HUD is rejected: only the
+    // session-scoped failure commands own this state. App shutdown uses its
+    // distinct cleanup path and retries the bounded process barrier.
+    await expect(service.cancel()).rejects.toThrow("failure_action_required");
+    await expect(service.restart()).rejects.toThrow("failure_action_required");
     expect(mocks.currentState).toMatchObject({
       phase: "failed",
       sessionId: started.sessionId,
@@ -1382,7 +1391,7 @@ describe("Windows FFmpeg recorder", () => {
     await cancelPromise;
   });
 
-  test("shutdown and stale close-cancel wait for processing to persist", async () => {
+  test("shutdown waits for processing while normal close-cancel is rejected", async () => {
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
     const sourceStore = await import("../../persistence/source-store");
@@ -1413,16 +1422,13 @@ describe("Windows FFmpeg recorder", () => {
     });
 
     let shutdownSettled = false;
-    let closeCancelSettled = false;
     const shutdownPromise = service.shutdown().then(() => {
       shutdownSettled = true;
     });
-    const closeCancelPromise = service.cancel().then(() => {
-      closeCancelSettled = true;
-    });
+    await expect(service.cancel()).rejects.toThrow("finalization_in_progress");
+    await expect(service.restart()).rejects.toThrow("finalization_in_progress");
     await vi.advanceTimersByTimeAsync(0);
     expect(shutdownSettled).toBe(false);
-    expect(closeCancelSettled).toBe(false);
     expect(mocks.currentState).toMatchObject({
       phase: "processing",
       sessionId: first.sessionId
@@ -1441,7 +1447,6 @@ describe("Windows FFmpeg recorder", () => {
     });
     await expect(stopPromise).resolves.toEqual({ captureId: "cap-1" });
     await shutdownPromise;
-    await closeCancelPromise;
 
     expect(vi.mocked(sourceStore.statSource)).toHaveBeenCalledWith(
       "/fake/captures/src-finalized-on-quit.mp4"
@@ -1478,6 +1483,11 @@ describe("Windows FFmpeg recorder", () => {
       code: "recorder_exited"
     });
 
+    await expect(
+      service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 })
+    ).rejects.toThrow("failure_action_required");
+    expect(mocks.spawnedChildren).toHaveLength(1);
+
     const retried = await service.retry(first.sessionId);
     expect(retried.sessionId).not.toBe(first.sessionId);
     expect(mocks.spawnedChildren).toHaveLength(2);
@@ -1485,6 +1495,8 @@ describe("Windows FFmpeg recorder", () => {
       phase: "recording",
       sessionId: retried.sessionId
     });
+    expect(argAfter(mocks.spawnCalls[0]!.args, "-draw_mouse")).toBe("0");
+    expect(argAfter(mocks.spawnCalls[1]!.args, "-draw_mouse")).toBe("0");
 
     await expect(service.dismissFailure(first.sessionId)).rejects.toThrow("stale_failure");
     expect(service.isActive()).toBe(true);
@@ -1495,6 +1507,35 @@ describe("Windows FFmpeg recorder", () => {
     await cancelPromise;
     await vi.advanceTimersByTimeAsync(0);
     expect(mocks.currentState).toEqual({ phase: "idle" });
+  });
+
+  test("normal Windows Restart preserves the cursor snapshot", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    await service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      captureCursor: false,
+      countdownSeconds: 0
+    });
+    const restartPromise = service.restart();
+    await vi.advanceTimersByTimeAsync(3_100);
+    const restarted = await restartPromise;
+
+    expect(restarted.sessionId).not.toBe("");
+    expect(mocks.spawnCalls).toHaveLength(2);
+    expect(argAfter(mocks.spawnCalls[0]!.args, "-draw_mouse")).toBe("0");
+    expect(argAfter(mocks.spawnCalls[1]!.args, "-draw_mouse")).toBe("0");
+
+    const cancelPromise = service.cancel();
+    await vi.advanceTimersByTimeAsync(0);
+    await cancelPromise;
   });
 
   test("failed retry can be dismissed and clears its process and retry snapshot", async () => {

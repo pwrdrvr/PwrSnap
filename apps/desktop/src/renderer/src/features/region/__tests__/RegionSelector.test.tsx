@@ -28,6 +28,7 @@ type ModePayload = {
   screenUrl?: string;
   intent?: "snap" | "video";
   cursor?: boolean;
+  quickCaptureAction?: "ask" | "snap" | "record";
 };
 type SnapshotPayload = {
   invocationId: number;
@@ -135,7 +136,8 @@ afterEach(async () => {
     "windowListCount",
     "windowListReady",
     "windowListState",
-    "snapshotState"
+    "snapshotState",
+    "choosing"
   ]) {
     delete document.body.dataset[k];
   }
@@ -241,6 +243,45 @@ async function drawRect(): Promise<void> {
   await mouseDown(100, 100);
   await mouseMove(300, 300);
   await mouseUp(300, 300);
+}
+
+async function openAskChooser(cursor = true): Promise<void> {
+  await emitMode({
+    invocationId: DEFAULT_INVOCATION_ID + 1,
+    mode: "auto",
+    intent: "snap",
+    cursor,
+    quickCaptureAction: "ask"
+  });
+  await drawRect();
+  await keyDown("Enter");
+}
+
+function chooser(): HTMLElement {
+  const el = container?.querySelector('[data-testid="region-capture-chooser"]');
+  if (!(el instanceof HTMLElement)) throw new Error("capture chooser not found");
+  return el;
+}
+
+function choiceButton(action: "snap" | "record"): HTMLButtonElement {
+  const el = container?.querySelector(`[data-testid="region-capture-choice-${action}"]`);
+  if (!(el instanceof HTMLButtonElement)) throw new Error(`${action} choice not found`);
+  return el;
+}
+
+function cursorToggleButton(): HTMLButtonElement {
+  const el = container?.querySelector('[data-testid="region-capture-cursor-toggle"]');
+  if (!(el instanceof HTMLButtonElement)) throw new Error("record cursor toggle not found");
+  return el;
+}
+
+async function clickButton(button: HTMLButtonElement): Promise<void> {
+  await act(async () => {
+    button.dispatchEvent(
+      new MouseEvent("mousedown", { button: 0, bubbles: true, cancelable: true })
+    );
+    button.click();
+  });
 }
 
 function regionHintText(): string {
@@ -860,5 +901,163 @@ describe("U6 — snapshot and paint feedback", () => {
       invocationId: 41,
       mark: "shell-painted"
     });
+  });
+});
+
+describe("U7 — Quick Capture Snap-vs-Record chooser", () => {
+  test("anchors a named modal chooser, focuses Snap, and uses platform labels", async () => {
+    window.pwrsnapApi!.platform = "darwin";
+    await mount();
+    await openAskChooser();
+
+    const dialog = chooser();
+    expect(dialog.getAttribute("role")).toBe("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.getAttribute("aria-labelledby")).toBe("region-capture-chooser-title");
+    expect(dialog.querySelector('[role="group"]')?.getAttribute("aria-label")).toBe(
+      "Capture action"
+    );
+    expect(choiceButton("snap").getAttribute("aria-label")).toBe("Snap (Return)");
+    expect(choiceButton("record").getAttribute("aria-label")).toBe("Record (R)");
+    expect(cursorToggleButton().getAttribute("aria-label")).toBe(
+      "Record cursor: on (C)"
+    );
+    expect(document.activeElement).toBe(choiceButton("snap"));
+    expect(dialog.style.left).toBe("60px");
+    expect(dialog.style.top).toBe("310px");
+
+    await emitMode({
+      invocationId: DEFAULT_INVOCATION_ID + 2,
+      mode: "auto",
+      quickCaptureAction: "ask"
+    });
+    window.pwrsnapApi!.platform = "win32";
+    await drawRect();
+    await keyDown("Enter");
+    expect(choiceButton("snap").getAttribute("aria-label")).toBe("Snap (Enter)");
+  });
+
+  test("Snap click submits the frozen selection exactly once", async () => {
+    await mount();
+    await openAskChooser();
+    await clickButton(choiceButton("snap"));
+    await emitKey("Enter");
+
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith({
+      ok: true,
+      invocationId: DEFAULT_INVOCATION_ID + 1,
+      rect: { x: 100, y: 100, w: 200, h: 200 },
+      displayId: 0,
+      action: "snap"
+    });
+  });
+
+  test("R records with the persisted cursor default and C toggles it off once", async () => {
+    await mount();
+    await openAskChooser(true);
+
+    await keyDown("c");
+    await emitKey("C");
+    expect(cursorToggleButton().getAttribute("aria-pressed")).toBe("false");
+    expect(cursorToggleButton().getAttribute("aria-label")).toBe(
+      "Record cursor: off (C)"
+    );
+    await keyDown("r");
+
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: true,
+        invocationId: DEFAULT_INVOCATION_ID + 1,
+        action: "record",
+        captureCursor: false
+      })
+    );
+  });
+
+  test("mouse toggles cursor from Off to On before Record", async () => {
+    await mount();
+    await openAskChooser(false);
+    expect(cursorToggleButton().getAttribute("aria-pressed")).toBe("false");
+    await clickButton(cursorToggleButton());
+    expect(cursorToggleButton().getAttribute("aria-pressed")).toBe("true");
+    await clickButton(choiceButton("record"));
+
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "record", captureCursor: true })
+    );
+  });
+
+  test("Escape cancels the chooser without persisting and duplicate paths are inert", async () => {
+    await mount();
+    await openAskChooser();
+    await keyDown("Escape");
+    await emitKey("Escape");
+    await emitKey("r");
+
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith({
+      ok: false,
+      invocationId: DEFAULT_INVOCATION_ID + 1
+    });
+  });
+
+  test.each([
+    ["snap", "snap"],
+    ["record", "record"]
+  ] as const)("fixed %s policy bypasses the chooser", async (policy, action) => {
+    await mount();
+    await emitMode({
+      invocationId: DEFAULT_INVOCATION_ID + 3,
+      mode: "auto",
+      quickCaptureAction: policy,
+      cursor: false
+    });
+    await drawRect();
+    await keyDown("Enter");
+
+    expect(container?.querySelector('[data-testid="region-capture-chooser"]')).toBeNull();
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        invocationId: DEFAULT_INVOCATION_ID + 3,
+        action,
+        ...(action === "record" ? { captureCursor: false } : {})
+      })
+    );
+  });
+
+  test("dedupes the Return that opens Ask so a deliberate later Return chooses Snap", async () => {
+    await mount();
+    await openAskChooser();
+    await emitKey("Enter");
+    expect(submitRegion).not.toHaveBeenCalled();
+    await delay(ESC_GUARD_WAIT_MS);
+    await emitKey("Enter");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "snap" })
+    );
+  });
+
+  test("late window-list delivery cannot mutate the frozen chooser selection", async () => {
+    await mount();
+    await openAskChooser();
+    const frozen = rectStyle();
+    const frozenTop = chooser().style.top;
+
+    await emitSnapshot({
+      invocationId: DEFAULT_INVOCATION_ID + 1,
+      status: "ready",
+      windows: [],
+      displayBounds: { width: window.innerWidth, height: window.innerHeight },
+      cursor: { x: 0, y: 0 }
+    });
+    expect(rectStyle()).toEqual(frozen);
+    expect(chooser().style.top).toBe(frozenTop);
+    await clickButton(choiceButton("record"));
+    expect(submitRegion).toHaveBeenCalledWith(
+      expect.objectContaining({ rect: { x: 100, y: 100, w: 200, h: 200 } })
+    );
   });
 });

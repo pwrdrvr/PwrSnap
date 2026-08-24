@@ -199,6 +199,9 @@ describe("startRecordingFromSelection", () => {
     expect(mocks.setFloatOverState.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.hideSelector.mock.invocationCallOrder[0]!
     );
+    expect(mocks.hideSelector.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.dispatch.mock.invocationCallOrder[0]!
+    );
   });
 
   test("routes a free selection as a region and falls back to the video cursor default", async () => {
@@ -235,6 +238,7 @@ describe("startRecordingFromSelection", () => {
     );
     expect(mocks.hideSelector).toHaveBeenCalledTimes(1);
     expect(mocks.releaseSnapshot).toHaveBeenCalledTimes(1);
+    expect(mocks.setFloatOverState).toHaveBeenCalledWith({ kind: "cancel" });
   });
 
   test("returns a recording dispatch error while cleaning selector ownership exactly once", async () => {
@@ -255,6 +259,28 @@ describe("startRecordingFromSelection", () => {
     expect(mocks.hideSelector).toHaveBeenCalledTimes(1);
     expect(mocks.releaseSnapshot).toHaveBeenCalledTimes(1);
     expect(mocks.logWarn).toHaveBeenCalledTimes(1);
+    expect(mocks.setFloatOverState).toHaveBeenCalledWith({ kind: "cancel" });
+  });
+
+  test("parks the idle Float-Over when recording start is cancelled", async () => {
+    const cancelled = {
+      ok: false as const,
+      error: {
+        kind: "recording" as const,
+        code: "cancelled",
+        message: "Recording cancelled."
+      }
+    };
+    mocks.dispatch.mockResolvedValue(cancelled);
+
+    await expect(
+      startRecordingFromSelection(committedSelection(), recordingSettings())
+    ).resolves.toBe(cancelled);
+
+    expect(mocks.setFloatOverState).toHaveBeenCalledWith({ kind: "cancel" });
+    expect(mocks.hideSelector).toHaveBeenCalledTimes(1);
+    expect(mocks.releaseSnapshot).toHaveBeenCalledTimes(1);
+    expect(mocks.logWarn).not.toHaveBeenCalled();
   });
 
   test("cleans selector ownership exactly once when recording dispatch throws", async () => {
@@ -268,5 +294,6 @@ describe("startRecordingFromSelection", () => {
     expect(mocks.hideSelector).toHaveBeenCalledTimes(1);
     expect(mocks.releaseSnapshot).toHaveBeenCalledTimes(1);
     expect(mocks.releaseSnapshot).toHaveBeenCalledWith("frozen-snapshot-1");
+    expect(mocks.setFloatOverState).toHaveBeenCalledWith({ kind: "cancel" });
   });
 });

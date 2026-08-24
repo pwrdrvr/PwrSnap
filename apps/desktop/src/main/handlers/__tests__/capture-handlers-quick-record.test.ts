@@ -19,7 +19,8 @@ const selection = {
   displayId: 7,
   screenSnapshotPath: "/tmp/frozen.png",
   screenSnapshotId: "snapshot-7",
-  previousAppPid: 42
+  previousAppPid: 42,
+  captureCursor: false
 };
 
 vi.mock("electron", () => ({
@@ -157,7 +158,7 @@ describe("capture:interactive Quick Capture recording route", () => {
     expect(mocks.startRecording).toHaveBeenCalledWith(
       selection,
       expect.objectContaining({
-        recording: expect.objectContaining({ quickCaptureAction: "ask" })
+        quickCaptureAction: "ask"
       })
     );
     expect(mocks.captureRegion).not.toHaveBeenCalled();
@@ -238,8 +239,8 @@ describe("capture:interactive Quick Capture recording route", () => {
     expect(duplicate).toEqual(
       err({
         kind: "capture",
-        code: "selector_busy",
-        message: "another capture selector is already active"
+        code: "capture_in_progress",
+        message: "An interactive capture is already in progress."
       })
     );
     expect(mocks.hideSelector).not.toHaveBeenCalled();

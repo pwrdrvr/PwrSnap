@@ -20,6 +20,10 @@ describe("interactive capture session production wiring", () => {
       new URL("../handlers/capture-handlers.ts", import.meta.url),
       "utf8"
     );
+    const recordSelectionSource = readFileSync(
+      new URL("../capture/record-selection.ts", import.meta.url),
+      "utf8"
+    );
 
     const imageHotkey = sourceBetween(
       indexSource,
@@ -62,24 +66,21 @@ describe("interactive capture session production wiring", () => {
     expect(video.indexOf("const settings = cachedRecordingSettings")).toBeLessThan(
       video.indexOf("await pickRegion(")
     );
-    expect(occurrences(video, "withInteractiveSelectionCleanup({")).toBe(1);
     const selectionCall = video.indexOf("await pickRegion(");
-    const deferredStorageGate = video.indexOf(
-      'if (process.platform !== "darwin")',
-      selectionCall
-    );
     expect(selectionCall).toBeGreaterThanOrEqual(0);
-    expect(deferredStorageGate).toBeGreaterThan(selectionCall);
-    expect(video.indexOf("withInteractiveSelectionCleanup({")).toBeLessThan(
-      video.indexOf("await ensureCapturesDirReady()", video.indexOf("const { screenSnapshotId"))
+    expect(occurrences(video, "startRecordingFromSelection(selection, settings)")).toBe(1);
+    expect(selectionCall).toBeLessThan(
+      video.indexOf("startRecordingFromSelection(selection, settings)")
     );
-    expect(occurrences(video, "selectionCleanup.hideSelector()")).toBe(1);
-    expect(occurrences(video, "selectionCleanup.releaseSnapshot()")).toBe(1);
-    expect(video.indexOf("selectionCleanup.hideSelector()")).toBeLessThan(
-      video.indexOf('bus.dispatch(\n    "recording:start"')
+    expect(occurrences(video, "withInteractiveSelectionCleanup({")).toBe(0);
+    expect(occurrences(recordSelectionSource, "withInteractiveSelectionCleanup({")).toBe(1);
+    expect(occurrences(recordSelectionSource, "selectionCleanup.hideSelector()")).toBe(1);
+    expect(occurrences(recordSelectionSource, "selectionCleanup.releaseSnapshot()")).toBe(1);
+    expect(recordSelectionSource.indexOf('setFloatOverState({ kind: "cancel" })')).toBeLessThan(
+      recordSelectionSource.indexOf("selectionCleanup.hideSelector()")
     );
-    expect(deferredStorageGate).toBeLessThan(
-      video.indexOf("selectionCleanup.hideSelector()")
+    expect(recordSelectionSource.indexOf("selectionCleanup.hideSelector()")).toBeLessThan(
+      recordSelectionSource.indexOf('bus.dispatch(\n      "recording:start"')
     );
     const darwinStorageGate = video.indexOf('if (process.platform === "darwin")');
     expect(darwinStorageGate).toBeGreaterThanOrEqual(0);

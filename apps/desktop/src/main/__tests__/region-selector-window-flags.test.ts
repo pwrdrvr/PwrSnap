@@ -1249,6 +1249,88 @@ describe("region-selector — snapshot-paint gate before show()", () => {
   });
 });
 
+describe("region-selector — chooser policy and terminal ownership", () => {
+  test("forwards policy and chooser keys while retaining the snapshot until one Record result", async () => {
+    const { globalShortcut } = await import("electron");
+    vi.mocked(globalShortcut.register).mockClear();
+    vi.mocked(globalShortcut.unregister).mockClear();
+    const { hideSelector, pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({
+      mode: "auto",
+      keepPwrSnapChrome: true,
+      intent: "snap",
+      cursorDefault: true,
+      quickCaptureAction: "ask"
+    });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.webContents.send).toHaveBeenCalledWith(
+        "region-selector:mode",
+        expect.objectContaining({
+          invocationId: 1,
+          mode: "auto",
+          intent: "snap",
+          cursor: true,
+          quickCaptureAction: "ask"
+        })
+      );
+    });
+    expect(globalShortcut.register).toHaveBeenCalledWith("R", expect.any(Function));
+    expect(globalShortcut.register).toHaveBeenCalledWith("C", expect.any(Function));
+    const cursorShortcut = vi.mocked(globalShortcut.register).mock.calls.find(
+      ([accelerator]) => accelerator === "C"
+    )?.[1] as (() => void) | undefined;
+    cursorShortcut?.();
+    expect(constructed[0]?.webContents.send).toHaveBeenCalledWith(
+      "region-selector:key",
+      { key: "c" }
+    );
+    expect(screenSnapshotMocks.releaseSnapshot).not.toHaveBeenCalled();
+
+    const committed = {
+      ok: true,
+      invocationId: 1,
+      rect: { x: 10, y: 20, w: 300, h: 200 },
+      displayId: 1,
+      action: "record",
+      captureCursor: false
+    };
+    ipcListeners.get("region-selector:result")?.({}, committed);
+    ipcListeners.get("region-selector:result")?.({}, { ...committed, action: "snap" });
+
+    await expect(pick).resolves.toMatchObject({
+      ok: true,
+      action: "record",
+      captureCursor: false,
+      rect: committed.rect,
+      displayId: 1,
+      screenSnapshotId: "snapshot-1"
+    });
+    expect(screenSnapshotMocks.releaseSnapshot).not.toHaveBeenCalled();
+    expect(globalShortcut.unregister).toHaveBeenCalledWith("R");
+    expect(globalShortcut.unregister).toHaveBeenCalledWith("C");
+
+    hideSelector();
+    hideSelector();
+    expect(screenSnapshotMocks.releaseSnapshot).not.toHaveBeenCalled();
+  });
+
+  test("treats an older renderer result without action as the historical Snap path", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ mode: "region", keepPwrSnapChrome: true });
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalledTimes(1));
+
+    ipcListeners.get("region-selector:result")?.({}, {
+      ok: true,
+      invocationId: 1,
+      rect: { x: 1, y: 2, w: 30, h: 40 },
+      displayId: 1
+    });
+
+    await expect(pick).resolves.toMatchObject({ ok: true, action: "snap" });
+  });
+});
+
 describe("region-selector — active lifecycle teardown", () => {
   test("close settles during a deferred capture and releases the late snapshot once", async () => {
     let resolveCapture!: (value: {
@@ -1386,9 +1468,11 @@ describe("region-selector — active lifecycle teardown", () => {
 
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "destroyed" });
     expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledTimes(1);
-    expect(globalShortcut.unregister).toHaveBeenCalledTimes(2);
+    expect(globalShortcut.unregister).toHaveBeenCalledTimes(4);
     expect(globalShortcut.unregister).toHaveBeenCalledWith("Escape");
     expect(globalShortcut.unregister).toHaveBeenCalledWith("Return");
+    expect(globalShortcut.unregister).toHaveBeenCalledWith("R");
+    expect(globalShortcut.unregister).toHaveBeenCalledWith("C");
   });
 
   test("display removal settles the active selector once and releases its snapshot once", async () => {

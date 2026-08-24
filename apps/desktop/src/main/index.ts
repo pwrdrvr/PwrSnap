@@ -224,7 +224,7 @@ import {
   singleInstanceOpenFileHandoffData,
   wireOpenFileHandler
 } from "./open-file";
-import { reconcilePendingPwrsnapImports } from "./import/pwrsnap-import-service";
+import { reconcileAndSweepPwrsnapImportsOnBoot } from "./import/pwrsnap-import-service";
 import { broadcastCapturesChanged } from "./events";
 
 const APP_NAME = "PwrSnap";
@@ -2103,7 +2103,7 @@ export function bootstrapApp(): void {
       // Filesystem publication and SQLite cannot share one transaction. Resume
       // any durable cross-device import intent asynchronously; import service
       // serialization makes queued OS opens wait behind this recovery pass.
-      void reconcilePendingPwrsnapImports()
+      void reconcileAndSweepPwrsnapImportsOnBoot()
         .then((recoveredIds) => {
           if (recoveredIds.length > 0) broadcastCapturesChanged(recoveredIds);
         })

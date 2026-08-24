@@ -33,6 +33,7 @@ import { bus } from "./command-bus";
 import { broadcastCapturesChanged } from "./events";
 import { normalizePwrsnapOpenPath } from "./import/pwrsnap-open-path";
 import { InvalidPwrsnapOpenPathError } from "./import/pwrsnap-open-path";
+import { safeImportFailureLog } from "./import/pwrsnap-import-error-report";
 import { importPwrsnapBundle } from "./import/pwrsnap-import-service";
 import { PwrsnapImportError } from "./import/pwrsnap-import-reader";
 import { getMainLogger } from "./log";
@@ -245,11 +246,7 @@ async function openPwrsnapInEditor(bundlePath: string): Promise<void> {
     }
     await openCaptureInLibrary(outcome.record.id);
   } catch (cause) {
-    log.warn("open-file: bundle import failed", {
-      bundlePath: normalizedPath,
-      code: cause instanceof PwrsnapImportError ? cause.code : undefined,
-      message: cause instanceof Error ? cause.message : String(cause)
-    });
+    log.warn("open-file: bundle import failed", safeImportFailureLog(cause));
     notifyImportFailure(cause);
   }
 }

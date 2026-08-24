@@ -279,6 +279,104 @@ describe("validatePwrsnapBundleBytes", () => {
     });
   });
 
+  test("rejects a rejected root and a live raster disconnected by rejected ancestry", async () => {
+    const fixture = await validBundle();
+    const rejectedRoot = fixture.document.layers.map((layer) =>
+      layer.id === "root000000000001"
+        ? { ...layer, rejected_at: "2026-08-23T12:01:00.000Z" }
+        : layer
+    );
+    const rejectedRootBytes = await packBundleV2({
+      manifest: fixture.manifest,
+      document: { ...fixture.document, layers: rejectedRoot },
+      sources: new Map([
+        [fixture.sourceASha, fixture.sourceA],
+        [fixture.sourceBSha, fixture.sourceB]
+      ]),
+      layerBytes: new Map()
+    });
+    await expect(validatePwrsnapBundleBytes(rejectedRootBytes)).rejects.toMatchObject({
+      code: "live_layer_root_invalid"
+    });
+
+    const createdAt = fixture.document.layers[0]!.created_at;
+    const rejectedGroupId = "rejectedgroup001";
+    const disconnectedLayers = [
+      ...fixture.document.layers.map((layer) =>
+        layer.id === "base000000000001"
+          ? { ...layer, parent_id: rejectedGroupId }
+          : layer
+      ),
+      {
+        id: rejectedGroupId,
+        parent_id: "root000000000001",
+        kind: "group" as const,
+        collapsed: false,
+        name: "Rejected parent",
+        visible: true,
+        locked: false,
+        opacity: 1,
+        blend_mode: "normal" as const,
+        transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+        z_index: 0,
+        source: "user" as const,
+        ai_run_id: null,
+        applied_at: createdAt,
+        rejected_at: "2026-08-23T12:01:00.000Z",
+        superseded_by: null,
+        created_at: createdAt
+      }
+    ];
+    const disconnectedBytes = await packBundleV2({
+      manifest: fixture.manifest,
+      document: { ...fixture.document, layers: disconnectedLayers },
+      sources: new Map([
+        [fixture.sourceASha, fixture.sourceA],
+        [fixture.sourceBSha, fixture.sourceB]
+      ]),
+      layerBytes: new Map()
+    });
+    await expect(validatePwrsnapBundleBytes(disconnectedBytes)).rejects.toMatchObject({
+      code: "live_layer_disconnected"
+    });
+  });
+
+  test("rejects dangling layer AI metadata and orphan embedded sources", async () => {
+    const fixture = await validBundle();
+    const danglingLayers = fixture.document.layers.map((layer) =>
+      layer.id === "vector0000000001"
+        ? { ...layer, ai_run_id: "missing-ai-run" }
+        : layer
+    );
+    const danglingBytes = await packBundleV2({
+      manifest: fixture.manifest,
+      document: { ...fixture.document, layers: danglingLayers },
+      sources: new Map([
+        [fixture.sourceASha, fixture.sourceA],
+        [fixture.sourceBSha, fixture.sourceB]
+      ]),
+      layerBytes: new Map()
+    });
+    await expect(validatePwrsnapBundleBytes(danglingBytes)).rejects.toMatchObject({
+      code: "layer_ai_run_dangling"
+    });
+
+    const orphan = await png(3, 2, "#00ffffff");
+    const orphanBytes = await packBundleV2({
+      manifest: fixture.manifest,
+      document: fixture.document,
+      sources: new Map([
+        [fixture.sourceASha, fixture.sourceA],
+        [fixture.sourceBSha, fixture.sourceB],
+        [sha(orphan), orphan]
+      ]),
+      layerBytes: new Map()
+    });
+    await expect(validatePwrsnapBundleBytes(orphanBytes)).rejects.toMatchObject({
+      code: "source_asset_orphan"
+    });
+  });
+
   test("binds each opaque layer payload to its canonical layer identity", async () => {
     const fixture = await validBundle();
     const firstPayload = await png(7, 5, "#123456ff");

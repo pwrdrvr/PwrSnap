@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { lstat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import type { Dirent } from "node:fs";
+import { lstat, readdir } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 import type { BundleDocumentV2, BundleLayerNode, CaptureRecord } from "@pwrsnap/shared";
 
@@ -11,7 +12,7 @@ import { getCaptureById, insertCapture } from "../persistence/captures-repo";
 import { getDb } from "../persistence/db";
 import { acceptDescription, addUserTag } from "../persistence/enrichment-repo";
 import { insertImportedLayerTreeForCapture } from "../persistence/layers-repo";
-import { getDataRoot } from "../persistence/paths";
+import { getDataRoot, getDurableCapturesRoots } from "../persistence/paths";
 import { sourceBufferHasAlpha } from "../persistence/source-alpha";
 import {
   projectPortableDescription,
@@ -19,6 +20,7 @@ import {
 } from "../persistence/bundle-carrier-repo";
 import {
   closeImportArtifact,
+  importIdentityFromStat,
   type ImportStageArtifact,
   type PublishedImportArtifact,
   publishStagedImport,
@@ -222,6 +224,15 @@ export async function reconcilePendingPwrsnapImports(): Promise<string[]> {
   return serializeImportOperation(reconcilePendingPwrsnapImportsExclusive);
 }
 
+/** Boot-only recovery plus cleanup of private temp names from interrupted imports. */
+export async function reconcileAndSweepPwrsnapImportsOnBoot(): Promise<string[]> {
+  return serializeImportOperation(async () => {
+    const recovered = await reconcilePendingPwrsnapImportsExclusive();
+    await sweepOrphanedImportTempsExclusive();
+    return recovered;
+  });
+}
+
 async function reconcilePendingPwrsnapImportsExclusive(): Promise<string[]> {
   const recoveredCaptureIds: string[] = [];
   for (const intent of listPwrsnapImportIntents()) {
@@ -348,6 +359,69 @@ async function reconcilePendingPwrsnapImportsExclusive(): Promise<string[]> {
   return recoveredCaptureIds;
 }
 
+const IMPORT_UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const STAGE_TEMP_NAME = new RegExp(`^\\.pwrsnap-import-${IMPORT_UUID}\\.tmp$`, "iu");
+const DESTINATION_TEMP_NAME = new RegExp(
+  `^\\..+\\.pwrsnap\\.import-${IMPORT_UUID}\\.tmp$`,
+  "iu"
+);
+
+async function sweepOrphanedImportTempsExclusive(): Promise<void> {
+  // Visible final .pwrsnap files are intentionally NOT pattern-swept: users may
+  // place their own bundles in the library directory. A published-without-row
+  // final is adopted only through its durable intent above, which proves app
+  // ownership and exact bytes.
+  const remainingIntents = listPwrsnapImportIntents();
+  const protectedStages = new Set(remainingIntents.map((intent) => intent.stagePath));
+  await sweepImportTempDirectory(
+    join(getDataRoot(), "import-staging"),
+    STAGE_TEMP_NAME,
+    protectedStages
+  );
+
+  const roots = new Set(getDurableCapturesRoots().map((root) => root.path));
+  for (const intent of remainingIntents) roots.add(dirname(intent.bundlePath));
+  // Probe one TCC-gated root at a time so a pending Documents prompt consumes
+  // at most one libuv worker and cannot starve unrelated main-process I/O.
+  for (const root of roots) {
+    await sweepImportTempDirectory(root, DESTINATION_TEMP_NAME, new Set());
+  }
+}
+
+async function sweepImportTempDirectory(
+  directory: string,
+  namePattern: RegExp,
+  protectedPaths: ReadonlySet<string>
+): Promise<void> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (cause) {
+    if (isErrno(cause, "ENOENT")) return;
+    log.warn("bundle import sweep: directory could not be inspected", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !namePattern.test(entry.name)) continue;
+    const path = join(directory, entry.name);
+    if (protectedPaths.has(path)) continue;
+    try {
+      const stat = await lstat(path, { bigint: true });
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      await removeImportArtifact({
+        path,
+        identity: importIdentityFromStat(stat)
+      });
+    } catch (cause) {
+      log.warn("bundle import sweep: temp cleanup deferred", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  }
+}
+
 function serializeImportOperation<T>(operation: () => Promise<T>): Promise<T> {
   const result = importQueue.catch(() => undefined).then(operation);
   importQueue = result.then(
@@ -415,14 +489,15 @@ async function recordMatchesContent(record: CaptureRecord, expectedDigest: strin
   }
   try {
     const local = await readAndValidatePwrsnapBundle(record.bundle_path);
-    const dbProjectionMatchesBundle =
+    // The DB may legitimately be ahead of its durable bundle while the normal
+    // repack debounce is pending or after a repack attempt failed. The clicked
+    // file is still this capture's owned logical bundle; importing a second row
+    // would fork stale content. Identity + logical bundle content are enough to
+    // open the live row, while its newer DB projection remains authoritative.
+    return (
       local.manifest.capture_id === record.id &&
-      local.manifest.canvas_dimensions.width_px === record.width_px &&
-      local.manifest.canvas_dimensions.height_px === record.height_px &&
-      local.baseSourceSha256 === record.sha256 &&
-      local.document.edits_version === record.bundle_edits_version &&
-      record.edits_version === record.bundle_edits_version;
-    return dbProjectionMatchesBundle && local.contentDigest === expectedDigest;
+      local.contentDigest === expectedDigest
+    );
   } catch (cause) {
     log.warn("bundle import: local collision candidate could not be verified", {
       captureId: record.id,

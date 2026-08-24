@@ -530,6 +530,13 @@ function validateLayerGraph(layers: readonly BundleLayerNode[]): void {
   if (roots.length !== 1 || roots[0]?.kind !== "group") {
     throw corrupt("layer_root_invalid", "The layer document must have one root group.");
   }
+  const root = roots[0]!;
+  if (!isLiveLayer(root)) {
+    throw corrupt(
+      "live_layer_root_invalid",
+      "The layer document must have one live root group."
+    );
+  }
 
   for (const layer of layers) {
     assertLayerNumbersBounded(layer);
@@ -560,6 +567,25 @@ function validateLayerGraph(layers: readonly BundleLayerNode[]): void {
       const next = byId.get(current.parent_id);
       if (next === undefined) break;
       current = next;
+    }
+    if (isLiveLayer(layer)) {
+      let liveCurrent = layer;
+      while (liveCurrent.parent_id !== null) {
+        const liveParent = byId.get(liveCurrent.parent_id);
+        if (liveParent === undefined || !isLiveLayer(liveParent)) {
+          throw corrupt(
+            "live_layer_disconnected",
+            "A live layer is disconnected from the live root group."
+          );
+        }
+        liveCurrent = liveParent;
+      }
+      if (liveCurrent.id !== root.id) {
+        throw corrupt(
+          "live_layer_disconnected",
+          "A live layer is disconnected from the live root group."
+        );
+      }
     }
 
     const seenReplacements = new Set<string>([layer.id]);
@@ -626,6 +652,14 @@ function validateAiRunIds(document: BundleDocument): void {
     }
     ids.add(run.id);
   }
+  for (const layer of document.layers) {
+    if (layer.ai_run_id !== null && !ids.has(layer.ai_run_id)) {
+      throw corrupt(
+        "layer_ai_run_dangling",
+        "A layer references missing AI metadata."
+      );
+    }
+  }
 }
 
 function validateLayerAssets(
@@ -635,6 +669,7 @@ function validateLayerAssets(
   layerBytes: ReadonlyMap<string, Buffer>
 ): void {
   const ids = new Set(layers.map((layer) => layer.id));
+  const referencedSources = new Set<string>();
   for (const id of layerBytes.keys()) {
     if (!ids.has(id)) {
       throw corrupt("layer_asset_orphan", "A layer payload has no matching layer record.");
@@ -643,6 +678,7 @@ function validateLayerAssets(
   for (const layer of layers) {
     if (layer.kind !== "raster") continue;
     const sha = layer.source_ref.sha256;
+    referencedSources.add(sha);
     const info = sourceInfo.get(sha);
     if (!sources.has(sha) || info === undefined) {
       throw corrupt("source_missing", "A raster layer references a missing source image.");
@@ -654,6 +690,14 @@ function validateLayerAssets(
       throw corrupt(
         "source_dimensions_mismatch",
         "A raster layer's dimensions do not match its source image."
+      );
+    }
+  }
+  for (const sha of sources.keys()) {
+    if (!referencedSources.has(sha)) {
+      throw corrupt(
+        "source_asset_orphan",
+        "The bundle contains an embedded source with no matching raster layer."
       );
     }
   }
@@ -677,6 +721,14 @@ function selectBaseSource(layers: readonly BundleLayerNode[]): string {
   // fallback: document/tree order supplies the base when no unique seeded
   // "Source" name survives (including a renamed base with pasted rasters).
   return live[0]!.source_ref.sha256;
+}
+
+function isLiveLayer(layer: BundleLayerNode): boolean {
+  return (
+    layer.applied_at !== null &&
+    layer.rejected_at === null &&
+    layer.superseded_by === null
+  );
 }
 
 async function inspectImage(

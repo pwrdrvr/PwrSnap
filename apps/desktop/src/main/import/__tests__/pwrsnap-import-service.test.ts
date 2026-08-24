@@ -41,7 +41,13 @@ vi.mock("../../persistence/db", () => ({
 
 vi.mock("../../persistence/paths", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../persistence/paths")>()),
-  getDataRoot: () => mocks.dataRoot
+  getDataRoot: () => mocks.dataRoot,
+  getDurableCapturesRoots: () => [
+    { kind: "override" as const, path: mocks.capturesRoot },
+    ...(mocks.fallbackCapturesRoot.length > 0
+      ? [{ kind: "home" as const, path: mocks.fallbackCapturesRoot }]
+      : [])
+  ]
 }));
 
 vi.mock("../../capture/capture-storage-gate", () => ({
@@ -520,6 +526,42 @@ describe("importPwrsnapBundle", () => {
     ).toBe(rowsBefore.count);
   });
 
+  test.each([
+    ["debounced repack is still pending", "dirtyduplicate01", 10],
+    ["the latest repack failed", "dirtyduplicate02", 11]
+  ])(
+    "opens its owned logical bundle when %s",
+    async (_scenario, captureId, editsVersion) => {
+      const fixture = await makeBundle({
+        captureId,
+        filename: `${captureId}.png`,
+        color: "#aa3300ff",
+        description: "Owned stale checkpoint"
+      });
+      const sourcePath = await writeExternal(`${captureId}.pwrsnap`, fixture.bytes);
+      const { importPwrsnapBundle } = await import("../pwrsnap-import-service");
+      const first = await importPwrsnapBundle(sourcePath);
+      if (first.status !== "imported") throw new Error("expected first import");
+      mocks.db!
+        .prepare("UPDATE captures SET edits_version = ? WHERE id = ?")
+        .run(editsVersion, captureId);
+
+      const reopened = await importPwrsnapBundle(first.record.bundle_path!);
+
+      expect(reopened).toMatchObject({ status: "duplicate", record: { id: captureId } });
+      expect(
+        (mocks.db!.prepare("SELECT COUNT(*) AS count FROM captures").get() as {
+          count: number;
+        }).count
+      ).toBe(1);
+      expect(
+        mocks.db!
+          .prepare("SELECT edits_version, bundle_edits_version FROM captures WHERE id = ?")
+          .get(captureId)
+      ).toEqual({ edits_version: editsVersion, bundle_edits_version: 9 });
+    }
+  );
+
   test("imports a conflicting capture ID under one deterministic new ID and remaps colliding layers", async () => {
     const original = await makeBundle({
       captureId: "collisioncap0001",
@@ -719,6 +761,21 @@ describe("importPwrsnapBundle", () => {
     markPwrsnapImportPublished(intent.id, published.identity);
     await closeImportArtifact(stage);
     await removeImportArtifact(stage);
+    const orphanStage = join(
+      mocks.dataRoot,
+      "import-staging",
+      ".pwrsnap-import-11111111-2222-4333-8444-555555555555.tmp"
+    );
+    const innocentStage = join(mocks.dataRoot, "import-staging", "keep-me.txt");
+    const orphanDestinationTemp = join(
+      mocks.capturesRoot,
+      ".orphan.pwrsnap.import-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.tmp"
+    );
+    const innocentDestination = join(mocks.capturesRoot, ".keep-import.tmp");
+    await fs.writeFile(orphanStage, "orphan stage");
+    await fs.writeFile(innocentStage, "not an import temp");
+    await fs.writeFile(orphanDestinationTemp, "orphan destination temp");
+    await fs.writeFile(innocentDestination, "not an import temp");
 
     expect(
       (mocks.db!.prepare("SELECT COUNT(*) AS count FROM captures").get() as { count: number }).count
@@ -727,12 +784,19 @@ describe("importPwrsnapBundle", () => {
       (mocks.db!.prepare("SELECT COUNT(*) AS count FROM pwrsnap_import_intents").get() as { count: number }).count
     ).toBe(1);
 
-    const { importPwrsnapBundle, reconcilePendingPwrsnapImports } = await import(
-      "../pwrsnap-import-service"
+    const {
+      importPwrsnapBundle,
+      reconcileAndSweepPwrsnapImportsOnBoot
+    } = await import("../pwrsnap-import-service");
+    await expect(reconcileAndSweepPwrsnapImportsOnBoot()).resolves.toEqual([captureId]);
+    await expect(fs.lstat(orphanStage)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.lstat(orphanDestinationTemp)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.readFile(innocentStage, "utf8")).resolves.toBe(
+      "not an import temp"
     );
-    await expect(reconcilePendingPwrsnapImports()).resolves.toEqual([
-      captureId
-    ]);
+    await expect(fs.readFile(innocentDestination, "utf8")).resolves.toBe(
+      "not an import temp"
+    );
     expect(
       (mocks.db!.prepare("SELECT COUNT(*) AS count FROM pwrsnap_import_intents").get() as { count: number }).count
     ).toBe(0);

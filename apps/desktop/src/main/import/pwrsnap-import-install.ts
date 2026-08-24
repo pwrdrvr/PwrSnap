@@ -82,7 +82,7 @@ export async function writeImportStage(
     const artifact: ImportStageArtifact = {
       path: stagePath,
       handle,
-      identity: identityFromStat(stat),
+      identity: importIdentityFromStat(stat),
       sha256: createHash("sha256").update(contents).digest("hex"),
       size: contents.length
     };
@@ -190,7 +190,7 @@ export async function removeImportArtifact(
     if (isErrno(cause, "ENOENT")) return "missing";
     throw cause;
   }
-  if (!sameIdentity(artifact.identity, identityFromStat(stat))) {
+  if (!sameIdentity(artifact.identity, importIdentityFromStat(stat))) {
     throw new PwrsnapImportError(
       "storage",
       "cleanup_identity_changed",
@@ -254,7 +254,7 @@ async function copyStageFromHandle(
     const local: ImportStageArtifact = {
       path: localPath,
       handle,
-      identity: identityFromStat(stat),
+      identity: importIdentityFromStat(stat),
       sha256: hash.digest("hex"),
       size: position
     };
@@ -284,9 +284,9 @@ async function assertPublishedIdentity(
     fileOps.lstat(source.path, { bigint: true }),
     fileOps.lstat(destinationPath, { bigint: true })
   ]);
-  const handleIdentity = identityFromStat(handleStat);
-  const sourceIdentity = identityFromStat(sourceStat);
-  const destinationIdentity = identityFromStat(destinationStat);
+  const handleIdentity = importIdentityFromStat(handleStat);
+  const sourceIdentity = importIdentityFromStat(sourceStat);
+  const destinationIdentity = importIdentityFromStat(destinationStat);
   if (
     !sameIdentity(source.identity, handleIdentity) ||
     !sameIdentity(source.identity, sourceIdentity) ||
@@ -310,8 +310,8 @@ async function assertPathMatchesArtifact(
     fileOps.lstat(artifact.path, { bigint: true })
   ]);
   if (
-    !sameIdentity(artifact.identity, identityFromStat(handleStat)) ||
-    !sameIdentity(artifact.identity, identityFromStat(pathStat))
+    !sameIdentity(artifact.identity, importIdentityFromStat(handleStat)) ||
+    !sameIdentity(artifact.identity, importIdentityFromStat(pathStat))
   ) {
     throw new PwrsnapImportError(
       "storage",
@@ -321,7 +321,7 @@ async function assertPathMatchesArtifact(
   }
 }
 
-function identityFromStat(stat: BigIntStats): ImportFileIdentity {
+export function importIdentityFromStat(stat: BigIntStats): ImportFileIdentity {
   return {
     dev: stat.dev.toString(),
     ino: stat.ino.toString(),

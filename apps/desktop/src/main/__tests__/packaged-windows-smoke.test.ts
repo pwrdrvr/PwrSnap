@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   PACKAGED_WINDOWS_SMOKE_ENV,
+  PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV,
   PACKAGED_WINDOWS_SMOKE_REPORT_NAME,
+  parseBundledWindowListEvidence,
   packagedRendererProbeSource,
   preflightPackagedWindowsSmokeRequest,
   probeSharpNativeModule,
@@ -76,6 +78,7 @@ async function makeLayout(): Promise<TestLayout> {
     reportPath: join(userData, PACKAGED_WINDOWS_SMOKE_REPORT_NAME),
     env: {
       [PACKAGED_WINDOWS_SMOKE_ENV]: "1",
+      [PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV]: "1",
       PWRSNAP_PACKAGED_WINDOWS_SMOKE_ROOT: smokeRoot,
       PWRSNAP_E2E: "1",
       PWRSNAP_E2E_SKIP_REGION_PREWARM: "1",
@@ -218,6 +221,19 @@ function makeDependencies(
       error: vi.fn()
     },
     probeSharp: vi.fn(async () => sharpEvidence),
+    probeBundledWindowList: vi.fn(async () => ({
+      executablePath: join(layout.resourcesPath, "PwrSnapWindowList.exe"),
+      jsonEnvelope: true as const,
+      ownWindowDetected: true as const,
+      windowCount: 1,
+      frontmostPid: 123,
+      frontmostBundleId: join(layout.smokeRoot, "install", "PwrSnap.exe")
+    })),
+    probeBundledFfmpeg: vi.fn(async () => ({
+      executablePath: join(layout.resourcesPath, "PwrSnapFFmpeg.exe"),
+      versionLine: "ffmpeg version 8.1.1-pwrsnap",
+      pngDecode: true as const
+    })),
     rendererTimeoutMs: 100,
     rendererExecuteTimeoutMs: 50,
     rendererPollIntervalMs: 1,
@@ -265,6 +281,16 @@ describe("packaged Windows smoke", () => {
         dependencies.env = { ...dependencies.env, PWRSNAP_E2E: undefined };
       },
       message: /PWRSNAP_E2E=1/
+    },
+    {
+      name: "an invalid FFmpeg requirement flag",
+      mutate: (dependencies: PackagedWindowsSmokeDependencies) => {
+        dependencies.env = {
+          ...dependencies.env,
+          [PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV]: "true"
+        };
+      },
+      message: /must be unset or exactly 1/
     },
     {
       name: "a data root outside the smoke root",
@@ -450,6 +476,28 @@ describe("packaged Windows smoke", () => {
     });
   });
 
+  test("accepts window-list evidence only when the helper finds this installed window", () => {
+    const installedExe = join(layout.smokeRoot, "install", "PwrSnap.exe");
+    const output = JSON.stringify({
+      windows: [
+        { pid: 1234, bundleId: installedExe, title: "PwrSnap", bounds: {} }
+      ],
+      frontmostPid: 1234,
+      frontmostBundleId: installedExe
+    });
+
+    expect(parseBundledWindowListEvidence(output, installedExe, 1234)).toEqual({
+      jsonEnvelope: true,
+      ownWindowDetected: true,
+      windowCount: 1,
+      frontmostPid: 1234,
+      frontmostBundleId: installedExe
+    });
+    expect(() => parseBundledWindowListEvidence(output, installedExe, 9999)).toThrow(
+      /did not enumerate the installed PwrSnap window/
+    );
+  });
+
   test("resolves Sharp's optional Windows slice from Sharp's package context", async () => {
     const source = await readFile(join(import.meta.dirname, "..", "packaged-windows-smoke.ts"), "utf8");
     expect(source).toContain("const sharpRequire = createRequire(sharpEntryPath)");
@@ -504,6 +552,21 @@ describe("packaged Windows smoke", () => {
           databasePath: layout.databasePath
         },
         sharp: sharpEvidence
+      },
+      bundledHelpers: {
+        windowList: {
+          executablePath: join(layout.resourcesPath, "PwrSnapWindowList.exe"),
+          jsonEnvelope: true,
+          ownWindowDetected: true,
+          windowCount: 1
+        },
+        ffmpeg: {
+          required: true,
+          executed: true,
+          executablePath: join(layout.resourcesPath, "PwrSnapFFmpeg.exe"),
+          versionLine: "ffmpeg version 8.1.1-pwrsnap",
+          pngDecode: true
+        }
       }
     });
     expect(report.isolation).toMatchObject({
@@ -523,8 +586,52 @@ describe("packaged Windows smoke", () => {
       regionPrewarmSkipped: true
     });
     expect(dependencies.probeSharp).toHaveBeenCalledTimes(1);
+    expect(dependencies.probeBundledWindowList).toHaveBeenCalledTimes(1);
+    expect(dependencies.probeBundledFfmpeg).toHaveBeenCalledTimes(1);
     expect(quit).toHaveBeenCalledTimes(1);
     expect((await readdir(layout.userData)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  test("always exercises window-list but permits preview artifacts without bundled FFmpeg", async () => {
+    const probeBundledFfmpeg = vi.fn();
+    const dependencies = makeDependencies(layout, {
+      env: {
+        ...layout.env,
+        [PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV]: undefined
+      },
+      probeBundledFfmpeg
+    });
+
+    await expect(runPackagedWindowsSmokeIfRequested(dependencies)).resolves.toBe(true);
+
+    const report = JSON.parse(
+      await readFile(layout.reportPath, "utf8")
+    ) as PackagedWindowsSmokeReport;
+    expect(report.bundledHelpers.ffmpeg).toEqual({ required: false, executed: false });
+    expect(dependencies.probeBundledWindowList).toHaveBeenCalledTimes(1);
+    expect(probeBundledFfmpeg).not.toHaveBeenCalled();
+  });
+
+  test("records a causal bundled-helper failure phase", async () => {
+    const dependencies = makeDependencies(layout, {
+      probeBundledFfmpeg: vi.fn(async () => {
+        throw new Error("bundled FFmpeg could not decode PNG");
+      })
+    });
+
+    await expect(runPackagedWindowsSmokeIfRequested(dependencies)).resolves.toBe(true);
+
+    const report = JSON.parse(await readFile(layout.reportPath, "utf8")) as {
+      status: string;
+      phase: string;
+      error: { message: string };
+    };
+    expect(report).toMatchObject({
+      status: "failed",
+      phase: "helper:ffmpeg",
+      error: { message: "bundled FFmpeg could not decode PNG" }
+    });
+    expect(dependencies.app.quit).toHaveBeenCalledTimes(1);
   });
 
   test("records a bounded failure and still exits through app.quit", async () => {

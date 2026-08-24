@@ -239,10 +239,11 @@ export type RecordingPermissionStatus =
   | "unknown";
 
 /**
- * Snapshot of all permissions the recording pipeline cares about.
- * Stable shape — the System Permissions page binds against it
- * directly, and the recording preflight reuses the same payload to
- * decide whether to show the in-context permission dialog.
+ * Operational readiness snapshot for the recording pipeline. On a platform
+ * without a preflight API, a capability may use a permissive fallback so the
+ * real operation can decide. Settings must use `permissionEvidence` from
+ * {@link PermissionReadinessReport} before presenting any value as an OS
+ * permission check.
  *
  * `screenRecording` is required for any video. The audio fields are
  * optional capabilities; missing them is a degraded recording, not
@@ -260,21 +261,44 @@ export type RecordingReadiness = {
   fingerprint: string;
 };
 
+export type RecordingPermission = "screen" | "microphone" | "systemAudio";
+
+/**
+ * Evidence available to Settings when it explains an OS permission.
+ * This is deliberately separate from {@link RecordingReadiness}: readiness
+ * may use a permissive fallback on platforms without a preflight API so the
+ * capture pipeline can try the real operation, while Settings must never
+ * present that fallback as proof that an OS check succeeded.
+ */
+export type RecordingPermissionEvidence =
+  | { kind: "os-status"; status: RecordingPermissionStatus }
+  | { kind: "derived"; status: RecordingPermissionStatus }
+  | { kind: "not-inspectable" }
+  | { kind: "unsupported" };
+
+export type RecordingPermissionEvidenceReport = {
+  platform: "darwin" | "win32" | "other";
+  screen: RecordingPermissionEvidence;
+  microphone: RecordingPermissionEvidence;
+  systemAudio: RecordingPermissionEvidence;
+};
+
 /**
  * `permissions:readiness` response. Superset of {@link RecordingReadiness}
- * (the OS-level snapshot) plus PwrSnap's own memory of whether it has ever
+ * plus PwrSnap's own memory of whether it has ever
  * triggered the macOS screen-capture prompt. The System Permissions page
  * needs the flag to choose between offering "Request access" (fires the OS
  * prompt on a fresh install) and "Open System Settings" (once macOS has
  * already recorded a decision and won't re-prompt). See
  * {@link Settings.recording.screenCapturePrompted} for the macOS quirk
- * that makes this necessary.
+ * that makes this necessary. `permissionEvidence` is the presentation-safe
+ * platform model; unlike the operational readiness fields, it records when
+ * an OS status cannot be inspected or the capability is unsupported.
  */
 export type PermissionReadinessReport = RecordingReadiness & {
   screenCapturePrompted: boolean;
+  permissionEvidence: RecordingPermissionEvidenceReport;
 };
-
-export type RecordingPermission = "screen" | "microphone" | "systemAudio";
 
 /** One requested capability that is not currently usable. The main
  * process computes this list from the live readiness snapshot so the
@@ -312,7 +336,6 @@ export type RecordingPermissionAction =
       action: "openSettings" | "continueWithout";
       permission: RecordingPermission;
     };
-
 /**
  * Quality tier for a video export. Mirrors the image `RenderPreset`
  * shape (low / med / high) so the renderer's preset cards feel like
@@ -4086,15 +4109,15 @@ export type Commands = {
 
   // ---- recording (Phase 5 — Fast Video Capture, issue #64) ----
   /**
-   * Resolve current screen/microphone/system-audio readiness without
-   * prompting. The System Permissions page reads this on mount; the
-   * recording preflight reuses the same payload to decide whether to
-   * route through the in-context dialog. Cheap — backed by Electron's
-   * `systemPreferences` + a single async ScreenCaptureKit probe.
+   * Resolve operational recording readiness plus presentation-safe permission
+   * evidence without prompting. On Windows, Electron can inspect the global
+   * desktop-app microphone control but always reports screen capture as
+   * granted; `permissionEvidence` records that distinction so Settings never
+   * presents a synthetic fallback as an OS check.
    */
   "permissions:readiness": { req: Record<string, never>; res: PermissionReadinessReport };
   /**
-   * Trigger an OS-level permission prompt. Microphone uses
+   * Trigger a macOS permission prompt. Microphone uses
    * `askForMediaAccess`. Screen + system-audio issue a real screen-source
    * request (`desktopCapturer.getSources`), which drives the macOS
    * first-grant dialog AND registers PwrSnap in the Privacy pane — this
@@ -4102,15 +4125,17 @@ export type Commands = {
    * `recording.screenCapturePrompted` so the next time around the UI
    * routes to System Settings via `permissions:openSystemSettings` (macOS
    * won't prompt twice). Returns the live status read back after the prompt.
+   * Other platforms do not expose an equivalent request API through this
+   * command, so no prompt or inspection occurs and the status is `unknown`.
    */
   "permissions:request": {
     req: { permission: RecordingPermission };
     res: { status: RecordingPermissionStatus };
   };
   /**
-   * Open System Settings to the right Privacy & Security pane for the
-   * requested permission. Used both from the System Permissions page
-   * (per-row action) and from the recording-time dialog.
+   * Open the platform-owned privacy page for the requested permission. The
+   * permission enum is validated and the URI is selected in main; renderers
+   * cannot supply an arbitrary external URL.
    */
   "permissions:openSystemSettings": {
     req: { permission: RecordingPermission };

@@ -17,8 +17,9 @@
 //   - macOS: a Swift binary `window-list` (full surface — list,
 //     --activate-pid, --capture-window, --extract-app-icon).
 //   - Windows: a C++ binary `window-list.exe`
-//     (native/window-list-win/main.cpp) that implements LIST plus
-//     --extract-app-icon. Window capture and activate-pid remain macOS-only.
+//     (native/window-list-win/main.cpp) that implements LIST,
+//     --activate-pid, and --extract-app-icon. Window capture remains
+//     macOS-only.
 //
 // In dev it lives at `<desktopRoot>/build/native/window-list[.exe]`; in
 // a packaged build it's shipped under `Contents/Resources/
@@ -75,6 +76,11 @@ const DEV_HELPER_NAME =
  */
 function helperSupportsMacSubcommands(): boolean {
   return process.platform === "darwin";
+}
+
+/** Both native helpers can best-effort restore the foreground application. */
+function helperSupportsAppActivation(): boolean {
+  return process.platform === "darwin" || process.platform === "win32";
 }
 
 /** Both native helpers implement app-icon extraction: NSWorkspace on macOS,
@@ -249,13 +255,7 @@ export async function extractAppIcon(
  * has nothing useful to do with the failure either way.
  */
 export async function activateApp(pid: number): Promise<void> {
-  // The Windows C++ helper has no --activate-pid subcommand. Restoring
-  // the previously-frontmost app there would need SetForegroundWindow,
-  // which the OS heavily restricts for background processes — a no-op is
-  // the safe choice and matches the "best-effort, silent on failure"
-  // contract. (After the selector hides, Windows naturally returns
-  // focus to the previously-active window in the common case.)
-  if (!helperSupportsMacSubcommands()) return;
+  if (!helperSupportsAppActivation()) return;
   const helper = resolveHelperPath();
   if (helper === null) return;
   if (!Number.isInteger(pid) || pid <= 0) return;

@@ -20,7 +20,19 @@ const mocks = vi.hoisted(() => ({
   stop: vi.fn(async () => ({ captureId: "capture-1" })),
   guard: vi.fn(async () => null),
   storageGate: vi.fn(async () => null),
-  resizePermissionController: vi.fn(() => true)
+  resizePermissionController: vi.fn(() => true),
+  foregroundEvents: [] as string[],
+  snapshotForeground: vi.fn(async () => {
+    let restored = false;
+    return {
+      pid: 8181,
+      restore: vi.fn(async () => {
+        if (restored) return;
+        restored = true;
+        mocks.foregroundEvents.push("restore-foreground");
+      })
+    };
+  })
 }));
 
 vi.mock("electron", (): Partial<typeof import("electron")> => ({
@@ -71,6 +83,10 @@ vi.mock("../../recording/recording-service", () => ({
 
 vi.mock("../../recording/recording-controller", () => ({
   resizeRecordingPermissionController: mocks.resizePermissionController
+}));
+
+vi.mock("../../recording/recording-foreground", () => ({
+  snapshotRecordingForeground: mocks.snapshotForeground
 }));
 
 vi.mock("../../persistence/captures-repo", () => ({
@@ -149,6 +165,12 @@ beforeEach(() => {
   mocks.guard.mockClear();
   mocks.storageGate.mockClear();
   mocks.resizePermissionController.mockClear();
+  mocks.foregroundEvents.length = 0;
+  mocks.snapshotForeground.mockClear();
+  mocks.start.mockImplementation(async () => {
+    mocks.foregroundEvents.push("service-start");
+    return { sessionId: "session-1" };
+  });
   setRecordingState({ phase: "idle" });
   installCoordinator();
 });
@@ -225,6 +247,11 @@ describe("recording permission command-bus integration", () => {
         capabilities: { microphone: false, systemAudio: false }
       })
     );
+    expect(mocks.snapshotForeground).toHaveBeenCalledTimes(1);
+    expect(mocks.foregroundEvents).toEqual([
+      "restore-foreground",
+      "service-start"
+    ]);
   });
 
   test("recording:start recheck keeps requested mic after access becomes granted", async () => {
@@ -286,6 +313,7 @@ describe("recording permission command-bus integration", () => {
     });
     expect(getRecordingState()).toEqual({ phase: "idle" });
     expect(states.at(-1)).toEqual({ phase: "idle" });
+    expect(mocks.foregroundEvents).toEqual(["restore-foreground"]);
     expect(mocks.start).not.toHaveBeenCalled();
     expect(mocks.cancel).not.toHaveBeenCalled();
   });

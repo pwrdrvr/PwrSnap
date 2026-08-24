@@ -196,7 +196,7 @@ export function RecordingPermissionDialog({
           </div>
         )}
 
-        <div style={footerStyle}>
+        <div data-permission-dialog-actions style={footerStyle}>
           <button
             type="button"
             data-permission-action="recheck"
@@ -350,7 +350,10 @@ function permissionDetail(
 const dialogStyle: ElectronCSSProperties = {
   boxSizing: "border-box",
   width: "100%",
-  overflow: "hidden",
+  maxHeight: "100vh",
+  overflowX: "hidden",
+  overflowY: "auto",
+  overscrollBehavior: "contain",
   borderRadius: 14,
   border: "1px solid rgba(255, 138, 31, 0.42)",
   background: "rgba(0, 0, 0, 0.96)",
@@ -477,5 +480,9 @@ const footerStyle: ElectronCSSProperties = {
   justifyContent: "flex-end",
   gap: 8,
   marginTop: "auto",
+  position: "sticky",
+  bottom: 0,
+  paddingTop: 6,
+  background: "rgba(0, 0, 0, 0.96)",
   WebkitAppRegion: "no-drag"
 };

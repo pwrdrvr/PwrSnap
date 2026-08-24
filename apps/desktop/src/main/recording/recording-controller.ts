@@ -32,19 +32,44 @@ let activePermissionRequestId: string | null = null;
 function ensureWindow(): BrowserWindow {
   if (window !== null && !window.isDestroyed()) return window;
   window = createRecordingControllerWindow();
-  setRecordingPermissionControllerWindowId(window.id);
-  window.on("closed", () => {
+  const created = window;
+  let permissionCancellationDispatched = false;
+  let permissionSurfaceTerminated = false;
+  const cancelPermissionSurfaceOnce = (): void => {
+    if (
+      permissionCancellationDispatched ||
+      getRecordingState().phase !== "permission"
+    ) {
+      return;
+    }
+    permissionCancellationDispatched = true;
+    activePermissionRequestId = null;
+    setRecordingPermissionControllerWindowId(null);
+    void bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+  };
+  const failPermissionSurface = (): void => {
+    if (permissionSurfaceTerminated) return;
+    permissionSurfaceTerminated = true;
+    cancelPermissionSurfaceOnce();
+    if (!created.isDestroyed()) created.destroy();
+  };
+
+  setRecordingPermissionControllerWindowId(created.id);
+  created.webContents.on("render-process-gone", failPermissionSurface);
+  created.webContents.on(
+    "did-fail-load",
+    (_event, _errorCode, _errorDescription, _validatedUrl, isMainFrame) => {
+      if (isMainFrame === false) return;
+      failPermissionSurface();
+    }
+  );
+  created.on("closed", () => {
+    cancelPermissionSurfaceOnce();
     window = null;
     activePermissionRequestId = null;
     setRecordingPermissionControllerWindowId(null);
-    // Permission setup happens before RecordingService owns a session.
-    // Closing this transient decision surface must resolve that broker,
-    // not leave the caller waiting forever.
-    if (getRecordingState().phase === "permission") {
-      void bus.dispatch("recording:cancel", {}, { principal: "ipc" });
-    }
   });
-  window.on("focus", () => {
+  created.on("focus", () => {
     const state = getRecordingState();
     if (
       window === null ||
@@ -59,10 +84,10 @@ function ensureWindow(): BrowserWindow {
     // whole round trip, then restores the decision panel when the user
     // actually comes back to PwrSnap. The renderer's focus listener owns
     // the corresponding readiness recheck.
-    window.setAlwaysOnTop(true, "floating");
-    window.moveTop();
+    created.setAlwaysOnTop(true, "floating");
+    created.moveTop();
   });
-  return window;
+  return created;
 }
 
 /**

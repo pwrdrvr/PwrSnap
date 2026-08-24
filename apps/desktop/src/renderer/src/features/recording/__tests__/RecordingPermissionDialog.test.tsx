@@ -372,4 +372,31 @@ describe("RecordingPermissionDialog", () => {
       req: { requestId: "request-1", width: 1_200, height: 1_600 }
     });
   });
+
+  test("constrained-height content scrolls while decision actions stay reachable", async () => {
+    await render(
+      {
+        ...basePreflight,
+        capabilities: { microphone: true, systemAudio: true },
+        missing: [
+          { permission: "screen", status: "restricted" },
+          { permission: "microphone", status: "restricted" },
+          { permission: "systemAudio", status: "unavailable" }
+        ]
+      },
+      "darwin"
+    );
+
+    const dialog = container?.querySelector<HTMLElement>('[role="dialog"]');
+    const actions = container?.querySelector<HTMLElement>(
+      "[data-permission-dialog-actions]"
+    );
+    expect(dialog?.style.maxHeight).toBe("100vh");
+    expect(dialog?.style.overflowY).toBe("auto");
+    expect(dialog?.style.overscrollBehavior).toBe("contain");
+    expect(actions?.style.position).toBe("sticky");
+    expect(actions?.style.bottom).toBe("0px");
+    expect(actions?.contains(button("recheck"))).toBe(true);
+    expect(actions?.contains(button("cancel"))).toBe(true);
+  });
 });

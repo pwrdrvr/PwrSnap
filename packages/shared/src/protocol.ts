@@ -2238,16 +2238,19 @@ export type Settings = {
      *  `capture:interactive` (mode `"timed"`); unbound by default —
      *  also reachable from the tray. */
     timed: string;
-    /** Video-capture hotkey. Default `⌘⌥C` (Command+Alt/Option+C),
-     *  deliberately NOT `⌘⇧V` — that chord is "Paste and Match
+    /** Video-capture hotkey. macOS defaults to `⌘⌥C`; Windows/Linux
+     *  leave it unbound because Ctrl+Alt is physically AltGr and Windows-logo
+     *  combinations are reserved by the OS. Deliberately NOT `⌘⇧V` —
+     *  that chord is "Paste and Match
      *  Style" in browsers / Slack / Mail / iWork / Notes / etc.
      *  and globalShortcut.register wins system-wide, so binding
      *  ⌘⇧V would steal paste-without-formatting from every app
      *  on the box while PwrSnap is running. */
     videoCapture: string;
     /** Re-pop the most recent capture's float-over toast over the
-     *  screen. Default `⌘⌥⇧F` (mnemonic: Float-over). The three-modifier
-     *  chord keeps it clear of app/OS shortcuts — a 2-modifier default
+     *  screen. macOS defaults to `⌘⌥⇧F`; Windows/Linux leave it unbound
+     *  because Ctrl+Alt is AltGr and Windows-logo combinations are reserved.
+     *  The macOS three-modifier chord keeps it clear of app/OS shortcuts — a 2-modifier default
      *  like ⌘⇧F would shadow "Find in Files" system-wide while PwrSnap
      *  runs. Rebindable/unbindable from Settings → Hotkeys. */
     reshowFloatOver: string;
@@ -2429,10 +2432,9 @@ export type LocalAgentMcpListenerStatus =
   | { state: "stopping" }
   | { state: "failed" };
 
-/** Out-of-the-box global capture hotkeys. Shared so the main-process
- *  `defaultSettings()` and the renderer's Settings → Hotkeys "Reset to
- *  defaults" both read ONE source — they previously duplicated these
- *  values and had to be kept in lock-step by hand. Empty string =
+/** Portable/macOS managed global capture hotkeys. Concrete defaults must be
+ *  obtained through `defaultHotkeysForPlatform` so main and Settings Reset
+ *  share ONE platform-aware source. Empty string =
  *  unbound (main skips registration). Per-field rationale (why ⌘⇧C not
  *  ⌘⇧P; why ⌘⌥C not ⌘⇧V; why three modifiers for re-show) lives on the
  *  `Settings["hotkeys"]` type above; the short version:
@@ -2451,6 +2453,49 @@ export const DEFAULT_HOTKEYS: Settings["hotkeys"] = {
   videoCapture: "CommandOrControl+Alt+C",
   reshowFloatOver: "CommandOrControl+Alt+Shift+F"
 };
+
+/** Platform-specific managed defaults. macOS keeps the established Option
+ * chords. Windows/Linux leave those secondary actions unbound: Ctrl+Alt is
+ * AltGr on international layouts and Windows-logo combinations are reserved
+ * by the OS. Users may still explicitly record a supported Win/Super chord. */
+export function defaultHotkeysForPlatform(
+  platform: import("./shortcut-semantics").ShortcutPlatform
+): Settings["hotkeys"] {
+  if (platform === "darwin") return { ...DEFAULT_HOTKEYS };
+  return {
+    ...DEFAULT_HOTKEYS,
+    videoCapture: "",
+    reshowFloatOver: ""
+  };
+}
+
+export type HotkeySettingKey = keyof Settings["hotkeys"];
+
+export type HotkeyRegistrationFailureCode =
+  | "unsupported"
+  | "duplicate"
+  | "unavailable"
+  | "registration_error";
+
+export type HotkeyRegistrationFailure = {
+  code: HotkeyRegistrationFailureCode;
+  message: string;
+};
+
+/** Runtime ownership of one persisted hotkey. Settings remain authoritative:
+ * an inactive row is never silently cleared merely because the OS rejected
+ * its registration during startup. */
+export type HotkeyRegistrationStatus = {
+  key: HotkeySettingKey;
+  accelerator: string;
+  state: "pending" | "unbound" | "active" | "inactive" | "suspended";
+  failure: HotkeyRegistrationFailure | null;
+};
+
+export type HotkeyRegistrationStatusSnapshot = Record<
+  HotkeySettingKey,
+  HotkeyRegistrationStatus
+>;
 
 // ---- Editor user preferences (Phase 1) ----------------------------------
 
@@ -3829,6 +3874,48 @@ export type Commands = {
   // ---- settings ----
   "settings:read": { req: Record<string, never>; res: Settings };
   "settings:write": { req: SettingsPatch; res: Settings };
+  /** Runtime registration state for every persisted global hotkey. */
+  "settings:hotkeyStatus": {
+    req: Record<string, never>;
+    res: HotkeyRegistrationStatusSnapshot;
+  };
+  /** Retry one inactive persisted binding without rewriting or clearing it. */
+  "settings:retryHotkey": {
+    req: { key: HotkeySettingKey };
+    res: HotkeyRegistrationStatusSnapshot;
+  };
+  /**
+   * Acquire (or refresh) the short-lived main-process lease that releases
+   * PwrSnap-owned native global shortcuts while Settings records a new chord.
+   * The renderer-minted session id plus monotonic generation lets a newly
+   * opened row supersede an older one without delayed begin/end traffic
+   * replacing or ending the current lease.
+   */
+  "settings:beginHotkeyRecording": {
+    req: { sessionId: string; generation: number };
+    res: {
+      sessionId: string;
+      generation: number;
+      accepted: boolean;
+      expiresAt: number;
+    };
+  };
+  /**
+   * Normal renderer cleanup names the exact session and generation. The
+   * bridge-only owner arm is used by the Settings BrowserWindow lifecycle
+   * when its renderer can no longer send cleanup (close, crash, navigation,
+   * or unresponsive).
+   */
+  "settings:endHotkeyRecording": {
+    req:
+      | { sessionId: string; generation: number }
+      | {
+          ownerWindowId: number;
+          ownerDocumentId: string;
+          reason: "window-closed" | "renderer-gone" | "navigation" | "unresponsive";
+        };
+    res: { ended: boolean };
+  };
   /** Open (or focus, if already open) the Settings BrowserWindow. */
   "settings:open": { req: { page?: SettingsPage }; res: void };
   /** Re-run Codex CLI discovery and return the snapshot. `force: false`

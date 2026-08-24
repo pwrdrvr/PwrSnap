@@ -48,6 +48,7 @@ import type {
   SensitiveDataPattern,
   Settings,
   SettingsPatch,
+  ShortcutPlatform,
   TextFontWeight,
   TextToolStyle,
   ToolColor,
@@ -61,6 +62,8 @@ import {
   DEFAULT_CODEX_CAPTION_MODEL,
   DEFAULT_ENRICHMENT_REASONING_EFFORT,
   DEFAULT_HOTKEYS,
+  acceleratorsAreEquivalent,
+  defaultHotkeysForPlatform,
   HOT_CPU_PROFILE_SLOWBURN_THRESHOLD_DEFAULT_PERCENT,
   HOT_CPU_PROFILE_START_DELAY_DEFAULT_MS,
   HOT_CPU_PROFILE_TRIGGER_MODE_DEFAULT,
@@ -88,7 +91,8 @@ import {
   isRedactionStyle,
   inferUpdateSelection,
   isUpdateChannel,
-  isUpdateTrain
+  isUpdateTrain,
+  shortcutPlatformFromString
 } from "@pwrsnap/shared";
 import {
   compareCodexCliVersions,
@@ -107,14 +111,19 @@ const execFile = promisify(execFileCallback);
 const CODEX_TEST_TIMEOUT_MS = 7500;
 const ERROR_MESSAGE_LIMIT = 240;
 const LEGACY_ENRICHMENT_DEFAULT_MODEL = "gpt-5.4-mini";
-const DEFAULTS_MIGRATION_VERSIONS: readonly string[] = ["1.0.0-beta.26"];
-const CURRENT_DEFAULTS_MIGRATION_VERSION = "1.0.0-beta.26";
+const DEFAULTS_MIGRATION_VERSIONS: readonly string[] = [
+  "1.0.0-beta.26",
+  "1.1.0-alpha.5"
+];
+const CURRENT_DEFAULTS_MIGRATION_VERSION = "1.1.0-alpha.5";
 
 type Logger = ReturnType<typeof getMainLogger>;
 
 export type DesktopSettingsServiceConfig = {
   filePath: string;
   logger?: Logger;
+  /** Explicit host shortcut semantics for defaults and managed migrations. */
+  shortcutPlatform?: ShortcutPlatform;
   /** Installed app version used to seed `updates.train` / `updates.channel`
    *  when both keys are absent from the file. Tests pass this explicitly
    *  so inference does not depend on Electron. */
@@ -122,7 +131,32 @@ export type DesktopSettingsServiceConfig = {
   resolveAppVersion?: () => string;
 };
 
-export function defaultSettings(): Settings {
+export type DesktopSettingsWritePreparation = {
+  /** Finalize staged external state after the atomic settings rename lands. */
+  commit(): void;
+  /** Undo staged external state when the settings write fails. */
+  rollback(): void | Promise<void>;
+};
+
+export type DesktopSettingsWriteOptions = {
+  /**
+   * Runs inside the service's serialized write queue, after merge and before
+   * persistence. Used for resources (notably global shortcuts) that must be
+   * proven available before their setting becomes durable.
+   */
+  prepare?: (
+    current: Settings,
+    merged: Settings
+  ) => DesktopSettingsWritePreparation | Promise<DesktopSettingsWritePreparation>;
+};
+
+export type SerializedSettingsOperation<T> = (
+  current: Settings
+) => T | Promise<T>;
+
+export function defaultSettings(
+  shortcutPlatform: ShortcutPlatform = shortcutPlatformFromString(process.platform)
+): Settings {
   return {
     schemaVersion: 1,
     lastDefaultsMigrationVersion: CURRENT_DEFAULTS_MIGRATION_VERSION,
@@ -154,7 +188,7 @@ export function defaultSettings(): Settings {
     // Single source of truth shared with the renderer's "Reset to
     // defaults" button. Rationale for each chord lives on the
     // `DEFAULT_HOTKEYS` declaration in @pwrsnap/shared.
-    hotkeys: { ...DEFAULT_HOTKEYS },
+    hotkeys: defaultHotkeysForPlatform(shortcutPlatform),
     general: {
       developerMode: false,
       hotCpuProfilingEnabled: false,
@@ -344,7 +378,11 @@ function defaultEditorSettings(): EditorSettings {
  *  PwrAgnt's docs/config-file-evolution.md. */
 type ShapeEntry = {
   shape: string;
-  parse(raw: unknown, appVersion: string): Settings | null;
+  parse(
+    raw: unknown,
+    appVersion: string,
+    shortcutPlatform: ShortcutPlatform
+  ): Settings | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -643,10 +681,14 @@ function parseUpdates(
   };
 }
 
-function parseV1(raw: unknown, appVersion = ""): Settings | null {
+function parseV1(
+  raw: unknown,
+  appVersion = "",
+  shortcutPlatform: ShortcutPlatform = shortcutPlatformFromString(process.platform)
+): Settings | null {
   if (!isRecord(raw)) return null;
   if (raw.schemaVersion !== 1) return null;
-  const defaults = defaultSettings();
+  const defaults = defaultSettings(shortcutPlatform);
   const codex = isRecord(raw.codex) ? raw.codex : {};
   const ai = isRecord(raw.ai) ? raw.ai : {};
   const hotkeys = isRecord(raw.hotkeys) ? raw.hotkeys : {};
@@ -667,6 +709,19 @@ function parseV1(raw: unknown, appVersion = ""): Settings | null {
     ? codex.captionModel
     : defaults.codex.captionModel;
   let aiSurfaceDefaults = parseAiSurfaceDefaults(ai.defaults);
+  let parsedHotkeys: Settings["hotkeys"] = {
+    quickCapture: pickString(hotkeys.quickCapture, defaults.hotkeys.quickCapture),
+    region: pickString(hotkeys.region, defaults.hotkeys.region),
+    window: pickString(hotkeys.window, defaults.hotkeys.window),
+    fullScreen: pickString(hotkeys.fullScreen, defaults.hotkeys.fullScreen),
+    allScreens: pickString(hotkeys.allScreens, defaults.hotkeys.allScreens),
+    timed: pickString(hotkeys.timed, defaults.hotkeys.timed),
+    videoCapture: pickString(hotkeys.videoCapture, defaults.hotkeys.videoCapture),
+    reshowFloatOver: pickString(
+      hotkeys.reshowFloatOver,
+      defaults.hotkeys.reshowFloatOver
+    )
+  };
   const storedDefaultsMigrationIndex =
     storedDefaultsMigrationVersion === undefined
       ? -1
@@ -682,6 +737,26 @@ function parseV1(raw: unknown, appVersion = ""): Settings | null {
       const version = DEFAULTS_MIGRATION_VERSIONS[index];
       if (version === "1.0.0-beta.26") {
         aiSurfaceDefaults = migrateEnrichmentDefaultToManagedLuna(aiSurfaceDefaults);
+      }
+      if (version === "1.1.0-alpha.5" && shortcutPlatform !== "darwin") {
+        const platformDefaults = defaultHotkeysForPlatform(shortcutPlatform);
+        parsedHotkeys = {
+          ...parsedHotkeys,
+          videoCapture: acceleratorsAreEquivalent(
+            parsedHotkeys.videoCapture,
+            DEFAULT_HOTKEYS.videoCapture,
+            shortcutPlatform
+          )
+            ? platformDefaults.videoCapture
+            : parsedHotkeys.videoCapture,
+          reshowFloatOver: acceleratorsAreEquivalent(
+            parsedHotkeys.reshowFloatOver,
+            DEFAULT_HOTKEYS.reshowFloatOver,
+            shortcutPlatform
+          )
+            ? platformDefaults.reshowFloatOver
+            : parsedHotkeys.reshowFloatOver
+        };
       }
     }
   }
@@ -732,25 +807,10 @@ function parseV1(raw: unknown, appVersion = ""): Settings | null {
       // agent. No `schemaVersion` bump per the additive convention.
       acp: parseAcpSettings(ai.acp)
     },
-    hotkeys: {
-      quickCapture: pickString(hotkeys.quickCapture, defaults.hotkeys.quickCapture),
-      region: pickString(hotkeys.region, defaults.hotkeys.region),
-      window: pickString(hotkeys.window, defaults.hotkeys.window),
-      // `fullScreen` / `allScreens` / `timed` landed after v1 shipped;
-      // older files won't have them. pickString fills in the current
-      // default ("" = unbound) so the fields are always present in-memory.
-      fullScreen: pickString(hotkeys.fullScreen, defaults.hotkeys.fullScreen),
-      allScreens: pickString(hotkeys.allScreens, defaults.hotkeys.allScreens),
-      timed: pickString(hotkeys.timed, defaults.hotkeys.timed),
-      // `videoCapture` landed after v1 shipped; older files won't have
-      // it. pickString fills in the current default for that case so
-      // the field is always present in-memory.
-      videoCapture: pickString(hotkeys.videoCapture, defaults.hotkeys.videoCapture),
-      // `reshowFloatOver` landed after v1 shipped; older files won't have
-      // it. pickString fills in the current default (⌘⌥⇧F) so the field
-      // is always present in-memory.
-      reshowFloatOver: pickString(hotkeys.reshowFloatOver, defaults.hotkeys.reshowFloatOver)
-    },
+    // Missing fields use the current platform defaults. The managed-default
+    // ledger above migrates only physical matches for historical defaults,
+    // preserving every genuinely customized chord.
+    hotkeys: parsedHotkeys,
     general: {
       // `general.developerMode` and `general.launchAtLogin` landed
       // after v1 shipped; older files won't have them. pickBoolean
@@ -1407,6 +1467,7 @@ export class DesktopSettingsService {
   private readonly filePath: string;
   private readonly log: Logger;
   private readonly resolveAppVersion: () => string;
+  private readonly shortcutPlatform: ShortcutPlatform;
 
   /**
    * Serializes all writes. Read isn't gated through this chain — the
@@ -1436,6 +1497,8 @@ export class DesktopSettingsService {
   constructor(config: DesktopSettingsServiceConfig) {
     this.filePath = config.filePath;
     this.log = config.logger ?? getMainLogger("pwrsnap:settings-service");
+    this.shortcutPlatform =
+      config.shortcutPlatform ?? shortcutPlatformFromString(process.platform);
     this.resolveAppVersion =
       config.resolveAppVersion ??
       (() => config.appVersion ?? "");
@@ -1472,13 +1535,13 @@ export class DesktopSettingsService {
       raw = await readFile(this.filePath, "utf8");
     } catch (cause) {
       if (isNodeError(cause) && cause.code === "ENOENT") {
-        return this.withInferredUpdates(defaultSettings());
+        return this.withInferredUpdates(defaultSettings(this.shortcutPlatform));
       }
       this.log.warn("settings-service: read failed, using defaults", {
         path: this.filePath,
         message: cause instanceof Error ? cause.message : String(cause)
       });
-      return this.withInferredUpdates(defaultSettings());
+      return this.withInferredUpdates(defaultSettings(this.shortcutPlatform));
     }
 
     let parsed: unknown;
@@ -1486,16 +1549,36 @@ export class DesktopSettingsService {
       parsed = JSON.parse(raw);
     } catch (cause) {
       await this.quarantine(`json_parse: ${cause instanceof Error ? cause.message : String(cause)}`);
-      return this.withInferredUpdates(defaultSettings());
+      return this.withInferredUpdates(defaultSettings(this.shortcutPlatform));
     }
 
     for (const entry of SHAPE_CATALOG) {
-      const normalized = entry.parse(parsed, this.currentAppVersion());
+      const normalized = entry.parse(
+        parsed,
+        this.currentAppVersion(),
+        this.shortcutPlatform
+      );
       if (normalized !== null) return normalized;
     }
 
     await this.quarantine("no_shape_matched");
-    return this.withInferredUpdates(defaultSettings());
+    return this.withInferredUpdates(defaultSettings(this.shortcutPlatform));
+  }
+
+  /**
+   * Run an external-state operation under the same serialization baton as
+   * settings writes. This is for mutations whose correctness depends on the
+   * persisted settings snapshot (for example retrying one native global
+   * shortcut): the operation cannot observe or alter staged state in the
+   * middle of another write's prepare → atomic rename → commit sequence.
+   *
+   * The callback must not call `write()` on this service; doing so would try
+   * to acquire the same non-reentrant queue from inside itself.
+   */
+  async withSerializedSettings<T>(
+    operation: SerializedSettingsOperation<T>
+  ): Promise<T> {
+    return this.enqueue(async () => operation(await this.read()));
   }
 
   /**
@@ -1513,11 +1596,35 @@ export class DesktopSettingsService {
    *
    * Returns the merged Settings the caller can echo to renderers.
    */
-  async write(patch: SettingsPatch): Promise<Settings> {
+  async write(
+    patch: SettingsPatch,
+    options: DesktopSettingsWriteOptions = {}
+  ): Promise<Settings> {
     const task = async (): Promise<Settings> => {
       const current = await this.read();
       const merged = mergeSettings(current, patch);
-      await this.atomicWriteJson(merged);
+      const prepared = options.prepare === undefined
+        ? undefined
+        : await options.prepare(current, merged);
+      try {
+        await this.atomicWriteJson(merged);
+      } catch (cause) {
+        if (prepared !== undefined) {
+          try {
+            await prepared.rollback();
+          } catch (rollbackCause) {
+            this.log.error("settings-service: staged write rollback failed", {
+              path: this.filePath,
+              message:
+                rollbackCause instanceof Error
+                  ? rollbackCause.message
+                  : String(rollbackCause)
+            });
+          }
+        }
+        throw cause;
+      }
+      prepared?.commit();
       // Invalidate the Codex discovery cache whenever a write touches
       // `codex.*`. Otherwise the snapshot's `resolvedPath` (computed
       // from `settings.codex.{mode, pinnedPath}` at snapshot time)
@@ -1538,6 +1645,10 @@ export class DesktopSettingsService {
     // without strictly serializing concurrent writes. The caller of
     // `next` still observes any rejection from `task`; only the
     // queue itself swallows it so subsequent writes can proceed.
+    return this.enqueue(task);
+  }
+
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
     const next = this.writeQueue.catch(() => undefined).then(task);
     this.writeQueue = next.catch(() => undefined);
     return next;
@@ -1728,7 +1839,7 @@ export class DesktopSettingsService {
     }
   }
 
-  private async atomicWriteJson(value: Settings): Promise<void> {
+  protected async atomicWriteJson(value: Settings): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
     const tmpPath = `${this.filePath}.tmp`;
     const json = `${JSON.stringify(value, null, 2)}\n`;

@@ -13,6 +13,7 @@ import type {
   Res,
   PwrSnapError,
   Result,
+  ShortcutPlatform,
   VideoPreset
 } from "@pwrsnap/shared";
 
@@ -37,7 +38,7 @@ export type WindowSnapEntry = {
 declare global {
   interface Window {
     pwrsnapApi?: {
-      platform: string;
+      platform: ShortcutPlatform;
       versions: { chrome: string; electron: string; node: string };
       dispatch<C extends CommandName>(
         name: C,

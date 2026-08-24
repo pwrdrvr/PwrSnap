@@ -3,7 +3,12 @@ import { ok } from "@pwrsnap/shared";
 
 const electronMock = vi.hoisted(() => ({
   handler: null as
-    | ((event: unknown, name: string, req: unknown) => Promise<unknown>)
+    | ((
+        event: unknown,
+        name: string,
+        req: unknown,
+        documentId?: unknown
+      ) => Promise<unknown>)
     | null,
   fromWebContents: vi.fn(),
   handle: vi.fn(),
@@ -58,11 +63,18 @@ describe("IPC dispatcher", () => {
       return ok({ runId: "run_1" });
     });
     registerIpcDispatcher();
+    const mainFrame = { processId: 17, routingId: 29 };
+    const sender = {
+      id: 9,
+      isDestroyed: () => false,
+      mainFrame
+    };
 
     const result = await electronMock.handler?.(
-      { sender: { marker: "sender" } },
+      { sender, senderFrame: mainFrame },
       "codex:enrich",
-      { captureId: "cap_1" }
+      { captureId: "cap_1" },
+      "documentepoch0001"
     );
 
     expect(result).toEqual({ ok: true, value: { runId: "run_1" } });
@@ -71,18 +83,63 @@ describe("IPC dispatcher", () => {
     expect(captured.signal?.aborted).toBe(true);
   });
 
-  test("passes the sender BrowserWindow id into command context", async () => {
-    const captured: { sourceWindowId: number | undefined } = { sourceWindowId: undefined };
+  test("passes the sender window and renderer-document ids into command context", async () => {
+    const captured: {
+      sourceWindowId: number | undefined;
+      sourceDocumentId: string | undefined;
+    } = { sourceWindowId: undefined, sourceDocumentId: undefined };
+    const mainFrame = { processId: 17, routingId: 29 };
+    const sender = {
+      id: 9,
+      marker: "sender",
+      isDestroyed: () => false,
+      mainFrame
+    };
     electronMock.fromWebContents.mockReturnValue({ id: 123 });
     bus.register("settings:open", async (_req, ctx) => {
       captured.sourceWindowId = ctx.sourceWindowId;
+      captured.sourceDocumentId = ctx.sourceDocumentId;
       return ok(undefined);
     });
     registerIpcDispatcher();
 
-    await electronMock.handler?.({ sender: { marker: "sender" } }, "settings:open", {});
+    await electronMock.handler?.(
+      { sender, senderFrame: mainFrame, processId: 17, frameId: 29 },
+      "settings:open",
+      {},
+      "documentepoch0001"
+    );
 
-    expect(electronMock.fromWebContents).toHaveBeenCalledWith({ marker: "sender" });
+    expect(electronMock.fromWebContents).toHaveBeenCalledWith(sender);
     expect(captured.sourceWindowId).toBe(123);
+    expect(captured.sourceDocumentId).toBe("documentepoch0001");
+  });
+
+  test("does not admit an epoch sent by a document that is no longer the current main frame", async () => {
+    const captured: { sourceDocumentId: string | undefined } = {
+      sourceDocumentId: undefined
+    };
+    const mainFrame = { processId: 17, routingId: 30 };
+    const staleFrame = { processId: 17, routingId: 29 };
+    const sender = {
+      id: 9,
+      isDestroyed: () => false,
+      mainFrame
+    };
+    electronMock.fromWebContents.mockReturnValue({ id: 123 });
+    bus.register("settings:open", async (_req, ctx) => {
+      captured.sourceDocumentId = ctx.sourceDocumentId;
+      return ok(undefined);
+    });
+    registerIpcDispatcher();
+
+    await electronMock.handler?.(
+      { sender, senderFrame: staleFrame, processId: 17, frameId: 29 },
+      "settings:open",
+      {},
+      "documentepoch0001"
+    );
+
+    expect(captured.sourceDocumentId).toBeUndefined();
   });
 });

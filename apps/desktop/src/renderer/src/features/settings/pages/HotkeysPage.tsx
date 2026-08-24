@@ -9,7 +9,7 @@
 // (V / A / S / H / B / T / C). Those are hardcoded in the editor and
 // aren't rebindable — the card documents them so they're discoverable.
 
-import { useMemo, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import {
   Card,
   Hk,
@@ -20,17 +20,20 @@ import {
 } from "../components";
 import { useSettingsContext } from "../SettingsContext";
 import { TOOLS } from "../../editor/editor-tools";
-import { DEFAULT_HOTKEYS } from "@pwrsnap/shared";
+import {
+  DEFAULT_HOTKEYS,
+  acceleratorToDisplayText,
+  acceleratorsAreEquivalent,
+  defaultHotkeysForPlatform,
+  shortcutPlatformFromString,
+  type HotkeyRegistrationStatusSnapshot
+} from "@pwrsnap/shared";
+import { dispatch } from "../../../lib/pwrsnap";
 
 /** The hotkey kinds this page edits — derived from the schema so a new
  *  `Settings["hotkeys"]` field is a compile error here until it gets a
  *  label below. */
 type HotkeyKey = keyof typeof DEFAULT_HOTKEYS;
-
-/** Values the "Reset to defaults" button writes back. Same object the
- *  service seeds new installs with — no hand-maintained duplicate to
- *  drift (see `DEFAULT_HOTKEYS` in @pwrsnap/shared). */
-const HOTKEY_DEFAULTS: Record<HotkeyKey, string> = DEFAULT_HOTKEYS;
 
 /** Human labels for the editable bindings — used both in the in-page
  *  rows and in the reset-confirmation modal's diff list. */
@@ -48,34 +51,130 @@ const HOTKEY_LABELS: Record<HotkeyKey, string> = {
 export function HotkeysPage(): ReactElement {
   const { settings, patch } = useSettingsContext();
   const hk = settings?.hotkeys ?? null;
+  const platform = shortcutPlatformFromString(window.pwrsnapApi?.platform);
+  const hotkeyDefaults = useMemo(() => defaultHotkeysForPlatform(platform), [platform]);
+  const [recordingKey, setRecordingKey] = useState<HotkeyKey | null>(null);
   const [confirmingReset, setConfirmingReset] = useState<boolean>(false);
+  const [registrationStatus, setRegistrationStatus] =
+    useState<HotkeyRegistrationStatusSnapshot | null>(null);
+  const [retryingKey, setRetryingKey] = useState<HotkeyKey | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [hotkeyMutationCount, setHotkeyMutationCount] = useState<number>(0);
+  const hotkeyMutationBusy = hotkeyMutationCount > 0;
 
-  const writeOne = async (key: HotkeyKey, next: string): Promise<void> => {
-    const hotkeysPatch: Partial<Record<HotkeyKey, string>> = {};
-    hotkeysPatch[key] = next;
-    await patch({ hotkeys: hotkeysPatch });
+  const refreshRegistrationStatus = useCallback(async (): Promise<void> => {
+    const result = await dispatch("settings:hotkeyStatus", {});
+    if (!result.ok) {
+      setStatusError(result.error.message);
+      return;
+    }
+    setRegistrationStatus(result.value);
+    setStatusError(null);
+  }, []);
+
+  useEffect(() => {
+    void refreshRegistrationStatus();
+  }, [refreshRegistrationStatus]);
+
+  const runHotkeyMutation = async <T,>(operation: () => Promise<T>): Promise<T> => {
+    setHotkeyMutationCount((count) => count + 1);
+    try {
+      return await operation();
+    } finally {
+      setHotkeyMutationCount((count) => Math.max(0, count - 1));
+    }
   };
 
-  const onCommit = (key: HotkeyKey) => (next: string): Promise<void> =>
-    writeOne(key, next);
+  const writeOne = async (key: HotkeyKey, next: string): Promise<void> => {
+    await runHotkeyMutation(async () => {
+      const hotkeysPatch: Partial<Record<HotkeyKey, string>> = {};
+      hotkeysPatch[key] = next;
+      await patch({ hotkeys: hotkeysPatch });
+      await refreshRegistrationStatus();
+    });
+  };
+
+  const onCommit = (key: HotkeyKey) => async (next: string): Promise<void> => {
+    await writeOne(key, next);
+    setRecordingKey((current) => (current === key ? null : current));
+  };
   const onUnbind = (key: HotkeyKey) => (): Promise<void> => writeOne(key, "");
+  const recorderProps = (key: HotkeyKey) => ({
+    label: HOTKEY_LABELS[key],
+    platform,
+    recording: recordingKey === key,
+    onStart: (): void => setRecordingKey(key),
+    onCancel: (): void => setRecordingKey((current) => (current === key ? null : current)),
+    onCommit: onCommit(key),
+    onUnbind: onUnbind(key)
+  });
+
+  const retryHotkey = async (key: HotkeyKey): Promise<void> => {
+    if (hotkeyMutationBusy) return;
+    setRetryingKey(key);
+    try {
+      await runHotkeyMutation(async () => {
+        const result = await dispatch("settings:retryHotkey", { key });
+        if (!result.ok) {
+          setStatusError(result.error.message);
+          return;
+        }
+        setRegistrationStatus(result.value);
+        setStatusError(null);
+      });
+    } finally {
+      setRetryingKey((current) => (current === key ? null : current));
+    }
+  };
+
+  const hotkeyControl = (key: HotkeyKey, value: string): ReactElement => {
+    const status = registrationStatus?.[key];
+    // A status request can resolve just after a settings-change broadcast.
+    // Never attach an old binding's failure to the newly persisted chord.
+    const inactive = status?.state === "inactive" && status.accelerator === value;
+    return (
+      <div className="pss__hotkey-control">
+        <HotkeyCapture {...recorderProps(key)} value={value} />
+        {inactive ? (
+          <div className="pss__hotkey-registration-error" role="alert">
+            <span>
+              {status.failure?.message ??
+                `${HOTKEY_LABELS[key]} is not active. Choose another combination.`}
+            </span>
+            <button
+              type="button"
+              className="pss__hotkey-retry"
+              disabled={hotkeyMutationBusy}
+              aria-label={`Retry ${HOTKEY_LABELS[key]} hotkey`}
+              onClick={() => void retryHotkey(key)}
+            >
+              {retryingKey === key ? "Retrying…" : "Retry"}
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
 
   /** Diff every editable binding against its default. Drives both the
    *  customization-count badge in the header and the modal's diff list. */
   const pendingChanges = useMemo<HotkeyChange[]>(() => {
     if (hk === null) return [];
     const out: HotkeyChange[] = [];
-    for (const key of Object.keys(HOTKEY_DEFAULTS) as HotkeyKey[]) {
+    for (const key of Object.keys(hotkeyDefaults) as HotkeyKey[]) {
       const current = hk[key];
-      const next = HOTKEY_DEFAULTS[key];
-      if (current === next) continue;
+      const next = hotkeyDefaults[key];
+      if (acceleratorsAreEquivalent(current, next, platform)) continue;
       out.push({ key, label: HOTKEY_LABELS[key], current, next });
     }
     return out;
-  }, [hk]);
+  }, [hk, hotkeyDefaults, platform]);
 
   const onConfirmReset = async (): Promise<void> => {
-    await patch({ hotkeys: { ...HOTKEY_DEFAULTS } });
+    await runHotkeyMutation(async () => {
+      await patch({ hotkeys: { ...hotkeyDefaults } });
+      await refreshRegistrationStatus();
+    });
     setConfirmingReset(false);
   };
 
@@ -103,13 +202,22 @@ export function HotkeysPage(): ReactElement {
           <button
             type="button"
             className="pss__top-btn"
-            disabled={count === 0}
-            onClick={() => setConfirmingReset(true)}
+            disabled={count === 0 || hotkeyMutationBusy}
+            onClick={() => {
+              setRecordingKey(null);
+              setConfirmingReset(true);
+            }}
           >
             Reset to defaults
           </button>
         </div>
       </div>
+
+      {statusError !== null ? (
+        <div className="pss__hotkey-status-error" role="alert">
+          Could not update global hotkey status: {statusError}
+        </div>
+      ) : null}
 
       <Card eyebrow="CAPTURE" title="Global capture shortcuts">
         <Row
@@ -117,91 +225,68 @@ export function HotkeysPage(): ReactElement {
           sub="The smart trigger. Picks region, window, or full-screen based on the cursor."
           tag="global"
         >
-          <HotkeyCapture
-            value={hk?.quickCapture ?? ""}
-            onCommit={onCommit("quickCapture")}
-            onUnbind={onUnbind("quickCapture")}
-          />
+          {hotkeyControl("quickCapture", hk?.quickCapture ?? "")}
         </Row>
         <Row
           label="Region"
           sub="Drag a marquee on any display. Unbound by default — Quick Capture covers it."
           tag="global"
         >
-          <HotkeyCapture
-            value={hk?.region ?? ""}
-            onCommit={onCommit("region")}
-            onUnbind={onUnbind("region")}
-          />
+          {hotkeyControl("region", hk?.region ?? "")}
         </Row>
         <Row
           label="Window"
           sub="Click a window. Unbound by default — Quick Capture covers it."
           tag="global"
         >
-          <HotkeyCapture
-            value={hk?.window ?? ""}
-            onCommit={onCommit("window")}
-            onUnbind={onUnbind("window")}
-          />
+          {hotkeyControl("window", hk?.window ?? "")}
         </Row>
         <Row
           label="Full Screen"
           sub="Capture the display under the cursor — no selector. Unbound by default; also available from the tray."
           tag="global"
         >
-          <HotkeyCapture
-            value={hk?.fullScreen ?? ""}
-            onCommit={onCommit("fullScreen")}
-            onUnbind={onUnbind("fullScreen")}
-          />
+          {hotkeyControl("fullScreen", hk?.fullScreen ?? "")}
         </Row>
         <Row
           label="All Screens"
           sub="Stitch every connected display into a single image. Unbound by default; also available from the tray."
           tag="global"
         >
-          <HotkeyCapture
-            value={hk?.allScreens ?? ""}
-            onCommit={onCommit("allScreens")}
-            onUnbind={onUnbind("allScreens")}
-          />
+          {hotkeyControl("allScreens", hk?.allScreens ?? "")}
         </Row>
         <Row
           label="Timed (5 s)"
           sub="5-second countdown, then the auto picker — useful for menus that close on focus loss. Unbound by default; also available from the tray."
           tag="global"
         >
-          <HotkeyCapture
-            value={hk?.timed ?? ""}
-            onCommit={onCommit("timed")}
-            onUnbind={onUnbind("timed")}
-          />
+          {hotkeyControl("timed", hk?.timed ?? "")}
         </Row>
         <Row
           label="Video Capture"
-          sub="Pick a region/window, then record. Defaults to ⌘⌥C (not ⌘⇧V — that's Paste & Match Style system-wide)."
+          sub={`Pick a region/window, then record. Defaults to ${acceleratorToDisplayText(
+            hotkeyDefaults.videoCapture,
+            platform
+          )} (not ${acceleratorToDisplayText(
+            "CommandOrControl+Shift+V",
+            platform
+          )} — that's Paste & Match Style system-wide).`}
           tag="global"
         >
-          <HotkeyCapture
-            value={hk?.videoCapture ?? ""}
-            onCommit={onCommit("videoCapture")}
-            onUnbind={onUnbind("videoCapture")}
-          />
+          {hotkeyControl("videoCapture", hk?.videoCapture ?? "")}
         </Row>
       </Card>
 
       <Card eyebrow="APP" title="Library & surfaces">
         <Row
           label="Re-show last Float-Over"
-          sub="Pops the most recent capture back over the screen. Defaults to ⌘⌥⇧F — rebind or unbind any time."
+          sub={`Pops the most recent capture back over the screen. Defaults to ${acceleratorToDisplayText(
+            hotkeyDefaults.reshowFloatOver,
+            platform
+          )} — rebind or unbind any time.`}
           tag="global"
         >
-          <HotkeyCapture
-            value={hk?.reshowFloatOver ?? ""}
-            onCommit={onCommit("reshowFloatOver")}
-            onUnbind={onUnbind("reshowFloatOver")}
-          />
+          {hotkeyControl("reshowFloatOver", hk?.reshowFloatOver ?? "")}
         </Row>
       </Card>
 
@@ -228,6 +313,7 @@ export function HotkeysPage(): ReactElement {
       {confirmingReset ? (
         <HotkeyResetModal
           changes={pendingChanges}
+          platform={platform}
           onCancel={() => setConfirmingReset(false)}
           onConfirm={onConfirmReset}
         />

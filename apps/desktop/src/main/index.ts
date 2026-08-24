@@ -15,7 +15,7 @@ import {
   Notification,
   shell
 } from "electron";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, shortcutPlatformFromString } from "@pwrsnap/shared";
 import type { RecordingSubject, Settings, SettingsChangedEvent } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
@@ -114,6 +114,14 @@ import { registerCartHandlers } from "./handlers/cart-handlers";
 import { getSizzleStore } from "./sizzle/sizzle-store";
 import { DesktopSettingsService } from "./settings/desktop-settings-service";
 import {
+  HotkeyRegistrationManager,
+  type HotkeyKind
+} from "./hotkeys/hotkey-registration-manager";
+import { hotkeyRecorderSuspension } from "./hotkeys/hotkey-recorder-suspension-instance";
+import { createHotkeyRecorderInputScope } from "./hotkeys/hotkey-recorder-input-scope";
+import { isLiveHotkeyRecorderDocument } from "./hotkeys/hotkey-recorder-document";
+import { registerHotkeyRecorderSuspensionHandlers } from "./handlers/hotkey-recorder-handlers";
+import {
   checkForAppUpdatesNow,
   initAppUpdater,
   reconcileAppUpdateSelection,
@@ -206,6 +214,7 @@ import {
 import {
   createMainWindow,
   findMainLibraryWindow,
+  findSettingsWindow,
   installMainProcessHotCpuMonitor,
   reclaimDockIconIfLibraryAlive,
   scheduleDockReclaim,
@@ -261,28 +270,18 @@ function sendEditCommand(
   });
 }
 
-/** The hotkey kinds we register from `settings.hotkeys.*`. Order
- *  matters only for log readability. */
-type HotkeyKind =
-  | "quickCapture"
-  | "region"
-  | "window"
-  | "fullScreen"
-  | "allScreens"
-  | "timed"
-  | "videoCapture"
-  | "reshowFloatOver";
-const HOTKEY_KINDS: readonly HotkeyKind[] = [
-  "quickCapture",
-  "region",
-  "window",
-  "fullScreen",
-  "allScreens",
-  "timed",
-  "videoCapture",
-  "reshowFloatOver"
-];
 const isMac = process.platform === "darwin";
+const shortcutPlatform = shortcutPlatformFromString(process.platform);
+
+// Native application-menu accelerators (Undo/Redo, cut/copy/paste/select-all,
+// zoom, and developer reload keys) run ahead of renderer DOM events. During a
+// recording lease, tell Electron to bypass only those menu shortcuts for the
+// owning Settings webContents so Ctrl/Command chords still reach keydown and
+// keyup. Normal Chromium text input remains enabled; every lease exit restores
+// menu handling for that exact window.
+hotkeyRecorderSuspension.configureInputScope(
+  createHotkeyRecorderInputScope((windowId) => BrowserWindow.fromId(windowId))
+);
 
 /**
  * E2E mode. When `PWRSNAP_E2E=1`, the bootstrap skips:
@@ -675,11 +674,6 @@ async function runPasteFromClipboard(): Promise<void> {
   }
 }
 
-/** Map of HotkeyKind → currently-registered accelerator. We hold this
- *  so we can unregister cleanly when a setting changes (the
- *  globalShortcut API doesn't track "who registered what"). */
-const registeredHotkeys = new Map<HotkeyKind, string>();
-
 function handlerFor(kind: HotkeyKind): () => void {
   const log = getMainLogger("pwrsnap:shortcut");
   switch (kind) {
@@ -745,36 +739,17 @@ function handlerFor(kind: HotkeyKind): () => void {
   }
 }
 
-/** Apply `settings.hotkeys.*` to the live globalShortcut registry.
- *  Idempotent: rebinds only the kinds whose accelerator changed. Empty
- *  string is the "unbound" sentinel and skips registration. */
-function applyHotkeys(hotkeys: Settings["hotkeys"]): void {
-  const log = getMainLogger("pwrsnap:shortcut");
-  for (const kind of HOTKEY_KINDS) {
-    const next = hotkeys[kind] ?? "";
-    const prev = registeredHotkeys.get(kind) ?? "";
-    if (next === prev) continue;
-    if (prev !== "") {
-      globalShortcut.unregister(prev);
-      registeredHotkeys.delete(kind);
-    }
-    if (next === "") continue;
-    const ok = globalShortcut.register(next, handlerFor(kind));
-    if (!ok) {
-      log.warn("failed to register hotkey (likely taken by another app)", {
-        kind,
-        accelerator: next
-      });
-      continue;
-    }
-    registeredHotkeys.set(kind, next);
-  }
-}
+const hotkeyRegistrationManager = new HotkeyRegistrationManager({
+  platform: shortcutPlatform,
+  registrar: globalShortcut,
+  callbackFor: (kind) => handlerFor(kind),
+  logger: getMainLogger("pwrsnap:shortcut")
+});
 
-/** Boot-time + on-change hotkey registration. Reads the current
- *  settings, applies them, and subscribes to main-side change events
- *  so subsequent edits (Settings → Hotkeys, or external file rewrites
- *  funneled through `settings:write`) re-bind without a restart. */
+/** Boot-time hotkey registration plus the shared settings-change listener.
+ *  Subsequent hotkey edits are staged transactionally by `settings:write`;
+ *  this listener updates the tray presentation and the unrelated runtime
+ *  settings that share the same broadcast. */
 async function wireHotkeyRegistrations(): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
   // The settings service is a tiny standalone class — load once,
@@ -792,8 +767,8 @@ async function wireHotkeyRegistrations(): Promise<void> {
   let currentTrain: Settings["updates"]["train"] = "stable";
   try {
     const settings = await service.read();
+    hotkeyRegistrationManager.initialize(settings.hotkeys);
     setTrayHotkeys(settings.hotkeys);
-    applyHotkeys(settings.hotkeys);
     // Pick up the persisted developer-mode flag and re-install the menu
     // so the View submenu matches the user's choice from the start of
     // this session (the early bootstrap call hit the false default).
@@ -813,7 +788,6 @@ async function wireHotkeyRegistrations(): Promise<void> {
   }));
   onSettingsChanged((settings) => {
     setTrayHotkeys(settings.hotkeys);
-    applyHotkeys(settings.hotkeys);
     if (settings.general.developerMode !== lastKnownDeveloperMode) {
       installApplicationMenu(settings.general.developerMode);
     }
@@ -1859,8 +1833,33 @@ export function bootstrapApp(): void {
       // settings + secrets substrate, AI enrichment + discovery, updater.
       registerSettingsDataHandlers({
         readLocalAgentMcpListenerStatus: () =>
-          localAgentMcpLifecycle?.getStatus() ?? { state: "off" }
+          localAgentMcpLifecycle?.getStatus() ?? { state: "off" },
+        shortcutPlatform,
+        ...(!isE2E && !startupProfilingEnabled()
+          ? { hotkeyRegistrationManager }
+          : {})
       });
+      const { service: settingsService } = getDesktopSettingsServices();
+      registerHotkeyRecorderSuspensionHandlers(
+        hotkeyRecorderSuspension,
+        {
+          withSerializedSettings: (operation) =>
+            settingsService.withSerializedSettings(operation),
+          registrationManager:
+            !isE2E && !startupProfilingEnabled()
+              ? hotkeyRegistrationManager
+              : null
+        },
+        (windowId, documentId) => {
+          const settings = findSettingsWindow();
+          return (
+            settings !== null &&
+            settings.id === windowId &&
+            !settings.webContents.isDestroyed() &&
+            isLiveHotkeyRecorderDocument(settings.webContents.id, documentId)
+          );
+        }
+      );
       registerCaptureStorageHandlers();
       registerCodexHandlers();
       registerCodexProfileHandlers();

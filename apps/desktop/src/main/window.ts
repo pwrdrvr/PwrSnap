@@ -34,6 +34,10 @@ import { signalLibraryWindowReady } from "./process-split/agent-bridge";
 import { showWindowWhenReady } from "./window-show";
 import { DesktopSettingsService } from "./settings/desktop-settings-service";
 import {
+  allowNextHotkeyRecorderDocument,
+  fenceHotkeyRecorderDocument
+} from "./hotkeys/hotkey-recorder-document";
+import {
   defaultLibraryWindowBounds,
   fitLibraryWindowBoundsToWorkArea,
   LIBRARY_WINDOW_MIN_HEIGHT,
@@ -930,6 +934,30 @@ export function findSettingsWindow(): BrowserWindow | null {
   return null;
 }
 
+function releaseSettingsHotkeyRecorderLease(
+  ownerWindowId: number,
+  ownerDocumentId: string,
+  reason: "window-closed" | "renderer-gone" | "navigation" | "unresponsive"
+): void {
+  void bus
+    .dispatch(
+      "settings:endHotkeyRecording",
+      { ownerWindowId, ownerDocumentId, reason },
+      { principal: "bridge" }
+    )
+    .then((result) => {
+      if (!result.ok && result.error.code !== "unknown_command") {
+        log.warn("failed to release Settings hotkey recorder lease", {
+          ownerWindowId,
+          ownerDocumentId,
+          reason,
+          code: result.error.code,
+          message: result.error.message
+        });
+      }
+    });
+}
+
 /**
  * Create a dedicated PwrSnap-owned approval surface for one local-agent
  * authorization request. The consent broker binds privileged commands to this
@@ -1019,21 +1047,49 @@ export function createSettingsWindow(
   });
   settingsWindow = window;
 
+  const fenceCurrentDocument = (
+    reason: "window-closed" | "renderer-gone" | "navigation" | "unresponsive"
+  ): void => {
+    const ownerDocumentId = fenceHotkeyRecorderDocument(window.webContents.id);
+    if (ownerDocumentId === null) return;
+    releaseSettingsHotkeyRecorderLease(window.id, ownerDocumentId, reason);
+  };
+  window.webContents.on("did-finish-load", () => {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) return;
+    allowNextHotkeyRecorderDocument(window.webContents.id);
+  });
+
   loadRenderer(window, rendererTarget("settings", extraHash));
 
   showWindowWhenReady(window, { label: "settings" });
 
-  window.on("close", () => log.info("settings window close event", { id: window.id }));
+  window.on("close", () => {
+    log.info("settings window close event", { id: window.id });
+    fenceCurrentDocument("window-closed");
+  });
   window.on("closed", () => {
     log.info("settings window closed", { id: window.id });
     if (settingsWindow === window) settingsWindow = null;
   });
   window.webContents.on("render-process-gone", (_event, details) => {
     log.warn("settings window renderer crashed", { id: window.id, reason: details.reason });
+    fenceCurrentDocument("renderer-gone");
   });
   window.webContents.on("unresponsive", () => {
     log.warn("settings window renderer unresponsive", { id: window.id });
+    fenceCurrentDocument("unresponsive");
   });
+  window.webContents.on(
+    "did-start-navigation",
+    (_event, _url, isInPlace, isMainFrame) => {
+      // A full navigation replaces the renderer document, so fence its IPC
+      // identity before the new document can load. In-page navigation keeps
+      // the same document; React cleanup owns its exact session end.
+      if (isMainFrame && !isInPlace) {
+        fenceCurrentDocument("navigation");
+      }
+    }
+  );
 
   return window;
 }

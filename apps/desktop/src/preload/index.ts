@@ -15,6 +15,7 @@
 // command-bus.ts (Phase 1.4) for the renderer-side helper.
 
 import { contextBridge, ipcRenderer, webFrame } from "electron";
+import { shortcutPlatformFromString } from "@pwrsnap/shared";
 
 // **Re-enable pinch gestures.** Electron disables visual zoom by
 // default, and "disabled" here means more than "no zooming
@@ -96,6 +97,12 @@ const REGION_SELECTOR_MODE_CHANNEL = "region-selector:mode";
 // empty transparent overlay flashing the live screen behind it.
 const REGION_SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
 
+// One opaque epoch per preload execution. The renderer cannot choose or reuse
+// it; main binds it to the current top-level WebFrameMain before admitting a
+// Settings recorder lease. This distinguishes delayed IPC from a document
+// that has already navigated away even when Chromium reuses a renderer PID.
+const rendererDocumentId = crypto.randomUUID().replaceAll("-", "");
+
 // Tray content auto-sizes to fit. The renderer measures itself with a
 // ResizeObserver and asks main to setContentSize so the popover never
 // has dead space at the bottom or clips a row.
@@ -142,7 +149,7 @@ export type WindowSnapEntry = {
 };
 
 const pwrsnapApi = {
-  platform: process.platform,
+  platform: shortcutPlatformFromString(process.platform),
   versions: {
     chrome: process.versions.chrome,
     electron: process.versions.electron,
@@ -155,7 +162,7 @@ const pwrsnapApi = {
    * inspect `result.ok`.
    */
   dispatch(name: string, req: unknown): Promise<unknown> {
-    return ipcRenderer.invoke(IPC_CMD, name, req);
+    return ipcRenderer.invoke(IPC_CMD, name, req, rendererDocumentId);
   },
   /**
    * Subscribe to a server → client event. Returns an unsubscribe

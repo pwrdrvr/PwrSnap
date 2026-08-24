@@ -17,6 +17,7 @@ import {
   AI_REASONING_EFFORTS,
   AI_SURFACE_IDS,
   BUILT_IN_ACP_AGENT_IDS,
+  DEFAULT_HOTKEYS,
   isAiReasoningEffort,
   isBuiltInAcpAgentId,
   isAppearanceTheme,
@@ -34,13 +35,17 @@ import {
   isHotCpuProfileTriggerMode,
   LIBRARY_SIDEBAR_TABS,
   MAX_HIGHLIGHT_OPACITY,
+  canonicalAcceleratorForPlatform,
+  shortcutPlatformDisplayName,
+  shortcutPlatformFromString,
   REDACTION_STYLES
 } from "@pwrsnap/shared";
 import type {
   DesktopSettingsSecretName,
   PwrSnapError,
   SettingsPage,
-  SettingsPatch
+  SettingsPatch,
+  ShortcutPlatform
 } from "@pwrsnap/shared";
 import { isValidProfileName, normalizeProfileName } from "@pwrdrvr/codex-discovery";
 import { KNOWN_SECRET_NAMES } from "../settings/desktop-secret-store";
@@ -95,25 +100,13 @@ function isStringOrNull(value: unknown): value is string | null {
   return value === null || typeof value === "string";
 }
 
-/** Rough shape-check for Electron accelerator strings. One-or-more
- *  modifier tokens followed by exactly one key token, all joined by
- *  `+`. We accept the modifier aliases Electron itself accepts
- *  (CommandOrControl/Cmd/Ctrl/Alt/Option/Shift/Super/Meta/Control) and
- *  let Electron's globalShortcut.register reject anything stricter at
- *  bind time — the goal here is to catch obvious garbage (`"asdf"`,
- *  `"+P"`, `"Shift"` alone) before it lands on disk. The key alphabet
- *  is intentionally permissive: every alphanumeric, ASCII punctuation
- *  Electron recognizes, plus named keys (Enter/Space/Tab/etc.) and
- *  function keys (F1–F24). */
-const ACCELERATOR_SHAPE =
-  /^(CommandOrControl|CmdOrCtrl|Command|Cmd|Control|Ctrl|Alt|Option|Shift|Super|Meta)(\+(CommandOrControl|CmdOrCtrl|Command|Cmd|Control|Ctrl|Alt|Option|Shift|Super|Meta))*\+([A-Za-z0-9`~!@#$%^&*()\-_=+[\]{}\\|;:'",.<>/?]|F([1-9]|1[0-9]|2[0-4])|Plus|Space|Tab|Backspace|Delete|Insert|Return|Enter|Up|Down|Left|Right|Home|End|PageUp|PageDown|Escape|Esc|VolumeUp|VolumeDown|VolumeMute|MediaNextTrack|MediaPreviousTrack|MediaStop|MediaPlayPause|PrintScreen)$/;
-
 /** Per-section validator. Each section's nested object is `Partial<T>` —
  *  every key is optional, but if present its value must match the
  *  declared type. `undefined` is always fine (means "untouched"); the
  *  service-level merge skips undefined keys. */
 export function validateSettingsWrite(
-  patch: unknown
+  patch: unknown,
+  shortcutPlatform: ShortcutPlatform = shortcutPlatformFromString(process.platform)
 ): ValidationResult<SettingsPatch> {
   if (typeof patch !== "object" || patch === null || Array.isArray(patch)) {
     return {
@@ -122,6 +115,7 @@ export function validateSettingsWrite(
     };
   }
   const p = patch as Record<string, unknown>;
+  let canonicalHotkeys: NonNullable<SettingsPatch["hotkeys"]> | undefined;
 
   if (p.codex !== undefined) {
     if (typeof p.codex !== "object" || p.codex === null || Array.isArray(p.codex)) {
@@ -248,16 +242,10 @@ export function validateSettingsWrite(
       };
     }
     const hotkeys = p.hotkeys as Record<string, unknown>;
-    for (const key of [
-      "quickCapture",
-      "region",
-      "window",
-      "fullScreen",
-      "allScreens",
-      "timed",
-      "videoCapture",
-      "reshowFloatOver"
-    ] as const) {
+    canonicalHotkeys = {};
+    for (const key of Object.keys(DEFAULT_HOTKEYS) as Array<
+      keyof typeof DEFAULT_HOTKEYS
+    >) {
       const v = hotkeys[key];
       if (isUndefined(v)) continue;
       if (!isString(v)) {
@@ -269,23 +257,21 @@ export function validateSettingsWrite(
           )
         };
       }
-      // Empty string is the "unbound" sentinel — always allowed. Any
-      // non-empty value MUST look like an Electron accelerator
-      // (`<Modifier>(+<Modifier>)*+<Key>`). We don't enforce the full
-      // Electron accelerator grammar here (Electron's own validator
-      // owns that and the global-shortcut register call returns false
-      // for malformed strings); the regex is a cheap "obvious garbage"
-      // filter so we never persist `"asdf"` or `"+"` from a buggy
-      // renderer.
-      if (v.length > 0 && !ACCELERATOR_SHAPE.test(v)) {
+      // Shared shortcut semantics are the grammar + canonicalization source
+      // for renderer, main, and tests. Keeping a second regex here previously
+      // rejected valid Electron keys such as AltGr and number-pad tokens.
+      const normalized = canonicalAcceleratorForPlatform(v, shortcutPlatform);
+      if (!normalized.ok) {
         return {
           ok: false,
           error: validationError(
             "invalid_hotkey_shape",
-            `settings:write: hotkeys.${key} is not a recognizable accelerator (got ${JSON.stringify(v)})`
+            `That shortcut is not supported on ${shortcutPlatformDisplayName(shortcutPlatform)}. ` +
+              "Choose another combination. Your saved shortcut was not changed."
           )
         };
       }
+      canonicalHotkeys[key] = normalized.normalized;
     }
   }
 
@@ -591,7 +577,14 @@ export function validateSettingsWrite(
     if (experimentalErr !== null) return { ok: false, error: experimentalErr };
   }
 
-  return { ok: true, value: patch as SettingsPatch };
+  const validatedPatch = patch as SettingsPatch;
+  return {
+    ok: true,
+    value:
+      canonicalHotkeys === undefined
+        ? validatedPatch
+        : { ...validatedPatch, hotkeys: canonicalHotkeys }
+  };
 }
 
 /** The renderer may only flip the MCP listener gate through settings:write.

@@ -120,6 +120,7 @@ function isCommandDispatchOptions(value: unknown): value is CommandDispatchOptio
     isCommandPrincipal(context["principal"]) &&
     isOptionalString(context["cancellationKey"]) &&
     isOptionalInteger(context["sourceWindowId"]) &&
+    isOptionalString(context["sourceDocumentId"]) &&
     isSourceBounds(context["sourceBounds"]) &&
     isLocalAgentContext(context["localAgent"])
   );

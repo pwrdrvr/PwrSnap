@@ -10,6 +10,7 @@ import {
   err,
   EVENT_CHANNELS,
   exportStrategyFromSettings,
+  shortcutPlatformFromString,
   resolveLocalAgentPolicy
 } from "@pwrsnap/shared";
 import type {
@@ -21,7 +22,9 @@ import type {
   SecretStatus,
   Settings,
   SettingsChangedEvent,
-  SettingsNavigateEvent
+  HotkeyRegistrationStatusSnapshot,
+  SettingsNavigateEvent,
+  ShortcutPlatform
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { activateForUserSurface } from "../process-split/activate-user-surface";
@@ -39,6 +42,12 @@ import {
 import { LocalAgentAuditService } from "../local-agents/local-agent-audit";
 import { LocalAgentUsageService } from "../local-agents/local-agent-usage";
 import { DesktopSettingsService } from "../settings/desktop-settings-service";
+import {
+  HotkeyRegistrationError,
+  HOTKEY_KINDS,
+  isHotkeyKind,
+  type HotkeyRegistrationCoordinator
+} from "../hotkeys/hotkey-registration-manager";
 import {
   DesktopSecretStore,
   SecretUnavailableError
@@ -58,6 +67,8 @@ let secretStore: DesktopSecretStore | null = null;
 let localAgentGrantService: LocalAgentGrantService | null = null;
 let localAgentAuditService: LocalAgentAuditService | null = null;
 let localAgentUsageService: LocalAgentUsageService | null = null;
+let hotkeyRegistrationManager: HotkeyRegistrationCoordinator | null = null;
+let shortcutPlatformForTests: ShortcutPlatform | null = null;
 
 function ensureServices(): {
   service: DesktopSettingsService;
@@ -102,6 +113,18 @@ export function __setSettingsServicesForTests(injected: {
   if (injected.usage !== undefined) localAgentUsageService = injected.usage;
   localAgentGrantService = null;
   localAgentAuditService = null;
+}
+
+export function __setHotkeyRegistrationManagerForTests(
+  injected: HotkeyRegistrationCoordinator | null
+): void {
+  hotkeyRegistrationManager = injected;
+}
+
+export function __setShortcutPlatformForTests(
+  platform: ShortcutPlatform | null
+): void {
+  shortcutPlatformForTests = platform;
 }
 
 function getLocalAgentUsageService(): LocalAgentUsageService {
@@ -195,6 +218,22 @@ function toSettingsError(
   return { kind: "settings", code, message, cause };
 }
 
+function unmanagedHotkeyStatus(
+  hotkeys: Settings["hotkeys"]
+): HotkeyRegistrationStatusSnapshot {
+  const status = {} as HotkeyRegistrationStatusSnapshot;
+  for (const key of HOTKEY_KINDS) {
+    const accelerator = hotkeys[key] ?? "";
+    status[key] = {
+      key,
+      accelerator,
+      state: accelerator === "" ? "unbound" : "pending",
+      failure: null
+    };
+  }
+  return status;
+}
+
 export function getLocalAgentGrantService(): LocalAgentGrantService {
   if (localAgentGrantService !== null) return localAgentGrantService;
   const { service, secrets } = ensureServices();
@@ -286,7 +325,12 @@ export function registerSettingsWindowHandlers(): void {
  *  (single writer, always-resident process). */
 export function registerSettingsDataHandlers(options: {
   readLocalAgentMcpListenerStatus?: () => LocalAgentMcpListenerStatus;
+  hotkeyRegistrationManager?: HotkeyRegistrationCoordinator;
+  shortcutPlatform?: ShortcutPlatform;
 } = {}): void {
+  if (options.hotkeyRegistrationManager !== undefined) {
+    hotkeyRegistrationManager = options.hotkeyRegistrationManager;
+  }
   bus.register("settings:read", async () => {
     const { service } = ensureServices();
     try {
@@ -297,11 +341,73 @@ export function registerSettingsDataHandlers(options: {
     }
   });
 
+  bus.register("settings:hotkeyStatus", async () => {
+    const { service } = ensureServices();
+    try {
+      const status = await service.withSerializedSettings((settings) => {
+        const registrationManager = hotkeyRegistrationManager;
+        if (registrationManager === null) {
+          return unmanagedHotkeyStatus(settings.hotkeys);
+        }
+        registrationManager.initialize(settings.hotkeys);
+        return registrationManager.statusSnapshot();
+      });
+      return ok(status);
+    } catch (cause) {
+      return err(
+        toSettingsError(
+          "hotkey_status_failed",
+          "failed to read global hotkey registration status",
+          cause
+        )
+      );
+    }
+  });
+
+  bus.register("settings:retryHotkey", async (req) => {
+    if (!isHotkeyKind((req as { key?: unknown } | null)?.key)) {
+      return err({
+        kind: "validation",
+        code: "invalid_hotkey_key",
+        message: "settings:retryHotkey: key must name a persisted global hotkey"
+      });
+    }
+    const registrationManager = hotkeyRegistrationManager;
+    if (registrationManager === null) {
+      return err(
+        toSettingsError(
+          "hotkey_retry_unavailable",
+          "global hotkeys are not managed in this PwrSnap process"
+        )
+      );
+    }
+    try {
+      const { service } = ensureServices();
+      const status = await service.withSerializedSettings((settings) => {
+        registrationManager.initialize(settings.hotkeys);
+        return registrationManager.retry(req.key);
+      });
+      return ok(status);
+    } catch (cause) {
+      return err(
+        toSettingsError(
+          "hotkey_retry_failed",
+          "failed to retry the global hotkey",
+          cause
+        )
+      );
+    }
+  });
+
   bus.register("settings:write", async (
     patch,
     ctx
   ): Promise<Result<Settings, PwrSnapError>> => {
-    const validated = validateSettingsWrite(patch);
+    const shortcutPlatform =
+      shortcutPlatformForTests ??
+      options.shortcutPlatform ??
+      shortcutPlatformFromString(process.platform);
+    const validated = validateSettingsWrite(patch, shortcutPlatform);
     if (!validated.ok) return err(validated.error);
     // This field is persisted through the settings substrate, but it is not a
     // free-form renderer preference. Only the capture fallback and the
@@ -318,11 +424,26 @@ export function registerSettingsDataHandlers(options: {
           "Captures location can only be changed by PwrSnap's permission fallback or guarded storage command."
       });
     }
+    const writePatch = validated.value;
     const { service, secrets } = ensureServices();
     let merged: Settings;
     try {
-      merged = await service.write(validated.value);
+      const registrationManager = hotkeyRegistrationManager;
+      if (
+        writePatch.hotkeys !== undefined &&
+        registrationManager !== null
+      ) {
+        merged = await service.write(writePatch, {
+          prepare: (current, next) =>
+            registrationManager.prepare(current.hotkeys, next.hotkeys)
+        });
+      } else {
+        merged = await service.write(writePatch);
+      }
     } catch (cause) {
+      if (cause instanceof HotkeyRegistrationError) {
+        return err(toSettingsError(cause.code, cause.message, cause));
+      }
       return err(
         toSettingsError(
           "write_failed",

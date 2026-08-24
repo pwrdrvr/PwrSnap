@@ -15,6 +15,9 @@ type WindowSpy = {
   on: ReturnType<typeof vi.fn>;
   once: ReturnType<typeof vi.fn>;
   webContents: {
+    id: number;
+    isDestroyed: ReturnType<typeof vi.fn>;
+    mainFrame: { processId: number; routingId: number };
     on: ReturnType<typeof vi.fn>;
     once: ReturnType<typeof vi.fn>;
   };
@@ -50,6 +53,9 @@ function makeWindowSpy(options?: Record<string, unknown>): WindowSpy {
     on: vi.fn(),
     once: vi.fn(),
     webContents: {
+      id: 100 + electronMock.windows.length,
+      isDestroyed: vi.fn(() => false),
+      mainFrame: { processId: 17, routingId: 29 },
       on: vi.fn(),
       once: vi.fn()
     }
@@ -189,6 +195,86 @@ describe("settings window placement", () => {
       show: false,
       title: "PwrSnap Settings"
     });
+  });
+
+  test("Settings close fences the exact loaded renderer document", async () => {
+    electronMock.getPrimaryDisplay.mockReturnValue({
+      workArea: { x: 0, y: 0, width: 1920, height: 1080 }
+    });
+    const [{ createSettingsWindow }, { bus }, recorderDocument] = await Promise.all([
+      import("../window"),
+      import("../command-bus"),
+      import("../hotkeys/hotkey-recorder-document")
+    ]);
+    const dispatchSpy = vi
+      .spyOn(bus, "dispatch")
+      .mockResolvedValue({ ok: true, value: { ended: true } } as never);
+    const settings = createSettingsWindow() as unknown as WindowSpy;
+    const didFinishLoad = settings.webContents.on.mock.calls.find(
+      ([event]) => event === "did-finish-load"
+    )?.[1] as (() => void) | undefined;
+    const close = settings.on.mock.calls.find(([event]) => event === "close")?.[1] as
+      | (() => void)
+      | undefined;
+
+    didFinishLoad?.();
+    recorderDocument.admitHotkeyRecorderDocument(
+      settings.webContents.id,
+      "documentepoch0001"
+    );
+    close?.();
+
+    expect(dispatchSpy).toHaveBeenCalledWith(
+      "settings:endHotkeyRecording",
+      {
+        ownerWindowId: settings.id,
+        ownerDocumentId: "documentepoch0001",
+        reason: "window-closed"
+      },
+      { principal: "bridge" }
+    );
+  });
+
+  test("full navigation fences the old document while in-page navigation does not", async () => {
+    electronMock.getPrimaryDisplay.mockReturnValue({
+      workArea: { x: 0, y: 0, width: 1920, height: 1080 }
+    });
+    const [{ createSettingsWindow }, { bus }, recorderDocument] = await Promise.all([
+      import("../window"),
+      import("../command-bus"),
+      import("../hotkeys/hotkey-recorder-document")
+    ]);
+    const dispatchSpy = vi
+      .spyOn(bus, "dispatch")
+      .mockResolvedValue({ ok: true, value: { ended: true } } as never);
+    const settings = createSettingsWindow() as unknown as WindowSpy;
+    const didFinishLoad = settings.webContents.on.mock.calls.find(
+      ([event]) => event === "did-finish-load"
+    )?.[1] as (() => void) | undefined;
+    const didStartNavigation = settings.webContents.on.mock.calls.find(
+      ([event]) => event === "did-start-navigation"
+    )?.[1] as
+      | ((event: unknown, url: string, isInPlace: boolean, isMainFrame: boolean) => void)
+      | undefined;
+
+    didFinishLoad?.();
+    recorderDocument.admitHotkeyRecorderDocument(
+      settings.webContents.id,
+      "documentepoch0001"
+    );
+    didStartNavigation?.({}, "app://settings#storage", true, true);
+    expect(dispatchSpy).not.toHaveBeenCalled();
+
+    didStartNavigation?.({}, "app://settings", false, true);
+    expect(dispatchSpy).toHaveBeenCalledWith(
+      "settings:endHotkeyRecording",
+      {
+        ownerWindowId: settings.id,
+        ownerDocumentId: "documentepoch0001",
+        reason: "navigation"
+      },
+      { principal: "bridge" }
+    );
   });
 
   test("centers a new Sizzle window on the source window display", async () => {

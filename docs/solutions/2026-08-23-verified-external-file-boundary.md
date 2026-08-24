@@ -53,6 +53,9 @@ conversion. The boundary enforces:
   (`width × height × channels × bytes-per-sample`);
 - exactly one page/frame, rejecting animations and multipage documents rather
   than silently flattening frame one;
+- an explicit still-raster decoder allowlist: PNG, JPEG, WebP, single-frame
+  GIF, HEIF/AVIF, TIFF, and JPEG 2000. SVG, PDF, camera-raw, scientific,
+  whole-slide, and other libvips loaders are not paste/drop formats;
 - the existing 32768 per-axis cap and strict sharp decoder warnings.
 
 Canonical PNG output is consumed as a stream and accumulated only through the

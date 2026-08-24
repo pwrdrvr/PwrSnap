@@ -9,6 +9,7 @@
 //   • invalid_dimensions — invalid/per-axis dimensions → reject
 //   • raster_limit_exceeded — total pixels/raw bytes/output exceed caps
 //   • unsupported_multi_page — animation/document inputs → reject
+//   • unsupported_format — vector/document/scientific/raw loaders → reject
 //   • read_failed — empty input → reject
 //   • happy path — valid PNG returns sha256 + dimensions + pngBytes
 //
@@ -129,6 +130,20 @@ describe("paste-image-worker: processImageInput", () => {
     expect(result).toMatchObject({
       ok: false,
       code: "unsupported_multi_page"
+    });
+  });
+
+  test("rejects formats outside the approved still-raster allowlist", async () => {
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2"/></svg>'
+    );
+    const result = await processImageInput({
+      kind: "decode-buffer",
+      bytes: new Uint8Array(svg)
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      code: "unsupported_format"
     });
   });
 });

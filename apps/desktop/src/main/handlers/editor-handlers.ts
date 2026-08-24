@@ -82,6 +82,12 @@ function workerErrorToBusError(code: PasteWorkerErrorCode, message: string): {
         code: "image_unsupported_multi_page",
         message: "Animated and multi-page images are not supported"
       };
+    case "unsupported_format":
+      return {
+        kind: "validation",
+        code: "image_unsupported_format",
+        message: "Image format is not supported"
+      };
     case "decode_failed":
       return {
         kind: "render",

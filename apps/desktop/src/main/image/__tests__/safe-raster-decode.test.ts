@@ -70,6 +70,33 @@ describe("safe raster decode boundary", () => {
     );
   });
 
+  test("rejects decoders outside the approved still-raster allowlist", () => {
+    expect(() =>
+      validateSafeRasterMetadata({
+        width: 16,
+        height: 16,
+        channels: 3,
+        depth: "ushort",
+        format: "dcraw"
+      })
+    ).toThrowError(
+      expect.objectContaining({
+        name: "SafeRasterError",
+        code: "unsupported_format"
+      })
+    );
+  });
+
+  test("rejects SVG input instead of invoking a document/vector loader", async () => {
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2"/></svg>'
+    );
+    await expect(canonicalizeSafeRasterToPng(svg)).rejects.toMatchObject({
+      name: "SafeRasterError",
+      code: "unsupported_format"
+    });
+  });
+
   test("rejects an animated source before PNG encoding", async () => {
     await expect(
       canonicalizeSafeRasterToPng(await makeAnimatedGif())

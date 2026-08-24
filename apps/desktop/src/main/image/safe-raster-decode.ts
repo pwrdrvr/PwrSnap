@@ -11,6 +11,7 @@ import {
 
 export type SafeRasterErrorCode =
   | "input_size_cap_exceeded"
+  | "unsupported_format"
   | "invalid_dimensions"
   | "pixel_cap_exceeded"
   | "channel_cap_exceeded"
@@ -21,6 +22,7 @@ export type SafeRasterErrorCode =
 
 const ERROR_MESSAGES: Readonly<Record<SafeRasterErrorCode, string>> = {
   input_size_cap_exceeded: "Encoded image exceeds size cap",
+  unsupported_format: "Image format is not supported",
   invalid_dimensions: "Image dimensions are invalid",
   pixel_cap_exceeded: "Decoded image exceeds pixel cap",
   channel_cap_exceeded: "Decoded image exceeds channel cap",
@@ -84,6 +86,19 @@ const SHARP_INPUT_OPTIONS = {
   unlimited: false
 };
 
+// Keep the decoder surface intentionally narrower than every loader compiled
+// into libvips/sharp. In particular, paste/drop is not a PDF, SVG, camera-raw,
+// scientific-image, slide, or ImageMagick document import boundary.
+const APPROVED_STILL_RASTER_FORMATS: ReadonlySet<Metadata["format"]> = new Set([
+  "gif",
+  "heif",
+  "jp2",
+  "jpeg",
+  "png",
+  "tiff",
+  "webp"
+]);
+
 function checkedProduct(...values: readonly number[]): number | null {
   let product = 1;
   for (const value of values) {
@@ -98,6 +113,10 @@ function checkedProduct(...values: readonly number[]): number | null {
 export function validateSafeRasterMetadata(
   metadata: RasterMetadataLike
 ): SafeRasterMetadata {
+  if (!APPROVED_STILL_RASTER_FORMATS.has(metadata.format)) {
+    throw new SafeRasterError("unsupported_format");
+  }
+
   const { width, height, channels } = metadata;
   if (
     width > MAX_IMAGE_DIM_PX ||

@@ -37,6 +37,7 @@ export type PasteWorkerErrorCode =
   | "size_cap_exceeded"
   | "read_failed"
   | "decode_failed"
+  | "unsupported_format"
   | "invalid_dimensions"
   | "raster_limit_exceeded"
   | "unsupported_multi_page";
@@ -108,6 +109,8 @@ export async function processImageInput(
       switch (cause.code) {
         case "input_size_cap_exceeded":
           return fail("size_cap_exceeded", cause.message);
+        case "unsupported_format":
+          return fail("unsupported_format", cause.message);
         case "invalid_dimensions":
           return fail("invalid_dimensions", cause.message);
         case "unsupported_multi_page":

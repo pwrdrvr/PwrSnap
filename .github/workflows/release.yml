@@ -402,7 +402,9 @@ jobs:
       }}
     environment: windows-signing
     runs-on: windows-2022
-    timeout-minutes: 45
+    # Leave enough budget for protected packaging plus bounded install,
+    # launch/readiness, graceful exit, and NSIS uninstall cleanup.
+    timeout-minutes: 55
     permissions:
       contents: read
       id-token: none
@@ -572,13 +574,20 @@ jobs:
           --sign-stage-only --release --require-signing
 
       - name: Verify Authenticode signatures
+        id: windows-authenticode
         shell: pwsh
         env:
           EXPECTED_PUBLISHER: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}
         run: |
+          $ErrorActionPreference = "Stop"
           $dist = "apps/desktop/release-stage/dist"
-          $installer = Get-ChildItem $dist -File -Filter "*-setup.exe" | Select-Object -First 1
+          $installers = @(Get-ChildItem $dist -File -Filter "*-setup.exe")
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one signed Windows installer; found $($installers.Count)."
+          }
+          $installer = $installers[0]
           $app = Get-ChildItem $dist -Recurse -File -Filter "PwrSnap.exe" | Select-Object -First 1
+          $publisherPattern = "(^|,\s*)CN=$([Regex]::Escape($env:EXPECTED_PUBLISHER))(,|$)"
           foreach ($target in @($installer, $app)) {
             if ($null -eq $target) {
               throw "Expected signed Windows executable is missing."
@@ -587,9 +596,65 @@ jobs:
             if ($signature.Status -ne "Valid") {
               throw "Authenticode signature is not valid for $($target.FullName): $($signature.Status)"
             }
-            if ($signature.SignerCertificate.Subject -notlike "*CN=$env:EXPECTED_PUBLISHER*") {
+            if ($signature.SignerCertificate.Subject -notmatch $publisherPattern) {
               throw "Unexpected Authenticode signer for $($target.FullName): $($signature.SignerCertificate.Subject)"
             }
+          }
+          $installerSha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "installer_sha256=$installerSha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      # Launch the application installed from the exact signed NSIS artifact.
+      # The shared smoke re-checks the installed executable's signer, isolates
+      # every app/profile path, proves main + renderer + native-module runtime
+      # readiness, and requires a clean app.quit() before publication can move.
+      - name: Smoke signed installed Windows application
+        shell: pwsh
+        env:
+          EXPECTED_PUBLISHER: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dist = Resolve-Path "apps/desktop/release-stage/dist"
+          $installers = @(Get-ChildItem -Path $dist -Filter "*-setup.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one signed NSIS installer in $dist; found $($installers.Count)."
+          }
+          & ./scripts/release/smoke-installed-windows.ps1 `
+            -InstallerPath $installers[0].FullName `
+            -ExpectedPublisher $env:EXPECTED_PUBLISHER
+
+      - name: Upload signed installed-app smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-signed-smoke-diagnostics
+          path: ${{ runner.temp }}/pwrsnap-windows-smoke-diagnostics-*
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Re-verify signed installer after installed-app smoke
+        shell: pwsh
+        env:
+          EXPECTED_PUBLISHER: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}
+          EXPECTED_SHA256: ${{ steps.windows-authenticode.outputs.installer_sha256 }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dist = "apps/desktop/release-stage/dist"
+          $installers = @(Get-ChildItem $dist -File -Filter "*-setup.exe")
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one signed Windows installer after smoke; found $($installers.Count)."
+          }
+          $installer = $installers[0]
+          $actualSha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $env:EXPECTED_SHA256) {
+            throw "Installed-app smoke changed the signed installer: expected $env:EXPECTED_SHA256, got $actualSha256."
+          }
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+          if ($signature.Status -ne "Valid") {
+            throw "Post-smoke Authenticode status is not valid: $($signature.Status)"
+          }
+          $publisherPattern = "(^|,\s*)CN=$([Regex]::Escape($env:EXPECTED_PUBLISHER))(,|$)"
+          if ($signature.SignerCertificate.Subject -notmatch $publisherPattern) {
+            throw "Post-smoke installer has unexpected signer: $($signature.SignerCertificate.Subject)"
           }
 
       - name: Prepare stable-name Windows installer alias

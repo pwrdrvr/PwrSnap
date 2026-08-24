@@ -197,7 +197,12 @@ The release workflow separates preparation, signing, and publication:
    signing credentials. It archives the stage and records its SHA-256.
 5. **`windows-sign`** runs inside `windows-signing`, verifies the archive,
    injects the pinned Windows FFmpeg artifact, installs `TrustedSigning`, and
-   packages via `--sign-stage-only --release --require-signing`. It does not
+   packages via `--sign-stage-only --release --require-signing`. After
+   Authenticode verification it installs that exact signed NSIS artifact into
+   a runner-temporary directory, launches the installed application with
+   isolated profile/userData/data roots, proves main + visible React renderer +
+   preload/IPC readiness, executes better-sqlite3 and a Sharp/libvips PNG round
+   trip, then requires clean `app.quit()` and silent uninstall. It does not
    check out source or install dependencies. See
    [desktop-windows-signing.md](desktop-windows-signing.md).
 6. **`publish-release-assets`** depends on successful Linux, macOS, and Windows
@@ -227,14 +232,26 @@ No signing job publishes directly. A macOS or Windows signing failure, an
 unapproved environment, or a Linux build failure leaves no partial GitHub
 Release behind.
 
+The same installed-application controller runs for the unsigned Windows
+`build-preview` artifact. Static archive/DLL/`.node` checks remain useful for
+payload structure, but they are not treated as launch readiness: only the
+installed process can produce the causal JSON evidence, and only after its
+renderer has completed a real `library:list` round trip against the fresh
+isolated database. Failure diagnostics are bounded tails of stdout, stderr,
+the result, and isolated app logs.
+
 For a non-publishing Windows signing smoke check, apply `ci:windows-signing` to
 a same-repository PR after reviewing its head SHA. Temporarily allow that exact
 PR merge ref (`refs/pull/<number>/merge`) in the `windows-signing` environment,
 approve the protected job, and remove the rule after the
 `windows-signed-installer-pr` artifact passes Authenticode and launch
-validation. This is the same `release.yml` Windows prepare/sign path used by
-tags; `publish-release-assets` is disabled for PR events, so it never creates a
-tag or GitHub Release.
+validation (including better-sqlite3, Sharp/libvips, React, preload, and IPC).
+This is the same `release.yml` Windows prepare/sign path used by tags;
+`publish-release-assets` is disabled for PR events, so it never creates a tag
+or GitHub Release. Because the launch is hermetic E2E mode, it deliberately
+does not initialize `electron-updater`; feed retrieval, blockmaps, download,
+signature selection, `quitAndInstall`, and prerelease-to-prerelease transition
+remain clean-VM release smoke coverage.
 
 Do not approve either signing environment unless the tag, commit, and release
 metadata are intended. Approval exposes that environment's credentials to its

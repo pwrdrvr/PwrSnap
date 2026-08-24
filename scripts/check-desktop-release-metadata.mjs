@@ -8,6 +8,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopPackagePath = resolve(repoRoot, "apps/desktop/package.json");
 const electronBuilderPath = resolve(repoRoot, "apps/desktop/electron-builder.yml");
 const ciWorkflowPath = resolve(repoRoot, ".github/workflows/ci.yml");
+const previewWorkflowPath = resolve(repoRoot, ".github/workflows/preview-build.yml");
 const releaseWorkflowPath = resolve(repoRoot, ".github/workflows/release.yml");
 const workflowsReadmePath = resolve(repoRoot, ".github/workflows/README.md");
 const windowsPackageScriptPath = resolve(repoRoot, "apps/desktop/scripts/package-win.mjs");
@@ -18,6 +19,10 @@ const windowsArchiveScriptPath = resolve(
 const trustedSigningScriptPath = resolve(
   repoRoot,
   "scripts/release/install-trusted-signing.ps1",
+);
+const windowsInstalledSmokeScriptPath = resolve(
+  repoRoot,
+  "scripts/release/smoke-installed-windows.ps1",
 );
 const changelogPath = resolve(repoRoot, "CHANGELOG.md");
 
@@ -117,12 +122,23 @@ const ciWorkflow = readFileSync(ciWorkflowPath, "utf8");
 if (!ciWorkflow.includes("releases/**")) {
   fail('.github/workflows/ci.yml must trigger CI for "releases/**" branches');
 }
+for (const expected of [
+  "Parse Windows release PowerShell",
+  "System.Management.Automation.Language.Parser",
+  "scripts/release/smoke-installed-windows.ps1",
+]) {
+  if (!ciWorkflow.includes(expected)) {
+    fail(`.github/workflows/ci.yml must contain ${JSON.stringify(expected)}`);
+  }
+}
 
 const releaseWorkflow = readFileSync(releaseWorkflowPath, "utf8");
+const previewWorkflow = readFileSync(previewWorkflowPath, "utf8");
 const workflowsReadme = readFileSync(workflowsReadmePath, "utf8");
 const windowsPackageScript = readFileSync(windowsPackageScriptPath, "utf8");
 const windowsArchiveScript = readFileSync(windowsArchiveScriptPath, "utf8");
 const trustedSigningScript = readFileSync(trustedSigningScriptPath, "utf8");
+const windowsInstalledSmokeScript = readFileSync(windowsInstalledSmokeScriptPath, "utf8");
 
 if (!workflowsReadme.includes("ci:windows-signing")) {
   fail(".github/workflows/README.md must document ci:windows-signing");
@@ -158,6 +174,9 @@ for (const expected of [
   "ci:windows-signing",
   "github.event.pull_request.head.repo.full_name == github.repository",
   "Get-AuthenticodeSignature",
+  "Smoke signed installed Windows application",
+  "Re-verify signed installer after installed-app smoke",
+  "scripts/release/smoke-installed-windows.ps1",
   "windows-signed-installer-pr",
   "if: ${{ github.event_name != 'pull_request' }}",
   "find mac-dist/dist mac-dist/build/ffmpeg-source",
@@ -195,6 +214,24 @@ if (!protectedWindowsJob) {
       );
     }
   }
+  const signatureIndex = protectedWindowsJob.indexOf("Verify Authenticode signatures");
+  const smokeIndex = protectedWindowsJob.indexOf("Smoke signed installed Windows application");
+  const reverificationIndex = protectedWindowsJob.indexOf(
+    "Re-verify signed installer after installed-app smoke",
+  );
+  const aliasIndex = protectedWindowsJob.indexOf("Prepare stable-name Windows installer alias");
+  const uploadIndex = protectedWindowsJob.indexOf("Upload Windows installer artifact");
+  if (
+    signatureIndex < 0 ||
+    smokeIndex <= signatureIndex ||
+    reverificationIndex <= smokeIndex ||
+    aliasIndex <= reverificationIndex ||
+    uploadIndex <= smokeIndex
+  ) {
+    fail(
+      ".github/workflows/release.yml must order Authenticode -> installed smoke -> re-verification -> alias/upload",
+    );
+  }
 }
 for (const unexpected of [
   "WINDOWS_UNSIGNED_RELEASE",
@@ -222,6 +259,7 @@ for (const expected of [
   "apps/desktop/release-stage",
   "apps/desktop/scripts/package-win.mjs",
   "scripts/release/install-trusted-signing.ps1",
+  "scripts/release/smoke-installed-windows.ps1",
   // The signing job has no checkout, so anything it runs — and anything those
   // scripts import — must be archived. verify-asar-contents.mjs imports
   // cli-entrypoint.mjs; omitting it is an ERR_MODULE_NOT_FOUND after signing.
@@ -231,6 +269,43 @@ for (const expected of [
 ]) {
   if (!windowsArchiveScript.includes(expected)) {
     fail(`${windowsArchiveScriptPath} must contain ${JSON.stringify(expected)}`);
+  }
+}
+if (!previewWorkflow.includes("Smoke installed Windows application")) {
+  fail(".github/workflows/preview-build.yml must launch the installed Windows preview");
+}
+if (!previewWorkflow.includes("scripts/release/smoke-installed-windows.ps1")) {
+  fail(".github/workflows/preview-build.yml must use the shared installed-app smoke");
+}
+const previewWindowsJob = previewWorkflow.split("\n  preview-windows:\n")[1];
+if (!previewWindowsJob?.includes("timeout-minutes: 40")) {
+  fail(".github/workflows/preview-build.yml must reserve 40 minutes for Windows packaging + smoke cleanup");
+}
+for (const expected of [
+  "Start-Process",
+  "WaitForExit",
+  "taskkill.exe /PID",
+  "PWRSNAP_E2E",
+  "PWRSNAP_USER_DATA",
+  "PWRSNAP_DATA_ROOT",
+  "PWRSNAP_PACKAGED_WINDOWS_SMOKE",
+  "ConvertFrom-Json",
+  "Assert-NoExistingPwrSnapInstallation",
+  "Get-PwrSnapRegistryResidue",
+  "Remove-SmokeOwnedFileAssociationRemainder",
+  "Refusing to remove unexpected .pwrsnap registry state",
+  "NODE_PATH",
+  "libraryUiState",
+  "betterSqlite3.quickCheck",
+  "betterSqlite3.bindingPath",
+  "sharp.vipsVersion",
+  "sharp.libvipsDllPaths",
+  "NSIS uninstall left production-identity residue",
+  "Installed-app smoke modified the source installer bytes",
+  "Uninstall*.exe",
+]) {
+  if (!windowsInstalledSmokeScript.includes(expected)) {
+    fail(`${windowsInstalledSmokeScriptPath} must contain ${JSON.stringify(expected)}`);
   }
 }
 for (const expected of [

@@ -31,7 +31,11 @@ $paths = @(
   # imports and fails if this list falls behind again.
   "scripts/lib/cli-entrypoint.mjs",
   "scripts/check-bundled-ffmpeg-notice.mjs",
-  "scripts/release/install-trusted-signing.ps1"
+  "scripts/release/install-trusted-signing.ps1",
+  # The protected job has no checkout. Carry the same installed-artifact
+  # runtime smoke used by preview CI so it runs against the signed NSIS after
+  # Authenticode verification and before any release artifact upload.
+  "scripts/release/smoke-installed-windows.ps1"
 )
 foreach ($path in $paths) {
   if (-not (Test-Path -LiteralPath $path)) {

@@ -130,12 +130,12 @@ jobs:
     name: Build preview installer (Windows)
     # Same build-preview label gate as the macOS preview above: build only when
     # the label is just applied (labeled) or already present on a new push
-    # (synchronize). Keeps the ~20-30 min Windows pack off every PR/push.
+    # (synchronize). Keeps the ~20-40 min Windows pack off every PR/push.
     if: |
       (github.event.action == 'labeled' && github.event.label.name == 'build-preview') ||
       (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview'))
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@v5
@@ -174,16 +174,16 @@ jobs:
       # Materializes a flat node_modules stage via `pnpm deploy`, rebuilds
       # better-sqlite3's Electron-native win32-x64 sidecar, injects sharp's
       # win32-x64 slice, then runs `electron-builder --win nsis --x64`.
-      # Unsigned for now (Authenticode signing is a later task). See
-      # apps/desktop/scripts/package-win.mjs.
+      # Preview artifacts are intentionally unsigned; release.yml owns the
+      # protected Authenticode path. See apps/desktop/scripts/package-win.mjs.
       - name: Build preview installer (unsigned)
         run: pnpm --filter @pwrsnap/desktop package:win
 
       # electron-builder 26.15.3 could produce a successful NSIS build whose
       # BCJ2-filtered payload silently omitted the application at install time.
-      # Inspect the embedded archive filters and exercise the installer itself
-      # so artifact existence alone cannot hide that regression.
-      - name: Verify Windows installer artifact and installed payload
+      # Keep this structural check alongside the causal installed-app smoke:
+      # archive integrity catches a different failure class than runtime load.
+      - name: Verify Windows installer archive integrity
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -257,32 +257,26 @@ jobs:
             throw "Embedded app-64.7z payload failed its integrity test."
           }
 
-          $installDir = Join-Path $env:RUNNER_TEMP "pwrsnap-nsis-smoke"
-          $process = Start-Process `
-            -FilePath $installer.FullName `
-            -ArgumentList @("/S", "/D=$installDir") `
-            -Wait `
-            -PassThru
-          if ($process.ExitCode -ne 0) {
-            throw "NSIS installer exited with code $($process.ExitCode)."
+      - name: Smoke installed Windows application
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dist = Resolve-Path "apps/desktop/release-stage/dist"
+          $installers = @(Get-ChildItem -Path $dist -Filter "*-setup.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer in $dist; found $($installers.Count)."
           }
+          & ./scripts/release/smoke-installed-windows.ps1 `
+            -InstallerPath $installers[0].FullName
 
-          $requiredFiles = @(
-            (Join-Path $installDir "PwrSnap.exe"),
-            (Join-Path $installDir "resources/app.asar"),
-            (Join-Path $installDir "resources/PwrSnapWindowList.exe")
-          )
-          foreach ($file in $requiredFiles) {
-            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
-              throw "Installed NSIS payload is missing $file."
-            }
-          }
-          if (@(Get-ChildItem -Path $installDir -Filter "*.dll" -File -Recurse).Count -eq 0) {
-            throw "Installed NSIS payload contains no DLLs."
-          }
-          if (@(Get-ChildItem -Path $installDir -Filter "*.node" -File -Recurse).Count -eq 0) {
-            throw "Installed NSIS payload contains no native .node binaries."
-          }
+      - name: Upload installed-app smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: PwrSnap-${{ steps.version.outputs.version }}-windows-smoke-diagnostics
+          path: ${{ runner.temp }}/pwrsnap-windows-smoke-diagnostics-*
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v7

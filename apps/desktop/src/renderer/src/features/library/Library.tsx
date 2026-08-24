@@ -4015,6 +4015,12 @@ export function Library() {
       className="psl"
       data-mode={view.kind}
       data-left={leftState}
+      // Packaged Windows readiness waits for the Library's own head-page
+      // request to resolve and commit. A mounted shell alone can coexist with
+      // the visible load-error state, so keep this marker owned by the same
+      // useLibrary snapshot that renders the real empty Library.
+      data-library-readiness={loading ? "loading" : error === null ? "ready" : "error"}
+      data-library-total-live={totalLive}
       // `data-right` controls the right column width (38px collapsed vs
       // 360px pinned) AND the footer/overflow rules. Computed as
       // `railDataRight` above: pinned/collapsed whenever the rail is

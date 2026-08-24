@@ -15,8 +15,11 @@ release workflow's Windows prepare/sign jobs for a same-repository PR. Its
 preparation job has no credentials. Its protected job verifies the prepared
 archive, downloads the pinned Windows FFmpeg artifact, installs TrustedSigning,
 packages with `--require-signing`, verifies the installer and application
-Authenticode signatures, and uploads `windows-signed-installer-pr`. The release
-publication job is explicitly disabled for PR events.
+Authenticode signatures, installs and launches that exact signed artifact under
+isolated runner-temporary profile/data roots, and uploads
+`windows-signed-installer-pr` only after main/renderer/native readiness and
+clean exit/uninstall pass. The release publication job is explicitly disabled
+for PR events.
 
 The environment's normal deployment policy should remain limited to `v*` tags.
 To run the signed PR smoke check, temporarily allow the exact synthetic merge
@@ -67,22 +70,38 @@ The release workflow has two Windows jobs:
    has no signing environment or Azure credentials.
 2. `windows-sign` downloads and verifies that exact archive, downloads and
    verifies the pinned FFmpeg artifact, installs `TrustedSigning`, then runs
-   `package-win.mjs --sign-stage-only --release --require-signing`. It does not
-   check out source or run pnpm/npm lifecycle scripts.
+   `package-win.mjs --sign-stage-only --release --require-signing`. After
+   Authenticode verification, the archived installed-app smoke silently
+   installs the signed NSIS, launches the installed executable with isolated
+   profile/userData/data roots, proves the migrated better-sqlite3 connection,
+   real Sharp/libvips encoding, visible React Library, and preload/IPC command
+   round trip, then requires clean `app.quit()` and uninstall. Native binding
+   provenance must stay under the installed `resources` tree. The installer is
+   hashed before the smoke and its hash + Authenticode signer are re-verified
+   afterward, before aliasing or upload. The protected job does not check out
+   source or run pnpm/npm lifecycle scripts, and the smoke step receives no
+   Azure credentials.
 
 Windows packaging cannot sign only the final installer after the fact:
 electron-builder signs multiple application and NSIS payloads while it builds
 the installer. Packaging is therefore the irreducible operation inside the
 protected job.
 
-The job uploads a signed Windows artifact to the workflow. A separate
+The job uploads a signed Windows artifact to the workflow only after the
+installed runtime smoke passes. A separate
 `publish-release-assets` job creates the GitHub Release only after the Linux
 build gate, signed/notarized macOS package, and signed Windows package all
 succeed.
 
-For PR events, the release workflow runs only the Windows prepare/sign path and
-stops at the uploaded artifact. The protected signing job performs no checkout
-and no package installation.
+For PR events, the release workflow runs only the Windows prepare/sign/smoke
+path and stops at the uploaded artifact. The protected signing job performs no
+checkout and no project package installation. Its temporary NSIS installation
+is removed by the smoke controller before the job can upload the artifact.
+
+This is a packaged-runtime gate, not an updater test. `PWRSNAP_E2E=1` prevents
+networked updater initialization, so `latest.yml`/blockmap retrieval, download,
+signature selection, `quitAndInstall`, and prerelease-to-prerelease transition
+remain part of the first signed clean-VM release smoke.
 
 ## Failure modes
 

@@ -124,7 +124,13 @@ import {
   setUpdateSelectionResolver
 } from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
-import { getMainLogger, initializeMainLogger } from "./log";
+import { getMainLogFilePath, getMainLogger, initializeMainLogger } from "./log";
+import {
+  preflightPackagedWindowsSmokeRequest,
+  resolvePackagedNativeModuleProvenance,
+  resolvePackagedWindowsSmokeConfig,
+  runPackagedWindowsSmokeIfRequested
+} from "./packaged-windows-smoke";
 import {
   LOCAL_AGENT_MCP_PORT,
   LocalAgentMcpServer
@@ -167,6 +173,7 @@ import {
   openDatabase,
   PendingMigrationsError
 } from "./persistence/db";
+import { getNativeBinding } from "./persistence/native-binding";
 import {
   getCaptureById,
   insertCapture,
@@ -183,7 +190,13 @@ import {
   persistCaptureFromTempV2,
   sweepBundleTrash
 } from "./persistence/bundle-store";
-import { getCacheSourcePath, setCapturesLocation } from "./persistence/paths";
+import {
+  getCacheSourcePath,
+  getCapturesRoot,
+  getDataRoot,
+  getDbPath,
+  setCapturesLocation
+} from "./persistence/paths";
 import { runBundleFilenameMaintenanceOnBoot } from "./persistence/bundle-filename-maintenance";
 import { runVideoFilenameMaintenanceOnBoot } from "./persistence/video-filename-maintenance";
 import {
@@ -1437,8 +1450,104 @@ function scheduleDarwinRegionSelectorPreWarm(): void {
 }
 
 export function bootstrapApp(): void {
+  // A malformed packaged-smoke request must fail before logging, role/settings
+  // reads, persistence, updater/hotkey wiring, or any other startup side
+  // effect can reach a non-isolated path. This preflight is intentionally
+  // lexical: Electron paths are checked again after setPath below.
+  try {
+    preflightPackagedWindowsSmokeRequest({
+      app,
+      env: process.env,
+      platform: process.platform
+    });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    try {
+      process.stderr.write(`[pwrsnap:packaged-windows-smoke] preflight failed: ${message}\n`);
+    } catch {
+      // The controller also treats an early/no-report exit as failure.
+    }
+    app.quit();
+    return;
+  }
+
   markStartup("main: bootstrapApp begin");
+  // setName BEFORE the first app.getPath("userData") access — Electron
+  // derives userData from the app name, and the role peek below reads
+  // the settings file from that directory. (Previously set later in
+  // bootstrap; every prior getPath call happened after it.)
+  app.setName(APP_NAME);
+
+  // E2E isolation: each Playwright/packaged-smoke launch sets
+  // PWRSNAP_USER_DATA to an isolated tmpdir. Apply it before the logger or any
+  // settings/persistence work so a valid packaged smoke never touches the
+  // runner's normal PwrSnap profile. We cannot rely on HOME alone because
+  // Electron caches userData early using the binary's bundle name.
+  const customUserData = process.env.PWRSNAP_USER_DATA;
+  if (customUserData !== undefined && customUserData.length > 0) {
+    app.setPath("userData", customUserData);
+    if (isE2E) {
+      // getCapturesRoot() composes from Electron's Documents path, not HOME.
+      // Rebase both paths only under E2E: startup profiling intentionally uses
+      // a cloned userData without PWRSNAP_E2E so it can observe the real
+      // captures library outside that clone.
+      app.setPath("documents", join(customUserData, "Documents"));
+      // The sticky permission-denial fallback writes to ~/PwrSnap. Setting
+      // Electron's resolved home closes any platform caching gap that could
+      // otherwise send an E2E fallback to the host's real home directory.
+      app.setPath("home", customUserData);
+    }
+  }
+
+  try {
+    resolvePackagedWindowsSmokeConfig({
+      app,
+      env: process.env,
+      platform: process.platform,
+      getPaths: () => ({
+        dataRoot: getDataRoot(),
+        databasePath: getDbPath(),
+        capturesRoot: getCapturesRoot(),
+        // The logger has not initialized yet. Its actual file path is checked
+        // immediately afterward; this candidate lets us validate every
+        // Electron/data root before the logger can create a file.
+        mainLogPath: join(app.getPath("logs"), "main.log")
+      })
+    });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    try {
+      process.stderr.write(
+        `[pwrsnap:packaged-windows-smoke] runtime path validation failed: ${message}\n`
+      );
+    } catch {
+      // The controller also treats an early/no-report exit as failure.
+    }
+    app.quit();
+    return;
+  }
+
   initializeMainLogger();
+  try {
+    resolvePackagedWindowsSmokeConfig({
+      app,
+      env: process.env,
+      platform: process.platform,
+      getPaths: () => ({
+        dataRoot: getDataRoot(),
+        databasePath: getDbPath(),
+        capturesRoot: getCapturesRoot(),
+        mainLogPath: getMainLogFilePath()
+      })
+    });
+  } catch (cause) {
+    log.error("packaged Windows smoke path validation failed before app ready", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    app.quit();
+    return;
+  }
+
   installTerminalSignalShutdown();
   // Install first: a Sizzle save may defer the initial before-quit pass.
   // Transient teardown skips that pass and runs on the resumed app.quit().
@@ -1459,12 +1568,6 @@ export function bootstrapApp(): void {
     },
     { shouldDisposeOnBeforeQuit: () => !isSizzleQuitDeferred() }
   );
-
-  // setName BEFORE the first app.getPath("userData") access — Electron
-  // derives userData from the app name, and the role peek below reads
-  // the settings file from that directory. (Previously set later in
-  // bootstrap; every prior getPath call happened after it.)
-  app.setName(APP_NAME);
 
   const role = resolveProcessRole({
     argv: process.argv,
@@ -1613,38 +1716,6 @@ export function bootstrapApp(): void {
 
   // Privileged schemes MUST be registered before app is ready.
   registerSchemesAsPrivileged();
-
-  // (app.setName moved to the top of bootstrap — the role peek needs
-  // the correct userData path.)
-
-  // E2E isolation: each Playwright launch sets PWRSNAP_USER_DATA to
-  // an isolated tmpdir so SQLite, captures dir, cache dir, and trash
-  // all live in a throwaway location — no contamination between
-  // specs and no risk of the suite writing into the developer's real
-  // PwrSnap install. We can't rely on HOME alone because Electron
-  // caches the userData path early using the binary's bundle name
-  // ("Electron" under Playwright), which mangles the layout.
-  const customUserData = process.env.PWRSNAP_USER_DATA;
-  if (customUserData !== undefined && customUserData.length > 0) {
-    app.setPath("userData", customUserData);
-    if (isE2E) {
-      // `getCapturesRoot()` composes from app.getPath("documents"),
-      // which macOS/Windows resolve via the OS user profile — NOT the
-      // fixture's HOME override. Without this rebase every E2E launch
-      // reads (and storage scans walk) the developer's real
-      // ~/Documents/PwrSnap: a hermeticity hole, and slow enough on a
-      // library of real captures to destabilize timing-sensitive
-      // specs. E2E-gated so profiling runs on a cloned userData
-      // (PWRSNAP_USER_DATA without PWRSNAP_E2E) keep observing the
-      // real captures library, which is their whole point.
-      app.setPath("documents", join(customUserData, "Documents"));
-      // The sticky permission-denial fallback writes to `~/PwrSnap`.
-      // HOME is already overridden by the fixture, but setting Electron's
-      // resolved path explicitly closes any platform caching gap that could
-      // otherwise send an E2E fallback to the host's real home directory.
-      app.setPath("home", customUserData);
-    }
-  }
 
   // Two-process split: the agent and library are separate Chromium
   // browser processes that share one `userData`. Chromium's per-profile
@@ -2138,6 +2209,40 @@ export function bootstrapApp(): void {
       scheduleAssetFilenameMaintenance();
     }
     markStartup("main: whenReady bootstrap complete");
+
+    // CI-only packaged readiness handshake. It is intentionally invoked only
+    // after normal bootstrap has opened/migrated SQLite, registered the
+    // command bus + IPC dispatcher, and created the real Library window. The
+    // env gate fails closed unless this is the installed Windows application
+    // running with E2E's isolated userData + data-root posture. Success is
+    // written before app.quit(), so the controller proves graceful teardown as
+    // well as main/renderer/native readiness.
+    const packagedSmokeOwnedLifecycle = await runPackagedWindowsSmokeIfRequested({
+      app: {
+        isPackaged: app.isPackaged,
+        getName: () => app.getName(),
+        getVersion: () => app.getVersion(),
+        getPath: (name) => app.getPath(name),
+        quit: () => app.quit()
+      },
+      env: process.env,
+      platform: process.platform,
+      arch: process.arch,
+      execPath: process.execPath,
+      electronVersion: process.versions.electron,
+      findMainLibraryWindow,
+      getDatabase: getDb,
+      getPaths: () => ({
+        dataRoot: getDataRoot(),
+        databasePath: getDbPath(),
+        capturesRoot: getCapturesRoot(),
+        mainLogPath: getMainLogFilePath()
+      }),
+      getNativeModuleProvenance: () =>
+        resolvePackagedNativeModuleProvenance(process.resourcesPath, getNativeBinding()),
+      logger: getMainLogger("pwrsnap:packaged-windows-smoke")
+    });
+    if (packagedSmokeOwnedLifecycle) return;
 
     // ── Dev probe-only CLI mode ───────────────────────────────────
     // Detect `--probe=<profile>` AFTER the full boot — unlike --seed,
